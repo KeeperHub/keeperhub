@@ -34,6 +34,15 @@ async function openProject(page: Page, name: string): Promise<void> {
   await workflowsPanel(page).getByRole("button", { name }).click();
 }
 
+// An entry in the open filter menu, by its value ("enabled", "Manual").
+function filterMenuItem(page: Page, value: string): Locator {
+  return page.locator(`[role="menuitemcheckbox"][data-filter="${value}"]`);
+}
+
+async function pickInMenu(page: Page, value: string): Promise<void> {
+  await filterMenuItem(page, value).click();
+}
+
 function pickerRow(page: Page, name: string): Locator {
   return page.getByTestId("workflow-picker-item").filter({ hasText: name });
 }
@@ -209,31 +218,52 @@ test.describe("Sidebar trigger status icons", () => {
     );
 
     await page.getByTestId("trigger-filter-button").click();
-    const chip = (value: string): Locator =>
-      page.locator(
-        `[data-testid="trigger-filter-chips"] [data-filter="${value}"]`
-      );
-    await expect(chip("all")).toHaveAttribute("aria-pressed", "true");
+    const statusButton = page.getByTestId("status-filter");
+    const typeButton = page.getByTestId("trigger-type-filter");
+    await expect(statusButton).toHaveAccessibleName("Status: All");
 
-    await chip("enabled").click();
+    // Status: Enabled.
+    await statusButton.click();
+    await pickInMenu(page, "enabled");
+    await page.keyboard.press("Escape");
     await expect(liveRow).toBeVisible();
     await expect(manualRow).toHaveCount(0);
 
-    await chip("manual").click();
-    await expect(chip("enabled")).toHaveAttribute("aria-pressed", "true");
-    await expect(chip("manual")).toHaveAttribute("aria-pressed", "true");
-    await expect(chip("all")).toHaveAttribute("aria-pressed", "false");
+    // Picks within a menu add up: Enabled or Manual.
+    await statusButton.click();
+    await pickInMenu(page, "manual");
+    await page.keyboard.press("Escape");
+    await expect(statusButton).toHaveAccessibleName("Status: Enabled, Manual");
     await expect(liveRow).toBeVisible();
     await expect(manualRow).toBeVisible();
 
-    await chip("enabled").click();
-    await chip("manual").click();
-    await chip("disabled").click();
+    // Across menus they narrow: (Enabled or Manual) and a Manual trigger.
+    await typeButton.click();
+    const manualType = filterMenuItem(page, "Manual");
+    await expect(manualType).toContainText("1");
+    await manualType.click();
+    await page.keyboard.press("Escape");
+    await expect(liveRow).toHaveCount(0);
+    await expect(manualRow).toBeVisible();
+
+    // While a filter is on, the filter button cannot hide the row.
+    await page.getByTestId("trigger-filter-button").click();
+    await expect(page.getByTestId("trigger-filters")).toBeVisible();
+
+    // Nothing left: the empty message offers a way back.
+    await typeButton.click();
+    await filterMenuItem(page, "Manual").click();
+    await filterMenuItem(page, "Schedule").click();
+    await page.keyboard.press("Escape");
+    await statusButton.click();
+    await pickInMenu(page, "enabled");
+    await page.keyboard.press("Escape");
     await expect(liveRow).toHaveCount(0);
     await expect(manualRow).toHaveCount(0);
 
     await page.getByTestId("trigger-filter-reset").click();
-    await expect(chip("all")).toHaveAttribute("aria-pressed", "true");
+    await expect(statusButton).toHaveAccessibleName("Status: All");
+    await expect(typeButton).toHaveAccessibleName("Trigger: All");
     await expect(liveRow).toBeVisible();
     await expect(manualRow).toBeVisible();
   });
@@ -287,14 +317,14 @@ test.describe("Sidebar trigger status icons", () => {
     await expect(page.getByRole("tooltip")).toHaveText(eventName);
   });
 
-  test("a project too long for the panel gets a search field", async ({
+  test("on a long project the filter row stays in view and clears in one click", async ({
     page,
     apiRequest,
   }) => {
     await page.setViewportSize({ width: 1280, height: 520 });
     const stamp = Date.now();
     const projectResponse = await apiRequest.post("/api/projects", {
-      data: { name: `trigger-search-${stamp}` },
+      data: { name: `trigger-long-${stamp}` },
     });
     expect(projectResponse.ok()).toBe(true);
     const project = (await projectResponse.json()) as {
@@ -303,14 +333,11 @@ test.describe("Sidebar trigger status icons", () => {
     };
     createdProjects.push(project.id);
 
-    const names = Array.from(
-      { length: 20 },
-      (_, i) => `trigger-search-${stamp}-${i % 2 === 0 ? "alpha" : "beta"}-${i}`
-    );
-    for (const name of names) {
+    for (let i = 0; i < 20; i += 1) {
       const workflow = await createTestWorkflow(PERSISTENT_TEST_USER_EMAIL, {
-        name,
-        triggerType: "manual",
+        name: `trigger-long-${stamp}-${i}`,
+        triggerType: i % 2 === 0 ? "manual" : "webhook",
+        enabled: false,
       });
       created.push(workflow.id);
       const moved = await apiRequest.patch(`/api/workflows/${workflow.id}`, {
@@ -324,34 +351,29 @@ test.describe("Sidebar trigger status icons", () => {
     await openProject(page, project.name);
     await page.getByTestId("trigger-filter-button").click();
 
-    const search = page.getByTestId("workflow-search");
-    await expect(search).toBeVisible();
-    await page
+    await page.getByTestId("trigger-type-filter").click();
+    await filterMenuItem(page, "Manual").click();
+    await page.keyboard.press("Escape");
+    const rows = page
       .getByTestId("workflow-picker-item")
-      .filter({ hasText: `${stamp}-19` })
-      .scrollIntoViewIfNeeded();
-    await expect(search).toBeInViewport();
-    await expect(page.getByTestId("trigger-filter-chips")).toBeInViewport();
-    await search.fill("beta");
-    await expect(
-      page.getByTestId("workflow-picker-item").filter({ hasText: "alpha" })
-    ).toHaveCount(0);
-    await expect(
-      page.getByTestId("workflow-picker-item").filter({ hasText: "beta" })
-    ).toHaveCount(10);
+      .filter({ hasText: stamp.toString() });
+    await expect(rows).toHaveCount(10);
 
-    // Escape clears the query first and leaves the panel open.
-    await search.press("Escape");
-    await expect(search).toHaveValue("");
-    await expect(search).toBeVisible();
+    await rows.last().scrollIntoViewIfNeeded();
+    await expect(page.getByTestId("trigger-filters")).toBeInViewport();
+    await expect(page.getByTestId("trigger-filter-button")).toHaveAttribute(
+      "data-filtered",
+      "true"
+    );
 
-    await search.fill("no-such-workflow");
-    await page.getByTestId("trigger-filter-reset").click();
-    await expect(search).toHaveValue("");
-    await expect(
-      page
-        .getByTestId("workflow-picker-item")
-        .filter({ hasText: stamp.toString() })
-    ).toHaveCount(20);
+    await page.getByTestId("trigger-filter-clear").click();
+    await expect(rows).toHaveCount(20);
+    await expect(page.getByTestId("trigger-filter-button")).not.toHaveAttribute(
+      "data-filtered",
+      "true"
+    );
+    // With nothing picked the button hides the row again.
+    await page.getByTestId("trigger-filter-button").click();
+    await expect(page.getByTestId("trigger-filters")).toHaveCount(0);
   });
 });

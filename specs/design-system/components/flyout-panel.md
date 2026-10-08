@@ -56,7 +56,7 @@ interface FlyoutPanelProps {
 ```
 
 The open panel is a `<section>` labelled with its title (not `role="menu"`),
-since the project panel holds a search field and filter chips.
+since the project panel holds filter menus.
 
 ## States
 

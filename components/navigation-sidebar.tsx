@@ -35,8 +35,7 @@ import { TruncatedTooltip } from "@/components/ui/truncated-tooltip";
 import {
   TRIGGER_FILTER_PANEL_ID,
   TriggerFilterButton,
-  TriggerFilterChips,
-  WorkflowSearchField,
+  TriggerFilters,
 } from "@/components/workflow-trigger-status";
 import { useIsMobile } from "@/hooks/use-mobile";
 import type { Project, SavedWorkflow } from "@/lib/api-client";
@@ -50,7 +49,6 @@ import { usePersistedNavState } from "@/lib/hooks/use-persisted-nav-state";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { registerSidebarRefetch } from "@/lib/refetch-sidebar";
 import { cn } from "@/lib/utils";
-import { matchesWorkflowSearch } from "@/lib/workflow/picker-search";
 import {
   dropSavedTriggersUpTo,
   recordSavedTrigger,
@@ -68,12 +66,17 @@ import {
 import {
   countDeactivated,
   countTriggerStatuses,
+  countTriggerTypes,
   describeEmptyFilterResult,
   getTriggerConfig,
   isSameTriggerDisplay,
+  listedTriggerTypes,
   matchesTriggerFilter,
+  matchesTriggerTypeFilter,
   type TriggerFilter,
+  type TriggerTypeFilter,
   toggleTriggerFilter,
+  toggleTriggerTypeFilter,
 } from "@/lib/workflow/trigger-display";
 import { FLYOUT_WIDTH, FlyoutPanel, STRIP_WIDTH } from "./flyout-panel";
 import {
@@ -494,17 +497,12 @@ export function NavigationSidebar(): React.ReactNode {
   const [triggerFilter, setTriggerFilter] = useState<TriggerFilter>(
     () => new Set()
   );
-  const [triggerFilterOpen, setTriggerFilterOpen] = useState(false);
-  const [workflowSearch, setWorkflowSearch] = useState("");
-  const [pickerOverflows, setPickerOverflows] = useState(false);
-  const [searchKept, setSearchKept] = useState(false);
-  const [pickerList, setPickerList] = useState<HTMLDivElement | null>(null);
-  const [pickerScroller, setPickerScroller] = useState<HTMLDivElement | null>(
-    null
+  const [triggerTypeFilter, setTriggerTypeFilter] = useState<TriggerTypeFilter>(
+    () => new Set()
   );
+  const [triggerFilterOpen, setTriggerFilterOpen] = useState(false);
   const filterButtonRef = useRef<HTMLButtonElement>(null);
-  const searchFieldRef = useRef<HTMLInputElement>(null);
-  const isPickerFiltered = triggerFilter.size > 0 || workflowSearch !== "";
+  const isPickerFiltered = triggerFilter.size > 0 || triggerTypeFilter.size > 0;
   const openWorkflowId = useAtomValue(currentWorkflowIdAtom);
   const liveTriggerConfig = useAtomValue(liveTriggerConfigAtom);
   const previewVersion = useAtomValue(previewVersionAtom);
@@ -547,62 +545,14 @@ export function NavigationSidebar(): React.ReactNode {
     });
   }, [isPending, session, fetchData]);
 
-  // Whether the project panel's list is taller than the panel. Measured only
-  // while nothing narrows the list, and kept while a filter or search does,
-  // so the search field does not vanish as typing shortens the list.
-  // Only the list is measured, so opening the filter strip above it cannot by
-  // itself make the list count as too long.
-  useEffect(() => {
-    const scroller = pickerScroller;
-    if (!(pickerList && scroller) || isPickerFiltered) {
-      return;
-    }
-    const measure = (): void => {
-      const style = getComputedStyle(scroller);
-      const room =
-        scroller.clientHeight -
-        Number.parseFloat(style.paddingTop) -
-        Number.parseFloat(style.paddingBottom);
-      setPickerOverflows(pickerList.offsetHeight > room);
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(pickerList);
-    observer.observe(scroller);
-    return () => observer.disconnect();
-  }, [pickerList, pickerScroller, isPickerFiltered]);
-
-  // Once search has appeared it stays until the filter closes or the project
-  // changes, so resizing the window never pulls it out from under the cursor.
-  useEffect(() => {
-    if (triggerFilterOpen && pickerOverflows) {
-      setSearchKept(true);
-    }
-  }, [triggerFilterOpen, pickerOverflows]);
-  const showWorkflowSearch =
-    workflowSearch !== "" || pickerOverflows || searchKept;
-  // Opening the filter on a long list puts the cursor in search, ready to
-  // type. Only on that click: search appearing later (a window resize, a
-  // refetch) must not pull focus from wherever the user is.
-  const focusSearchOnOpen = useRef(false);
-  useEffect(() => {
-    if (triggerFilterOpen && focusSearchOnOpen.current) {
-      focusSearchOnOpen.current = false;
-      if (showWorkflowSearch) {
-        searchFieldRef.current?.focus();
-      }
-    }
-  }, [triggerFilterOpen, showWorkflowSearch]);
-
   // Closing the project panel any way at all (Escape, clicking outside, the
-  // close button, re-clicking the project) drops the filter and search.
+  // close button, re-clicking the project) drops the filters.
   const tagsPanelState = navState.state.panels.tags;
   useEffect(() => {
     if (tagsPanelState === "closed") {
       setTriggerFilter(new Set());
-      setWorkflowSearch("");
+      setTriggerTypeFilter(new Set());
       setTriggerFilterOpen(false);
-      setSearchKept(false);
     }
   }, [tagsPanelState]);
 
@@ -785,37 +735,30 @@ export function NavigationSidebar(): React.ReactNode {
   const selectedProjectId = navState.state.selectedProjectId;
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
   const allProjectWorkflows = byProject[selectedProjectId ?? ""] ?? [];
-  const tagNames = new Map(tags.map((t) => [t.id, t.name]));
-  // Search covers the name, the tag, the trigger type ("Manual" when there
-  // is none yet) and the event name the label shows. Status words are left to
-  // the chips, so "disabled" and "enabled" never half-match labels.
-  const searchMatches = allProjectWorkflows.filter((w) =>
-    matchesWorkflowSearch(
-      [
-        w.name,
-        tagNames.get(w.tagId ?? "") ?? "",
-        w.triggerType ?? "Manual",
-        typeof w.triggerConfig?.eventName === "string"
-          ? w.triggerConfig.eventName
-          : "",
-      ].join(" "),
-      workflowSearch
+  // Each menu counts the workflows the other menu lets through, so its
+  // numbers say what picking an entry would show.
+  const statusCounts = countTriggerStatuses(
+    allProjectWorkflows.filter((w) =>
+      matchesTriggerTypeFilter(w, triggerTypeFilter)
     )
   );
-  const triggerCounts = countTriggerStatuses(searchMatches);
-  const projectWorkflows = searchMatches.filter((w) =>
+  const typeMatches = allProjectWorkflows.filter((w) =>
     matchesTriggerFilter(w, triggerFilter)
   );
-  // Escape on a chip or an empty search closes the filter, not the whole
-  // panel; the next Escape closes the panel.
+  const typeCounts = countTriggerTypes(typeMatches);
+  const listedTypes = listedTriggerTypes(allProjectWorkflows);
+  const projectWorkflows = typeMatches.filter((w) =>
+    matchesTriggerTypeFilter(w, triggerTypeFilter)
+  );
+  // Escape on a filter button steps back: it clears the filters and hides
+  // the row; the next Escape closes the panel.
   const closePickerFilter = (): void => {
     resetPickerFilter();
-    setSearchKept(false);
     setTriggerFilterOpen(false);
   };
   const resetPickerFilter = (): void => {
     setTriggerFilter(new Set());
-    setWorkflowSearch("");
+    setTriggerTypeFilter(new Set());
     filterButtonRef.current?.focus();
   };
   const projectTagIds = new Set(
@@ -955,11 +898,10 @@ export function NavigationSidebar(): React.ReactNode {
     navState.setSelectedTag(null);
     navState.setPanelState("tags", "open");
     navState.setPanelState("workflows", "closed");
-    // A filter or search belongs to the project it was set in.
+    // A filter belongs to the project it was set in.
     setTriggerFilter(new Set());
-    setWorkflowSearch("");
+    setTriggerTypeFilter(new Set());
     setTriggerFilterOpen(false);
-    setSearchKept(false);
   }
 
   // NAV-01: render every nav item for everyone (anonymous, signed-out, signed-in).
@@ -1115,24 +1057,16 @@ export function NavigationSidebar(): React.ReactNode {
 
       {/* Panel 2: Projects (workflows in a project, grouped by tag subheader) */}
       <FlyoutPanel
-        bodyRef={setPickerScroller}
         collapsedLabel={
           selectedProject ? `Projects - ${selectedProject.name}` : "Projects"
         }
         headerLeading={
           <TriggerFilterButton
             disabled={dataLoading || allProjectWorkflows.length === 0}
-            onToggle={() => {
-              // Closing the chips drops the filter, so a shortened list is
-              // never left behind with nothing on screen explaining it.
-              if (triggerFilterOpen) {
-                resetPickerFilter();
-                setSearchKept(false);
-              } else {
-                focusSearchOnOpen.current = true;
-              }
-              setTriggerFilterOpen(!triggerFilterOpen);
-            }}
+            // While a filter is on the row cannot be hidden, so a shortened
+            // list always shows why; the button only hides an unused row.
+            filtered={isPickerFiltered}
+            onToggle={() => setTriggerFilterOpen(!triggerFilterOpen)}
             open={triggerFilterOpen}
             ref={filterButtonRef}
           />
@@ -1145,32 +1079,38 @@ export function NavigationSidebar(): React.ReactNode {
       >
         <div>
           {triggerFilterOpen && !dataLoading && (
-            // Pinned to the top of the scrolling list, so search and the
-            // sign that a filter is on stay in view on long lists. The
-            // negative offsets cover the panel's p-2 padding.
+            // Pinned to the top of the scrolling list, so the sign that a
+            // filter is on stays in view on long lists. The negative offsets
+            // cover the panel's p-2 padding.
             <div
               className="fade-in-0 slide-in-from-top-1 sticky -top-2 z-10 -mx-2 -mt-2 mb-1 animate-in border-b bg-background px-2 pt-2 duration-150 motion-reduce:animate-none"
               id={TRIGGER_FILTER_PANEL_ID}
             >
-              {showWorkflowSearch && (
-                <WorkflowSearchField
-                  onChange={setWorkflowSearch}
-                  onEscape={closePickerFilter}
-                  ref={searchFieldRef}
-                  value={workflowSearch}
-                />
-              )}
-              <TriggerFilterChips
-                counts={triggerCounts}
-                deactivatedCount={countDeactivated(searchMatches)}
-                onClear={() => setTriggerFilter(new Set())}
+              <TriggerFilters
+                deactivatedCount={countDeactivated(
+                  allProjectWorkflows.filter((w) =>
+                    matchesTriggerTypeFilter(w, triggerTypeFilter)
+                  )
+                )}
+                listedTypes={listedTypes}
+                onClearAll={resetPickerFilter}
+                onClearStatus={() => setTriggerFilter(new Set())}
+                onClearTypes={() => setTriggerTypeFilter(new Set())}
                 onEscape={closePickerFilter}
-                onToggle={(status) =>
+                onToggleStatus={(status) =>
                   setTriggerFilter((current) =>
                     toggleTriggerFilter(current, status)
                   )
                 }
-                value={triggerFilter}
+                onToggleType={(type) =>
+                  setTriggerTypeFilter((current) =>
+                    toggleTriggerTypeFilter(current, type, listedTypes)
+                  )
+                }
+                status={triggerFilter}
+                statusCounts={statusCounts}
+                typeCounts={typeCounts}
+                types={triggerTypeFilter}
               />
             </div>
           )}
@@ -1181,13 +1121,13 @@ export function NavigationSidebar(): React.ReactNode {
                 : ""
             }
           />
-          <div ref={setPickerList}>
+          <div>
             <TagsPanel
               activeWorkflowId={workflowId}
               expandAll={isPickerFiltered}
               filteredEmptyText={describeEmptyFilterResult(
                 triggerFilter,
-                workflowSearch
+                triggerTypeFilter
               )}
               loading={dataLoading}
               onResetFilter={isPickerFiltered ? resetPickerFilter : undefined}

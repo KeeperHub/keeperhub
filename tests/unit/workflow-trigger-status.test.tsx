@@ -7,8 +7,10 @@ import {
   TRIGGER_ICONS,
 } from "@/components/workflow-trigger-icons";
 import {
+  MENU_HOVER_CLOSE_MS,
+  MENU_HOVER_OPEN_MS,
   TriggerFilterButton,
-  TriggerFilterChips,
+  TriggerFilters,
   TriggerStatusIcon,
 } from "@/components/workflow-trigger-status";
 import { isEscapeHandled } from "@/lib/escape-key";
@@ -85,12 +87,23 @@ describe("TriggerFilterButton", () => {
     render(<TriggerFilterButton onToggle={onToggle} open={false} />);
     const button = container.querySelector("button");
     expect(button?.getAttribute("aria-expanded")).toBe("false");
-    expect(button?.getAttribute("aria-label")).toBe("Filter and search");
+    expect(button?.getAttribute("aria-label")).toBe("Filter");
     act(() => button?.click());
     expect(onToggle).toHaveBeenCalledTimes(1);
 
     render(<TriggerFilterButton onToggle={onToggle} open />);
     expect(button?.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("cannot hide the filters while one is on, and shows a dot", () => {
+    const onToggle = vi.fn();
+    render(<TriggerFilterButton filtered onToggle={onToggle} open />);
+    const button = container.querySelector("button");
+    expect(button?.getAttribute("aria-disabled")).toBe("true");
+    expect(button?.getAttribute("aria-label")).toBe("Filter, filters on");
+    expect(button?.querySelector("span[aria-hidden=true]")).not.toBeNull();
+    act(() => button?.click());
+    expect(onToggle).not.toHaveBeenCalled();
   });
 });
 
@@ -105,148 +118,208 @@ describe("TriggerFilterButton while loading", () => {
   });
 });
 
-describe("TriggerFilterChips", () => {
-  const counts = { all: 11, enabled: 5, disabled: 5, manual: 1 };
+describe("TriggerFilters", () => {
+  const statusCounts = { all: 11, enabled: 5, disabled: 5, manual: 1 };
+  const typeCounts = {
+    Schedule: 6,
+    Event: 3,
+    Block: 0,
+    Webhook: 1,
+    Transfer: 0,
+    "Pyth Price": 0,
+    Manual: 1,
+  };
+  const listedTypes = [
+    WorkflowTriggerEnum.SCHEDULE,
+    WorkflowTriggerEnum.EVENT,
+    WorkflowTriggerEnum.BLOCK,
+    WorkflowTriggerEnum.WEBHOOK,
+    WorkflowTriggerEnum.TEMPO_PAYMENT,
+    WorkflowTriggerEnum.MANUAL,
+  ];
 
-  const renderChips = (
-    value: ReadonlySet<"enabled" | "disabled" | "manual">,
-    handlers: { onToggle?: () => void; onClear?: () => void } = {}
-  ): void =>
+  beforeEach(() => {
+    // Radix measures the menu's trigger with an observer jsdom does not have.
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe(): void {
+          // jsdom does no layout
+        }
+        unobserve(): void {
+          // jsdom does no layout
+        }
+        disconnect(): void {
+          // jsdom does no layout
+        }
+      }
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  type Props = Partial<React.ComponentProps<typeof TriggerFilters>>;
+  function renderFilters(props: Props = {}): void {
     render(
-      <TriggerFilterChips
-        counts={counts}
-        onClear={handlers.onClear ?? vi.fn()}
-        onToggle={handlers.onToggle ?? vi.fn()}
-        value={value}
+      <TriggerFilters
+        listedTypes={listedTypes}
+        onClearAll={vi.fn()}
+        onClearStatus={vi.fn()}
+        onClearTypes={vi.fn()}
+        onToggleStatus={vi.fn()}
+        onToggleType={vi.fn()}
+        status={new Set()}
+        statusCounts={statusCounts}
+        typeCounts={typeCounts}
+        types={new Set()}
+        {...props}
       />
     );
-  const pressed = (): (string | null)[] =>
-    [...container.querySelectorAll("button")].map((chip) =>
-      chip.getAttribute("aria-pressed")
-    );
+  }
 
-  it("shows a chip per filter with its count, the picked one pressed", () => {
-    renderChips(new Set(["disabled"]));
-    const chips = [...container.querySelectorAll("button")];
-    expect(chips.map((chip) => chip.textContent)).toEqual([
-      "All 11",
-      "Enabled 5",
-      "Disabled 5",
-      "Manual 1",
-    ]);
-    expect(pressed()).toEqual(["false", "false", "true", "false"]);
-  });
+  function button(testId: string): HTMLButtonElement {
+    const found = container.querySelector<HTMLButtonElement>(
+      `[data-testid=${testId}]`
+    );
+    if (!found) {
+      throw new Error(`no ${testId}`);
+    }
+    return found;
+  }
 
-  it("presses All while nothing else is picked", () => {
-    renderChips(new Set());
-    expect(pressed()).toEqual(["true", "false", "false", "false"]);
-  });
-
-  it("presses every picked chip at once", () => {
-    renderChips(new Set(["enabled", "disabled"]));
-    expect(pressed()).toEqual(["false", "true", "true", "false"]);
-  });
-
-  it("toggles a status chip and clears with All", () => {
-    const onToggle = vi.fn();
-    const onClear = vi.fn();
-    renderChips(new Set(["enabled"]), { onToggle, onClear });
-    act(() =>
-      container
-        .querySelector<HTMLButtonElement>("[data-filter=manual]")
-        ?.click()
-    );
-    expect(onToggle).toHaveBeenCalledWith("manual");
-    act(() =>
-      container.querySelector<HTMLButtonElement>("[data-filter=all]")?.click()
-    );
-    expect(onClear).toHaveBeenCalledTimes(1);
-  });
-
-  it("dims a chip that would empty the list, unless it is picked", () => {
-    const zero = { all: 34, enabled: 0, disabled: 30, manual: 4 };
-    act(() =>
-      root.render(
-        <TriggerFilterChips
-          counts={zero}
-          onClear={vi.fn()}
-          onToggle={vi.fn()}
-          value={new Set()}
-        />
-      )
-    );
-    const enabled = container.querySelector("[data-filter=enabled]");
-    expect(enabled?.className).toContain("opacity-70");
-    expect(
-      container.querySelector("[data-filter=disabled]")?.className
-    ).not.toContain("opacity-70");
-
-    act(() =>
-      root.render(
-        <TriggerFilterChips
-          counts={zero}
-          onClear={vi.fn()}
-          onToggle={vi.fn()}
-          value={new Set(["enabled"])}
-        />
-      )
-    );
-    expect(
-      container.querySelector("[data-filter=enabled]")?.className
-    ).not.toContain("opacity-70");
-  });
-
-  it("says on the Disabled chip how many are deactivated", () => {
-    act(() =>
-      root.render(
-        <TriggerFilterChips
-          counts={counts}
-          deactivatedCount={2}
-          onClear={vi.fn()}
-          onToggle={vi.fn()}
-          value={new Set()}
-        />
-      )
-    );
-    // The hint is the chip's tooltip (Radix marks its trigger with
-    // data-state), and hidden text in the chip, because Radix describes the
-    // chip only once the tooltip has opened, after focus is announced.
-    const disabled = container.querySelector("[data-filter=disabled]");
-    expect(disabled?.getAttribute("data-state")).not.toBeNull();
-    expect(disabled?.textContent).toBe(
-      "Disabled 5, Includes 2 deactivated by KeeperHub"
-    );
-    expect(disabled?.querySelector(".sr-only")?.textContent).toBe(
-      ", Includes 2 deactivated by KeeperHub"
-    );
-    expect(
-      container
-        .querySelector("[data-filter=enabled]")
-        ?.getAttribute("data-state")
-    ).toBeNull();
-  });
-
-  it("closes the filter on Escape from a chip", () => {
-    const onEscape = vi.fn();
-    act(() =>
-      root.render(
-        <TriggerFilterChips
-          counts={counts}
-          onClear={vi.fn()}
-          onEscape={onEscape}
-          onToggle={vi.fn()}
-          value={new Set()}
-        />
-      )
-    );
+  function press(target: Element, key: string): KeyboardEvent {
     const event = new KeyboardEvent("keydown", {
-      key: "Escape",
+      key,
       bubbles: true,
       cancelable: true,
     });
     act(() => {
-      container.querySelector("[data-filter=manual]")?.dispatchEvent(event);
+      target.dispatchEvent(event);
     });
+    return event;
+  }
+
+  function menuItems(): HTMLElement[] {
+    return [
+      ...document.querySelectorAll<HTMLElement>("[role=menuitemcheckbox]"),
+    ];
+  }
+
+  function pointer(target: Element, type: string): void {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "pointerType", { value: "mouse" });
+    act(() => {
+      target.dispatchEvent(event);
+    });
+  }
+
+  it("reads All on both buttons while nothing is picked, with no clear", () => {
+    renderFilters();
+    expect(button("status-filter").textContent).toBe("StatusAll");
+    expect(button("trigger-type-filter").textContent).toBe("TriggerAll");
+    expect(button("status-filter").getAttribute("aria-label")).toBe(
+      "Status: All"
+    );
+    expect(
+      container.querySelector("[data-testid=trigger-filter-clear]")
+    ).toBeNull();
+  });
+
+  it("names the first pick and how many more, and offers to clear both", () => {
+    const onClearAll = vi.fn();
+    renderFilters({
+      status: new Set(["enabled"]),
+      types: new Set([WorkflowTriggerEnum.EVENT, WorkflowTriggerEnum.BLOCK]),
+      onClearAll,
+    });
+    expect(button("status-filter").textContent).toBe("Enabled");
+    expect(button("trigger-type-filter").textContent).toBe("Event+1");
+    expect(button("trigger-type-filter").getAttribute("aria-label")).toBe(
+      "Trigger: Event, Block"
+    );
+    act(() => button("trigger-filter-clear").click());
+    expect(onClearAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists the statuses with counts and the deactivated note", () => {
+    renderFilters({ deactivatedCount: 2 });
+    press(button("status-filter"), "Enter");
+    expect(menuItems().map((item) => item.textContent)).toEqual([
+      "Enabled5",
+      "DisabledIncludes 2 deactivated by KeeperHub5",
+      "Manual1",
+    ]);
+  });
+
+  it("lists every trigger type with its row icon, dimming the empty ones", () => {
+    renderFilters();
+    press(button("trigger-type-filter"), "Enter");
+    const items = menuItems();
+    expect(items.map((item) => item.dataset.filter)).toEqual(listedTypes);
+    expect(items.map((item) => item.textContent)).toEqual([
+      "Schedule6",
+      "Event3",
+      "Block0",
+      "Webhook1",
+      "Transfer0",
+      "Manual1",
+    ]);
+    // The icon is the row's tile, grey: green would read as a status.
+    expect(items[0].querySelector("svg.lucide-clock")).not.toBeNull();
+    expect(items[2].className).toContain("opacity-60");
+    expect(items[0].className).not.toContain("opacity-60");
+  });
+
+  it("toggles a pick and stays open for the next one", () => {
+    const onToggleType = vi.fn();
+    renderFilters({ onToggleType });
+    press(button("trigger-type-filter"), "Enter");
+    act(() => menuItems()[1].click());
+    expect(onToggleType).toHaveBeenCalledWith(WorkflowTriggerEnum.EVENT);
+    expect(menuItems()).toHaveLength(6);
+  });
+
+  it("opens on hover after a short rest and closes after the pointer leaves", () => {
+    vi.useFakeTimers();
+    renderFilters();
+    const trigger = button("trigger-type-filter");
+    pointer(trigger, "pointerover");
+    act(() => {
+      vi.advanceTimersByTime(MENU_HOVER_OPEN_MS - 1);
+    });
+    expect(menuItems()).toHaveLength(0);
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(menuItems()).toHaveLength(6);
+    // Opened by hover, it leaves focus where it was.
+    expect(document.activeElement).toBe(document.body);
+    pointer(trigger, "pointerout");
+    act(() => {
+      vi.advanceTimersByTime(MENU_HOVER_CLOSE_MS);
+    });
+    expect(menuItems()).toHaveLength(0);
+  });
+
+  it("opens nothing when the pointer only passes over", () => {
+    vi.useFakeTimers();
+    renderFilters();
+    const trigger = button("status-filter");
+    pointer(trigger, "pointerover");
+    pointer(trigger, "pointerout");
+    act(() => {
+      vi.advanceTimersByTime(MENU_HOVER_OPEN_MS * 2);
+    });
+    expect(menuItems()).toHaveLength(0);
+  });
+
+  it("steps the filter back on Escape from a shut menu's button", () => {
+    const onEscape = vi.fn();
+    renderFilters({ onEscape });
+    const event = press(button("status-filter"), "Escape");
     expect(onEscape).toHaveBeenCalledTimes(1);
     expect(isEscapeHandled(event)).toBe(true);
   });

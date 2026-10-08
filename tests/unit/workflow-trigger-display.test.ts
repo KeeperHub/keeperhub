@@ -6,6 +6,7 @@ import {
 import {
   countDeactivated,
   countTriggerStatuses,
+  countTriggerTypes,
   describeEmptyFilterResult,
   getTriggerAccessibleStatus,
   getTriggerConfig,
@@ -14,10 +15,13 @@ import {
   getTriggerTooltip,
   getTriggerTypeLabel,
   isSameTriggerDisplay,
+  listedTriggerTypes,
   matchesTriggerFilter,
+  matchesTriggerTypeFilter,
   type TriggerFilter,
   type TriggerStatus,
   toggleTriggerFilter,
+  toggleTriggerTypeFilter,
 } from "@/lib/workflow/trigger-display";
 
 const SWITCHABLE = [
@@ -527,13 +531,85 @@ describe("getTriggerTooltip", () => {
 
 describe("describeEmptyFilterResult", () => {
   it.each([
-    [[], "lift", "No workflows match \u201clift\u201d"],
-    [["disabled"], "lift", "No disabled workflows match \u201clift\u201d"],
-    [["disabled"], "", "No disabled workflows"],
-    [["manual", "enabled"], "", "No enabled or manual workflows"],
-    [["enabled"], "  hat  ", "No enabled workflows match \u201chat\u201d"],
-  ] as const)("filter %j with query %j says %s", (statuses, query, text) => {
-    expect(describeEmptyFilterResult(new Set(statuses), query)).toBe(text);
+    [[], [], "No workflows"],
+    [["disabled"], [], "No disabled workflows"],
+    [["manual", "enabled"], [], "No enabled or manual workflows"],
+    [[], ["Block"], "No workflows with a Block trigger"],
+    [["enabled"], ["Event"], "No enabled workflows with an Event trigger"],
+    [
+      ["disabled"],
+      ["Webhook", "Schedule"],
+      "No disabled workflows with a Schedule or Webhook trigger",
+    ],
+  ] as const)("statuses %j and types %j say %s", (statuses, types, text) => {
+    expect(describeEmptyFilterResult(new Set(statuses), new Set(types))).toBe(
+      text
+    );
+  });
+});
+
+describe("trigger type filter", () => {
+  const workflows = [
+    { triggerType: WorkflowTriggerEnum.SCHEDULE },
+    { triggerType: WorkflowTriggerEnum.SCHEDULE },
+    { triggerType: WorkflowTriggerEnum.EVENT },
+    { triggerType: WorkflowTriggerEnum.MANUAL },
+    {},
+  ];
+
+  it("counts each type, filing a workflow with no trigger under Manual", () => {
+    expect(countTriggerTypes(workflows)).toEqual({
+      Schedule: 2,
+      Event: 1,
+      Block: 0,
+      Webhook: 0,
+      Transfer: 0,
+      "Pyth Price": 0,
+      Manual: 2,
+    });
+  });
+
+  it("lets everything through with nothing picked, else only the picks", () => {
+    expect(workflows.every((w) => matchesTriggerTypeFilter(w, new Set()))).toBe(
+      true
+    );
+    const manual = new Set([WorkflowTriggerEnum.MANUAL] as const);
+    expect(
+      workflows.filter((w) => matchesTriggerTypeFilter(w, manual))
+    ).toEqual([{ triggerType: WorkflowTriggerEnum.MANUAL }, {}]);
+  });
+
+  it("lists Pyth Price only when a workflow uses it", () => {
+    expect(listedTriggerTypes(workflows)).not.toContain(
+      WorkflowTriggerEnum.PYTH_PRICE
+    );
+    expect(
+      listedTriggerTypes([{ triggerType: WorkflowTriggerEnum.PYTH_PRICE }])
+    ).toContain(WorkflowTriggerEnum.PYTH_PRICE);
+    expect(listedTriggerTypes([])).toEqual([
+      "Schedule",
+      "Event",
+      "Block",
+      "Webhook",
+      "Transfer",
+      "Manual",
+    ]);
+  });
+
+  it("toggles a type, and picking every listed type means All", () => {
+    const listed = [WorkflowTriggerEnum.EVENT, WorkflowTriggerEnum.BLOCK];
+    const one = toggleTriggerTypeFilter(
+      new Set(),
+      WorkflowTriggerEnum.EVENT,
+      listed
+    );
+    expect([...one]).toEqual(["Event"]);
+    expect(
+      toggleTriggerTypeFilter(one, WorkflowTriggerEnum.BLOCK, listed).size
+    ).toBe(0);
+    expect(
+      toggleTriggerTypeFilter(one, WorkflowTriggerEnum.EVENT, listed).size
+    ).toBe(0);
   });
 });
 

@@ -307,6 +307,81 @@ export function toggleTriggerFilter(
   return next.size === FILTER_ORDER.length ? new Set() : next;
 }
 
+// The picked trigger types; empty means every type.
+export type TriggerTypeFilter = ReadonlySet<WorkflowTriggerType>;
+
+// The order trigger types are listed in the filter menu. Pyth Price sits
+// behind a feature flag, so the menu shows it only when a workflow uses it.
+export const TRIGGER_TYPE_FILTER_ORDER: readonly WorkflowTriggerType[] = [
+  WorkflowTriggerEnum.SCHEDULE,
+  WorkflowTriggerEnum.EVENT,
+  WorkflowTriggerEnum.BLOCK,
+  WorkflowTriggerEnum.WEBHOOK,
+  WorkflowTriggerEnum.TEMPO_PAYMENT,
+  WorkflowTriggerEnum.PYTH_PRICE,
+  WorkflowTriggerEnum.MANUAL,
+];
+
+/**
+ * The trigger types the filter menu offers: every type, except Pyth Price
+ * when no workflow here uses it (it is behind a feature flag).
+ */
+export function listedTriggerTypes(
+  workflows: Array<{ triggerType?: WorkflowTriggerType | null }>
+): WorkflowTriggerType[] {
+  const hasPyth = workflows.some(
+    (workflow) => workflow.triggerType === WorkflowTriggerEnum.PYTH_PRICE
+  );
+  return TRIGGER_TYPE_FILTER_ORDER.filter(
+    (type) => type !== WorkflowTriggerEnum.PYTH_PRICE || hasPyth
+  );
+}
+
+// The type a workflow is filed under: one with no trigger yet runs only when
+// clicked, so it is Manual, as its icon shows.
+function getFilterTriggerType(workflow: {
+  triggerType?: WorkflowTriggerType | null;
+}): WorkflowTriggerType {
+  return workflow.triggerType ?? WorkflowTriggerEnum.MANUAL;
+}
+
+export function countTriggerTypes(
+  workflows: Array<{ triggerType?: WorkflowTriggerType | null }>
+): Record<WorkflowTriggerType, number> {
+  const counts = Object.fromEntries(
+    TRIGGER_TYPE_FILTER_ORDER.map((type) => [type, 0])
+  ) as Record<WorkflowTriggerType, number>;
+  for (const workflow of workflows) {
+    counts[getFilterTriggerType(workflow)] += 1;
+  }
+  return counts;
+}
+
+export function matchesTriggerTypeFilter(
+  workflow: { triggerType?: WorkflowTriggerType | null },
+  filter: TriggerTypeFilter
+): boolean {
+  return filter.size === 0 || filter.has(getFilterTriggerType(workflow));
+}
+
+/**
+ * Adds the type to the filter, or takes it out. Picking every type the menu
+ * lists turns the filter back into All, as the status filter does.
+ */
+export function toggleTriggerTypeFilter(
+  filter: TriggerTypeFilter,
+  type: WorkflowTriggerType,
+  listed: readonly WorkflowTriggerType[]
+): TriggerTypeFilter {
+  const next = new Set(filter);
+  if (next.has(type)) {
+    next.delete(type);
+  } else {
+    next.add(type);
+  }
+  return listed.every((listedType) => next.has(listedType)) ? new Set() : next;
+}
+
 /** What the row icon's tooltip says, e.g. "Block trigger". */
 export function getTriggerTypeLabel(
   triggerType: WorkflowTriggerType | null | undefined
@@ -476,18 +551,20 @@ function getTriggerDetail(workflow: {
 const MANUAL_DETAIL = "Runs when you click Run Workflow";
 
 /**
- * The empty-list message when a filter or search hides every workflow,
- * naming both, e.g. 'No disabled workflows match "lift"'.
+ * The empty-list message when the filters hide every workflow, naming both,
+ * e.g. "No disabled workflows with an Event or Block trigger".
  */
 export function describeEmptyFilterResult(
   filter: TriggerFilter,
-  query: string
+  types: TriggerTypeFilter
 ): string {
   const statuses = FILTER_ORDER.filter((status) => filter.has(status));
   const subject =
     statuses.length === 0 ? "workflows" : `${statuses.join(" or ")} workflows`;
-  const search = query.trim();
-  return search === ""
-    ? `No ${subject}`
-    : `No ${subject} match \u201c${search}\u201d`;
+  const picked = TRIGGER_TYPE_FILTER_ORDER.filter((type) => types.has(type));
+  if (picked.length === 0) {
+    return `No ${subject}`;
+  }
+  const article = picked[0] === WorkflowTriggerEnum.EVENT ? "an" : "a";
+  return `No ${subject} with ${article} ${picked.join(" or ")} trigger`;
 }
