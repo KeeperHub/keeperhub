@@ -56,6 +56,7 @@ export type ActionConfigFieldBase = {
     | "code-editor" // Monaco-based JavaScript code editor
     | "json-editor" // Monaco-based JSON editor
     | "call-list-builder" // Dynamic list of contract calls for batch operations
+    | "event-list-builder" // Dynamic list of contract and event pairs for a multi-event query
     | "args-list-builder" // Dynamic list of argument sets for batch uniform mode
     | "protocol-address" // Address input with checksum validation
     | "protocol-uint" // Unsigned integer input with range validation
@@ -135,7 +136,8 @@ export type ActionConfigFieldBase = {
   required?: boolean;
 
   // Conditional rendering: only show if another field has a specific value.
-  // Use `equals` for single value match, `oneOf` for multiple value match.
+  // Use `equals` for single value match, `oneOf` for multiple value match,
+  // `notEquals` for any value but one (an absent value included).
   // Use `computed` to gate on a value derived from other config fields at
   // render time (no persistence). Currently supported computations:
   //   - "abiFunctionMutability": parses `abiField` (ABI JSON) and looks up

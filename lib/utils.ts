@@ -5,6 +5,15 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+// Node reports a failed multi-address connect as an AggregateError with an
+// empty message and one error per address tried.
+function describeCause(cause: Error): string {
+  if (cause.message === "" && cause instanceof AggregateError) {
+    return cause.errors.map((inner) => getErrorMessage(inner)).join("; ");
+  }
+  return cause.message;
+}
+
 /**
  * Extract a meaningful error message from various error types.
  * Handles Error instances, objects with message/error properties, strings,
@@ -21,7 +30,7 @@ export function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     // Some errors have a cause property with more details
     if (error.cause && error.cause instanceof Error) {
-      return `${error.message}: ${error.cause.message}`;
+      return `${error.message}: ${describeCause(error.cause)}`;
     }
     return error.message;
   }

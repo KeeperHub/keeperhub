@@ -47,6 +47,7 @@ Plugins provide the actions available in your workflows. Each plugin adds one or
 | [SendGrid](/plugins/sendgrid) | Notifications | Send emails | API key |
 | [PagerDuty](/plugins/pagerduty) | Notifications | Trigger, acknowledge and resolve incidents on a service picked from your account | Read-only API token, or scoped OAuth |
 | [Webhook](/plugins/webhook) | Integrations | Send HTTP requests to external services | None |
+| [Lucid Agents](/plugins/lucid) | Integrations | Discover Lucid agents and call their entrypoints; priced ones return their x402 terms without running | None |
 | [Hyperliquid](/plugins/hyperliquid) | Data | Read-only Info API queries: clearinghouse state, vault details, validators, funding history, spot deploy state, referrals, sub-accounts, active asset data | None |
 | [Blockscout](/plugins/blockscout) | Data | Read-only block explorer queries: address balance, transaction details, token info | None (optional instance URL/API key) |
 | [Robinhood](/plugins/robinhood) | Data | Read-only stock-token reads on Robinhood Chain: price, holder position in share terms, market/trading status | None |

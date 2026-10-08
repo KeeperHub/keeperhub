@@ -69,7 +69,7 @@ export function amountField(): ActionConfigField {
   };
 }
 
-export function contractAddressField(): ActionConfigField {
+export function contractAddressField(): ActionConfigFieldBase {
   return {
     example: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
     key: "contractAddress",

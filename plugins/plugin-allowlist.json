@@ -11,6 +11,7 @@
     "evm-chain",
     "hedera",
     "hyperliquid",
+    "lucid",
     "math",
     "pagerduty",
     "protocol",
