@@ -717,6 +717,130 @@ describe("validateWorkflowActionConfigs", () => {
     });
   });
 
+  describe("query-events query modes", () => {
+    const PAUSED_ABI = JSON.stringify([
+      {
+        type: "event",
+        name: "Paused",
+        inputs: [{ name: "account", type: "address", indexed: false }],
+      },
+    ]);
+    const ENTRY = {
+      contractAddress: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+      abi: PAUSED_ABI,
+      eventName: "Paused",
+    };
+    const SINGLE = {
+      network: "1",
+      contractAddress: ENTRY.contractAddress,
+      abi: PAUSED_ABI,
+      eventName: "Paused",
+    };
+
+    it("accepts a single-event config saved before the query mode existed", () => {
+      expect(
+        validateWorkflowActionConfigs([actionNode("web3/query-events", SINGLE)])
+      ).toEqual({ valid: true, issues: [] });
+    });
+
+    it("still requires the single-event fields when the mode is absent or single", () => {
+      for (const config of [
+        { network: "1" },
+        { network: "1", queryMode: "single" },
+      ]) {
+        const result = validateWorkflowActionConfigs([
+          actionNode("web3/query-events", config),
+        ]);
+        expect(result.issues.map((issue) => issue.field)).toEqual([
+          "contractAddress",
+          "abi",
+          "eventName",
+        ]);
+      }
+    });
+
+    it("accepts a multiple-events config without the single-event fields", () => {
+      for (const eventQueries of [JSON.stringify([ENTRY, ENTRY]), [ENTRY]]) {
+        expect(
+          validateWorkflowActionConfigs([
+            actionNode("web3/query-events", {
+              network: "1",
+              queryMode: "multiple",
+              eventQueries,
+            }),
+          ])
+        ).toEqual({ valid: true, issues: [] });
+      }
+    });
+
+    it("requires the event list in multiple mode", () => {
+      const result = validateWorkflowActionConfigs([
+        actionNode("web3/query-events", {
+          network: "1",
+          queryMode: "multiple",
+        }),
+      ]);
+
+      expect(result.issues).toEqual([
+        expect.objectContaining({
+          code: "MISSING_REQUIRED_FIELD",
+          field: "eventQueries",
+        }),
+      ]);
+    });
+
+    it("flags every missing field of an incomplete entry, naming the entry", () => {
+      const result = validateWorkflowActionConfigs([
+        actionNode("web3/query-events", {
+          network: "1",
+          queryMode: "multiple",
+          eventQueries: JSON.stringify([
+            ENTRY,
+            { contractAddress: "", abi: "", eventName: "" },
+          ]),
+        }),
+      ]);
+
+      expect(result.issues.map((issue) => issue.path)).toEqual([
+        "nodes[0].data.config.eventQueries[1].contractAddress",
+        "nodes[0].data.config.eventQueries[1].abi",
+        "nodes[0].data.config.eventQueries[1].eventName",
+      ]);
+      expect(result.issues[2].message).toContain('"Event" for event 2');
+    });
+
+    it("rejects an event list that is not an array", () => {
+      const result = validateWorkflowActionConfigs([
+        actionNode("web3/query-events", {
+          network: "1",
+          queryMode: "multiple",
+          eventQueries: JSON.stringify(ENTRY),
+        }),
+      ]);
+
+      expect(result.issues).toEqual([
+        expect.objectContaining({
+          code: "INVALID_FIELD_TYPE",
+          field: "eventQueries",
+          expected: "array",
+        }),
+      ]);
+    });
+
+    it("rejects a query mode that is not one of its options", () => {
+      const result = validateWorkflowActionConfigs([
+        actionNode("web3/query-events", { ...SINGLE, queryMode: "several" }),
+      ]);
+
+      expect(result.issues).toEqual([
+        expect.objectContaining({
+          code: "INVALID_FIELD_TYPE",
+          field: "queryMode",
+        }),
+      ]);
+    });
+  });
+
   describe("KEEP-571 legacy field aliases", () => {
     const WRITE_CONTRACT_ABI = JSON.stringify([
       {

@@ -111,6 +111,14 @@ when the status is `unconfirmed` the transaction is broadcast but not yet confir
 re-send an `unconfirmed` execution, the transaction may still land. (A read actionType
 returns the read value instead, as above.)
 
+**Wallet holds USDC but no ETH?** Call `top_up_gas` with `chain_id` and `amount_usdc` (up to
+the per-call stablecoin cap, 100 USD by default, and 200 USD per organization per day) and an
+`idempotency_key`. It converts USDC
+into native ETH on the same wallet through three gas-sponsored transactions and has no dry
+run. Read `steps` in the response: if the swap confirmed but the unwrap did not, the USDC is
+already spent and WETH sits in the wallet, so do not call again. See
+[Gas Top-Up](/api/direct-execution#gas-top-up).
+
 **Simulation is EVM-only.** On Solana mainnet (`101`) and devnet (`103`), a `simulate: true` call
 resolves with `isError: true` rather than throwing. Parse the JSON in `content[0].text` and stop
 when `error` is `simulation_unsupported_chain`:

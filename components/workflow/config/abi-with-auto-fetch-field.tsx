@@ -11,7 +11,11 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { TemplateBadgeTextarea } from "@/components/ui/template-badge-textarea";
-import { BeautifiableField } from "@/components/workflow/config/beautifiable-field";
+import {
+  BeautifiableField,
+  type FieldSize,
+  TALL_FIELD_MAX_ROWS,
+} from "@/components/workflow/config/beautifiable-field";
 import { toChecksumAddress, truncateAddress } from "@/lib/address-utils";
 import { buildAddressUrl } from "@/lib/build-explorer-url";
 import type { ActionConfigFieldBase } from "@/plugins/registry";
@@ -886,6 +890,7 @@ export function AbiWithAutoFetchField({
         // whether the action applies. Automatic mode is a disabled field, so
         // the frame has to dim with it.
         disabled={disabled || isLoading || !useManualAbi}
+        label={field.label}
         language="json"
         // The same handler the textarea uses: beautifying has to clear a stale
         // parse error the way typing a character does.
@@ -893,25 +898,28 @@ export function AbiWithAutoFetchField({
         showAction={useManualAbi}
         value={value}
       >
-        <TemplateBadgeTextarea
-          className="max-h-40 overflow-y-auto rounded-none border-0 opacity-100 shadow-none focus-within:ring-0"
-          disabled={disabled || isLoading || !useManualAbi}
-          id={field.key}
-          // Do not include `value.length` in the key: it remounts the textarea
-          // on every keystroke and kills focus mid-word. Parent-driven value
-          // changes are already synced via TemplateBadgeTextarea's effect when
-          // the field is blurred.
-          key={`${field.key}-${useProxyAbi ? "proxy" : "impl"}${isDiamond ? `-${useDiamondAbi ? "diamond" : "proxy"}` : ""}`}
-          maxRows={4}
-          onChange={handleAbiChange}
-          placeholder={
-            useManualAbi
-              ? "Paste your ABI here"
-              : "ABI will be fetched automatically when a contract address and network are set"
-          }
-          rows={4}
-          value={value}
-        />
+        {(size: FieldSize) => (
+          <TemplateBadgeTextarea
+            className="rounded-none border-0 opacity-100 shadow-none focus-within:ring-0"
+            disabled={disabled || isLoading || !useManualAbi}
+            fill={size === "fill"}
+            id={field.key}
+            // Do not include `value.length` in the key: it remounts the
+            // textarea on every keystroke and kills focus mid-word.
+            // Parent-driven value changes are already synced via
+            // TemplateBadgeTextarea's effect when the field is blurred.
+            key={`${field.key}-${useProxyAbi ? "proxy" : "impl"}${isDiamond ? `-${useDiamondAbi ? "diamond" : "proxy"}` : ""}`}
+            maxRows={size === "tall" ? TALL_FIELD_MAX_ROWS : 4}
+            onChange={handleAbiChange}
+            placeholder={
+              useManualAbi
+                ? "Paste your ABI here"
+                : "ABI will be fetched automatically when a contract address and network are set"
+            }
+            rows={4}
+            value={value}
+          />
+        )}
       </BeautifiableField>
     </div>
   );

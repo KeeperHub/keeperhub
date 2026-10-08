@@ -9,7 +9,7 @@
  * parsing, clamping and backoff rules stay identical.
  */
 
-import { MAX_CAUSE_DEPTH } from "@/lib/errors/cause-chain";
+import { findInErrorChain } from "@/lib/errors/cause-chain";
 
 export type RetryAttemptLimits = {
   /** Retries used when the config value is missing or unparseable. */
@@ -103,10 +103,11 @@ export function parseRetryAfterHeaderMs(
 
 /**
  * Error codes that prove the request never reached the server: the socket was
- * refused, the host or network is unreachable, or the name did not resolve.
- * Deliberately excludes ECONNRESET, EPIPE and timeouts, which can happen after
- * the request body was sent and so cannot rule out a delivered request. A
- * caller retrying a non-idempotent request should retry only these.
+ * refused, the host or network is unreachable, the name did not resolve, or
+ * the connection was never established in time. Deliberately excludes
+ * ECONNRESET, EPIPE and timeouts after connecting, which can happen after the
+ * request body was sent and so cannot rule out a delivered request. A caller
+ * retrying a non-idempotent request should retry only these.
  */
 const CONNECTION_FAILURE_CODES: ReadonlySet<string> = new Set([
   "ECONNREFUSED",
@@ -115,10 +116,46 @@ const CONNECTION_FAILURE_CODES: ReadonlySet<string> = new Set([
   "ENOTFOUND",
   "EAI_AGAIN",
   "EAI_NONAME",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+/**
+ * Failures that can happen after the request was sent: the socket reset or
+ * closed, or a read timed out. Transient, but only safe to retry for a caller
+ * that accepts a repeated request.
+ */
+const SOCKET_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "ECONNRESET",
+  "ECONNABORTED",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_SOCKET",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
 ]);
 
 /** safeFetch resolves DNS itself and throws this before any socket opens. */
 const DNS_FAILURE_MESSAGE = "Cannot resolve host:";
+
+type ErrorFields = { code?: unknown; message?: unknown; syscall?: unknown };
+
+function isUnsentFailure(candidate: object): boolean {
+  const { code, message, syscall } = candidate as ErrorFields;
+  // A failed connect() never opened the socket, whatever its code (Node's
+  // per-address attempt timeout is ETIMEDOUT with syscall "connect").
+  if (syscall === "connect") {
+    return true;
+  }
+  if (typeof code === "string" && CONNECTION_FAILURE_CODES.has(code)) {
+    return true;
+  }
+  return typeof message === "string" && message.startsWith(DNS_FAILURE_MESSAGE);
+}
+
+function isSocketFailure(candidate: object): boolean {
+  const { code } = candidate as ErrorFields;
+  return typeof code === "string" && SOCKET_FAILURE_CODES.has(code);
+}
 
 /**
  * True when the thrown error, or any error in its `cause` chain (undici wraps
@@ -126,26 +163,20 @@ const DNS_FAILURE_MESSAGE = "Cannot resolve host:";
  * this process.
  */
 export function isConnectionFailure(error: unknown): boolean {
-  let current: unknown = error;
-  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current; depth++) {
-    if (typeof current !== "object") {
-      return false;
-    }
-    const { code, message, cause } = current as {
-      code?: unknown;
-      message?: unknown;
-      cause?: unknown;
-    };
-    if (typeof code === "string" && CONNECTION_FAILURE_CODES.has(code)) {
-      return true;
-    }
-    if (
-      typeof message === "string" &&
-      message.startsWith(DNS_FAILURE_MESSAGE)
-    ) {
-      return true;
-    }
-    current = cause;
-  }
-  return false;
+  return findInErrorChain(error, isUnsentFailure) !== undefined;
+}
+
+/**
+ * True for any transient network failure: a connection failure, or a socket
+ * failure after the request may have been sent. Configuration errors that
+ * undici also wraps in "fetch failed" (an invalid header, a blocked port, a
+ * redirect loop, a TLS certificate error) are not transient.
+ */
+export function isTransientNetworkFailure(error: unknown): boolean {
+  return (
+    findInErrorChain(
+      error,
+      (candidate) => isUnsentFailure(candidate) || isSocketFailure(candidate)
+    ) !== undefined
+  );
 }
