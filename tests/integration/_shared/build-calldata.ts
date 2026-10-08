@@ -148,6 +148,22 @@ export function buildCalldata(params: BuildCalldataParams): Calldata {
     return { to, data, action, contract };
   }
 
-  const { data } = encodeFromConfig(protocol, action, chainId, sampleInputs);
+  // A payer input (the OFT send's refundAddress) takes no config value at
+  // runtime: encodeFromConfig writes the payerAddress it is handed into
+  // that slot. buildCalldata has no wallet in scope, so a fixture that
+  // names the payer input supplies it here and a fixture that omits it
+  // encodes the same placeholder the runtime arg builders emit.
+  const payerName = action.inputs.find((i) => i.payer)?.name;
+  const payerAddress =
+    payerName !== undefined && sampleInputs[payerName] !== ""
+      ? sampleInputs[payerName]
+      : undefined;
+  const { data } = encodeFromConfig(
+    protocol,
+    action,
+    chainId,
+    sampleInputs,
+    payerAddress
+  );
   return { to, data, action, contract };
 }

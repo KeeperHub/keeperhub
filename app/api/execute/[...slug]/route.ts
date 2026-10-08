@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import { resolveAbi } from "@/lib/abi/cache";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
+import { resolvePayableEther } from "@/lib/execute/protocol-eth-value";
 import {
   beginIdempotentFromRequest,
   dispositionForExecutionOutcome,
@@ -206,7 +207,7 @@ async function executeProtocolAction(
       "release"
     );
   }
-  const { functionArgs } = argsResult;
+  const { functionArgs, payerParam } = argsResult;
 
   if (meta.actionType === "read") {
     const coreInput: ReadContractCoreInput = {
@@ -243,7 +244,26 @@ async function executeProtocolAction(
     return recordIdempotentResponse(idem, walletError, "release");
   }
 
-  const ethValue = body.ethValue ? String(body.ethValue) : undefined;
+  // Read the payable value from the action's declared source (the OFT
+  // send's nativeFee, every other action's ethValue), then run the action's
+  // registered ethValue transform (a value field typed in wei, as
+  // LayerZero's OFT send is) before anything reads the value, so the cap
+  // reservation below and writeContractCore see the same ether string the
+  // workflow step would produce. An action with no transform gets its
+  // value through exactly as before. Refuses, rather than guesses, when the
+  // action cannot be resolved and a value is present.
+  const payableValue = resolvePayableEther(body, meta);
+  if (!payableValue.ok) {
+    return recordIdempotentResponse(
+      idem,
+      NextResponse.json(
+        { success: false, error: payableValue.error },
+        { status: HttpStatus.BAD_REQUEST }
+      ),
+      "release"
+    );
+  }
+  const ethValue = payableValue.value ? String(payableValue.value) : undefined;
   // Charge any native value forwarded by the protocol write against the cap.
   const parsedValue = parseNativeValueEther(ethValue);
   if (!parsedValue.ok) {
@@ -313,6 +333,7 @@ async function executeProtocolAction(
     abiFunction: meta.functionName,
     functionArgs,
     ethValue,
+    payerParam,
     _context: { organizationId },
   };
   const result = await withIdempotencyHeartbeat(idem, () =>

@@ -34,12 +34,35 @@ export type AbiInputOverride = {
   advanced?: boolean;
   decimals?: boolean | number;
   fieldType?: string;
+  /** The input is not a user field. writeContractCore sets this top-level address argument to the address that pays for the call (the Safe in safe modes, the org wallet otherwise). */
+  payer?: boolean;
 };
 
 export type AbiOutputOverride = {
   name?: string;
   label?: string;
   decimals?: number;
+};
+
+/**
+ * Editorial text for the virtual payable value field of a payable action.
+ * The field itself is not an ABI input - the registry adds it to every
+ * payable action's config (lib/protocol-registry.ts) - so it cannot be
+ * labelled through `inputs`. Declaring this on a non-payable function is an
+ * authoring error and throws at derive time: a label for a field that is
+ * never rendered would otherwise be accepted and silently dropped.
+ *
+ * Exists so an action whose value field takes a unit other than whole ether
+ * can say so at the point the user types the number. An action that declares
+ * nothing keeps the default "ETH Value" field unchanged.
+ */
+export type PayableValueOverride = {
+  label?: string;
+  helpTip?: string;
+  docUrl?: string;
+  placeholder?: string;
+  /** Name of an action input whose value the transaction carries as msg.value. When set, no separate value field is rendered and every entrance reads the value from this input. */
+  fromInput?: string;
 };
 
 /**
@@ -61,6 +84,9 @@ export type AbiFunctionOverride = {
    *  match parseGasLimitConfig in lib/web3/gas-defaults.ts. Only meaningful
    *  on write actions; ignored on reads. */
   gasLimit?: { mode: "maxGasLimit" | "multiplier"; value: string };
+  /** Label and help text for the payable value field. Payable functions
+   *  only; see PayableValueOverride. */
+  payableValue?: PayableValueOverride;
 };
 
 /**
@@ -165,6 +191,19 @@ function deriveInput(
   if (override?.decimals !== undefined) {
     input.decimals = override.decimals;
   }
+  if (override?.payer) {
+    if (param.type !== "address") {
+      throw new Error(
+        `payer input "${rawName}" must be an address parameter, got ${param.type}`
+      );
+    }
+    if (override.name !== undefined && override.name !== rawName) {
+      throw new Error(
+        `payer input "${rawName}" cannot be renamed: writeContractCore sets it by its ABI parameter name`
+      );
+    }
+    input.payer = true;
+  }
 
   const components = toInputComponents(param.components);
   if (components) {
@@ -182,7 +221,13 @@ function deriveTupleInputs(
   const components = param.components ?? [];
   for (let i = 0; i < components.length; i++) {
     const comp = components[i];
-    const compOverride = overrides?.[comp.name || defaultInputName(i)];
+    const compName = comp.name || defaultInputName(i);
+    const compOverride = overrides?.[compName];
+    if (compOverride?.payer) {
+      throw new Error(
+        `payer is supported on top-level parameters only ("${compName}")`
+      );
+    }
     const derived = deriveInput(comp, i, compOverride);
     if (derived) {
       inputs.push(derived);
@@ -280,6 +325,24 @@ function deriveAction(
 
   if (payable) {
     action.payable = true;
+  }
+
+  if (override?.payableValue !== undefined) {
+    if (!payable) {
+      throw new Error(
+        `Override for "${fn.name}" on contract "${contractKey}" declares payableValue, but the function is ${fn.stateMutability}, so no payable value field exists to label. Remove payableValue or fix the ABI's stateMutability.`
+      );
+    }
+    action.payableValue = { ...override.payableValue };
+    const fromInput = override.payableValue.fromInput;
+    if (fromInput !== undefined) {
+      const target = inputs.find((i) => i.name === fromInput);
+      if (!(target && !target.payer)) {
+        throw new Error(
+          `payableValue.fromInput "${fromInput}" must name a user input of ${slug}`
+        );
+      }
+    }
   }
 
   return action;

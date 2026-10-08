@@ -142,7 +142,6 @@ function generateSingleWriteCalldata(
   const abi = config.abi;
   const abiFunction = config.abiFunction;
   const functionArgs = config.functionArgs;
-  const ethValue = config.ethValue;
 
   // A write node with a missing, templated, or malformed contractAddress
   // used to serialize to a 200 whose `to` key was simply absent. A priced
@@ -228,6 +227,8 @@ function generateSingleWriteCalldata(
       error: `Failed to encode function call: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+
+  const ethValue = config.ethValue;
 
   // ethers.parseEther throws on non-numeric input ("abc", "1.5e18", etc).
   let value: string;

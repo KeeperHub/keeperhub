@@ -29,7 +29,7 @@ Plugins provide the actions available in your workflows. Each plugin adds one or
 | [Ethena](/plugins/ethena) | Protocol | sUSDe staking vault, cooldown/unstake, USDe and ENA balances | Wallet (for writes) |
 | [Euler V2](/plugins/euler-v2) | Protocol | ERC-4626 vault deposit/mint/withdraw/redeem, liquidity, borrow demand, interest accrual, vault configuration | Wallet (for writes) |
 | [Frax Ether V2](/plugins/frax-ether-v2) | Protocol | Liquid staking on Ethereum mainnet. Mint frxETH 1:1 from native ETH, or mint and stake directly into sfrxETH in one transaction | Wallet (for writes) |
-| [LayerZero](/plugins/layerzero) | Protocol | Crosschain OFT fee quotes, transfer previews, peer and approval checks, endpoint send library and DVN configuration reads | Wallet (for the approve action) |
+| [LayerZero](/plugins/layerzero) | Protocol | Crosschain OFT sends paying the quoted fee, fee quotes, transfer previews, peer and approval checks, endpoint send library and DVN configuration reads | Wallet (for the approve and send actions) |
 | [Lido](/plugins/lido) | Protocol | Wrap/unwrap stETH to wstETH, exchange rates, balances across Ethereum, Base, Sepolia | Wallet (for writes) |
 | [Morpho](/plugins/morpho) | Protocol | Supply, borrow, repay, liquidate, collateral management, position tracking, market monitoring | Wallet (for writes) |
 | [Pendle](/plugins/pendle) | Protocol | Yield tokenization, market data, PT/YT/SY balances, mint/redeem | Wallet (for writes) |
