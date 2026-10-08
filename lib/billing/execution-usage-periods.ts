@@ -1,11 +1,12 @@
 import "server-only";
 
-import { and, eq, gt, gte, inArray, lt, lte, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, lt, lte, min, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   type ExecutionUsagePeriodSource,
   executionUsagePeriods,
   organizationSubscriptions,
+  overageBillingRecords,
 } from "@/lib/db/schema";
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
 import { startOfCurrentMonthUtc } from "./execution-limit-core";
@@ -352,18 +353,29 @@ export function resolvePeriodSource(
  * pre-conversion part of a conversion month writable: the organization bills
  * overage today, but did not during those days, so a month row with no charge
  * is accurate rather than contradictory.
+ *
+ * `covered` is clipped to the span the close is looking at, so on its own it
+ * cannot answer this: an organization whose only recorded cycle ended before
+ * the span would look as if it had never converted, and every month in the
+ * span would read as pre-conversion. `earliestRecordedCycleStart` is the
+ * earliest cycle on record with no lower bound, from
+ * `getEarliestRecordedCycleStarts`, and is what anchors the answer. `covered`
+ * still contributes the live period, which is not a record.
  */
 export function predatesProviderCycles(
   window: PeriodWindow,
-  covered: CoveredInterval[]
+  covered: CoveredInterval[],
+  earliestRecordedCycleStart?: Date
 ): boolean {
-  if (covered.length === 0) {
+  let earliest = earliestRecordedCycleStart;
+  for (const interval of covered) {
+    if (earliest === undefined || interval.start < earliest) {
+      earliest = interval.start;
+    }
+  }
+  if (earliest === undefined) {
     return false;
   }
-  const earliest = covered.reduce(
-    (min, c) => (c.start < min ? c.start : min),
-    covered[0].start
-  );
   return window.periodEnd <= earliest;
 }
 
@@ -648,11 +660,19 @@ export async function getRecordedPeriodKeys(
 /**
  * The provider cycles that already account for usage inside a span.
  *
- * Two sources, because neither alone is complete. The `subscription` rows in
- * this table are the cycles actually recorded, which is what the close must
+ * Three sources, because no one of them is complete. The `subscription` rows
+ * in this table are the cycles actually recorded, which is what the close must
  * not duplicate. The live period columns cover the cycle currently open or
  * just closed, which `handleScan` is about to record but may not have yet, and
  * which is the exact window a churned organization keeps forever.
+ *
+ * `overage_billing_records` covers a cycle that was billed before this table
+ * recorded anything. Without it such a cycle is unknown here, the months
+ * around it read as predating every cycle the organization has, and the close
+ * writes a zero-charge month row straight across a window the customer was
+ * charged for. The status is deliberately not filtered: a pending or failed
+ * record is still a provider cycle with that exact window, and the billing
+ * path owns it.
  */
 export async function getProviderCoverage(
   organizationIds: string[],
@@ -663,7 +683,7 @@ export async function getProviderCoverage(
     return new Map();
   }
 
-  const [recorded, subs] = await Promise.all([
+  const [recorded, subs, billed] = await Promise.all([
     db
       .select({
         organizationId: executionUsagePeriods.organizationId,
@@ -689,6 +709,20 @@ export async function getProviderCoverage(
       .where(
         inArray(organizationSubscriptions.organizationId, organizationIds)
       ),
+    db
+      .select({
+        organizationId: overageBillingRecords.organizationId,
+        periodStart: overageBillingRecords.periodStart,
+        periodEnd: overageBillingRecords.periodEnd,
+      })
+      .from(overageBillingRecords)
+      .where(
+        and(
+          inArray(overageBillingRecords.organizationId, organizationIds),
+          lt(overageBillingRecords.periodStart, spanEnd),
+          gt(overageBillingRecords.periodEnd, spanStart)
+        )
+      ),
   ]);
 
   const coverage = new Map<string, CoveredInterval[]>();
@@ -709,7 +743,74 @@ export async function getProviderCoverage(
       add(row.organizationId, row.periodStart, row.periodEnd);
     }
   }
+  for (const row of billed) {
+    add(row.organizationId, row.periodStart, row.periodEnd);
+  }
   return coverage;
+}
+
+/**
+ * The start of the earliest provider cycle on record for each organization,
+ * with no lower bound on how far back it looks.
+ *
+ * Kept apart from `getProviderCoverage` on purpose. Coverage answers which
+ * part of a month a cycle already accounts for, so clipping it to the span is
+ * right: a cycle outside the span cannot overlap a month inside it. Whether an
+ * organization had started paying by a given month is a different question,
+ * and the cycle that answers it can be arbitrarily old. An organization billed
+ * an overage once, long ago, that has stayed inside its limit since has no
+ * record inside any recent span at all.
+ *
+ * Both sources are records of a cycle that really ran: a charge raised for it,
+ * or its usage frozen when it closed. The live period columns are not read
+ * here. They are not history, and a churned organization keeps a stale pair
+ * forever; `getProviderCoverage` already contributes them where they fall
+ * inside the span.
+ *
+ * An organization absent from the result has no cycle on record.
+ */
+export async function getEarliestRecordedCycleStarts(
+  organizationIds: string[]
+): Promise<Map<string, Date>> {
+  if (organizationIds.length === 0) {
+    return new Map();
+  }
+
+  const [billed, recorded] = await Promise.all([
+    db
+      .select({
+        organizationId: overageBillingRecords.organizationId,
+        earliest: min(overageBillingRecords.periodStart),
+      })
+      .from(overageBillingRecords)
+      .where(inArray(overageBillingRecords.organizationId, organizationIds))
+      .groupBy(overageBillingRecords.organizationId),
+    db
+      .select({
+        organizationId: executionUsagePeriods.organizationId,
+        earliest: min(executionUsagePeriods.periodStart),
+      })
+      .from(executionUsagePeriods)
+      .where(
+        and(
+          inArray(executionUsagePeriods.organizationId, organizationIds),
+          eq(executionUsagePeriods.source, "subscription")
+        )
+      )
+      .groupBy(executionUsagePeriods.organizationId),
+  ]);
+
+  const earliest = new Map<string, Date>();
+  for (const row of [...billed, ...recorded]) {
+    if (row.earliest === null) {
+      continue;
+    }
+    const known = earliest.get(row.organizationId);
+    if (known === undefined || row.earliest < known) {
+      earliest.set(row.organizationId, row.earliest);
+    }
+  }
+  return earliest;
 }
 
 export type StoredPeriodUsage = {
@@ -806,8 +907,9 @@ type PendingUsageRow = typeof executionUsagePeriods.$inferInsert;
  * organization with no `organization_subscriptions` row has no period boundary
  * anywhere, so without this pass its usage is never frozen.
  *
- * Three reads regardless of organization count - the usage aggregate, the
- * subscriptions, the records that already exist - then one insert per chunk.
+ * A fixed number of reads regardless of organization count - the usage
+ * aggregate, the subscriptions, the provider cycles, the records that already
+ * exist - then one insert per chunk.
  */
 export async function closeCalendarMonthUsage(
   now: Date = new Date()
@@ -834,11 +936,13 @@ export async function closeCalendarMonthUsage(
   }
 
   const organizationIds = [...new Set(usage.map((row) => row.organizationId))];
-  const [subscriptions, coverage, recordedKeys] = await Promise.all([
-    getSubscriptionsByOrg(organizationIds),
-    getProviderCoverage(organizationIds, spanStart, spanEnd),
-    getRecordedPeriodKeys(organizationIds, spanStart, spanEnd),
-  ]);
+  const [subscriptions, coverage, earliestCycleStarts, recordedKeys] =
+    await Promise.all([
+      getSubscriptionsByOrg(organizationIds),
+      getProviderCoverage(organizationIds, spanStart, spanEnd),
+      getEarliestRecordedCycleStarts(organizationIds),
+      getRecordedPeriodKeys(organizationIds, spanStart, spanEnd),
+    ]);
 
   const values: PendingUsageRow[] = [];
   let considered = 0;
@@ -862,13 +966,19 @@ export async function closeCalendarMonthUsage(
     // bills overage settles through its cycle, so a month row beside a stalled
     // or dunning cycle would carry the paid limit and a charge of zero. The
     // exception is a window predating every cycle the organization has, which
-    // is the part of a conversion month before it started paying.
+    // is the part of a conversion month before it started paying. That is
+    // judged against the earliest cycle on record however old it is, not only
+    // the ones inside this span.
     const sub = subscriptions.get(row.organizationId);
     const covers = coverage.get(row.organizationId) ?? [];
     if (
       sub !== undefined &&
       billsOverage(sub.plan) &&
-      !predatesProviderCycles(window, covers)
+      !predatesProviderCycles(
+        window,
+        covers,
+        earliestCycleStarts.get(row.organizationId)
+      )
     ) {
       continue;
     }
