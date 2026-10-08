@@ -122,7 +122,9 @@ function useFocusTooltip(hasSomethingToShow: boolean): {
 }
 
 // Memoized: the sidebar re-renders on every drag-resize step, and a row's
-// labels parse its cron. The entries keep their identity between fetches.
+// labels parse its cron. Each fetch maps every workflow to a new entry and so
+// re-renders every row; the memo skips the re-renders that come without a
+// fetch, such as drag-resize.
 export const WorkflowItem = memo(function WorkflowItem({
   workflow,
   activeWorkflowId,

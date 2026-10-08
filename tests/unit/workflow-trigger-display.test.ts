@@ -13,7 +13,6 @@ import {
   describeEmptyFilterResult,
   getPickerTriggerType,
   getTriggerAccessibleStatus,
-  getTriggerConfig,
   getTriggerLabel,
   getTriggerStatus,
   getTriggerTooltip,
@@ -24,6 +23,7 @@ import {
   type TriggerFilter,
   type TriggerStatus,
 } from "@/lib/workflow/trigger-display";
+import { getTriggerConfig } from "@/lib/workflow/trigger-display-key";
 
 const SWITCHABLE = [
   WorkflowTriggerEnum.SCHEDULE,
@@ -388,7 +388,7 @@ describe("trigger type read off a node list", () => {
     );
   });
 
-  it("shows the legacy Scheduled spelling as a schedule that is not kept running", () => {
+  it("shows the legacy Scheduled spelling as a schedule that never runs", () => {
     const legacy = {
       triggerType: getPickerTriggerType({ triggerType: "Scheduled" }),
       enabled: true,
@@ -398,7 +398,7 @@ describe("trigger type read off a node list", () => {
     expect(getTriggerStatus(legacy)).toBe("disabled");
     expect(getTriggerLabel(legacy)).toBe("");
     expect(getTriggerTooltip(legacy)).toBe(
-      "Schedule trigger · Old format, stops running on the next save. Open the trigger and pick Schedule again"
+      "Schedule trigger · Old format, does not run. Open the trigger and pick Schedule again"
     );
   });
 
@@ -444,7 +444,7 @@ describe("getTriggerTooltip", () => {
     ],
     [
       { scheduleCron: "0 */1 * * *" },
-      "Enabled · Schedule trigger · Every hour on the hour",
+      "Enabled · Schedule trigger · Every hour on the hour (UTC)",
     ],
     [
       { scheduleIntervalSeconds: 90 },
@@ -456,15 +456,15 @@ describe("getTriggerTooltip", () => {
     ],
     [
       { scheduleCron: "*/5 * 1 * *" },
-      "Enabled · Schedule trigger · Cron */5 * 1 * *",
+      "Enabled · Schedule trigger · Cron */5 * 1 * * (UTC)",
     ],
     [
       { scheduleCron: "*/60 * * * *" },
-      "Enabled · Schedule trigger · Every hour on the hour",
+      "Enabled · Schedule trigger · Every hour on the hour (UTC)",
     ],
     [
       { scheduleCron: "15 * * * *", scheduleTimezone: "Europe/Vilnius" },
-      "Enabled · Schedule trigger · Every hour at minute 15",
+      "Enabled · Schedule trigger · Every hour at minute 15 (Europe/Vilnius)",
     ],
     [
       { scheduleCron: "0 9 * * 0,1,2,3,4,5,6" },
@@ -476,11 +476,42 @@ describe("getTriggerTooltip", () => {
     ],
     [
       { scheduleCron: "*/7 * * * *" },
-      "Enabled · Schedule trigger · At minute 0 and every 7 minutes within each hour (uneven gaps)",
+      "Enabled · Schedule trigger · At minute 0 and every 7 minutes within each hour (uneven gaps, UTC)",
     ],
     [
       { scheduleCron: "0 9 * * *" },
       "Enabled · Schedule trigger · Every day at 9:00 AM (UTC)",
+    ],
+    // The minute depends on the timezone in a half-hour zone.
+    [
+      { scheduleCron: "30 * * * *", scheduleTimezone: "Asia/Kolkata" },
+      "Enabled · Schedule trigger · Every hour at minute 30 (Asia/Kolkata)",
+    ],
+    // Seconds first: field 2 is the minute, field 3 the hour.
+    [
+      { scheduleCron: "0 */30 9 * * *", scheduleTimezone: "America/New_York" },
+      "Enabled · Schedule trigger · Cron 0 */30 9 * * * (America/New_York)",
+    ],
+    [
+      { scheduleCron: "*/5 */2 * * *" },
+      "Enabled · Schedule trigger · Cron */5 */2 * * * (UTC)",
+    ],
+    [
+      { scheduleCron: "0 */2 * * 1-5", scheduleTimezone: "America/New_York" },
+      "Enabled · Schedule trigger · Cron 0 */2 * * 1-5 (America/New_York)",
+    ],
+    [
+      { scheduleCron: "60 * * * *" },
+      "Enabled · Schedule trigger · Cron 60 * * * * (UTC)",
+    ],
+    // A cadence alone reads the same in every timezone.
+    [
+      { scheduleCron: "*/5 * * * *", scheduleTimezone: "Asia/Kolkata" },
+      "Enabled · Schedule trigger · Every 5 minutes",
+    ],
+    [
+      { scheduleCron: "0 */6 * * *", scheduleTimezone: "Asia/Kolkata" },
+      "Enabled · Schedule trigger · Every 6 hours",
     ],
     [{}, "Enabled · Schedule trigger"],
   ])("spells out the schedule %o", (config, tooltip) => {

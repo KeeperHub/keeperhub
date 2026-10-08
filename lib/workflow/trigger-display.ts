@@ -32,10 +32,6 @@ export const TRIGGER_STATUS_OPTIONS: readonly {
   { value: "manual", label: "Manual" },
 ];
 
-type TriggerNodeLike = {
-  data?: { type?: string; config?: Record<string, unknown> };
-};
-
 const HOURLY_STEP_PATTERN = /^\*\/(\d+)$/;
 const WHITESPACE_PATTERN = /\s+/;
 const NUMERIC_PATTERN = /^\d+$/;
@@ -47,7 +43,6 @@ const DAYS_PER_WEEK = 7;
 const HOURS_PER_DAY = 24;
 const MINUTES_PER_HOUR = 60;
 const MAX_MINUTE = 59;
-const NO_CONFIG: Record<string, unknown> = Object.freeze({});
 
 // A trigger that fires on its own and so has an enabled switch; Manual and
 // "no trigger yet" do not. Also narrows away undefined for callers.
@@ -57,19 +52,13 @@ function hasEnableSwitch(
   return shouldShowEnableSwitch(triggerType ?? undefined);
 }
 
-/**
- * The trigger node's config, or undefined when there is no trigger node. A
- * trigger node saved without a config gets one shared empty object, so it
- * still counts as "has a trigger" (a Manual one) and compares equal from
- * call to call.
- */
 // "Scheduled" is a legacy spelling of Schedule still saved in some trigger
-// nodes. The schedule service accepts only "Schedule" and drops the schedule
-// of a "Scheduled" workflow on its next save, so the picker shows it as a
-// Schedule trigger that is not kept running, never as a live one.
+// nodes. The schedule service accepts only "Schedule", so a "Scheduled"
+// trigger never gets a schedule and never runs on its own. The picker shows
+// it as a Schedule trigger that is off, never as a live one.
 const LEGACY_SCHEDULE = "Scheduled";
 const LEGACY_SCHEDULE_DETAIL =
-  "Old format, stops running on the next save. Open the trigger and pick Schedule again";
+  "Old format, does not run. Open the trigger and pick Schedule again";
 
 function isLegacySchedule(workflow: {
   triggerConfig?: Record<string, unknown> | null;
@@ -84,16 +73,6 @@ export function getPickerTriggerType(
   return config?.triggerType === LEGACY_SCHEDULE
     ? WorkflowTriggerEnum.SCHEDULE
     : getTriggerTypeFromConfig(config);
-}
-
-export function getTriggerConfig(
-  nodes: TriggerNodeLike[]
-): Record<string, unknown> | undefined {
-  const triggerNode = nodes.find((node) => node.data?.type === "trigger");
-  if (!triggerNode) {
-    return;
-  }
-  return triggerNode.data?.config ?? NO_CONFIG;
 }
 
 /**
@@ -472,8 +451,6 @@ export function getTriggerTypeLabel(
   return `${triggerType ?? WorkflowTriggerEnum.MANUAL} trigger`;
 }
 
-// The trigger config fields the picker row reads; edits to any other field
-// (an ABI, a webhook schema) leave the row as it is.
 function every(count: number, unit: string): string {
   return count === 1 ? `Every ${unit}` : `Every ${count} ${unit}s`;
 }
@@ -504,14 +481,10 @@ function listTimes(hours: number[], minute: number): string {
     : `${times.slice(0, -1).join(", ")} and ${times.at(-1)}`;
 }
 
-// Cron fields that set an hour of the day, so the timezone matters.
-function setsHourOfDay(cron: string): boolean {
-  const hour = cron.trim().split(WHITESPACE_PATTERN)[1] ?? "*";
-  return hour !== "*" && !hour.startsWith("*/");
-}
-
-// The schedule in words. The timezone is named only where the schedule runs
-// at a time of day; "every 5 minutes" is the same everywhere.
+// The schedule in words. The timezone is named wherever the text names a
+// minute, a time, a day or the raw cron: each of those depends on it, even
+// the minute (a zone such as Asia/Kolkata is offset by half an hour). Only
+// "every N minutes" and "every N hours" read the same everywhere.
 function describeCronInFull(
   cron: string,
   shape: CronShape | undefined,
@@ -520,12 +493,12 @@ function describeCronInFull(
   switch (shape?.kind) {
     case "minutes":
       return every(shape.step, "minute");
-    case "hourly":
-      return shape.minute === 0
-        ? "Every hour on the hour"
-        : `Every hour at minute ${shape.minute}`;
     case "hours":
       return every(shape.step, "hour");
+    case "hourly":
+      return shape.minute === 0
+        ? `Every hour on the hour (${timezone})`
+        : `Every hour at minute ${shape.minute} (${timezone})`;
     case "daily":
       return `Every day at ${formatTime(shape.hour, shape.minute)} (${timezone})`;
     case "weekly":
@@ -533,17 +506,19 @@ function describeCronInFull(
     case "hoursAt":
       return `Every day at ${listTimes(shape.hours, shape.minute)} (${timezone})`;
     case "custom": {
-      // describeCron words uneven minute steps; anything else shows as is.
+      // describeCron words uneven minute steps, ending "(uneven gaps)";
+      // anything else shows as is.
       const text = describeCron(cron);
-      if (text !== "" && text !== "Custom schedule") {
-        return text;
+      if (text === "" || text === "Custom schedule") {
+        return `Cron ${cron.trim()} (${timezone})`;
       }
-      return setsHourOfDay(cron)
-        ? `Cron ${cron.trim()} (${timezone})`
-        : `Cron ${cron.trim()}`;
+      return text.endsWith(")")
+        ? `${text.slice(0, -1)}, ${timezone})`
+        : `${text} (${timezone})`;
     }
     default:
-      return `Cron ${cron.trim()}`;
+      // An invalid cron never runs, but it still reads as the others do.
+      return `Cron ${cron.trim()} (${timezone})`;
   }
 }
 

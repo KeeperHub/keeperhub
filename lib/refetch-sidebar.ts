@@ -1,4 +1,8 @@
-import { triggerDisplayKey } from "@/lib/workflow/trigger-display-key";
+import {
+  getTriggerConfig,
+  type TriggerNodeLike,
+  triggerDisplayKey,
+} from "@/lib/workflow/trigger-display-key";
 
 /**
  * Global event-based sidebar refetch system
@@ -64,8 +68,6 @@ export function refetchSidebar(options?: RefetchOptions): void {
 // What each workflow's sidebar row showed for its trigger at its last save.
 const savedTriggers = new Map<string, string>();
 
-type NodeLike = { data?: { type?: string; config?: unknown } };
-
 /**
  * Refetch the sidebar after a save that changes what a workflow's row shows
  * for its trigger (type, schedule, event, block interval), so the row follows
@@ -75,11 +77,9 @@ type NodeLike = { data?: { type?: string; config?: unknown } };
  */
 export function refetchSidebarIfTriggerChanged(
   workflowId: string,
-  nodes: NodeLike[]
+  nodes: TriggerNodeLike[]
 ): void {
-  const trigger = triggerDisplayKey(
-    nodes.find((node) => node.data?.type === "trigger")?.data?.config
-  );
+  const trigger = triggerDisplayKey(getTriggerConfig(nodes));
   if (savedTriggers.get(workflowId) === trigger) {
     return;
   }

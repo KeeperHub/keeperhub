@@ -56,13 +56,13 @@ import {
   countTriggerTypes,
   describeEmptyFilterResult,
   getPickerTriggerType,
-  getTriggerConfig,
   listedTriggerTypes,
   matchesTriggerFilter,
   matchesTriggerTypeFilter,
   type TriggerFilter,
   type TriggerTypeFilter,
 } from "@/lib/workflow/trigger-display";
+import { getTriggerConfig } from "@/lib/workflow/trigger-display-key";
 import { FLYOUT_WIDTH, FlyoutPanel, STRIP_WIDTH } from "./flyout-panel";
 import {
   TagsPanel,
@@ -480,6 +480,10 @@ export function NavigationSidebar(): React.ReactNode {
   // A reply that lands after a newer list request was sent is dropped rather
   // than put back over the newer list.
   const latestFetch = useRef(createLatestRequest());
+  // The organization the session is in, and the one the shown list was
+  // loaded for. A failed fetch keeps the shown list only while they match.
+  const sessionOrg = useRef<string | null>(null);
+  const listOrg = useRef<string | null>(null);
   const isDragging = useRef(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
@@ -492,10 +496,17 @@ export function NavigationSidebar(): React.ReactNode {
       }
       if (result.ok) {
         setWorkflows(result.value);
-      } else if (options?.clearOnFailure) {
+        // The org is read on reply: a reply sent before an org switch is
+        // never the latest, as the session refresh sends a newer one.
+        listOrg.current = sessionOrg.current;
+      } else if (
+        options?.clearOnFailure ||
+        sessionOrg.current !== listOrg.current
+      ) {
         // A failed refetch keeps the list already shown, unless it belongs
         // to another organization. A failed first load leaves it empty.
         setWorkflows([]);
+        listOrg.current = sessionOrg.current;
       }
       setDataLoading(false);
     },
@@ -514,6 +525,10 @@ export function NavigationSidebar(): React.ReactNode {
       setDataLoading(false);
       return;
     }
+    // Every org switch refreshes the session, whichever code path made it.
+    sessionOrg.current =
+      (session.session as { activeOrganizationId?: string | null })
+        .activeOrganizationId ?? null;
     fetchData().catch(() => {
       /* intentional noop */
     });

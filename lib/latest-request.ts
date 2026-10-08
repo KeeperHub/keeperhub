@@ -1,4 +1,4 @@
-export type LatestResult<T> =
+type LatestResult<T> =
   | { latest: false }
   | { latest: true; ok: true; value: T }
   | { latest: true; ok: false };

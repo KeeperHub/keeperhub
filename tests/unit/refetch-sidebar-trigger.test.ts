@@ -48,6 +48,16 @@ describe("refetchSidebarIfTriggerChanged", () => {
     unregister();
   });
 
+  it("tells a trigger node with no config from no trigger node", () => {
+    const refetch = vi.fn();
+    const unregister = registerSidebarRefetch(refetch);
+    refetchSidebarIfTriggerChanged("wf-empty", []);
+    // The row goes from no trigger to a Manual one.
+    refetchSidebarIfTriggerChanged("wf-empty", [{ data: { type: "trigger" } }]);
+    expect(refetch).toHaveBeenCalledTimes(2);
+    unregister();
+  });
+
   it("tracks each workflow on its own", () => {
     const refetch = vi.fn();
     const unregister = registerSidebarRefetch(refetch);
