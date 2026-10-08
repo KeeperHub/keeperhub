@@ -109,8 +109,11 @@ describe("KEEP-458 build-workflow", () => {
               it("required action inputs are present", () => {
                 const actionNode = built.nodes.find((n) => n.type === "action");
                 const cfg = actionNode?.data?.config ?? {};
+                // Payer inputs are never bound: the executor writes the
+                // paying address into their arg slot, so the config is
+                // expected to carry no key for them.
                 const required = action.inputs.filter(
-                  (i) => i.required ?? i.default === undefined
+                  (i) => !i.payer && (i.required ?? i.default === undefined)
                 );
                 for (const input of required) {
                   expect(cfg).toHaveProperty(input.name);
@@ -192,6 +195,27 @@ describe("KEEP-458 builders honour their inputs", () => {
       expect(built._chainId).toBe("11155111");
     }
   );
+});
+
+/**
+ * Payer inputs (the OFT send's refundAddress) are payer-owned: the fixture
+ * deliberately binds nothing for them and the builder must not treat the
+ * missing binding as an unbound address input, because the executor writes
+ * the paying address into the arg slot itself.
+ */
+describe("payer inputs build with no binding", () => {
+  it("layerzero/oft-send builds and carries no refundAddress config key", () => {
+    const built = buildActionWorkflow({
+      protocolSlug: "layerzero",
+      actionSlug: "oft-send",
+      chainId: "1",
+      trigger: "Manual",
+      walletAddress: TEST_WALLET,
+    });
+    const actionNode = built.nodes.find((n) => n.type === "action");
+    expect(actionNode).toBeDefined();
+    expect(actionNode?.data?.config).not.toHaveProperty("refundAddress");
+  });
 });
 
 /**

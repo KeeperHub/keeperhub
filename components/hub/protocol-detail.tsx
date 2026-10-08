@@ -58,7 +58,7 @@ function ActionTypeBadge({
   );
 }
 
-function ActionRow({
+export function ActionRow({
   action,
   isLast,
   isCreating,
@@ -69,6 +69,9 @@ function ActionRow({
   isCreating: boolean;
   onUse: () => void;
 }): React.ReactElement {
+  // Payer inputs render no field anywhere, so the line counts the ones a
+  // workflow actually fills.
+  const visibleInputs = action.inputs.filter((inp) => !inp.payer);
   return (
     <div
       className={`flex items-center justify-between px-4 py-4 transition-colors hover:bg-muted/50 ${isLast ? "" : "border-b border-border/30"}`}
@@ -81,10 +84,10 @@ function ActionRow({
         <p className="mt-0.5 text-muted-foreground text-xs">
           {action.description}
         </p>
-        {action.inputs.length > 0 ? (
+        {visibleInputs.length > 0 ? (
           <p className="mt-1 text-muted-foreground text-xs">
             Inputs:{" "}
-            {action.inputs.map((inp) => `${inp.name} (${inp.type})`).join(", ")}
+            {visibleInputs.map((inp) => `${inp.name} (${inp.type})`).join(", ")}
           </p>
         ) : (
           <p className="mt-1 text-muted-foreground text-xs">

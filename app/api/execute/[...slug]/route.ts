@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import { resolveAbi } from "@/lib/abi/cache";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
+import { resolvePayableEther } from "@/lib/execute/protocol-eth-value";
 import {
   beginIdempotentFromRequest,
   dispositionForExecutionOutcome,
@@ -16,6 +17,7 @@ import {
 } from "@/lib/idempotency";
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { requireScope } from "@/lib/middleware/require-scope";
+import { checkProtocolOnchainGuards } from "@/lib/protocol-input-guards-onchain";
 import { getProtocol, resolveContractAddress } from "@/lib/protocol-registry";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
@@ -184,7 +186,10 @@ async function executeProtocolAction(
     body,
     meta.protocolSlug,
     meta.contractKey,
-    meta.functionName
+    meta.functionName,
+    // Normalized above: the body may carry `chainId`, the deprecated `network`
+    // alias, or a chain name, and the guards index addresses by chain id.
+    network
   );
   if (!argsResult.ok) {
     // Pre-broadcast validation: release so the same key can retry with a
@@ -202,7 +207,7 @@ async function executeProtocolAction(
       "release"
     );
   }
-  const { functionArgs } = argsResult;
+  const { functionArgs, payerParam } = argsResult;
 
   if (meta.actionType === "read") {
     const coreInput: ReadContractCoreInput = {
@@ -239,7 +244,26 @@ async function executeProtocolAction(
     return recordIdempotentResponse(idem, walletError, "release");
   }
 
-  const ethValue = body.ethValue ? String(body.ethValue) : undefined;
+  // Read the payable value from the action's declared source (the OFT
+  // send's nativeFee, every other action's ethValue), then run the action's
+  // registered ethValue transform (a value field typed in wei, as
+  // LayerZero's OFT send is) before anything reads the value, so the cap
+  // reservation below and writeContractCore see the same ether string the
+  // workflow step would produce. An action with no transform gets its
+  // value through exactly as before. Refuses, rather than guesses, when the
+  // action cannot be resolved and a value is present.
+  const payableValue = resolvePayableEther(body, meta);
+  if (!payableValue.ok) {
+    return recordIdempotentResponse(
+      idem,
+      NextResponse.json(
+        { success: false, error: payableValue.error },
+        { status: HttpStatus.BAD_REQUEST }
+      ),
+      "release"
+    );
+  }
+  const ethValue = payableValue.value ? String(payableValue.value) : undefined;
   // Charge any native value forwarded by the protocol write against the cap.
   const parsedValue = parseNativeValueEther(ethValue);
   if (!parsedValue.ok) {
@@ -247,6 +271,33 @@ async function executeProtocolAction(
       idem,
       NextResponse.json(
         { success: false, error: parsedValue.error },
+        { status: HttpStatus.BAD_REQUEST }
+      ),
+      "release"
+    );
+  }
+
+  // Guards that need a round trip. Placed just above the first gate that
+  // costs the caller anything: the limit and concurrency checks above only
+  // read counters and answer 429, so an org already at its limit should get
+  // that answer without this endpoint issuing an ownerOf read per request.
+  // Shared with the workflow write step.
+  const onchainGuard = await checkProtocolOnchainGuards({
+    protocolSlug: meta.protocolSlug,
+    functionName: meta.functionName,
+    inputs: body,
+    network,
+    organizationId,
+  });
+  if (!onchainGuard.ok) {
+    return recordIdempotentResponse(
+      idem,
+      NextResponse.json(
+        {
+          success: false,
+          error: onchainGuard.error,
+          field: onchainGuard.field,
+        },
         { status: HttpStatus.BAD_REQUEST }
       ),
       "release"
@@ -282,6 +333,7 @@ async function executeProtocolAction(
     abiFunction: meta.functionName,
     functionArgs,
     ethValue,
+    payerParam,
     _context: { organizationId },
   };
   const result = await withIdempotencyHeartbeat(idem, () =>

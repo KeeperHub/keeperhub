@@ -5,7 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 
-import { BeautifiableField } from "@/components/workflow/config/beautifiable-field";
+import { TemplateAutocomplete } from "@/components/ui/template-autocomplete";
+import {
+  BeautifiableField,
+  type FieldSize,
+  tallFieldHeight,
+} from "@/components/workflow/config/beautifiable-field";
 import { MAX_BEAUTIFY_BYTES } from "@/lib/utils/beautify";
 
 let container: HTMLDivElement;
@@ -44,10 +49,16 @@ function render({
         showAction={showAction}
         value='{"a":1}'
       >
-        <textarea data-testid="input" readOnly value='{"a":1}' />
+        {() => <textarea data-testid="input" readOnly value='{"a":1}' />}
       </BeautifiableField>
     );
   });
+}
+
+function beautifyButton(): HTMLButtonElement | undefined {
+  return [...container.querySelectorAll("button")].find((b) =>
+    b.textContent?.includes("Beautify")
+  );
 }
 
 function frame(): HTMLElement {
@@ -61,15 +72,13 @@ function frame(): HTMLElement {
 describe("BeautifiableField", () => {
   it("frames the input and offers the action", () => {
     render();
-    expect(container.querySelector("button")?.textContent).toContain(
-      "Beautify"
-    );
+    expect(beautifyButton()).not.toBeUndefined();
     expect(container.querySelector('[data-testid="input"]')).not.toBeNull();
   });
 
   it("keeps the frame but drops the action when showAction is false", () => {
     render({ showAction: false });
-    expect(container.querySelector("button")).toBeNull();
+    expect(beautifyButton()).toBeUndefined();
     expect(container.querySelector('[data-testid="input"]')).not.toBeNull();
     expect(frame().className).toContain("rounded-md");
     expect(frame().className).toContain("border");
@@ -77,7 +86,7 @@ describe("BeautifiableField", () => {
 
   it("drops the action for a language with no formatter", () => {
     render({ language: "sql" });
-    expect(container.querySelector("button")).toBeNull();
+    expect(beautifyButton()).toBeUndefined();
     expect(container.querySelector('[data-testid="input"]')).not.toBeNull();
   });
 
@@ -106,20 +115,27 @@ describe("BeautifiableField", () => {
     expect(frame().className).not.toMatch(/(^|\s)focus-within:ring-1/);
   });
 
-  it("dims itself when disabled", () => {
+  // The strip is left undimmed so the expand buttons stay usable on a
+  // read-only field; Beautify greys itself out.
+  it("dims its border and input when disabled", () => {
     render({ disabled: true });
-    expect(frame().className).toContain("opacity-50");
+    expect(frame().className).toContain("border-border/50");
+    expect(
+      container.querySelector("[data-beautify-input]")?.className
+    ).toContain("opacity-50");
   });
 
   it("is not dimmed when enabled", () => {
     render();
-    expect(frame().className).not.toContain("opacity-50");
+    expect(frame().className).not.toContain("border-border/50");
+    expect(
+      container.querySelector("[data-beautify-input]")?.className
+    ).not.toContain("opacity-50");
   });
 
   it("disables the action when the field is disabled", () => {
     render({ disabled: true });
-    const button = container.querySelector("button");
-    expect(button?.hasAttribute("disabled")).toBe(true);
+    expect(beautifyButton()?.hasAttribute("disabled")).toBe(true);
   });
 });
 
@@ -139,7 +155,7 @@ describe("BeautifiableField above the size budget", () => {
           }}
           value={huge}
         >
-          <textarea data-testid="input" readOnly value={huge} />
+          {() => <textarea data-testid="input" readOnly value={huge} />}
         </BeautifiableField>
       );
     });
@@ -147,8 +163,8 @@ describe("BeautifiableField above the size budget", () => {
 
   it("greys the action out rather than hiding it", () => {
     renderLarge();
-    const button = container.querySelector("button");
-    expect(button).not.toBeNull();
+    const button = beautifyButton();
+    expect(button).not.toBeUndefined();
     expect(button?.hasAttribute("disabled")).toBe(true);
   });
 
@@ -156,5 +172,461 @@ describe("BeautifiableField above the size budget", () => {
     renderLarge();
     expect(container.querySelector('[data-testid="input"]')).not.toBeNull();
     expect(frame().className).not.toContain("opacity-50");
+  });
+});
+
+// Every field gets two more buttons: one makes it taller in place, one opens
+// it in a full-screen dialog.
+describe("BeautifiableField expand controls", () => {
+  type SizedOptions = Options & { label?: string };
+
+  function renderSized({
+    language = "json",
+    showAction,
+    disabled,
+    label = "Body (JSON)",
+  }: SizedOptions = {}): void {
+    act(() => {
+      root.render(
+        <BeautifiableField
+          disabled={disabled}
+          label={label}
+          language={language}
+          onChange={() => {
+            // not exercised here
+          }}
+          showAction={showAction}
+          value='{"a":1}'
+        >
+          {(size: FieldSize) => (
+            <textarea
+              data-size={size}
+              data-testid="input"
+              readOnly
+              value='{"a":1}'
+            />
+          )}
+        </BeautifiableField>
+      );
+    });
+  }
+
+  function button(name: string): HTMLButtonElement {
+    const found = document.querySelector(`button[aria-label="${name}"]`);
+    if (!(found instanceof HTMLButtonElement)) {
+      throw new Error(`no button labelled ${name}`);
+    }
+    return found;
+  }
+
+  function inputSizes(): (string | null)[] {
+    return [...document.querySelectorAll('[data-testid="input"]')].map(
+      (input) => input.getAttribute("data-size")
+    );
+  }
+
+  function pressEscape(): void {
+    act(() => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+    });
+  }
+
+  beforeEach(() => {
+    // Radix measures a tooltip's trigger with an observer jsdom does not have,
+    // and the dialog's buttons all carry tooltips.
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe(): void {
+          // jsdom does no layout
+        }
+        unobserve(): void {
+          // jsdom does no layout
+        }
+        disconnect(): void {
+          // jsdom does no layout
+        }
+      }
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("offers Make taller and Open in full screen beside Beautify", () => {
+    renderSized();
+    expect(container.textContent).toContain("Beautify");
+    expect(button("Make taller").getAttribute("aria-pressed")).toBe("false");
+    expect(button("Open in full screen")).not.toBeNull();
+    expect(inputSizes()).toEqual(["normal"]);
+  });
+
+  // A toggle keeps one name; its pressed state carries the change.
+  it("toggles the input between normal and tall", () => {
+    renderSized();
+    act(() => button("Make taller").click());
+    expect(inputSizes()).toEqual(["tall"]);
+    expect(button("Make taller").getAttribute("aria-pressed")).toBe("true");
+
+    act(() => button("Make taller").click());
+    expect(inputSizes()).toEqual(["normal"]);
+    expect(button("Make taller").getAttribute("aria-pressed")).toBe("false");
+  });
+
+  // SQL has no formatter, so the strip used to be dropped there entirely.
+  it("keeps the strip for the expand buttons on a field with no formatter", () => {
+    renderSized({ language: "sql" });
+    expect(container.textContent).not.toContain("Beautify");
+    expect(button("Make taller")).not.toBeNull();
+    expect(button("Open in full screen")).not.toBeNull();
+  });
+
+  it("keeps the expand buttons when the beautify action is hidden", () => {
+    renderSized({ showAction: false });
+    expect(container.textContent).not.toContain("Beautify");
+    expect(button("Make taller")).not.toBeNull();
+  });
+
+  // Reading a long value is the point, so read-only does not take them away.
+  it("leaves the expand buttons usable on a disabled field", () => {
+    renderSized({ disabled: true });
+    const beautify = [...container.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Beautify")
+    );
+    expect(beautify?.hasAttribute("disabled")).toBe(true);
+    expect(button("Make taller").hasAttribute("disabled")).toBe(false);
+    expect(button("Open in full screen").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("opens the input alone in a full-screen dialog", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog?.textContent).toContain("Body (JSON)");
+    // One live input: the dialog's. The field holds its place meanwhile.
+    expect(inputSizes()).toEqual(["fill"]);
+    expect(container.textContent).toContain("Editing in full screen");
+  });
+
+  it("closes the dialog with Escape and returns the input to the field", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    pressEscape();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(inputSizes()).toEqual(["normal"]);
+  });
+
+  it("closes the dialog with its exit button", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    // An action rather than a toggle, though it is drawn green.
+    expect(button("Exit full screen").hasAttribute("aria-pressed")).toBe(false);
+    act(() => button("Exit full screen").click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("puts focus in the input on open and back on its button on close", async () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    expect(document.activeElement?.getAttribute("data-size")).toBe("fill");
+
+    pressEscape();
+    // Radix restores focus on the tick after the dialog unmounts.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.activeElement).toBe(button("Open in full screen"));
+  });
+
+  it("greys out Beautify in the dialog for a disabled field", () => {
+    renderSized({ disabled: true });
+    act(() => button("Open in full screen").click());
+    const dialog = document.querySelector('[role="dialog"]');
+    const beautify = [...(dialog?.querySelectorAll("button") ?? [])].find((b) =>
+      b.textContent?.includes("Beautify")
+    );
+    expect(beautify?.hasAttribute("disabled")).toBe(true);
+    expect(button("Exit full screen").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("returns to the height the field had before it opened", () => {
+    renderSized();
+    act(() => button("Make taller").click());
+    act(() => button("Open in full screen").click());
+    act(() => button("Exit full screen").click());
+    expect(inputSizes()).toEqual(["tall"]);
+  });
+
+  // Escape closes an open variable picker first, not the dialog under it.
+  it("keeps the dialog open on Escape while a variable picker is open", () => {
+    const onClose = vi.fn();
+    act(() => {
+      root.render(
+        <BeautifiableField
+          label="Payload"
+          language="json"
+          onChange={() => {
+            // not exercised here
+          }}
+          value="{}"
+        >
+          {(size: FieldSize) =>
+            size === "fill" ? (
+              <TemplateAutocomplete
+                isOpen
+                onClose={onClose}
+                onSelect={() => {
+                  // not exercised here
+                }}
+                position={{ top: 0, left: 0 }}
+              />
+            ) : (
+              <textarea readOnly value="{}" />
+            )
+          }
+        </BeautifiableField>
+      );
+    });
+    act(() => button("Open in full screen").click());
+    const search = document.querySelector<HTMLInputElement>(
+      "[data-template-autocomplete] input"
+    );
+    act(() => search?.focus());
+
+    pressEscape();
+    expect(onClose).toHaveBeenCalledWith("escape");
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+    // From one of its options too, not only from its search box.
+    const option = document.querySelector<HTMLButtonElement>(
+      "[data-template-autocomplete] button"
+    );
+    expect(option).not.toBeNull();
+    act(() => option?.focus());
+    pressEscape();
+    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  // An editor that handles Escape stops it propagating - Monaco does for its
+  // suggestions, find bar, menus and command palette - and the dialog closes
+  // only on an Escape that comes back up unhandled.
+  it("stays open on an Escape an editor handled", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    const input = document.querySelector('[data-size="fill"]');
+    const swallow = (event: Event): void => event.stopPropagation();
+    input?.addEventListener("keydown", swallow);
+
+    pressEscape();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+    input?.removeEventListener("keydown", swallow);
+    pressEscape();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  // Monaco empties a closed right-click menu but leaves its node behind until
+  // the next one opens; a check for an open menu by its markup then held every
+  // later Escape. Nothing here reads widget markup any more.
+  it("closes on Escape after a right-click menu has opened and closed", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    const host = document.createElement("div");
+    host.className = "shadow-root-host";
+    const shadow = host.attachShadow({ mode: "open" });
+    const menu = document.createElement("div");
+    menu.className = "monaco-menu";
+    shadow.appendChild(menu);
+    document.querySelector('[role="dialog"]')?.appendChild(host);
+
+    pressEscape();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  // React Flow deletes the selected node on Backspace unless the key comes
+  // from an input or from inside `.nokey`, and focus in the dialog can sit on
+  // a button or on the dialog itself.
+  it("keeps its keys off the canvas behind it", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    expect(document.querySelector('[role="dialog"]')?.className).toContain(
+      "nokey"
+    );
+  });
+
+  // The core of the Escape rule: the dialog closes only on the Escape Radix
+  // gave it as the topmost layer. With a tooltip on top, the tooltip takes the
+  // first Escape and the dialog must not close on that same key.
+  it("leaves the dialog open when an Escape closed a tooltip on top of it", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    act(() => button("Exit full screen").focus());
+    expect(
+      document.querySelector('[data-slot="tooltip-content"]')
+    ).not.toBeNull();
+
+    pressEscape();
+    expect(document.querySelector('[data-slot="tooltip-content"]')).toBeNull();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+    pressEscape();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("still closes on Escape when focus has fallen outside the dialog", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    act(() => {
+      document.body.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+    });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  // Monaco's focusable widgets - its rename box, a focused hover - render in
+  // the dialog's widget root, outside the editor that would handle their
+  // Escape. Escape there is not a request to leave full screen.
+  it("stays open on Escape from a widget in Monaco's widget root", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    const root = document.querySelector<HTMLElement>(
+      '[role="dialog"] .monaco-editor-overflow-widgets-root'
+    );
+    expect(root).not.toBeNull();
+    const rename = document.createElement("input");
+    root?.appendChild(rename);
+    act(() => rename.focus());
+
+    pressEscape();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  // React Flow listens for Backspace and Delete on document; a key pressed in
+  // the dialog - on a button, or in Monaco's right-click menu, which sits in a
+  // shadow root the `nokey` check cannot see into - must not reach it.
+  it("does not let Backspace or Delete reach the canvas behind it", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    const seen: string[] = [];
+    const listener = (event: KeyboardEvent): void => {
+      seen.push(event.key);
+    };
+    document.addEventListener("keydown", listener);
+    try {
+      const target = button("Exit full screen");
+      for (const key of ["Backspace", "Delete", "a"]) {
+        act(() => {
+          target.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key,
+              bubbles: true,
+              cancelable: true,
+            })
+          );
+        });
+      }
+    } finally {
+      document.removeEventListener("keydown", listener);
+    }
+    expect(seen).toEqual(["a"]);
+  });
+
+  // Radix opens a tooltip on any focus not following a pointer press, so focus
+  // put back on the button by code would leave its tooltip showing.
+  it("returns focus to its button without opening the button's tooltip", async () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    pressEscape();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.activeElement).toBe(button("Open in full screen"));
+    expect(document.querySelector('[data-slot="tooltip-content"]')).toBeNull();
+  });
+
+  // A modal leaves everything outside it unreachable, so the picker has to
+  // render inside the dialog rather than on <body>.
+  it("portals the variable picker into the dialog", () => {
+    act(() => {
+      root.render(
+        <BeautifiableField
+          label="Payload"
+          language="json"
+          onChange={() => {
+            // not exercised here
+          }}
+          value="{}"
+        >
+          {(size: FieldSize) =>
+            size === "fill" ? (
+              <TemplateAutocomplete
+                isOpen
+                onClose={() => {
+                  // not exercised here
+                }}
+                onSelect={() => {
+                  // not exercised here
+                }}
+                position={{ top: 0, left: 0 }}
+              />
+            ) : (
+              <textarea readOnly value="{}" />
+            )
+          }
+        </BeautifiableField>
+      );
+    });
+    act(() => button("Open in full screen").click());
+    const picker = document.querySelector("[data-template-autocomplete]");
+    expect(picker).not.toBeNull();
+    expect(picker?.closest('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("falls back to a generic title when the field has no label", () => {
+    renderSized({ label: "" });
+    act(() => button("Open in full screen").click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+      "Edit field"
+    );
+  });
+});
+
+describe("tallFieldHeight", () => {
+  it("fits content between the normal height and the cap", () => {
+    expect(
+      tallFieldHeight({ normalHeight: 120, contentHeight: 396, maxHeight: 480 })
+    ).toBe(396);
+  });
+
+  it("stops at the cap", () => {
+    expect(
+      tallFieldHeight({
+        normalHeight: 120,
+        contentHeight: 1400,
+        maxHeight: 480,
+      })
+    ).toBe(480);
+  });
+
+  it("never goes below the normal height", () => {
+    expect(
+      tallFieldHeight({ normalHeight: 320, contentHeight: 60, maxHeight: 480 })
+    ).toBe(320);
   });
 });

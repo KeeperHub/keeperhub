@@ -18,14 +18,13 @@ import {
   type FunctionAbiEntry,
   reshapeArgsForAbi,
 } from "@/lib/abi/struct-args";
+import { resolvePayableEther } from "@/lib/execute/protocol-eth-value";
+import { PAYER_PLACEHOLDER } from "@/lib/execute/protocol-payer";
 import {
   isSolidityArrayType,
   normalizeProtocolArrayValue,
 } from "@/lib/protocol-array-value";
-import {
-  applyEncodeTransformsNamed,
-  getEncodeTransform,
-} from "@/lib/protocol-encode-transforms";
+import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
 import {
   getProtocol,
   type ProtocolAction,
@@ -150,7 +149,7 @@ export function encodeBoundAction(
   });
   const actionNode = built.nodes.find((n) => n.id !== "trigger-1");
   const config = (actionNode?.data.config ?? {}) as Record<string, unknown>;
-  return encodeFromConfig(protocol, action, chainId, config);
+  return encodeFromConfig(protocol, action, chainId, config, walletAddress);
 }
 
 /**
@@ -188,7 +187,8 @@ export function encodeSetupSteps(
       stepProtocol,
       stepAction,
       chainId,
-      config
+      config,
+      walletAddress
     );
     steps.push({ to, data, value });
   }
@@ -199,9 +199,17 @@ export function encodeFromConfig(
   protocol: ProtocolDefinition,
   action: ProtocolAction,
   chainId: string,
-  config: Record<string, unknown>
+  config: Record<string, unknown>,
+  // A payer input (the OFT send's refundAddress) is not config-bound: the
+  // runtime core writes the paying address into its slot, so the harness
+  // takes the wallet that would pay and defaults to the same placeholder
+  // the runtime arg builders emit.
+  payerAddress?: string
 ): EncodedAction {
   const named = action.inputs.map((inp) => {
+    if (inp.payer) {
+      return { name: inp.name, value: payerAddress ?? PAYER_PLACEHOLDER };
+    }
     const raw = config[inp.name];
     let value: unknown;
     if (raw === undefined || raw === "") {
@@ -236,22 +244,30 @@ export function encodeFromConfig(
       (config.contractAddress as string | undefined) ?? undefined
     ) ?? "";
   // ethValue is a virtual field, so applyEncodeTransformsNamed above never
-  // sees it - it only walks declared ABI inputs. Look the transform up
-  // separately, exactly as protocol-write.ts does before resolveEthValue.
-  // Without this the harness would parseEther a raw wei integer and every
-  // golden and on-chain check would silently carry 10^18 times the value
-  // the runtime sends, which is the one mistake this harness exists to
-  // catch.
-  const rawEthValue = config.ethValue as string | undefined;
-  const ethValueTransform = getEncodeTransform(
-    protocol.slug,
-    action.slug,
-    "ethValue"
-  );
+  // sees it - it only walks declared ABI inputs. Run the same helper the
+  // write step and the direct-execute routes run, so the harness cannot
+  // convert differently from production: without it the harness would
+  // parseEther a raw wei integer and every golden and on-chain check would
+  // silently carry 10^18 times the value the runtime sends, which is the
+  // one mistake this harness exists to catch. The helper resolves the
+  // action through the registry, so a definition passed in here that is
+  // not registered fails loudly on a value rather than skipping the
+  // conversion.
+  const meta = {
+    protocolSlug: protocol.slug,
+    contractKey: action.contract,
+    functionName: action.function,
+  };
+  // The value may live on a declared input rather than the virtual field
+  // (the OFT send's nativeFee), so select the source before converting.
+  const payableValue = resolvePayableEther(config, meta);
+  if (!payableValue.ok) {
+    throw new Error(`${protocol.slug}/${action.slug}: ${payableValue.error}`);
+  }
   const ethValue =
-    rawEthValue && ethValueTransform
-      ? String(ethValueTransform(rawEthValue.trim()))
-      : rawEthValue;
+    typeof payableValue.value === "string" && payableValue.value.trim() !== ""
+      ? payableValue.value.trim()
+      : undefined;
   return {
     to,
     data,

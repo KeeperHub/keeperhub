@@ -1,3 +1,5 @@
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -6,23 +8,46 @@ vi.mock("server-only", () => ({}));
 // factory is invoked when safe-fetch.ts imports @sentry/nextjs during ES
 // module graph resolution, which is before top-level test file statements
 // execute. A bare `const` would hit TDZ.
-const { captureException, mockPromisesLookup } = vi.hoisted(() => ({
+const { captureException, mockPromisesLookup, fakeDns } = vi.hoisted(() => ({
   captureException: vi.fn(),
   mockPromisesLookup: vi.fn(),
+  fakeDns: new Map<string, { address: string; family: number }[]>(),
 }));
 vi.mock("@sentry/nextjs", () => ({
   captureException,
 }));
 
-// Override only `promises.lookup` (used by `assertUrlIsPublic`). The
-// callback-form `lookup` from the same module is preserved so the undici
-// connector inside `safeFetch` continues to use real DNS for the
-// `safeFetch` tests below — those tests rely on `localhost` resolving to
-// 127.0.0.1 / ::1.
+// `promises.lookup` (used by `assertUrlIsPublic`) is fully mocked. The
+// callback-form `lookup` used by the `safeFetch` connector answers for
+// hostnames registered in `fakeDns` and uses real DNS for everything else,
+// so `localhost` still resolves to 127.0.0.1 / ::1.
 vi.mock("node:dns", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:dns")>();
+  function lookup(
+    hostname: string,
+    options: { all?: boolean; family?: number },
+    callback: (...args: unknown[]) => void
+  ): void {
+    const addresses = fakeDns.get(hostname);
+    if (!addresses) {
+      Reflect.apply(actual.lookup, actual, [hostname, options, callback]);
+      return;
+    }
+    const matching = addresses.filter(
+      ({ family }) => !options.family || family === options.family
+    );
+    // Answer on a later tick, as the real resolver does.
+    setImmediate(() => {
+      if (options.all) {
+        callback(null, matching);
+        return;
+      }
+      callback(null, matching[0]?.address, matching[0]?.family);
+    });
+  }
   return {
     ...actual,
+    lookup,
     promises: {
       ...actual.promises,
       lookup: mockPromisesLookup,
@@ -403,6 +428,50 @@ describe("safeFetch (enforce mode)", () => {
   it("throws TypeError for malformed URLs", async () => {
     await expect(safeFetch("not a url")).rejects.toBeInstanceOf(TypeError);
   });
+
+  describe("resolved addresses", () => {
+    afterEach(() => {
+      fakeDns.clear();
+    });
+
+    it("refuses a hostname when any resolved address is private", async () => {
+      fakeDns.set("split.example.test", [
+        { address: "93.184.216.34", family: 4 },
+        { address: "10.0.0.5", family: 4 },
+      ]);
+      let thrown: unknown;
+      try {
+        await safeFetch("http://split.example.test/", { plugin: "webhook" });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(SsrfBlockedError);
+      expect((thrown as SsrfBlockedError).reason).toBe("private-ip");
+      expect((thrown as SsrfBlockedError).resolvedIp).toBe("10.0.0.5");
+      expect(incrementCounter).toHaveBeenCalledWith(
+        "safe_fetch.blocks.total",
+        expect.objectContaining({
+          reason: "private-ip",
+          plugin_name: "webhook",
+          shadow: "false",
+        })
+      );
+    });
+
+    it("refuses a hostname that resolves to the metadata address", async () => {
+      fakeDns.set("metadata.example.test", [
+        { address: "169.254.169.254", family: 4 },
+      ]);
+      let thrown: unknown;
+      try {
+        await safeFetch("http://metadata.example.test/latest/meta-data/");
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(SsrfBlockedError);
+      expect((thrown as SsrfBlockedError).reason).toBe("link-local");
+    });
+  });
 });
 
 describe("safeFetch (shadow mode)", () => {
@@ -530,6 +599,83 @@ describe("safeFetch (shadow mode)", () => {
         }),
       })
     );
+  });
+
+  // Loopback is the only listener a unit test can reach, so these run in
+  // shadow mode, where a blocked address is recorded and still connected.
+  describe("against a local listener", () => {
+    let server: Server;
+    let port = 0;
+
+    beforeEach(async () => {
+      server = createServer((req, res) => {
+        if (req.url === "/redirect") {
+          res.writeHead(302, { location: `http://127.0.0.1:${port}/final` });
+          res.end();
+          return;
+        }
+        if (req.url === "/redirect-localhost") {
+          res.writeHead(302, { location: `http://localhost:${port}/final` });
+          res.end();
+          return;
+        }
+        res.end("ok");
+      });
+      await new Promise<void>((resolve) => {
+        server.listen(0, "127.0.0.1", resolve);
+      });
+      port = (server.address() as AddressInfo).port;
+    });
+
+    afterEach(async () => {
+      fakeDns.clear();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
+    });
+
+    it("connects through the next resolved address when the first does not answer", async () => {
+      fakeDns.set("fallback.example.test", [
+        { address: "192.0.2.1", family: 4 },
+        { address: "127.0.0.1", family: 4 },
+      ]);
+      const response = await safeFetch(`http://fallback.example.test:${port}/`);
+      expect(await response.text()).toBe("ok");
+    });
+
+    it("checks an IP-literal redirect hop", async () => {
+      fakeDns.set("redirect.example.test", [
+        { address: "127.0.0.1", family: 4 },
+      ]);
+      const response = await safeFetch(
+        `http://redirect.example.test:${port}/redirect`
+      );
+      expect(await response.text()).toBe("ok");
+      expect(captureException).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({
+          extra: { hostname: "127.0.0.1", resolved_ip: "127.0.0.1" },
+        })
+      );
+    });
+
+    it("applies the hostname denylist to a redirect hop", async () => {
+      fakeDns.set("redirect.example.test", [
+        { address: "127.0.0.1", family: 4 },
+      ]);
+      const response = await safeFetch(
+        `http://redirect.example.test:${port}/redirect-localhost`
+      );
+      expect(await response.text()).toBe("ok");
+      expect(captureException).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({
+          tags: expect.objectContaining({ safe_fetch_reason: "blocked-host" }),
+          extra: { hostname: "localhost", resolved_ip: undefined },
+        })
+      );
+    });
   });
 });
 

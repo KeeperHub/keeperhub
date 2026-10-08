@@ -79,7 +79,9 @@ export async function resolveBlockRange(
   provider: ethers.JsonRpcProvider,
   fromBlockInput: string | undefined,
   toBlockInput: string | undefined,
-  blockCountInput: number | string | undefined
+  blockCountInput: number | string | undefined,
+  // Blocks to end short of the head when the end resolves to latest.
+  headMargin = 0
 ): Promise<
   { success: true; range: BlockRange } | { success: false; error: string }
 > {
@@ -92,7 +94,10 @@ export async function resolveBlockRange(
     // This is a planning estimate only -- how many batches to run and where
     // `fromBlock` starts. It is NOT the authoritative bound used for the
     // final eth_getLogs call; see queryBatchWithRetry's tip-batch handling.
-    resolvedToBlock = await provider.getBlockNumber();
+    resolvedToBlock = Math.max(
+      0,
+      (await provider.getBlockNumber()) - headMargin
+    );
   } else {
     resolvedToBlock = Number.parseInt(toBlockStr, 10);
     if (Number.isNaN(resolvedToBlock)) {

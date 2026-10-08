@@ -452,14 +452,18 @@ export function generateWorkflowSDKCode(
   }
 
   function buildProtocolStepInputParams(
-    inputs: Array<{ name: string }>,
+    inputs: Array<{ name: string; payer?: boolean }>,
     config: Record<string, unknown>
   ): string[] {
-    return inputs.map((inp) => {
-      const raw = String(config[inp.name] ?? "");
-      const converted = convertTemplateToJS(raw);
-      return `${inp.name}: \`${escapeForTemplateLiteral(converted)}\``;
-    });
+    // A payer input is never caller-supplied: the synthesised body reads
+    // the signing account for it, so stepInput carries no key.
+    return inputs
+      .filter((inp) => !inp.payer)
+      .map((inp) => {
+        const raw = String(config[inp.name] ?? "");
+        const converted = convertTemplateToJS(raw);
+        return `${inp.name}: \`${escapeForTemplateLiteral(converted)}\``;
+      });
   }
 
   function generateProtocolStepFunctionBody(
