@@ -95,15 +95,16 @@ describe("TriggerFilterButton", () => {
     expect(button?.getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("cannot hide the filters while one is on, and shows a dot", () => {
+  it("shows a dot while a filter is on, and still acts when clicked", () => {
     const onToggle = vi.fn();
     render(<TriggerFilterButton filtered onToggle={onToggle} open />);
     const button = container.querySelector("button");
-    expect(button?.getAttribute("aria-disabled")).toBe("true");
+    // Never a dead control: the sidebar makes this click clear and hide.
+    expect(button?.hasAttribute("aria-disabled")).toBe(false);
     expect(button?.getAttribute("aria-label")).toBe("Filter, filters on");
     expect(button?.querySelector("span[aria-hidden=true]")).not.toBeNull();
     act(() => button?.click());
-    expect(onToggle).not.toHaveBeenCalled();
+    expect(onToggle).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -249,7 +250,7 @@ describe("TriggerFilters", () => {
     press(button("status-filter"), "Enter");
     expect(menuItems().map((item) => item.textContent)).toEqual([
       "Enabled5",
-      "DisabledIncludes 2 deactivated by KeeperHub5",
+      "DisabledIncl. 2 deactivated5",
       "Manual1",
     ]);
   });
@@ -269,8 +270,9 @@ describe("TriggerFilters", () => {
     ]);
     // The icon is the row's tile, grey: green would read as a status.
     expect(items[0].querySelector("svg.lucide-clock")).not.toBeNull();
-    expect(items[2].className).toContain("opacity-60");
-    expect(items[0].className).not.toContain("opacity-60");
+    // Block has none: its name dims, but not its zero, which is the point.
+    expect(items[2].querySelector(".opacity-60")?.textContent).toBe("Block");
+    expect(items[0].querySelector(".opacity-60")).toBeNull();
   });
 
   it("toggles a pick and stays open for the next one", () => {
@@ -314,6 +316,74 @@ describe("TriggerFilters", () => {
       vi.advanceTimersByTime(MENU_HOVER_OPEN_MS * 2);
     });
     expect(menuItems()).toHaveLength(0);
+  });
+
+  it("closes a hover-opened menu on Escape and marks it used", () => {
+    vi.useFakeTimers();
+    const onEscape = vi.fn();
+    renderFilters({ onEscape });
+    const trigger = button("status-filter");
+    act(() => trigger.focus());
+    pointer(trigger, "pointerover");
+    act(() => {
+      vi.advanceTimersByTime(MENU_HOVER_OPEN_MS);
+    });
+    expect(menuItems()).toHaveLength(3);
+    // Focus is still on the button; the menu's Escape must not also reach
+    // the button's own handler or the sidebar's.
+    const event = press(trigger, "Escape");
+    expect(menuItems()).toHaveLength(0);
+    expect(isEscapeHandled(event)).toBe(true);
+    expect(onEscape).not.toHaveBeenCalled();
+  });
+
+  it("opens one menu at a time, switching on hover while one is open", () => {
+    renderFilters();
+    press(button("status-filter"), "Enter");
+    expect(document.querySelector("[data-filter-menu=status]")).not.toBeNull();
+    pointer(button("trigger-type-filter"), "pointerover");
+    expect(document.querySelector("[data-filter-menu=status]")).toBeNull();
+    expect(document.querySelector("[data-filter-menu=trigger]")).not.toBeNull();
+  });
+
+  it("gives focus back when a hover-opened menu closes from under it", () => {
+    vi.useFakeTimers();
+    renderFilters();
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    act(() => outside.focus());
+    const trigger = button("trigger-type-filter");
+    pointer(trigger, "pointerover");
+    act(() => {
+      vi.advanceTimersByTime(MENU_HOVER_OPEN_MS);
+    });
+    expect(document.activeElement).toBe(outside);
+    // The pointer crossing the items moves focus onto them.
+    act(() => menuItems()[0].focus());
+    pointer(trigger, "pointerout");
+    act(() => {
+      vi.advanceTimersByTime(MENU_HOVER_CLOSE_MS);
+    });
+    // Radix hands focus back a tick after the menu unmounts.
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(menuItems()).toHaveLength(0);
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
+  });
+
+  it("moves into a hover-opened menu on the down arrow", () => {
+    vi.useFakeTimers();
+    renderFilters();
+    const trigger = button("trigger-type-filter");
+    act(() => trigger.focus());
+    pointer(trigger, "pointerover");
+    act(() => {
+      vi.advanceTimersByTime(MENU_HOVER_OPEN_MS);
+    });
+    press(trigger, "ArrowDown");
+    expect(document.activeElement).toBe(menuItems()[0]);
   });
 
   it("steps the filter back on Escape from a shut menu's button", () => {

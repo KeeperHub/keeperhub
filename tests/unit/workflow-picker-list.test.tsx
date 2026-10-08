@@ -10,7 +10,7 @@ import {
 import { TOOLTIP_DELAY_MS } from "@/components/workflow-trigger-status";
 import type { Tag } from "@/lib/api-client";
 import { isEscapeHandled } from "@/lib/escape-key";
-import { DEACTIVATED_EXPLANATION } from "@/lib/workflow/trigger-display";
+import { describeDeactivation } from "@/lib/workflow/trigger-display";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
@@ -128,7 +128,7 @@ describe("WorkflowItem keyboard-focus tooltip", () => {
     expect(tooltipText()).toBeNull();
     wait(1);
     expect(tooltipText()).toBe(
-      `${DEACTIVATED_EXPLANATION}Deactivated · Schedule trigger · Every 5 minutes`
+      `${describeDeactivation("2026-10-01T00:00:00.000Z")}Deactivated · Schedule trigger · Every 5 minutes`
     );
   });
 
@@ -229,10 +229,12 @@ describe("TagsPanel while filtering", () => {
     );
   }
 
-  function headers(): HTMLButtonElement[] {
-    return [...container.querySelectorAll<HTMLButtonElement>("button")].filter(
-      (button) => button.dataset.testid !== "workflow-picker-item"
-    );
+  function headers(): HTMLElement[] {
+    return [
+      ...container.querySelectorAll<HTMLElement>(
+        "[data-testid=tag-group-header]"
+      ),
+    ];
   }
 
   it("folds a group from its header when nothing is filtered", () => {
@@ -244,14 +246,15 @@ describe("TagsPanel while filtering", () => {
     expect(container.textContent).not.toContain("Hat monitor");
   });
 
-  it("holds every group open, with inert headers and no chevrons", () => {
+  it("holds every group open, with plain-text headers and no chevrons", () => {
     renderPanel(false);
     act(() => headers()[0].click());
     renderPanel(true);
     // The group folded a moment ago shows its match.
     expect(container.textContent).toContain("Hat monitor");
     for (const header of headers()) {
-      expect(header.disabled).toBe(true);
+      // Not a button at all, so it is not read as a dimmed control.
+      expect(header.tagName).toBe("DIV");
       expect(header.hasAttribute("aria-expanded")).toBe(false);
       expect(header.querySelector("svg")).toBeNull();
     }

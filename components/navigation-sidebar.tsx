@@ -121,7 +121,7 @@ function groupWorkflows(workflows: WorkflowEntry[]): {
 }
 
 // A polite live region that speaks only once the text has stopped changing
-// for a moment, so typing a search does not announce every keystroke.
+// for a moment, so a quick run of filter picks is announced once.
 function DelayedAnnouncement({ text }: { text: string }): React.ReactNode {
   const [announced, setAnnounced] = useState(text);
   useEffect(() => {
@@ -685,8 +685,8 @@ export function NavigationSidebar(): React.ReactNode {
     }
 
     function handleKeyDown(e: KeyboardEvent): void {
-      // A control that used this Escape itself (the search box clearing its
-      // text, a chip closing the filter) tags it; that step is all it does.
+      // A control that used this Escape itself (a filter menu closing, a
+      // filter button hiding the row) tags it; that step is all it does.
       // Likewise an Escape that closes a dialog, menu or select.
       if (
         e.key === "Escape" &&
@@ -746,15 +746,31 @@ export function NavigationSidebar(): React.ReactNode {
     matchesTriggerFilter(w, triggerFilter)
   );
   const typeCounts = countTriggerTypes(typeMatches);
-  const listedTypes = listedTriggerTypes(allProjectWorkflows);
+  const listedTypes = listedTriggerTypes(
+    allProjectWorkflows,
+    triggerTypeFilter
+  );
   const projectWorkflows = typeMatches.filter((w) =>
     matchesTriggerTypeFilter(w, triggerTypeFilter)
   );
-  // Escape on a filter button steps back: it clears the filters and hides
-  // the row; the next Escape closes the panel.
-  const closePickerFilter = (): void => {
-    resetPickerFilter();
-    setTriggerFilterOpen(false);
+  // Escape on a menu button hides an unused row; it never throws away picks
+  // (a second, habitual Escape after closing a menu would), so with a filter
+  // on it does nothing and the × or the filter button clears them.
+  const onFilterEscape = (): void => {
+    if (!isPickerFiltered) {
+      setTriggerFilterOpen(false);
+      filterButtonRef.current?.focus();
+    }
+  };
+  // The filter button: with a filter on it clears the filters and hides the
+  // row in one go, so the row never hides while it is shortening the list.
+  const toggleFilterRow = (): void => {
+    if (triggerFilterOpen && isPickerFiltered) {
+      resetPickerFilter();
+      setTriggerFilterOpen(false);
+      return;
+    }
+    setTriggerFilterOpen(!triggerFilterOpen);
   };
   const resetPickerFilter = (): void => {
     setTriggerFilter(new Set());
@@ -1063,10 +1079,8 @@ export function NavigationSidebar(): React.ReactNode {
         headerLeading={
           <TriggerFilterButton
             disabled={dataLoading || allProjectWorkflows.length === 0}
-            // While a filter is on the row cannot be hidden, so a shortened
-            // list always shows why; the button only hides an unused row.
             filtered={isPickerFiltered}
-            onToggle={() => setTriggerFilterOpen(!triggerFilterOpen)}
+            onToggle={toggleFilterRow}
             open={triggerFilterOpen}
             ref={filterButtonRef}
           />
@@ -1096,7 +1110,7 @@ export function NavigationSidebar(): React.ReactNode {
                 onClearAll={resetPickerFilter}
                 onClearStatus={() => setTriggerFilter(new Set())}
                 onClearTypes={() => setTriggerTypeFilter(new Set())}
-                onEscape={closePickerFilter}
+                onEscape={onFilterEscape}
                 onToggleStatus={(status) =>
                   setTriggerFilter((current) =>
                     toggleTriggerFilter(current, status)
@@ -1104,7 +1118,7 @@ export function NavigationSidebar(): React.ReactNode {
                 }
                 onToggleType={(type) =>
                   setTriggerTypeFilter((current) =>
-                    toggleTriggerTypeFilter(current, type, listedTypes)
+                    toggleTriggerTypeFilter(current, type)
                   )
                 }
                 status={triggerFilter}

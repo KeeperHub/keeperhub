@@ -236,9 +236,23 @@ export function getTriggerLabel(workflow: {
   }
 }
 
-/** What the Deactivated label's tooltip says. */
-export const DEACTIVATED_EXPLANATION =
-  "Turned off by KeeperHub. Contact support to turn it back on.";
+const DEACTIVATED_DATE = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+  timeZone: "UTC",
+});
+
+/**
+ * What the Deactivated label's tooltip says: who turned it off, when, and
+ * what to do, e.g. "Turned off by KeeperHub on Oct 6, 2026. Contact support
+ * to turn it back on."
+ */
+export function describeDeactivation(deactivatedAt: string): string {
+  const date = new Date(deactivatedAt);
+  const when = Number.isNaN(date.getTime())
+    ? ""
+    : ` on ${DEACTIVATED_DATE.format(date)}`;
+  return `Turned off by KeeperHub${when}. Contact support to turn it back on.`;
+}
 
 /**
  * The row's status for screen readers, read after the name in place of the
@@ -255,7 +269,9 @@ export function getTriggerAccessibleStatus(workflow: {
   triggerConfig?: Record<string, unknown> | null;
 }): string {
   const text = getTriggerSummaryParts(workflow).join(", ");
-  return workflow.deactivatedAt ? `${text}. ${DEACTIVATED_EXPLANATION}` : text;
+  return workflow.deactivatedAt
+    ? `${text}. ${describeDeactivation(workflow.deactivatedAt)}`
+    : text;
 }
 
 /** How many of these were switched off by KeeperHub ops. */
@@ -291,7 +307,8 @@ export function matchesTriggerFilter(
 
 /**
  * Adds the status to the filter, or takes it out if it is already there.
- * Picking the last remaining status turns the filter back into All.
+ * Every status picked shows the same as none picked, but stays ticked, so a
+ * third tick never looks as if it unticked the other two.
  */
 export function toggleTriggerFilter(
   filter: TriggerFilter,
@@ -303,8 +320,7 @@ export function toggleTriggerFilter(
   } else {
     next.add(status);
   }
-  // Every status picked shows everything, so it is All.
-  return next.size === FILTER_ORDER.length ? new Set() : next;
+  return next;
 }
 
 // The picked trigger types; empty means every type.
@@ -312,7 +328,7 @@ export type TriggerTypeFilter = ReadonlySet<WorkflowTriggerType>;
 
 // The order trigger types are listed in the filter menu. Pyth Price sits
 // behind a feature flag, so the menu shows it only when a workflow uses it.
-export const TRIGGER_TYPE_FILTER_ORDER: readonly WorkflowTriggerType[] = [
+const TRIGGER_TYPE_FILTER_ORDER: readonly WorkflowTriggerType[] = [
   WorkflowTriggerEnum.SCHEDULE,
   WorkflowTriggerEnum.EVENT,
   WorkflowTriggerEnum.BLOCK,
@@ -324,14 +340,19 @@ export const TRIGGER_TYPE_FILTER_ORDER: readonly WorkflowTriggerType[] = [
 
 /**
  * The trigger types the filter menu offers: every type, except Pyth Price
- * when no workflow here uses it (it is behind a feature flag).
+ * when no workflow here uses it (it is behind a feature flag) and it is not
+ * picked. A picked type always stays listed, so a filter never hides where
+ * the menu cannot show it.
  */
 export function listedTriggerTypes(
-  workflows: Array<{ triggerType?: WorkflowTriggerType | null }>
+  workflows: Array<{ triggerType?: WorkflowTriggerType | null }>,
+  picked: TriggerTypeFilter = new Set()
 ): WorkflowTriggerType[] {
-  const hasPyth = workflows.some(
-    (workflow) => workflow.triggerType === WorkflowTriggerEnum.PYTH_PRICE
-  );
+  const hasPyth =
+    picked.has(WorkflowTriggerEnum.PYTH_PRICE) ||
+    workflows.some(
+      (workflow) => workflow.triggerType === WorkflowTriggerEnum.PYTH_PRICE
+    );
   return TRIGGER_TYPE_FILTER_ORDER.filter(
     (type) => type !== WorkflowTriggerEnum.PYTH_PRICE || hasPyth
   );
@@ -342,7 +363,11 @@ export function listedTriggerTypes(
 function getFilterTriggerType(workflow: {
   triggerType?: WorkflowTriggerType | null;
 }): WorkflowTriggerType {
-  return workflow.triggerType ?? WorkflowTriggerEnum.MANUAL;
+  const type = workflow.triggerType;
+  // An unknown type (bad data) is filed as Manual too, as its icon shows.
+  return type && TRIGGER_TYPE_FILTER_ORDER.includes(type)
+    ? type
+    : WorkflowTriggerEnum.MANUAL;
 }
 
 export function countTriggerTypes(
@@ -364,14 +389,10 @@ export function matchesTriggerTypeFilter(
   return filter.size === 0 || filter.has(getFilterTriggerType(workflow));
 }
 
-/**
- * Adds the type to the filter, or takes it out. Picking every type the menu
- * lists turns the filter back into All, as the status filter does.
- */
+/** Adds the type to the filter, or takes it out, as the status filter does. */
 export function toggleTriggerTypeFilter(
   filter: TriggerTypeFilter,
-  type: WorkflowTriggerType,
-  listed: readonly WorkflowTriggerType[]
+  type: WorkflowTriggerType
 ): TriggerTypeFilter {
   const next = new Set(filter);
   if (next.has(type)) {
@@ -379,7 +400,7 @@ export function toggleTriggerTypeFilter(
   } else {
     next.add(type);
   }
-  return listed.every((listedType) => next.has(listedType)) ? new Set() : next;
+  return next;
 }
 
 /** What the row icon's tooltip says, e.g. "Block trigger". */

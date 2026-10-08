@@ -246,10 +246,6 @@ test.describe("Sidebar trigger status icons", () => {
     await expect(liveRow).toHaveCount(0);
     await expect(manualRow).toBeVisible();
 
-    // While a filter is on, the filter button cannot hide the row.
-    await page.getByTestId("trigger-filter-button").click();
-    await expect(page.getByTestId("trigger-filters")).toBeVisible();
-
     // Nothing left: the empty message offers a way back.
     await typeButton.click();
     await filterMenuItem(page, "Manual").click();
@@ -372,8 +368,15 @@ test.describe("Sidebar trigger status icons", () => {
       "data-filtered",
       "true"
     );
-    // With nothing picked the button hides the row again.
+
+    // With a filter on, the filter button clears it and hides the row in
+    // one go, so the row never hides while it is shortening the list.
+    await page.getByTestId("status-filter").click();
+    await pickInMenu(page, "manual");
+    await page.keyboard.press("Escape");
+    await expect(rows).toHaveCount(10);
     await page.getByTestId("trigger-filter-button").click();
     await expect(page.getByTestId("trigger-filters")).toHaveCount(0);
+    await expect(rows).toHaveCount(20);
   });
 });

@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   getTriggerTypeFromConfig,
   WorkflowTriggerEnum,
+  type WorkflowTriggerType,
 } from "@/lib/workflow/store";
 import {
   countDeactivated,
   countTriggerStatuses,
   countTriggerTypes,
+  describeDeactivation,
   describeEmptyFilterResult,
   getTriggerAccessibleStatus,
   getTriggerConfig,
@@ -272,9 +274,15 @@ describe("toggleTriggerFilter", () => {
     expect([...toggleTriggerFilter(two, "enabled")]).toEqual(["disabled"]);
   });
 
-  it("turns back into All when every status is picked", () => {
+  it("keeps every status ticked when all are picked, which shows all", () => {
     const two: TriggerFilter = new Set(["enabled", "disabled"]);
-    expect([...toggleTriggerFilter(two, "manual")]).toEqual([]);
+    const all = toggleTriggerFilter(two, "manual");
+    expect([...all].sort()).toEqual(["disabled", "enabled", "manual"]);
+    expect(
+      [{ triggerType: WorkflowTriggerEnum.MANUAL }, {}].every((w) =>
+        matchesTriggerFilter(w, all)
+      )
+    ).toBe(true);
   });
 
   it("does not change the filter it was given", () => {
@@ -334,7 +342,7 @@ describe("getTriggerAccessibleStatus", () => {
     expect(
       getTriggerAccessibleStatus({ deactivatedAt: "2026-10-01T00:00:00.000Z" })
     ).toBe(
-      "Deactivated, Manual trigger, Runs when you click Run Workflow. Turned off by KeeperHub. Contact support to turn it back on."
+      "Deactivated, Manual trigger, Runs when you click Run Workflow. Turned off by KeeperHub on Oct 1, 2026. Contact support to turn it back on."
     );
   });
 });
@@ -596,20 +604,43 @@ describe("trigger type filter", () => {
     ]);
   });
 
-  it("toggles a type, and picking every listed type means All", () => {
-    const listed = [WorkflowTriggerEnum.EVENT, WorkflowTriggerEnum.BLOCK];
-    const one = toggleTriggerTypeFilter(
-      new Set(),
-      WorkflowTriggerEnum.EVENT,
-      listed
-    );
+  it("toggles a type, keeping every pick ticked", () => {
+    const one = toggleTriggerTypeFilter(new Set(), WorkflowTriggerEnum.EVENT);
     expect([...one]).toEqual(["Event"]);
-    expect(
-      toggleTriggerTypeFilter(one, WorkflowTriggerEnum.BLOCK, listed).size
-    ).toBe(0);
-    expect(
-      toggleTriggerTypeFilter(one, WorkflowTriggerEnum.EVENT, listed).size
-    ).toBe(0);
+    const two = toggleTriggerTypeFilter(one, WorkflowTriggerEnum.BLOCK);
+    expect([...two]).toEqual(["Event", "Block"]);
+    expect([
+      ...toggleTriggerTypeFilter(two, WorkflowTriggerEnum.EVENT),
+    ]).toEqual(["Block"]);
+  });
+
+  it("keeps a picked type listed even once no workflow uses it", () => {
+    const pyth = new Set([WorkflowTriggerEnum.PYTH_PRICE] as const);
+    expect(listedTriggerTypes([], pyth)).toContain(
+      WorkflowTriggerEnum.PYTH_PRICE
+    );
+  });
+
+  it("files an unknown trigger type under Manual instead of counting NaN", () => {
+    const counts = countTriggerTypes([
+      { triggerType: "Nope" as WorkflowTriggerType },
+    ]);
+    expect(counts.Manual).toBe(1);
+    expect(Object.values(counts).every(Number.isFinite)).toBe(true);
+  });
+});
+
+describe("describeDeactivation", () => {
+  it("says who turned it off, when, and what to do", () => {
+    expect(describeDeactivation("2026-10-06T23:30:00.000Z")).toBe(
+      "Turned off by KeeperHub on Oct 6, 2026. Contact support to turn it back on."
+    );
+  });
+
+  it("leaves the date out when it cannot be read", () => {
+    expect(describeDeactivation("not a date")).toBe(
+      "Turned off by KeeperHub. Contact support to turn it back on."
+    );
   });
 });
 

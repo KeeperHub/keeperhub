@@ -77,36 +77,46 @@ read to screen readers from a hidden span; the visible label is
 The filter button (left of the project title) opens a row pinned to the top
 of the list with two dropdown filters and no search:
 
-- **Status**: Enabled, Disabled, Manual. Disabled notes how many of its
-  workflows were deactivated by KeeperHub.
+- **Status**: Enabled, Disabled, Manual. Disabled notes "Incl. N deactivated"
+  in the deactivated amber when KeeperHub turned any of its workflows off.
 - **Trigger**: every trigger type, each with the row's icon tile, always
   grey (green would read as a status). Pyth Price is listed only when a
-  workflow in the project uses it.
+  workflow in the project uses it or it is picked.
 
-Each menu is a list of checkboxes with counts; it stays open while you pick,
-and ends with "Clear ... filter". Within a menu picks add up (Event or Block);
-across the two they narrow (Enabled and Event); each menu counts the
-workflows the other lets through. The button reads "Status All" until
-something is picked, then the first pick (with its icon) and "+N". A clear
-button after the two menus clears both. Menus open on click, Enter or arrow
-keys, and also on hover after 150ms; one opened by hover leaves focus where
-it was and closes 300ms after the pointer leaves button and menu. The Status
-menu lines up with the panel's left edge and the Trigger menu with its
-right, so neither crosses the panel.
+Each menu is a list of checkboxes with counts (`foreground/70`; an entry
+that would empty the list dims its name, not its zero); it stays open while
+you pick, and ends with "Clear ... filter". Within a menu picks add up
+(Event or Block), and every entry can be ticked at once; across the two they
+narrow (Enabled and Event); each menu counts the workflows the other lets
+through. The button reads "Status All" until something is picked, then the
+first pick (with its icon) and "+N". A clear button after the two menus
+clears both.
 
-While any filter is on, the row stays in view: the filter button shows a dot
-and its tooltip says "Clear the filters to hide them". Tag groups are held
-open and their headers do not fold. An empty result names the filters and
-offers "Show all workflows".
+Only one menu is open at a time. Menus open on click, Enter or arrow keys,
+and also on hover after 250ms; while one is open, resting on the other
+button switches to it. One opened by hover leaves focus where it was, gives
+it back there when it closes, and closes 300ms after the pointer leaves
+button and menu; clicking its button or pressing the down arrow keeps it
+open and moves into it. Both menus stay inside the panel (it is their
+collision boundary).
+
+While any filter is on, the row stays in view and the filter button shows a
+dot; clicking it then clears the filters and hides the row in one go
+(tooltip "Clear filters and hide"). Tag groups are held open and their
+headers turn into plain text. An empty result names the filters and offers
+"Show all workflows".
 
 Dimmed text and grey icons step up on hover as on the open row. On keyboard
 focus, after the same 400ms, a row's icon tooltip opens only when it has
-something the row cannot show: a cut-off name in full, or why it is
-deactivated. Escape or moving the mouse closes it.
+something the row cannot show: a cut-off name in full, or why and when it
+was deactivated ("Turned off by KeeperHub on Oct 6, 2026. Contact support to
+turn it back on."). Escape or moving the mouse closes it.
 
-Escape inside a menu closes the menu; on a filter button it clears the
-filters and hides the row; then it closes the panel. An Escape that closes a
-dialog, menu or select inside the panel closes only that.
+Escape inside a menu, or on a hover-opened one, closes only the menu. On a
+menu button with its menu shut it hides an unused row, but never clears
+picks (a habitual second Escape would otherwise throw them away); with
+nothing open it closes the panel. An Escape that closes a dialog, menu or
+select inside the panel closes only that.
 
 ## Code Example
 

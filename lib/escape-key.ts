@@ -1,5 +1,5 @@
-// Escape presses a control has already used (the search box clearing its
-// text, a chip closing the filter). The sidebar's document listener checks
+// Escape presses a control has already used (a filter menu closing itself,
+// a filter button hiding the filter row). The sidebar's document listener checks
 // this instead of `defaultPrevented`, which an open Radix tooltip also sets
 // when it closes itself, and which would otherwise make the panel need an
 // extra press to close.

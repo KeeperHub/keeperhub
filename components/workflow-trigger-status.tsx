@@ -156,13 +156,12 @@ export function TriggerFilterButton({
   // While the workflows load there is nothing to filter yet.
   disabled?: boolean;
   // A filter is on. The row of menus then stays in view, so the shortened
-  // list always shows why; the button says how to hide it.
+  // list always shows why: a click clears the filters and only then hides it.
   filtered?: boolean;
 }): React.ReactNode {
-  const locked = open && filtered;
   let tip = "Filter";
-  if (locked) {
-    tip = "Clear the filters to hide them";
+  if (open && filtered) {
+    tip = "Clear filters and hide";
   } else if (open) {
     tip = "Hide filters";
   }
@@ -173,20 +172,18 @@ export function TriggerFilterButton({
       <TooltipTrigger asChild>
         <button
           aria-controls={open ? TRIGGER_FILTER_PANEL_ID : undefined}
-          aria-disabled={locked || undefined}
           aria-expanded={open}
           aria-label={filtered ? "Filter, filters on" : "Filter"}
           className={cn(
             "relative size-6 shrink-0 rounded-md border p-1 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-foreground/60 disabled:pointer-events-none disabled:opacity-40",
             open
               ? "border-foreground/40 bg-foreground/10 text-foreground"
-              : "border-transparent text-muted-foreground hover:bg-muted hover:text-foreground",
-            locked && "cursor-default"
+              : "border-transparent text-muted-foreground hover:bg-muted hover:text-foreground"
           )}
           data-filtered={filtered || undefined}
           data-testid="trigger-filter-button"
           disabled={disabled}
-          onClick={locked ? undefined : onToggle}
+          onClick={onToggle}
           ref={ref}
           type="button"
         >
@@ -204,112 +201,178 @@ export function TriggerFilterButton({
   );
 }
 
-// A menu opens after the pointer rests on its button this long, so sweeping
-// past it on the way to the list opens nothing ...
-export const MENU_HOVER_OPEN_MS = 150;
+// A menu opens after the pointer rests on its button this long, so moving
+// past it on the way to the list below opens nothing ...
+export const MENU_HOVER_OPEN_MS = 250;
 // ... and closes this long after the pointer leaves both button and menu,
 // so crossing the gap between them does not close it.
 export const MENU_HOVER_CLOSE_MS = 300;
 
-/**
- * Open-on-hover for a dropdown menu, on top of the usual click and keyboard
- * opening (touch and keyboard users never hover). A menu opened by hover
- * leaves focus where it was and closes when the pointer leaves; a click on
- * its button while it is open keeps it open, as if it had been clicked open.
- */
-function useHoverMenu(): {
+type MenuKey = "status" | "trigger";
+
+type MenuBinding = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   trigger: {
+    ref: (element: HTMLButtonElement | null) => void;
     onPointerEnter: (event: React.PointerEvent) => void;
     onPointerLeave: (event: React.PointerEvent) => void;
     onPointerDown: (event: React.PointerEvent) => void;
+    onKeyDown: (event: React.KeyboardEvent) => void;
   };
   content: {
+    ref: (element: HTMLDivElement | null) => void;
     onPointerEnter: () => void;
     onPointerLeave: (event: React.PointerEvent) => void;
     onOpenAutoFocus: (event: Event) => void;
     onCloseAutoFocus: (event: Event) => void;
+    onEscapeKeyDown: (event: KeyboardEvent) => void;
   };
-} {
-  const [open, setOpen] = useState(false);
+};
+
+/**
+ * The open state of the row's menus, one at a time like a menu bar, with
+ * open-on-hover on top of the usual click and keyboard opening (touch and
+ * keyboard users never hover).
+ *
+ * A menu opened by hover leaves focus where it was, and gives it back there
+ * when it closes, even after the pointer has moved focus onto its items. It
+ * closes when the pointer leaves; clicking its button, or pressing the
+ * down arrow on it, keeps it open as if it had been opened that way. While
+ * one menu is open, resting on the other button switches straight to it.
+ */
+function useFilterMenus(): (key: MenuKey) => MenuBinding {
+  const [openMenu, setOpenMenu] = useState<MenuKey | null>(null);
   const openedByHover = useRef(false);
+  const focusBefore = useRef<HTMLElement | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const triggers = useRef<Partial<Record<MenuKey, HTMLButtonElement>>>({});
+  const contents = useRef<Partial<Record<MenuKey, HTMLDivElement>>>({});
   useEffect(() => () => clearTimeout(timer.current), []);
+
   const later = (ms: number, action: () => void): void => {
     clearTimeout(timer.current);
     timer.current = setTimeout(action, ms);
   };
-  const closeIfHovered = (event: React.PointerEvent): void => {
+  const close = (key: MenuKey): void =>
+    setOpenMenu((current) => (current === key ? null : current));
+  const closeIfHovered = (key: MenuKey, event: React.PointerEvent): void => {
     if (event.pointerType === "mouse" && openedByHover.current) {
-      later(MENU_HOVER_CLOSE_MS, () => setOpen(false));
+      later(MENU_HOVER_CLOSE_MS, () => close(key));
     }
   };
-  return {
-    open,
+
+  return (key) => ({
+    open: openMenu === key,
     onOpenChange: (next) => {
       clearTimeout(timer.current);
       if (next) {
         openedByHover.current = false;
+        setOpenMenu(key);
+      } else {
+        close(key);
       }
-      setOpen(next);
     },
     trigger: {
+      ref: (element) => {
+        triggers.current[key] = element ?? undefined;
+      },
       onPointerEnter: (event) => {
         if (event.pointerType !== "mouse") {
           return;
         }
-        if (open) {
+        if (openMenu === key) {
           clearTimeout(timer.current);
+          return;
+        }
+        if (openMenu !== null) {
+          clearTimeout(timer.current);
+          setOpenMenu(key);
           return;
         }
         later(MENU_HOVER_OPEN_MS, () => {
           openedByHover.current = true;
-          setOpen(true);
+          focusBefore.current =
+            document.activeElement instanceof HTMLElement
+              ? document.activeElement
+              : null;
+          setOpenMenu(key);
         });
       },
       onPointerLeave: (event) => {
-        if (open) {
-          closeIfHovered(event);
-        } else {
+        if (openMenu === key) {
+          closeIfHovered(key, event);
+        } else if (openMenu === null) {
           clearTimeout(timer.current);
         }
       },
       onPointerDown: (event) => {
-        // The menu toggles on pointer down; one opened by hover stays open
-        // and now behaves as if it had been clicked open.
-        if (open && openedByHover.current) {
+        // The menu toggles on a primary-button press; one opened by hover
+        // stays open and now behaves as if it had been clicked open.
+        if (event.button === 0 && openMenu === key && openedByHover.current) {
           event.preventDefault();
           openedByHover.current = false;
           clearTimeout(timer.current);
         }
       },
+      onKeyDown: (event) => {
+        if (
+          event.key === "ArrowDown" &&
+          openMenu === key &&
+          openedByHover.current
+        ) {
+          event.preventDefault();
+          openedByHover.current = false;
+          clearTimeout(timer.current);
+          contents.current[key]
+            ?.querySelector<HTMLElement>("[role=menuitemcheckbox]")
+            ?.focus();
+        }
+      },
     },
     content: {
+      ref: (element) => {
+        contents.current[key] = element ?? undefined;
+      },
       onPointerEnter: () => clearTimeout(timer.current),
-      onPointerLeave: closeIfHovered,
+      onPointerLeave: (event) => closeIfHovered(key, event),
       onOpenAutoFocus: (event) => {
         if (openedByHover.current) {
           event.preventDefault();
         }
       },
       onCloseAutoFocus: (event) => {
-        if (openedByHover.current) {
-          event.preventDefault();
+        if (!openedByHover.current) {
+          return;
+        }
+        event.preventDefault();
+        const active = document.activeElement;
+        const lost =
+          !active ||
+          active === document.body ||
+          contents.current[key]?.contains(active);
+        if (lost) {
+          const back = focusBefore.current?.isConnected
+            ? focusBefore.current
+            : triggers.current[key];
+          back?.focus();
         }
       },
+      // The menu's own Escape: it closes the menu and nothing else, wherever
+      // focus is (a hover-opened menu may not hold it).
+      onEscapeKeyDown: (event) => markEscapeHandled(event),
     },
-  };
+  });
 }
 
-export type FilterMenuOption<T extends string> = {
+type FilterMenuOption<T extends string> = {
   value: T;
   label: string;
   count: number;
   // Drawn before the label, e.g. the trigger tile.
   icon?: React.ReactNode;
   // A second line under the label.
-  hint?: string;
+  hint?: React.ReactNode;
 };
 
 /**
@@ -317,13 +380,15 @@ export type FilterMenuOption<T extends string> = {
  * picked means All. The button names what is picked: "Status All" while
  * nothing is, then the first pick (with its icon) and "+N" for the rest.
  */
-export function FilterMenu<T extends string>({
+function FilterMenu<T extends string>({
   label,
   options,
   value,
   onToggle,
   onClear,
   onEscape,
+  binding,
+  boundary,
   align = "start",
   testId,
 }: {
@@ -332,14 +397,15 @@ export function FilterMenu<T extends string>({
   value: ReadonlySet<T>;
   onToggle: (value: T) => void;
   onClear: () => void;
-  // Escape on the button, with the menu shut: steps the filter back.
+  // Escape on the button, with the menu shut.
   onEscape?: () => void;
-  // Which edge of the button the menu lines up with; the panel's right-hand
-  // menu aligns to its end so it never crosses the panel's edge.
+  binding: MenuBinding;
+  // The panel: the menu shifts to stay inside it.
+  boundary?: Element | null;
+  // Which edge of the button the menu lines up with.
   align?: "start" | "end";
   testId?: string;
 }): React.ReactNode {
-  const menu = useHoverMenu();
   const picked = options.filter((option) => value.has(option.value));
   const first = picked[0];
   const accessibleValue =
@@ -349,29 +415,32 @@ export function FilterMenu<T extends string>({
   return (
     <DropdownMenu
       modal={false}
-      onOpenChange={menu.onOpenChange}
-      open={menu.open}
+      onOpenChange={binding.onOpenChange}
+      open={binding.open}
     >
       <DropdownMenuTrigger asChild>
         <button
           aria-label={`${label}: ${accessibleValue}`}
           className={cn(
             "flex h-7 min-w-0 items-center gap-1.5 rounded-md border px-2.5 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-foreground/60",
-            first || menu.open
+            first || binding.open
               ? "border-foreground/40 bg-foreground/10 text-foreground"
               : "border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground"
           )}
           data-testid={testId}
-          onKeyDown={(event) => handleEscape(event, onEscape)}
           type="button"
-          {...menu.trigger}
+          {...binding.trigger}
+          onKeyDown={(event) => {
+            binding.trigger.onKeyDown(event);
+            handleEscape(event, onEscape);
+          }}
         >
           {first ? (
             <>
               {first.icon}
               <span className="truncate font-medium">{first.label}</span>
               {picked.length > 1 && (
-                <span className="text-muted-foreground tabular-nums">
+                <span className="text-foreground/70 tabular-nums">
                   +{picked.length - 1}
                 </span>
               )}
@@ -388,49 +457,52 @@ export function FilterMenu<T extends string>({
       <DropdownMenuContent
         align={align}
         className="w-52"
+        collisionBoundary={boundary ?? undefined}
         collisionPadding={8}
-        {...menu.content}
+        data-filter-menu={label.toLowerCase()}
+        {...binding.content}
       >
-        {options.map((option) => (
-          <CheckboxItem
-            checked={value.has(option.value)}
-            className={cn(
-              "flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden focus:bg-accent focus:text-accent-foreground",
-              option.count === 0 && !value.has(option.value) && "opacity-60"
-            )}
-            data-filter={option.value}
-            key={option.value}
-            onCheckedChange={() => onToggle(option.value)}
-            // Stays open, so several can be picked in one go.
-            onSelect={(event) => event.preventDefault()}
-          >
-            <span
-              aria-hidden="true"
-              className={cn(
-                "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border",
-                value.has(option.value)
-                  ? "border-foreground/60 bg-foreground/15"
-                  : "border-border"
-              )}
+        {options.map((option) => {
+          const checked = value.has(option.value);
+          // An entry that would empty the list is dimmed, but not its count:
+          // the zero is the point.
+          const dim = option.count === 0 && !checked && "opacity-60";
+          return (
+            <CheckboxItem
+              checked={checked}
+              className="flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden focus:bg-accent focus:text-accent-foreground"
+              data-filter={option.value}
+              key={option.value}
+              onCheckedChange={() => onToggle(option.value)}
+              // Stays open, so several can be picked in one go.
+              onSelect={(event) => event.preventDefault()}
             >
-              <ItemIndicator>
-                <Check className="size-3" />
-              </ItemIndicator>
-            </span>
-            {option.icon}
-            <span className="flex min-w-0 flex-col">
-              <span>{option.label}</span>
-              {option.hint && (
-                <span className="text-muted-foreground text-xs">
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border",
+                  checked
+                    ? "border-foreground/60 bg-foreground/15"
+                    : "border-border"
+                )}
+              >
+                <ItemIndicator>
+                  <Check className="size-3" />
+                </ItemIndicator>
+              </span>
+              <span className={cn("flex min-w-0 items-center gap-2", dim)}>
+                {option.icon}
+                <span className="flex min-w-0 flex-col">
+                  <span>{option.label}</span>
                   {option.hint}
                 </span>
-              )}
-            </span>
-            <span className="ml-auto text-muted-foreground text-xs tabular-nums">
-              {option.count}
-            </span>
-          </CheckboxItem>
-        ))}
+              </span>
+              <span className="ml-auto text-foreground/70 text-xs tabular-nums">
+                {option.count}
+              </span>
+            </CheckboxItem>
+          );
+        })}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           className="text-xs"
@@ -444,7 +516,7 @@ export function FilterMenu<T extends string>({
   );
 }
 
-const STATUS_OPTIONS: ReadonlyArray<{ value: TriggerStatus; label: string }> = [
+const STATUS_OPTIONS: readonly { value: TriggerStatus; label: string }[] = [
   { value: "enabled", label: "Enabled" },
   { value: "disabled", label: "Disabled" },
   { value: "manual", label: "Manual" },
@@ -482,19 +554,22 @@ export function TriggerFilters({
   onClearStatus: () => void;
   onClearTypes: () => void;
   onClearAll: () => void;
+  // Escape on a menu button with its menu shut.
   onEscape?: () => void;
 }): React.ReactNode {
-  const typeOptions = listedTypes.map((type) => ({
-    value: type,
-    label: type,
-    count: typeCounts[type],
-  }));
+  const menus = useFilterMenus();
+  const [row, setRow] = useState<HTMLDivElement | null>(null);
+  // The panel the row sits in, which neither menu may cross.
+  const boundary = row?.closest("section") ?? null;
   return (
     <div
       className="flex items-center gap-1.5 pb-2"
       data-testid="trigger-filters"
+      ref={setRow}
     >
       <FilterMenu
+        binding={menus("status")}
+        boundary={boundary}
         label="Status"
         onClear={onClearStatus}
         onEscape={onEscape}
@@ -503,26 +578,32 @@ export function TriggerFilters({
           ...option,
           count: statusCounts[option.value],
           hint:
-            option.value === "disabled" && deactivatedCount > 0
-              ? `Includes ${deactivatedCount} deactivated by KeeperHub`
-              : undefined,
+            option.value === "disabled" && deactivatedCount > 0 ? (
+              <span className="text-status-deactivated text-xs">
+                Incl. {deactivatedCount} deactivated
+              </span>
+            ) : undefined,
         }))}
         testId="status-filter"
         value={status}
       />
       <FilterMenu
         align="end"
+        binding={menus("trigger")}
+        boundary={boundary}
         label="Trigger"
         onClear={onClearTypes}
         onEscape={onEscape}
         onToggle={onToggleType}
-        options={typeOptions.map((option) => ({
-          ...option,
+        options={listedTypes.map((type) => ({
+          value: type,
+          label: type,
+          count: typeCounts[type],
           icon: (
             <TriggerTile
               className="size-4 rounded-[4px] [&_svg]:size-2.5"
               status="manual"
-              triggerType={option.value}
+              triggerType={type}
             />
           ),
         }))}

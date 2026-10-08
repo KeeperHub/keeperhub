@@ -18,7 +18,7 @@ import { isEscapeHandled, markEscapeHandled } from "@/lib/escape-key";
 import { cn } from "@/lib/utils";
 import type { WorkflowTriggerType } from "@/lib/workflow/store";
 import {
-  DEACTIVATED_EXPLANATION,
+  describeDeactivation,
   getTriggerAccessibleStatus,
   getTriggerLabel,
   getTriggerStatus,
@@ -134,7 +134,9 @@ export function WorkflowItem({
   const [nameTruncated, setNameTruncated] = useState(false);
   const focusLines = [
     ...(nameTruncated ? [workflow.name] : []),
-    ...(workflow.deactivatedAt ? [DEACTIVATED_EXPLANATION] : []),
+    ...(workflow.deactivatedAt
+      ? [describeDeactivation(workflow.deactivatedAt)]
+      : []),
   ];
   const focusTooltip = useFocusTooltip(focusLines.length > 0);
   return (
@@ -192,7 +194,7 @@ export function WorkflowItem({
               <span className="block truncate">Deactivated</span>
             </TooltipTrigger>
             <TooltipContent side="right">
-              {DEACTIVATED_EXPLANATION}
+              {describeDeactivation(workflow.deactivatedAt)}
             </TooltipContent>
           </Tooltip>
         ) : (
@@ -230,6 +232,48 @@ function GroupChevron({
           <ChevronDown className="size-3" />
         ))}
     </span>
+  );
+}
+
+const GROUP_HEADER_CLASS =
+  "flex w-full items-center gap-2 rounded-md px-2 pt-1 pb-1.5 text-left font-medium text-muted-foreground text-xs uppercase tracking-wider";
+
+// A tag group's header: a button that folds the group, or, while a filter
+// holds every group open, plain text, so it is not announced as a dimmed
+// button that does nothing.
+function GroupHeader({
+  foldable,
+  collapsed,
+  onToggle,
+  children,
+}: {
+  foldable: boolean;
+  collapsed: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}): React.ReactNode {
+  if (!foldable) {
+    return (
+      <div className={GROUP_HEADER_CLASS} data-testid="tag-group-header">
+        <GroupChevron collapsed={false} hidden />
+        {children}
+      </div>
+    );
+  }
+  return (
+    <button
+      aria-expanded={!collapsed}
+      className={cn(
+        GROUP_HEADER_CLASS,
+        "outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset"
+      )}
+      data-testid="tag-group-header"
+      onClick={onToggle}
+      type="button"
+    >
+      <GroupChevron collapsed={collapsed} hidden={false} />
+      {children}
+    </button>
   );
 }
 
@@ -314,14 +358,11 @@ export function TagsPanel({
         return (
           <div className="flex flex-col gap-0.5" key={tag.id}>
             {index > 0 && <div className="my-1 border-t" />}
-            <button
-              aria-expanded={expandAll ? undefined : !isCollapsed}
-              className="flex w-full items-center gap-2 rounded-md px-2 pt-1 pb-1.5 text-left font-medium text-muted-foreground text-xs uppercase tracking-wider outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset disabled:pointer-events-none"
-              disabled={expandAll}
-              onClick={() => toggle(tag.id)}
-              type="button"
+            <GroupHeader
+              collapsed={isCollapsed}
+              foldable={!expandAll}
+              onToggle={() => toggle(tag.id)}
             >
-              <GroupChevron collapsed={isCollapsed} hidden={expandAll} />
               <span
                 className="inline-block size-2 shrink-0 rounded-full"
                 style={{ backgroundColor: tag.color }}
@@ -330,7 +371,7 @@ export function TagsPanel({
               <span className="ml-auto normal-case tracking-normal">
                 {tag.workflowCount}
               </span>
-            </button>
+            </GroupHeader>
             {!isCollapsed &&
               tagWorkflows.map((w) => (
                 <WorkflowItem
@@ -352,19 +393,16 @@ export function TagsPanel({
             return (
               <>
                 {showHeader && (
-                  <button
-                    aria-expanded={expandAll ? undefined : !isCollapsed}
-                    className="flex w-full items-center gap-2 rounded-md px-2 pt-1 pb-1.5 text-left font-medium text-muted-foreground text-xs uppercase tracking-wider outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset disabled:pointer-events-none"
-                    disabled={expandAll}
-                    onClick={() => toggle(UNTAGGED_KEY)}
-                    type="button"
+                  <GroupHeader
+                    collapsed={isCollapsed}
+                    foldable={!expandAll}
+                    onToggle={() => toggle(UNTAGGED_KEY)}
                   >
-                    <GroupChevron collapsed={isCollapsed} hidden={expandAll} />
                     <span className="truncate">Untagged</span>
                     <span className="ml-auto normal-case tracking-normal">
                       {untaggedWorkflows.length}
                     </span>
-                  </button>
+                  </GroupHeader>
                 )}
                 {!isCollapsed &&
                   untaggedWorkflows.map((w) => (
