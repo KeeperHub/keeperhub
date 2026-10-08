@@ -94,7 +94,7 @@ type NodeSimulationContext = {
   organizationId: string;
   actionType: SupportedActionType;
   config: Record<string, unknown>;
-  hasEarlierReachableWrite: boolean;
+  mayRunAfterAnotherWrite: boolean;
   /**
    * True when the node was simulated against the state its earlier steps
    * produced, so a revert is what the workflow would actually do and the
@@ -255,6 +255,33 @@ function isProtocolWriteNode(
   return meta?.actionType === "write";
 }
 
+/**
+ * True for a node whose action lands a state change on chain, whether or not
+ * this preflight can simulate it.
+ */
+function mutatesChainState(node: WorkflowSimulationNode): boolean {
+  const config = node.data?.config;
+  const actionType = config?.actionType ?? node.data?.actionType;
+  return (
+    isMutatingActionType(actionType) ||
+    isProtocolWriteNode(actionType, config?._protocolMeta)
+  );
+}
+
+/** True for a node this run would execute: an enabled, reachable action. */
+function isLiveActionNode(
+  node: WorkflowSimulationNode,
+  reachable: Set<string> | null
+): boolean {
+  if (reachable && !reachable.has(node.id)) {
+    return false;
+  }
+  if (node.data?.enabled === false) {
+    return false;
+  }
+  return node.type === "action" || node.data?.type === "action";
+}
+
 function issuePath(nodeIndex: number, fieldKey?: string): string {
   const base = `nodes[${nodeIndex}].data.config`;
   return fieldKey ? `${base}.${fieldKey}` : base;
@@ -313,7 +340,7 @@ function simulationRevertMessage(
   label: string,
   reason: string | null
 ): string {
-  if (context.hasEarlierReachableWrite && !context.chained) {
+  if (context.mayRunAfterAnotherWrite && !context.chained) {
     if (reason) {
       return `${label} may revert: ${reason}. This may depend on an earlier step in this workflow.`;
     }
@@ -336,7 +363,7 @@ function simulationRevertMessage(
  * by, neither of which the editor can derive on its own, so it is surfaced
  * verbatim rather than replaced with generic input guidance.
  *
- * An earlier reachable write may be what funds the account. Simulation reads
+ * Another write in the workflow may be what funds the account. Simulation reads
  * current state, not the state the workflow will have produced by the time
  * this node runs, so the claim is softened the same way a revert is.
  */
@@ -347,7 +374,7 @@ function simulationPreflightMessage(
 ): string {
   const sentence = reason.endsWith(".") ? reason : `${reason}.`;
 
-  if (!context.hasEarlierReachableWrite || context.chained) {
+  if (!context.mayRunAfterAnotherWrite || context.chained) {
     return `${label} cannot run: ${sentence}`;
   }
 
@@ -766,6 +793,59 @@ function graphOf(
 }
 
 /**
+ * The nodes a node reaches by following edges, computed from the edges alone
+ * so it does not depend on the order the walk visits anything in. The node
+ * itself is in the set only when the edges lead back to it, which is what
+ * tells a loop apart from a one-way path.
+ */
+function descendantsOf(
+  graph: Graph,
+  id: string,
+  cache: Map<string, Set<string>>
+): Set<string> {
+  const cached = cache.get(id);
+  if (cached) {
+    return cached;
+  }
+  const seen = new Set<string>();
+  const stack = [...(graph.out.get(id) ?? [])];
+  for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
+    if (seen.has(next)) {
+      continue;
+    }
+    seen.add(next);
+    for (const target of graph.out.get(next) ?? []) {
+      stack.push(target);
+    }
+  }
+  cache.set(id, seen);
+  return seen;
+}
+
+/**
+ * True when another write this run would execute may land before this node
+ * does, which is the question the earlier-step hedge needs answered: the
+ * simulation read state that write had not applied yet.
+ *
+ * The engine runs the branches of a fan-out under Promise.all, so a write on
+ * a parallel branch is as unordered against this node as one upstream of it.
+ * The only write that cannot have landed first is one this node reaches, and
+ * edges that come back to this node make its own earlier pass the step it
+ * may depend on.
+ */
+function mayRunAfterAnotherWrite(
+  nodeId: string,
+  writeIds: readonly string[],
+  graph: Graph,
+  cache: Map<string, Set<string>>
+): boolean {
+  const after = descendantsOf(graph, nodeId, cache);
+  return writeIds.some((writeId) =>
+    writeId === nodeId ? after.has(nodeId) : !after.has(writeId)
+  );
+}
+
+/**
  * The order the engine would run the nodes in, following edges from the
  * trigger, rather than the order they were stored in. The walk is depth
  * first, so a path stays contiguous: after a Condition, one arm is walked to
@@ -936,7 +1016,7 @@ async function simulateRun(
 }
 
 function chainedInRun(run: ReadyNode[], index: number): boolean {
-  return index > 0 && !run[0].context.hasEarlierReachableWrite;
+  return index > 0 && !run[0].context.mayRunAfterAnotherWrite;
 }
 
 /** Per-node simulation for a run the sequence could not answer. */
@@ -1006,9 +1086,19 @@ export async function runWorkflowSimulation({
   const warnings: WorkflowSimulationIssue[] = [];
   let simulatedNodeCount = 0;
   let skippedNodeCount = 0;
-  let reachableWriteCount = 0;
   const reachable = reachableNodeIds(nodes, edges);
   const graph = graphOf(nodes, edges);
+  // Every node this run would execute that mutates chain state, whether or
+  // not this preflight can simulate it: an Approve Token, a batch write, a
+  // protocol write or a Tempo write still lands, so a warning on a node it
+  // may precede can be its consequence. Only the supported types go on to be
+  // simulated.
+  const writeIds = nodes
+    .filter(
+      (node) => isLiveActionNode(node, reachable) && mutatesChainState(node)
+    )
+    .map((node) => node.id);
+  const descendants = new Map<string, Set<string>>();
   const indexById = new Map(
     nodes.map((node, index) => [node.id, index] as const)
   );
@@ -1048,31 +1138,13 @@ export async function runWorkflowSimulation({
       throw new WorkflowSimulationDeadlineError();
     }
 
-    if (reachable && !reachable.has(node.id)) {
-      continue;
-    }
-    if (node.data?.enabled === false) {
-      continue;
-    }
-    if (node.type !== "action" && node.data?.type !== "action") {
+    if (!isLiveActionNode(node, reachable)) {
       continue;
     }
 
     const config = node.data?.config;
     const actionType = config?.actionType ?? node.data?.actionType;
-    // Every reachable node that mutates chain state counts as an earlier
-    // write for the nodes after it, whether or not this preflight can
-    // simulate it: an Approve Token, a batch write, a protocol write or a
-    // Tempo write still lands before the next node runs, so a warning after
-    // it may depend on state the preflight never applied. Only the supported
-    // types go on to be simulated.
-    const hasEarlierReachableWrite = reachableWriteCount > 0;
-    const mutates =
-      isMutatingActionType(actionType) ||
-      isProtocolWriteNode(actionType, config?._protocolMeta);
-    if (mutates) {
-      reachableWriteCount += 1;
-    }
+    const mutates = mutatesChainState(node);
     if (!(config && isSupportedActionType(actionType))) {
       // An unsimulated write lands before everything after it, so no later
       // node may chain past it, not even the other branch of a fan-out whose
@@ -1089,7 +1161,12 @@ export async function runWorkflowSimulation({
       organizationId,
       actionType,
       config,
-      hasEarlierReachableWrite,
+      mayRunAfterAnotherWrite: mayRunAfterAnotherWrite(
+        node.id,
+        writeIds,
+        graph,
+        descendants
+      ),
     };
 
     const prepared = await prepareNode(context, deadlineAt);

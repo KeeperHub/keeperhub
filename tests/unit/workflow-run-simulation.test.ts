@@ -1526,4 +1526,191 @@ describe("runWorkflowSimulation", () => {
       expect(spies.simulateContractCall).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe("the earlier-step hedge follows the edges, not the walk order", () => {
+    const TRANSFER_CONFIG = {
+      amount: "1",
+      recipientAddress: "0xbb0000000000000000000000000000000000bb00",
+    };
+
+    it("hedges both writes of a sibling fan-out, neither upstream of the other", async () => {
+      spies.simulateNativeTransfer.mockResolvedValue(REVERT_RESULT);
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          actionNode("send-a", "web3/transfer-funds", TRANSFER_CONFIG),
+          actionNode("send-b", "web3/transfer-funds", TRANSFER_CONFIG),
+        ],
+        edges: [
+          { source: "trigger-1", target: "send-a" },
+          { source: "trigger-1", target: "send-b" },
+        ],
+      });
+
+      // The branches run under Promise.all, so either write can land first
+      // and neither was simulated against the other.
+      expect(result.warnings.map((warning) => warning.nodeId)).toEqual([
+        "send-a",
+        "send-b",
+      ]);
+      for (const warning of result.warnings) {
+        expect(warning.message).toContain("may depend on an earlier step");
+      }
+    });
+
+    it("hedges the node a diamond rejoins at, whose write is upstream through one arm", async () => {
+      spies.simulateContractCall
+        .mockResolvedValueOnce(SUCCESS_RESULT)
+        .mockResolvedValueOnce(REVERT_RESULT);
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          writeNode("approve", "approve"),
+          actionNode("notify-a", "discord/send-message"),
+          actionNode("notify-b", "discord/send-message"),
+          writeNode("deposit", "deposit"),
+        ],
+        edges: [
+          { source: "trigger-1", target: "approve" },
+          { source: "approve", target: "notify-a" },
+          { source: "approve", target: "notify-b" },
+          { source: "notify-a", target: "deposit" },
+          { source: "notify-b", target: "deposit" },
+        ],
+      });
+
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]).toMatchObject({ nodeId: "deposit" });
+      expect(result.warnings[0]?.message).toContain(
+        "may depend on an earlier step"
+      );
+    });
+
+    it("hedges a node whose only other write sits on the other condition arm", async () => {
+      spies.simulateContractCall.mockResolvedValueOnce(REVERT_RESULT);
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          actionNode("cond", "condition"),
+          writeNode("deposit", "deposit"),
+          actionNode("grant", "web3/approve-token", {
+            tokenAddress: "0xcc0000000000000000000000000000000000cc00",
+            spenderAddress: "0xbb0000000000000000000000000000000000bb00",
+            amount: "5",
+          }),
+        ],
+        // The deposit arm is walked first, so nothing had counted the
+        // approval by the time the deposit was judged.
+        edges: [
+          { source: "trigger-1", target: "cond" },
+          { source: "cond", target: "deposit" },
+          { source: "cond", target: "grant" },
+        ],
+      });
+
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]).toMatchObject({ nodeId: "deposit" });
+      expect(result.warnings[0]?.message).toContain(
+        "may depend on an earlier step"
+      );
+    });
+
+    it("reports a node with no other write plainly", async () => {
+      spies.simulateContractCall.mockResolvedValueOnce(REVERT_RESULT);
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          actionNode("notify", "discord/send-message"),
+          writeNode("deposit", "deposit"),
+        ],
+        edges: [
+          { source: "trigger-1", target: "notify" },
+          { source: "notify", target: "deposit" },
+        ],
+      });
+
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]?.message).toBe(
+        "deposit would revert: ERC4626: deposit more than max"
+      );
+    });
+
+    it("reports a node plainly when the only other write runs strictly after it", async () => {
+      spies.simulateNativeTransfer
+        .mockResolvedValueOnce(REVERT_RESULT)
+        .mockResolvedValueOnce(SUCCESS_RESULT);
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          actionNode("send-first", "web3/transfer-funds", TRANSFER_CONFIG),
+          actionNode("send-second", "web3/transfer-funds", TRANSFER_CONFIG),
+        ],
+        edges: [
+          { source: "trigger-1", target: "send-first" },
+          { source: "send-first", target: "send-second" },
+        ],
+      });
+
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]).toMatchObject({ nodeId: "send-first" });
+      expect(result.warnings[0]?.message).not.toContain("earlier step");
+    });
+
+    it("hedges a write that loops back into itself", async () => {
+      spies.simulateNativeTransfer.mockResolvedValueOnce(REVERT_RESULT);
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          actionNode("send", "web3/transfer-funds", TRANSFER_CONFIG),
+        ],
+        edges: [
+          { source: "trigger-1", target: "send" },
+          { source: "send", target: "send" },
+        ],
+      });
+
+      // Its own earlier pass is the earlier step.
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]?.message).toContain(
+        "may depend on an earlier step"
+      );
+    });
+
+    it("hedges both writes of a loop and still returns", async () => {
+      spies.simulateNativeTransfer.mockResolvedValue(REVERT_RESULT);
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        // Stored with the loop's second node first: its write is upstream
+        // through the loop-back edge all the same.
+        nodes: [
+          triggerNode(),
+          actionNode("send-second", "web3/transfer-funds", TRANSFER_CONFIG),
+          actionNode("send-first", "web3/transfer-funds", TRANSFER_CONFIG),
+        ],
+        edges: [
+          { source: "trigger-1", target: "send-first" },
+          { source: "send-first", target: "send-second" },
+          { source: "send-second", target: "send-first" },
+        ],
+      });
+
+      expect(result.warnings).toHaveLength(2);
+      for (const warning of result.warnings) {
+        expect(warning.message).toContain("may depend on an earlier step");
+      }
+    });
+  });
 });
