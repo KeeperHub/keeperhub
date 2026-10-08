@@ -45,7 +45,7 @@ export function useOrganization() {
     resetWorkflowStateForOrgSwitch();
     setAnalyticsProjectId(null);
     invalidateFeatureSnapshot();
-    refetchSidebar();
+    refetchSidebar({ orgChanged: true });
 
     // Org-scoped settings carry the organization in the path, so switching has
     // to rewrite it. Otherwise the route would keep pointing at the previous

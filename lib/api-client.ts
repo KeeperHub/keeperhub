@@ -10,6 +10,7 @@ import type {
   WorkflowExecutionStatus,
 } from "@/lib/errors/execution-status";
 import type { Page } from "@/lib/pagination";
+import { refetchSidebarIfTriggerChanged } from "@/lib/refetch-sidebar";
 import type { ActorCredential } from "@/lib/security/credential-label";
 import type { HeldPaymentView } from "@/lib/tempo/held-payment-view";
 import type { VoteDirection } from "@/lib/workflow/editor/votes";
@@ -754,12 +755,22 @@ export const workflowApi = {
       body: JSON.stringify(workflow),
     }),
 
-  // Update a workflow
-  update: (id: string, workflow: Partial<WorkflowData>) =>
-    apiCall<SavedWorkflow>(`/api/workflows/${id}`, {
+  // Update a workflow. The editor's saves of the nodes (autosave, Save, AI
+  // edits, version restore) come through here, so this is where the sidebar
+  // learns that a workflow's trigger changed.
+  update: async (
+    id: string,
+    workflow: Partial<WorkflowData>
+  ): Promise<SavedWorkflow> => {
+    const saved = await apiCall<SavedWorkflow>(`/api/workflows/${id}`, {
       method: "PATCH",
       body: JSON.stringify(workflow),
-    }),
+    });
+    if (workflow.nodes) {
+      refetchSidebarIfTriggerChanged(id, workflow.nodes);
+    }
+    return saved;
+  },
 
   // Delete a workflow
   delete: (id: string, options?: { force?: boolean }) =>

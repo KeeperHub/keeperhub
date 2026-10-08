@@ -1,3 +1,9 @@
+import {
+  getTriggerConfig,
+  type TriggerNodeLike,
+  triggerDisplayKey,
+} from "@/lib/workflow/trigger-display-key";
+
 /**
  * Global event-based sidebar refetch system
  *
@@ -7,6 +13,9 @@
 
 type RefetchOptions = {
   closeFlyout?: boolean;
+  // The active organization changed: a list that fails to load must not
+  // leave the previous organization's workflows on screen.
+  orgChanged?: boolean;
 };
 
 type RefetchCallback = (options?: RefetchOptions) => void;
@@ -54,4 +63,26 @@ export function refetchSidebar(options?: RefetchOptions): void {
       /* ignore callback errors */
     }
   }
+}
+
+// What each workflow's sidebar row showed for its trigger at its last save.
+const savedTriggers = new Map<string, string>();
+
+/**
+ * Refetch the sidebar after a save that changes what a workflow's row shows
+ * for its trigger (type, schedule, event, block interval), so the row follows
+ * it. Edits the row does not show (an ABI, a webhook schema) do not refetch.
+ * The first save of a workflow in a session has nothing to compare to and
+ * refetches once.
+ */
+export function refetchSidebarIfTriggerChanged(
+  workflowId: string,
+  nodes: TriggerNodeLike[]
+): void {
+  const trigger = triggerDisplayKey(getTriggerConfig(nodes));
+  if (savedTriggers.get(workflowId) === trigger) {
+    return;
+  }
+  savedTriggers.set(workflowId, trigger);
+  refetchSidebar();
 }
