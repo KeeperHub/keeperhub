@@ -129,10 +129,11 @@ test.describe("Sidebar trigger status icons", () => {
     await page.locator("#triggerType").click();
     await page.getByRole("option", { name: "Manual" }).click();
 
-    // The row follows only once the edit is saved: a 2.5s autosave debounce
-    // plus the request, so allow more than the default 5s.
+    // The row follows only once the edit is saved and the list refetched: a
+    // 2.5s autosave debounce, the save and the list request, so allow well
+    // more than the default 5s.
     await expect(icon).toHaveAttribute("data-trigger-type", "Manual", {
-      timeout: 10_000,
+      timeout: 15_000,
     });
     await expect(icon).toHaveAttribute("data-trigger-status", "manual");
     await expect(

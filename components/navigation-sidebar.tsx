@@ -46,15 +46,16 @@ import { useActiveMember } from "@/lib/hooks/use-organization";
 import type { NavPanelStates } from "@/lib/hooks/use-persisted-nav-state";
 import { usePersistedNavState } from "@/lib/hooks/use-persisted-nav-state";
 import { isAnonymousUser } from "@/lib/is-anonymous";
+import { createLatestRequest } from "@/lib/latest-request";
 import { registerSidebarRefetch } from "@/lib/refetch-sidebar";
 import { cn, toggleInSet } from "@/lib/utils";
 import { filterPickerVisible } from "@/lib/workflow/soft-delete";
-import { getTriggerTypeFromConfig } from "@/lib/workflow/store";
 import {
   countDeactivated,
   countTriggerStatuses,
   countTriggerTypes,
   describeEmptyFilterResult,
+  getPickerTriggerType,
   getTriggerConfig,
   listedTriggerTypes,
   matchesTriggerFilter,
@@ -476,27 +477,30 @@ export function NavigationSidebar(): React.ReactNode {
   const [triggerFilterOpen, setTriggerFilterOpen] = useState(false);
   const filterButtonRef = useRef<HTMLButtonElement>(null);
   const isPickerFiltered = triggerFilter.size > 0 || triggerTypeFilter.size > 0;
-  // Numbers each list request, so a reply that lands after a newer request
-  // was sent is dropped rather than put back over the newer list.
-  const latestFetch = useRef(0);
+  // A reply that lands after a newer list request was sent is dropped rather
+  // than put back over the newer list.
+  const latestFetch = useRef(createLatestRequest());
   const isDragging = useRef(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
-  const fetchData = useCallback(async (): Promise<void> => {
-    latestFetch.current += 1;
-    const request = latestFetch.current;
-    try {
-      const fetched = await api.workflow.getAll();
-      if (request === latestFetch.current) {
-        setWorkflows(fetched);
+  const fetchData = useCallback(
+    async (options?: { clearOnFailure?: boolean }): Promise<void> => {
+      const result = await latestFetch.current(() => api.workflow.getAll());
+      // Only the latest request settles the list and the loading state.
+      if (!result.latest) {
+        return;
       }
-    } catch {
-      // A failed refetch keeps the list already shown; a failed first load
-      // leaves it empty, as before.
-    } finally {
+      if (result.ok) {
+        setWorkflows(result.value);
+      } else if (options?.clearOnFailure) {
+        // A failed refetch keeps the list already shown, unless it belongs
+        // to another organization. A failed first load leaves it empty.
+        setWorkflows([]);
+      }
       setDataLoading(false);
-    }
-  }, []);
+    },
+    []
+  );
 
   useEffect(() => {
     // NAV-04: gate fetchData on session resolution. While pending, do nothing
@@ -537,7 +541,7 @@ export function NavigationSidebar(): React.ReactNode {
         if (options?.closeFlyout) {
           navState.closeAll();
         }
-        fetchData().catch(() => {
+        fetchData({ clearOnFailure: options?.orgChanged }).catch(() => {
           /* intentional noop */
         });
       }),
@@ -567,7 +571,7 @@ export function NavigationSidebar(): React.ReactNode {
         return {
           ...w,
           triggerConfig,
-          triggerType: getTriggerTypeFromConfig(triggerConfig),
+          triggerType: getPickerTriggerType(triggerConfig),
         };
       }),
     [workflows]

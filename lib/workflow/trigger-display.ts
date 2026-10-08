@@ -1,10 +1,12 @@
 import {
   describeCron,
+  formatTime,
   parseCronToSimple,
   parseIntervalSeconds,
   validateCronExpression,
 } from "@/lib/cron-utils";
 import {
+  getTriggerTypeFromConfig,
   shouldShowEnableSwitch,
   WorkflowTriggerEnum,
   type WorkflowTriggerType,
@@ -61,6 +63,29 @@ function hasEnableSwitch(
  * still counts as "has a trigger" (a Manual one) and compares equal from
  * call to call.
  */
+// "Scheduled" is a legacy spelling of Schedule still saved in some trigger
+// nodes. The schedule service accepts only "Schedule" and drops the schedule
+// of a "Scheduled" workflow on its next save, so the picker shows it as a
+// Schedule trigger that is not kept running, never as a live one.
+const LEGACY_SCHEDULE = "Scheduled";
+const LEGACY_SCHEDULE_DETAIL =
+  "Old format, stops running on the next save. Open the trigger and pick Schedule again";
+
+function isLegacySchedule(workflow: {
+  triggerConfig?: Record<string, unknown> | null;
+}): boolean {
+  return workflow.triggerConfig?.triggerType === LEGACY_SCHEDULE;
+}
+
+/** The trigger type a picker row shows for this trigger config. */
+export function getPickerTriggerType(
+  config: Record<string, unknown> | undefined
+): WorkflowTriggerType | undefined {
+  return config?.triggerType === LEGACY_SCHEDULE
+    ? WorkflowTriggerEnum.SCHEDULE
+    : getTriggerTypeFromConfig(config);
+}
+
 export function getTriggerConfig(
   nodes: TriggerNodeLike[]
 ): Record<string, unknown> | undefined {
@@ -82,8 +107,9 @@ export function getTriggerStatus(workflow: {
   triggerType?: WorkflowTriggerType | null;
   enabled?: boolean | null;
   deactivatedAt?: string | null;
+  triggerConfig?: Record<string, unknown> | null;
 }): TriggerStatus {
-  if (workflow.deactivatedAt) {
+  if (workflow.deactivatedAt || isLegacySchedule(workflow)) {
     return "disabled";
   }
   if (!hasEnableSwitch(workflow.triggerType)) {
@@ -126,11 +152,21 @@ function describeIntervalSeconds(raw: unknown): string | undefined {
   }
 }
 
-// `M */N * * *` (every N hours) is not a SimpleSchedule shape, but it is a
-// common one, so name it here instead of falling back to "Schedule". Only
-// when N divides the day: `*/5` fires at 0, 5 ... 20 and then 4 hours later,
-// which is not "every 5 hours", so that is left to describeCron.
-function everyNHours(cron: string): number | undefined {
+// A cron read once into the shape both the row label and the tooltip
+// describe, so the two never disagree. Undefined when the cron is not valid.
+type CronShape =
+  | { kind: "minutes"; step: number }
+  | { kind: "hourly"; minute: number }
+  | { kind: "hours"; step: number }
+  | { kind: "daily"; hour: number; minute: number }
+  | { kind: "weekly"; days: number[] }
+  // `M */N * * *` where N does not divide the day: it runs at these hours
+  // and then again at midnight, so it is not "every N hours".
+  | { kind: "hoursAt"; hours: number[]; minute: number }
+  | { kind: "custom" };
+
+// `M */N * * *` is not a SimpleSchedule shape, but it is a common one.
+function readEveryNHours(cron: string): CronShape | undefined {
   const [minute, hour, dayOfMonth, month, dayOfWeek, ...rest] = cron
     .trim()
     .split(WHITESPACE_PATTERN);
@@ -142,65 +178,91 @@ function everyNHours(cron: string): number | undefined {
     month !== "*" ||
     dayOfWeek !== "*"
   ) {
-    return undefined;
+    return;
   }
   const step = Number.parseInt(hour?.match(HOURLY_STEP_PATTERN)?.[1] ?? "", 10);
-  return step >= 1 && HOURS_PER_DAY % step === 0 && step < HOURS_PER_DAY
-    ? step
-    : undefined;
-}
-
-function describeEveryNHours(cron: string): string | undefined {
-  const step = everyNHours(cron);
-  if (step === undefined) {
+  if (!(step >= 1)) {
     return;
   }
-  return step === 1 ? "Hourly" : `${step} h`;
+  if (step === 1) {
+    return { kind: "hourly", minute: Number(minute) };
+  }
+  if (step < HOURS_PER_DAY && HOURS_PER_DAY % step === 0) {
+    return { kind: "hours", step };
+  }
+  const hours: number[] = [];
+  for (let h = 0; h < HOURS_PER_DAY; h += step) {
+    hours.push(h);
+  }
+  return { kind: "hoursAt", hours, minute: Number(minute) };
 }
 
-function describeWeekly(days: number[]): string {
-  const unique = new Set(days);
-  if (unique.size === 1) {
-    return "Weekly";
-  }
-  if (unique.size === DAYS_PER_WEEK) {
-    return "Daily";
-  }
-  if (unique.size === WEEKDAYS.length && WEEKDAYS.every((d) => unique.has(d))) {
-    return "Weekdays";
-  }
-  return `${unique.size}x a week`;
-}
-
-// `*/N` minutes keeps even gaps only when N divides the hour; `*/7` runs at
-// :56 and then :00, so it is not "7 min" and is left as Custom.
-function describeEveryNMinutes(
-  interval: number | undefined
-): string | undefined {
-  if (interval === undefined || interval < 1) {
+function readCron(cron: string): CronShape | undefined {
+  if (!validateCronExpression(cron).valid) {
     return;
   }
-  if (interval >= MINUTES_PER_HOUR) {
-    return "Hourly";
-  }
-  return MINUTES_PER_HOUR % interval === 0 ? `${interval} min` : undefined;
-}
-
-function describeCronShort(cron: string): string | undefined {
   const simple = parseCronToSimple(cron);
   switch (simple?.frequency) {
     case "every-minute":
-      return "1 min";
-    case "every-n-minutes":
-      return describeEveryNMinutes(simple.interval);
+      return { kind: "minutes", step: 1 };
+    case "every-n-minutes": {
+      // `*/N` minutes keeps even gaps only when N divides the hour (`*/7`
+      // runs at :56 and then :00); `*/60` and over runs on the hour only.
+      const step = simple.interval ?? 0;
+      if (step >= MINUTES_PER_HOUR) {
+        return { kind: "hourly", minute: 0 };
+      }
+      return step >= 1 && MINUTES_PER_HOUR % step === 0
+        ? { kind: "minutes", step }
+        : { kind: "custom" };
+    }
+    case "hourly":
+      return { kind: "hourly", minute: simple.minute ?? 0 };
+    case "daily":
+      return {
+        kind: "daily",
+        hour: simple.hour ?? 0,
+        minute: simple.minute ?? 0,
+      };
+    case "weekly": {
+      const days = [...new Set(simple.daysOfWeek ?? [])];
+      return days.length === DAYS_PER_WEEK
+        ? { kind: "daily", hour: simple.hour ?? 0, minute: simple.minute ?? 0 }
+        : { kind: "weekly", days };
+    }
+    default:
+      return readEveryNHours(cron) ?? { kind: "custom" };
+  }
+}
+
+function describeWeekly(days: number[]): string {
+  if (days.length === 1) {
+    return "Weekly";
+  }
+  if (
+    days.length === WEEKDAYS.length &&
+    WEEKDAYS.every((d) => days.includes(d))
+  ) {
+    return "Weekdays";
+  }
+  return `${days.length}x a week`;
+}
+
+function describeCronShort(shape: CronShape): string {
+  switch (shape.kind) {
+    case "minutes":
+      return `${shape.step} min`;
     case "hourly":
       return "Hourly";
+    case "hours":
+      return `${shape.step} h`;
     case "daily":
       return "Daily";
     case "weekly":
-      return describeWeekly(simple.daysOfWeek ?? []);
+      return describeWeekly(shape.days);
     default:
-      return describeEveryNHours(cron);
+      // A valid cron with no short name ("0 9 1 * *", uneven gaps).
+      return "Custom";
   }
 }
 
@@ -213,13 +275,9 @@ function describeSchedule(config: Record<string, unknown>): string {
   if (typeof cron !== "string" || cron.trim() === "") {
     return "";
   }
-  // A valid cron with no short name ("0 9 1 * *") is "Custom"; one that does
-  // not parse has nothing to show.
-  const short = describeCronShort(cron);
-  if (short) {
-    return short;
-  }
-  return validateCronExpression(cron).valid ? "Custom" : "";
+  // A cron that does not parse has nothing to show.
+  const shape = readCron(cron);
+  return shape ? describeCronShort(shape) : "";
 }
 
 function blockInterval(config: Record<string, unknown>): number | undefined {
@@ -256,6 +314,9 @@ export function getTriggerLabel(workflow: {
 }): string {
   if (workflow.deactivatedAt) {
     return "Deactivated";
+  }
+  if (isLegacySchedule(workflow)) {
+    return "";
   }
   const config = workflow.triggerConfig ?? {};
   switch (workflow.triggerType) {
@@ -413,29 +474,6 @@ export function getTriggerTypeLabel(
 
 // The trigger config fields the picker row reads; edits to any other field
 // (an ABI, a webhook schema) leave the row as it is.
-const DISPLAYED_CONFIG_KEYS = [
-  "triggerType",
-  "scheduleCron",
-  "scheduleIntervalSeconds",
-  "eventName",
-  "blockInterval",
-  "scheduleTimezone",
-] as const;
-
-export function isSameTriggerDisplay(
-  a: Record<string, unknown> | undefined,
-  b: Record<string, unknown> | undefined
-): boolean {
-  if (a === b) {
-    return true;
-  }
-  if (!(a && b)) {
-    return false;
-  }
-  return DISPLAYED_CONFIG_KEYS.every((key) => a[key] === b[key]);
-}
-
-// "Every hour", "Every 6 hours": one of a unit reads without the number.
 function every(count: number, unit: string): string {
   return count === 1 ? `Every ${unit}` : `Every ${count} ${unit}s`;
 }
@@ -453,6 +491,62 @@ function describeEvery(seconds: number): string {
   return every(seconds, "second");
 }
 
+// The scheduler runs a schedule saved without a timezone in UTC.
+function scheduleTimezone(config: Record<string, unknown>): string {
+  const timezone = config.scheduleTimezone;
+  return typeof timezone === "string" && timezone !== "" ? timezone : "UTC";
+}
+
+function listTimes(hours: number[], minute: number): string {
+  const times = hours.map((hour) => formatTime(hour, minute));
+  return times.length === 1
+    ? times[0]
+    : `${times.slice(0, -1).join(", ")} and ${times.at(-1)}`;
+}
+
+// Cron fields that set an hour of the day, so the timezone matters.
+function setsHourOfDay(cron: string): boolean {
+  const hour = cron.trim().split(WHITESPACE_PATTERN)[1] ?? "*";
+  return hour !== "*" && !hour.startsWith("*/");
+}
+
+// The schedule in words. The timezone is named only where the schedule runs
+// at a time of day; "every 5 minutes" is the same everywhere.
+function describeCronInFull(
+  cron: string,
+  shape: CronShape | undefined,
+  timezone: string
+): string {
+  switch (shape?.kind) {
+    case "minutes":
+      return every(shape.step, "minute");
+    case "hourly":
+      return shape.minute === 0
+        ? "Every hour on the hour"
+        : `Every hour at minute ${shape.minute}`;
+    case "hours":
+      return every(shape.step, "hour");
+    case "daily":
+      return `Every day at ${formatTime(shape.hour, shape.minute)} (${timezone})`;
+    case "weekly":
+      return `${describeCron(cron)} (${timezone})`;
+    case "hoursAt":
+      return `Every day at ${listTimes(shape.hours, shape.minute)} (${timezone})`;
+    case "custom": {
+      // describeCron words uneven minute steps; anything else shows as is.
+      const text = describeCron(cron);
+      if (text !== "" && text !== "Custom schedule") {
+        return text;
+      }
+      return setsHourOfDay(cron)
+        ? `Cron ${cron.trim()} (${timezone})`
+        : `Cron ${cron.trim()}`;
+    }
+    default:
+      return `Cron ${cron.trim()}`;
+  }
+}
+
 function describeScheduleInFull(
   config: Record<string, unknown>
 ): string | undefined {
@@ -468,20 +562,7 @@ function describeScheduleInFull(
   if (typeof cron !== "string" || cron.trim() === "") {
     return;
   }
-  const hours = everyNHours(cron);
-  if (hours !== undefined) {
-    return every(hours, "hour");
-  }
-  const text = describeCron(cron);
-  if (text === "" || text === "Custom schedule") {
-    return `Cron ${cron.trim()}`;
-  }
-  if (!text.includes(" at ")) {
-    return text;
-  }
-  // The scheduler runs a schedule saved without a timezone in UTC.
-  const timezone = config.scheduleTimezone;
-  return `${text} (${typeof timezone === "string" && timezone !== "" ? timezone : "UTC"})`;
+  return describeCronInFull(cron, readCron(cron), scheduleTimezone(config));
 }
 
 function describeBlockInFull(
@@ -497,9 +578,14 @@ function getStatusWord(workflow: {
   triggerType?: WorkflowTriggerType | null;
   enabled?: boolean | null;
   deactivatedAt?: string | null;
+  triggerConfig?: Record<string, unknown> | null;
 }): string | undefined {
   if (workflow.deactivatedAt) {
     return "Deactivated";
+  }
+  // Its detail says what state it is in; "Disabled" would not be true.
+  if (isLegacySchedule(workflow)) {
+    return;
   }
   switch (getTriggerStatus(workflow)) {
     case "enabled":
@@ -554,6 +640,9 @@ function getTriggerDetail(workflow: {
   triggerType?: WorkflowTriggerType | null;
   triggerConfig?: Record<string, unknown> | null;
 }): string | undefined {
+  if (isLegacySchedule(workflow)) {
+    return LEGACY_SCHEDULE_DETAIL;
+  }
   const config = workflow.triggerConfig ?? {};
   switch (workflow.triggerType) {
     case WorkflowTriggerEnum.SCHEDULE:

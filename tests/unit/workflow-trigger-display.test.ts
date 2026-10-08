@@ -11,13 +11,13 @@ import {
   countTriggerTypes,
   describeDeactivation,
   describeEmptyFilterResult,
+  getPickerTriggerType,
   getTriggerAccessibleStatus,
   getTriggerConfig,
   getTriggerLabel,
   getTriggerStatus,
   getTriggerTooltip,
   getTriggerTypeLabel,
-  isSameTriggerDisplay,
   listedTriggerTypes,
   matchesTriggerFilter,
   matchesTriggerTypeFilter,
@@ -118,6 +118,9 @@ describe("getTriggerLabel", () => {
     ["0 */30 * * *", "Custom"],
     ["99 */2 * * *", ""],
     ["0 9 * * 0,1,2,3,4,5,6", "Daily"],
+    ["0 9 * * 0-6", "Daily"],
+    ["*/60 * * * *", "Hourly"],
+    ["60 * * * *", ""],
     ["0 9 1 * *", "Custom"],
     ["0 0 9 * * *", "Custom"],
     ["0 9 * * 0,7", ""],
@@ -345,48 +348,13 @@ describe("getTriggerAccessibleStatus", () => {
 
   it("never says undefined for a deactivated workflow with no trigger", () => {
     expect(
-      getTriggerAccessibleStatus({ deactivatedAt: "2026-10-01T00:00:00.000Z" })
+      // Midday local time, so the date reads Oct 1 in every timezone.
+      getTriggerAccessibleStatus({
+        deactivatedAt: new Date(2026, 9, 1, 12).toISOString(),
+      })
     ).toBe(
       "Deactivated, Manual trigger. Turned off by KeeperHub on Oct 1, 2026. Contact support to turn it back on."
     );
-  });
-});
-
-describe("isSameTriggerDisplay", () => {
-  const base = {
-    triggerType: "Schedule",
-    scheduleCron: "*/5 * * * *",
-    contractABI: "[]",
-  };
-
-  it("notices a timezone change, which the tooltip shows", () => {
-    expect(
-      isSameTriggerDisplay(
-        { ...base, scheduleTimezone: "UTC" },
-        { ...base, scheduleTimezone: "Europe/Vilnius" }
-      )
-    ).toBe(false);
-  });
-
-  it("ignores fields the row does not show", () => {
-    expect(isSameTriggerDisplay(base, { ...base, contractABI: "[{}]" })).toBe(
-      true
-    );
-  });
-
-  it("notices a change to a field the row shows", () => {
-    expect(
-      isSameTriggerDisplay(base, { ...base, scheduleCron: "0 * * * *" })
-    ).toBe(false);
-    expect(isSameTriggerDisplay(base, { ...base, triggerType: "Manual" })).toBe(
-      false
-    );
-  });
-
-  it("treats a trigger node appearing or going away as a change", () => {
-    expect(isSameTriggerDisplay(undefined, base)).toBe(false);
-    expect(isSameTriggerDisplay(base, undefined)).toBe(false);
-    expect(isSameTriggerDisplay(undefined, undefined)).toBe(true);
   });
 });
 
@@ -417,6 +385,20 @@ describe("trigger type read off a node list", () => {
     expect(getTriggerLabel({ triggerType: undefined })).toBe("");
     expect(getTriggerTooltip({})).toBe(
       "Manual trigger · Runs when you click Run Workflow"
+    );
+  });
+
+  it("shows the legacy Scheduled spelling as a schedule that is not kept running", () => {
+    const legacy = {
+      triggerType: getPickerTriggerType({ triggerType: "Scheduled" }),
+      enabled: true,
+      triggerConfig: { triggerType: "Scheduled", scheduleCron: "*/5 * * * *" },
+    };
+    expect(legacy.triggerType).toBe(WorkflowTriggerEnum.SCHEDULE);
+    expect(getTriggerStatus(legacy)).toBe("disabled");
+    expect(getTriggerLabel(legacy)).toBe("");
+    expect(getTriggerTooltip(legacy)).toBe(
+      "Schedule trigger · Old format, stops running on the next save. Open the trigger and pick Schedule again"
     );
   });
 
@@ -462,7 +444,7 @@ describe("getTriggerTooltip", () => {
     ],
     [
       { scheduleCron: "0 */1 * * *" },
-      "Enabled · Schedule trigger · Every hour",
+      "Enabled · Schedule trigger · Every hour on the hour",
     ],
     [
       { scheduleIntervalSeconds: 90 },
@@ -470,7 +452,31 @@ describe("getTriggerTooltip", () => {
     ],
     [
       { scheduleCron: "0 9 1 * *" },
-      "Enabled · Schedule trigger · Cron 0 9 1 * *",
+      "Enabled · Schedule trigger · Cron 0 9 1 * * (UTC)",
+    ],
+    [
+      { scheduleCron: "*/5 * 1 * *" },
+      "Enabled · Schedule trigger · Cron */5 * 1 * *",
+    ],
+    [
+      { scheduleCron: "*/60 * * * *" },
+      "Enabled · Schedule trigger · Every hour on the hour",
+    ],
+    [
+      { scheduleCron: "15 * * * *", scheduleTimezone: "Europe/Vilnius" },
+      "Enabled · Schedule trigger · Every hour at minute 15",
+    ],
+    [
+      { scheduleCron: "0 9 * * 0,1,2,3,4,5,6" },
+      "Enabled · Schedule trigger · Every day at 9:00 AM (UTC)",
+    ],
+    [
+      { scheduleCron: "0 */5 * * *" },
+      "Enabled · Schedule trigger · Every day at 12:00 AM, 5:00 AM, 10:00 AM, 3:00 PM and 8:00 PM (UTC)",
+    ],
+    [
+      { scheduleCron: "*/7 * * * *" },
+      "Enabled · Schedule trigger · At minute 0 and every 7 minutes within each hour (uneven gaps)",
     ],
     [
       { scheduleCron: "0 9 * * *" },

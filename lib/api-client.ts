@@ -755,8 +755,9 @@ export const workflowApi = {
       body: JSON.stringify(workflow),
     }),
 
-  // Update a workflow. Every save of the nodes comes through here, so this is
-  // where the sidebar learns that a workflow's trigger changed.
+  // Update a workflow. The editor's saves of the nodes (autosave, Save, AI
+  // edits, version restore) come through here, so this is where the sidebar
+  // learns that a workflow's trigger changed.
   update: async (
     id: string,
     workflow: Partial<WorkflowData>
