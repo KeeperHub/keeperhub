@@ -40,13 +40,23 @@ Expandable side panel that slides out from the navigation sidebar. Used for proj
 
 ```typescript
 interface FlyoutPanelProps {
+  state: "open" | "collapsed" | "closed";
+  leftOffset: number;
   title: string;
-  icon: ReactNode;
+  collapsedLabel?: string;
+  accentColor?: string;
+  // A size-6 button in the open header's left slot, which otherwise holds an
+  // empty spacer balancing the collapse chevron, so the title keeps its full
+  // width and stays centred. The project panel puts its filter button here.
+  headerLeading?: ReactNode;
+  onCollapse: () => void;
+  onExpand: () => void;
   children: ReactNode;
-  isOpen: boolean;
-  onToggle: () => void;
 }
 ```
+
+The open panel is a `<section>` labelled with its title (not `role="menu"`),
+since the project panel holds filter menus.
 
 ## States
 

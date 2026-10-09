@@ -13,6 +13,7 @@
 import { describe, expect, it } from "vitest";
 import "@/protocols";
 import {
+  getEncodeTransformKind,
   listEncodeTransforms,
   orphanEncodeTransforms,
   type RegisteredEncodeTransform,
@@ -75,11 +76,31 @@ describe("encode transform registry invariants", () => {
     expect(weiToEtherOnDeclaredAbiInputs(listEncodeTransforms())).toEqual([]);
   });
 
+  it("registers weiToEther on layerzero/oft-send/ethValue and nowhere else", () => {
+    // The positive half of the invariant above. One production entry
+    // exists, on the one action whose value field is labelled as wei. In
+    // particular chainlink/ccip-send has no entry: it has the same
+    // wei-quote gap, but existing workflows type ether into its value
+    // field, so registering the conversion there would change what they
+    // send (#2470 scope).
+    const entries = listEncodeTransforms().filter(
+      (t) => t.kind === "weiToEther"
+    );
+    expect(entries).toEqual([
+      {
+        protocolSlug: "layerzero",
+        actionSlug: "oft-send",
+        inputName: "ethValue",
+        kind: "weiToEther",
+      },
+    ]);
+  });
+
   it("the detector catches a violation rather than passing vacuously", () => {
-    // Nothing registers weiToEther in production today, so the assertion
-    // above would hold even if this function stopped working. Feed it a
-    // synthetic entry naming a real action and a real declared input of
-    // that action, without touching the registry.
+    // The only production weiToEther entry is on a virtual field, so the
+    // assertion above would hold even if this function stopped working.
+    // Feed it a synthetic entry naming a real action and a real declared
+    // input of that action, without touching the registry.
     const { protocolSlug, actionSlug, inputName } = anyActionWithInputs();
     const synthetic: RegisteredEncodeTransform[] = [
       { protocolSlug, actionSlug, inputName, kind: "weiToEther" },
@@ -106,6 +127,27 @@ describe("encode transform registry invariants", () => {
     ).toThrow(/declared ABI input/);
     // The refusal must not leave a partial entry behind.
     expect(weiToEtherOnDeclaredAbiInputs(listEncodeTransforms())).toEqual([]);
+  });
+
+  it("every action that takes msg.value from an input registers weiToEther on ethValue", () => {
+    // readPayableValue refuses this pairing at run time, so this is the
+    // definition-time backstop: an action whose fromInput is an integer in
+    // wei but whose ethValue has no weiToEther conversion would hand the
+    // core a wei figure in an ether field - 10^18 times the intent - and
+    // every send against it fails until the transform is registered.
+    const missing: string[] = [];
+    for (const protocol of getRegisteredProtocols()) {
+      for (const action of protocol.actions) {
+        if (
+          action.payableValue?.fromInput &&
+          getEncodeTransformKind(protocol.slug, action.slug, "ethValue") !==
+            "weiToEther"
+        ) {
+          missing.push(`${protocol.slug}/${action.slug}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
   });
 });
 

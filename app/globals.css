@@ -39,6 +39,7 @@
   --color-card: var(--card);
   --color-keeperhub-green: var(--keeperhub-green);
   --color-keeperhub-green-dark: var(--keeperhub-green-dark);
+  --color-status-deactivated: var(--status-deactivated);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -80,6 +81,9 @@
   --sidebar-ring: oklch(0.7107 0.0351 256.79);
   --keeperhub-green: oklch(0.8671 0.2514 147.76);
   --keeperhub-green-dark: oklch(0.7402 0.2136 147.89);
+  /* Workflows switched off by KeeperHub ops: a muted amber, apart from the
+     grey of a user's own Disabled. Tailwind amber-200 at 70%. */
+  --status-deactivated: oklch(0.924 0.12 95.746 / 0.7);
 
   /* --- Hub surfaces (dark-only, used on /hub and protocol pages) --- */
   --color-hub-card: #1a2230;

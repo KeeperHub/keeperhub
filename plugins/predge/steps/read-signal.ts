@@ -1,0 +1,222 @@
+import "server-only";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+
+import { fetchCredentials } from "@/lib/credential-fetcher";
+import {
+  runPluginStep,
+  type StepInput,
+} from "@/lib/workflow/executor/step-handler";
+import type { PredgeCredentials } from "../credentials";
+import {
+  blameForBadBody,
+  MALFORMED_ATTESTATION_REASON,
+  MAX_SIGNAL_AGE_CEILING_SECONDS,
+  PINNED_KEY_MISMATCH_REASON,
+  RESOURCE_MISMATCH_REASON,
+  fetchSignedSignal,
+  parseConvictionPayload,
+  type PredgeAction,
+  type PredgeWindow,
+  verifyPredgeSignal,
+} from "./predge-core";
+
+// A successful step means a verified signal whose fields are the documented
+// shape: the step fails (below) if verification does not hold OR if the signed
+// payload is not a conviction signal, so success carries only checked data. A
+// signature proves who issued the bytes, not what is in them, so the two are
+// separate gates and both are on the error path -- not in the data as a flag an
+// author could forget to gate on.
+type ReadSignalResult =
+  | {
+      success: true;
+      // The normalized lowercase 0x wallet the signal was bound to, which the
+      // subject binding checked against the signed payload.
+      wallet: string;
+      // 0-100 conviction from Predge's on-chain track-record model. Checked to
+      // be a finite number in that range, never a numeric string and never
+      // absent: a workflow comparing it is comparing numbers.
+      conviction: number;
+      // One of accumulate / reduce / hold, checked against that set.
+      action: PredgeAction;
+      // One of 7d / 30d, checked against that set.
+      window: PredgeWindow;
+      // hex ed25519 public key the signature verified against.
+      signer: string;
+      // ISO-8601 issue time carried by the verified attestation.
+      issuedAt: string;
+      // Age of the attestation in seconds at verification time. Can be slightly
+      // negative within the clock-skew tolerance.
+      ageSeconds: number;
+    }
+  | {
+      success: false;
+      error: string;
+      errorClass?: ExecutionErrorType;
+    };
+
+export type ReadSignalCoreInput = {
+  wallet: string;
+};
+
+export type ReadSignalInput = StepInput &
+  ReadSignalCoreInput & {
+    integrationId?: string;
+  };
+
+type MaxAgeSetting =
+  | { valid: true; seconds?: number }
+  | { valid: false; reason: string };
+
+// Blank falls back to the default window. `0` is honored literally (reject
+// anything not issued this instant) rather than silently becoming the default,
+// so an operator who types it gets what they asked for. Anything else has to be
+// a number of seconds from 0 to MAX_SIGNAL_AGE_CEILING_SECONDS. A value outside
+// that, or one that is not a number, is refused rather than ignored: ignoring
+// it would run the step with a window the operator did not choose, and a value
+// above the ceiling is exactly the one that switches freshness off.
+function parseMaxAgeSeconds(raw?: string): MaxAgeSetting {
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    return { valid: true };
+  }
+  const parsed = Number(trimmed);
+  if (
+    !Number.isFinite(parsed) ||
+    parsed < 0 ||
+    parsed > MAX_SIGNAL_AGE_CEILING_SECONDS
+  ) {
+    return {
+      valid: false,
+      reason: `PREDGE_MAX_SIGNAL_AGE_SECONDS must be a number of seconds from 0 to ${MAX_SIGNAL_AGE_CEILING_SECONDS}, got ${JSON.stringify(trimmed)}`,
+    };
+  }
+  return { valid: true, seconds: parsed };
+}
+
+// Who to blame for a verification failure, for attribution only: this changes
+// no retry behaviour, it changes which side of the fence the run is filed on.
+//
+// Two kinds of reason are only reachable because the operator configured
+// something, and only then. A pinned-key mismatch is Predge rotating its signer
+// unless the operator supplied their own key id, in which case a typo there
+// produces exactly this. A bad body is Predge serving garbage unless the
+// operator repointed the host, in which case they are parsing something that
+// was never a Predge response -- and an envelope signed for a different
+// resource is that same mistake one layer in, a real Predge signature over
+// another product, so it is attributed the same way. Everything else is the
+// upstream's doing.
+function classifyVerificationFailure(
+  reason: string | undefined,
+  credentials: PredgeCredentials
+): ExecutionErrorType {
+  const operatorSetKeyId = Boolean(credentials.PREDGE_SIGNER_KEY_ID?.trim());
+  if (reason === PINNED_KEY_MISMATCH_REASON && operatorSetKeyId) {
+    return ExecutionErrorType.USER;
+  }
+  if (
+    reason === MALFORMED_ATTESTATION_REASON ||
+    reason?.startsWith(RESOURCE_MISMATCH_REASON)
+  ) {
+    return blameForBadBody(credentials);
+  }
+  return ExecutionErrorType.EXTERNAL;
+}
+
+async function stepHandler(
+  input: ReadSignalCoreInput,
+  credentials: PredgeCredentials
+): Promise<ReadSignalResult> {
+  const wallet = input.wallet?.trim();
+  if (!wallet) {
+    return {
+      success: false,
+      error: "Wallet address is required.",
+      errorClass: ExecutionErrorType.USER,
+    };
+  }
+
+  // Configuration is checked before any egress, like the wallet.
+  const maxAge = parseMaxAgeSeconds(credentials.PREDGE_MAX_SIGNAL_AGE_SECONDS);
+  if (!maxAge.valid) {
+    return {
+      success: false,
+      error: maxAge.reason,
+      errorClass: ExecutionErrorType.USER,
+    };
+  }
+
+  const result = await fetchSignedSignal(wallet, credentials);
+  if (!result.success) {
+    return result;
+  }
+
+  const { signed, wallet: boundWallet } = result.data;
+  // Verify offline against Predge's pinned key. PREDGE_SIGNER_KEY_ID overrides
+  // the pinned default; the key the response carries is never trusted on its
+  // own. Binds the signal to this wallet and rejects stale attestations.
+  const verification = await verifyPredgeSignal(signed, {
+    requestedWallet: wallet,
+    expectedKeyId: credentials.PREDGE_SIGNER_KEY_ID?.trim() || undefined,
+    maxAgeSeconds: maxAge.seconds,
+  });
+
+  // A gate that did not hold belongs on the error path, not in the data. Fail
+  // the step with the reason rather than handing the workflow an unverified
+  // payload it might act on. This also means the payload below is only read
+  // once verification has vouched for it.
+  if (!verification.verified) {
+    return {
+      success: false,
+      error: `Predge signal did not verify: ${verification.reason ?? "unknown reason"}`,
+      errorClass: classifyVerificationFailure(verification.reason, credentials),
+    };
+  }
+
+  // The signature vouches for the bytes, not for what is in them. Everything
+  // this step returns is checked against the documented shape before it can
+  // reach a workflow: a conviction outside 0-100, a numeric string, a missing
+  // field or an unrecognised action or window fails the step rather than being
+  // handed to a gate that would coerce it.
+  const parsed = parseConvictionPayload(signed.attestation.payload);
+  if (!parsed.valid) {
+    return {
+      success: false,
+      error: `Predge signal payload is not a conviction signal: ${parsed.reason}`,
+      errorClass: blameForBadBody(credentials),
+    };
+  }
+
+  const signal = parsed.signal;
+  return {
+    success: true,
+    // The form the binding was established on, not the raw string the author
+    // typed: an un-prefixed address is a valid input and a bad thing to emit.
+    wallet: boundWallet,
+    conviction: signal.conviction,
+    action: signal.action,
+    window: signal.window,
+    signer: verification.signer,
+    issuedAt: verification.issuedAt ?? "",
+    ageSeconds: verification.ageSeconds ?? 0,
+  };
+}
+
+export async function readSignalStep(
+  input: ReadSignalInput
+): Promise<ReadSignalResult> {
+  "use step";
+
+  const credentials = input.integrationId
+    ? await fetchCredentials(input.integrationId, {
+        organizationId: input._context?.organizationId ?? null,
+      })
+    : {};
+
+  return runPluginStep(
+    { pluginName: "predge", actionName: "read-signal" },
+    input,
+    () => stepHandler(input, credentials)
+  );
+}
+
+export const _integrationType = "predge";

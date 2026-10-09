@@ -100,6 +100,42 @@ describe("writeContractStep value-cap interaction", () => {
     expect(mockApplyFailOnError).not.toHaveBeenCalled();
   });
 
+  it("never forwards a payerParam the node config supplied to the core", async () => {
+    // payerParam is an internal writeContractCore option: the core uses it to
+    // overwrite an ABI argument with the resolved paying address. The
+    // workflow executor spreads node config into the step input, so without
+    // the strip a web3/write-contract node could name the argument the core
+    // rewrites -- and the stablecoin ceiling is the thing that decides what
+    // the rewritten call is allowed to move.
+    mockWriteContractCore.mockResolvedValue({ success: true });
+    mockWithStepValueCap.mockImplementation(
+      async (_args: unknown, run: () => Promise<unknown>) => run()
+    );
+
+    const input: WriteContractInput = {
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: "[]",
+      abiFunction: "transferFrom",
+      payerParam: "from",
+      _context: {
+        nodeId: "node-1",
+        nodeName: "Write",
+        nodeType: "web3/write-contract",
+        organizationId: "org-1",
+      },
+    };
+    const result = await writeContractStep(input);
+
+    expect(result.success).toBe(true);
+    expect(mockWriteContractCore).toHaveBeenCalledTimes(1);
+    const coreInput = mockWriteContractCore.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
+    expect("payerParam" in coreInput).toBe(false);
+  });
+
   it("applies failOnError softening to a genuine writeContractCore result", async () => {
     const coreFailure = {
       success: false,

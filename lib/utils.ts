@@ -418,3 +418,17 @@ export function deserializeTriggerInput(
   }
   return triggerInput;
 }
+
+/**
+ * A copy of the set with the value added, or taken out if it was there. For
+ * multi-pick filters and toggled groups; the set it is given is not changed.
+ */
+export function toggleInSet<T>(set: ReadonlySet<T>, value: T): Set<T> {
+  const next = new Set(set);
+  if (next.has(value)) {
+    next.delete(value);
+  } else {
+    next.add(value);
+  }
+  return next;
+}

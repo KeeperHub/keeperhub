@@ -18,6 +18,7 @@ vi.mock("@/lib/auth", () => ({
   },
 }));
 
+let mockSubscriptionRows: Record<string, unknown>[] = [];
 const mockUpdateSet = vi.fn().mockReturnValue({ where: vi.fn() });
 const mockReturning = vi
   .fn()
@@ -34,7 +35,7 @@ vi.mock("@/lib/db", () => ({
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
-          limit: vi.fn().mockResolvedValue([]),
+          limit: vi.fn(() => Promise.resolve(mockSubscriptionRows)),
         })),
       })),
     })),
@@ -55,6 +56,7 @@ const mockCreateCheckoutSession = vi.fn();
 const mockCreateCustomer = vi.fn();
 const mockUpdateSubscription = vi.fn();
 const mockGetSubscriptionDetails = vi.fn();
+const mockCancelSubscriptionNow = vi.fn();
 
 vi.mock("@/lib/billing/providers", () => ({
   getBillingProvider: () => ({
@@ -62,11 +64,13 @@ vi.mock("@/lib/billing/providers", () => ({
     createCustomer: mockCreateCustomer,
     updateSubscription: mockUpdateSubscription,
     getSubscriptionDetails: mockGetSubscriptionDetails,
+    cancelSubscriptionNow: mockCancelSubscriptionNow,
   }),
 }));
 
 import { __resetBillingRateLimitForTests } from "@/app/api/billing/_lib/rate-limit";
 import { POST } from "@/app/api/billing/checkout/route";
+import { SUBSCRIPTION_STATUS } from "@/lib/billing/constants";
 
 function makeRequest(body: Record<string, unknown>): Request {
   return new Request("http://localhost:3000/api/billing/checkout", {
@@ -87,6 +91,7 @@ function mockSession(overrides: Record<string, unknown> = {}): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockSubscriptionRows = [];
   __resetBillingRateLimitForTests();
   process.env.NEXT_PUBLIC_BILLING_ENABLED = "true";
   // Pin the trial tier so the trial-intent cases don't inherit a developer's
@@ -173,6 +178,63 @@ describe("POST /api/billing/checkout", () => {
 
     const arg = mockCreateCheckoutSession.mock.calls[0]?.[0];
     expect(arg.trialPeriodDays).toBeUndefined();
+  });
+
+  describe("org dropped to free with its subscription still live", () => {
+    function dropToFree(status: string): void {
+      mockSubscriptionRows = [
+        {
+          organizationId: "org_1",
+          providerCustomerId: "cus_123",
+          providerSubscriptionId: "sub_old",
+          plan: "free",
+          status,
+        },
+      ];
+    }
+
+    it("ends the old subscription before opening a new checkout", async () => {
+      mockSession();
+      dropToFree(SUBSCRIPTION_STATUS.PAST_DUE);
+      mockCancelSubscriptionNow.mockResolvedValue(undefined);
+      mockCreateCheckoutSession.mockResolvedValue({ url: "stub-url" });
+
+      const response = await POST(
+        makeRequest({ plan: "pro", tier: "25k", interval: "monthly" })
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockCancelSubscriptionNow).toHaveBeenCalledWith("sub_old");
+      expect(
+        mockCancelSubscriptionNow.mock.invocationCallOrder[0]
+      ).toBeLessThan(mockCreateCheckoutSession.mock.invocationCallOrder[0]);
+    });
+
+    it("opens no checkout when the old subscription cannot be ended", async () => {
+      mockSession();
+      dropToFree(SUBSCRIPTION_STATUS.PAST_DUE);
+      mockCancelSubscriptionNow.mockRejectedValue(new Error("provider down"));
+
+      const response = await POST(
+        makeRequest({ plan: "pro", tier: "25k", interval: "monthly" })
+      );
+
+      expect(response.status).toBe(500);
+      expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+    });
+
+    it("leaves an ended subscription alone", async () => {
+      mockSession();
+      dropToFree(SUBSCRIPTION_STATUS.CANCELED);
+      mockCreateCheckoutSession.mockResolvedValue({ url: "stub-url" });
+
+      await POST(
+        makeRequest({ plan: "pro", tier: "25k", interval: "monthly" })
+      );
+
+      expect(mockCancelSubscriptionNow).not.toHaveBeenCalled();
+      expect(mockCreateCheckoutSession).toHaveBeenCalled();
+    });
   });
 
   it("returns 401 without auth", async () => {
