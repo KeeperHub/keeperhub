@@ -40,6 +40,9 @@ describe("feature registry", () => {
     expect(getFeatureForActionType("predge/read-signal")?.id).toBe(
       "action.predge-read-signal"
     );
+    expect(getFeatureForActionType("web3/paid-request")?.id).toBe(
+      "action.paid-request"
+    );
   });
 
   it("returns undefined for non-gated action types", () => {
@@ -49,7 +52,7 @@ describe("feature registry", () => {
 
   it("filters by category", () => {
     const workflowActions = getFeaturesByCategory("workflow-action");
-    expect(workflowActions.length).toBe(6);
+    expect(workflowActions.length).toBe(7);
     for (const feature of workflowActions) {
       expect(feature.category).toBe("workflow-action");
     }
