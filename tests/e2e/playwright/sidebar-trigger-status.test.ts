@@ -1,4 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
+import { createScheduleTriggerNode } from "../../fixtures/workflows";
 import { expect, test } from "./fixtures";
 import {
   createTestWorkflow,
@@ -41,6 +42,31 @@ function filterMenuItem(page: Page, value: string): Locator {
 
 async function pickInMenu(page: Page, value: string): Promise<void> {
   await filterMenuItem(page, value).click();
+}
+
+// A menu still animating out swallows the next click as an outside click.
+async function closeMenu(page: Page): Promise<void> {
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu")).toHaveCount(0);
+}
+
+// An open tooltip covers the controls under it. A hover tooltip closes only on
+// a pointer move outside its grace area, so leave in steps for the empty right
+// edge; a focus tooltip (focus moves to the filter button once the clear
+// button goes) closes on blur.
+async function dismissTooltip(page: Page): Promise<void> {
+  const viewport = page.viewportSize();
+  if (viewport) {
+    await page.mouse.move(viewport.width - 1, viewport.height / 2, {
+      steps: 10,
+    });
+  }
+  await page.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  });
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
 }
 
 function pickerRow(page: Page, name: string): Locator {
@@ -105,11 +131,15 @@ test.describe("Sidebar trigger status icons", () => {
   test("the open workflow's row follows a trigger change without a reload", async ({
     page,
   }) => {
+    // Trigger only: the default action is a paid-plan node, and the free test
+    // org would have every autosave of it refused.
     const workflow = await createTestWorkflow(PERSISTENT_TEST_USER_EMAIL, {
       name: `trigger-status-switch-${Date.now()}`,
       triggerType: "schedule",
       cronExpression: "0 * * * *",
       enabled: true,
+      nodes: [createScheduleTriggerNode("0 * * * *")],
+      edges: [],
     });
     created.push(workflow.id);
 
@@ -117,6 +147,9 @@ test.describe("Sidebar trigger status icons", () => {
       waitUntil: "domcontentloaded",
     });
     await waitForCanvas(page);
+    // The flyout opens over the canvas, so select the trigger first.
+    await page.locator(".react-flow__node-trigger").click();
+    await expect(page.locator("#triggerType")).toBeVisible();
     await openWorkflowPicker(page, workflow.name);
 
     const icon = pickerRow(page, workflow.name).getByTestId(
@@ -125,7 +158,6 @@ test.describe("Sidebar trigger status icons", () => {
     await expect(icon).toHaveAttribute("data-trigger-type", "Schedule");
     await expect(icon).toHaveAttribute("data-trigger-status", "enabled");
 
-    await page.locator(".react-flow__node-trigger").click();
     await page.locator("#triggerType").click();
     await page.getByRole("option", { name: "Manual" }).click();
 
@@ -217,6 +249,7 @@ test.describe("Sidebar trigger status icons", () => {
     await expect(page.getByRole("tooltip")).toHaveText(
       "Enabled · Schedule trigger · Every 5 minutes"
     );
+    await dismissTooltip(page);
 
     await page.getByTestId("trigger-filter-button").click();
     const statusButton = page.getByTestId("status-filter");
@@ -226,14 +259,14 @@ test.describe("Sidebar trigger status icons", () => {
     // Status: Enabled.
     await statusButton.click();
     await pickInMenu(page, "enabled");
-    await page.keyboard.press("Escape");
+    await closeMenu(page);
     await expect(liveRow).toBeVisible();
     await expect(manualRow).toHaveCount(0);
 
     // Picks within a menu add up: Enabled or Manual.
     await statusButton.click();
     await pickInMenu(page, "manual");
-    await page.keyboard.press("Escape");
+    await closeMenu(page);
     await expect(statusButton).toHaveAccessibleName("Status: Enabled, Manual");
     await expect(liveRow).toBeVisible();
     await expect(manualRow).toBeVisible();
@@ -243,7 +276,7 @@ test.describe("Sidebar trigger status icons", () => {
     const manualType = filterMenuItem(page, "Manual");
     await expect(manualType).toContainText("1");
     await manualType.click();
-    await page.keyboard.press("Escape");
+    await closeMenu(page);
     await expect(liveRow).toHaveCount(0);
     await expect(manualRow).toBeVisible();
 
@@ -251,10 +284,10 @@ test.describe("Sidebar trigger status icons", () => {
     await typeButton.click();
     await filterMenuItem(page, "Manual").click();
     await filterMenuItem(page, "Schedule").click();
-    await page.keyboard.press("Escape");
+    await closeMenu(page);
     await statusButton.click();
     await pickInMenu(page, "enabled");
-    await page.keyboard.press("Escape");
+    await closeMenu(page);
     await expect(liveRow).toHaveCount(0);
     await expect(manualRow).toHaveCount(0);
 
@@ -350,7 +383,7 @@ test.describe("Sidebar trigger status icons", () => {
 
     await page.getByTestId("trigger-type-filter").click();
     await filterMenuItem(page, "Manual").click();
-    await page.keyboard.press("Escape");
+    await closeMenu(page);
     const rows = page
       .getByTestId("workflow-picker-item")
       .filter({ hasText: stamp.toString() });
@@ -364,6 +397,7 @@ test.describe("Sidebar trigger status icons", () => {
     );
 
     await page.getByTestId("trigger-filter-clear").click();
+    await dismissTooltip(page);
     await expect(rows).toHaveCount(20);
     await expect(page.getByTestId("trigger-filter-button")).not.toHaveAttribute(
       "data-filtered",
@@ -374,7 +408,7 @@ test.describe("Sidebar trigger status icons", () => {
     // one go, so the row never hides while it is shortening the list.
     await page.getByTestId("status-filter").click();
     await pickInMenu(page, "manual");
-    await page.keyboard.press("Escape");
+    await closeMenu(page);
     await expect(rows).toHaveCount(10);
     await page.getByTestId("trigger-filter-button").click();
     await expect(page.getByTestId("trigger-filters")).toHaveCount(0);
