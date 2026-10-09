@@ -113,6 +113,8 @@ function createMockProvider(
     listInvoices: vi.fn(),
     updateSubscription: vi.fn(),
     cancelSubscription: vi.fn(),
+    cancelSubscriptionNow: vi.fn().mockResolvedValue(undefined),
+    hasPaidInvoice: vi.fn().mockResolvedValue(true),
     previewProration: vi.fn(),
     createInvoiceItem: vi.fn(),
     getInvoiceStatus: vi.fn().mockResolvedValue({ status: "paid", paid: true }),
@@ -252,6 +254,77 @@ describe("handleBillingEvent", () => {
       );
 
       expect(db.insert).toHaveBeenCalled();
+    });
+
+    it("cancels the live subscription a new checkout replaces", async () => {
+      mockSelectReturning([
+        {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_old",
+          plan: "free",
+          status: "past_due",
+        },
+      ]);
+      const provider = createMockProvider();
+
+      await handleBillingEvent(
+        makeEvent("checkout.completed", {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_new",
+        }),
+        provider
+      );
+
+      expect(provider.cancelSubscriptionNow).toHaveBeenCalledWith("sub_old");
+      expect(
+        vi.mocked(provider.cancelSubscriptionNow).mock.invocationCallOrder[0]
+      ).toBeGreaterThan(mockOnConflictDoUpdate.mock.invocationCallOrder[0]);
+    });
+
+    it("leaves an already canceled subscription alone", async () => {
+      mockSelectReturning([
+        {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_old",
+          plan: "free",
+          status: "canceled",
+        },
+      ]);
+      const provider = createMockProvider();
+
+      await handleBillingEvent(
+        makeEvent("checkout.completed", {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_new",
+        }),
+        provider
+      );
+
+      expect(provider.cancelSubscriptionNow).not.toHaveBeenCalled();
+    });
+
+    it("still subscribes when canceling the replaced subscription fails", async () => {
+      mockSelectReturning([
+        {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_old",
+          plan: "free",
+          status: "past_due",
+        },
+      ]);
+      const provider = createMockProvider({
+        cancelSubscriptionNow: vi.fn().mockRejectedValue(new Error("gone")),
+      });
+
+      await handleBillingEvent(
+        makeEvent("checkout.completed", {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_new",
+        }),
+        provider
+      );
+
+      expect(mockOnConflictDoUpdate).toHaveBeenCalled();
     });
 
     it("skips when organizationId is missing", async () => {
@@ -653,7 +726,9 @@ describe("handleBillingEvent", () => {
   });
 
   describe("subscription.deleted", () => {
-    it("keeps plan active when period has not ended", async () => {
+    // The provider ends a subscription early when its payment retries run out.
+    // Keeping the plan to the period end handed an unpaid org the paid plan.
+    it("resets to free when the provider ends it before the period end", async () => {
       const futureDate = new Date(Date.now() + 86_400_000 * 30);
       mockSelectReturning([
         {
@@ -663,22 +738,22 @@ describe("handleBillingEvent", () => {
         },
       ]);
 
-      const provider = createMockProvider();
-      const event = makeEvent("subscription.deleted", {
-        providerSubscriptionId: "sub_1",
-      });
+      await handleBillingEvent(
+        makeEvent("subscription.deleted", {
+          providerSubscriptionId: "sub_1",
+          periodEnd: futureDate,
+        }),
+        createMockProvider()
+      );
 
-      await handleBillingEvent(event, provider);
-
-      expect(db.update).toHaveBeenCalled();
       expect(mockSet).toHaveBeenCalledWith(
         expect.objectContaining({
+          plan: "free",
+          tier: null,
           status: "canceled",
           cancelAtPeriodEnd: false,
         })
       );
-      const setArg = mockSet.mock.calls[0][0] as Record<string, unknown>;
-      expect(setArg.plan).toBeUndefined();
     });
 
     it("resets to free when period has ended", async () => {
@@ -733,36 +808,6 @@ describe("handleBillingEvent", () => {
       expect(setArg).not.toHaveProperty("providerPriceId");
     });
 
-    it("uses event periodEnd over DB periodEnd", async () => {
-      const pastDbDate = new Date(Date.now() - 86_400_000);
-      const futureEventDate = new Date(Date.now() + 86_400_000 * 30);
-      mockSelectReturning([
-        {
-          providerSubscriptionId: "sub_1",
-          currentPeriodEnd: pastDbDate,
-          plan: "pro",
-        },
-      ]);
-
-      const provider = createMockProvider();
-      const event = makeEvent("subscription.deleted", {
-        providerSubscriptionId: "sub_1",
-        periodEnd: futureEventDate,
-      });
-
-      await handleBillingEvent(event, provider);
-
-      expect(db.update).toHaveBeenCalled();
-      expect(mockSet).toHaveBeenCalledWith(
-        expect.objectContaining({
-          status: "canceled",
-          cancelAtPeriodEnd: false,
-        })
-      );
-      const setArg = mockSet.mock.calls[0][0] as Record<string, unknown>;
-      expect(setArg.plan).toBeUndefined();
-    });
-
     it("keeps debt when resetting to free", async () => {
       const pastDate = new Date(Date.now() - 86_400_000);
       mockSelectReturning([
@@ -770,27 +815,6 @@ describe("handleBillingEvent", () => {
           providerSubscriptionId: "sub_1",
           organizationId: "org_1",
           currentPeriodEnd: pastDate,
-          plan: "pro",
-        },
-      ]);
-
-      const provider = createMockProvider();
-      const event = makeEvent("subscription.deleted", {
-        providerSubscriptionId: "sub_1",
-      });
-
-      await handleBillingEvent(event, provider);
-
-      expect(mockClearAllDebtForOrg).not.toHaveBeenCalled();
-    });
-
-    it("keeps debt when the period is still active", async () => {
-      const futureDate = new Date(Date.now() + 86_400_000 * 30);
-      mockSelectReturning([
-        {
-          providerSubscriptionId: "sub_1",
-          organizationId: "org_1",
-          currentPeriodEnd: futureDate,
           plan: "pro",
         },
       ]);
@@ -836,25 +860,29 @@ describe("handleBillingEvent", () => {
       expect(billOrder).toBeLessThan(resetOrder);
     });
 
-    it("does not bill while the paid period is still running", async () => {
+    it("bills the usage so far when the provider ends it early", async () => {
       const futureDate = new Date(Date.now() + 86_400_000 * 30);
-      mockSelectReturning([
-        {
-          providerSubscriptionId: "sub_1",
-          organizationId: "org_1",
-          providerCustomerId: "cus_1",
-          currentPeriodStart: new Date("2025-01-01"),
-          currentPeriodEnd: futureDate,
-          plan: "pro",
-        },
-      ]);
+      const row = {
+        providerSubscriptionId: "sub_1",
+        organizationId: "org_1",
+        providerCustomerId: "cus_1",
+        currentPeriodStart: new Date("2025-01-01"),
+        currentPeriodEnd: futureDate,
+        plan: "pro",
+      };
+      mockSelectReturning([row]);
 
       await handleBillingEvent(
         makeEvent("subscription.deleted", { providerSubscriptionId: "sub_1" }),
         createMockProvider()
       );
 
-      expect(mockCollectFinalPeriodOverage).not.toHaveBeenCalled();
+      expect(mockCollectFinalPeriodOverage).toHaveBeenCalledWith(
+        "org_1",
+        row.currentPeriodStart,
+        futureDate,
+        "cus_1"
+      );
     });
 
     it("still downgrades when the final charge fails", async () => {
@@ -1002,6 +1030,58 @@ describe("handleBillingEvent", () => {
       expect(mockSet).toHaveBeenCalledWith(
         expect.objectContaining({ status: "active" })
       );
+    });
+
+    it("restores the subscribed plan once a dropped subscription is paid", async () => {
+      mockSelectReturning([
+        {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_1",
+          providerPriceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
+          plan: "free",
+          tier: null,
+          status: "past_due",
+        },
+      ]);
+
+      await handleBillingEvent(
+        makeEvent("invoice.paid", {
+          providerSubscriptionId: "sub_1",
+          invoiceId: "inv_retry",
+        }),
+        providerReporting("active")
+      );
+
+      expect(mockSet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: "active",
+          plan: "pro",
+          tier: "25k",
+        })
+      );
+    });
+
+    it("does not restore a plan on a subscription that is not active", async () => {
+      mockSelectReturning([
+        {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_1",
+          plan: "free",
+          tier: null,
+          status: "canceled",
+        },
+      ]);
+
+      await handleBillingEvent(
+        makeEvent("invoice.paid", {
+          providerSubscriptionId: "sub_1",
+          invoiceId: "inv_late",
+        }),
+        providerReporting("canceled")
+      );
+
+      const setArg = mockSet.mock.calls[0][0] as Record<string, unknown>;
+      expect(setArg).not.toHaveProperty("plan");
     });
 
     it("counts the conversion when it lands the trialing -> active move", async () => {
@@ -1188,6 +1268,108 @@ describe("handleBillingEvent", () => {
           billingAlertUrl: "https://invoice.stripe.com/i/123",
         })
       );
+    });
+
+    it("drops a never-paid subscription to free", async () => {
+      mockSelectReturning([
+        {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_1",
+          plan: "business",
+          tier: null,
+          status: "trialing",
+        },
+      ]);
+      const provider = createMockProvider({
+        hasPaidInvoice: vi.fn().mockResolvedValue(false),
+      });
+
+      await handleBillingEvent(
+        makeEvent("invoice.payment_failed", {
+          providerSubscriptionId: "sub_1",
+        }),
+        provider
+      );
+
+      expect(provider.hasPaidInvoice).toHaveBeenCalledWith("sub_1");
+      expect(mockSet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          plan: "free",
+          tier: null,
+          status: "past_due",
+          billingAlert: "payment_failed",
+        })
+      );
+    });
+
+    it("keeps the plan of a customer that has paid before", async () => {
+      mockSelectReturning([
+        {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_1",
+          plan: "pro",
+          tier: "25k",
+          status: "active",
+        },
+      ]);
+
+      await handleBillingEvent(
+        makeEvent("invoice.payment_failed", {
+          providerSubscriptionId: "sub_1",
+        }),
+        createMockProvider()
+      );
+
+      const setArg = mockSet.mock.calls[0][0] as Record<string, unknown>;
+      expect(setArg).not.toHaveProperty("plan");
+      expect(setArg).toMatchObject({ status: "past_due" });
+    });
+
+    it("keeps the plan when the invoice history cannot be read", async () => {
+      mockSelectReturning([
+        {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_1",
+          plan: "pro",
+          status: "trialing",
+        },
+      ]);
+      const provider = createMockProvider({
+        hasPaidInvoice: vi.fn().mockRejectedValue(new Error("provider down")),
+      });
+
+      await handleBillingEvent(
+        makeEvent("invoice.payment_failed", {
+          providerSubscriptionId: "sub_1",
+        }),
+        provider
+      );
+
+      const setArg = mockSet.mock.calls[0][0] as Record<string, unknown>;
+      expect(setArg).not.toHaveProperty("plan");
+    });
+
+    it("does not reopen a canceled subscription as past_due", async () => {
+      mockSelectReturning([
+        {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_1",
+          plan: "free",
+          status: "canceled",
+        },
+      ]);
+      const provider = createMockProvider();
+
+      await handleBillingEvent(
+        makeEvent("invoice.payment_failed", {
+          providerSubscriptionId: "sub_1",
+        }),
+        provider
+      );
+
+      const setArg = mockSet.mock.calls[0][0] as Record<string, unknown>;
+      expect(setArg).not.toHaveProperty("status");
+      expect(provider.hasPaidInvoice).not.toHaveBeenCalled();
     });
 
     it("skips when providerSubscriptionId is missing", async () => {

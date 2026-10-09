@@ -477,6 +477,24 @@ export class StripeBillingProvider implements BillingProvider {
     };
   }
 
+  async cancelSubscriptionNow(subscriptionId: string): Promise<void> {
+    await getStripe().subscriptions.cancel(subscriptionId);
+  }
+
+  async hasPaidInvoice(subscriptionId: string): Promise<boolean> {
+    const invoices = getStripe().invoices.list({
+      subscription: subscriptionId,
+      status: "paid",
+      limit: 100,
+    });
+    for await (const invoice of invoices) {
+      if (invoice.amount_paid > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   async getSubscriptionDetails(
     subscriptionId: string
   ): Promise<SubscriptionDetails> {
