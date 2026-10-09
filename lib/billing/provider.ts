@@ -163,9 +163,9 @@ export interface BillingProvider {
   cancelSubscriptionNow(subscriptionId: string): Promise<void>;
 
   /**
-   * Whether the subscription has ever had an invoice paid with money. The $0
-   * invoice issued at trial start does not count, so a trial whose first charge
-   * failed reads as never paid.
+   * Whether the subscription has ever had a paid invoice with a non-zero total.
+   * The $0 invoice issued at trial start does not count, so a trial whose first
+   * charge failed reads as never paid.
    */
   hasPaidInvoice(subscriptionId: string): Promise<boolean>;
 

@@ -29,6 +29,13 @@ vi.mock("@/lib/billing/overage", () => ({
     mockCollectOutstandingOverage(...args),
 }));
 
+const mockLowerGasAllocationToPlan = vi.fn().mockResolvedValue(undefined);
+
+vi.mock("@/lib/billing/gas-credits", () => ({
+  lowerGasAllocationToPlan: (...args: unknown[]) =>
+    mockLowerGasAllocationToPlan(...args),
+}));
+
 const mockIncrementCounter = vi.fn();
 
 vi.mock("@/lib/metrics", () => ({
@@ -40,6 +47,7 @@ vi.mock("@/lib/metrics", () => ({
   }),
 }));
 
+import { SUBSCRIPTION_STATUS } from "@/lib/billing/constants";
 import { handleBillingEvent } from "@/lib/billing/handle-billing-event";
 import type {
   BillingProvider,
@@ -105,7 +113,7 @@ function createMockProvider(
     verifyWebhook: vi.fn(),
     getSubscriptionDetails: vi.fn().mockResolvedValue({
       priceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
-      status: "active",
+      status: SUBSCRIPTION_STATUS.ACTIVE,
       cancelAtPeriodEnd: false,
       periodStart: new Date("2025-01-01"),
       periodEnd: new Date("2025-02-01"),
@@ -154,6 +162,7 @@ beforeEach(() => {
     attempted: 0,
     collected: 0,
   });
+  mockLowerGasAllocationToPlan.mockResolvedValue(undefined);
 });
 
 describe("handleBillingEvent", () => {
@@ -175,7 +184,7 @@ describe("handleBillingEvent", () => {
           providerSubscriptionId: "sub_1",
           plan: "pro",
           tier: "25k",
-          status: "active",
+          status: SUBSCRIPTION_STATUS.ACTIVE,
         })
       );
       expect(mockOnConflictDoUpdate).toHaveBeenCalledWith(
@@ -184,7 +193,7 @@ describe("handleBillingEvent", () => {
             providerSubscriptionId: "sub_1",
             plan: "pro",
             tier: "25k",
-            status: "active",
+            status: SUBSCRIPTION_STATUS.ACTIVE,
           }),
         })
       );
@@ -194,7 +203,7 @@ describe("handleBillingEvent", () => {
       const provider = createMockProvider({
         getSubscriptionDetails: vi.fn().mockResolvedValue({
           priceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
-          status: "trialing",
+          status: SUBSCRIPTION_STATUS.TRIALING,
           cancelAtPeriodEnd: false,
           periodStart: new Date("2025-01-01"),
           periodEnd: new Date("2025-01-15"),
@@ -211,14 +220,14 @@ describe("handleBillingEvent", () => {
         expect.objectContaining({
           organizationId: "org_1",
           plan: "pro",
-          status: "trialing",
+          status: SUBSCRIPTION_STATUS.TRIALING,
           trialStartedAt: expect.any(Date),
         })
       );
       expect(mockOnConflictDoUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
           set: expect.objectContaining({
-            status: "trialing",
+            status: SUBSCRIPTION_STATUS.TRIALING,
             trialStartedAt: expect.any(Date),
           }),
         })
@@ -256,77 +265,6 @@ describe("handleBillingEvent", () => {
       expect(db.insert).toHaveBeenCalled();
     });
 
-    it("cancels the live subscription a new checkout replaces", async () => {
-      mockSelectReturning([
-        {
-          organizationId: "org_1",
-          providerSubscriptionId: "sub_old",
-          plan: "free",
-          status: "past_due",
-        },
-      ]);
-      const provider = createMockProvider();
-
-      await handleBillingEvent(
-        makeEvent("checkout.completed", {
-          organizationId: "org_1",
-          providerSubscriptionId: "sub_new",
-        }),
-        provider
-      );
-
-      expect(provider.cancelSubscriptionNow).toHaveBeenCalledWith("sub_old");
-      expect(
-        vi.mocked(provider.cancelSubscriptionNow).mock.invocationCallOrder[0]
-      ).toBeGreaterThan(mockOnConflictDoUpdate.mock.invocationCallOrder[0]);
-    });
-
-    it("leaves an already canceled subscription alone", async () => {
-      mockSelectReturning([
-        {
-          organizationId: "org_1",
-          providerSubscriptionId: "sub_old",
-          plan: "free",
-          status: "canceled",
-        },
-      ]);
-      const provider = createMockProvider();
-
-      await handleBillingEvent(
-        makeEvent("checkout.completed", {
-          organizationId: "org_1",
-          providerSubscriptionId: "sub_new",
-        }),
-        provider
-      );
-
-      expect(provider.cancelSubscriptionNow).not.toHaveBeenCalled();
-    });
-
-    it("still subscribes when canceling the replaced subscription fails", async () => {
-      mockSelectReturning([
-        {
-          organizationId: "org_1",
-          providerSubscriptionId: "sub_old",
-          plan: "free",
-          status: "past_due",
-        },
-      ]);
-      const provider = createMockProvider({
-        cancelSubscriptionNow: vi.fn().mockRejectedValue(new Error("gone")),
-      });
-
-      await handleBillingEvent(
-        makeEvent("checkout.completed", {
-          organizationId: "org_1",
-          providerSubscriptionId: "sub_new",
-        }),
-        provider
-      );
-
-      expect(mockOnConflictDoUpdate).toHaveBeenCalled();
-    });
-
     it("skips when organizationId is missing", async () => {
       const provider = createMockProvider();
       const event = makeEvent("checkout.completed", {
@@ -355,7 +293,7 @@ describe("handleBillingEvent", () => {
       const provider = createMockProvider({
         getSubscriptionDetails: vi.fn().mockResolvedValue({
           priceId: "price_unknown_xyz",
-          status: "active",
+          status: SUBSCRIPTION_STATUS.ACTIVE,
           cancelAtPeriodEnd: false,
           periodStart: new Date("2025-01-01"),
           periodEnd: new Date("2025-02-01"),
@@ -380,7 +318,7 @@ describe("handleBillingEvent", () => {
       providerPriceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
       plan: "pro",
       tier: "25k",
-      status: "active",
+      status: SUBSCRIPTION_STATUS.ACTIVE,
       cancelAtPeriodEnd: false,
       currentPeriodStart: new Date("2025-01-01"),
       currentPeriodEnd: new Date("2025-02-01"),
@@ -463,7 +401,7 @@ describe("handleBillingEvent", () => {
           providerPriceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
           plan: "pro",
           tier: "25k",
-          status: "active",
+          status: SUBSCRIPTION_STATUS.ACTIVE,
           cancelAtPeriodEnd: false,
           currentPeriodStart: new Date("2025-01-01"),
           currentPeriodEnd: new Date("2025-02-01"),
@@ -474,7 +412,7 @@ describe("handleBillingEvent", () => {
       const event = makeEvent("subscription.updated", {
         providerSubscriptionId: "sub_1",
         priceId: process.env.STRIPE_PRICE_PRO_50K_MONTHLY,
-        status: "active",
+        status: SUBSCRIPTION_STATUS.ACTIVE,
         cancelAtPeriodEnd: false,
         periodStart: new Date("2025-01-01"),
         periodEnd: new Date("2025-02-01"),
@@ -500,7 +438,7 @@ describe("handleBillingEvent", () => {
           providerPriceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
           plan: "pro",
           tier: "25k",
-          status: "trialing",
+          status: SUBSCRIPTION_STATUS.TRIALING,
           cancelAtPeriodEnd: false,
           currentPeriodStart: new Date("2025-01-01"),
           currentPeriodEnd: new Date("2025-01-15"),
@@ -511,7 +449,7 @@ describe("handleBillingEvent", () => {
       const event = makeEvent("subscription.updated", {
         providerSubscriptionId: "sub_1",
         priceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
-        status: "active",
+        status: SUBSCRIPTION_STATUS.ACTIVE,
         cancelAtPeriodEnd: false,
         periodStart: new Date("2025-01-15"),
         periodEnd: new Date("2025-02-15"),
@@ -533,7 +471,7 @@ describe("handleBillingEvent", () => {
           providerPriceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
           plan: "pro",
           tier: "25k",
-          status: "active",
+          status: SUBSCRIPTION_STATUS.ACTIVE,
           cancelAtPeriodEnd: false,
           currentPeriodStart: new Date("2025-01-01"),
           currentPeriodEnd: new Date("2025-02-01"),
@@ -544,7 +482,7 @@ describe("handleBillingEvent", () => {
       const event = makeEvent("subscription.updated", {
         providerSubscriptionId: "sub_1",
         priceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
-        status: "active",
+        status: SUBSCRIPTION_STATUS.ACTIVE,
         cancelAtPeriodEnd: false,
         periodStart: new Date("2025-01-01"),
         periodEnd: new Date("2025-02-01"),
@@ -565,7 +503,7 @@ describe("handleBillingEvent", () => {
           providerPriceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
           plan: "pro",
           tier: "25k",
-          status: "active",
+          status: SUBSCRIPTION_STATUS.ACTIVE,
           cancelAtPeriodEnd: false,
           currentPeriodStart: new Date("2025-01-01"),
           currentPeriodEnd: new Date("2025-02-01"),
@@ -576,7 +514,7 @@ describe("handleBillingEvent", () => {
       const event = makeEvent("subscription.updated", {
         providerSubscriptionId: "sub_1",
         priceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
-        status: "active",
+        status: SUBSCRIPTION_STATUS.ACTIVE,
         cancelAtPeriodEnd: true,
       });
 
@@ -595,7 +533,7 @@ describe("handleBillingEvent", () => {
       const provider = createMockProvider();
       const event = makeEvent("subscription.updated", {
         providerSubscriptionId: "sub_unknown",
-        status: "active",
+        status: SUBSCRIPTION_STATUS.ACTIVE,
       });
 
       await handleBillingEvent(event, provider);
@@ -625,7 +563,7 @@ describe("handleBillingEvent", () => {
           providerPriceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
           plan: "pro",
           tier: "25k",
-          status: "active",
+          status: SUBSCRIPTION_STATUS.ACTIVE,
           cancelAtPeriodEnd: false,
           currentPeriodStart: oldStart,
           currentPeriodEnd: oldEnd,
@@ -636,7 +574,7 @@ describe("handleBillingEvent", () => {
       const event = makeEvent("subscription.updated", {
         providerSubscriptionId: "sub_1",
         priceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
-        status: "active",
+        status: SUBSCRIPTION_STATUS.ACTIVE,
         cancelAtPeriodEnd: false,
         periodStart: newStart,
         periodEnd: newEnd,
@@ -665,7 +603,7 @@ describe("handleBillingEvent", () => {
           providerPriceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
           plan: "pro",
           tier: "25k",
-          status: "active",
+          status: SUBSCRIPTION_STATUS.ACTIVE,
           cancelAtPeriodEnd: false,
           currentPeriodStart: oldStart,
           currentPeriodEnd: oldEnd,
@@ -678,7 +616,7 @@ describe("handleBillingEvent", () => {
       const event = makeEvent("subscription.updated", {
         providerSubscriptionId: "sub_1",
         priceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
-        status: "active",
+        status: SUBSCRIPTION_STATUS.ACTIVE,
         cancelAtPeriodEnd: false,
         periodStart: newStart,
         periodEnd: newEnd,
@@ -701,7 +639,7 @@ describe("handleBillingEvent", () => {
           providerPriceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
           plan: "pro",
           tier: "25k",
-          status: "active",
+          status: SUBSCRIPTION_STATUS.ACTIVE,
           cancelAtPeriodEnd: false,
           currentPeriodStart: sameStart,
           currentPeriodEnd: sameEnd,
@@ -712,7 +650,7 @@ describe("handleBillingEvent", () => {
       const event = makeEvent("subscription.updated", {
         providerSubscriptionId: "sub_1",
         priceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
-        status: "active",
+        status: SUBSCRIPTION_STATUS.ACTIVE,
         cancelAtPeriodEnd: false,
         periodStart: sameStart,
         periodEnd: sameEnd,
@@ -750,7 +688,7 @@ describe("handleBillingEvent", () => {
         expect.objectContaining({
           plan: "free",
           tier: null,
-          status: "canceled",
+          status: SUBSCRIPTION_STATUS.CANCELED,
           cancelAtPeriodEnd: false,
         })
       );
@@ -778,7 +716,7 @@ describe("handleBillingEvent", () => {
         expect.objectContaining({
           plan: "free",
           tier: null,
-          status: "canceled",
+          status: SUBSCRIPTION_STATUS.CANCELED,
         })
       );
     });
@@ -827,6 +765,32 @@ describe("handleBillingEvent", () => {
       await handleBillingEvent(event, provider);
 
       expect(mockClearAllDebtForOrg).not.toHaveBeenCalled();
+    });
+
+    it("cuts the period's gas credit to free", async () => {
+      const periodStart = new Date("2026-09-29T16:37:46Z");
+      mockSelectReturning([
+        {
+          providerSubscriptionId: "sub_1",
+          organizationId: "org_1",
+          currentPeriodStart: periodStart,
+          currentPeriodEnd: new Date(Date.now() + 86_400_000 * 20),
+          plan: "pro",
+          planOverrides: null,
+        },
+      ]);
+
+      await handleBillingEvent(
+        makeEvent("subscription.deleted", { providerSubscriptionId: "sub_1" }),
+        createMockProvider()
+      );
+
+      expect(mockLowerGasAllocationToPlan).toHaveBeenCalledWith(
+        "org_1",
+        periodStart,
+        "free",
+        null
+      );
     });
 
     it("bills the final period before the row drops to free", async () => {
@@ -959,7 +923,7 @@ describe("handleBillingEvent", () => {
     }
 
     it("takes the status from the provider and clears billing alerts", async () => {
-      const provider = providerReporting("active");
+      const provider = providerReporting(SUBSCRIPTION_STATUS.ACTIVE);
       const event = makeEvent("invoice.paid", {
         providerSubscriptionId: "sub_1",
         invoiceId: "inv_1",
@@ -971,7 +935,7 @@ describe("handleBillingEvent", () => {
       expect(db.update).toHaveBeenCalled();
       expect(mockSet).toHaveBeenCalledWith(
         expect.objectContaining({
-          status: "active",
+          status: SUBSCRIPTION_STATUS.ACTIVE,
           billingAlert: null,
           billingAlertUrl: null,
         })
@@ -979,7 +943,7 @@ describe("handleBillingEvent", () => {
     });
 
     // The $0 invoice the provider issues at trial start is paid immediately.
-    // Before the fix that event overwrote "trialing" with "active".
+    // Before the fix that event overwrote SUBSCRIPTION_STATUS.TRIALING with SUBSCRIPTION_STATUS.ACTIVE.
     it("leaves a trialing subscription trialing", async () => {
       mockSelectReturning([
         {
@@ -987,11 +951,11 @@ describe("handleBillingEvent", () => {
           providerSubscriptionId: "sub_1",
           plan: "pro",
           tier: "25k",
-          status: "trialing",
+          status: SUBSCRIPTION_STATUS.TRIALING,
         },
       ]);
 
-      const provider = providerReporting("trialing");
+      const provider = providerReporting(SUBSCRIPTION_STATUS.TRIALING);
       const event = makeEvent("invoice.paid", {
         providerSubscriptionId: "sub_1",
         invoiceId: "inv_trial_zero",
@@ -1000,7 +964,7 @@ describe("handleBillingEvent", () => {
       await handleBillingEvent(event, provider);
 
       expect(mockSet).toHaveBeenCalledWith(
-        expect.objectContaining({ status: "trialing" })
+        expect.objectContaining({ status: SUBSCRIPTION_STATUS.TRIALING })
       );
       expect(mockIncrementCounter).not.toHaveBeenCalledWith(
         MetricNames.BILLING_TRIAL_CONVERTED,
@@ -1015,11 +979,11 @@ describe("handleBillingEvent", () => {
           providerSubscriptionId: "sub_1",
           plan: "pro",
           tier: "25k",
-          status: "past_due",
+          status: SUBSCRIPTION_STATUS.PAST_DUE,
         },
       ]);
 
-      const provider = providerReporting("active");
+      const provider = providerReporting(SUBSCRIPTION_STATUS.ACTIVE);
       const event = makeEvent("invoice.paid", {
         providerSubscriptionId: "sub_1",
         invoiceId: "inv_retry",
@@ -1028,7 +992,7 @@ describe("handleBillingEvent", () => {
       await handleBillingEvent(event, provider);
 
       expect(mockSet).toHaveBeenCalledWith(
-        expect.objectContaining({ status: "active" })
+        expect.objectContaining({ status: SUBSCRIPTION_STATUS.ACTIVE })
       );
     });
 
@@ -1040,7 +1004,7 @@ describe("handleBillingEvent", () => {
           providerPriceId: process.env.STRIPE_PRICE_PRO_25K_MONTHLY,
           plan: "free",
           tier: null,
-          status: "past_due",
+          status: SUBSCRIPTION_STATUS.PAST_DUE,
         },
       ]);
 
@@ -1049,12 +1013,12 @@ describe("handleBillingEvent", () => {
           providerSubscriptionId: "sub_1",
           invoiceId: "inv_retry",
         }),
-        providerReporting("active")
+        providerReporting(SUBSCRIPTION_STATUS.ACTIVE)
       );
 
       expect(mockSet).toHaveBeenCalledWith(
         expect.objectContaining({
-          status: "active",
+          status: SUBSCRIPTION_STATUS.ACTIVE,
           plan: "pro",
           tier: "25k",
         })
@@ -1068,7 +1032,7 @@ describe("handleBillingEvent", () => {
           providerSubscriptionId: "sub_1",
           plan: "free",
           tier: null,
-          status: "canceled",
+          status: SUBSCRIPTION_STATUS.CANCELED,
         },
       ]);
 
@@ -1077,7 +1041,7 @@ describe("handleBillingEvent", () => {
           providerSubscriptionId: "sub_1",
           invoiceId: "inv_late",
         }),
-        providerReporting("canceled")
+        providerReporting(SUBSCRIPTION_STATUS.CANCELED)
       );
 
       const setArg = mockSet.mock.calls[0][0] as Record<string, unknown>;
@@ -1091,11 +1055,11 @@ describe("handleBillingEvent", () => {
           providerSubscriptionId: "sub_1",
           plan: "pro",
           tier: "25k",
-          status: "trialing",
+          status: SUBSCRIPTION_STATUS.TRIALING,
         },
       ]);
 
-      const provider = providerReporting("active");
+      const provider = providerReporting(SUBSCRIPTION_STATUS.ACTIVE);
       const event = makeEvent("invoice.paid", {
         providerSubscriptionId: "sub_1",
         invoiceId: "inv_first_charge",
@@ -1115,7 +1079,7 @@ describe("handleBillingEvent", () => {
           organizationId: "org_1",
           providerSubscriptionId: "sub_1",
           plan: "pro",
-          status: "trialing",
+          status: SUBSCRIPTION_STATUS.TRIALING,
         },
       ]);
 
@@ -1263,7 +1227,7 @@ describe("handleBillingEvent", () => {
       expect(db.update).toHaveBeenCalled();
       expect(mockSet).toHaveBeenCalledWith(
         expect.objectContaining({
-          status: "past_due",
+          status: SUBSCRIPTION_STATUS.PAST_DUE,
           billingAlert: "payment_failed",
           billingAlertUrl: "https://invoice.stripe.com/i/123",
         })
@@ -1277,7 +1241,7 @@ describe("handleBillingEvent", () => {
           providerSubscriptionId: "sub_1",
           plan: "business",
           tier: null,
-          status: "trialing",
+          status: SUBSCRIPTION_STATUS.TRIALING,
         },
       ]);
       const provider = createMockProvider({
@@ -1296,10 +1260,69 @@ describe("handleBillingEvent", () => {
         expect.objectContaining({
           plan: "free",
           tier: null,
-          status: "past_due",
+          status: SUBSCRIPTION_STATUS.PAST_DUE,
           billingAlert: "payment_failed",
         })
       );
+    });
+
+    it("cuts the period's gas credit to free before the plan write", async () => {
+      const periodStart = new Date("2026-09-29T16:37:46Z");
+      mockSelectReturning([
+        {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_1",
+          plan: "pro",
+          tier: "25k",
+          status: SUBSCRIPTION_STATUS.TRIALING,
+          currentPeriodStart: periodStart,
+          planOverrides: null,
+        },
+      ]);
+
+      await handleBillingEvent(
+        makeEvent("invoice.payment_failed", {
+          providerSubscriptionId: "sub_1",
+        }),
+        createMockProvider({
+          hasPaidInvoice: vi.fn().mockResolvedValue(false),
+        })
+      );
+
+      expect(mockLowerGasAllocationToPlan).toHaveBeenCalledWith(
+        "org_1",
+        periodStart,
+        "free",
+        null
+      );
+      expect(
+        mockLowerGasAllocationToPlan.mock.invocationCallOrder[0]
+      ).toBeLessThan(mockSet.mock.invocationCallOrder[0]);
+    });
+
+    it("leaves the plan in place when the gas credit cut fails, so the event retries", async () => {
+      mockSelectReturning([
+        {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_1",
+          plan: "pro",
+          status: SUBSCRIPTION_STATUS.TRIALING,
+          currentPeriodStart: new Date("2026-09-29T16:37:46Z"),
+        },
+      ]);
+      mockLowerGasAllocationToPlan.mockRejectedValue(new Error("db down"));
+
+      await expect(
+        handleBillingEvent(
+          makeEvent("invoice.payment_failed", {
+            providerSubscriptionId: "sub_1",
+          }),
+          createMockProvider({
+            hasPaidInvoice: vi.fn().mockResolvedValue(false),
+          })
+        )
+      ).rejects.toThrow("db down");
+      expect(mockSet).not.toHaveBeenCalled();
     });
 
     it("keeps the plan of a customer that has paid before", async () => {
@@ -1309,7 +1332,7 @@ describe("handleBillingEvent", () => {
           providerSubscriptionId: "sub_1",
           plan: "pro",
           tier: "25k",
-          status: "active",
+          status: SUBSCRIPTION_STATUS.ACTIVE,
         },
       ]);
 
@@ -1322,7 +1345,8 @@ describe("handleBillingEvent", () => {
 
       const setArg = mockSet.mock.calls[0][0] as Record<string, unknown>;
       expect(setArg).not.toHaveProperty("plan");
-      expect(setArg).toMatchObject({ status: "past_due" });
+      expect(setArg).toMatchObject({ status: SUBSCRIPTION_STATUS.PAST_DUE });
+      expect(mockLowerGasAllocationToPlan).not.toHaveBeenCalled();
     });
 
     it("keeps the plan when the invoice history cannot be read", async () => {
@@ -1331,7 +1355,7 @@ describe("handleBillingEvent", () => {
           organizationId: "org_1",
           providerSubscriptionId: "sub_1",
           plan: "pro",
-          status: "trialing",
+          status: SUBSCRIPTION_STATUS.TRIALING,
         },
       ]);
       const provider = createMockProvider({
@@ -1355,7 +1379,7 @@ describe("handleBillingEvent", () => {
           organizationId: "org_1",
           providerSubscriptionId: "sub_1",
           plan: "free",
-          status: "canceled",
+          status: SUBSCRIPTION_STATUS.CANCELED,
         },
       ]);
       const provider = createMockProvider();

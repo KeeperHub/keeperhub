@@ -1,5 +1,6 @@
 import type Stripe from "stripe";
 import { stripe } from "@/lib/stripe";
+import { SUBSCRIPTION_STATUS } from "../constants";
 import type {
   BillingDetails,
   BillingProvider,
@@ -35,6 +36,11 @@ function isStripeNotFound(error: unknown): boolean {
     (error as { statusCode: number }).statusCode === 404
   );
 }
+
+const ENDED_SUBSCRIPTION_STATUSES: ReadonlySet<string> = new Set<string>([
+  SUBSCRIPTION_STATUS.CANCELED,
+  SUBSCRIPTION_STATUS.INCOMPLETE_EXPIRED,
+]);
 
 const EVENT_TYPE_MAP: Record<string, BillingWebhookEvent["type"] | undefined> =
   {
@@ -478,7 +484,19 @@ export class StripeBillingProvider implements BillingProvider {
   }
 
   async cancelSubscriptionNow(subscriptionId: string): Promise<void> {
-    await getStripe().subscriptions.cancel(subscriptionId);
+    const s = getStripe();
+    try {
+      const subscription = await s.subscriptions.retrieve(subscriptionId);
+      if (ENDED_SUBSCRIPTION_STATUSES.has(subscription.status)) {
+        return;
+      }
+      await s.subscriptions.cancel(subscriptionId);
+    } catch (error) {
+      // Already gone on the provider side is the outcome this asks for.
+      if (!isStripeNotFound(error)) {
+        throw error;
+      }
+    }
   }
 
   async hasPaidInvoice(subscriptionId: string): Promise<boolean> {
@@ -488,7 +506,9 @@ export class StripeBillingProvider implements BillingProvider {
       limit: 100,
     });
     for await (const invoice of invoices) {
-      if (invoice.amount_paid > 0) {
+      // total, not amount_paid: an invoice settled from credit balance or
+      // marked paid outside Stripe has amount_paid 0 but was still paid.
+      if (invoice.total > 0) {
         return true;
       }
     }

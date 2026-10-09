@@ -13,8 +13,9 @@ import {
 import { getMetricsCollector } from "@/lib/metrics";
 import { MetricNames } from "@/lib/metrics/types";
 import { recordAuditEvent } from "@/lib/security/audit-log";
-import { BILLING_ALERTS } from "./constants";
+import { BILLING_ALERTS, SUBSCRIPTION_STATUS } from "./constants";
 import { clearDebtForInvoice } from "./execution-debt";
+import { lowerGasAllocationToPlan } from "./gas-credits";
 import {
   billOverageForOrg,
   collectFinalPeriodOverage,
@@ -74,7 +75,12 @@ function recordTrialConversion(
   plan: PlanName,
   tier: string | null
 ): void {
-  if (!(previousStatus === "trialing" && nextStatus === "active")) {
+  if (
+    !(
+      previousStatus === SUBSCRIPTION_STATUS.TRIALING &&
+      nextStatus === SUBSCRIPTION_STATUS.ACTIVE
+    )
+  ) {
     return;
   }
   getMetricsCollector().incrementCounter(MetricNames.BILLING_TRIAL_CONVERTED, {
@@ -108,51 +114,6 @@ async function findSubscriptionByCustomerId(
     .where(eq(organizationSubscriptions.providerCustomerId, providerCustomerId))
     .limit(1);
   return rows[0];
-}
-
-async function findSubscriptionByOrgId(
-  organizationId: string
-): Promise<SubscriptionRow | undefined> {
-  const rows = await db
-    .select()
-    .from(organizationSubscriptions)
-    .where(eq(organizationSubscriptions.organizationId, organizationId))
-    .limit(1);
-  return rows[0];
-}
-
-/**
- * End the subscription a new checkout replaced.
- *
- * An org that dropped to free over an unpaid charge can subscribe again while
- * the provider is still retrying the old invoice. Left running, a late retry
- * would charge the card a second time for a plan the org already pays for.
- * Runs after the row moves to the new subscription, so the old one's deletion
- * event matches no row.
- */
-async function cancelReplacedSubscription(
-  previous: SubscriptionRow | undefined,
-  providerSubscriptionId: string,
-  provider: BillingProvider
-): Promise<void> {
-  const replacedId = previous?.providerSubscriptionId;
-  if (
-    !replacedId ||
-    replacedId === providerSubscriptionId ||
-    previous.status === "canceled"
-  ) {
-    return;
-  }
-  try {
-    await provider.cancelSubscriptionNow(replacedId);
-  } catch (error) {
-    logSystemWarn(
-      ErrorCategory.BILLING,
-      `${LOG_PREFIX} Failed to cancel the subscription a checkout replaced`,
-      error,
-      { org_id: previous.organizationId, provider_subscription_id: replacedId }
-    );
-  }
 }
 
 export async function handleBillingEvent(
@@ -274,22 +235,22 @@ async function handleCheckoutCompleted(
   // checkout.completed only fires on success, so the subscription is either
   // trialing (trial requested) or active. Persist the real status and stamp
   // trial consumption so the org cannot start a second trial.
-  const isTrialing = details.status === "trialing";
+  const isTrialing = details.status === SUBSCRIPTION_STATUS.TRIALING;
 
   const subscriptionData = {
     providerSubscriptionId,
     providerPriceId: details.priceId,
     plan,
     tier,
-    status: isTrialing ? ("trialing" as const) : ("active" as const),
+    status: isTrialing
+      ? SUBSCRIPTION_STATUS.TRIALING
+      : SUBSCRIPTION_STATUS.ACTIVE,
     currentPeriodStart: details.periodStart,
     currentPeriodEnd: details.periodEnd,
     cancelAtPeriodEnd: details.cancelAtPeriodEnd,
     updatedAt: new Date(),
     ...(isTrialing && { trialStartedAt: new Date() }),
   };
-
-  const previous = await findSubscriptionByOrgId(organizationId);
 
   await db
     .insert(organizationSubscriptions)
@@ -303,8 +264,6 @@ async function handleCheckoutCompleted(
     });
 
   console.info(LOG_PREFIX, "Upserted subscription for org:", organizationId);
-
-  await cancelReplacedSubscription(previous, providerSubscriptionId, provider);
 
   // A returning org may have left an unpaid overage invoice behind when it
   // cancelled. Subscribing again means there is a payment method on file, so
@@ -597,6 +556,24 @@ async function collectFinalPeriodOverageSafely(
   }
 }
 
+/**
+ * Cut the current period's gas credit to the free cap. Runs before the plan
+ * write and throws on failure, so the event is retried with the row unchanged.
+ */
+async function lowerGasAllocationToFree(
+  sub: SubscriptionRow | undefined
+): Promise<void> {
+  if (!(sub?.currentPeriodStart instanceof Date)) {
+    return;
+  }
+  await lowerGasAllocationToPlan(
+    sub.organizationId,
+    sub.currentPeriodStart,
+    "free",
+    sub.planOverrides
+  );
+}
+
 async function handleSubscriptionDeleted(
   data: BillingWebhookEvent["data"]
 ): Promise<void> {
@@ -620,6 +597,8 @@ async function handleSubscriptionDeleted(
     "resetting to free"
   );
 
+  await lowerGasAllocationToFree(current);
+
   // Before the reset, while the row still carries the paid plan and its limit.
   // billOverageForOrg reads plan off the row and skips a free one, so this
   // cannot move below the update.
@@ -636,7 +615,7 @@ async function handleSubscriptionDeleted(
     .set({
       plan: "free",
       tier: null,
-      status: "canceled",
+      status: SUBSCRIPTION_STATUS.CANCELED,
       cancelAtPeriodEnd: false,
       updatedAt: now,
     })
@@ -669,7 +648,7 @@ async function handleSubscriptionDeleted(
       resourceType: "subscription",
       resourceId: current.organizationId,
       before: { plan: current.plan, status: current.status },
-      after: { plan: "free", status: "canceled" },
+      after: { plan: "free", status: SUBSCRIPTION_STATUS.CANCELED },
       metadata: { source: "stripe", providerSubscriptionId },
     });
   }
@@ -771,7 +750,7 @@ function planToRestore(
 ): ReturnType<typeof resolveSubscriptionPlan> {
   if (
     !(
-      details?.status === "active" &&
+      details?.status === SUBSCRIPTION_STATUS.ACTIVE &&
       details.priceId &&
       parsePlanName(sub.plan) === "free"
     )
@@ -955,13 +934,14 @@ async function handleInvoicePaymentFailed(
     updatedAt: new Date(),
   };
   // A failure on a subscription that already ended must not reopen it.
-  if (sub?.status !== "canceled") {
-    update.status = "past_due";
+  if (sub?.status !== SUBSCRIPTION_STATUS.CANCELED) {
+    update.status = SUBSCRIPTION_STATUS.PAST_DUE;
   }
   const downgrade =
     sub !== undefined &&
     (await isNeverPaid(sub, providerSubscriptionId, provider));
   if (downgrade) {
+    await lowerGasAllocationToFree(sub);
     update.plan = "free";
     update.tier = null;
   }
