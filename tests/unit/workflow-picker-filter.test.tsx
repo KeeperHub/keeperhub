@@ -78,19 +78,34 @@ const workflows: WorkflowEntry[] = [
 // The latest filter of each picker, by panel id, to act on it directly.
 const filters: Record<string, PickerFilter> = {};
 
-function Picker({ panelId }: { panelId: string }): React.ReactNode {
-  const filter = usePickerFilter();
+function Picker({
+  panelId,
+  panelState = "open",
+  list = workflows,
+}: {
+  panelId: string;
+  panelState?: "open" | "collapsed" | "closed";
+  list?: WorkflowEntry[];
+}): React.ReactNode {
+  const filter = usePickerFilter(panelState);
   filters[panelId] = filter;
-  const shown = applyPickerFilter(workflows, filter);
+  const shown = applyPickerFilter(list, filter);
   return (
     <section aria-label={panelId} data-flyout>
-      <PickerFilterButton disabled={false} filter={filter} panelId={panelId} />
+      <PickerFilterButton
+        filter={filter}
+        hasWorkflows={list.length > 0}
+        loading={false}
+        panelId={panelId}
+        panelName={panelId}
+      />
       <PickerFilterRow
         filter={filter}
         loading={false}
         panelId={panelId}
+        panelName={panelId}
         shownCount={shown.length}
-        workflows={workflows}
+        workflows={list}
       />
       {shown.map((w) => (
         <p data-row={w.id} key={w.id}>
@@ -101,11 +116,13 @@ function Picker({ panelId }: { panelId: string }): React.ReactNode {
   );
 }
 
-function renderPickers(): void {
+function renderPickers(
+  rootProps: Partial<React.ComponentProps<typeof Picker>> = {}
+): void {
   act(() =>
     root.render(
       <>
-        <Picker panelId="root-filter" />
+        <Picker panelId="root-filter" {...rootProps} />
         <Picker panelId="project-filter" />
       </>
     )
@@ -220,6 +237,52 @@ describe("picker filter", () => {
     act(() => vi.advanceTimersByTime(400));
     expect(
       panel("root-filter").querySelector("[aria-live=polite]")?.textContent
-    ).toBe("1 of 3 workflows shown");
+    ).toBe("1 of 3 workflows shown in root-filter");
+  });
+
+  it("names its panel, so two filter buttons can be told apart", () => {
+    renderPickers();
+    expect(filterButton("root-filter").getAttribute("aria-label")).toBe(
+      "Filter root-filter"
+    );
+    expect(filterButton("project-filter").getAttribute("aria-label")).toBe(
+      "Filter project-filter"
+    );
+  });
+
+  it("drops the filter when its panel closes", () => {
+    renderPickers();
+    act(() => filterButton("root-filter").click());
+    act(() => filters["root-filter"].setStatus(new Set(["enabled"])));
+    renderPickers({ panelState: "collapsed" });
+    expect(rows("root-filter")).toEqual(["live"]);
+
+    renderPickers({ panelState: "closed" });
+    expect(document.getElementById("root-filter")).toBeNull();
+    expect(rows("root-filter")).toEqual(["live", "off", "manual"]);
+  });
+
+  it("is disabled with nothing to filter, but not while its row is open", () => {
+    renderPickers({ list: [] });
+    expect(filterButton("root-filter").disabled).toBe(true);
+
+    renderPickers();
+    act(() => filterButton("root-filter").click());
+    act(() => filters["root-filter"].setStatus(new Set(["manual"])));
+    // The last workflow moves out of the list; the leftover filter can
+    // still be cleared from the button.
+    renderPickers({ list: [] });
+    const button = filterButton("root-filter");
+    expect(button.disabled).toBe(false);
+    act(() => button.click());
+    expect(document.getElementById("root-filter")).toBeNull();
+    expect(filters["root-filter"].isFiltered).toBe(false);
+  });
+
+  it("returns the same list while no filter is on", () => {
+    renderPickers();
+    expect(applyPickerFilter(workflows, filters["root-filter"])).toBe(
+      workflows
+    );
   });
 });

@@ -463,8 +463,8 @@ export function NavigationSidebar(): React.ReactNode {
   const [dataLoading, setDataLoading] = useState(true);
   // Each panel filters its own list: the Workflows panel the workflows
   // outside any project, a project's panel that project's workflows.
-  const rootFilter = usePickerFilter();
-  const projectFilter = usePickerFilter();
+  const rootFilter = usePickerFilter(navState.state.panels.projects);
+  const projectFilter = usePickerFilter(navState.state.panels.tags);
   // A reply that lands after a newer list request was sent is dropped rather
   // than put back over the newer list.
   const latestFetch = useRef(createLatestRequest());
@@ -522,23 +522,8 @@ export function NavigationSidebar(): React.ReactNode {
     });
   }, [isPending, session, fetchData]);
 
-  // Closing a panel any way at all (Escape, clicking outside, the close
-  // button, re-clicking the project) drops its filters.
   const clearRootFilter = rootFilter.clear;
-  const projectsPanelState = navState.state.panels.projects;
-  useEffect(() => {
-    if (projectsPanelState === "closed") {
-      clearRootFilter();
-    }
-  }, [projectsPanelState, clearRootFilter]);
-
   const clearProjectFilter = projectFilter.clear;
-  const tagsPanelState = navState.state.panels.tags;
-  useEffect(() => {
-    if (tagsPanelState === "closed") {
-      clearProjectFilter();
-    }
-  }, [tagsPanelState, clearProjectFilter]);
 
   useEffect(
     () =>
@@ -546,11 +531,17 @@ export function NavigationSidebar(): React.ReactNode {
         if (options?.closeFlyout) {
           navState.closeAll();
         }
+        // An org switch keeps the panels open; a filter belongs to the
+        // workflows it was set on.
+        if (options?.orgChanged) {
+          clearRootFilter();
+          clearProjectFilter();
+        }
         fetchData({ clearOnFailure: options?.orgChanged }).catch(() => {
           /* intentional noop */
         });
       }),
-    [fetchData, navState.closeAll]
+    [fetchData, navState.closeAll, clearRootFilter, clearProjectFilter]
   );
 
   // Validate persisted selections after data loads
@@ -781,6 +772,9 @@ export function NavigationSidebar(): React.ReactNode {
         nodes: [],
         edges: [],
       });
+      // The new workflow is outside any project; it shows even if the
+      // Workflows panel's filter would hide it.
+      clearRootFilter();
       await fetchData();
       navState.setPanelState("projects", "open");
       sessionStorage.setItem("animate-sidebar", "true");
@@ -793,6 +787,9 @@ export function NavigationSidebar(): React.ReactNode {
       nodes: [],
       edges: [],
     });
+    // The new workflow is outside any project; it shows even if the
+    // Workflows panel's filter would hide it.
+    clearRootFilter();
     await fetchData();
     navState.setPanelState("projects", "open");
     sessionStorage.setItem("animate-sidebar", "true");
@@ -983,9 +980,11 @@ export function NavigationSidebar(): React.ReactNode {
         }
         headerLeading={
           <PickerFilterButton
-            disabled={dataLoading || ungrouped.length === 0}
             filter={rootFilter}
+            hasWorkflows={ungrouped.length > 0}
+            loading={dataLoading}
             panelId={ROOT_FILTER_ROW_ID}
+            panelName="Workflows"
           />
         }
         leftOffset={offsets.projects}
@@ -998,13 +997,16 @@ export function NavigationSidebar(): React.ReactNode {
           filter={rootFilter}
           loading={dataLoading}
           panelId={ROOT_FILTER_ROW_ID}
+          panelName="Workflows"
           shownCount={shownUngrouped.length}
           workflows={ungrouped}
         />
         <ProjectsPanel
           activeWorkflowId={workflowId}
           byProject={byProject}
-          filteredEmptyText={rootFilter.emptyText}
+          // The project rows above are not filtered, so the message says
+          // which workflows it is about.
+          filteredEmptyText={`${rootFilter.emptyText} outside a project`}
           isAnonymous={isAnonymous}
           loading={dataLoading}
           onResetFilter={rootFilter.isFiltered ? rootFilter.reset : undefined}
@@ -1023,9 +1025,11 @@ export function NavigationSidebar(): React.ReactNode {
         }
         headerLeading={
           <PickerFilterButton
-            disabled={dataLoading || allProjectWorkflows.length === 0}
             filter={projectFilter}
+            hasWorkflows={allProjectWorkflows.length > 0}
+            loading={dataLoading}
             panelId={PROJECT_FILTER_ROW_ID}
+            panelName={selectedProject?.name ?? "Projects"}
           />
         }
         leftOffset={offsets.tags}
@@ -1038,6 +1042,7 @@ export function NavigationSidebar(): React.ReactNode {
           filter={projectFilter}
           loading={dataLoading}
           panelId={PROJECT_FILTER_ROW_ID}
+          panelName={selectedProject?.name ?? "Projects"}
           shownCount={projectWorkflows.length}
           workflows={allProjectWorkflows}
         />

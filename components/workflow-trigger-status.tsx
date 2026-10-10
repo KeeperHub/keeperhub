@@ -148,6 +148,7 @@ export function TriggerFilterButton({
   open,
   onToggle,
   controls,
+  panelName,
   ref,
   disabled = false,
   filtered = false,
@@ -155,7 +156,9 @@ export function TriggerFilterButton({
   open: boolean;
   onToggle: () => void;
   // The id of the row of filter menus that the button shows and hides.
-  controls?: string;
+  controls: string;
+  // The title of the panel it filters, as two panels can each have one.
+  panelName: string;
   ref?: React.Ref<HTMLButtonElement>;
   // While the workflows load there is nothing to filter yet.
   disabled?: boolean;
@@ -177,7 +180,9 @@ export function TriggerFilterButton({
         <button
           aria-controls={open ? controls : undefined}
           aria-expanded={open}
-          aria-label={filtered ? "Filter, filters on" : "Filter"}
+          aria-label={
+            filtered ? `Filter ${panelName}, filters on` : `Filter ${panelName}`
+          }
           className={cn(
             "relative size-6 shrink-0 rounded-md border p-1 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-foreground/60 disabled:pointer-events-none disabled:opacity-40",
             open

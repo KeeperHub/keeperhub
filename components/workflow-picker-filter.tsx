@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   TriggerFilterButton,
   TriggerFilters,
 } from "@/components/workflow-trigger-status";
 import { useDebounce } from "@/lib/hooks/use-debounce";
+import type { NavPanelStates } from "@/lib/hooks/use-persisted-nav-state";
 import { toggleInSet } from "@/lib/utils";
 import {
   countDeactivated,
@@ -47,7 +48,11 @@ export type PickerFilter = {
   emptyText: string;
 };
 
-export function usePickerFilter(): PickerFilter {
+export function usePickerFilter(
+  // The state of the panel the filter belongs to. Closing the panel any way
+  // at all (Escape, clicking outside, the close button) drops the filter.
+  panelState: NavPanelStates["projects"]
+): PickerFilter {
   const [status, setStatus] = useState<TriggerFilter>(() => new Set());
   const [types, setTypes] = useState<TriggerTypeFilter>(() => new Set());
   const [open, setOpen] = useState(false);
@@ -59,6 +64,12 @@ export function usePickerFilter(): PickerFilter {
     setTypes(new Set());
     setOpen(false);
   }, []);
+
+  useEffect(() => {
+    if (panelState === "closed") {
+      clear();
+    }
+  }, [panelState, clear]);
 
   return {
     status,
@@ -87,7 +98,7 @@ export function usePickerFilter(): PickerFilter {
         buttonRef.current?.focus();
       }
     },
-    emptyText: describeEmptyFilterResult(status, types),
+    emptyText: isFiltered ? describeEmptyFilterResult(status, types) : "",
   };
 }
 
@@ -96,6 +107,9 @@ export function applyPickerFilter(
   workflows: WorkflowEntry[],
   filter: PickerFilter
 ): WorkflowEntry[] {
+  if (!filter.isFiltered) {
+    return workflows;
+  }
   return workflows.filter(
     (w) =>
       matchesTriggerFilter(w, filter.status) &&
@@ -106,20 +120,29 @@ export function applyPickerFilter(
 export function PickerFilterButton({
   filter,
   panelId,
-  disabled,
+  panelName,
+  hasWorkflows,
+  loading,
 }: {
   filter: PickerFilter;
   // The id of the row this button shows and hides.
   panelId: string;
-  disabled: boolean;
+  // The panel's title, which tells this button from the other panel's.
+  panelName: string;
+  // Whether the panel's list has anything to filter.
+  hasWorkflows: boolean;
+  loading: boolean;
 }): React.ReactNode {
   return (
     <TriggerFilterButton
       controls={panelId}
-      disabled={disabled}
+      // An open row keeps its button working even once the list empties, so
+      // a leftover filter can always be cleared.
+      disabled={loading || !(hasWorkflows || filter.open)}
       filtered={filter.isFiltered}
       onToggle={filter.toggle}
       open={filter.open}
+      panelName={panelName}
       ref={filter.buttonRef}
     />
   );
@@ -146,16 +169,48 @@ function DelayedAnnouncement({ text }: { text: string }): React.ReactNode {
 export function PickerFilterRow({
   filter,
   panelId,
+  panelName,
   workflows,
   shownCount,
   loading,
 }: {
   filter: PickerFilter;
   panelId: string;
+  panelName: string;
   // Every workflow the filter applies to, before filtering.
   workflows: WorkflowEntry[];
   shownCount: number;
   loading: boolean;
+}): React.ReactNode {
+  return (
+    <>
+      {filter.open && !loading && (
+        // The negative offsets cover the panel's p-2 padding.
+        <div
+          className="fade-in-0 slide-in-from-top-1 sticky -top-2 z-10 -mx-2 -mt-2 mb-1 animate-in border-b bg-background px-2 pt-2 duration-150 motion-reduce:animate-none"
+          id={panelId}
+        >
+          <FilterMenus filter={filter} workflows={workflows} />
+        </div>
+      )}
+      <DelayedAnnouncement
+        text={
+          filter.isFiltered
+            ? `${shownCount} of ${workflows.length} workflows shown in ${panelName}`
+            : ""
+        }
+      />
+    </>
+  );
+}
+
+// The counts are worked out only while the row is shown.
+function FilterMenus({
+  filter,
+  workflows,
+}: {
+  filter: PickerFilter;
+  workflows: WorkflowEntry[];
 }): React.ReactNode {
   // Each menu counts the workflows the other menu lets through, so its
   // numbers say what picking an entry would show.
@@ -166,40 +221,23 @@ export function PickerFilterRow({
     matchesTriggerFilter(w, filter.status)
   );
   return (
-    <>
-      {filter.open && !loading && (
-        // The negative offsets cover the panel's p-2 padding.
-        <div
-          className="fade-in-0 slide-in-from-top-1 sticky -top-2 z-10 -mx-2 -mt-2 mb-1 animate-in border-b bg-background px-2 pt-2 duration-150 motion-reduce:animate-none"
-          id={panelId}
-        >
-          <TriggerFilters
-            deactivatedCount={countDeactivated(typeFiltered)}
-            listedTypes={listedTriggerTypes(workflows, filter.types)}
-            onClearAll={filter.reset}
-            onClearStatus={() => filter.setStatus(new Set())}
-            onClearTypes={() => filter.setTypes(new Set())}
-            onEscape={filter.escape}
-            onToggleStatus={(status) =>
-              filter.setStatus((current) => toggleInSet(current, status))
-            }
-            onToggleType={(type) =>
-              filter.setTypes((current) => toggleInSet(current, type))
-            }
-            status={filter.status}
-            statusCounts={countTriggerStatuses(typeFiltered)}
-            typeCounts={countTriggerTypes(statusMatches)}
-            types={filter.types}
-          />
-        </div>
-      )}
-      <DelayedAnnouncement
-        text={
-          filter.isFiltered
-            ? `${shownCount} of ${workflows.length} workflows shown`
-            : ""
-        }
-      />
-    </>
+    <TriggerFilters
+      deactivatedCount={countDeactivated(typeFiltered)}
+      listedTypes={listedTriggerTypes(workflows, filter.types)}
+      onClearAll={filter.reset}
+      onClearStatus={() => filter.setStatus(new Set())}
+      onClearTypes={() => filter.setTypes(new Set())}
+      onEscape={filter.escape}
+      onToggleStatus={(status) =>
+        filter.setStatus((current) => toggleInSet(current, status))
+      }
+      onToggleType={(type) =>
+        filter.setTypes((current) => toggleInSet(current, type))
+      }
+      status={filter.status}
+      statusCounts={countTriggerStatuses(typeFiltered)}
+      typeCounts={countTriggerTypes(statusMatches)}
+      types={filter.types}
+    />
   );
 }

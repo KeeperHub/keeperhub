@@ -84,24 +84,48 @@ describe("TriggerStatusIcon", () => {
 describe("TriggerFilterButton", () => {
   it("reflects and toggles its open state", () => {
     const onToggle = vi.fn();
-    render(<TriggerFilterButton onToggle={onToggle} open={false} />);
+    render(
+      <TriggerFilterButton
+        controls="filter-row"
+        onToggle={onToggle}
+        open={false}
+        panelName="Workflows"
+      />
+    );
     const button = container.querySelector("button");
     expect(button?.getAttribute("aria-expanded")).toBe("false");
-    expect(button?.getAttribute("aria-label")).toBe("Filter");
+    expect(button?.getAttribute("aria-label")).toBe("Filter Workflows");
     act(() => button?.click());
     expect(onToggle).toHaveBeenCalledTimes(1);
 
-    render(<TriggerFilterButton onToggle={onToggle} open />);
+    render(
+      <TriggerFilterButton
+        controls="filter-row"
+        onToggle={onToggle}
+        open
+        panelName="Workflows"
+      />
+    );
     expect(button?.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("shows a dot while a filter is on, and still acts when clicked", () => {
     const onToggle = vi.fn();
-    render(<TriggerFilterButton filtered onToggle={onToggle} open />);
+    render(
+      <TriggerFilterButton
+        controls="filter-row"
+        filtered
+        onToggle={onToggle}
+        open
+        panelName="Workflows"
+      />
+    );
     const button = container.querySelector("button");
     // Never a dead control: the sidebar makes this click clear and hide.
     expect(button?.hasAttribute("aria-disabled")).toBe(false);
-    expect(button?.getAttribute("aria-label")).toBe("Filter, filters on");
+    expect(button?.getAttribute("aria-label")).toBe(
+      "Filter Workflows, filters on"
+    );
     expect(button?.querySelector("span[aria-hidden=true]")).not.toBeNull();
     act(() => button?.click());
     expect(onToggle).toHaveBeenCalledTimes(1);
@@ -111,7 +135,15 @@ describe("TriggerFilterButton", () => {
 describe("TriggerFilterButton while loading", () => {
   it("is disabled and ignores clicks", () => {
     const onToggle = vi.fn();
-    render(<TriggerFilterButton disabled onToggle={onToggle} open={false} />);
+    render(
+      <TriggerFilterButton
+        controls="filter-row"
+        disabled
+        onToggle={onToggle}
+        open={false}
+        panelName="Workflows"
+      />
+    );
     const button = container.querySelector("button");
     expect(button?.disabled).toBe(true);
     act(() => button?.click());
