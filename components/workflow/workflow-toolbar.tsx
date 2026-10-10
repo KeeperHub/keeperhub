@@ -1469,6 +1469,7 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
     setIsDuplicating(true);
     try {
       const newWorkflow = await api.workflow.duplicate(currentWorkflowId);
+      refetchSidebar({ workflowCreated: true });
       toast.success("Template ready in your workflows");
       router.push(`/workflows/${newWorkflow.id}`);
     } catch (error) {

@@ -35,6 +35,9 @@ export type PickerFilter = {
   setTypes: React.Dispatch<React.SetStateAction<TriggerTypeFilter>>;
   // Drops both filters and hides the row.
   clear: () => void;
+  // Drops both filters and leaves the row and focus where they are, for a
+  // change made elsewhere (a new workflow) that the list must show.
+  showAll: () => void;
   // The filter button: with a filter on it clears the filters and hides the
   // row in one go, so the row never hides while it is shortening the list.
   toggle: () => void;
@@ -65,6 +68,12 @@ export function usePickerFilter(
     setOpen(false);
   }, []);
 
+  const showAll = useCallback((): void => {
+    // Keeps the same sets when nothing is picked, so nothing rerenders.
+    setStatus((current) => (current.size > 0 ? new Set() : current));
+    setTypes((current) => (current.size > 0 ? new Set() : current));
+  }, []);
+
   useEffect(() => {
     if (panelState === "closed") {
       clear();
@@ -80,6 +89,7 @@ export function usePickerFilter(
     setStatus,
     setTypes,
     clear,
+    showAll,
     toggle: () => {
       if (open && isFiltered) {
         clear();
@@ -88,8 +98,7 @@ export function usePickerFilter(
       setOpen(!open);
     },
     reset: () => {
-      setStatus(new Set());
-      setTypes(new Set());
+      showAll();
       buttonRef.current?.focus();
     },
     escape: () => {

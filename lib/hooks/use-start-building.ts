@@ -126,7 +126,7 @@ export function useStartBuilding(): { startBuilding: () => Promise<void> } {
         edges: defaultEdges,
       });
 
-      refetchSidebar();
+      refetchSidebar({ workflowCreated: true });
       sessionStorage.setItem("animate-sidebar", "true");
       setIsTransitioningFromHomepage(true);
       router.replace(`/workflows/${newWorkflow.id}`);

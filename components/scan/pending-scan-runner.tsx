@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { useSession } from "@/lib/auth-client";
 import { AUTH_SUCCESS_EVENT } from "@/lib/auth-events";
 import { isAnonymousUser } from "@/lib/is-anonymous";
+import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { persistSuggestion } from "@/lib/scan/persist-suggestion";
 import type { SuggestionDescriptor } from "@/lib/scan/suggestions/types";
 
@@ -175,6 +176,7 @@ export function PendingScanRunner(): null {
           const { id } = await persistSuggestion(intent, mode, {
             defaultEmail: session?.user?.email,
           });
+          refetchSidebar({ workflowCreated: true });
           writeSessionFlag(idempotencyKey);
           toast.success("Workflow saved");
           router.push(`/workflows/${id}`);

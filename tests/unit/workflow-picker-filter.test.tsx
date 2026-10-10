@@ -279,6 +279,36 @@ describe("picker filter", () => {
     expect(filters["root-filter"].isFiltered).toBe(false);
   });
 
+  it("shows every workflow for a new one, keeping the row and focus", () => {
+    renderPickers();
+    act(() => filterButton("root-filter").click());
+    act(() => filters["root-filter"].setStatus(new Set(["enabled"])));
+    const elsewhere = document.createElement("button");
+    document.body.appendChild(elsewhere);
+    elsewhere.focus();
+
+    act(() => filters["root-filter"].showAll());
+    expect(rows("root-filter")).toEqual(["live", "off", "manual"]);
+    expect(document.getElementById("root-filter")).not.toBeNull();
+    expect(filterButton("root-filter").getAttribute("aria-expanded")).toBe(
+      "true"
+    );
+    expect(document.activeElement).toBe(elsewhere);
+    elsewhere.remove();
+  });
+
+  it("leaves an open row with no picks alone for a new workflow", () => {
+    renderPickers();
+    act(() => filterButton("root-filter").click());
+    const before = filters["root-filter"];
+
+    act(() => filters["root-filter"].showAll());
+    expect(document.getElementById("root-filter")).not.toBeNull();
+    // The same picks, so nothing downstream sees a change.
+    expect(filters["root-filter"].status).toBe(before.status);
+    expect(filters["root-filter"].types).toBe(before.types);
+  });
+
   it("returns the same list while no filter is on", () => {
     renderPickers();
     expect(applyPickerFilter(workflows, filters["root-filter"])).toBe(

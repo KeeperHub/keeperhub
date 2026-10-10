@@ -523,6 +523,7 @@ export function NavigationSidebar(): React.ReactNode {
   }, [isPending, session, fetchData]);
 
   const clearRootFilter = rootFilter.clear;
+  const showAllRootWorkflows = rootFilter.showAll;
   const clearProjectFilter = projectFilter.clear;
 
   useEffect(
@@ -537,11 +538,20 @@ export function NavigationSidebar(): React.ReactNode {
           clearRootFilter();
           clearProjectFilter();
         }
+        if (options?.workflowCreated) {
+          showAllRootWorkflows();
+        }
         fetchData({ clearOnFailure: options?.orgChanged }).catch(() => {
           /* intentional noop */
         });
       }),
-    [fetchData, navState.closeAll, clearRootFilter, clearProjectFilter]
+    [
+      fetchData,
+      navState.closeAll,
+      clearRootFilter,
+      clearProjectFilter,
+      showAllRootWorkflows,
+    ]
   );
 
   // Validate persisted selections after data loads
@@ -772,9 +782,9 @@ export function NavigationSidebar(): React.ReactNode {
         nodes: [],
         edges: [],
       });
-      // The new workflow is outside any project; it shows even if the
-      // Workflows panel's filter would hide it.
-      clearRootFilter();
+      // Same as refetchSidebar({ workflowCreated: true }), awaited so the
+      // list holds the new workflow before the panel opens on it.
+      showAllRootWorkflows();
       await fetchData();
       navState.setPanelState("projects", "open");
       sessionStorage.setItem("animate-sidebar", "true");
@@ -787,9 +797,9 @@ export function NavigationSidebar(): React.ReactNode {
       nodes: [],
       edges: [],
     });
-    // The new workflow is outside any project; it shows even if the
-    // Workflows panel's filter would hide it.
-    clearRootFilter();
+    // Same as refetchSidebar({ workflowCreated: true }), awaited so the
+    // list holds the new workflow before the panel opens on it.
+    showAllRootWorkflows();
     await fetchData();
     navState.setPanelState("projects", "open");
     sessionStorage.setItem("animate-sidebar", "true");

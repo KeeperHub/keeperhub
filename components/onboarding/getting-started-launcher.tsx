@@ -526,7 +526,7 @@ export function GettingStartedLauncher({
         id = workflow.id;
         gs.setStepWorkflowId(key, id);
         // Surface the freshly created workflow in the sidebar list immediately.
-        refetchSidebar();
+        refetchSidebar({ workflowCreated: true });
       } catch {
         toast.error("Could not start a workflow.");
         return;
@@ -581,7 +581,7 @@ export function GettingStartedLauncher({
         id = workflow.id;
         gs.setStepWorkflowId(key, id);
         // The new clone won't appear in the sidebar list until it refetches.
-        refetchSidebar();
+        refetchSidebar({ workflowCreated: true });
       } catch (error) {
         console.error(
           `[GettingStarted] Failed to clone starter workflow ${chip.workflowId}`,

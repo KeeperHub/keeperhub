@@ -9,6 +9,7 @@ import {
 import { waitForCanvas } from "./utils/workflow";
 
 const ENABLE_BUTTON_REGEX = /^(Enable|Disable) workflow$/;
+const NEW_WORKFLOW_URL_REGEX = /\/workflows\/[^/]+$/;
 
 // The Workflows flyout, labelled with its title (FlyoutPanel is a section).
 function workflowsPanel(page: Page): Locator {
@@ -495,5 +496,51 @@ test.describe("Sidebar trigger status icons", () => {
     await panel.getByTestId("trigger-filter-button").click();
     await expect(panel.getByTestId("trigger-filters")).toHaveCount(0);
     await expect(manualRow).toBeVisible();
+  });
+
+  test("a new workflow shows in the filtered Workflows panel, which keeps its row", async ({
+    page,
+  }) => {
+    const stamp = Date.now();
+    const live = await createTestWorkflow(PERSISTENT_TEST_USER_EMAIL, {
+      name: `root-filter-new-live-${stamp}`,
+      triggerType: "schedule",
+      cronExpression: "*/5 * * * *",
+      enabled: true,
+    });
+    created.push(live.id);
+
+    await page.goto("/workflows", { waitUntil: "domcontentloaded" });
+    await openWorkflowPicker(page, live.name);
+    const panel = workflowsPanel(page);
+    const filterButton = panel.getByTestId("trigger-filter-button");
+
+    // An open row with nothing picked stays open.
+    await filterButton.click();
+    await expect(panel.getByTestId("trigger-filters")).toBeVisible();
+    await page.getByRole("button", { name: "New Workflow" }).click();
+    await page.waitForURL(NEW_WORKFLOW_URL_REGEX);
+    created.push(new URL(page.url()).pathname.split("/").pop() ?? "");
+    await expect(filterButton).toHaveAttribute("aria-expanded", "true");
+
+    // A new workflow is disabled; a filter for enabled ones lets it through.
+    await panel.getByTestId("status-filter").click();
+    await pickInMenu(page, "enabled");
+    await closeMenu(page);
+    await expect(filterButton).toHaveAttribute("data-filtered", "true");
+    await page.getByRole("button", { name: "New Workflow" }).click();
+    await page.waitForURL(
+      (url) =>
+        NEW_WORKFLOW_URL_REGEX.test(url.pathname) &&
+        !created.includes(url.pathname.split("/").pop() ?? "")
+    );
+    const newId = new URL(page.url()).pathname.split("/").pop() ?? "";
+    created.push(newId);
+    await expect(filterButton).not.toHaveAttribute("data-filtered", "true");
+    await expect(panel.getByTestId("trigger-filters")).toBeVisible();
+    // The open workflow's row is the new one.
+    await expect(
+      panel.locator('[data-testid="workflow-picker-item"][aria-current="page"]')
+    ).toContainText("Untitled Workflow");
   });
 });

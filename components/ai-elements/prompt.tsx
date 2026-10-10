@@ -18,6 +18,7 @@ import {
   pendingAiPromptAtom,
   selectedNodeAtom,
 } from "@/lib/workflow/store";
+import { refetchSidebar } from "@/lib/refetch-sidebar";
 
 type AIPromptProps = {
   workflowId?: string;
@@ -214,6 +215,7 @@ export function AIPrompt({ workflowId, onWorkflowCreated }: AIPromptProps): Reac
             edges: finalEdges,
           });
 
+          refetchSidebar({ workflowCreated: true });
           // State already updated by streaming callback
           setCurrentWorkflowId(newWorkflow.id);
 

@@ -120,6 +120,11 @@ dot; clicking it then clears the filters and hides the row in one go
 open and their headers turn into plain text. An empty result names the filters and offers
 "Show all workflows".
 
+A filter clears when its panel closes or the organization changes. Creating
+a workflow (New Workflow, a template, a hub action, a scan suggestion,
+onboarding) drops the Workflows panel's picks so the new workflow is
+listed; the row, if open, stays open and focus stays where it was.
+
 Dimmed text and grey icons step up on hover as on the open row. On keyboard
 focus, after the same 400ms, a row's icon tooltip opens only when it has
 something the row cannot show: a cut-off name in full, or why and when it
