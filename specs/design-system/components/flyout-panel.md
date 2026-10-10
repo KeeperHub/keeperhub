@@ -47,7 +47,7 @@ interface FlyoutPanelProps {
   accentColor?: string;
   // A size-6 button in the open header's left slot, which otherwise holds an
   // empty spacer balancing the collapse chevron, so the title keeps its full
-  // width and stays centred. The project panel puts its filter button here.
+  // width and stays centred. Both workflow panels put their filter button here.
   headerLeading?: ReactNode;
   onCollapse: () => void;
   onExpand: () => void;
@@ -56,7 +56,7 @@ interface FlyoutPanelProps {
 ```
 
 The open panel is a `<section>` labelled with its title (not `role="menu"`),
-since the project panel holds filter menus.
+since the workflow panels hold filter menus.
 
 ## States
 

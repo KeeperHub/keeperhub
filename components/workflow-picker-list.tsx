@@ -281,6 +281,30 @@ function GroupHeader({
   );
 }
 
+// What a list says when a trigger filter leaves nothing in it, with a way
+// back to every workflow instead of a dead end.
+export function FilteredEmpty({
+  text,
+  onReset,
+}: {
+  text: string;
+  onReset: () => void;
+}): React.ReactNode {
+  return (
+    <div className="flex flex-col items-center gap-1 py-4 text-sm">
+      <p className="text-center text-muted-foreground">{text}</p>
+      <button
+        className="rounded-sm text-foreground underline underline-offset-4 hover:text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-foreground/60"
+        data-testid="trigger-filter-reset"
+        onClick={onReset}
+        type="button"
+      >
+        Show all workflows
+      </button>
+    </div>
+  );
+}
+
 export function TagsPanel({
   projectTags,
   workflowsByTagId,
@@ -323,21 +347,7 @@ export function TagsPanel({
 
   if (!hasAny) {
     if (onResetFilter) {
-      return (
-        <div className="flex flex-col items-center gap-1 py-4 text-sm">
-          <p className="text-center text-muted-foreground">
-            {filteredEmptyText}
-          </p>
-          <button
-            className="rounded-sm text-foreground underline underline-offset-4 hover:text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-foreground/60"
-            data-testid="trigger-filter-reset"
-            onClick={onResetFilter}
-            type="button"
-          >
-            Show all workflows
-          </button>
-        </div>
-      );
+      return <FilteredEmpty onReset={onResetFilter} text={filteredEmptyText} />;
     }
     return (
       <p className="py-4 text-center text-muted-foreground text-sm">

@@ -144,18 +144,18 @@ function handleEscape(
   }
 }
 
-// The row of filter menus that the filter button shows and hides.
-export const TRIGGER_FILTER_PANEL_ID = "workflow-trigger-filter";
-
 export function TriggerFilterButton({
   open,
   onToggle,
+  controls,
   ref,
   disabled = false,
   filtered = false,
 }: {
   open: boolean;
   onToggle: () => void;
+  // The id of the row of filter menus that the button shows and hides.
+  controls?: string;
   ref?: React.Ref<HTMLButtonElement>;
   // While the workflows load there is nothing to filter yet.
   disabled?: boolean;
@@ -175,7 +175,7 @@ export function TriggerFilterButton({
     <Tooltip delayDuration={TOOLTIP_DELAY_MS}>
       <TooltipTrigger asChild>
         <button
-          aria-controls={open ? TRIGGER_FILTER_PANEL_ID : undefined}
+          aria-controls={open ? controls : undefined}
           aria-expanded={open}
           aria-label={filtered ? "Filter, filters on" : "Filter"}
           className={cn(

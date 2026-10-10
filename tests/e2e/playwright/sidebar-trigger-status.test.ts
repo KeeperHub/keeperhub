@@ -35,6 +35,12 @@ async function openProject(page: Page, name: string): Promise<void> {
   await workflowsPanel(page).getByRole("button", { name }).click();
 }
 
+// A project's flyout, labelled with the project's name. The Workflows flyout
+// beside it has a filter of its own, so filter controls are found per panel.
+function projectPanel(page: Page, name: string): Locator {
+  return page.getByRole("region", { name });
+}
+
 // An entry in the open filter menu, by its value ("enabled", "Manual").
 function filterMenuItem(page: Page, value: string): Locator {
   return page.locator(`[role="menuitemcheckbox"][data-filter="${value}"]`);
@@ -240,6 +246,7 @@ test.describe("Sidebar trigger status icons", () => {
     await page.goto("/workflows", { waitUntil: "domcontentloaded" });
     await openWorkflowPicker(page, project.name);
     await openProject(page, project.name);
+    const panel = projectPanel(page, project.name);
 
     const liveRow = pickerRow(page, live.name);
     const manualRow = pickerRow(page, manual.name);
@@ -251,9 +258,9 @@ test.describe("Sidebar trigger status icons", () => {
     );
     await dismissTooltip(page);
 
-    await page.getByTestId("trigger-filter-button").click();
-    const statusButton = page.getByTestId("status-filter");
-    const typeButton = page.getByTestId("trigger-type-filter");
+    await panel.getByTestId("trigger-filter-button").click();
+    const statusButton = panel.getByTestId("status-filter");
+    const typeButton = panel.getByTestId("trigger-type-filter");
     await expect(statusButton).toHaveAccessibleName("Status: All");
 
     // Status: Enabled.
@@ -291,7 +298,7 @@ test.describe("Sidebar trigger status icons", () => {
     await expect(liveRow).toHaveCount(0);
     await expect(manualRow).toHaveCount(0);
 
-    await page.getByTestId("trigger-filter-reset").click();
+    await panel.getByTestId("trigger-filter-reset").click();
     await expect(statusButton).toHaveAccessibleName("Status: All");
     await expect(typeButton).toHaveAccessibleName("Trigger: All");
     await expect(liveRow).toBeVisible();
@@ -379,9 +386,10 @@ test.describe("Sidebar trigger status icons", () => {
     await page.goto("/workflows", { waitUntil: "domcontentloaded" });
     await openWorkflowPicker(page, project.name);
     await openProject(page, project.name);
-    await page.getByTestId("trigger-filter-button").click();
+    const panel = projectPanel(page, project.name);
+    await panel.getByTestId("trigger-filter-button").click();
 
-    await page.getByTestId("trigger-type-filter").click();
+    await panel.getByTestId("trigger-type-filter").click();
     await filterMenuItem(page, "Manual").click();
     await closeMenu(page);
     const rows = page
@@ -390,28 +398,102 @@ test.describe("Sidebar trigger status icons", () => {
     await expect(rows).toHaveCount(10);
 
     await rows.last().scrollIntoViewIfNeeded();
-    await expect(page.getByTestId("trigger-filters")).toBeInViewport();
-    await expect(page.getByTestId("trigger-filter-button")).toHaveAttribute(
+    await expect(panel.getByTestId("trigger-filters")).toBeInViewport();
+    await expect(panel.getByTestId("trigger-filter-button")).toHaveAttribute(
       "data-filtered",
       "true"
     );
 
-    await page.getByTestId("trigger-filter-clear").click();
+    await panel.getByTestId("trigger-filter-clear").click();
     await dismissTooltip(page);
     await expect(rows).toHaveCount(20);
-    await expect(page.getByTestId("trigger-filter-button")).not.toHaveAttribute(
-      "data-filtered",
-      "true"
-    );
+    await expect(
+      panel.getByTestId("trigger-filter-button")
+    ).not.toHaveAttribute("data-filtered", "true");
 
     // With a filter on, the filter button clears it and hides the row in
     // one go, so the row never hides while it is shortening the list.
-    await page.getByTestId("status-filter").click();
+    await panel.getByTestId("status-filter").click();
     await pickInMenu(page, "manual");
     await closeMenu(page);
     await expect(rows).toHaveCount(10);
-    await page.getByTestId("trigger-filter-button").click();
-    await expect(page.getByTestId("trigger-filters")).toHaveCount(0);
+    await panel.getByTestId("trigger-filter-button").click();
+    await expect(panel.getByTestId("trigger-filters")).toHaveCount(0);
     await expect(rows).toHaveCount(20);
+  });
+
+  test("the Workflows panel filters workflows outside any project and leaves projects alone", async ({
+    page,
+    apiRequest,
+  }) => {
+    const stamp = Date.now();
+    const projectResponse = await apiRequest.post("/api/projects", {
+      data: { name: `root-filter-project-${stamp}` },
+    });
+    expect(projectResponse.ok()).toBe(true);
+    const project = (await projectResponse.json()) as {
+      id: string;
+      name: string;
+    };
+    createdProjects.push(project.id);
+
+    const live = await createTestWorkflow(PERSISTENT_TEST_USER_EMAIL, {
+      name: `root-filter-live-${stamp}`,
+      triggerType: "schedule",
+      cronExpression: "*/5 * * * *",
+      enabled: true,
+    });
+    const manual = await createTestWorkflow(PERSISTENT_TEST_USER_EMAIL, {
+      name: `root-filter-manual-${stamp}`,
+      triggerType: "manual",
+    });
+    const inProject = await createTestWorkflow(PERSISTENT_TEST_USER_EMAIL, {
+      name: `root-filter-in-project-${stamp}`,
+      triggerType: "manual",
+    });
+    created.push(live.id, manual.id, inProject.id);
+    const moved = await apiRequest.patch(`/api/workflows/${inProject.id}`, {
+      data: { projectId: project.id },
+    });
+    expect(moved.ok()).toBe(true);
+
+    await page.goto("/workflows", { waitUntil: "domcontentloaded" });
+    await openWorkflowPicker(page, live.name);
+    const panel = workflowsPanel(page);
+    const liveRow = pickerRow(page, live.name);
+    const manualRow = pickerRow(page, manual.name);
+    const projectButton = panel.getByRole("button", { name: project.name });
+    await expect(manualRow).toBeVisible();
+
+    await panel.getByTestId("trigger-filter-button").click();
+    await panel.getByTestId("status-filter").click();
+    await pickInMenu(page, "enabled");
+    await closeMenu(page);
+
+    // Only the workflows outside any project are filtered.
+    await expect(liveRow).toBeVisible();
+    await expect(manualRow).toHaveCount(0);
+    await expect(projectButton).toBeVisible();
+    await expect(panel.getByTestId("trigger-filter-button")).toHaveAttribute(
+      "data-filtered",
+      "true"
+    );
+
+    // A project opened beside it starts with its own filter off.
+    await openProject(page, project.name);
+    const projectFilterButton = projectPanel(page, project.name).getByTestId(
+      "trigger-filter-button"
+    );
+    await expect(projectFilterButton).not.toHaveAttribute(
+      "data-filtered",
+      "true"
+    );
+    await expect(pickerRow(page, inProject.name)).toBeVisible();
+    await expect(manualRow).toHaveCount(0);
+
+    // With a filter on, the button clears it and hides the row in one go.
+    await panel.getByTestId("trigger-filter-button").click();
+    await expect(panel.getByTestId("trigger-filters")).toHaveCount(0);
+    await expect(manualRow).toBeVisible();
   });
 });

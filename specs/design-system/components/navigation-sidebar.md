@@ -72,16 +72,30 @@ to `foreground/55`. Tooltips open after 400ms. Status and trigger detail are
 read to screen readers from a hidden span; the visible label is
 `aria-hidden`.
 
-## Project Panel Filter
+## Workflow Filters
 
-The filter button (left of the project title) opens a row pinned to the top
-of the list with two dropdown filters and no search:
+Both flyout panels that list workflows have a filter button left of their
+title: the Workflows panel and a project's panel. Each panel keeps its own
+filter.
+
+- **Workflows panel**: the filter narrows the workflows outside any project
+  ("Other Workflows"). The project list above them is never filtered, and
+  its counts stay the full counts. The button is disabled when there are no
+  workflows outside a project. An empty result shows under the "Other
+  Workflows" header.
+- **Project panel**: the filter narrows that project's workflows. Opening
+  another project drops it.
+
+Closing a panel, any way at all, drops its filter.
+
+The filter button opens a row pinned to the top of the list with two
+dropdown filters and no search:
 
 - **Status**: Enabled, Disabled, Manual. Disabled notes "Incl. N deactivated"
   in the deactivated amber when KeeperHub turned any of its workflows off.
 - **Trigger**: every trigger type, each with the row's icon tile, always
   grey (green would read as a status). Pyth Price is listed only when a
-  workflow in the project uses it or it is picked.
+  workflow in the panel's list uses it or it is picked.
 
 Each menu is a list of checkboxes with counts (`foreground/70`; an entry
 that would empty the list dims its name, not its zero); it stays open while
@@ -102,8 +116,8 @@ collision boundary).
 
 While any filter is on, the row stays in view and the filter button shows a
 dot; clicking it then clears the filters and hides the row in one go
-(tooltip "Clear filters and hide"). Tag groups are held open and their
-headers turn into plain text. An empty result names the filters and offers
+(tooltip "Clear filters and hide"). In a project's panel, tag groups are held
+open and their headers turn into plain text. An empty result names the filters and offers
 "Show all workflows".
 
 Dimmed text and grey icons step up on hover as on the open row. On keyboard
