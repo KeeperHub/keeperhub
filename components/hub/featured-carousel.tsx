@@ -78,7 +78,7 @@ export function FeaturedCarousel({ workflows }: FeaturedCarouselProps) {
       }
 
       const duplicated = await api.workflow.duplicate(workflowId);
-      refetchSidebar();
+      refetchSidebar({ workflowCreated: true });
       toast.success("Workflow duplicated successfully");
       router.push(`/workflows/${duplicated.id}`);
     } catch (error) {

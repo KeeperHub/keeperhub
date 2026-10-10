@@ -29,6 +29,7 @@ import {
   integrationsLoadedAtom,
   integrationsVersionAtom,
 } from "@/lib/integrations-store";
+import { refetchSidebar } from "@/lib/refetch-sidebar";
 import type { IntegrationType } from "@/lib/types/integration";
 import {
   currentExecutionIdAtom,
@@ -1094,6 +1095,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
                         },
                       ],
                     });
+                    refetchSidebar({ workflowCreated: true });
                     router.replace(`/workflows/${newWorkflow.id}`);
                   } catch (error) {
                     console.error("Failed to create workflow:", error);

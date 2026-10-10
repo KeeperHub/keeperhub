@@ -30,17 +30,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { TruncatedTooltip } from "@/components/ui/truncated-tooltip";
-import {
-  TRIGGER_FILTER_PANEL_ID,
-  TriggerFilterButton,
-  TriggerFilters,
-} from "@/components/workflow-trigger-status";
 import { useIsMobile } from "@/hooks/use-mobile";
 import type { Project, SavedWorkflow } from "@/lib/api-client";
 import { api } from "@/lib/api-client";
 import { authClient, useSession } from "@/lib/auth-client";
 import { isEscapeFromOverlay, isEscapeHandled } from "@/lib/escape-key";
-import { useDebounce } from "@/lib/hooks/use-debounce";
 import { useProjects, useTags } from "@/lib/hooks/use-org-data";
 import { useActiveMember } from "@/lib/hooks/use-organization";
 import type { NavPanelStates } from "@/lib/hooks/use-persisted-nav-state";
@@ -48,23 +42,19 @@ import { usePersistedNavState } from "@/lib/hooks/use-persisted-nav-state";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { createLatestRequest } from "@/lib/latest-request";
 import { registerSidebarRefetch } from "@/lib/refetch-sidebar";
-import { cn, toggleInSet } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { filterPickerVisible } from "@/lib/workflow/soft-delete";
-import {
-  countDeactivated,
-  countTriggerStatuses,
-  countTriggerTypes,
-  describeEmptyFilterResult,
-  getPickerTriggerType,
-  listedTriggerTypes,
-  matchesTriggerFilter,
-  matchesTriggerTypeFilter,
-  type TriggerFilter,
-  type TriggerTypeFilter,
-} from "@/lib/workflow/trigger-display";
+import { getPickerTriggerType } from "@/lib/workflow/trigger-display";
 import { getTriggerConfig } from "@/lib/workflow/trigger-display-key";
 import { FLYOUT_WIDTH, FlyoutPanel, STRIP_WIDTH } from "./flyout-panel";
 import {
+  applyPickerFilter,
+  PickerFilterButton,
+  PickerFilterRow,
+  usePickerFilter,
+} from "./workflow-picker-filter";
+import {
+  FilteredEmpty,
   TagsPanel,
   type WorkflowEntry,
   WorkflowItem,
@@ -95,19 +85,9 @@ function groupWorkflows(workflows: WorkflowEntry[]): {
   return { byProject, ungrouped };
 }
 
-// How long the result count must stay the same before it is announced.
-const ANNOUNCE_DELAY_MS = 400;
-
-// A polite live region that speaks only once the text has stopped changing
-// for a moment, so a quick run of filter picks is announced once.
-function DelayedAnnouncement({ text }: { text: string }): React.ReactNode {
-  const announced = useDebounce(text, ANNOUNCE_DELAY_MS);
-  return (
-    <p aria-live="polite" className="sr-only">
-      {announced}
-    </p>
-  );
-}
+// The rows of filter menus in the Workflows panel and in a project's panel.
+const ROOT_FILTER_ROW_ID = "workflow-root-filter";
+const PROJECT_FILTER_ROW_ID = "workflow-project-filter";
 
 function computePanelOffsets(
   sidebarWidth: number,
@@ -142,21 +122,31 @@ function computePanelOffsets(
 function ProjectsPanel({
   projects,
   ungrouped,
+  ungroupedTotal,
   byProject,
   activeWorkflowId,
   selectedProjectId,
   onSelectProject,
   loading,
   isAnonymous,
+  onResetFilter,
+  filteredEmptyText,
 }: {
   projects: Project[];
+  // The workflows outside any project that the filter lets through ...
   ungrouped: WorkflowEntry[];
+  // ... and how many there are before filtering.
+  ungroupedTotal: number;
   byProject: Record<string, WorkflowEntry[]>;
   activeWorkflowId: string | undefined;
   selectedProjectId: string | null;
   onSelectProject: (id: string) => void;
   loading: boolean;
   isAnonymous: boolean;
+  // Set while a trigger filter narrows the workflows outside any project;
+  // the filter leaves the project list as it is.
+  onResetFilter?: () => void;
+  filteredEmptyText: string;
 }): React.ReactNode {
   if (loading) {
     return (
@@ -166,7 +156,7 @@ function ProjectsPanel({
     );
   }
 
-  const hasAny = projects.length > 0 || ungrouped.length > 0;
+  const hasAny = projects.length > 0 || ungroupedTotal > 0;
 
   if (!hasAny) {
     return (
@@ -211,7 +201,7 @@ function ProjectsPanel({
         );
       })}
 
-      {ungrouped.length > 0 && (
+      {ungroupedTotal > 0 && (
         <>
           {projects.length > 0 && (
             <>
@@ -228,6 +218,9 @@ function ProjectsPanel({
               workflow={w}
             />
           ))}
+          {ungrouped.length === 0 && onResetFilter && (
+            <FilteredEmpty onReset={onResetFilter} text={filteredEmptyText} />
+          )}
         </>
       )}
       {isAnonymous && hasAny && (
@@ -468,15 +461,10 @@ export function NavigationSidebar(): React.ReactNode {
   const { data: projects } = useProjects();
   const { data: tags } = useTags();
   const [dataLoading, setDataLoading] = useState(true);
-  const [triggerFilter, setTriggerFilter] = useState<TriggerFilter>(
-    () => new Set()
-  );
-  const [triggerTypeFilter, setTriggerTypeFilter] = useState<TriggerTypeFilter>(
-    () => new Set()
-  );
-  const [triggerFilterOpen, setTriggerFilterOpen] = useState(false);
-  const filterButtonRef = useRef<HTMLButtonElement>(null);
-  const isPickerFiltered = triggerFilter.size > 0 || triggerTypeFilter.size > 0;
+  // Each panel filters its own list: the Workflows panel the workflows
+  // outside any project, a project's panel that project's workflows.
+  const rootFilter = usePickerFilter(navState.state.panels.projects);
+  const projectFilter = usePickerFilter(navState.state.panels.tags);
   // A reply that lands after a newer list request was sent is dropped rather
   // than put back over the newer list.
   const latestFetch = useRef(createLatestRequest());
@@ -534,21 +522,9 @@ export function NavigationSidebar(): React.ReactNode {
     });
   }, [isPending, session, fetchData]);
 
-  // Drops both filters and hides the filter row.
-  const clearPickerFilters = useCallback((): void => {
-    setTriggerFilter(new Set());
-    setTriggerTypeFilter(new Set());
-    setTriggerFilterOpen(false);
-  }, []);
-
-  // Closing the project panel any way at all (Escape, clicking outside, the
-  // close button, re-clicking the project) drops the filters.
-  const tagsPanelState = navState.state.panels.tags;
-  useEffect(() => {
-    if (tagsPanelState === "closed") {
-      clearPickerFilters();
-    }
-  }, [tagsPanelState, clearPickerFilters]);
+  const clearRootFilter = rootFilter.clear;
+  const showAllRootWorkflows = rootFilter.showAll;
+  const clearProjectFilter = projectFilter.clear;
 
   useEffect(
     () =>
@@ -556,11 +532,26 @@ export function NavigationSidebar(): React.ReactNode {
         if (options?.closeFlyout) {
           navState.closeAll();
         }
+        // An org switch keeps the panels open; a filter belongs to the
+        // workflows it was set on.
+        if (options?.orgChanged) {
+          clearRootFilter();
+          clearProjectFilter();
+        }
+        if (options?.workflowCreated) {
+          showAllRootWorkflows();
+        }
         fetchData({ clearOnFailure: options?.orgChanged }).catch(() => {
           /* intentional noop */
         });
       }),
-    [fetchData, navState.closeAll]
+    [
+      fetchData,
+      navState.closeAll,
+      clearRootFilter,
+      clearProjectFilter,
+      showAllRootWorkflows,
+    ]
   );
 
   // Validate persisted selections after data loads
@@ -712,46 +703,11 @@ export function NavigationSidebar(): React.ReactNode {
   const selectedProjectId = navState.state.selectedProjectId;
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
   const allProjectWorkflows = byProject[selectedProjectId ?? ""] ?? [];
-  // Each menu counts the workflows the other menu lets through, so its
-  // numbers say what picking an entry would show.
-  const typeFiltered = allProjectWorkflows.filter((w) =>
-    matchesTriggerTypeFilter(w, triggerTypeFilter)
-  );
-  const statusCounts = countTriggerStatuses(typeFiltered);
-  const typeMatches = allProjectWorkflows.filter((w) =>
-    matchesTriggerFilter(w, triggerFilter)
-  );
-  const typeCounts = countTriggerTypes(typeMatches);
-  const listedTypes = listedTriggerTypes(
+  const projectWorkflows = applyPickerFilter(
     allProjectWorkflows,
-    triggerTypeFilter
+    projectFilter
   );
-  const projectWorkflows = typeMatches.filter((w) =>
-    matchesTriggerTypeFilter(w, triggerTypeFilter)
-  );
-  // Escape on a menu button hides an unused row; it never throws away picks
-  // (a second, habitual Escape after closing a menu would), so with a filter
-  // on it does nothing and the × or the filter button clears them.
-  const onFilterEscape = (): void => {
-    if (!isPickerFiltered) {
-      setTriggerFilterOpen(false);
-      filterButtonRef.current?.focus();
-    }
-  };
-  // The filter button: with a filter on it clears the filters and hides the
-  // row in one go, so the row never hides while it is shortening the list.
-  const toggleFilterRow = (): void => {
-    if (triggerFilterOpen && isPickerFiltered) {
-      clearPickerFilters();
-      return;
-    }
-    setTriggerFilterOpen(!triggerFilterOpen);
-  };
-  const resetPickerFilter = (): void => {
-    setTriggerFilter(new Set());
-    setTriggerTypeFilter(new Set());
-    filterButtonRef.current?.focus();
-  };
+  const shownUngrouped = applyPickerFilter(ungrouped, rootFilter);
   const projectTagIds = new Set(
     projectWorkflows.filter((w) => w.tagId).map((w) => w.tagId)
   );
@@ -826,6 +782,9 @@ export function NavigationSidebar(): React.ReactNode {
         nodes: [],
         edges: [],
       });
+      // Same as refetchSidebar({ workflowCreated: true }), awaited so the
+      // list holds the new workflow before the panel opens on it.
+      showAllRootWorkflows();
       await fetchData();
       navState.setPanelState("projects", "open");
       sessionStorage.setItem("animate-sidebar", "true");
@@ -838,6 +797,9 @@ export function NavigationSidebar(): React.ReactNode {
       nodes: [],
       edges: [],
     });
+    // Same as refetchSidebar({ workflowCreated: true }), awaited so the
+    // list holds the new workflow before the panel opens on it.
+    showAllRootWorkflows();
     await fetchData();
     navState.setPanelState("projects", "open");
     sessionStorage.setItem("animate-sidebar", "true");
@@ -890,7 +852,7 @@ export function NavigationSidebar(): React.ReactNode {
     navState.setPanelState("tags", "open");
     navState.setPanelState("workflows", "closed");
     // A filter belongs to the project it was set in.
-    clearPickerFilters();
+    clearProjectFilter();
   }
 
   // NAV-01: render every nav item for everyone (anonymous, signed-out, signed-in).
@@ -1026,21 +988,43 @@ export function NavigationSidebar(): React.ReactNode {
         collapsedLabel={
           selectedProject ? `Workflows - ${selectedProject.name}` : "Workflows"
         }
+        headerLeading={
+          <PickerFilterButton
+            filter={rootFilter}
+            hasWorkflows={ungrouped.length > 0}
+            loading={dataLoading}
+            panelId={ROOT_FILTER_ROW_ID}
+            panelName="Workflows"
+          />
+        }
         leftOffset={offsets.projects}
         onCollapse={() => navState.setPanelState("projects", "collapsed")}
         onExpand={() => navState.setPanelState("projects", "open")}
         state={navState.state.panels.projects}
         title="Workflows"
       >
+        <PickerFilterRow
+          filter={rootFilter}
+          loading={dataLoading}
+          panelId={ROOT_FILTER_ROW_ID}
+          panelName="Workflows"
+          shownCount={shownUngrouped.length}
+          workflows={ungrouped}
+        />
         <ProjectsPanel
           activeWorkflowId={workflowId}
           byProject={byProject}
+          // The project rows above are not filtered, so the message says
+          // which workflows it is about.
+          filteredEmptyText={`${rootFilter.emptyText} outside a project`}
           isAnonymous={isAnonymous}
           loading={dataLoading}
+          onResetFilter={rootFilter.isFiltered ? rootFilter.reset : undefined}
           onSelectProject={handleSelectProject}
           projects={projects}
           selectedProjectId={selectedProjectId}
-          ungrouped={ungrouped}
+          ungrouped={shownUngrouped}
+          ungroupedTotal={ungrouped.length}
         />
       </FlyoutPanel>
 
@@ -1050,12 +1034,12 @@ export function NavigationSidebar(): React.ReactNode {
           selectedProject ? `Projects - ${selectedProject.name}` : "Projects"
         }
         headerLeading={
-          <TriggerFilterButton
-            disabled={dataLoading || allProjectWorkflows.length === 0}
-            filtered={isPickerFiltered}
-            onToggle={toggleFilterRow}
-            open={triggerFilterOpen}
-            ref={filterButtonRef}
+          <PickerFilterButton
+            filter={projectFilter}
+            hasWorkflows={allProjectWorkflows.length > 0}
+            loading={dataLoading}
+            panelId={PROJECT_FILTER_ROW_ID}
+            panelName={selectedProject?.name ?? "Projects"}
           />
         }
         leftOffset={offsets.tags}
@@ -1064,50 +1048,22 @@ export function NavigationSidebar(): React.ReactNode {
         state={navState.state.panels.tags}
         title={selectedProject?.name ?? "Projects"}
       >
-        {triggerFilterOpen && !dataLoading && (
-          // Pinned to the top of the scrolling list, so the sign that a
-          // filter is on stays in view on long lists. The negative offsets
-          // cover the panel's p-2 padding.
-          <div
-            className="fade-in-0 slide-in-from-top-1 sticky -top-2 z-10 -mx-2 -mt-2 mb-1 animate-in border-b bg-background px-2 pt-2 duration-150 motion-reduce:animate-none"
-            id={TRIGGER_FILTER_PANEL_ID}
-          >
-            <TriggerFilters
-              deactivatedCount={countDeactivated(typeFiltered)}
-              listedTypes={listedTypes}
-              onClearAll={resetPickerFilter}
-              onClearStatus={() => setTriggerFilter(new Set())}
-              onClearTypes={() => setTriggerTypeFilter(new Set())}
-              onEscape={onFilterEscape}
-              onToggleStatus={(status) =>
-                setTriggerFilter((current) => toggleInSet(current, status))
-              }
-              onToggleType={(type) =>
-                setTriggerTypeFilter((current) => toggleInSet(current, type))
-              }
-              status={triggerFilter}
-              statusCounts={statusCounts}
-              typeCounts={typeCounts}
-              types={triggerTypeFilter}
-            />
-          </div>
-        )}
-        <DelayedAnnouncement
-          text={
-            isPickerFiltered
-              ? `${projectWorkflows.length} of ${allProjectWorkflows.length} workflows shown`
-              : ""
-          }
+        <PickerFilterRow
+          filter={projectFilter}
+          loading={dataLoading}
+          panelId={PROJECT_FILTER_ROW_ID}
+          panelName={selectedProject?.name ?? "Projects"}
+          shownCount={projectWorkflows.length}
+          workflows={allProjectWorkflows}
         />
         <TagsPanel
           activeWorkflowId={workflowId}
-          expandAll={isPickerFiltered}
-          filteredEmptyText={describeEmptyFilterResult(
-            triggerFilter,
-            triggerTypeFilter
-          )}
+          expandAll={projectFilter.isFiltered}
+          filteredEmptyText={projectFilter.emptyText}
           loading={dataLoading}
-          onResetFilter={isPickerFiltered ? resetPickerFilter : undefined}
+          onResetFilter={
+            projectFilter.isFiltered ? projectFilter.reset : undefined
+          }
           projectTags={projectTagsWithCounts}
           untaggedWorkflows={untaggedWorkflows}
           workflowsByTagId={projectWorkflowsByTagId}

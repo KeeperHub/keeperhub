@@ -16,6 +16,9 @@ type RefetchOptions = {
   // The active organization changed: a list that fails to load must not
   // leave the previous organization's workflows on screen.
   orgChanged?: boolean;
+  // A workflow was just created outside any project: the Workflows panel
+  // drops its filter so the new workflow is listed whatever its trigger.
+  workflowCreated?: boolean;
 };
 
 type RefetchCallback = (options?: RefetchOptions) => void;

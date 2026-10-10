@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/sheet";
 import { WorkflowCanvas } from "@/components/workflow/workflow-canvas";
 import { getChainName } from "@/lib/chain-utils";
+import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { buildWorkflow } from "@/lib/scan/factory";
 import {
   addressFieldLabel,
@@ -298,6 +299,7 @@ export function SuggestionPreviewDrawer({
       const { id } = await persistSuggestion(activeSuggestion, mode, {
         defaultEmail: alertEmail,
       });
+      refetchSidebar({ workflowCreated: true });
       toast.success("Workflow saved!");
       router.push(`/workflows/${id}`);
     } catch (err) {
