@@ -7,6 +7,10 @@ import {
   directExecutions,
 } from "@/lib/db/schema";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import {
+  directExecutionEventColumns,
+  writeDirectExecutionStatus,
+} from "@/lib/outbound-webhooks/direct-execution-events";
 import { generateId } from "@/lib/utils/id";
 import type { RevertKind } from "@/lib/web3/decode-revert-error";
 import {
@@ -143,25 +147,28 @@ export async function completeExecution(
 
   const isTerminal = status !== "unconfirmed";
 
-  await db
-    .update(directExecutions)
-    .set({
-      status,
-      error: status === "completed" ? null : error,
-      transactionHash: result.transactionHash ?? null,
-      receipts,
-      gasUsedWei: result.gasUsedWei ?? null,
-      gasPriceWei: result.gasPriceWei ?? null,
-      estimatedCostUsd: result.estimatedCostUsd ?? null,
-      // biome-ignore lint/suspicious/noExplicitAny: jsonb column accepts arbitrary serializable data
-      output: (result.output ?? {}) as any,
-      // An unconfirmed execution has not completed, so it carries no
-      // completedAt. The reconciler finds rows that still need settling by
-      // status = 'unconfirmed' (lib/execute/reconcile-executions.ts), not by a
-      // null completedAt.
-      completedAt: isTerminal ? new Date() : null,
-    })
-    .where(eq(directExecutions.id, executionId));
+  await writeDirectExecutionStatus((tx) =>
+    tx
+      .update(directExecutions)
+      .set({
+        status,
+        error: status === "completed" ? null : error,
+        transactionHash: result.transactionHash ?? null,
+        receipts,
+        gasUsedWei: result.gasUsedWei ?? null,
+        gasPriceWei: result.gasPriceWei ?? null,
+        estimatedCostUsd: result.estimatedCostUsd ?? null,
+        // biome-ignore lint/suspicious/noExplicitAny: jsonb column accepts arbitrary serializable data
+        output: (result.output ?? {}) as any,
+        // An unconfirmed execution has not completed, so it carries no
+        // completedAt. The reconciler finds rows that still need settling by
+        // status = 'unconfirmed' (lib/execute/reconcile-executions.ts), not by a
+        // null completedAt.
+        completedAt: isTerminal ? new Date() : null,
+      })
+      .where(eq(directExecutions.id, executionId))
+      .returning(directExecutionEventColumns())
+  );
 
   return { status, error };
 }
@@ -283,25 +290,28 @@ export async function failExecution(
     failureOutput.errorClass = params.errorClass;
   }
 
-  await db
-    .update(directExecutions)
-    .set({
-      status,
-      error,
-      ...(params.transactionHash
-        ? { transactionHash: params.transactionHash }
-        : {}),
-      ...(receipts.length > 0 ? { receipts } : {}),
-      ...(Object.keys(failureOutput).length > 0
-        ? // biome-ignore lint/suspicious/noExplicitAny: jsonb column accepts arbitrary serializable data
-          { output: failureOutput as any }
-        : {}),
-      // The reconciler finds rows still needing settlement by
-      // status = 'unconfirmed' (lib/execute/reconcile-executions.ts); an
-      // unconfirmed row carries no completedAt because it has not finished.
-      completedAt: status === "failed" ? new Date() : null,
-    })
-    .where(eq(directExecutions.id, executionId));
+  await writeDirectExecutionStatus((tx) =>
+    tx
+      .update(directExecutions)
+      .set({
+        status,
+        error,
+        ...(params.transactionHash
+          ? { transactionHash: params.transactionHash }
+          : {}),
+        ...(receipts.length > 0 ? { receipts } : {}),
+        ...(Object.keys(failureOutput).length > 0
+          ? // biome-ignore lint/suspicious/noExplicitAny: jsonb column accepts arbitrary serializable data
+            { output: failureOutput as any }
+          : {}),
+        // The reconciler finds rows still needing settlement by
+        // status = 'unconfirmed' (lib/execute/reconcile-executions.ts); an
+        // unconfirmed row carries no completedAt because it has not finished.
+        completedAt: status === "failed" ? new Date() : null,
+      })
+      .where(eq(directExecutions.id, executionId))
+      .returning(directExecutionEventColumns())
+  );
 
   return { status };
 }

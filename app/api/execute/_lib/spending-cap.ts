@@ -21,6 +21,10 @@ import {
   sumOrgValueTodayWei,
 } from "@/lib/execute/value-ledger";
 import { logSecurityEvent } from "@/lib/logging";
+import {
+  directExecutionEventColumns,
+  writeDirectExecutionStatus,
+} from "@/lib/outbound-webhooks/direct-execution-events";
 import { generateId } from "@/lib/utils/id";
 
 export type SpendCapResult =
@@ -270,10 +274,17 @@ export async function checkAndReserveExecution(
     paygOverflow: params.paygOverflow,
   });
   if (charge.applicable && !charge.ok) {
-    await db
-      .update(directExecutions)
-      .set({ status: "failed", error: charge.message, completedAt: new Date() })
-      .where(eq(directExecutions.id, reserve.executionId));
+    await writeDirectExecutionStatus((tx) =>
+      tx
+        .update(directExecutions)
+        .set({
+          status: "failed",
+          error: charge.message,
+          completedAt: new Date(),
+        })
+        .where(eq(directExecutions.id, reserve.executionId))
+        .returning(directExecutionEventColumns())
+    );
     return { allowed: false, reason: charge.message };
   }
 

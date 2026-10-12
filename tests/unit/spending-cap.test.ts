@@ -113,18 +113,19 @@ vi.mock("@/lib/db", () => ({
             return Promise.resolve(undefined);
           },
         }),
+        // The reserved row is marked failed here when a PAYG charge is
+        // blocked, in its own transaction so its outbox event commits with it.
+        update: () => ({
+          set: (v: Record<string, unknown>) => ({
+            where: () => {
+              state.updated.push(v);
+              return { returning: () => Promise.resolve([]) };
+            },
+          }),
+        }),
       };
       return cb(tx);
     },
-    // The reserved row is marked failed here when a PAYG charge is blocked.
-    update: () => ({
-      set: (v: Record<string, unknown>) => ({
-        where: () => {
-          state.updated.push(v);
-          return Promise.resolve(undefined);
-        },
-      }),
-    }),
   },
 }));
 

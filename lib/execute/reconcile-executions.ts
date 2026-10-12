@@ -21,6 +21,10 @@ import {
 } from "@/lib/metrics/collectors/prometheus";
 import { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
+import {
+  directExecutionEventColumns,
+  writeDirectExecutionStatus,
+} from "@/lib/outbound-webhooks/direct-execution-events";
 import { DAY_MS } from "@/lib/utils/duration";
 import {
   describeVerificationFailure,
@@ -161,16 +165,18 @@ async function settle(
   receipts: DirectExecutionReceiptEntry[],
   error: string | null
 ): Promise<boolean> {
-  const updated = await db
-    .update(directExecutions)
-    .set({ status, error, receipts, completedAt: new Date() })
-    .where(
-      and(
-        eq(directExecutions.id, executionId),
-        eq(directExecutions.status, "unconfirmed")
+  const updated = await writeDirectExecutionStatus((tx) =>
+    tx
+      .update(directExecutions)
+      .set({ status, error, receipts, completedAt: new Date() })
+      .where(
+        and(
+          eq(directExecutions.id, executionId),
+          eq(directExecutions.status, "unconfirmed")
+        )
       )
-    )
-    .returning({ id: directExecutions.id });
+      .returning(directExecutionEventColumns())
+  );
   return updated.length > 0;
 }
 
