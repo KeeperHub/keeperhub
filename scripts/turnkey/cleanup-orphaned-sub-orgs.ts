@@ -39,6 +39,7 @@ import {
   type CreationActivity,
   collectCreationsByKey,
   createRateLimiter,
+  describeError,
   encodeBalanceOfCall,
   groupAddresses,
   hasNonZeroTokenAccount,
@@ -50,6 +51,7 @@ import {
   selectCandidates,
   type TokenAccount,
   type WalletAddresses,
+  withRetry,
 } from "./sub-org-cleanup";
 
 const TURNKEY_API_BASE_URL = "https://api.turnkey.com";
@@ -59,6 +61,8 @@ const RPC_BATCH_SIZE = 50;
 const RPC_ATTEMPTS = 3;
 const MAX_CONSECUTIVE_TURNKEY_ERRORS = 25;
 const PRINT_IDS_UP_TO = 5;
+const READ_ATTEMPTS = 5;
+const READ_RETRY_BASE_MS = 2000;
 
 type TurnkeyClient = ReturnType<Turnkey["apiClient"]>;
 
@@ -87,12 +91,20 @@ type Inspection =
   | { status: "ok"; subOrgId: string; addresses: WalletAddresses };
 
 function safeMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return redactAllUrls(message).slice(0, 300);
+  return redactAllUrls(describeError(error)).slice(0, 300);
 }
 
 function isNotFound(error: unknown): boolean {
   return safeMessage(error).includes("no organization found");
+}
+
+/** Turnkey reads are idempotent, so a dropped connection is retried. */
+function read<T>(call: () => Promise<T>): Promise<T> {
+  return withRetry(call, {
+    attempts: READ_ATTEMPTS,
+    baseDelayMs: READ_RETRY_BASE_MS,
+    shouldRetry: (error) => !isNotFound(error),
+  });
 }
 
 async function listSubOrgIds(
@@ -104,10 +116,15 @@ async function listSubOrgIds(
   let after: string | undefined;
   for (;;) {
     await limit();
-    const page = await client.getSubOrgIds({
-      organizationId,
-      paginationOptions: { limit: String(PAGE_SIZE), ...(after && { after }) },
-    });
+    const page = await read(() =>
+      client.getSubOrgIds({
+        organizationId,
+        paginationOptions: {
+          limit: String(PAGE_SIZE),
+          ...(after && { after }),
+        },
+      })
+    );
     const pageIds = page.organizationIds ?? [];
     ids.push(...pageIds);
     if (pageIds.length < PAGE_SIZE) {
@@ -126,19 +143,24 @@ async function listCreationActivities(
   let after: string | undefined;
   for (;;) {
     await limit();
-    const page = await client.getActivities({
-      organizationId,
-      filterByType: [
-        "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION",
-        "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION_V2",
-        "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION_V3",
-        "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION_V4",
-        "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION_V5",
-        "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION_V6",
-        "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION_V7",
-      ],
-      paginationOptions: { limit: String(PAGE_SIZE), ...(after && { after }) },
-    });
+    const page = await read(() =>
+      client.getActivities({
+        organizationId,
+        filterByType: [
+          "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION",
+          "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION_V2",
+          "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION_V3",
+          "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION_V4",
+          "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION_V5",
+          "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION_V6",
+          "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION_V7",
+        ],
+        paginationOptions: {
+          limit: String(PAGE_SIZE),
+          ...(after && { after }),
+        },
+      })
+    );
     const pageActivities = page.activities ?? [];
     activities.push(...(pageActivities as CreationActivity[]));
     if (pageActivities.length < PAGE_SIZE) {
@@ -411,16 +433,20 @@ async function main(): Promise<void> {
   const inspect = async (subOrgId: string): Promise<Inspection> => {
     try {
       await limit();
-      const { users } = await parent.getUsers({ organizationId: subOrgId });
+      const { users } = await read(() =>
+        parent.getUsers({ organizationId: subOrgId })
+      );
       if (!isOwnedSolelyByKey(users as SubOrgUser[], options.apiPublicKey)) {
         consecutiveErrors = 0;
         return { status: "not-owned" };
       }
       await limit();
-      const { accounts } = await parent.getWalletAccounts({
-        organizationId: subOrgId,
-        paginationOptions: { limit: String(PAGE_SIZE) },
-      });
+      const { accounts } = await read(() =>
+        parent.getWalletAccounts({
+          organizationId: subOrgId,
+          paginationOptions: { limit: String(PAGE_SIZE) },
+        })
+      );
       consecutiveErrors = 0;
       const addresses = groupAddresses(accounts ?? []);
       if (addresses.unsupported.length > 0) {

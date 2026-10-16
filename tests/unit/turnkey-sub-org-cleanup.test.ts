@@ -6,6 +6,7 @@ import {
   type CreationActivity,
   collectCreationsByKey,
   createRateLimiter,
+  describeError,
   encodeBalanceOfCall,
   groupAddresses,
   hasNonZeroTokenAccount,
@@ -14,6 +15,7 @@ import {
   parseHexQuantity,
   parseOptions,
   selectCandidates,
+  withRetry,
 } from "../../scripts/turnkey/sub-org-cleanup";
 
 const KEY =
@@ -476,5 +478,75 @@ describe("mapWithConcurrency", () => {
 
   it("returns an empty list for no items", async () => {
     expect(await mapWithConcurrency([], 3, async () => 1)).toEqual([]);
+  });
+});
+
+describe("describeError", () => {
+  it("appends the network cause code that fetch hides", () => {
+    const error = new TypeError("fetch failed", {
+      cause: Object.assign(new Error("socket hang up"), {
+        code: "ECONNRESET",
+      }),
+    });
+    expect(describeError(error)).toBe("fetch failed (ECONNRESET)");
+  });
+
+  it("returns the plain message when there is no cause code", () => {
+    expect(describeError(new Error("boom"))).toBe("boom");
+    expect(describeError("text")).toBe("text");
+  });
+});
+
+describe("withRetry", () => {
+  const noSleep = () => Promise.resolve();
+
+  it("retries until the call succeeds", async () => {
+    let calls = 0;
+    const result = await withRetry(
+      () => {
+        calls += 1;
+        return calls < 3
+          ? Promise.reject(new Error("fetch failed"))
+          : Promise.resolve("ok");
+      },
+      { attempts: 5, baseDelayMs: 10, sleep: noSleep }
+    );
+    expect(result).toBe("ok");
+    expect(calls).toBe(3);
+  });
+
+  it("waits longer after each failed attempt", async () => {
+    const waits: number[] = [];
+    await expect(
+      withRetry(() => Promise.reject(new Error("fetch failed")), {
+        attempts: 3,
+        baseDelayMs: 100,
+        sleep: (ms) => {
+          waits.push(ms);
+          return Promise.resolve();
+        },
+      })
+    ).rejects.toThrow("fetch failed");
+    expect(waits).toEqual([100, 200]);
+  });
+
+  it("does not retry an error the caller marks as final", async () => {
+    let calls = 0;
+    await expect(
+      withRetry(
+        () => {
+          calls += 1;
+          return Promise.reject(new Error("no organization found"));
+        },
+        {
+          attempts: 5,
+          baseDelayMs: 10,
+          sleep: noSleep,
+          shouldRetry: (error) =>
+            !String((error as Error).message).includes("no organization"),
+        }
+      )
+    ).rejects.toThrow("no organization found");
+    expect(calls).toBe(1);
   });
 });

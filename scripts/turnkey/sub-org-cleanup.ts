@@ -405,3 +405,49 @@ export async function mapWithConcurrency<T, R>(
   );
   return results;
 }
+
+/**
+ * Formats an error for the job log. Node's fetch reports network failures as
+ * a bare "fetch failed" and keeps the reason (ECONNRESET, ETIMEDOUT, ...) in
+ * `cause`, so the cause code is appended. URLs are left to the caller to
+ * redact.
+ */
+export function describeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = error instanceof Error ? error.cause : undefined;
+  const code =
+    cause && typeof cause === "object" && "code" in cause
+      ? String((cause as { code: unknown }).code)
+      : undefined;
+  return code ? `${message} (${code})` : message;
+}
+
+/**
+ * Retries a read with growing pauses. Only for idempotent calls: `shouldRetry`
+ * lets the caller stop on errors that will not change, such as a missing
+ * sub-org.
+ */
+export async function withRetry<T>(
+  call: () => Promise<T>,
+  options: {
+    attempts: number;
+    baseDelayMs: number;
+    shouldRetry?: (error: unknown) => boolean;
+    sleep?: (ms: number) => Promise<void>;
+  }
+): Promise<T> {
+  const sleep =
+    options.sleep ??
+    ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await call();
+    } catch (error) {
+      const retryable = options.shouldRetry?.(error) ?? true;
+      if (!retryable || attempt >= options.attempts) {
+        throw error;
+      }
+      await sleep(options.baseDelayMs * attempt);
+    }
+  }
+}
