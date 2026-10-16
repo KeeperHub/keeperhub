@@ -2031,6 +2031,123 @@ const web3Plugin: IntegrationPlugin = {
       ],
     },
     {
+      slug: "paid-request",
+      label: "Paid Request (x402)",
+      description:
+        "Call an HTTP endpoint that may require x402 payment. When the endpoint answers 402, the quoted USDC is paid on Base from the org's Turnkey wallet and the request is retried with the payment. Free responses pass through without signing. Disabled by default behind the action.paid-request feature flag.",
+      category: "Web3",
+      requiresCredentials: true,
+      egress: "user-destination",
+      stepFunction: "paidRequestStep",
+      stepImportPath: "paid-request",
+      outputFields: [
+        {
+          field: "success",
+          description: "Whether the request completed",
+        },
+        {
+          field: "paid",
+          description:
+            "Whether the endpoint answered 402 and was paid. False when the response was free.",
+        },
+        {
+          field: "status",
+          description: "HTTP status of the final response",
+        },
+        {
+          field: "data",
+          description: "Parsed body of the final response",
+        },
+        {
+          field: "amountUsdc",
+          description:
+            "USDC amount paid, present only when paid is true",
+        },
+        {
+          field: "payTo",
+          description:
+            "Payee address the quote paid to, present only when paid is true",
+        },
+        {
+          field: "error",
+          description: "Error message if the request failed",
+        },
+        {
+          field: "code",
+          description:
+            "Machine-readable error code: VALIDATION | FEATURE_DISABLED | LISTED_WORKFLOW | NO_WALLET | POLICY_BLOCKED | UPSTREAM | HTTP | UNKNOWN",
+        },
+      ],
+      configFields: [
+        {
+          key: "url",
+          label: "URL",
+          type: "template-input",
+          placeholder: "https://api.example.com/paid-endpoint",
+          example: "https://api.example.com/paid-endpoint",
+          required: true,
+        },
+        {
+          key: "method",
+          label: "Method",
+          type: "select",
+          options: [
+            { value: "GET", label: "GET" },
+            { value: "POST", label: "POST" },
+            { value: "PUT", label: "PUT" },
+            { value: "PATCH", label: "PATCH" },
+            { value: "DELETE", label: "DELETE" },
+          ],
+          defaultValue: "POST",
+        },
+        {
+          key: "headers",
+          label: "Headers",
+          type: "template-textarea",
+          valueFormat: "json",
+          placeholder: '{ "Content-Type": "application/json" }',
+          rows: 3,
+          helpTip:
+            "Request headers as a JSON object. The PAYMENT-SIGNATURE header is set automatically when a 402 is paid.",
+        },
+        {
+          key: "body",
+          label: "Body",
+          type: "template-textarea",
+          placeholder: '{"key": "value"}',
+          rows: 4,
+          helpTip: "Request body, sent verbatim. Ignored for GET and HEAD.",
+        },
+        {
+          key: "maxPriceUsdc",
+          label: "Max Price (USDC)",
+          type: "template-input",
+          placeholder: "0.25 or {{NodeName.maxPrice}}",
+          example: "0.25",
+          required: true,
+          helpTip:
+            "The maximum USDC this step will pay for one request. A quote at or above this is refused, and a 100 USDC per-payment ceiling applies regardless.",
+        },
+        {
+          key: "expectedPayTo",
+          label: "Expected Payee",
+          type: "template-input",
+          placeholder: "0x... (optional)",
+          helpTip:
+            "Optional. When set, only a quote paying to this address is accepted; any other payee is refused.",
+          isAddressField: true,
+        },
+        {
+          key: "timeout",
+          label: "Timeout (seconds)",
+          type: "template-input",
+          placeholder: "10",
+          helpTip:
+            "Per-request timeout in seconds. Defaults to 10, clamped to 1-30.",
+        },
+      ],
+    },
+    {
       slug: "sign-typed-data",
       label: "Sign Typed Data (EIP-712)",
       description:

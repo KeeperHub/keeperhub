@@ -13,12 +13,27 @@
  * EIP-3009 transfer/receive authorizations, governance delegations) are
  * REFUSED here - see checkSignableTypedData / FUND_MOVING_PRIMARY_TYPES.
  * This step signs with the org's creator EOA, which carries no signing
- * policy. Fund-moving payloads are signed only by the protected
+ * policy. Fund-moving payloads are otherwise signed only by the protected
  * agentic-wallet entrypoint (lib/agentic-wallet/sign.ts via
  * /api/agentic-wallet/sign), which binds payee and amount to a listed
  * workflow, tiers risk and caps daily spend. Workflow steps may reach it
  * over HMAC (plugins/agent-gateway); they must not sign these payloads
  * with the creator EOA or call the agentic signer in-process.
+ *
+ * EXCEPTION: the web3/paid-request step
+ * (plugins/web3/steps/paid-request-core.ts) is the one sanctioned place a
+ * workflow step signs a fund-moving authorization (EIP-3009
+ * TransferWithAuthorization) with the org wallet, and it is not a hole in
+ * this guard. It never signs a caller- or seller-supplied payload: it
+ * builds the authorization itself in lib/payments/x402/buyer.ts from the
+ * 402 quote AFTER validating the scheme (exact), network (Base), asset
+ * (Base USDC), amount (under the step's max price and a 100 USDC ceiling),
+ * payee (optional expected-payee match), and validity (the seller's
+ * maxTimeoutSeconds capped at 10 minutes) - the seller's `extra` and
+ * `asset` are never copied into the signature. It also refuses to run in
+ * marketplace-listed workflows, so a template cannot smuggle a drain past
+ * the author. Any other step that wants to sign fund-moving authorizations
+ * needs its own equivalent bounds; the denylist above stays the default.
  */
 import "server-only";
 

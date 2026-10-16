@@ -40,6 +40,9 @@ describe("feature registry", () => {
     expect(getFeatureForActionType("predge/read-signal")?.id).toBe(
       "action.predge-read-signal"
     );
+    expect(getFeatureForActionType("web3/paid-request")?.id).toBe(
+      "action.paid-request"
+    );
   });
 
   it("returns undefined for non-gated action types", () => {
@@ -49,7 +52,7 @@ describe("feature registry", () => {
 
   it("filters by category", () => {
     const workflowActions = getFeaturesByCategory("workflow-action");
-    expect(workflowActions.length).toBe(6);
+    expect(workflowActions.length).toBe(7);
     for (const feature of workflowActions) {
       expect(feature.category).toBe("workflow-action");
     }
@@ -147,5 +150,33 @@ describe("predge read-signal kill switch", () => {
   it("leaves the shared external-request gate untouched when disabled", () => {
     FEATURES[featureId].enabled = false;
     expect(isFeatureEnabled("action.external-request", "pro")).toBe(true);
+  });
+});
+
+describe("paid-request kill switch", () => {
+  const featureId: FeatureId = "action.paid-request";
+  const nodes = [{ id: "p1", actionType: "web3/paid-request" }];
+  const originalEnabled = FEATURES[featureId].enabled;
+
+  afterEach(() => {
+    FEATURES[featureId].enabled = originalEnabled;
+  });
+
+  it("is off by default and gates web3/paid-request for every plan", () => {
+    expect(FEATURES[featureId].enabled).toBe(false);
+    expect(FEATURES[featureId].requiredPlan).toBe("pro");
+    for (const plan of ["free", "pro", "business", "enterprise"] as const) {
+      const violations = validateWorkflowFeatures(nodes, plan);
+      expect(violations.map((v) => v.featureId)).toEqual([featureId]);
+      expect(violations[0]?.nodeIds).toEqual(["p1"]);
+    }
+  });
+
+  it("allows web3/paid-request for pro+ when enabled", () => {
+    FEATURES[featureId].enabled = true;
+    expect(validateWorkflowFeatures(nodes, "free")).toHaveLength(1);
+    for (const plan of ["pro", "business", "enterprise"] as const) {
+      expect(validateWorkflowFeatures(nodes, plan)).toEqual([]);
+    }
   });
 });
