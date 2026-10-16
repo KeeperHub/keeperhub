@@ -1,6 +1,6 @@
 "use client";
 
-import { type PrimitiveAtom, useAtomValue, useSetAtom } from "jotai";
+import { type PrimitiveAtom, useAtomValue, useSetAtom, useStore } from "jotai";
 import { loadable } from "jotai/utils";
 import { useCallback } from "react";
 import type { Project, Tag } from "@/lib/api-client";
@@ -30,6 +30,8 @@ const EMPTY: readonly never[] = [];
 type Loaded<T> = {
   data: T[];
   isLoading: boolean;
+  /** The request failed: the empty `data` is not a real answer. */
+  hasError: boolean;
   /** Reloads for every reader at once. Resolves on request, not on arrival. */
   refetch: () => Promise<void>;
 };
@@ -51,20 +53,31 @@ function read<T>(
   refetch: () => Promise<void>
 ): Loaded<T> {
   if (state.state === "hasData" && state.data != null) {
-    return { data: state.data, isLoading: false, refetch };
+    return { data: state.data, isLoading: false, hasError: false, refetch };
   }
   return {
     data: EMPTY as unknown as T[],
     isLoading: state.state !== "hasError",
+    hasError: state.state === "hasError",
     refetch,
   };
 }
 
-export function useOrganizationsData(): Loaded<OrganizationWithRole> {
-  return read(
-    useAtomValue(organizationsLoadable),
-    useRefresh(organizationsRefreshAtom)
-  );
+export function useOrganizationsData(): Loaded<OrganizationWithRole> & {
+  /** Reloads the list and resolves, once it arrives, to whether it loaded. */
+  reload: () => Promise<boolean>;
+} {
+  const refetch = useRefresh(organizationsRefreshAtom);
+  const store = useStore();
+  const reload = useCallback(async (): Promise<boolean> => {
+    await refetch();
+    try {
+      return (await store.get(organizationsAtom)) !== null;
+    } catch {
+      return false;
+    }
+  }, [refetch, store]);
+  return { ...read(useAtomValue(organizationsLoadable), refetch), reload };
 }
 
 export function useProjects(): Loaded<Project> {

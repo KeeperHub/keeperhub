@@ -2,8 +2,59 @@
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));
+/* 768-1023px: tablets, and windows narrowed to that. */
+@custom-variant tablet-width {
+  @media (width >= --theme(--breakpoint-md)) and (
+      width < --theme(--breakpoint-lg)
+    ) {
+    @slot;
+  }
+}
+/* A screen with no mouse (so no hover): a phone or a tablet. */
+@custom-variant touch {
+  @media not (pointer: fine) {
+    @slot;
+  }
+}
+/* The phone header and its menus: phones, and touch tablets below lg. */
+@custom-variant phone-ui {
+  @media (width < --theme(--breakpoint-md)) {
+    @slot;
+  }
+  @variant tablet-width {
+    @variant touch {
+      @slot;
+    }
+  }
+}
+/* The phone header, or a touch screen of any width: where nothing is shown
+   only on hover, and toast buttons are touch-sized. */
+@custom-variant touch-ui {
+  @variant phone-ui {
+    @slot;
+  }
+  @variant touch {
+    @slot;
+  }
+}
+/* A 768-1023px window with a mouse: the desktop header, beside the sidebar. */
+@custom-variant mouse-tablet {
+  @variant tablet-width {
+    @media (pointer: fine) {
+      @slot;
+    }
+  }
+}
 
 @theme inline {
+  /* 375px and 420px: the phone header's switcher and wallet (see
+     specs/design-system/components/navigation-sidebar.md). Like every
+     breakpoint they also step the container utility, whose uses all set a
+     max width of their own. */
+  --breakpoint-xs: 23.4375rem;
+  --breakpoint-wallet: 26.25rem;
+  /* The header org switcher's name gives way to initials below this. */
+  --container-org-name: 5.5rem;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-anek-latin);
@@ -581,4 +632,14 @@
 
 .driver-active [data-radix-popper-content-wrapper] {
   z-index: 1000000001 !important;
+}
+
+/* Toast actions on a phone or a touch screen of any width: a 36px target
+   (sonner's are 24px). More specific than sonner's own rule, so it wins over
+   it. */
+[data-sonner-toaster] [data-sonner-toast][data-styled="true"] [data-button] {
+  @variant touch-ui {
+    height: --spacing(9);
+    padding-inline: --spacing(3);
+  }
 }

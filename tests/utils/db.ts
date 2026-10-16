@@ -153,6 +153,65 @@ export async function getUserOrganizationId(
   }
 }
 
+/**
+ * Give a user one more organization, owned by them, for tests that switch
+ * between organizations. Remove it with removeTestOrganization.
+ */
+export async function addTestOrganization(
+  userEmail: string,
+  name: string
+): Promise<string> {
+  const sql = getDbConnection();
+  try {
+    const users = await sql`SELECT id FROM users WHERE email = ${userEmail}`;
+    if (users.length === 0) {
+      throw new Error(`User not found: ${userEmail}`);
+    }
+    const orgId = generateId();
+    const now = new Date();
+    await sql.begin(async (tx) => {
+      await tx`
+        INSERT INTO organization (id, name, slug, created_at)
+        VALUES (${orgId}, ${name}, ${`e2e-${orgId}`}, ${now})
+      `;
+      await tx`
+        INSERT INTO member (id, organization_id, user_id, role, created_at)
+        VALUES (${generateId()}, ${orgId}, ${users[0].id as string}, 'owner', ${now})
+      `;
+    });
+    return orgId;
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
+ * Remove an organization made by addTestOrganization. A session it was
+ * active in goes back to its user's seeded organization (owned, oldest
+ * first, as createTestWorkflow picks it), so later tests start there.
+ */
+export async function removeTestOrganization(orgId: string): Promise<void> {
+  const sql = getDbConnection();
+  try {
+    await sql.begin(async (tx) => {
+      await tx`
+        UPDATE sessions SET active_organization_id = (
+          SELECT organization_id FROM member
+          WHERE member.user_id = sessions.user_id
+            AND organization_id <> ${orgId}
+          ORDER BY (role = 'owner') DESC, created_at ASC
+          LIMIT 1
+        )
+        WHERE active_organization_id = ${orgId}
+      `;
+      await tx`DELETE FROM member WHERE organization_id = ${orgId}`;
+      await tx`DELETE FROM organization WHERE id = ${orgId}`;
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
 // ============================================================================
 // Workflow operations
 // ============================================================================

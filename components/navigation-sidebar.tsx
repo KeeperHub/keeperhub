@@ -1,26 +1,9 @@
 "use client";
 
-import {
-  Activity,
-  BarChart3,
-  Bookmark,
-  ChevronLeft,
-  ChevronRight,
-  Clock,
-  DollarSign,
-  Globe,
-  Info,
-  Loader2,
-  Plus,
-  Settings,
-  Workflow as WorkflowIcon,
-  X,
-} from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Plus, X } from "lucide-react";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
 import { useAuthPrompt } from "@/components/auth/provider";
-import { DiscordIcon } from "@/components/icons/discord-icon";
 import { GettingStartedLauncher } from "@/components/onboarding/getting-started-launcher";
 import { AddressBookOverlay } from "@/components/overlays/address-book-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
@@ -33,7 +16,7 @@ import { TruncatedTooltip } from "@/components/ui/truncated-tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
 import type { Project, SavedWorkflow } from "@/lib/api-client";
 import { api } from "@/lib/api-client";
-import { authClient, useSession } from "@/lib/auth-client";
+import { useSession } from "@/lib/auth-client";
 import { isEscapeFromOverlay, isEscapeHandled } from "@/lib/escape-key";
 import { useProjects, useTags } from "@/lib/hooks/use-org-data";
 import { useActiveMember } from "@/lib/hooks/use-organization";
@@ -47,6 +30,16 @@ import { filterPickerVisible } from "@/lib/workflow/soft-delete";
 import { getPickerTriggerType } from "@/lib/workflow/trigger-display";
 import { getTriggerConfig } from "@/lib/workflow/trigger-display-key";
 import { FLYOUT_WIDTH, FlyoutPanel, STRIP_WIDTH } from "./flyout-panel";
+import {
+  FOOTER_LINKS,
+  followNavItem,
+  isNavItemActive,
+  type NavItemDef,
+  NEW_WORKFLOW_LOOK,
+  runNewWorkflow,
+  SETTINGS_NAV_ITEM,
+  visibleNavItems,
+} from "./nav-items";
 import {
   applyPickerFilter,
   PickerFilterButton,
@@ -252,7 +245,10 @@ function SidebarHeader({
         aria-label="New Workflow"
         className={cn(
           expanded
-            ? "group/new flex items-center gap-1.5 whitespace-nowrap rounded-md border border-keeperhub-green/20 bg-keeperhub-green/10 px-2 py-1 text-keeperhub-green text-sm font-medium transition-all duration-200 hover:border-keeperhub-green/40 hover:bg-keeperhub-green/15 hover:shadow-[0_0_8px_rgba(0,255,100,0.08)] active:scale-[0.97]"
+            ? cn(
+                NEW_WORKFLOW_LOOK,
+                "group/new flex px-2 py-1 transition-all duration-200 hover:shadow-[0_0_8px_rgba(0,255,100,0.08)] active:scale-[0.97]"
+              )
             : "z-20 flex items-center justify-center text-keeperhub-green transition-colors hover:text-keeperhub-green-dark"
         )}
         data-testid="nav-new"
@@ -294,20 +290,6 @@ const ACTION_ITEM_IDS: ReadonlySet<string> = new Set([
   "address-book",
   "activity",
 ]);
-
-type NavItemDef = {
-  id: string;
-  icon: typeof Plus;
-  label: string;
-  href: string | null;
-  requireAuth: boolean;
-  // Visible only to organization owners/admins (the audit feed is gated the
-  // same way server-side).
-  adminOnly?: boolean;
-  // Visible only to organization owners (fund-moving surfaces like held
-  // payments; enforced server-side too).
-  ownerOnly?: boolean;
-};
 
 function NavItem({
   item,
@@ -375,73 +357,6 @@ function NavItem({
     </Tooltip>
   );
 }
-
-const NAV_ITEMS: NavItemDef[] = [
-  {
-    id: "hub",
-    icon: Globe,
-    label: "Hub",
-    href: "/hub",
-    requireAuth: false,
-  },
-  {
-    id: "workflows",
-    icon: WorkflowIcon,
-    label: "Workflows",
-    href: null,
-    requireAuth: false,
-  },
-  {
-    id: "analytics",
-    icon: BarChart3,
-    label: "Analytics",
-    href: "/analytics",
-    requireAuth: true,
-  },
-  {
-    id: "earnings",
-    icon: DollarSign,
-    label: "Earnings",
-    href: "/earnings",
-    requireAuth: true,
-  },
-  {
-    id: "held-payments",
-    icon: Clock,
-    label: "Held Payments",
-    href: "/held-payments",
-    requireAuth: true,
-    ownerOnly: true,
-  },
-  {
-    id: "address-book",
-    icon: Bookmark,
-    label: "Address Book",
-    href: null,
-    requireAuth: true,
-  },
-  {
-    // Visible to everyone and routable while signed-out: the page itself shows
-    // an in-page sign-in for guests, a labelled sample for members, and the
-    // real feed for owners/admins. So this is neither requireAuth nor adminOnly.
-    id: "activity",
-    icon: Activity,
-    label: "Activity",
-    href: "/activity",
-    requireAuth: false,
-  },
-];
-
-// Settings is a destination, not a workspace view, so it sits at the foot of
-// the nav column rather than among Hub / Workflows / Analytics -- above the
-// divider that starts the external links, but pushed clear of Activity.
-const SETTINGS_NAV_ITEM: NavItemDef = {
-  id: "settings",
-  icon: Settings,
-  label: "Settings",
-  href: "/settings",
-  requireAuth: true,
-};
 
 export function NavigationSidebar(): React.ReactNode {
   const isMobile = useIsMobile();
@@ -585,14 +500,7 @@ export function NavigationSidebar(): React.ReactNode {
 
   const workflowId =
     typeof params.workflowId === "string" ? params.workflowId : undefined;
-  const isWorkflowsPage =
-    pathname === "/workflows" || pathname.startsWith("/workflows/");
-  const isHubPage = pathname === "/hub";
-  const isAnalyticsPage = pathname === "/analytics";
-  const isEarningsPage = pathname === "/earnings";
-  const isHeldPaymentsPage = pathname === "/held-payments";
-  const isActivityPage = pathname === "/activity";
-  const isSettingsPage = pathname.startsWith("/settings");
+  const isSettingsPage = isNavItemActive(SETTINGS_NAV_ITEM.id, pathname);
 
   const expanded = navState.state.sidebar;
   const setExpanded = navState.setSidebar;
@@ -731,109 +639,39 @@ export function NavigationSidebar(): React.ReactNode {
   const showLabels = currentWidth >= SNAP_THRESHOLD;
   const offsets = computePanelOffsets(currentWidth, navState.state.panels);
 
-  function isActive(id: string): boolean {
-    // Route-based like every other item; the flyout state is not "you are here".
-    if (id === "workflows") {
-      return isWorkflowsPage;
-    }
-    if (id === "hub") {
-      return isHubPage;
-    }
-    if (id === "analytics") {
-      return isAnalyticsPage;
-    }
-    if (id === "earnings") {
-      return isEarningsPage;
-    }
-    if (id === "held-payments") {
-      return isHeldPaymentsPage;
-    }
-    if (id === "activity") {
-      return isActivityPage;
-    }
-    return false;
-  }
-
   async function handleNewWorkflow(): Promise<void> {
-    if (isAnonymous) {
-      if (!session) {
-        await authClient.signIn.anonymous();
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      const existing = await api.workflow
-        .getAll()
-        .catch(() => [] as SavedWorkflow[]);
-      const visible = existing.filter((w) => w.name !== "__current__");
-      if (visible.length > 0) {
-        // Anonymous users are capped at one workflow. Surface the cap so the
-        // click isn't silently a no-op visually, then drop them onto their
-        // existing workflow.
-        toast.info("Sign in to create more workflows.");
-        const latest = visible.sort(
-          (a, b) =>
-            new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-        )[0];
-        router.push(`/workflows/${latest.id}`);
-        return;
-      }
-      const newWorkflow = await api.workflow.create({
-        name: "Untitled Workflow",
-        description: "",
-        nodes: [],
-        edges: [],
-      });
-      // Same as refetchSidebar({ workflowCreated: true }), awaited so the
-      // list holds the new workflow before the panel opens on it.
-      showAllRootWorkflows();
-      await fetchData();
-      navState.setPanelState("projects", "open");
-      sessionStorage.setItem("animate-sidebar", "true");
-      router.push(`/workflows/${newWorkflow.id}`);
-      return;
-    }
-    const newWorkflow = await api.workflow.create({
-      name: "Untitled Workflow",
-      description: "",
-      nodes: [],
-      edges: [],
+    await runNewWorkflow({
+      isAnonymous,
+      hasSession: Boolean(session),
+      push: (href) => router.push(href),
+      onCreated: async (workflowId) => {
+        // Same as refetchSidebar({ workflowCreated: true }), awaited so the
+        // list holds the new workflow before the panel opens on it.
+        showAllRootWorkflows();
+        await fetchData();
+        navState.setPanelState("projects", "open");
+        sessionStorage.setItem("animate-sidebar", "true");
+        router.push(`/workflows/${workflowId}`);
+      },
     });
-    // Same as refetchSidebar({ workflowCreated: true }), awaited so the
-    // list holds the new workflow before the panel opens on it.
-    showAllRootWorkflows();
-    await fetchData();
-    navState.setPanelState("projects", "open");
-    sessionStorage.setItem("animate-sidebar", "true");
-    router.push(`/workflows/${newWorkflow.id}`);
   }
 
   function handleNavClick(item: NavItemDef): void {
-    // NAV-02: requireAuth items click-gate to the shared auth modal instead
-    // of routing to a 401 page when the user is signed-out or anonymous.
-    if (item.requireAuth && (!session?.user || isAnonymousUser(session.user))) {
-      openAuthPrompt({
-        action: `nav:${item.id}`,
-        redirectTo: item.href ?? undefined,
-      });
-      return;
-    }
-
-    if (item.id === "workflows") {
-      if (navState.state.panels.projects === "closed") {
-        navState.setPanelState("projects", "open");
-      } else {
-        navState.closeAll();
-      }
-      return;
-    }
-    if (item.id === "address-book") {
-      openOverlay(AddressBookOverlay);
-      return;
-    }
-    // Keep the workflows flyout open when moving between pages so the picker
-    // stays available instead of collapsing on every navigation.
-    if (item.href) {
-      router.push(item.href);
-    }
+    followNavItem(item, {
+      isAnonymous,
+      openAuthPrompt,
+      openWorkflows: () => {
+        if (navState.state.panels.projects === "closed") {
+          navState.setPanelState("projects", "open");
+        } else {
+          navState.closeAll();
+        }
+      },
+      openAddressBook: () => openOverlay(AddressBookOverlay),
+      // Keep the workflows flyout open when moving between pages so the
+      // picker stays available instead of collapsing on every navigation.
+      push: (href) => router.push(href),
+    });
   }
 
   function handleSelectProject(id: string): void {
@@ -858,9 +696,7 @@ export function NavigationSidebar(): React.ReactNode {
   // NAV-01: render every nav item for everyone (anonymous, signed-out, signed-in).
   // Click-gating for requireAuth items happens in handleNavClick. The exception
   // is adminOnly items (e.g. org Activity), hidden for non-owner/admin members.
-  const navItems = NAV_ITEMS.filter(
-    (item) => (!item.adminOnly || isAdmin) && (!item.ownerOnly || isOwner)
-  );
+  const navItems = visibleNavItems(isAdmin, isOwner);
 
   // NAV-03: branch on isPending FIRST. While the better-auth session resolves,
   // render a neutral skeleton with the same width as the fully-loaded sidebar
@@ -889,8 +725,8 @@ export function NavigationSidebar(): React.ReactNode {
         <SidebarHeader
           expanded={expanded}
           onNewWorkflow={() => {
-            handleNewWorkflow().catch(() => {
-              router.push("/");
+            handleNewWorkflow().catch((error: unknown) => {
+              console.error("[Sidebar] New Workflow", error);
             });
           }}
           onToggle={() => setExpanded(!expanded)}
@@ -903,7 +739,7 @@ export function NavigationSidebar(): React.ReactNode {
         >
           {navItems.map((item) => (
             <NavItem
-              active={isActive(item.id)}
+              active={isNavItemActive(item.id, pathname)}
               item={item}
               key={item.id}
               onClick={() => handleNavClick(item)}
@@ -923,20 +759,7 @@ export function NavigationSidebar(): React.ReactNode {
         <GettingStartedLauncher compact={!showLabels} />
 
         <div className="flex flex-col gap-1 border-t px-2.5 py-3">
-          {(
-            [
-              {
-                icon: DiscordIcon,
-                label: "Join Discord",
-                href: "https://discord.gg/keeperhub",
-              },
-              {
-                icon: Info,
-                label: "Documentation",
-                href: "https://docs.keeperhub.com",
-              },
-            ] as const
-          ).map((item) => {
+          {FOOTER_LINKS.map((item) => {
             const link = (
               <a
                 className={cn(

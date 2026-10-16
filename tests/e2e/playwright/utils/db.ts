@@ -12,6 +12,7 @@ export type {
   WorkflowTriggerType,
 } from "../../../utils/db";
 export {
+  addTestOrganization,
   createApiKey,
   createTestWorkflow,
   deleteApiKey,
@@ -20,6 +21,7 @@ export {
   getUserOrganizationId,
   getWorkflowWebhookUrl,
   PERSISTENT_TEST_USER_EMAIL,
+  removeTestOrganization,
   waitForWorkflowExecution,
 } from "../../../utils/db";
 
