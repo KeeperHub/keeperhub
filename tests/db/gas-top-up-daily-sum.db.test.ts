@@ -22,6 +22,7 @@ import {
   vi,
 } from "vitest";
 import { directExecutions, organization } from "../../lib/db/schema";
+import type { DirectExecutionStatus } from "../../lib/errors/execution-status";
 
 vi.mock("server-only", () => ({}));
 // tests/setup.ts globally stubs @/lib/db. The whole point here is the SQL.
@@ -42,7 +43,7 @@ const TWELVE_HOURS_AGO = new Date(NOW.getTime() - 12 * 60 * 60 * 1000);
 const YESTERDAY = new Date(Date.UTC(2026, 2, 9, 15));
 
 type TopUpRow = {
-  status: string;
+  status: DirectExecutionStatus;
   output?: Record<string, unknown>;
   createdAt?: Date;
   org?: string;

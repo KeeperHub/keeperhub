@@ -1,5 +1,6 @@
 import type { DirectExecutionReceiptEntry } from "@/lib/db/schema";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import type { DirectExecutionStatus } from "@/lib/errors/execution-status";
 import type { RevertKind } from "@/lib/web3/decode-revert-error";
 
 /**
@@ -9,13 +10,11 @@ import type { RevertKind } from "@/lib/web3/decode-revert-error";
  * retry, and a retry of a fund-moving action is the thing we most need to
  * avoid. Clients should keep polling; a reconciliation sweep settles the row to
  * completed or failed once the chain answers.
+ *
+ * The values are declared once, on DirectExecutionStatus, so the schema, the
+ * status writers and this API share one set.
  */
-export type ExecutionStatus =
-  | "pending"
-  | "running"
-  | "unconfirmed"
-  | "completed"
-  | "failed";
+export type ExecutionStatus = DirectExecutionStatus;
 
 export type ExecuteResponse = {
   executionId: string;

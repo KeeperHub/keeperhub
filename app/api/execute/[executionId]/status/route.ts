@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { directExecutions } from "@/lib/db/schema";
+import { isDirectExecutionTerminalStatus } from "@/lib/errors/execution-status";
 import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
@@ -16,7 +17,6 @@ import type { ExecutionStatusResponse } from "../../_lib/types";
 // Seconds a client should wait before polling status again while the execution
 // is still in flight. Terminal executions return 0 to tell clients to stop.
 const POLL_INTERVAL_HINT_SECONDS = 2;
-const TERMINAL_STATUSES = new Set(["completed", "failed"]);
 
 export async function GET(
   request: Request,
@@ -86,8 +86,8 @@ export async function GET(
   }
 
   const output = execution.output as Record<string, unknown> | null;
-  const status = execution.status as ExecutionStatusResponse["status"];
-  const pollIntervalHint = TERMINAL_STATUSES.has(status)
+  const status = execution.status;
+  const pollIntervalHint = isDirectExecutionTerminalStatus(status)
     ? 0
     : POLL_INTERVAL_HINT_SECONDS;
 

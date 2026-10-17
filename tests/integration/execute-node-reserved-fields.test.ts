@@ -96,6 +96,8 @@ vi.mock("@/lib/utils", async () => {
 
 vi.mock("@/lib/db/schema", () => ({
   integrations: { id: "id", organizationId: "organizationId" },
+  // Read when the direct-execution status writer module loads.
+  directExecutions: {},
 }));
 
 vi.mock("@/lib/db", () => ({

@@ -11,6 +11,8 @@ import {
 } from "@/lib/db/schema";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import {
+  DirectExecutionStatus,
+  type DirectExecutionTerminalStatus,
   type ErrorStatus,
   statusForErrorType,
 } from "@/lib/errors/execution-status";
@@ -21,6 +23,7 @@ import {
 } from "@/lib/metrics/collectors/prometheus";
 import { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
+import { setDirectExecutionStatus } from "@/lib/outbound-webhooks/direct-execution-events";
 import { DAY_MS } from "@/lib/utils/duration";
 import {
   describeVerificationFailure,
@@ -157,21 +160,16 @@ function toReceiptEntries(
 // settle it did not make - the same reason settleWorkflow reads `returning`.
 async function settle(
   executionId: string,
-  status: "completed" | "failed",
+  status: DirectExecutionTerminalStatus,
   receipts: DirectExecutionReceiptEntry[],
   error: string | null
 ): Promise<boolean> {
-  const updated = await db
-    .update(directExecutions)
-    .set({ status, error, receipts, completedAt: new Date() })
-    .where(
-      and(
-        eq(directExecutions.id, executionId),
-        eq(directExecutions.status, "unconfirmed")
-      )
-    )
-    .returning({ id: directExecutions.id });
-  return updated.length > 0;
+  const updated = await setDirectExecutionStatus(
+    executionId,
+    { status, error, receipts, completedAt: new Date() },
+    { from: [DirectExecutionStatus.UNCONFIRMED] }
+  );
+  return updated !== null;
 }
 
 // A settle that matched no row means another writer reached a verdict first;
@@ -179,7 +177,7 @@ async function settle(
 // did reach.
 function settledOutcome(
   settled: boolean,
-  verdict: "completed" | "failed"
+  verdict: DirectExecutionTerminalStatus
 ): SettleOutcome {
   return settled ? verdict : "unconfirmed";
 }
@@ -193,11 +191,11 @@ async function reconcileOne(
   if (!hash || chainId === null) {
     const settled = await settle(
       execution.id,
-      "failed",
+      DirectExecutionStatus.FAILED,
       execution.receipts,
       "Unable to verify transaction: chain could not be resolved"
     );
-    return settledOutcome(settled, "failed");
+    return settledOutcome(settled, DirectExecutionStatus.FAILED);
   }
 
   const { allVerified, results } = await verifyExecutionReceipts([
@@ -206,8 +204,13 @@ async function reconcileOne(
   const receipts = toReceiptEntries(results);
 
   if (allVerified) {
-    const settled = await settle(execution.id, "completed", receipts, null);
-    return settledOutcome(settled, "completed");
+    const settled = await settle(
+      execution.id,
+      DirectExecutionStatus.COMPLETED,
+      receipts,
+      null
+    );
+    return settledOutcome(settled, DirectExecutionStatus.COMPLETED);
   }
 
   const conclusive = results.every(
@@ -217,24 +220,24 @@ async function reconcileOne(
   if (conclusive) {
     const settled = await settle(
       execution.id,
-      "failed",
+      DirectExecutionStatus.FAILED,
       receipts,
       describeVerificationFailure(results)
     );
-    return settledOutcome(settled, "failed");
+    return settledOutcome(settled, DirectExecutionStatus.FAILED);
   }
 
   const age = now.getTime() - execution.createdAt.getTime();
   if (age >= DROPPED_AFTER_MS) {
     const settled = await settle(
       execution.id,
-      "failed",
+      DirectExecutionStatus.FAILED,
       receipts,
       `Transaction ${hash} was broadcast but never appeared on chain; treating it as dropped after ${Math.round(
         DROPPED_AFTER_MS / 3_600_000
       )}h`
     );
-    return settledOutcome(settled, "failed");
+    return settledOutcome(settled, DirectExecutionStatus.FAILED);
   }
 
   await db
@@ -243,7 +246,7 @@ async function reconcileOne(
     .where(
       and(
         eq(directExecutions.id, execution.id),
-        eq(directExecutions.status, "unconfirmed")
+        eq(directExecutions.status, DirectExecutionStatus.UNCONFIRMED)
       )
     );
   return "unconfirmed";
@@ -470,7 +473,7 @@ export async function reconcileUnconfirmedExecutions(
     createdAt: directExecutions.createdAt,
   };
   const directEligible = and(
-    eq(directExecutions.status, "unconfirmed"),
+    eq(directExecutions.status, DirectExecutionStatus.UNCONFIRMED),
     isNotNull(directExecutions.transactionHash),
     lt(directExecutions.createdAt, cutoff)
   );

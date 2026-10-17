@@ -42,7 +42,11 @@ vi.mock("@/lib/mcp/connections", () => ({
 vi.mock("@/lib/db", () => ({
   db: { query: { users: { findFirst: mockUsersFindFirst } } },
 }));
-vi.mock("@/lib/db/schema", () => ({ users: { id: "id" } }));
+vi.mock("@/lib/db/schema", () => ({
+  users: { id: "id" },
+  // Read when the direct-execution status writer module loads.
+  directExecutions: {},
+}));
 vi.mock("@sentry/nextjs", () => ({
   captureMessage: vi.fn(),
   captureException: vi.fn(),

@@ -1149,6 +1149,13 @@
       "when": 1790830000000,
       "tag": "0163_pyth_trigger_checkpoints",
       "breakpoints": true
+    },
+    {
+      "idx": 164,
+      "version": "7",
+      "when": 1791576469654,
+      "tag": "0164_event_outbox",
+      "breakpoints": true
     }
   ]
 }
