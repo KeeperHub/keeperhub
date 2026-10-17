@@ -39,6 +39,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { agenticWallets } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { getOrgContext } from "@/lib/middleware/org-context";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
 
 export const dynamic = "force-dynamic";
@@ -98,10 +99,17 @@ export async function POST(request: Request): Promise<Response> {
   const userId = session.user.id;
   const subOrgId = body.subOrgId;
 
+  // Linking is the first moment anybody knows who this wallet belongs to, so it
+  // is where the organization answerable for its signing is recorded. Without
+  // it the wallet signs outside every rule its owner has written, because
+  // policy is org-scoped and there would be no organization to look up.
+  const orgContext = await getOrgContext();
+  const organizationId = orgContext.organization?.id ?? null;
+
   try {
     const updated = await db
       .update(agenticWallets)
-      .set({ linkedUserId: userId, linkedAt: new Date() })
+      .set({ linkedUserId: userId, linkedAt: new Date(), organizationId })
       .where(
         and(
           eq(agenticWallets.subOrgId, subOrgId),
@@ -139,11 +147,11 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     await recordAuditEvent({
-      actor: { userId, organizationId: null, authMethod: "session" },
+      actor: { userId, organizationId, authMethod: "session" },
       action: "agentic_wallet.linked",
       resourceType: "agentic_wallet",
       resourceId: subOrgId,
-      after: { linkedUserId: userId },
+      after: { linkedUserId: userId, organizationId },
       metadata: buildAuditMetadata(request),
     });
 

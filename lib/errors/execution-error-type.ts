@@ -26,6 +26,15 @@ export const ExecutionErrorType = {
    * a webhook host down, a 5xx from a provider.
    */
   EXTERNAL: "external",
+  /**
+   * The organization's own guardrail refused the action.
+   *
+   * Its own domain rather than USER because it is not a mistake: the run did
+   * exactly what the organization asked for. Folding it into USER would make an
+   * org with strict rules look like an org with broken workflows, and folding
+   * it into SYSTEM would page somebody every time a policy did its job.
+   */
+  POLICY: "policy",
 } as const;
 
 export type ExecutionErrorType =
