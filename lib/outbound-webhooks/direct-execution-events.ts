@@ -1,77 +1,87 @@
 import "server-only";
 
+import { and, eq, inArray, notInArray } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { directExecutions, eventOutbox } from "@/lib/db/schema";
+import {
+  type DirectExecution,
+  directExecutions,
+  eventOutbox,
+  type NewDirectExecution,
+} from "@/lib/db/schema";
+import {
+  DIRECT_EXECUTION_TERMINAL_STATUSES,
+  type DirectExecutionStatus,
+  isDirectExecutionTerminalStatus,
+} from "@/lib/errors/execution-status";
+import { ErrorCategory, logSystemError } from "@/lib/logging";
+import {
+  DIRECT_EXECUTION_DEDUPE_KEY_PREFIX,
+  DIRECT_EXECUTION_EVENT_TYPE_BY_STATUS,
+} from "./event-types";
 import { isOutboundWebhooksEnabled } from "./feature-flag";
 
-export type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-export type DirectExecutionEventType =
-  | "direct_execution.succeeded"
-  | "direct_execution.failed";
-
-type DirectExecutionEventColumns = Pick<
-  typeof directExecutions,
-  | "id"
-  | "organizationId"
-  | "type"
-  | "status"
-  | "network"
-  | "transactionHash"
-  | "error"
-  | "completedAt"
->;
-
-/**
- * Columns a status write must return so its event can be built without a
- * second read. Pass to `.returning()`. A function rather than a constant so
- * importing this module never touches the table object.
- */
-export function directExecutionEventColumns(): DirectExecutionEventColumns {
-  return {
-    id: directExecutions.id,
-    organizationId: directExecutions.organizationId,
-    type: directExecutions.type,
-    status: directExecutions.status,
-    network: directExecutions.network,
-    transactionHash: directExecutions.transactionHash,
-    error: directExecutions.error,
-    completedAt: directExecutions.completedAt,
-  };
-}
-
-export type DirectExecutionEventRow = {
-  id: string;
-  organizationId: string;
-  type: string;
-  status: string;
-  network: string | null;
-  transactionHash: string | null;
-  error: string | null;
-  completedAt: Date | null;
+// The columns an event is built from. The status UPDATE hands them back via
+// `.returning()`, so building the event needs no second read.
+const EVENT_COLUMNS = {
+  id: directExecutions.id,
+  organizationId: directExecutions.organizationId,
+  type: directExecutions.type,
+  status: directExecutions.status,
+  network: directExecutions.network,
+  transactionHash: directExecutions.transactionHash,
+  error: directExecutions.error,
+  completedAt: directExecutions.completedAt,
 };
 
-/**
- * The event a status describes, or null when it is not final. `unconfirmed`
- * is deliberately not final: the transaction may still land, and the
- * reconciler settles the row later, which is when its event is written.
- */
-export function directExecutionEventType(
-  status: string
-): DirectExecutionEventType | null {
-  if (status === "completed") {
-    return "direct_execution.succeeded";
+export type DirectExecutionEventRow = Pick<
+  DirectExecution,
+  keyof typeof EVENT_COLUMNS
+>;
+
+export type DirectExecutionStatusPatch = Omit<
+  Partial<NewDirectExecution>,
+  "id" | "status"
+> & { status: DirectExecutionStatus };
+
+type StatusWriteOptions = {
+  // Statuses the row must currently be in for the write to apply. Defaults to
+  // every non-final status, so a final status is never overwritten.
+  from?: readonly DirectExecutionStatus[];
+};
+
+// Longest error message an event carries, in UTF-8 bytes.
+const MAX_EVENT_ERROR_BYTES = 1024;
+const CONTROL_CHARACTERS = /\p{Cc}+/gu;
+
+function truncateUtf8(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text) <= maxBytes) {
+    return text;
   }
-  if (status === "failed") {
-    return "direct_execution.failed";
+  let bytes = 0;
+  let end = 0;
+  for (const char of text) {
+    bytes += Buffer.byteLength(char);
+    if (bytes > maxBytes) {
+      break;
+    }
+    end += char.length;
   }
-  return null;
+  return text.slice(0, end);
 }
 
-// One final event per execution, whichever way it ended. Keyed on the
-// execution alone so a row that somehow ended twice still emits once.
-function dedupeKeyFor(executionId: string): string {
-  return `direct_execution:${executionId}`;
+/**
+ * The error message as an event carries it: control characters replaced with a
+ * space, so the words either side of a stripped newline stay apart, and cut to
+ * 1 KiB without splitting a character.
+ */
+export function sanitizeEventError(error: string | null): string | null {
+  if (error === null) {
+    return null;
+  }
+  const stripped = error.replace(CONTROL_CHARACTERS, " ").trim();
+  return truncateUtf8(stripped, MAX_EVENT_ERROR_BYTES);
 }
 
 // Mirrors fields GET /api/execute/{executionId}/status already returns, so an
@@ -83,50 +93,85 @@ function eventData(row: DirectExecutionEventRow): Record<string, unknown> {
     status: row.status,
     network: row.network,
     transactionHash: row.transactionHash,
-    error: row.error,
+    error: sanitizeEventError(row.error),
     completedAt: row.completedAt?.toISOString() ?? null,
   };
 }
 
-async function recordDirectExecutionEvent(
+async function recordEvent(
   tx: DbTransaction,
   row: DirectExecutionEventRow
 ): Promise<void> {
-  const eventType = directExecutionEventType(row.status);
-  if (!eventType) {
+  if (!isDirectExecutionTerminalStatus(row.status)) {
     return;
   }
-  await tx
-    .insert(eventOutbox)
-    .values({
-      organizationId: row.organizationId,
-      eventType,
-      executionId: row.id,
-      dedupeKey: dedupeKeyFor(row.id),
-      data: eventData(row),
-    })
-    .onConflictDoNothing({ target: eventOutbox.dedupeKey });
+  const eventType = DIRECT_EXECUTION_EVENT_TYPE_BY_STATUS[row.status];
+  try {
+    // Inside a savepoint, so a failed insert rolls back only itself and the
+    // status write it belongs to still commits.
+    await tx.transaction(async (savepoint) => {
+      await savepoint
+        .insert(eventOutbox)
+        .values({
+          organizationId: row.organizationId,
+          eventType,
+          executionId: row.id,
+          dedupeKey: `${DIRECT_EXECUTION_DEDUPE_KEY_PREFIX}${row.id}`,
+          data: eventData(row),
+        })
+        .onConflictDoNothing({ target: eventOutbox.dedupeKey });
+    });
+  } catch (error) {
+    logSystemError(
+      ErrorCategory.DATABASE,
+      "[OutboundWebhook] Failed to record a direct-execution event; the status write still commits",
+      error,
+      { execution_id: row.id, event_type: eventType }
+    );
+  }
 }
 
 /**
- * Applies a direct-execution status write and, in the same transaction,
- * records the outbox event for every row it left in a final state.
+ * The single writer of `direct_executions.status`. Applies `patch` to the
+ * execution and returns the updated row, or null when the row was not in a
+ * status the guard allows.
  *
- * `write` must run its UPDATE on the transaction it is given and return the
- * affected rows via `.returning(directExecutionEventColumns())`. A write that
- * matched nothing returns no rows and so records nothing, which is what a
- * guarded update that lost a race needs.
+ * A final status is never overwritten, so the first final write is the only
+ * one and its event always matches the row. When that write is final and
+ * outbound webhooks are enabled, the event goes into `event_outbox` in the same
+ * transaction, behind a savepoint so an outbox failure can never undo the
+ * status. Every other write is a single UPDATE with no transaction.
  */
-export async function writeDirectExecutionStatus(
-  write: (tx: DbTransaction) => Promise<DirectExecutionEventRow[]>
-): Promise<DirectExecutionEventRow[]> {
+export async function setDirectExecutionStatus(
+  executionId: string,
+  patch: DirectExecutionStatusPatch,
+  options: StatusWriteOptions = {}
+): Promise<DirectExecutionEventRow | null> {
+  const guard = options.from
+    ? inArray(directExecutions.status, [...options.from])
+    : notInArray(directExecutions.status, [
+        ...DIRECT_EXECUTION_TERMINAL_STATUSES,
+      ]);
+  const update = (executor: Pick<DbTransaction, "update">) =>
+    executor
+      .update(directExecutions)
+      .set(patch)
+      .where(and(eq(directExecutions.id, executionId), guard))
+      .returning(EVENT_COLUMNS);
+
+  const emits =
+    isOutboundWebhooksEnabled() &&
+    isDirectExecutionTerminalStatus(patch.status);
+  if (!emits) {
+    const [row] = await update(db);
+    return row ?? null;
+  }
+
   return await db.transaction(async (tx) => {
-    const rows = await write(tx);
-    if (isOutboundWebhooksEnabled()) {
-      for (const row of rows) {
-        await recordDirectExecutionEvent(tx, row);
-      }
+    const [row] = await update(tx);
+    if (row) {
+      await recordEvent(tx, row);
     }
-    return rows;
+    return row ?? null;
   });
 }

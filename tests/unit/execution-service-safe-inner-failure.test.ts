@@ -11,15 +11,13 @@ const mocks = vi.hoisted(() => {
   return { returning, where, set, update, verifyExecutionReceipts };
 });
 
-vi.mock("drizzle-orm", () => ({ eq: vi.fn(() => ({})) }));
-vi.mock("@/lib/db", () => ({
-  db: {
-    update: mocks.update,
-    // Status writes run inside a transaction so their outbox event commits
-    // with them; the transaction exposes the same update builder.
-    transaction: (cb: (tx: unknown) => unknown) => cb({ update: mocks.update }),
-  },
+vi.mock("drizzle-orm", () => ({
+  and: vi.fn(() => ({})),
+  eq: vi.fn(() => ({})),
+  inArray: vi.fn(() => ({})),
+  notInArray: vi.fn(() => ({})),
 }));
+vi.mock("@/lib/db", () => ({ db: { update: mocks.update } }));
 vi.mock("@/lib/db/schema", () => ({
   directExecutions: { id: { name: "id" } },
 }));

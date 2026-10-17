@@ -45,11 +45,6 @@ let returningRows: { id: string }[] = [];
 
 vi.mock("@/lib/db", () => ({
   db: {
-    // Direct-execution settles run inside a transaction so their outbox event
-    // commits with them; the transaction is this same recording builder.
-    transaction(cb: (tx: unknown) => unknown) {
-      return cb(this);
-    },
     select: () => {
       const call: SelectCall = {};
       selectCalls.push(call);
@@ -323,7 +318,7 @@ describe("direct executions", () => {
     await run([directRow()], []);
 
     const { sql, params } = render(directUpdates()[0].where);
-    expect(sql).toMatch(/"id" = \$1 and .*"status" = \$2/);
+    expect(sql).toMatch(/"id" = \$1 and .*"status" in \(\$2\)/);
     expect(params).toEqual(["de_1", "unconfirmed"]);
   });
 

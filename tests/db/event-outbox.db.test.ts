@@ -1,14 +1,14 @@
 /**
  * The execution event outbox against a real Postgres.
  *
- * The unit suite proves which events writeDirectExecutionStatus asks for. Only
- * a real database shows that the unique dedupe key holds a second terminal
- * write to one event, and that a status write and its event commit or roll
- * back together.
+ * The unit suite proves which writes setDirectExecutionStatus makes. Only a
+ * real database shows that the status guard refuses a second final write,
+ * that the unique dedupe key holds, and that a failed outbox insert inside its
+ * savepoint leaves the status write committed.
  */
 
 import "dotenv/config";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import {
@@ -25,10 +25,20 @@ import {
   eventOutbox,
   organization,
 } from "../../lib/db/schema";
+import {
+  DirectExecutionStatus,
+  type DirectExecutionTerminalStatus,
+} from "../../lib/errors/execution-status";
 
 vi.mock("server-only", () => ({}));
 // tests/setup.ts globally stubs @/lib/db. The whole point here is the SQL.
 vi.unmock("@/lib/db");
+
+const logSystemError = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/logging", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/logging")>()),
+  logSystemError,
+}));
 
 const DATABASE_URL = process.env.DATABASE_URL ?? "";
 const queryClient = postgres(DATABASE_URL, { max: 2 });
@@ -60,32 +70,24 @@ async function executionStatus(): Promise<string | undefined> {
   return row?.status;
 }
 
-async function settle(
-  status: "completed" | "failed",
-  guard?: "unconfirmed"
-): Promise<number> {
-  const { directExecutionEventColumns, writeDirectExecutionStatus } =
-    await import("../../lib/outbound-webhooks/direct-execution-events");
-  const rows = await writeDirectExecutionStatus((tx) =>
-    tx
-      .update(directExecutions)
-      .set({
-        status,
-        error: status === "failed" ? "reverted" : null,
-        transactionHash: "0xabc",
-        completedAt: new Date(),
-      })
-      .where(
-        guard
-          ? and(
-              eq(directExecutions.id, EXECUTION),
-              eq(directExecutions.status, guard)
-            )
-          : eq(directExecutions.id, EXECUTION)
-      )
-      .returning(directExecutionEventColumns())
+async function finish(
+  status: DirectExecutionTerminalStatus,
+  from?: DirectExecutionStatus[]
+): Promise<boolean> {
+  const { setDirectExecutionStatus } = await import(
+    "../../lib/outbound-webhooks/direct-execution-events"
   );
-  return rows.length;
+  const updated = await setDirectExecutionStatus(
+    EXECUTION,
+    {
+      status,
+      error: status === DirectExecutionStatus.FAILED ? "reverted" : null,
+      transactionHash: "0xabc",
+      completedAt: new Date(),
+    },
+    from ? { from } : {}
+  );
+  return updated !== null;
 }
 
 beforeAll(async () => {
@@ -97,6 +99,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await cleanup();
+  logSystemError.mockClear();
   vi.stubEnv("OUTBOUND_WEBHOOKS_ENABLED", "true");
   await testDb.insert(directExecutions).values({
     id: EXECUTION,
@@ -104,7 +107,7 @@ beforeEach(async () => {
     apiKeyId: `${PREFIX}key`,
     type: "transfer",
     network: "base-sepolia",
-    status: "running",
+    status: DirectExecutionStatus.RUNNING,
   });
 });
 
@@ -117,7 +120,7 @@ afterAll(async () => {
 
 describe("event_outbox (real database)", () => {
   it("writes one event when a direct execution completes", async () => {
-    await settle("completed");
+    expect(await finish(DirectExecutionStatus.COMPLETED)).toBe(true);
 
     const events = await outboxRows();
     expect(events).toHaveLength(1);
@@ -134,50 +137,62 @@ describe("event_outbox (real database)", () => {
     });
   });
 
-  it("keeps the first event when the terminal write runs again", async () => {
-    await settle("failed");
-    await settle("completed");
+  it("refuses a second final write, so the event always matches the row", async () => {
+    expect(await finish(DirectExecutionStatus.FAILED)).toBe(true);
+    expect(await finish(DirectExecutionStatus.COMPLETED)).toBe(false);
 
+    expect(await executionStatus()).toBe(DirectExecutionStatus.FAILED);
     const events = await outboxRows();
     expect(events).toHaveLength(1);
     expect(events[0]?.eventType).toBe("direct_execution.failed");
+    expect(events[0]?.data).toMatchObject({ status: "failed" });
   });
 
-  it("writes nothing when a guarded settle finds the row already settled", async () => {
+  it("writes nothing when the row is not in a status the caller moves from", async () => {
     // The reconciler only settles rows still unconfirmed; this one is running.
-    const settled = await settle("completed", "unconfirmed");
+    expect(
+      await finish(DirectExecutionStatus.COMPLETED, [
+        DirectExecutionStatus.UNCONFIRMED,
+      ])
+    ).toBe(false);
 
-    expect(settled).toBe(0);
+    expect(await executionStatus()).toBe(DirectExecutionStatus.RUNNING);
     expect(await outboxRows()).toHaveLength(0);
   });
 
-  it("rolls the status write back when its transaction fails", async () => {
-    // The write is not committed on its own: anything that fails the
-    // transaction, the event insert included, undoes the status too.
-    const { directExecutionEventColumns, writeDirectExecutionStatus } =
-      await import("../../lib/outbound-webhooks/direct-execution-events");
+  it("keeps the status write when the outbox insert fails", async () => {
+    // An environment whose migration lagged: the table is not there.
+    await queryClient`ALTER TABLE event_outbox RENAME TO event_outbox_hidden`;
+    try {
+      expect(await finish(DirectExecutionStatus.COMPLETED)).toBe(true);
+    } finally {
+      await queryClient`ALTER TABLE event_outbox_hidden RENAME TO event_outbox`;
+    }
 
-    await expect(
-      writeDirectExecutionStatus(async (tx) => {
-        await tx
-          .update(directExecutions)
-          .set({ status: "completed", completedAt: new Date() })
-          .where(eq(directExecutions.id, EXECUTION))
-          .returning(directExecutionEventColumns());
-        throw new Error("abort after the update");
-      })
-    ).rejects.toThrow("abort after the update");
+    expect(await executionStatus()).toBe(DirectExecutionStatus.COMPLETED);
+    expect(await outboxRows()).toHaveLength(0);
+    expect(logSystemError).toHaveBeenCalledTimes(1);
+  });
 
-    expect(await executionStatus()).toBe("running");
+  it("writes a non-final status without an event", async () => {
+    const { setDirectExecutionStatus } = await import(
+      "../../lib/outbound-webhooks/direct-execution-events"
+    );
+
+    await setDirectExecutionStatus(EXECUTION, {
+      status: DirectExecutionStatus.UNCONFIRMED,
+    });
+
+    expect(await executionStatus()).toBe(DirectExecutionStatus.UNCONFIRMED);
     expect(await outboxRows()).toHaveLength(0);
   });
 
   it("writes nothing while the flag is off", async () => {
     vi.stubEnv("OUTBOUND_WEBHOOKS_ENABLED", "");
 
-    await settle("completed");
+    await finish(DirectExecutionStatus.COMPLETED);
 
-    expect(await executionStatus()).toBe("completed");
+    expect(await executionStatus()).toBe(DirectExecutionStatus.COMPLETED);
     expect(await outboxRows()).toHaveLength(0);
   });
 });
