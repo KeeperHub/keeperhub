@@ -20,7 +20,7 @@
     "e2e:devnet": "tsx tests/e2e/devnet.ts"
   },
   "dependencies": {
-    "@aws-sdk/client-sqs": "^3.1149.0",
+    "@aws-sdk/client-sqs": "^3.1152.0",
     "@coral-xyz/anchor": "^0.32.1",
     "@solana/web3.js": "^1.99.0",
     "ioredis": "^5.11.1",
@@ -35,6 +35,6 @@
     "tsup": "^8.3.5",
     "tsx": "^4.23.15",
     "vite": "^8.3.4",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   }
 }
