@@ -172,8 +172,11 @@ test.describe("Workflow Runs title row", () => {
   test("the page count stays whole on phones, Projects open or not", async ({
     page,
   }) => {
-    await page.setViewportSize({ width: 360, height: 844 });
+    // signIn waits for the header's org switcher, which a phone narrower
+    // than 375px keeps in the nav drawer instead, so sign in at desktop width.
+    await page.setViewportSize(DESKTOP);
     await signIn(page, ANALYTICS_TEST_EMAIL, ANALYTICS_TEST_PASSWORD);
+    await page.setViewportSize({ width: 360, height: 844 });
     await page.goto("/analytics", { waitUntil: "domcontentloaded" });
     const weekOfRuns = page.waitForResponse(
       (response) =>
