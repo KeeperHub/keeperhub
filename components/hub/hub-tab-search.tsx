@@ -80,7 +80,10 @@ export function HubTabSearch(): React.ReactElement {
   };
 
   return (
-    <div className="flex w-[280px] items-center gap-2 rounded-lg border border-border/60 bg-[var(--color-hub-icon-bg)] px-3.5 py-2 transition-colors focus-within:border-[var(--color-text-accent)]/40 focus-within:ring-1 focus-within:ring-[var(--color-text-accent)]/20 motion-reduce:transition-none">
+    <div
+      className="flex flex-1 items-center gap-2 rounded-lg border border-border/60 bg-[var(--color-hub-icon-bg)] px-3.5 py-2 transition-colors focus-within:border-[var(--color-text-accent)]/40 focus-within:ring-1 focus-within:ring-[var(--color-text-accent)]/20 motion-reduce:transition-none sm:w-[280px] sm:flex-initial"
+      data-testid="hub-tab-search"
+    >
       <Search
         aria-hidden="true"
         className="size-3.5 shrink-0 text-muted-foreground/60"

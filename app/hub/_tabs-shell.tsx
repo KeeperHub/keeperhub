@@ -20,10 +20,10 @@ type HubTabsShellProps = {
 };
 
 const PILL_CLASSES =
-  "inline-flex min-h-9 items-center gap-2 rounded-full px-4 py-2 text-sm font-normal text-muted-foreground/70 transition-colors duration-150 ease hover:bg-[var(--color-hub-icon-bg)]/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-hub-overlay)] data-[state=active]:bg-[var(--color-hub-icon-bg)] data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:hover:bg-[var(--color-hub-icon-bg)] motion-reduce:transition-none";
+  "inline-flex min-h-9 items-center gap-2 rounded-full px-2 py-2 text-sm font-normal max-sm:gap-1.5 text-muted-foreground/70 transition-colors duration-150 ease hover:bg-[var(--color-hub-icon-bg)]/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-hub-overlay)] data-[state=active]:bg-[var(--color-hub-icon-bg)] data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:hover:bg-[var(--color-hub-icon-bg)] motion-reduce:transition-none sm:px-4";
 
 const PILL_ICON_CLASSES =
-  "size-4 text-muted-foreground/50 group-data-[state=active]:text-[var(--color-text-accent)]";
+  "size-4 text-muted-foreground/50 group-data-[state=active]:text-[var(--color-text-accent)] max-xs:hidden";
 
 export function HubTabsShell({
   initialTab,
@@ -65,11 +65,16 @@ export function HubTabsShell({
 
   return (
     <Tabs className="w-full" onValueChange={handleChange} value={initialTab}>
-      <div className="mb-6 flex items-center gap-4 border-border/20 border-b py-2">
+      {/* Below lg the tabs take a row of their own under the search box and
+          the links, sharing its width equally on phones; from lg the band is
+          the single row it always was. The tabs stay second in the DOM so
+          desktop focus order is unchanged; below lg, reading-flow makes Tab
+          follow the rows as drawn where browsers support it. */}
+      <div className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-2 border-border/20 border-b py-2 max-lg:[reading-flow:flex-visual] lg:flex-nowrap">
         {searchSlot}
         <TabsList
           aria-label="Hub views"
-          className="inline-flex h-auto items-center gap-1 bg-transparent p-0"
+          className="order-last grid h-auto w-full grid-cols-3 items-center justify-start gap-1 bg-transparent p-0 sm:grid-cols-[repeat(3,max-content)] lg:order-none lg:inline-flex lg:w-fit"
         >
           <TabsTrigger className={`group ${PILL_CLASSES}`} value="protocols">
             <Box aria-hidden="true" className={PILL_ICON_CLASSES} />
@@ -84,7 +89,11 @@ export function HubTabsShell({
             Marketplace
           </TabsTrigger>
         </TabsList>
-        {actionsSlot ? <div className="ml-auto">{actionsSlot}</div> : null}
+        {actionsSlot ? (
+          <div className="ml-auto flex self-stretch sm:block sm:self-auto">
+            {actionsSlot}
+          </div>
+        ) : null}
       </div>
 
       <TabsContent
