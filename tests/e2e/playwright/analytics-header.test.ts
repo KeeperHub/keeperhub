@@ -165,9 +165,12 @@ test.describe("Workflow Runs card on phones", () => {
     const next = pagination.getByRole("button", { name: "Next page" });
 
     await expect(async () => {
-      // The card sits below the charts: bring its title row on screen, as
-      // isOnTop can only hit-test what is in the viewport.
-      await title(page).scrollIntoViewIfNeeded();
+      // The card sits below the charts: bring its title row to the middle of
+      // the screen, as isOnTop can only hit-test what is in the viewport and
+      // the app's fixed top bar covers the first 60px of it.
+      await title(page).evaluate((element) =>
+        element.scrollIntoView({ block: "center" })
+      );
       expect(await textFits(title(page)), `title fits ${label}`).toBe(true);
       expect(await textFits(count), `count fits ${label}`).toBe(true);
       expect(
