@@ -122,44 +122,49 @@ export function AnalyticsHeader({
 
       {/* On phones the range buttons get a row of their own under the title,
           and refresh moves up beside the title (it stays after them in Tab
-          order). From sm it is one row whenever it fits. */}
-      <nav
-        aria-label="Time range"
-        className="order-last flex w-full flex-wrap items-center gap-1 sm:order-none sm:w-auto"
-      >
-        {rangeButtons}
-        <DateRangeFilter />
-      </nav>
+          order). From sm the two are one group beside the title, moving
+          under it together when they do not fit. */}
+      <div className="contents sm:flex sm:flex-wrap sm:items-center sm:gap-3">
+        <nav
+          aria-label="Time range"
+          className="order-last flex w-full flex-wrap items-center gap-1 sm:order-none sm:w-auto"
+        >
+          {rangeButtons}
+          <DateRangeFilter />
+        </nav>
 
-      <div className="flex items-center gap-3">
-        {onRefetch ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                aria-label="Refresh data"
-                disabled={refreshing}
-                onClick={() => {
-                  handleRefresh().catch(() => {
-                    /* errors handled in handleRefresh */
-                  });
-                }}
-                size="icon-sm"
-                variant="outline"
-              >
-                <RefreshCw
-                  className={cn("size-4", refreshing && "animate-spin")}
-                />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Refresh data</TooltipContent>
-          </Tooltip>
-        ) : null}
+        <div className="flex items-center gap-3">
+          {onRefetch ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label="Refresh data"
+                  disabled={refreshing}
+                  onClick={() => {
+                    handleRefresh().catch(() => {
+                      /* errors handled in handleRefresh */
+                    });
+                  }}
+                  size="icon-sm"
+                  variant="outline"
+                >
+                  <RefreshCw
+                    className={cn("size-4", refreshing && "animate-spin")}
+                  />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Load the latest numbers</TooltipContent>
+            </Tooltip>
+          ) : null}
 
-        {lastUpdated ? (
-          <span className="text-xs text-muted-foreground">
-            Updated {timeAgo}
-          </span>
-        ) : null}
+          {/* As wide as its longest wording, so ticking from "just now" to
+            "59m ago" never moves refresh to another row and back. */}
+          {lastUpdated ? (
+            <span className="min-w-24 whitespace-nowrap text-xs text-muted-foreground tabular-nums">
+              Updated {timeAgo}
+            </span>
+          ) : null}
+        </div>
       </div>
     </header>
   );

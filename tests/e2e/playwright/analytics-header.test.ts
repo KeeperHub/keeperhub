@@ -12,9 +12,13 @@ import {
 
 // Portrait phones, narrowest to widest, and phones turned sideways.
 const NARROW_WIDTHS = [320, 360, 390, 430, 640, 667];
+// Sideways phones and small tablets, where a picked range is too wide for
+// the title's row, so the range buttons and refresh move under it.
+const UNDER_TITLE_WIDTHS = [640, 700];
 const DESKTOP = { width: 1280, height: 800 };
-// The header's gap-3 between the range buttons and refresh.
-const ROW_GAP = 12;
+// Refresh sits right after the range buttons: a few pixels of gap, however
+// it is tuned, never pushed across the header.
+const BESIDE_MAX_GAP = 32;
 // This month's label, "Oct 1, 2026 - Oct 31, 2026": wider than any preset.
 const MONTH_RANGE_REGEX = /^\w{3} 1, \d{4} - \w{3} \d{2}, \d{4}$/;
 const PAGE_COUNT_REGEX = /^1–50 of [\d,]+$/;
@@ -35,6 +39,17 @@ function customButton(page: Page): Locator {
 
 function rangeNav(page: Page): Locator {
   return page.getByRole("navigation", { name: "Time range" });
+}
+
+async function pickThisMonth(page: Page): Promise<void> {
+  await customButton(page).click();
+  await page.getByRole("button", { name: "This month" }).click();
+  await page.keyboard.press("Escape");
+  await expect(customButton(page)).toHaveText(MONTH_RANGE_REGEX);
+}
+
+function centreY(found: { y: number; height: number }): number {
+  return found.y + found.height / 2;
 }
 
 async function expectHeaderFits(page: Page, width: number): Promise<void> {
@@ -69,14 +84,33 @@ test.describe("Analytics header", () => {
       (await box(rangeNav(page))).y
     );
 
-    // A picked range gives Custom a long label.
-    await customButton(page).click();
-    await page.getByRole("button", { name: "This month" }).click();
-    await page.keyboard.press("Escape");
-    await expect(customButton(page)).toHaveText(MONTH_RANGE_REGEX);
-
+    await pickThisMonth(page);
     for (const width of NARROW_WIDTHS) {
       await expectHeaderFits(page, width);
+    }
+  });
+
+  test("refresh moves under the title with the range buttons, not alone", async ({
+    page,
+  }) => {
+    await page.setViewportSize(DESKTOP);
+    await page.goto("/analytics", { waitUntil: "domcontentloaded" });
+    await expect(refreshButton(page)).toBeVisible({ timeout: 15_000 });
+    await pickThisMonth(page);
+
+    for (const width of UNDER_TITLE_WIDTHS) {
+      await page.setViewportSize({ width, height: 844 });
+      await expect(async () => {
+        const custom = await box(customButton(page));
+        const refresh = await box(refreshButton(page));
+        expect(
+          Math.abs(centreY(refresh) - centreY(custom)),
+          `refresh on Custom's row at ${width}px`
+        ).toBeLessThan(1.5);
+        expect(refresh.x, `refresh after Custom at ${width}px`).toBeGreaterThan(
+          custom.x + custom.width
+        );
+      }).toPass({ timeout: 5000 });
     }
   });
 
@@ -89,94 +123,72 @@ test.describe("Analytics header", () => {
 
     const nav = await box(rangeNav(page));
     const refresh = await box(refreshButton(page));
-    expect(Math.abs(refresh.x - (nav.x + nav.width) - ROW_GAP)).toBeLessThan(
-      1.5
-    );
-    expect(
-      Math.abs(refresh.y + refresh.height / 2 - (nav.y + nav.height / 2))
-    ).toBeLessThan(1.5);
+    const gap = refresh.x - (nav.x + nav.width);
+    expect(gap, "refresh after the range buttons").toBeGreaterThan(0);
+    expect(gap, "refresh right beside them").toBeLessThan(BESIDE_MAX_GAP);
+    expect(Math.abs(centreY(refresh) - centreY(nav))).toBeLessThan(1.5);
   });
 });
 
-// The count's text up to its first line break, as the browser laid it out.
-async function firstLineText(locator: Locator): Promise<string> {
-  return await locator.evaluate((element) => {
-    const range = document.createRange();
-    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-    let firstTop: number | null = null;
-    let line = "";
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      const text = node.textContent ?? "";
-      for (let i = 0; i < text.length; i += 1) {
-        range.setStart(node, i);
-        range.setEnd(node, i + 1);
-        const rect = range.getBoundingClientRect();
-        // A space the line breaks at can have no box of its own.
-        if (rect.width > 0) {
-          firstTop ??= rect.top;
-          if (rect.top > firstTop + 1) {
-            return line.trim();
-          }
-        }
-        line += text[i];
-      }
-    }
-    return line.trim();
-  });
-}
-
-test.describe("Workflow Runs title row", () => {
+test.describe("Workflow Runs card on phones", () => {
   // Signed in as the seeded analytics user rather than the persistent one:
   // only it has more than one page of runs, so only its card shows a count.
   test.use({ storageState: { cookies: [], origins: [] } });
 
-  function pagination(page: Page): Locator {
-    return page
-      .getByTestId("runs-table")
-      .getByRole("navigation", { name: "Pagination" });
+  function runsTable(page: Page): Locator {
+    return page.getByTestId("runs-table");
+  }
+
+  function title(page: Page): Locator {
+    return runsTable(page).getByText("Workflow Runs", { exact: true });
   }
 
   async function expectTitleRowWhole(page: Page, label: string): Promise<void> {
-    const card = page.getByTestId("runs-table");
-    const count = pagination(page).getByText(PAGE_COUNT_REGEX);
-    const title = card.getByText("Workflow Runs", { exact: true });
-    const previous = pagination(page).getByRole("button").nth(0);
-    const next = pagination(page).getByRole("button").nth(1);
+    const pagination = runsTable(page).getByRole("navigation", {
+      name: "Pagination",
+    });
+    const count = pagination.getByText(PAGE_COUNT_REGEX);
+    const previous = pagination.getByRole("button", { name: "Previous page" });
+    const next = pagination.getByRole("button", { name: "Next page" });
 
     await expect(async () => {
-      expect(await textFits(title), `title fits its box ${label}`).toBe(true);
-      expect(await textFits(count), `count fits its box ${label}`).toBe(true);
+      expect(await textFits(title(page)), `title fits ${label}`).toBe(true);
+      expect(await textFits(count), `count fits ${label}`).toBe(true);
       expect(
         (await box(count)).height,
         `count on one line ${label}`
       ).toBeLessThan(ONE_LINE_MAX_HEIGHT);
       expect(
-        await overlaps(title, count),
+        await overlaps(title(page), count),
         `count clear of title ${label}`
       ).toBe(false);
       expect(
         Math.abs((await box(previous)).y - (await box(next)).y),
         `arrows side by side ${label}`
       ).toBeLessThan(1);
-      const cardBox = await box(card);
+      const card = await box(runsTable(page));
       for (const control of [count, previous, next]) {
-        const controlBox = await box(control);
+        const found = await box(control);
         expect(
-          controlBox.x + controlBox.width,
+          found.x >= card.x &&
+            found.y >= card.y &&
+            found.x + found.width <= card.x + card.width &&
+            found.y + found.height <= card.y + card.height,
           `inside the card ${label}`
-        ).toBeLessThanOrEqual(cardBox.x + cardBox.width);
+        ).toBe(true);
+        expect(await isOnTop(control), `not covered ${label}`).toBe(true);
       }
     }).toPass({ timeout: 5000 });
   }
 
-  test("the page count stays whole on phones, Projects open or not", async ({
+  test("the title row stays whole, and Projects takes the card's place", async ({
     page,
   }) => {
     // signIn waits for the header's org switcher, which a phone narrower
     // than 375px keeps in the nav drawer instead, so sign in at desktop width.
     await page.setViewportSize(DESKTOP);
     await signIn(page, ANALYTICS_TEST_EMAIL, ANALYTICS_TEST_PASSWORD);
-    await page.setViewportSize({ width: 360, height: 844 });
+    await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/analytics", { waitUntil: "domcontentloaded" });
     const weekOfRuns = page.waitForResponse(
       (response) =>
@@ -185,25 +197,51 @@ test.describe("Workflow Runs title row", () => {
     );
     await rangeNav(page).getByRole("button", { name: "7d" }).click();
     await weekOfRuns;
-    const card = page.getByTestId("runs-table");
-    await expect(card.getByText(PAGE_COUNT_REGEX)).toBeVisible({
+    await expect(runsTable(page).getByText(PAGE_COUNT_REGEX)).toBeVisible({
       timeout: 15_000,
     });
 
-    await expectTitleRowWhole(page, "at 360px");
-
-    await card.getByRole("button", { name: "Projects" }).click();
-    await expect(card.getByRole("button", { name: "All Runs" })).toBeVisible();
-    // Too narrow for the whole count, it breaks before "of", not inside the
-    // range. The title does not fit here: the drawer leaves 42px of card.
-    await expect
-      .poll(() => firstLineText(pagination(page).getByText(PAGE_COUNT_REGEX)), {
-        message: "count's first line at 360px with Projects open",
-      })
-      .toBe("1–50");
-    for (const width of [390, 430]) {
+    for (const width of [320, 360, 390, 430]) {
       await page.setViewportSize({ width, height: 844 });
-      await expectTitleRowWhole(page, `at ${width}px with Projects open`);
+      await expectTitleRowWhole(page, `at ${width}px`);
     }
+
+    // Open, the drawer fills the card's width and the card steps aside.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await runsTable(page).getByRole("button", { name: "Projects" }).click();
+    const allRuns = runsTable(page).getByRole("button", { name: "All Runs" });
+    await expect(allRuns).toBeVisible();
+    await expect(title(page)).toBeHidden();
+    expect((await box(allRuns)).width).toBeGreaterThan(
+      (await box(runsTable(page))).width - 40
+    );
+
+    // Picking a project closes it, and the card is back whole.
+    await allRuns.click();
+    await expect(allRuns).toBeHidden();
+    await expect(title(page)).toBeVisible();
+    await expectTitleRowWhole(page, "after picking a project");
+  });
+
+  test("from 640px the drawer opens beside the card, as before", async ({
+    page,
+  }) => {
+    await page.setViewportSize(DESKTOP);
+    await signIn(page, ANALYTICS_TEST_EMAIL, ANALYTICS_TEST_PASSWORD);
+    await page.setViewportSize({ width: 700, height: 844 });
+    await page.goto("/analytics", { waitUntil: "domcontentloaded" });
+    await expect(title(page)).toBeVisible({ timeout: 15_000 });
+
+    await runsTable(page).getByRole("button", { name: "Projects" }).click();
+    const allRuns = runsTable(page).getByRole("button", { name: "All Runs" });
+    await expect(allRuns).toBeVisible();
+    await expect(title(page)).toBeVisible();
+    expect((await box(title(page))).x).toBeGreaterThan(
+      (await box(allRuns)).x + (await box(allRuns)).width
+    );
+
+    // Picking a project leaves it open there.
+    await allRuns.click();
+    await expect(allRuns).toBeVisible();
   });
 });

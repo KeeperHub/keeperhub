@@ -1,9 +1,6 @@
 import { expect, test } from "./fixtures";
 import { signIn } from "./utils/auth";
-import {
-  ANALYTICS_TEST_EMAIL as ANALYTICS_EMAIL,
-  ANALYTICS_TEST_PASSWORD as ANALYTICS_PASSWORD,
-} from "./utils/db";
+import { ANALYTICS_TEST_EMAIL, ANALYTICS_TEST_PASSWORD } from "./utils/db";
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
@@ -15,7 +12,7 @@ test.describe("Analytics Gas Tracking", () => {
   });
 
   test("Gas Spent KPI card shows non-zero value", async ({ page }) => {
-    await signIn(page, ANALYTICS_EMAIL, ANALYTICS_PASSWORD);
+    await signIn(page, ANALYTICS_TEST_EMAIL, ANALYTICS_TEST_PASSWORD);
     await page.goto("/analytics", { waitUntil: "domcontentloaded" });
 
     // Switch to 7d range (seed data spans 7 days)
@@ -41,7 +38,7 @@ test.describe("Analytics Gas Tracking", () => {
   });
 
   test("workflow runs table loads with data", async ({ page }) => {
-    await signIn(page, ANALYTICS_EMAIL, ANALYTICS_PASSWORD);
+    await signIn(page, ANALYTICS_TEST_EMAIL, ANALYTICS_TEST_PASSWORD);
     await page.goto("/analytics", { waitUntil: "domcontentloaded" });
 
     // Switch to 7d range
@@ -87,7 +84,7 @@ test.describe("Analytics Gas Tracking", () => {
   });
 
   test("network breakdown API includes workflow gas", async ({ page }) => {
-    await signIn(page, ANALYTICS_EMAIL, ANALYTICS_PASSWORD);
+    await signIn(page, ANALYTICS_TEST_EMAIL, ANALYTICS_TEST_PASSWORD);
     await page.goto("/analytics", { waitUntil: "domcontentloaded" });
 
     // Hit the networks endpoint directly via the page context (inherits auth cookies)
@@ -132,7 +129,7 @@ test.describe("Analytics Gas Tracking", () => {
   test("workflow runs API attaches gas to the returned page", async ({
     page,
   }) => {
-    await signIn(page, ANALYTICS_EMAIL, ANALYTICS_PASSWORD);
+    await signIn(page, ANALYTICS_TEST_EMAIL, ANALYTICS_TEST_PASSWORD);
     await page.goto("/analytics", { waitUntil: "domcontentloaded" });
 
     const response = await page.request.get(

@@ -4,6 +4,7 @@ import { useAtom } from "jotai";
 import { ChevronLeft, ChevronRight, Layers } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
+import { BELOW_SM_QUERY, useMediaQuery } from "@/hooks/use-mobile";
 import { analyticsProjectIdAtom } from "@/lib/atoms/analytics";
 import { authClient } from "@/lib/auth-client";
 import { cn } from "@/lib/utils";
@@ -84,12 +85,31 @@ export function ProjectDrawer(): ReactNode {
   const [state, setState] = useDrawerState();
   const [projectId, setProjectId] = useAtom(analyticsProjectIdAtom);
   const { projects, loading } = useProjects();
+  // On a phone the open drawer takes the runs card's place (the card hides
+  // itself, see RunsTable), so it starts closed whatever a wider screen
+  // saved, closes again once a project is picked, and saves nothing.
+  const phone = useMediaQuery(BELOW_SM_QUERY);
+  const [openOnPhone, setOpenOnPhone] = useState(false);
+  const open = phone ? openOnPhone : state === "open";
+  const setOpen = (next: boolean): void => {
+    if (phone) {
+      setOpenOnPhone(next);
+    } else {
+      setState(next ? "open" : "collapsed");
+    }
+  };
+  const pick = (id: string | null): void => {
+    setProjectId(id);
+    if (phone) {
+      setOpenOnPhone(false);
+    }
+  };
 
-  if (state === "collapsed") {
+  if (!open) {
     return (
       <button
         className="flex shrink-0 items-start justify-center border-r bg-background pt-3 transition-colors hover:bg-muted"
-        onClick={() => setState("open")}
+        onClick={() => setOpen(true)}
         style={{ width: STRIP_WIDTH }}
         type="button"
       >
@@ -108,8 +128,12 @@ export function ProjectDrawer(): ReactNode {
 
   return (
     <div
-      className="flex shrink-0 flex-col border-r bg-background"
-      style={{ width: DRAWER_WIDTH }}
+      className={cn(
+        "peer flex shrink-0 flex-col bg-background",
+        phone ? "w-full" : "border-r"
+      )}
+      data-replaces-card={phone ? "" : undefined}
+      style={phone ? undefined : { width: DRAWER_WIDTH }}
     >
       <div className="flex items-center justify-between border-b px-3 py-2">
         <div className="flex items-center gap-1.5">
@@ -118,7 +142,7 @@ export function ProjectDrawer(): ReactNode {
         </div>
         <button
           className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          onClick={() => setState("collapsed")}
+          onClick={() => setOpen(false)}
           title="Collapse"
           type="button"
         >
@@ -129,12 +153,12 @@ export function ProjectDrawer(): ReactNode {
       <nav className="flex-1 overflow-y-auto p-1.5">
         <button
           className={cn(
-            "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors",
+            "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors max-sm:py-3",
             projectId === null
               ? "bg-accent font-medium text-accent-foreground"
               : "text-muted-foreground hover:bg-muted hover:text-foreground"
           )}
-          onClick={() => setProjectId(null)}
+          onClick={() => pick(null)}
           type="button"
         >
           All Runs
@@ -148,13 +172,13 @@ export function ProjectDrawer(): ReactNode {
           projects.map((project) => (
             <button
               className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors",
+                "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors max-sm:py-3",
                 projectId === project.id
                   ? "bg-accent font-medium text-accent-foreground"
                   : "text-muted-foreground hover:bg-muted hover:text-foreground"
               )}
               key={project.id}
-              onClick={() => setProjectId(project.id)}
+              onClick={() => pick(project.id)}
               type="button"
             >
               <span
