@@ -1,8 +1,9 @@
 import { expect, test } from "./fixtures";
 import { signIn } from "./utils/auth";
-
-const ANALYTICS_EMAIL = "test-analytics@techops.services";
-const ANALYTICS_PASSWORD = "TestAnalytics123!";
+import {
+  ANALYTICS_TEST_EMAIL as ANALYTICS_EMAIL,
+  ANALYTICS_TEST_PASSWORD as ANALYTICS_PASSWORD,
+} from "./utils/db";
 
 test.use({ storageState: { cookies: [], origins: [] } });
 

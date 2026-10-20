@@ -675,29 +675,37 @@ export function Pagination({
   const rangeEnd = Math.min(page * pageSize, total);
 
   return (
-    <nav aria-label="Pagination" className="flex items-center gap-2">
+    <nav
+      aria-label="Pagination"
+      className="flex flex-wrap items-center gap-x-2 gap-y-1"
+    >
+      {/* When the whole count does not fit, it breaks only before "of". */}
       <span className="font-medium text-muted-foreground text-xs tabular-nums">
-        {rangeStart.toLocaleString()}&ndash;{rangeEnd.toLocaleString()} of{" "}
-        {total.toLocaleString()}
+        <span className="whitespace-nowrap">
+          {rangeStart.toLocaleString()}&ndash;{rangeEnd.toLocaleString()}
+        </span>{" "}
+        <span className="whitespace-nowrap">of {total.toLocaleString()}</span>
       </span>
-      <Button
-        className="size-7 p-0"
-        disabled={page <= 1 || loading}
-        onClick={() => onPageChange(page - 1)}
-        size="sm"
-        variant="ghost"
-      >
-        <ChevronLeft className="size-3.5" />
-      </Button>
-      <Button
-        className="size-7 p-0"
-        disabled={page >= totalPages || loading}
-        onClick={() => onPageChange(page + 1)}
-        size="sm"
-        variant="ghost"
-      >
-        <ChevronRight className="size-3.5" />
-      </Button>
+      <div className="flex items-center gap-2">
+        <Button
+          className="size-7 p-0"
+          disabled={page <= 1 || loading}
+          onClick={() => onPageChange(page - 1)}
+          size="sm"
+          variant="ghost"
+        >
+          <ChevronLeft className="size-3.5" />
+        </Button>
+        <Button
+          className="size-7 p-0"
+          disabled={page >= totalPages || loading}
+          onClick={() => onPageChange(page + 1)}
+          size="sm"
+          variant="ghost"
+        >
+          <ChevronRight className="size-3.5" />
+        </Button>
+      </div>
     </nav>
   );
 }
@@ -894,7 +902,11 @@ export function RunsTable(): ReactNode {
         <ProjectDrawer />
         <Card className="flex-1 rounded-none border-0">
           <CardHeader>
-            <CardTitle className="flex items-center justify-between">
+            {/* On a phone the card can be too narrow for one row: the count
+                then moves under the title rather than both squeezing, and the
+                arrows stay together. With the Projects drawer open below about
+                390px the card is too narrow even for that. */}
+            <CardTitle className="flex flex-wrap items-center justify-between gap-y-2">
               <span>Workflow Runs</span>
               <Pagination
                 loading={pageLoading}

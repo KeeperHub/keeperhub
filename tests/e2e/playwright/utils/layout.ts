@@ -45,3 +45,11 @@ export async function isOnTop(locator: Locator): Promise<boolean> {
     return hit !== null && element.contains(hit);
   });
 }
+
+// Its text is all inside its box. A squeezed box can still look fine to a
+// bounding-box check while the text spills out of it or is cut off.
+export async function textFits(locator: Locator): Promise<boolean> {
+  return await locator.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth
+  );
+}
