@@ -192,7 +192,11 @@ test.describe("Workflow Runs card on phones", () => {
             found.y + found.height <= card.y + card.height,
           `inside the card ${label}`
         ).toBe(true);
-        expect(await isOnTop(control), `not covered ${label}`).toBe(true);
+        // A disabled button (Previous on page 1) ignores pointer events, so
+        // hit-testing passes through it; only enabled controls can be checked.
+        if (await control.isEnabled()) {
+          expect(await isOnTop(control), `not covered ${label}`).toBe(true);
+        }
       }
     }).toPass({ timeout: 5000 });
   }
