@@ -1,10 +1,17 @@
-# Type: manual | Deletes Turnkey sub-orgs that the e2e suites created with the
-# Turnkey key of the `staging` environment and left behind when their
-# ephemeral database was dropped. Dry run by default. See the header of
+# Type: nightly + manual | Deletes Turnkey sub-orgs that the e2e suites created
+# with the Turnkey key of the `staging` environment and left behind when their
+# ephemeral database was dropped. The nightly run deletes up to 1000; a manual
+# run is a dry run by default. See the header of
 # scripts/turnkey/cleanup-orphaned-sub-orgs.ts for the selection rules.
+#
+# Both the key prefix guard and the sub-orgs to keep come from `staging`
+# environment variables TURNKEY_CLEANUP_KEY_PREFIX and
+# TURNKEY_CLEANUP_EXCLUDE_SUB_ORG_IDS. A manual run may override them.
 name: turnkey-sub-org-cleanup
 
 on:
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -13,9 +20,9 @@ on:
         options: [dry-run, delete]
         default: dry-run
       expected_key_prefix:
-        description: "First 16+ hex characters of the Turnkey API public key this job must run with"
+        description: "First 16+ hex characters of the Turnkey API public key this job must run with (default: TURNKEY_CLEANUP_KEY_PREFIX)"
         type: string
-        required: true
+        default: ""
       max_sub_orgs:
         description: "dry-run: sub-orgs to inspect; delete: sub-orgs to delete"
         type: string
@@ -29,7 +36,7 @@ on:
         type: string
         default: "10"
       exclude_sub_org_ids:
-        description: "Comma separated sub-org ids to keep"
+        description: "Comma separated sub-org ids to keep (default: TURNKEY_CLEANUP_EXCLUDE_SUB_ORG_IDS)"
         type: string
         default: ""
 
@@ -65,14 +72,26 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Without the exclusion list the job would delete sub-orgs that a
+      # database still uses, so a missing variable stops the run.
+      - name: Require cleanup settings
+        env:
+          KEY_PREFIX: ${{ vars.TURNKEY_CLEANUP_KEY_PREFIX }}
+          EXCLUDE_IDS: ${{ vars.TURNKEY_CLEANUP_EXCLUDE_SUB_ORG_IDS }}
+        run: |
+          if [ -z "$KEY_PREFIX" ] || [ -z "$EXCLUDE_IDS" ]; then
+            echo "::error::Set TURNKEY_CLEANUP_KEY_PREFIX and TURNKEY_CLEANUP_EXCLUDE_SUB_ORG_IDS on the staging environment"
+            exit 1
+          fi
+
       - name: Clean up sub-orgs
         env:
-          MODE: ${{ inputs.mode }}
-          EXPECTED_KEY_PREFIX: ${{ inputs.expected_key_prefix }}
-          MAX_SUB_ORGS: ${{ inputs.max_sub_orgs }}
-          MIN_AGE_HOURS: ${{ inputs.min_age_hours }}
-          REQUESTS_PER_SECOND: ${{ inputs.requests_per_second }}
-          EXCLUDE_SUB_ORG_IDS: ${{ inputs.exclude_sub_org_ids }}
+          MODE: ${{ github.event_name == 'schedule' && 'delete' || inputs.mode }}
+          EXPECTED_KEY_PREFIX: ${{ inputs.expected_key_prefix || vars.TURNKEY_CLEANUP_KEY_PREFIX }}
+          MAX_SUB_ORGS: ${{ github.event_name == 'schedule' && '1000' || inputs.max_sub_orgs }}
+          MIN_AGE_HOURS: ${{ inputs.min_age_hours || '6' }}
+          REQUESTS_PER_SECOND: ${{ inputs.requests_per_second || '10' }}
+          EXCLUDE_SUB_ORG_IDS: ${{ inputs.exclude_sub_org_ids || vars.TURNKEY_CLEANUP_EXCLUDE_SUB_ORG_IDS }}
           TURNKEY_API_PUBLIC_KEY: ${{ secrets.TURNKEY_API_PUBLIC_KEY }}
           TURNKEY_API_PRIVATE_KEY: ${{ secrets.TURNKEY_API_PRIVATE_KEY }}
           TURNKEY_ORGANIZATION_ID: ${{ secrets.TURNKEY_ORGANIZATION_ID }}
