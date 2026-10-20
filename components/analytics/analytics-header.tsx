@@ -115,21 +115,28 @@ export function AnalyticsHeader({
   );
 
   return (
-    <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex items-center gap-3">
+    <header className="flex flex-wrap items-center gap-3">
+      <div className="mr-auto flex items-center gap-3">
         <h1 className="text-2xl font-semibold tracking-tight">Analytics</h1>
       </div>
 
-      <div className="flex items-center gap-3">
-        <nav aria-label="Time range" className="flex items-center gap-1">
-          {rangeButtons}
-          <DateRangeFilter />
-        </nav>
+      {/* On phones the range buttons get a row of their own under the title,
+          and refresh moves up beside the title (it stays after them in Tab
+          order). From sm it is one row whenever it fits. */}
+      <nav
+        aria-label="Time range"
+        className="order-last flex w-full flex-wrap items-center gap-1 sm:order-none sm:w-auto"
+      >
+        {rangeButtons}
+        <DateRangeFilter />
+      </nav>
 
+      <div className="flex items-center gap-3">
         {onRefetch ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
+                aria-label="Refresh data"
                 disabled={refreshing}
                 onClick={() => {
                   handleRefresh().catch(() => {
