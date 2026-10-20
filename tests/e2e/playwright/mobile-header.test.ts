@@ -18,17 +18,24 @@ const TAIL_ADDRESS_REGEX = /^…\w{4}$/;
 const FULL_ADDRESS_REGEX = /^0x\w{4}\.\.\.\w{4}$/;
 const WALLET_NAME_REGEX = /^Wallet 0x\w{4}\.\.\.\w{4}$/;
 const ANALYTICS_URL_REGEX = /\/analytics$/;
+// The Save button's title, also while an autosave runs.
+const SAVE_TITLE_REGEX = /^(Save workflow|Saving\.\.\.)$/;
 // Portrait phone widths, narrowest to widest, plus the two the wallet's
 // address switches at.
 const PHONE_WIDTHS = [320, 360, 375, 390, 414, 420, 430];
 // Phones turned sideways and tablets, where the org switcher shows its name.
 const WIDE_WIDTHS = [640, 667, 740, 768, 820];
-// Widths at which the workflow editor's header must fit. Below about 700px
-// the editor's own buttons do not fit a phone's header (a known gap).
-const EDITOR_WIDTHS = [740, 768, 820];
-// A phone turned sideways where the editor's header does not fit (a known
-// gap): the avatar and the nav button must still be on top and tappable.
-const EDITOR_CROWDED_WIDTHS = [640, 667];
+// Widths at which the workflow editor's header must fit: below 768px its
+// buttons float in a bar at the bottom, from 768px they sit in the header.
+const EDITOR_WIDTHS = [320, 375, 390, 640, 667, 740, 768, 820, 1023];
+// Phones, upright and sideways, where the editor's buttons are in the bar.
+const EDITOR_BAR_SIZES = [
+  { width: 320, height: 568 },
+  { width: 375, height: 667 },
+  { width: 390, height: 844 },
+  { width: 667, height: 375 },
+  { width: 767, height: 800 },
+];
 // A wallet address for the editor test's stand-in wallet.
 // Mostly zeros: a made-up address, which the contract scanner skips.
 const STAND_IN_WALLET = `0x39c9${"0".repeat(32)}0de3`;
@@ -223,6 +230,55 @@ async function expectHeaderFits(page: Page, width: number): Promise<void> {
     .toBeGreaterThanOrEqual(HEADER_SIDES_MIN_GAP);
 }
 
+// On a phone the editor's buttons float in a bar at the bottom: wholly on
+// screen, each inside it and clear of the next, Run at its end (its icon
+// alone below 375px), and the canvas's zoom controls above it.
+async function expectEditorBar(page: Page, width: number): Promise<void> {
+  const bar = page.getByTestId("workflow-actions");
+  await expect(bar, `bar on screen at ${width}px`).toBeInViewport({
+    ratio: 1,
+  });
+  const barBox = await bar.boundingBox();
+  const boxes = await bar.evaluate((element) =>
+    [...element.querySelectorAll("button")]
+      .map((button) => button.getBoundingClientRect())
+      .filter((box) => box.width > 0)
+      .map((box) => ({ left: box.left, right: box.right, width: box.width }))
+  );
+  expect(boxes.length, `bar buttons at ${width}px`).toBeGreaterThanOrEqual(6);
+  for (const [index, box] of boxes.entries()) {
+    expect(
+      box.left,
+      `button ${index} inside the bar at ${width}px`
+    ).toBeGreaterThanOrEqual(barBox?.x ?? 0);
+    expect(box.right).toBeLessThanOrEqual(
+      (barBox?.x ?? 0) + (barBox?.width ?? 0)
+    );
+    if (index > 0) {
+      expect(
+        box.left - boxes[index - 1].right,
+        `gap before button ${index} at ${width}px`
+      ).toBeGreaterThanOrEqual(4);
+    }
+  }
+  const run = page.getByRole("button", { name: "Run", exact: true });
+  const runBox = await run.boundingBox();
+  expect(runBox?.x, `Run last at ${width}px`).toBe(boxes.at(-1)?.left);
+  if (width < 375) {
+    expect(runBox?.width, `Run's icon alone at ${width}px`).toBe(36);
+  } else {
+    expect(runBox?.width).toBeGreaterThanOrEqual(80);
+  }
+  await expect
+    .poll(() => isOnTop(run), { message: `Run tappable at ${width}px` })
+    .toBe(true);
+  const controls = await page.locator(".workflow-controls-panel").boundingBox();
+  expect(
+    (controls?.y ?? 0) + (controls?.height ?? 0),
+    `zoom controls above the bar at ${width}px`
+  ).toBeLessThanOrEqual(barBox?.y ?? 0);
+}
+
 test.describe("Mobile header", () => {
   // Phones and tablets are touch screens. Playwright reports a mouse
   // otherwise, and a 768-1023px window differs by pointer.
@@ -367,7 +423,7 @@ test.describe("Mobile header", () => {
     await expect(page.getByTestId("navigation-sidebar")).toBeVisible();
   });
 
-  test("the workflow editor's header fits tablets and wide phones", async ({
+  test("the editor's header fits every width; on phones its buttons float at the bottom", async ({
     page,
   }) => {
     const workflow = await createTestWorkflow(PERSISTENT_TEST_USER_EMAIL, {
@@ -394,32 +450,32 @@ test.describe("Mobile header", () => {
             ((switcherBox?.x ?? 0) + (switcherBox?.width ?? 0))
         )
       ).toBe(16);
-      // The owner's buttons and the wallet's address are in the header, so
-      // this is the crowded case.
-      await page.setViewportSize({ width: 768, height: 800 });
-      await expect(page.getByTitle("Configuration")).toBeVisible();
+      // A selected step adds Delete: the most crowded case.
+      await page.locator(".react-flow__node-trigger").first().click();
+      await expect(page.getByTitle("Delete")).toHaveCount(1);
       await expect(page.getByTestId("wallet-toolbar-address")).toContainText(
         "0x"
       );
       for (const width of EDITOR_WIDTHS) {
         await expectHeaderFits(page, width);
       }
-      for (const width of EDITOR_CROWDED_WIDTHS) {
+      // From 768px the buttons sit in the header's one row, side by side
+      // (they used to stack and hang below it); the switcher gives way to
+      // them, never under its 76px floor, and the wallet keeps its size.
+      for (const width of [768, 1023]) {
         await page.setViewportSize({ width, height: 800 });
-        await expectHeaderEndsOnScreen(page, width);
-        for (const testId of ["user-menu", "mobile-nav-trigger"]) {
-          await expect
-            .poll(() => isOnTop(page.getByTestId(testId)), {
-              message: `${testId} tappable at ${width}px`,
-            })
-            .toBe(true);
-        }
-        // However crowded, its wrapper never lets it under 76px, and nor is
-        // it drawn narrower.
-        await expect(
-          page.getByTestId("org-switcher").locator("xpath=.."),
-          `switcher floor at ${width}px`
-        ).toHaveCSS("min-width", "76px");
+        const header = await page.getByTestId("header-right").boundingBox();
+        const save = await page.getByTitle(SAVE_TITLE_REGEX).boundingBox();
+        const download = await page
+          .getByTitle("Export workflow as JSON")
+          .boundingBox();
+        expect(save?.y, `Save in the header row at ${width}px`).toBe(
+          download?.y
+        );
+        expect(
+          (save?.y ?? 0) + (save?.height ?? 0),
+          `Save inside the header at ${width}px`
+        ).toBeLessThanOrEqual((header?.y ?? 0) + (header?.height ?? 0));
         await expect
           .poll(
             async () =>
@@ -428,29 +484,13 @@ test.describe("Mobile header", () => {
             { message: `switcher width at ${width}px` }
           )
           .toBeGreaterThanOrEqual(75.5);
+        await expect(page.getByTestId("wallet-toolbar-copy")).toBeVisible();
+        await expect(page.getByTestId("wallet-toolbar-settings")).toBeVisible();
       }
-      // At 755px the squeezed switcher is about 126px wide: it still shows
-      // the name, which it gives up for the initials only under about 114px.
-      // This depends on the toolbar's buttons today (one more 36px button
-      // would tip it); the exact switch point is pinned on its own below.
-      await page.setViewportSize({ width: 755, height: 800 });
-      await expect(switcherName(page)).toBeVisible();
-      await expect(switcherInitials(page)).toBeHidden();
-      // At 667px the squeezed switcher is uncovered, whether it shows the
-      // name or the initials there (that depends on the editor's buttons);
-      // at 640px the editor's buttons cover it (a known gap).
-      await page.setViewportSize({ width: 667, height: 800 });
-      await expect
-        .poll(
-          async () =>
-            isOnTop(
-              (await switcherInitials(page).isVisible())
-                ? switcherInitials(page)
-                : switcherName(page)
-            ),
-          { message: "switcher uncovered at 667px" }
-        )
-        .toBe(true);
+      for (const size of EDITOR_BAR_SIZES) {
+        await page.setViewportSize(size);
+        await expectEditorBar(page, size.width);
+      }
     } finally {
       await deleteTestWorkflow(workflow.id);
     }

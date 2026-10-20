@@ -24,7 +24,6 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ButtonGroup } from "@/components/ui/button-group";
 import { MobileNav } from "@/components/mobile-nav";
 import { useSwitcherOffering } from "@/components/organization/org-switch-runner";
 import { OrgSwitcher } from "@/components/organization/org-switcher";
@@ -1627,42 +1626,41 @@ function ToolbarActions({
   const shouldDisplayEnableWorkflowSwitch = shouldShowEnableSwitch(triggerType);
 
   return (
-    <>
-      {/* Properties - Mobile Vertical (always visible) */}
-      <ButtonGroup className="flex lg:hidden" orientation="vertical">
+    // In the header from md up (its buttons sit in the header's row); on
+    // phones a bar floating at the bottom of the canvas, with Run at its end.
+    // Below xs the bar takes 4px more on each side and Run shows its icon
+    // alone, so a selection's Delete still fits at 320px.
+    <div
+      className="flex items-center gap-1 max-md:fixed max-md:right-[max(1rem,env(safe-area-inset-right))] max-md:bottom-[max(1rem,env(safe-area-inset-bottom))] max-md:left-[max(1rem,env(safe-area-inset-left))] max-md:rounded-lg max-md:border max-md:bg-background max-md:p-2 max-md:shadow-lg max-xs:right-3 max-xs:left-3 max-xs:px-1.5 wallet:gap-2 md:contents"
+      data-testid="workflow-actions"
+    >
+      {/* Properties and Delete (when something is selected) - below lg,
+          where the properties panel is not beside the canvas */}
+      <Button
+        className="border hover:bg-black/5 lg:hidden dark:hover:bg-white/5"
+        onClick={() => openOverlay(ConfigurationOverlay, {})}
+        size="icon"
+        title="Configuration"
+        variant="secondary"
+      >
+        <Settings2 className="size-4" />
+      </Button>
+      {hasSelection && (
         <Button
-          className="border hover:bg-black/5 dark:hover:bg-white/5"
-          onClick={() => openOverlay(ConfigurationOverlay, {})}
+          className="border hover:bg-black/5 lg:hidden dark:hover:bg-white/5"
+          onClick={handleDeleteConfirm}
           size="icon"
-          title="Configuration"
+          title="Delete"
           variant="secondary"
         >
-          <Settings2 className="size-4" />
+          <Trash2 className="size-4" />
         </Button>
-        {/* Delete - Show when node or edge is selected */}
-        {hasSelection && (
-          <Button
-            className="border hover:bg-black/5 dark:hover:bg-white/5"
-            onClick={handleDeleteConfirm}
-            size="icon"
-            title="Delete"
-            variant="secondary"
-          >
-            <Trash2 className="size-4" />
-          </Button>
-        )}
-      </ButtonGroup>
+      )}
 
-      {/* Save/Download - Mobile Vertical */}
-      <div className="flex flex-col gap-1 lg:hidden">
-        <SaveButton handleSave={actions.handleSave} state={state} />
-        <DownloadButton actions={actions} state={state} />
-      </div>
-
-      {/* Save/Download - Desktop Horizontal */}
-      <div className="hidden items-center gap-2 lg:flex">
+      {/* Save/Download - one group from lg, with the saving note */}
+      <div className="contents lg:flex lg:items-center lg:gap-2">
         {state.isSaving && !isAnonymousUser(state.session?.user) && (
-          <span className="flex items-center gap-1 text-muted-foreground text-xs">
+          <span className="hidden items-center gap-1 text-muted-foreground text-xs lg:flex">
             <Loader2 className="size-3 animate-spin" />
             Saving...
           </span>
@@ -1721,8 +1719,10 @@ function ToolbarActions({
         </button>
       )}
 
-      <RunButtonGroup actions={actions} state={state} />
-    </>
+      <div className="flex shrink-0 max-md:ml-auto">
+        <RunButtonGroup actions={actions} state={state} />
+      </div>
+    </div>
   );
 }
 
@@ -1923,12 +1923,13 @@ function RunButtonGroup({
   if (state.isExecuting) {
     return (
       <Button
-        className="min-w-20 bg-destructive text-white hover:bg-destructive/90"
+        className="min-w-20 bg-destructive text-white hover:bg-destructive/90 max-xs:min-w-9 max-xs:px-0"
         onClick={() => actions.handleCancel()}
         title="Stop Execution"
       >
         <div className="flex items-center gap-2">
-          <Square className="size-3.5 fill-current" /> Stop
+          <Square className="size-3.5 fill-current" />
+          <span className="max-xs:sr-only">Stop</span>
         </div>
       </Button>
     );
@@ -1936,7 +1937,7 @@ function RunButtonGroup({
 
   const button = (
     <Button
-      className="min-w-20 bg-keeperhub-green hover:bg-keeperhub-green-dark disabled:opacity-70 disabled:[&>svg]:text-muted-foreground"
+      className="min-w-20 bg-keeperhub-green hover:bg-keeperhub-green-dark disabled:opacity-70 disabled:[&>svg]:text-muted-foreground max-xs:min-w-9 max-xs:px-0"
       data-tour="workflow-run"
       disabled={disabled}
       onClick={() => actions.handleExecute()}
@@ -1955,17 +1956,17 @@ function RunButtonGroup({
                 isPreflighting and outlasts the check itself. Nothing is being
                 checked while the author is typing, so it does not spin. */}
             <TextCursorInput className="size-4" />
-            Waiting...
+            <span className="max-xs:sr-only">Waiting...</span>
           </>
         ) : actions.isPreflighting ? (
           <>
             <Loader2 className="size-4 animate-spin" />
-            Checking...
+            <span className="max-xs:sr-only">Checking...</span>
           </>
         ) : (
           <>
             <Play className="size-4" />
-            Run
+            <span className="max-xs:sr-only">Run</span>
           </>
         )}
       </div>
@@ -2083,8 +2084,10 @@ export const WorkflowToolbar = ({
     ? "flex items-center gap-2"
     : "flex flex-col gap-2 rounded-none border-none bg-transparent p-0 lg:flex-row lg:items-center";
 
+  // Below lg never squeezed: in a crowded header (the editor's buttons at
+  // 768px) the left side, and the org switcher in it, gives way instead.
   const rightSectionClassName = persistent
-    ? "flex items-center gap-2"
+    ? "flex items-center gap-2 max-lg:shrink-0"
     : "pointer-events-auto absolute top-4 right-4 z-10";
 
   const rightContentClassName = persistent
