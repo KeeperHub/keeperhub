@@ -12,6 +12,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { MarketplaceLeaderboardRow } from "@/lib/marketplace/leaderboard-query";
+import { MARKETPLACE_GRID_COLUMNS } from "./marketplace-grid";
 
 type MarketplaceRowProps = {
   row: MarketplaceLeaderboardRow;
@@ -127,7 +128,7 @@ export function MarketplaceRow({
     // biome-ignore lint/a11y/useSemanticElements: row is structurally a grid <article role="row"> per UI-SPEC §5; the surrounding <div role="table"> demands matching role children, and a wrapping <button> would break the rowgroup hierarchy.
     <article
       aria-label={`Open ${row.displayName}`}
-      className="group relative grid min-h-[3rem] cursor-pointer grid-cols-[48px_1fr_140px_100px_72px_88px_64px] items-center gap-x-3 border-border/20 border-b bg-[var(--color-hub-card)] px-4 py-3 transition-colors duration-100 ease before:absolute before:inset-0 before:z-[1] before:cursor-pointer before:content-[''] last:border-b-0 even:bg-[var(--color-hub-overlay)] hover:bg-[var(--color-hub-icon-bg)] motion-reduce:transition-none"
+      className={`group relative grid min-h-[3rem] cursor-pointer ${MARKETPLACE_GRID_COLUMNS} items-center gap-x-3 border-border/20 border-b bg-[var(--color-hub-card)] px-4 py-3 transition-colors duration-100 ease before:absolute before:inset-0 before:z-[1] before:cursor-pointer before:content-[''] last:border-b-0 even:bg-[var(--color-hub-overlay)] hover:bg-[var(--color-hub-icon-bg)] motion-reduce:transition-none`}
       onClick={openModal}
       onKeyDown={handleKeyDown}
       // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: UI-SPEC §5 mandates <article role="row"> for the grid layout; click is delivered via the ::before overlay and onKeyDown handler.
@@ -174,7 +175,7 @@ export function MarketplaceRow({
         ) : null}
       </div>
 
-      <div className="pointer-events-none relative z-[2] hidden max-w-full flex-wrap justify-self-end gap-1 lg:flex">
+      <div className="pointer-events-none relative z-[2] hidden max-w-full flex-wrap justify-self-end gap-1 @[44rem]:flex">
         {row.tags.slice(0, 3).map((tag) => (
           <span
             // Translucent foreground tint instead of the icon-bg token so the
@@ -195,32 +196,39 @@ export function MarketplaceRow({
           // row's ::before click overlay (the same trick the copy-slug
           // button uses); without it the row's openModal would fire
           // alongside the owner filter.
-          className="pointer-events-auto relative z-[2] hidden max-w-full truncate justify-self-end rounded text-right text-muted-foreground text-xs transition-colors hover:text-foreground hover:underline focus-visible:text-foreground focus-visible:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring motion-reduce:transition-none md:inline-block"
+          className="pointer-events-auto relative z-[2] hidden max-w-full truncate justify-self-end rounded text-right text-muted-foreground text-xs transition-colors hover:text-foreground hover:underline focus-visible:text-foreground focus-visible:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring motion-reduce:transition-none @[36rem]:inline-block"
           onClick={filterByOwner}
           type="button"
         >
           {ownerName}
         </button>
       ) : (
-        <span className="pointer-events-none relative z-[2] hidden max-w-full truncate justify-self-end text-muted-foreground text-xs md:inline">
+        <span className="pointer-events-none relative z-[2] hidden max-w-full truncate justify-self-end text-muted-foreground text-xs @[36rem]:inline">
           Anonymous
         </span>
       )}
 
-      <span className="pointer-events-none relative z-[2] justify-self-end font-semibold text-foreground text-sm tabular-nums">
+      <span className="pointer-events-none relative z-[2] hidden justify-self-end font-semibold text-foreground text-sm tabular-nums @[36rem]:inline">
         {callCountLabel(row.callCount)}
       </span>
 
-      <span className="pointer-events-none relative z-[2] justify-self-end font-mono font-semibold text-foreground text-xs tabular-nums">
+      <span className="pointer-events-none relative z-[2] justify-self-end text-right font-mono font-semibold text-foreground text-xs tabular-nums">
         {price}
+        {/* A narrow table has no Calls column, so the count sits under the
+            price; the comma keeps the two apart when read aloud. */}
+        <span className="sr-only">, </span>
+        <span className="block font-normal font-sans text-muted-foreground @[36rem]:hidden">
+          {callCountLabel(row.callCount)}{" "}
+          {row.callCount === 1 ? "call" : "calls"}
+        </span>
       </span>
 
       {badge ? (
-        <span className="pointer-events-none relative z-[2] hidden items-center justify-center justify-self-end rounded-full bg-[var(--color-bg-accent)] px-2 py-0.5 font-semibold text-[0.625rem] text-[var(--color-text-accent)] md:inline-flex">
+        <span className="pointer-events-none relative z-[2] hidden items-center justify-center justify-self-end rounded-full bg-[var(--color-bg-accent)] px-2 py-0.5 font-semibold text-[0.625rem] text-[var(--color-text-accent)] @[36rem]:inline-flex">
           {badge.label}
         </span>
       ) : (
-        <span aria-hidden="true" className="hidden md:inline" />
+        <span aria-hidden="true" className="hidden @[36rem]:inline" />
       )}
     </article>
   );

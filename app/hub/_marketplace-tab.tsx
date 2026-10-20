@@ -1,6 +1,7 @@
 import { asc, eq } from "drizzle-orm";
 import { Box, X } from "lucide-react";
 import Link from "next/link";
+import { MARKETPLACE_GRID_COLUMNS } from "@/components/hub/marketplace-grid";
 import { MarketplaceRow } from "@/components/hub/marketplace-row";
 import {
   MarketplaceSidebar,
@@ -178,17 +179,17 @@ export async function HubMarketplaceTab({
               )}
             </section>
           ) : (
-            // biome-ignore lint/a11y/useSemanticElements: UI-SPEC §5 mandates a CSS grid layout (grid-cols-[48px_1fr_140px_100px_72px_88px_64px]); a native <table> cannot drive grid tracks. The role="table"/"row"/"columnheader" hierarchy preserves screen-reader semantics.
+            // biome-ignore lint/a11y/useSemanticElements: UI-SPEC §5 mandates a CSS grid layout (MARKETPLACE_GRID_COLUMNS); a native <table> cannot drive grid tracks. The role="table"/"row"/"columnheader" hierarchy preserves screen-reader semantics.
             <div
               aria-label="Marketplace leaderboard"
               aria-rowcount={total}
-              className="overflow-hidden rounded-xl border border-border/20 bg-[var(--color-hub-card)]"
+              className="@container overflow-hidden rounded-xl border border-border/20 bg-[var(--color-hub-card)]"
               role="table"
             >
               {/* biome-ignore lint/a11y/useSemanticElements: see role="table" justification above. */}
               {/* biome-ignore lint/a11y/useFocusableInteractive: the header row is a label container, not a tab stop; making it focusable would create empty stops in the keyboard order. */}
               <div
-                className="grid grid-cols-[48px_1fr_140px_100px_72px_88px_64px] items-center gap-x-3 border-border/30 border-b bg-[var(--color-hub-overlay)] px-4 py-3 font-normal text-muted-foreground text-xs uppercase tracking-widest"
+                className={`grid ${MARKETPLACE_GRID_COLUMNS} items-center gap-x-3 border-border/30 border-b bg-[var(--color-hub-overlay)] px-4 py-3 font-normal text-muted-foreground text-xs uppercase tracking-widest`}
                 role="row"
               >
                 {/* biome-ignore lint/a11y/useSemanticElements: see role="table" justification above. */}
@@ -200,7 +201,7 @@ export async function HubMarketplaceTab({
                 {/* biome-ignore lint/a11y/useSemanticElements: see role="table" justification above. */}
                 {/* biome-ignore lint/a11y/useFocusableInteractive: column headers are static labels. */}
                 <span
-                  className="hidden justify-self-end lg:inline"
+                  className="hidden justify-self-end @[44rem]:inline"
                   role="columnheader"
                 >
                   Tags
@@ -208,14 +209,17 @@ export async function HubMarketplaceTab({
                 {/* biome-ignore lint/a11y/useSemanticElements: see role="table" justification above. */}
                 {/* biome-ignore lint/a11y/useFocusableInteractive: column headers are static labels. */}
                 <span
-                  className="hidden justify-self-end md:inline"
+                  className="hidden justify-self-end @[36rem]:inline"
                   role="columnheader"
                 >
                   Owner
                 </span>
                 {/* biome-ignore lint/a11y/useSemanticElements: see role="table" justification above. */}
                 {/* biome-ignore lint/a11y/useFocusableInteractive: column headers are static labels. */}
-                <span className="justify-self-end" role="columnheader">
+                <span
+                  className="hidden justify-self-end @[36rem]:inline"
+                  role="columnheader"
+                >
                   Calls
                 </span>
                 {/* biome-ignore lint/a11y/useSemanticElements: see role="table" justification above. */}
@@ -226,7 +230,7 @@ export async function HubMarketplaceTab({
                 {/* biome-ignore lint/a11y/useSemanticElements: see role="table" justification above. */}
                 {/* biome-ignore lint/a11y/useFocusableInteractive: column headers are static labels. */}
                 <span
-                  className="hidden justify-self-end md:inline"
+                  className="hidden justify-self-end @[36rem]:inline"
                   role="columnheader"
                 >
                   Chain
