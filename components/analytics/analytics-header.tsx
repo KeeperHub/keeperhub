@@ -121,13 +121,19 @@ export function AnalyticsHeader({
       </div>
 
       {/* On phones the range buttons get a row of their own under the title,
-          and refresh moves up beside the title (it stays after them in Tab
-          order). From sm the two are one group beside the title, moving
-          under it together when they do not fit. */}
-      <div className="contents sm:flex sm:flex-wrap sm:items-center sm:gap-3">
+          and refresh moves up beside the title. It stays after them in the
+          DOM, so Tab reaches it last there: putting it first would move that
+          mismatch to wider screens, where the order matches the screen.
+
+          From sm the two are one group beside the title, moving under it
+          together when they do not fit. Inside the group the range buttons
+          wrap first (the nav can shrink to its widest button), so refresh
+          stays on Custom's row and only takes a row of its own when even
+          that does not fit. */}
+      <div className="contents sm:flex sm:flex-wrap sm:items-end sm:gap-3">
         <nav
           aria-label="Time range"
-          className="order-last flex w-full flex-wrap items-center gap-1 sm:order-none sm:w-auto"
+          className="order-last flex w-full flex-wrap items-center gap-1 sm:order-none sm:w-auto sm:min-w-min sm:grow sm:basis-0"
         >
           {rangeButtons}
           <DateRangeFilter />

@@ -12,9 +12,12 @@ import {
 
 // Portrait phones, narrowest to widest, and phones turned sideways.
 const NARROW_WIDTHS = [320, 360, 390, 430, 640, 667];
-// Sideways phones and small tablets, where a picked range is too wide for
-// the title's row, so the range buttons and refresh move under it.
-const UNDER_TITLE_WIDTHS = [640, 700];
+// Sideways phones, where a picked range is too wide for the title's row
+// (up to about 690px), so the range buttons and refresh move under it.
+const UNDER_TITLE_WIDTHS = [640, 680];
+// With the sidebar expanded, the range buttons and refresh no longer fit
+// one row even under the title, so the buttons wrap Custom instead.
+const EXPANDED_SIDEBAR_WIDTH = 785;
 const DESKTOP = { width: 1280, height: 800 };
 // Refresh sits right after the range buttons: a few pixels of gap, however
 // it is tuned, never pushed across the header.
@@ -98,8 +101,18 @@ test.describe("Analytics header", () => {
     await expect(refreshButton(page)).toBeVisible({ timeout: 15_000 });
     await pickThisMonth(page);
 
-    for (const width of UNDER_TITLE_WIDTHS) {
+    const widths = [...UNDER_TITLE_WIDTHS, EXPANDED_SIDEBAR_WIDTH];
+    for (const width of widths) {
       await page.setViewportSize({ width, height: 844 });
+      if (width === EXPANDED_SIDEBAR_WIDTH) {
+        const expand = page.getByRole("button", { name: "Expand sidebar" });
+        if (await expand.isVisible()) {
+          await expand.click();
+        }
+        await expect(
+          page.getByRole("button", { name: "Collapse sidebar" })
+        ).toBeVisible();
+      }
       await expect(async () => {
         const custom = await box(customButton(page));
         const refresh = await box(refreshButton(page));
@@ -208,19 +221,29 @@ test.describe("Workflow Runs card on phones", () => {
 
     // Open, the drawer fills the card's width and the card steps aside.
     await page.setViewportSize({ width: 390, height: 844 });
-    await runsTable(page).getByRole("button", { name: "Projects" }).click();
+    const projects = runsTable(page).getByRole("button", { name: "Projects" });
+    await projects.click();
     const allRuns = runsTable(page).getByRole("button", { name: "All Runs" });
     await expect(allRuns).toBeVisible();
+    await expect(allRuns, "focus moves to the current pick").toBeFocused();
     await expect(title(page)).toBeHidden();
     expect((await box(allRuns)).width).toBeGreaterThan(
       (await box(runsTable(page))).width - 40
     );
 
-    // Picking a project closes it, and the card is back whole.
+    // Picking a project closes it, the card is back whole, and focus returns
+    // to the Projects button rather than falling to the page.
     await allRuns.click();
     await expect(allRuns).toBeHidden();
     await expect(title(page)).toBeVisible();
+    await expect(projects).toBeFocused();
     await expectTitleRowWhole(page, "after picking a project");
+
+    // "Back to runs" closes it without picking.
+    await projects.click();
+    await runsTable(page).getByRole("button", { name: "Back to runs" }).click();
+    await expect(title(page)).toBeVisible();
+    await expect(projects).toBeFocused();
   });
 
   test("from 640px the drawer opens beside the card, as before", async ({

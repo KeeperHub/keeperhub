@@ -3,7 +3,7 @@
 import { useAtom } from "jotai";
 import { ChevronLeft, ChevronRight, Layers } from "lucide-react";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { BELOW_SM_QUERY, useMediaQuery } from "@/hooks/use-mobile";
 import { analyticsProjectIdAtom } from "@/lib/atoms/analytics";
 import { authClient } from "@/lib/auth-client";
@@ -91,7 +91,39 @@ export function ProjectDrawer(): ReactNode {
   const phone = useMediaQuery(BELOW_SM_QUERY);
   const [openOnPhone, setOpenOnPhone] = useState(false);
   const open = phone ? openOnPhone : state === "open";
+
+  // Opening or closing swaps the strip for the panel, unmounting the button
+  // that had focus, so focus follows: to the current pick on opening, back
+  // to the strip on closing.
+  const stripRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const focusAfterToggle = useRef(false);
+  useEffect(() => {
+    if (!focusAfterToggle.current) {
+      return;
+    }
+    focusAfterToggle.current = false;
+    if (open) {
+      const panel = panelRef.current;
+      // The current pick, or the panel's first button while projects load.
+      (
+        panel?.querySelector<HTMLElement>('[aria-current="true"]') ??
+        panel?.querySelector<HTMLElement>("button")
+      )?.focus();
+    } else {
+      stripRef.current?.focus();
+    }
+  }, [open]);
+
+  // A phone turned sideways past sm and back starts closed again.
+  useEffect(() => {
+    if (!phone) {
+      setOpenOnPhone(false);
+    }
+  }, [phone]);
+
   const setOpen = (next: boolean): void => {
+    focusAfterToggle.current = true;
     if (phone) {
       setOpenOnPhone(next);
     } else {
@@ -101,7 +133,7 @@ export function ProjectDrawer(): ReactNode {
   const pick = (id: string | null): void => {
     setProjectId(id);
     if (phone) {
-      setOpenOnPhone(false);
+      setOpen(false);
     }
   };
 
@@ -110,6 +142,7 @@ export function ProjectDrawer(): ReactNode {
       <button
         className="flex shrink-0 items-start justify-center border-r bg-background pt-3 transition-colors hover:bg-muted"
         onClick={() => setOpen(true)}
+        ref={stripRef}
         style={{ width: STRIP_WIDTH }}
         type="button"
       >
@@ -133,6 +166,7 @@ export function ProjectDrawer(): ReactNode {
         phone ? "w-full" : "border-r"
       )}
       data-replaces-card={phone ? "" : undefined}
+      ref={panelRef}
       style={phone ? undefined : { width: DRAWER_WIDTH }}
     >
       <div className="flex items-center justify-between border-b px-3 py-2">
@@ -140,8 +174,11 @@ export function ProjectDrawer(): ReactNode {
           <Layers className="size-3.5 text-muted-foreground" />
           <span className="font-medium text-sm">Projects</span>
         </div>
+        {/* On a phone the runs are hidden behind the panel, so this is the
+            way back to them: a full-size target, named for where it goes. */}
         <button
-          className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          aria-label={phone ? "Back to runs" : undefined}
+          className="flex items-center justify-center rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground max-sm:size-11"
           onClick={() => setOpen(false)}
           title="Collapse"
           type="button"
@@ -152,6 +189,7 @@ export function ProjectDrawer(): ReactNode {
 
       <nav className="flex-1 overflow-y-auto p-1.5">
         <button
+          aria-current={projectId === null ? "true" : undefined}
           className={cn(
             "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors max-sm:py-3",
             projectId === null
@@ -171,6 +209,7 @@ export function ProjectDrawer(): ReactNode {
         ) : (
           projects.map((project) => (
             <button
+              aria-current={projectId === project.id ? "true" : undefined}
               className={cn(
                 "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors max-sm:py-3",
                 projectId === project.id
