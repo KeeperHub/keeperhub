@@ -29,6 +29,8 @@ const WIDE_WIDTHS = [640, 667, 740, 768, 820];
 // buttons float in a bar at the bottom, from 768px they sit in the header.
 const EDITOR_WIDTHS = [320, 375, 390, 640, 667, 740, 768, 820, 1023];
 // Phones, upright and sideways, where the editor's buttons are in the bar.
+// The phone bar has room for the Enable switch from 375px (xs).
+const SWITCH_IN_BAR_FROM = 375;
 const EDITOR_BAR_SIZES = [
   { width: 320, height: 568 },
   { width: 375, height: 667 },
@@ -230,51 +232,91 @@ async function expectHeaderFits(page: Page, width: number): Promise<void> {
     .toBeGreaterThanOrEqual(HEADER_SIDES_MIN_GAP);
 }
 
+// After a resize the toolbar's buttons animate their size (Run's label comes
+// and goes with the width): wait for that to finish before measuring.
+async function settleToolbar(page: Page): Promise<void> {
+  await page.getByTestId("workflow-actions").evaluate(async (element) => {
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve))
+    );
+    await Promise.all(
+      element
+        .getAnimations({ subtree: true })
+        .map((animation) => animation.finished)
+    );
+  });
+}
+
 // On a phone the editor's buttons float in a bar at the bottom: wholly on
-// screen, each inside it and clear of the next, Run at its end (its icon
-// alone below 375px), and the canvas's zoom controls above it.
+// screen, every control inside it and clear of the next, Run last and
+// tappable, the Enable switch beside it from 375px, and the canvas's zoom
+// controls above the bar. The workflow has a selected step and a trigger
+// that can be switched on and off.
 async function expectEditorBar(page: Page, width: number): Promise<void> {
   const bar = page.getByTestId("workflow-actions");
+  await settleToolbar(page);
   await expect(bar, `bar on screen at ${width}px`).toBeInViewport({
     ratio: 1,
   });
-  const barBox = await bar.boundingBox();
-  const boxes = await bar.evaluate((element) =>
-    [...element.querySelectorAll("button")]
-      .map((button) => button.getBoundingClientRect())
-      .filter((box) => box.width > 0)
-      .map((box) => ({ left: box.left, right: box.right, width: box.width }))
-  );
-  expect(boxes.length, `bar buttons at ${width}px`).toBeGreaterThanOrEqual(6);
-  for (const [index, box] of boxes.entries()) {
-    expect(
-      box.left,
-      `button ${index} inside the bar at ${width}px`
-    ).toBeGreaterThanOrEqual(barBox?.x ?? 0);
-    expect(box.right).toBeLessThanOrEqual(
-      (barBox?.x ?? 0) + (barBox?.width ?? 0)
-    );
-    if (index > 0) {
-      expect(
-        box.left - boxes[index - 1].right,
-        `gap before button ${index} at ${width}px`
-      ).toBeGreaterThanOrEqual(4);
-    }
-  }
-  const run = page.getByRole("button", { name: "Run", exact: true });
-  const runBox = await run.boundingBox();
-  expect(runBox?.x, `Run last at ${width}px`).toBe(boxes.at(-1)?.left);
-  if (width < 375) {
-    expect(runBox?.width, `Run's icon alone at ${width}px`).toBe(36);
+  const enableSwitch = bar.getByRole("switch");
+  if (width < SWITCH_IN_BAR_FROM) {
+    await expect(
+      enableSwitch,
+      `no room for the switch at ${width}px`
+    ).toBeHidden();
   } else {
-    expect(runBox?.width).toBeGreaterThanOrEqual(80);
+    await expect(enableSwitch, `switch in the bar at ${width}px`).toBeVisible();
   }
+  await expect(async () => {
+    const { barBox, controls } = await bar.evaluate((element) => {
+      const edges = (box: DOMRect) => ({
+        top: box.top,
+        right: box.right,
+        bottom: box.bottom,
+        left: box.left,
+        width: box.width,
+      });
+      return {
+        barBox: edges(element.getBoundingClientRect()),
+        controls: [...element.querySelectorAll("button")]
+          .map((button) => ({
+            ...edges(button.getBoundingClientRect()),
+            text: button.textContent?.trim() ?? "",
+          }))
+          .filter((box) => box.width > 0),
+      };
+    });
+    // Configuration, Delete, Save, Export, Visibility, Listing, the switch
+    // (from 375px) and Run.
+    expect(controls.length, `bar controls at ${width}px`).toBe(
+      width < SWITCH_IN_BAR_FROM ? 7 : 8
+    );
+    for (const [index, box] of controls.entries()) {
+      const where = `control ${index} at ${width}px`;
+      expect(box.left, `${where} inside the bar`).toBeGreaterThanOrEqual(
+        barBox.left
+      );
+      expect(box.right, where).toBeLessThanOrEqual(barBox.right);
+      expect(box.top, where).toBeGreaterThanOrEqual(barBox.top);
+      expect(box.bottom, where).toBeLessThanOrEqual(barBox.bottom);
+      if (index > 0) {
+        expect(box.left, `${where} clear of the one before`).toBeGreaterThan(
+          controls[index - 1].right
+        );
+      }
+    }
+    expect(controls.at(-1)?.text, `Run last at ${width}px`).toBe("Run");
+  }).toPass();
+  const run = bar.getByRole("button", { name: "Run", exact: true });
   await expect
     .poll(() => isOnTop(run), { message: `Run tappable at ${width}px` })
     .toBe(true);
-  const controls = await page.locator(".workflow-controls-panel").boundingBox();
+  const controlsPanel = page.locator(".workflow-controls-panel");
+  await expect(controlsPanel).toBeVisible();
+  const panelBox = await controlsPanel.boundingBox();
+  const barBox = await bar.boundingBox();
   expect(
-    (controls?.y ?? 0) + (controls?.height ?? 0),
+    (panelBox?.y ?? 0) + (panelBox?.height ?? 0),
     `zoom controls above the bar at ${width}px`
   ).toBeLessThanOrEqual(barBox?.y ?? 0);
 }
@@ -452,30 +494,47 @@ test.describe("Mobile header", () => {
       ).toBe(16);
       // A selected step adds Delete: the most crowded case.
       await page.locator(".react-flow__node-trigger").first().click();
-      await expect(page.getByTitle("Delete")).toHaveCount(1);
+      await expect(page.getByTitle("Delete", { exact: true })).toHaveCount(1);
       await expect(page.getByTestId("wallet-toolbar-address")).toContainText(
         "0x"
       );
       for (const width of EDITOR_WIDTHS) {
         await expectHeaderFits(page, width);
       }
-      // From 768px the buttons sit in the header's one row, side by side
-      // (they used to stack and hang below it); the switcher gives way to
-      // them, never under its 76px floor, and the wallet keeps its size.
+      // From 768px the buttons sit in the header's one row, on the avatar's
+      // line; the switcher gives way to them, never under its 76px floor,
+      // and the wallet is never squeezed. With a selection the Enable switch
+      // is there from 840px only.
+      const walletWidths: number[] = [];
       for (const width of [768, 1023]) {
         await page.setViewportSize({ width, height: 800 });
-        const header = await page.getByTestId("header-right").boundingBox();
-        const save = await page.getByTitle(SAVE_TITLE_REGEX).boundingBox();
-        const download = await page
-          .getByTitle("Export workflow as JSON")
-          .boundingBox();
-        expect(save?.y, `Save in the header row at ${width}px`).toBe(
-          download?.y
-        );
-        expect(
-          (save?.y ?? 0) + (save?.height ?? 0),
-          `Save inside the header at ${width}px`
-        ).toBeLessThanOrEqual((header?.y ?? 0) + (header?.height ?? 0));
+        await settleToolbar(page);
+        const middle = async (locator: Locator): Promise<number> => {
+          const box = await locator.boundingBox();
+          return Math.round((box?.y ?? 0) + (box?.height ?? 0) / 2);
+        };
+        const avatarMiddle = await middle(page.getByTestId("user-menu"));
+        const enableSwitch = page
+          .getByTestId("workflow-actions")
+          .getByRole("switch");
+        if (width < 840) {
+          await expect(enableSwitch).toBeHidden();
+        } else {
+          await expect(enableSwitch).toBeVisible();
+          expect(await middle(enableSwitch)).toBe(avatarMiddle);
+        }
+        for (const control of [
+          page.getByTitle("Configuration", { exact: true }),
+          page.getByTitle("Delete", { exact: true }),
+          page.getByTitle(SAVE_TITLE_REGEX),
+          page.getByTitle("Export workflow as JSON"),
+          page.getByRole("button", { name: "Run", exact: true }),
+        ]) {
+          expect(
+            await middle(control),
+            `${await control.getAttribute("title")} on the avatar's line at ${width}px`
+          ).toBe(avatarMiddle);
+        }
         await expect
           .poll(
             async () =>
@@ -484,13 +543,29 @@ test.describe("Mobile header", () => {
             { message: `switcher width at ${width}px` }
           )
           .toBeGreaterThanOrEqual(75.5);
-        await expect(page.getByTestId("wallet-toolbar-copy")).toBeVisible();
-        await expect(page.getByTestId("wallet-toolbar-settings")).toBeVisible();
+        walletWidths.push(
+          (await page.getByTestId("wallet-toolbar-address").boundingBox())
+            ?.width ?? 0
+        );
       }
+      expect(walletWidths[0], "the wallet keeps its size at 768px").toBe(
+        walletWidths[1]
+      );
       for (const size of EDITOR_BAR_SIZES) {
         await page.setViewportSize(size);
         await expectEditorBar(page, size.width);
       }
+      // Where the bar has no room for the switch, the Configuration sheet
+      // (the workflow's, with nothing selected) has it.
+      await page.setViewportSize({ width: 320, height: 568 });
+      await page
+        .locator(".react-flow__pane")
+        .click({ position: { x: 8, y: 120 } });
+      await expect(page.getByTitle("Delete", { exact: true })).toHaveCount(0);
+      await page.getByTitle("Configuration", { exact: true }).click();
+      await expect(
+        page.getByRole("switch", { name: "Workflow enabled" })
+      ).toBeVisible();
     } finally {
       await deleteTestWorkflow(workflow.id);
     }

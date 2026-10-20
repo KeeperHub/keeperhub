@@ -19,6 +19,7 @@ import { useOverlay } from "@/components/overlays/overlay-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError } from "@/lib/api-client";
 import { integrationsAtom } from "@/lib/integrations-store";
@@ -33,6 +34,7 @@ import {
   deleteNodeAtom,
   edgesAtom,
   isGeneratingAtom,
+  isWorkflowEnabled,
   isWorkflowOwnerAtom,
   newlyCreatedNodeIdAtom,
   nodesAtom,
@@ -51,10 +53,18 @@ import { SYSTEM_ACTION_INTEGRATIONS } from "@/lib/integrations/system";
 import type { OverlayComponentProps } from "./types";
 
 
-type ConfigurationOverlayProps = OverlayComponentProps;
+type ConfigurationOverlayProps = OverlayComponentProps<{
+  // Given when the workflow's trigger can be switched on and off: the
+  // workflow view then has the Enable switch, for where the toolbar has no
+  // room for it.
+  onToggleEnabled?: (enabled: boolean) => Promise<void>;
+}>;
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Complex UI logic with multiple conditions
-export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
+export function ConfigurationOverlay({
+  overlayId,
+  onToggleEnabled,
+}: ConfigurationOverlayProps) {
   const { push, closeAll } = useOverlay();
   const [selectedNodeId] = useAtom(selectedNodeAtom);
   const [selectedEdgeId] = useAtom(selectedEdgeAtom);
@@ -69,6 +79,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
     currentWorkflowDescriptionAtom
   );
   const isOwner = useAtomValue(isWorkflowOwnerAtom);
+  const isEnabled = useAtomValue(isWorkflowEnabled);
 
   const updateNodeData = useSetAtom(updateNodeDataAtom);
   const deleteNode = useSetAtom(deleteNodeAtom);
@@ -421,6 +432,16 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
         <div className="flex-1 overflow-y-auto">
           {validWorkflowTab === "properties" && (
             <div className="space-y-4 px-6 pt-4 pb-6">
+              {onToggleEnabled && isOwner && (
+                <div className="flex min-h-11 items-center justify-between gap-3">
+                  <Label htmlFor="workflow-enabled">Workflow enabled</Label>
+                  <Switch
+                    checked={isEnabled}
+                    id="workflow-enabled"
+                    onCheckedChange={(checked) => onToggleEnabled(checked)}
+                  />
+                </div>
+              )}
               <div className="space-y-2">
                 <Label htmlFor="workflow-name">Workflow Name</Label>
                 <Input

@@ -1634,11 +1634,16 @@ function ToolbarActions({
       className="flex items-center gap-1 max-md:fixed max-md:right-[max(1rem,env(safe-area-inset-right))] max-md:bottom-[max(1rem,env(safe-area-inset-bottom))] max-md:left-[max(1rem,env(safe-area-inset-left))] max-md:rounded-lg max-md:border max-md:bg-background max-md:p-2 max-md:shadow-lg max-xs:right-3 max-xs:left-3 max-xs:px-1.5 wallet:gap-2 md:contents"
       data-testid="workflow-actions"
     >
-      {/* Properties and Delete (when something is selected) - below lg,
-          where the properties panel is not beside the canvas */}
+      {/* Configuration, and Delete when something is selected - below lg */}
       <Button
         className="border hover:bg-black/5 lg:hidden dark:hover:bg-white/5"
-        onClick={() => openOverlay(ConfigurationOverlay, {})}
+        onClick={() =>
+          openOverlay(ConfigurationOverlay, {
+            onToggleEnabled: shouldDisplayEnableWorkflowSwitch
+              ? actions.handleToggleEnabled
+              : undefined,
+          })
+        }
         size="icon"
         title="Configuration"
         variant="secondary"
@@ -1719,8 +1724,32 @@ function ToolbarActions({
         </button>
       )}
 
-      <div className="flex shrink-0 max-md:ml-auto">
-        <RunButtonGroup actions={actions} state={state} />
+      <div className="flex shrink-0 items-center gap-1 max-md:ml-auto wallet:gap-2">
+        {/* Below lg the Enable switch is compact, beside Run, where it fits:
+            from xs, and with a selection's Delete from 840px in the
+            header. Elsewhere it is in the Configuration sheet. */}
+        {shouldDisplayEnableWorkflowSwitch && (
+          <Switch
+            aria-label={
+              state.isEnabled ? "Disable workflow" : "Enable workflow"
+            }
+            checked={state.isEnabled}
+            className={cn(
+              "max-xs:hidden lg:hidden",
+              hasSelection && "md:max-[840px]:hidden"
+            )}
+            onCheckedChange={(checked) => actions.handleToggleEnabled(checked)}
+            title={state.isEnabled ? "Disable workflow" : "Enable workflow"}
+          />
+        )}
+        <RunButtonGroup
+          actions={actions}
+          iconOnlyBelow={runIconOnlyBelow(
+            shouldDisplayEnableWorkflowSwitch,
+            Boolean(hasSelection)
+          )}
+          state={state}
+        />
       </div>
     </div>
   );
@@ -1896,13 +1925,45 @@ function ListingButton({
 }
 
 // Run Button Group Component
+// On a phone Run gives up its label (it stays its name) below a width that
+// depends on what shares the bar with it: below xs, below 390px beside the
+// Enable switch, and below sm beside the switch and a selection's Delete.
+// Its longer in-progress labels (Waiting..., Checking...) never show in the
+// bar.
+const RUN_ICON_ONLY = {
+  xs: { button: "max-xs:min-w-9 max-xs:px-0", label: "max-xs:sr-only" },
+  withSwitch: {
+    button: "max-[390px]:min-w-9 max-[390px]:px-0",
+    label: "max-[390px]:sr-only",
+  },
+  withSwitchAndDelete: {
+    button: "max-sm:min-w-9 max-sm:px-0",
+    label: "max-sm:sr-only",
+  },
+} as const;
+
+type RunIconOnlyBelow = keyof typeof RUN_ICON_ONLY;
+
+function runIconOnlyBelow(
+  hasEnableSwitch: boolean,
+  hasSelection: boolean
+): RunIconOnlyBelow {
+  if (!hasEnableSwitch) {
+    return "xs";
+  }
+  return hasSelection ? "withSwitchAndDelete" : "withSwitch";
+}
+
 function RunButtonGroup({
   state,
   actions,
+  iconOnlyBelow = "xs",
 }: {
   state: ReturnType<typeof useWorkflowState>;
   actions: ReturnType<typeof useWorkflowActions>;
+  iconOnlyBelow?: RunIconOnlyBelow;
 }) {
+  const iconOnly = RUN_ICON_ONLY[iconOnlyBelow];
   const triggerType = state.nodes.find((node) => node.data.type === "trigger")
     ?.data.config?.triggerType;
 
@@ -1923,13 +1984,16 @@ function RunButtonGroup({
   if (state.isExecuting) {
     return (
       <Button
-        className="min-w-20 bg-destructive text-white hover:bg-destructive/90 max-xs:min-w-9 max-xs:px-0"
+        className={cn(
+          "min-w-20 bg-destructive text-white hover:bg-destructive/90",
+          iconOnly.button
+        )}
         onClick={() => actions.handleCancel()}
         title="Stop Execution"
       >
         <div className="flex items-center gap-2">
           <Square className="size-3.5 fill-current" />
-          <span className="max-xs:sr-only">Stop</span>
+          <span className={iconOnly.label}>Stop</span>
         </div>
       </Button>
     );
@@ -1937,7 +2001,10 @@ function RunButtonGroup({
 
   const button = (
     <Button
-      className="min-w-20 bg-keeperhub-green hover:bg-keeperhub-green-dark disabled:opacity-70 disabled:[&>svg]:text-muted-foreground max-xs:min-w-9 max-xs:px-0"
+      className={cn(
+        "min-w-20 bg-keeperhub-green hover:bg-keeperhub-green-dark disabled:opacity-70 disabled:[&>svg]:text-muted-foreground",
+        iconOnly.button
+      )}
       data-tour="workflow-run"
       disabled={disabled}
       onClick={() => actions.handleExecute()}
@@ -1956,17 +2023,21 @@ function RunButtonGroup({
                 isPreflighting and outlasts the check itself. Nothing is being
                 checked while the author is typing, so it does not spin. */}
             <TextCursorInput className="size-4" />
-            <span className="max-xs:sr-only">Waiting...</span>
+            <span className={cn("max-md:sr-only", iconOnly.label)}>
+              Waiting...
+            </span>
           </>
         ) : actions.isPreflighting ? (
           <>
             <Loader2 className="size-4 animate-spin" />
-            <span className="max-xs:sr-only">Checking...</span>
+            <span className={cn("max-md:sr-only", iconOnly.label)}>
+              Checking...
+            </span>
           </>
         ) : (
           <>
             <Play className="size-4" />
-            <span className="max-xs:sr-only">Run</span>
+            <span className={iconOnly.label}>Run</span>
           </>
         )}
       </div>
@@ -2084,10 +2155,10 @@ export const WorkflowToolbar = ({
     ? "flex items-center gap-2"
     : "flex flex-col gap-2 rounded-none border-none bg-transparent p-0 lg:flex-row lg:items-center";
 
-  // Below lg never squeezed: in a crowded header (the editor's buttons at
-  // 768px) the left side, and the org switcher in it, gives way instead.
+  // At 768-1023px never squeezed: in a crowded header (the editor's buttons
+  // at 768px) the left side, and the org switcher in it, gives way instead.
   const rightSectionClassName = persistent
-    ? "flex items-center gap-2 max-lg:shrink-0"
+    ? "flex items-center gap-2 md:max-lg:shrink-0"
     : "pointer-events-auto absolute top-4 right-4 z-10";
 
   const rightContentClassName = persistent
