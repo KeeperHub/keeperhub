@@ -25,6 +25,8 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
+import { MobileNav } from "@/components/mobile-nav";
+import { useSwitcherOffering } from "@/components/organization/org-switch-runner";
 import { OrgSwitcher } from "@/components/organization/org-switcher";
 import { GoLiveOverlay } from "@/components/overlays/go-live-overlay";
 import { ListingOverlay } from "@/components/overlays/listing-overlay";
@@ -2006,16 +2008,21 @@ function ReadOnlyBadge({ className }: { className?: string }) {
 
 // Use-template Button — placed next to Sign In for non-owners (HUB-01, HUB-02).
 function UseTemplateButton({
+  className,
   isUsingTemplate,
   onUseTemplate,
 }: {
+  className?: string;
   isUsingTemplate: boolean;
   onUseTemplate: () => void;
 }) {
   return (
     <button
       aria-label="Use this workflow as a template"
-      className="inline-flex h-8 items-center rounded-md border px-2.5 font-normal text-xs transition-colors duration-150 hover:bg-[var(--color-bg-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50 motion-reduce:transition-none"
+      className={cn(
+        "inline-flex h-8 items-center rounded-md border px-2.5 font-normal text-xs transition-colors duration-150 hover:bg-[var(--color-bg-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50 motion-reduce:transition-none phone-ui:shrink-0 phone-ui:whitespace-nowrap",
+        className
+      )}
       data-analytics="template_use_clicked"
       disabled={isUsingTemplate}
       onClick={onUseTemplate}
@@ -2036,30 +2043,19 @@ function UseTemplateButton({
   );
 }
 
-// Workflow Menu Component
-function WorkflowMenuComponent({
-  workflowId,
-  state,
-}: {
-  workflowId?: string;
-  state: ReturnType<typeof useWorkflowState>;
-  actions: ReturnType<typeof useWorkflowActions>;
-}) {
-  const pathname = usePathname();
-  const isWorkflowRoute = pathname.startsWith("/workflows/");
-
-  return (
-    <div className="flex flex-col gap-1">
-    </div>
-  );
-}
-
 export const WorkflowToolbar = ({
   workflowId,
   persistent = false,
 }: WorkflowToolbarProps) => {
   const state = useWorkflowState();
   const actions = useWorkflowActions(state);
+  // The phone menu's button, where the org switcher hands focus when it is
+  // hidden (below xs).
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  // No org active and opening one failed, or the active one could not be
+  // loaded: the switcher, which offers to try again, shows in a 768-1023px
+  // window with a mouse too, which otherwise has none.
+  const switcherOffering = useSwitcherOffering();
 
   // Use prop if provided, otherwise fall back to atom value
   const effectiveWorkflowId =
@@ -2078,7 +2074,9 @@ export const WorkflowToolbar = ({
 
   // If persistent mode, use fixed positioning
   const containerClassName = persistent
-    ? "pointer-events-auto fixed top-[var(--app-banner-height,0px)] right-0 left-0 z-50 flex items-center justify-between border-b bg-background px-4 py-3"
+    ? // The side padding clears a notch on a phone turned sideways (the
+      // viewport is viewport-fit=cover).
+      "pointer-events-auto fixed top-[var(--app-banner-height,0px)] right-0 left-0 z-50 flex items-center justify-between border-b bg-background py-3 phone-ui:gap-2 pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))]"
     : "";
 
   const leftSectionClassName = persistent
@@ -2097,28 +2095,42 @@ export const WorkflowToolbar = ({
     return (
       <div className={containerClassName}>
         <VersionPreviewBanner />
-        {/* Left side: Logo + Menu + Org Switcher */}
-        <div className={leftSectionClassName}>
+        {/* Left side: Nav (phones) + Logo + Menu + Org Switcher */}
+        <div className={leftSectionClassName} data-testid="header-left">
+          <MobileNav triggerRef={menuButtonRef} />
           {(() => {
             const CustomLogo = getCustomLogo();
             return CustomLogo ? (
-              <a href="/">
-                <CustomLogo className="size-7 shrink-0" />
+              // On phones a 26px-wide tap area around the 18px mark, without
+              // moving anything.
+              <a className="max-md:-mx-1 max-md:px-1" href="/">
+                {/* Only as wide as the mark on phones, where the header is
+                    short of room; the square box from md up. */}
+                <CustomLogo className="h-7 w-4.5 shrink-0 md:w-7" />
               </a>
             ) : null;
           })()}
+          {/* Phones and touch tablets (below lg) get the switcher, except
+              below 375px, where it is in the nav drawer instead; a
+              768-1023px window with a mouse has the sidebar and the avatar
+              menu's organization item instead (but for a failed open). From
+              sm a crowded header squeezes this wrapper, never under 76px,
+              and the switcher with it. */}
           {showOrgSwitcher && (
-            <div className="hidden ml-2 lg:block">
-              <OrgSwitcher />
+            <div
+              className={cn(
+                "flex max-xs:hidden sm:ml-2 sm:max-lg:min-w-19 lg:block",
+                !switcherOffering && "mouse-tablet:hidden"
+              )}
+            >
+              <OrgSwitcher focusFallback={menuButtonRef} />
             </div>
           )}
-          <WorkflowMenuComponent
-            actions={actions}
-            state={state}
-            workflowId={effectiveWorkflowId}
-          />
+          {/* 16px (the gap and an ml-2) before what follows the logo and
+              switcher: the workflow's name from lg, and Use template in a
+              768-1023px window with a mouse (where name and badge hide). */}
           {isWorkflowRoute && state.currentWorkflowId && (
-            <span className="hidden max-w-48 truncate font-medium text-foreground text-sm lg:inline-block">
+            <span className="hidden max-w-48 truncate font-medium text-foreground text-sm lg:ml-2 lg:inline-block">
               {state.workflowName}
             </span>
           )}
@@ -2129,6 +2141,7 @@ export const WorkflowToolbar = ({
               <>
                 <ReadOnlyBadge className="hidden lg:inline-flex" />
                 <UseTemplateButton
+                  className="mouse-tablet:ml-2"
                   isUsingTemplate={state.isDuplicating}
                   onUseTemplate={actions.handleUseTemplate}
                 />
@@ -2137,7 +2150,7 @@ export const WorkflowToolbar = ({
         </div>
 
         {/* Right side: Actions + User Menu */}
-        <div className={rightSectionClassName}>
+        <div className={rightSectionClassName} data-testid="header-right">
           <div className={rightContentClassName}>
             {isWorkflowRoute && (
               <ToolbarActions
@@ -2177,11 +2190,6 @@ export const WorkflowToolbar = ({
               <OrgSwitcher />
             </div>
           )}
-          <WorkflowMenuComponent
-            actions={actions}
-            state={state}
-            workflowId={effectiveWorkflowId}
-          />
           {isWorkflowRoute &&
             effectiveWorkflowId &&
             !state.isOwner &&

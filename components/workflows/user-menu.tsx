@@ -35,6 +35,7 @@ import {
   useNotificationStatus,
 } from "@/lib/hooks/use-notifications";
 import { useActiveMember, useOrganization } from "@/lib/hooks/use-organization";
+import { getPersonInitials } from "@/lib/initials";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { gettingStartedOpenAtom } from "@/lib/workflow/store";
 
@@ -138,21 +139,6 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
     window.location.href = "/";
   };
 
-  const getUserInitials = (): string => {
-    if (session?.user?.name) {
-      return session.user.name
-        .split(" ")
-        .map((n) => n[0])
-        .join("")
-        .toUpperCase()
-        .slice(0, 2);
-    }
-    if (session?.user?.email) {
-      return session.user.email.slice(0, 2).toUpperCase();
-    }
-    return "U";
-  };
-
   return (
     <>
       <DropdownMenu onOpenChange={handleDropdownOpenChange}>
@@ -170,7 +156,9 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
                 alt={session?.user?.name || ""}
                 src={session?.user?.image || ""}
               />
-              <AvatarFallback>{getUserInitials()}</AvatarFallback>
+              <AvatarFallback>
+                {getPersonInitials(session?.user)}
+              </AvatarFallback>
             </Avatar>
             {showAvatarDot && (
               <span
@@ -229,7 +217,9 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
             </Tooltip>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <div className="lg:hidden">
+          {/* A 768-1023px window with a mouse has no org switcher in the
+              header (phones and touch tablets do), so this stays there. */}
+          <div className="hidden mouse-tablet:block">
             <DropdownMenuItem
               onClick={() =>
                 router.push(

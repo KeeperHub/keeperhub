@@ -137,8 +137,26 @@ function AuthenticatedWalletToolbarButton(): React.ReactElement | null {
             type="button"
           >
             <Wallet className="size-4 shrink-0" />
-            <span className="font-mono text-xs">
+            {/* Spoken as the shortened address at every width. A phone
+                header is short of room: from 420px (wallet) the address
+                shows in full, from 375px (xs) only its last 4 characters,
+                and below that the icon alone. */}
+            <span className="sr-only">
+              Wallet {truncateAddress(fullAddress)}
+            </span>
+            <span
+              aria-hidden="true"
+              className="hidden font-mono text-xs wallet:inline"
+            >
               {truncateAddress(fullAddress)}
+            </span>
+            <span
+              aria-hidden="true"
+              className="hidden whitespace-nowrap font-mono text-xs xs:max-wallet:inline"
+            >
+              {/* One ellipsis character: a header with wide initials at
+                  375-419px has no room for three dots. */}
+              …{fullAddress.slice(-4)}
             </span>
           </button>
         </DropdownMenuTrigger>
