@@ -425,8 +425,8 @@
   }
 }
 
-/* Safe area support for mobile devices */
-@media (max-width: 768px) {
+/* Above the editor's phone toolbar (below md), clear of the safe area */
+@media (width < 48rem) {
   .workflow-controls-panel {
     bottom: calc(env(safe-area-inset-bottom, 0px) + 5.5rem) !important;
   }

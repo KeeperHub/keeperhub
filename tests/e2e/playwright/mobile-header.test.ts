@@ -306,6 +306,12 @@ async function expectEditorBar(page: Page, width: number): Promise<void> {
       }
     }
     expect(controls.at(-1)?.text, `Run last at ${width}px`).toBe("Run");
+    // At the bar's end: as far from its right edge as Configuration is from
+    // its left.
+    expect(
+      Math.round(barBox.right - (controls.at(-1)?.right ?? 0)),
+      `Run at the bar's end at ${width}px`
+    ).toBe(Math.round(controls[0].left - barBox.left));
   }).toPass();
   const run = bar.getByRole("button", { name: "Run", exact: true });
   await expect
@@ -535,6 +541,10 @@ test.describe("Mobile header", () => {
             `${await control.getAttribute("title")} on the avatar's line at ${width}px`
           ).toBe(avatarMiddle);
         }
+        await expect(
+          page.getByTestId("org-switcher").locator("xpath=.."),
+          `switcher floor at ${width}px`
+        ).toHaveCSS("min-width", "76px");
         await expect
           .poll(
             async () =>
