@@ -159,7 +159,7 @@ function ActivityAdminView(): ReactNode {
               onValueChange={(v) => activity.setPageSize(Number(v))}
               value={String(activity.pageSize)}
             >
-              <SelectTrigger className="h-8 w-28 text-xs max-sm:data-[size=default]:h-8">
+              <SelectTrigger className="w-28 text-xs" size="sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
