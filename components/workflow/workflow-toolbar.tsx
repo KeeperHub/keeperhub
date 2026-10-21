@@ -1646,6 +1646,7 @@ function ToolbarActions({
     // alone, so a selection's Delete still fits at 320px.
     <div
       className="flex items-center gap-1 max-md:fixed max-md:right-[max(1rem,env(safe-area-inset-right))] max-md:bottom-[max(1rem,env(safe-area-inset-bottom))] max-md:left-[max(1rem,env(safe-area-inset-left))] max-md:rounded-lg max-md:border max-md:bg-background max-md:p-2 max-md:shadow-lg max-xs:right-3 max-xs:left-3 max-xs:px-1.5 wallet:gap-2 md:contents"
+      data-editor-toolbar=""
       data-testid="workflow-actions"
     >
       {/* Configuration, and Delete when something is selected - below lg */}

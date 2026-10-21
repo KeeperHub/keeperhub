@@ -576,13 +576,29 @@ test.describe("Mobile header", () => {
       expect(walletWidths[0], "the wallet keeps its size at 768px").toBe(
         walletWidths[1]
       );
-      // A toast (say, the paid-features notice on opening a workflow) sits
-      // over the bar until it times out, and a pointer resting on it holds
-      // it: move the pointer away and let it go.
-      await page.mouse.move(0, 0);
-      await expect(page.locator("[data-sonner-toast]")).toHaveCount(0, {
-        timeout: 15_000,
-      });
+      // A toast on a phone sits above the bar, so Run stays tappable while
+      // it shows (copying the wallet's address shows one).
+      await page.setViewportSize(PHONE);
+      await page.getByTestId("wallet-toolbar-copy").click();
+      const toast = page
+        .locator("[data-sonner-toast]")
+        .filter({ hasText: "Address copied" });
+      await expect(toast).toBeVisible();
+      await settleToolbar(page);
+      const toastBox = await toast.boundingBox();
+      const toolbarBox = await page
+        .getByTestId("workflow-actions")
+        .boundingBox();
+      expect(
+        (toastBox?.y ?? 0) + (toastBox?.height ?? 0),
+        "toast above the bar"
+      ).toBeLessThanOrEqual(toolbarBox?.y ?? 0);
+      await expect
+        .poll(
+          () => isOnTop(page.getByRole("button", { name: "Run", exact: true })),
+          { message: "Run tappable with a toast showing" }
+        )
+        .toBe(true);
       for (const size of EDITOR_BAR_SIZES) {
         await page.setViewportSize(size);
         await expectEditorBar(page, size.width);

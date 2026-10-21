@@ -443,6 +443,17 @@
     bottom: calc(max(1rem, env(safe-area-inset-bottom)) + 3.875rem);
     max-width: calc(100% - 6rem);
   }
+  /* While the editor's toolbar is on the page, toasts sit 8px above it, not
+     on it: Sonner's offsets below 600px (full width) and from 600px. They
+     are set inline on the toaster, hence !important. */
+  body:has([data-editor-toolbar]) [data-sonner-toaster] {
+    --above-editor-toolbar: calc(
+      max(1rem, env(safe-area-inset-bottom)) +
+      3.875rem
+    );
+    --mobile-offset-bottom: var(--above-editor-toolbar) !important;
+    --offset-bottom: var(--above-editor-toolbar) !important;
+  }
 }
 
 /* Statuspage embedded widget overrides */
