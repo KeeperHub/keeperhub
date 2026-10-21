@@ -19,6 +19,8 @@ const TAIL_ADDRESS_REGEX = /^…\w{4}$/;
 const FULL_ADDRESS_REGEX = /^0x\w{4}\.\.\.\w{4}$/;
 const WALLET_NAME_REGEX = /^Wallet 0x\w{4}\.\.\.\w{4}$/;
 const ANALYTICS_URL_REGEX = /\/analytics$/;
+// The desktop Enable switch's title, whichever way it is set.
+const ENABLE_TITLE_REGEX = /^(Enable|Disable) workflow$/;
 // The Save button's title, also while an autosave runs.
 const SAVE_TITLE_REGEX = /^(Save workflow|Saving\.\.\.)$/;
 // Portrait phone widths, narrowest to widest, plus the two the wallet's
@@ -150,6 +152,47 @@ async function expectHeaderEndsOnScreen(
     page.getByRole("link", { name: "KeeperHub Logo" }).first(),
     `logo on screen at ${width}px`
   ).toBeInViewport({ ratio: 1 });
+}
+
+// Overlaps (in px) between neighbouring controls across the whole header,
+// left to right: links, buttons, switches and the workflow's name.
+async function headerControlOverlaps(
+  page: Page,
+  workflowName: string
+): Promise<string[]> {
+  return await page.getByTestId("header-left").evaluate((left, name) => {
+    const header = left.parentElement ?? left;
+    const controls = [
+      ...header.querySelectorAll<HTMLElement>("a, button, [role='switch']"),
+      ...[...left.querySelectorAll<HTMLElement>("span")].filter(
+        (span) => span.textContent === name
+      ),
+    ]
+      .filter(
+        (element, _, all) =>
+          !all.some((other) => other !== element && other.contains(element))
+      )
+      .map((element) => ({
+        box: element.getBoundingClientRect(),
+        label:
+          element.getAttribute("aria-label") ??
+          element.getAttribute("data-testid") ??
+          (element.textContent?.trim().slice(0, 20) || element.tagName),
+      }))
+      .filter(({ box }) => box.width > 0 && box.height > 0)
+      .sort((a, b) => a.box.left - b.box.left);
+    const overlaps: string[] = [];
+    for (const [index, control] of controls.slice(1).entries()) {
+      const before = controls[index];
+      const overlap = before.box.right - control.box.left;
+      if (overlap > 0.5) {
+        overlaps.push(
+          `${before.label} > ${control.label} ${Math.round(overlap)}px`
+        );
+      }
+    }
+    return overlaps;
+  }, workflowName);
 }
 
 // The test user has no wallet (the e2e setup removes it): stand one in, for
@@ -1107,6 +1150,48 @@ test.describe("Mobile header", () => {
 });
 
 test.describe("Desktop header", () => {
+  test("a long workflow name gives way at 1024px; nothing else is squeezed", async ({
+    page,
+  }) => {
+    const workflow = await createTestWorkflow(PERSISTENT_TEST_USER_EMAIL, {
+      name: `Rebalance the treasury vaults every morning before markets open ${Date.now()}`,
+    });
+    try {
+      await stubWallet(page);
+      await page.setViewportSize(DESKTOP);
+      await page.goto(`/workflows/${workflow.id}`, {
+        waitUntil: "domcontentloaded",
+      });
+      await waitForCanvas(page);
+      await waitForSignedInHeader(page);
+      // The owner's buttons, the Enable switch (a webhook trigger) and the
+      // wallet with its full address make this the most crowded desktop
+      // header.
+      await expect(page.getByTitle(ENABLE_TITLE_REGEX)).toBeVisible();
+      const name = page.getByTestId("header-left").getByText(workflow.name);
+      const nameWidth = async (): Promise<number> =>
+        await name.evaluate((element) => element.clientWidth);
+      const roomyWidth = await nameWidth();
+      await expectHeaderFits(page, 1024);
+      expect(
+        await headerControlOverlaps(page, workflow.name),
+        "header controls overlapping at 1024px"
+      ).toEqual([]);
+      // Only the name makes room: narrower than at 1280px, still cut short.
+      expect(await nameWidth(), "the name gives way at 1024px").toBeLessThan(
+        roomyWidth
+      );
+      expect(
+        await name.evaluate(
+          (element) => element.scrollWidth > element.clientWidth
+        ),
+        "the name is cut short"
+      ).toBe(true);
+    } finally {
+      await deleteTestWorkflow(workflow.id);
+    }
+  });
+
   test("a 768-1023px window with a mouse shows the switcher while it offers an org", async ({
     page,
   }) => {

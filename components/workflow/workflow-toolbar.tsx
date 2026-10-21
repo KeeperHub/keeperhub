@@ -2165,10 +2165,14 @@ export const WorkflowToolbar = ({
     ? "flex items-center gap-2"
     : "flex flex-col gap-2 rounded-none border-none bg-transparent p-0 lg:flex-row lg:items-center";
 
-  // At 768-1023px never squeezed: in a crowded header (the editor's buttons
-  // at 768px) the left side, and the org switcher in it, gives way instead.
+  // globals.css gives every element min-width: 0, so in a crowded header
+  // each flex item would shrink below its content. From md the right side
+  // is never squeezed: at 768-1023px the left side, and the org switcher in
+  // it, gives way instead; from lg the logo and the switcher are shrink-0
+  // too, so only the workflow's name (truncating, at most 192px) makes room,
+  // and the right side stays 8px clear of it.
   const rightSectionClassName = persistent
-    ? "flex items-center gap-2 tablet-width:shrink-0"
+    ? "flex items-center gap-2 md:shrink-0 lg:ml-2"
     : "pointer-events-auto absolute top-4 right-4 z-10";
 
   const rightContentClassName = persistent
@@ -2187,7 +2191,7 @@ export const WorkflowToolbar = ({
             return CustomLogo ? (
               // On phones a 26px-wide tap area around the 18px mark, without
               // moving anything.
-              <a className="max-md:-mx-1 max-md:px-1" href="/">
+              <a className="max-md:-mx-1 max-md:px-1 lg:shrink-0" href="/">
                 {/* Only as wide as the mark on phones, where the header is
                     short of room; the square box from md up. */}
                 <CustomLogo className="h-7 w-4.5 shrink-0 md:w-7" />
@@ -2203,7 +2207,7 @@ export const WorkflowToolbar = ({
           {showOrgSwitcher && (
             <div
               className={cn(
-                "flex max-xs:hidden sm:ml-2 sm:max-lg:min-w-19 lg:block",
+                "flex max-xs:hidden sm:ml-2 sm:max-lg:min-w-19 lg:block lg:shrink-0",
                 !switcherOffering && "mouse-tablet:hidden"
               )}
             >
