@@ -2076,7 +2076,7 @@ export const WorkflowToolbar = ({
   const containerClassName = persistent
     ? // The side padding clears a notch on a phone turned sideways (the
       // viewport is viewport-fit=cover).
-      "pointer-events-auto fixed top-[var(--app-banner-height,0px)] right-0 left-0 z-50 flex items-center justify-between border-b bg-background py-3 phone-ui:gap-2 pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))]"
+      "pointer-events-auto fixed top-[var(--app-banner-height,0px)] right-0 left-0 z-50 flex items-center justify-between border-b bg-background py-3 phone-ui:gap-2 lg:gap-2 pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))]"
     : "";
 
   const leftSectionClassName = persistent
