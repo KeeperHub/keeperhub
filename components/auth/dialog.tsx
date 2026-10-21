@@ -75,10 +75,11 @@ export const AuthDialog = ({
     <Dialog onOpenChange={setOpen} open={open}>
       {children ? <DialogTrigger asChild>{children}</DialogTrigger> : null}
       {/* Scrolls instead of growing past a short screen (a small phone, or one
-          turned sideways): the sign-up view with the compact captcha is
-          taller than such a screen, and the close button and Create account
-          would be out of reach. */}
-      <DialogContent className="max-h-[calc(100dvh-2rem)] gap-8 overflow-y-auto p-8 sm:max-w-md">
+          turned sideways), where the window is taller than the screen in
+          every view, sign-up with the compact captcha most of all; the close
+          button and Create account would be out of reach. Phones get the
+          tighter padding the welcome card uses. */}
+      <DialogContent className="max-h-[calc(100dvh-2rem)] gap-6 overflow-y-auto p-6 sm:max-w-md sm:gap-8 sm:p-8">
         <DialogHeader className="flex flex-col items-center gap-4">
           <KeeperHubLogo className="size-10" />
           <DialogTitle className="text-2xl">Sign in to KeeperHub</DialogTitle>

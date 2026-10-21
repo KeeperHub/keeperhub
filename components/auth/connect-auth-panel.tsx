@@ -198,6 +198,7 @@ export function ConnectAuthPanel({
   // turned sideways) replaces the widget, and its token goes with it.
   const captchaCompactRef = useRef(false);
   const [captchaCompact, setCaptchaCompact] = useState(false);
+  const captchaSize = captchaCompact ? "compact" : "normal";
   useLayoutEffect(() => {
     const el = contentRef.current;
     if (!el) {
@@ -217,6 +218,20 @@ export function ConnectAuthPanel({
     measure();
     return () => observer.disconnect();
   }, []);
+
+  // In a sign-in window too tall for the screen, the visitor scrolls down to
+  // reach a link such as Create an account; the view it opens starts at the
+  // top, with its heading and the close button in sight.
+  const shownViewRef = useRef(view);
+  useLayoutEffect(() => {
+    if (shownViewRef.current === view) {
+      return;
+    }
+    shownViewRef.current = view;
+    contentRef.current
+      ?.closest('[data-slot="dialog-content"]')
+      ?.scrollTo({ top: 0 });
+  }, [view]);
 
   const handleSocial = async (provider: SocialProvider): Promise<void> => {
     setSocial(provider);
@@ -770,15 +785,12 @@ export function ConnectAuthPanel({
         key: "captcha",
         node: (
           <Turnstile
-            data-size={captchaCompact ? "compact" : "normal"}
+            data-size={captchaSize}
             data-testid="signup-captcha"
             onError={() => setCaptchaToken("")}
             onExpire={() => setCaptchaToken("")}
             onSuccess={setCaptchaToken}
-            options={{
-              size: captchaCompact ? "compact" : "normal",
-              theme: "auto",
-            }}
+            options={{ size: captchaSize, theme: "auto" }}
             ref={captchaRef}
             siteKey={turnstileSiteKey}
           />

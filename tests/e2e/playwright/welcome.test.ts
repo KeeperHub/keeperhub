@@ -29,6 +29,21 @@ async function openSignUp(page: Page): Promise<void> {
   }).toPass({ timeout: 30_000 });
 }
 
+// Takes the guest link into the app.
+async function continueAsGuest(page: Page): Promise<void> {
+  const guestButton = page.getByRole("button", {
+    name: "Explore without signing in",
+  });
+  await expect(guestButton).toBeVisible({ timeout: 15_000 });
+  // Retry to tolerate the post-navigation hydration race on the first click.
+  await expect(async () => {
+    if (await guestButton.isVisible()) {
+      await guestButton.click();
+    }
+    await expect(page).not.toHaveURL(WELCOME_ANY, { timeout: 4000 });
+  }).toPass({ timeout: 30_000 });
+}
+
 test.describe("welcome landing", () => {
   test("redirects a logged-out visitor from / to /welcome", async ({
     page,
@@ -109,17 +124,7 @@ test.describe("welcome landing", () => {
     context,
   }) => {
     await page.goto("/welcome", { waitUntil: "domcontentloaded" });
-    const guestButton = page.getByRole("button", {
-      name: "Explore without signing in",
-    });
-    await expect(guestButton).toBeVisible({ timeout: 15_000 });
-    // Retry to tolerate the post-navigation hydration race on the first click.
-    await expect(async () => {
-      if (await guestButton.isVisible()) {
-        await guestButton.click();
-      }
-      await expect(page).not.toHaveURL(WELCOME_ANY, { timeout: 4000 });
-    }).toPass({ timeout: 30_000 });
+    await continueAsGuest(page);
 
     // The guest path must actually create the anonymous account: without a
     // better-auth session cookie the proxy would bounce "/" back to /welcome.
@@ -158,12 +163,14 @@ test.describe("welcome landing on a phone", () => {
     // The options stay side by side on every phone, by design.
     await page.goto("/welcome", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#auth-email")).toBeVisible({ timeout: 15_000 });
-    const tops = await page
-      .getByRole("button", { name: SOCIAL_OPTION_REGEX })
-      .evaluateAll((buttons) =>
-        buttons.map((button) => Math.round(button.getBoundingClientRect().top))
-      );
-    expect(tops.length).toBeGreaterThan(0);
+    const options = page.getByRole("button", { name: SOCIAL_OPTION_REGEX });
+    test.skip(
+      (await options.count()) < 2,
+      "this build has no Google or GitHub sign-in"
+    );
+    const tops = await options.evaluateAll((buttons) =>
+      buttons.map((button) => Math.round(button.getBoundingClientRect().top))
+    );
     expect(new Set(tops).size).toBe(1);
     const overflow = await page.evaluate(
       () => document.documentElement.scrollWidth - window.innerWidth
@@ -196,16 +203,7 @@ test.describe("welcome landing on a phone", () => {
     page,
   }) => {
     await page.goto("/welcome", { waitUntil: "domcontentloaded" });
-    const guestButton = page.getByRole("button", {
-      name: "Explore without signing in",
-    });
-    await expect(guestButton).toBeVisible({ timeout: 15_000 });
-    await expect(async () => {
-      if (await guestButton.isVisible()) {
-        await guestButton.click();
-      }
-      await expect(page).not.toHaveURL(WELCOME_ANY, { timeout: 4000 });
-    }).toPass({ timeout: 30_000 });
+    await continueAsGuest(page);
     await expect(page.getByText("Desktop Optimized")).toBeVisible({
       timeout: 15_000,
     });
@@ -239,54 +237,63 @@ test.describe("welcome landing on a phone", () => {
   });
 });
 
-test.describe("sign-in window on a short phone screen", () => {
-  // An iPhone SE with Safari's toolbars showing.
-  test.use({ viewport: { width: 320, height: 454 }, hasTouch: true });
+const SHORT_SCREENS = [
+  { name: "an iPhone SE with Safari's toolbars", width: 320, height: 454 },
+  { name: "a phone turned sideways", width: 667, height: 375 },
+];
 
-  test.beforeEach(async ({ page }) => {
-    // Below 768px the app warns once that it is best on a larger screen.
-    await page.addInitScript(() => {
-      try {
-        window.localStorage.setItem(
-          "keeperhub-mobile-warning-dismissed",
-          "true"
-        );
-      } catch {
-        // A sandboxed frame has no storage, and no warning either.
-      }
+for (const screen of SHORT_SCREENS) {
+  test.describe(`sign-in window on ${screen.name}`, () => {
+    test.use({
+      viewport: { width: screen.width, height: screen.height },
+      hasTouch: true,
+    });
+
+    test("stays on screen and scrolls inside", async ({ page }) => {
+      await page.goto("/hub", { waitUntil: "domcontentloaded" });
+      // Below 768px the app first warns that it is best on a larger screen.
+      await page.getByRole("button", { name: "Continue Anyway" }).click();
+      const signIn = page.getByRole("button", { name: "Sign in", exact: true });
+      const dialog = page.getByRole("dialog");
+      await expect(async () => {
+        await signIn.click({ timeout: 2000 }).catch(() => undefined);
+        await expect(dialog).toBeVisible({ timeout: 4000 });
+      }).toPass({ timeout: 30_000 });
+      await openSignUp(page);
+
+      // Taller than the screen, so it has to scroll inside itself rather
+      // than run off the top and bottom.
+      await expect(async () => {
+        const box = await dialog.boundingBox();
+        expect(box).not.toBeNull();
+        if (!box) {
+          return;
+        }
+        expect(box.y).toBeGreaterThanOrEqual(0);
+        expect(box.y + box.height).toBeLessThanOrEqual(screen.height);
+      }).toPass({ timeout: 10_000 });
+      expect(
+        await dialog.evaluate((d) => d.scrollHeight > d.clientHeight)
+      ).toBe(true);
+
+      // Reaching Create an account scrolled the window down; the sign-up view
+      // starts back at the top, close button in sight.
+      await expect(
+        dialog.getByRole("button", { name: "Close" })
+      ).toBeInViewport();
+      // Scrolled the way a visitor scrolls, not by script, from the title: a
+      // wheel over the captcha's frame would scroll the frame instead. The
+      // window is still growing as the captcha arrives, so keep scrolling
+      // until the button shows, as a visitor would.
+      const title = dialog.getByRole("heading", {
+        name: "Sign in to KeeperHub",
+      });
+      const submit = dialog.getByRole("button", { name: "Create account" });
+      await expect(async () => {
+        await title.hover();
+        await page.mouse.wheel(0, 2000);
+        await expect(submit).toBeInViewport({ timeout: 1000 });
+      }).toPass({ timeout: 15_000 });
     });
   });
-
-  test("keeps the sign-up view on screen", async ({ page }) => {
-    await page.goto("/hub", { waitUntil: "domcontentloaded" });
-    const signIn = page.getByRole("button", { name: "Sign in", exact: true });
-    const dialog = page.getByRole("dialog");
-    await expect(signIn.first()).toBeVisible({ timeout: 15_000 });
-    await expect(async () => {
-      await signIn
-        .first()
-        .click({ timeout: 2000 })
-        .catch(() => undefined);
-      await expect(dialog).toBeVisible({ timeout: 4000 });
-    }).toPass({ timeout: 30_000 });
-    await openSignUp(page);
-
-    // The window scrolls inside itself rather than growing past the screen,
-    // so its close button and Create account stay reachable.
-    await expect(async () => {
-      const box = await dialog.boundingBox();
-      expect(box).not.toBeNull();
-      if (!box) {
-        return;
-      }
-      expect(box.y).toBeGreaterThanOrEqual(0);
-      expect(box.y + box.height).toBeLessThanOrEqual(454);
-    }).toPass({ timeout: 10_000 });
-    await expect(
-      dialog.getByRole("button", { name: "Close" })
-    ).toBeInViewport();
-    const submit = dialog.getByRole("button", { name: "Create account" });
-    await submit.scrollIntoViewIfNeeded();
-    await expect(submit).toBeInViewport();
-  });
-});
+}
