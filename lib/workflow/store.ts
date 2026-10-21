@@ -108,6 +108,12 @@ export const currentWorkflowPublicTagsAtom = atom<
 >([]);
 export const isWorkflowOwnerAtom = atom<boolean>(true); // Whether current user owns this workflow
 export const isWorkflowEnabled = atom<boolean>(false);
+// The toolbar's Enable switch handler (validation, sign-in prompt, API call),
+// published for the Configuration sheet's switch so it always acts on the
+// current workflow; null while no editor toolbar is mounted.
+export const workflowEnableToggleAtom = atom<{
+  toggle: (enabled: boolean) => Promise<void>;
+} | null>(null);
 
 // v1.7 listing state atoms
 export const currentWorkflowIsListedAtom = atom<boolean>(false);

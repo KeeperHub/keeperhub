@@ -20,10 +20,10 @@ type HubTabsShellProps = {
 };
 
 const PILL_CLASSES =
-  "inline-flex min-h-9 items-center gap-2 rounded-full px-4 py-2 text-sm font-normal text-muted-foreground/70 transition-colors duration-150 ease hover:bg-[var(--color-hub-icon-bg)]/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-hub-overlay)] data-[state=active]:bg-[var(--color-hub-icon-bg)] data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:hover:bg-[var(--color-hub-icon-bg)] motion-reduce:transition-none";
+  "inline-flex min-h-9 items-center gap-2 rounded-full px-2 py-2 text-sm font-normal @max-xl/hub-band:gap-1.5 text-muted-foreground/70 transition-colors duration-150 ease hover:bg-[var(--color-hub-icon-bg)]/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-hub-overlay)] data-[state=active]:bg-[var(--color-hub-icon-bg)] data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:hover:bg-[var(--color-hub-icon-bg)] motion-reduce:transition-none @xl/hub-band:px-4";
 
 const PILL_ICON_CLASSES =
-  "size-4 text-muted-foreground/50 group-data-[state=active]:text-[var(--color-text-accent)]";
+  "size-4 text-muted-foreground/50 group-data-[state=active]:text-[var(--color-text-accent)] max-xs:hidden";
 
 export function HubTabsShell({
   initialTab,
@@ -64,12 +64,28 @@ export function HubTabsShell({
   };
 
   return (
-    <Tabs className="w-full" onValueChange={handleChange} value={initialTab}>
-      <div className="mb-6 flex items-center gap-4 border-border/20 border-b py-2">
+    // The band follows its own width rather than the window's: the nav takes
+    // a varying share beside it, up to a 1024px window leaving it 640px.
+    <Tabs
+      className="@container/hub-band w-full"
+      onValueChange={handleChange}
+      value={initialTab}
+    >
+      {/* Under 36rem the band is search and links, then the tabs sharing a
+          row equally; under 48rem the tabs keep a row of their own; from
+          48rem it is the single row it always was, the links last. The
+          links are rendered in both places and only one shows, so in every
+          layout the DOM, and with it Tab, follows the order drawn. */}
+      <div className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-2 border-border/20 border-b py-2 @3xl/hub-band:flex-nowrap">
         {searchSlot}
+        {actionsSlot ? (
+          <div className="ml-auto flex self-stretch @xl/hub-band:block @xl/hub-band:self-auto @3xl/hub-band:hidden">
+            {actionsSlot}
+          </div>
+        ) : null}
         <TabsList
           aria-label="Hub views"
-          className="inline-flex h-auto items-center gap-1 bg-transparent p-0"
+          className="grid h-auto w-full grid-cols-3 items-center justify-start gap-1 bg-transparent p-0 @xl/hub-band:grid-cols-[repeat(3,max-content)] @3xl/hub-band:inline-flex @3xl/hub-band:w-fit"
         >
           <TabsTrigger className={`group ${PILL_CLASSES}`} value="protocols">
             <Box aria-hidden="true" className={PILL_ICON_CLASSES} />
@@ -84,7 +100,11 @@ export function HubTabsShell({
             Marketplace
           </TabsTrigger>
         </TabsList>
-        {actionsSlot ? <div className="ml-auto">{actionsSlot}</div> : null}
+        {actionsSlot ? (
+          <div className="ml-auto hidden @3xl/hub-band:block">
+            {actionsSlot}
+          </div>
+        ) : null}
       </div>
 
       <TabsContent

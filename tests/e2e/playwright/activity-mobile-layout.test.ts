@@ -193,7 +193,7 @@ test.describe("Activity page on phones", () => {
           box(pageSize),
         ]);
         expect(filterBox.y).toBeGreaterThanOrEqual(bottom(searchBox));
-        expect(overlaps(filterBox, sizeBox)).toBe(false);
+        expect(await overlaps(filterBox, sizeBox)).toBe(false);
         expect(Math.abs(filterBox.y - sizeBox.y)).toBeLessThanOrEqual(1);
         expect(sizeBox.height).toBe(filterBox.height);
 
