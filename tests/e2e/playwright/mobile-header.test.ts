@@ -18,6 +18,8 @@ const TAIL_ADDRESS_REGEX = /^…\w{4}$/;
 const FULL_ADDRESS_REGEX = /^0x\w{4}\.\.\.\w{4}$/;
 const WALLET_NAME_REGEX = /^Wallet 0x\w{4}\.\.\.\w{4}$/;
 const ANALYTICS_URL_REGEX = /\/analytics$/;
+// The desktop Enable switch's title, whichever way it is set.
+const ENABLE_TITLE_REGEX = /^(Enable|Disable) workflow$/;
 // Portrait phone widths, narrowest to widest, plus the two the wallet's
 // address switches at.
 const PHONE_WIDTHS = [320, 360, 375, 390, 414, 420, 430];
@@ -884,6 +886,53 @@ test.describe("Mobile header", () => {
 });
 
 test.describe("Desktop header", () => {
+  test("a long workflow name gives way at 1024px; nothing else is squeezed", async ({
+    page,
+  }) => {
+    const workflow = await createTestWorkflow(PERSISTENT_TEST_USER_EMAIL, {
+      name: `Rebalance the treasury vaults every morning before markets open ${Date.now()}`,
+    });
+    try {
+      await stubWallet(page);
+      await page.setViewportSize({ width: 1024, height: 800 });
+      await page.goto(`/workflows/${workflow.id}`, {
+        waitUntil: "domcontentloaded",
+      });
+      await waitForCanvas(page);
+      await waitForSignedInHeader(page);
+      // The owner's buttons, the Enable switch (a webhook trigger) and the
+      // wallet with its full address make this the most crowded desktop
+      // header.
+      await expect(page.getByTitle(ENABLE_TITLE_REGEX)).toBeVisible();
+      await expect
+        .poll(() => headerSidesGap(page), {
+          message: "header sides overlap at 1024px",
+        })
+        .toBeGreaterThanOrEqual(HEADER_SIDES_MIN_GAP);
+      const overlaps = await page
+        .getByTestId("header-right")
+        .evaluate((element) => {
+          const boxes = [...element.querySelectorAll("button")]
+            .map((button) => button.getBoundingClientRect())
+            .filter((box) => box.width > 0);
+          return boxes
+            .slice(1)
+            .map((box, index) => boxes[index].right - box.left)
+            .filter((overlap) => overlap > 0.5);
+        });
+      expect(overlaps, "header buttons overlapping at 1024px").toEqual([]);
+      const name = page.getByTestId("header-left").getByText(workflow.name);
+      expect(
+        await name.evaluate(
+          (element) => element.scrollWidth > element.clientWidth
+        ),
+        "the name is cut short"
+      ).toBe(true);
+    } finally {
+      await deleteTestWorkflow(workflow.id);
+    }
+  });
+
   test("a 768-1023px window with a mouse shows the switcher while it offers an org", async ({
     page,
   }) => {

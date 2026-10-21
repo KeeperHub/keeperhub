@@ -2083,8 +2083,11 @@ export const WorkflowToolbar = ({
     ? "flex items-center gap-2"
     : "flex flex-col gap-2 rounded-none border-none bg-transparent p-0 lg:flex-row lg:items-center";
 
+  // From lg the workflow's name is the one thing in the header that gives
+  // way (it truncates): the logo, the switcher and the right side keep
+  // their size.
   const rightSectionClassName = persistent
-    ? "flex items-center gap-2"
+    ? "flex items-center gap-2 lg:shrink-0"
     : "pointer-events-auto absolute top-4 right-4 z-10";
 
   const rightContentClassName = persistent
@@ -2103,7 +2106,7 @@ export const WorkflowToolbar = ({
             return CustomLogo ? (
               // On phones a 26px-wide tap area around the 18px mark, without
               // moving anything.
-              <a className="max-md:-mx-1 max-md:px-1" href="/">
+              <a className="max-md:-mx-1 max-md:px-1 lg:shrink-0" href="/">
                 {/* Only as wide as the mark on phones, where the header is
                     short of room; the square box from md up. */}
                 <CustomLogo className="h-7 w-4.5 shrink-0 md:w-7" />
@@ -2119,7 +2122,7 @@ export const WorkflowToolbar = ({
           {showOrgSwitcher && (
             <div
               className={cn(
-                "flex max-xs:hidden sm:ml-2 sm:max-lg:min-w-19 lg:block",
+                "flex max-xs:hidden sm:ml-2 sm:max-lg:min-w-19 lg:block lg:shrink-0",
                 !switcherOffering && "mouse-tablet:hidden"
               )}
             >
