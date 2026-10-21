@@ -1,6 +1,12 @@
 import type { Locator, Page, Route } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { type Box, box, dismissPhoneOverlays, textFits } from "./utils/layout";
+import {
+  type Box,
+  box,
+  dismissPhoneOverlays,
+  overlaps,
+  textFits,
+} from "./utils/layout";
 
 // The activity feed's layout on phones, and that nothing about it changes from
 // 640px up. The feed is served from a stub so every width sees the same rows,
@@ -187,6 +193,8 @@ test.describe("Activity page on phones", () => {
           box(pageSize),
         ]);
         expect(filterBox.y).toBeGreaterThanOrEqual(bottom(searchBox));
+        expect(await overlaps(filterBox, sizeBox)).toBe(false);
+        expect(await overlaps(filterBox, sizeBox)).toBe(false);
         expect(Math.abs(filterBox.y - sizeBox.y)).toBeLessThanOrEqual(1);
         expect(sizeBox.height).toBe(filterBox.height);
 
@@ -352,16 +360,27 @@ test.describe("Activity page on phones", () => {
         await expect(button("2")).toBeVisible();
         await expect(label).toBeHidden();
         await expect(button("Last page")).toBeHidden();
-        // Desktop keeps its natively disabled Previous on page 1 (the phone
-        // buttons are aria-disabled instead).
-        await expect(button("Previous page")).toHaveAttribute("disabled", "");
+        // Previous is spent on page 1, and keeps focus (aria-disabled).
+        await expect(button("Previous page")).toHaveAttribute(
+          "aria-disabled",
+          "true"
+        );
       });
     }
 
-    await test.step("Next is natively disabled on the last page", async () => {
+    await test.step("Next is spent on the last page and keeps focus", async () => {
       await button("28").click();
       await expect(button("28")).toHaveAttribute("aria-current", "page");
-      await expect(button("Next page")).toHaveAttribute("disabled", "");
+      await button("Previous page").click();
+      await expect(button("27")).toHaveAttribute("aria-current", "page");
+      await button("Next page").focus();
+      await page.keyboard.press("Enter");
+      await expect(button("28")).toHaveAttribute("aria-current", "page");
+      await expect(button("Next page")).toHaveAttribute(
+        "aria-disabled",
+        "true"
+      );
+      await expect(button("Next page")).toBeFocused();
     });
   });
 });

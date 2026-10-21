@@ -7,6 +7,7 @@ import {
   PERSISTENT_TEST_USER_EMAIL,
   removeTestOrganization,
 } from "./utils/db";
+import { dismissPhoneOverlays, isOnTop } from "./utils/layout";
 import { waitForCanvas } from "./utils/workflow";
 
 const PHONE = { width: 390, height: 844 };
@@ -48,18 +49,9 @@ const TRY_OPEN_REGEX = /^Try again: open /;
 // The header keeps at least this much between its two sides when it fits.
 const HEADER_SIDES_MIN_GAP = 8;
 
-// Below 768px the app warns once that it is best on a larger screen, in a
-// dialog over everything, and an announcement banner can sit above the
-// header; these tests are about the header and what is under it.
+// These tests are about the header and what is under it.
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => {
-    try {
-      window.localStorage.setItem("keeperhub-mobile-warning-dismissed", "true");
-      window.localStorage.setItem("kh-billing-announce-v1", "1");
-    } catch {
-      // A sandboxed frame has no storage, and no dialog either.
-    }
-  });
+  await dismissPhoneOverlays(page);
 });
 
 // The organizations switched to from now on, in order.
@@ -133,18 +125,6 @@ async function headerSidesGap(page: Page): Promise<number> {
       }
     }
     return right.getBoundingClientRect().left - leftEnd;
-  });
-}
-
-// Whether the centre of an element is drawn on top, so a tap there reaches it.
-async function isOnTop(locator: Locator): Promise<boolean> {
-  return await locator.evaluate((element) => {
-    const box = element.getBoundingClientRect();
-    const hit = document.elementFromPoint(
-      box.left + box.width / 2,
-      box.top + box.height / 2
-    );
-    return hit !== null && element.contains(hit);
   });
 }
 
