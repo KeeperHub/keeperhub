@@ -1,6 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 
-type Box = { x: number; y: number; width: number; height: number };
+export type Box = { x: number; y: number; width: number; height: number };
 
 // Below 768px the app warns once that it is best on a larger screen, in a
 // dialog over everything, and an announcement banner can sit above the
@@ -16,6 +16,10 @@ export async function dismissPhoneOverlays(page: Page): Promise<void> {
   });
 }
 
+function measured(target: Locator | Box): Promise<Box> | Box {
+  return "boundingBox" in target ? box(target) : target;
+}
+
 export async function box(locator: Locator): Promise<Box> {
   const found = await locator.boundingBox();
   if (!found) {
@@ -24,8 +28,12 @@ export async function box(locator: Locator): Promise<Box> {
   return found;
 }
 
-export async function overlaps(a: Locator, b: Locator): Promise<boolean> {
-  const [p, q] = await Promise.all([box(a), box(b)]);
+// Either side may be a box the caller has already measured.
+export async function overlaps(
+  a: Locator | Box,
+  b: Locator | Box
+): Promise<boolean> {
+  const [p, q] = await Promise.all([measured(a), measured(b)]);
   return (
     p.x < q.x + q.width &&
     q.x < p.x + p.width &&
