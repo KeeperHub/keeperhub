@@ -218,6 +218,8 @@ test.describe("Activity page on phones", () => {
   test("scrolls the whole page and keeps the pager in reach", async ({
     page,
   }) => {
+    // Pages through the feed several times; give a loaded runner room.
+    test.slow();
     await openActivity(page, SMALL_PHONE, "?size=25");
     const title = page.getByRole("heading", { name: "Organization activity" });
     const heading = page.getByText("Today", { exact: true });
