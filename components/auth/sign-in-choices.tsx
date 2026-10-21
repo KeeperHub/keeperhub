@@ -6,6 +6,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { ConnectAuthPanel } from "@/components/auth/connect-auth-panel";
 import { WalletPicker } from "@/components/auth/wallet-picker";
 import { Button } from "@/components/ui/button";
+import { useAfterChange } from "@/hooks/use-after-change";
 import { resolvePostAuthDestination } from "@/lib/post-auth-destination";
 
 /**
@@ -28,10 +29,7 @@ export function SignInChoices({
   redirectTo?: string;
 } = {}): React.ReactElement {
   const [showWallet, setShowWallet] = useState(false);
-  const toggleWallet = (show: boolean): void => {
-    setShowWallet(show);
-    onViewChange?.();
-  };
+  useAfterChange(showWallet, onViewChange);
 
   const contentRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState<number | "auto">("auto");
@@ -76,7 +74,7 @@ export function SignInChoices({
               />
               <Button
                 className="w-full justify-center"
-                onClick={() => toggleWallet(false)}
+                onClick={() => setShowWallet(false)}
                 type="button"
                 variant="ghost"
               >
@@ -96,7 +94,7 @@ export function SignInChoices({
               <ConnectAuthPanel
                 hideChooserHeader
                 onViewChange={onViewChange}
-                onWalletClick={() => toggleWallet(true)}
+                onWalletClick={() => setShowWallet(true)}
                 redirectTo={redirectTo}
               />
             </motion.div>

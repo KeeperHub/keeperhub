@@ -59,6 +59,9 @@ describe("MobileWarningDialog", () => {
     "/enroll-mfa",
     "/enforce-mfa",
     "/verify-ip",
+    "/accept-invite/inv_123",
+    "/device",
+    "/oauth/authorize",
   ])("does not cover %s", (pathname) => {
     renderAt(pathname);
     expect(container.textContent).not.toContain(WARNING);

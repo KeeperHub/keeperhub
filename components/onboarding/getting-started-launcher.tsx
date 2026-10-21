@@ -31,7 +31,7 @@ import {
   getBranches,
   type Step,
 } from "@/lib/onboarding/getting-started-config";
-import { isWelcomePath, SIGN_IN_GATE_PATHS } from "@/lib/pre-app-paths";
+import { isPreAppPath } from "@/lib/pre-app-paths";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { cn } from "@/lib/utils";
 import {
@@ -425,11 +425,7 @@ export function GettingStartedLauncher({
   }, []);
 
   const path = pathname ?? "";
-  if (
-    !gs.isAuthenticated ||
-    SIGN_IN_GATE_PATHS.has(path) ||
-    isWelcomePath(path)
-  ) {
+  if (!gs.isAuthenticated || isPreAppPath(path)) {
     return null;
   }
   if (gs.state === "dismissed") {

@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
+import { useAfterChange } from "@/hooks/use-after-change";
 import {
   type AuthErrorBody,
   authErrorCode,
@@ -20,6 +21,7 @@ import { authClient, signIn, signUp } from "@/lib/auth-client";
 import { DISPOSABLE_EMAIL_REJECTION_MESSAGE } from "@/lib/auth-disposable-emails-message";
 import { AUTH_SUCCESS_EVENT } from "@/lib/auth-events";
 import { getEnabledAuthProviders } from "@/lib/auth-providers";
+import { isSignInGatePath, isWelcomePath } from "@/lib/pre-app-paths";
 
 type View =
   | "main"
@@ -37,6 +39,10 @@ type SocialProvider = "github" | "google";
 const EXISTING_ACCOUNT = /already|exists|duplicate/i;
 // Fixed width of Cloudflare's "normal" Turnstile widget.
 const TURNSTILE_NORMAL_WIDTH = 300;
+
+type CaptchaSize = "compact" | "normal";
+// A solved captcha: its token, and the size of the widget that issued it.
+type CaptchaPass = { size: CaptchaSize; token: string };
 
 const PROVIDER_LABELS: Record<SocialProvider, string> = {
   github: "GitHub",
@@ -103,31 +109,18 @@ const GoogleIcon = (): React.ReactElement => (
   />
 );
 
-// Auth / gate surfaces we must never redirect back into after a sign-in:
-// bouncing to one of these would immediately re-prompt and loop.
-const UNSAFE_REDIRECT_PREFIXES = [
-  "/welcome",
-  "/enroll-mfa",
-  "/verify-mfa",
-  "/enforce-mfa",
-  "/verify-ip",
-];
-
 const REDIRECT_QUERY_HASH_REGEX = /[?#]/;
 
 // Only honor a redirect target that is a same-origin in-app path and not an
 // auth/gate surface; anything else (off-site, protocol-relative, or an auth
-// page) falls back to "/" to avoid open redirects and sign-in loops.
+// page) falls back to "/" to avoid open redirects and sign-in loops. Bouncing
+// back into the welcome page or a sign-in gate would re-prompt and loop.
 function safePostAuthTarget(target: string | undefined): string {
   if (!target?.startsWith("/") || target.startsWith("//")) {
     return "/";
   }
   const path = target.split(REDIRECT_QUERY_HASH_REGEX)[0];
-  if (
-    UNSAFE_REDIRECT_PREFIXES.some(
-      (prefix) => path === prefix || path.startsWith(`${prefix}/`)
-    )
-  ) {
+  if (isWelcomePath(path) || isSignInGatePath(path)) {
     return "/";
   }
   return target;
@@ -182,7 +175,6 @@ export function ConnectAuthPanel({
   const [oauthOnlyProviders, setOauthOnlyProviders] = useState<
     SocialProvider[]
   >([]);
-  const [captchaToken, setCaptchaToken] = useState("");
   const captchaRef = useRef<TurnstileInstance | null>(null);
 
   // While this panel is on screen the visitor is mid auth flow. Better Auth
@@ -200,10 +192,16 @@ export function ConnectAuthPanel({
   // The normal captcha is a fixed 300px wide and is clipped when this panel is
   // narrower (on most phones; how narrow depends on the page or dialog around
   // it), so switch to the compact widget there. Crossing that width (a phone
-  // turned sideways) replaces the widget, and its token goes with it.
-  const captchaCompactRef = useRef(false);
+  // turned sideways) replaces the widget, and its pass is dropped during that
+  // render, so the new widget has to pass again, even after turning back.
   const [captchaCompact, setCaptchaCompact] = useState(false);
-  const captchaSize = captchaCompact ? "compact" : "normal";
+  const captchaSize: CaptchaSize = captchaCompact ? "compact" : "normal";
+  const [captchaPass, setCaptchaPass] = useState<CaptchaPass | null>(null);
+  if (captchaPass && captchaPass.size !== captchaSize) {
+    setCaptchaPass(null);
+  }
+  const captchaToken =
+    captchaPass?.size === captchaSize ? captchaPass.token : "";
   useLayoutEffect(() => {
     const el = contentRef.current;
     if (!el) {
@@ -211,12 +209,7 @@ export function ConnectAuthPanel({
     }
     const measure = (): void => {
       setHeight(el.scrollHeight);
-      const compact = el.clientWidth < TURNSTILE_NORMAL_WIDTH;
-      if (compact !== captchaCompactRef.current) {
-        captchaCompactRef.current = compact;
-        setCaptchaCompact(compact);
-        setCaptchaToken("");
-      }
+      setCaptchaCompact(el.clientWidth < TURNSTILE_NORMAL_WIDTH);
     };
     const observer = new ResizeObserver(measure);
     observer.observe(el);
@@ -224,14 +217,7 @@ export function ConnectAuthPanel({
     return () => observer.disconnect();
   }, []);
 
-  const shownViewRef = useRef(view);
-  useLayoutEffect(() => {
-    if (shownViewRef.current === view) {
-      return;
-    }
-    shownViewRef.current = view;
-    onViewChange?.();
-  }, [view, onViewChange]);
+  useAfterChange(view, onViewChange);
 
   const handleSocial = async (provider: SocialProvider): Promise<void> => {
     setSocial(provider);
@@ -316,7 +302,7 @@ export function ConnectAuthPanel({
           setError(msg);
         }
         captchaRef.current?.reset();
-        setCaptchaToken("");
+        setCaptchaPass(null);
         return;
       }
       // A duplicate address does not reach the error branch above: with
@@ -787,9 +773,9 @@ export function ConnectAuthPanel({
           <Turnstile
             data-size={captchaSize}
             data-testid="signup-captcha"
-            onError={() => setCaptchaToken("")}
-            onExpire={() => setCaptchaToken("")}
-            onSuccess={setCaptchaToken}
+            onError={() => setCaptchaPass(null)}
+            onExpire={() => setCaptchaPass(null)}
+            onSuccess={(token) => setCaptchaPass({ size: captchaSize, token })}
             options={{ size: captchaSize, theme: "auto" }}
             ref={captchaRef}
             siteKey={turnstileSiteKey}

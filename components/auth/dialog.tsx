@@ -61,7 +61,7 @@ export const AuthDialog = ({
   intent,
 }: AuthDialogProps): React.ReactElement => {
   const [internalOpen, setInternalOpen] = useState(false);
-  const contentRef = useRef<HTMLDivElement>(null);
+  const choicesRef = useRef<HTMLDivElement>(null);
   const isControlled = controlledOpen !== undefined;
   const open = isControlled ? controlledOpen : internalOpen;
   const setOpen = (next: boolean): void => {
@@ -75,25 +75,30 @@ export const AuthDialog = ({
   return (
     <Dialog onOpenChange={setOpen} open={open}>
       {children ? <DialogTrigger asChild>{children}</DialogTrigger> : null}
-      {/* Scrolls instead of growing past a short screen (a small phone, or one
-          turned sideways), where the window is taller than the screen in
-          every view, sign-up with the compact captcha most of all; the close
-          button and Create account would be out of reach. Phones get the
-          tighter padding the welcome card uses. The visitor scrolls down to
-          reach links such as Create an account, so each new view starts back
-          at the top, its heading and the close button in sight. */}
-      <DialogContent
-        className="max-h-[calc(100dvh-2rem)] gap-6 overflow-y-auto p-6 sm:max-w-md sm:gap-8 sm:p-8"
-        ref={contentRef}
-      >
-        <DialogHeader className="flex flex-col items-center gap-4">
+      {/* On a short screen (a small phone, or one turned sideways) the window
+          is taller than the screen in every view, sign-up with the compact
+          captcha most of all. It stops at the screen's height and the sign-in
+          choices scroll inside it, below the header, so the title and the
+          close button stay in place. The visitor scrolls down to reach links
+          such as Create an account, so each new view starts back at the top
+          of that area. Phones get the tighter padding the welcome card uses;
+          -m-1 p-1 leaves room for the fields' focus rings inside the
+          scrolling area. */}
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-6 p-6 sm:max-w-md sm:gap-8 sm:p-8">
+        <DialogHeader className="flex shrink-0 flex-col items-center gap-4">
           <KeeperHubLogo className="size-10" />
           <DialogTitle className="text-2xl">Sign in to KeeperHub</DialogTitle>
         </DialogHeader>
-        <SignInChoices
-          onViewChange={() => contentRef.current?.scrollTo({ top: 0 })}
-          redirectTo={intent?.redirectTo}
-        />
+        <div
+          className="-m-1 min-h-0 overflow-y-auto p-1"
+          data-testid="auth-dialog-choices"
+          ref={choicesRef}
+        >
+          <SignInChoices
+            onViewChange={() => choicesRef.current?.scrollTo({ top: 0 })}
+            redirectTo={intent?.redirectTo}
+          />
+        </div>
       </DialogContent>
     </Dialog>
   );

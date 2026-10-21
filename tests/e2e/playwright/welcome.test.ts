@@ -248,6 +248,26 @@ async function openSignInWindow(page: Page): Promise<Locator> {
   return dialog;
 }
 
+// Scrolls the sign-in choices inside the window with the mouse wheel, the way
+// a visitor scrolls rather than by script, from the area's top corner (a
+// wheel over the captcha's frame would scroll the frame instead). Retried
+// while the window may still be growing as the captcha arrives.
+async function scrollChoicesDown(
+  page: Page,
+  choices: Locator,
+  until: () => Promise<void>
+): Promise<void> {
+  await expect(async () => {
+    await choices.hover({ position: { x: 2, y: 2 } });
+    await page.mouse.wheel(0, 2000);
+    await until();
+  }).toPass({ timeout: 15_000 });
+}
+
+function scrollTop(locator: Locator): Promise<number> {
+  return locator.evaluate((element) => element.scrollTop);
+}
+
 for (const screen of SHORT_SCREENS) {
   test.describe(`sign-in window on ${screen.name}`, () => {
     test.use({
@@ -257,6 +277,8 @@ for (const screen of SHORT_SCREENS) {
 
     test("stays on screen and scrolls inside", async ({ page }) => {
       const dialog = await openSignInWindow(page);
+      const choices = dialog.getByTestId("auth-dialog-choices");
+      const close = dialog.getByRole("button", { name: "Close" });
       await openSignupView(page);
 
       // Taller than the screen, so it scrolls inside itself rather than run
@@ -271,52 +293,44 @@ for (const screen of SHORT_SCREENS) {
         expect(box.y + box.height).toBeLessThanOrEqual(screen.height);
       }).toPass({ timeout: 10_000 });
 
-      // Reaching Create an account scrolled the window down; the sign-up view
-      // starts back at the top, close button in sight.
+      // Reaching Create an account scrolled the choices down; the sign-up
+      // view starts back at the top.
       await expect(
-        dialog.getByRole("button", { name: "Close" })
+        dialog.getByRole("heading", { name: "Create your account" })
       ).toBeInViewport({ ratio: 1 });
-      // Scrolled the way a visitor scrolls, not by script, from the title: a
-      // wheel over the captcha's frame would scroll the frame instead. The
-      // window is still growing as the captcha arrives, so keep scrolling
-      // until the button shows, as a visitor would.
-      const title = dialog.getByRole("heading", {
-        name: "Sign in to KeeperHub",
-      });
+
+      // Scrolled down to Create account, the title and the close button
+      // stay where they were.
       const submit = dialog.getByRole("button", { name: "Create account" });
-      await expect(async () => {
-        await title.hover();
-        await page.mouse.wheel(0, 2000);
+      await scrollChoicesDown(page, choices, async () => {
         await expect(submit).toBeInViewport({ timeout: 1000 });
-      }).toPass({ timeout: 15_000 });
+      });
+      await expect(close).toBeInViewport({ ratio: 1 });
+      await expect(
+        dialog.getByRole("heading", { name: "Sign in to KeeperHub" })
+      ).toBeInViewport({ ratio: 1 });
     });
 
     test("opens and leaves the wallet picker at the top", async ({ page }) => {
       const dialog = await openSignInWindow(page);
-      const close = dialog.getByRole("button", { name: "Close" });
-      const title = dialog.getByRole("heading", {
-        name: "Sign in to KeeperHub",
-      });
+      const choices = dialog.getByTestId("auth-dialog-choices");
 
-      // Scrolled down first, as a visitor who read the whole window would be,
-      // retried while the window may still be growing.
-      await expect(async () => {
-        await title.hover();
-        await page.mouse.wheel(0, 2000);
-        expect(await dialog.evaluate((d) => d.scrollTop)).toBeGreaterThan(0);
-      }).toPass({ timeout: 15_000 });
+      // Scrolled down first, as a visitor who read the whole window would be.
+      await scrollChoicesDown(page, choices, async () => {
+        expect(await scrollTop(choices)).toBeGreaterThan(0);
+      });
       await dialog.getByRole("button", { name: "Wallet", exact: true }).click();
       await expect(
         page.getByText("Nothing leaves your device but a signature.")
       ).toBeVisible();
-      await expect(close).toBeInViewport({ ratio: 1 });
+      await expect.poll(() => scrollTop(choices)).toBe(0);
 
-      // At the bottom of the picker, so reaching it scrolls the window down.
+      // At the bottom of the picker, so reaching it scrolls the choices down.
       await dialog
         .getByRole("button", { name: "Other ways to sign in" })
         .click();
       await expect(dialog.locator("#auth-email")).toBeVisible();
-      await expect(close).toBeInViewport({ ratio: 1 });
+      await expect.poll(() => scrollTop(choices)).toBe(0);
     });
   });
 }

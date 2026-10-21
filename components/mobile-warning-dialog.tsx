@@ -4,7 +4,7 @@ import { Monitor } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { isWelcomePath, SIGN_IN_GATE_PATHS } from "@/lib/pre-app-paths";
+import { isPreAppPath } from "@/lib/pre-app-paths";
 
 const STORAGE_KEY = "keeperhub-mobile-warning-dismissed";
 const MOBILE_BREAKPOINT = 768;
@@ -26,11 +26,12 @@ export function MobileWarningDialog(): React.ReactElement | null {
     }
   }, []);
 
-  // The welcome and sign-in check pages work on phones, and the popup would
-  // cover the form the visitor is filling in to get into the app. Held back
-  // here rather than in the effect, so it appears on the first page after
-  // these, however the visitor gets there.
-  if (!open || isWelcomePath(pathname) || SIGN_IN_GATE_PATHS.has(pathname)) {
+  // The pages before the app (welcome, sign-in checks, and the invite, device
+  // and OAuth pages a visitor signs in on from a link) work on phones, and the
+  // popup would cover the form the visitor is filling in to get into the app.
+  // Held back here rather than in the effect, so it appears on the first page
+  // after these, however the visitor gets there.
+  if (!open || isPreAppPath(pathname)) {
     return null;
   }
 
