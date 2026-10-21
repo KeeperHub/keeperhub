@@ -394,6 +394,14 @@ export function ActivityFeed({
       keepPlaceOnPageChange(rootRef.current, listRef.current);
     }
   };
+  // The held height covers only the page change that set it: once that load
+  // settles it goes, so later loads (search, filters, page size) start from the
+  // skeleton's own height.
+  useEffect(() => {
+    if (fillHeight && !loading) {
+      rootRef.current?.style.removeProperty("--activity-held-height");
+    }
+  }, [fillHeight, loading]);
 
   // Skeletons show on every load in both modes. In the fixed box the swap is
   // absorbed; when embedded, the skeleton holds the last content height

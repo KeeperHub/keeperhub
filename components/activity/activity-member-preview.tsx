@@ -123,7 +123,7 @@ export function ActivityMemberPreview(): ReactNode {
       >
         <div
           className={cn(
-            "flex min-h-0 flex-1 flex-col gap-6 p-6 pt-[calc(5rem+var(--app-banner-height,0px))] max-sm:gap-4 max-sm:px-4 max-sm:pb-4",
+            "flex min-h-0 flex-1 flex-col gap-6 p-6 pt-[calc(5rem+var(--app-banner-height,0px))] max-sm:gap-4 max-sm:px-4 max-sm:pb-[max(1rem,env(safe-area-inset-bottom))]",
             PHONE_PAGE_FILL
           )}
         >

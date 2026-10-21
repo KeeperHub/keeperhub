@@ -70,7 +70,7 @@ export function Pager({
   meta,
   onPage,
   unit = "items",
-  compactOnPhones = false,
+  compactOnPhones: compact = false,
 }: {
   meta: PageMeta;
   onPage: (page: number) => void;
@@ -87,7 +87,6 @@ export function Pager({
     return null;
   }
 
-  const compact = compactOnPhones;
   const toFirst = page > 1 ? () => onPage(1) : null;
   const back = page > 1 ? () => onPage(page - 1) : null;
   const forward = page < totalPages ? () => onPage(page + 1) : null;
