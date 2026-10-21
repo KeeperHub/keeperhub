@@ -1,9 +1,11 @@
 import * as React from "react"
 
-// Tailwind's md and lg (--breakpoint-md, --breakpoint-lg in its default
-// theme; a unit test pins them), for code that must agree with the CSS:
-// below md the sidebar gives way to the nav drawer; below lg the header
-// switcher can show initials.
+// Tailwind's sm, md and lg (--breakpoint-sm and so on in its default theme;
+// a unit test pins them), for code that must agree with the CSS: below sm
+// the analytics Projects drawer takes the runs card's place; below md the
+// sidebar gives way to the nav drawer; below lg the header switcher can
+// show initials.
+export const BELOW_SM_QUERY = "(width < 40rem)"
 const BELOW_MD_QUERY = "(width < 48rem)"
 export const BELOW_LG_QUERY = "(width < 64rem)"
 

@@ -5,7 +5,12 @@ import { createRequire } from "node:module";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BELOW_LG_QUERY, useIsMobile, useMediaQuery } from "@/hooks/use-mobile";
+import {
+  BELOW_LG_QUERY,
+  BELOW_SM_QUERY,
+  useIsMobile,
+  useMediaQuery,
+} from "@/hooks/use-mobile";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -127,7 +132,8 @@ function tailwindBreakpoint(name: string): string {
 }
 
 describe("breakpoint queries", () => {
-  it("match Tailwind's md and lg", () => {
+  it("match Tailwind's sm, md and lg", () => {
+    expect(BELOW_SM_QUERY).toBe(`(width < ${tailwindBreakpoint("sm")})`);
     expect(BELOW_LG_QUERY).toBe(`(width < ${tailwindBreakpoint("lg")})`);
     function MobileProbe(): null {
       useIsMobile();
