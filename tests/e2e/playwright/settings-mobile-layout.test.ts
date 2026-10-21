@@ -54,12 +54,13 @@ test.describe("settings on a phone", () => {
       timeout: 20_000,
     });
     await users.click();
-    await expect(page).toHaveURL(USERS_URL);
+    // A section's code is compiled on first visit in development.
+    await expect(page).toHaveURL(USERS_URL, { timeout: 20_000 });
 
     const back = page.getByTestId("settings-back-to-menu");
-    await expect(back).toBeVisible();
+    await expect(back).toBeVisible({ timeout: 20_000 });
     await back.click();
-    await expect(page).toHaveURL(MENU_URL);
+    await expect(page).toHaveURL(MENU_URL, { timeout: 20_000 });
     await expect(menu).toBeVisible();
   });
 
