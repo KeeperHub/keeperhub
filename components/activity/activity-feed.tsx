@@ -1,18 +1,11 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import {
-  type CSSProperties,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiKeysOverlay } from "@/components/overlays/api-keys-overlay";
 import { IntegrationsOverlay } from "@/components/overlays/integrations-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
 import { Skeleton } from "@/components/ui/skeleton";
-import { BELOW_SM_QUERY } from "@/hooks/use-mobile";
 import { groupByDate } from "@/lib/activity/time-groups";
 import { api, type SecurityAuditEvent } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
@@ -80,30 +73,44 @@ function mergeFallback(
   );
 }
 
+// The nearest scrolling ancestor, or null when an ancestor clips first. From
+// 640px up the page container clips and only the list scrolls, so this is
+// null there and the page-change handling below does nothing.
 function scrollParent(element: HTMLElement): HTMLElement | null {
   for (let node = element.parentElement; node; node = node.parentElement) {
     const { overflowY } = getComputedStyle(node);
     if (overflowY === "auto" || overflowY === "scroll") {
       return node;
     }
+    if (overflowY === "hidden" || overflowY === "clip") {
+      return null;
+    }
   }
   return null;
 }
 
-// After a page change on a phone, bring the list's top back under the app
+// On a phone the page itself scrolls. When the page changes, hold the list at
+// its current height while the next page loads (so a shorter skeleton does not
+// pull the reader up mid-load), and bring the list's top back under the app
 // header if the reader had scrolled past it; never scroll down to it.
-function scrollBackToTop(list: HTMLElement): void {
-  const scroller = scrollParent(list);
+function keepPlaceOnPageChange(
+  feed: HTMLElement,
+  list: HTMLElement | null
+): void {
+  const scroller = scrollParent(feed);
   if (!scroller) {
     return;
+  }
+  if (list) {
+    feed.style.setProperty("--activity-held-height", `${list.offsetHeight}px`);
   }
   // Unset scroll padding reads back as "auto", which counts as none.
   const px = (value: string): number => Number.parseFloat(value) || 0;
   const landing =
     scroller.getBoundingClientRect().top +
     px(getComputedStyle(scroller).scrollPaddingTop) +
-    px(getComputedStyle(list).scrollMarginTop);
-  const offBy = list.getBoundingClientRect().top - landing;
+    px(getComputedStyle(feed).scrollMarginTop);
+  const offBy = feed.getBoundingClientRect().top - landing;
   if (offBy < 0) {
     scroller.scrollBy({ top: offBy });
   }
@@ -334,12 +341,11 @@ export function ActivityFeed({
   // load. Without this the embedded feed (no fixed box) collapses to the
   // skeleton's natural height and back, jumping the modal on every filter/page
   // change. Per-resource overlays use the fixed box below instead. The full
-  // page holds it too, on phones only: there the page itself scrolls, and a
-  // shorter skeleton would pull the reader back up mid-load.
+  // page holds its height only on a phone's page change (keepPlaceOnPageChange).
   const listRef = useRef<HTMLDivElement>(null);
   const [reservedHeight, setReservedHeight] = useState<number>();
   useEffect(() => {
-    if ((embedded || fillHeight) && !loading && listRef.current) {
+    if (embedded && !fillHeight && !loading && listRef.current) {
       setReservedHeight(listRef.current.offsetHeight);
     }
   }, [embedded, fillHeight, loading]);
@@ -384,30 +390,22 @@ export function ActivityFeed({
   const rootRef = useRef<HTMLDivElement>(null);
   const goToPage = (next: number): void => {
     setPage(next);
-    const root = rootRef.current;
-    if (fillHeight && root && window.matchMedia(BELOW_SM_QUERY).matches) {
-      scrollBackToTop(root);
+    if (fillHeight && rootRef.current) {
+      keepPlaceOnPageChange(rootRef.current, listRef.current);
     }
   };
 
   // Skeletons show on every load in both modes. In the fixed box the swap is
   // absorbed; when embedded, the skeleton holds the last content height
-  // (reservedHeight) so the modal doesn't jump. The full page holds it through
-  // a variable that only phones read.
-  let skeletonStyle: CSSProperties | undefined;
-  if (embedded && !fillHeight) {
-    skeletonStyle = { minHeight: reservedHeight };
-  } else if (fillHeight && reservedHeight) {
-    skeletonStyle = {
-      "--activity-held-height": `${reservedHeight}px`,
-    } as CSSProperties;
-  }
+  // (reservedHeight) so the modal doesn't jump.
   if (loading) {
     return (
       <div className={rootClass} ref={rootRef}>
         <div
           className={cn(scrollClass, fillHeight && PHONE_HELD_HEIGHT)}
-          style={skeletonStyle}
+          style={
+            embedded && !fillHeight ? { minHeight: reservedHeight } : undefined
+          }
         >
           <ul>
             {SKELETON_KEYS.slice(
@@ -425,7 +423,12 @@ export function ActivityFeed({
         </div>
         {meta && (
           <div className={pagerClass}>
-            <Pager meta={meta} onPage={goToPage} unit="events" />
+            <Pager
+              compactOnPhones
+              meta={meta}
+              onPage={goToPage}
+              unit="events"
+            />
           </div>
         )}
       </div>
@@ -485,7 +488,7 @@ export function ActivityFeed({
       </div>
       {meta && (
         <div className={pagerClass}>
-          <Pager meta={meta} onPage={goToPage} unit="events" />
+          <Pager compactOnPhones meta={meta} onPage={goToPage} unit="events" />
         </div>
       )}
     </div>

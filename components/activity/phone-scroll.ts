@@ -42,5 +42,5 @@ export const PHONE_FEED_LIST =
 /** The feed's top, where a page change scrolls back to: just under the header. */
 export const PHONE_FEED_TOP = "max-sm:scroll-mt-(--activity-sticky-top)";
 
-/** The loading skeleton keeps the list's last height, so the page does not shrink mid-load. */
+/** The loading skeleton keeps the height the list had when the page changed (set then), so the page does not shrink mid-load. */
 export const PHONE_HELD_HEIGHT = "max-sm:min-h-(--activity-held-height)";
