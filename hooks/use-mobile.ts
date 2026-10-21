@@ -6,7 +6,7 @@ import * as React from "react"
 // sidebar gives way to the nav drawer; below lg the header switcher can
 // show initials.
 export const BELOW_SM_QUERY = "(width < 40rem)"
-const BELOW_MD_QUERY = "(width < 48rem)"
+export const BELOW_MD_QUERY = "(width < 48rem)"
 export const BELOW_LG_QUERY = "(width < 64rem)"
 
 // One MediaQueryList per query, shared by every reader and by the

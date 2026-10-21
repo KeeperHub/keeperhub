@@ -54,7 +54,8 @@ export function ConnectionsTable({
                   {connection.label}
                 </span>
               </TableCell>
-              <TableCell className="text-muted-foreground">
+              {/* In a narrow column: under the service, past its icon. */}
+              <TableCell className="text-muted-foreground @max-xl/settings:pl-8.5 @max-xl/settings:text-xs">
                 {connection.name}
               </TableCell>
               <TableCell className="text-right">

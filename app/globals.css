@@ -669,3 +669,34 @@
     padding-inline: --spacing(3);
   }
 }
+
+/* start custom keeperhub code */
+/* The plan cards come from keeperhub-pricing-ui. A plan's two figures share
+   a row only while both fit: in the four-column grid "250,000" and "$25" ran
+   into each other. Each still takes half the row, as the package's grid
+   gives it, but never less than its own width, so the second one wraps
+   under the first instead. */
+.khp-metrics .khp-metrics-box {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.khp-metrics .khp-metric {
+  flex: 1 1 0;
+  min-width: max-content;
+}
+/* On a phone the comparison scrolls sideways in its frame with the feature
+   names held in place, rather than five columns squeezed into the screen. */
+@media (width < 48rem) {
+  .khp-table-wrap .khp-table {
+    min-width: 40rem;
+  }
+  .khp-table-wrap .khp-th--feature,
+  .khp-table-wrap .khp-td--label {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background-color: var(--background);
+  }
+}
+/* end keeperhub code */

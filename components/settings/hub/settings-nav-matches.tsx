@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { cn } from "@/lib/utils";
 import { findSettingsMatches, settingsAnchor, settingsHref } from "./nav";
 import { useSettingsContext } from "./settings-context";
 
@@ -10,9 +11,13 @@ import { useSettingsContext } from "./settings-context";
  */
 export function SettingsNavMatches({
   query,
+  variant = "rail",
 }: {
   query: string;
+  /** "menu" is the phone's settings menu: the same list, tap-sized. */
+  variant?: "rail" | "menu";
 }): React.ReactElement {
+  const menu = variant === "menu";
   const { isAdmin, isOwner, organizationId } = useSettingsContext();
   const matches = findSettingsMatches(query, { isAdmin, isOwner });
 
@@ -29,8 +34,11 @@ export function SettingsNavMatches({
       {matches.map(({ item, panels }) => (
         <div className="flex flex-col gap-0.5" key={item.segment}>
           <Link
-            className="flex h-9 items-center gap-3 rounded-md px-2 font-medium text-sm transition-colors hover:bg-muted"
-            data-testid={`settings-match-${item.segment}`}
+            className={cn(
+              "flex items-center gap-3 rounded-md px-2 font-medium transition-colors hover:bg-muted",
+              menu ? "h-11 text-base" : "h-9 text-sm"
+            )}
+            data-testid={`settings-${menu ? "menu-match" : "match"}-${item.segment}`}
             href={settingsHref(item, organizationId)}
           >
             <item.icon className="size-4 shrink-0" />
@@ -43,7 +51,10 @@ export function SettingsNavMatches({
             <div className="ml-4 flex flex-col gap-0.5 border-border/60 border-l pl-1.5">
               {panels.map((panel) => (
                 <Link
-                  className="flex h-8 items-center rounded-md px-2 text-sm transition-colors hover:bg-muted"
+                  className={cn(
+                    "flex items-center rounded-md px-2 transition-colors hover:bg-muted",
+                    menu ? "h-11 text-base" : "h-8 text-sm"
+                  )}
                   href={`${settingsHref(item, organizationId)}?highlight=${settingsAnchor(panel.title)}`}
                   key={panel.title}
                 >

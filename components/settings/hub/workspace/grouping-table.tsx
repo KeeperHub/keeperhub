@@ -13,7 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ConfirmDeleteDialog } from "../confirm-delete-dialog";
-import { SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import { NARROW_ONLY, SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
 
 export type GroupingRow = {
   id: string;
@@ -94,8 +94,12 @@ export function GroupingTable({
                     </div>
                   </div>
                 </TableCell>
-                <TableCell className="text-muted-foreground tabular-nums">
+                {/* In a narrow column: under the name, past the dot. */}
+                <TableCell className="text-muted-foreground tabular-nums @max-xl/settings:pl-7 @max-xl/settings:text-xs">
                   {row.workflowCount}
+                  <span className={NARROW_ONLY}>
+                    {row.workflowCount === 1 ? " workflow" : " workflows"}
+                  </span>
                 </TableCell>
                 <TableCell className="text-right">
                   {canManage && (

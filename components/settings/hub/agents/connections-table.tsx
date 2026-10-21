@@ -33,7 +33,12 @@ import type {
   McpConnectionRow,
   McpUserGroup,
 } from "../hooks/use-mcp-connections";
-import { SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import { NARROW_ONLY, SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+
+// In a narrow column a person's access and last use sit under their name,
+// past the chevron, and a session's under its own indented name.
+const UNDER_PERSON = "@max-xl/settings:pl-8";
+const UNDER_SESSION = "@max-xl/settings:pl-10";
 
 const SKELETON_ROWS = ["a", "b", "c"] as const;
 
@@ -81,6 +86,7 @@ function LastUsed({
   }
   return (
     <span className="text-muted-foreground text-xs">
+      <span className={NARROW_ONLY}>Last used </span>
       {relativeTime(session.lastUsedAt)}
     </span>
   );
@@ -267,7 +273,7 @@ export function ConnectionsTable({
                       </span>
                     </button>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className={UNDER_PERSON}>
                     {canManage && group.canEdit ? (
                       <Select
                         disabled={busyId === group.userId}
@@ -304,11 +310,14 @@ export function ConnectionsTable({
                       </span>
                     )}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className={UNDER_PERSON}>
                     {(() => {
                       const latest = lastUsedAcross(group);
                       return (
                         <span className="text-muted-foreground text-xs">
+                          {latest && (
+                            <span className={NARROW_ONLY}>Last used </span>
+                          )}
                           {latest ? relativeTime(latest) : "Not used yet"}
                         </span>
                       );
@@ -337,7 +346,7 @@ export function ConnectionsTable({
                         </span>
                       </div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className={UNDER_SESSION}>
                       {/* Padded to the select trigger above it, so the session's
                           level lines up with the person's rather than sitting a
                           step to its left. */}
@@ -345,7 +354,7 @@ export function ConnectionsTable({
                         {scopeLabel(effectiveScope(session.scope))}
                       </span>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className={UNDER_SESSION}>
                       <LastUsed session={session} />
                     </TableCell>
                     <TableCell className="text-right">

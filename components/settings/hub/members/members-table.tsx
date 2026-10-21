@@ -21,9 +21,15 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { roleLabel } from "@/lib/organization/role-label";
+import { cn } from "@/lib/utils";
 import { ConfirmDeleteDialog } from "../confirm-delete-dialog";
 import type { OrgMember } from "../hooks/use-org-members";
-import { SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import {
+  NARROW_ONLY,
+  NARROW_UNDER_NAME,
+  SETTINGS_HEAD_ROW,
+  SETTINGS_ROW,
+} from "../section";
 
 const SKELETON_ROWS = ["a", "b"] as const;
 
@@ -71,10 +77,10 @@ export function MembersTable({
                     </div>
                   </div>
                 </TableCell>
-                <TableCell>
+                <TableCell className={NARROW_UNDER_NAME}>
                   <Skeleton className="h-5 w-20" />
                 </TableCell>
-                <TableCell>
+                <TableCell className={NARROW_UNDER_NAME}>
                   <Skeleton className="h-5 w-24" />
                 </TableCell>
                 <TableCell />
@@ -115,7 +121,7 @@ export function MembersTable({
                       </div>
                     </div>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className={NARROW_UNDER_NAME}>
                     {roleEditable ? (
                       <Select
                         disabled={updatingId === member.id}
@@ -136,7 +142,10 @@ export function MembersTable({
                       </span>
                     )}
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell
+                    className={cn("text-muted-foreground", NARROW_UNDER_NAME)}
+                  >
+                    <span className={NARROW_ONLY}>Joined </span>
                     {new Date(member.createdAt).toLocaleDateString()}
                   </TableCell>
                   <TableCell className="text-right">

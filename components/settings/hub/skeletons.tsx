@@ -80,7 +80,7 @@ export function StatTilesSkeleton({
   tiles?: number;
 }): React.ReactNode {
   return (
-    <div className="grid gap-4 sm:grid-cols-3">
+    <div className="grid gap-4 @xs/settings:grid-cols-3 max-md:gap-2">
       {KEYS.slice(0, tiles).map((key) => (
         <StatTile hint="" key={key} label="" loading value="" />
       ))}

@@ -61,7 +61,9 @@ export function SectionHeader({
       <div className="flex min-w-0 items-start gap-3">
         {leading}
         <div className="flex min-w-0 flex-col gap-1.5">
-          <h1 className="font-bold text-2xl tracking-tight">{title}</h1>
+          <h1 className="font-bold text-xl tracking-tight md:text-2xl">
+            {title}
+          </h1>
           {description && (
             <p className="max-w-xl text-muted-foreground text-sm">
               {description}
@@ -100,22 +102,26 @@ export function SettingsCard({
       id={title ? settingsAnchor(title) : undefined}
       ref={ref}
     >
-      {/* Centred, and the words hold a width of their own: a long description
-          used to push the controls onto a line of their own and leave them
-          pinned to the top of it. */}
+      {/* The actions sit beside the title and keep their size, centred on
+          the title and description together. In a narrow column the
+          description takes the full width under both instead, so the
+          controls stay on the title's line rather than dropping below the
+          words or squeezing them into a sliver. */}
       {title && (
-        <header className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
-          <div className="flex min-w-0 flex-col gap-1">
-            <h2 className="font-semibold text-sm">{title}</h2>
-            {description && (
-              <p className="max-w-2xl text-muted-foreground text-xs">
-                {description}
-              </p>
-            )}
-          </div>
-          {/* The actions keep their size and drop to their own line rather
-              than being pushed past the card's edge on a narrow screen. */}
-          {action && <div className="flex shrink-0 items-center">{action}</div>}
+        <header className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-b px-5 py-4">
+          <h2 className="col-start-1 row-start-1 font-semibold text-sm">
+            {title}
+          </h2>
+          {description && (
+            <p className="col-span-2 col-start-1 row-start-2 max-w-2xl text-muted-foreground text-xs @xl/settings:col-span-1">
+              {description}
+            </p>
+          )}
+          {action && (
+            <div className="col-start-2 row-start-1 flex items-center justify-end @xl/settings:row-span-2">
+              {action}
+            </div>
+          )}
         </header>
       )}
       <div className={cn("p-5", bodyClassName)}>{children}</div>
@@ -145,7 +151,9 @@ export function StatTile({
   loading?: boolean;
 }): React.ReactElement {
   return (
-    <div className="flex flex-col gap-1.5 rounded-xl border bg-card/60 p-4">
+    // Three to a row at any width, so in a narrow column they are a little
+    // tighter rather than a stack of near-empty boxes.
+    <div className="flex flex-col gap-1.5 rounded-xl border bg-card/60 p-3 @xl/settings:p-4">
       <span
         className={cn("w-fit text-muted-foreground text-xs", loading && VEILED)}
       >
@@ -209,10 +217,29 @@ export const SETTINGS_ROW = [
   "[&>td]:before:transition-colors [&>td]:before:content-['']",
   "[&:hover>td]:before:bg-muted/50",
   "[&>td:first-child]:before:rounded-l-lg [&>td:last-child]:before:rounded-r-lg",
+  // In a narrow content column (a phone, or a tablet beside the rail) the row
+  // becomes a block: the first cell heads it, the last one (the row's action)
+  // stays top right, and the cells between line up under the heading. The
+  // band would be drawn once per cell there, so it goes.
+  "@max-xl/settings:grid @max-xl/settings:grid-cols-[minmax(0,1fr)_auto] @max-xl/settings:items-start @max-xl/settings:gap-x-3 @max-xl/settings:gap-y-1 @max-xl/settings:py-3",
+  "@max-xl/settings:[&>td]:col-start-1 @max-xl/settings:[&>td]:py-0 @max-xl/settings:[&>td]:whitespace-normal @max-xl/settings:[&>td]:before:hidden",
+  "@max-xl/settings:[&>td:last-child:not(:first-child)]:col-start-2 @max-xl/settings:[&>td:last-child:not(:first-child)]:row-start-1",
 ].join(" ");
 
 /** Header row: same horizontal rhythm as the body, a touch more air below. */
 // A header is not a row anyone can act on, so it does not light up under the
-// pointer the way the rows below it do.
+// pointer the way the rows below it do. A narrow column has no columns to
+// head, so it goes there, and a cell that needs its name says it itself
+// (NARROW_ONLY).
 export const SETTINGS_HEAD_ROW =
-  "border-border/60 hover:bg-transparent [&>th]:h-9 [&>th]:pb-2";
+  "border-border/60 hover:bg-transparent [&>th]:h-9 [&>th]:pb-2 @max-xl/settings:hidden";
+
+/** Shown only in a narrow content column, e.g. the "Joined" before a date. */
+export const NARROW_ONLY = "@xl/settings:hidden";
+
+/**
+ * A cell that, in a narrow column, sits under a row heading led by a 32px
+ * icon or avatar: lined up with the name, past the icon, in small type.
+ */
+export const NARROW_UNDER_NAME =
+  "@max-xl/settings:pl-13 @max-xl/settings:text-xs";

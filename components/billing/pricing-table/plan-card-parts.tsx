@@ -78,23 +78,22 @@ export function HeroMetrics({
   executions: string;
   gas: string | null;
 }): React.ReactElement {
-  const gridCols = gas === null ? "grid-cols-1" : "grid-cols-2";
   return (
     <div className="mt-3 mb-3">
       <p className="mb-2 font-medium text-muted-foreground text-xs">
         Includes per month
       </p>
-      <div
-        className={`grid ${gridCols} gap-2 rounded-xl border border-border/60 bg-background/60 px-5 py-4`}
-      >
-        <div className="text-center">
+      {/* Side by side while both fit, each half the row; in a narrow card the
+          second wraps under the first rather than running into it. */}
+      <div className="flex flex-wrap justify-center gap-2 rounded-xl border border-border/60 bg-background/60 px-5 py-4">
+        <div className="min-w-max flex-1 text-center">
           <p className="mb-1.5 whitespace-nowrap text-muted-foreground text-xs">
             Executions
           </p>
           <p className="font-bold text-2xl leading-tight">{executions}</p>
         </div>
         {gas !== null && (
-          <div className="text-center">
+          <div className="min-w-max flex-1 text-center">
             <p className="mb-1.5 whitespace-nowrap text-muted-foreground text-xs">
               Gas credits
             </p>

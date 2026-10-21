@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/table";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { cn } from "@/lib/utils";
-import { SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import { NARROW_ONLY, SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
 import type { AssetRow } from "./use-account-assets";
 
 function fmt(balance: string): string {
@@ -87,10 +87,14 @@ export function AssetsTable({
                   )}
                 </span>
               </TableCell>
-              <TableCell className="text-right font-mono tabular-nums">
+              <TableCell className="text-right font-mono tabular-nums @max-xl/settings:text-left">
+                <span className={cn("font-sans", NARROW_ONLY)}>Balance </span>
                 {fmt(row.balance)}
               </TableCell>
-              <TableCell>
+              {/* A native coin's "-" says nothing on a line of its own. */}
+              <TableCell
+                className={cn(!row.tokenAddress && "@max-xl/settings:hidden")}
+              >
                 {row.tokenAddress ? (
                   <div className="flex min-w-0 flex-nowrap items-center gap-1">
                     {/* Shown whole where it fits, clipped where it does not,

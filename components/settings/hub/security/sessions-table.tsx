@@ -9,8 +9,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 import type { SessionRow } from "../hooks/use-security";
-import { SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import {
+  NARROW_ONLY,
+  NARROW_UNDER_NAME,
+  SETTINGS_HEAD_ROW,
+  SETTINGS_ROW,
+} from "../section";
 
 function relative(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -70,10 +76,15 @@ export function SessionsTable({
                   </div>
                 </div>
               </TableCell>
-              <TableCell className="text-muted-foreground">
+              <TableCell
+                className={cn("text-muted-foreground", NARROW_UNDER_NAME)}
+              >
                 {session.location ?? session.country ?? "Unknown"}
               </TableCell>
-              <TableCell className="text-muted-foreground">
+              <TableCell
+                className={cn("text-muted-foreground", NARROW_UNDER_NAME)}
+              >
+                <span className={NARROW_ONLY}>Last active </span>
                 {relative(session.updatedAt)}
               </TableCell>
               <TableCell className="text-right">

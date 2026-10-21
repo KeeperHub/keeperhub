@@ -39,7 +39,7 @@ export function WalletsSection(): React.ReactElement {
         title="Wallets"
       />
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 @xs/settings:grid-cols-3 max-md:gap-2">
         <StatTile
           hint="Managed signer plus any Safes"
           label="Accounts"

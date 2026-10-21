@@ -16,7 +16,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { roleLabel } from "@/lib/organization/role-label";
-import { SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import { NARROW_ONLY, SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
 
 function formatDate(value: string | null): string {
   if (!value) {
@@ -112,6 +112,7 @@ export function ApiKeysTable({
               <TableCell>
                 <div className="flex min-w-0 flex-col">
                   <span className="truncate">
+                    <span className={NARROW_ONLY}>Created by </span>
                     {key.createdByName || key.createdByEmail || "Unknown"}
                   </span>
                   {key.createdByRole && (
@@ -122,7 +123,8 @@ export function ApiKeysTable({
                 </div>
               </TableCell>
             )}
-            <TableCell className="text-muted-foreground">
+            <TableCell className="text-muted-foreground @max-xl/settings:text-xs">
+              <span className={NARROW_ONLY}>Last used: </span>
               {formatDate(key.lastUsedAt)}
             </TableCell>
             <TableCell className="text-right">

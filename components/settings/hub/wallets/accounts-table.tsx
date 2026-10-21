@@ -28,7 +28,7 @@ import {
   accountSlug,
   type WalletAccounts,
 } from "@/lib/wallet/use-wallet-accounts";
-import { SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import { NARROW_UNDER_NAME, SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
 import { useSettingsContext } from "../settings-context";
 import { AccountAddress } from "./account-address";
 
@@ -76,7 +76,7 @@ export function AccountsTable({
                   </span>
                 </div>
               </TableCell>
-              <TableCell>
+              <TableCell className={NARROW_UNDER_NAME}>
                 <Skeleton className="h-5 w-28" />
               </TableCell>
               <TableCell />
@@ -120,7 +120,9 @@ export function AccountsTable({
                     </span>
                   </div>
                 </TableCell>
-                <TableCell className="text-muted-foreground">
+                <TableCell
+                  className={cn("text-muted-foreground", NARROW_UNDER_NAME)}
+                >
                   {isSafe ? account.chainName : network}
                 </TableCell>
                 <TableCell className="text-right">
