@@ -49,7 +49,7 @@ type AuthDialogProps = {
 
 /**
  * App-wide auth modal. Presents the shared SignInChoices interface -- the same
- * one the Connect button and welcome page use -- so every entry point (sidebar
+ * one the welcome page uses -- so every entry point (the Connect button, sidebar
  * requireAuth nav, activity, use-template, accept-invite, add-connection, the
  * device page) shows an identical sign-in surface. Supports controlled mode
  * (AuthProvider) and an uncontrolled trigger passed as children.
@@ -74,7 +74,11 @@ export const AuthDialog = ({
   return (
     <Dialog onOpenChange={setOpen} open={open}>
       {children ? <DialogTrigger asChild>{children}</DialogTrigger> : null}
-      <DialogContent className="gap-8 p-8 sm:max-w-md">
+      {/* Scrolls instead of growing past a short screen (a small phone, or one
+          turned sideways): the sign-up view with the compact captcha is
+          taller than such a screen, and the close button and Create account
+          would be out of reach. */}
+      <DialogContent className="max-h-[calc(100dvh-2rem)] gap-8 overflow-y-auto p-8 sm:max-w-md">
         <DialogHeader className="flex flex-col items-center gap-4">
           <KeeperHubLogo className="size-10" />
           <DialogTitle className="text-2xl">Sign in to KeeperHub</DialogTitle>

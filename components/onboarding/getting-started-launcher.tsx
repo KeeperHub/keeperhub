@@ -33,6 +33,7 @@ import {
 } from "@/lib/onboarding/getting-started-config";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { cn } from "@/lib/utils";
+import { isWelcomePath } from "@/lib/welcome-path";
 import {
   editorTourRequestedAtom,
   gettingStartedOpenAtom,
@@ -434,7 +435,7 @@ export function GettingStartedLauncher({
   if (
     !gs.isAuthenticated ||
     SUPPRESSED_PATHS.has(path) ||
-    path.startsWith("/welcome")
+    isWelcomePath(path)
   ) {
     return null;
   }

@@ -7,6 +7,7 @@ import { NavigationSidebar } from "@/components/navigation-sidebar";
 import { useRecordExitPath } from "@/components/settings/hub/hooks/use-exit-path";
 import { PersistentCanvas } from "@/components/workflow/persistent-canvas";
 import { WorkflowToolbar } from "@/components/workflow/workflow-toolbar";
+import { isWelcomePath } from "@/lib/welcome-path";
 
 /**
  * Routes that must render without any auth-aware shell. The MFA gates
@@ -26,14 +27,13 @@ const BARE_LAYOUT_PATHS: ReadonlySet<string> = new Set([
   "/enforce-mfa",
 ]);
 
-// Prefixes whose whole subtree renders bare. The welcome landing plus its
-// onboarding wizard (/welcome, /welcome/create-org, ...) are full-screen and
-// must not render the workflow shell behind them. Shared execution views are
-// standalone pages for the same reason.
-const BARE_LAYOUT_PREFIXES: readonly string[] = ["/welcome", "/executions"];
+// Prefixes whose whole subtree renders bare. Shared execution views are
+// standalone pages, and the welcome pages (isWelcomePath) are full-screen; the
+// workflow shell must not render behind either.
+const BARE_LAYOUT_PREFIXES: readonly string[] = ["/executions"];
 
 function isBareLayoutPath(pathname: string): boolean {
-  if (BARE_LAYOUT_PATHS.has(pathname)) {
+  if (BARE_LAYOUT_PATHS.has(pathname) || isWelcomePath(pathname)) {
     return true;
   }
   return BARE_LAYOUT_PREFIXES.some((prefix) => pathname.startsWith(prefix));

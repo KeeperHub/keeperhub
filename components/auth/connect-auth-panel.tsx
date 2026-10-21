@@ -192,9 +192,10 @@ export function ConnectAuthPanel({
 
   const contentRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState<number | "auto">("auto");
-  // The normal captcha is a fixed 300px wide and would be clipped on narrow
-  // phones (the panel is under 300px on screens below ~380px), so switch to the compact
-  // widget there. A token from the replaced widget is dropped with it.
+  // The normal captcha is a fixed 300px wide and is clipped when this panel is
+  // narrower (on most phones; how narrow depends on the page or dialog around
+  // it), so switch to the compact widget there. Crossing that width (a phone
+  // turned sideways) replaces the widget, and its token goes with it.
   const captchaCompactRef = useRef(false);
   const [captchaCompact, setCaptchaCompact] = useState(false);
   useLayoutEffect(() => {
@@ -771,7 +772,6 @@ export function ConnectAuthPanel({
           <Turnstile
             data-size={captchaCompact ? "compact" : "normal"}
             data-testid="signup-captcha"
-            key={captchaCompact ? "compact" : "normal"}
             onError={() => setCaptchaToken("")}
             onExpire={() => setCaptchaToken("")}
             onSuccess={setCaptchaToken}
