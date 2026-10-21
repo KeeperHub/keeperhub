@@ -104,7 +104,7 @@ export function ActivityMemberPreview(): ReactNode {
   return (
     <div className="pointer-events-auto fixed inset-0 flex flex-col overflow-hidden bg-sidebar">
       <div className="flex min-h-0 flex-1 flex-col transition-[margin-left] duration-200 ease-out md:ml-[var(--nav-content-offset,var(--nav-sidebar-width,60px))]">
-        <div className="flex min-h-0 flex-1 flex-col gap-6 p-6 pt-[calc(5rem+var(--app-banner-height,0px))]">
+        <div className="flex min-h-0 flex-1 flex-col gap-6 p-6 pt-[calc(5rem+var(--app-banner-height,0px))] max-sm:gap-4 max-sm:px-4 max-sm:pb-4">
           <div className="space-y-1">
             <h1 className="font-semibold text-2xl tracking-tight">
               Organization activity

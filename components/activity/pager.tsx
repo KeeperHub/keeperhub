@@ -56,7 +56,7 @@ export function Pager({
           {pageWindow(page, totalPages).map((p, i) =>
             p === "gap" ? (
               <span
-                className="px-1 text-muted-foreground text-xs"
+                className="px-1 text-muted-foreground text-xs max-sm:hidden"
                 // biome-ignore lint/suspicious/noArrayIndexKey: gaps are positional and static
                 key={`gap-${i}`}
               >
@@ -65,7 +65,7 @@ export function Pager({
             ) : (
               <Button
                 aria-current={p === page ? "page" : undefined}
-                className="min-w-7"
+                className="min-w-7 max-sm:hidden"
                 key={p}
                 onClick={() => onPage(p)}
                 size="icon-sm"
@@ -75,6 +75,10 @@ export function Pager({
               </Button>
             )
           )}
+          {/* The numbered window does not fit beside the count on a phone. */}
+          <span className="whitespace-nowrap px-1.5 text-muted-foreground text-xs sm:hidden">
+            Page {page} of {totalPages}
+          </span>
           <Button
             aria-label="Next page"
             disabled={page >= totalPages}

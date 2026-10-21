@@ -274,19 +274,21 @@ export function ActivityRow({
   const header = (
     <>
       <div className="flex items-baseline justify-between gap-2 text-sm leading-snug">
-        <span className="min-w-0 truncate">
+        {/* Phones wrap the identity instead of truncating it, since the
+            action moves to its own line below. */}
+        <span className="min-w-0 truncate max-sm:whitespace-normal">
           <span className="font-medium">{actorLabel(actor)}</span>
           {role && (
             <span className="ml-1 text-muted-foreground text-xs">· {role}</span>
           )}
           {via && (
-            <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 font-medium text-[10px] text-foreground">
+            <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 font-medium text-[10px] text-foreground max-sm:inline-block max-sm:max-w-full max-sm:truncate max-sm:align-bottom">
               {via}
             </span>
           )}
         </span>
         <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-muted-foreground">
-          {capitalize(phrase)}
+          <span className="max-sm:hidden">{capitalize(phrase)}</span>
           {/* Always reserve the chevron slot so non-openable rows keep their
               label aligned with openable ones. */}
           {canOpen ? (
@@ -295,6 +297,11 @@ export function ActivityRow({
             <span aria-hidden="true" className="size-3.5" />
           )}
         </span>
+      </div>
+      {/* A long action ("changed the organization's AI agent limit") leaves
+          no room for the name on a phone, so it gets its own line there. */}
+      <div className="mt-0.5 text-muted-foreground text-sm leading-snug sm:hidden">
+        {capitalize(phrase)}
       </div>
       {resourceName && !event.resourceUser && (
         <div className="mt-0.5 truncate font-medium text-foreground/90 text-sm">
