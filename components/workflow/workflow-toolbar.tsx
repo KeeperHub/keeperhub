@@ -1739,7 +1739,6 @@ function ToolbarActions({
               hasSelection && "md:max-[840px]:hidden"
             )}
             onCheckedChange={(checked) => actions.handleToggleEnabled(checked)}
-            title={state.isEnabled ? "Disable workflow" : "Enable workflow"}
           />
         )}
         <RunButtonGroup

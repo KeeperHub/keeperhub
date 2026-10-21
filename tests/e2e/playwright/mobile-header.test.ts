@@ -561,6 +561,13 @@ test.describe("Mobile header", () => {
       expect(walletWidths[0], "the wallet keeps its size at 768px").toBe(
         walletWidths[1]
       );
+      // A toast (say, the paid-features notice on opening a workflow) sits
+      // over the bar until it times out, and a pointer resting on it holds
+      // it: move the pointer away and let it go.
+      await page.mouse.move(0, 0);
+      await expect(page.locator("[data-sonner-toast]")).toHaveCount(0, {
+        timeout: 15_000,
+      });
       for (const size of EDITOR_BAR_SIZES) {
         await page.setViewportSize(size);
         await expectEditorBar(page, size.width);
