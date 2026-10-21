@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { SignInChoices } from "@/components/auth/sign-in-choices";
 import { KeeperHubLogo } from "@/components/icons/keeperhub-logo";
 import {
@@ -49,7 +49,7 @@ type AuthDialogProps = {
 
 /**
  * App-wide auth modal. Presents the shared SignInChoices interface -- the same
- * one the Connect button and welcome page use -- so every entry point (sidebar
+ * one the welcome page uses -- so every entry point (the Connect button, sidebar
  * requireAuth nav, activity, use-template, accept-invite, add-connection, the
  * device page) shows an identical sign-in surface. Supports controlled mode
  * (AuthProvider) and an uncontrolled trigger passed as children.
@@ -61,6 +61,7 @@ export const AuthDialog = ({
   intent,
 }: AuthDialogProps): React.ReactElement => {
   const [internalOpen, setInternalOpen] = useState(false);
+  const choicesRef = useRef<HTMLDivElement>(null);
   const isControlled = controlledOpen !== undefined;
   const open = isControlled ? controlledOpen : internalOpen;
   const setOpen = (next: boolean): void => {
@@ -74,12 +75,30 @@ export const AuthDialog = ({
   return (
     <Dialog onOpenChange={setOpen} open={open}>
       {children ? <DialogTrigger asChild>{children}</DialogTrigger> : null}
-      <DialogContent className="gap-8 p-8 sm:max-w-md">
-        <DialogHeader className="flex flex-col items-center gap-4">
+      {/* On a short screen (a small phone, or one turned sideways) the window
+          is taller than the screen in every view, sign-up with the compact
+          captcha most of all. It stops at the screen's height and the sign-in
+          choices scroll inside it, below the header, so the title and the
+          close button stay in place. The visitor scrolls down to reach links
+          such as Create an account, so each new view starts back at the top
+          of that area. Phones get the tighter padding the welcome card uses;
+          -m-1 p-1 leaves room for the fields' focus rings inside the
+          scrolling area. */}
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-6 p-6 sm:max-w-md sm:gap-8 sm:p-8">
+        <DialogHeader className="flex shrink-0 flex-col items-center gap-4">
           <KeeperHubLogo className="size-10" />
           <DialogTitle className="text-2xl">Sign in to KeeperHub</DialogTitle>
         </DialogHeader>
-        <SignInChoices redirectTo={intent?.redirectTo} />
+        <div
+          className="-m-1 min-h-0 overflow-y-auto p-1"
+          data-testid="auth-dialog-choices"
+          ref={choicesRef}
+        >
+          <SignInChoices
+            onViewChange={() => choicesRef.current?.scrollTo({ top: 0 })}
+            redirectTo={intent?.redirectTo}
+          />
+        </div>
       </DialogContent>
     </Dialog>
   );

@@ -31,6 +31,7 @@ import {
   getBranches,
   type Step,
 } from "@/lib/onboarding/getting-started-config";
+import { isPreAppPath } from "@/lib/pre-app-paths";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { cn } from "@/lib/utils";
 import {
@@ -38,13 +39,6 @@ import {
   gettingStartedOpenAtom,
   pendingAiPromptAtom,
 } from "@/lib/workflow/store";
-
-const SUPPRESSED_PATHS = new Set([
-  "/verify-mfa",
-  "/enroll-mfa",
-  "/enforce-mfa",
-  "/verify-ip",
-]);
 
 // AI workflow generation is gated by this flag and is off in prod + staging.
 const AI_ENABLED = process.env.NEXT_PUBLIC_AI_PROMPT_ENABLED === "true";
@@ -431,11 +425,7 @@ export function GettingStartedLauncher({
   }, []);
 
   const path = pathname ?? "";
-  if (
-    !gs.isAuthenticated ||
-    SUPPRESSED_PATHS.has(path) ||
-    path.startsWith("/welcome")
-  ) {
+  if (!gs.isAuthenticated || isPreAppPath(path)) {
     return null;
   }
   if (gs.state === "dismissed") {
