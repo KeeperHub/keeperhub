@@ -1,5 +1,6 @@
 "use client";
 
+import { useRef } from "react";
 import { SignInChoices } from "@/components/auth/sign-in-choices";
 import { KeeperHubLogo } from "@/components/icons/keeperhub-logo";
 import { authClient } from "@/lib/auth-client";
@@ -24,16 +25,31 @@ export function WelcomeAuth(): React.ReactElement {
     window.location.assign("/");
   };
 
+  // A short screen (a phone turned sideways) scrolls the page to reach links
+  // at the bottom of the card, such as Create an account; bring the card's
+  // top back into sight for the view they open. Left alone when it is in
+  // sight, so a page that fits never moves.
+  const cardRef = useRef<HTMLDivElement>(null);
+  const showCardTop = (): void => {
+    const card = cardRef.current;
+    if (card && card.getBoundingClientRect().top < 0) {
+      card.scrollIntoView({ block: "start" });
+    }
+  };
+
   return (
     <div className="flex w-full max-w-sm flex-col gap-6">
-      <div className="rounded-xl border border-border bg-card p-6">
+      <div
+        className="rounded-xl border border-border bg-card p-6"
+        ref={cardRef}
+      >
         <div className="mb-6 flex flex-col items-center gap-3 text-center">
           <KeeperHubLogo className="size-9" />
           <h1 className="font-semibold text-2xl tracking-tight">
             Sign in to KeeperHub
           </h1>
         </div>
-        <SignInChoices />
+        <SignInChoices onViewChange={showCardTop} />
       </div>
 
       <button

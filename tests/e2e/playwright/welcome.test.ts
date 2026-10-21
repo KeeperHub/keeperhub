@@ -1,3 +1,4 @@
+import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 import { enterAsGuest, openSignupView } from "./utils/auth";
 
@@ -203,6 +204,34 @@ test.describe("welcome landing on a phone", () => {
   });
 });
 
+test.describe("welcome landing on a phone turned sideways", () => {
+  test.use({ viewport: { width: 667, height: 375 }, hasTouch: true });
+
+  test("opens sign-up with its heading in sight", async ({ page }) => {
+    await page.goto("/welcome", { waitUntil: "domcontentloaded" });
+    // Create an account sits below the fold here, so reaching it scrolls the
+    // page down past the top of the card.
+    await openSignupView(page);
+    await expect(
+      page.getByRole("heading", { name: "Create your account" })
+    ).toBeInViewport({ ratio: 1 });
+  });
+});
+
+// Opens the Sign in window from the app header on /hub.
+async function openSignInWindow(page: Page): Promise<Locator> {
+  await page.goto("/hub", { waitUntil: "domcontentloaded" });
+  // Below 768px the app first warns that it is best on a larger screen.
+  await page.getByRole("button", { name: "Continue Anyway" }).click();
+  const signIn = page.getByRole("button", { name: "Sign in", exact: true });
+  const dialog = page.getByRole("dialog");
+  await expect(async () => {
+    await signIn.click({ timeout: 2000 }).catch(() => undefined);
+    await expect(dialog).toBeVisible({ timeout: 4000 });
+  }).toPass({ timeout: 30_000 });
+  return dialog;
+}
+
 const SHORT_SCREENS = [
   { name: "an iPhone SE with Safari's toolbars", width: 320, height: 454 },
   { name: "a phone turned sideways", width: 667, height: 375 },
@@ -216,15 +245,7 @@ for (const screen of SHORT_SCREENS) {
     });
 
     test("stays on screen and scrolls inside", async ({ page }) => {
-      await page.goto("/hub", { waitUntil: "domcontentloaded" });
-      // Below 768px the app first warns that it is best on a larger screen.
-      await page.getByRole("button", { name: "Continue Anyway" }).click();
-      const signIn = page.getByRole("button", { name: "Sign in", exact: true });
-      const dialog = page.getByRole("dialog");
-      await expect(async () => {
-        await signIn.click({ timeout: 2000 }).catch(() => undefined);
-        await expect(dialog).toBeVisible({ timeout: 4000 });
-      }).toPass({ timeout: 30_000 });
+      const dialog = await openSignInWindow(page);
       await openSignupView(page);
 
       // Taller than the screen, so it scrolls inside itself rather than run
@@ -260,14 +281,7 @@ for (const screen of SHORT_SCREENS) {
     });
 
     test("opens and leaves the wallet picker at the top", async ({ page }) => {
-      await page.goto("/hub", { waitUntil: "domcontentloaded" });
-      await page.getByRole("button", { name: "Continue Anyway" }).click();
-      const signIn = page.getByRole("button", { name: "Sign in", exact: true });
-      const dialog = page.getByRole("dialog");
-      await expect(async () => {
-        await signIn.click({ timeout: 2000 }).catch(() => undefined);
-        await expect(dialog).toBeVisible({ timeout: 4000 });
-      }).toPass({ timeout: 30_000 });
+      const dialog = await openSignInWindow(page);
       const close = dialog.getByRole("button", { name: "Close" });
       const title = dialog.getByRole("heading", {
         name: "Sign in to KeeperHub",
@@ -276,6 +290,7 @@ for (const screen of SHORT_SCREENS) {
       // Scrolled down first, as a visitor who read the whole window would be.
       await title.hover();
       await page.mouse.wheel(0, 2000);
+      await expect(close).not.toBeInViewport({ ratio: 1 });
       await dialog.getByRole("button", { name: "Wallet", exact: true }).click();
       await expect(
         page.getByText("Nothing leaves your device but a signature.")
