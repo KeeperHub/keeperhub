@@ -244,6 +244,46 @@ test.describe("Activity page on phones", () => {
       }).toPass();
     });
 
+    await test.step("a focused row stays clear of the stuck bars", async () => {
+      // The pager's bar: its top border is where rows disappear under it.
+      const bar = nav.locator("xpath=../..");
+      const rowButtons = page
+        .getByRole("listitem")
+        .filter({ hasText: STUB_IP })
+        .getByRole("button");
+      // Scroll the page so `row`'s top sits `at` px down the screen.
+      const scrollRowTo = async (row: Locator, at: number): Promise<void> => {
+        await row.evaluate((element, top) => {
+          let scroller = element.parentElement;
+          while (scroller && getComputedStyle(scroller).overflowY !== "auto") {
+            scroller = scroller.parentElement;
+          }
+          scroller?.scrollBy(0, element.getBoundingClientRect().top - top);
+        }, at);
+      };
+
+      // Tabbing down onto a row that is mostly under the pager brings it out.
+      const barTop = (await box(bar)).y;
+      await scrollRowTo(rowButtons.nth(4), barTop - 20);
+      await rowButtons.nth(3).focus();
+      await page.keyboard.press("Tab");
+      await expect(rowButtons.nth(4)).toBeFocused();
+      expect(bottom(await box(rowButtons.nth(4)))).toBeLessThanOrEqual(
+        (await box(bar)).y + 1
+      );
+
+      // Tabbing up onto a row that is mostly under the heading brings it out.
+      const headingBottom = bottom(await box(heading));
+      const above = rowButtons.nth(2);
+      await scrollRowTo(above, headingBottom - (await box(above)).height + 20);
+      await rowButtons.nth(3).focus();
+      await page.keyboard.press("Shift+Tab");
+      await expect(above).toBeFocused();
+      expect((await box(above)).y).toBeGreaterThanOrEqual(
+        bottom(await box(heading)) - 1
+      );
+    });
+
     await test.step("a page change goes back to the top of the list", async () => {
       await button("Next page").click();
       await expect(label).toHaveText("Page 2 of 6");

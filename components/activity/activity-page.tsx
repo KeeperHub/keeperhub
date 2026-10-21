@@ -93,7 +93,8 @@ function ActivityAdminView(): ReactNode {
 
   return (
     // On phones the whole page scrolls rather than only the feed, which would
-    // otherwise get the little height left under the title and toolbar.
+    // otherwise get the little height left under the title and toolbar. The
+    // pager is the last thing on it and pads itself, so the page does not.
     <div
       className={cn(
         "pointer-events-auto fixed inset-0 flex flex-col overflow-hidden bg-sidebar",
@@ -108,7 +109,7 @@ function ActivityAdminView(): ReactNode {
       >
         <div
           className={cn(
-            "flex min-h-0 flex-1 flex-col gap-6 p-6 pt-[calc(5rem+var(--app-banner-height,0px))] max-sm:gap-4 max-sm:px-4 max-sm:pb-4",
+            "flex min-h-0 flex-1 flex-col gap-6 p-6 pt-[calc(5rem+var(--app-banner-height,0px))] max-sm:gap-4 max-sm:px-4 max-sm:pb-0",
             PHONE_PAGE_FILL
           )}
         >

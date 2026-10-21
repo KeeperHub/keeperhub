@@ -1,7 +1,13 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { ApiKeysOverlay } from "@/components/overlays/api-keys-overlay";
 import { IntegrationsOverlay } from "@/components/overlays/integrations-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
@@ -107,9 +113,13 @@ function scrollBackToTop(list: HTMLElement): void {
 // the array index.
 const SKELETON_KEYS = ["a", "b", "c", "d", "e", "f"] as const;
 
-function SkeletonRow(): React.ReactElement {
+function SkeletonRow({
+  className,
+}: {
+  className?: string;
+}): React.ReactElement {
   return (
-    <li className="flex items-start gap-3 py-3">
+    <li className={cn("flex items-start gap-3 py-3", className)}>
       <Skeleton className="size-7 shrink-0 rounded-full" />
       <div className="flex-1 space-y-2 py-0.5">
         <Skeleton className="h-3.5 w-2/5" />
@@ -333,6 +343,14 @@ export function ActivityFeed({
       setReservedHeight(listRef.current.offsetHeight);
     }
   }, [embedded, fillHeight, loading]);
+  // On phones the skeleton draws no more rows than the last page had, or a
+  // short page would grow and push the pager down while the next one loads.
+  const [shownRows, setShownRows] = useState<number>(SKELETON_KEYS.length);
+  useEffect(() => {
+    if (fillHeight && !loading && events.length > 0) {
+      setShownRows(events.length);
+    }
+  }, [fillHeight, loading, events.length]);
 
   // Three layout modes:
   // - fillHeight (full page): the list grows to fill the flex parent and scrolls
@@ -380,13 +398,13 @@ export function ActivityFeed({
   // absorbed; when embedded, the skeleton holds the last content height
   // (reservedHeight) so the modal doesn't jump. The full page holds it through
   // a variable that only phones read.
-  let skeletonStyle: React.CSSProperties | undefined;
+  let skeletonStyle: CSSProperties | undefined;
   if (embedded && !fillHeight) {
     skeletonStyle = { minHeight: reservedHeight };
   } else if (fillHeight && reservedHeight) {
     skeletonStyle = {
       "--activity-held-height": `${reservedHeight}px`,
-    } as React.CSSProperties;
+    } as CSSProperties;
   }
   if (loading) {
     return (
@@ -399,8 +417,13 @@ export function ActivityFeed({
             {SKELETON_KEYS.slice(
               0,
               Math.min(limit ?? 3, SKELETON_KEYS.length)
-            ).map((key) => (
-              <SkeletonRow key={key} />
+            ).map((key, index) => (
+              <SkeletonRow
+                className={
+                  fillHeight && index >= shownRows ? "max-sm:hidden" : undefined
+                }
+                key={key}
+              />
             ))}
           </ul>
         </div>

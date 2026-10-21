@@ -14,15 +14,21 @@ export const PHONE_PAGE_SCROLLER =
 /** Wrappers between the scroller and the feed: at least a screen tall, growing with the feed. */
 export const PHONE_PAGE_FILL = "max-sm:flex-[1_0_auto]";
 
-/** A date heading that sticks under the app header while the page scrolls. */
+/**
+ * A date heading that sticks under the app header while the page scrolls,
+ * with a little room under the header. Each heading is the first child of its
+ * group, so the padding has to beat the headings' own first:pt-0.
+ */
 export const PHONE_STICKY_HEADING =
-  "max-sm:top-(--activity-sticky-top) max-sm:pt-2";
+  "max-sm:top-(--activity-sticky-top) max-sm:first:pt-2";
 
 /**
  * The feed's list: a row focused from the keyboard scrolls clear of the stuck
  * heading above and the pager below instead of hiding behind them. Set on the
  * rows rather than as the page's scroll padding, which would also push the
  * pager's own buttons "into view" and scroll the page when they get focus.
+ * 2.5rem covers a stuck heading (about 33px); 6rem covers the pager (57px,
+ * 81px when it wraps) plus a home-indicator inset.
  */
 export const PHONE_FEED_LIST =
   "max-sm:[&_button]:scroll-mt-[calc(var(--activity-sticky-top)+2.5rem)] max-sm:[&_button]:scroll-mb-24";

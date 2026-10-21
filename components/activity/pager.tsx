@@ -9,9 +9,32 @@ import {
 import { Button } from "@/components/ui/button";
 import type { PageMeta } from "@/lib/pagination";
 
-// Phone-only; looks like a disabled button while it has nowhere to go.
-const END_BUTTON_CLASS =
-  "aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent sm:hidden";
+// The phone pager's step buttons. They are aria-disabled rather than
+// disabled: they turn off as soon as they reach an end, and a disabled button
+// drops keyboard focus out of the pager. The desktop window keeps its own
+// Previous/Next, unchanged.
+function PhoneStepButton({
+  children,
+  label,
+  onGo,
+}: {
+  children: React.ReactNode;
+  label: string;
+  onGo: (() => void) | null;
+}): React.ReactElement {
+  return (
+    <Button
+      aria-disabled={onGo === null}
+      aria-label={label}
+      className="aria-disabled:pointer-events-none aria-disabled:opacity-50 sm:hidden"
+      onClick={() => onGo?.()}
+      size="icon-sm"
+      variant="ghost"
+    >
+      {children}
+    </Button>
+  );
+}
 
 /** First, last, and the current page +/-1, collapsing gaps to an ellipsis. */
 function pageWindow(page: number, totalPages: number): (number | "gap")[] {
@@ -59,25 +82,21 @@ export function Pager({
           aria-label="Pagination"
           className="flex items-center gap-0.5 max-sm:ml-auto"
         >
-          {/* First and Last are aria-disabled rather than disabled: they turn
-              off as soon as they are used, and a disabled button would drop
-              keyboard focus out of the pager. */}
-          <Button
-            aria-disabled={page <= 1}
-            aria-label="First page"
-            className={END_BUTTON_CLASS}
-            onClick={() => {
-              if (page > 1) {
-                onPage(1);
-              }
-            }}
-            size="icon-sm"
-            variant="ghost"
+          <PhoneStepButton
+            label="First page"
+            onGo={page > 1 ? () => onPage(1) : null}
           >
             <ChevronsLeft className="size-4" />
-          </Button>
+          </PhoneStepButton>
+          <PhoneStepButton
+            label="Previous page"
+            onGo={page > 1 ? () => onPage(page - 1) : null}
+          >
+            <ChevronLeft className="size-4" />
+          </PhoneStepButton>
           <Button
             aria-label="Previous page"
+            className="max-sm:hidden"
             disabled={page <= 1}
             onClick={() => onPage(page - 1)}
             size="icon-sm"
@@ -126,6 +145,7 @@ export function Pager({
           </span>
           <Button
             aria-label="Next page"
+            className="max-sm:hidden"
             disabled={page >= totalPages}
             onClick={() => onPage(page + 1)}
             size="icon-sm"
@@ -133,20 +153,18 @@ export function Pager({
           >
             <ChevronRight className="size-4" />
           </Button>
-          <Button
-            aria-disabled={page >= totalPages}
-            aria-label="Last page"
-            className={END_BUTTON_CLASS}
-            onClick={() => {
-              if (page < totalPages) {
-                onPage(totalPages);
-              }
-            }}
-            size="icon-sm"
-            variant="ghost"
+          <PhoneStepButton
+            label="Next page"
+            onGo={page < totalPages ? () => onPage(page + 1) : null}
+          >
+            <ChevronRight className="size-4" />
+          </PhoneStepButton>
+          <PhoneStepButton
+            label="Last page"
+            onGo={page < totalPages ? () => onPage(totalPages) : null}
           >
             <ChevronsRight className="size-4" />
-          </Button>
+          </PhoneStepButton>
         </nav>
       )}
     </div>
