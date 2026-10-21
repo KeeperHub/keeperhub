@@ -91,7 +91,10 @@ test.describe("settings on a phone", () => {
       // until the drawer is there.
       const drawer = page.getByTestId("mobile-nav");
       await expect(async () => {
-        await page.getByTestId("mobile-nav-trigger").click();
+        // A tap on an open drawer's button would only close it again.
+        if (!(await drawer.isVisible())) {
+          await page.getByTestId("mobile-nav-trigger").click();
+        }
         await expect(drawer).toBeVisible({ timeout: 2000 });
       }).toPass(FIRST_VISIT);
       await page.getByTestId("mobile-nav-settings").click();
@@ -129,9 +132,16 @@ test.describe("settings on a phone", () => {
     await page.setViewportSize({ width: 390, height: PHONE_HEIGHT });
     await page.goto(MENU_PATH, { waitUntil: "domcontentloaded" });
 
-    await page.getByTestId("settings-menu-search").fill("password");
+    // The field is in the server's HTML, so it can be typed into before the
+    // page has hydrated, and that text never reaches the search. Type again
+    // until the matches show.
+    const search = page.getByTestId("settings-menu-search");
     const match = page.getByTestId("settings-menu-match-security");
-    await expect(match).toBeVisible(FIRST_VISIT);
+    await expect(async () => {
+      await search.fill("");
+      await search.fill("password");
+      await expect(match).toBeVisible({ timeout: 2000 });
+    }).toPass(FIRST_VISIT);
     await expect(page.getByTestId("settings-menu-users")).toHaveCount(0);
   });
 
