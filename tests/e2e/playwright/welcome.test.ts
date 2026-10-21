@@ -222,9 +222,11 @@ test.describe("welcome landing on a phone turned sideways", () => {
     await page.goto("/welcome", { waitUntil: "domcontentloaded" });
     // Create an account sits below the fold here, so reaching it scrolls the
     // page down past the top of the card.
-    await expect(
-      page.getByRole("button", { name: "Create an account" })
-    ).not.toBeInViewport();
+    const createAccount = page.getByRole("button", {
+      name: "Create an account",
+    });
+    await expect(createAccount).toBeVisible({ timeout: 15_000 });
+    await expect(createAccount).not.toBeInViewport();
     await openSignupView(page);
     await expect(
       page.getByRole("heading", { name: "Create your account" })
@@ -296,12 +298,13 @@ for (const screen of SHORT_SCREENS) {
         name: "Sign in to KeeperHub",
       });
 
-      // Scrolled down first, as a visitor who read the whole window would be.
-      await title.hover();
-      await page.mouse.wheel(0, 2000);
-      await expect
-        .poll(() => dialog.evaluate((d) => d.scrollTop))
-        .toBeGreaterThan(0);
+      // Scrolled down first, as a visitor who read the whole window would be,
+      // retried while the window may still be growing.
+      await expect(async () => {
+        await title.hover();
+        await page.mouse.wheel(0, 2000);
+        expect(await dialog.evaluate((d) => d.scrollTop)).toBeGreaterThan(0);
+      }).toPass({ timeout: 15_000 });
       await dialog.getByRole("button", { name: "Wallet", exact: true }).click();
       await expect(
         page.getByText("Nothing leaves your device but a signature.")
