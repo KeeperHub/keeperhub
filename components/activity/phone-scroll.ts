@@ -6,10 +6,12 @@
 // --activity-sticky-top is the app header's bottom edge. It uses the same
 // --header-height fallback as the settings shell and the version banner (the
 // token itself is not loaded by the app); the header's 1px border overlaps it.
+// --activity-pager-pad is the stuck pager's bottom padding: 12px, or the home
+// indicator's inset where that is larger.
 
 /** The fixed page container, which scrolls on phones. */
 export const PHONE_PAGE_SCROLLER =
-  "max-sm:overflow-y-auto max-sm:[--activity-sticky-top:calc(var(--header-height,60px)+var(--app-banner-height,0px))]";
+  "max-sm:overflow-y-auto max-sm:[--activity-sticky-top:calc(var(--header-height,60px)+var(--app-banner-height,0px))] max-sm:[--activity-pager-pad:max(0.75rem,env(safe-area-inset-bottom))]";
 
 /** Wrappers between the scroller and the feed: at least a screen tall, growing with the feed. */
 export const PHONE_PAGE_FILL = "max-sm:flex-[1_0_auto]";
@@ -27,12 +29,13 @@ export const PHONE_STICKY_HEADING =
  * heading above and the pager below instead of hiding behind them. Set on the
  * rows rather than as the page's scroll padding, which would also push the
  * pager's own buttons "into view" and scroll the page when they get focus.
- * 2.5rem covers a stuck heading (about 33px). 6rem covers the pager: 57px,
- * or 79px over a 34px home indicator (the inset replaces its 12px bottom
- * padding); it only wraps (81px) at 320px, on phones without one.
+ * 2.5rem covers a stuck heading (about 33px). Above its bottom padding the
+ * pager is 45px on one row, or 69px when the count and the buttons wrap onto
+ * two (very large totals: about 100k+ events at 360px, 1M+ at 375px), so 5rem
+ * plus that padding covers it with any home indicator.
  */
 export const PHONE_FEED_LIST =
-  "max-sm:[&_button]:scroll-mt-[calc(var(--activity-sticky-top)+2.5rem)] max-sm:[&_button]:scroll-mb-24";
+  "max-sm:[&_button]:scroll-mt-[calc(var(--activity-sticky-top)+2.5rem)] max-sm:[&_button]:scroll-mb-[calc(5rem+var(--activity-pager-pad))]";
 
 /** The feed's top, where a page change scrolls back to: just under the header. */
 export const PHONE_FEED_TOP = "max-sm:scroll-mt-(--activity-sticky-top)";

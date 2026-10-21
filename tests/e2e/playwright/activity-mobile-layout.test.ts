@@ -355,5 +355,11 @@ test.describe("Activity page on phones", () => {
         await expect(button("Previous page")).toHaveAttribute("disabled", "");
       });
     }
+
+    await test.step("Next is natively disabled on the last page", async () => {
+      await button("28").click();
+      await expect(button("28")).toHaveAttribute("aria-current", "page");
+      await expect(button("Next page")).toHaveAttribute("disabled", "");
+    });
   });
 });

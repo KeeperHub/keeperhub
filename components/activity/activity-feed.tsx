@@ -378,7 +378,7 @@ export function ActivityFeed({
     ? cn("flex min-h-0 flex-1 flex-col", PHONE_PAGE_FILL, PHONE_FEED_TOP)
     : undefined;
   const pagerClass = fillHeight
-    ? "border-border/60 border-t pt-3 max-sm:sticky max-sm:bottom-0 max-sm:z-10 max-sm:bg-sidebar max-sm:pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+    ? "border-border/60 border-t pt-3 max-sm:sticky max-sm:bottom-0 max-sm:z-10 max-sm:bg-sidebar max-sm:pb-(--activity-pager-pad)"
     : "pt-2";
   const groupLabelOffset = fillHeight ? PHONE_STICKY_HEADING : "";
   const rootRef = useRef<HTMLDivElement>(null);
