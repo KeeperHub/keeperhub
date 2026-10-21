@@ -17,13 +17,21 @@ import { resolvePostAuthDestination } from "@/lib/post-auth-destination";
  * takes over.
  */
 export function SignInChoices({
+  onViewChange,
   redirectTo,
 }: {
+  // Called whenever what is shown changes: the wallet picker in or out, or a
+  // view of the email panel.
+  onViewChange?: () => void;
   // Where to land after a successful sign-in; forwarded to the email panel and
   // the wallet path. Defaults to the resolved post-auth destination.
   redirectTo?: string;
 } = {}): React.ReactElement {
   const [showWallet, setShowWallet] = useState(false);
+  const toggleWallet = (show: boolean): void => {
+    setShowWallet(show);
+    onViewChange?.();
+  };
 
   const contentRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState<number | "auto">("auto");
@@ -68,7 +76,7 @@ export function SignInChoices({
               />
               <Button
                 className="w-full justify-center"
-                onClick={() => setShowWallet(false)}
+                onClick={() => toggleWallet(false)}
                 type="button"
                 variant="ghost"
               >
@@ -87,7 +95,8 @@ export function SignInChoices({
             >
               <ConnectAuthPanel
                 hideChooserHeader
-                onWalletClick={() => setShowWallet(true)}
+                onViewChange={onViewChange}
+                onWalletClick={() => toggleWallet(true)}
                 redirectTo={redirectTo}
               />
             </motion.div>

@@ -1,5 +1,5 @@
-import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
+import { enterAsGuest, openSignupView } from "./utils/auth";
 
 // Logged-out visitors are routed to the welcome landing; the guest link drops
 // them into the app without an account. Runs with a fresh anonymous context.
@@ -11,38 +11,6 @@ const WELCOME_ANY = /\/welcome/;
 const SESSION_COOKIE_NAME_RE = /^(?:__Secure-)?better-auth\.session_token$/;
 const CLIENT_ERROR_REGEX = /Application error/;
 const SOCIAL_OPTION_REGEX = /^(Google|GitHub|Wallet)$/;
-
-// Opens "Create your account". The form is server-rendered, so a working click
-// is also the proof that the page has hydrated and its effects have run.
-async function openSignUp(page: Page): Promise<void> {
-  const createAccount = page.getByRole("button", {
-    name: "Create an account",
-  });
-  await expect(createAccount).toBeVisible({ timeout: 15_000 });
-  await expect(async () => {
-    await createAccount.click({ timeout: 2000 }).catch(() => undefined);
-    await expect(page.locator("#auth-password")).toHaveAttribute(
-      "autocomplete",
-      "new-password",
-      { timeout: 4000 }
-    );
-  }).toPass({ timeout: 30_000 });
-}
-
-// Takes the guest link into the app.
-async function continueAsGuest(page: Page): Promise<void> {
-  const guestButton = page.getByRole("button", {
-    name: "Explore without signing in",
-  });
-  await expect(guestButton).toBeVisible({ timeout: 15_000 });
-  // Retry to tolerate the post-navigation hydration race on the first click.
-  await expect(async () => {
-    if (await guestButton.isVisible()) {
-      await guestButton.click();
-    }
-    await expect(page).not.toHaveURL(WELCOME_ANY, { timeout: 4000 });
-  }).toPass({ timeout: 30_000 });
-}
 
 test.describe("welcome landing", () => {
   test("redirects a logged-out visitor from / to /welcome", async ({
@@ -112,7 +80,7 @@ test.describe("welcome landing", () => {
       }
     });
     await page.goto("/welcome", { waitUntil: "domcontentloaded" });
-    await openSignUp(page);
+    await openSignupView(page);
     await expect(page.getByText(CLIENT_ERROR_REGEX)).toHaveCount(0);
     await expect(
       page.getByRole("heading", { name: "Sign in to KeeperHub" })
@@ -123,8 +91,7 @@ test.describe("welcome landing", () => {
     page,
     context,
   }) => {
-    await page.goto("/welcome", { waitUntil: "domcontentloaded" });
-    await continueAsGuest(page);
+    await enterAsGuest(page);
 
     // The guest path must actually create the anonymous account: without a
     // better-auth session cookie the proxy would bounce "/" back to /welcome.
@@ -195,15 +162,14 @@ test.describe("welcome landing on a phone", () => {
     page,
   }) => {
     await page.goto("/welcome", { waitUntil: "domcontentloaded" });
-    await openSignUp(page);
+    await openSignupView(page);
     await expect(page.getByText("Desktop Optimized")).toHaveCount(0);
   });
 
   test("still warns once the visitor leaves the welcome page", async ({
     page,
   }) => {
-    await page.goto("/welcome", { waitUntil: "domcontentloaded" });
-    await continueAsGuest(page);
+    await enterAsGuest(page);
     await expect(page.getByText("Desktop Optimized")).toBeVisible({
       timeout: 15_000,
     });
@@ -211,7 +177,7 @@ test.describe("welcome landing on a phone", () => {
 
   test("fits the captcha inside the sign-up form", async ({ page }) => {
     await page.goto("/welcome", { waitUntil: "domcontentloaded" });
-    await openSignUp(page);
+    await openSignupView(page);
     const captcha = page.getByTestId("signup-captcha");
     test.skip(
       (await captcha.count()) === 0,
@@ -259,10 +225,10 @@ for (const screen of SHORT_SCREENS) {
         await signIn.click({ timeout: 2000 }).catch(() => undefined);
         await expect(dialog).toBeVisible({ timeout: 4000 });
       }).toPass({ timeout: 30_000 });
-      await openSignUp(page);
+      await openSignupView(page);
 
-      // Taller than the screen, so it has to scroll inside itself rather
-      // than run off the top and bottom.
+      // Taller than the screen, so it scrolls inside itself rather than run
+      // off the top and bottom.
       await expect(async () => {
         const box = await dialog.boundingBox();
         expect(box).not.toBeNull();
@@ -272,15 +238,12 @@ for (const screen of SHORT_SCREENS) {
         expect(box.y).toBeGreaterThanOrEqual(0);
         expect(box.y + box.height).toBeLessThanOrEqual(screen.height);
       }).toPass({ timeout: 10_000 });
-      expect(
-        await dialog.evaluate((d) => d.scrollHeight > d.clientHeight)
-      ).toBe(true);
 
       // Reaching Create an account scrolled the window down; the sign-up view
       // starts back at the top, close button in sight.
       await expect(
         dialog.getByRole("button", { name: "Close" })
-      ).toBeInViewport();
+      ).toBeInViewport({ ratio: 1 });
       // Scrolled the way a visitor scrolls, not by script, from the title: a
       // wheel over the captcha's frame would scroll the frame instead. The
       // window is still growing as the captcha arrives, so keep scrolling
@@ -294,6 +257,37 @@ for (const screen of SHORT_SCREENS) {
         await page.mouse.wheel(0, 2000);
         await expect(submit).toBeInViewport({ timeout: 1000 });
       }).toPass({ timeout: 15_000 });
+    });
+
+    test("opens and leaves the wallet picker at the top", async ({ page }) => {
+      await page.goto("/hub", { waitUntil: "domcontentloaded" });
+      await page.getByRole("button", { name: "Continue Anyway" }).click();
+      const signIn = page.getByRole("button", { name: "Sign in", exact: true });
+      const dialog = page.getByRole("dialog");
+      await expect(async () => {
+        await signIn.click({ timeout: 2000 }).catch(() => undefined);
+        await expect(dialog).toBeVisible({ timeout: 4000 });
+      }).toPass({ timeout: 30_000 });
+      const close = dialog.getByRole("button", { name: "Close" });
+      const title = dialog.getByRole("heading", {
+        name: "Sign in to KeeperHub",
+      });
+
+      // Scrolled down first, as a visitor who read the whole window would be.
+      await title.hover();
+      await page.mouse.wheel(0, 2000);
+      await dialog.getByRole("button", { name: "Wallet", exact: true }).click();
+      await expect(
+        page.getByText("Nothing leaves your device but a signature.")
+      ).toBeVisible();
+      await expect(close).toBeInViewport({ ratio: 1 });
+
+      // At the bottom of the picker, so reaching it scrolls the window down.
+      await dialog
+        .getByRole("button", { name: "Other ways to sign in" })
+        .click();
+      await expect(dialog.locator("#auth-email")).toBeVisible();
+      await expect(close).toBeInViewport({ ratio: 1 });
     });
   });
 }

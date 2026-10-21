@@ -145,6 +145,7 @@ function reloadHome(target = "/"): void {
  */
 export function ConnectAuthPanel({
   hideChooserHeader = false,
+  onViewChange,
   onWalletClick,
   redirectTo,
 }: {
@@ -152,6 +153,10 @@ export function ConnectAuthPanel({
   // page), suppress the default view's own header to avoid repeating the same
   // phrase. Contextual step headers (verify, MFA) stay.
   hideChooserHeader?: boolean;
+  // Called after the panel switches view (sign-in, sign-up, forgot password,
+  // ...), for a surrounding scroll container to bring the new view's top back
+  // into sight.
+  onViewChange?: () => void;
   // When provided, a "Wallet" button is shown in the social row; clicking it
   // hands off to the surrounding surface to reveal the wallet picker.
   onWalletClick?: () => void;
@@ -219,19 +224,14 @@ export function ConnectAuthPanel({
     return () => observer.disconnect();
   }, []);
 
-  // In a sign-in window too tall for the screen, the visitor scrolls down to
-  // reach a link such as Create an account; the view it opens starts at the
-  // top, with its heading and the close button in sight.
   const shownViewRef = useRef(view);
   useLayoutEffect(() => {
     if (shownViewRef.current === view) {
       return;
     }
     shownViewRef.current = view;
-    contentRef.current
-      ?.closest('[data-slot="dialog-content"]')
-      ?.scrollTo({ top: 0 });
-  }, [view]);
+    onViewChange?.();
+  }, [view, onViewChange]);
 
   const handleSocial = async (provider: SocialProvider): Promise<void> => {
     setSocial(provider);

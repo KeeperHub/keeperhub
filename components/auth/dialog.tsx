@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { SignInChoices } from "@/components/auth/sign-in-choices";
 import { KeeperHubLogo } from "@/components/icons/keeperhub-logo";
 import {
@@ -61,6 +61,7 @@ export const AuthDialog = ({
   intent,
 }: AuthDialogProps): React.ReactElement => {
   const [internalOpen, setInternalOpen] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
   const isControlled = controlledOpen !== undefined;
   const open = isControlled ? controlledOpen : internalOpen;
   const setOpen = (next: boolean): void => {
@@ -78,13 +79,21 @@ export const AuthDialog = ({
           turned sideways), where the window is taller than the screen in
           every view, sign-up with the compact captcha most of all; the close
           button and Create account would be out of reach. Phones get the
-          tighter padding the welcome card uses. */}
-      <DialogContent className="max-h-[calc(100dvh-2rem)] gap-6 overflow-y-auto p-6 sm:max-w-md sm:gap-8 sm:p-8">
+          tighter padding the welcome card uses. The visitor scrolls down to
+          reach links such as Create an account, so each new view starts back
+          at the top, its heading and the close button in sight. */}
+      <DialogContent
+        className="max-h-[calc(100dvh-2rem)] gap-6 overflow-y-auto p-6 sm:max-w-md sm:gap-8 sm:p-8"
+        ref={contentRef}
+      >
         <DialogHeader className="flex flex-col items-center gap-4">
           <KeeperHubLogo className="size-10" />
           <DialogTitle className="text-2xl">Sign in to KeeperHub</DialogTitle>
         </DialogHeader>
-        <SignInChoices redirectTo={intent?.redirectTo} />
+        <SignInChoices
+          onViewChange={() => contentRef.current?.scrollTo({ top: 0 })}
+          redirectTo={intent?.redirectTo}
+        />
       </DialogContent>
     </Dialog>
   );

@@ -74,14 +74,22 @@ describe("MobileWarningDialog", () => {
     expect(container.textContent).toContain(WARNING);
   });
 
-  it("does not warn on a wide screen or once dismissed", () => {
+  it("does not warn on a wide screen", () => {
     setWidth(1280);
     renderAt("/hub");
     expect(container.textContent).not.toContain(WARNING);
-    act(() => root.unmount());
+  });
 
-    setWidth(375);
-    localStorage.setItem("keeperhub-mobile-warning-dismissed", "true");
+  it("does not warn again once dismissed", () => {
+    renderAt("/hub");
+    const button = [...container.querySelectorAll("button")].find(
+      (candidate) => candidate.textContent === "Continue Anyway"
+    );
+    expect(button).toBeDefined();
+    act(() => button?.click());
+    expect(container.textContent).not.toContain(WARNING);
+
+    act(() => root.unmount());
     root = createRoot(container);
     renderAt("/hub");
     expect(container.textContent).not.toContain(WARNING);
