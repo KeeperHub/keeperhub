@@ -31,8 +31,10 @@ export const PHONE_STICKY_HEADING =
  * pager's own buttons "into view" and scroll the page when they get focus.
  * 2.5rem covers a stuck heading (about 33px). Above its bottom padding the
  * pager is 45px on one row, or 69px when the count and the buttons wrap onto
- * two (very large totals: about 100k+ events at 360px, 1M+ at 375px), so 5rem
- * plus that padding covers it with any home indicator.
+ * two. That happens when the event count and "Page X of Y" together are too
+ * wide for the phone: from a few hundred events at 320px at the default page
+ * size, later on wider phones or with larger pages. 5rem plus that padding
+ * covers both, with any home indicator.
  */
 export const PHONE_FEED_LIST =
   "max-sm:[&_button]:scroll-mt-[calc(var(--activity-sticky-top)+2.5rem)] max-sm:[&_button]:scroll-mb-[calc(5rem+var(--activity-pager-pad))]";
