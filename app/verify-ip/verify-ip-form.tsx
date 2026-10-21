@@ -4,13 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
 import { DualFactorSteps } from "@/components/auth/dual-factor-steps";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { SignInGateDialog } from "@/components/auth/sign-in-gate-dialog";
 import { useDualFactorState } from "@/lib/mfa/use-dual-factor-state";
 
 type Props = {
@@ -118,46 +112,41 @@ export function VerifyIpForm({
   };
 
   return (
-    <Dialog open>
-      <DialogContent
-        className="sm:max-w-md [&>button[type='button']]:hidden"
-        onEscapeKeyDown={(event) => event.preventDefault()}
-        onInteractOutside={(event) => event.preventDefault()}
-      >
-        <DialogHeader>
-          <DialogTitle>Confirm this new sign-in</DialogTitle>
-          <DialogDescription>
-            We noticed you're signing in from a new network. Please confirm it's
-            you by entering the code we just emailed to {email} and the current
-            code from your authenticator app.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
-          <span className="text-muted-foreground">Signing in from</span>
-          <button
-            className="font-mono text-foreground hover:underline"
-            onClick={handleCopyIp}
-            title="Copy IP to clipboard"
-            type="button"
-          >
-            {ip}
-            {country ? ` (${country})` : ""}
-          </button>
-        </div>
-        <DualFactorSteps
-          busy={busy}
-          dual={dual}
-          onBack={() => {
-            if (typeof window !== "undefined") {
-              window.location.assign("/");
-            }
-          }}
-          onPrefetchEmail={() => dual.prefetchEmail(emptyCodesFetch)}
-          onResendEmail={() => dual.resendEmail(emptyCodesFetch)}
-          onSubmit={handleSubmit}
-          submitLabel="Verify"
-        />
-      </DialogContent>
-    </Dialog>
+    <SignInGateDialog
+      description={
+        <>
+          We noticed you're signing in from a new network. Please confirm it's
+          you by entering the code we just emailed to {email} and the current
+          code from your authenticator app.
+        </>
+      }
+      title="Confirm this new sign-in"
+    >
+      <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
+        <span className="text-muted-foreground">Signing in from</span>
+        <button
+          className="font-mono text-foreground hover:underline"
+          onClick={handleCopyIp}
+          title="Copy IP to clipboard"
+          type="button"
+        >
+          {ip}
+          {country ? ` (${country})` : ""}
+        </button>
+      </div>
+      <DualFactorSteps
+        busy={busy}
+        dual={dual}
+        onBack={() => {
+          if (typeof window !== "undefined") {
+            window.location.assign("/");
+          }
+        }}
+        onPrefetchEmail={() => dual.prefetchEmail(emptyCodesFetch)}
+        onResendEmail={() => dual.resendEmail(emptyCodesFetch)}
+        onSubmit={handleSubmit}
+        submitLabel="Verify"
+      />
+    </SignInGateDialog>
   );
 }

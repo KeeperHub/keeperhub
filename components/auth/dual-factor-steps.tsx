@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -176,11 +177,10 @@ export function DualFactorSteps({
     onPrefetchEmail();
   }, []);
 
+  // The first field on mount; later steps are focused by goToPhase.
   useEffect(() => {
-    const target =
-      phase === "email" ? emailInputRef.current : totpInputRef.current;
-    target?.focus();
-  }, [phase]);
+    emailInputRef.current?.focus();
+  }, []);
 
   // The email step uses a contenteditable div, not an <input>, so password
   // managers cannot fill it. Sync external value changes (e.g. resend
@@ -198,6 +198,17 @@ export function DualFactorSteps({
       node.textContent = dual.emailOtp;
     }
   }, [dual.emailOtp]);
+
+  // Move focus inside the event handler itself, so it never depends on when
+  // React renders and runs effects: iOS only keeps the on-screen keyboard
+  // open when focus moves while the user's tap is being handled. The step
+  // being opened is hidden until it renders, so flush that first.
+  const goToPhase = (next: Phase): void => {
+    flushSync(() => setPhase(next));
+    const target =
+      next === "email" ? emailInputRef.current : totpInputRef.current;
+    target?.focus();
+  };
 
   const handleResend = async (): Promise<void> => {
     setResending(true);
@@ -268,7 +279,7 @@ export function DualFactorSteps({
                 if (event.key === "Enter") {
                   event.preventDefault();
                   if (!busy && emailReady) {
-                    setPhase("authenticator");
+                    goToPhase("authenticator");
                   }
                 }
               }}
@@ -311,7 +322,7 @@ export function DualFactorSteps({
           </Button>
           <Button
             disabled={busy || !emailReady}
-            onClick={() => setPhase("authenticator")}
+            onClick={() => goToPhase("authenticator")}
           >
             Continue
           </Button>
@@ -348,7 +359,7 @@ export function DualFactorSteps({
         <div className="flex justify-between">
           <Button
             disabled={busy}
-            onClick={() => setPhase("email")}
+            onClick={() => goToPhase("email")}
             variant="outline"
           >
             Back
