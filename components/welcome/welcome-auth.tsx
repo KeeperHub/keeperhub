@@ -27,7 +27,8 @@ export function WelcomeAuth(): React.ReactElement {
 
   // A short screen (a phone turned sideways) scrolls the page to reach links
   // at the bottom of the card, such as Create an account; bring the card's
-  // top back into sight for the view they open. Left alone when it is in
+  // top back into sight for the view they open, keeping the page margin above
+  // it (scroll-mt matches the page's p-4 sm:p-6). Left alone when it is in
   // sight, so a page that fits never moves.
   const cardRef = useRef<HTMLDivElement>(null);
   const showCardTop = (): void => {
@@ -40,7 +41,7 @@ export function WelcomeAuth(): React.ReactElement {
   return (
     <div className="flex w-full max-w-sm flex-col gap-6">
       <div
-        className="rounded-xl border border-border bg-card p-6"
+        className="scroll-mt-4 rounded-xl border border-border bg-card p-6 sm:scroll-mt-6"
         ref={cardRef}
       >
         <div className="mb-6 flex flex-col items-center gap-3 text-center">

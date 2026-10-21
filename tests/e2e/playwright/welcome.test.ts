@@ -204,13 +204,27 @@ test.describe("welcome landing on a phone", () => {
   });
 });
 
+// A phone turned sideways, and an iPhone SE with Safari's toolbars showing:
+// screens shorter than the sign-in card or window.
+const SIDEWAYS = { name: "a phone turned sideways", width: 667, height: 375 };
+const SHORT_SCREENS = [
+  { name: "an iPhone SE with Safari's toolbars", width: 320, height: 454 },
+  SIDEWAYS,
+];
+
 test.describe("welcome landing on a phone turned sideways", () => {
-  test.use({ viewport: { width: 667, height: 375 }, hasTouch: true });
+  test.use({
+    viewport: { width: SIDEWAYS.width, height: SIDEWAYS.height },
+    hasTouch: true,
+  });
 
   test("opens sign-up with its heading in sight", async ({ page }) => {
     await page.goto("/welcome", { waitUntil: "domcontentloaded" });
     // Create an account sits below the fold here, so reaching it scrolls the
     // page down past the top of the card.
+    await expect(
+      page.getByRole("button", { name: "Create an account" })
+    ).not.toBeInViewport();
     await openSignupView(page);
     await expect(
       page.getByRole("heading", { name: "Create your account" })
@@ -231,11 +245,6 @@ async function openSignInWindow(page: Page): Promise<Locator> {
   }).toPass({ timeout: 30_000 });
   return dialog;
 }
-
-const SHORT_SCREENS = [
-  { name: "an iPhone SE with Safari's toolbars", width: 320, height: 454 },
-  { name: "a phone turned sideways", width: 667, height: 375 },
-];
 
 for (const screen of SHORT_SCREENS) {
   test.describe(`sign-in window on ${screen.name}`, () => {
@@ -290,7 +299,9 @@ for (const screen of SHORT_SCREENS) {
       // Scrolled down first, as a visitor who read the whole window would be.
       await title.hover();
       await page.mouse.wheel(0, 2000);
-      await expect(close).not.toBeInViewport({ ratio: 1 });
+      await expect
+        .poll(() => dialog.evaluate((d) => d.scrollTop))
+        .toBeGreaterThan(0);
       await dialog.getByRole("button", { name: "Wallet", exact: true }).click();
       await expect(
         page.getByText("Nothing leaves your device but a signature.")
