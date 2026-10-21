@@ -206,6 +206,13 @@ describe("MobileNav", () => {
     expect(isOpen()).toBe(false);
   });
 
+  it("opens settings on their phone menu", () => {
+    render();
+    openDrawer();
+    click(item("settings"));
+    expect(mocks.push).toHaveBeenCalledWith("/settings/menu");
+  });
+
   it("opens the latest workflow for Workflows", () => {
     render();
     openDrawer();

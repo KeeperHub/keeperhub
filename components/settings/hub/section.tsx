@@ -111,7 +111,7 @@ export function SettingsCard({
       {title && (
         <header className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4 @max-xl/settings:gap-y-1">
           <div className="flex min-w-0 flex-col gap-1 @max-xl/settings:contents">
-            <h2 className="font-semibold text-sm @max-xl/settings:grow @max-xl/settings:basis-32">
+            <h2 className="font-semibold text-sm @max-xl/settings:grow">
               {title}
             </h2>
             {description && (

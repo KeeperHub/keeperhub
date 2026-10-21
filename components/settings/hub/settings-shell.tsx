@@ -15,9 +15,11 @@ import { SettingsRail } from "./settings-rail";
  *
  * "A phone" is below Tailwind's md everywhere here, the app's own phone
  * breakpoint (the header's menu button): the rail's max-md:hidden, this bar's
- * md:hidden, the menu page's md:hidden and BELOW_MD_QUERY, and the plan
- * comparison's phone scroll in app/globals.css. They move together, or a
- * window between them has no way round settings.
+ * md:hidden, the menu page's md:hidden and BELOW_MD_QUERY, the plan
+ * comparison's phone scroll in app/globals.css, and the two ways in that
+ * lead phones to the menu: the header drawer's Settings (the drawer itself
+ * is md:hidden) and the user menu's settings button (useIsMobile). They move
+ * together, or a window between them has no way round settings.
  */
 function SettingsBackBar(): React.ReactElement {
   return (

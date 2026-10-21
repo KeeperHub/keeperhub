@@ -1,6 +1,12 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { box, dismissPhoneOverlays, overlaps, textFits } from "./utils/layout";
+import {
+  type Box,
+  box,
+  dismissPhoneOverlays,
+  overlaps,
+  textFits,
+} from "./utils/layout";
 import { openOrgSettings } from "./utils/settings";
 
 const PHONE_WIDTHS = [320, 390];
@@ -19,6 +25,10 @@ const MAX_GUTTER = 24;
 // In a stacked row the name keeps most of the line; the action cell only
 // takes what its buttons need.
 const MIN_HEADING_SHARE = 0.5;
+// From this width "Members" and its 176px search fit on one line.
+const SHARED_HEADER_FROM = 390;
+// A card title's line box (text-sm): taller means it wrapped.
+const ONE_LINE = 24;
 // A section's code is compiled on first visit in development.
 const FIRST_VISIT = { timeout: 20_000 };
 
@@ -43,6 +53,18 @@ async function contentFitsWidth(page: Page, width: number): Promise<void> {
   expect(Math.abs(x - (width - x - cardWidth))).toBeLessThanOrEqual(1);
 }
 
+// The first card header's title and search field, once the field is there.
+async function headerParts(page: Page): Promise<{ title: Box; search: Box }> {
+  const header = page.locator("main section header").first();
+  const search = header.locator("input");
+  await expect(search).toBeVisible(FIRST_VISIT);
+  return { title: await box(header.locator("h2")), search: await box(search) };
+}
+
+function centreY(target: Box): number {
+  return target.y + target.height / 2;
+}
+
 // The members table's header row and its first member, once the list has
 // loaded (the skeleton rows before it have no email).
 async function membersTable(
@@ -58,11 +80,20 @@ test.describe("settings on a phone", () => {
   test("opens on the menu, and each section leads back to it", async ({
     page,
   }) => {
+    test.slow();
     await page.setViewportSize({ width: 390, height: PHONE_HEIGHT });
-    await page.goto("/workflows", { waitUntil: "domcontentloaded" });
+    // Not /workflows: it goes on to the latest workflow by itself, which can
+    // overtake the tap on Settings.
+    await page.goto("/hub", { waitUntil: "domcontentloaded" });
 
     await test.step("the drawer's Settings opens the menu", async () => {
-      await page.getByTestId("mobile-nav-trigger").click();
+      // A tap before the page has hydrated opens nothing, so try again
+      // until the drawer is there.
+      const drawer = page.getByTestId("mobile-nav");
+      await expect(async () => {
+        await page.getByTestId("mobile-nav-trigger").click();
+        await expect(drawer).toBeVisible({ timeout: 2000 });
+      }).toPass(FIRST_VISIT);
       await page.getByTestId("mobile-nav-settings").click();
       await expect(page).toHaveURL(MENU_URL, FIRST_VISIT);
     });
@@ -83,6 +114,15 @@ test.describe("settings on a phone", () => {
     await back.click();
     await expect(page).toHaveURL(MENU_URL, FIRST_VISIT);
     await expect(menu).toBeVisible();
+  });
+
+  test("the menu comes from the server, not only after the page loads", async ({
+    page,
+  }) => {
+    // Shown below md by CSS, so a phone sees it from the first paint.
+    const response = await page.request.get(MENU_PATH);
+    expect(response.ok()).toBe(true);
+    expect(await response.text()).toContain('data-testid="settings-menu"');
   });
 
   test("the menu's search leads to a single setting", async ({ page }) => {
@@ -115,14 +155,27 @@ test.describe("settings on a phone", () => {
         await openOrgSettings(page, "users");
         await contentFitsWidth(page, width);
       });
-      await test.step("a card's title and its search share the header", async () => {
+      await test.step("a card's search beside its title, or under it", async () => {
+        // Members' title is short enough to share its line with the search
+        // from 390; Connections' is not, so its search takes the next.
+        if (width >= SHARED_HEADER_FROM) {
+          await openOrgSettings(page, "users");
+          const members = await headerParts(page);
+          expect(
+            Math.abs(centreY(members.title) - centreY(members.search))
+          ).toBeLessThanOrEqual(2);
+          expect(members.search.x).toBeGreaterThan(
+            members.title.x + members.title.width
+          );
+        }
+
         await openOrgSettings(page, "connections");
-        const header = page.locator("main section header").first();
-        const title = header.locator("h2");
-        const search = header.locator("input");
-        await expect(search).toBeVisible(FIRST_VISIT);
-        expect(await overlaps(title, search)).toBe(false);
-        expect(await textFits(title)).toBe(true);
+        const connections = await headerParts(page);
+        expect(connections.search.y).toBeGreaterThanOrEqual(
+          connections.title.y + connections.title.height
+        );
+        // Its own line, and the title is not squeezed onto two.
+        expect(connections.title.height).toBeLessThanOrEqual(ONE_LINE);
       });
     });
   }
