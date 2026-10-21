@@ -585,14 +585,19 @@ test.describe("Mobile header", () => {
         .filter({ hasText: "Address copied" });
       await expect(toast).toBeVisible();
       await settleToolbar(page);
-      const toastBox = await toast.boundingBox();
       const toolbarBox = await page
         .getByTestId("workflow-actions")
         .boundingBox();
-      expect(
-        (toastBox?.y ?? 0) + (toastBox?.height ?? 0),
-        "toast above the bar"
-      ).toBeLessThanOrEqual(toolbarBox?.y ?? 0);
+      // A toast slides up into place (0.4s): measure it once it has.
+      await expect
+        .poll(
+          async () => {
+            const box = await toast.boundingBox();
+            return (box?.y ?? 0) + (box?.height ?? 0);
+          },
+          { message: "toast above the bar" }
+        )
+        .toBeLessThanOrEqual(toolbarBox?.y ?? 0);
       await expect
         .poll(
           () => isOnTop(page.getByRole("button", { name: "Run", exact: true })),
