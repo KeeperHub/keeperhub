@@ -247,10 +247,15 @@ test.describe("Activity page on phones", () => {
     await test.step("a focused row stays clear of the stuck bars", async () => {
       // The pager's bar: its top border is where rows disappear under it.
       const bar = nav.locator("xpath=../..");
-      const rowButtons = page
-        .getByRole("listitem")
-        .filter({ hasText: STUB_IP })
-        .getByRole("button");
+      // The nth row that opens something, by its button.
+      const rowButton = (n: number): Locator =>
+        page
+          .getByRole("listitem")
+          .filter({ hasText: STUB_IP })
+          .filter({ has: page.getByRole("button") })
+          .nth(n)
+          .getByRole("button")
+          .first();
       // Scroll the page so `row`'s top sits `at` px down the screen.
       const scrollRowTo = async (row: Locator, at: number): Promise<void> => {
         await row.evaluate((element, top) => {
@@ -264,19 +269,19 @@ test.describe("Activity page on phones", () => {
 
       // Tabbing down onto a row that is mostly under the pager brings it out.
       const barTop = (await box(bar)).y;
-      await scrollRowTo(rowButtons.nth(4), barTop - 20);
-      await rowButtons.nth(3).focus();
+      await scrollRowTo(rowButton(4), barTop - 20);
+      await rowButton(3).focus();
       await page.keyboard.press("Tab");
-      await expect(rowButtons.nth(4)).toBeFocused();
-      expect(bottom(await box(rowButtons.nth(4)))).toBeLessThanOrEqual(
+      await expect(rowButton(4)).toBeFocused();
+      expect(bottom(await box(rowButton(4)))).toBeLessThanOrEqual(
         (await box(bar)).y + 1
       );
 
       // Tabbing up onto a row that is mostly under the heading brings it out.
       const headingBottom = bottom(await box(heading));
-      const above = rowButtons.nth(2);
+      const above = rowButton(2);
       await scrollRowTo(above, headingBottom - (await box(above)).height + 20);
-      await rowButtons.nth(3).focus();
+      await rowButton(3).focus();
       await page.keyboard.press("Shift+Tab");
       await expect(above).toBeFocused();
       expect((await box(above)).y).toBeGreaterThanOrEqual(
@@ -345,6 +350,9 @@ test.describe("Activity page on phones", () => {
         await expect(button("2")).toBeVisible();
         await expect(label).toBeHidden();
         await expect(button("Last page")).toBeHidden();
+        // Desktop keeps its natively disabled Previous on page 1 (the phone
+        // buttons are aria-disabled instead).
+        await expect(button("Previous page")).toHaveAttribute("disabled", "");
       });
     }
   });

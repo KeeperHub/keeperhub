@@ -27,8 +27,9 @@ export const PHONE_STICKY_HEADING =
  * heading above and the pager below instead of hiding behind them. Set on the
  * rows rather than as the page's scroll padding, which would also push the
  * pager's own buttons "into view" and scroll the page when they get focus.
- * 2.5rem covers a stuck heading (about 33px); 6rem covers the pager (57px,
- * 81px when it wraps) plus a home-indicator inset.
+ * 2.5rem covers a stuck heading (about 33px). 6rem covers the pager: 57px,
+ * or 79px over a 34px home indicator (the inset replaces its 12px bottom
+ * padding); it only wraps (81px) at 320px, on phones without one.
  */
 export const PHONE_FEED_LIST =
   "max-sm:[&_button]:scroll-mt-[calc(var(--activity-sticky-top)+2.5rem)] max-sm:[&_button]:scroll-mb-24";

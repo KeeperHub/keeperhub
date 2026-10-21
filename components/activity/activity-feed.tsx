@@ -343,14 +343,10 @@ export function ActivityFeed({
       setReservedHeight(listRef.current.offsetHeight);
     }
   }, [embedded, fillHeight, loading]);
-  // On phones the skeleton draws no more rows than the last page had, or a
-  // short page would grow and push the pager down while the next one loads.
-  const [shownRows, setShownRows] = useState<number>(SKELETON_KEYS.length);
-  useEffect(() => {
-    if (fillHeight && !loading && events.length > 0) {
-      setShownRows(events.length);
-    }
-  }, [fillHeight, loading, events.length]);
+  // On phones the skeleton draws no more rows than the page on screen has (the
+  // items stay until the next page arrives), or a short page would grow and
+  // push the pager down while the next one loads.
+  const shownRows = events.length || SKELETON_KEYS.length;
 
   // Three layout modes:
   // - fillHeight (full page): the list grows to fill the flex parent and scrolls

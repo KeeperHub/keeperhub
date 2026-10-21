@@ -12,7 +12,7 @@ import type { PageMeta } from "@/lib/pagination";
 // The phone pager's step buttons. They are aria-disabled rather than
 // disabled: they turn off as soon as they reach an end, and a disabled button
 // drops keyboard focus out of the pager. The desktop window keeps its own
-// Previous/Next, unchanged.
+// Previous/Next, unchanged. Only the icon dims, so the focus ring stays full.
 function PhoneStepButton({
   children,
   label,
@@ -26,7 +26,7 @@ function PhoneStepButton({
     <Button
       aria-disabled={onGo === null}
       aria-label={label}
-      className="aria-disabled:pointer-events-none aria-disabled:opacity-50 sm:hidden"
+      className="aria-disabled:pointer-events-none aria-disabled:[&_svg]:opacity-50 sm:hidden"
       onClick={() => onGo?.()}
       size="icon-sm"
       variant="ghost"
@@ -69,6 +69,12 @@ export function Pager({
     return null;
   }
 
+  // Each step is worked out once, for the phone buttons and the desktop pair.
+  const toFirst = page > 1 ? () => onPage(1) : null;
+  const back = page > 1 ? () => onPage(page - 1) : null;
+  const forward = page < totalPages ? () => onPage(page + 1) : null;
+  const toLast = page < totalPages ? () => onPage(totalPages) : null;
+
   return (
     // On phones the numbered window gives way to first/last buttons around a
     // "Page X of Y" label; if even that does not fit beside the count, the
@@ -82,23 +88,17 @@ export function Pager({
           aria-label="Pagination"
           className="flex items-center gap-0.5 max-sm:ml-auto"
         >
-          <PhoneStepButton
-            label="First page"
-            onGo={page > 1 ? () => onPage(1) : null}
-          >
+          <PhoneStepButton label="First page" onGo={toFirst}>
             <ChevronsLeft className="size-4" />
           </PhoneStepButton>
-          <PhoneStepButton
-            label="Previous page"
-            onGo={page > 1 ? () => onPage(page - 1) : null}
-          >
+          <PhoneStepButton label="Previous page" onGo={back}>
             <ChevronLeft className="size-4" />
           </PhoneStepButton>
           <Button
             aria-label="Previous page"
             className="max-sm:hidden"
-            disabled={page <= 1}
-            onClick={() => onPage(page - 1)}
+            disabled={back === null}
+            onClick={back ?? undefined}
             size="icon-sm"
             variant="ghost"
           >
@@ -146,23 +146,17 @@ export function Pager({
           <Button
             aria-label="Next page"
             className="max-sm:hidden"
-            disabled={page >= totalPages}
-            onClick={() => onPage(page + 1)}
+            disabled={forward === null}
+            onClick={forward ?? undefined}
             size="icon-sm"
             variant="ghost"
           >
             <ChevronRight className="size-4" />
           </Button>
-          <PhoneStepButton
-            label="Next page"
-            onGo={page < totalPages ? () => onPage(page + 1) : null}
-          >
+          <PhoneStepButton label="Next page" onGo={forward}>
             <ChevronRight className="size-4" />
           </PhoneStepButton>
-          <PhoneStepButton
-            label="Last page"
-            onGo={page < totalPages ? () => onPage(totalPages) : null}
-          >
+          <PhoneStepButton label="Last page" onGo={toLast}>
             <ChevronsRight className="size-4" />
           </PhoneStepButton>
         </nav>
