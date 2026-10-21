@@ -599,8 +599,12 @@ test.describe("Mobile header", () => {
       ): Promise<void> => {
         await page.setViewportSize(size);
         await page.getByTitle("Configuration", { exact: true }).click();
-        const sheet = page.getByRole("dialog");
-        await expect(sheet).toBeVisible();
+        // A drawer on phones, a centred panel from md (which has no dialog
+        // role): found by its Close button either way.
+        const closeSheet = page
+          .getByRole("button", { name: "Close", exact: true })
+          .filter({ visible: true });
+        await expect(closeSheet).toHaveCount(1);
         if (shown) {
           await expect(
             sheetSwitch,
@@ -612,8 +616,8 @@ test.describe("Mobile header", () => {
             `no sheet switch at ${size.width}px`
           ).toBeHidden();
         }
-        await sheet.getByRole("button", { name: "Close" }).click();
-        await expect(sheet).toBeHidden();
+        await closeSheet.click();
+        await expect(closeSheet).toHaveCount(0);
       };
       await expectSheetSwitch({ width: 320, height: 568 }, true);
       await expectSheetSwitch({ width: 800, height: 800 }, true);
