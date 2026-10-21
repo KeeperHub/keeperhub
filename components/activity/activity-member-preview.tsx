@@ -102,9 +102,10 @@ export function ActivityMemberPreview(): ReactNode {
   }, []);
 
   return (
-    <div className="pointer-events-auto fixed inset-0 flex flex-col overflow-hidden bg-sidebar">
-      <div className="flex min-h-0 flex-1 flex-col transition-[margin-left] duration-200 ease-out md:ml-[var(--nav-content-offset,var(--nav-sidebar-width,60px))]">
-        <div className="flex min-h-0 flex-1 flex-col gap-6 p-6 pt-[calc(5rem+var(--app-banner-height,0px))] max-sm:gap-4 max-sm:px-4 max-sm:pb-4">
+    // Same phone layout as the admin feed: the whole page scrolls.
+    <div className="pointer-events-auto fixed inset-0 flex flex-col overflow-hidden bg-sidebar max-sm:overflow-y-auto">
+      <div className="flex min-h-0 flex-1 flex-col transition-[margin-left] duration-200 ease-out max-sm:flex-none md:ml-[var(--nav-content-offset,var(--nav-sidebar-width,60px))]">
+        <div className="flex min-h-0 flex-1 flex-col gap-6 p-6 pt-[calc(5rem+var(--app-banner-height,0px))] max-sm:flex-none max-sm:gap-4 max-sm:px-4 max-sm:pb-4">
           <div className="space-y-1">
             <h1 className="font-semibold text-2xl tracking-tight">
               Organization activity
@@ -125,10 +126,10 @@ export function ActivityMemberPreview(): ReactNode {
             </div>
           </div>
 
-          <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto">
+          <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto max-sm:flex-none max-sm:overflow-visible">
             {groups.map((group) => (
               <div key={group.label}>
-                <p className="sticky top-0 z-10 mb-2 border-border/60 border-b bg-background pt-6 pb-2 font-medium text-muted-foreground text-xs uppercase tracking-wide first:pt-0">
+                <p className="sticky top-0 z-10 mb-2 border-border/60 border-b bg-background pt-6 pb-2 font-medium text-muted-foreground text-xs uppercase tracking-wide first:pt-0 max-sm:top-[calc(var(--header-height,60px)+var(--app-banner-height,0px))]">
                   {group.label}
                 </p>
                 <ul>

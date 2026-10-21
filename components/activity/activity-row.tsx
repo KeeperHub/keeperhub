@@ -273,22 +273,29 @@ export function ActivityRow({
 
   const header = (
     <>
-      <div className="flex items-baseline justify-between gap-2 text-sm leading-snug">
-        {/* Phones wrap the identity instead of truncating it, since the
-            action moves to its own line below. */}
-        <span className="min-w-0 truncate max-sm:whitespace-normal">
-          <span className="font-medium">{actorLabel(actor)}</span>
+      {/* On phones a long action ("changed the organization's AI agent
+          limit") leaves no room for the name, so the action drops to a line of
+          its own and the name, role and badge wrap instead of truncating. */}
+      <div className="flex items-baseline justify-between gap-2 text-sm leading-snug max-sm:flex-wrap max-sm:gap-y-0.5">
+        <span className="min-w-0 truncate max-sm:flex max-sm:flex-1 max-sm:flex-wrap max-sm:items-baseline max-sm:gap-x-1.5 max-sm:gap-y-1 max-sm:whitespace-normal">
+          <span className="font-medium max-sm:wrap-anywhere">
+            {actorLabel(actor)}
+          </span>
           {role && (
-            <span className="ml-1 text-muted-foreground text-xs">· {role}</span>
+            <span className="ml-1 text-muted-foreground text-xs max-sm:ml-0 max-sm:whitespace-nowrap">
+              · {role}
+            </span>
           )}
           {via && (
-            <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 font-medium text-[10px] text-foreground max-sm:inline-block max-sm:max-w-full max-sm:truncate max-sm:align-bottom">
+            <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 font-medium text-[10px] text-foreground max-sm:ml-0 max-sm:max-w-full max-sm:truncate">
               {via}
             </span>
           )}
         </span>
-        <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-muted-foreground">
-          <span className="max-sm:hidden">{capitalize(phrase)}</span>
+        <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-muted-foreground max-sm:contents">
+          <span className="max-sm:order-last max-sm:basis-full max-sm:whitespace-normal">
+            {capitalize(phrase)}
+          </span>
           {/* Always reserve the chevron slot so non-openable rows keep their
               label aligned with openable ones. */}
           {canOpen ? (
@@ -297,11 +304,6 @@ export function ActivityRow({
             <span aria-hidden="true" className="size-3.5" />
           )}
         </span>
-      </div>
-      {/* A long action ("changed the organization's AI agent limit") leaves
-          no room for the name on a phone, so it gets its own line there. */}
-      <div className="mt-0.5 text-muted-foreground text-sm leading-snug sm:hidden">
-        {capitalize(phrase)}
       </div>
       {resourceName && !event.resourceUser && (
         <div className="mt-0.5 truncate font-medium text-foreground/90 text-sm">

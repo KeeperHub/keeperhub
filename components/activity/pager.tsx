@@ -1,6 +1,11 @@
 "use client";
 
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { PageMeta } from "@/lib/pagination";
 
@@ -38,12 +43,28 @@ export function Pager({
   }
 
   return (
-    <div className="flex items-center justify-between gap-2">
+    // On phones the numbered window gives way to first/last buttons around a
+    // "Page X of Y" label; if even that does not fit beside the count, the
+    // buttons wrap to a row of their own instead of overflowing.
+    <div className="flex items-center justify-between gap-2 max-sm:flex-wrap max-sm:gap-y-2">
       <span className="text-muted-foreground text-xs">
         {total} {unit}
       </span>
       {totalPages > 1 && (
-        <nav aria-label="Pagination" className="flex items-center gap-0.5">
+        <nav
+          aria-label="Pagination"
+          className="flex items-center gap-0.5 max-sm:ml-auto"
+        >
+          <Button
+            aria-label="First page"
+            className="sm:hidden"
+            disabled={page <= 1}
+            onClick={() => onPage(1)}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <ChevronsLeft className="size-4" />
+          </Button>
           <Button
             aria-label="Previous page"
             disabled={page <= 1}
@@ -75,8 +96,11 @@ export function Pager({
               </Button>
             )
           )}
-          {/* The numbered window does not fit beside the count on a phone. */}
-          <span className="whitespace-nowrap px-1.5 text-muted-foreground text-xs sm:hidden">
+          <span
+            aria-atomic="true"
+            aria-live="polite"
+            className="whitespace-nowrap px-1.5 text-muted-foreground text-xs tabular-nums sm:hidden"
+          >
             Page {page} of {totalPages}
           </span>
           <Button
@@ -87,6 +111,16 @@ export function Pager({
             variant="ghost"
           >
             <ChevronRight className="size-4" />
+          </Button>
+          <Button
+            aria-label="Last page"
+            className="sm:hidden"
+            disabled={page >= totalPages}
+            onClick={() => onPage(totalPages)}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <ChevronsRight className="size-4" />
           </Button>
         </nav>
       )}

@@ -11,6 +11,7 @@ import { api, type SecurityAuditEvent } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
 import { usePaginatedResource } from "@/lib/hooks/use-paginated-resource";
 import type { PageMeta } from "@/lib/pagination";
+import { cn } from "@/lib/utils";
 import { ActivityRow } from "./activity-row";
 import { Pager } from "./pager";
 
@@ -302,7 +303,10 @@ export function ActivityFeed({
   //   resizes; content taller than the box scrolls inside it.
   let scrollClass: string;
   if (fillHeight) {
-    scrollClass = "thin-scrollbar min-h-0 flex-1 overflow-y-auto";
+    // On phones the page scrolls as a whole (see ActivityPage), so the list
+    // takes its natural height there.
+    scrollClass =
+      "thin-scrollbar min-h-0 flex-1 overflow-y-auto max-sm:flex-none max-sm:overflow-visible";
   } else if (embedded) {
     scrollClass = "";
   } else {
@@ -311,15 +315,32 @@ export function ActivityFeed({
 
   // In fillHeight mode the feed is a flex column so the list (flex-1) pushes the
   // Pager to the bottom; other modes keep the natural block flow.
-  const rootClass = fillHeight ? "flex min-h-0 flex-1 flex-col" : undefined;
-  const pagerClass = fillHeight ? "border-border/60 border-t pt-3" : "pt-2";
+  // On phones the pager sticks to the bottom of the screen instead, and a page
+  // change scrolls back to the top of the list (scroll-mt clears the header).
+  const rootClass = fillHeight
+    ? "flex min-h-0 flex-1 flex-col max-sm:flex-none max-sm:scroll-mt-[calc(var(--header-height,60px)+var(--app-banner-height,0px))]"
+    : undefined;
+  const pagerClass = fillHeight
+    ? "border-border/60 border-t pt-3 max-sm:sticky max-sm:bottom-0 max-sm:z-10 max-sm:bg-sidebar max-sm:pb-3"
+    : "pt-2";
+  // The group headings stick below the app header when the page scrolls.
+  const groupLabelOffset = fillHeight
+    ? "max-sm:top-[calc(var(--header-height,60px)+var(--app-banner-height,0px))]"
+    : "";
+  const rootRef = useRef<HTMLDivElement>(null);
+  const goToPage = (next: number): void => {
+    setPage(next);
+    if (fillHeight && window.matchMedia("(width < 40rem)").matches) {
+      rootRef.current?.scrollIntoView({ block: "start" });
+    }
+  };
 
   // Skeletons show on every load in both modes. In the fixed box the swap is
   // absorbed; when embedded, the skeleton holds the last content height
   // (reservedHeight) so the modal doesn't jump.
   if (loading) {
     return (
-      <div className={rootClass}>
+      <div className={rootClass} ref={rootRef}>
         <div
           className={scrollClass}
           style={
@@ -337,7 +358,7 @@ export function ActivityFeed({
         </div>
         {meta && (
           <div className={pagerClass}>
-            <Pager meta={meta} onPage={setPage} unit="events" />
+            <Pager meta={meta} onPage={goToPage} unit="events" />
           </div>
         )}
       </div>
@@ -369,11 +390,16 @@ export function ActivityFeed({
   const groups = groupByDate(merged, (e) => e.createdAt);
 
   return (
-    <div className={rootClass}>
+    <div className={rootClass} ref={rootRef}>
       <div className={scrollClass} ref={listRef}>
         {groups.map((group) => (
           <div key={group.label}>
-            <p className="sticky top-0 z-10 mb-2 border-border/60 border-b bg-background pt-6 pb-2 font-medium text-muted-foreground text-xs uppercase tracking-wide first:pt-0">
+            <p
+              className={cn(
+                "sticky top-0 z-10 mb-2 border-border/60 border-b bg-background pt-6 pb-2 font-medium text-muted-foreground text-xs uppercase tracking-wide first:pt-0",
+                groupLabelOffset
+              )}
+            >
               {group.label}
             </p>
             <ul>
@@ -392,7 +418,7 @@ export function ActivityFeed({
       </div>
       {meta && (
         <div className={pagerClass}>
-          <Pager meta={meta} onPage={setPage} unit="events" />
+          <Pager meta={meta} onPage={goToPage} unit="events" />
         </div>
       )}
     </div>
