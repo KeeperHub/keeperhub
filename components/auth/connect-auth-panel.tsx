@@ -35,6 +35,8 @@ type Item = { key: string; node: React.ReactNode };
 type SocialProvider = "github" | "google";
 
 const EXISTING_ACCOUNT = /already|exists|duplicate/i;
+// Fixed width of Cloudflare's "normal" Turnstile widget.
+const TURNSTILE_NORMAL_WIDTH = 300;
 
 const PROVIDER_LABELS: Record<SocialProvider, string> = {
   github: "GitHub",
@@ -92,7 +94,13 @@ const GitHubIcon = (): React.ReactElement => (
 );
 
 const GoogleIcon = (): React.ReactElement => (
-  <Image alt="" className="size-4" height={16} src="/google.svg" width={16} />
+  <Image
+    alt=""
+    className="size-4 shrink-0"
+    height={16}
+    src="/google.svg"
+    width={16}
+  />
 );
 
 // Auth / gate surfaces we must never redirect back into after a sign-in:
@@ -184,14 +192,28 @@ export function ConnectAuthPanel({
 
   const contentRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState<number | "auto">("auto");
+  // The normal captcha is a fixed 300px wide and would be clipped on narrow
+  // phones (the panel is under 300px on screens below ~380px), so switch to the compact
+  // widget there. A token from the replaced widget is dropped with it.
+  const captchaCompactRef = useRef(false);
+  const [captchaCompact, setCaptchaCompact] = useState(false);
   useLayoutEffect(() => {
     const el = contentRef.current;
     if (!el) {
       return;
     }
-    const observer = new ResizeObserver(() => setHeight(el.scrollHeight));
+    const measure = (): void => {
+      setHeight(el.scrollHeight);
+      const compact = el.clientWidth < TURNSTILE_NORMAL_WIDTH;
+      if (compact !== captchaCompactRef.current) {
+        captchaCompactRef.current = compact;
+        setCaptchaCompact(compact);
+        setCaptchaToken("");
+      }
+    };
+    const observer = new ResizeObserver(measure);
     observer.observe(el);
-    setHeight(el.scrollHeight);
+    measure();
     return () => observer.disconnect();
   }, []);
 
@@ -747,10 +769,16 @@ export function ConnectAuthPanel({
         key: "captcha",
         node: (
           <Turnstile
+            data-size={captchaCompact ? "compact" : "normal"}
+            data-testid="signup-captcha"
+            key={captchaCompact ? "compact" : "normal"}
             onError={() => setCaptchaToken("")}
             onExpire={() => setCaptchaToken("")}
             onSuccess={setCaptchaToken}
-            options={{ theme: "auto" }}
+            options={{
+              size: captchaCompact ? "compact" : "normal",
+              theme: "auto",
+            }}
             ref={captchaRef}
             siteKey={turnstileSiteKey}
           />

@@ -18,8 +18,15 @@ export function useRecordExitPath(): void {
   const pathname = usePathname();
 
   useEffect(() => {
-    if (!isSettings(pathname)) {
+    if (isSettings(pathname)) {
+      return;
+    }
+    try {
       sessionStorage.setItem(STORAGE_KEY, pathname);
+    } catch {
+      // Storage is blocked (site data disabled, some private modes) and the
+      // access throws. This hook runs on every route, so letting it escape
+      // would take the whole page down; settings falls back to FALLBACK.
     }
   }, [pathname]);
 }
@@ -34,7 +41,12 @@ export function useExitPath(): string {
   // Read after mount: session storage does not exist while rendering on the
   // server, and guessing would flash the wrong destination.
   useEffect(() => {
-    const stored = sessionStorage.getItem(STORAGE_KEY);
+    let stored: string | null = null;
+    try {
+      stored = sessionStorage.getItem(STORAGE_KEY);
+    } catch {
+      // Storage is blocked; keep FALLBACK.
+    }
     if (stored && !isSettings(stored)) {
       setPath(stored);
     }
