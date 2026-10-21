@@ -53,6 +53,11 @@
      max width of their own. */
   --breakpoint-xs: 23.4375rem;
   --breakpoint-wallet: 26.25rem;
+  /* 390px and 840px: the workflow editor's Enable switch beside Run. In the
+     phone bar Run keeps its label from run-label; in the 768-1023px header
+     the switch has room beside a selection's Delete from switch-row. */
+  --breakpoint-run-label: 24.375rem;
+  --breakpoint-switch-row: 52.5rem;
   /* The header org switcher's name gives way to initials below this. */
   --container-org-name: 5.5rem;
   /* The marketplace leaderboard shows its Tags column from this width. */
@@ -100,6 +105,8 @@
 }
 
 :root {
+  /* The persistent header's height (its row, without the app banner). */
+  --header-height: 60px;
   --radius: 0.625rem;
   --background: oklch(0.9842 0.0034 247.86);
   --foreground: oklch(0.2101 0.0318 264.66);
@@ -427,10 +434,27 @@
   }
 }
 
-/* Safe area support for mobile devices */
-@media (max-width: 768px) {
+/* Above the editor's phone toolbar (below md), clear of the safe area */
+@media (width < 48rem) {
   .workflow-controls-panel {
     bottom: calc(env(safe-area-inset-bottom, 0px) + 5.5rem) !important;
+  }
+  /* The AI prompt 8px above the toolbar (54px tall at the toolbar's bottom
+     offset), narrow enough to stay clear of the zoom controls at the right. */
+  .workflow-prompt {
+    bottom: calc(max(1rem, env(safe-area-inset-bottom)) + 3.875rem);
+    max-width: calc(100% - 6rem);
+  }
+  /* While the editor's toolbar is on the page, toasts sit 8px above it, not
+     on it: Sonner's offsets below 600px (full width) and from 600px. They
+     are set inline on the toaster, hence !important. */
+  body:has([data-editor-toolbar]) [data-sonner-toaster] {
+    --above-editor-toolbar: calc(
+      max(1rem, env(safe-area-inset-bottom)) +
+      3.875rem
+    );
+    --mobile-offset-bottom: var(--above-editor-toolbar) !important;
+    --offset-bottom: var(--above-editor-toolbar) !important;
   }
 }
 
