@@ -2083,9 +2083,12 @@ export const WorkflowToolbar = ({
     ? "flex items-center gap-2"
     : "flex flex-col gap-2 rounded-none border-none bg-transparent p-0 lg:flex-row lg:items-center";
 
-  // From lg the workflow's name is the one thing in the header that gives
-  // way (it truncates): the logo, the switcher and the right side keep
-  // their size, and the right side stays 8px clear of the name.
+  // globals.css gives every element min-width: 0, so in a crowded header
+  // each flex item would shrink below its content: the logo and the
+  // switcher squeezed under what they draw, the right side's controls run
+  // into each other. From lg the logo, the switcher and the right side are
+  // shrink-0, so only the workflow's name (truncating, at most 192px) makes
+  // room; the right side stays 8px clear of it.
   const rightSectionClassName = persistent
     ? "flex items-center gap-2 lg:ml-2 lg:shrink-0"
     : "pointer-events-auto absolute top-4 right-4 z-10";

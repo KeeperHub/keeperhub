@@ -165,6 +165,47 @@ async function expectHeaderEndsOnScreen(
   ).toBeInViewport({ ratio: 1 });
 }
 
+// Overlaps (in px) between neighbouring controls across the whole header,
+// left to right: links, buttons, switches and the workflow's name.
+async function headerControlOverlaps(
+  page: Page,
+  workflowName: string
+): Promise<string[]> {
+  return await page.getByTestId("header-left").evaluate((left, name) => {
+    const header = left.parentElement ?? left;
+    const controls = [
+      ...header.querySelectorAll<HTMLElement>("a, button, [role='switch']"),
+      ...[...left.querySelectorAll<HTMLElement>("span")].filter(
+        (span) => span.textContent === name
+      ),
+    ]
+      .filter(
+        (element, _, all) =>
+          !all.some((other) => other !== element && other.contains(element))
+      )
+      .map((element) => ({
+        box: element.getBoundingClientRect(),
+        label:
+          element.getAttribute("aria-label") ??
+          element.getAttribute("data-testid") ??
+          (element.textContent?.trim().slice(0, 20) || element.tagName),
+      }))
+      .filter(({ box }) => box.width > 0 && box.height > 0)
+      .sort((a, b) => a.box.left - b.box.left);
+    const overlaps: string[] = [];
+    for (const [index, control] of controls.slice(1).entries()) {
+      const before = controls[index];
+      const overlap = before.box.right - control.box.left;
+      if (overlap > 0.5) {
+        overlaps.push(
+          `${before.label} > ${control.label} ${Math.round(overlap)}px`
+        );
+      }
+    }
+    return overlaps;
+  }, workflowName);
+}
+
 // The test user has no wallet (the e2e setup removes it): stand one in, for
 // the address's forms and for a header as crowded as a real user's.
 async function stubWallet(page: Page): Promise<void> {
@@ -894,7 +935,7 @@ test.describe("Desktop header", () => {
     });
     try {
       await stubWallet(page);
-      await page.setViewportSize({ width: 1024, height: 800 });
+      await page.setViewportSize(DESKTOP);
       await page.goto(`/workflows/${workflow.id}`, {
         waitUntil: "domcontentloaded",
       });
@@ -904,24 +945,19 @@ test.describe("Desktop header", () => {
       // wallet with its full address make this the most crowded desktop
       // header.
       await expect(page.getByTitle(ENABLE_TITLE_REGEX)).toBeVisible();
-      await expect
-        .poll(() => headerSidesGap(page), {
-          message: "header sides overlap at 1024px",
-        })
-        .toBeGreaterThanOrEqual(HEADER_SIDES_MIN_GAP);
-      const overlaps = await page
-        .getByTestId("header-right")
-        .evaluate((element) => {
-          const boxes = [...element.querySelectorAll("button")]
-            .map((button) => button.getBoundingClientRect())
-            .filter((box) => box.width > 0);
-          return boxes
-            .slice(1)
-            .map((box, index) => boxes[index].right - box.left)
-            .filter((overlap) => overlap > 0.5);
-        });
-      expect(overlaps, "header buttons overlapping at 1024px").toEqual([]);
       const name = page.getByTestId("header-left").getByText(workflow.name);
+      const nameWidth = async (): Promise<number> =>
+        await name.evaluate((element) => element.clientWidth);
+      const roomyWidth = await nameWidth();
+      await expectHeaderFits(page, 1024);
+      expect(
+        await headerControlOverlaps(page, workflow.name),
+        "header controls overlapping at 1024px"
+      ).toEqual([]);
+      // Only the name makes room: narrower than at 1280px, still cut short.
+      expect(await nameWidth(), "the name gives way at 1024px").toBeLessThan(
+        roomyWidth
+      );
       expect(
         await name.evaluate(
           (element) => element.scrollWidth > element.clientWidth
