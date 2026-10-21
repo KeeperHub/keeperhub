@@ -201,7 +201,7 @@ export async function HubMarketplaceTab({
                 {/* biome-ignore lint/a11y/useSemanticElements: see role="table" justification above. */}
                 {/* biome-ignore lint/a11y/useFocusableInteractive: column headers are static labels. */}
                 <span
-                  className="hidden justify-self-end @[44rem]:inline"
+                  className="hidden justify-self-end @leaderboard-full:inline"
                   role="columnheader"
                 >
                   Tags
@@ -209,7 +209,7 @@ export async function HubMarketplaceTab({
                 {/* biome-ignore lint/a11y/useSemanticElements: see role="table" justification above. */}
                 {/* biome-ignore lint/a11y/useFocusableInteractive: column headers are static labels. */}
                 <span
-                  className="hidden justify-self-end @[36rem]:inline"
+                  className="hidden justify-self-end @xl:inline"
                   role="columnheader"
                 >
                   Owner
@@ -217,7 +217,7 @@ export async function HubMarketplaceTab({
                 {/* biome-ignore lint/a11y/useSemanticElements: see role="table" justification above. */}
                 {/* biome-ignore lint/a11y/useFocusableInteractive: column headers are static labels. */}
                 <span
-                  className="hidden justify-self-end @[36rem]:inline"
+                  className="hidden justify-self-end @xl:inline"
                   role="columnheader"
                 >
                   Calls
@@ -230,7 +230,7 @@ export async function HubMarketplaceTab({
                 {/* biome-ignore lint/a11y/useSemanticElements: see role="table" justification above. */}
                 {/* biome-ignore lint/a11y/useFocusableInteractive: column headers are static labels. */}
                 <span
-                  className="hidden justify-self-end @[36rem]:inline"
+                  className="hidden justify-self-end @xl:inline"
                   role="columnheader"
                 >
                   Chain
