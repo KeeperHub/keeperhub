@@ -1710,7 +1710,7 @@ function ToolbarActions({
 }
 
 // The workflow's Enable switch. From lg the 98px pill with its word; below lg
-// a compact switch beside Run, with a 44px tall tap area. It hides where it
+// a compact switch beside Run, with a 44px square tap area. It hides where it
 // has no room (below xs, and in the 768-1023px header beside a selection's
 // Delete below switch-row); the Configuration sheet has it there instead
 // (WorkflowEnabledRow), on the same conditions.
@@ -1729,7 +1729,7 @@ function EnableWorkflowSwitch({
       aria-checked={enabled}
       aria-label={label}
       className={cn(
-        "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background max-xs:hidden max-lg:before:absolute max-lg:before:inset-x-0 max-lg:before:-inset-y-2.5 lg:h-8 lg:w-24.5",
+        "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background max-xs:hidden max-lg:before:absolute max-lg:before:-inset-x-0.5 max-lg:before:-inset-y-3 lg:h-8 lg:w-24.5",
         enabled ? "bg-keeperhub-green" : "bg-input",
         hasSelection && "tablet-width:max-switch-row:hidden"
       )}
