@@ -31,7 +31,7 @@ export const MFA_GATE_PATHS: ReadonlySet<string> = new Set([
  * Every check a sign-in can stop at before the app: the second-factor gates,
  * plus confirming a sign-in from a new network.
  */
-export const SIGN_IN_GATE_PATHS: ReadonlySet<string> = new Set([
+const SIGN_IN_GATE_PATHS: ReadonlySet<string> = new Set([
   ...MFA_GATE_PATHS,
   "/verify-ip",
 ]);
