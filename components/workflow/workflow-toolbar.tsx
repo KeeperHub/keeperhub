@@ -30,7 +30,6 @@ import { OrgSwitcher } from "@/components/organization/org-switcher";
 import { GoLiveOverlay } from "@/components/overlays/go-live-overlay";
 import { ListingOverlay } from "@/components/overlays/listing-overlay";
 import { ManualRunInputOverlay } from "@/components/overlays/manual-run-input-overlay";
-import { Switch } from "@/components/ui/switch";
 import { WalletToolbarButton } from "@/components/workflow/wallet-toolbar-button";
 import { BUILTIN_NODE_ID } from "@/lib/workflow/editor/builtin-variables";
 import { useAuthPrompt } from "@/components/auth/provider";
@@ -92,6 +91,7 @@ import {
   selectedExecutionIdAtom,
   selectedNodeAtom,
   shouldShowEnableSwitch,
+  workflowEnableToggleAtom,
   triggerExecuteAtom,
   undoAtom,
   updateNodeDataAtom,
@@ -1522,6 +1522,20 @@ function ToolbarActions({
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
   const hasSelection = selectedNode || selectedEdge;
 
+  // The Configuration sheet's Enable switch runs this toolbar's toggle (its
+  // validation, sign-in prompt and API call) as it is at that moment.
+  const setEnableToggle = useSetAtom(workflowEnableToggleAtom);
+  const toggleEnabledRef = useRef(actions.handleToggleEnabled);
+  useEffect(() => {
+    toggleEnabledRef.current = actions.handleToggleEnabled;
+  });
+  useEffect(() => {
+    setEnableToggle({
+      toggle: (enabled: boolean) => toggleEnabledRef.current(enabled),
+    });
+    return () => setEnableToggle(null);
+  }, [setEnableToggle]);
+
   // Hide owner-only toolbar actions (Run, Save, Edit, Settings) only for
   // non-owners. Shared-link viewers of public/unlisted workflows still see
   // the workflow exactly as the owner does (read-only canvas + the same
@@ -1637,13 +1651,7 @@ function ToolbarActions({
       {/* Configuration, and Delete when something is selected - below lg */}
       <Button
         className="border hover:bg-black/5 lg:hidden dark:hover:bg-white/5"
-        onClick={() =>
-          openOverlay(ConfigurationOverlay, {
-            onToggleEnabled: shouldDisplayEnableWorkflowSwitch
-              ? actions.handleToggleEnabled
-              : undefined,
-          })
-        }
+        onClick={() => openOverlay(ConfigurationOverlay, {})}
         size="icon"
         title="Configuration"
         variant="secondary"
@@ -1680,65 +1688,12 @@ function ToolbarActions({
       {/* Listing Button */}
       <ListingButton actions={actions} state={state} />
 
-      {shouldDisplayEnableWorkflowSwitch && (
-        <button
-          className="relative hidden h-8 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background lg:inline-flex"
-          onClick={() => actions.handleToggleEnabled(!state.isEnabled)}
-          style={{
-            width: 98,
-            backgroundColor: state.isEnabled
-              ? "var(--color-keeperhub-green)"
-              : "var(--color-input)",
-          }}
-          title={state.isEnabled ? "Disable workflow" : "Enable workflow"}
-          type="button"
-        >
-          <span
-            className="pointer-events-none absolute inset-0 flex items-center pl-3 pr-2 font-medium text-sm transition-opacity"
-            style={{
-              justifyContent: "flex-start",
-              opacity: state.isEnabled ? 1 : 0,
-              color: "var(--color-background)",
-            }}
-          >
-            Disable
-          </span>
-          <span
-            className="pointer-events-none absolute inset-0 flex items-center pl-2 pr-3 font-medium text-sm transition-opacity"
-            style={{
-              justifyContent: "flex-end",
-              opacity: state.isEnabled ? 0 : 1,
-              color: "var(--color-foreground)",
-            }}
-          >
-            Enable
-          </span>
-          <span
-            className="pointer-events-none block size-6 rounded-full bg-background shadow-lg ring-0 transition-transform"
-            style={{
-              transform: state.isEnabled
-                ? "translateX(66px)"
-                : "translateX(2px)",
-            }}
-          />
-        </button>
-      )}
-
       <div className="flex shrink-0 items-center gap-1 max-md:ml-auto wallet:gap-2">
-        {/* Below lg the Enable switch is compact, beside Run, where it fits:
-            from xs, and with a selection's Delete from 840px in the
-            header. Elsewhere it is in the Configuration sheet. */}
         {shouldDisplayEnableWorkflowSwitch && (
-          <Switch
-            aria-label={
-              state.isEnabled ? "Disable workflow" : "Enable workflow"
-            }
-            checked={state.isEnabled}
-            className={cn(
-              "max-xs:hidden lg:hidden",
-              hasSelection && "md:max-[840px]:hidden"
-            )}
-            onCheckedChange={(checked) => actions.handleToggleEnabled(checked)}
+          <EnableWorkflowSwitch
+            enabled={state.isEnabled}
+            hasSelection={Boolean(hasSelection)}
+            onToggle={actions.handleToggleEnabled}
           />
         )}
         <RunButtonGroup
@@ -1751,6 +1706,61 @@ function ToolbarActions({
         />
       </div>
     </div>
+  );
+}
+
+// The workflow's Enable switch. From lg the 98px pill with its word; below lg
+// a compact switch beside Run, with a 44px tall tap area. It hides where it
+// has no room (below xs, and in the 768-1023px header beside a selection's
+// Delete below switch-row); the Configuration sheet has it there instead
+// (WorkflowEnabledRow), on the same conditions.
+function EnableWorkflowSwitch({
+  enabled,
+  hasSelection,
+  onToggle,
+}: {
+  enabled: boolean;
+  hasSelection: boolean;
+  onToggle: (enabled: boolean) => Promise<void>;
+}): React.ReactElement {
+  const label = enabled ? "Disable workflow" : "Enable workflow";
+  return (
+    <button
+      aria-checked={enabled}
+      aria-label={label}
+      className={cn(
+        "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background max-xs:hidden max-lg:before:absolute max-lg:before:inset-x-0 max-lg:before:-inset-y-2.5 lg:h-8 lg:w-24.5",
+        enabled ? "bg-keeperhub-green" : "bg-input",
+        hasSelection && "tablet-width:max-switch-row:hidden"
+      )}
+      onClick={() => onToggle(!enabled)}
+      role="switch"
+      title={label}
+      type="button"
+    >
+      <span
+        className={cn(
+          "pointer-events-none absolute inset-0 hidden items-center justify-start pr-2 pl-3 font-medium text-background text-sm transition-opacity lg:flex",
+          enabled ? "opacity-100" : "opacity-0"
+        )}
+      >
+        Disable
+      </span>
+      <span
+        className={cn(
+          "pointer-events-none absolute inset-0 hidden items-center justify-end pr-3 pl-2 font-medium text-foreground text-sm transition-opacity lg:flex",
+          enabled ? "opacity-0" : "opacity-100"
+        )}
+      >
+        Enable
+      </span>
+      <span
+        className={cn(
+          "pointer-events-none block size-5 rounded-full bg-background shadow-lg ring-0 transition-transform lg:size-6",
+          enabled ? "translate-x-5 lg:translate-x-16.5" : "lg:translate-x-0.5"
+        )}
+      />
+    </button>
   );
 }
 
@@ -1925,15 +1935,15 @@ function ListingButton({
 
 // Run Button Group Component
 // On a phone Run gives up its label (it stays its name) below a width that
-// depends on what shares the bar with it: below xs, below 390px beside the
-// Enable switch, and below sm beside the switch and a selection's Delete.
-// Its longer in-progress labels (Waiting..., Checking...) never show in the
-// bar.
+// depends on what shares the bar with it: below xs, below run-label beside
+// the Enable switch, and below sm beside the switch and a selection's
+// Delete. Its longer in-progress labels (Waiting..., Checking...) show only
+// from lg: below it the bar and the 768-1023px header have no room for them.
 const RUN_ICON_ONLY = {
   xs: { button: "max-xs:min-w-9 max-xs:px-0", label: "max-xs:sr-only" },
   withSwitch: {
-    button: "max-[390px]:min-w-9 max-[390px]:px-0",
-    label: "max-[390px]:sr-only",
+    button: "max-run-label:min-w-9 max-run-label:px-0",
+    label: "max-run-label:sr-only",
   },
   withSwitchAndDelete: {
     button: "max-sm:min-w-9 max-sm:px-0",
@@ -2022,14 +2032,14 @@ function RunButtonGroup({
                 isPreflighting and outlasts the check itself. Nothing is being
                 checked while the author is typing, so it does not spin. */}
             <TextCursorInput className="size-4" />
-            <span className={cn("max-md:sr-only", iconOnly.label)}>
+            <span className={cn("max-lg:sr-only", iconOnly.label)}>
               Waiting...
             </span>
           </>
         ) : actions.isPreflighting ? (
           <>
             <Loader2 className="size-4 animate-spin" />
-            <span className={cn("max-md:sr-only", iconOnly.label)}>
+            <span className={cn("max-lg:sr-only", iconOnly.label)}>
               Checking...
             </span>
           </>
@@ -2157,7 +2167,7 @@ export const WorkflowToolbar = ({
   // At 768-1023px never squeezed: in a crowded header (the editor's buttons
   // at 768px) the left side, and the org switcher in it, gives way instead.
   const rightSectionClassName = persistent
-    ? "flex items-center gap-2 md:max-lg:shrink-0"
+    ? "flex items-center gap-2 tablet-width:shrink-0"
     : "pointer-events-auto absolute top-4 right-4 z-10";
 
   const rightContentClassName = persistent

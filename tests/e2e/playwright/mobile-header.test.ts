@@ -266,6 +266,17 @@ async function expectEditorBar(page: Page, width: number): Promise<void> {
     ).toBeHidden();
   } else {
     await expect(enableSwitch, `switch in the bar at ${width}px`).toBeVisible();
+    // A 44px tall tap area: 20px above and below its middle still reach it.
+    const reached = await enableSwitch.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const x = box.left + box.width / 2;
+      const y = box.top + box.height / 2;
+      return [y - 20, y + 20].every((pointY) => {
+        const hit = document.elementFromPoint(x, pointY);
+        return hit !== null && element.contains(hit);
+      });
+    });
+    expect(reached, `switch's tap area at ${width}px`).toBe(true);
   }
   await expect(async () => {
     const { barBox, controls } = await bar.evaluate((element) => {
@@ -512,7 +523,11 @@ test.describe("Mobile header", () => {
       // and the wallet is never squeezed. With a selection the Enable switch
       // is there from 840px only.
       const walletWidths: number[] = [];
-      for (const width of [768, 1023]) {
+      for (const { width, switchShown } of [
+        // Beside a selection's Delete the narrow tablet header has no room.
+        { width: 768, switchShown: false },
+        { width: 1023, switchShown: true },
+      ]) {
         await page.setViewportSize({ width, height: 800 });
         await settleToolbar(page);
         const middle = async (locator: Locator): Promise<number> => {
@@ -523,11 +538,11 @@ test.describe("Mobile header", () => {
         const enableSwitch = page
           .getByTestId("workflow-actions")
           .getByRole("switch");
-        if (width < 840) {
-          await expect(enableSwitch).toBeHidden();
-        } else {
+        if (switchShown) {
           await expect(enableSwitch).toBeVisible();
           expect(await middle(enableSwitch)).toBe(avatarMiddle);
+        } else {
+          await expect(enableSwitch).toBeHidden();
         }
         for (const control of [
           page.getByTitle("Configuration", { exact: true }),
@@ -572,17 +587,88 @@ test.describe("Mobile header", () => {
         await page.setViewportSize(size);
         await expectEditorBar(page, size.width);
       }
-      // Where the bar has no room for the switch, the Configuration sheet
-      // (the workflow's, with nothing selected) has it.
+      // Where the toolbar has no room for the switch, the Configuration sheet
+      // has it, with a step selected or not; where the toolbar has it, the
+      // sheet does not.
+      const sheetSwitch = page.getByRole("switch", {
+        name: "Workflow enabled",
+      });
+      const expectSheetSwitch = async (
+        size: { width: number; height: number },
+        shown: boolean
+      ): Promise<void> => {
+        await page.setViewportSize(size);
+        await page.getByTitle("Configuration", { exact: true }).click();
+        const sheet = page.getByRole("dialog");
+        await expect(sheet).toBeVisible();
+        if (shown) {
+          await expect(
+            sheetSwitch,
+            `sheet switch at ${size.width}px`
+          ).toBeVisible();
+        } else {
+          await expect(
+            sheetSwitch,
+            `no sheet switch at ${size.width}px`
+          ).toBeHidden();
+        }
+        await sheet.getByRole("button", { name: "Close" }).click();
+        await expect(sheet).toBeHidden();
+      };
+      await expectSheetSwitch({ width: 320, height: 568 }, true);
+      await expectSheetSwitch({ width: 800, height: 800 }, true);
+      await expectSheetSwitch({ width: 1000, height: 800 }, false);
       await page.setViewportSize({ width: 320, height: 568 });
       await page
         .locator(".react-flow__pane")
         .click({ position: { x: 8, y: 120 } });
       await expect(page.getByTitle("Delete", { exact: true })).toHaveCount(0);
-      await page.getByTitle("Configuration", { exact: true }).click();
-      await expect(
-        page.getByRole("switch", { name: "Workflow enabled" })
-      ).toBeVisible();
+      await expectSheetSwitch({ width: 320, height: 568 }, true);
+      await expectSheetSwitch({ width: 390, height: 844 }, false);
+    } finally {
+      await deleteTestWorkflow(workflow.id);
+    }
+  });
+
+  test("on a phone the AI prompt sits above the editor's buttons", async ({
+    page,
+  }) => {
+    test.skip(
+      process.env.NEXT_PUBLIC_AI_PROMPT_ENABLED !== "true",
+      "the AI prompt is off in this build"
+    );
+    const workflow = await createTestWorkflow(PERSISTENT_TEST_USER_EMAIL, {
+      name: `mobile-header-prompt-${Date.now()}`,
+    });
+    try {
+      await stubWallet(page);
+      await page.setViewportSize(PHONE);
+      await page.goto(`/workflows/${workflow.id}`, {
+        waitUntil: "domcontentloaded",
+      });
+      await waitForCanvas(page);
+      await waitForSignedInHeader(page);
+      await settleToolbar(page);
+      const prompt = page.getByRole("form", {
+        name: "KeeperHub workflow prompt",
+      });
+      await expect(prompt).toBeInViewport({ ratio: 1 });
+      const promptBox = await prompt.boundingBox();
+      const barBox = await page.getByTestId("workflow-actions").boundingBox();
+      const controlsBox = await page
+        .locator(".workflow-controls-panel")
+        .boundingBox();
+      expect(
+        (promptBox?.y ?? 0) + (promptBox?.height ?? 0),
+        "prompt above the bar"
+      ).toBeLessThanOrEqual(barBox?.y ?? 0);
+      expect(
+        (promptBox?.x ?? 0) + (promptBox?.width ?? 0),
+        "prompt clear of the zoom controls"
+      ).toBeLessThanOrEqual(controlsBox?.x ?? 0);
+      await expect
+        .poll(() => isOnTop(prompt), { message: "prompt tappable" })
+        .toBe(true);
     } finally {
       await deleteTestWorkflow(workflow.id);
     }

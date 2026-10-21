@@ -24,6 +24,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError } from "@/lib/api-client";
 import { integrationsAtom } from "@/lib/integrations-store";
 import type { IntegrationType } from "@/lib/types/integration";
+import { cn } from "@/lib/utils";
 import {
   clearNodeStatusesAtom,
   clearWorkflowAtom,
@@ -41,7 +42,10 @@ import {
   propertiesPanelActiveTabAtom,
   selectedEdgeAtom,
   selectedNodeAtom,
+  shouldShowEnableSwitch,
   updateNodeDataAtom,
+  type WorkflowTriggerType,
+  workflowEnableToggleAtom,
 } from "@/lib/workflow/store";
 import { findActionById } from "@/plugins/registry";
 import { ActionConfig } from "../workflow/config/action-config";
@@ -53,18 +57,50 @@ import { SYSTEM_ACTION_INTEGRATIONS } from "@/lib/integrations/system";
 import type { OverlayComponentProps } from "./types";
 
 
-type ConfigurationOverlayProps = OverlayComponentProps<{
-  // Given when the workflow's trigger can be switched on and off: the
-  // workflow view then has the Enable switch, for where the toolbar has no
-  // room for it.
-  onToggleEnabled?: (enabled: boolean) => Promise<void>;
-}>;
+type ConfigurationOverlayProps = OverlayComponentProps;
+
+// The workflow's Enable switch for where the toolbar's has no room: below xs,
+// and in the 768-1023px header beside a selection's Delete below switch-row
+// (see EnableWorkflowSwitch in workflow-toolbar.tsx). The caller gives the
+// visibility classes for its view. Owner only, for triggers that can be
+// switched on and off; it reads the live workflow and runs the toolbar's own
+// toggle (validation, sign-in prompt, API call).
+function WorkflowEnabledRow({
+  className,
+}: {
+  className: string;
+}): React.ReactElement | null {
+  const enabled = useAtomValue(isWorkflowEnabled);
+  const owner = useAtomValue(isWorkflowOwnerAtom);
+  const workflowNodes = useAtomValue(nodesAtom);
+  const enableToggle = useAtomValue(workflowEnableToggleAtom);
+  const triggerType = workflowNodes.find((node) => node.data.type === "trigger")
+    ?.data.config?.triggerType as WorkflowTriggerType | undefined;
+  if (!(owner && enableToggle && shouldShowEnableSwitch(triggerType))) {
+    return null;
+  }
+  return (
+    <div
+      className={cn("min-h-11 items-center justify-between gap-3", className)}
+    >
+      <Label htmlFor="workflow-enabled">Workflow enabled</Label>
+      <Switch
+        checked={enabled}
+        id="workflow-enabled"
+        onCheckedChange={(checked) => enableToggle.toggle(checked)}
+      />
+    </div>
+  );
+}
+
+// With nothing selected the toolbar's switch hides only below xs; with a
+// selection also in the narrow tablet header.
+const ENABLED_ROW_NO_SELECTION = "hidden max-xs:flex";
+const ENABLED_ROW_WITH_SELECTION =
+  "hidden max-xs:flex tablet-width:max-switch-row:flex";
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Complex UI logic with multiple conditions
-export function ConfigurationOverlay({
-  overlayId,
-  onToggleEnabled,
-}: ConfigurationOverlayProps) {
+export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
   const { push, closeAll } = useOverlay();
   const [selectedNodeId] = useAtom(selectedNodeAtom);
   const [selectedEdgeId] = useAtom(selectedEdgeAtom);
@@ -79,7 +115,6 @@ export function ConfigurationOverlay({
     currentWorkflowDescriptionAtom
   );
   const isOwner = useAtomValue(isWorkflowOwnerAtom);
-  const isEnabled = useAtomValue(isWorkflowEnabled);
 
   const updateNodeData = useSetAtom(updateNodeDataAtom);
   const deleteNode = useSetAtom(deleteNodeAtom);
@@ -391,6 +426,7 @@ export function ConfigurationOverlay({
         <SmartOverlayHeader overlayId={overlayId} title="Connection" />
 
         <div className="flex-1 space-y-4 overflow-y-auto px-6 pt-4 pb-6">
+          <WorkflowEnabledRow className={ENABLED_ROW_WITH_SELECTION} />
           <div className="space-y-2">
             <Label htmlFor="edge-id">Connection ID</Label>
             <Input disabled id="edge-id" value={selectedEdge.id} />
@@ -432,16 +468,7 @@ export function ConfigurationOverlay({
         <div className="flex-1 overflow-y-auto">
           {validWorkflowTab === "properties" && (
             <div className="space-y-4 px-6 pt-4 pb-6">
-              {onToggleEnabled && isOwner && (
-                <div className="flex min-h-11 items-center justify-between gap-3">
-                  <Label htmlFor="workflow-enabled">Workflow enabled</Label>
-                  <Switch
-                    checked={isEnabled}
-                    id="workflow-enabled"
-                    onCheckedChange={(checked) => onToggleEnabled(checked)}
-                  />
-                </div>
-              )}
+              <WorkflowEnabledRow className={ENABLED_ROW_NO_SELECTION} />
               <div className="space-y-2">
                 <Label htmlFor="workflow-name">Workflow Name</Label>
                 <Input
@@ -599,6 +626,7 @@ export function ConfigurationOverlay({
       <div className="flex-1 overflow-y-auto">
         {activeTab === "properties" && (
           <div className="space-y-4 px-6 pt-4 pb-6">
+            <WorkflowEnabledRow className={ENABLED_ROW_WITH_SELECTION} />
             {/* Action selection */}
             {selectedNode.data.type === "action" &&
               !selectedNode.data.config?.actionType &&
