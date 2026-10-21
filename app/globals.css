@@ -55,6 +55,8 @@
   --breakpoint-wallet: 26.25rem;
   /* The header org switcher's name gives way to initials below this. */
   --container-org-name: 5.5rem;
+  /* The marketplace leaderboard shows its Tags column from this width. */
+  --container-leaderboard-full: 44rem;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-anek-latin);

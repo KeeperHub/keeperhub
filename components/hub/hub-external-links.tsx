@@ -13,7 +13,7 @@ const LABEL_CLASSES = "max-xs:sr-only";
 
 export function HubExternalLinks(): React.ReactElement {
   return (
-    <div className="flex shrink-0 items-center gap-2 max-sm:items-stretch">
+    <div className="flex shrink-0 items-center gap-2 @max-xl/hub-band:items-stretch">
       <a
         className={LINK_CLASSES}
         href="https://youtube.com/@KeeperHub"
