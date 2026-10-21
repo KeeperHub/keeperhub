@@ -22,7 +22,7 @@ export function AccountStats({
   // powers the other tiles says nothing about it.
   if (isSolana) {
     return (
-      <div className="grid gap-4 @xs/settings:grid-cols-3 max-md:gap-2">
+      <div className="grid gap-4 @xs/settings:grid-cols-3 @max-xl/settings:gap-2">
         <StatTile hint="Managed signer" label="Account type" value="EOA" />
         <StatTile
           hint={solanaIsTestnet ? "Devnet cluster" : "Mainnet cluster"}
@@ -39,7 +39,7 @@ export function AccountStats({
   }
 
   return (
-    <div className="grid gap-4 @xs/settings:grid-cols-3 max-md:gap-2">
+    <div className="grid gap-4 @xs/settings:grid-cols-3 @max-xl/settings:gap-2">
       <StatTile
         hint="Networks with a balance here"
         label="Funded networks"

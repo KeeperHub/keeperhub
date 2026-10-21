@@ -5,12 +5,19 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { SETTINGS_MENU_PATH } from "./nav";
 import { SettingsAccessGate } from "./settings-access-gate";
 import { SettingsRail } from "./settings-rail";
 
 /**
- * On a phone the rail gives way to the settings menu (the index page), so a
- * section leads back to it from a bar that stays at the top while it scrolls.
+ * On a phone the rail gives way to the settings menu, so a section leads back
+ * to it from a bar that stays at the top while it scrolls.
+ *
+ * "A phone" is below Tailwind's md everywhere here, the app's own phone
+ * breakpoint (the header's menu button): the rail's max-md:hidden, this bar's
+ * md:hidden, the menu page's md:hidden and BELOW_MD_QUERY, and the plan
+ * comparison's phone scroll in app/globals.css. They move together, or a
+ * window between them has no way round settings.
  */
 function SettingsBackBar(): React.ReactElement {
   return (
@@ -18,7 +25,7 @@ function SettingsBackBar(): React.ReactElement {
       <Link
         className="flex h-11 items-center gap-1 rounded-md pr-3 pl-2 font-medium text-sm transition-colors hover:bg-muted"
         data-testid="settings-back-to-menu"
-        href="/settings"
+        href={SETTINGS_MENU_PATH}
       >
         <ChevronLeft className="size-4 shrink-0 text-muted-foreground" />
         Settings
@@ -36,7 +43,7 @@ export function SettingsShell({
   // The plan cards are a four-column grid built for a full page; the reading
   // width every other section wants would crush them into each other.
   const wide = pathname.endsWith("/plans");
-  const menu = pathname === "/settings";
+  const menu = pathname === SETTINGS_MENU_PATH;
 
   return (
     <div

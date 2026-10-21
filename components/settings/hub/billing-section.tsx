@@ -70,7 +70,7 @@ export function BillingSection(): React.ReactElement {
         title="Billing"
       />
 
-      <div className="grid gap-4 @xs/settings:grid-cols-3 max-md:gap-2">
+      <div className="grid gap-4 @xs/settings:grid-cols-3 @max-xl/settings:gap-2">
         <StatTile
           hint={summary?.interval ? `Billed ${summary.interval}` : "No charge"}
           label="Current plan"

@@ -102,26 +102,27 @@ export function SettingsCard({
       id={title ? settingsAnchor(title) : undefined}
       ref={ref}
     >
-      {/* The actions sit beside the title and keep their size, centred on
-          the title and description together. In a narrow column the
-          description takes the full width under both instead, so the
-          controls stay on the title's line rather than dropping below the
-          words or squeezing them into a sliver. */}
+      {/* Centred, and the words hold a width of their own: a long description
+          used to push the controls onto a line of their own and leave them
+          pinned to the top of it. In a narrow column the title block lets go
+          of its children (contents) so the title shares the first line with
+          the actions while both fit, the actions taking the next line when
+          they do not, and the description runs the full width below. */}
       {title && (
-        <header className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-b px-5 py-4">
-          <h2 className="col-start-1 row-start-1 font-semibold text-sm">
-            {title}
-          </h2>
-          {description && (
-            <p className="col-span-2 col-start-1 row-start-2 max-w-2xl text-muted-foreground text-xs @xl/settings:col-span-1">
-              {description}
-            </p>
-          )}
-          {action && (
-            <div className="col-start-2 row-start-1 flex items-center justify-end @xl/settings:row-span-2">
-              {action}
-            </div>
-          )}
+        <header className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4 @max-xl/settings:gap-y-1">
+          <div className="flex min-w-0 flex-col gap-1 @max-xl/settings:contents">
+            <h2 className="font-semibold text-sm @max-xl/settings:grow @max-xl/settings:basis-32">
+              {title}
+            </h2>
+            {description && (
+              <p className="max-w-2xl text-muted-foreground text-xs @max-xl/settings:order-last @max-xl/settings:basis-full">
+                {description}
+              </p>
+            )}
+          </div>
+          {/* The actions keep their size and drop to their own line rather
+              than being pushed past the card's edge on a narrow screen. */}
+          {action && <div className="flex shrink-0 items-center">{action}</div>}
         </header>
       )}
       <div className={cn("p-5", bodyClassName)}>{children}</div>
@@ -151,8 +152,8 @@ export function StatTile({
   loading?: boolean;
 }): React.ReactElement {
   return (
-    // Three to a row at any width, so in a narrow column they are a little
-    // tighter rather than a stack of near-empty boxes.
+    // Three to a row from a 20rem column, one to a row below that (their
+    // grids), and a little tighter in a narrow column so three still fit.
     <div className="flex flex-col gap-1.5 rounded-xl border bg-card/60 p-3 @xl/settings:p-4">
       <span
         className={cn("w-fit text-muted-foreground text-xs", loading && VEILED)}
@@ -236,6 +237,9 @@ export const SETTINGS_HEAD_ROW =
 
 /** Shown only in a narrow content column, e.g. the "Joined" before a date. */
 export const NARROW_ONLY = "@xl/settings:hidden";
+
+/** Hidden in a narrow content column, where NARROW_ONLY says it another way. */
+export const NARROW_HIDDEN = "@max-xl/settings:hidden";
 
 /**
  * A cell that, in a narrow column, sits under a row heading led by a 32px

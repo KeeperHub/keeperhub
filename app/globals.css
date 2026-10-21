@@ -675,7 +675,9 @@
    a row only while both fit: in the four-column grid "250,000" and "$25" ran
    into each other. Each still takes half the row, as the package's grid
    gives it, but never less than its own width, so the second one wraps
-   under the first instead. */
+   under the first instead. These rules lean on the package's class names;
+   the same fix belongs in the package (the marketing site uses it too),
+   after which they can go. */
 .khp-metrics .khp-metrics-box {
   display: flex;
   flex-wrap: wrap;
@@ -685,8 +687,10 @@
   flex: 1 1 0;
   min-width: max-content;
 }
-/* On a phone the comparison scrolls sideways in its frame with the feature
-   names held in place, rather than five columns squeezed into the screen. */
+/* On a phone (below md, as the settings rail; see SettingsShell) the
+   comparison scrolls sideways in its frame with the feature names held in
+   place, rather than five columns squeezed into the screen: 40rem is five
+   8rem columns, enough for "All EVM + Solana" on two lines. */
 @media (width < 48rem) {
   .khp-table-wrap .khp-table {
     min-width: 40rem;

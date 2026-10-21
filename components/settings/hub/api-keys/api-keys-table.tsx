@@ -16,7 +16,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { roleLabel } from "@/lib/organization/role-label";
-import { NARROW_ONLY, SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import { cn } from "@/lib/utils";
+import {
+  NARROW_HIDDEN,
+  NARROW_ONLY,
+  SETTINGS_HEAD_ROW,
+  SETTINGS_ROW,
+} from "../section";
 
 function formatDate(value: string | null): string {
   if (!value) {
@@ -124,8 +130,13 @@ export function ApiKeysTable({
               </TableCell>
             )}
             <TableCell className="text-muted-foreground @max-xl/settings:text-xs">
-              <span className={NARROW_ONLY}>Last used: </span>
-              {formatDate(key.lastUsedAt)}
+              {/* "Last used Never" would not read; a key never used says so. */}
+              <span className={NARROW_ONLY}>
+                {key.lastUsedAt ? "Last used " : "Never used"}
+              </span>
+              <span className={cn(!key.lastUsedAt && NARROW_HIDDEN)}>
+                {formatDate(key.lastUsedAt)}
+              </span>
             </TableCell>
             <TableCell className="text-right">
               {canDelete && (

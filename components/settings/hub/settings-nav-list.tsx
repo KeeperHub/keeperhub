@@ -17,7 +17,9 @@ const ROW =
   "flex h-9 items-center gap-3 rounded-md px-2 text-sm transition-colors hover:bg-muted";
 
 // The phone menu: each group a card of full-width rows, tall enough to tap.
-const MENU_ROW =
+export const MENU_CARD =
+  "flex flex-col overflow-hidden rounded-xl border bg-card/60";
+export const MENU_ROW =
   "flex h-12 items-center gap-3 border-t px-3.5 text-base transition-colors first:border-t-0 hover:bg-muted/50";
 
 export function SettingsNavList({
@@ -53,13 +55,7 @@ export function SettingsNavList({
           >
             {group.label}
           </p>
-          <div
-            className={
-              menu
-                ? "flex flex-col overflow-hidden rounded-xl border bg-card/60"
-                : "contents"
-            }
-          >
+          <div className={menu ? MENU_CARD : "contents"}>
             {group.items.map((item) => {
               const active = !menu && isSettingsItemActive(item, pathname);
               return (

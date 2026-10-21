@@ -17,6 +17,7 @@ import {
 import { OrgSwitcher } from "@/components/organization/org-switcher";
 import { AddressBookOverlay } from "@/components/overlays/address-book-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
+import { SETTINGS_MENU_PATH } from "@/components/settings/hub/nav";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -31,6 +32,13 @@ import { isAnonymousUser } from "@/lib/is-anonymous";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { cn } from "@/lib/utils";
 import { getCustomLogo } from "@/lib/workflow/editor/extension-registry";
+
+// The drawer is the phone's, and settings on a phone open on their menu
+// rather than the first section.
+const PHONE_SETTINGS_ITEM: NavItemDef = {
+  ...SETTINGS_NAV_ITEM,
+  href: SETTINGS_MENU_PATH,
+};
 
 /**
  * The navigation on a phone: below 768px, where the sidebar is not drawn,
@@ -250,8 +258,8 @@ function MobileNavBody({
           <MobileNavItem
             active={isNavItemActive(SETTINGS_NAV_ITEM.id, pathname)}
             disabled={busy}
-            item={SETTINGS_NAV_ITEM}
-            onClick={() => pick(SETTINGS_NAV_ITEM)}
+            item={PHONE_SETTINGS_ITEM}
+            onClick={() => pick(PHONE_SETTINGS_ITEM)}
           />
         </div>
       </nav>
