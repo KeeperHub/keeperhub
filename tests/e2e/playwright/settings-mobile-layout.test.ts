@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { box, dismissPhoneOverlays, overlaps } from "./utils/layout";
+import { box, dismissPhoneOverlays, overlaps, textFits } from "./utils/layout";
 import { openOrgSettings } from "./utils/settings";
 
 const PHONE_WIDTHS = [320, 390];
@@ -116,12 +116,18 @@ test.describe("settings on wider screens", () => {
     await page.setViewportSize(DESKTOP);
     await openOrgSettings(page, "plans");
 
-    const boxes = page.locator(".khp-metrics-box");
-    await expect(boxes.first()).toBeVisible({ timeout: 20_000 });
-    for (const metricsBox of await boxes.all()) {
-      const figures = metricsBox.locator(".khp-metric-value");
-      if ((await figures.count()) === 2) {
-        expect(await overlaps(figures.nth(0), figures.nth(1))).toBe(false);
+    // Each figure's box stayed inside its half of the row while the number
+    // itself spilled out of it into the other one, so the text is what is
+    // measured, not just the boxes.
+    const figures = page.locator(".khp-metric-value");
+    await expect(figures.first()).toBeVisible({ timeout: 20_000 });
+    for (const figure of await figures.all()) {
+      expect(await textFits(figure)).toBe(true);
+    }
+    for (const metricsBox of await page.locator(".khp-metrics-box").all()) {
+      const pair = metricsBox.locator(".khp-metric-value");
+      if ((await pair.count()) === 2) {
+        expect(await overlaps(pair.nth(0), pair.nth(1))).toBe(false);
       }
     }
   });
