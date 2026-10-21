@@ -73,13 +73,13 @@ export function HubTabsShell({
     >
       {/* Under 36rem the band is search and links, then the tabs sharing a
           row equally; under 48rem the tabs keep a row of their own; from
-          48rem it is the single row it always was, the links drawn last.
-          The DOM follows the narrow layout, so only the single row needs
-          reading-flow to keep Tab in drawn order (Chromium today). */}
-      <div className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-2 border-border/20 border-b py-2 @3xl/hub-band:flex-nowrap @3xl/hub-band:[reading-flow:flex-visual]">
+          48rem it is the single row it always was, the links last. The
+          links are rendered in both places and only one shows, so in every
+          layout the DOM, and with it Tab, follows the order drawn. */}
+      <div className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-2 border-border/20 border-b py-2 @3xl/hub-band:flex-nowrap">
         {searchSlot}
         {actionsSlot ? (
-          <div className="ml-auto flex self-stretch @xl/hub-band:block @3xl/hub-band:order-last @xl/hub-band:self-auto">
+          <div className="ml-auto flex self-stretch @xl/hub-band:block @xl/hub-band:self-auto @3xl/hub-band:hidden">
             {actionsSlot}
           </div>
         ) : null}
@@ -100,6 +100,11 @@ export function HubTabsShell({
             Marketplace
           </TabsTrigger>
         </TabsList>
+        {actionsSlot ? (
+          <div className="ml-auto hidden @3xl/hub-band:block">
+            {actionsSlot}
+          </div>
+        ) : null}
       </div>
 
       <TabsContent

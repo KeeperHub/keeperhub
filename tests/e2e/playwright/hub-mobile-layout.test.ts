@@ -133,14 +133,14 @@ test.describe("Hub tab band", () => {
     expect(await textFits(active)).toBe(true);
   });
 
-  // The DOM is search, links, tabs: the phone layout needs nothing more.
+  // The links are rendered before and after the tabs and only the copy for
+  // the layout shows, so Tab follows the DOM in every browser. getByRole
+  // skips the hidden copy; a second visible one would fail strict mode.
   test("Tab follows the rows as drawn at 390px", async ({ page }) => {
     await open(page, 390, "/hub");
     expect(await tabOrder(page)).toEqual(["Demos", "Docs", "Protocols"]);
   });
 
-  // The single row draws the links last; reading-flow keeps Tab with it in
-  // Chromium, the browser this suite runs.
   test("desktop: one row, and Tab still reaches the tabs first", async ({
     page,
   }) => {
