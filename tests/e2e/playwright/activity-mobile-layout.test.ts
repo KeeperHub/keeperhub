@@ -1,6 +1,6 @@
 import type { Locator, Page, Route } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { type Box, box, dismissPhoneOverlays } from "./utils/layout";
+import { type Box, box, dismissPhoneOverlays, textFits } from "./utils/layout";
 
 // The activity feed's layout on phones, and that nothing about it changes from
 // 640px up. The feed is served from a stub so every width sees the same rows,
@@ -10,14 +10,17 @@ import { type Box, box, dismissPhoneOverlays } from "./utils/layout";
 const PHONE_WIDTHS = [320, 360, 390, 639] as const;
 const WIDE_WIDTHS = [640, 768, 1280] as const;
 const HEIGHT = 800;
+// A small phone: the page is taller than the screen even at 5 rows a page.
+const SMALL_PHONE = { width: 320, height: 568 };
 
 const TOTAL_EVENTS = 140;
+// Every stub row shows it, and no other list on the page does.
+const STUB_IP = "203.0.113.10";
 const LONG_PHRASE = "Changed the organization's AI agent limit";
 const LONG_NAME = "Alexandria Konstantinopoulou-Whitfield";
 const LONG_BADGE = "via API Key - production-deployment-runner-west-coast-2";
 // A user without a name is shown by email, which has nowhere to break.
 const LONG_EMAIL = "averyveryverylongemailaddress.name@subdomain.example.com";
-const PAGE_LABEL_REGEX = /^Page \d+ of \d+$/;
 
 const bottom = (b: Box): number => b.y + b.height;
 const right = (b: Box): number => b.x + b.width;
@@ -27,8 +30,9 @@ function stubEvent(id: number): Record<string, unknown> {
     id: `stub-${id}`,
     resourceUser: null,
     version: null,
-    createdAt: new Date(Date.now() - id * 3_600_000).toISOString(),
-    metadata: { ip: "203.0.113.10", country: "DK" },
+    // Seconds apart, so every page is one "Today" group.
+    createdAt: new Date(Date.now() - id * 1000).toISOString(),
+    metadata: { ip: STUB_IP, country: "DK" },
   };
   if (id % 3 === 1) {
     return {
@@ -85,13 +89,17 @@ async function stubFeed(page: Page): Promise<void> {
   });
 }
 
-async function openActivity(page: Page, width: number): Promise<void> {
+async function openActivity(
+  page: Page,
+  size: { width: number; height: number },
+  query = ""
+): Promise<void> {
   await dismissPhoneOverlays(page);
   await stubFeed(page);
-  await page.setViewportSize({ width, height: HEIGHT });
-  await page.goto("/activity", { waitUntil: "domcontentloaded" });
+  await page.setViewportSize(size);
+  await page.goto(`/activity${query}`, { waitUntil: "domcontentloaded" });
   await expect(page.getByText(`${TOTAL_EVENTS} events`)).toBeVisible({
-    timeout: 60_000,
+    timeout: 30_000,
   });
 }
 
@@ -137,6 +145,20 @@ function longRow(page: Page): {
   };
 }
 
+function pager(page: Page): {
+  nav: Locator;
+  label: Locator;
+  button: (name: string) => Locator;
+} {
+  const nav = page.getByRole("navigation", { name: "Pagination" });
+  return {
+    nav,
+    // The phone-only "Page X of Y", announced when it changes.
+    label: nav.locator("[aria-live]"),
+    button: (name) => nav.getByRole("button", { name, exact: true }),
+  };
+}
+
 async function hasSidewaysScroll(page: Page): Promise<boolean> {
   return await page.evaluate(() =>
     [...document.querySelectorAll("li, nav, main, body")].some(
@@ -147,14 +169,16 @@ async function hasSidewaysScroll(page: Page): Promise<boolean> {
 
 test.describe("Activity page on phones", () => {
   test("lays out the toolbar, rows and pager for a phone", async ({ page }) => {
-    await openActivity(page, PHONE_WIDTHS[0]);
+    await openActivity(page, { width: PHONE_WIDTHS[0], height: HEIGHT });
     const { search, filter, pageSize } = toolbar(page);
     const { row, name, badge, phrase } = longRow(page);
-    const nav = page.getByRole("navigation", { name: "Pagination" });
+    const { nav, label, button } = pager(page);
 
     for (const width of PHONE_WIDTHS) {
       await atWidth(page, width, async () => {
-        expect(await hasSidewaysScroll(page)).toBe(false);
+        expect(await hasSidewaysScroll(page), "nothing scrolls sideways").toBe(
+          false
+        );
 
         // Search has a row of its own; Filter and the page size share the next.
         const [searchBox, filterBox, sizeBox] = await Promise.all([
@@ -178,19 +202,14 @@ test.describe("Activity page on phones", () => {
         expect(right(badgeBox)).toBeLessThanOrEqual(right(rowBox));
 
         // The long email is shown whole, wrapped rather than cut off.
-        const email = page.getByText(LONG_EMAIL, { exact: true }).first();
         expect(
-          await email.evaluate((el) => el.scrollWidth <= el.clientWidth)
+          await textFits(page.getByText(LONG_EMAIL, { exact: true }).first())
         ).toBe(true);
 
         // The pager offers first/last and says where you are; no numbers.
-        await expect(nav.getByText(PAGE_LABEL_REGEX)).toBeVisible();
-        await expect(
-          nav.getByRole("button", { name: "Last page" })
-        ).toBeVisible();
-        await expect(
-          nav.getByRole("button", { name: "2", exact: true })
-        ).toBeHidden();
+        await expect(label).toHaveText("Page 1 of 28");
+        await expect(button("Last page")).toBeVisible();
+        await expect(button("2")).toBeHidden();
         expect(right(await box(nav))).toBeLessThanOrEqual(width);
       });
     }
@@ -199,49 +218,73 @@ test.describe("Activity page on phones", () => {
   test("scrolls the whole page and keeps the pager in reach", async ({
     page,
   }) => {
-    await openActivity(page, 320);
-    const nav = page.getByRole("navigation", { name: "Pagination" });
-    const label = nav.getByText(PAGE_LABEL_REGEX);
+    await openActivity(page, SMALL_PHONE, "?size=25");
+    const title = page.getByRole("heading", { name: "Organization activity" });
+    const heading = page.getByText("Today", { exact: true });
+    const { nav, label, button } = pager(page);
+    // The app header's bottom edge, where the date headings stick.
+    const headerBottom = 60;
 
-    await test.step("the pager stays on screen while scrolling", async () => {
+    await test.step("a page change from the top does not scroll", async () => {
+      await button("Next page").click();
+      await expect(label).toHaveText("Page 2 of 6");
+      await expect(title).toBeInViewport();
+      await button("Previous page").click();
+      await expect(label).toHaveText("Page 1 of 6");
+    });
+
+    await test.step("the page scrolls, not just the list", async () => {
       await page.mouse.move(160, 400);
-      await page.mouse.wheel(0, 600);
+      await page.mouse.wheel(0, 1200);
+      await expect(title).not.toBeInViewport();
+      // The date heading sticks under the header and the pager to the bottom.
       await expect(async () => {
-        expect(bottom(await box(nav))).toBeLessThanOrEqual(HEIGHT);
+        expect(Math.abs((await box(heading)).y - headerBottom)).toBeLessThan(2);
+        expect(bottom(await box(nav))).toBeGreaterThan(SMALL_PHONE.height - 40);
       }).toPass();
-      await expect(page.getByText(LONG_PHRASE).nth(1)).toBeInViewport();
     });
 
     await test.step("a page change goes back to the top of the list", async () => {
-      await nav.getByRole("button", { name: "Next page" }).click();
-      await expect(label).toHaveText("Page 2 of 28");
-      const first = page
+      await button("Next page").click();
+      await expect(label).toHaveText("Page 2 of 6");
+      // The first row sits right under the stuck heading, not further down.
+      const firstRow = page
         .getByRole("listitem")
-        .filter({ hasText: LONG_PHRASE })
+        .filter({ hasText: STUB_IP })
         .first();
-      await expect(first).toBeInViewport();
+      await expect(async () => {
+        const rowTop = (await box(firstRow)).y;
+        expect(rowTop).toBeGreaterThan(headerBottom);
+        expect(rowTop).toBeLessThan(headerBottom + 80);
+      }).toPass();
     });
 
-    await test.step("first and last jump to the ends", async () => {
-      await nav.getByRole("button", { name: "Last page" }).click();
-      await expect(label).toHaveText("Page 28 of 28");
-      await expect(
-        nav.getByRole("button", { name: "Next page" })
-      ).toBeDisabled();
-      await nav.getByRole("button", { name: "First page" }).click();
-      await expect(label).toHaveText("Page 1 of 28");
+    await test.step("first and last jump to the ends, keeping focus", async () => {
+      await button("Last page").click();
+      await expect(label).toHaveText("Page 6 of 6");
+      await expect(button("Next page")).toBeDisabled();
+      await expect(button("Last page")).toHaveAttribute(
+        "aria-disabled",
+        "true"
+      );
+      await expect(button("Last page")).toBeFocused();
+      await button("First page").click();
+      await expect(label).toHaveText("Page 1 of 6");
+      await expect(button("First page")).toBeFocused();
     });
   });
 
   test("keeps the desktop layout from 640px up", async ({ page }) => {
-    await openActivity(page, WIDE_WIDTHS[0]);
+    await openActivity(page, { width: WIDE_WIDTHS[0], height: HEIGHT });
     const { search, pageSize } = toolbar(page);
     const { name, phrase } = longRow(page);
-    const nav = page.getByRole("navigation", { name: "Pagination" });
+    const { label, button } = pager(page);
 
     for (const width of WIDE_WIDTHS) {
       await atWidth(page, width, async () => {
-        expect(await hasSidewaysScroll(page)).toBe(false);
+        expect(await hasSidewaysScroll(page), "nothing scrolls sideways").toBe(
+          false
+        );
 
         // The page size stays beside the search box, however the open
         // sidebar wraps Filter (it can at 768px, as before).
@@ -259,13 +302,9 @@ test.describe("Activity page on phones", () => {
         ]);
         expect(phraseBox.y).toBeLessThan(bottom(nameBox));
 
-        await expect(
-          nav.getByRole("button", { name: "2", exact: true })
-        ).toBeVisible();
-        await expect(nav.getByText(PAGE_LABEL_REGEX)).toBeHidden();
-        await expect(
-          nav.getByRole("button", { name: "Last page" })
-        ).toBeHidden();
+        await expect(button("2")).toBeVisible();
+        await expect(label).toBeHidden();
+        await expect(button("Last page")).toBeHidden();
       });
     }
   });

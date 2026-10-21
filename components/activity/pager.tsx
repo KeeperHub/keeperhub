@@ -9,6 +9,10 @@ import {
 import { Button } from "@/components/ui/button";
 import type { PageMeta } from "@/lib/pagination";
 
+// Phone-only; looks like a disabled button while it has nowhere to go.
+const END_BUTTON_CLASS =
+  "aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent sm:hidden";
+
 /** First, last, and the current page +/-1, collapsing gaps to an ellipsis. */
 function pageWindow(page: number, totalPages: number): (number | "gap")[] {
   const wanted = new Set<number>([1, totalPages, page - 1, page, page + 1]);
@@ -55,11 +59,18 @@ export function Pager({
           aria-label="Pagination"
           className="flex items-center gap-0.5 max-sm:ml-auto"
         >
+          {/* First and Last are aria-disabled rather than disabled: they turn
+              off as soon as they are used, and a disabled button would drop
+              keyboard focus out of the pager. */}
           <Button
+            aria-disabled={page <= 1}
             aria-label="First page"
-            className="sm:hidden"
-            disabled={page <= 1}
-            onClick={() => onPage(1)}
+            className={END_BUTTON_CLASS}
+            onClick={() => {
+              if (page > 1) {
+                onPage(1);
+              }
+            }}
             size="icon-sm"
             variant="ghost"
           >
@@ -96,12 +107,22 @@ export function Pager({
               </Button>
             )
           )}
-          <span
-            aria-atomic="true"
-            aria-live="polite"
-            className="whitespace-nowrap px-1.5 text-muted-foreground text-xs tabular-nums sm:hidden"
-          >
-            Page {page} of {totalPages}
+          {/* Sized by an invisible copy of the widest label, so the buttons
+              keep their place (and the row its wrap) from page to page. */}
+          <span className="grid whitespace-nowrap px-0.5 text-center text-muted-foreground text-xs tabular-nums sm:hidden">
+            <span
+              aria-hidden="true"
+              className="invisible col-start-1 row-start-1"
+            >
+              Page {totalPages} of {totalPages}
+            </span>
+            <span
+              aria-atomic="true"
+              aria-live="polite"
+              className="col-start-1 row-start-1"
+            >
+              Page {page} of {totalPages}
+            </span>
           </span>
           <Button
             aria-label="Next page"
@@ -113,10 +134,14 @@ export function Pager({
             <ChevronRight className="size-4" />
           </Button>
           <Button
+            aria-disabled={page >= totalPages}
             aria-label="Last page"
-            className="sm:hidden"
-            disabled={page >= totalPages}
-            onClick={() => onPage(totalPages)}
+            className={END_BUTTON_CLASS}
+            onClick={() => {
+              if (page < totalPages) {
+                onPage(totalPages);
+              }
+            }}
             size="icon-sm"
             variant="ghost"
           >

@@ -6,6 +6,10 @@ import type { ReactNode } from "react";
 import { ActivityFeed } from "@/components/activity/activity-feed";
 import { ActivityMemberPreview } from "@/components/activity/activity-member-preview";
 import { AuditFilterBar } from "@/components/activity/audit-filter-bar";
+import {
+  PHONE_PAGE_FILL,
+  PHONE_PAGE_SCROLLER,
+} from "@/components/activity/phone-scroll";
 import { useAuthPrompt } from "@/components/auth/provider";
 import { ExportAuditOverlay } from "@/components/overlays/export-audit-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
@@ -25,6 +29,7 @@ import {
   useAuditActivity,
 } from "@/lib/hooks/use-audit-activity";
 import { useActiveMember } from "@/lib/hooks/use-organization";
+import { cn } from "@/lib/utils";
 
 /**
  * In-page sign-in panel for the Activity route. Signed-out users reach the page
@@ -89,9 +94,24 @@ function ActivityAdminView(): ReactNode {
   return (
     // On phones the whole page scrolls rather than only the feed, which would
     // otherwise get the little height left under the title and toolbar.
-    <div className="pointer-events-auto fixed inset-0 flex flex-col overflow-hidden bg-sidebar max-sm:overflow-y-auto">
-      <div className="flex min-h-0 flex-1 flex-col transition-[margin-left] duration-200 ease-out max-sm:flex-none md:ml-[var(--nav-content-offset,var(--nav-sidebar-width,60px))]">
-        <div className="flex min-h-0 flex-1 flex-col gap-6 p-6 pt-[calc(5rem+var(--app-banner-height,0px))] max-sm:flex-none max-sm:gap-4 max-sm:px-4 max-sm:pb-4">
+    <div
+      className={cn(
+        "pointer-events-auto fixed inset-0 flex flex-col overflow-hidden bg-sidebar",
+        PHONE_PAGE_SCROLLER
+      )}
+    >
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col transition-[margin-left] duration-200 ease-out md:ml-[var(--nav-content-offset,var(--nav-sidebar-width,60px))]",
+          PHONE_PAGE_FILL
+        )}
+      >
+        <div
+          className={cn(
+            "flex min-h-0 flex-1 flex-col gap-6 p-6 pt-[calc(5rem+var(--app-banner-height,0px))] max-sm:gap-4 max-sm:px-4 max-sm:pb-4",
+            PHONE_PAGE_FILL
+          )}
+        >
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="space-y-1">
               <h1 className="font-semibold text-2xl tracking-tight">
@@ -126,7 +146,7 @@ function ActivityAdminView(): ReactNode {
               <div className="relative w-full max-w-xs max-sm:max-w-none">
                 <Search className="-translate-y-1/2 absolute top-1/2 left-2.5 size-4 text-muted-foreground" />
                 <Input
-                  className="h-8 pl-8 text-sm max-sm:text-base"
+                  className="h-8 pl-8 text-sm"
                   onChange={(e) => activity.setSearchText(e.target.value)}
                   placeholder="Search name, email, workflow, IP..."
                   value={activity.searchText}

@@ -278,14 +278,19 @@ export function ActivityRow({
           its own and the name, role and badge wrap instead of truncating. */}
       <div className="flex items-baseline justify-between gap-2 text-sm leading-snug max-sm:flex-wrap max-sm:gap-y-0.5">
         <span className="min-w-0 truncate max-sm:flex max-sm:flex-1 max-sm:flex-wrap max-sm:items-baseline max-sm:gap-x-1.5 max-sm:gap-y-1 max-sm:whitespace-normal">
-          <span className="font-medium max-sm:wrap-anywhere">
-            {actorLabel(actor)}
-          </span>
-          {role && (
-            <span className="ml-1 text-muted-foreground text-xs max-sm:ml-0 max-sm:whitespace-nowrap">
-              · {role}
+          {/* On phones a long name or email can push the role to a line of
+              its own, so the separator dot is dropped there. */}
+          <span>
+            <span className="font-medium max-sm:wrap-anywhere">
+              {actorLabel(actor)}
             </span>
-          )}
+            {role && (
+              <span className="ml-1 text-muted-foreground text-xs max-sm:whitespace-nowrap">
+                <span className="max-sm:hidden">· </span>
+                {role}
+              </span>
+            )}
+          </span>
           {via && (
             <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 font-medium text-[10px] text-foreground max-sm:ml-0 max-sm:max-w-full max-sm:truncate">
               {via}
