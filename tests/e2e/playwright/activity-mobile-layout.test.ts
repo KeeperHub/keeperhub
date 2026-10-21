@@ -193,8 +193,7 @@ test.describe("Activity page on phones", () => {
           box(pageSize),
         ]);
         expect(filterBox.y).toBeGreaterThanOrEqual(bottom(searchBox));
-        expect(await overlaps(filterBox, sizeBox)).toBe(false);
-        expect(await overlaps(filterBox, sizeBox)).toBe(false);
+        expect(overlaps(filterBox, sizeBox)).toBe(false);
         expect(Math.abs(filterBox.y - sizeBox.y)).toBeLessThanOrEqual(1);
         expect(sizeBox.height).toBe(filterBox.height);
 
@@ -209,10 +208,11 @@ test.describe("Activity page on phones", () => {
         expect(phraseBox.y).toBeGreaterThanOrEqual(bottom(nameBox) - 1);
         expect(right(badgeBox)).toBeLessThanOrEqual(right(rowBox));
 
-        // The long email is shown whole, wrapped rather than cut off.
-        expect(
-          await textFits(page.getByText(LONG_EMAIL, { exact: true }).first())
-        ).toBe(true);
+        // The long email is shown whole, wrapped rather than cut off: its line
+        // (the identity block around the inline name) does not overflow.
+        const email = page.getByText(LONG_EMAIL, { exact: true }).first();
+        expect(await textFits(email.locator("xpath=../.."))).toBe(true);
+        expect(right(await box(email))).toBeLessThanOrEqual(right(rowBox));
 
         // The pager offers first/last and says where you are; no numbers.
         await expect(label).toHaveText("Page 1 of 28");
@@ -232,8 +232,14 @@ test.describe("Activity page on phones", () => {
     const title = page.getByRole("heading", { name: "Organization activity" });
     const heading = page.getByText("Today", { exact: true });
     const { nav, label, button } = pager(page);
-    // The app header's bottom edge, where the date headings stick.
-    const headerBottom = 60;
+    // The app header's bottom edge, where the date headings stick: the fixed
+    // bar that holds the user menu.
+    const header = page
+      .getByTestId("header-right")
+      .locator(
+        "xpath=ancestor::div[contains(concat(' ', @class, ' '), ' fixed ')][1]"
+      );
+    const headerBottom = bottom(await box(header));
 
     await test.step("a page change from the top does not scroll", async () => {
       await button("Next page").click();

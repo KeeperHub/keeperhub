@@ -16,10 +16,6 @@ export async function dismissPhoneOverlays(page: Page): Promise<void> {
   });
 }
 
-function measured(target: Locator | Box): Promise<Box> | Box {
-  return "boundingBox" in target ? box(target) : target;
-}
-
 export async function box(locator: Locator): Promise<Box> {
   const found = await locator.boundingBox();
   if (!found) {
@@ -28,12 +24,7 @@ export async function box(locator: Locator): Promise<Box> {
   return found;
 }
 
-// Either side may be a box the caller has already measured.
-export async function overlaps(
-  a: Locator | Box,
-  b: Locator | Box
-): Promise<boolean> {
-  const [p, q] = await Promise.all([measured(a), measured(b)]);
+export function overlaps(p: Box, q: Box): boolean {
   return (
     p.x < q.x + q.width &&
     q.x < p.x + p.width &&
