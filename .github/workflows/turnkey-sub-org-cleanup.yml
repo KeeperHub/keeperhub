@@ -113,12 +113,20 @@ jobs:
             echo "::error::Set the TURNKEY_APP_KEY_PARAMETERS secret on the staging environment"
             exit 1
           fi
+          # The AWS error text names the role and the parameter, which must
+          # not reach the public log, so it is dropped and only the entry
+          # number is reported.
           keys=""
+          n=0
           for entry in ${PARAMETERS//,/ }; do
+            n=$((n + 1))
             region="${entry%%:*}"
             name="${entry#*:}"
-            key=$(aws ssm get-parameter --region "$region" --name "$name" \
-              --with-decryption --query Parameter.Value --output text)
+            if ! key=$(aws ssm get-parameter --region "$region" --name "$name" \
+              --with-decryption --query Parameter.Value --output text 2>/dev/null); then
+              echo "::error::Could not read app key parameter $n"
+              exit 1
+            fi
             echo "::add-mask::$key"
             keys="${keys:+$keys,}$key"
           done
