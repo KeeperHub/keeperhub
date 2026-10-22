@@ -6,6 +6,7 @@ import { flushSync } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useVisualViewportVars } from "@/hooks/use-visual-viewport-vars";
 import type { UseDualFactorState } from "@/lib/mfa/use-dual-factor-state";
 
 /**
@@ -171,6 +172,9 @@ export function DualFactorSteps({
   const [resending, setResending] = useState(false);
   const emailInputRef = useRef<HTMLDivElement>(null);
   const totpInputRef = useRef<HTMLInputElement>(null);
+  // The window around this code entry stays above the on-screen keyboard
+  // (keyboard-safe-window in globals.css, matched by data-keyboard-safe).
+  useVisualViewportVars();
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: prefetch must fire exactly once on mount; the hook guards against duplicate fires.
   useEffect(() => {
@@ -226,7 +230,7 @@ export function DualFactorSteps({
   const totpReady = dual.totpCode.trim().length === 6;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" data-keyboard-safe>
       <StepIndicator current={phase} />
 
       {context && <p className="text-muted-foreground text-sm">{context}</p>}

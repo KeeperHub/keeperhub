@@ -96,3 +96,91 @@ describe("DualFactorSteps step change", () => {
     expect(document.activeElement?.id).toBe("dfs-email-verify");
   });
 });
+
+describe("DualFactorSteps and the on-screen keyboard", () => {
+  // jsdom has no visual viewport; this stands in for one an open keyboard has
+  // shrunk.
+  class FakeVisualViewport extends EventTarget {
+    height = 367;
+    offsetTop = 0;
+  }
+
+  const original = Object.getOwnPropertyDescriptor(window, "visualViewport");
+  let viewport: FakeVisualViewport;
+  const rootStyle = (): CSSStyleDeclaration => document.documentElement.style;
+
+  beforeEach(() => {
+    viewport = new FakeVisualViewport();
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: viewport,
+    });
+  });
+
+  afterEach(() => {
+    if (original) {
+      Object.defineProperty(window, "visualViewport", original);
+    } else {
+      Reflect.deleteProperty(window, "visualViewport");
+    }
+  });
+
+  it("marks itself for the keyboard-safe window around it", () => {
+    renderSteps();
+    expect(container.querySelector("[data-keyboard-safe]")).not.toBeNull();
+  });
+
+  it("mirrors the visible height into CSS variables while mounted", () => {
+    renderSteps();
+    expect(rootStyle().getPropertyValue("--visual-viewport-height")).toBe(
+      "367px"
+    );
+    expect(rootStyle().getPropertyValue("--visual-viewport-top")).toBe("0px");
+
+    viewport.height = 420;
+    viewport.offsetTop = 12;
+    viewport.dispatchEvent(new Event("resize"));
+    expect(rootStyle().getPropertyValue("--visual-viewport-height")).toBe(
+      "420px"
+    );
+    expect(rootStyle().getPropertyValue("--visual-viewport-top")).toBe("12px");
+
+    // iOS pans the page under an open keyboard without resizing.
+    viewport.offsetTop = 30;
+    viewport.dispatchEvent(new Event("scroll"));
+    expect(rootStyle().getPropertyValue("--visual-viewport-top")).toBe("30px");
+
+    actGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    act(() => root.render(<div />));
+    expect(rootStyle().getPropertyValue("--visual-viewport-height")).toBe("");
+    expect(rootStyle().getPropertyValue("--visual-viewport-top")).toBe("");
+  });
+
+  it("keeps the variables while another code entry is still mounted", () => {
+    renderSteps();
+    const otherContainer = document.createElement("div");
+    document.body.appendChild(otherContainer);
+    const otherRoot = createRoot(otherContainer);
+    actGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+    act(() =>
+      otherRoot.render(
+        <DualFactorSteps
+          dual={dualWithEmailCode()}
+          onBack={vi.fn()}
+          onPrefetchEmail={vi.fn(async () => undefined)}
+          onResendEmail={vi.fn(async () => true)}
+          onSubmit={vi.fn(async () => undefined)}
+        />
+      )
+    );
+
+    act(() => otherRoot.unmount());
+    otherContainer.remove();
+    expect(rootStyle().getPropertyValue("--visual-viewport-height")).toBe(
+      "367px"
+    );
+
+    act(() => root.render(<div />));
+    expect(rootStyle().getPropertyValue("--visual-viewport-height")).toBe("");
+  });
+});
