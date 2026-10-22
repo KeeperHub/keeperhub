@@ -1,4 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
+import { SETTINGS_NAV } from "@/components/settings/hub/nav";
 import { expect, test } from "./fixtures";
 import {
   type Box,
@@ -19,9 +20,20 @@ const MD = 768;
 const MENU_PATH = "/settings";
 const MENU_URL = /\/settings$/;
 // Org-scoped sections, whose paths carry the organization. A link to one of
-// these without it (/settings/users) reads the section as an org id.
-const ORG_PATH_WITHOUT_ORG =
-  /^\/settings\/(organization|users|notifications|billing|plans|wallets|limits|connections|workspace|api-keys|agents)$/;
+// these without it (/settings/users) reads the section as an org id. Taken
+// from the nav itself, less segments an account-level section also uses
+// (/settings/security is Account security), so a new section is covered too.
+const ACCOUNT_SEGMENTS = new Set(
+  SETTINGS_NAV.flatMap((group) => group.items)
+    .filter((item) => item.scope === "user")
+    .map((item) => item.segment)
+);
+const ORG_SEGMENTS = SETTINGS_NAV.flatMap((group) => group.items)
+  .filter((item) => item.scope === "org" && !ACCOUNT_SEGMENTS.has(item.segment))
+  .map((item) => item.segment);
+const ORG_PATH_WITHOUT_ORG = new RegExp(
+  `^/settings/(${ORG_SEGMENTS.join("|")})$`
+);
 const ACCOUNT_URL = /\/settings\/account$/;
 // An org-scoped section carries the organization in its path.
 const USERS_URL = /\/settings\/[^/]+\/users$/;
@@ -136,6 +148,8 @@ test.describe("settings on a phone", () => {
   test("the menu never links a section without its organization", async ({
     page,
   }) => {
+    // An empty list would check nothing.
+    expect(ORG_SEGMENTS).toContain("users");
     await page.setViewportSize({ width: 390, height: PHONE_HEIGHT });
     await page.goto(MENU_PATH, { waitUntil: "domcontentloaded" });
     const hrefs = (): Promise<string[]> =>
@@ -259,6 +273,12 @@ test.describe("settings on wider screens", () => {
       page,
     }) => {
       await page.setViewportSize(size);
+      // The server's page for /settings fills the column for a wide window
+      // while it waits to move on, rather than leaving it empty.
+      const index = await page.request.get(MENU_PATH);
+      expect(await index.text()).toContain(
+        'data-testid="settings-index-loading"'
+      );
       await page.goto("/settings", { waitUntil: "domcontentloaded" });
       await expect(page).toHaveURL(ACCOUNT_URL, FIRST_VISIT);
       await expect(page.getByTestId("settings-rail")).toBeVisible();
