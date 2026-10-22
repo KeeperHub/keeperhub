@@ -8,6 +8,13 @@
 # environment variables TURNKEY_CLEANUP_KEY_PREFIX and
 # TURNKEY_CLEANUP_EXCLUDE_SUB_ORG_IDS. A manual run may replace the key prefix
 # and may add sub-orgs to keep, but can never drop one from the variable.
+#
+# Before it deletes anything, the job reads the live Turnkey public key of
+# every app from the parameters listed in the TURNKEY_APP_KEY_PARAMETERS
+# secret ("region:name", comma separated; a secret so the names stay out of
+# the public log). If an app uses the job's own key, its
+# wallets would look like e2e leftovers, so the job refuses to run; it also
+# refuses when it cannot read a key.
 name: turnkey-sub-org-cleanup
 
 on:
@@ -43,6 +50,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: turnkey-sub-org-cleanup
@@ -90,7 +98,34 @@ jobs:
             exit 1
           fi
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.TO_REGION }}
+
+      - name: Read the live app keys
+        shell: bash
+        env:
+          PARAMETERS: ${{ secrets.TURNKEY_APP_KEY_PARAMETERS }}
+        run: |
+          if [ -z "$PARAMETERS" ]; then
+            echo "::error::Set the TURNKEY_APP_KEY_PARAMETERS secret on the staging environment"
+            exit 1
+          fi
+          keys=""
+          for entry in ${PARAMETERS//,/ }; do
+            region="${entry%%:*}"
+            name="${entry#*:}"
+            key=$(aws ssm get-parameter --region "$region" --name "$name" \
+              --with-decryption --query Parameter.Value --output text)
+            echo "::add-mask::$key"
+            keys="${keys:+$keys,}$key"
+          done
+          echo "APP_PUBLIC_KEYS=$keys" >> "$GITHUB_ENV"
+
       - name: Clean up sub-orgs
+        # APP_PUBLIC_KEYS comes from the step above through GITHUB_ENV.
         env:
           MODE: ${{ github.event_name == 'schedule' && 'delete' || inputs.mode }}
           EXPECTED_KEY_PREFIX: ${{ inputs.expected_key_prefix || vars.TURNKEY_CLEANUP_KEY_PREFIX }}

@@ -26,6 +26,8 @@ const KEY =
   "03aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const OTHER_KEY =
   "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const STAGING_APP_KEY = `02${"c".repeat(64)}`;
+const PROD_APP_KEY = `03${"d".repeat(64)}`;
 const SUB_A = "11111111-1111-4111-8111-111111111111";
 const SUB_B = "22222222-2222-4222-8222-222222222222";
 const SUB_C = "33333333-3333-4333-8333-333333333333";
@@ -40,6 +42,7 @@ function env(overrides: Record<string, string | undefined> = {}) {
     TURNKEY_API_PRIVATE_KEY: "private",
     TURNKEY_ORGANIZATION_ID: "parent-org",
     CHAIN_RPC_CONFIG: "{}",
+    APP_PUBLIC_KEYS: `${STAGING_APP_KEY},${PROD_APP_KEY}`,
     ...overrides,
   };
 }
@@ -90,6 +93,37 @@ describe("parseOptions", () => {
     expect(() =>
       parseOptions(env({ EXPECTED_KEY_PREFIX: KEY.slice(0, 8) }))
     ).toThrow("at least 16");
+  });
+
+  it("refuses to run when an app uses the job's key", () => {
+    expect(() =>
+      parseOptions(
+        env({ APP_PUBLIC_KEYS: `${STAGING_APP_KEY},${KEY.toUpperCase()}` })
+      )
+    ).toThrow("Refusing to run");
+  });
+
+  it("refuses to run without the live app keys", () => {
+    expect(() => parseOptions(env({ APP_PUBLIC_KEYS: "" }))).toThrow(
+      "APP_PUBLIC_KEYS is required"
+    );
+    expect(() => parseOptions(env({ APP_PUBLIC_KEYS: " , " }))).toThrow(
+      "APP_PUBLIC_KEYS is required"
+    );
+  });
+
+  it.each([
+    ["the text None from an empty read", "None"],
+    ["a truncated key", STAGING_APP_KEY.slice(0, 40)],
+    ["an uncompressed key", `04${"e".repeat(128)}`],
+  ])("refuses to run when an app key is %s", (_name, value) => {
+    expect(() =>
+      parseOptions(env({ APP_PUBLIC_KEYS: `${PROD_APP_KEY},${value}` }))
+    ).toThrow("not a public key");
+  });
+
+  it("runs when every app uses a different key", () => {
+    expect(parseOptions(env()).apiPublicKey).toBe(KEY);
   });
 
   it("matches the key prefix case-insensitively", () => {

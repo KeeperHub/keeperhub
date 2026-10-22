@@ -27,6 +27,8 @@ export type CleanupOptions = {
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const KEY_PREFIX_PATTERN = /^[0-9a-f]{16,}$/i;
+// A compressed P-256 public key, the format Turnkey API keys use.
+const PUBLIC_KEY_PATTERN = /^0[23][0-9a-f]{64}$/i;
 const LIST_SEPARATOR = /[\s,]+/;
 const MAX_REQUESTS_PER_SECOND = 30;
 
@@ -51,6 +53,29 @@ function parseNumber(
     throw new Error(`${name} must be a number between ${min} and ${max}`);
   }
   return value;
+}
+
+/**
+ * The job deletes sub-orgs owned only by its own key. If an app used the same
+ * key, its real wallets would look exactly like e2e leftovers. `appKeys` holds
+ * the live public key of every app, read at run time; the job refuses to run
+ * when one of them is its own key or when any of them is not a valid key.
+ */
+function assertNoAppUsesKey(appKeys: string, apiPublicKey: string): void {
+  const keys = appKeys.split(LIST_SEPARATOR).filter(Boolean);
+  if (keys.length === 0) {
+    throw new Error("APP_PUBLIC_KEYS is required");
+  }
+  for (const key of keys) {
+    if (!PUBLIC_KEY_PATTERN.test(key)) {
+      throw new Error("APP_PUBLIC_KEYS holds a value that is not a public key");
+    }
+    if (key.toLowerCase() === apiPublicKey.toLowerCase()) {
+      throw new Error(
+        "An app uses the same Turnkey key as this job, so its wallets would look like e2e leftovers. Refusing to run"
+      );
+    }
+  }
 }
 
 /**
@@ -79,6 +104,8 @@ export function parseOptions(env: Env): CleanupOptions {
       "EXPECTED_KEY_PREFIX does not match the API public key this job runs with"
     );
   }
+
+  assertNoAppUsesKey(required(env, "APP_PUBLIC_KEYS"), apiPublicKey);
 
   const maxSubOrgs = parseNumber(
     env,
