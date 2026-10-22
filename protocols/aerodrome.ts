@@ -54,15 +54,23 @@ const TEST_DATA: ProtocolTestData = {
       "get-pool-for-pair": [{ field: "pool", notEmpty: true }],
     },
     // The Base event emitter wraps ETH for the pool swap and pulls AERO from
-    // the veAERO escrow under impersonation, then drives a swap, a lock, a
-    // vote, a lock/withdraw, and an epoch distribute - six of the seven events.
+    // the veAERO escrow under impersonation, then drives a swap, a lock and a
+    // lock/withdraw - four of the seven events.
     // gauge-created stays skipped: every whitelisted Base pair already has a
     // gauge, so emitting it would need a freshly deployed token to pair and
     // gauge, which the self-contained emitter does not set up.
+    // voter-voted and distribute-reward are skipped since the Aero launch:
+    // every gauge in this Voter was killed at 2026-10-21 23:38 UTC (Base block
+    // 52918274), so Voter.vote and Voter.distribute revert with GaugeNotAlive
+    // on a fork of any later block.
     events: {
       skipped: {
         "gauge-created":
           "Voter.createGauge emits GaugeCreated only for a pool that has no gauge yet; every whitelisted Base pair already has one, so a fresh emission would require deploying a throwaway token to pair and gauge",
+        "voter-voted":
+          "every gauge in this Voter was killed at the Aero launch (2026-10-21), so Voter.vote reverts with GaugeNotAlive on a current Base fork",
+        "distribute-reward":
+          "every gauge in this Voter was killed at the Aero launch (2026-10-21), so there is no live gauge to distribute emissions to on a current Base fork",
       },
     },
   },

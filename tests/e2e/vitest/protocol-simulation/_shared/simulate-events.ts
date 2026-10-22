@@ -508,11 +508,11 @@ async function emitPendle(
 
 // -- Aerodrome (Base fork) ---------------------------------------------------
 // Pool ops need no whale (wrap ETH for WETH); AERO comes from the veAERO escrow
-// under impersonation. Locks/vote/distribute drive the Voter + VotingEscrow.
+// under impersonation. Locks drive the VotingEscrow. The vote and distribute
+// events are skipped (see protocols/aerodrome.ts testData): the Aero launch
+// killed every gauge in the Voter, so both revert on a current Base fork.
 const AERO_ROUTER = "0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43";
-const AERO_VOTER = "0x16613524e02ad97eDfeF371bC883F2F5d6C480A5";
 const AERO_ESCROW = "0xeBf418Fe2512e7E6bd9b87a8F0f294aCDC67e6B4";
-const AERO_POOL = "0xcDAC0d6c6C59727a65F871236188350531885C43"; // WETH/USDC volatile
 const AERO_FACTORY = "0x420DD381b31aEf6683db6B902084cB0FFECe40Da";
 const AERO_AERO = "0x940181a94A35A4569E4529A3CDfB74e38FD98631";
 const AERO_WETH = "0x4200000000000000000000000000000000000006";
@@ -530,33 +530,9 @@ const AERO_VE_IFACE = new Interface([
   "function createLock(uint256 _value, uint256 _lockDuration) returns (uint256)",
   "function withdraw(uint256 _tokenId)",
 ]);
-const AERO_VOTER_IFACE = new Interface([
-  "function vote(uint256 _tokenId, address[] _poolVote, uint256[] _weights)",
-  "function gauges(address) view returns (address)",
-  "function distribute(address[] _gauges)",
-]);
 const AERO_DEPOSIT_TOPIC = id(
   "Deposit(address,uint256,uint8,uint256,uint256,uint256)"
 );
-const AERO_WEEK = BigInt(7 * 24 * 3600);
-const AERO_HOUR = BigInt(3600);
-
-// Mirrors VelodromeTimeLibrary.epochStart: epochs run Thu 00:00 UTC to Thu
-// 00:00 UTC. Voter.onlyNewEpoch reverts with DistributeWindow for
-// timestamp <= epochVoteStart (the first hour of a new epoch, Voter.sol:105)
-// and with NotWhitelistedNFT for timestamp > epochVoteEnd (the last hour of
-// the old one, Voter.sol:266), so a vote is only valid in the half-open
-// range (epochVoteStart, epochVoteEnd].
-function aeroEpochStart(timestamp: bigint): bigint {
-  return timestamp - (timestamp % AERO_WEEK);
-}
-
-function isInAeroVoteWindow(timestamp: bigint): boolean {
-  const start = aeroEpochStart(timestamp);
-  return (
-    timestamp > start + AERO_HOUR && timestamp <= start + AERO_WEEK - AERO_HOUR
-  );
-}
 
 async function emitAerodrome(provider: JsonRpcProvider): Promise<Log[]> {
   const logs: Log[] = [];
@@ -610,7 +586,7 @@ async function emitAerodrome(provider: JsonRpcProvider): Promise<Log[]> {
     ])
   );
 
-  // ve-deposit: lock AERO for a year (voting power for the vote below).
+  // ve-deposit + ve-withdraw: a short lock, warped past expiry, then withdrawn.
   await push(
     AERO_AERO,
     AERO_ERC20.encodeFunctionData("approve", [
@@ -618,85 +594,21 @@ async function emitAerodrome(provider: JsonRpcProvider): Promise<Log[]> {
       parseEther("1000000"),
     ])
   );
-  const lock1 = await push(
-    AERO_ESCROW,
-    AERO_VE_IFACE.encodeFunctionData("createLock", [
-      parseEther("1000"),
-      BigInt(365 * 24 * 3600),
-    ])
-  );
-  const id1 = tokenIdFrom(lock1.logs);
-
-  // voter-voted: warp to a fixed offset into the *next* epoch rather than a
-  // fixed +2d delta from "now" - the old delta drifted in and out of the
-  // epoch's voting window depending on when CI ran. Target epochStart(now) +
-  // WEEK + 12h: always a fresh epoch, 11h clear of the opening
-  // DistributeWindow and far clear (~155h) of the closing epochVoteEnd cutoff.
-  const preVoteBlock = await provider.getBlock("latest");
-  if (!preVoteBlock) {
-    throw new Error("aerodrome fork: no latest block before vote warp");
-  }
-  const voteTarget =
-    aeroEpochStart(BigInt(preVoteBlock.timestamp)) +
-    AERO_WEEK +
-    AERO_HOUR * BigInt(12);
-  await provider.send("evm_increaseTime", [
-    Number(voteTarget - BigInt(preVoteBlock.timestamp)),
-  ]);
-  await provider.send("evm_mine", []);
-  const votedBlock = await provider.getBlock("latest");
-  if (!votedBlock) {
-    throw new Error("aerodrome fork: no latest block after vote warp");
-  }
-  expect(
-    isInAeroVoteWindow(BigInt(votedBlock.timestamp)),
-    `aerodrome vote warp landed at ${votedBlock.timestamp}, outside the Aerodrome voting window`
-  ).toBe(true);
-  await push(
-    AERO_VOTER,
-    AERO_VOTER_IFACE.encodeFunctionData("vote", [id1, [AERO_POOL], [ONE]])
-  );
-
-  // ve-withdraw: a short lock, warped past expiry, then withdrawn.
-  const lock2 = await push(
+  const lock = await push(
     AERO_ESCROW,
     AERO_VE_IFACE.encodeFunctionData("createLock", [
       parseEther("100"),
       BigInt(7 * 24 * 3600),
     ])
   );
-  const id2 = tokenIdFrom(lock2.logs);
+  const lockId = tokenIdFrom(lock.logs);
   await provider.send("evm_increaseTime", [8 * 24 * 3600]);
   await provider.send("evm_mine", []);
-  await push(AERO_ESCROW, AERO_VE_IFACE.encodeFunctionData("withdraw", [id2]));
-
-  // distribute-reward: a fresh epoch, then distribute emissions to the voted
-  // gauge (permissionless; drives minter.updatePeriod). Assert the epoch
-  // actually flips instead of assuming the fixed 7-day warp always crosses
-  // one (the same unchecked-assumption class of bug as the vote-window one).
-  const gauge = (await new Contract(
-    AERO_VOTER,
-    AERO_VOTER_IFACE,
-    provider
-  ).gauges(AERO_POOL)) as string;
-  const preDistributeBlock = await provider.getBlock("latest");
-  if (!preDistributeBlock) {
-    throw new Error("aerodrome fork: no latest block before distribute warp");
-  }
-  await provider.send("evm_increaseTime", [7 * 24 * 3600]);
-  await provider.send("evm_mine", []);
-  const distributeBlock = await provider.getBlock("latest");
-  if (!distributeBlock) {
-    throw new Error("aerodrome fork: no latest block after distribute warp");
-  }
-  expect(
-    aeroEpochStart(BigInt(distributeBlock.timestamp)),
-    "distribute-reward warp did not cross an Aerodrome epoch boundary"
-  ).toBeGreaterThan(aeroEpochStart(BigInt(preDistributeBlock.timestamp)));
   await push(
-    AERO_VOTER,
-    AERO_VOTER_IFACE.encodeFunctionData("distribute", [[gauge]])
+    AERO_ESCROW,
+    AERO_VE_IFACE.encodeFunctionData("withdraw", [lockId])
   );
+
   return logs;
 }
 
