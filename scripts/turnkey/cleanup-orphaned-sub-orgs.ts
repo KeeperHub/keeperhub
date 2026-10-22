@@ -39,11 +39,13 @@ import {
   type CreationActivity,
   collectCreationsByKey,
   createRateLimiter,
+  createTurnkeyReader,
   describeError,
   encodeBalanceOfCall,
   groupAddresses,
   hasNonZeroTokenAccount,
   isOwnedSolelyByKey,
+  isSubOrgNotFound,
   mapWithConcurrency,
   parseHexQuantity,
   parseOptions,
@@ -59,6 +61,7 @@ const PAGE_SIZE = 100;
 const CHUNK_SIZE = 100;
 const RPC_BATCH_SIZE = 50;
 const RPC_ATTEMPTS = 3;
+const RPC_RETRY_BASE_MS = 1000;
 const MAX_CONSECUTIVE_TURNKEY_ERRORS = 25;
 const PRINT_IDS_UP_TO = 5;
 const READ_ATTEMPTS = 5;
@@ -90,32 +93,21 @@ type Inspection =
   | { status: "gone" | "not-owned" | "unsupported" | "error" }
   | { status: "ok"; subOrgId: string; addresses: WalletAddresses };
 
+/** For logging only: decisions use the full, untruncated error text. */
 function safeMessage(error: unknown): string {
   return redactAllUrls(describeError(error)).slice(0, 300);
 }
 
-function isNotFound(error: unknown): boolean {
-  return safeMessage(error).includes("no organization found");
-}
-
-/** Turnkey reads are idempotent, so a dropped connection is retried. */
-function read<T>(call: () => Promise<T>): Promise<T> {
-  return withRetry(call, {
-    attempts: READ_ATTEMPTS,
-    baseDelayMs: READ_RETRY_BASE_MS,
-    shouldRetry: (error) => !isNotFound(error),
-  });
-}
+type TurnkeyRead = <T>(call: () => Promise<T>) => Promise<T>;
 
 async function listSubOrgIds(
   client: TurnkeyClient,
   organizationId: string,
-  limit: () => Promise<void>
+  read: TurnkeyRead
 ): Promise<string[]> {
   const ids: string[] = [];
   let after: string | undefined;
   for (;;) {
-    await limit();
     const page = await read(() =>
       client.getSubOrgIds({
         organizationId,
@@ -137,12 +129,11 @@ async function listSubOrgIds(
 async function listCreationActivities(
   client: TurnkeyClient,
   organizationId: string,
-  limit: () => Promise<void>
+  read: TurnkeyRead
 ): Promise<CreationActivity[]> {
   const activities: CreationActivity[] = [];
   let after: string | undefined;
   for (;;) {
-    await limit();
     const page = await read(() =>
       client.getActivities({
         organizationId,
@@ -170,29 +161,40 @@ async function listCreationActivities(
   }
 }
 
+type RpcResponse = { id: number; result?: unknown; error?: unknown }[];
+
+/**
+ * Posts a JSON-RPC batch, alternating between the primary and fallback URL.
+ * Returns undefined when every attempt fails, so the caller marks those
+ * balances unknown. Errors are not logged: they can carry the RPC URL, which
+ * holds an API key.
+ */
 async function postJsonRpc(
   urls: string[],
   body: unknown[]
-): Promise<{ id: number; result?: unknown; error?: unknown }[] | undefined> {
-  for (let attempt = 0; attempt < RPC_ATTEMPTS; attempt += 1) {
-    const url = urls[attempt % urls.length];
-    try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const json: unknown = await response.json();
-      if (response.ok && Array.isArray(json)) {
-        return json;
-      }
-    } catch {
-      // Network errors carry the RPC URL, which holds an API key. Retry
-      // without logging it.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+): Promise<RpcResponse | undefined> {
+  let attempt = 0;
+  try {
+    return await withRetry(
+      async () => {
+        const url = urls[attempt % urls.length];
+        attempt += 1;
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const json: unknown = await response.json();
+        if (!(response.ok && Array.isArray(json))) {
+          throw new Error(`RPC batch failed with HTTP ${response.status}`);
+        }
+        return json as RpcResponse;
+      },
+      { attempts: RPC_ATTEMPTS, baseDelayMs: RPC_RETRY_BASE_MS }
+    );
+  } catch {
+    return;
   }
-  return;
 }
 
 type RpcCall = { method: string; params: unknown[]; address: string };
@@ -377,6 +379,10 @@ async function main(): Promise<void> {
       defaultOrganizationId: organizationId,
     }).apiClient();
   const parent = clientFor(options.organizationId);
+  const read = createTurnkeyReader(limit, {
+    attempts: READ_ATTEMPTS,
+    baseDelayMs: READ_RETRY_BASE_MS,
+  });
 
   const counters: Counters = {
     listed: 0,
@@ -400,9 +406,9 @@ async function main(): Promise<void> {
   const fundedByChain = new Map<string, number>();
   const deletedIds: string[] = [];
 
-  const listed = await listSubOrgIds(parent, options.organizationId, limit);
+  const listed = await listSubOrgIds(parent, options.organizationId, read);
   const createdByKey = collectCreationsByKey(
-    await listCreationActivities(parent, options.organizationId, limit),
+    await listCreationActivities(parent, options.organizationId, read),
     options.apiPublicKey
   );
   const selection = selectCandidates({
@@ -432,7 +438,6 @@ async function main(): Promise<void> {
 
   const inspect = async (subOrgId: string): Promise<Inspection> => {
     try {
-      await limit();
       const { users } = await read(() =>
         parent.getUsers({ organizationId: subOrgId })
       );
@@ -440,7 +445,6 @@ async function main(): Promise<void> {
         consecutiveErrors = 0;
         return { status: "not-owned" };
       }
-      await limit();
       const { accounts } = await read(() =>
         parent.getWalletAccounts({
           organizationId: subOrgId,
@@ -454,7 +458,7 @@ async function main(): Promise<void> {
       }
       return { status: "ok", subOrgId, addresses };
     } catch (error) {
-      if (isNotFound(error)) {
+      if (isSubOrgNotFound(error)) {
         consecutiveErrors = 0;
         return { status: "gone" };
       }

@@ -4,9 +4,10 @@
 # run is a dry run by default. See the header of
 # scripts/turnkey/cleanup-orphaned-sub-orgs.ts for the selection rules.
 #
-# Both the key prefix guard and the sub-orgs to keep come from `staging`
+# The key prefix guard and the sub-orgs to keep come from `staging`
 # environment variables TURNKEY_CLEANUP_KEY_PREFIX and
-# TURNKEY_CLEANUP_EXCLUDE_SUB_ORG_IDS. A manual run may override them.
+# TURNKEY_CLEANUP_EXCLUDE_SUB_ORG_IDS. A manual run may replace the key prefix
+# and may add sub-orgs to keep, but can never drop one from the variable.
 name: turnkey-sub-org-cleanup
 
 on:
@@ -36,7 +37,7 @@ on:
         type: string
         default: "10"
       exclude_sub_org_ids:
-        description: "Comma separated sub-org ids to keep (default: TURNKEY_CLEANUP_EXCLUDE_SUB_ORG_IDS)"
+        description: "Comma separated sub-org ids to keep, added to TURNKEY_CLEANUP_EXCLUDE_SUB_ORG_IDS"
         type: string
         default: ""
 
@@ -73,14 +74,19 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # Without the exclusion list the job would delete sub-orgs that a
-      # database still uses, so a missing variable stops the run.
+      # database still uses, so a missing variable stops the run. The key
+      # prefix may come from the input instead.
       - name: Require cleanup settings
         env:
-          KEY_PREFIX: ${{ vars.TURNKEY_CLEANUP_KEY_PREFIX }}
+          KEY_PREFIX: ${{ inputs.expected_key_prefix || vars.TURNKEY_CLEANUP_KEY_PREFIX }}
           EXCLUDE_IDS: ${{ vars.TURNKEY_CLEANUP_EXCLUDE_SUB_ORG_IDS }}
         run: |
-          if [ -z "$KEY_PREFIX" ] || [ -z "$EXCLUDE_IDS" ]; then
-            echo "::error::Set TURNKEY_CLEANUP_KEY_PREFIX and TURNKEY_CLEANUP_EXCLUDE_SUB_ORG_IDS on the staging environment"
+          if [ -z "$KEY_PREFIX" ]; then
+            echo "::error::Pass expected_key_prefix or set TURNKEY_CLEANUP_KEY_PREFIX on the staging environment"
+            exit 1
+          fi
+          if [ -z "$EXCLUDE_IDS" ]; then
+            echo "::error::Set TURNKEY_CLEANUP_EXCLUDE_SUB_ORG_IDS on the staging environment"
             exit 1
           fi
 
@@ -91,7 +97,7 @@ jobs:
           MAX_SUB_ORGS: ${{ github.event_name == 'schedule' && '1000' || inputs.max_sub_orgs }}
           MIN_AGE_HOURS: ${{ inputs.min_age_hours || '6' }}
           REQUESTS_PER_SECOND: ${{ inputs.requests_per_second || '10' }}
-          EXCLUDE_SUB_ORG_IDS: ${{ inputs.exclude_sub_org_ids || vars.TURNKEY_CLEANUP_EXCLUDE_SUB_ORG_IDS }}
+          EXCLUDE_SUB_ORG_IDS: ${{ format('{0},{1}', vars.TURNKEY_CLEANUP_EXCLUDE_SUB_ORG_IDS, inputs.exclude_sub_org_ids) }}
           TURNKEY_API_PUBLIC_KEY: ${{ secrets.TURNKEY_API_PUBLIC_KEY }}
           TURNKEY_API_PRIVATE_KEY: ${{ secrets.TURNKEY_API_PRIVATE_KEY }}
           TURNKEY_ORGANIZATION_ID: ${{ secrets.TURNKEY_ORGANIZATION_ID }}

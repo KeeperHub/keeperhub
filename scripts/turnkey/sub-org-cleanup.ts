@@ -415,17 +415,92 @@ export async function mapWithConcurrency<T, R>(
 export function describeError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const cause = error instanceof Error ? error.cause : undefined;
-  const code =
-    cause && typeof cause === "object" && "code" in cause
-      ? String((cause as { code: unknown }).code)
-      : undefined;
-  return code ? `${message} (${code})` : message;
+  const reason = causeCode(cause) ?? causeMessage(cause);
+  return reason ? `${message} (${reason})` : message;
+}
+
+function causeCode(cause: unknown): string | undefined {
+  if (!cause || typeof cause !== "object" || !("code" in cause)) {
+    return;
+  }
+  const code = (cause as { code: unknown }).code;
+  if (typeof code === "number" || (typeof code === "string" && code !== "")) {
+    return String(code);
+  }
+  return;
+}
+
+function causeMessage(cause: unknown): string | undefined {
+  return cause instanceof Error && cause.message !== ""
+    ? cause.message
+    : undefined;
+}
+
+const SUB_ORG_NOT_FOUND = "no organization found";
+
+/** True when Turnkey says the sub-org does not exist (any more). */
+export function isSubOrgNotFound(error: unknown): boolean {
+  return describeError(error).includes(SUB_ORG_NOT_FOUND);
+}
+
+// Turnkey API errors carry a gRPC status code. These four are the ones that
+// can succeed on a later attempt: DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED
+// (rate limit), INTERNAL and UNAVAILABLE.
+const TRANSIENT_TURNKEY_CODES: ReadonlySet<number> = new Set([4, 8, 13, 14]);
+const HTTP_STATUS_PREFIX = /^(\d{3}) /;
+
+/**
+ * True for errors a retry can fix: a network failure (fetch puts the reason
+ * code in `cause`), a Turnkey rate limit or server error, or an HTTP 429 or
+ * 5xx that came back without a JSON body. Auth, permission and validation
+ * errors are final.
+ */
+export function isTransientError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  if (causeCode(error.cause)) {
+    return true;
+  }
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "number") {
+    return TRANSIENT_TURNKEY_CODES.has(code);
+  }
+  const status = Number(HTTP_STATUS_PREFIX.exec(error.message)?.[1]);
+  return status === 429 || status >= 500;
+}
+
+export function shouldRetryTurnkeyRead(error: unknown): boolean {
+  return !isSubOrgNotFound(error) && isTransientError(error);
 }
 
 /**
- * Retries a read with growing pauses. Only for idempotent calls: `shouldRetry`
- * lets the caller stop on errors that will not change, such as a missing
- * sub-org.
+ * Builds the wrapper for every Turnkey read. Each attempt, retries included,
+ * waits for the rate limiter first, so retries never push the job above its
+ * configured rate.
+ */
+export function createTurnkeyReader(
+  limit: () => Promise<void>,
+  options: {
+    attempts: number;
+    baseDelayMs: number;
+    sleep?: (ms: number) => Promise<void>;
+  }
+): <T>(call: () => Promise<T>) => Promise<T> {
+  return (call) =>
+    withRetry(
+      async () => {
+        await limit();
+        return call();
+      },
+      { ...options, shouldRetry: shouldRetryTurnkeyRead }
+    );
+}
+
+/**
+ * Retries a call with growing pauses and no pause after the last attempt.
+ * Only for idempotent calls: `shouldRetry` stops on errors that will not
+ * change.
  */
 export async function withRetry<T>(
   call: () => Promise<T>,
