@@ -1,7 +1,6 @@
 "use client";
 
 import { ChevronRight } from "lucide-react";
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { useUserInvitations } from "./hooks/use-user-invitations";
@@ -9,9 +8,9 @@ import {
   isSettingsItemActive,
   isSettingsItemVisible,
   SETTINGS_NAV,
-  settingsHref,
 } from "./nav";
 import { useSettingsContext } from "./settings-context";
+import { SettingsLink } from "./settings-link";
 
 const ROW =
   "flex h-9 items-center gap-3 rounded-md px-2 text-sm transition-colors hover:bg-muted";
@@ -59,13 +58,14 @@ export function SettingsNavList({
             {group.items.map((item) => {
               const active = !menu && isSettingsItemActive(item, pathname);
               return (
-                <Link
+                <SettingsLink
                   aria-current={active ? "page" : undefined}
                   aria-label={item.label}
                   className={cn(menu ? MENU_ROW : ROW, active && "bg-muted")}
                   data-testid={`settings-${menu ? "menu" : "nav"}-${item.segment}`}
-                  href={settingsHref(item, organizationId)}
+                  item={item}
                   key={item.segment}
+                  organizationId={organizationId}
                   // Sections are dynamic routes, so their code is not fetched
                   // until asked for; prefetching keeps the click instant.
                   prefetch
@@ -83,7 +83,7 @@ export function SettingsNavList({
                   {menu && (
                     <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
                   )}
-                </Link>
+                </SettingsLink>
               );
             })}
           </div>

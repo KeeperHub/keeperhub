@@ -687,11 +687,13 @@
   flex: 1 1 0;
   min-width: max-content;
 }
-/* On a phone (below md, as the settings rail; see SettingsShell) the
-   comparison scrolls sideways in its frame with the feature names held in
-   place, rather than five columns squeezed into the screen: 40rem is five
-   8rem columns, enough for "All EVM + Solana" on two lines. */
-@media (width < 48rem) {
+/* In a narrow settings column (a phone, or a tablet beside the rail; the
+   same 36rem as the column's other narrow layouts) the comparison scrolls
+   sideways in its frame with the feature names held in place, rather than
+   five columns squeezed into it: 40rem is five 8rem columns, enough for
+   "All EVM + Solana" on two lines. The pinned names paint the table frame's
+   own translucent slate over the page, so they match it in either theme. */
+@container settings (width < 36rem) {
   .khp-table-wrap .khp-table {
     min-width: 40rem;
   }
@@ -700,7 +702,11 @@
     position: sticky;
     left: 0;
     z-index: 1;
-    background-color: var(--background);
+    background-color: color-mix(
+      in srgb,
+      --theme(--color-slate-800) 30%,
+      var(--background)
+    );
   }
 }
 /* end keeperhub code */

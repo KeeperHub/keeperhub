@@ -61,7 +61,7 @@ export function SectionHeader({
       <div className="flex min-w-0 items-start gap-3">
         {leading}
         <div className="flex min-w-0 flex-col gap-1.5">
-          <h1 className="font-bold text-xl tracking-tight md:text-2xl">
+          <h1 className="font-bold text-xl tracking-tight @xl/settings:text-2xl">
             {title}
           </h1>
           {description && (

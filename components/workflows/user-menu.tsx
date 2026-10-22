@@ -11,7 +11,6 @@ import {
   isSingleProviderSignInInitiated,
 } from "@/components/auth/dialog";
 import { ManageOrgsModal } from "@/components/organization/manage-orgs-modal";
-import { SETTINGS_MENU_PATH } from "@/components/settings/hub/nav";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,7 +27,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useIsMobile } from "@/hooks/use-mobile";
 import { toChecksumAddress, truncateAddress } from "@/lib/address-utils";
 import { isWalletEmail } from "@/lib/auth/wallet-constants";
 import { signOut, useSession } from "@/lib/auth-client";
@@ -120,8 +118,6 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
   const { organization } = useOrganization();
   const { isOwner } = useActiveMember();
   const router = useRouter();
-  // Settings on a phone open on their menu rather than the first section.
-  const isMobile = useIsMobile();
   const openGettingStarted = useSetAtom(gettingStartedOpenAtom);
   const { status: notificationStatus, refresh: refreshNotifications } =
     useNotificationStatus(isOwner ? organization?.id : null);
@@ -204,9 +200,7 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
                 <button
                   aria-label="Account settings"
                   className="relative shrink-0 rounded p-1 text-muted-foreground transition-colors hover:text-foreground"
-                  onClick={() =>
-                    router.push(isMobile ? SETTINGS_MENU_PATH : "/settings")
-                  }
+                  onClick={() => router.push("/settings")}
                   type="button"
                 >
                   <Settings className="size-4" />

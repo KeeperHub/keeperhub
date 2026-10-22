@@ -54,12 +54,6 @@ export type SettingsNavGroup = {
   items: SettingsNavItem[];
 };
 
-/**
- * The settings menu a phone opens on: the rail, full width, as a page of its
- * own. /settings itself goes straight to the first section, as it always has.
- */
-export const SETTINGS_MENU_PATH = "/settings/menu";
-
 export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
   {
     label: "Account",

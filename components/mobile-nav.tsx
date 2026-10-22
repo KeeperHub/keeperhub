@@ -17,7 +17,6 @@ import {
 import { OrgSwitcher } from "@/components/organization/org-switcher";
 import { AddressBookOverlay } from "@/components/overlays/address-book-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
-import { SETTINGS_MENU_PATH } from "@/components/settings/hub/nav";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -33,11 +32,11 @@ import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { cn } from "@/lib/utils";
 import { getCustomLogo } from "@/lib/workflow/editor/extension-registry";
 
-// The drawer is the phone's, and settings on a phone open on their menu
-// rather than the first section.
-const PHONE_SETTINGS_ITEM: NavItemDef = {
-  ...SETTINGS_NAV_ITEM,
-  href: SETTINGS_MENU_PATH,
+// Items that open their index from anywhere inside their section, so they
+// count as already shown only there.
+const INDEX_PATHS: Partial<Record<string, string>> = {
+  workflows: "/workflows",
+  settings: "/settings",
 };
 
 /**
@@ -152,12 +151,13 @@ function MobileNavBody({
 
   function pick(item: NavItemDef): void {
     // Nothing opens for the page already shown, so focus returns (unless
-    // an account-only item asks to sign in). Workflows counts only on its
-    // index: from a workflow it goes to the latest one.
-    const alreadyShown =
-      item.id === "workflows"
-        ? pathname === "/workflows"
-        : isNavItemActive(item.id, pathname);
+    // an account-only item asks to sign in). Workflows and Settings count
+    // only on their index: from a workflow it goes to the latest one, and
+    // from a settings section back to the settings menu.
+    const index = INDEX_PATHS[item.id];
+    const alreadyShown = index
+      ? pathname === index
+      : isNavItemActive(item.id, pathname);
     if (alreadyShown && !(item.requireAuth && isAnonymous)) {
       onPick(true);
       return;
@@ -258,8 +258,8 @@ function MobileNavBody({
           <MobileNavItem
             active={isNavItemActive(SETTINGS_NAV_ITEM.id, pathname)}
             disabled={busy}
-            item={PHONE_SETTINGS_ITEM}
-            onClick={() => pick(PHONE_SETTINGS_ITEM)}
+            item={SETTINGS_NAV_ITEM}
+            onClick={() => pick(SETTINGS_NAV_ITEM)}
           />
         </div>
       </nav>

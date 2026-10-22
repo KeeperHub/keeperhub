@@ -15,8 +15,13 @@ const TABLET = { width: 768, height: 1024 };
 const DESKTOP = { width: 1280, height: 800 };
 // Tailwind's md: below it the rail gives way to the menu.
 const MD = 768;
-const MENU_PATH = "/settings/menu";
-const MENU_URL = /\/settings\/menu$/;
+// The settings index: the menu on a phone, the first section beside the rail.
+const MENU_PATH = "/settings";
+const MENU_URL = /\/settings$/;
+// Org-scoped sections, whose paths carry the organization. A link to one of
+// these without it (/settings/users) reads the section as an org id.
+const ORG_PATH_WITHOUT_ORG =
+  /^\/settings\/(organization|users|notifications|billing|plans|wallets|limits|connections|workspace|api-keys|agents)$/;
 const ACCOUNT_URL = /\/settings\/account$/;
 // An org-scoped section carries the organization in its path.
 const USERS_URL = /\/settings\/[^/]+\/users$/;
@@ -117,6 +122,38 @@ test.describe("settings on a phone", () => {
     await back.click();
     await expect(page).toHaveURL(MENU_URL, FIRST_VISIT);
     await expect(menu).toBeVisible();
+
+    await test.step("from inside a section, the drawer's Settings too", async () => {
+      await users.click();
+      await expect(page).toHaveURL(USERS_URL, FIRST_VISIT);
+      await page.getByTestId("mobile-nav-trigger").click();
+      await page.getByTestId("mobile-nav-settings").click();
+      await expect(page).toHaveURL(MENU_URL, FIRST_VISIT);
+      await expect(menu).toBeVisible();
+    });
+  });
+
+  test("the menu never links a section without its organization", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: PHONE_HEIGHT });
+    await page.goto(MENU_PATH, { waitUntil: "domcontentloaded" });
+    const hrefs = (): Promise<string[]> =>
+      page.$$eval('[data-testid="settings-menu"] a[href]', (links) =>
+        links.map((link) => link.getAttribute("href") ?? "")
+      );
+    // Before the organization has loaded, and after.
+    expect((await hrefs()).filter((h) => ORG_PATH_WITHOUT_ORG.test(h))).toEqual(
+      []
+    );
+    await expect(page.getByTestId("settings-menu-users")).toHaveAttribute(
+      "href",
+      USERS_URL,
+      FIRST_VISIT
+    );
+    expect((await hrefs()).filter((h) => ORG_PATH_WITHOUT_ORG.test(h))).toEqual(
+      []
+    );
   });
 
   test("the menu comes from the server, not only after the page loads", async ({
@@ -150,9 +187,8 @@ test.describe("settings on a phone", () => {
       test.slow();
       await page.setViewportSize({ width, height: PHONE_HEIGHT });
 
-      await test.step("Profile, from /settings", async () => {
-        await page.goto("/settings", { waitUntil: "domcontentloaded" });
-        await expect(page).toHaveURL(ACCOUNT_URL, FIRST_VISIT);
+      await test.step("Profile", async () => {
+        await page.goto("/settings/account", { waitUntil: "domcontentloaded" });
         await contentFitsWidth(page, width);
       });
       await test.step("Account security", async () => {
@@ -227,11 +263,8 @@ test.describe("settings on wider screens", () => {
       await expect(page).toHaveURL(ACCOUNT_URL, FIRST_VISIT);
       await expect(page.getByTestId("settings-rail")).toBeVisible();
       await expect(page.getByTestId("settings-back-to-menu")).toBeHidden();
-
       // The phone's menu has nothing to add beside the rail.
-      await page.goto(MENU_PATH, { waitUntil: "domcontentloaded" });
-      await expect(page).toHaveURL(ACCOUNT_URL, FIRST_VISIT);
-      await expect(page.getByTestId("settings-rail")).toBeVisible();
+      await expect(page.getByTestId("settings-menu")).toHaveCount(0);
     });
   }
 
@@ -268,5 +301,28 @@ test.describe("settings on wider screens", () => {
       }
     }
     expect(pairs).toBeGreaterThan(0);
+  });
+  test("the plan comparison scrolls in a narrow column, not on a desktop", async ({
+    page,
+  }) => {
+    // A tablet beside the rail has a narrow settings column too.
+    for (const [size, scrolls] of [
+      [TABLET, true],
+      [DESKTOP, false],
+    ] as const) {
+      await page.setViewportSize(size);
+      await openOrgSettings(page, "plans");
+      const wrap = page.locator(".khp-table-wrap");
+      await expect(wrap).toBeVisible(FIRST_VISIT);
+      const scrollable = await wrap.evaluate(
+        (element) => element.scrollWidth > element.clientWidth
+      );
+      const pinned = await page
+        .locator(".khp-td--label")
+        .first()
+        .evaluate((cell) => getComputedStyle(cell).position);
+      expect(scrollable).toBe(scrolls);
+      expect(pinned).toBe(scrolls ? "sticky" : "static");
+    }
   });
 });

@@ -5,21 +5,20 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { SETTINGS_MENU_PATH } from "./nav";
 import { SettingsAccessGate } from "./settings-access-gate";
 import { SettingsRail } from "./settings-rail";
 
 /**
- * On a phone the rail gives way to the settings menu, so a section leads back
- * to it from a bar that stays at the top while it scrolls.
+ * On a phone the rail gives way to the settings menu (the /settings index),
+ * so a section leads back to it from a bar that stays at the top while it
+ * scrolls.
  *
  * "A phone" is below Tailwind's md everywhere here, the app's own phone
  * breakpoint (the header's menu button): the rail's max-md:hidden, this bar's
- * md:hidden, the menu page's md:hidden and BELOW_MD_QUERY, the plan
- * comparison's phone scroll in app/globals.css, and the two ways in that
- * lead phones to the menu: the header drawer's Settings (the drawer itself
- * is md:hidden) and the user menu's settings button (useIsMobile). They move
- * together, or a window between them has no way round settings.
+ * md:hidden, and the menu's md:hidden and BELOW_MD_QUERY. The header drawer,
+ * whose Settings opens the menu, is md:hidden too. They move together, or a
+ * window between them has no way round settings. Inside a section, layouts
+ * follow the column's own width instead (@container/settings).
  */
 function SettingsBackBar(): React.ReactElement {
   return (
@@ -27,7 +26,7 @@ function SettingsBackBar(): React.ReactElement {
       <Link
         className="flex h-11 items-center gap-1 rounded-md pr-3 pl-2 font-medium text-sm transition-colors hover:bg-muted"
         data-testid="settings-back-to-menu"
-        href={SETTINGS_MENU_PATH}
+        href="/settings"
       >
         <ChevronLeft className="size-4 shrink-0 text-muted-foreground" />
         Settings
@@ -45,7 +44,7 @@ export function SettingsShell({
   // The plan cards are a four-column grid built for a full page; the reading
   // width every other section wants would crush them into each other.
   const wide = pathname.endsWith("/plans");
-  const menu = pathname === SETTINGS_MENU_PATH;
+  const menu = pathname === "/settings";
 
   return (
     <div

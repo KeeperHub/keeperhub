@@ -206,11 +206,22 @@ describe("MobileNav", () => {
     expect(isOpen()).toBe(false);
   });
 
-  it("opens settings on their phone menu", () => {
+  it("opens the settings menu from inside a settings section", () => {
+    mocks.pathname = "/settings/org-1/users";
     render();
     openDrawer();
     click(item("settings"));
-    expect(mocks.push).toHaveBeenCalledWith("/settings/menu");
+    expect(mocks.push).toHaveBeenCalledWith("/settings");
+    expect(isOpen()).toBe(false);
+  });
+
+  it("only closes for Settings on the settings menu itself", () => {
+    mocks.pathname = "/settings";
+    render();
+    openDrawer();
+    click(item("settings"));
+    expect(mocks.push).not.toHaveBeenCalled();
+    expect(isOpen()).toBe(false);
   });
 
   it("opens the latest workflow for Workflows", () => {

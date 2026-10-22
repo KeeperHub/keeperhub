@@ -32,6 +32,15 @@ function mediaQueryList(query: string): MediaQueryList {
 }
 
 /**
+ * Whether a media query matches right now, from the same shared list the hook
+ * reads. For an effect that must not act on the hook's hydration value
+ * (false until the first client render corrects it). Client only.
+ */
+export function mediaQueryMatches(query: string): boolean {
+  return mediaQueryList(query).matches
+}
+
+/**
  * Whether a media query matches, kept up to date. Right from the first render
  * on the client; false on the server and while hydrating, then corrected.
  */

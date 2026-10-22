@@ -4,40 +4,40 @@ import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { BELOW_MD_QUERY } from "@/hooks/use-mobile";
+import {
+  BELOW_MD_QUERY,
+  mediaQueryMatches,
+  useMediaQuery,
+} from "@/hooks/use-mobile";
 import { useExitPath } from "./hooks/use-exit-path";
-import { MENU_CARD, MENU_ROW, SettingsNavList } from "./settings-nav-list";
+import { SettingsNavList } from "./settings-nav-list";
 import { SettingsNavMatches } from "./settings-nav-matches";
-import { SETTINGS_LINKS } from "./settings-rail";
+import { SettingsLinks } from "./settings-rail";
 import { SettingsSearch } from "./settings-search";
 
 const FIRST_SECTION = "/settings/account";
 
 /**
- * The phone's settings menu (SETTINGS_MENU_PATH): the rail, full width, with
+ * The phone's settings menu, the /settings index: the rail, full width, with
  * each section leading back to it. Below md the rail is hidden (see
  * SettingsShell), so CSS shows this from the first paint; a wider window has
  * the rail beside every section and goes on to the first one.
  */
 export function SettingsMenu(): React.ReactElement {
   const router = useRouter();
+  const phone = useMediaQuery(BELOW_MD_QUERY);
   const exitPath = useExitPath();
   const [query, setQuery] = useState("");
   const searching = query.trim().length > 0;
 
   useEffect(() => {
-    // Asked again when the answer changes, e.g. a phone turned to a landscape
-    // tablet width, where the rail is back.
-    const list = window.matchMedia(BELOW_MD_QUERY);
-    const goOnIfWide = (): void => {
-      if (!list.matches) {
-        router.replace(FIRST_SECTION);
-      }
-    };
-    goOnIfWide();
-    list.addEventListener("change", goOnIfWide);
-    return () => list.removeEventListener("change", goOnIfWide);
-  }, [router]);
+    // `phone` is false while the page hydrates, which would send a phone on
+    // too, so the answer is asked of the shared list itself as well. Runs
+    // again when it changes, e.g. a phone turned to a landscape tablet width.
+    if (!(phone || mediaQueryMatches(BELOW_MD_QUERY))) {
+      router.replace(FIRST_SECTION);
+    }
+  }, [phone, router]);
 
   return (
     <div className="flex flex-col gap-5 md:hidden" data-testid="settings-menu">
@@ -59,20 +59,7 @@ export function SettingsMenu(): React.ReactElement {
           <SettingsNavList variant="menu" />
         )}
       </nav>
-      <div className={MENU_CARD}>
-        {SETTINGS_LINKS.map((item) => (
-          <a
-            className={MENU_ROW}
-            href={item.href}
-            key={item.label}
-            rel="noopener"
-            target="_blank"
-          >
-            <item.icon className="size-4 shrink-0" />
-            <span className="truncate">{item.label}</span>
-          </a>
-        ))}
-      </div>
+      <SettingsLinks variant="menu" />
     </div>
   );
 }

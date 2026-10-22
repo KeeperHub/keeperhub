@@ -1,9 +1,12 @@
-import { redirect } from "next/navigation";
+"use client";
+
+import { SettingsMenu } from "@/components/settings/hub/settings-menu";
 
 /**
- * Settings has no landing page of its own: the rail is the index, and its
- * search finds an individual setting. Land on the first section instead.
+ * The settings index. On a phone it is the settings menu, the rail at full
+ * width; a wider window has the rail beside every section, so the menu sends
+ * it on to the first section.
  */
-export default function SettingsIndex(): never {
-  redirect("/settings/account");
+export default function SettingsIndex(): React.ReactElement {
+  return <SettingsMenu />;
 }

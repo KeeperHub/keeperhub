@@ -9,6 +9,7 @@ import {
   BELOW_LG_QUERY,
   BELOW_MD_QUERY,
   BELOW_SM_QUERY,
+  mediaQueryMatches,
   useIsMobile,
   useMediaQuery,
 } from "@/hooks/use-mobile";
@@ -88,6 +89,14 @@ describe("useMediaQuery", () => {
     expect(seen.at(-1)).toBe(false);
     change(true);
     expect(seen.at(-1)).toBe(true);
+  });
+
+  it("answers right now from the hook's own list", () => {
+    render();
+    expect(mediaQueryMatches("(width < 48rem)")).toBe(true);
+    change(false);
+    expect(mediaQueryMatches("(width < 48rem)")).toBe(false);
+    expect(window.matchMedia).toHaveBeenCalledOnce();
   });
 
   it("builds one list per query, however often it renders", () => {
