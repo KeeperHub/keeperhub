@@ -1,8 +1,8 @@
 "use client";
 
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtomValue, useSetAtom, useStore } from "jotai";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api-client";
 import {
@@ -11,7 +11,14 @@ import {
   hasUnsavedChangesAtom,
   nodesAtom,
   previewVersionAtom,
+  propertiesPanelActiveTabAtom,
 } from "@/lib/workflow/store";
+
+// Bumped by every preview and exit. A canvas load only applies while it is
+// still the latest request, so a version that finishes loading after the user
+// left History (or started another preview) cannot land on the canvas. Shared
+// across hook instances because the panel, banner and page each call the hook.
+let latestCanvasRequest = 0;
 
 /**
  * Single source of truth for previewing a historical workflow version on the
@@ -27,7 +34,7 @@ export function useVersionPreview() {
   const edges = useAtomValue(edgesAtom);
   const setNodes = useSetAtom(nodesAtom);
   const setEdges = useSetAtom(edgesAtom);
-  const previewVersion = useAtomValue(previewVersionAtom);
+  const store = useStore();
   const setPreviewVersion = useSetAtom(previewVersionAtom);
   const setHasUnsavedChanges = useSetAtom(hasUnsavedChangesAtom);
   const router = useRouter();
@@ -53,15 +60,22 @@ export function useVersionPreview() {
       if (!workflowId) {
         return;
       }
+      latestCanvasRequest += 1;
+      const request = latestCanvasRequest;
       try {
         const snap = await api.workflow.getById(workflowId, { version });
+        if (request !== latestCanvasRequest) {
+          return;
+        }
         setNodes(snap.nodes);
         setEdges(snap.edges);
         setPreviewVersion(version);
         setHasUnsavedChanges(false);
         setVersionParam(version);
       } catch {
-        toast.error("Failed to load version");
+        if (request === latestCanvasRequest) {
+          toast.error("Failed to load version");
+        }
       }
     },
     [
@@ -78,10 +92,14 @@ export function useVersionPreview() {
     if (!workflowId) {
       return;
     }
+    // Cancels a preview that is still loading.
+    latestCanvasRequest += 1;
+    const request = latestCanvasRequest;
     // Nothing is previewed, so the canvas already holds the live workflow.
     // Reloading it anyway would replace the nodes and drop the selection; only
-    // a leftover ?version= (e.g. ?version=current) needs clearing.
-    if (previewVersion === null) {
+    // a leftover ?version= (a pending preview, or ?version=current) needs
+    // clearing.
+    if (store.get(previewVersionAtom) === null) {
       if (searchParams?.has("version")) {
         setVersionParam(null);
       }
@@ -89,6 +107,9 @@ export function useVersionPreview() {
     }
     try {
       const live = await api.workflow.getById(workflowId);
+      if (request !== latestCanvasRequest) {
+        return;
+      }
       setNodes(live.nodes);
       setEdges(live.edges);
       setPreviewVersion(null);
@@ -101,7 +122,7 @@ export function useVersionPreview() {
     }
   }, [
     workflowId,
-    previewVersion,
+    store,
     searchParams,
     setNodes,
     setEdges,
@@ -137,4 +158,27 @@ export function useVersionPreview() {
   );
 
   return { preview, exitPreview, restore };
+}
+
+/**
+ * Drops the canvas preview when the properties panel leaves the History tab,
+ * whichever control changed the tab (a tab click, a node double-click, the
+ * mobile overlay). Watching the tab itself keeps this independent of when the
+ * History panel happens to mount or unmount. Call it once, from the editor.
+ */
+export function useExitPreviewOnLeavingHistory(): void {
+  const activeTab = useAtomValue(propertiesPanelActiveTabAtom);
+  const { exitPreview } = useVersionPreview();
+  const previousTab = useRef(activeTab);
+
+  useEffect(() => {
+    const leftHistory =
+      previousTab.current === "history" && activeTab !== "history";
+    previousTab.current = activeTab;
+    if (leftHistory) {
+      exitPreview().catch(() => {
+        // Best-effort: a failure here must not break tab switching.
+      });
+    }
+  }, [activeTab, exitPreview]);
 }

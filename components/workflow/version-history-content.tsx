@@ -667,7 +667,7 @@ export function VersionHistoryContent({
 }): React.ReactElement | null {
   const workflowId = useAtomValue(currentWorkflowIdAtom);
   const previewVersion = useAtomValue(previewVersionAtom);
-  const { preview, exitPreview } = useVersionPreview();
+  const { preview } = useVersionPreview();
   const resolveValue = useConfigValueDisplay(active);
 
   // The workflow-level timeline is URL-driven so the page and the selected
@@ -726,15 +726,6 @@ export function VersionHistoryContent({
       toast.error("Failed to load version history");
     }
   }, [error]);
-
-  useEffect(() => {
-    if (!active) {
-      exitPreview().catch(() => {
-        // Best-effort: leaving the tab should drop the preview, but a failure
-        // here must not break tab switching.
-      });
-    }
-  }, [active, exitPreview]);
 
   // The URL owns the page in the workflow-level view: mirror ?historyPage= into
   // the fetch.

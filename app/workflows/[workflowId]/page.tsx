@@ -71,7 +71,10 @@ import {
   type WorkflowVisibility,
   workflowNotFoundAtom,
 } from "@/lib/workflow/store";
-import { useVersionPreview } from "@/lib/workflow/use-version-preview";
+import {
+  useExitPreviewOnLeavingHistory,
+  useVersionPreview,
+} from "@/lib/workflow/use-version-preview";
 import { findActionById } from "@/plugins/registry";
 
 type WorkflowPageProps = {
@@ -648,6 +651,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
   // canvas. "current" is the live version, so it opens history without a canvas
   // preview. Fires once per distinct version param; clears when removed.
   const { preview: previewVersionOnCanvas } = useVersionPreview();
+  useExitPreviewOnLeavingHistory();
   const appliedVersionParamRef = useRef<string | null>(null);
   useEffect(() => {
     const raw = searchParams?.get("version");
