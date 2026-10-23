@@ -13,7 +13,12 @@ import {
 } from "@/components/ui/table";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { cn } from "@/lib/utils";
-import { NARROW_ONLY, SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import {
+  NARROW_ONLY,
+  NARROW_SR_ONLY,
+  SETTINGS_HEAD_ROW,
+  SETTINGS_ROW,
+} from "../section";
 import type { AssetRow } from "./use-account-assets";
 
 function fmt(balance: string): string {
@@ -61,8 +66,12 @@ export function AssetsTable({
         {rows.map((row) => {
           const funded = Number.parseFloat(row.balance) > 0;
           return (
-            <TableRow className={cn("group", SETTINGS_ROW)} key={row.key}>
-              <TableCell>
+            <TableRow
+              className={cn("group", SETTINGS_ROW)}
+              key={row.key}
+              role="row"
+            >
+              <TableCell role="cell">
                 <div className="flex min-w-0 flex-col">
                   <span className="flex items-center gap-2 font-medium">
                     {row.symbol}
@@ -77,8 +86,9 @@ export function AssetsTable({
                   </span>
                 </div>
               </TableCell>
-              <TableCell>
+              <TableCell role="cell">
                 <span className="flex items-center gap-2 text-muted-foreground">
+                  <span className={NARROW_SR_ONLY}>Network </span>
                   {row.chainName}
                   {row.isTestnet && (
                     <span className="rounded-full border px-2 py-0.5 text-[0.6875rem]">
@@ -87,14 +97,19 @@ export function AssetsTable({
                   )}
                 </span>
               </TableCell>
-              <TableCell className="text-right font-mono tabular-nums @max-xl/settings:text-left">
+              <TableCell
+                className="text-right font-mono tabular-nums @max-xl/settings:text-left"
+                role="cell"
+              >
                 <span className={cn("font-sans", NARROW_ONLY)}>Balance </span>
                 {fmt(row.balance)}
               </TableCell>
               {/* A native coin's "-" says nothing on a line of its own. */}
               <TableCell
                 className={cn(!row.tokenAddress && "@max-xl/settings:hidden")}
+                role="cell"
               >
+                <span className={NARROW_SR_ONLY}>Contract </span>
                 {row.tokenAddress ? (
                   <div className="flex min-w-0 flex-nowrap items-center gap-1">
                     {/* Shown whole where it fits, clipped where it does not,
@@ -139,7 +154,7 @@ export function AssetsTable({
                   <span className="text-muted-foreground text-xs">-</span>
                 )}
               </TableCell>
-              <TableCell className="text-right">
+              <TableCell className="text-right" role="cell">
                 {canWithdraw && funded && (
                   <Button
                     className="h-7 gap-1.5 px-2 text-xs"
@@ -156,8 +171,8 @@ export function AssetsTable({
           );
         })}
         {canAdd && (
-          <TableRow className={SETTINGS_ROW}>
-            <TableCell colSpan={5}>
+          <TableRow className={SETTINGS_ROW} role="row">
+            <TableCell colSpan={5} role="cell">
               <button
                 className="flex items-center gap-3 text-left"
                 onClick={onAdd}

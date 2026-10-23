@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 import {
   NARROW_HIDDEN,
   NARROW_ONLY,
+  NARROW_SR_ONLY,
   SETTINGS_HEAD_ROW,
   SETTINGS_ROW,
 } from "../section";
@@ -79,8 +80,8 @@ export function ApiKeysTable({
       </TableHeader>
       <TableBody>
         {apiKeys.map((key) => (
-          <TableRow className={SETTINGS_ROW} key={key.id}>
-            <TableCell>
+          <TableRow className={SETTINGS_ROW} key={key.id} role="row">
+            <TableCell role="cell">
               <div className="flex min-w-0 flex-col">
                 <span className="truncate font-medium">
                   {key.name || "Untitled key"}
@@ -91,7 +92,8 @@ export function ApiKeysTable({
               </div>
             </TableCell>
             {showScope && (
-              <TableCell>
+              <TableCell role="cell">
+                <span className={NARROW_SR_ONLY}>Scopes </span>
                 <div className="flex flex-wrap gap-1">
                   {(key.scope ?? "")
                     .split(SCOPE_SEPARATOR)
@@ -115,7 +117,7 @@ export function ApiKeysTable({
               </TableCell>
             )}
             {showCreator && (
-              <TableCell>
+              <TableCell role="cell">
                 <div className="flex min-w-0 flex-col">
                   <span className="truncate">
                     <span className={NARROW_ONLY}>Created by </span>
@@ -129,7 +131,10 @@ export function ApiKeysTable({
                 </div>
               </TableCell>
             )}
-            <TableCell className="text-muted-foreground @max-xl/settings:text-xs">
+            <TableCell
+              className="text-muted-foreground @max-xl/settings:text-xs"
+              role="cell"
+            >
               {/* "Last used Never" would not read; a key never used says so. */}
               <span className={NARROW_ONLY}>
                 {key.lastUsedAt ? "Last used " : "Never used"}
@@ -138,7 +143,7 @@ export function ApiKeysTable({
                 {formatDate(key.lastUsedAt)}
               </span>
             </TableCell>
-            <TableCell className="text-right">
+            <TableCell className="text-right" role="cell">
               {canDelete && (
                 <Button
                   aria-label={`Revoke ${key.name || "key"}`}

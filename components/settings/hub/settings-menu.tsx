@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import {
   BELOW_MD_QUERY,
   mediaQueryMatches,
-  useMediaQuery,
+  useIsMobile,
 } from "@/hooks/use-mobile";
 import { useExitPath } from "./hooks/use-exit-path";
 import { SettingsNavList } from "./settings-nav-list";
@@ -25,16 +25,17 @@ const FIRST_SECTION = "/settings/account";
  */
 export function SettingsMenu(): React.ReactElement {
   const router = useRouter();
-  const phone = useMediaQuery(BELOW_MD_QUERY);
+  const phone = useIsMobile();
   const exitPath = useExitPath();
   const [query, setQuery] = useState("");
   const searching = query.trim().length > 0;
 
+  // `phone` is false while the page hydrates, so the width is read from the
+  // shared list itself; `phone` only re-runs this when the breakpoint changes,
+  // e.g. a phone turned to a landscape tablet width.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: phone is a re-run trigger, not a value this reads
   useEffect(() => {
-    // `phone` is false while the page hydrates, which would send a phone on
-    // too, so the answer is asked of the shared list itself as well. Runs
-    // again when it changes, e.g. a phone turned to a landscape tablet width.
-    if (!(phone || mediaQueryMatches(BELOW_MD_QUERY))) {
+    if (!mediaQueryMatches(BELOW_MD_QUERY)) {
       router.replace(FIRST_SECTION);
     }
   }, [phone, router]);

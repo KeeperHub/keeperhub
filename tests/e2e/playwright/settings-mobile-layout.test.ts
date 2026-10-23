@@ -63,9 +63,17 @@ async function contentFitsWidth(page: Page, width: number): Promise<void> {
     .toBe(true);
   // The first card spans the screen less its gutters: the rail used to take
   // 200px of it, leaving a column a word or two wide.
+  // A section can be swapped for its loaded form right after it shows, so the
+  // measurement is retried until it lands on one that stays.
   const card = main.locator("section").first();
-  await expect(card).toBeVisible(FIRST_VISIT);
-  const { x, width: cardWidth } = await box(card);
+  let measured: Box | null = null;
+  await expect
+    .poll(async () => {
+      measured = await card.boundingBox();
+      return measured;
+    }, FIRST_VISIT)
+    .not.toBeNull();
+  const { x, width: cardWidth } = measured ?? (await box(card));
   expect(x).toBeLessThanOrEqual(MAX_GUTTER);
   expect(Math.abs(x - (width - x - cardWidth))).toBeLessThanOrEqual(1);
 }
@@ -220,10 +228,15 @@ test.describe("settings on a phone", () => {
         // from 390; Connections' is not, so its search takes the next.
         if (width >= SHARED_HEADER_FROM) {
           await openOrgSettings(page, "users");
+          // Measured once the header has settled: the card can still be
+          // laying out when its search first shows.
+          await expect
+            .poll(async () => {
+              const parts = await headerParts(page);
+              return Math.abs(centreY(parts.title) - centreY(parts.search));
+            }, FIRST_VISIT)
+            .toBeLessThanOrEqual(2);
           const members = await headerParts(page);
-          expect(
-            Math.abs(centreY(members.title) - centreY(members.search))
-          ).toBeLessThanOrEqual(2);
           expect(members.search.x).toBeGreaterThan(
             members.title.x + members.title.width
           );
@@ -264,6 +277,31 @@ test.describe("tables in a narrow column", () => {
     const { head, row } = await membersTable(page);
     await expect(head).toBeVisible();
     await expect(row.getByText("Joined")).toBeHidden();
+  });
+
+  test("still read as rows and cells, each naming its column", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: PHONE_HEIGHT });
+    await openOrgSettings(page, "users");
+    const { head, row } = await membersTable(page);
+    await expect(head).toBeHidden();
+    // A grid row drops its implicit table roles in some engines.
+    await expect(row).toHaveAttribute("role", "row");
+    // With the header row hidden, the cell says which column it is.
+    await expect(row.getByRole("cell", { name: /^Role\b/ })).toHaveCount(1);
+
+    await page.goto("/settings/security", { waitUntil: "domcontentloaded" });
+    const session = page
+      .getByRole("row")
+      .filter({ has: page.getByRole("cell", { name: /^Location\b/ }) })
+      .first();
+    await expect(session).toBeVisible(FIRST_VISIT);
+    await expect(
+      session.getByRole("cell", {
+        name: /^Last active (just now|\d+[mhd] ago)$/,
+      })
+    ).toHaveCount(1);
   });
 });
 

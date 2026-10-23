@@ -15,7 +15,7 @@ import {
 import type { Integration } from "@/lib/api-client";
 import { ConfirmDeleteDialog } from "../confirm-delete-dialog";
 import type { LabelledIntegration } from "../hooks/use-connections";
-import { SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import { NARROW_SR_ONLY, SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
 
 export function ConnectionsTable({
   connections,
@@ -44,8 +44,8 @@ export function ConnectionsTable({
         </TableHeader>
         <TableBody>
           {connections.map((connection) => (
-            <TableRow className={SETTINGS_ROW} key={connection.id}>
-              <TableCell>
+            <TableRow className={SETTINGS_ROW} key={connection.id} role="row">
+              <TableCell role="cell">
                 <span className="flex items-center gap-2.5 font-medium">
                   <IntegrationIcon
                     className="size-4 shrink-0"
@@ -55,10 +55,14 @@ export function ConnectionsTable({
                 </span>
               </TableCell>
               {/* In a narrow column: under the service, past its icon. */}
-              <TableCell className="text-muted-foreground @max-xl/settings:pl-8.5 @max-xl/settings:text-xs">
+              <TableCell
+                className="text-muted-foreground @max-xl/settings:pl-8.5 @max-xl/settings:text-xs"
+                role="cell"
+              >
+                <span className={NARROW_SR_ONLY}>Label </span>
                 {connection.name}
               </TableCell>
-              <TableCell className="text-right">
+              <TableCell className="text-right" role="cell">
                 <div className="flex justify-end gap-1">
                   <Button
                     aria-label="Activity"

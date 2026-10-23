@@ -33,7 +33,12 @@ import type {
   McpConnectionRow,
   McpUserGroup,
 } from "../hooks/use-mcp-connections";
-import { NARROW_ONLY, SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import {
+  NARROW_ONLY,
+  NARROW_SR_ONLY,
+  SETTINGS_HEAD_ROW,
+  SETTINGS_ROW,
+} from "../section";
 
 // In a narrow column a person's access and last use sit under their name,
 // past the chevron, and a session's under its own indented name.
@@ -222,7 +227,7 @@ export function ConnectionsTable({
           {loading &&
             SKELETON_ROWS.map((key) => (
               <TableRow key={key}>
-                <TableCell colSpan={4}>
+                <TableCell colSpan={4} role="cell">
                   <Skeleton className="h-8 w-full" />
                 </TableCell>
               </TableRow>
@@ -230,7 +235,7 @@ export function ConnectionsTable({
 
           {!loading && shown.length === 0 && (
             <TableRow>
-              <TableCell colSpan={4}>
+              <TableCell colSpan={4} role="cell">
                 <span className="block py-6 text-center text-muted-foreground text-xs">
                   Nothing matches that.
                 </span>
@@ -245,8 +250,12 @@ export function ConnectionsTable({
               const hasSessions = group.sessions.length > 0;
               const isOpen = hasSessions && !collapsed.has(group.userId);
               return [
-                <TableRow className={SETTINGS_ROW} key={group.userId}>
-                  <TableCell>
+                <TableRow
+                  className={SETTINGS_ROW}
+                  key={group.userId}
+                  role="row"
+                >
+                  <TableCell role="cell">
                     <button
                       aria-expanded={isOpen}
                       className="flex min-w-0 items-center gap-2 text-left"
@@ -273,14 +282,14 @@ export function ConnectionsTable({
                       </span>
                     </button>
                   </TableCell>
-                  <TableCell className={UNDER_PERSON}>
+                  <TableCell className={UNDER_PERSON} role="cell">
                     {canManage && group.canEdit ? (
                       <Select
                         disabled={busyId === group.userId}
                         onValueChange={(next) => onScopeChange(group, next)}
                         value={group.maxScope ?? UNSET_READS_AS}
                       >
-                        <SelectTrigger className="h-8 w-48">
+                        <SelectTrigger aria-label="Access" className="h-8 w-48">
                           <SelectValue />
                         </SelectTrigger>
                         {/* The label stays plain: the trigger renders the
@@ -305,12 +314,13 @@ export function ConnectionsTable({
                         </SelectContent>
                       </Select>
                     ) : (
-                      <span className="pl-3 text-sm">
+                      <span className="text-sm @xl/settings:pl-3">
+                        <span className={NARROW_SR_ONLY}>Access </span>
                         {scopeLabel(group.maxScope ?? UNSET_READS_AS)}
                       </span>
                     )}
                   </TableCell>
-                  <TableCell className={UNDER_PERSON}>
+                  <TableCell className={UNDER_PERSON} role="cell">
                     {(() => {
                       const latest = lastUsedAcross(group);
                       return (
@@ -323,12 +333,16 @@ export function ConnectionsTable({
                       );
                     })()}
                   </TableCell>
-                  <TableCell />
+                  <TableCell role="cell" />
                 </TableRow>,
 
                 ...(isOpen ? group.sessions : []).map((session) => (
-                  <TableRow className={SETTINGS_ROW} key={session.id}>
-                    <TableCell className="pl-10">
+                  <TableRow
+                    className={SETTINGS_ROW}
+                    key={session.id}
+                    role="row"
+                  >
+                    <TableCell className="pl-10" role="cell">
                       <div className="flex min-w-0 flex-col">
                         <span className="flex min-w-0 items-center gap-2 text-sm">
                           <span className="truncate">{session.clientName}</span>
@@ -346,18 +360,20 @@ export function ConnectionsTable({
                         </span>
                       </div>
                     </TableCell>
-                    <TableCell className={UNDER_SESSION}>
-                      {/* Padded to the select trigger above it, so the session's
-                          level lines up with the person's rather than sitting a
-                          step to its left. */}
-                      <span className="pl-3 text-muted-foreground text-xs">
+                    <TableCell className={UNDER_SESSION} role="cell">
+                      {/* In the wide layout, padded to the select trigger above
+                          it, so the session's level lines up with the person's.
+                          Stacked in a narrow column it lines up with the lines
+                          around it instead. */}
+                      <span className="text-muted-foreground text-xs @xl/settings:pl-3">
+                        <span className={NARROW_SR_ONLY}>Access </span>
                         {scopeLabel(effectiveScope(session.scope))}
                       </span>
                     </TableCell>
-                    <TableCell className={UNDER_SESSION}>
+                    <TableCell className={UNDER_SESSION} role="cell">
                       <LastUsed session={session} />
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="text-right" role="cell">
                       <Button
                         className="h-7 text-xs"
                         disabled={busyId === session.id}

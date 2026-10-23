@@ -154,7 +154,7 @@ export function StatTile({
   return (
     // Three to a row from a 20rem column, one to a row below that (their
     // grids), and a little tighter in a narrow column so three still fit.
-    <div className="flex flex-col gap-1.5 rounded-xl border bg-card/60 p-3 @xl/settings:p-4">
+    <div className="flex min-w-0 flex-col gap-1.5 rounded-xl border bg-card/60 p-3 @xl/settings:p-4">
       <span
         className={cn("w-fit text-muted-foreground text-xs", loading && VEILED)}
       >
@@ -162,7 +162,10 @@ export function StatTile({
       </span>
       <span
         className={cn(
-          "w-fit font-bold text-xl tabular-nums",
+          // A narrow column leaves a third of a phone for each tile, so the
+          // value steps down there and may break rather than spill into the
+          // next tile ("Enterprise", "1,234,567").
+          "w-fit max-w-full font-bold text-base tabular-nums [overflow-wrap:anywhere] @md/settings:text-xl",
           loading && VEILED
         )}
       >
@@ -221,7 +224,9 @@ export const SETTINGS_ROW = [
   // In a narrow content column (a phone, or a tablet beside the rail) the row
   // becomes a block: the first cell heads it, the last one (the row's action)
   // stays top right, and the cells between line up under the heading. The
-  // band would be drawn once per cell there, so it goes.
+  // band would be drawn once per cell there, so it goes. A grid row loses its
+  // table semantics in WebKit and some Chromium versions, so rows and cells
+  // using this state role="row" / role="cell".
   "@max-xl/settings:grid @max-xl/settings:grid-cols-[minmax(0,1fr)_auto] @max-xl/settings:items-start @max-xl/settings:gap-x-3 @max-xl/settings:gap-y-1 @max-xl/settings:py-3",
   "@max-xl/settings:[&>td]:col-start-1 @max-xl/settings:[&>td]:py-0 @max-xl/settings:[&>td]:whitespace-normal @max-xl/settings:[&>td]:before:hidden",
   "@max-xl/settings:[&>td:last-child:not(:first-child)]:col-start-2 @max-xl/settings:[&>td:last-child:not(:first-child)]:row-start-1",
@@ -237,6 +242,14 @@ export const SETTINGS_HEAD_ROW =
 
 /** Shown only in a narrow content column, e.g. the "Joined" before a date. */
 export const NARROW_ONLY = "@xl/settings:hidden";
+
+/**
+ * A column name read out only by screen readers in a narrow content column,
+ * for a cell that shows no NARROW_ONLY label. The header row is hidden there,
+ * so without it the cell would be read with no context. The wide layout has
+ * the header row.
+ */
+export const NARROW_SR_ONLY = "sr-only @xl/settings:hidden";
 
 /** Hidden in a narrow content column, where NARROW_ONLY says it another way. */
 export const NARROW_HIDDEN = "@max-xl/settings:hidden";

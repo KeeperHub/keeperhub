@@ -123,8 +123,8 @@ export function TableSkeleton({
       </TableHeader>
       <TableBody>
         {KEYS.slice(0, rows).map((key) => (
-          <TableRow className={SETTINGS_ROW} key={key}>
-            <TableCell>
+          <TableRow className={SETTINGS_ROW} key={key} role="row">
+            <TableCell role="cell">
               <div className="flex items-center gap-3">
                 {leading && <Skeleton className="size-8 shrink-0 rounded-lg" />}
                 <div className="flex flex-col gap-1.5">
@@ -134,7 +134,7 @@ export function TableSkeleton({
               </div>
             </TableCell>
             {rest.map((i) => (
-              <TableCell key={i}>
+              <TableCell key={i} role="cell">
                 <Skeleton className="h-4 w-16" />
               </TableCell>
             ))}

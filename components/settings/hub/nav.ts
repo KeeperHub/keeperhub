@@ -566,10 +566,24 @@ export function findSettingsItem(pathname: string): SettingsNavItem | null {
   return null;
 }
 
+/**
+ * Who is looking. `noOrganization` is true once the session has resolved with
+ * no organization to show (none active, or it failed to load); org sections
+ * have nowhere to go then, so they are left out rather than shown inert.
+ */
+export type SettingsAccess = {
+  isOwner: boolean;
+  isAdmin: boolean;
+  noOrganization?: boolean;
+};
+
 export function isSettingsItemVisible(
   item: SettingsNavItem,
-  access: { isOwner: boolean; isAdmin: boolean }
+  access: SettingsAccess
 ): boolean {
+  if (item.scope === "org" && access.noOrganization) {
+    return false;
+  }
   if (item.ownerOnly && !access.isOwner) {
     return false;
   }
@@ -621,7 +635,7 @@ export type SettingsMatch = {
  */
 export function findSettingsMatches(
   query: string,
-  access: { isOwner: boolean; isAdmin: boolean }
+  access: SettingsAccess
 ): SettingsMatch[] {
   const typed = words(query);
   if (typed.length === 0) {

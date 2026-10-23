@@ -2,13 +2,16 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { cn } from "@/lib/utils";
 import { type SettingsNavItem, settingsHref } from "./nav";
 
 /**
  * A link to a settings section (and, with `suffix`, to a card in it). An
  * org-scoped section's path carries the organization; until that has loaded
  * the path would have none, and /settings/users reads "users" as an org id
- * and bounces back out. So the row waits as plain text until it can go.
+ * and bounces back out. So the row waits, dimmed and without a hover, until it
+ * can go. Once the session resolves with no organization the nav leaves these
+ * rows out instead (see isSettingsItemVisible).
  */
 export function SettingsLink({
   item,
@@ -32,7 +35,11 @@ export function SettingsLink({
 }): React.ReactElement {
   if (item.scope === "org" && !organizationId) {
     return (
-      <span aria-disabled="true" className={className} {...attributes}>
+      <span
+        aria-disabled="true"
+        className={cn(className, "pointer-events-none opacity-50")}
+        {...attributes}
+      >
         {children}
       </span>
     );
