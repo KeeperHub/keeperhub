@@ -5,6 +5,10 @@
  * ever cleans those sub-orgs up.
  *
  * A sub-org is deleted only when all of these hold:
+ *   - no app uses this job's API key: APP_PUBLIC_KEYS holds a valid public
+ *     key for every app and none of them is this job's key. Checked once,
+ *     before anything else; otherwise the script refuses to run, because an
+ *     app's real wallets would look exactly like e2e leftovers
  *   - it still exists under TURNKEY_ORGANIZATION_ID
  *   - its creation activity was signed by this job's API key only
  *   - it is older than MIN_AGE_HOURS and not in EXCLUDE_SUB_ORG_IDS
@@ -20,6 +24,10 @@
  *   MIN_AGE_HOURS             skip sub-orgs younger than this (default 6)
  *   REQUESTS_PER_SECOND       Turnkey request rate (default 10, max 30)
  *   EXCLUDE_SUB_ORG_IDS       comma or space separated sub-org ids to keep
+ *   APP_PUBLIC_KEYS           comma separated live Turnkey public key of
+ *                             every app (staging, which the PR environments
+ *                             share, and prod); the workflow reads them
+ *                             right before this script runs
  *   TURNKEY_API_PUBLIC_KEY, TURNKEY_API_PRIVATE_KEY, TURNKEY_ORGANIZATION_ID
  *   CHAIN_RPC_CONFIG
  *
