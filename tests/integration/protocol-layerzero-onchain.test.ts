@@ -937,6 +937,10 @@ const UNUSED_ORIGIN = {
   nonce: 1,
 };
 
+// Four sequential reads per chain, and a stalled public testnet RPC can hold
+// any one of them for the provider's 30s timeout before its retry answers.
+const VIEW_SUITE_TIMEOUT_MS = 4 * 31_000;
+
 describe("LayerZero EndpointV2View deployments answer executable()", () => {
   for (const chainId of Object.keys(
     layerzeroDef.contracts.endpointV2View.addresses
@@ -998,7 +1002,7 @@ describe("LayerZero EndpointV2View deployments answer executable()", () => {
           LAYERZERO_EIDS[chainId]
         );
       },
-      30_000
+      VIEW_SUITE_TIMEOUT_MS
     );
   }
 });
