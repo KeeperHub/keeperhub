@@ -272,7 +272,7 @@ test.describe("Protocol popup rows", () => {
     {
       protocol: "aerodrome",
       tab: "Events",
-      title: "Gauge Vote Cast",
+      title: "Pool Reserves Synced",
       action: "Listen to Event",
     },
   ] as const;
