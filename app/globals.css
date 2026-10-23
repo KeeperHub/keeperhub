@@ -45,6 +45,49 @@
     }
   }
 }
+/* Where typing brings up an on-screen keyboard: phones (below sm), and touch
+   screens of any width. */
+@custom-variant soft-keyboard {
+  @media (width < --theme(--breakpoint-sm)) {
+    @slot;
+  }
+  @variant touch {
+    @slot;
+  }
+}
+
+/* A window that holds a code entry (marked data-keyboard-safe, as
+   DualFactorSteps is) sits near the top on phones and touch screens, so the
+   on-screen keyboard does not cover its field and buttons. It is never taller
+   than what the keyboard leaves visible: --visual-viewport-height and -top
+   come from useVisualViewportVars while the code entry is mounted (dvh does
+   not shrink for the keyboard); the window itself scrolls the rest. A screen
+   640px or wider with a mouse keeps the centred window. */
+@utility keyboard-safe-window {
+  @variant soft-keyboard {
+    &:has([data-keyboard-safe]) {
+      --keyboard-safe-top: max(12dvh, calc(env(safe-area-inset-top) + 1rem));
+      --keyboard-safe-bottom: max(1rem, env(safe-area-inset-bottom));
+      --tw-translate-y: 0;
+      top: calc(var(--visual-viewport-top, 0px) + var(--keyboard-safe-top));
+      max-height: calc(
+        var(--visual-viewport-height, 100dvh) -
+        var(--keyboard-safe-top) -
+        var(--keyboard-safe-bottom)
+      );
+      overflow-y: auto;
+      /* Follow the keyboard at once: a duration such as DialogContent's
+         duration-200 would otherwise animate top and max-height (WebKit for
+         up to 1.5s), leaving the bottom under the keyboard meanwhile. */
+      transition-property: none;
+      /* Phones, and short screens such as a phone turned sideways, keep
+         every pixel above the keyboard. */
+      @media (width < --theme(--breakpoint-sm)) or (height < 40rem) {
+        --keyboard-safe-top: calc(env(safe-area-inset-top) + 1rem);
+      }
+    }
+  }
+}
 
 @theme inline {
   /* 375px and 420px: the phone header's switcher and wallet (see
