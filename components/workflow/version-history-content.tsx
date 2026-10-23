@@ -727,14 +727,16 @@ export function VersionHistoryContent({
     }
   }, [error]);
 
+  // Only with a preview open: exitPreview reloads the live nodes, which would
+  // drop the canvas selection.
   useEffect(() => {
-    if (!active) {
+    if (!active && previewVersion !== null) {
       exitPreview().catch(() => {
         // Best-effort: leaving the tab should drop the preview, but a failure
         // here must not break tab switching.
       });
     }
-  }, [active, exitPreview]);
+  }, [active, previewVersion, exitPreview]);
 
   // The URL owns the page in the workflow-level view: mirror ?historyPage= into
   // the fetch.
