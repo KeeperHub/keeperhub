@@ -89,12 +89,23 @@ export const edgesAtom = atom<WorkflowEdge[]>([]);
 // this is set so previewing a past version can never clobber the live
 // workflow via the debounced save.
 export const previewVersionAtom = atom<number | null>(null);
-// Outcome of the latest version-preview response, announced on the canvas as
-// data-preview-request so tests can wait for it: "applied" when it reached the
-// canvas, "discarded" when an exit, restore or newer preview had superseded it,
-// "failed" when the request errored.
-export type PreviewRequestOutcome = "none" | "applied" | "discarded" | "failed";
-export const previewRequestOutcomeAtom = atom<PreviewRequestOutcome>("none");
+// Version-preview requests, announced on the canvas as data-preview-request
+// ("2:discarded 3:applied") so tests can wait for one specific request:
+// "pending" while it loads, "applied" when it reached the canvas, "discarded"
+// when an exit, restore or newer preview had superseded it, "failed" when it
+// errored. Each request only updates its own entry, and starting a preview
+// drops the settled ones, so an earlier outcome cannot answer a later wait.
+export type PreviewRequestStatus =
+  | "pending"
+  | "applied"
+  | "discarded"
+  | "failed";
+export type PreviewRequest = {
+  request: number;
+  version: number;
+  status: PreviewRequestStatus;
+};
+export const previewRequestsAtom = atom<PreviewRequest[]>([]);
 // Whether the right-docked version-history panel is open in the editor.
 export const versionHistoryOpenAtom = atom(false);
 export const selectedNodeAtom = atom<string | null>(null);

@@ -116,14 +116,28 @@ function tab(page: Page, name: "Properties" | "Runs" | "History") {
   return page.getByRole("tab", { name, exact: true });
 }
 
-// The canvas announces what happened to the latest preview response, so the
-// cancellation tests can wait for the late response to be dropped instead of
-// sleeping.
-async function expectPreviewDiscarded(page: Page): Promise<void> {
+// The canvas announces each version-preview request as "<version>:<status>",
+// so a test can wait for one specific request to land or be dropped instead
+// of sleeping.
+async function expectPreviewRequests(page: Page, value: string): Promise<void> {
   await expect(page.getByTestId("workflow-canvas")).toHaveAttribute(
     "data-preview-request",
-    "discarded"
+    value
   );
+}
+
+// Several version rows can be expanded at once, so scope the View button to
+// the row it belongs to.
+async function viewVersion(page: Page, version: number): Promise<void> {
+  const toggle = page.getByRole("button", {
+    name: new RegExp(`Version ${version}\\b`),
+  });
+  await toggle.click();
+  await page
+    .getByRole("listitem")
+    .filter({ has: toggle })
+    .getByRole("button", { name: "View on canvas" })
+    .click();
 }
 
 test.describe("Leaving the History tab", () => {
@@ -190,7 +204,7 @@ test.describe("Leaving the History tab", () => {
       await tab(page, "Runs").click();
       await expect(page).not.toHaveURL(VERSION_PARAM);
       await held.release();
-      await expectPreviewDiscarded(page);
+      await expectPreviewRequests(page, "1:discarded");
 
       await expect(tab(page, "Runs")).toHaveAttribute("aria-selected", "true");
       await expect(page).not.toHaveURL(VERSION_PARAM);
@@ -228,7 +242,7 @@ test.describe("Leaving the History tab", () => {
         "true"
       );
       await held.release();
-      await expectPreviewDiscarded(page);
+      await expectPreviewRequests(page, "1:discarded");
 
       await expect(page.locator("#label")).toHaveValue(LIVE_LABEL);
       await expect(actionNode).toContainText(LIVE_LABEL);
@@ -263,13 +277,52 @@ test.describe("Leaving the History tab", () => {
       await page.getByRole("button", { name: "Restore this version" }).click();
       await expect(page).not.toHaveURL(VERSION_PARAM);
       await held.release();
-      await expectPreviewDiscarded(page);
+      await expectPreviewRequests(page, "2:discarded");
 
       await expect(actionNode).toContainText(OLD_LABEL);
       await expect(page).not.toHaveURL(VERSION_PARAM);
       await expect(
         page.getByRole("button", { name: "Exit preview" })
       ).toBeHidden();
+    } finally {
+      await deleteTestWorkflow(id);
+    }
+  });
+});
+
+test.describe("Previewing versions", () => {
+  test("each preview reports its own outcome", async ({ page, apiRequest }) => {
+    const id = await createVersionedWorkflow(page, apiRequest, [
+      "Label one",
+      "Label two",
+      "Label three",
+      LIVE_LABEL,
+    ]);
+    try {
+      const actionNode = page.getByTestId("action-node-action-1");
+      await openWorkflow(page, id);
+      await tab(page, "History").click();
+      await viewVersion(page, 1);
+      await expectPreviewRequests(page, "1:applied");
+
+      // A new preview starts as pending, so the earlier "applied" cannot
+      // answer a wait for it.
+      const held = await holdVersionRequest(page, id, 2);
+      await viewVersion(page, 2);
+      await held.requested;
+      await expectPreviewRequests(page, "2:pending");
+
+      // Version 3 lands while version 2 is still loading.
+      await viewVersion(page, 3);
+      await expectPreviewRequests(page, "2:pending 3:applied");
+      await expect(actionNode).toContainText("Label three");
+
+      // The late version 2 response is dropped without overwriting what
+      // version 3 reported.
+      await held.release();
+      await expectPreviewRequests(page, "2:discarded 3:applied");
+      await expect(actionNode).toContainText("Label three");
+      await expect(page).toHaveURL(/[?&]version=3\b/);
     } finally {
       await deleteTestWorkflow(id);
     }

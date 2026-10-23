@@ -10,7 +10,8 @@ import {
   edgesAtom,
   hasUnsavedChangesAtom,
   nodesAtom,
-  previewRequestOutcomeAtom,
+  type PreviewRequestStatus,
+  previewRequestsAtom,
   previewVersionAtom,
   propertiesPanelActiveTabAtom,
 } from "@/lib/workflow/store";
@@ -38,7 +39,7 @@ export function useVersionPreview() {
   const store = useStore();
   const setPreviewVersion = useSetAtom(previewVersionAtom);
   const setHasUnsavedChanges = useSetAtom(hasUnsavedChangesAtom);
-  const setPreviewOutcome = useSetAtom(previewRequestOutcomeAtom);
+  const setPreviewRequests = useSetAtom(previewRequestsAtom);
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -64,10 +65,23 @@ export function useVersionPreview() {
       }
       latestCanvasRequest += 1;
       const request = latestCanvasRequest;
+      setPreviewRequests((entries) => [
+        ...entries.filter((entry) => entry.status === "pending"),
+        { request, version, status: "pending" },
+      ]);
+      // Updates only this request's entry, so a late response cannot overwrite
+      // what a newer preview reported.
+      const settle = (status: PreviewRequestStatus) => {
+        setPreviewRequests((entries) =>
+          entries.map((entry) =>
+            entry.request === request ? { ...entry, status } : entry
+          )
+        );
+      };
       try {
         const snap = await api.workflow.getById(workflowId, { version });
         if (request !== latestCanvasRequest) {
-          setPreviewOutcome("discarded");
+          settle("discarded");
           return;
         }
         setNodes(snap.nodes);
@@ -75,19 +89,19 @@ export function useVersionPreview() {
         setPreviewVersion(version);
         setHasUnsavedChanges(false);
         setVersionParam(version);
-        setPreviewOutcome("applied");
+        settle("applied");
       } catch {
         if (request === latestCanvasRequest) {
-          setPreviewOutcome("failed");
+          settle("failed");
           toast.error("Failed to load version");
         } else {
-          setPreviewOutcome("discarded");
+          settle("discarded");
         }
       }
     },
     [
       workflowId,
-      setPreviewOutcome,
+      setPreviewRequests,
       setNodes,
       setEdges,
       setPreviewVersion,

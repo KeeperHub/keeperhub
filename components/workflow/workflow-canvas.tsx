@@ -41,7 +41,7 @@ import {
   nodesAtom,
   onEdgesChangeAtom,
   onNodesChangeAtom,
-  previewRequestOutcomeAtom,
+  previewRequestsAtom,
   propertiesPanelActiveTabAtom,
   rightPanelWidthAtom,
   selectedEdgeAtom,
@@ -106,7 +106,7 @@ export function WorkflowCanvas() {
   const currentWorkflowId = useAtomValue(currentWorkflowIdAtom);
   const [showMinimap] = useAtom(showMinimapAtom);
   const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
-  const previewRequestOutcome = useAtomValue(previewRequestOutcomeAtom);
+  const previewRequests = useAtomValue(previewRequestsAtom);
   const isPanelAnimating = useAtomValue(isPanelAnimatingAtom);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useAtom(isSidebarCollapsedAtom);
   const setIsPanelAnimating = useSetAtom(isPanelAnimatingAtom);
@@ -771,7 +771,9 @@ export function WorkflowCanvas() {
       className="relative h-full bg-background"
       data-testid="workflow-canvas"
       data-ready={isCanvasReady}
-      data-preview-request={previewRequestOutcome}
+      data-preview-request={previewRequests
+        .map((entry) => `${entry.version}:${entry.status}`)
+        .join(" ")}
       style={{
         opacity: isCanvasReady ? 1 : 0,
         width: rightPanelWidth ? `calc(100% - ${rightPanelWidth})` : "100%",
