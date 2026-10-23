@@ -6,20 +6,28 @@ import {
   type CreationActivity,
   collectCreationsByKey,
   createRateLimiter,
+  createTurnkeyReader,
+  describeError,
   encodeBalanceOfCall,
   groupAddresses,
   hasNonZeroTokenAccount,
   isOwnedSolelyByKey,
+  isSubOrgNotFound,
+  isTransientError,
   mapWithConcurrency,
   parseHexQuantity,
   parseOptions,
   selectCandidates,
+  shouldRetryTurnkeyRead,
+  withRetry,
 } from "../../scripts/turnkey/sub-org-cleanup";
 
 const KEY =
   "03aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const OTHER_KEY =
   "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const STAGING_APP_KEY = `02${"c".repeat(64)}`;
+const PROD_APP_KEY = `03${"d".repeat(64)}`;
 const SUB_A = "11111111-1111-4111-8111-111111111111";
 const SUB_B = "22222222-2222-4222-8222-222222222222";
 const SUB_C = "33333333-3333-4333-8333-333333333333";
@@ -34,6 +42,7 @@ function env(overrides: Record<string, string | undefined> = {}) {
     TURNKEY_API_PRIVATE_KEY: "private",
     TURNKEY_ORGANIZATION_ID: "parent-org",
     CHAIN_RPC_CONFIG: "{}",
+    APP_PUBLIC_KEYS: `${STAGING_APP_KEY},${PROD_APP_KEY}`,
     ...overrides,
   };
 }
@@ -84,6 +93,37 @@ describe("parseOptions", () => {
     expect(() =>
       parseOptions(env({ EXPECTED_KEY_PREFIX: KEY.slice(0, 8) }))
     ).toThrow("at least 16");
+  });
+
+  it("refuses to run when an app uses the job's key", () => {
+    expect(() =>
+      parseOptions(
+        env({ APP_PUBLIC_KEYS: `${STAGING_APP_KEY},${KEY.toUpperCase()}` })
+      )
+    ).toThrow("Refusing to run");
+  });
+
+  it("refuses to run without the live app keys", () => {
+    expect(() => parseOptions(env({ APP_PUBLIC_KEYS: "" }))).toThrow(
+      "APP_PUBLIC_KEYS is required"
+    );
+    expect(() => parseOptions(env({ APP_PUBLIC_KEYS: " , " }))).toThrow(
+      "APP_PUBLIC_KEYS is required"
+    );
+  });
+
+  it.each([
+    ["the text None from an empty read", "None"],
+    ["a truncated key", STAGING_APP_KEY.slice(0, 40)],
+    ["an uncompressed key", `04${"e".repeat(128)}`],
+  ])("refuses to run when an app key is %s", (_name, value) => {
+    expect(() =>
+      parseOptions(env({ APP_PUBLIC_KEYS: `${PROD_APP_KEY},${value}` }))
+    ).toThrow("not a public key");
+  });
+
+  it("runs when every app uses a different key", () => {
+    expect(parseOptions(env()).apiPublicKey).toBe(KEY);
   });
 
   it("matches the key prefix case-insensitively", () => {
@@ -476,5 +516,187 @@ describe("mapWithConcurrency", () => {
 
   it("returns an empty list for no items", async () => {
     expect(await mapWithConcurrency([], 3, async () => 1)).toEqual([]);
+  });
+});
+
+// Shapes the Turnkey SDK and Node's fetch actually throw.
+function networkError(...code: unknown[]): Error {
+  const cause = new Error("socket hang up");
+  if (code.length > 0) {
+    Object.assign(cause, { code: code[0] });
+  } else {
+    Object.assign(cause, { code: "ECONNRESET" });
+  }
+  return new TypeError("fetch failed", { cause });
+}
+
+function turnkeyError(code: number, message: string): Error {
+  return Object.assign(new Error(`Turnkey error ${code}: ${message}`), {
+    name: "TurnkeyRequestError",
+    code,
+  });
+}
+
+const NOT_FOUND = turnkeyError(
+  5,
+  `${"x".repeat(400)} no organization found with given ID`
+);
+
+describe("describeError", () => {
+  it("appends the network cause code that fetch hides", () => {
+    expect(describeError(networkError())).toBe("fetch failed (ECONNRESET)");
+  });
+
+  it("falls back to the cause message when the code is empty", () => {
+    expect(describeError(networkError(undefined))).toBe(
+      "fetch failed (socket hang up)"
+    );
+    expect(describeError(networkError(null))).toBe(
+      "fetch failed (socket hang up)"
+    );
+    expect(describeError(networkError(""))).toBe(
+      "fetch failed (socket hang up)"
+    );
+  });
+
+  it("keeps a numeric cause code", () => {
+    expect(describeError(networkError(504))).toBe("fetch failed (504)");
+  });
+
+  it("returns the plain message when there is no cause", () => {
+    expect(describeError(new Error("boom"))).toBe("boom");
+    expect(describeError("text")).toBe("text");
+  });
+});
+
+describe("isSubOrgNotFound", () => {
+  it("finds the phrase past the first 300 characters", () => {
+    expect(isSubOrgNotFound(NOT_FOUND)).toBe(true);
+  });
+
+  it("is false for other errors", () => {
+    expect(isSubOrgNotFound(turnkeyError(7, "permission denied"))).toBe(false);
+  });
+});
+
+describe("isTransientError", () => {
+  it.each([
+    ["a network failure", networkError()],
+    ["a Turnkey rate limit", turnkeyError(8, "rate limit exceeded")],
+    ["a Turnkey internal error", turnkeyError(13, "internal")],
+    ["Turnkey unavailable", turnkeyError(14, "unavailable")],
+    ["a Turnkey deadline", turnkeyError(4, "deadline exceeded")],
+    ["an HTTP 429 without a JSON body", new Error("429 Too Many Requests")],
+    ["an HTTP 502 without a JSON body", new Error("502 Bad Gateway")],
+  ])("retries %s", (_name, error) => {
+    expect(isTransientError(error)).toBe(true);
+  });
+
+  it.each([
+    ["an auth failure", turnkeyError(16, "unauthenticated")],
+    ["a permission failure", turnkeyError(7, "permission denied")],
+    ["a validation failure", turnkeyError(3, "invalid argument")],
+    ["an HTTP 400 without a JSON body", new Error("400 Bad Request")],
+    ["a plain error", new Error("boom")],
+    ["a non-error value", "boom"],
+  ])("does not retry %s", (_name, error) => {
+    expect(isTransientError(error)).toBe(false);
+  });
+});
+
+describe("shouldRetryTurnkeyRead", () => {
+  it("never retries a missing sub-org", () => {
+    expect(shouldRetryTurnkeyRead(NOT_FOUND)).toBe(false);
+  });
+
+  it("retries a dropped connection", () => {
+    expect(shouldRetryTurnkeyRead(networkError())).toBe(true);
+  });
+});
+
+describe("createTurnkeyReader", () => {
+  const noSleep = () => Promise.resolve();
+
+  function failing(errors: unknown[]) {
+    let calls = 0;
+    const call = () => {
+      const error = errors[calls];
+      calls += 1;
+      return error === undefined
+        ? Promise.resolve("ok")
+        : Promise.reject(error);
+    };
+    return { call, calls: () => calls };
+  }
+
+  it("takes a rate-limit slot before every attempt, retries included", async () => {
+    let slots = 0;
+    const read = createTurnkeyReader(
+      () => {
+        slots += 1;
+        return Promise.resolve();
+      },
+      { attempts: 5, baseDelayMs: 10, sleep: noSleep }
+    );
+    const target = failing([networkError(), networkError()]);
+    expect(await read(target.call)).toBe("ok");
+    expect(target.calls()).toBe(3);
+    expect(slots).toBe(3);
+  });
+
+  it("does not retry a missing sub-org", async () => {
+    const read = createTurnkeyReader(() => Promise.resolve(), {
+      attempts: 5,
+      baseDelayMs: 10,
+      sleep: noSleep,
+    });
+    const target = failing([NOT_FOUND]);
+    await expect(read(target.call)).rejects.toBe(NOT_FOUND);
+    expect(target.calls()).toBe(1);
+  });
+
+  it("does not retry a permission failure", async () => {
+    const read = createTurnkeyReader(() => Promise.resolve(), {
+      attempts: 5,
+      baseDelayMs: 10,
+      sleep: noSleep,
+    });
+    const denied = turnkeyError(7, "permission denied");
+    const target = failing([denied]);
+    await expect(read(target.call)).rejects.toBe(denied);
+    expect(target.calls()).toBe(1);
+  });
+
+  it("gives up after the last attempt without a final pause", async () => {
+    const waits: number[] = [];
+    const read = createTurnkeyReader(() => Promise.resolve(), {
+      attempts: 3,
+      baseDelayMs: 100,
+      sleep: (ms) => {
+        waits.push(ms);
+        return Promise.resolve();
+      },
+    });
+    const target = failing([networkError(), networkError(), networkError()]);
+    await expect(read(target.call)).rejects.toThrow("fetch failed");
+    expect(target.calls()).toBe(3);
+    expect(waits).toEqual([100, 200]);
+  });
+});
+
+describe("withRetry", () => {
+  it("retries every error when no predicate is given", async () => {
+    let calls = 0;
+    const result = await withRetry(
+      () => {
+        calls += 1;
+        return calls < 3
+          ? Promise.reject(new Error("HTTP 503"))
+          : Promise.resolve("ok");
+      },
+      { attempts: 5, baseDelayMs: 10, sleep: () => Promise.resolve() }
+    );
+    expect(result).toBe("ok");
+    expect(calls).toBe(3);
   });
 });
