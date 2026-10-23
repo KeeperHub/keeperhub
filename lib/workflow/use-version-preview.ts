@@ -10,6 +10,7 @@ import {
   edgesAtom,
   hasUnsavedChangesAtom,
   nodesAtom,
+  previewRequestOutcomeAtom,
   previewVersionAtom,
   propertiesPanelActiveTabAtom,
 } from "@/lib/workflow/store";
@@ -37,6 +38,7 @@ export function useVersionPreview() {
   const store = useStore();
   const setPreviewVersion = useSetAtom(previewVersionAtom);
   const setHasUnsavedChanges = useSetAtom(hasUnsavedChangesAtom);
+  const setPreviewOutcome = useSetAtom(previewRequestOutcomeAtom);
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -65,6 +67,7 @@ export function useVersionPreview() {
       try {
         const snap = await api.workflow.getById(workflowId, { version });
         if (request !== latestCanvasRequest) {
+          setPreviewOutcome("discarded");
           return;
         }
         setNodes(snap.nodes);
@@ -72,14 +75,19 @@ export function useVersionPreview() {
         setPreviewVersion(version);
         setHasUnsavedChanges(false);
         setVersionParam(version);
+        setPreviewOutcome("applied");
       } catch {
         if (request === latestCanvasRequest) {
+          setPreviewOutcome("failed");
           toast.error("Failed to load version");
+        } else {
+          setPreviewOutcome("discarded");
         }
       }
     },
     [
       workflowId,
+      setPreviewOutcome,
       setNodes,
       setEdges,
       setPreviewVersion,
@@ -117,8 +125,11 @@ export function useVersionPreview() {
       setVersionParam(null);
     } catch {
       // Stay in the preview: leaving it would put the old snapshot's nodes on
-      // the canvas as if they were the live workflow.
-      toast.error("Failed to reload the current version");
+      // the canvas as if they were the live workflow. A superseded reload has
+      // nothing to report.
+      if (request === latestCanvasRequest) {
+        toast.error("Failed to reload the current version");
+      }
     }
   }, [
     workflowId,
@@ -137,12 +148,20 @@ export function useVersionPreview() {
       if (!workflowId) {
         return;
       }
+      // Cancels a preview that is still loading, so it cannot land after the
+      // restore.
+      latestCanvasRequest += 1;
+      const request = latestCanvasRequest;
       try {
         await api.workflow.update(workflowId, { nodes, edges });
+        toast.success(`Restored version ${version}`);
+        // A preview started while saving owns the canvas now; leave it.
+        if (request !== latestCanvasRequest) {
+          return;
+        }
         setPreviewVersion(null);
         setHasUnsavedChanges(false);
         setVersionParam(null);
-        toast.success(`Restored version ${version}`);
       } catch {
         toast.error("Failed to restore version");
       }

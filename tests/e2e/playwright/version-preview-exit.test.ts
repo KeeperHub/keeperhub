@@ -1,5 +1,5 @@
 import type { Page, Request } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { type AuthenticatedApiRequest, expect, test } from "./fixtures";
 import {
   createTestWorkflow,
   deleteTestWorkflow,
@@ -14,9 +14,6 @@ test.use({ storageState: "tests/e2e/playwright/.auth/pro.json" });
 const OLD_LABEL = "Old label";
 const LIVE_LABEL = "Live label";
 const VERSION_PARAM = /[?&]version=/;
-// A cancelled preview shows up as nothing happening, so the negative checks
-// give the released response time to reach the canvas and the URL.
-const SETTLE_MS = 1000;
 
 type SavedWorkflow = {
   nodes: Array<{ id: string; data: Record<string, unknown> }>;
@@ -24,6 +21,7 @@ type SavedWorkflow = {
 
 async function saveActionLabel(
   page: Page,
+  apiRequest: AuthenticatedApiRequest,
   workflowId: string,
   label: string
 ): Promise<void> {
@@ -32,22 +30,27 @@ async function saveActionLabel(
   const nodes = workflow.nodes.map((node) =>
     node.id === "action-1" ? { ...node, data: { ...node.data, label } } : node
   );
-  const saved = await page.request.patch(`/api/workflows/${workflowId}`, {
+  const saved = await apiRequest.patch(`/api/workflows/${workflowId}`, {
     data: { nodes },
-    headers: { origin: "http://localhost:3000" },
   });
   expect(saved.ok(), await saved.text()).toBe(true);
 }
 
-// Version 1 has the old label, version 2 (current) the live one.
-async function createVersionedWorkflow(page: Page): Promise<string> {
+// Saves one version per label, in order: by default version 1 has the old
+// label and version 2 (current) the live one.
+async function createVersionedWorkflow(
+  page: Page,
+  apiRequest: AuthenticatedApiRequest,
+  labels: readonly string[] = [OLD_LABEL, LIVE_LABEL]
+): Promise<string> {
   const workflow = await createTestWorkflow(PERSISTENT_PRO_EMAIL, {
     name: `version-preview-${Date.now()}`,
     triggerType: "manual",
     enabled: false,
   });
-  await saveActionLabel(page, workflow.id, OLD_LABEL);
-  await saveActionLabel(page, workflow.id, LIVE_LABEL);
+  for (const label of labels) {
+    await saveActionLabel(page, apiRequest, workflow.id, label);
+  }
   return workflow.id;
 }
 
@@ -113,9 +116,22 @@ function tab(page: Page, name: "Properties" | "Runs" | "History") {
   return page.getByRole("tab", { name, exact: true });
 }
 
+// The canvas announces what happened to the latest preview response, so the
+// cancellation tests can wait for the late response to be dropped instead of
+// sleeping.
+async function expectPreviewDiscarded(page: Page): Promise<void> {
+  await expect(page.getByTestId("workflow-canvas")).toHaveAttribute(
+    "data-preview-request",
+    "discarded"
+  );
+}
+
 test.describe("Leaving the History tab", () => {
-  test("drops a version preview opened by link", async ({ page }) => {
-    const id = await createVersionedWorkflow(page);
+  test("drops a version preview opened by link", async ({
+    page,
+    apiRequest,
+  }) => {
+    const id = await createVersionedWorkflow(page, apiRequest);
     try {
       const actionNode = page.getByTestId("action-node-action-1");
       await openWorkflow(page, id, "?version=1");
@@ -137,8 +153,8 @@ test.describe("Leaving the History tab", () => {
     }
   });
 
-  test("clears a ?version=current link", async ({ page }) => {
-    const id = await createVersionedWorkflow(page);
+  test("clears a ?version=current link", async ({ page, apiRequest }) => {
+    const id = await createVersionedWorkflow(page, apiRequest);
     try {
       await openWorkflow(page, id, "?version=current");
       await expect(tab(page, "History")).toHaveAttribute(
@@ -149,8 +165,6 @@ test.describe("Leaving the History tab", () => {
       await tab(page, "Runs").click();
 
       await expect(page).not.toHaveURL(VERSION_PARAM);
-      // A leftover param would let the deep-link effect pull the panel back.
-      await page.waitForTimeout(SETTLE_MS);
       await expect(tab(page, "Runs")).toHaveAttribute("aria-selected", "true");
       await expect(page.getByTestId("action-node-action-1")).toContainText(
         LIVE_LABEL
@@ -162,8 +176,9 @@ test.describe("Leaving the History tab", () => {
 
   test("cancels a workflow version preview that is still loading", async ({
     page,
+    apiRequest,
   }) => {
-    const id = await createVersionedWorkflow(page);
+    const id = await createVersionedWorkflow(page, apiRequest);
     try {
       await openWorkflow(page, id);
       const held = await holdVersionRequest(page, id, 1);
@@ -175,7 +190,7 @@ test.describe("Leaving the History tab", () => {
       await tab(page, "Runs").click();
       await expect(page).not.toHaveURL(VERSION_PARAM);
       await held.release();
-      await page.waitForTimeout(SETTLE_MS);
+      await expectPreviewDiscarded(page);
 
       await expect(tab(page, "Runs")).toHaveAttribute("aria-selected", "true");
       await expect(page).not.toHaveURL(VERSION_PARAM);
@@ -192,8 +207,9 @@ test.describe("Leaving the History tab", () => {
 
   test("cancels a node version preview that is still loading", async ({
     page,
+    apiRequest,
   }) => {
-    const id = await createVersionedWorkflow(page);
+    const id = await createVersionedWorkflow(page, apiRequest);
     try {
       await openWorkflow(page, id);
       const actionNode = page.getByTestId("action-node-action-1");
@@ -212,10 +228,45 @@ test.describe("Leaving the History tab", () => {
         "true"
       );
       await held.release();
-      await page.waitForTimeout(SETTLE_MS);
+      await expectPreviewDiscarded(page);
 
       await expect(page.locator("#label")).toHaveValue(LIVE_LABEL);
       await expect(actionNode).toContainText(LIVE_LABEL);
+      await expect(
+        page.getByRole("button", { name: "Exit preview" })
+      ).toBeHidden();
+    } finally {
+      await deleteTestWorkflow(id);
+    }
+  });
+
+  test("restoring a version cancels another preview that is still loading", async ({
+    page,
+    apiRequest,
+  }) => {
+    const id = await createVersionedWorkflow(page, apiRequest, [
+      OLD_LABEL,
+      LIVE_LABEL,
+      "Newest label",
+    ]);
+    try {
+      const actionNode = page.getByTestId("action-node-action-1");
+      await openWorkflow(page, id, "?version=1");
+      await expect(actionNode).toContainText(OLD_LABEL);
+
+      const held = await holdVersionRequest(page, id, 2);
+      await page.getByRole("button", { name: /Version 2\b/ }).click();
+      await page.getByRole("button", { name: "View on canvas" }).click();
+      await held.requested;
+
+      // Restore version 1 (still on the canvas) before version 2 arrives.
+      await page.getByRole("button", { name: "Restore this version" }).click();
+      await expect(page).not.toHaveURL(VERSION_PARAM);
+      await held.release();
+      await expectPreviewDiscarded(page);
+
+      await expect(actionNode).toContainText(OLD_LABEL);
+      await expect(page).not.toHaveURL(VERSION_PARAM);
       await expect(
         page.getByRole("button", { name: "Exit preview" })
       ).toBeHidden();
