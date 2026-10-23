@@ -732,9 +732,14 @@ export const PanelInner = () => {
   if (!selectedNode) {
     return (
       <>
+        {/* The node panel below lists its tab panels in a different order, so
+            without distinct keys React would hand one panel's mounted content
+            to another (e.g. the open Runs panel to the node's History panel)
+            when a node is selected or deselected. */}
         <Tabs
           className="size-full"
           defaultValue="properties"
+          key="workflow-panel"
           onValueChange={setActiveTab}
           value={
             activeTab === "properties" ||
@@ -938,6 +943,7 @@ export const PanelInner = () => {
         className="size-full"
         data-testid="properties-panel"
         defaultValue="properties"
+        key="node-panel"
         onValueChange={setActiveTab}
         value={
           activeTab === "properties" ||

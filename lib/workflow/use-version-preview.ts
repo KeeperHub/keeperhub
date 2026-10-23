@@ -27,6 +27,7 @@ export function useVersionPreview() {
   const edges = useAtomValue(edgesAtom);
   const setNodes = useSetAtom(nodesAtom);
   const setEdges = useSetAtom(edgesAtom);
+  const previewVersion = useAtomValue(previewVersionAtom);
   const setPreviewVersion = useSetAtom(previewVersionAtom);
   const setHasUnsavedChanges = useSetAtom(hasUnsavedChangesAtom);
   const router = useRouter();
@@ -77,6 +78,15 @@ export function useVersionPreview() {
     if (!workflowId) {
       return;
     }
+    // Nothing is previewed, so the canvas already holds the live workflow.
+    // Reloading it anyway would replace the nodes and drop the selection; only
+    // a leftover ?version= (e.g. ?version=current) needs clearing.
+    if (previewVersion === null) {
+      if (searchParams?.has("version")) {
+        setVersionParam(null);
+      }
+      return;
+    }
     try {
       const live = await api.workflow.getById(workflowId);
       setNodes(live.nodes);
@@ -91,6 +101,8 @@ export function useVersionPreview() {
     }
   }, [
     workflowId,
+    previewVersion,
+    searchParams,
     setNodes,
     setEdges,
     setPreviewVersion,

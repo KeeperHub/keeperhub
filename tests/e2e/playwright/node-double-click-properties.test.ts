@@ -41,6 +41,19 @@ test.describe("Double-clicking a node opens its properties", () => {
         const tab = page.getByRole("tab", { name: tabName, exact: true });
         const actionNode = page.getByTestId("action-node-action-1");
 
+        // Selecting a node must not reload the workflow: a reload replaces the
+        // canvas nodes and drops the selection the double-click relies on.
+        const workflowReloads: string[] = [];
+        page.on("request", (request) => {
+          const { pathname } = new URL(request.url());
+          if (
+            request.method() === "GET" &&
+            pathname === `/api/workflows/${id}`
+          ) {
+            workflowReloads.push(request.url());
+          }
+        });
+
         // Single click selects the node and keeps the current tab.
         await actionNode.click();
         await expect(page.getByTestId("rf__node-action-1")).toHaveClass(
@@ -54,6 +67,7 @@ test.describe("Double-clicking a node opens its properties", () => {
         ).toHaveAttribute("aria-selected", "true");
         await expect(page.getByTestId("properties-panel")).toBeVisible();
         await expect(page.locator("#label")).toHaveValue("HTTP Request");
+        expect(workflowReloads).toEqual([]);
       } finally {
         await deleteTestWorkflow(id);
       }
