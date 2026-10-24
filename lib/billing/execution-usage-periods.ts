@@ -6,6 +6,7 @@ import {
   type ExecutionUsagePeriodSource,
   executionUsagePeriods,
   organizationSubscriptions,
+  overageBillingRecords,
 } from "@/lib/db/schema";
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
 import { startOfCurrentMonthUtc } from "./execution-limit-core";
@@ -352,6 +353,14 @@ export function resolvePeriodSource(
  * pre-conversion part of a conversion month writable: the organization bills
  * overage today, but did not during those days, so a month row with no charge
  * is accurate rather than contradictory.
+ *
+ * "Every cycle" means every cycle inside the span `covered` was read for, and
+ * deliberately not every cycle on record. The records cannot tell a gap the
+ * organization spent on the free plan from a gap of paid cycles nothing
+ * recorded, so anchoring on the oldest cycle in all of history reads every gap
+ * as paid: an organization that paid once, left, and subscribed again a year
+ * later would lose the free-plan days before its new cycle, and nothing else
+ * writes those. A cycle missing from the records is fixed by recording it.
  */
 export function predatesProviderCycles(
   window: PeriodWindow,
@@ -387,15 +396,25 @@ export type CoveredInterval = { start: Date; end: Date };
  *
  * So coverage decides, month by month. Returns null when the cycle covers the
  * window completely.
+ *
+ * The intervals are walked in start order, whatever order they arrive in. The
+ * trim below is only right that way round: taken later-cycle-first, two
+ * adjacent cycles close the window from the right and then cover what is left
+ * of it, and the uncovered days after the second cycle are reported as covered.
+ * `getProviderCoverage` concatenates three unordered reads, so the caller
+ * cannot be relied on for it.
  */
 export function uncoveredPart(
   windowStart: Date,
   windowEnd: Date,
   covered: CoveredInterval[]
 ): PeriodWindow | null {
+  const ordered = [...covered].sort(
+    (a, b) => a.start.getTime() - b.start.getTime()
+  );
   let start = windowStart;
   let end = windowEnd;
-  for (const interval of covered) {
+  for (const interval of ordered) {
     if (interval.end <= start || interval.start >= end) {
       continue;
     }
@@ -412,6 +431,78 @@ export function uncoveredPart(
     }
   }
   return start < end ? { periodStart: start, periodEnd: end } : null;
+}
+
+/**
+ * The part of a calendar window a `calendar_month` row may be written for, or
+ * null when the window is not this path's to record.
+ *
+ * One function, because two callers have to reach the same answer: the month
+ * close, and the repair that rewrites a row an earlier close got wrong. A
+ * repair deciding this for itself would write rows the close never would.
+ */
+export function calendarWindowToRecord(
+  windowStart: Date,
+  windowEnd: Date,
+  covered: CoveredInterval[],
+  sub: SubscriptionPlanRow | undefined
+): PeriodWindow | null {
+  const window = uncoveredPart(windowStart, windowEnd, covered);
+  // Fully covered by a provider cycle: that cycle's own record is the one
+  // that counts, and a month row beside it would double count.
+  if (window === null) {
+    return null;
+  }
+  // Coverage says nobody billed this window. The plan still decides whether
+  // a zero-charge month row is an honest thing to write for it: a plan that
+  // bills overage settles through its cycle, so a month row beside a stalled
+  // or dunning cycle would carry the paid limit and a charge of zero. The
+  // exception is a window predating every cycle the organization has, which
+  // is the part of a conversion month before it started paying.
+  if (
+    sub !== undefined &&
+    billsOverage(sub.plan) &&
+    !predatesProviderCycles(window, covered)
+  ) {
+    return null;
+  }
+  return window;
+}
+
+/**
+ * The `calendar_month` row for a window nothing billed.
+ *
+ * Best effort on the plan, and knowingly so: nothing stores what plan an
+ * organization was on during a month that has already closed, so a
+ * reconstructed row carries today's plan. Coverage is exact; this is not, and
+ * the invoices page prefers a billed record where one exists.
+ */
+export function calendarUsageRow(
+  organizationId: string,
+  window: PeriodWindow,
+  counts: PeriodExecutionCounts,
+  sub: SubscriptionPlanRow | undefined
+): typeof executionUsagePeriods.$inferInsert {
+  const snapshot = planSnapshotFrom(sub);
+  return {
+    organizationId,
+    periodStart: window.periodStart,
+    periodEnd: window.periodEnd,
+    plan: snapshot.plan,
+    tier: snapshot.tier,
+    executionLimit: snapshot.executionLimit,
+    workflowExecutions: counts.workflowExecutions,
+    directExecutions: counts.directExecutions,
+    totalExecutions: counts.total,
+    overageCount:
+      snapshot.executionLimit === -1
+        ? 0
+        : Math.max(0, counts.total - snapshot.executionLimit),
+    // No charge reaches this path: anything a provider cycle billed is
+    // covered and excluded, so what remains was never invoiced.
+    totalChargeCents: 0,
+    source: "calendar_month",
+  };
 }
 
 /** First instant of the UTC month before the one `now` falls in. */
@@ -648,11 +739,19 @@ export async function getRecordedPeriodKeys(
 /**
  * The provider cycles that already account for usage inside a span.
  *
- * Two sources, because neither alone is complete. The `subscription` rows in
- * this table are the cycles actually recorded, which is what the close must
+ * Three sources, because no one of them is complete. The `subscription` rows
+ * in this table are the cycles actually recorded, which is what the close must
  * not duplicate. The live period columns cover the cycle currently open or
  * just closed, which `handleScan` is about to record but may not have yet, and
  * which is the exact window a churned organization keeps forever.
+ *
+ * `overage_billing_records` covers a cycle that was billed before this table
+ * recorded anything. Without it such a cycle is unknown here, the months
+ * around it read as predating every cycle the organization has, and the close
+ * writes a zero-charge month row straight across a window the customer was
+ * charged for. The status is deliberately not filtered: a pending or failed
+ * record is still a provider cycle with that exact window, and the billing
+ * path owns it.
  */
 export async function getProviderCoverage(
   organizationIds: string[],
@@ -663,7 +762,7 @@ export async function getProviderCoverage(
     return new Map();
   }
 
-  const [recorded, subs] = await Promise.all([
+  const [recorded, subs, billed] = await Promise.all([
     db
       .select({
         organizationId: executionUsagePeriods.organizationId,
@@ -689,6 +788,20 @@ export async function getProviderCoverage(
       .where(
         inArray(organizationSubscriptions.organizationId, organizationIds)
       ),
+    db
+      .select({
+        organizationId: overageBillingRecords.organizationId,
+        periodStart: overageBillingRecords.periodStart,
+        periodEnd: overageBillingRecords.periodEnd,
+      })
+      .from(overageBillingRecords)
+      .where(
+        and(
+          inArray(overageBillingRecords.organizationId, organizationIds),
+          lt(overageBillingRecords.periodStart, spanEnd),
+          gt(overageBillingRecords.periodEnd, spanStart)
+        )
+      ),
   ]);
 
   const coverage = new Map<string, CoveredInterval[]>();
@@ -708,6 +821,9 @@ export async function getProviderCoverage(
     if (row.periodStart !== null && row.periodEnd !== null) {
       add(row.organizationId, row.periodStart, row.periodEnd);
     }
+  }
+  for (const row of billed) {
+    add(row.organizationId, row.periodStart, row.periodEnd);
   }
   return coverage;
 }
@@ -806,8 +922,9 @@ type PendingUsageRow = typeof executionUsagePeriods.$inferInsert;
  * organization with no `organization_subscriptions` row has no period boundary
  * anywhere, so without this pass its usage is never frozen.
  *
- * Three reads regardless of organization count - the usage aggregate, the
- * subscriptions, the records that already exist - then one insert per chunk.
+ * A fixed number of reads regardless of organization count - the usage
+ * aggregate, the subscriptions, the provider cycles, the records that already
+ * exist - then one insert per chunk.
  */
 export async function closeCalendarMonthUsage(
   now: Date = new Date()
@@ -847,29 +964,14 @@ export async function closeCalendarMonthUsage(
   for (const row of usage) {
     const monthStart = row.monthStart;
     const monthEnd = addMonthsUtc(monthStart, 1);
-    const window = uncoveredPart(
+    const sub = subscriptions.get(row.organizationId);
+    const window = calendarWindowToRecord(
       monthStart,
       monthEnd,
-      coverage.get(row.organizationId) ?? []
+      coverage.get(row.organizationId) ?? [],
+      sub
     );
-    // Fully covered by a provider cycle: that cycle's own record is the one
-    // that counts, and a month row beside it would double count.
     if (window === null) {
-      continue;
-    }
-    // Coverage says nobody billed this window. The plan still decides whether
-    // a zero-charge month row is an honest thing to write for it: a plan that
-    // bills overage settles through its cycle, so a month row beside a stalled
-    // or dunning cycle would carry the paid limit and a charge of zero. The
-    // exception is a window predating every cycle the organization has, which
-    // is the part of a conversion month before it started paying.
-    const sub = subscriptions.get(row.organizationId);
-    const covers = coverage.get(row.organizationId) ?? [];
-    if (
-      sub !== undefined &&
-      billsOverage(sub.plan) &&
-      !predatesProviderCycles(window, covers)
-    ) {
       continue;
     }
     considered += 1;
@@ -899,30 +1001,7 @@ export async function closeCalendarMonthUsage(
       continue;
     }
 
-    const snapshot = planSnapshotFrom(subscriptions.get(row.organizationId));
-    values.push({
-      organizationId: row.organizationId,
-      periodStart: window.periodStart,
-      periodEnd: window.periodEnd,
-      // Best effort, and knowingly so: nothing stores what plan an
-      // organization was on during a month that has already closed, so a
-      // reconstructed row carries today's plan. Coverage above is exact; this
-      // is not, and the invoices page prefers a billed record where one exists.
-      plan: snapshot.plan,
-      tier: snapshot.tier,
-      executionLimit: snapshot.executionLimit,
-      workflowExecutions: counts.workflowExecutions,
-      directExecutions: counts.directExecutions,
-      totalExecutions: counts.total,
-      overageCount:
-        snapshot.executionLimit === -1
-          ? 0
-          : Math.max(0, counts.total - snapshot.executionLimit),
-      // No charge reaches this path: anything a provider cycle billed is
-      // covered above and excluded, so what remains was never invoiced.
-      totalChargeCents: 0,
-      source: "calendar_month" as const,
-    });
+    values.push(calendarUsageRow(row.organizationId, window, counts, sub));
   }
 
   if (values.length === 0) {
