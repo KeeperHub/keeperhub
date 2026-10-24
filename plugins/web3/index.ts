@@ -2075,6 +2075,94 @@ const web3Plugin: IntegrationPlugin = {
         },
       ],
     },
+    {
+      slug: "paid-request",
+      label: "Paid Request (x402)",
+      description:
+        "Call an endpoint and, when it asks for an x402 payment, pay the quoted USDC on Base from the org's wallet and call it again. Refuses any price over the max price.",
+      category: "Web3",
+      requiresCredentials: true,
+      egress: "user-destination",
+      stepFunction: "paidRequestStep",
+      stepImportPath: "paid-request",
+      outputFields: [
+        {
+          field: "success",
+          description: "Whether the call succeeded",
+        },
+        {
+          field: "paid",
+          description:
+            "Whether a payment was signed and sent. False when the endpoint did not ask for one",
+        },
+        {
+          field: "httpStatus",
+          description: "HTTP status of the final response",
+        },
+        {
+          field: "data",
+          description: "Response body, parsed as JSON when possible",
+        },
+        {
+          field: "payment",
+          description:
+            "What was paid: payTo, amountUsdc, network, asset and payer. Present only when paid is true",
+        },
+        {
+          field: "settlementClaim",
+          description:
+            "The endpoint's own PAYMENT-RESPONSE header, decoded. Reported by the seller, not checked on chain",
+        },
+        {
+          field: "error",
+          description: "Error message if the call or the payment failed",
+        },
+      ],
+      configFields: [
+        {
+          key: "url",
+          label: "URL",
+          type: "template-input",
+          placeholder: "https://api.example.com/resource",
+          required: true,
+        },
+        {
+          key: "method",
+          label: "HTTP Method",
+          type: "select",
+          options: [
+            { value: "GET", label: "GET" },
+            { value: "POST", label: "POST" },
+          ],
+          defaultValue: "GET",
+          required: true,
+        },
+        {
+          key: "body",
+          label: "Body (JSON)",
+          type: "template-textarea",
+          placeholder: '{"key": "value"}',
+          showWhen: { field: "method", equals: "POST" },
+        },
+        {
+          key: "maxPriceUsdc",
+          label: "Max Price (USDC)",
+          type: "template-input",
+          placeholder: "0.05",
+          helpText:
+            "The most this call may pay. A higher quoted price fails the step without paying.",
+          required: true,
+        },
+        {
+          key: "payTo",
+          label: "Expected Payee",
+          type: "template-input",
+          placeholder: "0x...",
+          helpText:
+            "Optional. When set, the step refuses to pay any other address.",
+        },
+      ],
+    },
   ],
 };
 

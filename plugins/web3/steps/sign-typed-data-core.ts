@@ -18,7 +18,10 @@
  * /api/agentic-wallet/sign), which binds payee and amount to a listed
  * workflow, tiers risk and caps daily spend. Workflow steps may reach it
  * over HMAC (plugins/agent-gateway); they must not sign these payloads
- * with the creator EOA or call the agentic signer in-process.
+ * with the creator EOA or call the agentic signer in-process. The one
+ * exception is the paid-request step, which never signs a supplied payload:
+ * it builds a Base USDC transfer authorization itself from a 402 quote it has
+ * checked against the step's max price (lib/payments/x402/buyer.ts).
  */
 import "server-only";
 
