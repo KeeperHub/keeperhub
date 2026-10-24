@@ -21,9 +21,16 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { roleLabel } from "@/lib/organization/role-label";
+import { cn } from "@/lib/utils";
 import { ConfirmDeleteDialog } from "../confirm-delete-dialog";
 import type { OrgMember } from "../hooks/use-org-members";
-import { SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import {
+  NARROW_ONLY,
+  NARROW_SR_ONLY,
+  NARROW_UNDER_NAME,
+  SETTINGS_HEAD_ROW,
+  SETTINGS_ROW,
+} from "../section";
 
 const SKELETON_ROWS = ["a", "b"] as const;
 
@@ -61,8 +68,8 @@ export function MembersTable({
         <TableBody>
           {loading &&
             SKELETON_ROWS.map((key) => (
-              <TableRow className={SETTINGS_ROW} key={key}>
-                <TableCell>
+              <TableRow className={SETTINGS_ROW} key={key} role="row">
+                <TableCell role="cell">
                   <div className="flex items-center gap-3">
                     <Skeleton className="size-8 shrink-0 rounded-full" />
                     <div className="flex flex-col gap-1.5">
@@ -71,13 +78,13 @@ export function MembersTable({
                     </div>
                   </div>
                 </TableCell>
-                <TableCell>
+                <TableCell className={NARROW_UNDER_NAME} role="cell">
                   <Skeleton className="h-5 w-20" />
                 </TableCell>
-                <TableCell>
+                <TableCell className={NARROW_UNDER_NAME} role="cell">
                   <Skeleton className="h-5 w-24" />
                 </TableCell>
-                <TableCell />
+                <TableCell role="cell" />
               </TableRow>
             ))}
           {!loading &&
@@ -88,8 +95,8 @@ export function MembersTable({
               const roleEditable =
                 canManage && !isSelf && member.role !== "owner";
               return (
-                <TableRow className={SETTINGS_ROW} key={member.id}>
-                  <TableCell>
+                <TableRow className={SETTINGS_ROW} key={member.id} role="row">
+                  <TableCell role="cell">
                     <div className="flex items-center gap-3">
                       <Avatar className="size-8">
                         <AvatarImage
@@ -115,14 +122,17 @@ export function MembersTable({
                       </div>
                     </div>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className={NARROW_UNDER_NAME} role="cell">
                     {roleEditable ? (
                       <Select
                         disabled={updatingId === member.id}
                         onValueChange={(role) => onRoleChange(member, role)}
                         value={member.role}
                       >
-                        <SelectTrigger className="h-8 w-[120px]">
+                        <SelectTrigger
+                          aria-label="Role"
+                          className="h-8 w-[120px]"
+                        >
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -132,14 +142,19 @@ export function MembersTable({
                       </Select>
                     ) : (
                       <span className="rounded-full border px-2 py-0.5 text-[0.6875rem]">
+                        <span className={NARROW_SR_ONLY}>Role </span>
                         {roleLabel(member.role)}
                       </span>
                     )}
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell
+                    className={cn("text-muted-foreground", NARROW_UNDER_NAME)}
+                    role="cell"
+                  >
+                    <span className={NARROW_ONLY}>Joined </span>
                     {new Date(member.createdAt).toLocaleDateString()}
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="text-right" role="cell">
                     {canManage && !isSelf && (
                       <Button
                         aria-label={`Remove ${member.user.name}`}

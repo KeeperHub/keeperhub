@@ -71,7 +71,10 @@ import {
   type WorkflowVisibility,
   workflowNotFoundAtom,
 } from "@/lib/workflow/store";
-import { useVersionPreview } from "@/lib/workflow/use-version-preview";
+import {
+  useExitPreviewOnLeavingHistory,
+  useVersionPreview,
+} from "@/lib/workflow/use-version-preview";
 import { findActionById } from "@/plugins/registry";
 
 type WorkflowPageProps = {
@@ -648,6 +651,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
   // canvas. "current" is the live version, so it opens history without a canvas
   // preview. Fires once per distinct version param; clears when removed.
   const { preview: previewVersionOnCanvas } = useVersionPreview();
+  useExitPreviewOnLeavingHistory();
   const appliedVersionParamRef = useRef<string | null>(null);
   useEffect(() => {
     const raw = searchParams?.get("version");
@@ -1122,7 +1126,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
       {/* Expand button when panel is collapsed - only show if trigger exists */}
       {!isMobile && hasTriggerNode && panelCollapsed && (
         <button
-          className="pointer-events-auto absolute top-[calc(60px+0.75rem)] right-0 z-20 flex size-6 items-center justify-center rounded-l-full border border-r-0 bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+          className="pointer-events-auto absolute top-[calc(var(--header-height)+var(--app-banner-height,0px)+0.75rem)] right-0 z-20 flex size-6 items-center justify-center rounded-l-full border border-r-0 bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
           onClick={() => {
             setIsPanelAnimating(true);
             setPanelCollapsed(false);
@@ -1137,7 +1141,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
       {/* Right panel overlay (desktop only) - only show if trigger exists */}
       {!isMobile && hasTriggerNode && (
         <div
-          className="pointer-events-auto absolute top-[calc(6rem+var(--app-banner-height,0px))] right-0 bottom-0 z-20 border-l bg-background transition-transform duration-300 ease-out lg:top-[calc(60px+var(--app-banner-height,0px))]"
+          className="pointer-events-auto absolute top-[calc(var(--header-height)+var(--app-banner-height,0px))] right-0 bottom-0 z-20 border-l bg-background transition-transform duration-300 ease-out"
           style={{
             width: `${panelWidth}%`,
             transform:

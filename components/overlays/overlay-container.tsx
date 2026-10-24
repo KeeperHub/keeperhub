@@ -253,13 +253,16 @@ function DesktopOverlayContainer() {
               transition={{ duration: 0.2 }}
             />
 
-            {/* Dialog container */}
+            {/* Dialog container. While it holds a code entry on a touch
+                screen, py-4 keeps the card's shadow clear of the edge when
+                keyboard-safe-window makes it scroll. */}
             <motion.div
               animate="visible"
               className={cn(
-                "-translate-x-1/2 -translate-y-1/2 fixed top-1/2 left-1/2 z-50 w-full px-4",
+                "-translate-x-1/2 -translate-y-1/2 keyboard-safe-window fixed top-1/2 left-1/2 z-50 w-full px-4 soft-keyboard:has-[[data-keyboard-safe]]:py-4",
                 sizeClasses[currentItem?.options.size || "lg"]
               )}
+              data-testid="overlay-window"
               exit="exit"
               initial="hidden"
               variants={containerVariants}

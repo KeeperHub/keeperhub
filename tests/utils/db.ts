@@ -75,6 +75,8 @@ export type CreateTestWorkflowOptions = {
    */
   nodes?: WorkflowNodeJson[];
   edges?: WorkflowEdgeJson[];
+  /** List the workflow on the marketplace under this slug and price. */
+  listing?: { slug: string; priceUsdcPerCall: string };
 };
 
 export type TestWorkflow = {
@@ -270,6 +272,7 @@ export async function createTestWorkflow(
       actionEndpoint,
       nodes: fixtureNodes,
       edges: fixtureEdges,
+      listing,
     } = options;
 
     // KEEP-458: when caller supplies a fixture's nodes/edges, insert them
@@ -314,6 +317,17 @@ export async function createTestWorkflow(
         now,
       ]
     );
+
+    if (listing) {
+      await sql`
+        UPDATE workflows
+        SET is_listed = true,
+            listed_slug = ${listing.slug},
+            listed_at = ${now},
+            price_usdc_per_call = ${listing.priceUsdcPerCall}
+        WHERE id = ${workflowId}
+      `;
+    }
 
     // If schedule trigger, also create the schedule record
     if (triggerType === "schedule") {
