@@ -1,9 +1,9 @@
 import "server-only";
 
-import { eq } from "drizzle-orm";
 import { chargePaygIfBillable } from "@/lib/billing/payg/charge";
 import { db } from "@/lib/db";
 import { directExecutions } from "@/lib/db/schema";
+import { DirectExecutionStatus } from "@/lib/errors/execution-status";
 import {
   isOrgHalted,
   ORG_HALTED_REASON,
@@ -21,6 +21,7 @@ import {
   sumOrgValueTodayWei,
 } from "@/lib/execute/value-ledger";
 import { logSecurityEvent } from "@/lib/logging";
+import { setDirectExecutionStatus } from "@/lib/outbound-webhooks/direct-execution-events";
 import { generateId } from "@/lib/utils/id";
 
 export type SpendCapResult =
@@ -184,7 +185,7 @@ export async function checkAndReserveExecution(
           params.reserved.kind === "solana"
             ? params.reserved.valueLamports
             : null,
-        status: "pending",
+        status: DirectExecutionStatus.PENDING,
       });
 
     // A request that moves no value cannot push the day's total over anything,
@@ -270,10 +271,11 @@ export async function checkAndReserveExecution(
     paygOverflow: params.paygOverflow,
   });
   if (charge.applicable && !charge.ok) {
-    await db
-      .update(directExecutions)
-      .set({ status: "failed", error: charge.message, completedAt: new Date() })
-      .where(eq(directExecutions.id, reserve.executionId));
+    await setDirectExecutionStatus(reserve.executionId, {
+      status: DirectExecutionStatus.FAILED,
+      error: charge.message,
+      completedAt: new Date(),
+    });
     return { allowed: false, reason: charge.message };
   }
 

@@ -32,6 +32,7 @@ import {
 // Note: Using relative paths instead of @/ aliases for drizzle-kit compatibility
 import type { PlanLimits } from "@/lib/billing/plans";
 import { organization, users, workflows } from "@/lib/db/schema";
+import type { DirectExecutionStatus } from "@/lib/errors/execution-status";
 import { generateId } from "@/lib/utils/id";
 
 /**
@@ -678,7 +679,11 @@ export const directExecutions = pgTable(
     input: jsonb("input").$type<any>(),
     // biome-ignore lint/suspicious/noExplicitAny: JSONB type - execution result structure varies by execution type
     output: jsonb("output").$type<any>(),
-    status: text("status").notNull().default("pending"), // pending | running | completed | failed
+    // Values and their meanings live on DirectExecutionStatus.
+    status: text("status")
+      .notNull()
+      .default("pending")
+      .$type<DirectExecutionStatus>(),
     transactionHash: text("transaction_hash"),
     // KEEP-966: on-chain verification results for every transaction hash this
     // execution claims. Populated by completeExecution() regardless of

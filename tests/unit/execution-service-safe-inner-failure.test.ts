@@ -3,14 +3,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 const mocks = vi.hoisted(() => {
-  const where = vi.fn().mockResolvedValue(undefined);
+  const returning = vi.fn().mockResolvedValue([]);
+  const where = vi.fn(() => ({ returning }));
   const set = vi.fn(() => ({ where }));
   const update = vi.fn(() => ({ set }));
   const verifyExecutionReceipts = vi.fn();
-  return { where, set, update, verifyExecutionReceipts };
+  return { returning, where, set, update, verifyExecutionReceipts };
 });
 
-vi.mock("drizzle-orm", () => ({ eq: vi.fn(() => ({})) }));
+vi.mock("drizzle-orm", () => ({
+  and: vi.fn(() => ({})),
+  eq: vi.fn(() => ({})),
+  inArray: vi.fn(() => ({})),
+  notInArray: vi.fn(() => ({})),
+}));
 vi.mock("@/lib/db", () => ({ db: { update: mocks.update } }));
 vi.mock("@/lib/db/schema", () => ({
   directExecutions: { id: { name: "id" } },

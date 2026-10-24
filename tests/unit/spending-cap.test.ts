@@ -121,7 +121,7 @@ vi.mock("@/lib/db", () => ({
       set: (v: Record<string, unknown>) => ({
         where: () => {
           state.updated.push(v);
-          return Promise.resolve(undefined);
+          return { returning: () => Promise.resolve([]) };
         },
       }),
     }),

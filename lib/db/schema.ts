@@ -1072,6 +1072,11 @@ export {
   type WalletApprovalRequest,
   walletApprovalRequests,
 } from "./schema-agentic-wallets";
+export {
+  type EventOutboxRow,
+  eventOutbox,
+  type NewEventOutboxRow,
+} from "./schema-events";
 // KeeperHub: Organization Wallets, Organization API Keys, and Organization Tokens (imported from KeeperHub schema extensions)
 // Note: Using relative path instead of @/ alias for drizzle-kit compatibility
 export {
