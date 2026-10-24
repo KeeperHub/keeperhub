@@ -75,6 +75,20 @@ export const FEATURES: Record<FeatureId, FeatureDefinition> = {
     requiredPlan: "pro",
     actionTypes: ["predge/read-signal"],
   },
+  // Paid x402 buyer step. OFF by default: it moves funds (signs an EIP-3009
+  // USDC authorization from the org wallet), so it stays dark until the flag
+  // is deliberately flipped. The step also re-checks this switch at runtime
+  // because the direct node route does not consult feature gates.
+  "action.paid-request": {
+    id: "action.paid-request",
+    name: "Paid Request (x402) action",
+    description:
+      "Call an HTTP endpoint and, when it answers 402, pay the quoted USDC on Base from the org wallet and retry. Free responses pass through without signing.",
+    category: "workflow-action",
+    enabled: false,
+    requiredPlan: "pro",
+    actionTypes: ["web3/paid-request"],
+  },
   "notifications.execution-digest": {
     id: "notifications.execution-digest",
     name: "Execution digest",
