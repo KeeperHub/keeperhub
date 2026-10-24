@@ -32,6 +32,13 @@ import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { cn } from "@/lib/utils";
 import { getCustomLogo } from "@/lib/workflow/editor/extension-registry";
 
+// Items that open their index from anywhere inside their section, so they
+// count as already shown only there.
+const INDEX_PATHS: Partial<Record<string, string>> = {
+  workflows: "/workflows",
+  settings: "/settings",
+};
+
 /**
  * The navigation on a phone: below 768px, where the sidebar is not drawn,
  * this header button opens the sidebar's items in a drawer from the left.
@@ -144,12 +151,13 @@ function MobileNavBody({
 
   function pick(item: NavItemDef): void {
     // Nothing opens for the page already shown, so focus returns (unless
-    // an account-only item asks to sign in). Workflows counts only on its
-    // index: from a workflow it goes to the latest one.
-    const alreadyShown =
-      item.id === "workflows"
-        ? pathname === "/workflows"
-        : isNavItemActive(item.id, pathname);
+    // an account-only item asks to sign in). Workflows and Settings count
+    // only on their index: from a workflow it goes to the latest one, and
+    // from a settings section back to the settings menu.
+    const index = INDEX_PATHS[item.id];
+    const alreadyShown = index
+      ? pathname === index
+      : isNavItemActive(item.id, pathname);
     if (alreadyShown && !(item.requireAuth && isAnonymous)) {
       onPick(true);
       return;

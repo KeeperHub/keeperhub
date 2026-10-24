@@ -6,7 +6,7 @@ import * as React from "react"
 // sidebar gives way to the nav drawer; below lg the header switcher can
 // show initials.
 export const BELOW_SM_QUERY = "(width < 40rem)"
-const BELOW_MD_QUERY = "(width < 48rem)"
+export const BELOW_MD_QUERY = "(width < 48rem)"
 export const BELOW_LG_QUERY = "(width < 64rem)"
 
 // One MediaQueryList per query, shared by every reader and by the
@@ -29,6 +29,15 @@ function mediaQueryList(query: string): MediaQueryList {
     lists.set(query, list)
   }
   return list
+}
+
+/**
+ * Whether a media query matches right now, from the same shared list the hook
+ * reads. For an effect that must not act on the hook's hydration value
+ * (false until the first client render corrects it). Client only.
+ */
+export function mediaQueryMatches(query: string): boolean {
+  return mediaQueryList(query).matches
 }
 
 /**
