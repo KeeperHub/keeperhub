@@ -20,19 +20,34 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { toChecksumAddress, truncateAddress } from "@/lib/address-utils";
+import { isWalletEmail } from "@/lib/auth/wallet-constants";
 import { roleLabel } from "@/lib/organization/role-label";
 import { cn } from "@/lib/utils";
 import { ConfirmDeleteDialog } from "../confirm-delete-dialog";
 import type { OrgMember } from "../hooks/use-org-members";
 import {
+  NARROW_HIDDEN,
   NARROW_ONLY,
-  NARROW_SR_ONLY,
   NARROW_UNDER_NAME,
   SETTINGS_HEAD_ROW,
   SETTINGS_ROW,
 } from "../section";
 
 const SKELETON_ROWS = ["a", "b"] as const;
+
+const BADGE = "rounded-full border px-2 py-0.5 text-[0.6875rem]";
+
+// Wallet members carry a synthetic `<address>@wallet...` email rather than a
+// mailbox, so show the wallet they sign in with, as the invitations do. The
+// full form is kept for the tooltip, since either one may be cut short.
+function memberIdentifier(email: string): { shown: string; full: string } {
+  if (!isWalletEmail(email)) {
+    return { shown: email, full: email };
+  }
+  const address = toChecksumAddress(email.split("@")[0]);
+  return { shown: truncateAddress(address), full: address };
+}
 
 export function MembersTable({
   members,
@@ -94,6 +109,7 @@ export function MembersTable({
               // the leave flow, so the picker only offers the two editable roles.
               const roleEditable =
                 canManage && !isSelf && member.role !== "owner";
+              const identifier = memberIdentifier(member.user.email);
               return (
                 <TableRow className={SETTINGS_ROW} key={member.id} role="row">
                   <TableCell role="cell">
@@ -110,19 +126,38 @@ export function MembersTable({
                       <div className="flex min-w-0 flex-col">
                         <span className="flex items-center gap-2 truncate font-medium">
                           {member.user.name}
-                          {isSelf && (
-                            <span className="rounded-full border px-2 py-0.5 text-[0.6875rem]">
-                              You
+                          {isSelf && <span className={BADGE}>You</span>}
+                        </span>
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span
+                            className="truncate text-muted-foreground text-xs"
+                            data-testid="member-identifier"
+                            title={identifier.full}
+                          >
+                            {identifier.shown}
+                          </span>
+                          {/* In a narrow column a fixed role shares the
+                              identifier's line instead of taking one of its own. */}
+                          {!roleEditable && (
+                            <span
+                              className={cn(BADGE, "shrink-0", NARROW_ONLY)}
+                              data-testid="member-role"
+                            >
+                              <span className="sr-only">Role </span>
+                              {roleLabel(member.role)}
                             </span>
                           )}
-                        </span>
-                        <span className="truncate text-muted-foreground text-xs">
-                          {member.user.email}
                         </span>
                       </div>
                     </div>
                   </TableCell>
-                  <TableCell className={NARROW_UNDER_NAME} role="cell">
+                  <TableCell
+                    className={cn(
+                      NARROW_UNDER_NAME,
+                      !roleEditable && NARROW_HIDDEN
+                    )}
+                    role="cell"
+                  >
                     {roleEditable ? (
                       <Select
                         disabled={updatingId === member.id}
@@ -141,10 +176,7 @@ export function MembersTable({
                         </SelectContent>
                       </Select>
                     ) : (
-                      <span className="rounded-full border px-2 py-0.5 text-[0.6875rem]">
-                        <span className={NARROW_SR_ONLY}>Role </span>
-                        {roleLabel(member.role)}
-                      </span>
+                      <span className={BADGE}>{roleLabel(member.role)}</span>
                     )}
                   </TableCell>
                   <TableCell

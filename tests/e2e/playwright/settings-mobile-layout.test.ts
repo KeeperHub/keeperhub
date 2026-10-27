@@ -270,6 +270,26 @@ test.describe("tables in a narrow column", () => {
     });
   }
 
+  for (const width of PHONE_WIDTHS) {
+    test(`put a fixed role on the identifier's line at ${width}px`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: PHONE_HEIGHT });
+      await openOrgSettings(page, "users");
+
+      // The owner is listed first, and an owner's role is fixed.
+      const { row } = await membersTable(page);
+      const identifier = await box(row.getByTestId("member-identifier"));
+      const role = await box(row.getByTestId("member-role"));
+      expect(Math.abs(centreY(role) - centreY(identifier))).toBeLessThan(2);
+      expect(role.x).toBeGreaterThanOrEqual(identifier.x + identifier.width);
+      const whole = await box(row);
+      expect(role.x + role.width).toBeLessThanOrEqual(whole.x + whole.width);
+      // Not said a second time on a line of its own.
+      await expect(row.locator("td").nth(1)).toBeHidden();
+    });
+  }
+
   test("stay tables on a desktop", async ({ page }) => {
     await page.setViewportSize(DESKTOP);
     await openOrgSettings(page, "users");
@@ -277,6 +297,9 @@ test.describe("tables in a narrow column", () => {
     const { head, row } = await membersTable(page);
     await expect(head).toBeVisible();
     await expect(row.getByText("Joined")).toBeHidden();
+    // The Role column shows the role, so the member cell does not.
+    await expect(row.getByTestId("member-role")).toBeHidden();
+    await expect(row.locator("td").nth(1)).toBeVisible();
   });
 
   test("still read as rows and cells, each naming its column", async ({
@@ -288,8 +311,9 @@ test.describe("tables in a narrow column", () => {
     await expect(head).toBeHidden();
     // A grid row drops its implicit table roles in some engines.
     await expect(row).toHaveAttribute("role", "row");
-    // With the header row hidden, the cell says which column it is.
-    await expect(row.getByRole("cell", { name: /^Role\b/ })).toHaveCount(1);
+    // With the header row hidden, the role says it is the role. The owner's
+    // role is fixed, so it sits in the member cell rather than its own.
+    await expect(row.getByRole("cell", { name: /\bRole \w+$/ })).toHaveCount(1);
 
     await page.goto("/settings/security", { waitUntil: "domcontentloaded" });
     const session = page
