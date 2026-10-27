@@ -19,8 +19,7 @@ export const WELCOME_STEP_COUNT = WELCOME_STEPS.length;
 const FORM_PADDING =
   "pt-[calc(2rem+var(--app-banner-height,0px))] pr-[max(2rem,env(safe-area-inset-right))] pb-[calc(2rem+env(safe-area-inset-bottom,0px))] pl-[max(2rem,env(safe-area-inset-left))] lg:p-12 lg:pt-[calc(3rem+var(--app-banner-height,0px))] lg:pb-[calc(3rem+env(safe-area-inset-bottom,0px))]";
 
-// Focus scrolling stops clear of the banner and shows Finish's focus ring.
-// Only the element that is scrolling uses it, so both layers can carry it.
+// Keeps focused controls clear of the banner and Finish's focus ring in view.
 const SCROLL_PADDING =
   "scroll-pt-[calc(var(--app-banner-height,0px)+1rem)] scroll-pb-12";
 
