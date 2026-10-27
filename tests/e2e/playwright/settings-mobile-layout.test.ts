@@ -1,5 +1,5 @@
 import type { Locator, Page, Route } from "@playwright/test";
-import type { McpUserGroup } from "@/components/settings/hub/hooks/use-mcp-connections";
+import type { ConnectionsResponse } from "@/components/settings/hub/hooks/use-mcp-connections";
 import { SETTINGS_NAV } from "@/components/settings/hub/nav";
 import { WALLET_EMAIL_DOMAIN } from "@/lib/auth/wallet-constants";
 import { expect, test } from "./fixtures";
@@ -53,7 +53,7 @@ const FIRST_VISIT = { timeout: 20_000 };
 // A wallet member's sign-in, the longest name a settings row carries.
 const WALLET_EMAIL = `0x${"0".repeat(32)}deadbeef@${WALLET_EMAIL_DOMAIN}`;
 const DAY = 86_400_000;
-const AGENTS_CLIENT =
+const AGENT_CLIENT =
   "A client name long enough to need the whole row and then some";
 // What the row shows of the client id.
 const AGENT_ID = "a1b2c3d4";
@@ -62,8 +62,9 @@ const AGENT_ID = "a1b2c3d4";
 const NARROW_TABLES = [640, 834];
 // A small laptop beside the rail, where the table once pushed Revoke out.
 const SMALL_LAPTOP = 1024;
-// A client name cut to fewer pixels than this shows no more than a letter.
-const MIN_NAME = 40;
+// A long client name gets a line of its own rather than sharing one with its
+// badge, which left it a letter or two in the narrowest columns.
+const MIN_NAME = 100;
 // The agents list, served as is so every width sees the same rows: someone
 // with one session under a long client name, and a wallet member with none.
 const AGENTS = {
@@ -81,7 +82,7 @@ const AGENTS = {
         {
           id: "agents-session",
           clientId: `${AGENT_ID}e5f6`,
-          clientName: AGENTS_CLIENT,
+          clientName: AGENT_CLIENT,
           userId: "agents-owner",
           userName: "Agents Owner",
           userEmail: "agents-owner@example.com",
@@ -103,11 +104,7 @@ const AGENTS = {
       sessions: [],
     },
   ],
-} satisfies {
-  canManage: boolean;
-  maxScope: string | null;
-  users: McpUserGroup[];
-};
+} satisfies ConnectionsResponse;
 
 // These tests are about the settings layout, not what sits over it.
 test.beforeEach(async ({ page }) => {
@@ -516,11 +513,12 @@ test.describe("the connected agents table", () => {
         const summaryBox = await box(summary);
         expect(summaryBox.x + summaryBox.width).toBeLessThanOrEqual(personEnd);
 
-        // A long client name keeps a few letters beside its badge or above
-        // it, and the id that tells same-named sessions apart stays whole.
+        // A long client name keeps a readable width, and when it was
+        // connected and the id that tells same-named sessions apart stay whole.
         const sessionEnd = await endsBy(session);
-        const name = await box(session.getByText(AGENTS_CLIENT));
+        const name = await box(session.getByText(AGENT_CLIENT));
         expect(name.width).toBeGreaterThan(MIN_NAME);
+        expect(await textFits(session.getByText(/^Connected /))).toBe(true);
         const id = session.getByText(AGENT_ID, { exact: true });
         expect(await textFits(id)).toBe(true);
         const idBox = await box(id);

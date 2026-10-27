@@ -364,12 +364,15 @@ export function ConnectionsTable({
                             can hold several sessions under the same name. The
                             client id is what tells them apart, and it is public
                             in OAuth, so a leading fragment is safe to show. */}
-                        <span className="flex min-w-0 gap-1 text-muted-foreground text-xs">
+                        <span className="flex min-w-0 flex-wrap gap-x-1 text-muted-foreground text-xs">
                           <span className="truncate">
-                            Connected {relativeTime(session.connectedAt)} ·
+                            Connected {relativeTime(session.connectedAt)}
                           </span>
-                          <span className="shrink-0 font-mono">
-                            {session.clientId.slice(0, 8)}
+                          <span className="shrink-0">
+                            ·{" "}
+                            <span className="font-mono">
+                              {session.clientId.slice(0, 8)}
+                            </span>
                           </span>
                         </span>
                       </div>
