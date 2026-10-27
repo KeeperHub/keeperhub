@@ -386,6 +386,7 @@ test.describe("settings on wider screens", () => {
   test("the save badge sits under the plan switch's Annual end in a narrow column", async ({
     page,
   }) => {
+    // A phone, and a tablet beside the rail, both get the narrow column.
     for (const [size, stacked] of [
       [{ width: 390, height: PHONE_HEIGHT }, true],
       [TABLET, true],
@@ -393,18 +394,44 @@ test.describe("settings on wider screens", () => {
     ] as const) {
       await page.setViewportSize(size);
       await openOrgSettings(page, "plans");
-      const badge = page.locator(".khp-save-badge");
-      await expect(badge).toBeVisible(FIRST_VISIT);
-      const toggle = await box(page.locator(".khp-interval-group"));
-      const save = await box(badge);
+      const interval = page.locator(".khp-interval");
+      await expect(interval.locator(".khp-save-badge")).toBeVisible(
+        FIRST_VISIT
+      );
+      // All four boxes in one frame: the page moves once the owner's role
+      // and billing load, and two separate reads could straddle that.
+      const { column, toggle, annual, save } = await interval.evaluate(
+        (element) => {
+          const rect = (node: Element | null | undefined): Box => {
+            const { x, y, width, height } = (
+              node as Element
+            ).getBoundingClientRect();
+            return { x, y, width, height };
+          };
+          const buttons = [...element.querySelectorAll(".khp-interval-btn")];
+          return {
+            column: rect(element.parentElement),
+            toggle: rect(element.querySelector(".khp-interval-group")),
+            annual: rect(
+              buttons.find((button) => button.textContent?.trim() === "Annual")
+            ),
+            save: rect(element.querySelector(".khp-save-badge")),
+          };
+        }
+      );
+      const middle = (b: Box): number => b.x + b.width / 2;
       if (stacked) {
         expect(save.y).toBeGreaterThanOrEqual(toggle.y + toggle.height);
-        expect(
-          Math.abs(save.x + save.width - (toggle.x + toggle.width))
-        ).toBeLessThan(1);
+        expect(middle(save)).toBeGreaterThanOrEqual(annual.x);
+        expect(middle(save)).toBeLessThanOrEqual(annual.x + annual.width);
+        expect(Math.abs(middle(toggle) - middle(column))).toBeLessThanOrEqual(
+          1
+        );
       } else {
+        const level = save.y + save.height / 2;
         expect(save.x).toBeGreaterThanOrEqual(toggle.x + toggle.width);
-        expect(save.y).toBeLessThan(toggle.y + toggle.height);
+        expect(level).toBeGreaterThanOrEqual(toggle.y);
+        expect(level).toBeLessThanOrEqual(toggle.y + toggle.height);
       }
     }
   });
