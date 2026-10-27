@@ -215,14 +215,16 @@ export function ConnectionsTable({
       </div>
 
       {/* Fixed widths, so a long address is cut short in its own column
-          rather than widening the table past the card. */}
+          rather than widening the table past the card. The other columns
+          take only what their longest value needs, since the first one gets
+          what is left of a table that can be as narrow as 36rem. */}
       <Table className="table-fixed">
         <TableHeader>
           <TableRow className={SETTINGS_HEAD_ROW}>
-            <TableHead>Person and sessions</TableHead>
-            <TableHead className="w-52">Access</TableHead>
-            <TableHead className="w-36">Last used</TableHead>
-            <TableHead className="w-24" />
+            <TableHead className="truncate">Person and sessions</TableHead>
+            <TableHead className="w-44">Access</TableHead>
+            <TableHead className="w-28">Last used</TableHead>
+            <TableHead className="w-20" />
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -280,8 +282,12 @@ export function ConnectionsTable({
                         <span className="truncate font-medium">
                           {group.userName || group.userEmail}
                         </span>
-                        <span className="truncate text-muted-foreground text-xs">
-                          {group.userEmail} · {sessionSummary(group)}
+                        {/* The address gives way, not what is connected. */}
+                        <span className="flex min-w-0 gap-1 text-muted-foreground text-xs">
+                          <span className="truncate">{group.userEmail}</span>
+                          <span className="shrink-0">
+                            · {sessionSummary(group)}
+                          </span>
                         </span>
                       </span>
                     </button>
@@ -293,7 +299,7 @@ export function ConnectionsTable({
                         onValueChange={(next) => onScopeChange(group, next)}
                         value={group.maxScope ?? UNSET_READS_AS}
                       >
-                        <SelectTrigger aria-label="Access" className="h-8 w-48">
+                        <SelectTrigger aria-label="Access" className="h-8 w-40">
                           <SelectValue />
                         </SelectTrigger>
                         {/* The label stays plain: the trigger renders the
@@ -348,7 +354,9 @@ export function ConnectionsTable({
                   >
                     <TableCell className="pl-10" role="cell">
                       <div className="flex min-w-0 flex-col">
-                        <span className="flex min-w-0 items-center gap-2 text-sm">
+                        {/* Where both do not fit, the badge drops under the
+                            name rather than squeezing it to nothing. */}
+                        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
                           <span className="truncate">{session.clientName}</span>
                           <ConnectedBadge session={session} />
                         </span>
@@ -356,9 +364,11 @@ export function ConnectionsTable({
                             can hold several sessions under the same name. The
                             client id is what tells them apart, and it is public
                             in OAuth, so a leading fragment is safe to show. */}
-                        <span className="truncate text-muted-foreground text-xs">
-                          Connected {relativeTime(session.connectedAt)} ·{" "}
-                          <span className="font-mono">
+                        <span className="flex min-w-0 gap-1 text-muted-foreground text-xs">
+                          <span className="truncate">
+                            Connected {relativeTime(session.connectedAt)} ·
+                          </span>
+                          <span className="shrink-0 font-mono">
                             {session.clientId.slice(0, 8)}
                           </span>
                         </span>

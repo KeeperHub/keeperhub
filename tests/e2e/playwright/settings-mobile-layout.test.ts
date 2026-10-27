@@ -1,4 +1,5 @@
 import type { Locator, Page, Route } from "@playwright/test";
+import type { McpUserGroup } from "@/components/settings/hub/hooks/use-mcp-connections";
 import { SETTINGS_NAV } from "@/components/settings/hub/nav";
 import { WALLET_EMAIL_DOMAIN } from "@/lib/auth/wallet-constants";
 import { expect, test } from "./fixtures";
@@ -52,6 +53,17 @@ const FIRST_VISIT = { timeout: 20_000 };
 // A wallet member's sign-in, the longest name a settings row carries.
 const WALLET_EMAIL = `0x${"0".repeat(32)}deadbeef@${WALLET_EMAIL_DOMAIN}`;
 const DAY = 86_400_000;
+const AGENTS_CLIENT =
+  "A client name long enough to need the whole row and then some";
+// What the row shows of the client id.
+const AGENT_ID = "a1b2c3d4";
+// Where the agents table is at nearly its narrowest: a phone on its side,
+// with no rail, and an 11-inch tablet upright beside the rail.
+const NARROW_TABLES = [640, 834];
+// A small laptop beside the rail, where the table once pushed Revoke out.
+const SMALL_LAPTOP = 1024;
+// A client name cut to fewer pixels than this shows no more than a letter.
+const MIN_NAME = 40;
 // The agents list, served as is so every width sees the same rows: someone
 // with one session under a long client name, and a wallet member with none.
 const AGENTS = {
@@ -68,9 +80,8 @@ const AGENTS = {
       sessions: [
         {
           id: "agents-session",
-          clientId: "a1b2c3d4e5f6",
-          clientName:
-            "A client name long enough to need the whole row and then some",
+          clientId: `${AGENT_ID}e5f6`,
+          clientName: AGENTS_CLIENT,
           userId: "agents-owner",
           userName: "Agents Owner",
           userEmail: "agents-owner@example.com",
@@ -78,6 +89,7 @@ const AGENTS = {
           connectedAt: new Date(Date.now() - DAY).toISOString(),
           expiresAt: new Date(Date.now() + DAY).toISOString(),
           lastUsedAt: null,
+          revokedAt: null,
         },
       ],
     },
@@ -91,6 +103,10 @@ const AGENTS = {
       sessions: [],
     },
   ],
+} satisfies {
+  canManage: boolean;
+  maxScope: string | null;
+  users: McpUserGroup[];
 };
 
 // These tests are about the settings layout, not what sits over it.
@@ -440,40 +456,83 @@ test.describe("the connected agents table", () => {
       await route.fulfill({ json: AGENTS });
     });
 
-    for (const width of [...PHONE_WIDTHS, TABLET.width, 1024, DESKTOP.width]) {
+    for (const width of [
+      ...PHONE_WIDTHS,
+      TABLET.width,
+      ...NARROW_TABLES,
+      SMALL_LAPTOP,
+      DESKTOP.width,
+    ]) {
       await test.step(`${width}px`, async () => {
         await page.setViewportSize({ width, height: TABLET.height });
         await openOrgSettings(page, "agents");
-        const table = page.locator("main table").first();
-        const person = table
-          .locator("tbody tr")
-          .filter({ hasText: WALLET_EMAIL });
+        const card = page.locator("main section").filter({
+          has: page.getByRole("heading", { name: "Connected agents" }),
+        });
+        const table = card.locator("table");
+        const rows = table.locator("tbody tr");
+        const person = rows.filter({ hasText: WALLET_EMAIL });
+        const session = rows.filter({ hasText: AGENT_ID });
         await expect(person).toBeVisible(FIRST_VISIT);
+        await expect(session).toBeVisible();
 
         // The table stays inside its card: nothing to scroll sideways to.
         expect(
-          await page
-            .locator("main [data-slot=table-container]")
-            .first()
+          await card
+            .locator("[data-slot=table-container]")
             .evaluate((element) => element.scrollWidth <= element.clientWidth)
         ).toBe(true);
-        // The address line is what gives way, ending in an ellipsis where it
-        // does not fit, and it ends inside the card either way.
-        const card = await box(page.locator("main section").first());
-        const right = card.x + card.width;
-        const line = person.getByText(`${WALLET_EMAIL} · No agents connected`);
-        const shown = await box(line);
-        expect(shown.x + shown.width).toBeLessThanOrEqual(right);
-        if (!(await textFits(line))) {
-          expect(
-            await line.evaluate(
-              (element) => getComputedStyle(element).textOverflow
-            )
-          ).toBe("ellipsis");
+
+        // Text ends inside the card, and as a table inside its own column,
+        // short of the Access cell beside it.
+        const cardBox = await box(card);
+        const asTable = await table.locator("thead tr").isVisible();
+        const endsBy = async (row: Locator): Promise<number> =>
+          asTable
+            ? (await box(row.locator("td").nth(1))).x
+            : cardBox.x + cardBox.width;
+        if (asTable) {
+          expect(await textFits(table.locator("th").first())).toBe(true);
         }
-        // A session's Revoke stays in reach beside a long client name.
-        const button = await box(table.getByRole("button", { name: "Revoke" }));
-        expect(button.x + button.width).toBeLessThanOrEqual(right);
+
+        // The address is what gives way, ending in an ellipsis, while what
+        // is connected stays readable.
+        const personEnd = await endsBy(person);
+        for (const address of await person
+          .getByText(WALLET_EMAIL, { exact: true })
+          .all()) {
+          const shown = await box(address);
+          expect(shown.x + shown.width).toBeLessThanOrEqual(personEnd);
+          if (!(await textFits(address))) {
+            expect(
+              await address.evaluate(
+                (element) => getComputedStyle(element).textOverflow
+              )
+            ).toBe("ellipsis");
+          }
+        }
+        const summary = person.getByText("· No agents connected");
+        expect(await textFits(summary)).toBe(true);
+        const summaryBox = await box(summary);
+        expect(summaryBox.x + summaryBox.width).toBeLessThanOrEqual(personEnd);
+
+        // A long client name keeps a few letters beside its badge or above
+        // it, and the id that tells same-named sessions apart stays whole.
+        const sessionEnd = await endsBy(session);
+        const name = await box(session.getByText(AGENTS_CLIENT));
+        expect(name.width).toBeGreaterThan(MIN_NAME);
+        const id = session.getByText(AGENT_ID, { exact: true });
+        expect(await textFits(id)).toBe(true);
+        const idBox = await box(id);
+        expect(idBox.x + idBox.width).toBeLessThanOrEqual(sessionEnd);
+
+        // Revoke stays in reach.
+        const revoke = await box(
+          session.getByRole("button", { name: "Revoke" })
+        );
+        expect(revoke.x + revoke.width).toBeLessThanOrEqual(
+          cardBox.x + cardBox.width
+        );
       });
     }
   });
