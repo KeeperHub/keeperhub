@@ -127,18 +127,19 @@ export function MembersTable({
                           {member.user.name}
                           {isSelf && <span className={BADGE}>You</span>}
                         </span>
-                        <span className="flex min-w-0 items-center gap-2">
+                        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
                           <span
-                            className="truncate text-muted-foreground text-xs"
+                            className="max-w-full truncate text-muted-foreground text-xs"
                             data-testid="member-identifier"
                             title={identifier.full}
                           >
                             {identifier.shown}
                           </span>
                           {/* In a narrow column a fixed role sits on the
-                              identifier's line. An editable one keeps a line
-                              of its own: its picker would leave the
-                              identifier no room on a phone. */}
+                              identifier's line, or just under it when the
+                              identifier needs the whole line. An editable one
+                              keeps a line of its own: its picker would leave
+                              the identifier no room on a phone. */}
                           {!roleEditable && (
                             <span
                               className={cn(BADGE, "shrink-0", NARROW_ONLY)}

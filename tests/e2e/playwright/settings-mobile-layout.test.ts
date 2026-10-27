@@ -273,7 +273,7 @@ test.describe("tables in a narrow column", () => {
   }
 
   for (const width of PHONE_WIDTHS) {
-    test(`put a fixed role on the identifier's line at ${width}px`, async ({
+    test(`put a fixed role beside the identifier, or under it, at ${width}px`, async ({
       page,
     }) => {
       await page.setViewportSize({ width, height: PHONE_HEIGHT });
@@ -281,14 +281,23 @@ test.describe("tables in a narrow column", () => {
 
       // The owner is listed first, and an owner's role is fixed.
       const { row } = await membersTable(page);
-      const identifier = await box(row.getByTestId("member-identifier"));
+      const identifierText = row.getByTestId("member-identifier");
+      const identifier = await box(identifierText);
       const role = await box(row.getByTestId("member-role"));
-      expect(Math.abs(centreY(role) - centreY(identifier))).toBeLessThan(
-        SAME_LINE
-      );
-      expect(role.x).toBeGreaterThanOrEqual(identifier.x + identifier.width);
       const whole = await box(row);
       expect(role.x + role.width).toBeLessThanOrEqual(whole.x + whole.width);
+      if (Math.abs(centreY(role) - centreY(identifier)) < SAME_LINE) {
+        // Beside it only when the identifier is shown whole.
+        expect(role.x).toBeGreaterThanOrEqual(identifier.x + identifier.width);
+        const cut = await identifierText.evaluate(
+          (el) => el.scrollWidth > el.clientWidth
+        );
+        expect(cut).toBe(false);
+      } else {
+        // Otherwise on the next line, lined up with the identifier.
+        expect(role.y).toBeGreaterThanOrEqual(identifier.y + identifier.height);
+        expect(Math.abs(role.x - identifier.x)).toBeLessThan(SAME_LINE);
+      }
       // Not said a second time on a line of its own.
       await expect(row.locator("td").nth(1)).toBeHidden();
     });
