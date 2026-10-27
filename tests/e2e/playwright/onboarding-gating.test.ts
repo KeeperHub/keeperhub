@@ -1,3 +1,4 @@
+import type { CDPSession } from "@playwright/test";
 import { expect, test } from "./fixtures";
 import {
   completeTotpEnrollment,
@@ -79,21 +80,42 @@ test.describe("welcome gating: returning user", () => {
   });
 });
 
-// The page itself never scrolls, so each wizard step has to. The last step is
-// the tallest: a visitor on a small screen must be able to scroll down to
-// Finish, not only reach it by keyboard focus. Below lg the whole step
-// scrolls; the desktop case guards the form column, which scrolls on its own.
+// The last wizard step is taller than a small screen; scroll it down to Finish.
 const SMALL_SCREENS = [
-  { name: "a phone", width: 390, height: 700, hasTouch: true },
-  { name: "a narrow window", width: 900, height: 700, hasTouch: false },
-  { name: "a short desktop window", width: 1280, height: 600, hasTouch: false },
+  { name: "a phone", width: 390, height: 700, touch: true },
+  { name: "a narrow window", width: 900, height: 700, touch: false },
+  { name: "a short desktop window", width: 1280, height: 600, touch: false },
 ];
+
+// A finger swipe up the screen, sent as raw touch events.
+async function swipeUp(
+  cdp: CDPSession,
+  x: number,
+  fromY: number
+): Promise<void> {
+  let y = fromY;
+  await cdp.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ x, y }],
+  });
+  for (let step = 0; step < 10; step++) {
+    y -= 50;
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [{ x, y }],
+    });
+  }
+  await cdp.send("Input.dispatchTouchEvent", {
+    type: "touchEnd",
+    touchPoints: [],
+  });
+}
 
 for (const screen of SMALL_SCREENS) {
   test.describe(`onboarding wizard on ${screen.name}`, () => {
     test.use({
       viewport: { width: screen.width, height: screen.height },
-      hasTouch: screen.hasTouch,
+      hasTouch: screen.touch,
     });
 
     test("scrolls the last step down to Finish", async ({ page }) => {
@@ -108,11 +130,19 @@ for (const screen of SMALL_SCREENS) {
       // Taller than the screen, otherwise there is nothing to scroll.
       await expect(finish).not.toBeInViewport();
 
-      // Wheel over the form. Hover once: hovering again inside the retry
-      // would scroll the heading back into view.
-      await heading.hover();
+      // Swipe on the phone. Elsewhere hover once: a hover in the retry scrolls back up.
+      const cdp = screen.touch
+        ? await page.context().newCDPSession(page)
+        : null;
+      if (!cdp) {
+        await heading.hover();
+      }
       await expect(async () => {
-        await page.mouse.wheel(0, 2000);
+        if (cdp) {
+          await swipeUp(cdp, screen.width / 2, screen.height - 100);
+        } else {
+          await page.mouse.wheel(0, 2000);
+        }
         await expect(finish).toBeInViewport({ ratio: 1, timeout: 1000 });
       }).toPass({ timeout: 15_000 });
     });
