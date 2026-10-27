@@ -66,7 +66,7 @@ function FreeCapCallout({
 }): React.ReactElement {
   return (
     <div className="flex items-center gap-4 rounded-lg border border-keeperhub-green/20 bg-keeperhub-green/5 p-4">
-      <p className="font-semibold text-4xl text-keeperhub-green tabular-nums">
+      <p className="shrink-0 font-semibold text-4xl text-keeperhub-green tabular-nums">
         5,000
       </p>
       <div className="flex flex-col gap-0.5">
