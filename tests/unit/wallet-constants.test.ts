@@ -4,7 +4,8 @@ import {
   walletAddressFromEmail,
 } from "@/lib/auth/wallet-constants";
 
-const ADDRESS = "0x52908400098527886e0f7030069857d2e4169ee7";
+// A synthetic fixture (mostly zeros), not a deployed address.
+const ADDRESS = "0x00000000000000000000000000000000deadbeef";
 
 describe("walletAddressFromEmail", () => {
   it("returns the address a wallet email carries", () => {
