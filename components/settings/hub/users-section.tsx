@@ -5,12 +5,11 @@ import { useState } from "react";
 import { InviteMemberForm } from "@/components/organization/invite-modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { truncateAddress } from "@/lib/address-utils";
-import { isWalletEmail } from "@/lib/auth/wallet-constants";
 import { useSession } from "@/lib/auth-client";
 import { useOrgMembers } from "./hooks/use-org-members";
 import { InvitationsCard } from "./invitations-card";
 import { MemberStats } from "./member-stats";
+import { loginIdentifier } from "./members/login-identifier";
 import { MembersTable } from "./members/members-table";
 import { invitationTiming } from "./relative-time";
 import { EmptyState, SectionHeader, SettingsCard } from "./section";
@@ -43,7 +42,9 @@ export function UsersSection(): React.ReactElement {
       (m) =>
         !needle ||
         (m.user.name ?? "").toLowerCase().includes(needle) ||
-        (m.user.email ?? "").toLowerCase().includes(needle)
+        loginIdentifier(m.user.email ?? "")
+          .full.toLowerCase()
+          .includes(needle)
     )
     .slice()
     .sort(
@@ -130,9 +131,7 @@ export function UsersSection(): React.ReactElement {
             badge: inv.role,
             // Wallet invitees carry a synthetic address rather than a mailbox,
             // and are never emailed, so show the wallet they sign in with.
-            label: isWalletEmail(inv.email)
-              ? truncateAddress(inv.email.split("@")[0])
-              : inv.email,
+            label: loginIdentifier(inv.email).shown,
             expired: inv.expiresAt
               ? new Date(inv.expiresAt) < new Date()
               : false,

@@ -46,6 +46,8 @@ const MIN_HEADING_SHARE = 0.5;
 const SHARED_HEADER_FROM = 390;
 // A card title's line box (text-sm): taller means it wrapped.
 const ONE_LINE = 24;
+// Centres closer than this sit on the same line.
+const SAME_LINE = 2;
 // A section's code is compiled on first visit in development.
 const FIRST_VISIT = { timeout: 20_000 };
 
@@ -91,13 +93,13 @@ function centreY(target: Box): number {
 }
 
 // The members table's header row and its first member, once the list has
-// loaded (the skeleton rows before it have no email).
+// loaded (the skeleton rows before it have no identifier).
 async function membersTable(
   page: Page
 ): Promise<{ head: Locator; row: Locator }> {
   const table = page.locator("main table").first();
   const row = table.locator("tbody tr").first();
-  await expect(row).toContainText("@", FIRST_VISIT);
+  await expect(row.getByTestId("member-identifier")).toBeVisible(FIRST_VISIT);
   return { head: table.locator("thead tr"), row };
 }
 
@@ -281,7 +283,9 @@ test.describe("tables in a narrow column", () => {
       const { row } = await membersTable(page);
       const identifier = await box(row.getByTestId("member-identifier"));
       const role = await box(row.getByTestId("member-role"));
-      expect(Math.abs(centreY(role) - centreY(identifier))).toBeLessThan(2);
+      expect(Math.abs(centreY(role) - centreY(identifier))).toBeLessThan(
+        SAME_LINE
+      );
       expect(role.x).toBeGreaterThanOrEqual(identifier.x + identifier.width);
       const whole = await box(row);
       expect(role.x + role.width).toBeLessThanOrEqual(whole.x + whole.width);

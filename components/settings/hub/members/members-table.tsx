@@ -20,8 +20,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { toChecksumAddress, truncateAddress } from "@/lib/address-utils";
-import { isWalletEmail } from "@/lib/auth/wallet-constants";
 import { roleLabel } from "@/lib/organization/role-label";
 import { cn } from "@/lib/utils";
 import { ConfirmDeleteDialog } from "../confirm-delete-dialog";
@@ -33,21 +31,11 @@ import {
   SETTINGS_HEAD_ROW,
   SETTINGS_ROW,
 } from "../section";
+import { loginIdentifier } from "./login-identifier";
 
 const SKELETON_ROWS = ["a", "b"] as const;
 
 const BADGE = "rounded-full border px-2 py-0.5 text-[0.6875rem]";
-
-// Wallet members carry a synthetic `<address>@wallet...` email rather than a
-// mailbox, so show the wallet they sign in with, as the invitations do. The
-// full form is kept for the tooltip, since either one may be cut short.
-function memberIdentifier(email: string): { shown: string; full: string } {
-  if (!isWalletEmail(email)) {
-    return { shown: email, full: email };
-  }
-  const address = toChecksumAddress(email.split("@")[0]);
-  return { shown: truncateAddress(address), full: address };
-}
 
 export function MembersTable({
   members,
@@ -93,7 +81,12 @@ export function MembersTable({
                     </div>
                   </div>
                 </TableCell>
-                <TableCell className={NARROW_UNDER_NAME} role="cell">
+                {/* Without the rights to change roles every role is fixed,
+                    and in a narrow column takes no line of its own. */}
+                <TableCell
+                  className={cn(NARROW_UNDER_NAME, !canManage && NARROW_HIDDEN)}
+                  role="cell"
+                >
                   <Skeleton className="h-5 w-20" />
                 </TableCell>
                 <TableCell className={NARROW_UNDER_NAME} role="cell">
@@ -109,7 +102,7 @@ export function MembersTable({
               // the leave flow, so the picker only offers the two editable roles.
               const roleEditable =
                 canManage && !isSelf && member.role !== "owner";
-              const identifier = memberIdentifier(member.user.email);
+              const identifier = loginIdentifier(member.user.email);
               return (
                 <TableRow className={SETTINGS_ROW} key={member.id} role="row">
                   <TableCell role="cell">
@@ -136,8 +129,10 @@ export function MembersTable({
                           >
                             {identifier.shown}
                           </span>
-                          {/* In a narrow column a fixed role shares the
-                              identifier's line instead of taking one of its own. */}
+                          {/* In a narrow column a fixed role sits on the
+                              identifier's line. An editable one keeps a line
+                              of its own: its picker would leave the
+                              identifier no room on a phone. */}
                           {!roleEditable && (
                             <span
                               className={cn(BADGE, "shrink-0", NARROW_ONLY)}
