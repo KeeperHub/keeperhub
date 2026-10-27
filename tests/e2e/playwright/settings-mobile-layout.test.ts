@@ -402,20 +402,31 @@ test.describe("settings on wider screens", () => {
       // and billing load, and two separate reads could straddle that.
       const { column, toggle, annual, save } = await interval.evaluate(
         (element) => {
-          const rect = (node: Element | null | undefined): Box => {
-            const { x, y, width, height } = (
-              node as Element
-            ).getBoundingClientRect();
+          const rect = (
+            name: string,
+            node: Element | null | undefined
+          ): Box => {
+            if (!node) {
+              throw new Error(`${name} is not rendered`);
+            }
+            const { x, y, width, height } = node.getBoundingClientRect();
             return { x, y, width, height };
           };
           const buttons = [...element.querySelectorAll(".khp-interval-btn")];
           return {
-            column: rect(element.parentElement),
-            toggle: rect(element.querySelector(".khp-interval-group")),
+            column: rect("the plan cards", element.parentElement),
+            toggle: rect(
+              "the plan switch",
+              element.querySelector(".khp-interval-group")
+            ),
             annual: rect(
+              "the Annual button",
               buttons.find((button) => button.textContent?.trim() === "Annual")
             ),
-            save: rect(element.querySelector(".khp-save-badge")),
+            save: rect(
+              "the save badge",
+              element.querySelector(".khp-save-badge")
+            ),
           };
         }
       );
