@@ -217,7 +217,7 @@ export function ConnectionsTable({
       {/* Fixed widths, so a long address is cut short in its own column
           rather than widening the table past the card. The other columns
           take only what their longest value needs, since the first one gets
-          what is left of a table that can be as narrow as 36rem. */}
+          what is left in a settings column as narrow as 36rem. */}
       <Table className="table-fixed">
         <TableHeader>
           <TableRow className={SETTINGS_HEAD_ROW}>
@@ -365,7 +365,9 @@ export function ConnectionsTable({
                             client id is what tells them apart, and it is public
                             in OAuth, so a leading fragment is safe to show. */}
                         <span className="flex min-w-0 flex-wrap gap-x-1 text-muted-foreground text-xs">
-                          <span className="truncate">
+                          {/* Cut short only in a table row: a stacked one has
+                              room below to wrap into. */}
+                          <span className="@xl/settings:truncate">
                             Connected {relativeTime(session.connectedAt)}
                           </span>
                           <span className="shrink-0">
