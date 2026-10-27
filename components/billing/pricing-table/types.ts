@@ -24,9 +24,14 @@ export type PricingTableProps = {
   gasCreditCaps?: GasCreditCapsMap;
   trial?: TrialInfo;
   onPlanUpdated?: () => Promise<void>;
-  /** Monthly or annual prices. Without it the table keeps its own choice. */
-  interval?: BillingInterval;
-  onIntervalChange?: (next: BillingInterval) => void;
-};
+} & (
+  | {
+      /** Monthly or annual prices, held by the caller across remounts. */
+      interval: BillingInterval;
+      onIntervalChange: (next: BillingInterval) => void;
+    }
+  // Without them the table keeps its own choice.
+  | { interval?: never; onIntervalChange?: never }
+);
 
 export type PlanTierItem = (typeof PLANS)[PlanName]["tiers"][number];

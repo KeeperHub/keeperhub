@@ -823,12 +823,12 @@ export function PricingTable({
   trial,
   onPlanUpdated,
   canManage = true,
-  interval: heldInterval,
+  interval: controlledInterval,
   onIntervalChange,
 }: PricingTableProps): React.ReactElement {
   const [ownInterval, setOwnInterval] = useState<BillingInterval>("monthly");
-  const interval = heldInterval ?? ownInterval;
-  const setInterval = onIntervalChange ?? setOwnInterval;
+  const interval = controlledInterval ?? ownInterval;
+  const changeInterval = onIntervalChange ?? setOwnInterval;
   const [selectedTierByCard, setSelectedTierByCard] = useState<
     Record<TieredPlanName, TierKey | null>
   >({
@@ -934,14 +934,14 @@ export function PricingTable({
         <PricingCards
           cards={cards}
           interval={appIntervalToPkg(interval)}
-          onIntervalChange={(next) => setInterval(pkgIntervalToApp(next))}
+          onIntervalChange={(next) => changeInterval(pkgIntervalToApp(next))}
           onTierChange={onCardTierChange}
         />
       ) : (
         <ReadOnlyCards
           cards={cards}
           interval={appIntervalToPkg(interval)}
-          onIntervalChange={(next) => setInterval(pkgIntervalToApp(next))}
+          onIntervalChange={(next) => changeInterval(pkgIntervalToApp(next))}
           onTierChange={onCardTierChange}
         />
       )}

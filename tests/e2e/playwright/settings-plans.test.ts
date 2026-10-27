@@ -1,8 +1,8 @@
 import type { Locator, Page, Route } from "@playwright/test";
+import { OWNER_ONLY_LINE } from "@/components/settings/hub/plans-description";
 import { expect, test } from "./fixtures";
 import { openOrgSettings } from "./utils/settings";
 
-const OWNER_ONLY_LINE = "Only the owner can change the plan.";
 const FIRST_VISIT = { timeout: 20_000 };
 // Long enough for the page to be on screen and usable before it arrives.
 const LATE = 3000;
@@ -28,15 +28,18 @@ test.describe("the plans page while it loads", () => {
   test("an owner is never told only the owner can change the plan", async ({
     page,
   }) => {
-    // The role comes with the active organization; a slow one leaves the
-    // page on screen without it for a while.
-    await page.route(
+    // The role comes from the organizations list, or from the active
+    // membership until the list arrives; slow ones leave the page on screen
+    // without it for a while.
+    for (const url of [
+      "**/api/organizations",
       "**/api/auth/organization/get-full-organization*",
-      async (route: Route) => {
+    ]) {
+      await page.route(url, async (route: Route) => {
         await new Promise((resolve) => setTimeout(resolve, LATE));
         await route.fallback();
-      }
-    );
+      });
+    }
     await page.addInitScript((line) => {
       const seen = (): void => {
         if (document.body?.innerText.includes(line)) {
@@ -69,7 +72,7 @@ test.describe("the plans page while it loads", () => {
     page,
   }) => {
     // A paid plan, so its arrival changes the current card and remounts the
-    // table, which is what used to drop the reader's pick.
+    // table.
     await page.route("**/api/billing/subscription", (route: Route) =>
       route.fulfill({
         status: 200,
