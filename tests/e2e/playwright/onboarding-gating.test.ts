@@ -82,24 +82,28 @@ test.describe("welcome gating: returning user", () => {
 
 // The last wizard step is taller than a small screen; scroll it down to Finish.
 const SMALL_SCREENS = [
+  { name: "a small phone", width: 320, height: 568, touch: true },
   { name: "a phone", width: 390, height: 700, touch: true },
   { name: "a narrow window", width: 900, height: 700, touch: false },
+  { name: "a landscape tablet", width: 1180, height: 600, touch: true },
   { name: "a short desktop window", width: 1280, height: 600, touch: false },
 ];
 
-// A finger swipe up the screen, sent as raw touch events.
+// A finger swipe up most of the screen, over the form column, as raw touch events.
 async function swipeUp(
   cdp: CDPSession,
-  x: number,
-  fromY: number
+  width: number,
+  height: number
 ): Promise<void> {
-  let y = fromY;
+  const x = width / 4;
+  const stepPx = (height * 0.7) / 10;
+  let y = height * 0.85;
   await cdp.send("Input.dispatchTouchEvent", {
     type: "touchStart",
     touchPoints: [{ x, y }],
   });
   for (let step = 0; step < 10; step++) {
-    y -= 50;
+    y -= stepPx;
     await cdp.send("Input.dispatchTouchEvent", {
       type: "touchMove",
       touchPoints: [{ x, y }],
@@ -130,21 +134,40 @@ for (const screen of SMALL_SCREENS) {
       // Taller than the screen, otherwise there is nothing to scroll.
       await expect(finish).not.toBeInViewport();
 
-      // Swipe on the phone. Elsewhere hover once: a hover in the retry scrolls back up.
-      const cdp = screen.touch
-        ? await page.context().newCDPSession(page)
-        : null;
-      if (!cdp) {
+      let cdp: CDPSession | undefined;
+      if (screen.touch) {
+        cdp = await page.context().newCDPSession(page);
+      } else {
+        // The wheel needs the pointer over the step; re-hovering would scroll back up.
         await heading.hover();
       }
       await expect(async () => {
         if (cdp) {
-          await swipeUp(cdp, screen.width / 2, screen.height - 100);
+          await swipeUp(cdp, screen.width, screen.height);
         } else {
           await page.mouse.wheel(0, 2000);
         }
         await expect(finish).toBeInViewport({ ratio: 1, timeout: 1000 });
       }).toPass({ timeout: 15_000 });
+    });
+
+    test("moves the step label down by the app banner's height", async ({
+      page,
+    }) => {
+      await page.goto("/welcome/connect-agent", {
+        waitUntil: "domcontentloaded",
+      });
+      const label = page.getByText("Step 4 / 4");
+      await expect(label).toBeVisible({ timeout: 15_000 });
+      // Set the banner's height here, so the check does not wait on the banner.
+      const shift = await label.evaluate((element) => {
+        const root = document.documentElement.style;
+        root.setProperty("--app-banner-height", "0px");
+        const before = element.getBoundingClientRect().top;
+        root.setProperty("--app-banner-height", "36px");
+        return element.getBoundingClientRect().top - before;
+      });
+      expect(shift).toBe(36);
     });
   });
 }
