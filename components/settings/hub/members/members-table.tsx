@@ -37,6 +37,12 @@ const SKELETON_ROWS = ["a", "b"] as const;
 
 const BADGE = "rounded-full border px-2 py-0.5 text-[0.6875rem]";
 
+// Just past the narrow layout a long identifier would push Joined and the
+// actions out of the card, so there the member column takes whatever the
+// others leave and the identifier truncates. Wider columns fit it as it is.
+const MEMBER_CELL =
+  "@xl/settings:@max-4xl/settings:w-full @xl/settings:@max-4xl/settings:max-w-0";
+
 export function MembersTable({
   members,
   loading,
@@ -72,7 +78,7 @@ export function MembersTable({
           {loading &&
             SKELETON_ROWS.map((key) => (
               <TableRow className={SETTINGS_ROW} key={key} role="row">
-                <TableCell role="cell">
+                <TableCell className={MEMBER_CELL} role="cell">
                   <div className="flex items-center gap-3">
                     <Skeleton className="size-8 shrink-0 rounded-full" />
                     <div className="flex flex-col gap-1.5">
@@ -105,7 +111,7 @@ export function MembersTable({
               const identifier = loginIdentifier(member.user.email);
               return (
                 <TableRow className={SETTINGS_ROW} key={member.id} role="row">
-                  <TableCell role="cell">
+                  <TableCell className={MEMBER_CELL} role="cell">
                     <div className="flex items-center gap-3">
                       <Avatar className="size-8">
                         <AvatarImage
