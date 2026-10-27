@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import {
   Popover,
+  PopoverAnchor,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
@@ -36,10 +37,8 @@ const MONTH_LABEL = new Intl.DateTimeFormat("en-US", { month: "long" });
 // Where clearing lands, matching the range the page opens in.
 const DEFAULT_RANGE = "24h" as const;
 
-// The page's p-6. Below sm the popover keeps this clear of both screen edges,
-// so it lines up with the header above it; its width, calc(100vw-3rem), is the
-// same 24px taken off each side.
-const PHONE_EDGE_GAP = 24;
+// Below sm, the room the popover keeps above and below itself on a short screen.
+const PHONE_SCREEN_GAP = { top: 24, bottom: 24 };
 
 const NOOP = (): void => {
   // Selection is handled in onDayClick.
@@ -82,18 +81,24 @@ function buildPresets(now: Date): Preset[] {
  * Choosing here switches the range to `custom`; choosing a preset button
  * clears the dates again.
  */
-export function DateRangeFilter(): ReactNode {
+export function DateRangeFilter({
+  phoneAnchor,
+}: {
+  // Below sm the popover opens under this, as wide as it.
+  phoneAnchor: HTMLElement | null;
+}): ReactNode {
   const [range, setRange] = useAtom(analyticsRangeAtom);
   const [customStart, setCustomStart] = useAtom(analyticsCustomStartAtom);
   const setCustomEnd = useSetAtom(analyticsCustomEndAtom);
   const [customEnd] = useAtom(analyticsCustomEndAtom);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<DateRange | undefined>(undefined);
-  // Below sm the popover takes the screen's width less the page margins (up to
-  // max-w-sm) rather than its contents' width, so it shows one month under a
-  // wrapped row of presets. The preset column beside two stacked months ran
-  // past the right edge at 320px and stood taller than most phones.
+  // Below sm: one month under a wrapped row of presets.
   const narrow = useMediaQuery(BELOW_SM_QUERY);
+  const anchorRef = useMemo(
+    () => (phoneAnchor ? { current: phoneAnchor } : null),
+    [phoneAnchor]
+  );
 
   const presets = useMemo(() => buildPresets(new Date()), []);
 
@@ -178,6 +183,7 @@ export function DateRangeFilter(): ReactNode {
 
   return (
     <Popover onOpenChange={onOpenChange} open={open}>
+      {narrow && anchorRef ? <PopoverAnchor virtualRef={anchorRef} /> : null}
       <PopoverTrigger asChild>
         <Button
           aria-label="Custom date range"
@@ -191,10 +197,8 @@ export function DateRangeFilter(): ReactNode {
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="flex max-h-(--radix-popover-content-available-height) w-[calc(100vw-3rem)] max-w-sm flex-col gap-0 overflow-y-auto p-0 sm:w-auto sm:max-w-none sm:flex-row"
-        // Phones only: from sm the popover is 634px wide, and 24px each side
-        // would push it off a 640px screen, where it used to fit.
-        collisionPadding={narrow ? PHONE_EDGE_GAP : 0}
+        className="flex w-(--radix-popover-trigger-width) flex-col gap-0 p-0 max-sm:max-h-(--radix-popover-content-available-height) max-sm:overflow-y-auto sm:w-auto sm:flex-row"
+        collisionPadding={narrow ? PHONE_SCREEN_GAP : 0}
       >
         <div className="flex flex-wrap gap-1 border-b p-2 sm:w-36 sm:flex-col sm:flex-nowrap sm:gap-0.5 sm:border-r sm:border-b-0">
           {presets.map((preset) => (

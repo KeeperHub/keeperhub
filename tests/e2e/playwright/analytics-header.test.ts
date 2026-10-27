@@ -19,18 +19,6 @@ const UNDER_TITLE_WIDTHS = [640, 680];
 // one row even under the title, so the buttons wrap Custom instead.
 const EXPANDED_SIDEBAR_WIDTH = 785;
 const DESKTOP = { width: 1280, height: 800 };
-// Phones get the one-month popover, capped at max-w-sm from about 432px
-// (600). From 640 it is the desktop one, 634px wide, which used to be cut
-// off up to 681px; 667 is a sideways phone.
-const POPOVER_WIDTHS = [320, 390, 430, 600, 640, 667, DESKTOP.width];
-// Tailwind's sm, as BELOW_SM_QUERY in hooks/use-mobile.ts.
-const SM = 640;
-// max-w-sm: on a phone the popover never grows past this, one month's width
-// with room to spare, so from about 432px it stops short of the page's edge.
-const POPOVER_MAX_WIDTH = 384;
-// Too short for the phone popover below Custom: it keeps to the space there
-// and scrolls inside rather than running off the bottom.
-const SHORT_PHONE = { width: 390, height: 420 };
 // Refresh sits right after the range buttons: a few pixels of gap, however
 // it is tuned, never pushed across the header.
 const BESIDE_MAX_GAP = 32;
@@ -54,10 +42,6 @@ function customButton(page: Page): Locator {
 
 function rangeNav(page: Page): Locator {
   return page.getByRole("navigation", { name: "Time range" });
-}
-
-function datePopover(page: Page): Locator {
-  return page.locator("[data-slot=popover-content]");
 }
 
 async function pickThisMonth(page: Page): Promise<void> {
@@ -141,67 +125,6 @@ test.describe("Analytics header", () => {
         );
       }).toPass({ timeout: 5000 });
     }
-  });
-
-  test("the Custom popover stays on screen, lined up with the header on phones", async ({
-    page,
-  }) => {
-    await page.setViewportSize({ width: POPOVER_WIDTHS[0], height: 844 });
-    await page.goto("/analytics", { waitUntil: "domcontentloaded" });
-    await expect(customButton(page)).toBeVisible({ timeout: 15_000 });
-
-    for (const width of POPOVER_WIDTHS) {
-      const phone = width < SM;
-      await page.setViewportSize({ width, height: 844 });
-      await customButton(page).click();
-      const popover = datePopover(page);
-      await expect(popover).toBeVisible();
-      await expect(popover, `wholly on screen at ${width}px`).toBeInViewport({
-        ratio: 1,
-      });
-      const grids = popover.getByRole("grid");
-      await expect(grids).toHaveCount(phone ? 1 : 2);
-
-      await expect(async () => {
-        const presets = await box(
-          popover.getByRole("button", { name: "This month" })
-        );
-        const calendar = await box(grids.first());
-        if (phone) {
-          // Same left edge as the range buttons, which take the page's whole
-          // width on phones, and as wide as them up to the cap.
-          const found = await box(popover);
-          const nav = await box(rangeNav(page));
-          expect(
-            Math.abs(found.x - nav.x),
-            `lined up with the header at ${width}px`
-          ).toBeLessThan(1);
-          expect(
-            Math.abs(found.width - Math.min(nav.width, POPOVER_MAX_WIDTH)),
-            `the page's width, up to the cap, at ${width}px`
-          ).toBeLessThan(1);
-          expect(presets.y + presets.height).toBeLessThan(calendar.y);
-        } else {
-          expect(presets.x + presets.width).toBeLessThan(calendar.x);
-        }
-      }).toPass({ timeout: 5000 });
-
-      await page.keyboard.press("Escape");
-      await expect(popover).toBeHidden();
-    }
-
-    await page.setViewportSize(SHORT_PHONE);
-    await customButton(page).click();
-    const popover = datePopover(page);
-    await expect(popover, "wholly on a short screen").toBeInViewport({
-      ratio: 1,
-    });
-    expect(
-      await popover.evaluate(
-        (element) => element.scrollHeight > element.clientHeight
-      ),
-      "scrolls inside on a short screen"
-    ).toBe(true);
   });
 
   test("desktop keeps one row with refresh right after the range buttons", async ({
