@@ -1,44 +1,39 @@
 import type { Locator, Page } from "@playwright/test";
+import { BELOW_SM_QUERY } from "@/hooks/use-mobile";
 import { expect, test } from "./fixtures";
+import { customButton, pickThisMonth, rangeNav } from "./utils/analytics";
 import { box, dismissPhoneOverlays } from "./utils/layout";
 
-// Playwright hides scrollbars unless told otherwise. A desktop browser in a
-// narrow window shows a classic one beside the page, and it takes width from
-// the page: the popover has to line up with the page, not with the window.
-test.use({ launchOptions: { ignoreDefaultArgs: ["--hide-scrollbars"] } });
-
-// Phones get the one-month popover under the range buttons, as wide as them.
-// From 640 it is the desktop one, 634px wide, which used to be cut off up to
-// 681px; 667 is a sideways phone.
+// Phones get the one-month popover under the range buttons, as wide as them;
+// from sm it is the desktop one, 634px wide. 667 is a sideways phone.
 const POPOVER_WIDTHS = [320, 390, 430, 600, 640, 667, 1280];
-// Tailwind's sm, as BELOW_SM_QUERY in hooks/use-mobile.ts.
-const SM = 640;
 // Too short for the phone popover below Custom: it keeps to the space there
 // and scrolls inside rather than running off the bottom.
 const SHORT_PHONE = { width: 390, height: 420 };
 // The desktop popover lays out as it always has, even in a short window.
 const SHORT_DESKTOP = { width: 1280, height: 400 };
-const MONTH_RANGE_REGEX = /^\w{3} 1, \d{4} - \w{3} \d{2}, \d{4}$/;
+// A classic scrollbar, as on Windows or Linux, whatever the OS running the
+// test. Playwright hides scrollbars unless told otherwise, and macOS overlays
+// them, so the test needs both this flag and the style below. The style puts
+// the app's global scrollbar-width and scrollbar-color back to auto because
+// Chromium ignores ::-webkit-scrollbar while either is set.
+test.use({ launchOptions: { ignoreDefaultArgs: ["--hide-scrollbars"] } });
+const CLASSIC_SCROLLBAR_CSS =
+  "*{scrollbar-width:auto!important;scrollbar-color:auto!important}*::-webkit-scrollbar{width:12px!important}";
 
 test.beforeEach(async ({ page }) => {
   await dismissPhoneOverlays(page);
 });
 
-function customButton(page: Page): Locator {
-  return page.getByRole("button", { name: "Custom date range" });
-}
-
-function rangeNav(page: Page): Locator {
-  return page.getByRole("navigation", { name: "Time range" });
-}
-
 function datePopover(page: Page): Locator {
   return page.locator("[data-slot=popover-content]");
 }
 
-// Stands in for a long runs table, so the page scrolls whatever the test
-// data, and returns the width its scrollbar takes.
-function makePageScroll(page: Page): Promise<number> {
+// Gives the page a classic scrollbar and makes it scroll whatever the test
+// data, as a long runs table would, then returns the width the scrollbar
+// takes from the page.
+async function showPageScrollbar(page: Page): Promise<number> {
+  await page.addStyleTag({ content: CLASSIC_SCROLLBAR_CSS });
   return rangeNav(page).evaluate((nav) => {
     let scroller = nav.parentElement;
     while (scroller && getComputedStyle(scroller).overflowY !== "auto") {
@@ -54,16 +49,12 @@ function makePageScroll(page: Page): Promise<number> {
   });
 }
 
-async function pickThisMonth(page: Page): Promise<void> {
-  await customButton(page).click();
-  await page.getByRole("button", { name: "This month" }).click();
-  await page.keyboard.press("Escape");
-  await expect(customButton(page)).toHaveText(MONTH_RANGE_REGEX);
-}
-
 async function expectPopoverFits(page: Page, width: number): Promise<void> {
-  const phone = width < SM;
   await page.setViewportSize({ width, height: 844 });
+  const phone = await page.evaluate(
+    (query) => window.matchMedia(query).matches,
+    BELOW_SM_QUERY
+  );
   await customButton(page).click();
   const popover = datePopover(page);
   await expect(popover).toBeVisible();
@@ -109,7 +100,7 @@ test.describe("Analytics Custom date popover", () => {
     await page.goto("/analytics", { waitUntil: "domcontentloaded" });
     await expect(customButton(page)).toBeVisible({ timeout: 15_000 });
     expect(
-      await makePageScroll(page),
+      await showPageScrollbar(page),
       "the page shows a scrollbar beside it"
     ).toBeGreaterThan(0);
 
