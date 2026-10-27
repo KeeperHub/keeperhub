@@ -383,4 +383,29 @@ test.describe("settings on wider screens", () => {
       expect(pinned).toBe(scrolls ? "sticky" : "static");
     }
   });
+  test("the save badge sits under the plan switch's Annual end in a narrow column", async ({
+    page,
+  }) => {
+    for (const [size, stacked] of [
+      [{ width: 390, height: PHONE_HEIGHT }, true],
+      [TABLET, true],
+      [DESKTOP, false],
+    ] as const) {
+      await page.setViewportSize(size);
+      await openOrgSettings(page, "plans");
+      const badge = page.locator(".khp-save-badge");
+      await expect(badge).toBeVisible(FIRST_VISIT);
+      const toggle = await box(page.locator(".khp-interval-group"));
+      const save = await box(badge);
+      if (stacked) {
+        expect(save.y).toBeGreaterThanOrEqual(toggle.y + toggle.height);
+        expect(
+          Math.abs(save.x + save.width - (toggle.x + toggle.width))
+        ).toBeLessThan(1);
+      } else {
+        expect(save.x).toBeGreaterThanOrEqual(toggle.x + toggle.width);
+        expect(save.y).toBeLessThan(toggle.y + toggle.height);
+      }
+    }
+  });
 });
