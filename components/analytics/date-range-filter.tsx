@@ -12,6 +12,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { BELOW_SM_QUERY, useMediaQuery } from "@/hooks/use-mobile";
 import {
   endOfDay,
   nextRangeStep,
@@ -34,6 +35,11 @@ const MONTH_LABEL = new Intl.DateTimeFormat("en-US", { month: "long" });
 
 // Where clearing lands, matching the range the page opens in.
 const DEFAULT_RANGE = "24h" as const;
+
+// The page's p-6. Below sm the popover keeps this clear of both screen edges,
+// so it lines up with the header above it; its width, calc(100vw-3rem), is the
+// same 24px taken off each side.
+const PHONE_EDGE_GAP = 24;
 
 const NOOP = (): void => {
   // Selection is handled in onDayClick.
@@ -83,6 +89,11 @@ export function DateRangeFilter(): ReactNode {
   const [customEnd] = useAtom(analyticsCustomEndAtom);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<DateRange | undefined>(undefined);
+  // Below sm the popover takes the screen's width less the page margins (up to
+  // max-w-sm) rather than its contents' width, so it shows one month under a
+  // wrapped row of presets. The preset column beside two stacked months ran
+  // past the right edge at 320px and stood taller than most phones.
+  const narrow = useMediaQuery(BELOW_SM_QUERY);
 
   const presets = useMemo(() => buildPresets(new Date()), []);
 
@@ -178,8 +189,14 @@ export function DateRangeFilter(): ReactNode {
           {label}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="flex w-auto gap-0 p-0">
-        <div className="flex w-36 flex-col gap-0.5 border-r p-2">
+      <PopoverContent
+        align="end"
+        className="flex max-h-(--radix-popover-content-available-height) w-[calc(100vw-3rem)] max-w-sm flex-col gap-0 overflow-y-auto p-0 sm:w-auto sm:max-w-none sm:flex-row"
+        // Phones only: from sm the popover is 634px wide, and 24px each side
+        // would push it off a 640px screen, where it used to fit.
+        collisionPadding={narrow ? PHONE_EDGE_GAP : 0}
+      >
+        <div className="flex flex-wrap gap-1 border-b p-2 sm:w-36 sm:flex-col sm:flex-nowrap sm:gap-0.5 sm:border-r sm:border-b-0">
           {presets.map((preset) => (
             <Button
               className="h-7 justify-start px-2 text-xs"
@@ -191,9 +208,10 @@ export function DateRangeFilter(): ReactNode {
               {preset.label}
             </Button>
           ))}
-          <div className="mt-1 border-t pt-1">
+          {/* On phones the end of the last row, apart from the dates. */}
+          <div className="ml-auto sm:mt-1 sm:ml-0 sm:border-t sm:pt-1">
             <Button
-              className="h-7 w-full justify-start px-2 text-muted-foreground text-xs"
+              className="h-7 justify-start px-2 text-muted-foreground text-xs sm:w-full"
               disabled={!active}
               onClick={clear}
               size="sm"
@@ -204,9 +222,10 @@ export function DateRangeFilter(): ReactNode {
           </div>
         </div>
         <Calendar
+          className="self-center sm:self-auto"
           defaultMonth={selected?.from}
           mode="range"
-          numberOfMonths={2}
+          numberOfMonths={narrow ? 1 : 2}
           onDayClick={onDayClick}
           // Required by the range mode's types; the click handler above owns
           // the transitions, so this deliberately does nothing.
