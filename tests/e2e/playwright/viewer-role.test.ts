@@ -60,7 +60,9 @@ test.describe("viewer role", () => {
   }) => {
     const res = await page.request.get(`/api/workflows/${workflowId}`);
     expect(res.status()).toBe(200);
-    expect((await res.json()).isOwner).toBe(false);
+    const body = await res.json();
+    expect(body.isOwner).toBe(false);
+    expect(body.canRead).toBe(true);
 
     await page.goto(`/workflows/${workflowId}`);
     await waitForCanvas(page);
@@ -81,6 +83,11 @@ test.describe("viewer role", () => {
       apiRequest.post(`/api/workflow/${workflowId}/execute`, { data: {} }),
       apiRequest.post("/api/projects", { data: { name: "Blocked" } }),
       apiRequest.post("/api/keys", { data: { name: "Blocked" } }),
+      // Naming another org in the header does not lift the active-org check.
+      apiRequest.post("/api/workflows/current", {
+        data: { nodes: [], edges: [] },
+        headers: { "X-Organization-Id": "not-a-real-org" },
+      }),
     ];
     for (const res of await Promise.all(writes)) {
       expect(res.status()).toBe(403);

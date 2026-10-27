@@ -83,6 +83,7 @@ import {
   isSavingAtom,
   isWorkflowEnabled,
   isWorkflowOwnerAtom,
+  isWorkflowViewerAtom,
   nodesAtom,
   previewVersionAtom,
   propertiesPanelActiveTabAtom,
@@ -2138,7 +2139,9 @@ export const WorkflowToolbar = ({
 }: WorkflowToolbarProps) => {
   const state = useWorkflowState();
   const actions = useWorkflowActions(state);
+  // Template use creates a workflow in the active org, which a viewer cannot.
   const { isViewer } = useActiveMember();
+  const isWorkflowViewer = useAtomValue(isWorkflowViewerAtom);
   // The phone menu's button, where the org switcher hands focus when it is
   // hidden (below xs).
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -2233,21 +2236,23 @@ export const WorkflowToolbar = ({
           {isWorkflowRoute &&
             effectiveWorkflowId &&
             !state.isOwner &&
-            isViewer && (
+            isWorkflowViewer && (
               <ReadOnlyBadge className="hidden lg:inline-flex" label="Read only" />
             )}
           {isWorkflowRoute &&
             effectiveWorkflowId &&
             !state.isOwner &&
-            !isViewer &&
+            !isWorkflowViewer &&
             state.workflowVisibility === "public" && (
               <>
                 <ReadOnlyBadge className="hidden lg:inline-flex" />
-                <UseTemplateButton
-                  className="mouse-tablet:ml-2"
-                  isUsingTemplate={state.isDuplicating}
-                  onUseTemplate={actions.handleUseTemplate}
-                />
+                {!isViewer && (
+                  <UseTemplateButton
+                    className="mouse-tablet:ml-2"
+                    isUsingTemplate={state.isDuplicating}
+                    onUseTemplate={actions.handleUseTemplate}
+                  />
+                )}
               </>
             )}
         </div>
@@ -2296,20 +2301,22 @@ export const WorkflowToolbar = ({
           {isWorkflowRoute &&
             effectiveWorkflowId &&
             !state.isOwner &&
-            isViewer && (
+            isWorkflowViewer && (
               <ReadOnlyBadge className="hidden lg:inline-flex" label="Read only" />
             )}
           {isWorkflowRoute &&
             effectiveWorkflowId &&
             !state.isOwner &&
-            !isViewer &&
+            !isWorkflowViewer &&
             state.workflowVisibility === "public" && (
               <>
                 <ReadOnlyBadge className="hidden lg:inline-flex" />
-                <UseTemplateButton
-                  isUsingTemplate={state.isDuplicating}
-                  onUseTemplate={actions.handleUseTemplate}
-                />
+                {!isViewer && (
+                  <UseTemplateButton
+                    isUsingTemplate={state.isDuplicating}
+                    onUseTemplate={actions.handleUseTemplate}
+                  />
+                )}
               </>
             )}
         </div>

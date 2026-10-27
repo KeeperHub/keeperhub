@@ -7,9 +7,7 @@ const {
   mockGetOrgContext,
   mockOrgLookup,
   mockDefaultOrgLookup,
-  mockGetOrgRole,
 } = vi.hoisted(() => ({
-  mockGetOrgRole: vi.fn(),
   mockAuthenticateApiKey: vi.fn(),
   mockAuthenticateOAuthToken: vi.fn(),
   mockGetSession: vi.fn(),
@@ -29,8 +27,6 @@ const {
 vi.mock("@/lib/api-key-auth", () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
-
-vi.mock("@/lib/security/org-role", () => ({ getOrgRole: mockGetOrgRole }));
 
 vi.mock("@/lib/auth", () => ({
   auth: {
@@ -58,9 +54,12 @@ vi.mock("@/lib/db", () => ({
             limit: () => mockOrgLookup(),
           }),
         }),
-        // Default path: lookup the session's default org (deactivation check).
-        where: () => ({
-          limit: () => mockDefaultOrgLookup(),
+        // Default path: the session's default org (deactivation check) with
+        // the caller's membership role left-joined in.
+        leftJoin: () => ({
+          where: () => ({
+            limit: () => mockDefaultOrgLookup(),
+          }),
         }),
       }),
     }),
@@ -750,16 +749,33 @@ describe("session scope for viewers", () => {
   });
 
   it("gives a viewer's write a read-only scope", async () => {
-    mockGetOrgRole.mockResolvedValue("viewer");
+    mockDefaultOrgLookup.mockResolvedValue([
+      { deactivatedAt: null, role: "viewer" },
+    ]);
     const result = await getDualAuthContext(
       makeRequest(cookieHeaders, { method: "POST" })
     );
     expect(result).toMatchObject({ authMethod: "session", scope: "mcp:read" });
-    expect(mockGetOrgRole).toHaveBeenCalledWith("user_session", "org_session");
+  });
+
+  it("reads the role from the org named in X-Organization-Id", async () => {
+    mockOrgLookup.mockResolvedValue([{ id: "org_target", role: "viewer" }]);
+    const result = await resolveCreatorContext(
+      makeRequest(
+        { ...cookieHeaders, "x-organization-id": "org_target" },
+        { method: "POST" }
+      )
+    );
+    expect(result).toMatchObject({
+      organizationId: "org_target",
+      scope: "mcp:read",
+    });
   });
 
   it("leaves a member's write unscoped", async () => {
-    mockGetOrgRole.mockResolvedValue("member");
+    mockDefaultOrgLookup.mockResolvedValue([
+      { deactivatedAt: null, role: "member" },
+    ]);
     const result = await resolveOrganizationId(
       makeRequest(cookieHeaders, { method: "PATCH" })
     );
@@ -767,12 +783,13 @@ describe("session scope for viewers", () => {
     expect((result as { scope?: string }).scope).toBeUndefined();
   });
 
-  it("skips the role lookup on reads", async () => {
-    mockGetOrgRole.mockResolvedValue("viewer");
+  it("leaves a viewer's read unscoped", async () => {
+    mockDefaultOrgLookup.mockResolvedValue([
+      { deactivatedAt: null, role: "viewer" },
+    ]);
     const result = await resolveCreatorContext(
       makeRequest(cookieHeaders, { method: "GET" })
     );
     expect((result as { scope?: string }).scope).toBeUndefined();
-    expect(mockGetOrgRole).not.toHaveBeenCalled();
   });
 });

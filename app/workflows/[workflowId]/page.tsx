@@ -58,6 +58,7 @@ import {
   isSidebarCollapsedAtom,
   isWorkflowEnabled,
   isWorkflowOwnerAtom,
+  isWorkflowViewerAtom,
   newlyCreatedNodeIdAtom,
   nodesAtom,
   previewVersionAtom,
@@ -204,6 +205,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     currentWorkflowVisibilityAtom
   );
   const [isOwner, setIsWorkflowOwner] = useAtom(isWorkflowOwnerAtom);
+  const setIsWorkflowViewer = useSetAtom(isWorkflowViewerAtom);
   const { isViewer } = useActiveMember();
   const setIsWorkflowEnabled = useSetAtom(isWorkflowEnabled); // keeperhub custom field //
   const setCurrentWorkflowPublicTags = useSetAtom(
@@ -504,6 +506,9 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
         (workflow.visibility as WorkflowVisibility) ?? "private"
       );
       setIsWorkflowOwner(workflow.isOwner !== false); // Default to true if not set
+      setIsWorkflowViewer(
+        workflow.isOwner === false && workflow.canRead === true
+      );
       setIsWorkflowEnabled(workflow.enabled ?? false); // keeperhub custom field //
       setCurrentWorkflowProjectId(workflow.projectId ?? null);
       setCurrentWorkflowTagId(workflow.tagId ?? null);
@@ -540,6 +545,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     setCurrentWorkflowName,
     setCurrentWorkflowVisibility,
     setIsWorkflowOwner,
+    setIsWorkflowViewer,
     setIsWorkflowEnabled, // keeperhub custom field //
     setCurrentWorkflowProjectId,
     setCurrentWorkflowPublicTags,
@@ -576,6 +582,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
       setCurrentWorkflowDescription("");
       setCurrentWorkflowVisibility("private");
       setIsWorkflowOwner(true);
+      setIsWorkflowViewer(false);
       setNodes([]);
       setEdges([]);
       setSelectedNode(null);
@@ -588,6 +595,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
       setCurrentWorkflowDescription("");
       setCurrentWorkflowVisibility("private");
       setIsWorkflowOwner(true);
+      setIsWorkflowViewer(false);
       setNodes([]);
       setEdges([]);
       setSelectedNode(null);
@@ -601,6 +609,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     setCurrentWorkflowDescription,
     setCurrentWorkflowVisibility,
     setIsWorkflowOwner,
+    setIsWorkflowViewer,
     setNodes,
     setEdges,
     setSelectedNode,

@@ -14,7 +14,7 @@ import { authenticateOAuthToken } from "@/lib/mcp/oauth-auth";
 import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
 import { getOrgContext } from "@/lib/middleware/org-context";
 import { isViewerRole } from "@/lib/organization/role-label";
-import { getOrgRole } from "@/lib/security/org-role";
+import { isStateChangingMethod } from "@/lib/security/viewer-policy";
 import {
   hasSessionCookie,
   isTrustedOrigin,
@@ -38,8 +38,6 @@ export type AuthFailure = {
   status: number;
 };
 
-const STATE_CHANGING_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
-
 /**
  * Defence-in-depth CSRF check for session-authed routes. The root proxy
  * (`proxy.ts`) is the primary enforcement; this runs again on the small
@@ -51,7 +49,7 @@ const STATE_CHANGING_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
  */
 function checkSessionOrigin(request: Request): AuthFailure | null {
   const method = request.method.toUpperCase();
-  if (!STATE_CHANGING_METHODS.has(method)) {
+  if (!isStateChangingMethod(method)) {
     return null;
   }
   // Only enforce when the request actually carries the better-auth session
@@ -110,12 +108,17 @@ const ORG_HEADER = "x-organization-id";
  * Hard org-scoping for API keys and OAuth tokens is unchanged: those callers
  * never read this header. Only session auth honors it, because only session
  * auth carries a multi-org identity.
+ *
+ * Also returns the caller's role in the resolved org from the same query, so
+ * the proxy's viewer gate and the routes agree on both the org and the role.
  */
-async function resolveSessionOrg(
+export async function resolveSessionOrg(
   request: Request,
   userId: string,
   defaultOrgId: string | null
-): Promise<{ organizationId: string | null } | AuthFailure> {
+): Promise<
+  { organizationId: string | null; role: string | null } | AuthFailure
+> {
   const raw = request.headers.get(ORG_HEADER)?.trim();
   if (!raw) {
     if (!defaultOrgId) {
@@ -125,22 +128,32 @@ async function resolveSessionOrg(
       // rejected with a spurious "no active organization". This only ever
       // resolves an org the user already belongs to.
       const [membership] = await db
-        .select({ organizationId: member.organizationId })
+        .select({ organizationId: member.organizationId, role: member.role })
         .from(member)
         .innerJoin(organization, eq(organization.id, member.organizationId))
         .where(
           and(eq(member.userId, userId), isNull(organization.deactivatedAt))
         )
         .limit(1);
-      return { organizationId: membership?.organizationId ?? null };
+      return {
+        organizationId: membership?.organizationId ?? null,
+        role: membership?.role ?? null,
+      };
     }
     // A deactivated org (its owner was deactivated and the cascade fired) is
     // inaccessible to its members even though their session still points at
     // it. Surface it as not-found, matching the header path's enumeration-safe
     // response, so members lose access without leaking the deactivated state.
     const [defaultOrg] = await db
-      .select({ deactivatedAt: organization.deactivatedAt })
+      .select({ deactivatedAt: organization.deactivatedAt, role: member.role })
       .from(organization)
+      .leftJoin(
+        member,
+        and(
+          eq(member.organizationId, organization.id),
+          eq(member.userId, userId)
+        )
+      )
       .where(eq(organization.id, defaultOrgId))
       .limit(1);
     if (!defaultOrg || defaultOrg.deactivatedAt) {
@@ -150,7 +163,7 @@ async function resolveSessionOrg(
         status: 404,
       };
     }
-    return { organizationId: defaultOrgId };
+    return { organizationId: defaultOrgId, role: defaultOrg.role ?? null };
   }
 
   // Single query joining organization to the caller's membership row. We can't
@@ -159,7 +172,7 @@ async function resolveSessionOrg(
   // authenticated user enumerate org ids and slugs. A deactivated org is
   // excluded here too, so it reads as not-found rather than accessible.
   const match = await db
-    .select({ id: organization.id })
+    .select({ id: organization.id, role: member.role })
     .from(organization)
     .innerJoin(
       member,
@@ -182,7 +195,7 @@ async function resolveSessionOrg(
     };
   }
 
-  return { organizationId: targetOrgId };
+  return { organizationId: targetOrgId, role: match[0]?.role ?? null };
 }
 
 /**
@@ -192,20 +205,14 @@ async function resolveSessionOrg(
  * sink rejects it. The proxy's viewer gate is the primary block; this keeps
  * the routes closed if a request ever reaches them without passing it.
  */
-async function sessionScope(
+function sessionScope(
   request: Request,
-  userId: string,
-  organizationId: string | null
-): Promise<string | undefined> {
-  if (
-    !(
-      organizationId && STATE_CHANGING_METHODS.has(request.method.toUpperCase())
-    )
-  ) {
-    return;
+  role: string | null
+): string | undefined {
+  if (isStateChangingMethod(request.method) && isViewerRole(role)) {
+    return SCOPE_MCP_READ;
   }
-  const role = await getOrgRole(userId, organizationId);
-  return isViewerRole(role) ? SCOPE_MCP_READ : undefined;
+  return;
 }
 
 export type DualAuthContext =
@@ -403,11 +410,7 @@ export async function getDualAuthContext(
     organizationId: orgResult.organizationId,
     authMethod: "session",
     apiKeyId: null,
-    scope: await sessionScope(
-      request,
-      session.user.id,
-      orgResult.organizationId
-    ),
+    scope: sessionScope(request, orgResult.role),
     isAnonymous: isAnonymousUserShape(session.user),
   };
 }
@@ -512,11 +515,7 @@ export async function resolveOrganizationId(
     organizationId: orgResult.organizationId,
     authMethod: "session",
     apiKeyId: null,
-    scope: await sessionScope(
-      request,
-      session.user.id,
-      orgResult.organizationId
-    ),
+    scope: sessionScope(request, orgResult.role),
   };
 }
 
@@ -595,11 +594,7 @@ export async function resolveCreatorContext(request: Request): Promise<
     userId: session.user.id,
     authMethod: "session",
     apiKeyId: null,
-    scope: await sessionScope(
-      request,
-      session.user.id,
-      orgResult.organizationId
-    ),
+    scope: sessionScope(request, orgResult.role),
   };
 }
 

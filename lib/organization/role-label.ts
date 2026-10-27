@@ -2,6 +2,9 @@ export type OrgRole = "owner" | "admin" | "member" | "viewer";
 
 export const VIEWER_ROLE = "viewer" satisfies OrgRole;
 
+/** Roles an invitation can grant; ownership is never handed out by invite. */
+export type InviteRole = Exclude<OrgRole, "owner">;
+
 const ROLE_LABELS: Record<OrgRole, string> = {
   admin: "Admin",
   member: "Member",

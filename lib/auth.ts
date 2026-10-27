@@ -42,6 +42,7 @@ import {
   logWarn,
 } from "@/lib/logging";
 import { revokeRefreshTokensForUserOrg } from "@/lib/mcp/oauth-store";
+import { revokeMcpGrantsOnViewerDowngrade } from "@/lib/org/viewer-downgrade";
 import { isViewerRole } from "@/lib/organization/role-label";
 import { recordAuditEvent } from "@/lib/security/audit-log";
 import {
@@ -500,6 +501,13 @@ const plugins = [
           resourceId: data.member.id,
           before: { role: data.previousRole },
           after: { role: data.member.role },
+        });
+
+        await revokeMcpGrantsOnViewerDowngrade({
+          userId: data.member.userId,
+          organizationId: data.organization.id,
+          previousRole: data.previousRole,
+          role: data.member.role,
         });
       },
 

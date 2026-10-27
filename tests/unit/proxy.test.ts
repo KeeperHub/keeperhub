@@ -914,6 +914,8 @@ describe("Viewer read-only gate", () => {
       "u1",
       "org-1"
     );
+    // The MFA gate's session lookup is reused rather than repeated.
+    expect(mockGetSession).toHaveBeenCalledTimes(1);
   });
 
   it("blocks a viewer approving a CLI device login", async () => {
@@ -922,6 +924,8 @@ describe("Viewer read-only gate", () => {
       make("/api/auth/device/approve", { method: "POST", headers })
     );
     expect(res.status).toBe(403);
+    // /api/auth/ skips the MFA gate, so the viewer gate looks the session up.
+    expect(mockGetSession).toHaveBeenCalledTimes(1);
   });
 
   it("lets a viewer read", async () => {

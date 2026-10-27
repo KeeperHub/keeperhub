@@ -413,7 +413,9 @@ function MembersListContent({
             {entry.kind === "member" &&
               canInvite &&
               entry.userId !== currentUserId &&
-              (currentUserRole === "owner" || entry.role === "member") && (
+              (currentUserRole === "owner" ||
+                entry.role === "member" ||
+                entry.role === "viewer") && (
                 <Button
                   aria-label={`Remove ${entry.email}`}
                   disabled={removingMember === entry.id}
@@ -1055,7 +1057,7 @@ export function ManageOrgsModal({
       const { error: inviteError } = await authClient.organization.inviteMember(
         {
           email,
-          role: role as "member" | "admin" | "owner",
+          role: role as MemberRole,
           organizationId: managedOrgId,
         }
       );

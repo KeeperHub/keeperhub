@@ -44,6 +44,8 @@ const VIEWER_EXEMPT_PREFIXES: readonly string[] = [
 
 const VIEWER_EXEMPT_PATTERNS: readonly RegExp[] = [
   /^\/api\/organizations\/[^/]+\/leave$/,
+  // A Hub vote is the caller's own, not a change to the organization.
+  /^\/api\/workflows\/[^/]+\/rate$/,
   // Revoking one of your own webhook keys only removes access.
   /^\/api\/api-keys\/[^/]+$/,
   /^\/api\/workflows\/[^/]+\/webhook(?:\/|$)/,
@@ -109,5 +111,10 @@ export function orgIdFromPath(pathname: string): string | null {
   if (!segment || NON_ORG_ID_SEGMENTS.has(segment)) {
     return null;
   }
-  return decodeURIComponent(segment);
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    // A malformed escape is not an org id; the route answers it with a 404.
+    return null;
+  }
 }

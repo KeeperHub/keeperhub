@@ -42,6 +42,7 @@ import {
   edgesAtom,
   isGeneratingAtom,
   isWorkflowOwnerAtom,
+  isWorkflowViewerAtom,
   newlyCreatedNodeIdAtom,
   nodesAtom,
   pendingIntegrationNodesAtom,
@@ -53,7 +54,6 @@ import {
   updateNodeDataAtom,
   workflowNotFoundAtom,
 } from "@/lib/workflow/store";
-import { useActiveMember } from "@/lib/hooks/use-organization";
 import { buildConfigForActionTypeChange } from "@/lib/workflow/editor/action-type-transition";
 import { findActionById } from "@/plugins/registry";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
@@ -163,8 +163,9 @@ export const PanelInner = () => {
     currentWorkflowTagIdAtom
   );
   const isOwner = useAtomValue(isWorkflowOwnerAtom);
-  // Viewers cannot edit but may read the org's run and version history.
-  const { isViewer } = useActiveMember();
+  // Viewers of the workflow's org cannot edit but may read its run and
+  // version history.
+  const isViewer = useAtomValue(isWorkflowViewerAtom);
   const canReadHistory = isOwner || isViewer;
   const workflowNotFound = useAtomValue(workflowNotFoundAtom);
   const updateNodeData = useSetAtom(updateNodeDataAtom);

@@ -101,6 +101,7 @@ const EXPECTED_VIEWER_EXEMPT = [
   "app/api/user/verify-ip/route.ts",
   "app/api/user/wallet/prices/route.ts",
   "app/api/web3/fetch-abi/route.ts",
+  "app/api/workflows/[workflowId]/rate/route.ts",
   "app/api/workflows/[workflowId]/webhook/route.ts",
 ];
 
@@ -175,6 +176,10 @@ describe("orgIdFromPath", () => {
     expect(
       orgIdFromPath("/api/organizations/circuit-breaker/reset")
     ).toBeNull();
+  });
+
+  it("returns null for a malformed escape instead of throwing", () => {
+    expect(orgIdFromPath("/api/organizations/%E0%A4%A/x")).toBeNull();
   });
 
   it("returns null outside /api/organizations", () => {

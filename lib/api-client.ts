@@ -55,6 +55,8 @@ export type SavedWorkflow = WorkflowData & {
   createdAt: string;
   updatedAt: string;
   isOwner?: boolean;
+  // Full read access (org member), true for viewers who cannot edit.
+  canRead?: boolean;
   featured?: boolean;
   projectId?: string | null;
   tagId?: string | null;

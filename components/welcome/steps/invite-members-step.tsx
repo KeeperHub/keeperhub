@@ -26,12 +26,12 @@ import {
   isSelfInvite,
   isValidInvite,
 } from "@/lib/onboarding/invite-validation";
+import type { InviteRole } from "@/lib/organization/role-label";
 import { cn } from "@/lib/utils";
 
 const NEXT_PATH = "/welcome/pay-per-execution";
 const BACK_PATH = "/welcome/create-org";
 
-type InviteRole = "viewer" | "member" | "admin";
 type InviteRow = { id: string; value: string; role: InviteRole };
 
 function newRow(): InviteRow {

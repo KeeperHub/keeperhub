@@ -12,6 +12,7 @@ import { resolveSigninDevice } from "@/lib/security/device-trust";
 import { gateRequestCountry } from "@/lib/security/login-risk";
 import { isViewerForRequest } from "@/lib/security/viewer-gate";
 import {
+  isStateChangingMethod,
   requiresViewerCheck,
   VIEWER_READ_ONLY_ERROR,
 } from "@/lib/security/viewer-policy";
@@ -81,8 +82,6 @@ import {
 // CSRF
 // ---------------------------------------------------------------------------
 
-const STATE_CHANGING_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
-
 const CSRF_EXEMPT_PREFIXES: readonly string[] = [
   "/api/auth/",
   "/api/billing/webhooks/",
@@ -115,7 +114,7 @@ function csrfBlock(request: NextRequest): NextResponse | null {
   if (!nextUrl.pathname.startsWith("/api/")) {
     return null;
   }
-  if (!STATE_CHANGING_METHODS.has(method)) {
+  if (!isStateChangingMethod(method)) {
     return null;
   }
   if (isCsrfExemptPath(nextUrl.pathname)) {
@@ -247,9 +246,13 @@ function mfaRedirect(
 
 type GatedUser = { id: string; email: string };
 
+type ProxySession = Awaited<ReturnType<typeof auth.api.getSession>>;
+
+// `session` is set once the gate has looked it up, so later gates reuse it
+// instead of resolving the session again.
 type MfaResult =
   | { kind: "block"; response: NextResponse }
-  | { kind: "pass"; user: GatedUser | null };
+  | { kind: "pass"; user: GatedUser | null; session?: ProxySession };
 
 async function mfaBlock(request: NextRequest): Promise<MfaResult> {
   const { pathname } = request.nextUrl;
@@ -269,7 +272,7 @@ async function mfaBlock(request: NextRequest): Promise<MfaResult> {
 
   const session = await auth.api.getSession({ headers: request.headers });
   if (!session?.user) {
-    return { kind: "pass", user: null };
+    return { kind: "pass", user: null, session };
   }
 
   // Anonymous sessions have no permanent identity to protect, so gating
@@ -280,7 +283,7 @@ async function mfaBlock(request: NextRequest): Promise<MfaResult> {
   // /api/user), and using them here would let a real user bypass the gate
   // by renaming themselves "Anonymous".
   if ((session.user as { isAnonymous?: boolean | null }).isAnonymous === true) {
-    return { kind: "pass", user: null };
+    return { kind: "pass", user: null, session };
   }
 
   // Wallet (SIWE) users authenticate by signing a nonce, which is itself a
@@ -303,7 +306,7 @@ async function mfaBlock(request: NextRequest): Promise<MfaResult> {
       activeOrganizationId: activeOrgId,
     });
     if (compliance.compliant) {
-      return { kind: "pass", user: null };
+      return { kind: "pass", user: null, session };
     }
     if (apiPath) {
       return {
@@ -362,10 +365,14 @@ async function mfaBlock(request: NextRequest): Promise<MfaResult> {
   }
 
   if (!user.email) {
-    return { kind: "pass", user: null };
+    return { kind: "pass", user: null, session };
   }
 
-  return { kind: "pass", user: { id: session.user.id, email: user.email } };
+  return {
+    kind: "pass",
+    user: { id: session.user.id, email: user.email },
+    session,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -462,14 +469,20 @@ async function countryGateBlock(
 // Viewer read-only gate
 // ---------------------------------------------------------------------------
 
-async function viewerBlock(request: NextRequest): Promise<NextResponse | null> {
+async function viewerBlock(
+  request: NextRequest,
+  knownSession: ProxySession | undefined
+): Promise<NextResponse | null> {
   if (!requiresViewerCheck(request.method, request.nextUrl.pathname)) {
     return null;
   }
   if (!hasSessionCookie(request.headers)) {
     return null;
   }
-  const session = await auth.api.getSession({ headers: request.headers });
+  const session =
+    knownSession === undefined
+      ? await auth.api.getSession({ headers: request.headers })
+      : knownSession;
   if (!session?.user) {
     return null;
   }
@@ -648,7 +661,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
       return countryResponse;
     }
   }
-  const viewerResponse = await viewerBlock(request);
+  const viewerResponse = await viewerBlock(request, mfaResult.session);
   if (viewerResponse) {
     return viewerResponse;
   }

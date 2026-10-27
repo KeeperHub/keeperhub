@@ -189,6 +189,7 @@ export async function GET(
         createdAt: workflow.createdAt.toISOString(),
         updatedAt: workflow.updatedAt.toISOString(),
         isOwner: access.canEdit,
+        canRead: hasFullAccess,
       });
     }
 
@@ -210,6 +211,7 @@ export async function GET(
       // edit, not just the original creator. This is a bit of a misnomer but
       // avoids refactoring the frontend atom naming (isWorkflowOwnerAtom).
       isOwner: access.canEdit,
+      canRead: hasFullAccess,
     };
 
     // INFRA-05: Sanitize description for non-owner reads of listed workflows

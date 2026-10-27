@@ -37,6 +37,7 @@ import {
   isGeneratingAtom,
   isWorkflowEnabled,
   isWorkflowOwnerAtom,
+  isWorkflowViewerAtom,
   newlyCreatedNodeIdAtom,
   nodesAtom,
   propertiesPanelActiveTabAtom,
@@ -47,7 +48,6 @@ import {
   type WorkflowTriggerType,
   workflowEnableToggleAtom,
 } from "@/lib/workflow/store";
-import { useActiveMember } from "@/lib/hooks/use-organization";
 import { findActionById } from "@/plugins/registry";
 import { ActionConfig } from "../workflow/config/action-config";
 import { ActionGrid } from "../workflow/config/action-grid";
@@ -116,8 +116,9 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
     currentWorkflowDescriptionAtom
   );
   const isOwner = useAtomValue(isWorkflowOwnerAtom);
-  // Viewers cannot edit but may read the org's run and version history.
-  const { isViewer } = useActiveMember();
+  // Viewers of the workflow's org cannot edit but may read its run and
+  // version history.
+  const isViewer = useAtomValue(isWorkflowViewerAtom);
   const canReadHistory = isOwner || isViewer;
 
   const updateNodeData = useSetAtom(updateNodeDataAtom);

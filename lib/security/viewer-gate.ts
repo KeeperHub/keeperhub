@@ -1,45 +1,23 @@
-import { and, eq, or } from "drizzle-orm";
-import { db } from "@/lib/db";
-import { member, organization } from "@/lib/db/schema";
-import { isViewerRole, VIEWER_ROLE } from "@/lib/organization/role-label";
+import { NextResponse } from "next/server";
+import { resolveSessionOrg } from "@/lib/middleware/auth-helpers";
+import { isViewerRole } from "@/lib/organization/role-label";
 import { getOrgRole } from "@/lib/security/org-role";
-import { orgIdFromPath } from "@/lib/security/viewer-policy";
+import {
+  orgIdFromPath,
+  VIEWER_READ_ONLY_ERROR,
+} from "@/lib/security/viewer-policy";
 
 const ORG_HEADER = "x-organization-id";
 
-async function roleInOrgByIdOrSlug(
-  userId: string,
-  idOrSlug: string
-): Promise<string | null> {
-  const [row] = await db
-    .select({ role: member.role })
-    .from(member)
-    .innerJoin(organization, eq(organization.id, member.organizationId))
-    .where(
-      and(
-        eq(member.userId, userId),
-        or(eq(organization.id, idOrSlug), eq(organization.slug, idOrSlug))
-      )
-    )
-    .limit(1);
-  return row?.role ?? null;
-}
-
-async function isViewerAnywhere(userId: string): Promise<boolean> {
-  const [row] = await db
-    .select({ id: member.id })
-    .from(member)
-    .where(and(eq(member.userId, userId), eq(member.role, VIEWER_ROLE)))
-    .limit(1);
-  return row !== undefined;
-}
-
 /**
  * True when the session caller is a viewer in the organization this request
- * acts on. The organization is resolved the way route handlers resolve it: an
- * /api/organizations/<id>/ path segment, then the X-Organization-Id header,
- * then the session's active organization. With none of those, a viewer
- * membership anywhere blocks the call, so an unresolved org fails closed.
+ * acts on. An /api/organizations/<id>/ path segment wins; otherwise the org is
+ * resolved with resolveSessionOrg, the same resolver the routes use (the
+ * X-Organization-Id header, then the active org, then the first membership).
+ *
+ * When an X-Organization-Id header is sent, the active org is checked too:
+ * routes that read the org from the session ignore the header, so a viewer in
+ * the active org must not get through by naming a different org.
  */
 export async function isViewerForRequest(
   request: Request,
@@ -50,12 +28,34 @@ export async function isViewerForRequest(
   if (pathOrgId) {
     return isViewerRole(await getOrgRole(userId, pathOrgId));
   }
-  const headerOrg = request.headers.get(ORG_HEADER)?.trim();
-  if (headerOrg) {
-    return isViewerRole(await roleInOrgByIdOrSlug(userId, headerOrg));
+  const resolved = await resolveSessionOrg(
+    request,
+    userId,
+    activeOrganizationId ?? null
+  );
+  if (!("error" in resolved) && isViewerRole(resolved.role)) {
+    return true;
   }
-  if (activeOrganizationId) {
+  const sentHeader = request.headers.has(ORG_HEADER);
+  if (activeOrganizationId && (sentHeader || "error" in resolved)) {
     return isViewerRole(await getOrgRole(userId, activeOrganizationId));
   }
-  return await isViewerAnywhere(userId);
+  return false;
+}
+
+/**
+ * Route-level guard for handlers that resolve the session themselves rather
+ * than through the shared auth helpers. Returns a 403 for a viewer, else null.
+ */
+export async function viewerForbidden(
+  userId: string,
+  organizationId: string | null | undefined
+): Promise<NextResponse | null> {
+  if (!organizationId) {
+    return null;
+  }
+  if (!isViewerRole(await getOrgRole(userId, organizationId))) {
+    return null;
+  }
+  return NextResponse.json(VIEWER_READ_ONLY_ERROR, { status: 403 });
 }
