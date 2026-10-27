@@ -1,4 +1,4 @@
-/** What the Plans section is for, as its header says it. */
+/** The Plans section's description. */
 export const PLANS_DESCRIPTION =
   "What this organization is on, and what it could move to.";
 

@@ -18,9 +18,7 @@ export function PlansSection(): React.ReactElement {
   return (
     <>
       <SectionHeader
-        // Only a role that is known and is not the owner's gets the owner-only
-        // line, so an owner never sees it, even while the role loads or when
-        // it cannot be loaded.
+        // Only a known non-owner gets the owner-only line.
         description={
           role && role !== "owner"
             ? `${PLANS_DESCRIPTION} ${OWNER_ONLY_LINE}`

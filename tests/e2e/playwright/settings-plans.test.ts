@@ -1,24 +1,12 @@
 import type { Locator, Page, Route } from "@playwright/test";
 import { OWNER_ONLY_LINE } from "@/components/settings/hub/plans-description";
+import { PLANS, type PlanName, type TierKey } from "@/lib/billing/plans";
 import { expect, test } from "./fixtures";
 import { openOrgSettings } from "./utils/settings";
 
 const FIRST_VISIT = { timeout: 20_000 };
 // Long enough for the page to be on screen and usable before it arrives.
 const LATE = 3000;
-
-/** Holds every request to `url` until the returned function is called. */
-async function holdRequests(page: Page, url: string): Promise<() => void> {
-  let release = (): void => undefined;
-  const released = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await page.route(url, async (route: Route) => {
-    await released;
-    await route.fallback();
-  });
-  return release;
-}
 
 function annualButton(page: Page): Locator {
   return page.locator(".khp-interval-btn", { hasText: "Annual" });
@@ -72,23 +60,23 @@ test.describe("the plans page while it loads", () => {
     page,
   }) => {
     // A paid plan, so its arrival changes the current card and remounts the
-    // table.
-    await page.route("**/api/billing/subscription", (route: Route) =>
-      route.fulfill({
+    // table. It is held back until the reader has picked.
+    const plan: PlanName = "pro";
+    const tier: TierKey = "25k";
+    let release = (): void => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/billing/subscription", async (route: Route) => {
+      await released;
+      await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          subscription: {
-            plan: "pro",
-            tier: "25k",
-            interval: null,
-            status: "active",
-          },
+          subscription: { plan, tier, interval: null, status: "active" },
         }),
-      })
-    );
-    // Registered last, so it runs first and holds the answer above back.
-    const release = await holdRequests(page, "**/api/billing/subscription");
+      });
+    });
 
     await openOrgSettings(page, "plans");
     const annual = annualButton(page);
@@ -103,9 +91,11 @@ test.describe("the plans page while it loads", () => {
     }).toPass(FIRST_VISIT);
 
     release();
-    const pro = page
-      .locator(".khp-card")
-      .filter({ has: page.locator(".khp-card-name", { hasText: /^Pro$/ }) });
+    const pro = page.locator(".khp-card").filter({
+      has: page
+        .locator(".khp-card-name")
+        .getByText(PLANS[plan].name, { exact: true }),
+    });
     await expect(pro.locator(".khp-card-badge")).toHaveText(/current/i, {
       timeout: FIRST_VISIT.timeout,
     });
