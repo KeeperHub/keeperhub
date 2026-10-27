@@ -823,8 +823,12 @@ export function PricingTable({
   trial,
   onPlanUpdated,
   canManage = true,
+  interval: heldInterval,
+  onIntervalChange,
 }: PricingTableProps): React.ReactElement {
-  const [interval, setInterval] = useState<BillingInterval>("monthly");
+  const [ownInterval, setOwnInterval] = useState<BillingInterval>("monthly");
+  const interval = heldInterval ?? ownInterval;
+  const setInterval = onIntervalChange ?? setOwnInterval;
   const [selectedTierByCard, setSelectedTierByCard] = useState<
     Record<TieredPlanName, TierKey | null>
   >({

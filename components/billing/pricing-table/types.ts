@@ -24,6 +24,9 @@ export type PricingTableProps = {
   gasCreditCaps?: GasCreditCapsMap;
   trial?: TrialInfo;
   onPlanUpdated?: () => Promise<void>;
+  /** Monthly or annual prices. Without it the table keeps its own choice. */
+  interval?: BillingInterval;
+  onIntervalChange?: (next: BillingInterval) => void;
 };
 
 export type PlanTierItem = (typeof PLANS)[PlanName]["tiers"][number];
