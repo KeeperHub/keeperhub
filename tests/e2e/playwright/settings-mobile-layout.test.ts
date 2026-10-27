@@ -1,5 +1,6 @@
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 import { SETTINGS_NAV } from "@/components/settings/hub/nav";
+import { WALLET_EMAIL_DOMAIN } from "@/lib/auth/wallet-constants";
 import { expect, test } from "./fixtures";
 import {
   type Box,
@@ -48,6 +49,49 @@ const SHARED_HEADER_FROM = 390;
 const ONE_LINE = 24;
 // A section's code is compiled on first visit in development.
 const FIRST_VISIT = { timeout: 20_000 };
+// A wallet member's sign-in, the longest name a settings row carries.
+const WALLET_EMAIL = `0x${"0".repeat(32)}deadbeef@${WALLET_EMAIL_DOMAIN}`;
+const DAY = 86_400_000;
+// The agents list, served as is so every width sees the same rows: someone
+// with one session under a long client name, and a wallet member with none.
+const AGENTS = {
+  canManage: true,
+  maxScope: null,
+  users: [
+    {
+      userId: "agents-owner",
+      userName: "Agents Owner",
+      userEmail: "agents-owner@example.com",
+      role: "owner",
+      maxScope: null,
+      canEdit: true,
+      sessions: [
+        {
+          id: "agents-session",
+          clientId: "a1b2c3d4e5f6",
+          clientName:
+            "A client name long enough to need the whole row and then some",
+          userId: "agents-owner",
+          userName: "Agents Owner",
+          userEmail: "agents-owner@example.com",
+          scope: "mcp:read",
+          connectedAt: new Date(Date.now() - DAY).toISOString(),
+          expiresAt: new Date(Date.now() + DAY).toISOString(),
+          lastUsedAt: null,
+        },
+      ],
+    },
+    {
+      userId: "agents-wallet",
+      userName: "",
+      userEmail: WALLET_EMAIL,
+      role: "member",
+      maxScope: null,
+      canEdit: true,
+      sessions: [],
+    },
+  ],
+};
 
 // These tests are about the settings layout, not what sits over it.
 test.beforeEach(async ({ page }) => {
@@ -381,6 +425,56 @@ test.describe("settings on wider screens", () => {
         .evaluate((cell) => getComputedStyle(cell).position);
       expect(scrollable).toBe(scrolls);
       expect(pinned).toBe(scrolls ? "sticky" : "static");
+    }
+  });
+});
+
+test.describe("the connected agents table", () => {
+  test("cuts long names short rather than scrolling", async ({ page }) => {
+    test.slow();
+    await page.route("**/api/mcp/connections", async (route: Route) => {
+      if (route.request().method() !== "GET") {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({ json: AGENTS });
+    });
+
+    for (const width of [...PHONE_WIDTHS, TABLET.width, 1024, DESKTOP.width]) {
+      await test.step(`${width}px`, async () => {
+        await page.setViewportSize({ width, height: TABLET.height });
+        await openOrgSettings(page, "agents");
+        const table = page.locator("main table").first();
+        const person = table
+          .locator("tbody tr")
+          .filter({ hasText: WALLET_EMAIL });
+        await expect(person).toBeVisible(FIRST_VISIT);
+
+        // The table stays inside its card: nothing to scroll sideways to.
+        expect(
+          await page
+            .locator("main [data-slot=table-container]")
+            .first()
+            .evaluate((element) => element.scrollWidth <= element.clientWidth)
+        ).toBe(true);
+        // The address line is what gives way, ending in an ellipsis where it
+        // does not fit, and it ends inside the card either way.
+        const card = await box(page.locator("main section").first());
+        const right = card.x + card.width;
+        const line = person.getByText(`${WALLET_EMAIL} · No agents connected`);
+        const shown = await box(line);
+        expect(shown.x + shown.width).toBeLessThanOrEqual(right);
+        if (!(await textFits(line))) {
+          expect(
+            await line.evaluate(
+              (element) => getComputedStyle(element).textOverflow
+            )
+          ).toBe("ellipsis");
+        }
+        // A session's Revoke stays in reach beside a long client name.
+        const button = await box(table.getByRole("button", { name: "Revoke" }));
+        expect(button.x + button.width).toBeLessThanOrEqual(right);
+      });
     }
   });
 });

@@ -214,7 +214,9 @@ export function ConnectionsTable({
         />
       </div>
 
-      <Table>
+      {/* Fixed widths, so a long address is cut short in its own column
+          rather than widening the table past the card. */}
+      <Table className="table-fixed">
         <TableHeader>
           <TableRow className={SETTINGS_HEAD_ROW}>
             <TableHead>Person and sessions</TableHead>
@@ -256,9 +258,11 @@ export function ConnectionsTable({
                   role="row"
                 >
                   <TableCell role="cell">
+                    {/* A button is as wide as its text unless capped, which
+                        would leave the lines inside nothing to cut short. */}
                     <button
                       aria-expanded={isOpen}
-                      className="flex min-w-0 items-center gap-2 text-left"
+                      className="flex min-w-0 max-w-full items-center gap-2 text-left"
                       disabled={!hasSessions}
                       onClick={() => toggle(group.userId)}
                       type="button"
@@ -352,7 +356,7 @@ export function ConnectionsTable({
                             can hold several sessions under the same name. The
                             client id is what tells them apart, and it is public
                             in OAuth, so a leading fragment is safe to show. */}
-                        <span className="text-muted-foreground text-xs">
+                        <span className="truncate text-muted-foreground text-xs">
                           Connected {relativeTime(session.connectedAt)} ·{" "}
                           <span className="font-mono">
                             {session.clientId.slice(0, 8)}
