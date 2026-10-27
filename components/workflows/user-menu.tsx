@@ -28,10 +28,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { toChecksumAddress, truncateAddress } from "@/lib/address-utils";
-import {
-  isWalletEmail,
-  walletAddressFromEmail,
-} from "@/lib/auth/wallet-constants";
+import { isWalletEmail } from "@/lib/auth/wallet-constants";
 import { signOut, useSession } from "@/lib/auth-client";
 import {
   hasNotificationType,
@@ -100,8 +97,9 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
   // The full sign-in wallet address, checksummed, copyable from the menu
   // (wallet users only). Checksum before truncating so the shown short form
   // carries the correct EIP-55 casing too.
-  const walletAddress = walletAddressFromEmail(email);
-  const signinAddress = walletAddress ? toChecksumAddress(walletAddress) : null;
+  const signinAddress = isWalletEmail(email)
+    ? toChecksumAddress(email.split("@")[0])
+    : null;
   const accountIdentifier = signinAddress
     ? truncateAddress(signinAddress)
     : email;

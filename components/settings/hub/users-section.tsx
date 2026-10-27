@@ -26,6 +26,14 @@ function roleRank(role: string): number {
   return role === "member" ? 2 : 3;
 }
 
+/** Search finds a member by the identifier the list shows, short or full. */
+function matchesIdentifier(email: string, needle: string): boolean {
+  const { shown, full } = loginIdentifier(email);
+  return (
+    shown.toLowerCase().includes(needle) || full.toLowerCase().includes(needle)
+  );
+}
+
 export function UsersSection(): React.ReactElement {
   const { isAdmin } = useSettingsContext();
   const { data: session } = useSession();
@@ -42,9 +50,7 @@ export function UsersSection(): React.ReactElement {
       (m) =>
         !needle ||
         (m.user.name ?? "").toLowerCase().includes(needle) ||
-        loginIdentifier(m.user.email ?? "")
-          .full.toLowerCase()
-          .includes(needle)
+        matchesIdentifier(m.user.email ?? "", needle)
     )
     .slice()
     .sort(
