@@ -51,6 +51,7 @@ import {
   type WorkflowNodeForValidation,
 } from "@/lib/workflow/validation/action-config";
 import { findInvalidTemplateTokens } from "@/lib/workflow/validation/template-syntax";
+import { VIEWER_READ_ONLY_ERROR } from "@/lib/security/viewer-policy";
 async function fetchWorkflowPublicTags(
   workflowId: string
 ): Promise<Array<{ id: string; name: string; slug: string }>> {
@@ -187,7 +188,7 @@ export async function GET(
         versionCreatedAt: historyRow.createdAt.toISOString(),
         createdAt: workflow.createdAt.toISOString(),
         updatedAt: workflow.updatedAt.toISOString(),
-        isOwner: hasFullAccess,
+        isOwner: access.canEdit,
       });
     }
 
@@ -205,10 +206,10 @@ export async function GET(
       createdAt: workflow.createdAt.toISOString(),
       updatedAt: workflow.updatedAt.toISOString(),
       // Note: `isOwner` controls edit permissions in the frontend.
-      // We use `hasFullAccess` here so that all org members can edit,
-      // not just the original creator. This is a bit of a misnomer but
+      // We use `canEdit` here so that all org members except viewers can
+      // edit, not just the original creator. This is a bit of a misnomer but
       // avoids refactoring the frontend atom naming (isWorkflowOwnerAtom).
-      isOwner: hasFullAccess,
+      isOwner: access.canEdit,
     };
 
     // INFRA-05: Sanitize description for non-owner reads of listed workflows
@@ -296,13 +297,14 @@ async function validateWorkflowAccess(
 ): Promise<{
   workflow: typeof workflows.$inferSelect | null;
   hasAccess: boolean;
+  canEdit: boolean;
 }> {
   const existingWorkflow = await db.query.workflows.findFirst({
     where: eq(workflows.id, workflowId),
   });
 
   if (!existingWorkflow) {
-    return { workflow: null, hasAccess: false };
+    return { workflow: null, hasAccess: false, canEdit: false };
   }
 
   const access = await getWorkflowAccess(existingWorkflow, {
@@ -316,6 +318,7 @@ async function validateWorkflowAccess(
   return {
     workflow: existingWorkflow,
     hasAccess: access.hasFullAccess && !access.isDeleted,
+    canEdit: access.canEdit,
   };
 }
 
@@ -376,19 +379,25 @@ export async function PATCH(
     }
 
     const { userId, organizationId } = authContext;
-    const { workflow: existingWorkflow, hasAccess } =
-      await validateWorkflowAccess(
-        workflowId,
-        userId,
-        organizationId,
-        authContext.authMethod
-      );
+    const {
+      workflow: existingWorkflow,
+      hasAccess,
+      canEdit,
+    } = await validateWorkflowAccess(
+      workflowId,
+      userId,
+      organizationId,
+      authContext.authMethod
+    );
 
     if (!(existingWorkflow && hasAccess)) {
       return NextResponse.json(
         { error: "Workflow not found" },
         { status: 404 }
       );
+    }
+    if (!canEdit) {
+      return NextResponse.json(VIEWER_READ_ONLY_ERROR, { status: 403 });
     }
 
     const body = await request.json();
@@ -1028,7 +1037,7 @@ export async function DELETE(
 
     const { userId, organizationId } = authContext;
 
-    const { hasAccess } = await validateWorkflowAccess(
+    const { hasAccess, canEdit } = await validateWorkflowAccess(
       workflowId,
       userId,
       organizationId,
@@ -1040,6 +1049,9 @@ export async function DELETE(
         { error: "Workflow not found" },
         { status: 404 }
       );
+    }
+    if (!canEdit) {
+      return NextResponse.json(VIEWER_READ_ONLY_ERROR, { status: 403 });
     }
 
     // Check for existing executions before deleting

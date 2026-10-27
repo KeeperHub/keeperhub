@@ -136,6 +136,7 @@ export function MembersTable({
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
+                          <SelectItem value="viewer">Viewer</SelectItem>
                           <SelectItem value="member">Member</SelectItem>
                           <SelectItem value="admin">Admin</SelectItem>
                         </SelectContent>

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { IntegrationsManager } from "@/components/settings/integrations-manager";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
+import { useActiveMember } from "@/lib/hooks/use-organization";
 import { integrationsVersionAtom } from "@/lib/integrations-store";
 import { AddConnectionOverlay } from "./add-connection-overlay";
 import { Overlay } from "./overlay";
@@ -53,6 +54,8 @@ export function IntegrationsOverlay({
     hasChangesRef.current = true;
   }, []);
 
+  const { isViewer } = useActiveMember();
+
   const handleAddConnection = () => {
     push(AddConnectionOverlay, {
       onSuccess: handleIntegrationChange,
@@ -62,11 +65,15 @@ export function IntegrationsOverlay({
   return (
     <Overlay
       actions={[
-        {
-          label: "Add Connection",
-          variant: "outline",
-          onClick: handleAddConnection,
-        },
+        ...(isViewer
+          ? []
+          : [
+              {
+                label: "Add Connection",
+                variant: "outline" as const,
+                onClick: handleAddConnection,
+              },
+            ]),
         { label: "Done", onClick: handleClose },
       ]}
       overlayId={overlayId}

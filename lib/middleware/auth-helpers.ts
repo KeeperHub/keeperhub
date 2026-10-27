@@ -11,7 +11,10 @@ import {
   apiError,
 } from "@/lib/errors/api-envelope";
 import { authenticateOAuthToken } from "@/lib/mcp/oauth-auth";
+import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
 import { getOrgContext } from "@/lib/middleware/org-context";
+import { isViewerRole } from "@/lib/organization/role-label";
+import { getOrgRole } from "@/lib/security/org-role";
 import {
   hasSessionCookie,
   isTrustedOrigin,
@@ -180,6 +183,29 @@ async function resolveSessionOrg(
   }
 
   return { organizationId: targetOrgId };
+}
+
+/**
+ * Scope for a session caller. Sessions are otherwise unscoped (full access),
+ * but a viewer is read-only in the org, so on a state-changing request their
+ * session carries `mcp:read` and every `requireScope(..., SCOPE_MCP_WRITE)`
+ * sink rejects it. The proxy's viewer gate is the primary block; this keeps
+ * the routes closed if a request ever reaches them without passing it.
+ */
+async function sessionScope(
+  request: Request,
+  userId: string,
+  organizationId: string | null
+): Promise<string | undefined> {
+  if (
+    !(
+      organizationId && STATE_CHANGING_METHODS.has(request.method.toUpperCase())
+    )
+  ) {
+    return;
+  }
+  const role = await getOrgRole(userId, organizationId);
+  return isViewerRole(role) ? SCOPE_MCP_READ : undefined;
 }
 
 export type DualAuthContext =
@@ -377,6 +403,11 @@ export async function getDualAuthContext(
     organizationId: orgResult.organizationId,
     authMethod: "session",
     apiKeyId: null,
+    scope: await sessionScope(
+      request,
+      session.user.id,
+      orgResult.organizationId
+    ),
     isAnonymous: isAnonymousUserShape(session.user),
   };
 }
@@ -405,7 +436,7 @@ export type OrganizationAuthContext =
       apiKeyId: string | null;
       // OAuth token scope (mcp:read|write|admin). Also set for scoped API keys.
       // Undefined for session callers and unscoped keys, which scopeSatisfies()
-      // treats as full access.
+      // treats as full access. A viewer's session is mcp:read on writes.
       scope?: string;
     }
   | AuthFailure;
@@ -481,6 +512,11 @@ export async function resolveOrganizationId(
     organizationId: orgResult.organizationId,
     authMethod: "session",
     apiKeyId: null,
+    scope: await sessionScope(
+      request,
+      session.user.id,
+      orgResult.organizationId
+    ),
   };
 }
 
@@ -496,7 +532,8 @@ export async function resolveCreatorContext(request: Request): Promise<
       apiKeyId: string | null;
       // OAuth token scope (mcp:read|write|admin). Also set for scoped API keys.
       // Undefined for session callers and unscoped keys, which scopeSatisfies()
-      // treats as full access for backwards compatibility.
+      // treats as full access for backwards compatibility. A viewer's session
+      // is mcp:read on writes.
       scope?: string;
     }
   | AuthFailure
@@ -558,6 +595,11 @@ export async function resolveCreatorContext(request: Request): Promise<
     userId: session.user.id,
     authMethod: "session",
     apiKeyId: null,
+    scope: await sessionScope(
+      request,
+      session.user.id,
+      orgResult.organizationId
+    ),
   };
 }
 

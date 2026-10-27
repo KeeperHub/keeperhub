@@ -19,6 +19,7 @@ type AddressBookRowProps = {
   onDelete: () => void;
   onEdit: (entry: AddressBookEntry) => void;
   deleting: string | null;
+  canEdit?: boolean;
 };
 
 export function AddressBookRow({
@@ -26,6 +27,7 @@ export function AddressBookRow({
   onDelete,
   onEdit,
   deleting,
+  canEdit = true,
 }: AddressBookRowProps) {
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -59,28 +61,30 @@ export function AddressBookRow({
         </div>
       </TableCell>
       <TableCell className="text-right">
-        <div className="flex items-center justify-end gap-2">
-          <Button
-            disabled={deleting === entry.id}
-            onClick={() => onEdit(entry)}
-            size="sm"
-            variant="ghost"
-          >
-            <Edit className="h-4 w-4" />
-          </Button>
-          <Button
-            disabled={deleting === entry.id}
-            onClick={onDelete}
-            size="sm"
-            variant="ghost"
-          >
-            {deleting === entry.id ? (
-              <Spinner className="h-4 w-4" />
-            ) : (
-              <Trash2 className="h-4 w-4 text-destructive" />
-            )}
-          </Button>
-        </div>
+        {canEdit && (
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              disabled={deleting === entry.id}
+              onClick={() => onEdit(entry)}
+              size="sm"
+              variant="ghost"
+            >
+              <Edit className="h-4 w-4" />
+            </Button>
+            <Button
+              disabled={deleting === entry.id}
+              onClick={onDelete}
+              size="sm"
+              variant="ghost"
+            >
+              {deleting === entry.id ? (
+                <Spinner className="h-4 w-4" />
+              ) : (
+                <Trash2 className="h-4 w-4 text-destructive" />
+              )}
+            </Button>
+          </div>
+        )}
       </TableCell>
     </TableRow>
   );

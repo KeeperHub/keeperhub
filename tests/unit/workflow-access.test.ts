@@ -192,4 +192,41 @@ describe("getWorkflowAccess", () => {
     expect(access.isCreatorWithCurrentAccess).toBe(false);
     expect(mockMemberLimit).not.toHaveBeenCalled();
   });
+
+  it("gives a current member edit access", async () => {
+    mockMemberLimit.mockResolvedValue([{ id: "member-1", role: "member" }]);
+
+    const access = await getWorkflowAccess(ORG_WORKFLOW, {
+      userId: "someone",
+      organizationId: "org-1",
+    });
+
+    expect(access.hasFullAccess).toBe(true);
+    expect(access.canEdit).toBe(true);
+  });
+
+  it("gives a viewer full read access but no edit access", async () => {
+    mockMemberLimit.mockResolvedValue([{ id: "member-1", role: "viewer" }]);
+
+    const access = await getWorkflowAccess(ORG_WORKFLOW, {
+      userId: "someone",
+      organizationId: "org-1",
+    });
+
+    expect(access.hasFullAccess).toBe(true);
+    expect(access.isSameOrg).toBe(true);
+    expect(access.canEdit).toBe(false);
+  });
+
+  it("gives a non-member neither read nor edit access", async () => {
+    mockMemberLimit.mockResolvedValue([]);
+
+    const access = await getWorkflowAccess(ORG_WORKFLOW, {
+      userId: "someone",
+      organizationId: "org-1",
+    });
+
+    expect(access.hasFullAccess).toBe(false);
+    expect(access.canEdit).toBe(false);
+  });
 });

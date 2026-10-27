@@ -14,6 +14,7 @@ const {
   mockHandlerGet,
   mockIssueCliDeviceApiKey,
   mockHashSessionToken,
+  mockGetOrgRole,
   sessionRows,
   userRows,
   selectCalls,
@@ -22,6 +23,7 @@ const {
   mockHandlerGet: vi.fn(),
   mockIssueCliDeviceApiKey: vi.fn(),
   mockHashSessionToken: vi.fn((token: string) => `hashed:${token}`),
+  mockGetOrgRole: vi.fn(),
   sessionRows: [] as Array<{
     userId: string;
     activeOrganizationId: string | null;
@@ -102,6 +104,8 @@ vi.mock("@/lib/pending-signup-cookie", () => ({
 
 vi.mock("@/lib/sanitize-next-path", () => ({ sanitizeNextPath: vi.fn() }));
 
+vi.mock("@/lib/security/org-role", () => ({ getOrgRole: mockGetOrgRole }));
+
 const { POST } = await import("@/app/api/auth/[...all]/route");
 
 const TOKEN_URL = "https://app.example.com/api/auth/device/token";
@@ -129,6 +133,8 @@ beforeEach(() => {
   mockHandlerPost.mockReset();
   mockIssueCliDeviceApiKey.mockReset();
   mockIssueCliDeviceApiKey.mockResolvedValue("kh_generated_key");
+  mockGetOrgRole.mockReset();
+  mockGetOrgRole.mockResolvedValue("member");
   mockHandlerPost.mockResolvedValue(jsonResponse({ success: true }));
 });
 
@@ -173,6 +179,23 @@ describe("device token - API key issuance", () => {
     });
     // The session is found by hashed token, since that is how sessions are stored.
     expect(mockHashSessionToken).toHaveBeenCalledWith("raw-session-token");
+  });
+
+  it("refuses the grant for a viewer, minting no key and leaking no session token", async () => {
+    sessionRows.push({ userId: "user-1", activeOrganizationId: "org-1" });
+    mockGetOrgRole.mockResolvedValue("viewer");
+    mockHandlerPost.mockResolvedValue(
+      jsonResponse({ access_token: "raw-session-token" })
+    );
+
+    const res = await POST(postRequest(TOKEN_URL));
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(403);
+    expect(body.error).toBe("access_denied");
+    expect(mockGetOrgRole).toHaveBeenCalledWith("user-1", "org-1");
+    expect(mockIssueCliDeviceApiKey).not.toHaveBeenCalled();
+    expect(JSON.stringify(body)).not.toContain("raw-session-token");
   });
 
   it("fails the grant when the account has no active organization", async () => {

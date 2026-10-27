@@ -100,6 +100,7 @@ const accessFull = {
   isCreatorWithCurrentAccess: true,
   isSameOrg: true,
   hasFullAccess: true,
+  canEdit: true,
   isDeleted: false,
 };
 
@@ -107,6 +108,7 @@ const accessForbidden = {
   isCreatorWithCurrentAccess: false,
   isSameOrg: false,
   hasFullAccess: false,
+  canEdit: false,
   isDeleted: false,
 };
 
@@ -114,6 +116,7 @@ const accessDeleted = {
   isCreatorWithCurrentAccess: true,
   isSameOrg: true,
   hasFullAccess: true,
+  canEdit: true,
   isDeleted: true,
 };
 

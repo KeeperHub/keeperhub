@@ -200,7 +200,7 @@ export function useOrgMembers(): OrgMembersState {
         const { error } = await authClient.organization.inviteMember({
           email: invitation.email,
           organizationId,
-          role: invitation.role as "member" | "admin" | "owner",
+          role: invitation.role as "viewer" | "member" | "admin" | "owner",
         });
         if (error) {
           toast.error(error.message || "Could not resend the invitation");

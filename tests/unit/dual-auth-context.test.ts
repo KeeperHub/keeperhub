@@ -7,7 +7,9 @@ const {
   mockGetOrgContext,
   mockOrgLookup,
   mockDefaultOrgLookup,
+  mockGetOrgRole,
 } = vi.hoisted(() => ({
+  mockGetOrgRole: vi.fn(),
   mockAuthenticateApiKey: vi.fn(),
   mockAuthenticateOAuthToken: vi.fn(),
   mockGetSession: vi.fn(),
@@ -27,6 +29,8 @@ const {
 vi.mock("@/lib/api-key-auth", () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
+
+vi.mock("@/lib/security/org-role", () => ({ getOrgRole: mockGetOrgRole }));
 
 vi.mock("@/lib/auth", () => ({
   auth: {
@@ -725,5 +729,50 @@ describe("resolveCreatorContext — origin check wiring", () => {
       authMethod: "session",
       apiKeyId: null,
     });
+  });
+});
+
+describe("session scope for viewers", () => {
+  const cookieHeaders = {
+    cookie: "better-auth.session_token=abc",
+    origin: "http://localhost:3000",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAuthenticateOAuthToken.mockResolvedValue({ authenticated: false });
+    mockAuthenticateApiKey.mockResolvedValue({ authenticated: false });
+    mockGetSession.mockResolvedValue({ user: { id: "user_session" } });
+    mockGetOrgContext.mockResolvedValue({
+      organization: { id: "org_session" },
+    });
+    mockDefaultOrgLookup.mockResolvedValue([{ deactivatedAt: null }]);
+  });
+
+  it("gives a viewer's write a read-only scope", async () => {
+    mockGetOrgRole.mockResolvedValue("viewer");
+    const result = await getDualAuthContext(
+      makeRequest(cookieHeaders, { method: "POST" })
+    );
+    expect(result).toMatchObject({ authMethod: "session", scope: "mcp:read" });
+    expect(mockGetOrgRole).toHaveBeenCalledWith("user_session", "org_session");
+  });
+
+  it("leaves a member's write unscoped", async () => {
+    mockGetOrgRole.mockResolvedValue("member");
+    const result = await resolveOrganizationId(
+      makeRequest(cookieHeaders, { method: "PATCH" })
+    );
+    expect(result).toMatchObject({ authMethod: "session" });
+    expect((result as { scope?: string }).scope).toBeUndefined();
+  });
+
+  it("skips the role lookup on reads", async () => {
+    mockGetOrgRole.mockResolvedValue("viewer");
+    const result = await resolveCreatorContext(
+      makeRequest(cookieHeaders, { method: "GET" })
+    );
+    expect((result as { scope?: string }).scope).toBeUndefined();
+    expect(mockGetOrgRole).not.toHaveBeenCalled();
   });
 });

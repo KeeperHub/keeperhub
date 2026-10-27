@@ -10,6 +10,7 @@ import { ScanResults } from "@/components/scan/scan-results";
 import { SuggestionPreviewDrawer } from "@/components/scan/suggestion-preview-drawer";
 import { Button } from "@/components/ui/button";
 import { useSession } from "@/lib/auth-client";
+import { useActiveMember } from "@/lib/hooks/use-organization";
 import { useStartBuilding } from "@/lib/hooks/use-start-building";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import type { SuggestionDescriptor } from "@/lib/scan/suggestions/types";
@@ -120,6 +121,7 @@ export function ScanLanding(): React.ReactElement {
 
   const router = useRouter();
   const { startBuilding } = useStartBuilding();
+  const { isViewer } = useActiveMember();
 
   const { data: session } = useSession();
   const isAuthenticated =
@@ -317,19 +319,21 @@ export function ScanLanding(): React.ReactElement {
                   <span className="h-px flex-1 bg-border" />
                 </div>
                 <div className="flex flex-wrap items-center justify-center gap-3">
-                  <Button
-                    className="gap-2 shadow-lg"
-                    onClick={() => {
-                      startBuilding().catch(() => {
-                        // Errors are surfaced via toast inside startBuilding.
-                      });
-                    }}
-                    size="default"
-                    type="button"
-                  >
-                    <Plus className="size-4" />
-                    Start building
-                  </Button>
+                  {!isViewer && (
+                    <Button
+                      className="gap-2 shadow-lg"
+                      onClick={() => {
+                        startBuilding().catch(() => {
+                          // Errors are surfaced via toast inside startBuilding.
+                        });
+                      }}
+                      size="default"
+                      type="button"
+                    >
+                      <Plus className="size-4" />
+                      Start building
+                    </Button>
+                  )}
                   <Button
                     className="gap-2 shadow-lg"
                     onClick={() => router.push("/hub")}

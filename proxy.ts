@@ -10,6 +10,11 @@ import {
 } from "@/lib/pending-ip-cookie";
 import { resolveSigninDevice } from "@/lib/security/device-trust";
 import { gateRequestCountry } from "@/lib/security/login-risk";
+import { isViewerForRequest } from "@/lib/security/viewer-gate";
+import {
+  requiresViewerCheck,
+  VIEWER_READ_ONLY_ERROR,
+} from "@/lib/security/viewer-policy";
 import { negotiate } from "@/lib/site/accept";
 import { NEGOTIABLE_PATHS, negotiablePage } from "@/lib/site/content";
 import { renderPageMarkdown } from "@/lib/site/markdown";
@@ -60,6 +65,11 @@ import {
  *     transition is seamless. Requests with no CF country (local dev)
  *     pass through. New devices are warned about by email at sign-in, not
  *     here.
+ *
+ *  4. Viewer read-only gate: a session whose role in the organization the
+ *     request acts on is `viewer` gets 403 viewer_read_only on every
+ *     state-changing /api/** call outside the exemptions in
+ *     lib/security/viewer-policy.ts.
  *
  * Unauthenticated requests pass through untouched - route handlers
  * remain responsible for their own auth/authorization, and API-key
@@ -449,6 +459,30 @@ async function countryGateBlock(
 }
 
 // ---------------------------------------------------------------------------
+// Viewer read-only gate
+// ---------------------------------------------------------------------------
+
+async function viewerBlock(request: NextRequest): Promise<NextResponse | null> {
+  if (!requiresViewerCheck(request.method, request.nextUrl.pathname)) {
+    return null;
+  }
+  if (!hasSessionCookie(request.headers)) {
+    return null;
+  }
+  const session = await auth.api.getSession({ headers: request.headers });
+  if (!session?.user) {
+    return null;
+  }
+  const activeOrgId = (
+    session.session as { activeOrganizationId?: string | null }
+  ).activeOrganizationId;
+  if (!(await isViewerForRequest(request, session.user.id, activeOrgId))) {
+    return null;
+  }
+  return NextResponse.json(VIEWER_READ_ONLY_ERROR, { status: 403 });
+}
+
+// ---------------------------------------------------------------------------
 // Markdown content negotiation
 // ---------------------------------------------------------------------------
 
@@ -613,6 +647,10 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     if (countryResponse) {
       return countryResponse;
     }
+  }
+  const viewerResponse = await viewerBlock(request);
+  if (viewerResponse) {
+    return viewerResponse;
   }
   return applyVaryAccept(request, NextResponse.next());
 }

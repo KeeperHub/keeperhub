@@ -45,6 +45,7 @@ vi.mock("@/lib/db/schema", () => ({ users: { id: "id" } }));
 // only thing that can flip the result.
 vi.mock("@/lib/workflow/access", () => ({
   isUserMemberOfOrganization: vi.fn().mockResolvedValue(true),
+  getActiveMemberRole: vi.fn().mockResolvedValue("member"),
 }));
 
 vi.mock("@sentry/nextjs", () => ({

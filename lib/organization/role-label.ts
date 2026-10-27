@@ -1,13 +1,26 @@
-export type OrgRole = "owner" | "admin" | "member";
+export type OrgRole = "owner" | "admin" | "member" | "viewer";
+
+export const VIEWER_ROLE = "viewer" satisfies OrgRole;
 
 const ROLE_LABELS: Record<OrgRole, string> = {
   admin: "Admin",
   member: "Member",
   owner: "Owner",
+  viewer: "Viewer",
 };
 
 function isOrgRole(value: string): value is OrgRole {
-  return value === "owner" || value === "admin" || value === "member";
+  return (
+    value === "owner" ||
+    value === "admin" ||
+    value === "member" ||
+    value === "viewer"
+  );
+}
+
+/** Viewers can read everything in the org but cannot change anything. */
+export function isViewerRole(role: string | null | undefined): boolean {
+  return role?.toLowerCase() === VIEWER_ROLE;
 }
 
 /**

@@ -17,6 +17,7 @@ import {
 } from "@/lib/address-utils";
 import { addressBookApi, api } from "@/lib/api-client";
 import { useSession } from "@/lib/auth-client";
+import { useActiveMember } from "@/lib/hooks/use-organization";
 import {
   currentWorkflowIdAtom,
   edgesAtom,
@@ -128,6 +129,7 @@ export function SaveAddressBookmark({
     !session?.user ||
     session.user.name === "Anonymous" ||
     session.user.email?.startsWith("temp-");
+  const { isViewer } = useActiveMember();
 
   useEffect(() => {
     const childValue = children.props.value;
@@ -240,7 +242,7 @@ export function SaveAddressBookmark({
       <div className="flex items-center gap-2">
         <div className="flex-1" ref={inputContainerRef}>
           <AddressSelectPopover
-            isOpen={isInputFocused && !isTemporalAccount}
+            isOpen={isInputFocused && !isTemporalAccount && !isViewer}
             onAddressSelect={handleAddressSelect}
             onClose={() => setIsInputFocused(false)}
             selectedBookmarkId={
@@ -250,7 +252,7 @@ export function SaveAddressBookmark({
             {childWithInterception}
           </AddressSelectPopover>
         </div>
-        {!isTemporalAccount && (
+        {!(isTemporalAccount || isViewer) && (
           <SaveAddressButton
             address={currentAddress}
             onClick={handleSaveClick}

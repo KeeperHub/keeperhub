@@ -116,7 +116,7 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
   };
   const [orgModalOpen, setOrgModalOpen] = useState(false);
   const { organization } = useOrganization();
-  const { isOwner } = useActiveMember();
+  const { isOwner, isViewer } = useActiveMember();
   const router = useRouter();
   const openGettingStarted = useSetAtom(gettingStartedOpenAtom);
   const { status: notificationStatus, refresh: refreshNotifications } =
@@ -236,11 +236,15 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
             </DropdownMenuItem>
             <DropdownMenuSeparator />
           </div>
-          <DropdownMenuItem onClick={() => openGettingStarted(true)}>
-            <Rocket className="size-4" />
-            <span>Getting started</span>
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
+          {!isViewer && (
+            <>
+              <DropdownMenuItem onClick={() => openGettingStarted(true)}>
+                <Rocket className="size-4" />
+                <span>Getting started</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          )}
           <DropdownMenuItem onClick={handleLogout}>
             <LogOut className="size-4" />
             <span>Logout</span>
