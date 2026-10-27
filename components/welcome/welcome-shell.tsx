@@ -53,9 +53,14 @@ export function WelcomeShell({
   contentClassName,
   preview,
 }: WelcomeShellProps): React.ReactElement {
+  // html and body never scroll (globals.css), so the shell fills the screen.
+  // Below lg the whole step scrolls, as on app/welcome/page.tsx; from lg only
+  // the form column scrolls and the preview stays put. The scroll padding
+  // keeps a focused control clear of the fixed app banner, and from lg shows
+  // Finish's focus ring rather than stopping at the column's bottom edge.
   return (
-    <div className="grid min-h-screen grid-cols-1 lg:h-screen lg:grid-cols-5">
-      <div className="flex flex-col justify-between p-8 lg:col-span-2 lg:overflow-y-auto lg:p-12">
+    <div className="grid h-dvh grid-cols-1 max-lg:scroll-pt-[calc(var(--app-banner-height,0px)+1rem)] max-lg:overflow-y-auto lg:grid-cols-5">
+      <div className="flex flex-col justify-between p-8 lg:col-span-2 lg:scroll-pt-[calc(var(--app-banner-height,0px)+1rem)] lg:scroll-pb-12 lg:overflow-y-auto lg:p-12">
         <div className="flex flex-col gap-6">
           <p className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
             Step {stepIndex + 1} / {WELCOME_STEP_COUNT}

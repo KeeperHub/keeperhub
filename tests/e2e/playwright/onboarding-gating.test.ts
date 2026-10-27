@@ -79,6 +79,46 @@ test.describe("welcome gating: returning user", () => {
   });
 });
 
+// The page itself never scrolls, so each wizard step has to. The last step is
+// the tallest: a visitor on a small screen must be able to scroll down to
+// Finish, not only reach it by keyboard focus. Below lg the whole step
+// scrolls; the desktop case guards the form column, which scrolls on its own.
+const SMALL_SCREENS = [
+  { name: "a phone", width: 390, height: 700, hasTouch: true },
+  { name: "a narrow window", width: 900, height: 700, hasTouch: false },
+  { name: "a short desktop window", width: 1280, height: 600, hasTouch: false },
+];
+
+for (const screen of SMALL_SCREENS) {
+  test.describe(`onboarding wizard on ${screen.name}`, () => {
+    test.use({
+      viewport: { width: screen.width, height: screen.height },
+      hasTouch: screen.hasTouch,
+    });
+
+    test("scrolls the last step down to Finish", async ({ page }) => {
+      await page.goto("/welcome/connect-agent", {
+        waitUntil: "domcontentloaded",
+      });
+      const heading = page.getByRole("heading", {
+        name: "Connect your AI agent",
+      });
+      const finish = page.getByRole("button", { name: "Finish" });
+      await expect(heading).toBeVisible({ timeout: 15_000 });
+      // Taller than the screen, otherwise there is nothing to scroll.
+      await expect(finish).not.toBeInViewport();
+
+      // Wheel over the form. Hover once: hovering again inside the retry
+      // would scroll the heading back into view.
+      await heading.hover();
+      await expect(async () => {
+        await page.mouse.wheel(0, 2000);
+        await expect(finish).toBeInViewport({ ratio: 1, timeout: 1000 });
+      }).toPass({ timeout: 15_000 });
+    });
+  });
+}
+
 test.describe("onboarding wizard: new signup", () => {
   // Fresh anonymous browser so the signup is treated as a first-time user.
   test.use({ storageState: { cookies: [], origins: [] } });
