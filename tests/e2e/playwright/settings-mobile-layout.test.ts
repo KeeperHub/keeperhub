@@ -86,6 +86,10 @@ async function headerParts(page: Page): Promise<{ title: Box; search: Box }> {
   return { title: await box(header.locator("h2")), search: await box(search) };
 }
 
+function centreX(target: Box): number {
+  return target.x + target.width / 2;
+}
+
 function centreY(target: Box): number {
   return target.y + target.height / 2;
 }
@@ -430,16 +434,15 @@ test.describe("settings on wider screens", () => {
           };
         }
       );
-      const middle = (b: Box): number => b.x + b.width / 2;
       if (stacked) {
         expect(save.y).toBeGreaterThanOrEqual(toggle.y + toggle.height);
-        expect(middle(save)).toBeGreaterThanOrEqual(annual.x);
-        expect(middle(save)).toBeLessThanOrEqual(annual.x + annual.width);
-        expect(Math.abs(middle(toggle) - middle(column))).toBeLessThanOrEqual(
+        expect(centreX(save)).toBeGreaterThanOrEqual(annual.x);
+        expect(centreX(save)).toBeLessThanOrEqual(annual.x + annual.width);
+        expect(Math.abs(centreX(toggle) - centreX(column))).toBeLessThanOrEqual(
           1
         );
       } else {
-        const level = save.y + save.height / 2;
+        const level = centreY(save);
         expect(save.x).toBeGreaterThanOrEqual(toggle.x + toggle.width);
         expect(level).toBeGreaterThanOrEqual(toggle.y);
         expect(level).toBeLessThanOrEqual(toggle.y + toggle.height);
