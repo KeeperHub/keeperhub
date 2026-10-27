@@ -17,7 +17,7 @@ export const WELCOME_STEP_COUNT = WELCOME_STEPS.length;
 
 // Keeps the form clear of the fixed app banner, the notch and the home indicator.
 const FORM_PADDING =
-  "pt-[calc(2rem+var(--app-banner-height,0px))] pr-[max(2rem,env(safe-area-inset-right))] pb-[calc(2rem+env(safe-area-inset-bottom,0px))] pl-[max(2rem,env(safe-area-inset-left))] lg:p-12 lg:pt-[calc(3rem+var(--app-banner-height,0px))] lg:pb-[calc(3rem+env(safe-area-inset-bottom,0px))]";
+  "pt-[calc(2rem+var(--app-banner-height,0px))] pr-[max(2rem,env(safe-area-inset-right))] pb-[calc(2rem+env(safe-area-inset-bottom))] pl-[max(2rem,env(safe-area-inset-left))] lg:px-12 lg:pt-[calc(3rem+var(--app-banner-height,0px))] lg:pb-[calc(3rem+env(safe-area-inset-bottom))]";
 
 // Keeps focused controls clear of the banner and Finish's focus ring in view.
 const SCROLL_PADDING =
