@@ -232,7 +232,7 @@ There's no built-in version history or CI/CD integration yet. If you need that, 
 
 ### How do teams and organizations work?
 
-You can create organizations, invite team members via email, and share workflows within the org. Organizations have three roles (owner, admin, and member) that gate sensitive wallet and security actions, while workflow collaboration is shared across all members. See [Access Control](/users-teams-orgs/permissions) for the breakdown.
+You can create organizations, invite team members via email, and share workflows within the org. Organizations have four roles (owner, admin, member, and viewer). Members, admins, and owners collaborate on workflows, admins and owners handle sensitive wallet and security actions, and viewers get read-only access to everything. See [Access Control](/users-teams-orgs/permissions) for the breakdown.
 
 See [Organizations](/users-teams-orgs/organizations) for details.
 
