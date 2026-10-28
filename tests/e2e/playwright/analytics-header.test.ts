@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
+import { customButton, pickThisMonth, rangeNav } from "./utils/analytics";
 import { signIn } from "./utils/auth";
 import { ANALYTICS_TEST_EMAIL, ANALYTICS_TEST_PASSWORD } from "./utils/db";
 import {
@@ -22,8 +23,6 @@ const DESKTOP = { width: 1280, height: 800 };
 // Refresh sits right after the range buttons: a few pixels of gap, however
 // it is tuned, never pushed across the header.
 const BESIDE_MAX_GAP = 32;
-// This month's label, "Oct 1, 2026 - Oct 31, 2026": wider than any preset.
-const MONTH_RANGE_REGEX = /^\w{3} 1, \d{4} - \w{3} \d{2}, \d{4}$/;
 const PAGE_COUNT_REGEX = /^1–50 of [\d,]+$/;
 // One line of the count's 12px text; two lines would be at least 32px.
 const ONE_LINE_MAX_HEIGHT = 24;
@@ -34,21 +33,6 @@ test.beforeEach(async ({ page }) => {
 
 function refreshButton(page: Page): Locator {
   return page.getByRole("button", { name: "Refresh data" });
-}
-
-function customButton(page: Page): Locator {
-  return page.getByRole("button", { name: "Custom date range" });
-}
-
-function rangeNav(page: Page): Locator {
-  return page.getByRole("navigation", { name: "Time range" });
-}
-
-async function pickThisMonth(page: Page): Promise<void> {
-  await customButton(page).click();
-  await page.getByRole("button", { name: "This month" }).click();
-  await page.keyboard.press("Escape");
-  await expect(customButton(page)).toHaveText(MONTH_RANGE_REGEX);
 }
 
 function centreY(found: { y: number; height: number }): number {
