@@ -10,6 +10,7 @@ import type { KeyboardEvent, MouseEvent } from "react";
 import type { SavedWorkflow } from "@/lib/api-client";
 import type { VoteDirection } from "@/lib/workflow/editor/votes";
 import { PlanRequiredBadge } from "./plan-required-badge";
+import { WORKFLOW_LIST_GRID_COLUMNS } from "./workflow-list-grid";
 
 type WorkflowTemplateRowProps = {
   workflow: SavedWorkflow;
@@ -56,12 +57,29 @@ export function WorkflowTemplateRow({
   const upActive = userVote === "upvote";
   const downActive = userVote === "downvote";
   const uses = workflow.duplicateCount ?? 0;
+  const badges =
+    workflow.requiredPlan || isFeatured ? (
+      <>
+        {workflow.requiredPlan ? (
+          <PlanRequiredBadge
+            className="inline-flex h-[20px] shrink-0 items-center gap-1 rounded-full bg-[var(--color-bg-accent)] px-2 py-0.5 font-semibold"
+            plan={workflow.requiredPlan}
+          />
+        ) : null}
+        {isFeatured ? (
+          <span className="inline-flex h-[20px] shrink-0 items-center gap-1 rounded-full bg-[var(--color-bg-accent)] px-2 py-0.5 font-semibold text-[0.625rem] text-[var(--color-text-accent)]">
+            <Star className="size-2.5 fill-[var(--color-text-accent)] text-[var(--color-text-accent)]" />
+            Featured
+          </span>
+        ) : null}
+      </>
+    ) : null;
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: row uses an <article> with the row A11y role per UI-SPEC §2 to act as a click target with the ::before overlay; nested vote buttons forbid wrapping <a>.
     <article
       aria-label={`Open ${workflow.name} preview`}
-      className="group relative grid min-h-[3rem] cursor-pointer grid-cols-[48px_1fr_220px_96px_96px_136px] items-center gap-x-3 border-border/20 border-b bg-[var(--color-hub-card)] px-4 py-3 transition-colors duration-100 ease before:absolute before:inset-0 before:z-[1] before:cursor-pointer before:content-[''] last:border-b-0 even:bg-[var(--color-hub-overlay)] hover:bg-[var(--color-hub-icon-bg)] motion-reduce:transition-none"
+      className={`group relative grid min-h-[3rem] cursor-pointer ${WORKFLOW_LIST_GRID_COLUMNS} items-center border-border/20 border-b bg-[var(--color-hub-card)] px-4 py-3 transition-colors duration-100 ease before:absolute before:inset-0 before:z-[1] before:cursor-pointer before:content-[''] last:border-b-0 even:bg-[var(--color-hub-overlay)] hover:bg-[var(--color-hub-icon-bg)] motion-reduce:transition-none`}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
       // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: UI-SPEC §2 mandates an <article> with the row A11y role for rowgroup/row semantics; the row is interactive via the ::before overlay and onKeyDown handler.
@@ -75,13 +93,21 @@ export function WorkflowTemplateRow({
         <WorkflowIcon className="size-3.5" />
       </span>
 
-      <span className="pointer-events-none relative z-[2] truncate font-semibold text-foreground text-sm">
-        {workflow.name}
-      </span>
+      <div className="pointer-events-none relative z-[2] min-w-0">
+        <span className="block truncate font-semibold text-foreground text-sm">
+          {workflow.name}
+        </span>
+        {/* Narrow tables have no badge column, so the badges sit here. */}
+        {badges ? (
+          <div className="pointer-events-auto mt-1 flex flex-wrap items-center gap-1.5 @xl:hidden">
+            {badges}
+          </div>
+        ) : null}
+      </div>
 
       {/* MARKETPLACE_BADGE_SLOT: reserved for cross-tab discovery — Phase 44 HUBV2-08 forbids rendering anything here. Tab-strip is the only cross-tab discovery mechanism. */}
 
-      <div className="pointer-events-none relative z-[2] hidden flex-wrap gap-1 lg:flex">
+      <div className="pointer-events-none relative z-[2] hidden flex-wrap gap-1 @workflow-list-tags:flex">
         {workflow.publicTags?.slice(0, 3).map((tag) => (
           <span
             className="rounded-full bg-[var(--color-hub-icon-bg)] px-2 py-0.5 font-medium text-[0.625rem] text-muted-foreground"
@@ -154,23 +180,12 @@ export function WorkflowTemplateRow({
         </span>
       )}
 
-      {workflow.requiredPlan || isFeatured ? (
-        <div className="pointer-events-auto relative z-[2] flex flex-wrap items-center justify-end justify-self-end gap-1.5">
-          {workflow.requiredPlan ? (
-            <PlanRequiredBadge
-              className="inline-flex h-[20px] shrink-0 items-center gap-1 rounded-full bg-[var(--color-bg-accent)] px-2 py-0.5 font-semibold"
-              plan={workflow.requiredPlan}
-            />
-          ) : null}
-          {isFeatured ? (
-            <span className="inline-flex h-[20px] shrink-0 items-center gap-1 rounded-full bg-[var(--color-bg-accent)] px-2 py-0.5 font-semibold text-[0.625rem] text-[var(--color-text-accent)]">
-              <Star className="size-2.5 fill-[var(--color-text-accent)] text-[var(--color-text-accent)]" />
-              Featured
-            </span>
-          ) : null}
+      {badges ? (
+        <div className="pointer-events-auto relative z-[2] hidden flex-wrap items-center justify-end justify-self-end gap-1.5 @xl:flex">
+          {badges}
         </div>
       ) : (
-        <span />
+        <span aria-hidden="true" className="hidden @xl:inline" />
       )}
     </article>
   );
