@@ -10,10 +10,7 @@ import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { BACKLOG_ALERT_MS } from "./constants";
 import { isFailureAlertsRolloutActive } from "./rollout";
 
-/**
- * Run from another cron (the reaper) so a stopped failure-alerts job is still
- * noticed: work waiting past BACKLOG_ALERT_MS pages our on-call.
- */
+/** Runs from the reaper cron so a stopped alerts job still pages our on-call. */
 export async function checkFailureAlertsRunning(): Promise<{
   queueLagMs: number;
   outboxLagMs: number;

@@ -27,10 +27,7 @@ import {
 import type { RenderedMessage } from "./messages";
 import type { ChannelConfig } from "./policy";
 
-/**
- * One attempt to deliver one message, and what it means for the next step.
- * Never throws: the outbox records every outcome.
- */
+/** One delivery attempt's outcome; senders never throw. */
 export type DeliveryOutcome = {
   ok: boolean;
   status?: number;
@@ -39,10 +36,7 @@ export type DeliveryOutcome = {
   retryAfterMs?: number;
   /** Ours to fix (our email key), so our on-call hears about it. */
   platformFault?: boolean;
-  /**
-   * Not delivered, but the channel itself is fine (a PagerDuty service in a
-   * maintenance window): use the backups, do not pause the channel.
-   */
+  /** Not delivered but the channel is fine (maintenance window): back up, do not pause. */
   channelHealthy?: boolean;
   message: string;
 };
@@ -87,10 +81,7 @@ const SLACK_ERRORS: Record<string, string> = {
   token_revoked: "The Slack token was revoked. Reconnect Slack in Connections",
 };
 
-/**
- * Say what a provider's refusal means and what to do, keeping the code at the
- * end for whoever has to look it up.
- */
+/** Explain a provider refusal, keeping the code at the end for lookup. */
 export function explainFailure(
   kind: string,
   status: number | undefined,
@@ -127,6 +118,21 @@ export async function sendEmailMessage(
   };
 }
 
+const CHAT_KINDS: ReadonlySet<string> = new Set([
+  "slack",
+  "discord",
+  "telegram",
+]);
+
+/** A method kind this code does not know: refuse it rather than guess. */
+function unknownKind(kind: never | string): DeliveryOutcome {
+  return {
+    ok: false,
+    retryable: false,
+    message: `KeeperHub cannot send to a ${kind} method yet.`,
+  };
+}
+
 /** Credentials only resolve for a connection shared with the whole org. */
 async function orgCredentials(
   channel: ChannelConfig,
@@ -157,6 +163,9 @@ export async function sendChannelMessage(params: {
   details?: Record<string, unknown>;
   /** PagerDuty only: where the incident links back to. */
   link?: string;
+  /** PagerDuty only: alerts sharing a group can be merged into one incident. */
+  pagerDutyGroup?: string;
+  pagerDutySeverity?: "error" | "warning";
 }): Promise<DeliveryOutcome> {
   const { channel, organizationId, rendered } = params;
   try {
@@ -173,7 +182,12 @@ export async function sendChannelMessage(params: {
         summary: rendered.summary,
         details: params.details,
         link: params.link,
+        group: params.pagerDutyGroup,
+        severity: params.pagerDutySeverity,
       });
+    }
+    if (!CHAT_KINDS.has(channel.kind)) {
+      return unknownKind(channel.kind);
     }
     const outcome = await sendBackupNotification({
       integrationId: channel.integrationId,
@@ -204,11 +218,7 @@ export async function sendChannelMessage(params: {
   }
 }
 
-/**
- * Trigger and resolve go through the PagerDuty node's own event builder, so
- * the limits, cleaning and link-back are the same as a page from a workflow.
- * A change event (the no-page test) has no builder of its own to reuse.
- */
+/** Reuses the PagerDuty node's event builder so pages match a workflow's own. */
 async function sendPagerDuty(params: {
   credentials: PagerDutyCredentials;
   serviceId: string;
@@ -217,6 +227,8 @@ async function sendPagerDuty(params: {
   summary: string;
   details?: Record<string, unknown>;
   link?: string;
+  group?: string;
+  severity?: "error" | "warning";
 }): Promise<DeliveryOutcome> {
   const service = await resolveRoutingKey(params.credentials, params.serviceId);
   if (!service.ok) {
@@ -232,9 +244,7 @@ async function sendPagerDuty(params: {
       ),
     };
   }
-  // A service in maintenance or disabled takes the event and pages nobody.
-  // Treat that as not delivered, so the backups fire, but leave the channel
-  // alone: nothing is broken.
+  // Maintenance or disabled services page nobody: fire backups, keep the channel.
   if (
     params.action === "trigger" &&
     serviceSwallowsEvents(service.value.serviceStatus)
@@ -272,8 +282,9 @@ async function sendPagerDuty(params: {
       timestamp,
       input: {
         summary: params.summary,
-        severity: "error",
+        severity: params.severity ?? "error",
         source: "keeperhub",
+        group: params.group,
         customDetails: params.details,
         client: "KeeperHub",
         clientUrl: params.link,
@@ -302,15 +313,7 @@ async function sendPagerDuty(params: {
   };
 }
 
-/**
- * Check a channel still works without sending anything anyone would see.
- *
- * Discord: read the webhook. Telegram: read the chat. Slack: check the token.
- * PagerDuty: read the service and its Events API key. None of these post a
- * message, page anyone or leave a mark on a timeline. The plugins' own
- * connection tests are not reused: they check credentials only (Discord's
- * checks nothing), skip the SSRF guard and do not say whether to retry.
- */
+/** Check a channel without posting; plugin tests skip the SSRF guard and give no retry hint. */
 export async function checkChannelSilently(
   channel: ChannelConfig,
   organizationId: string
@@ -333,7 +336,7 @@ export async function checkChannelSilently(
         );
       case "slack":
         return await checkSlack(credentials.SLACK_API_KEY ?? "");
-      default: {
+      case "pagerduty": {
         const service = await resolveRoutingKey(
           credentials as PagerDutyCredentials,
           channel.destination
@@ -351,6 +354,8 @@ export async function checkChannelSilently(
               ),
             };
       }
+      default:
+        return unknownKind(channel.kind);
     }
   } catch (error) {
     return {

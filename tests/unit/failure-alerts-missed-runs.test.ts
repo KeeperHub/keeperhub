@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  graceFor,
   lastDueAt,
   missedDueAt,
 } from "@/lib/notifications/failure-alerts/missed-runs";
@@ -78,5 +79,21 @@ describe("missedDueAt", () => {
         now,
       })
     ).toBeNull();
+  });
+});
+
+describe("graceFor", () => {
+  it("is twice the interval, between 2 and 10 minutes", () => {
+    const at = new Date("2026-10-28T12:00:30Z");
+    expect(graceFor({ ...every5, cronExpression: "* * * * *" }, at)).toBe(
+      2 * 60_000
+    );
+    expect(graceFor({ ...every5, cronExpression: "*/3 * * * *" }, at)).toBe(
+      6 * 60_000
+    );
+    expect(graceFor(every5, at)).toBe(10 * 60_000);
+    expect(graceFor({ ...every5, cronExpression: "0 * * * *" }, at)).toBe(
+      10 * 60_000
+    );
   });
 });

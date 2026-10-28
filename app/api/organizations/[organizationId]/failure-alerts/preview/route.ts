@@ -13,7 +13,7 @@ import type { MessagePreview } from "@/lib/notifications/failure-alerts/view-typ
 
 const SAMPLES = new Set<SampleKind>(["alert", "missed", "paused", "recovery"]);
 
-/** What each channel would receive, rendered by the real message code. Any member may read it. */
+/** Each channel's message, rendered by the real message code. Any member. */
 export async function GET(
   request: Request,
   context: { params: Promise<{ organizationId: string }> }

@@ -43,7 +43,7 @@ function scryptAsync(
   });
 }
 
-async function hashPassword(password: string): Promise<string> {
+export async function hashPassword(password: string): Promise<string> {
   const saltBytes = randomBytes(16);
   const salt = bytesToHex(saltBytes);
   const key = await scryptAsync(

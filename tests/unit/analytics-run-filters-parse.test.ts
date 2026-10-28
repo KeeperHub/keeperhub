@@ -82,6 +82,18 @@ describe("buildRunsQuery", () => {
     expect(parsed.search).toBe("nightly");
   });
 
+  it("names all three sources when the reader picked none", () => {
+    // The API leaves notifications out unless asked; the page lists them.
+    expect(parse(buildRunsQuery({ range: "24h" })).sources).toEqual([
+      "workflow",
+      "direct",
+      "notification",
+    ]);
+    expect(
+      parse(buildRunsQuery({ range: "24h", sources: [] })).sources
+    ).toEqual(["workflow", "direct", "notification"]);
+  });
+
   it("carries the notification source through to the parser", () => {
     const query = buildRunsQuery({
       range: "24h",
@@ -122,7 +134,10 @@ describe("buildRunsQuery", () => {
   });
 
   it("leaves page 1 off the query so the first page has a clean URL", () => {
-    expect(buildRunsQuery({ range: "24h", page: 1 })).toBe("range=24h");
+    const first = new URLSearchParams(
+      buildRunsQuery({ range: "24h", page: 1 })
+    );
+    expect(first.has("page")).toBe(false);
     expect(buildRunsQuery({ range: "24h", page: 3 })).toContain("page=3");
   });
 });

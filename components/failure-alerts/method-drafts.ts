@@ -34,8 +34,24 @@ export type MethodStatus =
   | "working"
   | "untested"
   | "failed"
+  | "delivery"
   | "paused"
+  | "missing"
+  | "unsaved"
+  | "refused"
   | "unreachable";
+
+/** States a method row opens itself for, so the problem is in view. */
+export const BROKEN_STATUSES: readonly MethodStatus[] = [
+  "failed",
+  "delivery",
+  "paused",
+  "missing",
+  "refused",
+  "unreachable",
+];
+
+const TELEGRAM_CHAT_ID = /^-?\d+$|^@[A-Za-z]\w{4,}$/;
 
 export const CHANNEL_KINDS: FailureAlertChannelKind[] = [
   "telegram",
@@ -119,20 +135,66 @@ export function isChannelDirty(
   return !sameTarget(draft, saved) || draft.role !== saved.role;
 }
 
-/** Health of the saved target; a new or retargeted one has only this session's test. */
+/** A target the server would refuse anyway, caught before asking it. */
+export function destinationProblem(draft: DraftChannel): string | null {
+  const value = draft.destination.trim();
+  if (draft.kind === "telegram" && value && !TELEGRAM_CHAT_ID.test(value)) {
+    return "That is not a chat ID. Use a number such as -1001234567890, or @name for a public channel.";
+  }
+  return null;
+}
+
+/** The last delivery failed and nothing has been delivered since. */
+function lastDeliveryFailed(view: ChannelView): boolean {
+  return Boolean(
+    view.lastFailedAt &&
+      (!view.lastDeliveredAt || view.lastFailedAt > view.lastDeliveredAt)
+  );
+}
+
+/** Could reach people right now, as far as KeeperHub knows. */
+export function channelWorks(view: ChannelView): boolean {
+  return !(view.pausedAt || view.connectionMissing || lastDeliveryFailed(view));
+}
+
+/**
+ * Health of the saved target; a new or retargeted one has only this session's
+ * test. `connectionKnown` is false when the picked connection is not listed.
+ */
 export function channelStatus(
   draft: DraftChannel,
-  saved: ChannelView | undefined
+  saved: ChannelView | undefined,
+  connectionKnown: boolean
 ): MethodStatus {
-  const view = saved && sameTarget(draft, saved) ? saved : undefined;
-  if (view?.pausedAt && draft.testedOk !== true) {
+  const missing = Boolean(draft.integrationId) && !connectionKnown;
+  if (!(saved && sameTarget(draft, saved))) {
+    if (missing) {
+      return "missing";
+    }
+    return draft.testedOk === false ? "failed" : "unsaved";
+  }
+  if (missing || saved.connectionMissing) {
+    return "missing";
+  }
+  if (draft.testedOk === true) {
+    return "working";
+  }
+  if (saved.pausedAt) {
     return "paused";
   }
-  const lastTestOk = draft.testedOk ?? view?.lastTestOk ?? null;
-  if (lastTestOk === false) {
+  if (draft.testedOk === false) {
     return "failed";
   }
-  if (lastTestOk === true || view?.lastDeliveredAt) {
+  if (lastDeliveryFailed(saved)) {
+    return "delivery";
+  }
+  const testedLater =
+    saved.lastTestedAt &&
+    (!saved.lastDeliveredAt || saved.lastTestedAt > saved.lastDeliveredAt);
+  if (saved.lastTestOk === false && testedLater) {
+    return "failed";
+  }
+  if (saved.lastDeliveredAt || saved.lastTestOk || saved.lastHealthCheckAt) {
     return "working";
   }
   return "untested";

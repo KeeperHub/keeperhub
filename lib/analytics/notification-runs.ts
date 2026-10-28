@@ -13,20 +13,10 @@ import type {
   UnifiedRun,
 } from "./types";
 
-/**
- * Failure notifications listed beside runs in the analytics runs table: one row
- * per message sent (a delivery), so a reader can see what the org was told and
- * whether it arrived next to the runs that caused it. Pure, so it can be tested
- * without a database; the SQL is in notification-runs-query.ts.
- */
+// Failure notifications as rows in the analytics runs table, one per delivery.
+// Pure for testing; the SQL lives in notification-runs-query.ts.
 
-/**
- * A delivery state as a run status, for the status filter and its counts (the
- * table labels notification rows by their own state). Capped is a message the
- * plan refused, which is what the list's "skipped" means. A skipped delivery is
- * one withdrawn before it went out (its incident resolved, or what it was about
- * is gone), which is a cancellation.
- */
+/** Delivery state as run status: capped (plan refused) is "skipped", skipped (withdrawn) is "cancelled". */
 const STATUS_BY_STATE: Record<FailureAlertDeliveryState, NormalizedStatus> = {
   delivered: "success",
   failed: "error",
@@ -56,10 +46,7 @@ export function notificationStatesFor(
     .map(([state]) => state);
 }
 
-/**
- * Notifications have no network, no gas and no run duration, so any of those
- * filters leaves none of them in the list rather than matching all of them.
- */
+/** Network, gas and duration filters exclude notifications rather than match all. */
 export function notificationsExcludedBy(filters: RunQueryFilters): boolean {
   return (
     (filters.networks?.length ?? 0) > 0 ||
@@ -77,10 +64,7 @@ export function groupedIncidentIds(
   return Array.isArray(ids) ? ids.map(String) : [];
 }
 
-/**
- * "Alert: Nightly sync", "Alert: 3 workflows", "Channel stopped working: Slack
- * #ops", "Notifications turned on".
- */
+/** e.g. "Alert: Nightly sync", "Alert: 3 workflows", "Notifications turned on". */
 export function notificationTitle(
   kind: string,
   workflows: { name: string }[],
@@ -128,11 +112,7 @@ function finishedAt(row: NotificationRow): Date | null {
   return FINISHED_UNDELIVERED.has(row.state) ? row.updatedAt : null;
 }
 
-/**
- * One delivery as a run row. `groupedNames` maps the incident ids grouped
- * messages carry to their workflow; an id with no entry (its incident is gone)
- * is dropped, as the notification history does.
- */
+/** One delivery as a run row; grouped ids whose incident is gone are dropped. */
 export function toNotificationRun(
   row: NotificationRow,
   groupedNames: ReadonlyMap<string, { id: string; name: string }>
@@ -165,8 +145,7 @@ export function toNotificationRun(
     status: notificationStatus(row.state),
     startedAt: row.createdAt.toISOString(),
     completedAt: completed?.toISOString() ?? null,
-    // Not a run: the time a message took to arrive is no duration a reader
-    // filters runs by, and the duration filter leaves notifications out.
+    // Delivery time is not a run duration.
     durationMs: null,
     workflowId: only?.id ?? null,
     workflowName: only?.name ?? null,

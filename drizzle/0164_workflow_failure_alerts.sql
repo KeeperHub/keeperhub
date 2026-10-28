@@ -61,6 +61,7 @@ CREATE TABLE "alert_settings" (
 	"paused_until" timestamp,
 	"pause_reason" text,
 	"paused_by" text,
+	"version" integer DEFAULT 0 NOT NULL,
 	"updated_by" text,
 	"created_at" timestamp DEFAULT now() NOT NULL,
 	"updated_at" timestamp DEFAULT now() NOT NULL
@@ -78,6 +79,7 @@ CREATE TABLE "alert_overrides" (
 	"mute_reason" text,
 	"muted_by" text,
 	"pause_workflow" boolean DEFAULT false NOT NULL,
+	"version" integer DEFAULT 0 NOT NULL,
 	"updated_by" text,
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
@@ -130,15 +132,9 @@ CREATE INDEX "idx_alert_queue_due" ON "alert_queue" USING btree ("due_at");--> s
 CREATE UNIQUE INDEX "uq_alert_incidents_open" ON "alert_incidents" USING btree ("workflow_id") WHERE "alert_incidents"."resolved_at" IS NULL;--> statement-breakpoint
 CREATE INDEX "idx_alert_incidents_org" ON "alert_incidents" USING btree ("organization_id");--> statement-breakpoint
 CREATE INDEX "idx_alert_incidents_workflow" ON "alert_incidents" USING btree ("workflow_id");--> statement-breakpoint
--- Mark a workflow for the failure-alert evaluator whenever one of its runs
--- reaches a final success or error. Every code path that ends a run writes
--- this table, so one trigger covers all of them. The evaluator decides
--- whether the run counts (manual runs do not); this only queues.
---
--- It must never stop a run from finishing, so any error is swallowed with a
--- warning in the Postgres log. A run missed that way is counted when the
--- workflow's next run ends, since the evaluator reads the whole streak from
--- run history rather than counting queue entries.
+-- Queues the workflow for the failure-alert evaluator when a run ends in success
+-- or error (covers every code path). Must never block a run: errors are swallowed
+-- with a warning, and the next run's evaluation reads the full streak anyway.
 CREATE OR REPLACE FUNCTION public.queue_alert_check()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -168,10 +164,9 @@ CREATE TRIGGER queue_alert_check
   WHEN (NEW.status IN ('success', 'error'))
   EXECUTE FUNCTION public.queue_alert_check();
 --> statement-breakpoint
--- Record when a workflow its failure incident paused is turned back on, by
--- any path (editor, API, MCP, admin): the incident then stops holding it, so
--- turning it off again later is the owner's own pause. Errors are swallowed
--- like the run trigger's, so an Enable switch can never fail because of this.
+-- Sets workflow_resumed_at on open incidents when a workflow is re-enabled by any
+-- path, so the incident stops holding it. Never blocks the Enable switch: errors
+-- are swallowed with a warning.
 CREATE OR REPLACE FUNCTION public.mark_alert_incident_resumed()
 RETURNS trigger
 LANGUAGE plpgsql

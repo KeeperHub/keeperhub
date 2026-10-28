@@ -1,35 +1,48 @@
 "use client";
 
 import { ChevronRight, Pause as PauseIcon, Plus } from "lucide-react";
-import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { timeAgo } from "@/components/settings/hub/relative-time";
-import { SectionHeader, SettingsCard } from "@/components/settings/hub/section";
+import {
+  EmptyState,
+  SectionHeader,
+  SettingsCard,
+} from "@/components/settings/hub/section";
 import { FormSkeleton } from "@/components/settings/hub/skeletons";
 import { Button } from "@/components/ui/button";
 import { Notice } from "@/components/ui/notice";
-import {
-  type ChannelView,
-  channelLabel,
-  type OrgSettingsView,
+import type {
+  ChannelView,
+  OrgSettingsView,
 } from "@/lib/notifications/failure-alerts/view-types";
+import { AlertsStatus } from "./alerts-status";
 import { fetchView } from "./api";
-import { failedRuns } from "./format";
+import { CustomWorkflowsList } from "./custom-workflows";
+import { describeRule } from "./format";
+import { memberLabel } from "./member-label";
 import { MessagePreviewDialog } from "./message-preview-dialog";
-import { ChannelMethodCard, EmailMethodCard } from "./method-card";
+import {
+  ChannelMethodCard,
+  EmailMethodCard,
+  focusMethodAt,
+} from "./method-card";
 import {
   type ChannelPayload,
   channelPayload,
+  channelWorks,
   type DraftChannel,
   draftFromView,
+  isChannelDirty,
   newMethodDraft,
   sameTarget,
 } from "./method-drafts";
 import { NotificationHistory } from "./notification-history";
-import { AlertsPausedNotice, PauseAlertsForm } from "./pause-alerts";
+import { PauseAlertsForm } from "./pause-alerts";
+import type { SaveRefusal } from "./save-state";
+import { UnsavedChangesGuard } from "./unsaved-guard";
 import {
   type RulesDraft,
+  rulesDirty,
   rulesDraftFrom,
   WhenToNotify,
 } from "./when-to-notify";
@@ -42,29 +55,29 @@ type Loaded = OrgSettingsView & {
 const ALERTS_DESCRIPTION =
   "Tells your team when a workflow that runs on its own keeps failing, or a scheduled run does not start.";
 
-/** What happens today, from the saved settings, in one sentence. */
-function describeRule(data: Loaded): string {
-  const people = data.members.filter(
-    (m) => m.reachable && data.recipientUserIds.includes(m.userId)
-  ).length;
-  const methods = data.channels
-    .filter((c) => !c.pausedAt && c.role === "always")
-    .map((c) => channelLabel(c.kind, c.destination, c.connectionName));
-  const targets = [
-    people > 0
-      ? `${people} ${people === 1 ? "person" : "people"} by email`
-      : null,
-    ...methods,
-  ].filter(Boolean);
-  const who = targets.length > 0 ? targets.join(" and ") : "nobody yet";
-  return `After ${data.threshold} failed run${data.threshold === 1 ? "" : "s"} in a row of a workflow that runs on its own, KeeperHub tells ${who}.`;
-}
-
-type PutResult = { ok: true; body: Loaded } | { ok: false; error: string };
+type PutResult =
+  | { ok: true; body: Loaded }
+  | { ok: false; refusal: SaveRefusal };
 
 /** The tap targets below sm stay at least 44px tall. */
 const SUMMARY_CLASS =
   "flex min-h-11 cursor-pointer list-none items-center gap-1 text-muted-foreground text-xs hover:text-foreground sm:min-h-0";
+
+/** The saved rule as a sentence, naming the viewer as "you". */
+function ruleSentence(data: Loaded): string {
+  const emails = data.members
+    .filter((m) => m.reachable && data.recipientUserIds.includes(m.userId))
+    .map(memberLabel);
+  const viewer = data.members.find((m) => m.userId === data.viewerUserId);
+  return describeRule({
+    threshold: data.threshold,
+    timeLimitMinutes: data.timeLimitMinutes,
+    emails,
+    viewerEmail: viewer ? memberLabel(viewer) : null,
+    channels: data.channels,
+    scope: "org",
+  });
+}
 
 function savedChannelsPayload(channels: ChannelView[]): ChannelPayload[] {
   return channels.map((c) => channelPayload(draftFromView(c)));
@@ -73,6 +86,7 @@ function savedChannelsPayload(channels: ChannelView[]): ChannelPayload[] {
 /** The settings exactly as last saved: the base every card's Save starts from. */
 function basePayload(saved: Loaded): Record<string, unknown> {
   return {
+    version: saved.version,
     threshold: saved.threshold,
     timeLimitMinutes: saved.timeLimitMinutes,
     remindDaily: saved.remindDaily,
@@ -91,32 +105,16 @@ function reconcile(cards: DraftChannel[], saved: Loaded): DraftChannel[] {
   ];
 }
 
-/** The only working channel when nobody can be emailed, so a backup can be suggested. */
-function soleWorkingMethod(data: Loaded): string | null {
-  const emailable = data.members.some(
-    (m) => m.reachable && data.recipientUserIds.includes(m.userId)
-  );
-  const working = data.channels.filter((c) => !c.pausedAt);
-  if (emailable || working.length !== 1) {
-    return null;
-  }
-  const [only] = working;
-  return channelLabel(only.kind, only.destination, only.connectionName);
-}
-
-/** The pause in force, if it has not run out yet. */
-function activePause(data: Loaded): OrgSettingsView["pause"] {
-  const pause = data.pause;
-  return pause && new Date(pause.until).getTime() > Date.now() ? pause : null;
-}
-
 function LoadingCards(): React.ReactElement {
   return (
     <>
-      <SettingsCard title="When to notify">
+      <SettingsCard title="Status">
+        <FormSkeleton rows={2} />
+      </SettingsCard>
+      <SettingsCard title="Rules">
         <FormSkeleton rows={4} />
       </SettingsCard>
-      <SettingsCard title="How to notify">
+      <SettingsCard title="Methods">
         <FormSkeleton rows={4} />
       </SettingsCard>
     </>
@@ -124,9 +122,9 @@ function LoadingCards(): React.ReactElement {
 }
 
 /**
- * The Alerts settings page: pause, failing now, the rules every method
- * follows, one card per method, and the history. Each part saves on its own,
- * on top of what was last saved, so an unsaved edit elsewhere is never sent.
+ * The Alerts settings page: status, the rules every method follows, one card
+ * per method, workflows with their own settings, and what was sent. Each part
+ * saves on its own, on top of what was last saved.
  */
 export function OrgFailureAlertsSection({
   organizationId,
@@ -142,6 +140,8 @@ export function OrgFailureAlertsSection({
   const savedRef = useRef<Loaded | null>(null);
   const cardsRef = useRef<DraftChannel[]>([]);
   cardsRef.current = cards;
+  const methodsRef = useRef<HTMLUListElement>(null);
+  const addRef = useRef<HTMLButtonElement>(null);
   // Saves run one after another, each on top of the one before.
   const queueRef = useRef<Promise<unknown>>(Promise.resolve());
   const url = `/api/organizations/${encodeURIComponent(organizationId ?? "")}/failure-alerts`;
@@ -152,6 +152,7 @@ export function OrgFailureAlertsSection({
     setCards((current) => reconcile(current, body));
   }, []);
 
+  /** Load, or reload after someone else saved: every draft starts over. */
   const load = useCallback(
     async (isActive: () => boolean = () => true): Promise<void> => {
       setLoadFailed(false);
@@ -160,7 +161,12 @@ export function OrgFailureAlertsSection({
         if (!isActive()) {
           return;
         }
-        accept(body);
+        savedRef.current = body;
+        setData(body);
+        setCards((current) => [
+          ...body.channels.map(draftFromView),
+          ...current.filter((c) => !c.id),
+        ]);
         setRules(rulesDraftFrom(body));
         setRecipients([...body.recipientUserIds]);
       } catch {
@@ -169,7 +175,7 @@ export function OrgFailureAlertsSection({
         }
       }
     },
-    [accept, url]
+    [url]
   );
 
   useEffect(() => {
@@ -182,6 +188,10 @@ export function OrgFailureAlertsSection({
       active = false;
     };
   }, [load, organizationId]);
+
+  const reload = useCallback((): void => {
+    load().catch(() => undefined);
+  }, [load]);
 
   /** Health or connections changed on the server: refresh, keep every draft. */
   const refresh = useCallback(async (): Promise<void> => {
@@ -201,7 +211,10 @@ export function OrgFailureAlertsSection({
       const run = async (): Promise<PutResult> => {
         const saved = savedRef.current;
         if (!saved) {
-          return { ok: false, error: "The settings are still loading." };
+          return {
+            ok: false,
+            refusal: { message: "The settings are still loading." },
+          };
         }
         try {
           const res = await fetch(`${url}${path}`, {
@@ -215,15 +228,20 @@ export function OrgFailureAlertsSection({
           if (!res.ok) {
             return {
               ok: false,
-              error: body.error ?? `Could not save (HTTP ${res.status}).`,
+              refusal: {
+                message: body.error ?? `Could not save (HTTP ${res.status}).`,
+                stale: res.status === 409,
+              },
             };
           }
           return { ok: true, body };
         } catch {
           return {
             ok: false,
-            error:
-              "Could not reach KeeperHub. Check your connection and try again.",
+            refusal: {
+              message:
+                "Could not reach KeeperHub. Check your connection and try again.",
+            },
           };
         }
       };
@@ -250,14 +268,14 @@ export function OrgFailureAlertsSection({
           {header}
           <Notice role="alert" tone="danger">
             <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              Could not load the failure notification settings.
+              Could not load alert settings.
               <Button
                 className="h-auto px-0 text-xs"
-                onClick={() => load()}
+                onClick={reload}
                 type="button"
                 variant="link"
               >
-                Retry
+                Try again
               </Button>
             </span>
           </Notice>
@@ -272,10 +290,46 @@ export function OrgFailureAlertsSection({
     );
   }
 
+  if (!data.enabled) {
+    return (
+      <div data-testid="failure-alerts-unavailable">
+        <SectionHeader description={ALERTS_DESCRIPTION} title="Alerts" />
+        <SettingsCard className="mt-4 md:mt-6">
+          <EmptyState>
+            Alerts are not available for this organization yet.
+          </EmptyState>
+        </SettingsCard>
+      </div>
+    );
+  }
+
   const orgId = organizationId ?? "";
   const canManage = data.canManage;
-  const pause = activePause(data);
-  const singleMethod = soleWorkingMethod(data);
+  const pause =
+    data.pause && new Date(data.pause.until).getTime() > Date.now()
+      ? data.pause
+      : null;
+  const emailReaches = data.members.some(
+    (m) => m.reachable && data.recipientUserIds.includes(m.userId)
+  );
+  const recipientsDirty =
+    recipients.length !== data.recipientUserIds.length ||
+    recipients.some((id) => !data.recipientUserIds.includes(id));
+  const anyDirty =
+    rulesDirty(rules, data) ||
+    recipientsDirty ||
+    cards.some((c) =>
+      isChannelDirty(
+        c,
+        data.channels.find((v) => v.id === c.id)
+      )
+    );
+
+  /** Nobody else can be told if this saved method is broken. */
+  const lastResort = (id: string | undefined): boolean =>
+    !(
+      emailReaches || data.channels.some((c) => c.id !== id && channelWorks(c))
+    );
 
   const pauseAlerts = async (body: {
     until: string;
@@ -283,7 +337,7 @@ export function OrgFailureAlertsSection({
   }): Promise<string | null> => {
     const result = await send("PUT", "/pause", () => body);
     if (!result.ok) {
-      return result.error;
+      return result.refusal.message;
     }
     accept(result.body);
     setPausing(false);
@@ -293,13 +347,13 @@ export function OrgFailureAlertsSection({
   const resumeAlerts = async (): Promise<string | null> => {
     const result = await send("DELETE", "/pause", null);
     if (!result.ok) {
-      return result.error;
+      return result.refusal.message;
     }
     accept(result.body);
     return null;
   };
 
-  const saveRules = async (): Promise<string | null> => {
+  const saveRules = async (): Promise<SaveRefusal | null> => {
     const draft = rules;
     const result = await put((saved) => ({
       ...basePayload(saved),
@@ -309,31 +363,31 @@ export function OrgFailureAlertsSection({
       notifyRecovery: draft.notifyRecovery,
     }));
     if (!result.ok) {
-      return result.error;
+      return result.refusal;
     }
     accept(result.body);
     setRules(rulesDraftFrom(result.body));
     return null;
   };
 
-  const saveRecipients = async (): Promise<string | null> => {
+  const saveRecipients = async (): Promise<SaveRefusal | null> => {
     const chosen = recipients;
     const result = await put((saved) => ({
       ...basePayload(saved),
       recipientUserIds: chosen,
     }));
     if (!result.ok) {
-      return result.error;
+      return result.refusal;
     }
     accept(result.body);
     setRecipients([...result.body.recipientUserIds]);
     return null;
   };
 
-  const saveCard = async (key: string): Promise<string | null> => {
+  const saveCard = async (key: string): Promise<SaveRefusal | null> => {
     const card = cardsRef.current.find((c) => c.key === key);
     if (!card) {
-      return "This method is no longer on the page.";
+      return { message: "This method is no longer on the page." };
     }
     const result = await put((saved) => {
       const channels = savedChannelsPayload(saved.channels);
@@ -350,7 +404,7 @@ export function OrgFailureAlertsSection({
       return { ...basePayload(saved), channels };
     });
     if (!result.ok) {
-      return result.error;
+      return result.refusal;
     }
     // A new card takes the id of the row the server made for it.
     const taken = new Set(
@@ -400,12 +454,13 @@ export function OrgFailureAlertsSection({
     if (result.ok) {
       accept(result.body);
     } else {
-      toast.error(result.error);
+      toast.error(result.refusal.message);
     }
   };
 
   const removeCard = async (key: string, label: string): Promise<void> => {
-    const card = cardsRef.current.find((c) => c.key === key);
+    const position = cardsRef.current.findIndex((c) => c.key === key);
+    const card = cardsRef.current[position];
     if (!card) {
       return;
     }
@@ -414,6 +469,7 @@ export function OrgFailureAlertsSection({
       : undefined;
     if (!view) {
       setCards((current) => current.filter((c) => c.key !== key));
+      focusMethodAt(methodsRef, Number.POSITIVE_INFINITY, addRef);
       return;
     }
     const index = savedRef.current?.channels.indexOf(view) ?? 0;
@@ -424,13 +480,20 @@ export function OrgFailureAlertsSection({
       ),
     }));
     if (!result.ok) {
-      toast.error(result.error);
+      toast.error(result.refusal.message);
       return;
     }
     accept(result.body);
+    // Email is the first row, so the next method sits at position + 1.
+    focusMethodAt(methodsRef, position + 1, addRef);
     toast(`${label} removed`, {
       action: { label: "Undo", onClick: () => restore(view, index) },
     });
+  };
+
+  const addMethod = (): void => {
+    setCards((current) => [...current, newMethodDraft(data.connections)]);
+    focusMethodAt(methodsRef, cards.length + 1, null);
   };
 
   return (
@@ -438,6 +501,7 @@ export function OrgFailureAlertsSection({
       className="flex flex-col gap-4 md:gap-6"
       data-testid="failure-alerts-settings"
     >
+      <UnsavedChangesGuard dirty={anyDirty} />
       <SectionHeader
         action={
           canManage && !pause && !pausing ? (
@@ -452,125 +516,59 @@ export function OrgFailureAlertsSection({
             </Button>
           ) : undefined
         }
-        description={`${ALERTS_DESCRIPTION} ${describeRule(data)}`}
+        description={
+          <>
+            <span data-testid="failure-alerts-rule-sentence">
+              {ruleSentence(data)}
+            </span>
+            {!canManage && (
+              <span className="mt-1 block">
+                Only owners and admins can change alert settings.
+              </span>
+            )}
+          </>
+        }
         title="Alerts"
       />
-      {pause && (
-        <AlertsPausedNotice
-          canManage={canManage}
-          onResume={resumeAlerts}
-          pause={pause}
-        />
-      )}
       {pausing && !pause && (
         <PauseAlertsForm
           onCancel={() => setPausing(false)}
           onPause={pauseAlerts}
         />
       )}
-      {data.unreachable && (
-        <Notice className="p-3" role="alert" tone="danger">
-          Nobody would be told about a failing workflow: nobody chosen for email
-          has an address KeeperHub can reach and no other method works. Add an
-          email in{" "}
-          <Link className="underline" href="/settings/security">
-            Account security
-          </Link>
-          , or add a Telegram, Discord, Slack or PagerDuty method.
-        </Notice>
-      )}
-      {singleMethod && (
-        <Notice className="p-3" tone="warning">
-          Only {singleMethod} can reach anyone: nobody chosen for email has an
-          address KeeperHub can reach. Add a backup method, or an email in{" "}
-          <Link className="underline" href="/settings/security">
-            Account security
-          </Link>
-          , so you still hear about failing workflows if {singleMethod} stops
-          working.
-        </Notice>
-      )}
-      {data.failingNow.length > 0 && (
-        <SettingsCard
-          description="Workflows with an alert open right now."
-          title="Failing now"
-        >
-          <ul className="divide-y rounded-md border">
-            {data.failingNow.map((w) => (
-              <li
-                className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 px-3 py-2 text-sm"
-                key={w.workflowId}
-              >
-                <Link
-                  className="min-w-0 break-words font-medium underline underline-offset-4"
-                  href={`/workflows/${w.workflowId}?tab=runs`}
-                >
-                  {w.name}
-                </Link>
-                <span className="text-destructive text-xs">
-                  {w.openedBy === "missed"
-                    ? `Not running: due ${timeAgo(w.dueAt)}`
-                    : `${failedRuns(w.failureCount)} in a row`}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </SettingsCard>
-      )}
 
-      <SettingsCard
-        description="These rules apply to every method below."
-        title="When to notify"
-      >
-        <div className="space-y-4">
-          <p className="text-muted-foreground text-xs">
-            {data.enabled
-              ? "On for every workflow that runs on its own. Runs started by hand never count."
-              : "Being switched on for organizations in stages; not on here yet. What you set now applies when it is."}
-            {canManage
-              ? ""
-              : " Only owners and admins can change these settings."}
-          </p>
-          <WhenToNotify
-            canManage={canManage}
-            draft={rules}
-            onChange={setRules}
-            onSave={saveRules}
-            saved={data}
-          />
-          {data.customWorkflows.length > 0 && (
-            <p className="text-muted-foreground text-xs">
-              {data.customWorkflows.length === 1
-                ? "1 workflow has its own settings: "
-                : `${data.customWorkflows.length} workflows have their own settings: `}
-              {data.customWorkflows.map((w, i) => (
-                <span key={w.id}>
-                  {i > 0 ? ", " : null}
-                  <Link
-                    className="underline underline-offset-4"
-                    href={`/workflows/${w.id}`}
-                  >
-                    {w.name}
-                  </Link>
-                </span>
-              ))}
-            </p>
-          )}
-        </div>
+      <SettingsCard title="Status">
+        <AlertsStatus
+          canManage={canManage}
+          data={data}
+          onResume={resumeAlerts}
+        />
+      </SettingsCard>
+
+      <SettingsCard description="Apply to every method." title="Rules">
+        <WhenToNotify
+          canManage={canManage}
+          draft={rules}
+          onChange={setRules}
+          onReload={reload}
+          onSave={saveRules}
+          saved={data}
+        />
       </SettingsCard>
 
       <SettingsCard
         action={<MessagePreviewDialog organizationId={orgId} />}
-        description="Each method saves on its own. Saving checks that it can receive notifications, and every saved method is checked again each day."
-        title="How to notify"
+        description="Who gets alerts, and how. Each method is checked before it is saved and again every day."
+        title="Methods"
       >
         <div className="space-y-4" data-testid="failure-alerts-methods">
-          <ul className="space-y-3">
+          <ul aria-label="Alert methods" className="space-y-3" ref={methodsRef}>
             <EmailMethodCard
               canManage={canManage}
               emailUsage={data.emailUsage}
               members={data.members}
               onChange={setRecipients}
+              onReload={reload}
               onSave={saveRecipients}
               organizationId={orgId}
               recipients={recipients}
@@ -582,12 +580,14 @@ export function OrgFailureAlertsSection({
                 connections={data.connections}
                 draft={card}
                 key={card.key}
+                lastResort={lastResort(card.id)}
                 onChange={(next) =>
                   setCards((current) =>
                     current.map((c) => (c.key === next.key ? next : c))
                   )
                 }
                 onConnectionsChanged={refresh}
+                onReload={reload}
                 onRemove={(label) => removeCard(card.key, label)}
                 onSave={() => saveCard(card.key)}
                 onTested={refresh}
@@ -599,12 +599,8 @@ export function OrgFailureAlertsSection({
           </ul>
           {canManage && (
             <Button
-              onClick={() =>
-                setCards((current) => [
-                  ...current,
-                  newMethodDraft(data.connections),
-                ])
-              }
+              onClick={addMethod}
+              ref={addRef}
               size="sm"
               type="button"
               variant="outline"
@@ -629,9 +625,9 @@ export function OrgFailureAlertsSection({
                 what failed. Retries continue for 24 hours.
               </li>
               <li>
-                A method that stops working is paused and you are told once.
-                Every method is also checked quietly every day, without sending
-                anything.
+                A method that stops working is paused and everyone is told once.
+                It is checked again every day and turns back on by itself when
+                it works.
               </li>
               <li>
                 Only connections shared with the whole organization can be used.
@@ -641,9 +637,18 @@ export function OrgFailureAlertsSection({
         </div>
       </SettingsCard>
 
+      {data.customWorkflows.length > 0 && (
+        <SettingsCard
+          description="Set in each workflow's Properties. They do not follow the rules above."
+          title="Workflows with their own settings"
+        >
+          <CustomWorkflowsList workflows={data.customWorkflows} />
+        </SettingsCard>
+      )}
+
       <SettingsCard
-        description="What was sent, where, and whether it arrived."
-        title="Recent notifications"
+        description="Every alert, test and warning, where it went, and whether it arrived."
+        title="Sent alerts"
       >
         <NotificationHistory organizationId={orgId} />
       </SettingsCard>

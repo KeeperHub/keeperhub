@@ -4,7 +4,7 @@ import { MISSED_RUN_GRACE_MS } from "./constants";
 /** A run may start this much before its due time (dispatcher clock, phantom row). */
 const DISPATCH_TOLERANCE_MS = 60 * 1000;
 
-export type ScheduleTiming = {
+type ScheduleTiming = {
   cronExpression: string;
   timezone: string;
   intervalSeconds: number | null;
@@ -31,6 +31,30 @@ export function lastDueAt(schedule: ScheduleTiming, at: Date): Date | null {
   }
 }
 
+const MIN_GRACE_MS = 2 * 60 * 1000;
+
+/** How late a run may be: twice its interval, between 2 and 10 minutes. */
+export function graceFor(schedule: ScheduleTiming, at: Date): number {
+  let interval: number | null = null;
+  if (schedule.intervalSeconds && schedule.intervalSeconds > 0) {
+    interval = schedule.intervalSeconds * 1000;
+  } else {
+    try {
+      const cron = CronExpressionParser.parse(schedule.cronExpression, {
+        currentDate: at,
+        tz: schedule.timezone,
+      });
+      interval = cron.next().getTime() - cron.prev().getTime();
+    } catch {
+      interval = null;
+    }
+  }
+  if (!interval || interval <= 0) {
+    return MISSED_RUN_GRACE_MS;
+  }
+  return Math.min(MISSED_RUN_GRACE_MS, Math.max(MIN_GRACE_MS, 2 * interval));
+}
+
 /** When the run it missed was due, or null: due past the grace, after notBefore, and no run since. */
 export function missedDueAt(params: {
   schedule: ScheduleTiming;
@@ -40,7 +64,7 @@ export function missedDueAt(params: {
 }): Date | null {
   const due = lastDueAt(
     params.schedule,
-    new Date(params.now.getTime() - MISSED_RUN_GRACE_MS)
+    new Date(params.now.getTime() - graceFor(params.schedule, params.now))
   );
   if (!due || due <= params.notBefore) {
     return null;

@@ -35,10 +35,7 @@ function parseRequest(body: Record<string, unknown>): TestRequest | null {
   };
 }
 
-/**
- * Send a test through a channel, saved or not yet saved, using the same
- * senders as real alerts. Owners and admins only; rate limited.
- */
+/** Test a saved or unsaved channel via the real senders. Owners and admins; rate limited. */
 export async function POST(
   request: Request,
   context: { params: Promise<{ organizationId: string }> }

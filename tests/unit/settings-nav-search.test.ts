@@ -8,6 +8,7 @@ import {
 
 const OWNER = { isAdmin: true, isOwner: true };
 const MEMBER = { isAdmin: false, isOwner: false };
+const MEMBER_WITH_ALERTS = { ...MEMBER, alertsEnabled: true };
 
 /** Every card the query surfaced, as "Section > Card". */
 function results(query: string, access = OWNER): string[] {
@@ -80,8 +81,29 @@ describe("findSettingsMatches", () => {
       "pause",
     ]) {
       expect(
-        findSettingsMatches(query, MEMBER).map((m) => m.item.segment)
+        findSettingsMatches(query, MEMBER_WITH_ALERTS).map(
+          (m) => m.item.segment
+        )
       ).toContain("alerts");
+    }
+  });
+
+  it("deep links each Alerts card, old card names included", () => {
+    expect(results("how to notify", MEMBER_WITH_ALERTS)).toEqual([
+      "Alerts > Methods",
+    ]);
+    expect(results("recent notifications", MEMBER_WITH_ALERTS)).toEqual([
+      "Alerts > Sent alerts",
+    ]);
+  });
+
+  it("hides Alerts until alerts are switched on for the org", () => {
+    for (const alertsEnabled of [false, null, undefined]) {
+      expect(
+        findSettingsMatches("alerts", { ...OWNER, alertsEnabled }).some(
+          (m) => m.item.segment === "alerts"
+        )
+      ).toBe(false);
     }
   });
 
@@ -121,8 +143,11 @@ describe("isSettingsItemVisible", () => {
   });
 
   it("opens Alerts to every member of the organization", () => {
+    expect(
+      isSettingsItemVisible(item("/settings/org-1/alerts"), MEMBER_WITH_ALERTS)
+    ).toBe(true);
     expect(isSettingsItemVisible(item("/settings/org-1/alerts"), MEMBER)).toBe(
-      true
+      false
     );
   });
 

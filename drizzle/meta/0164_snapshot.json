@@ -4053,6 +4053,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
         "updated_by": {
           "name": "updated_by",
           "type": "text",
@@ -9059,6 +9066,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "updated_by": {
           "name": "updated_by",

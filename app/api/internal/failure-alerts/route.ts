@@ -1,15 +1,6 @@
 /**
- * Workflow failure notifications: the once-a-minute cycle.
- *
- * Evaluates workflows whose runs ended since the last cycle, opens and
- * resolves incidents, sends what is due with retries and backups, and runs the
- * weekly silent channel checks. Authenticated as an internal service (HMAC)
- * and invoked by the `failure-alerts` k8s CronJob via deploy/scripts/reaper.sh
- * with concurrencyPolicy Forbid. Replicas can still overlap during a deploy,
- * which is safe: every claim in the cycle uses SKIP LOCKED or a unique row.
- *
- * A cycle whose stages failed answers 500, so the CronJob fails and our
- * alerting on failed jobs sees it; the report still says what did run.
+ * Once-a-minute failure alert cycle, called by the `failure-alerts` CronJob (HMAC).
+ * Overlapping replicas are safe (SKIP LOCKED); failed stages answer 500.
  */
 import { NextResponse } from "next/server";
 import { authenticateInternalService } from "@/lib/internal-service-auth";

@@ -41,12 +41,7 @@ export async function authenticate(
   return { ...auth, userId: auth.userId };
 }
 
-/**
- * Whether they may read or change this org's failure notifications. Owners
- * and admins manage them (the same people who manage members); any member may
- * read them. An API key or OAuth token is held to the organization it was
- * issued for, even when its user also belongs to others.
- */
+/** Owners/admins manage, members read; API keys and OAuth tokens stay bound to their own org. */
 export async function orgAccess(
   auth: Authenticated,
   organizationId: string

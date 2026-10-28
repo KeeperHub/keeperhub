@@ -11,20 +11,13 @@ import type { EffectivePolicy } from "./policy";
 import { insertDeliveries, rowsForPolicy, type Tx } from "./queue-rows";
 import { runsOnItsOwn, workflowTriggerType } from "./workflow-trigger";
 
-/**
- * "Pause this workflow when it reaches the limit": turning a workflow off for
- * its incident, holding the incident open while it stays off, and pausing it
- * again if it keeps failing once someone turns it back on.
- *
- * Turning it back on is recorded by a database trigger on workflows.enabled
- * (workflow_resumed_at), so every way of switching it on counts: the editor,
- * the API, MCP or an admin.
- */
+// "Pause at the limit". Re-enabling is caught by a DB trigger on
+// workflows.enabled, so editor, API, MCP and admin all count.
 
 type IncidentRow = typeof workflowFailureIncidents.$inferSelect;
 type PauseState = Pick<IncidentRow, "workflowPausedAt" | "workflowResumedAt">;
 
-export type PausableWorkflow = {
+type PausableWorkflow = {
   id: string;
   organizationId: string;
   deactivatedAt: Date | null;
@@ -45,13 +38,7 @@ export const HELD_SQL = sql`(${workflowFailureIncidents.workflowPausedAt} IS NOT
   AND (${workflowFailureIncidents.workflowResumedAt} IS NULL
     OR ${workflowFailureIncidents.workflowResumedAt} < ${workflowFailureIncidents.workflowPausedAt}))`;
 
-/**
- * True while an incident's own pause keeps its workflow off. The incident then
- * stays open: the workflow is stopped, not fixed, and its PagerDuty page and
- * the "Failing" state should stay until someone turns it back on and it works.
- * Once someone has turned it back on, turning it off again is theirs, and the
- * incident closes like any paused workflow's.
- */
+/** The incident's own pause holds it open: stopped is not fixed. */
 export function heldByPause(
   incident: PauseState,
   workflow: PausableWorkflow,
@@ -65,11 +52,7 @@ export function heldByPause(
   );
 }
 
-/**
- * Turn a workflow off for its incident, the way its Enable switch does: every
- * trigger checks `enabled` before it starts a run. False when it was already
- * off (someone paused it first), which leaves the incident as it was.
- */
+/** Turn the workflow off like its Enable switch; false if it was already off. */
 export async function turnOffForIncident(
   tx: Tx,
   workflowId: string,
@@ -121,14 +104,7 @@ export async function recordPause(
 
 class ClaimLost extends Error {}
 
-/**
- * Pause the workflow of an incident that is already open: the box was ticked
- * after the alert went out, or the workflow kept failing after someone turned
- * it back on. Sent as the incident's next reminder. Claiming that reminder,
- * turning the workflow off and queueing the message are one transaction, so
- * the workflow is never off without a word and two evaluators never both
- * send it. Returns how many messages were queued.
- */
+/** Pause an already-open incident's workflow in one transaction, so it is never off silently. */
 export async function pauseOpenIncident(params: {
   workflow: PausableWorkflow;
   incident: IncidentRow;
@@ -136,6 +112,8 @@ export async function pauseOpenIncident(params: {
   failures: number;
   again: boolean;
   now: Date;
+  /** Org-wide pause: turn it off now, tell people when the pause ends. */
+  holdUntil?: Date;
 }): Promise<number> {
   const { workflow, incident, policy, failures, again, now } = params;
   const members = await loadOrgMembers(workflow.organizationId);
@@ -168,7 +146,7 @@ export async function pauseOpenIncident(params: {
           incident.id,
           "reminder",
           sequence,
-          now,
+          params.holdUntil ?? now,
           again
             ? { pausedAgain: true, failures }
             : { workflowPaused: true, failures }

@@ -1,14 +1,12 @@
 import type { FailureIncidentTrigger } from "@/lib/db/schema-failure-alerts";
 import { emailButton, emailLayout, escapeHtml } from "@/lib/email";
+import { isFundingShortfall } from "@/lib/errors/funding-shortfall";
 import {
   MAX_SUMMARY_CHARS,
   truncateRunes,
 } from "@/plugins/pagerduty/event-payload";
 
-/**
- * What each failure notification says, for every channel. Kept apart from the
- * delivery code so the wording can be read and tested in one place.
- */
+// Message wording for every channel, apart from delivery so it is tested in one place.
 
 export type AlertWorkflow = {
   id: string;
@@ -48,12 +46,16 @@ export type MessageInput =
       /** Failed runs that led to this pause, when not the incident's count. */
       pausedFailures?: number;
       testNote?: string;
+      /** Reminder number, and the most there will be. */
+      reminderNumber?: number;
+      maxReminders?: number;
     })
   | (OrgFields & {
       kind: "grouped";
       workflows: (AlertWorkflow & {
         failureCount: number;
         workflowPaused?: boolean;
+        lastError?: string | null;
       })[];
       backupReason?: string;
     })
@@ -62,6 +64,8 @@ export type MessageInput =
       workflow: AlertWorkflow;
       incident: AlertIncident;
       testNote?: string;
+      /** A late schedule ran again, but that run failed. */
+      ranButFailed?: boolean;
     })
   | (OrgFields & {
       kind: "channel_paused";
@@ -75,6 +79,7 @@ export type MessageInput =
       by: string | null;
     })
   | (OrgFields & { kind: "alerts_resumed"; by: string | null })
+  | (OrgFields & { kind: "cap_warning"; used: number; limit: number })
   | (OrgFields & {
       kind: "launch_notice";
       threshold: number;
@@ -106,16 +111,18 @@ function shortError(error: string | null): string {
 
 const RPC_TROUBLE =
   /\b(429|rate.?limit|too many requests|timed? ?out|timeout|ETIMEDOUT|ECONNRESET|503|502)\b/i;
-const GAS_TROUBLE =
-  /insufficient funds|out of gas|gas required exceeds|intrinsic gas/i;
+const GAS_LIMIT_TROUBLE = /out of gas|gas required exceeds|intrinsic gas/i;
 
 /** A first guess at the cause, for the errors that keep coming up. */
 function errorHint(error: string | null): string | null {
   if (!error) {
     return null;
   }
-  if (GAS_TROUBLE.test(error)) {
-    return "This looks like the wallet running out of gas: check its balance.";
+  if (isFundingShortfall(error)) {
+    return "This looks like the wallet running out of funds: check its balance.";
+  }
+  if (GAS_LIMIT_TROUBLE.test(error)) {
+    return "The transaction ran out of its gas limit, which often means it reverted.";
   }
   if (RPC_TROUBLE.test(error)) {
     return "This looks like an RPC provider problem (rate limit or timeout), which often clears on its own.";
@@ -167,14 +174,17 @@ function failingHeadline(
   now: Date
 ): string {
   if (incident.openedBy === "missed") {
-    return `${workflow.name} ${still ? "still has" : "has"} not run: it was due at ${formatUtc(incident.firstFailedAt)}`;
+    return `${workflow.name} ${still ? "still has" : "has"} not run since ${formatUtc(incident.firstFailedAt)}`;
+  }
+  if (incident.openedBy === "funding" && !still) {
+    return `Wallet out of funds: ${workflow.name} cannot pay for its transaction`;
   }
   const runs = `${plural(incident.failureCount, "failed run", "failed runs")} in a row`;
   if (incident.openedBy === "time" && !still) {
     return `${workflow.name} has been failing for ${formatDuration(now.getTime() - incident.firstFailedAt.getTime())} (${runs})`;
   }
   return still
-    ? `${workflow.name} is still failing: ${plural(incident.failureCount, "failed run", "failed runs")}`
+    ? `${workflow.name}: ${plural(incident.failureCount, "failed run", "failed runs")} in a row`
     : `${workflow.name} failed ${plural(incident.failureCount, "time", "times")} in a row`;
 }
 
@@ -234,8 +244,7 @@ function backupBanner(reason: string | undefined): {
 
 function footer(input: OrgFields): { text: string; html: string } {
   const link = settingsUrl(input.appUrl, input.organizationId);
-  const why =
-    "You get this because you receive workflow failure notifications for this organization.";
+  const why = `You get this because you receive ${input.orgName} alerts.`;
   return {
     text: `${why} Change who gets these: ${link}`,
     html: `${escapeHtml(why)} <a href="${escapeHtml(link)}" style="color: #999;">Change who gets these</a>.`,
@@ -261,13 +270,17 @@ export function renderMessage(
     case "alerts_paused":
     case "alerts_resumed":
       return renderOrgPause(input);
+    case "cap_warning":
+      return renderCapWarning(input);
     default:
       return renderTest(input);
   }
 }
 
 const MISSED_DETAIL =
-  "Its schedule was due and no run started. This is usually a KeeperHub scheduling problem, not your workflow; our team is alerted too.";
+  "Its scheduled run did not start. This is usually a KeeperHub scheduling problem, not your workflow; our team is alerted and looking into it.";
+const FUNDING_NEXT_STEP =
+  "Add funds to the wallet that pays for it; the next run picks them up. The error above shows what it had and what it needed.";
 const FAILING_NEXT_STEP =
   "It keeps running and failing until someone fixes, mutes or pauses it.";
 const MISSED_NEXT_STEP =
@@ -315,8 +328,24 @@ function renderAlert(
     nextStep = PAUSED_NEXT_STEP;
   } else if (missed) {
     nextStep = MISSED_NEXT_STEP;
+  } else if (incident.openedBy === "funding") {
+    nextStep = FUNDING_NEXT_STEP;
   }
-  const label = reminder && !input.paused ? "Still failing" : "Action needed";
+  let label = "Action needed";
+  if (missed && !input.paused) {
+    label = "Check";
+  } else if (reminder && !input.paused) {
+    label = input.reminderNumber
+      ? `Still failing (reminder ${input.reminderNumber} of ${input.maxReminders ?? 7})`
+      : "Still failing";
+  }
+  const last =
+    reminder &&
+    !input.paused &&
+    input.reminderNumber !== undefined &&
+    input.reminderNumber >= (input.maxReminders ?? 7);
+  const accent = missed && !input.paused ? "#b45309" : "#b91c1c";
+  const tint = missed && !input.paused ? "#fffbeb" : "#fef2f2";
   const since = missed
     ? `Due at ${formatUtc(incident.firstFailedAt)}.`
     : `Failing since ${formatUtc(incident.firstFailedAt)}.`;
@@ -326,7 +355,10 @@ function renderAlert(
     : `Last error: ${shortError(incident.lastError)}`;
 
   // The same lines, in the same order, for email text, chat and the HTML.
-  const lines = [since, history, detail, hint, nextStep].filter(
+  const lastLine = last
+    ? "This is the last reminder. It stays under Failing now on the Alerts page until it works or someone pauses it."
+    : null;
+  const lines = [since, history, detail, hint, nextStep, lastLine].filter(
     (line): line is string => Boolean(line)
   );
   const links = missed
@@ -343,9 +375,9 @@ ${workflow.triggerLabel} trigger, ${orgName}.
 ${foot.text}`;
 
   const html = emailLayout(
-    `<span style="display:inline-block; background:#b91c1c; color:#fff; font-size:12px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; padding:3px 8px; border-radius:4px; margin-bottom:8px;">${label}</span><br>${escapeHtml(headline)}`,
+    `<span style="display:inline-block; background:${accent}; color:#fff; font-size:12px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; padding:3px 8px; border-radius:4px; margin-bottom:8px;">${label}</span><br>${escapeHtml(headline)}`,
     `${banners.html}
-    <div style="border-left: 4px solid #b91c1c; background: #fef2f2; border-radius: 6px; padding: 14px 16px; margin: 0 0 20px; font-size: 14px;">
+    <div style="border-left: 4px solid ${accent}; background: ${tint}; border-radius: 6px; padding: 14px 16px; margin: 0 0 20px; font-size: 14px;">
       <div><strong>${escapeHtml(since)}</strong></div>
       ${history ? `<div>${escapeHtml(history)}</div>` : ""}
       ${
@@ -354,8 +386,9 @@ ${foot.text}`;
           : `<div style="margin-top: 8px;">Last error: <code>${escapeHtml(shortError(incident.lastError))}</code></div>`
       }
       ${hint ? `<div style="margin-top: 8px;">${escapeHtml(hint)}</div>` : ""}
+      ${lastLine ? `<div style="margin-top: 8px;"><strong>${escapeHtml(lastLine)}</strong></div>` : ""}
     </div>
-    <p>${emailButton(open, missed ? "Open the workflow" : "Open the failing workflow", "danger")}${missed ? "" : emailButton(runs, "View failed runs")}</p>
+    <p>${emailButton(open, missed ? "Open the workflow" : "Open the failing workflow", missed ? "primary" : "danger")}${missed ? "" : emailButton(runs, "View failed runs")}</p>
     <p style="color: #555; font-size: 13px;">${escapeHtml(nextStep)} ${escapeHtml(workflow.triggerLabel)} trigger, ${escapeHtml(orgName)}.</p>`,
     foot.html
   );
@@ -374,6 +407,10 @@ function renderGrouped(
 ): RenderedMessage {
   const { workflows, orgName, appUrl } = input;
   const headline = `${workflows.length} workflows started failing`;
+  const errorOf = (w: { lastError?: string | null }): string =>
+    w.lastError
+      ? `: ${truncateRunes(w.lastError.replace(WHITESPACE, " "), 120)}`
+      : "";
   const anyPaused = workflows.some((w) => w.workflowPaused);
   const cause = `This often means a shared cause, such as an RPC provider or a wallet out of gas.${anyPaused ? " Paused workflows stay off until someone turns them back on." : ""}`;
   const backup = backupBanner(input.backupReason);
@@ -382,7 +419,7 @@ function renderGrouped(
     w.workflowPaused ? ", paused" : "";
   const lines = workflows.map(
     (w) =>
-      `- ${w.name}: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)} (${runsUrl(appUrl, w.id)})`
+      `- ${w.name}: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}${errorOf(w)} (${runsUrl(appUrl, w.id)})`
   );
   const text = `${backup.text}${headline} in ${orgName}. ${cause}
 
@@ -392,23 +429,23 @@ See all failing workflows: ${settingsUrl(appUrl, input.organizationId)}
 
 ${foot.text}`;
   const html = emailLayout(
-    escapeHtml(headline),
+    `<span style="display:inline-block; background:#b91c1c; color:#fff; font-size:12px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; padding:3px 8px; border-radius:4px; margin-bottom:8px;">Action needed</span><br>${escapeHtml(headline)}`,
     `${backup.html}
     <p>${escapeHtml(cause)}</p>
     <ul style="padding-left: 20px;">${workflows
       .map(
         (w) =>
-          `<li><a href="${escapeHtml(runsUrl(appUrl, w.id))}">${escapeHtml(w.name)}</a>: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}</li>`
+          `<li><a href="${escapeHtml(runsUrl(appUrl, w.id))}">${escapeHtml(w.name)}</a>: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}${w.lastError ? `<br><code style="font-size:12px;">${escapeHtml(truncateRunes(w.lastError.replace(WHITESPACE, " "), 120))}</code>` : ""}</li>`
       )
       .join("")}</ul>
-    <p>${emailButton(settingsUrl(appUrl, input.organizationId), "See all failing workflows")}</p>`,
+    <p>${emailButton(settingsUrl(appUrl, input.organizationId), "See all failing workflows", "danger")}</p>`,
     foot.html
   );
   return {
-    subject: `${input.backupReason ? "[Backup] " : ""}[${orgName}] ${headline}`,
+    subject: `${input.backupReason ? "[Backup] " : ""}[${orgName}] Action needed: ${headline}`,
     text,
     html,
-    chat: `[${orgName}] ${backup.chat}${headline}. ${cause}\n${lines.join("\n")}`,
+    chat: `[${orgName}] ${backup.chat}Action needed: ${headline}. ${cause}\n${lines.join("\n")}`,
     summary: summaryOf(`${orgName}: ${headline}`),
   };
 }
@@ -419,16 +456,22 @@ function renderRecovery(
 ): RenderedMessage {
   const { workflow, incident, orgName, appUrl } = input;
   const span = formatDuration(now.getTime() - incident.firstFailedAt.getTime());
-  const headline = `${workflow.name} is running again`;
-  const detail =
-    incident.openedBy === "missed"
-      ? `It started again ${span} after it was due.`
-      : `It succeeded after ${plural(incident.failureCount, "failed run", "failed runs")} over ${span}.`;
+  let headline = `${workflow.name} is running again`;
+  let detail = `It succeeded after ${plural(incident.failureCount, "failed run", "failed runs")} (${span}).`;
+  if (incident.openedBy === "missed") {
+    headline = input.ranButFailed
+      ? `${workflow.name} started again, but that run failed`
+      : `${workflow.name} is running again`;
+    detail = input.ranButFailed
+      ? `It started ${span} after it was due. You will be told if it keeps failing.`
+      : `It started again ${span} after it was due.`;
+  }
+  const prefix = input.ranButFailed ? "Started again" : "Resolved";
   const link = runsUrl(appUrl, workflow.id);
   const foot = footer(input);
   const test = testBanner(input.testNote);
   return {
-    subject: `${input.testNote ? "[Test] " : ""}[${orgName}] Resolved: ${headline}`,
+    subject: `${input.testNote ? "[Test] " : ""}[${orgName}] ${prefix}: ${headline}`,
     text: `${test.text}${headline}. ${detail}\n\nView runs: ${link}\n\n${foot.text}`,
     html: emailLayout(
       escapeHtml(headline),
@@ -453,6 +496,31 @@ function renderChannelPaused(
     html: emailLayout(
       escapeHtml(headline),
       `<p>${escapeHtml(detail)}</p><p>${emailButton(link, "Fix the channel")}</p>`,
+      foot.html
+    ),
+    chat: `[${input.orgName}] ${headline}. ${detail}\n${link}`,
+    summary: summaryOf(`${input.orgName}: ${headline}`),
+  };
+}
+
+function renderCapWarning(
+  input: Extract<MessageInput, { kind: "cap_warning" }>
+): RenderedMessage {
+  const out = input.used >= input.limit;
+  const headline = out
+    ? `${input.orgName} has used all ${input.limit} alert emails this month`
+    : `${input.orgName} has used ${input.used} of its ${input.limit} alert emails this month`;
+  const detail = out
+    ? "New failure alerts reach Slack, Discord, Telegram and PagerDuty until next month, not email. Add a chat method, or upgrade for unlimited alert emails."
+    : "The last 10 are kept for new failures; reminders stop using email first. Chat and PagerDuty are never counted.";
+  const link = settingsUrl(input.appUrl, input.organizationId);
+  const foot = footer(input);
+  return {
+    subject: `[${input.orgName}] ${headline}`,
+    text: `${headline}.\n\n${detail}\n\nAlerts settings: ${link}\n\n${foot.text}`,
+    html: emailLayout(
+      escapeHtml(headline),
+      `<p>${escapeHtml(detail)}</p><p>${emailButton(link, "Alerts settings")}</p>`,
       foot.html
     ),
     chat: `[${input.orgName}] ${headline}. ${detail}\n${link}`,
@@ -493,8 +561,8 @@ function renderLaunchNotice(
   input: Extract<MessageInput, { kind: "launch_notice" }>
 ): RenderedMessage {
   const link = settingsUrl(input.appUrl, input.organizationId);
-  const headline = "Workflow failure notifications are on";
-  const rule = `KeeperHub now emails you when a workflow that runs on its own (schedule, event, block, webhook, transfer or Pyth price trigger) fails ${input.threshold} times in a row. You can change who gets it, add Slack, Discord, Telegram or PagerDuty, and test each one in Settings, Notifications.`;
+  const headline = "Workflow alerts are on";
+  const rule = `KeeperHub now emails you when a workflow that runs on its own (schedule, event, block, webhook, transfer or Pyth price trigger) fails ${input.threshold} times in a row. You can change who gets it, add Slack, Discord, Telegram or PagerDuty, and test each one in Settings, Alerts.`;
   const failingText =
     input.failingNow.length > 0
       ? `\n\nThese workflows are failing right now:\n${input.failingNow
@@ -518,7 +586,7 @@ function renderLaunchNotice(
     text: `${rule}${failingText}\n\nSettings: ${link}`,
     html: emailLayout(
       headline,
-      `<p>${escapeHtml(rule)}</p>${failingHtml}<p>${emailButton(link, "Notification settings")}</p>`,
+      `<p>${escapeHtml(rule)}</p>${failingHtml}<p>${emailButton(link, "Alerts settings")}</p>`,
       "You get this once, as an owner of the organization."
     ),
     chat: `[${input.orgName}] ${headline}. ${rule}`,
@@ -581,6 +649,6 @@ function renderTest(
   return renderSample(
     input,
     input.sample ?? "alert",
-    `Test from Settings, Notifications, sent to ${input.channelLabel}. Nothing is failing: this is how a real alert looks.`
+    `Test from Settings, Alerts, sent to ${input.channelLabel}. Nothing is failing: this is how a real alert looks.`
   );
 }

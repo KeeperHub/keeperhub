@@ -266,7 +266,7 @@ describe("notificationBadge", () => {
       tooltip: "Could not be delivered: 403",
     });
     expect(notificationBadge({ ...detail, state: "capped" })).toMatchObject({
-      label: "Over plan limit",
+      label: "Over the monthly email limit",
       tooltip: "Not sent: Free plan monthly email limit reached",
     });
     expect(
@@ -279,8 +279,15 @@ describe("notificationBadge", () => {
       label: "Withdrawn",
       tooltip: "Withdrawn: The workflow is running again.",
     });
-    for (const state of ["pending", "sending", "retrying"]) {
-      expect(notificationBadge({ ...detail, state }).label).toBe("Sending");
-    }
+    // The Alerts history's words for a message still on its way.
+    expect(notificationBadge({ ...detail, state: "pending" }).label).toBe(
+      "Queued"
+    );
+    expect(notificationBadge({ ...detail, state: "sending" }).label).toBe(
+      "Sending"
+    );
+    expect(
+      notificationBadge({ ...detail, state: "retrying", lastError: "429" })
+    ).toMatchObject({ label: "Retrying", tooltip: "Retrying: 429" });
   });
 });

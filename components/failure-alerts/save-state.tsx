@@ -2,28 +2,33 @@
 
 import { Check, Loader2 } from "lucide-react";
 import { useCallback, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Notice } from "@/components/ui/notice";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
-/** A save resolves to null when the server accepted it, or its refusal. */
-export type SaveAction = () => Promise<string | null>;
+/** Why the server refused a save; stale means someone else saved first (409). */
+export type SaveRefusal = { message: string; stale?: boolean };
+
+/** A save resolves to null when the server accepted it. */
+export type SaveAction = () => Promise<SaveRefusal | null>;
 
 export function useSaveState(): {
   state: SaveState;
-  error: string | null;
-  run: (action: SaveAction) => Promise<void>;
+  error: SaveRefusal | null;
+  run: (action: SaveAction) => Promise<boolean>;
   reset: () => void;
 } {
   const [state, setState] = useState<SaveState>("idle");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SaveRefusal | null>(null);
 
-  const run = useCallback(async (action: SaveAction): Promise<void> => {
+  const run = useCallback(async (action: SaveAction): Promise<boolean> => {
     setState("saving");
     setError(null);
     const refused = await action();
     setState(refused ? "error" : "saved");
     setError(refused);
+    return !refused;
   }, []);
 
   const reset = useCallback((): void => {
@@ -65,7 +70,7 @@ export function SaveFeedback({
         </>
       )}
       {shown === "error" && <span className="text-destructive">Not saved</span>}
-      {shown === "idle" && dirty && "Unsaved changes"}
+      {shown === "idle" && dirty && "Not saved yet"}
     </output>
   );
 }
@@ -73,16 +78,36 @@ export function SaveFeedback({
 /** Why the server refused a save, kept until the next attempt or edit. */
 export function SaveError({
   error,
+  onReload,
 }: {
-  error: string | null;
+  error: SaveRefusal | null;
+  /** Offered when someone else saved first. */
+  onReload?: () => void;
 }): React.ReactElement | null {
   if (!error) {
     return null;
   }
   return (
-    <div data-testid="failure-alert-save-error">
+    <div
+      data-stale={Boolean(error.stale)}
+      data-testid="failure-alert-save-error"
+    >
       <Notice role="alert" tone="danger">
-        <span className="font-medium">Not saved.</span> {error}
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span>
+            <span className="font-medium">Not saved.</span> {error.message}
+          </span>
+          {error.stale && onReload && (
+            <Button
+              className="h-auto px-0 text-xs"
+              onClick={onReload}
+              type="button"
+              variant="link"
+            >
+              Reload
+            </Button>
+          )}
+        </span>
       </Notice>
     </div>
   );

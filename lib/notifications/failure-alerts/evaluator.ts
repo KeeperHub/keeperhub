@@ -4,6 +4,7 @@ import {
   and,
   desc,
   eq,
+  gt,
   inArray,
   isNotNull,
   isNull,
@@ -24,7 +25,7 @@ import {
   workflows,
 } from "@/lib/db/schema";
 import type { FailureIncidentResolution } from "@/lib/db/schema-failure-alerts";
-import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import { workflowExecutableConditions } from "@/lib/workflow/executable";
 import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
@@ -49,6 +50,7 @@ import {
   turnOffForIncident,
 } from "./pause";
 import {
+  type EffectivePolicy,
   ensureOrgSettings,
   isMuted,
   loadChannels,
@@ -95,6 +97,8 @@ type OpenedIncident = {
   workflowId: string;
   /** Its workflow was turned off as the incident opened. */
   workflowPaused?: boolean;
+  /** Org-wide pause: the alert waits until the pause ends. */
+  holdUntil?: Date;
 };
 
 export type EvaluationStats = {
@@ -118,13 +122,8 @@ export function emptyStats(): EvaluationStats {
 }
 
 /**
- * Take a batch of due workflows. Each row's due time is pushed five minutes
- * out as a lease; a run status written meanwhile pulls it back to now, and
- * the release below then leaves it for the next cycle instead of losing it.
- *
- * The lease travels as Postgres's own text form of the timestamp. Read into a
- * JS Date through a raw query it would be parsed in the process's local time
- * zone, and the release would never match it outside UTC.
+ * Claim due workflows with a five-minute lease. The lease stays Postgres text:
+ * a raw-query Date is parsed in local time and would never match outside UTC.
  */
 async function claimQueue(): Promise<{ workflowId: string; lease: string }[]> {
   const rows = await db.execute<{ workflow_id: string; lease: string }>(sql`
@@ -151,8 +150,7 @@ async function releaseQueue(
   recheckAt: Date | null
 ): Promise<void> {
   if (recheckAt) {
-    // An ISO string, not a Date: the raw sql template would send a Date as
-    // its local-time display string.
+    // ISO string: the raw sql template sends a Date as local-time text.
     const at = recheckAt.toISOString();
     await db.execute(sql`
       UPDATE ${workflowFailureAlertQueue}
@@ -254,14 +252,8 @@ const SKIPPED_BECAUSE: Record<FailureIncidentResolution, string> = {
 };
 
 /**
- * Close an incident, whatever closed it.
- *
- * Messages still waiting are dropped. A PagerDuty page that went out (or is
- * going out) is always resolved on the same key, whatever the reason and
- * whether or not the org wants recovery messages: an incident left triggered
- * keeps paging the on-call for a workflow that no longer fails or no longer
- * runs. Email and chat get the "working again" message only when it really
- * recovered and the org asked for it.
+ * Close an incident. Any page sent is always resolved, or it keeps paging the
+ * on-call; email and chat hear "working again" only on a real, wanted recovery.
  */
 async function closeIncident(params: {
   incident: IncidentRow;
@@ -270,10 +262,11 @@ async function closeIncident(params: {
   notifyRecovery: boolean;
   now: Date;
   stats: EvaluationStats;
+  /** Extra context for the recovery message (e.g. the run that ended it failed). */
+  recoveryContext?: Record<string, unknown>;
 }): Promise<void> {
   const { incident, reason, now, stats } = params;
-  // One transaction: an incident closed without its PagerDuty resolve queued
-  // would never be revisited, and the page would stay open.
+  // One transaction, or a closed incident could leave its page open forever.
   await db.transaction(async (tx) => {
     const closed = await tx
       .update(workflowFailureIncidents)
@@ -331,11 +324,9 @@ async function closeIncident(params: {
       (reason === "success" || reason === "ran") && params.notifyRecovery;
     for (const row of prior) {
       const pagerDuty = row.channel === "pagerduty";
-      // A page still in flight may land after this resolve; send the resolve
-      // a little later so it arrives second.
+      // Delay the resolve so it lands after a page still in flight.
       const inFlight = pagerDuty && row.state === "sending";
-      // A page that timed out may still have reached PagerDuty. Resolving a
-      // key PagerDuty never saw is harmless, so every attempted page gets one.
+      // A timed-out page may have landed; resolving an unknown key is harmless.
       const maybePaged = pagerDuty && row.attempts > 0;
       const reached = row.state === "delivered";
       if (
@@ -359,6 +350,7 @@ async function closeIncident(params: {
         channel: row.channel,
         channelId: row.channelId,
         recipient: row.recipient,
+        context: params.recoveryContext,
         nextAttemptAt: inFlight ? new Date(now.getTime() + 2 * 60 * 1000) : now,
       });
     }
@@ -366,10 +358,26 @@ async function closeIncident(params: {
   });
 }
 
-/**
- * Evaluate one workflow. Returns when it should be looked at again without a
- * new run (the time limit or a mute ending), or null.
- */
+/** Evaluate one workflow; returns when to recheck without a new run, or null. */
+const LAUNCH_SCANS_PER_CYCLE = 20;
+const cycles = new WeakMap<
+  EvaluationStats,
+  { orgsSeen: Set<string>; launchScans: number }
+>();
+
+/** Per-cycle bookkeeping, keyed by the cycle's stats object. */
+function cycleState(stats: EvaluationStats): {
+  orgsSeen: Set<string>;
+  launchScans: number;
+} {
+  let state = cycles.get(stats);
+  if (!state) {
+    state = { orgsSeen: new Set(), launchScans: 0 };
+    cycles.set(stats, state);
+  }
+  return state;
+}
+
 async function evaluateWorkflow(
   workflowId: string,
   now: Date,
@@ -402,8 +410,13 @@ async function evaluateWorkflow(
     return null;
   }
 
-  await ensureOrgSettings(workflow.organizationId, now);
-  await queueLaunchNotice(workflow.organizationId, now, stats);
+  // Once per org per cycle: on rollout day thousands of runs share a few orgs.
+  const cycle = cycleState(stats);
+  if (!cycle.orgsSeen.has(workflow.organizationId)) {
+    cycle.orgsSeen.add(workflow.organizationId);
+    await ensureOrgSettings(workflow.organizationId, now);
+    await queueLaunchNotice(workflow.organizationId, now, stats);
+  }
 
   const policy = await loadEffectivePolicy(workflow.organizationId, workflowId);
   const orgPause = activePause(policy.orgPausedUntil, now);
@@ -416,14 +429,17 @@ async function evaluateWorkflow(
 
   // A late schedule's incident ends with any run; failures then count as usual.
   if (open?.openedBy === "missed") {
-    if (runs.some((run) => run.startedAt > open.firstFailedAt)) {
+    const ranAgain = runs.find((run) => run.startedAt > open.firstFailedAt);
+    if (ranAgain) {
       await closeIncident({
         incident: open,
         reason: "ran",
-        resolvingExecutionId: runs[0]?.id ?? null,
+        resolvingExecutionId: ranAgain.id,
         notifyRecovery: policy.notifyRecovery,
         now,
         stats,
+        recoveryContext:
+          runs[0]?.status === "error" ? { ranButFailed: true } : undefined,
       });
       // Now closed: the run that ended it may itself start a failing streak.
       return await evaluateWorkflow(workflowId, now, opened, stats);
@@ -450,10 +466,9 @@ async function evaluateWorkflow(
       .where(eq(workflowFailureIncidents.id, open.id));
   }
 
-  // Set to pause at its limit and past it while its incident is open: the box
-  // was ticked after the alert went out, or it was turned back on and kept
-  // failing (then only runs since the last pause count).
-  if (open && policy.pauseWorkflow && !orgPause) {
+  // Pause box ticked after the alert, or re-enabled and still failing (runs
+  // since the last pause count).
+  if (open && policy.pauseWorkflow) {
     const since = open.workflowPausedAt;
     const streak = since ? summarizeStreak(runs, since, window) : summary;
     if (streak.failures >= policy.threshold) {
@@ -464,6 +479,7 @@ async function evaluateWorkflow(
         failures: streak.failures,
         again: since !== null,
         now,
+        holdUntil: orgPause ?? undefined,
       });
       return null;
     }
@@ -494,24 +510,21 @@ async function evaluateWorkflow(
   if (decision.kind !== "open") {
     return null;
   }
-  // Org-wide pause: nothing opens (and nothing is paused) until it ends.
-  if (orgPause) {
+  // An org pause holds alerts but still turns the workflow off (it may spend gas).
+  if (orgPause && !policy.pauseWorkflow) {
     return orgPause;
   }
-  // A mute silences alerts, not the pause someone asked for. A workflow
-  // turned off without a word would be worse than the alert, so pausing one
-  // always opens the incident and tells people.
+  // A mute never hides a pause: turning a workflow off silently is worse.
   if (isMuted(policy, now) && !policy.pauseWorkflow) {
     // Alerts start again if it is still failing when the mute ends.
-    return policy.muteUntilSuccess ? null : policy.mutedUntil;
+    return policy.mutedUntil;
   }
   if (!(summary.firstFailedAt && summary.lastFailedAt)) {
     return null;
   }
 
   const { firstFailedAt, lastFailedAt } = summary;
-  // Opening and pausing are one transaction, so an incident that should have
-  // paused its workflow never exists without the pause.
+  // One transaction, so the incident never exists without its pause.
   const result = await db.transaction(async (tx: Tx) => {
     const [row] = await tx
       .insert(workflowFailureIncidents)
@@ -547,6 +560,7 @@ async function evaluateWorkflow(
       organizationId: workflow.organizationId,
       workflowId,
       workflowPaused: result.paused,
+      holdUntil: orgPause ?? undefined,
     });
   }
   return null;
@@ -568,16 +582,7 @@ async function queueAndMark(
   });
 }
 
-/**
- * Queue alerts for newly opened incidents. Three or more in one org at once
- * usually share a cause (an RPC outage, a wallet out of gas), so email and
- * chat get one grouped message; PagerDuty still gets one incident per
- * workflow so each resolves on its own.
- *
- * Each org's rows and the incidents' alertQueuedAt are written in one
- * transaction, so a crash leaves either both or neither; an incident left
- * without them is picked up by requeueLostAlerts.
- */
+/** 3+ alerts in one org usually share a cause: group email/chat, keep PagerDuty per workflow. */
 async function queueAlerts(
   opened: OpenedIncident[],
   now: Date,
@@ -594,12 +599,24 @@ async function queueAlerts(
     try {
       const members = await loadOrgMembers(organizationId);
       const rows: DeliveryInsert[] = [];
-      if (incidents.length >= GROUP_ALERTS_FROM) {
+      const policies = new Map<string, EffectivePolicy>();
+      for (const incident of incidents) {
+        policies.set(
+          incident.id,
+          await loadEffectivePolicy(organizationId, incident.workflowId)
+        );
+      }
+      // Only org-following workflows group; held alerts (org pause) go out later.
+      const groupable = incidents.filter(
+        (i) => !(policies.get(i.id)?.customRouting || i.holdUntil)
+      );
+      const grouped = groupable.length >= GROUP_ALERTS_FROM ? groupable : [];
+      if (grouped.length > 0) {
         const org = await loadOrgPolicy(organizationId);
         const orgChannels = await loadChannels(organizationId, null);
         rows.push(
           ...buildMessageRows({
-            scope: groupScope(incidents[0].id),
+            scope: groupScope(grouped[0].id),
             organizationId,
             incidentId: null,
             kind: "alert",
@@ -607,15 +624,12 @@ async function queueAlerts(
             emails: resolveRecipientEmails(org.recipientUserIds, members),
             channels: orgChannels,
             includePagerDuty: false,
-            context: { incidentIds: incidents.map((i) => i.id) },
+            context: { incidentIds: grouped.map((i) => i.id) },
             now,
           })
         );
-        for (const incident of incidents) {
-          const policy = await loadEffectivePolicy(
-            organizationId,
-            incident.workflowId
-          );
+        for (const incident of grouped) {
+          const policy = policies.get(incident.id);
           rows.push(
             ...buildMessageRows({
               scope: incidentScope(incident.id),
@@ -624,31 +638,33 @@ async function queueAlerts(
               kind: "alert",
               sequence: 0,
               emails: [],
-              channels: policy.channels.filter((c) => c.kind === "pagerduty"),
+              channels: (policy?.channels ?? []).filter(
+                (c) => c.kind === "pagerduty"
+              ),
               includePagerDuty: true,
+              context: { group: groupScope(grouped[0].id) },
               now,
             }).filter((row) => row.channel === "pagerduty")
           );
         }
-      } else {
-        for (const incident of incidents) {
-          const policy = await loadEffectivePolicy(
-            organizationId,
-            incident.workflowId
-          );
-          rows.push(
-            ...rowsForPolicy(
-              policy,
-              members,
-              organizationId,
-              incident.id,
-              "alert",
-              0,
-              now,
-              incident.workflowPaused ? { workflowPaused: true } : undefined
-            )
-          );
+      }
+      for (const incident of incidents) {
+        const policy = policies.get(incident.id);
+        if (grouped.includes(incident) || !policy) {
+          continue;
         }
+        rows.push(
+          ...rowsForPolicy(
+            policy,
+            members,
+            organizationId,
+            incident.id,
+            "alert",
+            0,
+            incident.holdUntil ?? now,
+            incident.workflowPaused ? { workflowPaused: true } : undefined
+          )
+        );
       }
       stats.messagesQueued += await queueAndMark(
         rows,
@@ -688,8 +704,7 @@ export async function requeueLostAlerts(
         )
       )
     )
-    // A stable order, so two overlapping cycles group the same incidents the
-    // same way and their grouped alerts share one dedup key.
+    // Stable order, so overlapping cycles produce the same group dedup key.
     .orderBy(workflowFailureIncidents.id)
     .limit(100);
   const enabled = lost.filter((incident) =>
@@ -700,12 +715,7 @@ export async function requeueLostAlerts(
   }
 }
 
-/**
- * Close incidents of workflows that were paused, deleted or switched to a
- * manual trigger. Those changes write no run, so nothing queues the workflow;
- * without this sweep the incident would stay open, reminders would keep
- * going and a PagerDuty page would stay triggered.
- */
+/** Close incidents of paused, deleted or manual workflows: no run ever queues them. */
 export async function closeInactiveIncidents(
   now: Date,
   stats: EvaluationStats
@@ -724,9 +734,7 @@ export async function closeInactiveIncidents(
     .where(
       and(
         isNull(workflowFailureIncidents.resolvedAt),
-        // Only the inactive ones, so a long list of open incidents during a
-        // wide outage cannot crowd them out of the batch. A workflow its own
-        // incident paused is held open (heldByPause), so it is left out too.
+        // Filter in SQL so a wide outage cannot crowd them out; heldByPause stays open.
         sql`((${workflows.enabled} = false AND NOT ${HELD_SQL})
           OR ${workflows.deletedAt} IS NOT NULL
           OR ${workflows.deactivatedAt} IS NOT NULL
@@ -780,10 +788,7 @@ export async function closeInactiveIncidents(
   }
 }
 
-/**
- * Daily reminders while a workflow keeps failing. Claimed with a compare and
- * set on the reminder count, so two evaluators never both send one.
- */
+/** Daily reminders; compare-and-set on the count so only one evaluator sends. */
 export async function queueReminders(
   now: Date,
   stats: EvaluationStats
@@ -819,8 +824,7 @@ export async function queueReminders(
         isHeld(incident) ||
         activePause(policy.orgPausedUntil, now)
       ) {
-        // Not owed a reminder today. Move its clock on without counting one,
-        // so it leaves the due list instead of crowding out other orgs'.
+        // Not owed today: move its clock so it stops crowding the due list.
         await db
           .update(workflowFailureIncidents)
           .set({ lastNotifiedAt: now })
@@ -865,18 +869,17 @@ export async function queueReminders(
   }
 }
 
-/**
- * The one-time "notifications are on" email for an organization that already
- * had workflows running before the feature reached it, listing the workflows
- * failing right now so nobody learns about them weeks later. Claimed by
- * setting launchNoticeSentAt, so it goes out once however the settings row
- * came to exist.
- */
+/** One-time launch notice listing workflows already failing; launchNoticeSentAt claims it. */
 async function queueLaunchNotice(
   organizationId: string,
   now: Date,
   stats: EvaluationStats
 ): Promise<void> {
+  // The scan below is heavy: a few orgs per cycle, the rest next time.
+  const cycle = cycleState(stats);
+  if (cycle.launchScans >= LAUNCH_SCANS_PER_CYCLE) {
+    return;
+  }
   const claimed = await db
     .update(orgFailureAlertSettings)
     .set({ launchNoticeSentAt: now })
@@ -890,6 +893,7 @@ async function queueLaunchNotice(
   if (claimed.length === 0) {
     return;
   }
+  cycle.launchScans += 1;
 
   const [earlier] = await db
     .select({ id: workflowExecutions.id })
@@ -977,16 +981,19 @@ async function findFailingWorkflows(organizationId: string): Promise<
 }
 
 /** Drain the queue of workflows to evaluate and queue the resulting alerts. */
-/**
- * Scheduled workflows that should have run and did not: due by their cron or
- * interval, past the grace, with no run row since. Many at once pages our team.
- */
+/** Where the missed-run scan stopped, so each cycle covers the next slice. */
+let missedScanCursor: string | null = null;
+/** A scheduler outage is ours: customers hear only once it lasts this long. */
+const PLATFORM_HOLD_MS = 30 * 60 * 1000;
+
+/** Schedules past due plus grace with no run since; many at once pages our team. */
 export async function checkMissedSchedules(
   now: Date,
   stats: EvaluationStats
 ): Promise<void> {
   const candidates = await db
     .select({
+      scheduleId: workflowSchedules.id,
       workflowId: workflows.id,
       organizationId: workflows.organizationId,
       nodes: workflows.nodes,
@@ -994,7 +1001,7 @@ export async function checkMissedSchedules(
       timezone: workflowSchedules.timezone,
       intervalSeconds: workflowSchedules.intervalSeconds,
       anchorAt: workflowSchedules.anchorAt,
-      scheduleUpdatedAt: workflowSchedules.updatedAt,
+      scheduleCreatedAt: workflowSchedules.createdAt,
       lastStartedAt: sql`(SELECT max(${workflowExecutions.startedAt})
         FROM ${workflowExecutions}
         WHERE ${workflowExecutions.workflowId} = ${workflows.id})`.mapWith(
@@ -1008,6 +1015,9 @@ export async function checkMissedSchedules(
       and(
         eq(workflowSchedules.enabled, true),
         workflowExecutableConditions(),
+        missedScanCursor
+          ? gt(workflowSchedules.id, missedScanCursor)
+          : undefined,
         sql`NOT EXISTS (SELECT 1 FROM ${workflowExecutions}
           WHERE ${workflowExecutions.workflowId} = ${workflows.id}
             AND ${workflowExecutions.startedAt} >= ${ranRecentlyCutoff(now).toISOString()})`,
@@ -1018,12 +1028,60 @@ export async function checkMissedSchedules(
     )
     .orderBy(workflowSchedules.id)
     .limit(MISSED_SCAN_LIMIT);
+  missedScanCursor =
+    candidates.length < MISSED_SCAN_LIMIT
+      ? null
+      : (candidates.at(-1)?.scheduleId ?? null);
 
-  const opened: OpenedIncident[] = [];
+  // The cheap due check first; settings are read only for late schedules.
+  const counting = new Map<string, Date | null>();
+  const late: ((typeof candidates)[number] & { dueAt: Date })[] = [];
   for (const row of candidates) {
     if (
       !isFailureAlertsEnabledForOrg(row.organizationId) ||
       workflowTriggerType(row.nodes) !== "Schedule"
+    ) {
+      continue;
+    }
+    if (!counting.has(row.organizationId)) {
+      counting.set(
+        row.organizationId,
+        (await loadOrgPolicy(row.organizationId)).countingSince
+      );
+    }
+    // A new org starts counting now, so nothing before this cycle is "late".
+    const since = counting.get(row.organizationId) ?? now;
+    const dueAt = missedDueAt({
+      schedule: row,
+      lastStartedAt: row.lastStartedAt,
+      notBefore: new Date(
+        Math.max(since.getTime(), row.scheduleCreatedAt.getTime())
+      ),
+      now,
+    });
+    if (dueAt) {
+      late.push({ ...row, dueAt });
+    }
+  }
+  stats.schedulesLate += late.length;
+
+  const platformWide =
+    late.length >= MISSED_RUNS_PLATFORM_ALERT &&
+    new Set(late.map((row) => row.organizationId)).size >= 3;
+  if (platformWide) {
+    logSystemError(
+      ErrorCategory.WORKFLOW_ENGINE,
+      "[FailureAlerts] Many scheduled workflows have not run; the scheduler may be down",
+      new Error(`${late.length} schedules late`),
+      { late: String(late.length) }
+    );
+  }
+
+  const opened: OpenedIncident[] = [];
+  for (const row of late) {
+    if (
+      platformWide &&
+      now.getTime() - row.dueAt.getTime() < PLATFORM_HOLD_MS
     ) {
       continue;
     }
@@ -1033,19 +1091,6 @@ export async function checkMissedSchedules(
         row.organizationId,
         row.workflowId
       );
-      const counting = policy.countingSince?.getTime() ?? 0;
-      const dueAt = missedDueAt({
-        schedule: row,
-        lastStartedAt: row.lastStartedAt,
-        notBefore: new Date(
-          Math.max(counting, row.scheduleUpdatedAt.getTime())
-        ),
-        now,
-      });
-      if (!dueAt) {
-        continue;
-      }
-      stats.schedulesLate += 1;
       if (isMuted(policy, now) || activePause(policy.orgPausedUntil, now)) {
         continue;
       }
@@ -1057,8 +1102,8 @@ export async function checkMissedSchedules(
           openedBy: "missed",
           threshold: policy.threshold,
           failureCount: 0,
-          firstFailedAt: dueAt,
-          lastFailedAt: dueAt,
+          firstFailedAt: row.dueAt,
+          lastFailedAt: row.dueAt,
           lastNotifiedAt: now,
         })
         .onConflictDoNothing()
@@ -1070,6 +1115,13 @@ export async function checkMissedSchedules(
           organizationId: row.organizationId,
           workflowId: row.workflowId,
         });
+        // The message tells customers our team is alerted: make it true.
+        logSystemWarn(
+          ErrorCategory.WORKFLOW_ENGINE,
+          "[FailureAlerts] A scheduled run did not start",
+          new Error(`due at ${row.dueAt.toISOString()}`),
+          { workflow_id: row.workflowId, organization_id: row.organizationId }
+        );
       }
     } catch (error) {
       logSystemError(
@@ -1079,14 +1131,6 @@ export async function checkMissedSchedules(
         { workflow_id: row.workflowId }
       );
     }
-  }
-  if (stats.schedulesLate >= MISSED_RUNS_PLATFORM_ALERT) {
-    logSystemError(
-      ErrorCategory.WORKFLOW_ENGINE,
-      "[FailureAlerts] Many scheduled workflows have not run; the scheduler may be down",
-      new Error(`${stats.schedulesLate} schedules late`),
-      { late: String(stats.schedulesLate) }
-    );
   }
   await queueAlerts(opened, now, stats);
 }
@@ -1102,8 +1146,7 @@ export async function evaluateQueuedWorkflows(
       const recheckAt = await evaluateWorkflow(workflowId, now, opened, stats);
       await releaseQueue(workflowId, lease, recheckAt);
     } catch (error) {
-      // The lease is left in place, so the workflow comes back in five
-      // minutes instead of being dropped.
+      // Leave the lease, so the workflow returns in five minutes.
       logSystemError(
         ErrorCategory.WORKFLOW_ENGINE,
         "[FailureAlerts] Could not evaluate workflow",

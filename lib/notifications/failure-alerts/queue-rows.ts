@@ -18,12 +18,7 @@ export type DeliveryInsert = Omit<
   typeof failureAlertDeliveries.$inferInsert,
   "dedupKey"
 > & {
-  /**
-   * What the message is about: `i:<incident>`, `g:<first incident>` for a
-   * grouped alert, `launch:<org>`, `paused:<channel>:<when>`. Part of the
-   * dedup key, so two different messages never collide and the same one can
-   * never be queued twice.
-   */
+  /** Dedup-key subject: `i:<incident>`, `g:<first incident>`, `launch:<org>`, `paused:<channel>:<when>`. */
   scope: string;
 };
 
@@ -80,11 +75,7 @@ export async function insertDeliveries(
   return inserted.length;
 }
 
-/**
- * The rows for one message to everyone the policy names. With nobody to
- * email and no chat channel, one failed email row is written so the backup
- * channels fire and the history shows nobody could be reached.
- */
+/** Rows for one message; with nobody reachable, a failed email row makes backups fire. */
 export function buildMessageRows(params: {
   scope: string;
   organizationId: string;

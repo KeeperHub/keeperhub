@@ -84,3 +84,13 @@ If any of the above commands fail or show errors:
 - **No dependencies field**: Do not use the `dependencies` field in plugin `index.ts` files.
 - **Why**: Avoiding SDKs reduces supply chain attack surface, since SDKs carry transitive dependencies that could be compromised. Routing egress through `safeFetch` stops a user-controlled destination from reaching internal metadata endpoints or RFC1918 hosts.
 
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+## This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

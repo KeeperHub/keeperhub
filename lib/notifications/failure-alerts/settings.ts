@@ -98,6 +98,9 @@ export async function loadChannelViews(
       )
     )
     .orderBy(failureAlertChannels.createdAt);
+  const usable = new Set(
+    (await loadUsableConnections(organizationId)).map((c) => c.id)
+  );
   return rows.map(({ channel, connectionName }) => ({
     id: channel.id,
     kind: channel.kind,
@@ -112,14 +115,12 @@ export async function loadChannelViews(
     lastError: channel.lastError,
     lastTestedAt: iso(channel.lastTestedAt),
     lastTestOk: channel.lastTestOk,
+    lastHealthCheckAt: iso(channel.lastHealthCheckAt),
+    connectionMissing: !usable.has(channel.integrationId),
   }));
 }
 
-/**
- * Connections of a kind that can alert. Shared ones (`organization`
- * visibility) can be used; with `ownerId`, that user's own unshared ones are
- * returned instead, so the picker can explain why they are missing.
- */
+/** Org-shared connections, or with `ownerId` that user's unshared ones (to explain them). */
 export async function loadUsableConnections(
   organizationId: string,
   ownerId?: string
@@ -180,6 +181,26 @@ async function loadFailingNow(
   }));
 }
 
+async function lastAlertDelivered(
+  organizationId: string
+): Promise<string | null> {
+  const [row] = await db
+    .select({
+      at: sql`max(${failureAlertDeliveries.deliveredAt})`.mapWith(
+        failureAlertDeliveries.deliveredAt
+      ),
+    })
+    .from(failureAlertDeliveries)
+    .where(
+      and(
+        eq(failureAlertDeliveries.organizationId, organizationId),
+        eq(failureAlertDeliveries.state, "delivered"),
+        inArray(failureAlertDeliveries.kind, ["alert", "reminder", "recovery"])
+      )
+    );
+  return row?.at ? row.at.toISOString() : null;
+}
+
 async function loadEmailUsage(
   organizationId: string
 ): Promise<{ used: number; limit: number } | null> {
@@ -194,11 +215,20 @@ async function loadEmailUsage(
   return { used: [...rows][0]?.sent ?? 0, limit: FREE_PLAN_MONTHLY_EMAILS };
 }
 
+/** Someone can be told: an email that is not capped, or a method that works. */
 export function isReachable(
   emails: string[],
-  channels: { pausedAt: string | Date | null }[]
+  channels: { pausedAt: string | Date | null; connectionMissing?: boolean }[],
+  emailCapped = false
 ): boolean {
-  return emails.length > 0 || channels.some((c) => !c.pausedAt);
+  return (
+    (emails.length > 0 && !emailCapped) ||
+    channels.some((c) => !(c.pausedAt || c.connectionMissing))
+  );
+}
+
+function capReached(usage: { used: number; limit: number } | null): boolean {
+  return usage !== null && usage.used >= usage.limit;
 }
 
 export async function loadOrgSettingsView(
@@ -223,7 +253,16 @@ export async function loadOrgSettingsView(
     loadEmailUsage(organizationId),
     loadFailingNow(organizationId),
     db
-      .select({ id: workflows.id, name: workflows.name })
+      .select({
+        id: workflows.id,
+        name: workflows.name,
+        mutedUntil: workflowFailureAlertOverrides.mutedUntil,
+        muteUntilSuccess: workflowFailureAlertOverrides.muteUntilSuccess,
+        threshold: workflowFailureAlertOverrides.threshold,
+        recipientUserIds: workflowFailureAlertOverrides.recipientUserIds,
+        customChannels: workflowFailureAlertOverrides.customChannels,
+        pauseWorkflow: workflowFailureAlertOverrides.pauseWorkflow,
+      })
       .from(workflowFailureAlertOverrides)
       .innerJoin(
         workflows,
@@ -266,7 +305,21 @@ export async function loadOrgSettingsView(
     connections,
     unsharedConnections,
     emailUsage,
-    customWorkflows: custom,
+    customWorkflows: custom.map((row) => ({
+      id: row.id,
+      name: row.name,
+      mutedUntil:
+        row.mutedUntil && row.mutedUntil > new Date()
+          ? row.mutedUntil.toISOString()
+          : null,
+      muteUntilSuccess: row.muteUntilSuccess,
+      threshold: row.threshold,
+      customRecipients: row.recipientUserIds !== null,
+      customChannels: row.customChannels,
+      pauseWorkflow: row.pauseWorkflow,
+    })),
+    lastAlertDeliveredAt: await lastAlertDelivered(organizationId),
+    version: policy.version,
     pause:
       policy.pausedUntil && policy.pausedUntil > new Date()
         ? {
@@ -278,7 +331,8 @@ export async function loadOrgSettingsView(
     failingNow,
     unreachable: !isReachable(
       resolveRecipientEmails(policy.recipientUserIds, members),
-      channels
+      channels,
+      capReached(emailUsage)
     ),
   };
 }
@@ -297,14 +351,12 @@ type ChannelInput = {
   integrationId: string;
   destination: string;
   role: FailureAlertChannelRole;
-  /**
-   * Only for a channel put back by Undo after its row was deleted: it comes
-   * back paused with this reason rather than live. Can pause, never unpause.
-   */
+  /** Undo of a deleted channel restores it paused; can pause, never unpause. */
   pausedReason?: string;
 };
 
 const MAX_PAUSED_REASON = 500;
+const TELEGRAM_CHAT_ID = /^(-?\d{5,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$/;
 const TRAILING_PERIOD = /\.+$/;
 
 export function parseThreshold(raw: unknown): number {
@@ -332,10 +384,7 @@ export function parseTimeLimit(raw: unknown): number | null {
   return value;
 }
 
-/**
- * Validate channel rows against the org's shared connections. With verify, a
- * new or retargeted channel must pass a silent check before it can be saved.
- */
+/** Validate channels; with verify, new or retargeted ones must pass a silent check. */
 export async function parseChannels(
   raw: unknown,
   organizationId: string,
@@ -372,9 +421,8 @@ export async function parseChannels(
   for (const item of items) {
     const integrationId = String(item?.integrationId ?? "");
     const connection = connections.get(integrationId);
-    // A saved channel whose connection was deleted or unshared since stays as
-    // it is, so it does not block every other change until someone removes
-    // it. It cannot send; the row already says so and the sender pauses it.
+    // Keep a channel whose connection vanished, so it does not block other
+    // changes; the sender pauses it.
     const unchanged = connection
       ? undefined
       : saved.find(
@@ -404,8 +452,10 @@ export async function parseChannels(
         "A Slack channel needs a channel, for example #alerts."
       );
     }
-    if (connection.kind === "telegram" && !destination) {
-      throw new SettingsError("A Telegram channel needs a chat ID.");
+    if (connection.kind === "telegram" && !TELEGRAM_CHAT_ID.test(destination)) {
+      throw new SettingsError(
+        "That is not a Telegram chat ID: use a number like -1001234567890, or @name for a public channel."
+      );
     }
     if (connection.kind === "pagerduty" && !isPagerDutyId(destination)) {
       throw new SettingsError("Pick the PagerDuty service to page.");
@@ -450,7 +500,7 @@ async function verifyNewTargets(
   const fresh = parsed.filter(
     (p) =>
       !(
-        p.pausedReason ||
+        (p.pausedReason && !p.id) ||
         saved.some(
           (row) =>
             row.id === p.id &&
@@ -486,10 +536,7 @@ async function verifyNewTargets(
   );
 }
 
-/**
- * Replace a channel list (org-wide when workflowId is null). Rows that are
- * kept keep their id, so their health and history stay attached.
- */
+/** Replace a channel list; kept rows keep their id, health and history. */
 export async function replaceChannels(
   tx: Tx,
   organizationId: string,
@@ -582,9 +629,10 @@ export async function replaceChannels(
       destination: channel.destination,
       role: channel.role,
       createdBy: userId,
+      // Saving ran the silent check, so a new method starts checked.
       ...(channel.pausedReason
         ? { pausedAt: new Date(), pausedReason: channel.pausedReason }
-        : {}),
+        : { lastHealthCheckAt: new Date() }),
     });
   }
 }
@@ -596,7 +644,23 @@ type OrgSettingsInput = {
   notifyRecovery: boolean;
   recipientUserIds: string[];
   channels: ChannelInput[];
+  /** The version the editor loaded; absent (API callers) skips the check. */
+  version: number | null;
 };
+
+const STALE_SAVE =
+  "These settings were changed by someone else. Reload to see the latest, then save again.";
+
+/** Refuse a save made from an older copy, so it cannot undo someone else's change. */
+export function checkVersion(expected: number | null, current: number): void {
+  if (expected !== null && expected !== current) {
+    throw new SettingsError(STALE_SAVE, 409);
+  }
+}
+
+export function parseVersion(raw: unknown): number | null {
+  return typeof raw === "number" && Number.isInteger(raw) ? raw : null;
+}
 
 export async function parseOrgSettings(
   body: Record<string, unknown>,
@@ -630,6 +694,7 @@ export async function parseOrgSettings(
     channels: await parseChannels(body.channels, organizationId, {
       verify: true,
     }),
+    version: parseVersion(body.version),
   };
 }
 
@@ -661,22 +726,24 @@ export async function saveOrgSettings(
   };
   await db.transaction(async (tx: Tx) => {
     await lockOrgSettings(tx, organizationId);
+    const [current] = await tx
+      .select({ version: orgFailureAlertSettings.version })
+      .from(orgFailureAlertSettings)
+      .where(eq(orgFailureAlertSettings.organizationId, organizationId));
+    checkVersion(input.version, current?.version ?? 0);
+    const next = { ...values, version: (current?.version ?? 0) + 1 };
     await tx
       .insert(orgFailureAlertSettings)
-      .values({ organizationId, ...values })
+      .values({ organizationId, ...next })
       .onConflictDoUpdate({
         target: orgFailureAlertSettings.organizationId,
-        set: values,
+        set: next,
       });
     await replaceChannels(tx, organizationId, null, input.channels, userId);
   });
 }
 
-/**
- * Serialise saves of one org's notification settings, so two that overlap
- * (auto-save while an earlier save is in flight, two admins) apply one after
- * the other instead of interleaving their channel changes.
- */
+/** Serialise one org's saves so overlapping ones never interleave channel changes. */
 export async function lockOrgSettings(
   tx: Tx,
   organizationId: string
@@ -693,10 +760,7 @@ type HistoryFilter = {
   limit?: number;
 };
 
-/**
- * What was sent, newest first: every alert, reminder, recovery, backup and
- * notice, with where it went and what happened.
- */
+/** Everything sent, newest first, with destination and outcome. */
 export async function loadHistory(
   organizationId: string,
   filter: HistoryFilter
@@ -859,10 +923,7 @@ export function historyToCsv(entries: HistoryEntry[]): string {
   return `${lines.join("\n")}\n`;
 }
 
-/**
- * Look at workflows again after a settings change, so a lower threshold or an
- * ended mute takes effect now rather than on the next run.
- */
+/** Re-evaluate after a settings change so it applies now, not on the next run. */
 export async function requeueForEvaluation(
   organizationId: string,
   workflowId?: string
@@ -892,11 +953,14 @@ export async function loadInAppAlertState(
   if (!isFailureAlertsEnabledForOrg(organizationId)) {
     return { failingWorkflows: 0, unreachable: false };
   }
-  const [policy, members, channels, open] = await Promise.all([
+  const [policy, members, rows, open, usable, usage] = await Promise.all([
     loadOrgPolicy(organizationId),
     loadOrgMembers(organizationId),
     db
-      .select({ pausedAt: failureAlertChannels.pausedAt })
+      .select({
+        pausedAt: failureAlertChannels.pausedAt,
+        integrationId: failureAlertChannels.integrationId,
+      })
       .from(failureAlertChannels)
       .where(
         and(
@@ -913,12 +977,20 @@ export async function loadInAppAlertState(
           isNull(workflowFailureIncidents.resolvedAt)
         )
       ),
+    loadUsableConnections(organizationId),
+    loadEmailUsage(organizationId),
   ]);
+  const usableIds = new Set(usable.map((c) => c.id));
+  const channels = rows.map((row) => ({
+    pausedAt: row.pausedAt,
+    connectionMissing: !usableIds.has(row.integrationId),
+  }));
   return {
     failingWorkflows: open[0]?.count ?? 0,
     unreachable: !isReachable(
       resolveRecipientEmails(policy.recipientUserIds, members),
-      channels
+      channels,
+      capReached(usage)
     ),
   };
 }

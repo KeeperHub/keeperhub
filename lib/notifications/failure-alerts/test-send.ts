@@ -103,11 +103,7 @@ async function orgName(organizationId: string): Promise<string> {
 
 type ChannelTestRequest = Exclude<TestRequest, { channel: "email" }>;
 
-/**
- * What to test. A saved channel is tested with its own stored connection and
- * destination, never values from the request, so a test can only clear the
- * pause on the channel it actually proved works.
- */
+/** Saved channels test with stored values only, so a test clears only the channel it proved. */
 async function resolveTarget(
   organizationId: string,
   request: ChannelTestRequest
@@ -209,11 +205,7 @@ async function testEmail(
   };
 }
 
-/**
- * Send one test through the same senders real alerts use, so a passing test
- * proves the real path. Validated before the rate limit is spent, and never
- * counted toward the Free plan's emails.
- */
+/** Test through the real senders; not counted toward the Free plan's emails. */
 export async function sendTest(params: {
   organizationId: string;
   userId: string;

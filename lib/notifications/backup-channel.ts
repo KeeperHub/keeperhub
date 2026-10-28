@@ -42,11 +42,7 @@ export type BackupOutcome = {
   error?: string;
   /** HTTP status of the provider's answer, when there was one. */
   status?: number;
-  /**
-   * Whether another attempt could help: a timeout, a rate limit or a 5xx.
-   * False for a deleted webhook, a revoked token or a bot removed from the
-   * chat, which keep failing until someone fixes the connection.
-   */
+  /** A retry could help (timeout, rate limit, 5xx); false for broken connections. */
   retryable?: boolean;
 };
 
@@ -179,10 +175,7 @@ async function postTelegram(
       };
 }
 
-/**
- * Slack answers most failures with HTTP 200 and an error code, so the status
- * alone cannot tell a rate limit from a revoked token.
- */
+/** Slack fails with HTTP 200 plus an error code, so read the code, not the status. */
 export function slackFailureIsRetryable(
   httpOk: boolean,
   status: number,
@@ -247,8 +240,7 @@ export async function sendBackupNotification(params: {
       attempted: true,
       delivered: false,
       error: `Backup notification failed: ${getErrorMessage(error)}`,
-      // A network fault or timeout may clear; a host the SSRF guard refused
-      // will be refused identically every time.
+      // Network faults may clear; an SSRF-guard refusal never will.
       retryable: !(error instanceof SsrfBlockedError),
     };
   }

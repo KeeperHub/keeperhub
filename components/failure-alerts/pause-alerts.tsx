@@ -53,7 +53,7 @@ export function AlertsPausedNotice({
             Alerts are paused until {formatWhen(pause.until)}
             {pause.by ? ` by ${pause.by}` : ""}
             {pause.reason ? `: ${pause.reason}` : ""}. Workflows keep running;
-            failures are not reported until then.
+            failures are recorded, but nobody is told until then.
           </p>
           {canManage && (
             <Button
@@ -191,7 +191,7 @@ export function PauseAlertsForm({
           value={reason}
         />
         <p className="text-muted-foreground text-xs">
-          Shown to everyone here, and in Recent notifications.
+          Shown on this page and in the pause email.
         </p>
       </div>
       {error && (

@@ -15,10 +15,7 @@ const CHANNELS = new Set([
 ]);
 const CSV_LIMIT = 500;
 
-/**
- * What failure notifications were sent, newest first. Any member may read it.
- * `?format=csv` downloads up to 500 rows.
- */
+/** Sent notifications, newest first; any member. `?format=csv` gives up to 500 rows. */
 export async function GET(
   request: Request,
   context: { params: Promise<{ organizationId: string }> }

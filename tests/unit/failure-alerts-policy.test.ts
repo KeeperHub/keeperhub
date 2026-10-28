@@ -26,6 +26,7 @@ function override(
     muteReason: null,
     mutedBy: null,
     pauseWorkflow: false,
+    version: 0,
     updatedBy: null,
     updatedAt: new Date(),
     ...patch,

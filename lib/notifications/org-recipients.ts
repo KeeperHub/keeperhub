@@ -5,10 +5,7 @@ import { db } from "@/lib/db";
 import { member, users } from "@/lib/db/schema";
 import { deliverableAddress } from "@/lib/notifications/deliverable-address";
 
-/**
- * Who in an organization can be emailed, shared by every notification that
- * goes to members (execution-quota warnings, workflow failure alerts).
- */
+// Which org members can be emailed, shared by quota warnings and failure alerts.
 
 export type OrgMember = {
   userId: string;

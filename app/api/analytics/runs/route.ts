@@ -69,9 +69,7 @@ function parsePaginationParam(
 }
 
 /**
- * A cursor is what the previous page's `nextCursor` held: an opaque keyset
- * (time, source, id), or the plain ISO `startedAt` this listing minted before.
- * See lib/analytics/run-cursor.ts.
+ * A cursor is the previous page's `nextCursor` (see lib/analytics/run-cursor.ts).
  *
  * `Date.parse` admits far more than either, and the extras all end badly.
  * `?cursor=abc` became an Invalid Date, which Postgres rejected and the route

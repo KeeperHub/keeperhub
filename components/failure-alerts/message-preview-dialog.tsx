@@ -72,8 +72,8 @@ export function MessagePreviewDialog({
         <DialogHeader>
           <DialogTitle>What people get</DialogTitle>
           <DialogDescription>
-            An example workflow, rendered by the same code as real alerts. Every
-            method gets the same words; only the layout differs.
+            An example, made by the same code as real alerts. Every method gets
+            the same words; only the layout differs.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-1.5">

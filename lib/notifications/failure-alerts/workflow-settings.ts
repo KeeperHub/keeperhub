@@ -20,6 +20,7 @@ import {
 } from "./policy";
 import type { Tx } from "./queue-rows";
 import {
+  checkVersion,
   loadChannelViews,
   loadOrgSettingsView,
   loadUsableConnections,
@@ -27,6 +28,7 @@ import {
   parseChannels,
   parseThreshold,
   parseTimeLimit,
+  parseVersion,
   replaceChannels,
   SettingsError,
   toMemberView,
@@ -140,16 +142,16 @@ export async function loadWorkflowAlertView(
       channels: org.channels,
       unreachable: org.unreachable,
       emailUsage: org.emailUsage,
+      pause: org.pause,
     },
+    version: override?.version ?? 0,
     override: {
       threshold: override?.threshold ?? null,
       timeLimitMinutes: override?.timeLimitMinutes ?? null,
       recipientUserIds: override?.recipientUserIds ?? null,
       customChannels: override?.customChannels ?? false,
       channels: workflowChannels,
-      // A mute that has ended is no mute: showing it would say "Muted"
-      // about a workflow that alerts again, and sending it back would be
-      // refused as a mute in the past.
+      // Drop an ended mute: it would show "Muted" and be refused when saved back.
       mutedUntil:
         override?.mutedUntil && override.mutedUntil > new Date()
           ? override.mutedUntil.toISOString()
@@ -220,17 +222,18 @@ function parseMute(
     typeof body.muteReason === "string"
       ? body.muteReason.trim().slice(0, 200)
       : "";
+  // "Until it works" still ends after MAX_MUTE_DAYS, so no mute is forever.
+  if (untilSuccess && !mutedUntil) {
+    mutedUntil = new Date(now.getTime() + MAX_MUTE_DAYS * 24 * 60 * 60 * 1000);
+  }
   return {
     mutedUntil,
-    muteUntilSuccess: untilSuccess && !mutedUntil,
-    muteReason: (mutedUntil || untilSuccess) && reason ? reason : null,
+    muteUntilSuccess: untilSuccess,
+    muteReason: mutedUntil && reason ? reason : null,
   };
 }
 
-/**
- * Save a workflow's override. Every field left null follows the org. An
- * override with nothing set is removed, along with its channels.
- */
+/** Save a workflow override; an empty one is removed with its channels. */
 export async function saveWorkflowOverride(params: {
   workflowId: string;
   organizationId: string;
@@ -285,6 +288,14 @@ export async function saveWorkflowOverride(params: {
     ? await parseChannels(body.channels, organizationId, { verify: true })
     : [];
   const mute = parseMute(body, now);
+  const expectedVersion = parseVersion(body.version);
+  const currentVersion = async (tx: Tx): Promise<number> => {
+    const [row] = await tx
+      .select({ version: workflowFailureAlertOverrides.version })
+      .from(workflowFailureAlertOverrides)
+      .where(eq(workflowFailureAlertOverrides.workflowId, workflowId));
+    return row?.version ?? 0;
+  };
   const pauseWorkflow = body.pauseWorkflow === true;
 
   const empty =
@@ -299,6 +310,7 @@ export async function saveWorkflowOverride(params: {
   if (empty) {
     await db.transaction(async (tx: Tx) => {
       await lockOrgSettings(tx, organizationId);
+      checkVersion(expectedVersion, await currentVersion(tx));
       await tx
         .delete(workflowFailureAlertOverrides)
         .where(eq(workflowFailureAlertOverrides.workflowId, workflowId));
@@ -325,12 +337,15 @@ export async function saveWorkflowOverride(params: {
   };
   await db.transaction(async (tx: Tx) => {
     await lockOrgSettings(tx, organizationId);
+    const current = await currentVersion(tx);
+    checkVersion(expectedVersion, current);
+    const next = { ...values, version: current + 1 };
     await tx
       .insert(workflowFailureAlertOverrides)
-      .values({ workflowId, organizationId, ...values })
+      .values({ workflowId, organizationId, ...next })
       .onConflictDoUpdate({
         target: workflowFailureAlertOverrides.workflowId,
-        set: values,
+        set: next,
       });
     await replaceChannels(tx, organizationId, workflowId, channels, userId);
   });

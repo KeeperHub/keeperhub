@@ -14,15 +14,8 @@ import {
 import { organization, workflows } from "@/lib/db/schema";
 import { generateId } from "@/lib/utils/id";
 
-/**
- * Workflow failure notifications: tell an organization when a workflow that
- * runs on its own keeps failing.
- *
- * Detection never hooks the code that ends a run (about ten places do). A
- * trigger on workflow_executions marks the workflow in
- * alert_queue, and the evaluator (an internal cron route)
- * reads run history from there. See lib/notifications/failure-alerts/.
- */
+// Failure alerts. A DB trigger queues workflows (runs end in ~10 code paths);
+// the cron evaluator in lib/notifications/failure-alerts/ reads from there.
 
 export type FailureAlertChannelKind =
   | "slack"
@@ -33,15 +26,7 @@ export type FailureAlertChannelKind =
 /** "always" gets every alert; "backup" only when another channel failed. */
 export type FailureAlertChannelRole = "always" | "backup";
 
-/**
- * Org-wide policy. An organization with no row gets DEFAULT_FAILURE_ALERT_POLICY
- * (5 failed runs in a row, email the owners), so nothing is backfilled for
- * existing organizations.
- *
- * `countingSince` is written the first time the evaluator sees the org with
- * the feature on. Failures before it never count, so switching the feature on
- * does not email every owner about workflows that have been failing for weeks.
- */
+/** Org-wide policy; no row means the defaults. countingSince hides older failures. */
 export const orgFailureAlertSettings = pgTable(
   "alert_settings",
   {
@@ -51,8 +36,7 @@ export const orgFailureAlertSettings = pgTable(
     timeLimitMinutes: integer("time_limit_minutes").default(360),
     remindDaily: boolean("remind_daily").notNull().default(true),
     notifyRecovery: boolean("notify_recovery").notNull().default(true),
-    // Null: the organization's owners. Otherwise these members, filtered to
-    // current members with a deliverable address at send time.
+    // Null: the owners. Otherwise these members, re-filtered at send time.
     recipientUserIds: jsonb("recipient_user_ids").$type<string[] | null>(),
     countingSince: timestamp("counting_since"),
     launchNoticeSentAt: timestamp("launch_notice_sent_at"),
@@ -60,6 +44,8 @@ export const orgFailureAlertSettings = pgTable(
     pausedUntil: timestamp("paused_until"),
     pauseReason: text("pause_reason"),
     pausedBy: text("paused_by"),
+    // Bumped on every save; a save sent with an older one is refused.
+    version: integer("version").notNull().default(0),
     updatedBy: text("updated_by"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -73,17 +59,7 @@ export const orgFailureAlertSettings = pgTable(
   ]
 );
 
-/**
- * A chat or PagerDuty destination. `workflowId` null is an org-wide channel;
- * set, it belongs to that workflow's custom channel list.
- *
- * Health lives on the row so settings can show it and the evaluator can skip a
- * paused channel without reading the delivery log.
- *
- * `integrationId` deliberately has no foreign key: deleting a connection must
- * not delete the channel silently. The next send finds the connection gone,
- * pauses the channel and tells the org, which a cascade would skip.
- */
+/** Chat/PagerDuty channel. No FK on integrationId, on purpose: pause and tell, never cascade. */
 export const failureAlertChannels = pgTable(
   "alert_methods",
   {
@@ -100,8 +76,7 @@ export const failureAlertChannels = pgTable(
       .notNull()
       .default("always")
       .$type<FailureAlertChannelRole>(),
-    // Set after a permanent error or a day of failed retries; cleared by a
-    // successful test.
+    // Set after a permanent error or a day of failed retries; a good test clears it.
     pausedAt: timestamp("paused_at"),
     pausedReason: text("paused_reason"),
     lastDeliveredAt: timestamp("last_delivered_at"),
@@ -134,10 +109,7 @@ export const failureAlertChannels = pgTable(
   ]
 );
 
-/**
- * Per-workflow override. Every nullable field means "follow the org": a field
- * nobody touched keeps tracking later org changes.
- */
+/** Per-workflow override; a null field follows the org. */
 export const workflowFailureAlertOverrides = pgTable(
   "alert_overrides",
   {
@@ -147,16 +119,16 @@ export const workflowFailureAlertOverrides = pgTable(
     // Null follows the org; 0 turns the time limit off for this workflow.
     timeLimitMinutes: integer("time_limit_minutes"),
     recipientUserIds: jsonb("recipient_user_ids").$type<string[] | null>(),
-    // True: use this workflow's rows in alert_methods instead of the
-    // org's.
+    // True: use this workflow's alert_methods rows instead of the org's.
     customChannels: boolean("custom_channels").notNull().default(false),
     mutedUntil: timestamp("muted_until"),
     muteUntilSuccess: boolean("mute_until_success").notNull().default(false),
     muteReason: text("mute_reason"),
     mutedBy: text("muted_by"),
-    // Turn the workflow off when its alert goes out. Per workflow only, on
-    // purpose: an org-wide switch could stop every automation at once.
+    // Per workflow only: an org-wide switch could stop every automation at once.
     pauseWorkflow: boolean("pause_workflow").notNull().default(false),
+    // Bumped on every save; a save sent with an older one is refused.
+    version: integer("version").notNull().default(0),
     updatedBy: text("updated_by"),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
@@ -174,11 +146,7 @@ export const workflowFailureAlertOverrides = pgTable(
   ]
 );
 
-/**
- * Workflows to evaluate. Written by the run-status trigger (due now) and by
- * the evaluator itself to re-check a streak when its time limit falls due.
- * One row per workflow however often it runs.
- */
+/** Workflows to evaluate, one row each; written by the run trigger and time-limit rechecks. */
 export const workflowFailureAlertQueue = pgTable(
   "alert_queue",
   {
@@ -196,13 +164,9 @@ export type FailureIncidentResolution =
   | "manual_trigger";
 
 /** What opened an incident: N failures, a time limit, or a schedule that did not run. */
-export type FailureIncidentTrigger = "count" | "time" | "missed";
+export type FailureIncidentTrigger = "count" | "time" | "missed" | "funding";
 
-/**
- * One failing streak that reached the threshold. At most one open per
- * workflow (partial unique index): whoever inserts it sends the alert, so two
- * evaluators can never both send.
- */
+/** A streak over threshold; one open per workflow, so only the inserter sends. */
 export const workflowFailureIncidents = pgTable(
   "alert_incidents",
   {
@@ -221,14 +185,11 @@ export const workflowFailureIncidents = pgTable(
     lastError: text("last_error"),
     reminderCount: integer("reminder_count").notNull().default(0),
     lastNotifiedAt: timestamp("last_notified_at").notNull().defaultNow(),
-    // Set in the same transaction that queues the alert. An open incident
-    // without it lost its alert (a crash between the two) and is re-queued.
+    // Set with the alert's queueing; an open incident without it gets re-queued.
     alertQueuedAt: timestamp("alert_queued_at"),
-    // When this incident last turned its workflow off (pauseWorkflow). While
-    // the workflow stays off the incident stays open: stopped is not fixed.
+    // While the workflow stays off, the incident stays open: stopped is not fixed.
     workflowPausedAt: timestamp("workflow_paused_at"),
-    // When someone last turned the workflow back on, set by a trigger on
-    // workflows.enabled. A pause older than this no longer holds the incident.
+    // Set by a trigger on workflows.enabled; an older pause no longer holds the incident.
     workflowResumedAt: timestamp("workflow_resumed_at"),
     resolvedAt: timestamp("resolved_at"),
     resolvedReason: text("resolved_reason").$type<FailureIncidentResolution>(),
@@ -260,7 +221,8 @@ export type FailureAlertMessageKind =
   | "channel_paused"
   | "launch_notice"
   | "alerts_paused"
-  | "alerts_resumed";
+  | "alerts_resumed"
+  | "cap_warning";
 
 export type FailureAlertDeliveryChannel = "email" | FailureAlertChannelKind;
 
@@ -273,15 +235,7 @@ export type FailureAlertDeliveryState =
   | "capped"
   | "skipped";
 
-/**
- * The outbox: one row per message, channel and recipient. The evaluator only
- * inserts; the drain step sends, retries and records the outcome.
- *
- * `dedupKey` names the message (incident or group, kind, sequence, channel,
- * recipient, backup or not) and is unique, so a message can never be queued
- * twice. A unique index over the nullable incident_id could not do that:
- * Postgres treats NULLs as distinct, and grouped alerts and notices have none.
- */
+/** Outbox, one row per message and recipient; dedupKey is unique since incident_id can be null. */
 export const failureAlertDeliveries = pgTable(
   "alert_deliveries",
   {
@@ -331,8 +285,7 @@ export const failureAlertDeliveries = pgTable(
     }).onDelete("cascade"),
     uniqueIndex("uq_alert_deliveries_dedup").on(table.dedupKey),
     index("idx_alert_deliveries_incident").on(table.incidentId),
-    // Only rows that may still need plan B, so delivered primaries (most of
-    // the table) never sit in it.
+    // Partial: delivered primaries (most rows) stay out of it.
     index("idx_alert_deliveries_backup_due")
       .on(table.backupAt)
       .where(

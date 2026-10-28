@@ -34,19 +34,10 @@ import {
 } from "./run-cursor";
 import type { RunQueryFilters } from "./types";
 
-/**
- * The SQL behind the notification rows of the analytics runs list. Callers
- * decide whether notifications are in play at all (resolveSources in
- * queries.ts): network, gas and duration filters leave none, so they are not
- * expressed here.
- */
+// SQL for notification rows in the runs list. resolveSources (queries.ts) drops
+// them for network, gas and duration filters, so those are not handled here.
 
-/**
- * Deliveries about a workflow matching `workflowPredicate` (written against
- * the alias `wf`). A delivery names its incident directly, or lists several in
- * context.incidentIds for a grouped message; each arm reaches the incident by
- * its primary key, so neither scans the organization's incidents per delivery.
- */
+/** Deliveries about a workflow matching `workflowPredicate` (alias `wf`); both arms join incidents by key. */
 function deliveryAboutWorkflow(
   organizationId: string,
   workflowPredicate: SQL
@@ -86,11 +77,7 @@ function searchCondition(term: string, organizationId: string): SQL {
   )`;
 }
 
-/**
- * Every notification predicate, org and window included. With a project, a
- * message is in it when a workflow it is about is (any one, for a grouped
- * message); a notice about no workflow is in none.
- */
+/** All notification predicates; with a project, a workflow-less notice matches none. */
 function notificationConditions(
   organizationId: string,
   rangeStart: Date,
@@ -125,12 +112,7 @@ function notificationConditions(
   return conditions;
 }
 
-/**
- * Failure notifications as run rows, newest first. Workflow names resolve the
- * way the Settings > Notifications history resolves them: a message about one
- * incident through that incident, a grouped one through the incident ids its
- * context lists.
- */
+/** Failure notifications as run rows, newest first, named like the notification history. */
 export async function fetchNotificationRuns(
   organizationId: string,
   rangeStart: Date,
@@ -258,12 +240,7 @@ export async function getNotificationRunsTotal(
   return Number(result[0]?.count) || 0;
 }
 
-/**
- * The newest change to a notification in the window, for the SSE checksum. It
- * reads updated_at so a delivery that settles refreshes the list as well as a
- * new one; an org's notifications in one window are few, and the org /
- * created_at index bounds the scan to them.
- */
+/** Newest updated_at in the window for the SSE checksum, so settled deliveries refresh too. */
 export async function newestNotificationChange(
   organizationId: string,
   rangeStart: Date

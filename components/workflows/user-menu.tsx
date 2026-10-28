@@ -258,7 +258,7 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
                 <span className="truncate">
                   {hasNotificationType(notificationStatus, "workflows_failing")
                     ? "Workflows failing"
-                    : "Nobody gets failure alerts"}
+                    : "Nobody gets alerts"}
                 </span>
               </DropdownMenuItem>
               <DropdownMenuSeparator />

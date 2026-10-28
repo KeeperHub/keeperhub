@@ -1,7 +1,4 @@
-/**
- * Numbers that define workflow failure notifications, in one place so the
- * settings API, the evaluator, the UI and the tests cannot drift apart.
- */
+// Shared numbers, so the API, evaluator, UI and tests cannot drift apart.
 
 /** Every organization gets this until an owner or admin changes it. */
 export const DEFAULT_THRESHOLD = 5;
@@ -22,10 +19,7 @@ export const MAX_REMINDERS = 7;
 /** Free plan: alert emails accepted by the provider per org per UTC month. */
 export const FREE_PLAN_MONTHLY_EMAILS = 100;
 
-/**
- * How long a temporary failure is retried before the backup channels are
- * used. PagerDuty is the on-call path, so it gets two minutes, not fifteen.
- */
+/** Retry window before backups fire; PagerDuty is on-call, so only two minutes. */
 export const BACKUP_AFTER_MS = {
   email: 15 * 60 * 1000,
   slack: 15 * 60 * 1000,
@@ -37,10 +31,7 @@ export const BACKUP_AFTER_MS = {
 /** Retries keep going after the backups fire, until this much time passes. */
 export const GIVE_UP_AFTER_MS = 24 * 60 * 60 * 1000;
 
-/**
- * Delay before attempt N+1 (index N-1). The last value repeats. The evaluator
- * runs every minute, so anything shorter waits for the next run.
- */
+/** Delay before attempt N+1 (index N-1); the last repeats. Under a minute waits a cycle. */
 export const RETRY_DELAYS_MS = [
   60 * 1000,
   2 * 60 * 1000,
@@ -50,18 +41,10 @@ export const RETRY_DELAYS_MS = [
   60 * 60 * 1000,
 ] as const;
 
-/**
- * A row left in "sending" this long belongs to an evaluator that died. A live
- * row waits at most the delivery budget plus one send (10 s timeout, two calls
- * for PagerDuty) before it is sent or handed back, far below this.
- */
+/** A row "sending" this long was claimed by a dead evaluator; live ones finish far sooner. */
 export const STALE_SENDING_MS = 5 * 60 * 1000;
 
-/**
- * Rows are claimed a few at a time. Both drains of a cycle share one budget,
- * checked before every row, and rows not reached by then go back to the queue,
- * so a cycle ends inside its minute and no claimed row waits long.
- */
+/** Both drains share this budget so a cycle ends within its minute; unreached rows go back. */
 export const DELIVERY_BATCH = 25;
 export const DELIVERY_BUDGET_MS = 40 * 1000;
 export const MAX_WORKFLOWS_PER_RUN = 500;

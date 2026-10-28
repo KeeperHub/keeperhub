@@ -32,6 +32,7 @@ import {
   FREE_PLAN_MONTHLY_EMAILS,
   GIVE_UP_AFTER_MS,
   HEALTH_CHECK_INTERVAL_MS,
+  MAX_REMINDERS,
   RETENTION_DAYS,
   RETRY_DELAYS_MS,
   STALE_SENDING_MS,
@@ -113,10 +114,7 @@ function scopeOf(row: DeliveryRow): string {
   return `row:${row.id}`;
 }
 
-/**
- * Claim a few due rows. "sending" rows untouched for STALE_SENDING_MS belong
- * to an evaluator that died mid-send and are taken over.
- */
+/** Claim due rows, taking over "sending" rows a dead evaluator left behind. */
 async function claimDue(): Promise<DeliveryRow[]> {
   const rows = await db.execute<{ id: string }>(sql`
     UPDATE ${failureAlertDeliveries}
@@ -302,6 +300,13 @@ async function renderRow(
       channelLabel: String(context.channelLabel ?? "A channel"),
       reason: String(context.reason ?? ""),
     };
+  } else if (row.kind === "cap_warning") {
+    input = {
+      ...org,
+      kind: "cap_warning",
+      used: Number(context.used ?? 0),
+      limit: Number(context.limit ?? FREE_PLAN_MONTHLY_EMAILS),
+    };
   } else if (row.kind === "alerts_paused") {
     input = {
       ...org,
@@ -337,6 +342,7 @@ async function renderRow(
           ...workflow,
           failureCount: incident.failureCount,
           workflowPaused: incident.workflowPausedAt !== null,
+          lastError: incident.lastError,
         });
       }
     }
@@ -365,7 +371,13 @@ async function renderRow(
     };
     input =
       row.kind === "recovery"
-        ? { ...org, kind: "recovery", workflow, incident: alertIncident }
+        ? {
+            ...org,
+            kind: "recovery",
+            workflow,
+            incident: alertIncident,
+            ranButFailed: context.ranButFailed === true,
+          }
         : {
             ...org,
             kind: row.kind === "reminder" ? "reminder" : "alert",
@@ -373,6 +385,8 @@ async function renderRow(
             incident: alertIncident,
             backupReason,
             paused: pausedVariant(row.kind, context, incident),
+            reminderNumber: row.kind === "reminder" ? row.sequence : undefined,
+            maxReminders: MAX_REMINDERS,
             pausedFailures:
               typeof context.failures === "number"
                 ? context.failures
@@ -396,26 +410,67 @@ async function renderRow(
   return { rendered: renderMessage(input) };
 }
 
-/**
- * Reserve one email against the Free plan's monthly allowance. Returns false
- * when the allowance is used up. Paid plans are never capped.
- */
+/** Reserve one email of the Free monthly allowance; false when used up. */
 async function reserveEmail(
   organizationId: string,
-  ctx: Context
+  ctx: Context,
+  kind: string
 ): Promise<boolean> {
   if ((await ctx.plan(organizationId)) !== "free") {
     return true;
   }
+  // The last few emails of the month are kept for new failures.
+  const limit =
+    kind === "alert"
+      ? FREE_PLAN_MONTHLY_EMAILS
+      : FREE_PLAN_MONTHLY_EMAILS - EMAILS_KEPT_FOR_NEW_ALERTS;
   const rows = await db.execute<{ sent: number }>(sql`
     INSERT INTO ${failureAlertEmailUsage} (organization_id, period_start, sent)
     VALUES (${organizationId}, date_trunc('month', now() AT TIME ZONE 'UTC'), 1)
     ON CONFLICT (organization_id, period_start) DO UPDATE
       SET sent = ${failureAlertEmailUsage}.sent + 1
-      WHERE ${failureAlertEmailUsage}.sent < ${FREE_PLAN_MONTHLY_EMAILS}
+      WHERE ${failureAlertEmailUsage}.sent < ${limit}
     RETURNING sent
   `);
-  return [...rows].length > 0;
+  const sent = [...rows][0]?.sent;
+  if (sent === undefined) {
+    return false;
+  }
+  const warnAt = CAP_WARNINGS.find((at) => at === Number(sent));
+  if (warnAt) {
+    await queueCapWarning(organizationId, warnAt);
+  }
+  return true;
+}
+
+const EMAILS_KEPT_FOR_NEW_ALERTS = 10;
+const CAP_WARNINGS = [80, FREE_PLAN_MONTHLY_EMAILS];
+
+/** Tell the email recipients once when the Free plan's alert emails run low or out. */
+async function queueCapWarning(
+  organizationId: string,
+  used: number
+): Promise<void> {
+  const now = new Date();
+  const period = now.toISOString().slice(0, 7);
+  const org = await loadOrgPolicy(organizationId);
+  const emails = resolveRecipientEmails(
+    org.recipientUserIds,
+    await loadOrgMembers(organizationId)
+  );
+  await insertDeliveries(
+    emails.map((email) => ({
+      scope: `cap:${organizationId}:${period}:${used}`,
+      organizationId,
+      incidentId: null,
+      kind: "cap_warning" as const,
+      sequence: 0,
+      channel: "email" as const,
+      recipient: email,
+      nextAttemptAt: now,
+      context: { used, limit: FREE_PLAN_MONTHLY_EMAILS },
+    }))
+  );
 }
 
 /** Give back a reservation for an email the provider did not accept. */
@@ -434,10 +489,7 @@ async function releaseEmail(
   `);
 }
 
-/**
- * The cap is on alert emails. One-time notices (notifications switched on, a
- * channel paused) are rare and are how people learn the setup is broken.
- */
+/** One-time notices skip the cap: they are how people learn the setup is broken. */
 const CAPPED_KINDS: ReadonlySet<string> = new Set([
   "alert",
   "reminder",
@@ -454,8 +506,11 @@ async function sendRow(
   }
 
   if (row.channel === "email") {
-    const counted = CAPPED_KINDS.has(row.kind);
-    if (counted && !(await reserveEmail(row.organizationId, ctx))) {
+    // A missed scheduled run is usually our fault, so it never uses the cap.
+    const incident = row.incidentId ? await ctx.incident(row.incidentId) : null;
+    const counted =
+      CAPPED_KINDS.has(row.kind) && incident?.openedBy !== "missed";
+    if (counted && !(await reserveEmail(row.organizationId, ctx, row.kind))) {
       return "capped";
     }
     const outcome = await sendEmailMessage(row.recipient, content.rendered);
@@ -482,6 +537,14 @@ async function sendRow(
     pagerDutyAction: row.kind === "recovery" ? "resolve" : "trigger",
     details: content.details,
     link: content.link,
+    pagerDutyGroup:
+      typeof row.context?.group === "string" ? row.context.group : undefined,
+    // A missed run is usually our scheduler, not an emergency of theirs.
+    pagerDutySeverity:
+      (row.incidentId && (await ctx.incident(row.incidentId))?.openedBy) ===
+      "missed"
+        ? "warning"
+        : "error",
   });
 }
 
@@ -496,10 +559,7 @@ async function finishRow(
     .where(eq(failureAlertDeliveries.id, row.id));
 }
 
-/**
- * Pause a chat or PagerDuty channel that cannot work until someone fixes it,
- * and tell the people who receive failure emails, once.
- */
+/** Pause a broken channel and tell the email recipients once. */
 async function pauseChannel(
   channelId: string,
   reason: string,
@@ -575,10 +635,7 @@ async function recordChannelHealth(
     .where(eq(failureAlertChannels.id, channelId));
 }
 
-/**
- * Send everything due, a small batch at a time, until the queue is empty or
- * the time budget is spent.
- */
+/** Send due rows in small batches until empty or out of budget. */
 export async function drainOutbox(
   appUrl: string,
   stats: DrainStats,
@@ -720,12 +777,7 @@ function describeFailure(row: DeliveryRow): string {
   return `${name} could not deliver it${paged}`;
 }
 
-/**
- * Plan B. A message that failed for good, or is still not delivered when its
- * backup time comes, goes to the backup channels and, when it was not email
- * that failed, to the email recipients too. Claimed per row, and the dedup
- * key stops two rows of the same message queuing the same backup twice.
- */
+/** Backups for failed or late messages (plus email when email was not what failed). */
 export async function fireBackups(now: Date, stats: DrainStats): Promise<void> {
   const due = await db
     .select()
@@ -906,10 +958,7 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
   return await insertDeliveries(targets);
 }
 
-/**
- * The daily silent check, sending nothing a person would see: a dead channel
- * is paused and the org told; a paused one that works again comes back.
- */
+/** Daily silent check: pause dead channels, restore paused ones that work again. */
 export async function runHealthChecks(
   now: Date,
   stats: DrainStats
@@ -947,7 +996,9 @@ export async function runHealthChecks(
         .update(failureAlertChannels)
         .set({
           lastHealthCheckAt: now,
-          ...(channel.pausedAt && outcome.ok
+          // Slack's check only proves the token, not the channel, so a paused
+          // Slack channel comes back only through a Test.
+          ...(channel.pausedAt && outcome.ok && channel.kind !== "slack"
             ? { pausedAt: null, pausedReason: null }
             : {}),
         })
@@ -976,17 +1027,18 @@ export async function runHealthChecks(
   }
 }
 
-/**
- * Keep history and incidents for RETENTION_DAYS. A few thousand rows per
- * cycle, so a backlog clears over a few minutes without long locks.
- */
+/** Prune past RETENTION_DAYS a few thousand rows per cycle, avoiding long locks. */
 export async function pruneOldRecords(now: Date): Promise<void> {
   const cutoff = new Date(now.getTime() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
   await db.execute(sql`
     DELETE FROM ${failureAlertDeliveries}
     WHERE id IN (
-      SELECT id FROM ${failureAlertDeliveries}
-      WHERE created_at < ${cutoff.toISOString()}::timestamptz AT TIME ZONE 'UTC'
+      SELECT d.id FROM ${failureAlertDeliveries} d
+      WHERE d.created_at < ${cutoff.toISOString()}::timestamptz AT TIME ZONE 'UTC'
+        AND NOT EXISTS (
+          SELECT 1 FROM ${workflowFailureIncidents} i
+          WHERE i.id = d.incident_id AND i.resolved_at IS NULL
+        )
       LIMIT 5000
     )
   `);

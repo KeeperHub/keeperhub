@@ -19,16 +19,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useAlertsEnabled } from "@/lib/hooks/use-notifications";
+import { useOrganization } from "@/lib/hooks/use-organization";
 import {
   MAX_MUTE_DAYS,
   MAX_THRESHOLD,
   MIN_THRESHOLD,
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
-import {
-  channelLabel,
-  type WorkflowAlertView,
-} from "@/lib/notifications/failure-alerts/view-types";
+import type { WorkflowAlertView } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import {
   isWorkflowEnabled,
@@ -37,7 +36,13 @@ import {
 } from "@/lib/workflow/store";
 import { fetchView } from "./api";
 import { ChannelListEditor } from "./channel-list-editor";
-import { failedRuns, formatWhen, toLocalInput } from "./format";
+import {
+  describeRule,
+  failedRuns,
+  formatWhen,
+  timeLimitLabel,
+  toLocalInput,
+} from "./format";
 import { memberLabel } from "./member-label";
 import {
   channelsPayload,
@@ -50,12 +55,6 @@ import { NotificationHistory } from "./notification-history";
 type Loaded = WorkflowAlertView & { canManage: boolean };
 type Panel = null | "mute" | "custom";
 
-const TIME_LABEL: Record<number, string> = {
-  60: "1 hour",
-  360: "6 hours",
-  1440: "24 hours",
-};
-
 const HOUR_MS = 60 * 60 * 1000;
 // One id for every save toast, so "muted" then "back on" replace each other
 // instead of stacking over the panel's buttons.
@@ -66,7 +65,9 @@ const FOCUSABLE = "button:not([disabled]), input:not([disabled])";
 
 /** Footer links stay at least 44px tall below sm, for a thumb. */
 const FOOTER_LINK =
-  "inline-flex min-h-11 items-center underline underline-offset-4 hover:text-foreground sm:min-h-0";
+  "inline-flex min-h-11 items-center text-foreground underline underline-offset-4 sm:min-h-0";
+const STALE_TOAST =
+  "These settings were changed by someone else. Reload to see the latest, then save again.";
 const MUTE_CHOICES: { label: string; ms: number | "success" }[] = [
   { label: "1 hour", ms: HOUR_MS },
   { label: "24 hours", ms: 24 * HOUR_MS },
@@ -75,25 +76,18 @@ const MUTE_CHOICES: { label: string; ms: number | "success" }[] = [
 ];
 
 function describeTimeLimit(minutes: number | null): string {
-  return minutes
-    ? ` or ${TIME_LABEL[minutes] ?? `${minutes} minutes`} of failing`
-    : "";
+  return minutes ? ` or ${timeLimitLabel(minutes)} of failing` : "";
 }
 
 function summary(view: Loaded): string {
-  const who =
-    view.effective.emails.length > 0
-      ? `Emails ${view.effective.emails.join(", ")}`
-      : "Nobody can be emailed";
-  const channels = view.effective.channels
-    .filter((c) => !c.pausedAt)
-    .map(
-      (c) =>
-        `${channelLabel(c.kind, c.destination, c.connectionName)}${c.role === "backup" ? " (backup)" : ""}`
-    );
-  const also = channels.length > 0 ? `, plus ${channels.join(", ")}` : "";
-  const pause = view.override.pauseWorkflow ? " Then pauses the workflow." : "";
-  return `${who}${also}, after ${failedRuns(view.effective.threshold)} in a row${describeTimeLimit(view.effective.timeLimitMinutes)}.${pause}`;
+  return describeRule({
+    threshold: view.effective.threshold,
+    timeLimitMinutes: view.effective.timeLimitMinutes,
+    emails: view.effective.emails,
+    channels: view.effective.channels,
+    pauseWorkflow: view.override.pauseWorkflow,
+    scope: "workflow",
+  });
 }
 
 function incidentTitle(
@@ -101,10 +95,19 @@ function incidentTitle(
   pausedByAlert: boolean
 ): string {
   if (incident.openedBy === "missed") {
-    return `Not running: its scheduled run was due ${timeAgo(incident.since)}`;
+    return `Did not run at ${formatWhen(incident.since)}`;
   }
   const runs = `${failedRuns(incident.failureCount)} in a row`;
+  if (incident.openedBy === "funding" && !pausedByAlert) {
+    return `Wallet out of funds: ${runs}`;
+  }
   return pausedByAlert ? `Paused after ${runs}` : `Failing: ${runs}`;
+}
+
+/** "1 more failed run" before the alert, for a workflow that turns itself off. */
+function runsLeft(view: Loaded): string {
+  const left = Math.max(view.effective.threshold - view.status.failures, 1);
+  return `${left} more failed run${left === 1 ? "" : "s"}`;
 }
 
 function isMutedView(view: Loaded): boolean {
@@ -112,7 +115,7 @@ function isMutedView(view: Loaded): boolean {
 }
 
 /**
- * "Notifications on fail" in a workflow's Properties: what applies, whether
+ * "Alerts" in a workflow's Properties: what applies, whether
  * it is failing right now, a one-click mute, and a way to customise it.
  */
 export function WorkflowFailureAlerts({
@@ -128,6 +131,9 @@ export function WorkflowFailureAlerts({
   const [panel, setPanel] = useState<Panel>(null);
   const [saving, setSaving] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [staleError, setStaleError] = useState<string | null>(null);
+  const { organization } = useOrganization();
+  const alertsEnabled = useAlertsEnabled(organization?.id);
   const setActiveTab = useSetAtom(propertiesPanelActiveTabAtom);
   const enableToggle = useAtomValue(workflowEnableToggleAtom);
   const enabled = useAtomValue(isWorkflowEnabled);
@@ -247,14 +253,19 @@ export function WorkflowFailureAlerts({
     }
   }, [url]);
 
+  // Hidden where alerts are not switched on, and until that is known.
+  if (alertsEnabled !== true) {
+    return null;
+  }
+
   if (!view) {
     return (
       <div className="space-y-2">
-        <Label className="ml-1">Notifications on fail</Label>
+        <Label className="ml-1">Alerts</Label>
         {loadFailed ? (
           <Notice role="alert" tone="danger">
             <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              Could not load the failure notification settings.
+              Could not load alert settings.
               <Button
                 className="h-auto px-0 text-xs"
                 onClick={() => load()}
@@ -303,30 +314,41 @@ export function WorkflowFailureAlerts({
     channels: channelsPayload(draftsFromViews(view.override.channels)),
     pauseWorkflow: view.override.pauseWorkflow,
   });
+  const orgPause =
+    view.org.pause && new Date(view.org.pause.until).getTime() > Date.now()
+      ? view.org.pause
+      : null;
 
   const put = async (
     body: Record<string, unknown>,
     done: string
   ): Promise<boolean> => {
     setSaving(true);
+    setStaleError(null);
     try {
       const res = await fetch(url, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, version: view.version }),
       });
       const data = (await res.json().catch(() => ({}))) as Loaded & {
         error?: string;
       };
+      if (res.status === 409) {
+        setStaleError(data.error ?? STALE_TOAST);
+        return false;
+      }
       if (!res.ok) {
-        toast.error(data.error ?? "Could not save", { id: SAVE_TOAST });
+        toast.error(data.error ?? "Could not save. Try again.", {
+          id: SAVE_TOAST,
+        });
         return false;
       }
       apply(data);
       toast.success(done, { id: SAVE_TOAST });
       return true;
     } catch {
-      toast.error("Could not save", { id: SAVE_TOAST });
+      toast.error("Could not save. Try again.", { id: SAVE_TOAST });
       return false;
     } finally {
       setSaving(false);
@@ -350,7 +372,7 @@ export function WorkflowFailureAlerts({
         mutedUntil,
         muteUntilSuccess: choice === "success",
       },
-      "Notifications muted for this workflow"
+      "Alerts muted for this workflow"
     );
     if (ok) {
       setPanel(null);
@@ -358,7 +380,7 @@ export function WorkflowFailureAlerts({
   };
 
   const unmute = async (): Promise<void> => {
-    await put(storedOverride(), "Notifications back on for this workflow");
+    await put(storedOverride(), "Alerts back on for this workflow");
   };
 
   const saveCustom = async (): Promise<void> => {
@@ -397,46 +419,60 @@ export function WorkflowFailureAlerts({
         mutedUntil: view.override.mutedUntil,
         muteUntilSuccess: view.override.muteUntilSuccess,
       },
-      "This workflow follows the org setting again"
+      "Back on the org rules"
     );
     if (ok) {
       setPanel(null);
     }
   };
 
-  let tag: { label: string; className?: string } = { label: "Org setting" };
+  let tag: { label: string; className?: string } = { label: "Org rules" };
   if (!applies) {
-    tag = { label: "Does not apply" };
+    tag = { label: "Not used" };
   } else if (muted) {
     tag = {
       label: "Muted",
       className: WARNING_TEXT,
     };
   } else if (custom) {
-    tag = { label: "Custom" };
+    tag = { label: "Own settings" };
   }
 
   return (
-    <div className="space-y-3" data-testid="workflow-failure-alerts">
+    <div
+      className="scroll-mt-20 space-y-3"
+      data-testid="workflow-failure-alerts"
+    >
       <div className="ml-1 flex items-center gap-2">
-        <Label>Notifications on fail</Label>
+        <Label>Alerts</Label>
         <Badge className={tag.className} variant="outline">
           {tag.label}
         </Badge>
       </div>
 
+      {orgPause && (
+        <p
+          className="rounded-lg border bg-muted/30 p-3 text-muted-foreground text-xs"
+          data-testid="workflow-failure-alerts-org-paused"
+        >
+          Alerts are paused for the whole organization until{" "}
+          {formatWhen(orgPause.until)}
+          {orgPause.reason ? `: ${orgPause.reason}` : ""}.
+        </p>
+      )}
+
       {!applies && (
         <p className="rounded-lg border border-dashed p-3 text-muted-foreground text-sm">
-          Only runs started by hand, so failure alerts don't apply: you see the
-          result yourself. Use a Schedule, Event, Block, Webhook, Transfer or
-          Pyth Price trigger to get them.
+          Only runs started by hand, so alerts do not apply: you see the result
+          yourself. Add a Schedule, Event, Block, Webhook, Transfer or Pyth
+          Price trigger to get alerts.
         </p>
       )}
 
       {applies && view.status.incident && (
         // Muted means someone already knows, so the box stops shouting.
         <Notice
-          className="p-3 text-sm"
+          className="scroll-mt-20 p-3 text-sm"
           tone={muted || pausedByAlert ? "warning" : "danger"}
         >
           <div className="space-y-2">
@@ -502,8 +538,9 @@ export function WorkflowFailureAlerts({
             {view.status.firstFailedAt
               ? `Started failing ${timeAgo(view.status.firstFailedAt)}. `
               : null}
-            The alert goes out at {failedRuns(view.effective.threshold)}
-            {describeTimeLimit(view.effective.timeLimitMinutes)}.
+            {view.override.pauseWorkflow
+              ? `${runsLeft(view)} and KeeperHub alerts your team and turns this workflow off.`
+              : `The alert goes out at ${failedRuns(view.effective.threshold)}${describeTimeLimit(view.effective.timeLimitMinutes)}.`}
           </p>
         </Notice>
       )}
@@ -521,32 +558,55 @@ export function WorkflowFailureAlerts({
                   ? "Muted until it works again"
                   : `Muted until ${formatWhen(view.override.mutedUntil ?? "")}`}
                 {view.override.mutedBy ? ` by ${view.override.mutedBy}` : ""}.
-                Failures still show in Runs.
+                Failures still show in Runs; nobody is told.
                 {view.override.pauseWorkflow &&
                   " It is still paused at the limit, and people are told."}
               </span>
             </p>
           ) : (
-            <p>{summary(view)}</p>
+            <p role="status">{summary(view)}</p>
           )}
           {view.org.unreachable && !custom && (
             <Notice tone="danger">
-              Nobody can be reached right now. Add an email or a channel in{" "}
+              Nobody can be reached right now. Fix it in{" "}
               <Link
                 className="underline underline-offset-4"
                 href={`/settings/${view.organizationId}/alerts`}
               >
-                Alerts settings
+                Alerts
               </Link>
               .
             </Notice>
           )}
           {!canManage && (
             <p className="text-muted-foreground text-xs">
-              Only owners and admins can change these settings.
+              Only owners and admins can change alert settings.
             </p>
           )}
 
+          {staleError && (
+            <div data-stale="true" data-testid="failure-alert-save-error">
+              <Notice role="alert" tone="danger">
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span>
+                    <span className="font-medium">Not saved.</span> {staleError}
+                  </span>
+                  <Button
+                    className="h-auto px-0 text-xs"
+                    onClick={() => {
+                      setStaleError(null);
+                      setPanel(null);
+                      load().catch(() => undefined);
+                    }}
+                    type="button"
+                    variant="link"
+                  >
+                    Reload
+                  </Button>
+                </span>
+              </Notice>
+            </div>
+          )}
           {canManage && panel === null && (
             <div className="flex flex-wrap gap-2">
               {muted ? (
@@ -578,17 +638,17 @@ export function WorkflowFailureAlerts({
                 type="button"
                 variant="outline"
               >
-                {custom ? "Edit for this workflow" : "Customize"}
+                {custom ? "Edit" : "Change for this workflow"}
               </Button>
               {custom && (
                 <Button
+                  className="h-auto min-h-11 px-0 text-xs sm:min-h-0"
                   disabled={saving}
                   onClick={followOrgSetting}
-                  size="sm"
                   type="button"
-                  variant="ghost"
+                  variant="link"
                 >
-                  Use org setting
+                  Reset to org rules
                 </Button>
               )}
             </div>
@@ -615,10 +675,13 @@ export function WorkflowFailureAlerts({
                   </Button>
                 ))}
               </div>
+              <Label className="text-xs" htmlFor="wf-mute-until">
+                Or until
+              </Label>
               <div className="flex flex-wrap items-center gap-2">
                 <Input
-                  aria-label="Mute until a date and time"
                   className="h-8 w-auto"
+                  id="wf-mute-until"
                   max={toLocalInput(
                     new Date(Date.now() + MAX_MUTE_DAYS * 24 * HOUR_MS)
                   )}
@@ -659,7 +722,7 @@ export function WorkflowFailureAlerts({
               ref={panelRef}
             >
               <p className="text-muted-foreground text-xs">
-                Anything left on "Org setting" keeps following the org.
+                Empty fields follow the org rules.
               </p>
               <div className="space-y-1.5">
                 <Label className="text-xs" htmlFor="wf-failure-threshold">
@@ -676,7 +739,7 @@ export function WorkflowFailureAlerts({
                   max={MAX_THRESHOLD}
                   min={MIN_THRESHOLD}
                   onChange={(e) => setThreshold(e.target.value)}
-                  placeholder={`Org setting: ${view.org.threshold}`}
+                  placeholder={`Org: ${view.org.threshold}`}
                   type="number"
                   value={threshold}
                 />
@@ -686,32 +749,33 @@ export function WorkflowFailureAlerts({
                     id="wf-failure-threshold-error"
                   >
                     Use a whole number from {MIN_THRESHOLD} to {MAX_THRESHOLD},
-                    or leave it empty to follow the org.
+                    or leave it empty for the org rules.
                   </p>
                 )}
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs">Or after failing for</Label>
+                <Label className="text-xs" htmlFor="wf-time-limit">
+                  Or after failing for
+                </Label>
                 <Select onValueChange={setTimeLimit} value={timeLimit}>
                   <SelectTrigger
-                    aria-label="Time limit"
                     className="h-8 w-full"
+                    id="wf-time-limit"
                     size="sm"
                   >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="org">
-                      Org setting (
+                      Org:{" "}
                       {view.org.timeLimitMinutes
-                        ? TIME_LABEL[view.org.timeLimitMinutes]
+                        ? timeLimitLabel(view.org.timeLimitMinutes)
                         : "off"}
-                      )
                     </SelectItem>
                     <SelectItem value="off">Off</SelectItem>
                     {TIME_LIMIT_OPTIONS_MINUTES.map((m) => (
                       <SelectItem key={m} value={String(m)}>
-                        {TIME_LABEL[m]}
+                        {timeLimitLabel(m)}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -735,15 +799,8 @@ export function WorkflowFailureAlerts({
                   className="pl-6 text-muted-foreground text-xs"
                   id="wf-pause-workflow-help"
                 >
-                  Turns this workflow off when its alert goes out (after{" "}
-                  {failedRuns(
-                    threshold.trim() && !thresholdInvalid
-                      ? Number(threshold)
-                      : view.org.threshold
-                  )}{" "}
-                  in a row, or the time limit). Any failure counts, including
-                  RPC or network errors. Turn it back on with the Enable switch
-                  once fixed. Applies to this workflow only.
+                  Turns it off when its alert goes out. Any failure counts. Turn
+                  it back on with the Enable switch.
                 </p>
               </div>
               <div className="space-y-2">
@@ -763,7 +820,7 @@ export function WorkflowFailureAlerts({
                 </div>
                 {customRecipients === null ? (
                   <p className="text-muted-foreground text-xs">
-                    Org setting:{" "}
+                    Org:{" "}
                     {view.effective.emails.join(", ") || "nobody reachable"}
                   </p>
                 ) : (
@@ -828,7 +885,7 @@ export function WorkflowFailureAlerts({
                     }
                   />
                   <Label className="text-xs" htmlFor="wf-own-channels">
-                    Use different channels
+                    Use different methods
                   </Label>
                 </div>
                 {customChannels !== null && (
@@ -868,12 +925,12 @@ export function WorkflowFailureAlerts({
         </div>
       )}
 
-      <div className="ml-1 flex flex-wrap gap-x-4 text-muted-foreground text-xs">
+      <div className="ml-1 flex flex-wrap gap-x-4 text-xs">
         <Link
           className={FOOTER_LINK}
           href={`/settings/${view.organizationId}/alerts`}
         >
-          Alerts settings
+          Org alert rules
         </Link>
         <button
           aria-expanded={showHistory}
@@ -881,7 +938,7 @@ export function WorkflowFailureAlerts({
           onClick={() => setShowHistory((open) => !open)}
           type="button"
         >
-          {showHistory ? "Hide notification history" : "Notification history"}
+          {showHistory ? "Hide sent alerts" : "Sent alerts for this workflow"}
         </button>
       </div>
       {showHistory && (

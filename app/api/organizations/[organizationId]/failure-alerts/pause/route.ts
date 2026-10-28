@@ -85,7 +85,7 @@ async function handle(
   }
 }
 
-/** Pause every alert of the organization until a time (maintenance). Owners and admins. */
+/** Pause all org alerts until a time (maintenance). Owners and admins. */
 export function PUT(request: Request, context: Params): Promise<NextResponse> {
   return handle(request, context, async (organizationId, access) => {
     const body = (await request.json().catch(() => ({}))) as Record<

@@ -537,7 +537,9 @@ function directFilterConditions(
 
 /**
  * Whether each source is in play, given the filters and project scope. No
- * source selected means all three, notifications included.
+ * source selected means the runs, workflow and direct: notifications are listed
+ * only when asked for by name, so an API or MCP caller that never heard of
+ * them gets the listing it always had. The analytics page names all three.
  */
 function resolveSources(
   filters: RunQueryFilters,
@@ -553,8 +555,7 @@ function resolveSources(
     // A project is applied inside the notification query instead: a message
     // about one of the project's workflows is in it.
     notification:
-      (all || selected.includes("notification")) &&
-      !notificationsExcludedBy(filters),
+      selected.includes("notification") && !notificationsExcludedBy(filters),
   };
 }
 
@@ -2015,13 +2016,26 @@ export function getRunFacets(
   );
 }
 
+/**
+ * Whether a source selection changes any count. Counts are of runs, and
+ * notifications are never in them, so a selection naming both run sources (the
+ * analytics page's default of all three) counts the same as none and may use
+ * the cached unfiltered facets.
+ */
+function sourcesNarrowCounts(sources: RunSource[] | undefined): boolean {
+  if (!sources || sources.length === 0) {
+    return false;
+  }
+  return !(sources.includes("workflow") && sources.includes("direct"));
+}
+
 function hasFilters(filters: RunQueryFilters): boolean {
   return Boolean(
     // Statuses reach this call for the network and gas dimensions, which do not
     // lift them - and the cache key does not name them, so a status-filtered
     // count must not be stored under, or served from, the unfiltered key.
     (filters.statuses?.length ?? 0) > 0 ||
-      (filters.sources?.length ?? 0) > 0 ||
+      sourcesNarrowCounts(filters.sources) ||
       (filters.networks?.length ?? 0) > 0 ||
       filters.durationMinMs !== undefined ||
       filters.durationMaxMs !== undefined ||

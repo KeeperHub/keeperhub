@@ -1,7 +1,4 @@
-/**
- * The shapes the failure-notification API returns, importable from the
- * browser. The server modules that build them carry "server-only".
- */
+// API response shapes, kept here so the browser can import them (builders are server-only).
 import type {
   FailureAlertChannelKind,
   FailureAlertChannelRole,
@@ -22,6 +19,10 @@ export type ChannelView = {
   lastError: string | null;
   lastTestedAt: string | null;
   lastTestOk: boolean | null;
+  /** Last daily silent check. */
+  lastHealthCheckAt: string | null;
+  /** The connection was deleted or is no longer shared: it cannot send. */
+  connectionMissing: boolean;
 };
 
 export type MemberView = {
@@ -53,7 +54,21 @@ export type OrgSettingsView = {
   channels: ChannelView[];
   connections: ConnectionView[];
   emailUsage: { used: number; limit: number } | null;
-  customWorkflows: { id: string; name: string }[];
+  /** Workflows with their own settings, so mutes and overrides are visible to the team. */
+  customWorkflows: {
+    id: string;
+    name: string;
+    mutedUntil: string | null;
+    muteUntilSuccess: boolean;
+    threshold: number | null;
+    customRecipients: boolean;
+    customChannels: boolean;
+    pauseWorkflow: boolean;
+  }[];
+  /** Last alert of any kind delivered to anyone, for "it works" proof. */
+  lastAlertDeliveredAt: string | null;
+  /** Send back on save; a stale one is refused with 409. */
+  version: number;
   /** Org-wide pause: no alerts until `until`. */
   pause: { until: string; reason: string | null; by: string | null } | null;
   /** Workflows with an open failure incident right now. */
@@ -63,13 +78,10 @@ export type OrgSettingsView = {
     failureCount: number;
     openedAt: string;
     /** "missed": a scheduled run did not start; dueAt is when it was due. */
-    openedBy: "count" | "time" | "missed";
+    openedBy: "count" | "time" | "missed" | "funding";
     dueAt: string;
   }[];
-  /**
-   * The viewer's own connections that are not shared with the org: shown
-   * greyed out, so a missing connection is explained rather than invisible.
-   */
+  /** The viewer's unshared connections, greyed out to explain why they are missing. */
   unsharedConnections: ConnectionView[];
   /** Nobody can be emailed and no chat or PagerDuty channel works. */
   unreachable: boolean;
@@ -108,7 +120,10 @@ export type WorkflowAlertView = {
     | "channels"
     | "unreachable"
     | "emailUsage"
+    | "pause"
   >;
+  /** Send back on save; a stale one is refused with 409. */
+  version: number;
   override: {
     threshold: number | null;
     timeLimitMinutes: number | null;
@@ -140,7 +155,7 @@ export type WorkflowAlertView = {
       threshold: number;
       lastNotifiedAt: string;
       deliveredTo: string[];
-      openedBy: "count" | "time" | "missed";
+      openedBy: "count" | "time" | "missed" | "funding";
       /** First failure, or when the missed run was due. */
       since: string;
       /** When this incident last turned the workflow off, if it did. */
@@ -164,10 +179,7 @@ export type TestRequest =
       channel: FailureAlertChannelKind;
       integrationId: string;
       destination: string;
-      /**
-       * A saved channel. When set, its stored connection and destination are
-       * tested and its health is updated; the two fields above are ignored.
-       */
+      /** A saved channel: tests its stored values and ignores the fields above. */
       channelId?: string;
       /** PagerDuty: "change" pages nobody; "page" opens and resolves one. */
       pagerDutyMode?: "change" | "page";
@@ -207,12 +219,13 @@ export function channelLabel(
 export const FAILURE_ALERT_KIND_LABEL: Record<FailureAlertMessageKind, string> =
   {
     alert: "Alert",
-    reminder: "Reminder",
-    recovery: "Running again",
-    channel_paused: "Channel stopped working",
-    launch_notice: "Notifications turned on",
+    reminder: "Still failing",
+    recovery: "Recovered",
+    channel_paused: "Method paused",
+    launch_notice: "Alerts turned on",
     alerts_paused: "Alerts paused",
     alerts_resumed: "Alerts back on",
+    cap_warning: "Email limit warning",
   };
 
 /** Which channel a pause notice is about, why a backup was sent, or a workflow pause. */
@@ -242,4 +255,15 @@ export type MessagePreview = {
   /** Slack, Discord and Telegram. */
   chat: string;
   pagerDutySummary: string;
+};
+
+/** One word per delivery state, the same in history, analytics and emails. */
+export const DELIVERY_STATE_LABEL: Record<string, string> = {
+  pending: "Queued",
+  sending: "Sending",
+  retrying: "Retrying",
+  delivered: "Delivered",
+  failed: "Not delivered",
+  capped: "Over the monthly email limit",
+  skipped: "Withdrawn",
 };

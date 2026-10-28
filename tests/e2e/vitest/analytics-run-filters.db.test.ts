@@ -687,6 +687,12 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
   const D_LAUNCH = `${N}d_launch`;
   const D_OTHER = `${N}d_other`;
   const ALL_DELIVERIES = [D_ALERT, D_FAILED, D_GROUPED, D_PAUSED, D_LAUNCH];
+  // What the analytics page asks for when the reader picked no source.
+  const PAGE_SOURCES: RunQueryFilters["sources"] = [
+    "workflow",
+    "direct",
+    "notification",
+  ];
 
   let queryClient: ReturnType<typeof postgres>;
   let db: ReturnType<typeof drizzle>;
@@ -738,6 +744,7 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
     filters: RunQueryFilters & { projectId?: string } = {}
   ): Promise<string[]> {
     const { runs } = await getUnifiedRuns(N_ORG, "7d", {
+      sources: PAGE_SOURCES,
       ...filters,
       limit: 50,
     });
@@ -882,9 +889,20 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
     await queryClient.end();
   });
 
-  it("lists notifications beside runs when no source is chosen", async () => {
+  it("leaves notifications out when the caller names no source", async () => {
+    // API and MCP callers that predate notifications get the listing they had.
     const { runs, total, listTotal } = await getUnifiedRuns(N_ORG, "7d", {
       limit: 50,
+    });
+    expect(runs.map((run) => run.id)).toEqual([RUN]);
+    expect(total).toBe(1);
+    expect(listTotal).toBe(1);
+  });
+
+  it("lists notifications beside runs when asked for with them", async () => {
+    const { runs, total, listTotal } = await getUnifiedRuns(N_ORG, "7d", {
+      limit: 50,
+      sources: PAGE_SOURCES,
     });
 
     expect(runs.map((run) => run.id)).toEqual([RUN, ...ALL_DELIVERIES]);
@@ -971,20 +989,29 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
     const { total, listTotal } = await getUnifiedRuns(N_ORG, "7d", {
       projectId: N_PROJECT,
       limit: 50,
+      sources: PAGE_SOURCES,
     });
     expect(total).toBe(1);
     expect(listTotal).toBe(3);
   });
 
   it("pages by page number over every listed row, notifications included", async () => {
-    const first = await getUnifiedRuns(N_ORG, "7d", { limit: 2, page: 1 });
+    const first = await getUnifiedRuns(N_ORG, "7d", {
+      limit: 2,
+      page: 1,
+      sources: PAGE_SOURCES,
+    });
     expect(first.total).toBe(1);
     const pages = Math.ceil(first.listTotal / 2);
     expect(pages).toBe(3);
 
     const seen: string[] = [];
     for (let page = 1; page <= pages; page += 1) {
-      const result = await getUnifiedRuns(N_ORG, "7d", { limit: 2, page });
+      const result = await getUnifiedRuns(N_ORG, "7d", {
+        limit: 2,
+        page,
+        sources: PAGE_SOURCES,
+      });
       seen.push(...result.runs.map((run) => run.id));
     }
     expect(seen).toEqual([RUN, ...ALL_DELIVERIES]);
@@ -994,7 +1021,11 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
     const seen: string[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < 5; page += 1) {
-      const result = await getUnifiedRuns(N_ORG, "7d", { limit: 2, cursor });
+      const result = await getUnifiedRuns(N_ORG, "7d", {
+        limit: 2,
+        cursor,
+        sources: PAGE_SOURCES,
+      });
       seen.push(...result.runs.map((run) => run.id));
       if (!result.nextCursor) {
         break;
@@ -1028,7 +1059,7 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
     try {
       for (const sources of [
         ["notification"] as RunQueryFilters["sources"],
-        undefined,
+        PAGE_SOURCES,
       ]) {
         const seen: string[] = [];
         let cursor: string | undefined;
@@ -1044,9 +1075,10 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
           }
           cursor = result.nextCursor;
         }
-        const expected = sources
-          ? [...tied, ...ALL_DELIVERIES]
-          : [RUN, tiedRun, ...tied, ...ALL_DELIVERIES];
+        const expected =
+          sources === PAGE_SOURCES
+            ? [RUN, tiedRun, ...tied, ...ALL_DELIVERIES]
+            : [...tied, ...ALL_DELIVERIES];
         expect(seen.length, String(sources)).toBe(new Set(seen).size);
         expect([...seen].sort(), String(sources)).toEqual([...expected].sort());
 
@@ -1068,6 +1100,8 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
     // options are counts of runs.
     const all = await getRunFacets(N_ORG, "7d", { search: "" });
     expect(all.statusCounts).toEqual({ success: 1 });
+    const page = await getRunFacets(N_ORG, "7d", { sources: PAGE_SOURCES });
+    expect(page.statusCounts).toEqual({ success: 1 });
 
     const onlyNotifications = await getRunFacets(N_ORG, "7d", {
       sources: ["notification"],

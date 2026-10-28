@@ -18,21 +18,12 @@ import type { FailureAlertMessageKind } from "@/lib/db/schema-failure-alerts";
 import { HISTORY_PAGE_SIZE } from "@/lib/notifications/failure-alerts/constants";
 import {
   CHANNEL_LABEL,
+  DELIVERY_STATE_LABEL,
   FAILURE_ALERT_KIND_LABEL,
   type HistoryEntry,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import { formatWhen } from "./format";
-
-const STATE_LABEL: Record<string, string> = {
-  pending: "Queued",
-  sending: "Sending",
-  delivered: "Delivered",
-  retrying: "Retrying",
-  failed: "Failed",
-  capped: "Monthly email limit",
-  skipped: "Not sent",
-};
 
 function stateTone(state: string): string {
   if (state === "delivered") {
@@ -92,7 +83,7 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
         )}
         title={entry.attempts > 1 ? `${entry.attempts} attempts` : undefined}
       >
-        {STATE_LABEL[entry.state] ?? entry.state}
+        {DELIVERY_STATE_LABEL[entry.state] ?? entry.state}
         {entry.attempts > 1 ? ` (${entry.attempts} tries)` : ""}
       </span>
       <span className="col-start-1 row-start-2 text-muted-foreground text-xs tabular-nums @xl/settings:row-start-1">
@@ -124,7 +115,7 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
 }
 
 /**
- * Every failure notification the organization sent, newest first: alerts,
+ * Every alert the organization sent, newest first: alerts,
  * reminders, recoveries, backups and notices, with where each went and what
  * happened. Also scoped to one workflow from its Properties panel.
  */
@@ -198,11 +189,11 @@ export function NotificationHistory({
     <div className="space-y-3" data-testid="failure-alert-history">
       <div className="flex flex-wrap items-center gap-2">
         <Select onValueChange={setChannel} value={channel}>
-          <SelectTrigger aria-label="Channel" className="h-8 w-36" size="sm">
+          <SelectTrigger aria-label="Method" className="h-8 w-36" size="sm">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All channels</SelectItem>
+            <SelectItem value="all">All methods</SelectItem>
             {(
               ["email", "slack", "discord", "telegram", "pagerduty"] as const
             ).map((kind) => (
@@ -235,14 +226,14 @@ export function NotificationHistory({
       {failed && (
         <Notice role="alert" tone="danger">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            Could not load the notification history.
+            Could not load sent alerts.
             <Button
               className="h-auto px-0 text-xs"
               onClick={() => load(failed.before)}
               type="button"
               variant="link"
             >
-              Retry
+              Try again
             </Button>
           </span>
         </Notice>
@@ -250,8 +241,7 @@ export function NotificationHistory({
 
       {entries.length === 0 && !(loading || failed) && (
         <p className="text-muted-foreground text-sm">
-          Nothing sent yet. Alerts, reminders, recoveries and backups show up
-          here.
+          Nothing sent yet. Alerts, tests and method warnings show up here.
         </p>
       )}
 

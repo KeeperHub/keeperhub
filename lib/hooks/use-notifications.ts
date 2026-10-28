@@ -10,9 +10,15 @@ export type NotificationType =
 type NotificationStatus = {
   unreadCount: number;
   types: NotificationType[];
+  /** Alerts are switched on for the org; null until the answer is in. */
+  alertsEnabled: boolean | null;
 };
 
-const EMPTY_STATUS: NotificationStatus = { unreadCount: 0, types: [] };
+const EMPTY_STATUS: NotificationStatus = {
+  unreadCount: 0,
+  types: [],
+  alertsEnabled: null,
+};
 
 /**
  * The top banner and the user menu both mount on every page and both want
@@ -32,12 +38,16 @@ async function fetchStatus(): Promise<NotificationStatus> {
       credentials: "include",
     });
     if (!response.ok) {
-      return EMPTY_STATUS;
+      return { ...EMPTY_STATUS, alertsEnabled: false };
     }
-    const data = (await response.json()) as NotificationStatus;
-    return { unreadCount: data.unreadCount ?? 0, types: data.types ?? [] };
+    const data = (await response.json()) as Partial<NotificationStatus>;
+    return {
+      unreadCount: data.unreadCount ?? 0,
+      types: data.types ?? [],
+      alertsEnabled: data.alertsEnabled === true,
+    };
   } catch {
-    return EMPTY_STATUS;
+    return { ...EMPTY_STATUS, alertsEnabled: false };
   }
 }
 
@@ -88,4 +98,12 @@ export function hasNotificationType(
   type: NotificationType
 ): boolean {
   return status.types.includes(type);
+}
+
+/** Whether alerts are on for the org: null while unknown, so callers render nothing. */
+export function useAlertsEnabled(
+  organizationId?: string | null
+): boolean | null {
+  const { status } = useNotificationStatus(organizationId);
+  return organizationId ? status.alertsEnabled : null;
 }

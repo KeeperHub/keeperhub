@@ -23,8 +23,7 @@ export async function GET(
 ): Promise<NextResponse> {
   try {
     const { workflowId } = await context.params;
-    // Authenticate before looking the workflow up, so an unknown id and one
-    // in another org answer the same way.
+    // Auth first, so unknown and other-org ids answer the same.
     const auth = await authenticate(request);
     if (auth instanceof NextResponse) {
       return auth;
@@ -49,18 +48,14 @@ export async function GET(
   }
 }
 
-/**
- * Save the override. Owners and admins only for now: an override can lower
- * the threshold or add recipients, which is the org's call.
- */
+/** Save the override; owners and admins only, since it can change who is alerted. */
 export async function PUT(
   request: Request,
   context: { params: Promise<{ workflowId: string }> }
 ): Promise<NextResponse> {
   try {
     const { workflowId } = await context.params;
-    // Authenticate before looking the workflow up, so an unknown id and one
-    // in another org answer the same way.
+    // Auth first, so unknown and other-org ids answer the same.
     const auth = await authenticate(request);
     if (auth instanceof NextResponse) {
       return auth;

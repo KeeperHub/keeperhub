@@ -1,16 +1,11 @@
+import { isFundingShortfall } from "@/lib/errors/funding-shortfall";
+
 /**
- * Which runs count toward a failing streak, as pure functions so the rules can
- * be tested as a table.
- *
- * - error counts.
- * - success ends the streak.
- * - Everything else is stepped over: it neither counts nor resets. That covers
- *   runs refused before they started (skipped), cancelled runs, runs not
- *   finished yet (pending, running, phantom, unconfirmed until the reconciler
- *   settles them) and platform errors (system_error), which are ours to fix
- *   and page our own on-call instead of every owner at once.
- * - A run someone started by hand never counts either way: they saw the
- *   result, and a test press on a broken workflow must not hide the streak.
+ * Failing-streak rules:
+ * - error counts; success ends the streak.
+ * - Every other status is stepped over (system_error pages our on-call, not owners).
+ * - Unfinished runs are stepped over until the reconciler settles them.
+ * - Runs started by hand never count: the person saw the result.
  */
 
 export type StreakRun = {
@@ -23,13 +18,7 @@ export type StreakRun = {
   error: string | null;
 };
 
-/**
- * Whether a run started on its own, rather than by a person pressing Run.
- *
- * `trigger_source` is "manual" both for the Run button and for an API call
- * that sent no trigger header, and an API call is automation. The credential
- * type tells them apart: only a browser session is a person.
- */
+/** "manual" also covers API calls; only a browser session is a person. */
 export function isAutomatedRun(
   run: Pick<StreakRun, "triggerSource" | "credentialType">
 ): boolean {
@@ -48,19 +37,26 @@ type StreakSummary = {
   lastError: string | null;
   /** The newest automated success, when it is newer than every failure. */
   latestSuccessRunId: string | null;
-  /**
-   * True when the window held only failures, so the streak may be longer than
-   * counted. Enough to decide "at or over the threshold".
-   */
+  /** The window held only failures, so the streak may be longer than counted. */
   truncated: boolean;
+  /** Newest failures in a row that were the wallet unable to pay. */
+  outOfFunds: number;
 };
 
-/**
- * Walk runs newest first and summarise the current streak.
- *
- * `countingSince` drops runs that finished before the organization started
- * counting, so switching the feature on never alerts on old history.
- */
+/** Our pre-send balance check, e.g. "Insufficient ETH balance. Have: 0.0004, Need: 0.0006". */
+const PREFLIGHT_SHORTFALL = /Insufficient \S+ balance\. Have:/;
+
+/** The chain or our pre-send check refused it: the wallet holds less than this run needs. */
+export function isOutOfFunds(error: string | null): boolean {
+  return Boolean(
+    error && (isFundingShortfall(error) || PREFLIGHT_SHORTFALL.test(error))
+  );
+}
+
+/** Two shortfalls in a row alert at once: waiting for more only burns runs. */
+export const OUT_OF_FUNDS_THRESHOLD = 2;
+
+/** Summarise the current streak; `countingSince` keeps old history from alerting. */
 export function summarizeStreak(
   runsNewestFirst: readonly StreakRun[],
   countingSince: Date | null,
@@ -74,7 +70,9 @@ export function summarizeStreak(
     lastError: null,
     latestSuccessRunId: null,
     truncated: false,
+    outOfFunds: 0,
   };
+  let fundingRun = true;
 
   let ended = false;
   for (const run of runsNewestFirst) {
@@ -97,6 +95,10 @@ export function summarizeStreak(
       continue;
     }
     summary.failures += 1;
+    fundingRun = fundingRun && isOutOfFunds(run.error);
+    if (fundingRun) {
+      summary.outOfFunds += 1;
+    }
     if (summary.lastFailedAt === null) {
       summary.lastFailedAt = finishedAt;
       summary.lastFailedRunId = run.id;
@@ -112,14 +114,11 @@ export function summarizeStreak(
 
 type StreakDecision =
   | { kind: "none" }
-  | { kind: "open"; by: "count" | "time" }
+  | { kind: "open"; by: "count" | "time" | "funding" }
   | { kind: "resolve" }
   | { kind: "recheck"; at: Date };
 
-/**
- * What the evaluator should do with a workflow, given its streak and whether
- * an incident is already open.
- */
+/** What the evaluator should do, given the streak and any open incident. */
 export function decide(params: {
   summary: StreakSummary;
   threshold: number;
@@ -139,6 +138,9 @@ export function decide(params: {
   }
   if (summary.failures >= threshold) {
     return { kind: "open", by: "count" };
+  }
+  if (summary.outOfFunds >= OUT_OF_FUNDS_THRESHOLD) {
+    return { kind: "open", by: "funding" };
   }
   if (timeLimitMinutes && summary.firstFailedAt) {
     const dueAt = new Date(

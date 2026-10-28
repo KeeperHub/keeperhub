@@ -16,6 +16,7 @@ import {
   runOrgSwitch,
   useOrgSwitching,
 } from "@/components/organization/org-switch-runner";
+import { useAlertsEnabled } from "@/lib/hooks/use-notifications";
 import {
   useActiveMember,
   useOrganization,
@@ -39,6 +40,8 @@ type SettingsContextValue = {
    */
   revision: number;
   refreshAll: () => void;
+  /** Alerts are switched on for this org; null until known. */
+  alertsEnabled: boolean | null;
 };
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
@@ -155,6 +158,7 @@ export function SettingsProvider({
   // disappears once the answer arrives.
   const isOwner = role === "owner";
   const isAdmin = role === "owner" || role === "admin";
+  const alertsEnabled = useAlertsEnabled(organizationId);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: organizationId is a reload trigger, not a value this reads
   useEffect(() => {
@@ -167,6 +171,7 @@ export function SettingsProvider({
 
   const value = useMemo<SettingsContextValue>(
     () => ({
+      alertsEnabled,
       isAdmin,
       isLoading: orgLoading || memberLoading,
       isOwner,
@@ -178,6 +183,7 @@ export function SettingsProvider({
       roleLoading,
     }),
     [
+      alertsEnabled,
       isAdmin,
       isOwner,
       memberLoading,

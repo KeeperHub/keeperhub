@@ -8,7 +8,7 @@ import type {
   ChannelView,
   ConnectionView,
 } from "@/lib/notifications/failure-alerts/view-types";
-import { ChannelMethodCard } from "./method-card";
+import { ChannelMethodCard, focusMethodAt } from "./method-card";
 import {
   type DraftChannel,
   newMethodDraft,
@@ -40,10 +40,13 @@ export function ChannelListEditor({
   // is by then rather than the one it was removed from.
   const latest = useRef({ channels, onChange });
   latest.current = { channels, onChange };
+  const listRef = useRef<HTMLUListElement>(null);
+  const addRef = useRef<HTMLButtonElement>(null);
 
   const remove = (channel: DraftChannel, label: string): void => {
     const index = channels.findIndex((c) => c.key === channel.key);
     onChange(channels.filter((c) => c.key !== channel.key));
+    focusMethodAt(listRef, channel.fresh ? channels.length : index, addRef);
     if (channel.fresh) {
       return;
     }
@@ -75,7 +78,7 @@ export function ChannelListEditor({
   return (
     <div className="space-y-2">
       {channels.length > 0 && (
-        <ul className="space-y-2">
+        <ul aria-label="Alert methods" className="space-y-2" ref={listRef}>
           {channels.map((channel) => (
             <ChannelMethodCard
               canManage
@@ -94,7 +97,11 @@ export function ChannelListEditor({
         </ul>
       )}
       <Button
-        onClick={() => onChange([...channels, newMethodDraft(connections)])}
+        onClick={() => {
+          onChange([...channels, newMethodDraft(connections)]);
+          focusMethodAt(listRef, channels.length, null);
+        }}
+        ref={addRef}
         size="sm"
         type="button"
         variant="outline"

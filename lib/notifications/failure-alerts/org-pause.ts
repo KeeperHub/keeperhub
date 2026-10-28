@@ -1,8 +1,11 @@
 import "server-only";
 
-import { and, eq, isNotNull, lte } from "drizzle-orm";
+import { and, eq, gt, isNotNull, lte } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { orgFailureAlertSettings } from "@/lib/db/schema";
+import {
+  failureAlertDeliveries,
+  orgFailureAlertSettings,
+} from "@/lib/db/schema";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import { MAX_ORG_PAUSE_MS, MAX_PAUSE_REASON } from "./constants";
 import {
@@ -90,6 +93,8 @@ export async function resumeOrgAlerts(params: {
   organizationId: string;
   byEmail: string | null;
   now: Date;
+  /** Only end it if it has run out, so a pause extended meanwhile survives. */
+  expiredOnly?: boolean;
 }): Promise<boolean> {
   const { organizationId, now } = params;
   const cleared = await db
@@ -98,7 +103,9 @@ export async function resumeOrgAlerts(params: {
     .where(
       and(
         eq(orgFailureAlertSettings.organizationId, organizationId),
-        isNotNull(orgFailureAlertSettings.pausedUntil)
+        params.expiredOnly
+          ? lte(orgFailureAlertSettings.pausedUntil, now)
+          : isNotNull(orgFailureAlertSettings.pausedUntil)
       )
     )
     .returning({ organizationId: orgFailureAlertSettings.organizationId });
@@ -111,7 +118,17 @@ export async function resumeOrgAlerts(params: {
     { by: params.byEmail },
     now
   );
-  // Anything that failed during the pause is reported now.
+  // Messages held for the pause go out now; anything still failing is re-checked.
+  await db
+    .update(failureAlertDeliveries)
+    .set({ nextAttemptAt: now, backupAt: now })
+    .where(
+      and(
+        eq(failureAlertDeliveries.organizationId, organizationId),
+        eq(failureAlertDeliveries.state, "pending"),
+        gt(failureAlertDeliveries.nextAttemptAt, now)
+      )
+    );
   await requeueForEvaluation(organizationId);
   return true;
 }
@@ -124,7 +141,14 @@ export async function endExpiredOrgPauses(now: Date): Promise<number> {
     .where(lte(orgFailureAlertSettings.pausedUntil, now));
   let ended = 0;
   for (const { organizationId } of expired) {
-    if (await resumeOrgAlerts({ organizationId, byEmail: null, now })) {
+    if (
+      await resumeOrgAlerts({
+        organizationId,
+        byEmail: null,
+        now,
+        expiredOnly: true,
+      })
+    ) {
       ended += 1;
     }
   }

@@ -297,13 +297,13 @@ describe("message wording after review", () => {
   it("words a reminder as still failing, once", () => {
     const message = renderMessage({ ...base, kind: "reminder", incident }, now);
     expect(message.subject).toBe(
-      "[Acme] Still failing: Rebalance vault is still failing: 6 failed runs"
+      "[Acme] Still failing: Rebalance vault: 6 failed runs in a row"
     );
   });
 
   it("hints at gas and RPC causes", () => {
     const gas = renderMessage({ ...base, kind: "alert", incident }, now);
-    expect(gas.text).toContain("out of gas");
+    expect(gas.text).toContain("running out of funds");
     const rpc = renderMessage(
       {
         ...base,

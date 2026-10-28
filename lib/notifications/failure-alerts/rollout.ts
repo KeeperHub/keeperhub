@@ -1,19 +1,6 @@
 import { createHash } from "node:crypto";
 
-/**
- * Which organizations have workflow failure notifications switched on.
- *
- * Read from FAILURE_ALERTS_ROLLOUT so the launch can go out in waves and be
- * switched off without a deploy of new code:
- *
- * - unset or "off": nobody
- * - "all": everybody
- * - "orgs:<id>,<id>": only these organizations (internal ones first)
- * - "percent:<n>": a stable n% of organizations, plus nothing else
- *
- * The bucket for "percent" is a hash of the organization id, so raising the
- * number only ever adds organizations and never flips one back off.
- */
+/** FAILURE_ALERTS_ROLLOUT: off | all | orgs:<id>,<id> | percent:<n> (hashed, so raising n only adds). */
 export function isFailureAlertsEnabledForOrg(
   organizationId: string,
   rollout: string | undefined = process.env.FAILURE_ALERTS_ROLLOUT

@@ -2,18 +2,8 @@ import { type AnyColumn, type SQL, sql } from "drizzle-orm";
 import type { RunSource, UnifiedRun } from "./types";
 
 /**
- * Where the runs listing left off: the last row's time, source and id.
- *
- * The listing merges three tables ordered by (time desc, source, id desc), so a
- * time alone cannot say where a page ended. Rows can share a time to the
- * microsecond (every delivery of one notification is written in one
- * transaction), and a page boundary inside such a group skipped the rest of
- * it. The time is kept to the microsecond the columns hold, not the
- * millisecond a JavaScript Date carries.
- *
- * Opaque on the wire (base64url). A plain ISO time, the cursor this listing
- * minted before, is still read: it carries no source or id, so it pages the
- * way it always did.
+ * Keyset cursor (time, source, id): rows share a microsecond time, so time alone
+ * skips rows. Base64url on the wire; legacy plain-ISO cursors still parse.
  */
 export type RunCursor = {
   /** "YYYY-MM-DDTHH:MM:SS.ffffff" (or .fff from a legacy cursor), UTC. */
@@ -22,10 +12,7 @@ export type RunCursor = {
   id: string | null;
 };
 
-/**
- * Order of the sources among rows of one time, newest-first listing. Any fixed
- * order works; this one has to be the same on both sides of the keyset.
- */
+/** Any fixed order works, as long as SQL and the merge agree. */
 const SOURCE_RANK: Record<RunSource, number> = {
   workflow: 2,
   direct: 1,
@@ -97,13 +84,7 @@ export function keysetTime(column: AnyColumn): SQL<string> {
   return sql<string>`to_char(${column}, 'YYYY-MM-DD"T"HH24:MI:SS.US')`;
 }
 
-/**
- * The rows of `source` that come after the cursor in the listing's order:
- * time descending, then source by SOURCE_RANK descending, then id descending.
- * Each source orders its own query by (time desc, id desc), so only the source
- * that owns the cursor row compares ids; at the cursor's time the sources
- * ranked above it were already listed, and the ones below were not.
- */
+/** Rows of `source` after the cursor; only the cursor's own source compares ids. */
 export function runCursorCondition(
   cursor: RunCursor,
   source: RunSource,
@@ -125,11 +106,7 @@ export function runCursorCondition(
   return sql`(${time}, ${id}) < (${at}, ${cursor.id}::text)`;
 }
 
-/**
- * Merge the sources into the listing's order. Stable, so rows of one source
- * and one time keep the id order their own query returned: the comparison has
- * to match Postgres's collation, which only Postgres knows.
- */
+/** Stable sort, so same-time rows keep Postgres's id (collation) order. */
 export function mergeKeyedRuns(lists: KeyedRun[][]): KeyedRun[] {
   return lists.flat().sort((a, b) => {
     if (a.at !== b.at) {

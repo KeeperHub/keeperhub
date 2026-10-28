@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  MAX_REMINDERS,
   MAX_THRESHOLD,
   MIN_THRESHOLD,
   TIME_LIMIT_OPTIONS_MINUTES,
@@ -55,7 +56,7 @@ function isValidThreshold(value: string): boolean {
   );
 }
 
-function rulesDirty(draft: RulesDraft, saved: SavedRules): boolean {
+export function rulesDirty(draft: RulesDraft, saved: SavedRules): boolean {
   return (
     draft.threshold.trim() !== String(saved.threshold) ||
     draft.timeLimitMinutes !== saved.timeLimitMinutes ||
@@ -71,17 +72,20 @@ export function WhenToNotify({
   canManage,
   onChange,
   onSave,
+  onReload,
 }: {
   draft: RulesDraft;
   saved: SavedRules;
   canManage: boolean;
   onChange: (next: RulesDraft) => void;
   onSave: SaveAction;
+  onReload?: () => void;
 }): React.ReactElement {
   const save = useSaveState();
   const disabled = !canManage;
   const invalid = !isValidThreshold(draft.threshold);
   const dirty = rulesDirty(draft, saved);
+  const runs = invalid ? saved.threshold : Number(draft.threshold);
 
   const change = (patch: Partial<RulesDraft>): void => {
     save.reset();
@@ -130,11 +134,16 @@ export function WhenToNotify({
         </Label>
         <Select
           disabled={disabled || draft.timeLimitMinutes === null}
+          key={draft.timeLimitMinutes === null ? "off" : "on"}
           onValueChange={(v) => change({ timeLimitMinutes: Number(v) })}
           value={String(draft.timeLimitMinutes ?? DEFAULT_TIME_LIMIT)}
         >
           <SelectTrigger aria-label="How long" className="h-9 w-28" size="sm">
-            <SelectValue />
+            {draft.timeLimitMinutes === null ? (
+              <span className="text-muted-foreground">Off</span>
+            ) : (
+              <SelectValue />
+            )}
           </SelectTrigger>
           <SelectContent>
             {TIME_LIMIT_OPTIONS_MINUTES.map((minutes) => (
@@ -145,6 +154,10 @@ export function WhenToNotify({
           </SelectContent>
         </Select>
       </div>
+      <p className="text-muted-foreground text-xs">
+        For slow schedules: a workflow that runs every 4 hours takes {4 * runs}{" "}
+        hours to fail {runs} time{runs === 1 ? "" : "s"}.
+      </p>
       <label className="flex items-center gap-2" htmlFor="failure-remind">
         <Checkbox
           checked={draft.remindDaily}
@@ -154,7 +167,7 @@ export function WhenToNotify({
             change({ remindDaily: checked === true })
           }
         />
-        Remind once a day while it keeps failing
+        Remind once a day while it keeps failing (up to {MAX_REMINDERS} days)
       </label>
       <label className="flex items-center gap-2" htmlFor="failure-recovery">
         <Checkbox
@@ -165,16 +178,23 @@ export function WhenToNotify({
             change({ notifyRecovery: checked === true })
           }
         />
-        Send a message when it works again
+        Tell people when it works again
       </label>
-      <p className="text-muted-foreground text-xs">
-        A scheduled workflow that does not run on time is reported too.
-      </p>
-      <SaveError error={save.error} />
+      <SaveError
+        error={save.error}
+        onReload={
+          onReload
+            ? () => {
+                save.reset();
+                onReload();
+              }
+            : undefined
+        }
+      />
       {canManage && (
         <div className="flex flex-wrap items-center gap-2 border-t pt-3">
           <Button
-            aria-label="Save when to notify"
+            aria-label="Save rules"
             disabled={!dirty || invalid || save.state === "saving"}
             onClick={() => save.run(onSave)}
             size="sm"

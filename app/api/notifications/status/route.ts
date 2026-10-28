@@ -5,6 +5,7 @@ import { isBillingEnabled } from "@/lib/billing/feature-flag";
 import { isBillingLimitReached } from "@/lib/billing/limit-status";
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
+import { isFailureAlertsEnabledForOrg } from "@/lib/notifications/failure-alerts/rollout";
 import { loadInAppAlertState } from "@/lib/notifications/failure-alerts/settings";
 
 export type NotificationType =
@@ -15,11 +16,14 @@ export type NotificationType =
 type NotificationStatusResponse = {
   unreadCount: number;
   types: NotificationType[];
+  /** Alerts are on for this org (FAILURE_ALERTS_ROLLOUT); the UI hides them otherwise. */
+  alertsEnabled: boolean;
 };
 
 const EMPTY_RESPONSE: NotificationStatusResponse = {
   unreadCount: 0,
   types: [],
+  alertsEnabled: false,
 };
 
 export async function GET(
@@ -46,8 +50,7 @@ export async function GET(
       types.push("billing_limit_reached");
     }
 
-    // Owners and admins are the people who can act on a failing workflow or
-    // fix the notification settings.
+    // Only owners and admins can act on a failing workflow or fix settings.
     if (role === "owner" || role === "admin") {
       // Its own catch, so a failure here never hides the billing notice.
       try {
@@ -67,7 +70,11 @@ export async function GET(
       }
     }
 
-    return NextResponse.json({ unreadCount: types.length, types });
+    return NextResponse.json({
+      unreadCount: types.length,
+      types,
+      alertsEnabled: isFailureAlertsEnabledForOrg(organizationId),
+    });
   } catch (error) {
     logSystemWarn(
       ErrorCategory.INFRASTRUCTURE,

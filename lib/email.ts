@@ -45,12 +45,7 @@ const EMAIL_LOGO_URL =
   "https://raw.githubusercontent.com/KeeperHub/keeperhub/staging/public/keeperhub_logo_email.png";
 // end keeperhub code //
 
-/**
- * The branded HTML shell: logo header, white card with a title, the body, and
- * a small footer. The older templates below inline their own copy of it; new
- * ones use this. `title` and `footerHtml` are inserted as HTML, so escape any
- * user-controlled text before passing it.
- */
+/** Branded email shell. `title` and `footerHtml` are raw HTML: escape user text first. */
 export function emailLayout(
   title: string,
   bodyHtml: string,
@@ -80,7 +75,7 @@ export function emailLayout(
 </html>`.trim();
 }
 
-/** A button for emailLayout bodies; "danger" for the one action an urgent email asks for. */
+/** Button for emailLayout bodies; "danger" for an urgent email's one action. */
 export function emailButton(
   href: string,
   label: string,
@@ -135,21 +130,14 @@ export function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
-/**
- * What happened to one send, in enough detail to decide whether to try again.
- *
- * `sendEmail` collapses this to a boolean, which is all a sign-up code needs.
- * Failure alerts retry and fall back, and a boolean cannot tell a rate limit
- * (wait and retry) from a rejected API key (page our own on-call) from a
- * malformed address (never retry).
- */
+/** One send's outcome in enough detail for alerts to retry, page us, or give up. */
 type EmailSendResult = {
   ok: boolean;
   /** HTTP status from the provider; absent when the request never completed. */
   status?: number;
   /** True for timeouts, network faults, 408, 425, 429 and 5xx. */
   retryable: boolean;
-  /** Milliseconds the provider asked us to wait before retrying, when it said. */
+  /** Retry-after the provider asked for, in milliseconds. */
   retryAfterMs?: number;
   /** True when the key or sender is ours to fix (401, 403, no key configured). */
   platformFault: boolean;
@@ -180,9 +168,7 @@ export async function sendEmail(options: SendEmailOptions): Promise<boolean> {
   return result.ok;
 }
 
-/**
- * Send an email using SendGrid and report the provider's answer.
- */
+/** Send via SendGrid and report the provider's answer. */
 export async function sendEmailDetailed(
   options: SendEmailOptions
 ): Promise<EmailSendResult> {

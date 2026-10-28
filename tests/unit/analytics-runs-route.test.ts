@@ -156,7 +156,7 @@ describe("GET /api/analytics/runs source filter", () => {
     );
   });
 
-  it("sends no source when none is asked for, which lists all three", async () => {
+  it("sends no source when none is asked for, which leaves notifications out", async () => {
     await GET(sourceRequest());
 
     const [, , options] = vi.mocked(getUnifiedRuns).mock.calls[0] ?? [];

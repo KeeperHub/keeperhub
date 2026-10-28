@@ -3,7 +3,14 @@
 import { useSetAtom } from "jotai";
 import { Loader2, Mail, Plus } from "lucide-react";
 import Link from "next/link";
-import { type ReactNode, useId, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import { ConfigureConnectionOverlay } from "@/components/overlays/add-connection-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
 import { timeAgo } from "@/components/settings/hub/relative-time";
@@ -13,7 +20,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { IntegrationIcon } from "@/components/ui/integration-icon";
 import { Label } from "@/components/ui/label";
-import { Notice, WARNING_TEXT } from "@/components/ui/notice";
+import { WARNING_TEXT } from "@/components/ui/notice";
 import {
   Select,
   SelectContent,
@@ -40,9 +47,11 @@ import { cn } from "@/lib/utils";
 import { sendFailureAlertTest } from "./api";
 import { memberLabel } from "./member-label";
 import {
+  BROKEN_STATUSES,
   CHANNEL_KINDS,
   channelStatus,
   type DraftChannel,
+  destinationProblem,
   isChannelDirty,
   type MethodStatus,
   needsDestination,
@@ -57,39 +66,57 @@ import {
 import { TestResultLine } from "./test-result-line";
 
 const TRAILING_DOTS = /\.+$/;
+const FOCUSABLE =
+  "button:not([disabled]), input:not([disabled]), [role='combobox']:not([disabled])";
+const RED = "border-destructive/50 text-destructive";
 
-const STATUS_BADGE: Record<MethodStatus, { label: string; className: string }> =
-  {
-    working: {
-      label: "Working",
-      className: "border-keeperhub-green/40 text-keeperhub-green-dark",
-    },
-    untested: { label: "Untested", className: WARNING_TEXT },
-    failed: {
-      label: "Test failed",
-      className: "border-destructive/50 text-destructive",
-    },
-    paused: {
-      label: "Paused",
-      className: "border-destructive/50 text-destructive",
-    },
-    unreachable: {
-      label: "Nobody reachable",
-      className: "border-destructive/50 text-destructive",
-    },
-  };
+const STATUS_LABEL: Record<MethodStatus, string> = {
+  working: "Working",
+  untested: "Not tested",
+  failed: "Test failed",
+  delivery: "Not delivering",
+  paused: "Paused",
+  missing: "Connection missing",
+  unsaved: "Not saved",
+  refused: "Not saved",
+  unreachable: "Nobody reachable",
+};
 
-function StatusBadge({ status }: { status: MethodStatus }): React.ReactElement {
-  const badge = STATUS_BADGE[status];
-  return (
-    <Badge
-      className={badge.className}
-      data-testid="failure-alert-method-status"
-      variant="outline"
-    >
-      {badge.label}
-    </Badge>
-  );
+function statusClass(status: MethodStatus, lastResort: boolean): string {
+  if (status === "working") {
+    return "border-keeperhub-green/40 text-keeperhub-green-dark";
+  }
+  if (status === "unsaved") {
+    return "text-muted-foreground";
+  }
+  if (status === "untested" || (status === "paused" && !lastResort)) {
+    return WARNING_TEXT;
+  }
+  return RED;
+}
+
+const ROLE_TEXT: Record<FailureAlertChannelRole, string> = {
+  always: "Always",
+  backup: "Backup only",
+};
+
+/** After a row is removed: the next row's first control, or the fallback. */
+export function focusMethodAt(
+  container: RefObject<HTMLElement | null>,
+  position: number,
+  fallback: RefObject<HTMLElement | null> | null
+): void {
+  requestAnimationFrame(() => {
+    const rows = container.current?.querySelectorAll<HTMLElement>(
+      '[data-testid="failure-alert-method"]'
+    );
+    const row = rows?.[position];
+    const target =
+      row?.querySelector<HTMLElement>("[data-method-toggle]") ??
+      row?.querySelector<HTMLElement>(FOCUSABLE) ??
+      fallback?.current;
+    target?.focus();
+  });
 }
 
 /** A label above its field, the same on every card. */
@@ -115,69 +142,152 @@ function Field({
 }
 
 /**
- * The one layout every method shares: icon, name and status; the target; when
- * to use it; then Test, Save and Remove in the same place on every card.
+ * The one layout every method shares: a row with icon, name, when it is used,
+ * status and Edit; opened, the fields, then Test, Save and Remove.
  */
-function MethodCardFrame({
+function MethodRow({
   kind,
   icon,
   name,
+  roleText,
   status,
+  lastResort,
   dirty,
   health,
-  picker,
-  target,
-  whenToUse,
-  notices,
+  feedback,
+  expanded,
+  toggle,
+  toggleRef,
+  bodyRef,
+  body,
   actions,
+  bodyId,
 }: {
   kind: string;
   icon: ReactNode;
   name: string;
+  roleText: string;
   status: MethodStatus;
+  lastResort: boolean;
   dirty: boolean;
   health: ReactNode;
-  picker?: ReactNode;
-  target: ReactNode;
-  whenToUse: ReactNode;
-  notices?: ReactNode;
+  feedback?: ReactNode;
+  expanded: boolean;
+  toggle?: { label: string; onClick: () => void };
+  toggleRef: RefObject<HTMLButtonElement | null>;
+  bodyRef: RefObject<HTMLDivElement | null>;
+  body: ReactNode;
   actions?: ReactNode;
+  bodyId: string;
 }): React.ReactElement {
+  const nameId = `${bodyId}-name`;
+  const alarming =
+    status === "unreachable" ||
+    status === "refused" ||
+    (lastResort && BROKEN_STATUSES.includes(status));
   return (
     <li
+      aria-labelledby={nameId}
       className={cn(
         "min-w-0 rounded-lg border bg-background/40",
-        (status === "paused" || status === "unreachable") &&
-          "border-destructive/50"
+        (status === "unsaved" || status === "refused") && "border-dashed",
+        alarming && "border-destructive/50"
       )}
       data-dirty={dirty}
+      data-expanded={expanded}
       data-kind={kind}
       data-status={status}
       data-testid="failure-alert-method"
     >
-      <div className="flex items-start gap-3 p-3 @xl/settings:px-4">
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-2 p-3 @xl/settings:px-4">
         <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted">
           {icon}
         </span>
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-40">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <h4 className="font-medium text-sm">{name}</h4>
-            <StatusBadge status={status} />
+            <h4
+              className="min-w-0 max-w-full truncate font-medium text-sm"
+              id={nameId}
+              title={name}
+            >
+              {name}
+            </h4>
+            <Badge
+              className={statusClass(status, lastResort)}
+              data-testid="failure-alert-method-status"
+              variant="outline"
+            >
+              {STATUS_LABEL[status]}
+            </Badge>
+            {feedback}
           </div>
+          <p className="text-muted-foreground text-xs">{roleText}</p>
           <p className="mt-0.5 break-words text-xs">{health}</p>
         </div>
+        {toggle && (
+          <Button
+            aria-controls={expanded ? bodyId : undefined}
+            aria-expanded={expanded}
+            aria-label={`${toggle.label} ${name}`}
+            className="w-full @xl/settings:w-auto"
+            data-method-toggle=""
+            onClick={toggle.onClick}
+            ref={toggleRef}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            {toggle.label}
+          </Button>
+        )}
       </div>
-      <div className="space-y-4 border-t p-3 @xl/settings:px-4">
-        {picker}
-        {target}
-        {whenToUse}
-        {notices}
-      </div>
-      {actions && (
-        <div className="border-t p-3 @xl/settings:px-4">{actions}</div>
+      {expanded && (
+        <div id={bodyId} ref={bodyRef}>
+          <div className="space-y-4 border-t p-3 @xl/settings:px-4">{body}</div>
+          {actions && (
+            <div className="border-t p-3 @xl/settings:px-4">{actions}</div>
+          )}
+        </div>
       )}
     </li>
   );
+}
+
+/** Open, close and focus for a row; open by itself when it needs attention. */
+function useRowState(startOpen: boolean): {
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  toggleRef: RefObject<HTMLButtonElement | null>;
+  bodyRef: RefObject<HTMLDivElement | null>;
+  openAndFocus: () => void;
+  closeAndFocus: () => void;
+} {
+  const [open, setOpen] = useState(startOpen);
+  const toggleRef = useRef<HTMLButtonElement | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const focusBody = useRef(false);
+
+  useEffect(() => {
+    if (open && focusBody.current) {
+      focusBody.current = false;
+      bodyRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+    }
+  }, [open]);
+
+  return {
+    open,
+    setOpen,
+    toggleRef,
+    bodyRef,
+    openAndFocus: () => {
+      focusBody.current = true;
+      setOpen(true);
+    },
+    closeAndFocus: () => {
+      setOpen(false);
+      requestAnimationFrame(() => toggleRef.current?.focus());
+    },
+  };
 }
 
 /** Test and Save on the left, Remove on the right, on every card. */
@@ -203,35 +313,26 @@ function SaveButton({
   label,
   dirty,
   ready,
-  save,
-  onSave,
+  saving,
+  onClick,
 }: {
   label: string;
   dirty: boolean;
   ready: boolean;
-  save: ReturnType<typeof useSaveState>;
-  onSave: SaveAction;
+  saving: boolean;
+  onClick: () => void;
 }): React.ReactElement {
   return (
-    <>
-      <Button
-        aria-label={`Save ${label}`}
-        disabled={!(dirty && ready) || save.state === "saving"}
-        onClick={() => save.run(onSave)}
-        size="sm"
-        type="button"
-      >
-        {save.state === "saving" ? (
-          <Loader2 className="size-3.5 animate-spin" />
-        ) : null}
-        Save
-      </Button>
-      <SaveFeedback
-        dirty={dirty}
-        state={save.state}
-        testId="failure-alert-method-save"
-      />
-    </>
+    <Button
+      aria-label={`Save ${label}`}
+      disabled={!(dirty && ready) || saving}
+      onClick={onClick}
+      size="sm"
+      type="button"
+    >
+      {saving ? <Loader2 className="size-3.5 animate-spin" /> : null}
+      Save
+    </Button>
   );
 }
 
@@ -264,8 +365,7 @@ function PagerDutyModeChoice({
         <span>
           Check the connection (recommended)
           <span className="block text-muted-foreground text-xs">
-            Sends a change event. It shows on the service timeline and never
-            pages anyone.
+            Sends a change event. It never pages anyone.
           </span>
         </span>
       </label>
@@ -304,7 +404,7 @@ function MethodPicker({
 }): React.ReactElement {
   return (
     <fieldset data-testid="failure-alert-method-picker">
-      <legend className="mb-1.5 font-medium text-xs">Method</legend>
+      <legend className="mb-1.5 font-medium text-xs">Choose how to send</legend>
       <div className="grid grid-cols-2 gap-2 @xl/settings:grid-cols-4">
         {CHANNEL_KINDS.map((option) => (
           <label
@@ -338,96 +438,136 @@ function WhenToUse({
   id,
   value,
   disabled,
-  fixed,
   onChange,
 }: {
   id: string;
   value: FailureAlertChannelRole;
   disabled: boolean;
-  /** Email: always used, shown the same way but not changeable. */
-  fixed?: boolean;
-  onChange?: (role: FailureAlertChannelRole) => void;
+  onChange: (role: FailureAlertChannelRole) => void;
 }): React.ReactElement {
-  let hint: string | null = null;
-  if (fixed) {
-    hint = "Email gets every alert.";
-  } else if (value === "backup") {
-    hint =
-      "Gets an alert only when email or another method could not deliver it, with a note saying which one failed.";
-  }
   return (
     <Field htmlFor={id} label="When to use">
       <Select
-        disabled={disabled || fixed}
-        onValueChange={(next) => onChange?.(next as FailureAlertChannelRole)}
+        disabled={disabled}
+        onValueChange={(next) => onChange(next as FailureAlertChannelRole)}
         value={value}
       >
-        <SelectTrigger className="h-9 w-full @xl/settings:w-56" id={id}>
+        <SelectTrigger className="h-9 w-full @xl/settings:w-48" id={id}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="always">Always</SelectItem>
-          <SelectItem value="backup">Only as a backup</SelectItem>
+          <SelectItem value="backup">Backup only</SelectItem>
         </SelectContent>
       </Select>
-      {hint && <p className="text-muted-foreground text-xs">{hint}</p>}
+      {value === "backup" && (
+        <p className="text-muted-foreground text-xs">
+          Gets an alert only when another method could not deliver it.
+        </p>
+      )}
     </Field>
   );
 }
 
+/** "Checked 2 h ago. Last delivered 3 days ago." */
+function healthTimes(view: ChannelView): string {
+  const parts = [
+    view.lastHealthCheckAt ? `Checked ${timeAgo(view.lastHealthCheckAt)}` : "",
+    view.lastDeliveredAt
+      ? `Last delivered ${timeAgo(view.lastDeliveredAt)}`
+      : "No alert sent yet",
+  ].filter(Boolean);
+  return `${parts.join(". ")}.`;
+}
+
+const TARGET_WORD: Record<FailureAlertChannelKind, string> = {
+  slack: "channel",
+  discord: "connection",
+  telegram: "chat",
+  pagerduty: "service",
+};
+
 function ChannelHealth({
   draft,
   saved,
+  status,
+  savesHere,
 }: {
   draft: DraftChannel;
   saved: ChannelView | undefined;
+  status: MethodStatus;
+  savesHere: boolean;
 }): React.ReactElement {
+  const savedWith = "Saved with this workflow's settings below.";
+  if (status === "missing") {
+    return (
+      <span className="text-destructive">
+        Its connection was deleted or is no longer shared with the organization.
+        Pick another connection or remove this method.
+      </span>
+    );
+  }
   if (!saved) {
     return (
       <span className="text-muted-foreground">
-        Not saved yet. Saving checks that it can receive notifications.
+        {savesHere
+          ? "Not saved yet. Save checks that it can receive alerts."
+          : savedWith}
       </span>
     );
   }
   if (!sameTarget(draft, saved)) {
     return (
       <span className="text-muted-foreground">
-        Changed, not saved yet. Saving checks the new target.
+        {savesHere
+          ? `Changed, not saved. Save checks the new ${TARGET_WORD[draft.kind]}.`
+          : savedWith}
       </span>
     );
   }
-  if (saved.pausedAt && draft.testedOk === true) {
+  if (status === "working" && saved.pausedAt) {
     return (
-      <span className="text-muted-foreground">Test passed: it is back on.</span>
+      <span className="text-muted-foreground">Test passed. It is back on.</span>
     );
   }
-  if (saved.pausedAt) {
+  if (status === "paused") {
+    return (
+      <span>
+        Paused {timeAgo(saved.pausedAt ?? "")}:{" "}
+        {(saved.pausedReason ?? "it stopped working").replace(
+          TRAILING_DOTS,
+          ""
+        )}
+        . It turns back on by itself when the daily check passes, or Test it
+        now.
+      </span>
+    );
+  }
+  if (status === "delivery") {
     return (
       <span className="text-destructive">
-        Paused {timeAgo(saved.pausedAt)}:{" "}
-        {(saved.pausedReason ?? "").replace(TRAILING_DOTS, "")}. Test it to turn
-        it back on.
+        Last alert failed {timeAgo(saved.lastFailedAt ?? "")}
+        {saved.lastError ? `: ${saved.lastError}` : "."}
       </span>
     );
   }
-  const failedLast =
-    saved.lastFailedAt &&
-    (!saved.lastDeliveredAt || saved.lastFailedAt > saved.lastDeliveredAt);
-  if (failedLast && saved.lastFailedAt) {
+  if (status === "failed") {
     return (
       <span className="text-destructive">
-        Last delivery failed {timeAgo(saved.lastFailedAt)}: {saved.lastError}
+        Last test failed
+        {saved.lastTestedAt ? ` ${timeAgo(saved.lastTestedAt)}` : ""}. Fix it,
+        then Test again.
       </span>
     );
   }
-  if (saved.lastDeliveredAt) {
+  if (status === "untested") {
     return (
       <span className="text-muted-foreground">
-        Last delivered {timeAgo(saved.lastDeliveredAt)}
+        Saved but not tested yet. Test sends one message marked [Test].
       </span>
     );
   }
-  return <span className="text-muted-foreground">Never used yet</span>;
+  return <span className="text-muted-foreground">{healthTimes(saved)}</span>;
 }
 
 function ConnectionField({
@@ -436,7 +576,6 @@ function ConnectionField({
   connections,
   unsharedConnections,
   disabled,
-  canManage,
   onPick,
   onConnectionsChanged,
 }: {
@@ -445,7 +584,6 @@ function ConnectionField({
   connections: ConnectionView[];
   unsharedConnections: ConnectionView[];
   disabled: boolean;
-  canManage: boolean;
   onPick: (integrationId: string) => void;
   onConnectionsChanged: () => Promise<void> | void;
 }): React.ReactElement {
@@ -498,9 +636,9 @@ function ConnectionField({
           No {kindLabel} connection shared with the organization yet.
         </p>
       )}
-      {canManage && (
+      {!disabled && (
         <Button
-          className="h-auto max-w-full justify-start whitespace-normal px-0 text-left text-xs"
+          className="h-auto px-0 text-xs"
           onClick={newConnection}
           type="button"
           variant="link"
@@ -517,13 +655,16 @@ function DestinationField({
   id,
   draft,
   disabled,
+  problem,
   onChange,
 }: {
   id: string;
   draft: DraftChannel;
   disabled: boolean;
+  problem: string | null;
   onChange: (destination: string) => void;
-}): React.ReactElement {
+}): React.ReactElement | null {
+  const errorId = `${id}-error`;
   if (draft.kind === "slack") {
     return (
       <Field htmlFor={id} label="Slack channel">
@@ -542,6 +683,8 @@ function DestinationField({
     return (
       <Field htmlFor={id} label="Chat ID">
         <Input
+          aria-describedby={problem ? errorId : undefined}
+          aria-invalid={Boolean(problem)}
           className="h-9 font-mono"
           disabled={disabled}
           id={id}
@@ -549,18 +692,28 @@ function DestinationField({
           placeholder="-1001234567890"
           value={draft.destination}
         />
-        <p className="text-muted-foreground text-xs">
-          A group number such as -1001234567890, or @name for a public channel.
-          Add your bot to the group first.{" "}
-          <a
-            className="underline"
-            href="https://docs.keeperhub.com/plugins/telegram"
-            rel="noopener"
-            target="_blank"
+        {problem ? (
+          <p
+            className="text-destructive text-xs"
+            data-testid="failure-alert-destination-error"
+            id={errorId}
           >
-            How to find the chat ID
-          </a>
-        </p>
+            {problem}
+          </p>
+        ) : (
+          <p className="text-muted-foreground text-xs">
+            A group number such as -1001234567890, or @name. Add your bot to the
+            group first.{" "}
+            <a
+              className="underline"
+              href="https://docs.keeperhub.com/plugins/telegram"
+              rel="noopener"
+              target="_blank"
+            >
+              How to find it
+            </a>
+          </p>
+        )}
       </Field>
     );
   }
@@ -580,14 +733,7 @@ function DestinationField({
       </fieldset>
     );
   }
-  return (
-    <Field label="Where">
-      <p className="text-muted-foreground text-xs">
-        The connection holds the Discord webhook, so there is nothing else to
-        fill in.
-      </p>
-    </Field>
-  );
+  return null;
 }
 
 /**
@@ -601,10 +747,12 @@ export function ChannelMethodCard({
   connections,
   unsharedConnections = [],
   canManage,
+  lastResort = false,
   onChange,
   onSave,
   onRemove,
   onTested,
+  onReload,
   onConnectionsChanged,
 }: {
   organizationId: string;
@@ -614,11 +762,15 @@ export function ChannelMethodCard({
   connections: ConnectionView[];
   unsharedConnections?: ConnectionView[];
   canManage: boolean;
+  /** Nobody else can be told if this one is broken. */
+  lastResort?: boolean;
   onChange: (next: DraftChannel) => void;
   onSave?: SaveAction;
   onRemove?: (label: string) => void;
   /** A saved channel was tested: its stored health changed. */
   onTested?: () => void;
+  /** Refetch after someone else saved first. */
+  onReload?: () => void;
   onConnectionsChanged: () => Promise<void> | void;
 }): React.ReactElement {
   const idPrefix = useId();
@@ -630,16 +782,24 @@ export function ChannelMethodCard({
 
   const isNew = Boolean(draft.fresh) && !(draft.id || saved);
   const dirty = isChannelDirty(draft, saved);
-  const status = channelStatus(draft, saved);
   const connection = connections.find((c) => c.id === draft.integrationId);
+  let status = channelStatus(draft, saved, Boolean(connection));
+  if (save.error && status === "unsaved") {
+    status = "refused";
+  }
+  const row = useRowState(BROKEN_STATUSES.includes(status));
+  const expanded =
+    canManage && (row.open || isNew || dirty || Boolean(save.error));
   const label = channelLabel(
     draft.kind,
     draft.destination,
     connection?.name ?? saved?.connectionName
   );
+  const problem = destinationProblem(draft);
   const ready =
     Boolean(draft.integrationId) &&
-    (!needsDestination(draft.kind) || draft.destination.trim() !== "");
+    (!needsDestination(draft.kind) || draft.destination.trim() !== "") &&
+    !problem;
   const disabled = !canManage;
 
   const edit = (patch: Partial<DraftChannel>): void => {
@@ -651,6 +811,30 @@ export function ChannelMethodCard({
       setResult(null);
     }
     onChange(next);
+  };
+
+  const runSave = async (): Promise<void> => {
+    if (!onSave) {
+      return;
+    }
+    if (await save.run(onSave)) {
+      row.closeAndFocus();
+    }
+  };
+
+  const discard = (): void => {
+    save.reset();
+    setResult(null);
+    if (saved) {
+      onChange({
+        ...draft,
+        integrationId: saved.integrationId,
+        destination: saved.destination,
+        role: saved.role,
+        testedOk: undefined,
+      });
+    }
+    row.closeAndFocus();
   };
 
   const runTest = async (): Promise<void> => {
@@ -673,8 +857,23 @@ export function ChannelMethodCard({
     }
   };
 
+  let toggle: { label: string; onClick: () => void } | undefined;
+  if (canManage && !isNew) {
+    if (!expanded) {
+      toggle = {
+        label: BROKEN_STATUSES.includes(status) ? "Fix" : "Edit",
+        onClick: row.openAndFocus,
+      };
+    } else if (dirty && saved) {
+      toggle = { label: "Discard changes", onClick: discard };
+    } else if (!(dirty || save.error)) {
+      toggle = { label: "Close", onClick: row.closeAndFocus };
+    }
+  }
+
   const testButton = (
     <Button
+      aria-busy={testing}
       aria-expanded={draft.kind === "pagerduty" ? choosingPdMode : undefined}
       aria-label={`Test ${label}`}
       disabled={testing || !ready}
@@ -705,39 +904,64 @@ export function ChannelMethodCard({
   ) : undefined;
 
   return (
-    <MethodCardFrame
+    <MethodRow
       actions={
-        canManage ? (
-          <ActionsRow
-            remove={removeButton}
-            save={
-              onSave ? (
-                <SaveButton
-                  dirty={dirty}
-                  label={label}
-                  onSave={onSave}
-                  ready={ready}
-                  save={save}
-                />
-              ) : undefined
-            }
-            test={testButton}
-          />
-        ) : undefined
+        <ActionsRow
+          remove={removeButton}
+          save={
+            onSave ? (
+              <SaveButton
+                dirty={dirty}
+                label={label}
+                onClick={runSave}
+                ready={ready}
+                saving={save.state === "saving"}
+              />
+            ) : undefined
+          }
+          test={testButton}
+        />
       }
-      dirty={dirty}
-      health={<ChannelHealth draft={draft} saved={saved} />}
-      icon={<IntegrationIcon className="size-4" integration={draft.kind} />}
-      kind={draft.kind}
-      name={CHANNEL_LABEL[draft.kind]}
-      notices={
-        <>
-          {draft.integrationId && !connection && (
-            <Notice tone="danger">
-              Its connection was deleted or is no longer shared with the
-              organization.
-            </Notice>
+      body={
+        <div className="space-y-4">
+          {isNew && (
+            <MethodPicker
+              idPrefix={idPrefix}
+              onPick={(kind) =>
+                edit({
+                  kind,
+                  integrationId:
+                    connections.find((c) => c.kind === kind)?.id ?? "",
+                  destination: "",
+                })
+              }
+              value={draft.kind}
+            />
           )}
+          <div className="grid grid-cols-1 gap-4 @xl/settings:grid-cols-2">
+            <ConnectionField
+              connections={connections}
+              disabled={disabled}
+              draft={draft}
+              id={`${idPrefix}-connection`}
+              onConnectionsChanged={onConnectionsChanged}
+              onPick={(integrationId) => edit({ integrationId })}
+              unsharedConnections={unsharedConnections}
+            />
+            <DestinationField
+              disabled={disabled}
+              draft={draft}
+              id={`${idPrefix}-destination`}
+              onChange={(destination) => edit({ destination })}
+              problem={problem}
+            />
+          </div>
+          <WhenToUse
+            disabled={disabled}
+            id={`${idPrefix}-role`}
+            onChange={(role) => edit({ role })}
+            value={draft.role}
+          />
           {choosingPdMode && (
             <div className="space-y-3 rounded-md border p-3">
               <PagerDutyModeChoice
@@ -769,56 +993,60 @@ export function ChannelMethodCard({
             </div>
           )}
           {result && <TestResultLine result={result} />}
-          <SaveError error={save.error} />
-        </>
-      }
-      picker={
-        isNew && canManage ? (
-          <MethodPicker
-            idPrefix={idPrefix}
-            onPick={(kind) =>
-              edit({
-                kind,
-                integrationId:
-                  connections.find((c) => c.kind === kind)?.id ?? "",
-                destination: "",
-              })
+          <SaveError
+            error={save.error}
+            onReload={
+              onReload
+                ? () => {
+                    save.reset();
+                    onReload();
+                  }
+                : undefined
             }
-            value={draft.kind}
-          />
-        ) : undefined
-      }
-      status={status}
-      target={
-        <div className="grid grid-cols-1 gap-4 @xl/settings:grid-cols-2">
-          <ConnectionField
-            canManage={canManage}
-            connections={connections}
-            disabled={disabled}
-            draft={draft}
-            id={`${idPrefix}-connection`}
-            onConnectionsChanged={onConnectionsChanged}
-            onPick={(integrationId) => edit({ integrationId })}
-            unsharedConnections={unsharedConnections}
-          />
-          <DestinationField
-            disabled={disabled}
-            draft={draft}
-            id={`${idPrefix}-destination`}
-            onChange={(destination) => edit({ destination })}
           />
         </div>
       }
-      whenToUse={
-        <WhenToUse
-          disabled={disabled}
-          id={`${idPrefix}-role`}
-          onChange={(role) => edit({ role })}
-          value={draft.role}
+      bodyId={`${idPrefix}-body`}
+      bodyRef={row.bodyRef}
+      dirty={dirty}
+      expanded={expanded}
+      feedback={
+        onSave ? (
+          <SaveFeedback
+            dirty={dirty}
+            state={save.state}
+            testId="failure-alert-method-save"
+          />
+        ) : undefined
+      }
+      health={
+        <ChannelHealth
+          draft={draft}
+          saved={saved}
+          savesHere={Boolean(onSave)}
+          status={status}
         />
       }
+      icon={<IntegrationIcon className="size-4" integration={draft.kind} />}
+      kind={draft.kind}
+      lastResort={lastResort}
+      name={label}
+      roleText={ROLE_TEXT[draft.role]}
+      status={status}
+      toggle={toggle}
+      toggleRef={row.toggleRef}
     />
   );
+}
+
+function recipientsLine(reachable: MemberView[]): string {
+  if (reachable.length === 0) {
+    return "Nobody chosen has an email KeeperHub can reach.";
+  }
+  const names = reachable.map(memberLabel);
+  const who =
+    names.length <= 2 ? names.join(" and ") : `${names.length} people`;
+  return `Goes to ${who}. Test sends one email to you.`;
 }
 
 /** Email: the people who get it. Always used; cannot be removed. */
@@ -831,6 +1059,7 @@ export function EmailMethodCard({
   emailUsage,
   onChange,
   onSave,
+  onReload,
 }: {
   organizationId: string;
   members: MemberView[];
@@ -840,6 +1069,7 @@ export function EmailMethodCard({
   emailUsage: { used: number; limit: number } | null;
   onChange: (recipients: string[]) => void;
   onSave: SaveAction;
+  onReload?: () => void;
 }): React.ReactElement {
   const idPrefix = useId();
   const save = useSaveState();
@@ -856,15 +1086,23 @@ export function EmailMethodCard({
   if (status === "working" && result && !result.delivered) {
     status = "failed";
   }
+  const row = useRowState(status === "unreachable");
+  const expanded = canManage && (row.open || dirty || Boolean(save.error));
   const onlyOne = recipients.length === 1;
 
-  const toggle = (userId: string, checked: boolean): void => {
+  const toggleRecipient = (userId: string, checked: boolean): void => {
     save.reset();
     onChange(
       checked
         ? [...new Set([...recipients, userId])]
         : recipients.filter((id) => id !== userId)
     );
+  };
+
+  const runSave = async (): Promise<void> => {
+    if (await save.run(onSave)) {
+      row.closeAndFocus();
+    }
   };
 
   const runTest = async (): Promise<void> => {
@@ -876,128 +1114,173 @@ export function EmailMethodCard({
     setTesting(false);
   };
 
+  let toggle: { label: string; onClick: () => void } | undefined;
+  if (canManage) {
+    if (!expanded) {
+      toggle = {
+        label: status === "unreachable" ? "Fix" : "Edit",
+        onClick: row.openAndFocus,
+      };
+    } else if (dirty) {
+      toggle = {
+        label: "Discard changes",
+        onClick: () => {
+          save.reset();
+          onChange([...savedRecipients]);
+          row.closeAndFocus();
+        },
+      };
+    } else if (!save.error) {
+      toggle = { label: "Close", onClick: row.closeAndFocus };
+    }
+  }
+
   return (
-    <MethodCardFrame
+    <MethodRow
       actions={
-        canManage ? (
-          <ActionsRow
-            save={
-              <SaveButton
-                dirty={dirty}
-                label="Email"
-                onSave={onSave}
-                ready={recipients.length > 0}
-                save={save}
-              />
-            }
-            test={
-              <Button
-                aria-label="Test Email"
-                disabled={testing}
-                onClick={runTest}
-                size="sm"
-                title="Sends one test email to you"
-                type="button"
-                variant="outline"
-              >
-                {testing ? <Loader2 className="size-3.5 animate-spin" /> : null}
-                Test
-              </Button>
+        <ActionsRow
+          save={
+            <SaveButton
+              dirty={dirty}
+              label="Email"
+              onClick={runSave}
+              ready={recipients.length > 0}
+              saving={save.state === "saving"}
+            />
+          }
+          test={
+            <Button
+              aria-busy={testing}
+              aria-label="Test Email"
+              disabled={testing}
+              onClick={runTest}
+              size="sm"
+              title="Sends one test email to you"
+              type="button"
+              variant="outline"
+            >
+              {testing ? <Loader2 className="size-3.5 animate-spin" /> : null}
+              Test
+            </Button>
+          }
+        />
+      }
+      body={
+        <div className="space-y-4">
+          <fieldset className="min-w-0 space-y-2">
+            <legend className="mb-1.5 font-medium text-xs">Recipients</legend>
+            <ul className="space-y-2">
+              {members.map((m) => {
+                const checked = recipients.includes(m.userId);
+                const isLast = checked && onlyOne;
+                const id = `${idPrefix}-recipient-${m.userId}`;
+                if (!(m.reachable || checked)) {
+                  return (
+                    <li
+                      className="break-words pl-6 text-muted-foreground text-sm"
+                      key={m.userId}
+                    >
+                      {memberLabel(m)} cannot get email yet. They can add one in{" "}
+                      <Link className="underline" href="/settings/security">
+                        Account security
+                      </Link>
+                      .
+                    </li>
+                  );
+                }
+                return (
+                  <li
+                    className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm"
+                    key={m.userId}
+                  >
+                    <Checkbox
+                      checked={checked}
+                      disabled={isLast}
+                      id={id}
+                      onCheckedChange={(next) =>
+                        toggleRecipient(m.userId, next === true)
+                      }
+                      title={
+                        isLast
+                          ? "Someone has to get the email. Tick another person first."
+                          : undefined
+                      }
+                    />
+                    <Label
+                      className="min-w-0 cursor-pointer break-all font-normal"
+                      htmlFor={id}
+                    >
+                      {memberLabel(m)}
+                    </Label>
+                    <span className="text-muted-foreground text-xs">
+                      ({roleLabel(m.role)})
+                    </span>
+                    {!m.reachable && (
+                      <span className="basis-full pl-6 text-destructive text-xs">
+                        No email yet: this person cannot get alerts.
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+            {onlyOne && (
+              <p className="text-muted-foreground text-xs">
+                Someone has to get the email. Tick another person first.
+              </p>
+            )}
+          </fieldset>
+          <p className="text-muted-foreground text-xs">
+            Email gets every alert.
+          </p>
+          {emailUsage && emailUsage.used < emailUsage.limit * 0.8 && (
+            <p className="text-muted-foreground text-xs">
+              Free plan: {emailUsage.used} of {emailUsage.limit} alert emails
+              used this month. Chat and PagerDuty are not counted.
+            </p>
+          )}
+          {result && <TestResultLine result={result} />}
+          <SaveError
+            error={save.error}
+            onReload={
+              onReload
+                ? () => {
+                    save.reset();
+                    onReload();
+                  }
+                : undefined
             }
           />
-        ) : undefined
+        </div>
       }
+      bodyId={`${idPrefix}-body`}
+      bodyRef={row.bodyRef}
       dirty={dirty}
+      expanded={expanded}
+      feedback={
+        <SaveFeedback
+          dirty={dirty}
+          state={save.state}
+          testId="failure-alert-method-save"
+        />
+      }
       health={
         <span
           className={
             reachable.length > 0 ? "text-muted-foreground" : "text-destructive"
           }
         >
-          {reachable.length > 0
-            ? `Goes to ${reachable.length === 1 ? "1 person" : `${reachable.length} people`}. Test sends one email to you.`
-            : "Nobody ticked below has an email KeeperHub can reach."}
+          {recipientsLine(reachable)}
         </span>
       }
       icon={<Mail aria-hidden="true" className="size-4 text-foreground" />}
       kind="email"
+      lastResort
       name="Email"
-      notices={
-        <>
-          {emailUsage && (
-            <p className="text-muted-foreground text-xs">
-              {emailUsage.used >= emailUsage.limit
-                ? `All ${emailUsage.limit} alert emails for this month are used. Until the 1st, alerts go to your other methods and show in KeeperHub.`
-                : `Free plan: ${emailUsage.limit} alert emails a month, ${emailUsage.used} used. Chat and PagerDuty are not counted.`}
-            </p>
-          )}
-          {result && <TestResultLine result={result} />}
-          <SaveError error={save.error} />
-        </>
-      }
+      roleText="Always"
       status={status}
-      target={
-        <fieldset className="min-w-0 space-y-2">
-          <legend className="mb-1.5 font-medium text-xs">Recipients</legend>
-          <ul className="space-y-2">
-            {members.map((m) => {
-              const checked = recipients.includes(m.userId);
-              const isLast = checked && onlyOne;
-              const id = `${idPrefix}-recipient-${m.userId}`;
-              return (
-                <li
-                  className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm"
-                  key={m.userId}
-                >
-                  <Checkbox
-                    checked={checked}
-                    disabled={!canManage || isLast || !(m.reachable || checked)}
-                    id={id}
-                    onCheckedChange={(next) => toggle(m.userId, next === true)}
-                    title={
-                      isLast
-                        ? "At least one person has to get the email"
-                        : undefined
-                    }
-                  />
-                  <Label
-                    className={cn(
-                      "min-w-0 cursor-pointer break-all font-normal",
-                      // Unreachable, not unimportant: keep the name readable.
-                      !m.reachable &&
-                        "text-muted-foreground peer-disabled:opacity-100"
-                    )}
-                    htmlFor={id}
-                  >
-                    {memberLabel(m)}
-                  </Label>
-                  <span className="text-muted-foreground text-xs">
-                    ({roleLabel(m.role)})
-                  </span>
-                  {!m.reachable && (
-                    <span className="basis-full pl-6 text-muted-foreground text-xs @xl/settings:basis-auto @xl/settings:pl-0">
-                      No email yet. They can add one in{" "}
-                      <Link className="underline" href="/settings/security">
-                        Account security
-                      </Link>
-                      .
-                    </span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-          {onlyOne && canManage && (
-            <p className="text-muted-foreground text-xs">
-              At least one person has to get the email: tick someone else before
-              unticking the last one.
-            </p>
-          )}
-        </fieldset>
-      }
-      whenToUse={
-        <WhenToUse disabled fixed id={`${idPrefix}-role`} value="always" />
-      }
+      toggle={toggle}
+      toggleRef={row.toggleRef}
     />
   );
 }

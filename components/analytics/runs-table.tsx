@@ -13,6 +13,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { MouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useRunSources } from "@/components/analytics/use-run-sources";
 import { formatWhen } from "@/components/failure-alerts/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -57,7 +58,10 @@ import {
   useChainDisplay,
 } from "@/lib/hooks/use-chain-display";
 import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
-import { channelLabel } from "@/lib/notifications/failure-alerts/view-types";
+import {
+  channelLabel,
+  DELIVERY_STATE_LABEL,
+} from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import { ProjectDrawer } from "./project-drawer";
 
@@ -307,16 +311,18 @@ export function notificationBadge(detail: NotificationRunDetail): {
   className: string;
   tooltip: string | null;
 } {
+  // The words the Alerts history uses, so both screens name a state alike.
+  const label = DELIVERY_STATE_LABEL[detail.state] ?? detail.state;
   switch (detail.state) {
     case "delivered":
       return {
-        label: "Delivered",
+        label,
         className: STATUS_DISPLAY.success.badge,
         tooltip: null,
       };
     case "failed":
       return {
-        label: "Not delivered",
+        label,
         className: "border-destructive/20 bg-destructive/10 text-destructive",
         tooltip: detail.lastError
           ? `Could not be delivered: ${detail.lastError}`
@@ -324,20 +330,20 @@ export function notificationBadge(detail: NotificationRunDetail): {
       };
     case "capped":
       return {
-        label: "Over plan limit",
+        label,
         className:
           "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20",
         tooltip: MONTHLY_LIMIT_TEXT,
       };
     case "skipped":
       return {
-        label: "Withdrawn",
+        label,
         className: STATUS_DISPLAY.skipped.badge,
         tooltip: detail.lastError ? `Withdrawn: ${detail.lastError}` : null,
       };
     default:
       return {
-        label: "Sending",
+        label,
         className: STATUS_DISPLAY.running.badge,
         tooltip:
           detail.attempts > 0 && detail.lastError
@@ -368,7 +374,7 @@ function NotificationStatusBadge({
 const SOURCE_LABEL: Record<RunSource, string> = {
   workflow: "Workflow",
   direct: "Direct",
-  notification: "System notification",
+  notification: "Alert",
 };
 
 function SourceBadge({ source }: { source: RunSource }): ReactNode {
@@ -1014,7 +1020,7 @@ export function RunsTable(): ReactNode {
   const loading = useAtomValue(analyticsLoadingAtom);
   const range = useAtomValue(analyticsRangeAtom);
   const statuses = useAtomValue(analyticsStatusFiltersAtom);
-  const sources = useAtomValue(analyticsSourceFiltersAtom);
+  const sources = useRunSources(useAtomValue(analyticsSourceFiltersAtom));
   const networks = useAtomValue(analyticsNetworkFiltersAtom);
   const gas = useAtomValue(analyticsGasFiltersAtom);
   const duration = useAtomValue(analyticsDurationFilterAtom);

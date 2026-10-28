@@ -8,10 +8,7 @@ import {
   type TriggerNodeLike,
 } from "@/lib/workflow/trigger-display-key";
 
-/**
- * The configured trigger, read the way the editor reads it, or null when there
- * is none (an unrecognised value counts as none).
- */
+/** The trigger as the editor reads it; null when missing or unrecognised. */
 export function workflowTriggerType(
   nodes: TriggerNodeLike[]
 ): WorkflowTriggerType | null {
@@ -23,10 +20,7 @@ export const AUTOMATIC_TRIGGERS: readonly string[] = Object.values(
   WorkflowTriggerEnum
 ).filter((trigger) => trigger !== WorkflowTriggerEnum.MANUAL);
 
-/**
- * Whether runs of this workflow start on their own, so failures count. Every
- * trigger but Manual does, including any trigger added to the enum later.
- */
+/** Every trigger but Manual runs on its own, including ones added later. */
 export function runsOnItsOwn(trigger: string | null): boolean {
   return trigger !== null && trigger !== WorkflowTriggerEnum.MANUAL;
 }

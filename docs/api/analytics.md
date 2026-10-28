@@ -155,7 +155,7 @@ Same as the summary endpoint, including `projectId`: it excludes direct executio
 GET /api/analytics/runs
 ```
 
-Returns a unified list of workflow executions, direct executions and system notifications with pagination. A system notification is one failure notification KeeperHub sent the organization (an alert, reminder, recovery notice or channel notice) on one channel to one recipient. System notifications are listed but never counted: the summary, time series, network breakdown, filter counts and the `total` below count runs alone.
+Returns a unified list of workflow executions and direct executions with pagination. Pass `source=notification` (alone or with the other sources) to list system notifications as well; they are never included otherwise. A system notification is one failure notification KeeperHub sent the organization (an alert, reminder, recovery notice or channel notice) on one channel to one recipient. System notifications are listed but never counted: the summary, time series, network breakdown, filter counts and the `total` below count runs alone.
 
 ### Query Parameters
 
@@ -165,7 +165,7 @@ Returns a unified list of workflow executions, direct executions and system noti
 | `customStart` | string | ISO timestamp for custom range start |
 | `customEnd` | string | ISO timestamp for custom range end |
 | `status` | string | Filter by status. Repeatable. One of `pending`, `running`, `success`, `error`, `system_error`, `external_error`, `skipped`, `cancelled` |
-| `source` | string | Filter by source: `workflow`, `direct`, `notification`. Repeatable. Omitted, all three are listed |
+| `source` | string | Filter by source: `workflow`, `direct`, `notification`. Repeatable. Omitted, workflow and direct executions are listed and system notifications are not |
 | `network` | string | Restrict to these networks. Repeatable. System notifications have no network, so any value excludes them |
 | `gas` | string | How the run's gas was paid: `sponsored`, `wallet` or `free`. Repeatable. Any other value is dropped rather than refused, so `?gas=8453` returns the unfiltered list with no error: filter by chain with `network` above. Any accepted value excludes system notifications |
 | `durationMin` | number | Only runs at or above this duration, in milliseconds. Excludes system notifications |

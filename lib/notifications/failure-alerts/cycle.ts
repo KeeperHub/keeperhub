@@ -26,14 +26,7 @@ import { isFailureAlertsRolloutActive } from "./rollout";
 type CycleReport = EvaluationStats &
   DrainStats & { durationMs: number; disabled?: boolean; errors: string[] };
 
-/**
- * One minute's work: evaluate workflows whose runs ended, close incidents of
- * workflows that stopped, queue reminders and lost alerts, send what is due,
- * fire backups for what did not get through, check a few channels silently
- * and prune old history. Each stage catches its own errors so one failure
- * never stops the others; the errors come back in the report so the route can
- * fail the job and our alerting on failed CronJobs sees it.
- */
+/** One minute of alert work; stage errors are isolated and reported so the CronJob fails. */
 export async function runFailureAlertCycle(
   appUrl: string,
   now: Date = new Date()
