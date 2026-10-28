@@ -200,13 +200,11 @@
     "neverBuiltDependencies": [
       "prisma"
     ],
-    "patchedDependencies": {
-      "stream-json@1.9.1": "patches/stream-json@1.9.1.patch"
-    },
     "overrides_better_auth_comment": "Pinned to 1.7.2. better-auth 1.7.3 restored the 1.6 account core schema and no longer writes accounts.issuer, which KEEP-1311 (drizzle/0148) added as NOT NULL - so every credential signup fails on the insert. Unpin only together with the 1.7 upgrade-guide cleanup.",
     "overrides": {
       "better-auth": "1.7.2",
-      "toml": "^4.2.0",
+      "toml": "^5.0.1",
+      "jayson": "^5.0.0",
       "fflate": "^0.7.5",
       "rollup": "^4.59.0",
       "minimatch": "^10.2.3",
@@ -220,7 +218,7 @@
       "@isaacs/brace-expansion": "^5.0.1",
       "@trpc/server": "^11.8.0",
       "glob": "^11.1.0",
-      "dompurify": "^3.4.13",
+      "dompurify": "^3.4.17",
       "hono": "^4.13.5",
       "form-data": "^4.0.6",
       "piscina": "^4.9.3",
@@ -237,7 +235,7 @@
       "file-type": ">=21.3.1",
       "yauzl": ">=3.2.1",
       "drizzle-orm": "^0.45.4",
-      "ip-address": "^10.3.1",
+      "ip-address": "^10.7.4",
       "uuid@11": "^11.1.1",
       "uuid@<11": "^11.1.1",
       "postcss": "^8.5.23",
