@@ -339,6 +339,12 @@ async function releaseEmail(
   `);
 }
 
+const CAPPED_KINDS: ReadonlySet<string> = new Set([
+  "alert",
+  "reminder",
+  "recovery",
+]);
+
 async function sendRow(
   row: DeliveryRow,
   ctx: Context
@@ -349,11 +355,14 @@ async function sendRow(
   }
 
   if (row.channel === "email") {
-    if (!(await reserveEmail(row.organizationId, ctx))) {
+    // The cap is on alerts. One-time notices (notifications switched on, a
+    // channel paused) are rare and are how people learn the setup is broken.
+    const counted = CAPPED_KINDS.has(row.kind);
+    if (counted && !(await reserveEmail(row.organizationId, ctx))) {
       return "capped";
     }
     const outcome = await sendEmailMessage(row.recipient, content.rendered);
-    if (!outcome.ok) {
+    if (counted && !outcome.ok) {
       await releaseEmail(row.organizationId, ctx);
     }
     return outcome;
@@ -725,8 +734,11 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
       policy?.recipientUserIds ?? org?.recipientUserIds ?? null,
       await loadOrgMembers(row.organizationId)
     );
+    // A page that did not go out is news even to someone who already has the
+    // alert by email: it means nobody on call was woken.
+    const pageFailed = row.channel === "pagerduty";
     for (const email of emails) {
-      if (has("email", email)) {
+      if (!pageFailed && has("email", email)) {
         continue;
       }
       targets.push({

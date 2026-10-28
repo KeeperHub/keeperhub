@@ -87,7 +87,13 @@ export async function loadOrgPolicy(
 }
 
 /**
- * Make sure the org has a settings row, starting the count now. Returns true
+ * The count starts a little before the evaluator first sees the org, so the
+ * very run that brought it here (finished a moment before this cycle) counts.
+ */
+const COUNTING_SLACK_MS = 10 * 60 * 1000;
+
+/**
+ * Make sure the org has a settings row and a start for the count. Returns true
  * when this call created it: the first time the evaluator sees the org with
  * the feature on, which is when the launch notice goes out.
  */
@@ -95,9 +101,10 @@ export async function ensureOrgSettings(
   organizationId: string,
   now: Date
 ): Promise<boolean> {
+  const countingSince = new Date(now.getTime() - COUNTING_SLACK_MS);
   const inserted = await db
     .insert(orgFailureAlertSettings)
-    .values({ organizationId, countingSince: now })
+    .values({ organizationId, countingSince })
     .onConflictDoNothing()
     .returning({ organizationId: orgFailureAlertSettings.organizationId });
   if (inserted.length > 0) {
@@ -106,7 +113,7 @@ export async function ensureOrgSettings(
   // A row saved from settings before the evaluator ever ran has no start yet.
   await db
     .update(orgFailureAlertSettings)
-    .set({ countingSince: now })
+    .set({ countingSince })
     .where(
       and(
         eq(orgFailureAlertSettings.organizationId, organizationId),

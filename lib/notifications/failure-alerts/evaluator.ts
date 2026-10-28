@@ -104,9 +104,13 @@ export function workflowTriggerType(
  * Take a batch of due workflows. Each row's due time is pushed five minutes
  * out as a lease; a run status written meanwhile pulls it back to now, and
  * the release below then leaves it for the next cycle instead of losing it.
+ *
+ * The lease travels as Postgres's own text form of the timestamp. Read into a
+ * JS Date through a raw query it would be parsed in the process's local time
+ * zone, and the release would never match it outside UTC.
  */
-async function claimQueue(): Promise<{ workflowId: string; lease: Date }[]> {
-  const rows = await db.execute<{ workflow_id: string; due_at: Date }>(sql`
+async function claimQueue(): Promise<{ workflowId: string; lease: string }[]> {
+  const rows = await db.execute<{ workflow_id: string; lease: string }>(sql`
     UPDATE ${workflowFailureAlertQueue}
     SET due_at = ${LEASE}
     WHERE workflow_id IN (
@@ -116,36 +120,36 @@ async function claimQueue(): Promise<{ workflowId: string; lease: Date }[]> {
       LIMIT ${MAX_WORKFLOWS_PER_RUN}
       FOR UPDATE SKIP LOCKED
     )
-    RETURNING workflow_id, due_at
+    RETURNING workflow_id, due_at::text AS lease
   `);
   return [...rows].map((row) => ({
     workflowId: row.workflow_id,
-    lease: new Date(row.due_at),
+    lease: row.lease,
   }));
 }
 
 async function releaseQueue(
   workflowId: string,
-  lease: Date,
+  lease: string,
   recheckAt: Date | null
 ): Promise<void> {
   if (recheckAt) {
+    // An ISO string, not a Date: the raw sql template would send a Date as
+    // its local-time display string.
+    const at = recheckAt.toISOString();
     await db.execute(sql`
       UPDATE ${workflowFailureAlertQueue}
-      SET due_at = CASE WHEN due_at = ${lease} THEN ${recheckAt}::timestamp
-                        ELSE LEAST(due_at, ${recheckAt}::timestamp) END
+      SET due_at = CASE WHEN due_at = ${lease}::timestamp
+                        THEN (${at}::timestamptz AT TIME ZONE 'UTC')
+                        ELSE LEAST(due_at, ${at}::timestamptz AT TIME ZONE 'UTC') END
       WHERE workflow_id = ${workflowId}
     `);
     return;
   }
-  await db
-    .delete(workflowFailureAlertQueue)
-    .where(
-      and(
-        eq(workflowFailureAlertQueue.workflowId, workflowId),
-        eq(workflowFailureAlertQueue.dueAt, lease)
-      )
-    );
+  await db.execute(sql`
+    DELETE FROM ${workflowFailureAlertQueue}
+    WHERE workflow_id = ${workflowId} AND due_at = ${lease}::timestamp
+  `);
 }
 
 async function loadWorkflow(workflowId: string): Promise<WorkflowRow | null> {
