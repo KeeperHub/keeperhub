@@ -265,11 +265,11 @@ test.describe("Marketplace leaderboard columns", () => {
 
 test.describe("Workflows list columns", () => {
   // Unique per run so ?q= shows only these templates.
-  const token = `hublist${Date.now()}`;
+  const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const token = `hublist${suffix}`;
   const featured = `${token} rebalance collateral across chains when the health factor drops`;
   const plain = `${token} wrap stETH`;
-  const tagSuffix = Date.now().toString(36);
-  const tagNames = [`Liquidations ${tagSuffix}`, `Cross-chain ${tagSuffix}`];
+  const tagNames = [`Liquidations ${suffix}`, `Cross-chain ${suffix}`];
   const workflowIds: string[] = [];
   const tagIds: string[] = [];
 
@@ -317,7 +317,7 @@ test.describe("Workflows list columns", () => {
     page,
   }) => {
     await openList(page, 320);
-    for (const width of [320, 390, 768, 1024, 1280, 1440, 1920]) {
+    for (const width of [320, 390, 768, 900, 1024, 1280, 1440, 1920]) {
       await atWidth(page, width, async () => {
         const [uses, votes] = await Promise.all([
           box(header(page, "Uses")),
@@ -360,7 +360,19 @@ test.describe("Workflows list columns", () => {
       await expect(tag).toBeHidden();
     });
 
-    // 1280px has the compact Tags column, 1920px the original grid.
+    // 900px has the badge column only, 1280px the compact Tags column and
+    // 1920px the original grid.
+    await atWidth(page, 900, async () => {
+      const [nameBox, badgeBox, downBox] = await Promise.all([
+        box(name),
+        box(badgeOf(row)),
+        box(row.getByRole("button", { name: "Downvote" })),
+      ]);
+      expect(badgeBox.x).toBeGreaterThan(right(downBox));
+      expect(Math.abs(middle(badgeBox) - middle(nameBox))).toBeLessThan(2);
+      await expect(header(page, "Tags")).toBeHidden();
+    });
+
     for (const width of [1280, 1920]) {
       await atWidth(page, width, async () => {
         const [nameBox, badgeBox, downBox, tagBox] = await Promise.all([
@@ -372,7 +384,8 @@ test.describe("Workflows list columns", () => {
         expect(badgeBox.x).toBeGreaterThan(right(downBox));
         expect(Math.abs(middle(badgeBox) - middle(nameBox))).toBeLessThan(2);
         expect(tagBox.x).toBeGreaterThan(right(nameBox));
-        await expect(header(page, "Tags")).toBeVisible();
+        const tags = await box(header(page, "Tags"));
+        expect(Math.abs(tagBox.x - tags.x)).toBeLessThanOrEqual(1);
       });
     }
   });

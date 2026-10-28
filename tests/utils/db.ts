@@ -415,7 +415,10 @@ export async function createTestPublicTag(name: string): Promise<string> {
   const sql = getDbConnection();
   try {
     const id = generateId();
-    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    const slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
     await sql`
       INSERT INTO public_tags (id, name, slug) VALUES (${id}, ${name}, ${slug})
     `;
@@ -425,6 +428,9 @@ export async function createTestPublicTag(name: string): Promise<string> {
   }
 }
 
+/**
+ * Delete a Hub public tag; its workflow links go with it
+ */
 export async function deleteTestPublicTag(id: string): Promise<void> {
   const sql = getDbConnection();
   try {

@@ -62,12 +62,12 @@ export function WorkflowTemplateRow({
       <>
         {workflow.requiredPlan ? (
           <PlanRequiredBadge
-            className="inline-flex h-[20px] shrink-0 items-center gap-1 rounded-full bg-[var(--color-bg-accent)] px-2 py-0.5 font-semibold"
+            className="inline-flex h-5 shrink-0 items-center gap-1 rounded-full bg-[var(--color-bg-accent)] px-2 py-0.5 font-semibold"
             plan={workflow.requiredPlan}
           />
         ) : null}
         {isFeatured ? (
-          <span className="inline-flex h-[20px] shrink-0 items-center gap-1 rounded-full bg-[var(--color-bg-accent)] px-2 py-0.5 font-semibold text-[0.625rem] text-[var(--color-text-accent)]">
+          <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-full bg-[var(--color-bg-accent)] px-2 py-0.5 font-semibold text-[0.625rem] text-[var(--color-text-accent)]">
             <Star className="size-2.5 fill-[var(--color-text-accent)] text-[var(--color-text-accent)]" />
             Featured
           </span>
@@ -88,13 +88,13 @@ export function WorkflowTemplateRow({
     >
       <span
         aria-hidden="true"
-        className="pointer-events-none relative z-[2] inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-[var(--color-hub-icon-bg)] text-muted-foreground"
+        className="pointer-events-none relative z-[2] hidden size-6 shrink-0 items-center justify-center rounded-md bg-[var(--color-hub-icon-bg)] text-muted-foreground @xl:inline-flex"
       >
         <WorkflowIcon className="size-3.5" />
       </span>
 
       <div className="pointer-events-none relative z-[2] min-w-0">
-        <span className="block truncate font-semibold text-foreground text-sm">
+        <span className="block font-semibold text-foreground text-sm @max-xl:line-clamp-2 @max-xl:wrap-anywhere @xl:truncate">
           {workflow.name}
         </span>
         {/* Narrow tables have no badge column, so the badges sit here. */}
@@ -127,7 +127,7 @@ export function WorkflowTemplateRow({
           <button
             aria-label="Upvote"
             aria-pressed={upActive}
-            className={`rounded p-0.5 transition-colors duration-150 motion-reduce:transition-none ${
+            className={`relative rounded p-0.5 transition-colors after:absolute after:-inset-1.5 after:content-[''] duration-150 motion-reduce:transition-none ${
               upActive
                 ? "cursor-default text-[var(--color-text-accent)]"
                 : "text-muted-foreground/50 hover:text-[var(--color-text-accent)]"
@@ -155,7 +155,7 @@ export function WorkflowTemplateRow({
           <button
             aria-label="Downvote"
             aria-pressed={downActive}
-            className={`rounded p-0.5 transition-colors duration-150 motion-reduce:transition-none ${
+            className={`relative rounded p-0.5 transition-colors after:absolute after:-inset-1.5 after:content-[''] duration-150 motion-reduce:transition-none ${
               downActive
                 ? "cursor-default text-[var(--color-text-error)]"
                 : "text-muted-foreground/50 hover:text-[var(--color-text-error)]"

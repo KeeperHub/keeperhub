@@ -47,7 +47,9 @@ export function WorkflowTemplateList({
       >
         {/* biome-ignore lint/a11y/useSemanticElements: see role="table" justification above. */}
         {/* biome-ignore lint/a11y/useFocusableInteractive: column headers are static labels. */}
-        <span role="columnheader">{/* icon */}</span>
+        <span className="hidden @xl:inline" role="columnheader">
+          {/* icon */}
+        </span>
         {/* biome-ignore lint/a11y/useSemanticElements: see role="table" justification above. */}
         {/* biome-ignore lint/a11y/useFocusableInteractive: column headers are static labels. */}
         <span role="columnheader">Name</span>
