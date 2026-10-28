@@ -15,7 +15,7 @@ import {
   type OrgMember,
   reachableEmails,
 } from "@/lib/notifications/org-recipients";
-import { DEFAULT_THRESHOLD } from "./constants";
+import { DEFAULT_THRESHOLD, DEFAULT_TIME_LIMIT_MINUTES } from "./constants";
 
 /** The org-wide rule, as stored or as the default when no row exists. */
 type OrgPolicy = {
@@ -35,7 +35,7 @@ type OrgPolicy = {
 
 export const DEFAULT_ORG_POLICY: OrgPolicy = {
   threshold: DEFAULT_THRESHOLD,
-  timeLimitMinutes: null,
+  timeLimitMinutes: DEFAULT_TIME_LIMIT_MINUTES,
   remindDaily: true,
   notifyRecovery: true,
   recipientUserIds: null,

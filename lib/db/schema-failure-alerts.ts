@@ -20,7 +20,7 @@ import { generateId } from "@/lib/utils/id";
  *
  * Detection never hooks the code that ends a run (about ten places do). A
  * trigger on workflow_executions marks the workflow in
- * workflow_failure_alert_queue, and the evaluator (an internal cron route)
+ * alert_queue, and the evaluator (an internal cron route)
  * reads run history from there. See lib/notifications/failure-alerts/.
  */
 
@@ -43,12 +43,12 @@ export type FailureAlertChannelRole = "always" | "backup";
  * does not email every owner about workflows that have been failing for weeks.
  */
 export const orgFailureAlertSettings = pgTable(
-  "org_failure_alert_settings",
+  "alert_settings",
   {
     organizationId: text("organization_id").primaryKey(),
     threshold: integer("threshold").notNull().default(5),
     // Null: no time limit. Otherwise alert once a streak has lasted this long.
-    timeLimitMinutes: integer("time_limit_minutes"),
+    timeLimitMinutes: integer("time_limit_minutes").default(360),
     remindDaily: boolean("remind_daily").notNull().default(true),
     notifyRecovery: boolean("notify_recovery").notNull().default(true),
     // Null: the organization's owners. Otherwise these members, filtered to
@@ -68,7 +68,7 @@ export const orgFailureAlertSettings = pgTable(
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: "org_failure_alert_settings_org_fk",
+      name: "alert_settings_org_fk",
     }).onDelete("cascade"),
   ]
 );
@@ -85,7 +85,7 @@ export const orgFailureAlertSettings = pgTable(
  * pauses the channel and tells the org, which a cascade would skip.
  */
 export const failureAlertChannels = pgTable(
-  "failure_alert_channels",
+  "alert_methods",
   {
     id: text("id")
       .primaryKey()
@@ -117,20 +117,20 @@ export const failureAlertChannels = pgTable(
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: "failure_alert_channels_org_fk",
+      name: "alert_methods_org_fk",
     }).onDelete("cascade"),
     foreignKey({
       columns: [table.workflowId],
       foreignColumns: [workflows.id],
-      name: "failure_alert_channels_workflow_fk",
+      name: "alert_methods_workflow_fk",
     }).onDelete("cascade"),
-    uniqueIndex("uq_failure_alert_channels_destination").on(
+    uniqueIndex("uq_alert_methods_destination").on(
       table.organizationId,
       sql`coalesce(${table.workflowId}, '')`,
       table.integrationId,
       table.destination
     ),
-    index("idx_failure_alert_channels_workflow").on(table.workflowId),
+    index("idx_alert_methods_workflow").on(table.workflowId),
   ]
 );
 
@@ -139,7 +139,7 @@ export const failureAlertChannels = pgTable(
  * nobody touched keeps tracking later org changes.
  */
 export const workflowFailureAlertOverrides = pgTable(
-  "workflow_failure_alert_overrides",
+  "alert_overrides",
   {
     workflowId: text("workflow_id").primaryKey(),
     organizationId: text("organization_id").notNull(),
@@ -147,7 +147,7 @@ export const workflowFailureAlertOverrides = pgTable(
     // Null follows the org; 0 turns the time limit off for this workflow.
     timeLimitMinutes: integer("time_limit_minutes"),
     recipientUserIds: jsonb("recipient_user_ids").$type<string[] | null>(),
-    // True: use this workflow's rows in failure_alert_channels instead of the
+    // True: use this workflow's rows in alert_methods instead of the
     // org's.
     customChannels: boolean("custom_channels").notNull().default(false),
     mutedUntil: timestamp("muted_until"),
@@ -164,12 +164,12 @@ export const workflowFailureAlertOverrides = pgTable(
     foreignKey({
       columns: [table.workflowId],
       foreignColumns: [workflows.id],
-      name: "workflow_failure_alert_overrides_workflow_fk",
+      name: "alert_overrides_workflow_fk",
     }).onDelete("cascade"),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: "workflow_failure_alert_overrides_org_fk",
+      name: "alert_overrides_org_fk",
     }).onDelete("cascade"),
   ]
 );
@@ -180,12 +180,12 @@ export const workflowFailureAlertOverrides = pgTable(
  * One row per workflow however often it runs.
  */
 export const workflowFailureAlertQueue = pgTable(
-  "workflow_failure_alert_queue",
+  "alert_queue",
   {
     workflowId: text("workflow_id").primaryKey(),
     dueAt: timestamp("due_at").notNull().defaultNow(),
   },
-  (table) => [index("idx_failure_alert_queue_due").on(table.dueAt)]
+  (table) => [index("idx_alert_queue_due").on(table.dueAt)]
 );
 
 export type FailureIncidentResolution =
@@ -204,7 +204,7 @@ export type FailureIncidentTrigger = "count" | "time" | "missed";
  * evaluators can never both send.
  */
 export const workflowFailureIncidents = pgTable(
-  "workflow_failure_incidents",
+  "alert_incidents",
   {
     id: text("id")
       .primaryKey()
@@ -238,18 +238,18 @@ export const workflowFailureIncidents = pgTable(
     foreignKey({
       columns: [table.workflowId],
       foreignColumns: [workflows.id],
-      name: "workflow_failure_incidents_workflow_fk",
+      name: "alert_incidents_workflow_fk",
     }).onDelete("cascade"),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: "workflow_failure_incidents_org_fk",
+      name: "alert_incidents_org_fk",
     }).onDelete("cascade"),
-    uniqueIndex("uq_workflow_failure_incidents_open")
+    uniqueIndex("uq_alert_incidents_open")
       .on(table.workflowId)
       .where(sql`${table.resolvedAt} IS NULL`),
-    index("idx_workflow_failure_incidents_org").on(table.organizationId),
-    index("idx_workflow_failure_incidents_workflow").on(table.workflowId),
+    index("idx_alert_incidents_org").on(table.organizationId),
+    index("idx_alert_incidents_workflow").on(table.workflowId),
   ]
 );
 
@@ -283,7 +283,7 @@ export type FailureAlertDeliveryState =
  * Postgres treats NULLs as distinct, and grouped alerts and notices have none.
  */
 export const failureAlertDeliveries = pgTable(
-  "failure_alert_deliveries",
+  "alert_deliveries",
   {
     id: text("id")
       .primaryKey()
@@ -295,7 +295,7 @@ export const failureAlertDeliveries = pgTable(
     // Reminder number, so each reminder is its own message.
     sequence: integer("sequence").notNull().default(0),
     channel: text("channel").notNull().$type<FailureAlertDeliveryChannel>(),
-    // failure_alert_channels.id for chat and PagerDuty; null for email.
+    // alert_methods.id for chat and PagerDuty; null for email.
     channelId: text("channel_id"),
     // Email address, or the channel's destination for display.
     recipient: text("recipient").notNull(),
@@ -322,26 +322,26 @@ export const failureAlertDeliveries = pgTable(
     foreignKey({
       columns: [table.incidentId],
       foreignColumns: [workflowFailureIncidents.id],
-      name: "failure_alert_deliveries_incident_fk",
+      name: "alert_deliveries_incident_fk",
     }).onDelete("cascade"),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: "failure_alert_deliveries_org_fk",
+      name: "alert_deliveries_org_fk",
     }).onDelete("cascade"),
-    uniqueIndex("uq_failure_alert_deliveries_dedup").on(table.dedupKey),
-    index("idx_failure_alert_deliveries_incident").on(table.incidentId),
+    uniqueIndex("uq_alert_deliveries_dedup").on(table.dedupKey),
+    index("idx_alert_deliveries_incident").on(table.incidentId),
     // Only rows that may still need plan B, so delivered primaries (most of
     // the table) never sit in it.
-    index("idx_failure_alert_deliveries_backup_due")
+    index("idx_alert_deliveries_backup_due")
       .on(table.backupAt)
       .where(
         sql`${table.isBackup} = false AND ${table.backupSentAt} IS NULL AND ${table.state} IN ('pending', 'retrying', 'sending', 'failed', 'capped')`
       ),
-    index("idx_failure_alert_deliveries_due")
+    index("idx_alert_deliveries_due")
       .on(table.nextAttemptAt)
       .where(sql`${table.state} IN ('pending', 'retrying', 'sending')`),
-    index("idx_failure_alert_deliveries_org_created").on(
+    index("idx_alert_deliveries_org_created").on(
       table.organizationId,
       table.createdAt.desc()
     ),
@@ -350,7 +350,7 @@ export const failureAlertDeliveries = pgTable(
 
 /** Alert emails accepted by the provider per org per UTC month (Free cap). */
 export const failureAlertEmailUsage = pgTable(
-  "failure_alert_email_usage",
+  "alert_email_usage",
   {
     organizationId: text("organization_id").notNull(),
     periodStart: timestamp("period_start").notNull(),
@@ -361,7 +361,7 @@ export const failureAlertEmailUsage = pgTable(
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: "failure_alert_email_usage_org_fk",
+      name: "alert_email_usage_org_fk",
     }).onDelete("cascade"),
   ]
 );

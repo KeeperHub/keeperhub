@@ -67,6 +67,9 @@ export const DELIVERY_BUDGET_MS = 40 * 1000;
 export const MAX_WORKFLOWS_PER_RUN = 500;
 
 /** Longest org-wide pause, so a forgotten one cannot silence alerts for long. */
+/** "Or when it has been failing for 6 hours", on by default. */
+export const DEFAULT_TIME_LIMIT_MINUTES = 360;
+
 export const MAX_ORG_PAUSE_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_PAUSE_REASON = 200;
 

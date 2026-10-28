@@ -66,7 +66,7 @@ describe.skipIf(SKIP)("getAnalyticsChecksum", () => {
   ) => Promise<string>;
 
   async function cleanup(): Promise<void> {
-    await queryClient`DELETE FROM failure_alert_deliveries WHERE id LIKE ${`${PREFIX}%`}`;
+    await queryClient`DELETE FROM alert_deliveries WHERE id LIKE ${`${PREFIX}%`}`;
     await queryClient`DELETE FROM workflow_executions WHERE id LIKE ${`${PREFIX}%`}`;
     await queryClient`DELETE FROM workflows WHERE id LIKE ${`${PREFIX}%`}`;
     await queryClient`DELETE FROM member WHERE organization_id LIKE ${`${PREFIX}%`}`;
@@ -203,7 +203,7 @@ describe.skipIf(SKIP)("getAnalyticsChecksum", () => {
     const sent = atSecond(daysAgo(3));
     const settled = atSecond(daysAgo(1));
     await queryClient`
-      INSERT INTO failure_alert_deliveries
+      INSERT INTO alert_deliveries
         (id, dedup_key, organization_id, kind, channel, recipient, state, created_at, updated_at)
       VALUES (${`${PREFIX}delivery`}, ${`${PREFIX}delivery`}, ${ORG_ID}, 'launch_notice',
               'email', 'ops@checksum.test', 'pending', ${pgText(sent)}, ${pgText(sent)})`;
@@ -213,7 +213,7 @@ describe.skipIf(SKIP)("getAnalyticsChecksum", () => {
       );
 
       await queryClient`
-        UPDATE failure_alert_deliveries
+        UPDATE alert_deliveries
            SET state = 'delivered', updated_at = ${pgText(settled)}
          WHERE id = ${`${PREFIX}delivery`}`;
       expect(await getAnalyticsChecksum(ORG_ID, daysAgo(30))).toBe(
@@ -225,7 +225,7 @@ describe.skipIf(SKIP)("getAnalyticsChecksum", () => {
         `${pgText(NEWEST_IN_WINDOW)}|${SENTINEL}|1|${SENTINEL}`
       );
     } finally {
-      await queryClient`DELETE FROM failure_alert_deliveries WHERE id = ${`${PREFIX}delivery`}`;
+      await queryClient`DELETE FROM alert_deliveries WHERE id = ${`${PREFIX}delivery`}`;
     }
   });
 });

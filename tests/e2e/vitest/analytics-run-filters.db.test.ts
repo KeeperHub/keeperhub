@@ -725,8 +725,8 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
   }
 
   async function cleanup(): Promise<void> {
-    await queryClient`DELETE FROM failure_alert_deliveries WHERE id LIKE ${`${N}%`}`;
-    await queryClient`DELETE FROM workflow_failure_incidents WHERE id LIKE ${`${N}%`}`;
+    await queryClient`DELETE FROM alert_deliveries WHERE id LIKE ${`${N}%`}`;
+    await queryClient`DELETE FROM alert_incidents WHERE id LIKE ${`${N}%`}`;
     await queryClient`DELETE FROM workflow_executions WHERE id LIKE ${`${N}%`}`;
     await queryClient`DELETE FROM workflows WHERE id LIKE ${`${N}%`}`;
     await queryClient`DELETE FROM projects WHERE id LIKE ${`${N}%`}`;
@@ -1015,7 +1015,7 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
     const tiedRun = `${N}run_tied`;
     for (const id of tied) {
       await queryClient`
-        INSERT INTO failure_alert_deliveries
+        INSERT INTO alert_deliveries
           (id, dedup_key, organization_id, kind, channel, recipient, state,
            created_at, updated_at)
         VALUES (${id}, ${id}, ${N_ORG}, 'alert', 'email', ${`${id}@notifs.test`},
@@ -1058,7 +1058,7 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
         expect(seen).toEqual(runs.map((run) => run.id));
       }
     } finally {
-      await queryClient`DELETE FROM failure_alert_deliveries WHERE id IN ${queryClient(tied)}`;
+      await queryClient`DELETE FROM alert_deliveries WHERE id IN ${queryClient(tied)}`;
       await queryClient`DELETE FROM workflow_executions WHERE id = ${tiedRun}`;
     }
   });

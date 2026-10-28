@@ -40,7 +40,25 @@ type Loaded = OrgSettingsView & {
 };
 
 const ALERTS_DESCRIPTION =
-  "Tells your team when a workflow that runs on its own keeps failing: by default, an email to the owners after 5 failed runs in a row. Scheduled runs that do not start are reported too.";
+  "Tells your team when a workflow that runs on its own keeps failing, or a scheduled run does not start.";
+
+/** What happens today, from the saved settings, in one sentence. */
+function describeRule(data: Loaded): string {
+  const people = data.members.filter(
+    (m) => m.reachable && data.recipientUserIds.includes(m.userId)
+  ).length;
+  const methods = data.channels
+    .filter((c) => !c.pausedAt && c.role === "always")
+    .map((c) => channelLabel(c.kind, c.destination, c.connectionName));
+  const targets = [
+    people > 0
+      ? `${people} ${people === 1 ? "person" : "people"} by email`
+      : null,
+    ...methods,
+  ].filter(Boolean);
+  const who = targets.length > 0 ? targets.join(" and ") : "nobody yet";
+  return `After ${data.threshold} failed run${data.threshold === 1 ? "" : "s"} in a row of a workflow that runs on its own, KeeperHub tells ${who}.`;
+}
 
 type PutResult = { ok: true; body: Loaded } | { ok: false; error: string };
 
@@ -434,7 +452,7 @@ export function OrgFailureAlertsSection({
             </Button>
           ) : undefined
         }
-        description={ALERTS_DESCRIPTION}
+        description={`${ALERTS_DESCRIPTION} ${describeRule(data)}`}
         title="Alerts"
       />
       {pause && (

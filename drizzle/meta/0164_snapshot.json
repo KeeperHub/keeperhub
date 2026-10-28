@@ -1,5 +1,5 @@
 {
-  "id": "2010f78b-e1df-4d2b-83e6-0a794d438029",
+  "id": "4c6c7092-b7a9-45e7-af84-e4917abb3e91",
   "prevId": "5d3abb79-2d6b-441f-940a-fa5e227d40ad",
   "version": "7",
   "dialect": "postgresql",
@@ -1937,8 +1937,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.failure_alert_channels": {
-      "name": "failure_alert_channels",
+    "public.alert_methods": {
+      "name": "alert_methods",
       "schema": "",
       "columns": {
         "id": {
@@ -2048,8 +2048,8 @@
         }
       },
       "indexes": {
-        "uq_failure_alert_channels_destination": {
-          "name": "uq_failure_alert_channels_destination",
+        "uq_alert_methods_destination": {
+          "name": "uq_alert_methods_destination",
           "columns": [
             {
               "expression": "organization_id",
@@ -2081,8 +2081,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_failure_alert_channels_workflow": {
-          "name": "idx_failure_alert_channels_workflow",
+        "idx_alert_methods_workflow": {
+          "name": "idx_alert_methods_workflow",
           "columns": [
             {
               "expression": "workflow_id",
@@ -2098,9 +2098,9 @@
         }
       },
       "foreignKeys": {
-        "failure_alert_channels_org_fk": {
-          "name": "failure_alert_channels_org_fk",
-          "tableFrom": "failure_alert_channels",
+        "alert_methods_org_fk": {
+          "name": "alert_methods_org_fk",
+          "tableFrom": "alert_methods",
           "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
@@ -2111,9 +2111,9 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "failure_alert_channels_workflow_fk": {
-          "name": "failure_alert_channels_workflow_fk",
-          "tableFrom": "failure_alert_channels",
+        "alert_methods_workflow_fk": {
+          "name": "alert_methods_workflow_fk",
+          "tableFrom": "alert_methods",
           "tableTo": "workflows",
           "columnsFrom": [
             "workflow_id"
@@ -2131,8 +2131,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.failure_alert_deliveries": {
-      "name": "failure_alert_deliveries",
+    "public.alert_deliveries": {
+      "name": "alert_deliveries",
       "schema": "",
       "columns": {
         "id": {
@@ -2270,8 +2270,8 @@
         }
       },
       "indexes": {
-        "uq_failure_alert_deliveries_dedup": {
-          "name": "uq_failure_alert_deliveries_dedup",
+        "uq_alert_deliveries_dedup": {
+          "name": "uq_alert_deliveries_dedup",
           "columns": [
             {
               "expression": "dedup_key",
@@ -2285,8 +2285,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_failure_alert_deliveries_incident": {
-          "name": "idx_failure_alert_deliveries_incident",
+        "idx_alert_deliveries_incident": {
+          "name": "idx_alert_deliveries_incident",
           "columns": [
             {
               "expression": "incident_id",
@@ -2300,8 +2300,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_failure_alert_deliveries_backup_due": {
-          "name": "idx_failure_alert_deliveries_backup_due",
+        "idx_alert_deliveries_backup_due": {
+          "name": "idx_alert_deliveries_backup_due",
           "columns": [
             {
               "expression": "backup_at",
@@ -2311,13 +2311,13 @@
             }
           ],
           "isUnique": false,
-          "where": "\"failure_alert_deliveries\".\"is_backup\" = false AND \"failure_alert_deliveries\".\"backup_sent_at\" IS NULL AND \"failure_alert_deliveries\".\"state\" IN ('pending', 'retrying', 'sending', 'failed', 'capped')",
+          "where": "\"alert_deliveries\".\"is_backup\" = false AND \"alert_deliveries\".\"backup_sent_at\" IS NULL AND \"alert_deliveries\".\"state\" IN ('pending', 'retrying', 'sending', 'failed', 'capped')",
           "concurrently": false,
           "method": "btree",
           "with": {}
         },
-        "idx_failure_alert_deliveries_due": {
-          "name": "idx_failure_alert_deliveries_due",
+        "idx_alert_deliveries_due": {
+          "name": "idx_alert_deliveries_due",
           "columns": [
             {
               "expression": "next_attempt_at",
@@ -2327,13 +2327,13 @@
             }
           ],
           "isUnique": false,
-          "where": "\"failure_alert_deliveries\".\"state\" IN ('pending', 'retrying', 'sending')",
+          "where": "\"alert_deliveries\".\"state\" IN ('pending', 'retrying', 'sending')",
           "concurrently": false,
           "method": "btree",
           "with": {}
         },
-        "idx_failure_alert_deliveries_org_created": {
-          "name": "idx_failure_alert_deliveries_org_created",
+        "idx_alert_deliveries_org_created": {
+          "name": "idx_alert_deliveries_org_created",
           "columns": [
             {
               "expression": "organization_id",
@@ -2355,10 +2355,10 @@
         }
       },
       "foreignKeys": {
-        "failure_alert_deliveries_incident_fk": {
-          "name": "failure_alert_deliveries_incident_fk",
-          "tableFrom": "failure_alert_deliveries",
-          "tableTo": "workflow_failure_incidents",
+        "alert_deliveries_incident_fk": {
+          "name": "alert_deliveries_incident_fk",
+          "tableFrom": "alert_deliveries",
+          "tableTo": "alert_incidents",
           "columnsFrom": [
             "incident_id"
           ],
@@ -2368,9 +2368,9 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "failure_alert_deliveries_org_fk": {
-          "name": "failure_alert_deliveries_org_fk",
-          "tableFrom": "failure_alert_deliveries",
+        "alert_deliveries_org_fk": {
+          "name": "alert_deliveries_org_fk",
+          "tableFrom": "alert_deliveries",
           "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
@@ -2388,8 +2388,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.failure_alert_email_usage": {
-      "name": "failure_alert_email_usage",
+    "public.alert_email_usage": {
+      "name": "alert_email_usage",
       "schema": "",
       "columns": {
         "organization_id": {
@@ -2414,9 +2414,9 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "failure_alert_email_usage_org_fk": {
-          "name": "failure_alert_email_usage_org_fk",
-          "tableFrom": "failure_alert_email_usage",
+        "alert_email_usage_org_fk": {
+          "name": "alert_email_usage_org_fk",
+          "tableFrom": "alert_email_usage",
           "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
@@ -2429,8 +2429,8 @@
         }
       },
       "compositePrimaryKeys": {
-        "failure_alert_email_usage_organization_id_period_start_pk": {
-          "name": "failure_alert_email_usage_organization_id_period_start_pk",
+        "alert_email_usage_organization_id_period_start_pk": {
+          "name": "alert_email_usage_organization_id_period_start_pk",
           "columns": [
             "organization_id",
             "period_start"
@@ -3979,8 +3979,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.org_failure_alert_settings": {
-      "name": "org_failure_alert_settings",
+    "public.alert_settings": {
+      "name": "alert_settings",
       "schema": "",
       "columns": {
         "organization_id": {
@@ -4000,7 +4000,8 @@
           "name": "time_limit_minutes",
           "type": "integer",
           "primaryKey": false,
-          "notNull": false
+          "notNull": false,
+          "default": 360
         },
         "remind_daily": {
           "name": "remind_daily",
@@ -4075,9 +4076,9 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "org_failure_alert_settings_org_fk": {
-          "name": "org_failure_alert_settings_org_fk",
-          "tableFrom": "org_failure_alert_settings",
+        "alert_settings_org_fk": {
+          "name": "alert_settings_org_fk",
+          "tableFrom": "alert_settings",
           "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
@@ -8986,8 +8987,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.workflow_failure_alert_overrides": {
-      "name": "workflow_failure_alert_overrides",
+    "public.alert_overrides": {
+      "name": "alert_overrides",
       "schema": "",
       "columns": {
         "workflow_id": {
@@ -9075,9 +9076,9 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "workflow_failure_alert_overrides_workflow_fk": {
-          "name": "workflow_failure_alert_overrides_workflow_fk",
-          "tableFrom": "workflow_failure_alert_overrides",
+        "alert_overrides_workflow_fk": {
+          "name": "alert_overrides_workflow_fk",
+          "tableFrom": "alert_overrides",
           "tableTo": "workflows",
           "columnsFrom": [
             "workflow_id"
@@ -9088,9 +9089,9 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "workflow_failure_alert_overrides_org_fk": {
-          "name": "workflow_failure_alert_overrides_org_fk",
-          "tableFrom": "workflow_failure_alert_overrides",
+        "alert_overrides_org_fk": {
+          "name": "alert_overrides_org_fk",
+          "tableFrom": "alert_overrides",
           "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
@@ -9108,8 +9109,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.workflow_failure_alert_queue": {
-      "name": "workflow_failure_alert_queue",
+    "public.alert_queue": {
+      "name": "alert_queue",
       "schema": "",
       "columns": {
         "workflow_id": {
@@ -9127,8 +9128,8 @@
         }
       },
       "indexes": {
-        "idx_failure_alert_queue_due": {
-          "name": "idx_failure_alert_queue_due",
+        "idx_alert_queue_due": {
+          "name": "idx_alert_queue_due",
           "columns": [
             {
               "expression": "due_at",
@@ -9150,8 +9151,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.workflow_failure_incidents": {
-      "name": "workflow_failure_incidents",
+    "public.alert_incidents": {
+      "name": "alert_incidents",
       "schema": "",
       "columns": {
         "id": {
@@ -9273,8 +9274,8 @@
         }
       },
       "indexes": {
-        "uq_workflow_failure_incidents_open": {
-          "name": "uq_workflow_failure_incidents_open",
+        "uq_alert_incidents_open": {
+          "name": "uq_alert_incidents_open",
           "columns": [
             {
               "expression": "workflow_id",
@@ -9284,13 +9285,13 @@
             }
           ],
           "isUnique": true,
-          "where": "\"workflow_failure_incidents\".\"resolved_at\" IS NULL",
+          "where": "\"alert_incidents\".\"resolved_at\" IS NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
         },
-        "idx_workflow_failure_incidents_org": {
-          "name": "idx_workflow_failure_incidents_org",
+        "idx_alert_incidents_org": {
+          "name": "idx_alert_incidents_org",
           "columns": [
             {
               "expression": "organization_id",
@@ -9304,8 +9305,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_workflow_failure_incidents_workflow": {
-          "name": "idx_workflow_failure_incidents_workflow",
+        "idx_alert_incidents_workflow": {
+          "name": "idx_alert_incidents_workflow",
           "columns": [
             {
               "expression": "workflow_id",
@@ -9321,9 +9322,9 @@
         }
       },
       "foreignKeys": {
-        "workflow_failure_incidents_workflow_fk": {
-          "name": "workflow_failure_incidents_workflow_fk",
-          "tableFrom": "workflow_failure_incidents",
+        "alert_incidents_workflow_fk": {
+          "name": "alert_incidents_workflow_fk",
+          "tableFrom": "alert_incidents",
           "tableTo": "workflows",
           "columnsFrom": [
             "workflow_id"
@@ -9334,9 +9335,9 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "workflow_failure_incidents_org_fk": {
-          "name": "workflow_failure_incidents_org_fk",
-          "tableFrom": "workflow_failure_incidents",
+        "alert_incidents_org_fk": {
+          "name": "alert_incidents_org_fk",
+          "tableFrom": "alert_incidents",
           "tableTo": "organization",
           "columnsFrom": [
             "organization_id"

@@ -46,7 +46,7 @@ describe("mergePolicy", () => {
   it("is the default for an org nobody configured", () => {
     const policy = mergePolicy(DEFAULT_ORG_POLICY, [], null, []);
     expect(policy.threshold).toBe(5);
-    expect(policy.timeLimitMinutes).toBeNull();
+    expect(policy.timeLimitMinutes).toBe(360);
     expect(policy.recipientUserIds).toBeNull();
     expect(policy.source).toBe("default");
   });
