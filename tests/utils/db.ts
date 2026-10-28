@@ -342,6 +342,7 @@ export async function createTestWorkflow(
         await sql`
           INSERT INTO workflow_public_tags (workflow_id, public_tag_id)
           VALUES (${workflowId}, ${tagId})
+          ON CONFLICT DO NOTHING
         `;
       }
     }
@@ -409,8 +410,8 @@ export async function deleteTestWorkflow(workflowId: string): Promise<void> {
 }
 
 /**
- * Create a Hub public tag, or take over one a crashed run left behind; delete
- * it with deleteTestPublicTag
+ * Create a Hub public tag, or take over one with the same slug a crashed run
+ * left behind; delete it with deleteTestPublicTag
  */
 export async function createTestPublicTag(name: string): Promise<string> {
   const sql = getDbConnection();

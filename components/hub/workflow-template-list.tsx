@@ -33,7 +33,7 @@ export function WorkflowTemplateList({
   }
 
   return (
-    // biome-ignore lint/a11y/useSemanticElements: matches the marketplace table — UI-SPEC §5 mandates a CSS grid layout (WORKFLOW_LIST_GRID_COLUMNS); a native <table> cannot drive grid tracks. The role="table"/"row"/"columnheader" hierarchy preserves screen-reader semantics.
+    // biome-ignore lint/a11y/useSemanticElements: matches the marketplace table — UI-SPEC §5 mandates a CSS grid layout (tracks in workflow-list-grid.ts); a native <table> cannot drive grid tracks. The role="table"/"row"/"columnheader" hierarchy preserves screen-reader semantics.
     <div
       aria-label="Workflow templates"
       className="@container overflow-hidden rounded-xl border border-border/20 bg-[var(--color-hub-card)]"

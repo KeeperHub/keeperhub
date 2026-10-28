@@ -31,13 +31,16 @@ function voteCountColorClass(userVote: VoteDirection | null): string {
   return "text-foreground";
 }
 
-const compactUses = new Intl.NumberFormat("en-US", { notation: "compact" });
+const compactUses = new Intl.NumberFormat("en-US", {
+  notation: "compact",
+  roundingMode: "trunc",
+});
 
 function usesLabel(count: number): string {
   return count.toLocaleString("en-US");
 }
 
-// The narrow Uses track fits four digits; larger counts go compact (123K).
+// The narrow Uses track fits four digits; larger counts go compact, rounded down (999K).
 function narrowUsesLabel(count: number): string {
   return count < 10_000 ? usesLabel(count) : compactUses.format(count);
 }
