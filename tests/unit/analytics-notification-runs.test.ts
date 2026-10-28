@@ -240,9 +240,7 @@ describe("toNotificationRun", () => {
       }),
       NO_GROUPS
     );
-    expect(paused.notification?.title).toBe(
-      "Method paused: Slack #ops"
-    );
+    expect(paused.notification?.title).toBe("Method paused: Slack #ops");
     expect(paused.notification?.workflows).toEqual([]);
     expect(paused.workflowId).toBeNull();
   });

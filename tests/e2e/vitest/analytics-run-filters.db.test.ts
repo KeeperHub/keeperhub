@@ -936,9 +936,7 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
       status: "cancelled",
       notification: { title: "Method paused: Slack #oncall" },
     });
-    expect(byId.get(D_LAUNCH)?.notification?.title).toBe(
-      "Alerts turned on"
-    );
+    expect(byId.get(D_LAUNCH)?.notification?.title).toBe("Alerts turned on");
   });
 
   it("narrows to notifications, or away from them, by source", async () => {
