@@ -1,7 +1,9 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 import {
+  createTestPublicTag,
   createTestWorkflow,
+  deleteTestPublicTag,
   deleteTestWorkflow,
   PERSISTENT_TEST_USER_EMAIL,
 } from "./utils/db";
@@ -258,6 +260,121 @@ test.describe("Marketplace leaderboard columns", () => {
       ).toBeVisible();
     }
     await expect(row.getByText("0 calls")).toBeHidden();
+  });
+});
+
+test.describe("Workflows list columns", () => {
+  // Unique per run so ?q= shows only these templates.
+  const token = `hublist${Date.now()}`;
+  const featured = `${token} rebalance collateral across chains when the health factor drops`;
+  const plain = `${token} wrap stETH`;
+  const tagSuffix = Date.now().toString(36);
+  const tagNames = [`Liquidations ${tagSuffix}`, `Cross-chain ${tagSuffix}`];
+  const workflowIds: string[] = [];
+  const tagIds: string[] = [];
+
+  test.beforeAll(async () => {
+    for (const name of tagNames) {
+      tagIds.push(await createTestPublicTag(name));
+    }
+    for (const [name, isFeatured] of [
+      [featured, true],
+      [plain, false],
+    ] as const) {
+      const workflow = await createTestWorkflow(PERSISTENT_TEST_USER_EMAIL, {
+        name,
+        hub: { featured: isFeatured, tagIds },
+      });
+      workflowIds.push(workflow.id);
+    }
+  });
+
+  test.afterAll(async () => {
+    for (const id of workflowIds) {
+      await deleteTestWorkflow(id);
+    }
+    for (const id of tagIds) {
+      await deleteTestPublicTag(id);
+    }
+  });
+
+  const rowOf = (page: Page, name: string): Locator =>
+    page.getByRole("row", { name: `Open ${name} preview` });
+  const header = (page: Page, name: string): Locator =>
+    page.getByRole("columnheader", { name, exact: true });
+  // The badge is rendered under the name and in its own column; one shows.
+  const badgeOf = (row: Locator): Locator =>
+    row.getByText("Featured", { exact: true }).filter({ visible: true });
+
+  async function openList(page: Page, width: number): Promise<void> {
+    await open(page, width, `/hub?tab=workflows&q=${token}`);
+    await page.getByRole("radio", { name: "View as list" }).click();
+    await expect(rowOf(page, plain)).toBeVisible({ timeout: 15_000 });
+  }
+
+  // 1024px is the narrowest table: the nav and the sort sidebar both show.
+  test("names and votes are readable and line up from 320 to 1920px", async ({
+    page,
+  }) => {
+    await openList(page, 320);
+    for (const width of [320, 390, 768, 1024, 1280, 1440, 1920]) {
+      await atWidth(page, width, async () => {
+        const [uses, votes] = await Promise.all([
+          box(header(page, "Uses")),
+          box(header(page, "Votes")),
+        ]);
+        for (const name of [featured, plain]) {
+          const row = rowOf(page, name);
+          const [rowBox, nameBox, downBox] = await Promise.all([
+            box(row),
+            box(row.getByText(name)),
+            box(row.getByRole("button", { name: "Downvote" })),
+          ]);
+          expect(nameBox.width).toBeGreaterThanOrEqual(64);
+          expect(right(nameBox)).toBeLessThanOrEqual(uses.x);
+          expect(right(rowBox)).toBeLessThanOrEqual(width);
+          expect(right(downBox)).toBeLessThanOrEqual(right(rowBox));
+          expect(Math.abs(right(votes) - right(downBox))).toBeLessThanOrEqual(
+            1
+          );
+        }
+      });
+    }
+  });
+
+  test("a narrow table puts Featured under the name; wider ones give it and the tags columns", async ({
+    page,
+  }) => {
+    await openList(page, 390);
+    const row = rowOf(page, featured);
+    const name = row.getByText(featured);
+    const tag = row.getByText(tagNames[0], { exact: true });
+
+    await atWidth(page, 390, async () => {
+      const [nameBox, badgeBox] = await Promise.all([
+        box(name),
+        box(badgeOf(row)),
+      ]);
+      expect(badgeBox.y).toBeGreaterThanOrEqual(bottom(nameBox));
+      await expect(header(page, "Tags")).toBeHidden();
+      await expect(tag).toBeHidden();
+    });
+
+    // 1280px has the compact Tags column, 1920px the original grid.
+    for (const width of [1280, 1920]) {
+      await atWidth(page, width, async () => {
+        const [nameBox, badgeBox, downBox, tagBox] = await Promise.all([
+          box(name),
+          box(badgeOf(row)),
+          box(row.getByRole("button", { name: "Downvote" })),
+          box(tag),
+        ]);
+        expect(badgeBox.x).toBeGreaterThan(right(downBox));
+        expect(Math.abs(middle(badgeBox) - middle(nameBox))).toBeLessThan(2);
+        expect(tagBox.x).toBeGreaterThan(right(nameBox));
+        await expect(header(page, "Tags")).toBeVisible();
+      });
+    }
   });
 });
 
