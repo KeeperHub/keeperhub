@@ -316,7 +316,7 @@ function renderAlert(
   } else if (missed) {
     nextStep = MISSED_NEXT_STEP;
   }
-  const label = reminder ? "Still failing" : "Action needed";
+  const label = reminder && !input.paused ? "Still failing" : "Action needed";
   const since = missed
     ? `Due at ${formatUtc(incident.firstFailedAt)}.`
     : `Failing since ${formatUtc(incident.firstFailedAt)}.`;
