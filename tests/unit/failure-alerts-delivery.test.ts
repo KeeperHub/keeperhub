@@ -166,7 +166,8 @@ describe("renderMessage", () => {
         workflow,
         incident,
         appUrl: "https://app.test",
-        backupReason: "PagerDuty could not be reached (HTTP 503), nobody has been paged yet",
+        backupReason:
+          "PagerDuty could not be reached (HTTP 503), nobody has been paged yet",
       },
       now
     );

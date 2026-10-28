@@ -5,8 +5,12 @@ import { isBillingEnabled } from "@/lib/billing/feature-flag";
 import { isBillingLimitReached } from "@/lib/billing/limit-status";
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
+import { loadInAppAlertState } from "@/lib/notifications/failure-alerts/settings";
 
-export type NotificationType = "billing_limit_reached";
+export type NotificationType =
+  | "billing_limit_reached"
+  | "workflows_failing"
+  | "failure_alerts_unreachable";
 
 type NotificationStatusResponse = {
   unreadCount: number;
@@ -29,14 +33,28 @@ export async function GET(
     const { organizationId } = authContext;
 
     const types: NotificationType[] = [];
+    const activeMember = await auth.api.getActiveMember({
+      headers: await headers(),
+    });
+    const role = activeMember?.role;
 
-    if (isBillingEnabled()) {
-      const activeMember = await auth.api.getActiveMember({
-        headers: await headers(),
-      });
-      const isOwner = activeMember?.role === "owner";
-      if (isOwner && (await isBillingLimitReached(organizationId))) {
-        types.push("billing_limit_reached");
+    if (
+      isBillingEnabled() &&
+      role === "owner" &&
+      (await isBillingLimitReached(organizationId))
+    ) {
+      types.push("billing_limit_reached");
+    }
+
+    // Owners and admins are the people who can act on a failing workflow or
+    // fix the notification settings.
+    if (role === "owner" || role === "admin") {
+      const alerts = await loadInAppAlertState(organizationId);
+      if (alerts.failingWorkflows > 0) {
+        types.push("workflows_failing");
+      }
+      if (alerts.unreachable) {
+        types.push("failure_alerts_unreachable");
       }
     }
 

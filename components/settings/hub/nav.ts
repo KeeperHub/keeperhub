@@ -250,8 +250,28 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
         scope: "org",
         label: "Notifications",
         icon: Bell,
-        description: "Execution digest emails and who receives them.",
+        description:
+          "Failing-workflow alerts, execution digests and who receives them.",
         panels: [
+          {
+            title: "Workflow failure notifications",
+            tags: [
+              "failure alerts",
+              "failed runs",
+              "consecutive failures",
+              "pagerduty",
+              "telegram",
+              "discord",
+              "slack",
+              "backup channel",
+              "test notification",
+              "mute",
+            ],
+          },
+          {
+            title: "Recent notifications",
+            tags: ["notification history", "delivery log", "sent alerts"],
+          },
           {
             title: "Execution digest",
             tags: [

@@ -4,8 +4,14 @@ import { Info, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { QuotaBanner } from "@/components/billing/quota-banner";
+import { FailureAlertsUnreachableBanner } from "@/components/failure-alerts/unreachable-banner";
 import { useSession } from "@/lib/auth-client";
 import { isBillingEnabled } from "@/lib/billing/feature-flag";
+import {
+  hasNotificationType,
+  useNotificationStatus,
+} from "@/lib/hooks/use-notifications";
+import { useActiveMember, useOrganization } from "@/lib/hooks/use-organization";
 import {
   quotaBannerStorageKey,
   useQuotaStatus,
@@ -14,7 +20,36 @@ import { isAnonymousUser } from "@/lib/is-anonymous";
 
 const STORAGE_KEY = "kh-billing-announce-v1";
 
+/**
+ * The single fixed banner slot. "Nobody would be told about a failing
+ * workflow" outranks every billing banner: it is the only one that means
+ * something is broken right now and will stay broken until someone acts.
+ */
 export function AppBanner(): React.ReactElement | null {
+  const { organization } = useOrganization();
+  const { isAdmin } = useActiveMember();
+  const { data: session } = useSession();
+  const signedIn = Boolean(session?.user) && !isAnonymousUser(session?.user);
+  const { status } = useNotificationStatus(
+    signedIn && isAdmin ? organization?.id : null
+  );
+  const unreachable =
+    Boolean(organization?.id) &&
+    hasNotificationType(status, "failure_alerts_unreachable");
+
+  useEffect(() => {
+    if (!unreachable) {
+      return;
+    }
+    document.documentElement.style.setProperty("--app-banner-height", "36px");
+    return (): void => {
+      document.documentElement.style.removeProperty("--app-banner-height");
+    };
+  }, [unreachable]);
+
+  if (unreachable && organization?.id) {
+    return <FailureAlertsUnreachableBanner organizationId={organization.id} />;
+  }
   if (!isBillingEnabled()) {
     return null;
   }

@@ -3,19 +3,17 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/db", () => ({ db: {} }));
 
-const {
-  DEFAULT_ORG_POLICY,
-  isMuted,
-  mergePolicy,
-  resolveRecipientEmails,
-} = await import("@/lib/notifications/failure-alerts/policy");
+const { DEFAULT_ORG_POLICY, isMuted, mergePolicy, resolveRecipientEmails } =
+  await import("@/lib/notifications/failure-alerts/policy");
 const { isFailureAlertsEnabledForOrg } = await import(
   "@/lib/notifications/failure-alerts/rollout"
 );
 
 type Override = Parameters<typeof mergePolicy>[2];
 
-function override(patch: Partial<NonNullable<Override>>): NonNullable<Override> {
+function override(
+  patch: Partial<NonNullable<Override>>
+): NonNullable<Override> {
   return {
     workflowId: "wf",
     organizationId: "org",
@@ -97,10 +95,34 @@ describe("mergePolicy", () => {
 
 describe("resolveRecipientEmails", () => {
   const members = [
-    { userId: "owner", role: "owner", email: "o@x.dev", name: null, deliverable: "o@x.dev" },
-    { userId: "admin", role: "admin", email: "a@x.dev", name: null, deliverable: "a@x.dev" },
-    { userId: "wallet", role: "member", email: "0x1@wallet.keeperhub.com", name: null, deliverable: null },
-    { userId: "dup", role: "member", email: "o@x.dev", name: null, deliverable: "o@x.dev" },
+    {
+      userId: "owner",
+      role: "owner",
+      email: "o@x.dev",
+      name: null,
+      deliverable: "o@x.dev",
+    },
+    {
+      userId: "admin",
+      role: "admin",
+      email: "a@x.dev",
+      name: null,
+      deliverable: "a@x.dev",
+    },
+    {
+      userId: "wallet",
+      role: "member",
+      email: "0x1@wallet.keeperhub.com",
+      name: null,
+      deliverable: null,
+    },
+    {
+      userId: "dup",
+      role: "member",
+      email: "o@x.dev",
+      name: null,
+      deliverable: "o@x.dev",
+    },
   ];
 
   it("defaults to the owners", () => {
@@ -120,10 +142,7 @@ describe("resolveRecipientEmails", () => {
   });
 
   it("falls back to admins when no owner can be reached", () => {
-    const walletOwner = [
-      { ...members[0], deliverable: null },
-      members[1],
-    ];
+    const walletOwner = [{ ...members[0], deliverable: null }, members[1]];
     expect(resolveRecipientEmails(null, walletOwner)).toEqual(["a@x.dev"]);
   });
 
@@ -148,7 +167,9 @@ describe("isFailureAlertsEnabledForOrg", () => {
 
   it("only ever adds organizations as the percentage grows", () => {
     const ids = Array.from({ length: 200 }, (_, i) => `org-${i}`);
-    const at10 = ids.filter((id) => isFailureAlertsEnabledForOrg(id, "percent:10"));
+    const at10 = ids.filter((id) =>
+      isFailureAlertsEnabledForOrg(id, "percent:10")
+    );
     const at50 = new Set(
       ids.filter((id) => isFailureAlertsEnabledForOrg(id, "percent:50"))
     );

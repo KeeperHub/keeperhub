@@ -104,11 +104,7 @@ describe("summarizeStreak", () => {
   });
 
   it("flags a window full of failures as possibly longer", () => {
-    const summary = summarizeStreak(
-      runs(["error", "error", "error"]),
-      null,
-      3
-    );
+    const summary = summarizeStreak(runs(["error", "error", "error"]), null, 3);
     expect(summary.truncated).toBe(true);
   });
 });

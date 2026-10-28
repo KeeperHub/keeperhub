@@ -2,7 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-export type NotificationType = "billing_limit_reached";
+export type NotificationType =
+  | "billing_limit_reached"
+  | "workflows_failing"
+  | "failure_alerts_unreachable";
 
 type NotificationStatus = {
   unreadCount: number;
