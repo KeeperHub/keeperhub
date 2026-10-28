@@ -1,8 +1,8 @@
 "use client";
 
-import { AlertTriangle, Gem, Info, Loader2 } from "lucide-react";
+import { AlertTriangle, Check, ChevronRight, Gem, Loader2 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -39,10 +39,11 @@ const TIME_LIMIT_LABEL: Record<number, string> = {
   360: "6 hours",
   1440: "24 hours",
 };
+const DEFAULT_TIME_LIMIT = 360;
 
 type Form = {
-  threshold: string;
-  timeLimit: string;
+  threshold: number;
+  timeLimitMinutes: number | null;
   remindDaily: boolean;
   notifyRecovery: boolean;
   recipients: string[];
@@ -51,23 +52,22 @@ type Form = {
 
 function formFrom(data: Loaded): Form {
   return {
-    threshold: String(data.threshold),
-    timeLimit: data.timeLimitMinutes ? String(data.timeLimitMinutes) : "off",
+    threshold: data.threshold,
+    timeLimitMinutes: data.timeLimitMinutes,
     remindDaily: data.remindDaily,
     notifyRecovery: data.notifyRecovery,
-    recipients: [...data.recipientUserIds].sort(),
+    recipients: [...data.recipientUserIds],
     channels: draftsFromViews(data.channels),
   };
 }
 
-function serialise(form: Form): string {
-  return JSON.stringify({
-    ...form,
-    recipients: [...form.recipients].sort(),
-    channels: channelsPayload(form.channels),
-  });
-}
+type SaveState = "idle" | "saving" | "saved" | "error";
 
+/**
+ * The org-wide failure notification settings. Every change saves as it is
+ * made: a channel someone added and tested is never lost to a Save button at
+ * the bottom of the card.
+ */
 export function OrgFailureAlertsSection({
   organizationId,
 }: {
@@ -75,18 +75,23 @@ export function OrgFailureAlertsSection({
 }): React.ReactElement {
   const [data, setData] = useState<Loaded | null>(null);
   const [form, setForm] = useState<Form | null>(null);
-  const [saved, setSaved] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [testTarget, setTestTarget] = useState<"me" | "recipients">("me");
+  const [thresholdInput, setThresholdInput] = useState("");
+  const [saveState, setSaveState] = useState<SaveState>("idle");
   const [emailTesting, setEmailTesting] = useState(false);
   const [emailResult, setEmailResult] = useState<TestResult | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  // The last state the server accepted, to roll back to when a save fails.
+  const savedRef = useRef<Form | null>(null);
+  // Saves run one after another so an older one never lands last.
+  const queueRef = useRef<Promise<void>>(Promise.resolve());
   const url = `/api/organizations/${encodeURIComponent(organizationId)}/failure-alerts`;
 
   const apply = useCallback((next: Loaded) => {
     const nextForm = formFrom(next);
     setData(next);
     setForm(nextForm);
-    setSaved(serialise(nextForm));
+    setThresholdInput(String(nextForm.threshold));
+    savedRef.current = nextForm;
   }, []);
 
   useEffect(() => {
@@ -96,6 +101,13 @@ export function OrgFailureAlertsSection({
       .then((body: Loaded | null) => {
         if (active && body) {
           apply(body);
+          // Open on load only when something in it is not the default; after
+          // that it stays the way the person left it.
+          setMoreOpen(
+            body.timeLimitMinutes !== null ||
+              !body.remindDaily ||
+              !body.notifyRecovery
+          );
         }
       })
       .catch(() => {
@@ -108,6 +120,64 @@ export function OrgFailureAlertsSection({
     };
   }, [apply, url]);
 
+  const persist = useCallback(
+    (next: Form): void => {
+      setForm(next);
+      setSaveState("saving");
+      queueRef.current = queueRef.current.then(async () => {
+        try {
+          const res = await fetch(url, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              threshold: next.threshold,
+              timeLimitMinutes: next.timeLimitMinutes,
+              remindDaily: next.remindDaily,
+              notifyRecovery: next.notifyRecovery,
+              recipientUserIds: next.recipients,
+              channels: channelsPayload(next.channels),
+            }),
+          });
+          const body = (await res.json().catch(() => ({}))) as Loaded & {
+            error?: string;
+          };
+          if (!res.ok) {
+            throw new Error(body.error ?? "Could not save");
+          }
+          // Keep what the session knows about tests; the server adds ids and
+          // health to new channels.
+          const tested = new Map(
+            next.channels.map((c) => [
+              `${c.integrationId}|${c.destination}`,
+              c.testedOk,
+            ])
+          );
+          const merged = formFrom(body);
+          merged.channels = merged.channels.map((c) => ({
+            ...c,
+            testedOk: tested.get(`${c.integrationId}|${c.destination}`),
+          }));
+          setData(body);
+          setForm(merged);
+          setThresholdInput(String(merged.threshold));
+          savedRef.current = merged;
+          setSaveState("saved");
+        } catch (error) {
+          const previous = savedRef.current;
+          if (previous) {
+            setForm(previous);
+            setThresholdInput(String(previous.threshold));
+          }
+          setSaveState("error");
+          toast.error(
+            error instanceof Error ? error.message : "Could not save"
+          );
+        }
+      });
+    },
+    [url]
+  );
+
   /** A connection made from the Add form: refresh the list, keep the form. */
   const refreshConnections = useCallback(async () => {
     const res = await fetch(url);
@@ -119,17 +189,6 @@ export function OrgFailureAlertsSection({
     }
   }, [url]);
 
-  const dirty = form !== null && saved !== null && serialise(form) !== saved;
-
-  const reachableChosen = useMemo(() => {
-    if (!(data && form)) {
-      return false;
-    }
-    return data.members.some(
-      (m) => m.reachable && form.recipients.includes(m.userId)
-    );
-  }, [data, form]);
-
   if (!(data && form)) {
     return (
       <div className="flex items-center gap-2 text-muted-foreground text-sm">
@@ -140,99 +199,101 @@ export function OrgFailureAlertsSection({
   }
 
   const canManage = data.canManage;
-  const disabled = !canManage || saving;
-  const update = (patch: Partial<Form>): void =>
-    setForm((prev) => (prev ? { ...prev, ...patch } : prev));
-  const liveChannels = form.channels.filter((c) => !c.view?.pausedAt);
-  const unreachable = !reachableChosen && liveChannels.length === 0;
-  const untested = form.channels.filter(
-    (c) => !(c.testedOk || c.view?.lastTestOk || c.view?.lastDeliveredAt)
-  ).length;
+  const disabled = !canManage;
+  const change = (patch: Partial<Form>): void => persist({ ...form, ...patch });
+
+  const commitThreshold = (): void => {
+    const value = Number(thresholdInput);
+    if (value === form.threshold) {
+      return;
+    }
+    if (
+      !Number.isInteger(value) ||
+      value < MIN_THRESHOLD ||
+      value > MAX_THRESHOLD
+    ) {
+      toast.error(
+        `Failed runs in a row must be a whole number from ${MIN_THRESHOLD} to ${MAX_THRESHOLD}.`
+      );
+      setThresholdInput(String(form.threshold));
+      return;
+    }
+    change({ threshold: value });
+  };
 
   const toggleRecipient = (userId: string, checked: boolean): void => {
     const next = checked
       ? [...new Set([...form.recipients, userId])]
       : form.recipients.filter((id) => id !== userId);
-    update({ recipients: next });
+    if (next.length === 0) {
+      toast.error("Someone has to get the email. Tick another person first.");
+      return;
+    }
+    change({ recipients: next });
   };
 
-  const save = async (): Promise<void> => {
-    const threshold = Number(form.threshold);
-    if (
-      !Number.isInteger(threshold) ||
-      threshold < MIN_THRESHOLD ||
-      threshold > MAX_THRESHOLD
-    ) {
-      toast.error(
-        `Failed runs in a row must be a whole number from ${MIN_THRESHOLD} to ${MAX_THRESHOLD}.`
-      );
+  /** Save when the channel list itself changed, not when a test updated a row. */
+  const changeChannels = (channels: DraftChannel[]): void => {
+    const before = JSON.stringify(channelsPayload(form.channels));
+    const after = JSON.stringify(channelsPayload(channels));
+    if (before === after) {
+      setForm({ ...form, channels });
       return;
     }
-    if (form.recipients.length === 0) {
-      toast.error("Choose at least one person to email.");
-      return;
-    }
-    setSaving(true);
-    try {
-      const res = await fetch(url, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          threshold,
-          timeLimitMinutes:
-            form.timeLimit === "off" ? null : Number(form.timeLimit),
-          remindDaily: form.remindDaily,
-          notifyRecovery: form.notifyRecovery,
-          recipientUserIds: form.recipients,
-          channels: channelsPayload(form.channels),
-        }),
-      });
-      const body = (await res.json().catch(() => ({}))) as Loaded & {
-        error?: string;
-      };
-      if (!res.ok) {
-        toast.error(body.error ?? "Could not save settings");
-        return;
-      }
-      apply(body);
-      toast.success("Failure notification settings saved");
-    } catch {
-      toast.error("Could not save settings");
-    } finally {
-      setSaving(false);
-    }
+    persist({ ...form, channels });
   };
 
   const testEmail = async (): Promise<void> => {
     setEmailTesting(true);
     setEmailResult(null);
     setEmailResult(
-      await sendFailureAlertTest(organizationId, {
-        channel: "email",
-        to: testTarget,
-        recipientUserIds: form.recipients,
-      })
+      await sendFailureAlertTest(organizationId, { channel: "email", to: "me" })
     );
     setEmailTesting(false);
   };
 
+  const reachableChosen = data.members.some(
+    (m) => m.reachable && form.recipients.includes(m.userId)
+  );
+  const liveChannels = form.channels.filter((c) => !c.view?.pausedAt);
+  const unreachable = !reachableChosen && liveChannels.length === 0;
+
   return (
     <div className="space-y-6" data-testid="failure-alerts-settings">
-      {!data.enabled && (
-        <Callout tone="info">
-          Failure notifications are being switched on for organizations in
-          stages and have not reached this one yet. You can set them up now;
-          they start working when they do.
-        </Callout>
-      )}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {data.enabled ? (
+          <p className="text-muted-foreground text-xs">
+            On for every workflow that runs on its own. Runs started by hand
+            never count.
+          </p>
+        ) : (
+          <p className="text-muted-foreground text-xs">
+            Being switched on for organizations in stages; not on here yet. What
+            you set now applies when it is.
+          </p>
+        )}
+        <SaveIndicator state={saveState} />
+      </div>
+
       {!canManage && (
         <p className="text-muted-foreground text-xs">
           Only owners and admins can change these settings.
         </p>
       )}
 
-      <section className="space-y-3">
-        <h3 className="font-medium text-sm">When to alert</h3>
+      {unreachable && (
+        <Callout tone="danger">
+          Nobody would be told about a failing workflow: nobody ticked below has
+          an email KeeperHub can reach and there is no working channel. Add an
+          email in{" "}
+          <Link className="underline" href="/settings/security">
+            Account security
+          </Link>
+          , or add a Telegram, Discord, Slack or PagerDuty channel.
+        </Callout>
+      )}
+
+      <section className="space-y-2">
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <Label htmlFor="failure-threshold">Alert after</Label>
           <Input
@@ -242,75 +303,100 @@ export function OrgFailureAlertsSection({
             inputMode="numeric"
             max={MAX_THRESHOLD}
             min={MIN_THRESHOLD}
-            onChange={(e) => update({ threshold: e.target.value })}
+            onBlur={commitThreshold}
+            onChange={(e) => setThresholdInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                commitThreshold();
+              }
+            }}
             type="number"
-            value={form.threshold}
+            value={thresholdInput}
           />
           <span>failed runs in a row</span>
-          <span className="text-muted-foreground">or after failing for</span>
-          <Select
-            disabled={disabled}
-            onValueChange={(timeLimit) => update({ timeLimit })}
-            value={form.timeLimit}
-          >
-            <SelectTrigger
-              aria-label="Time limit"
-              className="h-8 w-28"
-              size="sm"
+        </div>
+
+        <details
+          className="group"
+          onToggle={(e) => setMoreOpen(e.currentTarget.open)}
+          open={moreOpen}
+        >
+          <summary className="flex cursor-pointer list-none items-center gap-1 text-muted-foreground text-xs hover:text-foreground">
+            <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
+            More options
+          </summary>
+          <div className="mt-3 space-y-3 border-l pl-4 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <Checkbox
+                checked={form.timeLimitMinutes !== null}
+                disabled={disabled}
+                id="failure-time-limit"
+                onCheckedChange={(checked) =>
+                  change({
+                    timeLimitMinutes:
+                      checked === true ? DEFAULT_TIME_LIMIT : null,
+                  })
+                }
+              />
+              <Label className="font-normal" htmlFor="failure-time-limit">
+                Also alert when a workflow keeps failing for
+              </Label>
+              <Select
+                disabled={disabled || form.timeLimitMinutes === null}
+                onValueChange={(v) => change({ timeLimitMinutes: Number(v) })}
+                value={String(form.timeLimitMinutes ?? DEFAULT_TIME_LIMIT)}
+              >
+                <SelectTrigger
+                  aria-label="How long"
+                  className="h-8 w-28"
+                  size="sm"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TIME_LIMIT_OPTIONS_MINUTES.map((minutes) => (
+                    <SelectItem key={minutes} value={String(minutes)}>
+                      {TIME_LIMIT_LABEL[minutes]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-muted-foreground text-xs">
+              For slow schedules: a workflow every 4 hours needs 20 hours to
+              fail 5 times.
+            </p>
+            <label className="flex items-center gap-2" htmlFor="failure-remind">
+              <Checkbox
+                checked={form.remindDaily}
+                disabled={disabled}
+                id="failure-remind"
+                onCheckedChange={(checked) =>
+                  change({ remindDaily: checked === true })
+                }
+              />
+              Remind once a day while it keeps failing
+            </label>
+            <label
+              className="flex items-center gap-2"
+              htmlFor="failure-recovery"
             >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="off">Off</SelectItem>
-              {TIME_LIMIT_OPTIONS_MINUTES.map((minutes) => (
-                <SelectItem key={minutes} value={String(minutes)}>
-                  {TIME_LIMIT_LABEL[minutes]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <p className="text-muted-foreground text-xs">
-          Counts workflows that run on their own: schedules, events, blocks and
-          webhooks. Runs started by hand never count. The time limit catches
-          slow schedules: a workflow every 4 hours needs 20 hours to fail 5
-          times.
-        </p>
-        <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
-          <label className="flex items-center gap-2" htmlFor="failure-remind">
-            <Checkbox
-              checked={form.remindDaily}
-              disabled={disabled}
-              id="failure-remind"
-              onCheckedChange={(checked) =>
-                update({ remindDaily: checked === true })
-              }
-            />
-            Remind once a day while it keeps failing
-          </label>
-          <label className="flex items-center gap-2" htmlFor="failure-recovery">
-            <Checkbox
-              checked={form.notifyRecovery}
-              disabled={disabled}
-              id="failure-recovery"
-              onCheckedChange={(checked) =>
-                update({ notifyRecovery: checked === true })
-              }
-            />
-            Tell us when it recovers
-          </label>
-        </div>
+              <Checkbox
+                checked={form.notifyRecovery}
+                disabled={disabled}
+                id="failure-recovery"
+                onCheckedChange={(checked) =>
+                  change({ notifyRecovery: checked === true })
+                }
+              />
+              Tell us when it works again
+            </label>
+          </div>
+        </details>
       </section>
 
       <section className="space-y-3">
         <h3 className="font-medium text-sm">Email</h3>
-        <p className="text-muted-foreground text-xs">
-          {data.recipientsAreDefault
-            ? "The owners get it until you choose otherwise. "
-            : null}
-          Email always reaches at least one person, so a failing workflow is
-          never silent.
-        </p>
         <ul className="space-y-2">
           {data.members.map((m) => (
             <li
@@ -348,36 +434,18 @@ export function OrgFailureAlertsSection({
           ))}
         </ul>
         {canManage && (
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              disabled={emailTesting}
-              onClick={testEmail}
-              size="sm"
-              type="button"
-              variant="outline"
-            >
-              {emailTesting ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : null}
-              Send test email
-            </Button>
-            <Select
-              onValueChange={(v) => setTestTarget(v as "me" | "recipients")}
-              value={testTarget}
-            >
-              <SelectTrigger
-                aria-label="Who gets the test email"
-                className="h-8 w-48"
-                size="sm"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="me">To me</SelectItem>
-                <SelectItem value="recipients">To everyone ticked</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          <Button
+            disabled={emailTesting}
+            onClick={testEmail}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            {emailTesting ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : null}
+            Send me a test email
+          </Button>
         )}
         {emailResult && <TestResultLine result={emailResult} />}
       </section>
@@ -388,107 +456,93 @@ export function OrgFailureAlertsSection({
           canManage={canManage}
           channels={form.channels}
           connections={data.connections}
-          onChange={(channels) => update({ channels })}
+          onChange={changeChannels}
           onConnectionsChanged={refreshConnections}
           organizationId={organizationId}
         />
-        <p className="text-muted-foreground text-xs">
-          Only connections shared with the whole organization can be used, so an
-          alert never depends on one person's account.
-        </p>
+        <details className="group text-xs">
+          <summary className="flex cursor-pointer list-none items-center gap-1 text-muted-foreground hover:text-foreground">
+            <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
+            How delivery works
+          </summary>
+          <ul className="mt-2 list-disc space-y-1 pl-8 text-muted-foreground">
+            <li>
+              Each alert goes out once per failing streak, not on every failed
+              run.
+            </li>
+            <li>
+              If email or chat cannot deliver for 15 minutes, or PagerDuty for
+              2, the alert goes to your backup channels and to email, saying
+              what failed. Retries continue for 24 hours.
+            </li>
+            <li>
+              A channel that stops working is paused and you are told once.
+              Every channel is also checked quietly once a week, without sending
+              anything.
+            </li>
+            <li>
+              Only connections shared with the whole organization can be used.
+            </li>
+          </ul>
+        </details>
       </section>
 
-      <Callout tone="info">
-        <span className="font-medium text-foreground">
-          If something can't be delivered:
-        </span>{" "}
-        email and chat are retried for 15 minutes and PagerDuty for 2, then the
-        alert goes to the backup channels and to email with a note saying what
-        failed. Retries continue for 24 hours. A channel that stops working is
-        paused and you are told once. Every channel is also checked silently
-        once a week, without sending anything.
-      </Callout>
-
-      {unreachable && (
-        <Callout tone="danger">
-          Nobody here would be told about a failing workflow: nobody ticked has
-          an email KeeperHub can reach and there is no working channel. Add an
-          email in Account security, or add a Telegram, Discord, Slack or
-          PagerDuty channel.
-        </Callout>
-      )}
-      {!unreachable && liveChannels.length === 0 && (
-        <p className="text-muted-foreground text-xs">
-          You have no backup. Add a second channel so an email outage does not
-          hide failures.
-        </p>
-      )}
-      {untested > 0 && (
-        <Callout tone="warning">
-          {untested === 1 ? "1 channel is" : `${untested} channels are`}{" "}
-          untested. Send a test so you know it works.
-        </Callout>
-      )}
-
       {data.emailUsage && (
-        <div className="flex items-start gap-3 rounded-md border bg-muted/40 p-3 text-sm">
+        <div className="flex items-start gap-3 rounded-md border bg-muted/40 p-3 text-xs">
           <Gem className="mt-0.5 size-4 shrink-0 text-accent-foreground" />
           <p className="flex-1 text-muted-foreground">
             {data.emailUsage.used >= data.emailUsage.limit
-              ? `All ${data.emailUsage.limit} alert emails for this month are used. Until the 1st, alerts go to your chat and PagerDuty channels and show in KeeperHub.`
-              : `Free plan: up to ${data.emailUsage.limit} alert emails a month, ${data.emailUsage.used} used so far. Chat and PagerDuty alerts are not counted.`}
+              ? `All ${data.emailUsage.limit} alert emails for this month are used. Until the 1st, alerts go to your channels and show in KeeperHub.`
+              : `Free plan: ${data.emailUsage.limit} alert emails a month, ${data.emailUsage.used} used. Chat and PagerDuty are not counted.`}
           </p>
         </div>
       )}
 
       {data.customWorkflows.length > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 text-sm">
-          <span>
-            {data.customWorkflows.length === 1
-              ? "1 workflow uses its own settings"
-              : `${data.customWorkflows.length} workflows use their own settings`}
-          </span>
-          <span className="flex flex-wrap gap-3 text-xs">
-            {data.customWorkflows.map((w) => (
+        <p className="text-muted-foreground text-xs">
+          {data.customWorkflows.length === 1
+            ? "1 workflow has its own settings: "
+            : `${data.customWorkflows.length} workflows have their own settings: `}
+          {data.customWorkflows.map((w, i) => (
+            <span key={w.id}>
+              {i > 0 ? ", " : null}
               <Link
                 className="underline underline-offset-4"
                 href={`/workflows/${w.id}`}
-                key={w.id}
               >
                 {w.name}
               </Link>
-            ))}
-          </span>
-        </div>
-      )}
-
-      {canManage && (
-        <div className="flex items-center justify-end gap-2">
-          {dirty && !saving && (
-            <span className="mr-auto text-muted-foreground text-xs">
-              Unsaved changes
             </span>
-          )}
-          <Button
-            disabled={!dirty || saving}
-            onClick={() => saved && data && setForm(formFrom(data))}
-            size="sm"
-            type="button"
-            variant="ghost"
-          >
-            Cancel
-          </Button>
-          <Button
-            disabled={!dirty || saving}
-            onClick={save}
-            size="sm"
-            type="button"
-          >
-            {saving ? "Saving..." : "Save changes"}
-          </Button>
-        </div>
+          ))}
+        </p>
       )}
     </div>
+  );
+}
+
+function SaveIndicator({ state }: { state: SaveState }): React.ReactElement {
+  return (
+    <output
+      aria-live="polite"
+      className="flex items-center gap-1 text-muted-foreground text-xs"
+      data-state={state}
+      data-testid="failure-alerts-save-state"
+    >
+      {state === "saving" && (
+        <>
+          <Loader2 className="size-3 animate-spin" />
+          Saving
+        </>
+      )}
+      {state === "saved" && (
+        <>
+          <Check className="size-3 text-keeperhub-green-dark" />
+          Saved
+        </>
+      )}
+      {state === "error" && <span className="text-destructive">Not saved</span>}
+      {state === "idle" && "Changes save automatically"}
+    </output>
   );
 }
 
@@ -496,28 +550,21 @@ function Callout({
   tone,
   children,
 }: {
-  tone: "info" | "warning" | "danger";
+  tone: "danger";
   children: React.ReactNode;
 }): React.ReactElement {
-  const Icon = tone === "info" ? Info : AlertTriangle;
   return (
     <div
       className={cn(
         "flex items-start gap-2 rounded-md border p-3 text-xs",
-        tone === "info" && "bg-muted/30 text-muted-foreground",
-        tone === "warning" &&
-          "border-yellow-500/40 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300",
         tone === "danger" &&
           "border-destructive/50 bg-destructive/15 text-foreground"
       )}
-      role={tone === "danger" ? "alert" : undefined}
+      role="alert"
     >
-      <Icon
+      <AlertTriangle
         aria-hidden="true"
-        className={cn(
-          "mt-0.5 size-3.5 shrink-0",
-          tone === "danger" && "text-destructive"
-        )}
+        className="mt-0.5 size-3.5 shrink-0 text-destructive"
       />
       <div className="min-w-0">{children}</div>
     </div>

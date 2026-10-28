@@ -145,7 +145,13 @@ export async function loadWorkflowAlertView(workflow: {
       recipientUserIds: override?.recipientUserIds ?? null,
       customChannels: override?.customChannels ?? false,
       channels: workflowChannels,
-      mutedUntil: override?.mutedUntil?.toISOString() ?? null,
+      // A mute that has ended is no mute: showing it would say "Muted"
+      // about a workflow that alerts again, and sending it back would be
+      // refused as a mute in the past.
+      mutedUntil:
+        override?.mutedUntil && override.mutedUntil > new Date()
+          ? override.mutedUntil.toISOString()
+          : null,
       muteUntilSuccess: override?.muteUntilSuccess ?? false,
       muteReason: override?.muteReason ?? null,
       mutedBy:

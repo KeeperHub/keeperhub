@@ -24,7 +24,6 @@ import {
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
 import type { WorkflowAlertView } from "@/lib/notifications/failure-alerts/view-types";
-import { cn } from "@/lib/utils";
 import { getRelativeTime } from "@/lib/utils/time";
 import {
   isWorkflowEnabled,
@@ -42,13 +41,21 @@ import { memberLabel } from "./member-label";
 import { NotificationHistory } from "./notification-history";
 
 type Loaded = WorkflowAlertView & { canManage: boolean };
-type Mode = "default" | "custom" | "muted";
+type Panel = null | "mute" | "custom";
 
 const TIME_LABEL: Record<number, string> = {
   60: "1 hour",
   360: "6 hours",
   1440: "24 hours",
 };
+
+const HOUR_MS = 60 * 60 * 1000;
+const MUTE_CHOICES: { label: string; ms: number | "success" }[] = [
+  { label: "1 hour", ms: HOUR_MS },
+  { label: "24 hours", ms: 24 * HOUR_MS },
+  { label: "7 days", ms: 7 * 24 * HOUR_MS },
+  { label: "Until it works again", ms: "success" },
+];
 
 function describeTimeLimit(minutes: number | null): string {
   return minutes
@@ -59,7 +66,7 @@ function describeTimeLimit(minutes: number | null): string {
 function summary(view: Loaded): string {
   const who =
     view.effective.emails.length > 0
-      ? `Email ${view.effective.emails.join(", ")}`
+      ? `Emails ${view.effective.emails.join(", ")}`
       : "Nobody can be emailed";
   const channels = view.effective.channels
     .filter((c) => !c.pausedAt)
@@ -67,27 +74,29 @@ function summary(view: Loaded): string {
       (c) =>
         `${CHANNEL_LABEL[c.kind]}${c.kind === "discord" ? "" : ` ${c.destination}`}${c.role === "backup" ? " (backup)" : ""}`
     );
-  const also = channels.length > 0 ? `. Also ${channels.join(", ")}` : "";
-  return `${who} after ${view.effective.threshold} failed run${view.effective.threshold === 1 ? "" : "s"} in a row${describeTimeLimit(view.effective.timeLimitMinutes)}${also}.`;
+  const also = channels.length > 0 ? `, plus ${channels.join(", ")}` : "";
+  return `${who}${also}, after ${view.effective.threshold} failed run${view.effective.threshold === 1 ? "" : "s"} in a row${describeTimeLimit(view.effective.timeLimitMinutes)}.`;
 }
 
-function modeOf(view: Loaded): Mode {
-  if (view.override.mutedUntil || view.override.muteUntilSuccess) {
-    return "muted";
-  }
-  return view.effective.source === "custom" ? "custom" : "default";
+function isMutedView(view: Loaded): boolean {
+  return Boolean(view.override.mutedUntil || view.override.muteUntilSuccess);
 }
-
-type MuteChoice = "24h" | "7d" | "success" | "date";
 
 function toLocalInput(date: Date): string {
   const pad = (n: number): string => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+function formatWhen(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
 /**
- * "Notifications on fail" in a workflow's Properties: what applies to this
- * workflow, its failing state right now, and a way to customise or mute it.
+ * "Notifications on fail" in a workflow's Properties: what applies, whether
+ * it is failing right now, a one-click mute, and a way to customise it.
  */
 export function WorkflowFailureAlerts({
   workflowId,
@@ -98,14 +107,14 @@ export function WorkflowFailureAlerts({
   triggerType: string | undefined;
 }): React.ReactElement | null {
   const [view, setView] = useState<Loaded | null>(null);
-  const [mode, setMode] = useState<Mode>("default");
+  const [panel, setPanel] = useState<Panel>(null);
   const [saving, setSaving] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const setActiveTab = useSetAtom(propertiesPanelActiveTabAtom);
   const enableToggle = useAtomValue(workflowEnableToggleAtom);
   const enabled = useAtomValue(isWorkflowEnabled);
 
-  // Custom form
+  // Customise form
   const [threshold, setThreshold] = useState("");
   const [timeLimit, setTimeLimit] = useState("org");
   const [customRecipients, setCustomRecipients] = useState<string[] | null>(
@@ -114,16 +123,12 @@ export function WorkflowFailureAlerts({
   const [customChannels, setCustomChannels] = useState<DraftChannel[] | null>(
     null
   );
-  // Mute form
-  const [muteChoice, setMuteChoice] = useState<MuteChoice>("24h");
   const [muteDate, setMuteDate] = useState("");
-  const [muteReason, setMuteReason] = useState("");
 
   const url = `/api/workflows/${encodeURIComponent(workflowId)}/failure-alerts`;
 
   const apply = useCallback((next: Loaded) => {
     setView(next);
-    setMode(modeOf(next));
     setThreshold(
       next.override.threshold ? String(next.override.threshold) : ""
     );
@@ -140,19 +145,18 @@ export function WorkflowFailureAlerts({
         ? draftsFromViews(next.override.channels)
         : null
     );
-    setMuteReason(next.override.muteReason ?? "");
   }, []);
 
-  const load = useCallback(async () => {
-    const res = await fetch(url);
-    if (res.ok) {
-      apply((await res.json()) as Loaded);
-    }
-  }, [apply, url]);
-
   useEffect(() => {
-    load().catch(() => undefined);
-  }, [load]);
+    fetch(url)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body: Loaded | null) => {
+        if (body) {
+          apply(body);
+        }
+      })
+      .catch(() => undefined);
+  }, [apply, url]);
 
   const refreshConnections = useCallback(async () => {
     const res = await fetch(url);
@@ -178,12 +182,22 @@ export function WorkflowFailureAlerts({
 
   const applies = Boolean(triggerType && triggerType !== "Manual");
   const canManage = view.canManage;
-  const settingsHref = `/settings/${view.organizationId}/notifications`;
+  const muted = isMutedView(view);
+  const custom = view.effective.source === "custom";
+
+  /** The override as stored, so a mute change keeps the custom fields. */
+  const storedOverride = (): Record<string, unknown> => ({
+    threshold: view.override.threshold,
+    timeLimitMinutes: view.override.timeLimitMinutes,
+    recipientUserIds: view.override.recipientUserIds,
+    customChannels: view.override.customChannels,
+    channels: channelsPayload(draftsFromViews(view.override.channels)),
+  });
 
   const put = async (
     body: Record<string, unknown>,
     done: string
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     setSaving(true);
     try {
       const res = await fetch(url, {
@@ -196,15 +210,45 @@ export function WorkflowFailureAlerts({
       };
       if (!res.ok) {
         toast.error(data.error ?? "Could not save");
-        return;
+        return false;
       }
       apply(data);
       toast.success(done);
+      return true;
     } catch {
       toast.error("Could not save");
+      return false;
     } finally {
       setSaving(false);
     }
+  };
+
+  const mute = async (choice: number | "success" | "date"): Promise<void> => {
+    let mutedUntil: string | null = null;
+    if (choice === "date") {
+      if (!muteDate) {
+        toast.error("Pick when the mute ends.");
+        return;
+      }
+      mutedUntil = new Date(muteDate).toISOString();
+    } else if (choice !== "success") {
+      mutedUntil = new Date(Date.now() + choice).toISOString();
+    }
+    const ok = await put(
+      {
+        ...storedOverride(),
+        mutedUntil,
+        muteUntilSuccess: choice === "success",
+      },
+      "Alerts muted for this workflow"
+    );
+    if (ok) {
+      setPanel(null);
+    }
+  };
+
+  const unmute = async (): Promise<void> => {
+    await put(storedOverride(), "Alerts back on for this workflow");
   };
 
   const saveCustom = async (): Promise<void> => {
@@ -228,79 +272,47 @@ export function WorkflowFailureAlerts({
     } else if (timeLimit !== "org") {
       timeLimitMinutes = Number(timeLimit);
     }
-    await put(
+    const ok = await put(
       {
         threshold: parsedThreshold,
         timeLimitMinutes,
         recipientUserIds: customRecipients,
         customChannels: customChannels !== null,
         channels: customChannels ? channelsPayload(customChannels) : [],
+        mutedUntil: view.override.mutedUntil,
+        muteUntilSuccess: view.override.muteUntilSuccess,
       },
       "Saved for this workflow"
     );
-  };
-
-  const saveMute = async (): Promise<void> => {
-    const now = Date.now();
-    let mutedUntil: string | null = null;
-    if (muteChoice === "24h") {
-      mutedUntil = new Date(now + 24 * 60 * 60 * 1000).toISOString();
-    } else if (muteChoice === "7d") {
-      mutedUntil = new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString();
-    } else if (muteChoice === "date") {
-      if (!muteDate) {
-        toast.error("Pick when the mute ends.");
-        return;
-      }
-      mutedUntil = new Date(muteDate).toISOString();
+    if (ok) {
+      setPanel(null);
     }
-    await put(
+  };
+
+  const followOrgSetting = async (): Promise<void> => {
+    const ok = await put(
       {
-        threshold: view.override.threshold,
-        timeLimitMinutes: view.override.timeLimitMinutes,
-        recipientUserIds: view.override.recipientUserIds,
-        customChannels: view.override.customChannels,
-        channels: channelsPayload(draftsFromViews(view.override.channels)),
-        mutedUntil,
-        muteUntilSuccess: muteChoice === "success",
-        muteReason,
+        mutedUntil: view.override.mutedUntil,
+        muteUntilSuccess: view.override.muteUntilSuccess,
       },
-      "Alerts muted for this workflow"
+      "This workflow follows the org setting again"
     );
+    if (ok) {
+      setPanel(null);
+    }
   };
 
-  const unmute = async (): Promise<void> => {
-    await put(
-      {
-        threshold: view.override.threshold,
-        timeLimitMinutes: view.override.timeLimitMinutes,
-        recipientUserIds: view.override.recipientUserIds,
-        customChannels: view.override.customChannels,
-        channels: channelsPayload(draftsFromViews(view.override.channels)),
-      },
-      "Alerts back on for this workflow"
-    );
-  };
-
-  const resetAll = async (): Promise<void> => {
-    await put({}, "This workflow follows the org default again");
-  };
-
-  let tag: { label: string; className?: string } = { label: "Org default" };
+  let tag: { label: string; className?: string } = { label: "Org setting" };
   if (!applies) {
     tag = { label: "Does not apply" };
-  } else if (modeOf(view) === "muted") {
+  } else if (muted) {
     tag = {
       label: "Muted",
       className: "border-yellow-500/40 text-yellow-600 dark:text-yellow-400",
     };
-  } else if (view.effective.source === "custom") {
+  } else if (custom) {
     tag = { label: "Custom" };
   }
-
-  const maxDate = toLocalInput(
-    new Date(Date.now() + MAX_MUTE_DAYS * 24 * 60 * 60 * 1000)
-  );
 
   return (
     <div className="space-y-3" data-testid="workflow-failure-alerts">
@@ -312,11 +324,11 @@ export function WorkflowFailureAlerts({
       </div>
 
       {!applies && (
-        <div className="rounded-lg border border-dashed p-3 text-muted-foreground text-sm">
-          This workflow only runs when someone starts it, and they see the
-          result right away, so failure alerts don't apply. Switch the trigger
-          to Schedule, Event, Block or Webhook to get them.
-        </div>
+        <p className="rounded-lg border border-dashed p-3 text-muted-foreground text-sm">
+          Only runs started by hand, so failure alerts don't apply: you see the
+          result yourself. Use a Schedule, Event, Block or Webhook trigger to
+          get them.
+        </p>
       )}
 
       {applies && view.status.incident && (
@@ -349,16 +361,6 @@ export function WorkflowFailureAlerts({
             >
               View failed runs
             </Button>
-            {canManage && modeOf(view) !== "muted" && (
-              <Button
-                onClick={() => setMode("muted")}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                Mute
-              </Button>
-            )}
             {enableToggle && enabled && (
               <Button
                 onClick={() => enableToggle.toggle(false)}
@@ -383,67 +385,141 @@ export function WorkflowFailureAlerts({
             {view.status.firstFailedAt
               ? `Since ${getRelativeTime(view.status.firstFailedAt)}. `
               : null}
-            An alert goes out at {view.effective.threshold} failed runs
+            The alert goes out at {view.effective.threshold} failed runs
             {describeTimeLimit(view.effective.timeLimitMinutes)}.
           </p>
         </div>
       )}
 
       {applies && (
-        <>
-          {canManage && (
-            <fieldset className="grid grid-cols-3 gap-1 rounded-lg border p-1">
-              <legend className="sr-only">Alert mode</legend>
-              {(
-                [
-                  ["default", "Org default"],
-                  ["custom", "Custom"],
-                  ["muted", "Muted"],
-                ] as const
-              ).map(([value, label]) => (
-                <button
-                  aria-pressed={mode === value}
-                  className={cn(
-                    "rounded-md px-2 py-1.5 text-xs transition-colors",
-                    mode === value
-                      ? "bg-muted text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  )}
-                  key={value}
-                  onClick={() => setMode(value)}
-                  type="button"
-                >
-                  {label}
-                </button>
-              ))}
-            </fieldset>
+        <div className="space-y-3 rounded-lg border bg-muted/20 p-3 text-sm">
+          {muted ? (
+            <p className="flex items-start gap-2">
+              <BellOff
+                aria-hidden="true"
+                className="mt-0.5 size-4 shrink-0 text-yellow-600 dark:text-yellow-400"
+              />
+              <span>
+                {view.override.muteUntilSuccess
+                  ? "Muted until it works again"
+                  : `Muted until ${formatWhen(view.override.mutedUntil ?? "")}`}
+                {view.override.mutedBy ? ` by ${view.override.mutedBy}` : ""}.
+                Failures still show in Runs.
+              </span>
+            </p>
+          ) : (
+            <p>{summary(view)}</p>
+          )}
+          {view.org.unreachable && !custom && (
+            <p className="text-destructive text-xs">
+              Nobody can be reached right now. Add an email or a channel in
+              notification settings.
+            </p>
           )}
 
-          {mode === "default" && (
-            <div className="space-y-2 rounded-lg border bg-muted/20 p-3 text-sm">
-              <p>{summary(view)}</p>
-              {view.effective.source === "custom" && canManage && (
+          {canManage && panel === null && (
+            <div className="flex flex-wrap gap-2">
+              {muted ? (
                 <Button
                   disabled={saving}
-                  onClick={resetAll}
+                  onClick={unmute}
                   size="sm"
                   type="button"
                   variant="outline"
                 >
-                  Use the org default for this workflow
+                  Unmute
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => setPanel("mute")}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Mute
                 </Button>
               )}
-              {view.org.unreachable && (
-                <p className="text-destructive text-xs">
-                  Nobody can be reached right now. Add an email or a channel in
-                  notification settings.
-                </p>
+              <Button
+                onClick={() => setPanel("custom")}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                {custom ? "Edit for this workflow" : "Customize"}
+              </Button>
+              {custom && (
+                <Button
+                  disabled={saving}
+                  onClick={followOrgSetting}
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  Use org setting
+                </Button>
               )}
             </div>
           )}
 
-          {mode === "custom" && canManage && (
-            <div className="space-y-4 rounded-lg border p-3">
+          {panel === "mute" && (
+            <div className="space-y-2" data-testid="failure-alerts-mute">
+              <p className="text-xs">Mute alerts for</p>
+              <div className="flex flex-wrap gap-2">
+                {MUTE_CHOICES.map((choice) => (
+                  <Button
+                    disabled={saving}
+                    key={choice.label}
+                    onClick={() => mute(choice.ms)}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    {choice.label}
+                  </Button>
+                ))}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  aria-label="Mute until a date and time"
+                  className="h-8 w-auto"
+                  max={toLocalInput(
+                    new Date(Date.now() + MAX_MUTE_DAYS * 24 * HOUR_MS)
+                  )}
+                  min={toLocalInput(new Date())}
+                  onChange={(e) => setMuteDate(e.target.value)}
+                  type="datetime-local"
+                  value={muteDate}
+                />
+                <Button
+                  disabled={saving || !muteDate}
+                  onClick={() => mute("date")}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Mute until then
+                </Button>
+              </div>
+              <p className="text-muted-foreground text-xs">
+                Up to {MAX_MUTE_DAYS} days. Alerts start again by themselves if
+                it is still failing.
+              </p>
+              <Button
+                onClick={() => setPanel(null)}
+                size="sm"
+                type="button"
+                variant="ghost"
+              >
+                Cancel
+              </Button>
+            </div>
+          )}
+
+          {panel === "custom" && (
+            <div className="space-y-4" data-testid="failure-alerts-custom">
+              <p className="text-muted-foreground text-xs">
+                Anything left on "Org setting" keeps following the org.
+              </p>
               <div className="space-y-1.5">
                 <Label className="text-xs" htmlFor="wf-failure-threshold">
                   Failed runs in a row
@@ -453,7 +529,7 @@ export function WorkflowFailureAlerts({
                   id="wf-failure-threshold"
                   inputMode="numeric"
                   onChange={(e) => setThreshold(e.target.value)}
-                  placeholder={`Org default: ${view.org.threshold}`}
+                  placeholder={`Org setting: ${view.org.threshold}`}
                   type="number"
                   value={threshold}
                 />
@@ -470,7 +546,7 @@ export function WorkflowFailureAlerts({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="org">
-                      Org default (
+                      Org setting (
                       {view.org.timeLimitMinutes
                         ? TIME_LABEL[view.org.timeLimitMinutes]
                         : "off"}
@@ -486,28 +562,23 @@ export function WorkflowFailureAlerts({
                 </Select>
               </div>
               <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs">Email</Label>
-                  <Button
-                    className="h-auto px-0 text-xs"
-                    onClick={() =>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    checked={customRecipients !== null}
+                    id="wf-own-recipients"
+                    onCheckedChange={(checked) =>
                       setCustomRecipients(
-                        customRecipients === null
-                          ? [...view.org.recipientUserIds]
-                          : null
+                        checked === true ? [...view.org.recipientUserIds] : null
                       )
                     }
-                    type="button"
-                    variant="link"
-                  >
-                    {customRecipients === null
-                      ? "Choose for this workflow"
-                      : "Use org list"}
-                  </Button>
+                  />
+                  <Label className="text-xs" htmlFor="wf-own-recipients">
+                    Email different people
+                  </Label>
                 </div>
                 {customRecipients === null ? (
                   <p className="text-muted-foreground text-xs">
-                    Org list:{" "}
+                    Org setting:{" "}
                     {view.effective.emails.join(", ") || "nobody reachable"}
                   </p>
                 ) : (
@@ -543,13 +614,13 @@ export function WorkflowFailureAlerts({
                 )}
               </div>
               <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs">Channels</Label>
-                  <Button
-                    className="h-auto px-0 text-xs"
-                    onClick={() =>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    checked={customChannels !== null}
+                    id="wf-own-channels"
+                    onCheckedChange={(checked) =>
                       setCustomChannels(
-                        customChannels === null
+                        checked === true
                           ? draftsFromViews(view.org.channels).map((c) => ({
                               ...c,
                               id: undefined,
@@ -558,27 +629,12 @@ export function WorkflowFailureAlerts({
                           : null
                       )
                     }
-                    type="button"
-                    variant="link"
-                  >
-                    {customChannels === null
-                      ? "Choose for this workflow"
-                      : "Use org channels"}
-                  </Button>
+                  />
+                  <Label className="text-xs" htmlFor="wf-own-channels">
+                    Use different channels
+                  </Label>
                 </div>
-                {customChannels === null ? (
-                  <p className="text-muted-foreground text-xs">
-                    Org channels:{" "}
-                    {view.org.channels.length > 0
-                      ? view.org.channels
-                          .map(
-                            (c) =>
-                              `${CHANNEL_LABEL[c.kind]} ${c.kind === "discord" ? (c.connectionName ?? "") : c.destination}`
-                          )
-                          .join(", ")
-                      : "none"}
-                  </p>
-                ) : (
+                {customChannels !== null && (
                   <ChannelListEditor
                     canManage
                     channels={customChannels}
@@ -589,148 +645,38 @@ export function WorkflowFailureAlerts({
                   />
                 )}
               </div>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex justify-end gap-2">
                 <Button
-                  className="h-auto px-0 text-xs"
-                  disabled={saving}
-                  onClick={resetAll}
+                  onClick={() => {
+                    apply(view);
+                    setPanel(null);
+                  }}
+                  size="sm"
                   type="button"
-                  variant="link"
+                  variant="ghost"
                 >
-                  Reset all to org default
+                  Cancel
                 </Button>
-                <span className="ml-auto flex gap-2">
-                  <Button
-                    onClick={() => apply(view)}
-                    size="sm"
-                    type="button"
-                    variant="ghost"
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    disabled={saving}
-                    onClick={saveCustom}
-                    size="sm"
-                    type="button"
-                  >
-                    {saving ? "Saving..." : "Save"}
-                  </Button>
-                </span>
+                <Button
+                  disabled={saving}
+                  onClick={saveCustom}
+                  size="sm"
+                  type="button"
+                >
+                  {saving ? "Saving..." : "Save"}
+                </Button>
               </div>
             </div>
           )}
-
-          {mode === "muted" && (
-            <div className="space-y-3 rounded-lg border border-yellow-500/40 p-3">
-              {modeOf(view) === "muted" && (
-                <p className="flex items-start gap-2 text-sm">
-                  <BellOff
-                    aria-hidden="true"
-                    className="mt-0.5 size-4 shrink-0"
-                  />
-                  <span>
-                    {view.override.muteUntilSuccess
-                      ? "Muted until the next successful run"
-                      : `Muted until ${new Date(view.override.mutedUntil ?? "").toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`}
-                    {view.override.mutedBy
-                      ? ` by ${view.override.mutedBy}`
-                      : ""}
-                    . Failures still show in Runs. If it is still failing when
-                    the mute ends, alerts start again.
-                  </span>
-                </p>
-              )}
-              {canManage && (
-                <>
-                  <fieldset className="space-y-1.5">
-                    <legend className="mb-1 text-xs">Mute until</legend>
-                    {(
-                      [
-                        ["24h", "24 hours"],
-                        ["7d", "7 days"],
-                        ["success", "The next successful run"],
-                        ["date", "A date and time"],
-                      ] as const
-                    ).map(([value, label]) => (
-                      <label
-                        className="flex items-center gap-2 text-sm"
-                        htmlFor={`mute-${value}`}
-                        key={value}
-                      >
-                        <input
-                          checked={muteChoice === value}
-                          id={`mute-${value}`}
-                          name="mute-choice"
-                          onChange={() => setMuteChoice(value)}
-                          type="radio"
-                        />
-                        {label}
-                      </label>
-                    ))}
-                    {muteChoice === "date" && (
-                      <Input
-                        aria-label="Mute end"
-                        className="h-8"
-                        max={maxDate}
-                        min={toLocalInput(new Date())}
-                        onChange={(e) => setMuteDate(e.target.value)}
-                        type="datetime-local"
-                        value={muteDate}
-                      />
-                    )}
-                    <p className="text-muted-foreground text-xs">
-                      Up to {MAX_MUTE_DAYS} days. A mute never lasts forever, so
-                      a broken workflow cannot be forgotten.
-                    </p>
-                  </fieldset>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs" htmlFor="mute-reason">
-                      Reason (optional)
-                    </Label>
-                    <Input
-                      className="h-8"
-                      id="mute-reason"
-                      maxLength={200}
-                      onChange={(e) => setMuteReason(e.target.value)}
-                      placeholder="Contract upgrade window"
-                      value={muteReason}
-                    />
-                  </div>
-                  <div className="flex justify-end gap-2">
-                    {modeOf(view) === "muted" && (
-                      <Button
-                        disabled={saving}
-                        onClick={unmute}
-                        size="sm"
-                        type="button"
-                        variant="outline"
-                      >
-                        Unmute now
-                      </Button>
-                    )}
-                    <Button
-                      disabled={saving}
-                      onClick={saveMute}
-                      size="sm"
-                      type="button"
-                    >
-                      {saving ? "Saving..." : "Mute alerts"}
-                    </Button>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-        </>
+        </div>
       )}
 
       <div className="ml-1 flex flex-wrap gap-x-4 gap-y-1 text-xs">
         <Link
           className="underline-offset-4 hover:underline"
-          href={settingsHref}
+          href={`/settings/${view.organizationId}/notifications`}
         >
-          View org setting
+          Org setting
         </Link>
         <button
           className="underline-offset-4 hover:underline"

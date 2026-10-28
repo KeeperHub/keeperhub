@@ -111,9 +111,8 @@ function HealthLine({
   if (view.pausedAt) {
     return (
       <span className="text-destructive">
-        Paused {getRelativeTime(view.pausedAt)}:{" "}
-        {(view.pausedReason ?? "").replace(TRAILING_DOTS, "")}. A successful
-        test turns it back on.
+        {(view.pausedReason ?? "").replace(TRAILING_DOTS, "")} (
+        {getRelativeTime(view.pausedAt)}). Test it to turn it back on.
       </span>
     );
   }
@@ -272,7 +271,15 @@ function ChannelRow({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="truncate">{label}</span>
-            {isUntested(channel) && (
+            {paused && (
+              <Badge
+                className="border-destructive/50 text-destructive"
+                variant="outline"
+              >
+                Paused
+              </Badge>
+            )}
+            {!paused && isUntested(channel) && (
               <Badge
                 className="border-yellow-500/40 text-yellow-600 dark:text-yellow-400"
                 variant="outline"
@@ -315,7 +322,7 @@ function ChannelRow({
               }
               size="sm"
               type="button"
-              variant={isUntested(channel) ? "default" : "outline"}
+              variant={paused || isUntested(channel) ? "default" : "outline"}
             >
               {testing ? <Loader2 className="size-3.5 animate-spin" /> : null}
               Test
@@ -524,7 +531,17 @@ function AddChannelForm({
             value={destination}
           />
           <p className="text-muted-foreground text-xs">
-            The group or channel the bot posts to. The bot has to be a member.
+            A numeric ID, or @name for a public channel. Add the bot to the
+            group, send it a message, then open
+            api.telegram.org/bot&lt;token&gt;/getUpdates: the ID is under chat.{" "}
+            <a
+              className="underline"
+              href="https://docs.keeperhub.com/plugins/telegram"
+              rel="noopener"
+              target="_blank"
+            >
+              Step by step
+            </a>
           </p>
         </div>
       )}
