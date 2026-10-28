@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 /** FAILURE_ALERTS_ROLLOUT: off | all | orgs:<id>,<id> | percent:<n> (hashed, so raising n only adds). */
 export function isFailureAlertsEnabledForOrg(
   organizationId: string,
@@ -37,8 +35,12 @@ export function isFailureAlertsRolloutActive(
   return value !== "" && value !== "off";
 }
 
-/** 0-99, stable per organization. */
+/** 0-99, stable per organization (FNV-1a: spreads ids evenly, no secrecy needed). */
 function orgBucket(organizationId: string): number {
-  const digest = createHash("sha256").update(organizationId).digest();
-  return digest.readUInt32BE(0) % 100;
+  let hash = 0x81_1c_9d_c5;
+  for (let i = 0; i < organizationId.length; i += 1) {
+    hash ^= organizationId.charCodeAt(i);
+    hash = Math.imul(hash, 0x01_00_01_93);
+  }
+  return (hash >>> 0) % 100;
 }
