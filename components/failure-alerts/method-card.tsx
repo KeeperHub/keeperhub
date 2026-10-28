@@ -638,7 +638,7 @@ function ConnectionField({
       )}
       {!disabled && (
         <Button
-          className="h-auto px-0 text-xs"
+          className="h-auto max-w-full justify-start whitespace-normal px-0 text-left text-xs"
           onClick={newConnection}
           type="button"
           variant="link"
@@ -790,6 +790,13 @@ export function ChannelMethodCard({
   const row = useRowState(BROKEN_STATUSES.includes(status));
   const expanded =
     canManage && (row.open || isNew || dirty || Boolean(save.error));
+  // A row just added by "Add a method" takes focus, on its method picker.
+  const { bodyRef } = row;
+  useEffect(() => {
+    if (isNew) {
+      bodyRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+    }
+  }, [isNew, bodyRef]);
   const label = channelLabel(
     draft.kind,
     draft.destination,

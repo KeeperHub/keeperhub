@@ -460,7 +460,7 @@ function renderRecovery(
   let detail = `It succeeded after ${plural(incident.failureCount, "failed run", "failed runs")} (${span}).`;
   if (incident.openedBy === "missed") {
     headline = input.ranButFailed
-      ? `${workflow.name} started again, but that run failed`
+      ? `${workflow.name} ran, but the run failed`
       : `${workflow.name} is running again`;
     detail = input.ranButFailed
       ? `It started ${span} after it was due. You will be told if it keeps failing.`

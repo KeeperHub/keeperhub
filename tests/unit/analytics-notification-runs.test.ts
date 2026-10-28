@@ -83,7 +83,7 @@ describe("notificationTitle", () => {
     );
     expect(
       notificationTitle("recovery", [{ name: "Nightly sync" }], null)
-    ).toBe("Running again: Nightly sync");
+    ).toBe("Recovered: Nightly sync");
   });
 
   it("counts the workflows of a grouped message", () => {
@@ -112,10 +112,10 @@ describe("notificationTitle", () => {
 
   it("names the channel of a pause notice and nothing for a launch notice", () => {
     expect(notificationTitle("channel_paused", [], "Slack #ops")).toBe(
-      "Channel stopped working: Slack #ops"
+      "Method paused: Slack #ops"
     );
     expect(notificationTitle("launch_notice", [], null)).toBe(
-      "Notifications turned on"
+      "Alerts turned on"
     );
   });
 });
@@ -241,7 +241,7 @@ describe("toNotificationRun", () => {
       NO_GROUPS
     );
     expect(paused.notification?.title).toBe(
-      "Channel stopped working: Slack #ops"
+      "Method paused: Slack #ops"
     );
     expect(paused.notification?.workflows).toEqual([]);
     expect(paused.workflowId).toBeNull();

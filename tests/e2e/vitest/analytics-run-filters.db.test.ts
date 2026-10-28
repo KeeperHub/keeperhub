@@ -922,7 +922,7 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
       status: "error",
       workflowId: WF_OUT,
       notification: {
-        title: "Reminder: Oracle watch",
+        title: "Still failing: Oracle watch",
         lastError: "channel_not_found",
         attempts: 4,
       },
@@ -934,10 +934,10 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
     });
     expect(byId.get(D_PAUSED)).toMatchObject({
       status: "cancelled",
-      notification: { title: "Channel stopped working: Slack #oncall" },
+      notification: { title: "Method paused: Slack #oncall" },
     });
     expect(byId.get(D_LAUNCH)?.notification?.title).toBe(
-      "Notifications turned on"
+      "Alerts turned on"
     );
   });
 
