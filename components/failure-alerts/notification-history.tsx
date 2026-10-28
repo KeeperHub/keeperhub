@@ -210,6 +210,11 @@ export function NotificationHistory({
                       : entry.recipient}
                   </span>
                 </span>
+                {entry.note && (
+                  <span className="text-muted-foreground text-xs">
+                    {entry.note}
+                  </span>
+                )}
                 {entry.lastError && entry.state !== "delivered" && (
                   <span className="text-muted-foreground text-xs">
                     {entry.lastError}

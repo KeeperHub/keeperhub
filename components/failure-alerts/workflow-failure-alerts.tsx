@@ -632,7 +632,7 @@ export function WorkflowFailureAlerts({
                   <span>
                     {view.override.muteUntilSuccess
                       ? "Muted until the next successful run"
-                      : `Muted until ${new Date(view.override.mutedUntil ?? "").toLocaleString()}`}
+                      : `Muted until ${new Date(view.override.mutedUntil ?? "").toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`}
                     {view.override.mutedBy
                       ? ` by ${view.override.mutedBy}`
                       : ""}
@@ -715,7 +715,7 @@ export function WorkflowFailureAlerts({
                       size="sm"
                       type="button"
                     >
-                      {saving ? "Saving..." : "Mute"}
+                      {saving ? "Saving..." : "Mute alerts"}
                     </Button>
                   </div>
                 </>

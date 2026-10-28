@@ -50,6 +50,8 @@ const KINDS: FailureAlertChannelKind[] = [
   "pagerduty",
 ];
 
+const TRAILING_DOTS = /\.+$/;
+
 let draftCounter = 0;
 function nextKey(): string {
   draftCounter += 1;
@@ -109,8 +111,9 @@ function HealthLine({
   if (view.pausedAt) {
     return (
       <span className="text-destructive">
-        Paused {getRelativeTime(view.pausedAt)}: {view.pausedReason}. A
-        successful test turns it back on.
+        Paused {getRelativeTime(view.pausedAt)}:{" "}
+        {(view.pausedReason ?? "").replace(TRAILING_DOTS, "")}. A successful
+        test turns it back on.
       </span>
     );
   }

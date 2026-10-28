@@ -10,7 +10,9 @@ const {
   parseTimeLimit,
   SettingsError,
 } = await import("@/lib/notifications/failure-alerts/settings");
-const { memberLabel } = await import("@/components/failure-alerts/member-label");
+const { memberLabel } = await import(
+  "@/components/failure-alerts/member-label"
+);
 
 describe("parseThreshold", () => {
   it.each([1, 5, 20, "7"])("accepts %s", (value) => {
@@ -61,7 +63,8 @@ describe("historyToCsv", () => {
         attempts: 3,
         lastStatus: 503,
         lastError: "Service, unavailable",
-        workflows: [{ id: "w", name: "=HYPERLINK(\"x\")" }],
+        note: "Sent because Email could not be reached",
+        workflows: [{ id: "w", name: '=HYPERLINK("x")' }],
       },
     ]);
     const [header, row] = csv.trim().split("\n");
@@ -75,7 +78,8 @@ describe("memberLabel", () => {
   it("shows a wallet member by address rather than the synthetic login", () => {
     expect(
       memberLabel({
-        email: "0x7a3f0000000000000000000000000000000091c2@wallet.keeperhub.com",
+        email:
+          "0x7a3f0000000000000000000000000000000091c2@wallet.keeperhub.com",
         name: null,
         userId: "u",
       })

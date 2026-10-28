@@ -577,12 +577,23 @@ export async function loadHistory(
       attempts: delivery.attempts,
       lastStatus: delivery.lastStatus,
       lastError: delivery.lastError,
+      note: historyNote(delivery.context),
       workflows:
         workflowId && workflowName
           ? [{ id: workflowId, name: workflowName }]
           : grouped,
     };
   });
+}
+
+function historyNote(context: Record<string, unknown> | null): string | null {
+  if (typeof context?.channelLabel === "string") {
+    return context.channelLabel;
+  }
+  if (typeof context?.backupReason === "string") {
+    return `Sent because ${context.backupReason}`;
+  }
+  return null;
 }
 
 const CSV_HEADER = [
@@ -595,6 +606,7 @@ const CSV_HEADER = [
   "attempts",
   "http_status",
   "error",
+  "note",
   "workflows",
 ];
 
@@ -625,6 +637,7 @@ export function historyToCsv(entries: HistoryEntry[]): string {
         e.attempts,
         e.lastStatus,
         e.lastError,
+        e.note,
         e.workflows.map((w) => w.name).join("; "),
       ]
         .map(csvCell)

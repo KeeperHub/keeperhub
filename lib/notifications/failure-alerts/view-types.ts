@@ -70,6 +70,8 @@ export type HistoryEntry = {
   attempts: number;
   lastStatus: number | null;
   lastError: string | null;
+  /** Which channel a pause notice is about, or why a backup was sent. */
+  note: string | null;
   workflows: { id: string; name: string }[];
 };
 

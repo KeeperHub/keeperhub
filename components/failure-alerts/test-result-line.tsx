@@ -33,7 +33,11 @@ export function TestResultLine({
       <span>
         {result.message}
         {result.delivered ? ` (${seconds} s)` : null}
-        {!result.delivered && result.status ? ` HTTP ${result.status}.` : null}
+        {!result.delivered &&
+        result.status &&
+        !result.message.includes(String(result.status))
+          ? ` HTTP ${result.status}.`
+          : null}
         {!result.delivered && result.classification === "transient"
           ? " This looks temporary; real alerts would be retried."
           : null}
