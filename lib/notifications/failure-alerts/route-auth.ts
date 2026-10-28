@@ -1,6 +1,7 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
+import { isUniqueViolation } from "@/lib/db/errors";
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import {
   type DualAuthContext,
@@ -96,6 +97,13 @@ export function settingsErrorResponse(error: unknown): NextResponse | null {
     return NextResponse.json(
       { error: error.message },
       { status: error.status }
+    );
+  }
+  if (isUniqueViolation(error)) {
+    // The same connection and destination twice in one list.
+    return NextResponse.json(
+      { error: "That channel is already in the list." },
+      { status: 409 }
     );
   }
   return null;

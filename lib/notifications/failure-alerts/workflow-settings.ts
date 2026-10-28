@@ -11,6 +11,7 @@ import {
   workflows,
 } from "@/lib/db/schema";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
+import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
 import { MAX_MUTE_DAYS } from "./constants";
 import {
   loadEffectivePolicy,
@@ -38,8 +39,7 @@ export async function loadWorkflowForAlerts(workflowId: string): Promise<{
   id: string;
   organizationId: string;
   enabled: boolean;
-  // biome-ignore lint/suspicious/noExplicitAny: workflow nodes are JSONB validated at application level
-  nodes: any[];
+  nodes: TriggerNodeLike[];
 } | null> {
   const [row] = await db
     .select({
@@ -61,8 +61,7 @@ export async function loadWorkflowAlertView(
     id: string;
     organizationId: string;
     enabled: boolean;
-    // biome-ignore lint/suspicious/noExplicitAny: workflow nodes are JSONB validated at application level
-    nodes: any[];
+    nodes: TriggerNodeLike[];
   },
   viewerUserId: string
 ): Promise<WorkflowAlertView> {

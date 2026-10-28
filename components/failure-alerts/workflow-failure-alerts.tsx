@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Notice } from "@/components/ui/notice";
+import { Notice, WARNING_TEXT } from "@/components/ui/notice";
 import {
   Select,
   SelectContent,
@@ -42,6 +42,7 @@ import {
   type DraftChannel,
   draftsFromViews,
 } from "./channel-list-editor";
+import { failedRuns, formatWhen } from "./format";
 import { memberLabel } from "./member-label";
 import { NotificationHistory } from "./notification-history";
 
@@ -55,6 +56,9 @@ const TIME_LABEL: Record<number, string> = {
 };
 
 const HOUR_MS = 60 * 60 * 1000;
+// One id for every save toast, so "muted" then "back on" replace each other
+// instead of stacking over the panel's buttons.
+const SAVE_TOAST = "workflow-failure-alerts-save";
 
 /** The first thing to focus when a panel opens. */
 const FOCUSABLE = "button:not([disabled]), input:not([disabled])";
@@ -87,7 +91,7 @@ function summary(view: Loaded): string {
         `${channelLabel(c.kind, c.destination, c.connectionName)}${c.role === "backup" ? " (backup)" : ""}`
     );
   const also = channels.length > 0 ? `, plus ${channels.join(", ")}` : "";
-  return `${who}${also}, after ${view.effective.threshold} failed run${view.effective.threshold === 1 ? "" : "s"} in a row${describeTimeLimit(view.effective.timeLimitMinutes)}.`;
+  return `${who}${also}, after ${failedRuns(view.effective.threshold)} in a row${describeTimeLimit(view.effective.timeLimitMinutes)}.`;
 }
 
 function isMutedView(view: Loaded): boolean {
@@ -97,13 +101,6 @@ function isMutedView(view: Loaded): boolean {
 function toLocalInput(date: Date): string {
   const pad = (n: number): string => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function formatWhen(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
 }
 
 /**
@@ -203,6 +200,28 @@ export function WorkflowFailureAlerts({
     }
   }, [panel]);
 
+  // Escape closes a panel like Cancel. A native listener on the panel's own
+  // DOM, so the Escape of a select opened from it (rendered in a portal)
+  // closes only that list.
+  useEffect(() => {
+    const element = panelRef.current;
+    if (!(panel && element && view)) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      if (panel === "custom") {
+        apply(view);
+      }
+      setPanel(null);
+    };
+    element.addEventListener("keydown", onKeyDown);
+    return () => element.removeEventListener("keydown", onKeyDown);
+  }, [panel, view, apply]);
+
   const openPanel = (next: Exclude<Panel, null>): void => {
     openerRef.current = next;
     setPanel(next);
@@ -282,14 +301,14 @@ export function WorkflowFailureAlerts({
         error?: string;
       };
       if (!res.ok) {
-        toast.error(data.error ?? "Could not save");
+        toast.error(data.error ?? "Could not save", { id: SAVE_TOAST });
         return false;
       }
       apply(data);
-      toast.success(done);
+      toast.success(done, { id: SAVE_TOAST });
       return true;
     } catch {
-      toast.error("Could not save");
+      toast.error("Could not save", { id: SAVE_TOAST });
       return false;
     } finally {
       setSaving(false);
@@ -313,7 +332,7 @@ export function WorkflowFailureAlerts({
         mutedUntil,
         muteUntilSuccess: choice === "success",
       },
-      "Alerts muted for this workflow"
+      "Notifications muted for this workflow"
     );
     if (ok) {
       setPanel(null);
@@ -321,7 +340,7 @@ export function WorkflowFailureAlerts({
   };
 
   const unmute = async (): Promise<void> => {
-    await put(storedOverride(), "Alerts back on for this workflow");
+    await put(storedOverride(), "Notifications back on for this workflow");
   };
 
   const saveCustom = async (): Promise<void> => {
@@ -372,7 +391,7 @@ export function WorkflowFailureAlerts({
   } else if (muted) {
     tag = {
       label: "Muted",
-      className: "border-yellow-500/40 text-yellow-600 dark:text-yellow-400",
+      className: WARNING_TEXT,
     };
   } else if (custom) {
     tag = { label: "Custom" };
@@ -396,14 +415,15 @@ export function WorkflowFailureAlerts({
       )}
 
       {applies && view.status.incident && (
-        <Notice className="p-3 text-sm" tone="danger">
+        // Muted means someone already knows, so the box stops shouting.
+        <Notice className="p-3 text-sm" tone={muted ? "warning" : "danger"}>
           <div className="space-y-2">
             <p className="font-medium">
-              Failing, {view.status.incident.failureCount} runs in a row
+              Failing: {failedRuns(view.status.incident.failureCount)} in a row
             </p>
             <p className="text-xs">
               {view.status.incident.deliveredTo.length > 0
-                ? `Alert sent ${timeAgo(view.status.incident.openedAt)} to ${view.status.incident.deliveredTo.join(", ")}, after ${view.status.incident.threshold} failed runs in a row.`
+                ? `Alert sent ${timeAgo(view.status.incident.openedAt)} to ${view.status.incident.deliveredTo.join(", ")}.`
                 : `Alert queued ${timeAgo(view.status.incident.openedAt)}, not delivered yet.`}
             </p>
             {view.status.lastError && (
@@ -438,14 +458,13 @@ export function WorkflowFailureAlerts({
       {applies && !view.status.incident && view.status.failures > 0 && (
         <Notice className="p-3" tone="warning">
           <p className="font-medium text-sm">
-            Failing: {view.status.failures} failed run
-            {view.status.failures === 1 ? "" : "s"} in a row
+            Failing: {failedRuns(view.status.failures)} in a row
           </p>
           <p className="text-foreground">
             {view.status.firstFailedAt
               ? `Started failing ${timeAgo(view.status.firstFailedAt)}. `
               : null}
-            The alert goes out at {view.effective.threshold} failed runs
+            The alert goes out at {failedRuns(view.effective.threshold)}
             {describeTimeLimit(view.effective.timeLimitMinutes)}.
           </p>
         </Notice>
@@ -457,7 +476,7 @@ export function WorkflowFailureAlerts({
             <p className="flex items-start gap-2">
               <BellOff
                 aria-hidden="true"
-                className="mt-0.5 size-4 shrink-0 text-yellow-600 dark:text-yellow-400"
+                className={cn("mt-0.5 size-4 shrink-0", WARNING_TEXT)}
               />
               <span>
                 {view.override.muteUntilSuccess
@@ -787,7 +806,7 @@ export function WorkflowFailureAlerts({
           onClick={() => setShowHistory((open) => !open)}
           type="button"
         >
-          {showHistory ? "Hide alert history" : "Alert history"}
+          {showHistory ? "Hide notification history" : "Notification history"}
         </button>
       </div>
       {showHistory && (

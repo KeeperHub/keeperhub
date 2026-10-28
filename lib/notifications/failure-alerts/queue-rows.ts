@@ -16,6 +16,24 @@ export type DeliveryInsert = Omit<
   scope: string;
 };
 
+/** Scope of everything about one incident: alert, reminders, recovery. */
+export function incidentScope(incidentId: string): string {
+  return `i:${incidentId}`;
+}
+
+/** Scope of a grouped alert, named after its first incident. */
+export function groupScope(firstIncidentId: string): string {
+  return `g:${firstIncidentId}`;
+}
+
+/** Who a chat or PagerDuty row is addressed to, for dedup and history. */
+export function channelRecipient(channel: {
+  kind: string;
+  destination: string;
+}): string {
+  return channel.destination || channel.kind;
+}
+
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export function dedupKeyFor(row: DeliveryInsert): string {

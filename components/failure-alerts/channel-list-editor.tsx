@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IntegrationIcon } from "@/components/ui/integration-icon";
 import { Label } from "@/components/ui/label";
-import { Notice } from "@/components/ui/notice";
+import { Notice, WARNING_TEXT } from "@/components/ui/notice";
 import {
   Select,
   SelectContent,
@@ -47,6 +47,8 @@ export type DraftChannel = {
   view?: ChannelView;
   /** Set by a test in this session; a new channel stays "Untested" until then. */
   testedOk?: boolean;
+  /** A paused channel put back by Undo: it is saved paused, not live. */
+  pausedReason?: string;
 };
 
 const KINDS: FailureAlertChannelKind[] = [
@@ -82,14 +84,18 @@ export function channelsPayload(channels: DraftChannel[]): {
   integrationId: string;
   destination: string;
   role: FailureAlertChannelRole;
+  pausedReason?: string;
 }[] {
-  return channels.map(({ id, kind, integrationId, destination, role }) => ({
-    id,
-    kind,
-    integrationId,
-    destination,
-    role,
-  }));
+  return channels.map(
+    ({ id, kind, integrationId, destination, role, pausedReason }) => ({
+      id,
+      kind,
+      integrationId,
+      destination,
+      role,
+      pausedReason,
+    })
+  );
 }
 
 function destinationLabel(
@@ -117,8 +123,9 @@ function HealthLine({
   if (view.pausedAt) {
     return (
       <span className="text-destructive">
-        {(view.pausedReason ?? "").replace(TRAILING_DOTS, "")} (
-        {timeAgo(view.pausedAt)}). Test it to turn it back on.
+        Paused {timeAgo(view.pausedAt)}:{" "}
+        {(view.pausedReason ?? "").replace(TRAILING_DOTS, "")}. Test it to turn
+        it back on.
       </span>
     );
   }
@@ -142,12 +149,16 @@ function HealthLine({
   return <span className="text-muted-foreground">Never used yet</span>;
 }
 
-function isUntested(channel: DraftChannel): boolean {
-  if (channel.testedOk) {
-    return false;
+/** What the channel's last test says: never tested and never used, or failed. */
+function testState(channel: DraftChannel): "untested" | "failed" | null {
+  const lastTestOk = channel.testedOk ?? channel.view?.lastTestOk ?? null;
+  if (lastTestOk === false) {
+    return "failed";
   }
-  const view = channel.view;
-  return !(view?.lastTestOk || view?.lastDeliveredAt);
+  if (lastTestOk === true || channel.view?.lastDeliveredAt) {
+    return null;
+  }
+  return "untested";
 }
 
 type PagerDutyMode = "change" | "page";
@@ -259,10 +270,13 @@ function ChannelRow({
             }
           : channel.view,
       });
+    } else {
+      onChange({ ...channel, testedOk: false });
     }
   }, [channel, onChange, organizationId, pdMode]);
 
   const paused = Boolean(channel.view?.pausedAt);
+  const tested = testState(channel);
 
   return (
     <li
@@ -293,12 +307,9 @@ function ChannelRow({
                   Paused
                 </Badge>
               )}
-              {!paused && isUntested(channel) && (
-                <Badge
-                  className="border-yellow-500/40 text-yellow-600 dark:text-yellow-400"
-                  variant="outline"
-                >
-                  Untested
+              {!paused && tested && (
+                <Badge className={WARNING_TEXT} variant="outline">
+                  {tested === "failed" ? "Test failed" : "Untested"}
                 </Badge>
               )}
             </div>
@@ -342,7 +353,7 @@ function ChannelRow({
                 }
                 size="sm"
                 type="button"
-                variant={paused || isUntested(channel) ? "default" : "outline"}
+                variant={paused || tested ? "default" : "outline"}
               >
                 {testing ? <Loader2 className="size-3.5 animate-spin" /> : null}
                 Test
@@ -584,17 +595,16 @@ function AddChannelForm({
             value={destination}
           />
           <p className="text-muted-foreground text-xs">
+            A group or channel number such as -1001234567890, or @name for a
+            public channel. Add your bot to the group first.{" "}
             <a
               className="underline"
               href="https://docs.keeperhub.com/plugins/telegram"
               rel="noopener"
               target="_blank"
             >
-              Step by step
+              How to find the chat ID
             </a>
-            . In short: a numeric ID, or @name for a public channel. Add the bot
-            to the group, send it a message, then open
-            api.telegram.org/bot&lt;token&gt;/getUpdates: the ID is under chat.
           </p>
         </div>
       )}
@@ -699,11 +709,15 @@ export function ChannelListEditor({
             return;
           }
           const next = [...current];
-          // The saved row is gone, so it comes back as a new one.
+          // The saved row is gone, so it comes back as a new one, and a
+          // channel that was paused comes back paused, not live.
           next.splice(Math.min(index, next.length), 0, {
             ...channel,
             id: undefined,
             key: nextKey(),
+            pausedReason: channel.view?.pausedAt
+              ? (channel.view.pausedReason ?? "It stopped working.")
+              : undefined,
           });
           latest.current.onChange(next);
         },

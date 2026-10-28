@@ -27,7 +27,6 @@ import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import {
   DELIVERY_BATCH,
-  DELIVERY_BUDGET_MS,
   FREE_PLAN_MONTHLY_EMAILS,
   GIVE_UP_AFTER_MS,
   HEALTH_CHECK_INTERVAL_MS,
@@ -50,7 +49,13 @@ import {
   loadOrgPolicy,
   resolveRecipientEmails,
 } from "./policy";
-import { type DeliveryInsert, insertDeliveries } from "./queue-rows";
+import {
+  channelRecipient,
+  type DeliveryInsert,
+  groupScope,
+  incidentScope,
+  insertDeliveries,
+} from "./queue-rows";
 import {
   checkChannelSilently,
   type DeliveryOutcome,
@@ -97,11 +102,11 @@ export function nextRetryDelayMs(
 /** The scope a row was queued under, so its backups and recovery share it. */
 function scopeOf(row: DeliveryRow): string {
   if (row.incidentId) {
-    return `i:${row.incidentId}`;
+    return incidentScope(row.incidentId);
   }
   const ids = row.context?.incidentIds;
   if (Array.isArray(ids) && ids.length > 0) {
-    return `g:${String(ids[0])}`;
+    return groupScope(String(ids[0]));
   }
   return `row:${row.id}`;
 }
@@ -272,7 +277,10 @@ async function renderRow(
   } else {
     const incident = row.incidentId ? await ctx.incident(row.incidentId) : null;
     const workflow = incident ? await ctx.workflow(incident.workflowId) : null;
-    if (!(incident && workflow)) {
+    // A "still failing" message must not land after the workflow recovered,
+    // e.g. a row taken over from a crashed evaluator after the close.
+    const stale = row.kind !== "recovery" && Boolean(incident?.resolvedAt);
+    if (!(incident && workflow) || stale) {
       return null;
     }
     const alertIncident = {
@@ -493,13 +501,12 @@ async function recordChannelHealth(
  * the time budget is spent.
  */
 export async function drainOutbox(
-  now: Date,
   appUrl: string,
-  stats: DrainStats
+  stats: DrainStats,
+  deadline: number
 ): Promise<void> {
-  const started = Date.now();
   const ctx = new Context(appUrl);
-  while (Date.now() - started < DELIVERY_BUDGET_MS) {
+  while (Date.now() < deadline) {
     const rows = await claimDue();
     if (rows.length === 0) {
       return;
@@ -507,7 +514,11 @@ export async function drainOutbox(
     await ctx.loadChannels(
       rows.map((row) => row.channelId).filter((id): id is string => Boolean(id))
     );
-    for (const row of rows) {
+    for (const [index, row] of rows.entries()) {
+      if (Date.now() >= deadline) {
+        await releaseRows(rows.slice(index));
+        return;
+      }
       try {
         // Restart this row's clock: it may have waited behind slow sends in
         // its batch, and must not look abandoned to another evaluator.
@@ -515,12 +526,7 @@ export async function drainOutbox(
           .update(failureAlertDeliveries)
           .set({ updatedAt: new Date(), attempts: row.attempts + 1 })
           .where(eq(failureAlertDeliveries.id, row.id));
-        await processRow(
-          { ...row, attempts: row.attempts + 1 },
-          ctx,
-          now,
-          stats
-        );
+        await processRow({ ...row, attempts: row.attempts + 1 }, ctx, stats);
       } catch (error) {
         logSystemError(
           ErrorCategory.EXTERNAL_SERVICE,
@@ -537,13 +543,24 @@ export async function drainOutbox(
   }
 }
 
+/** Hand claimed rows the budget did not reach back to the queue, due now. */
+async function releaseRows(rows: DeliveryRow[]): Promise<void> {
+  for (const row of rows) {
+    await finishRow(row, row.attempts === 0 ? "pending" : "retrying", {
+      nextAttemptAt: new Date(),
+    });
+  }
+}
+
 async function processRow(
   row: DeliveryRow,
   ctx: Context,
-  now: Date,
   stats: DrainStats
 ): Promise<void> {
   const outcome = await sendRow(row, ctx);
+  // The time of this send, not the cycle's start: a long cycle would otherwise
+  // make a one-minute retry due at once and date deliveries too early.
+  const now = new Date();
   if (outcome === "gone") {
     await finishRow(row, "skipped", {
       lastError: "What this message was about no longer exists.",
@@ -670,7 +687,16 @@ export async function fireBackups(now: Date, stats: DrainStats): Promise<void> {
       if (claimed.length === 0) {
         continue;
       }
-      stats.backupsQueued += await queueBackupFor(row, now);
+      try {
+        stats.backupsQueued += await queueBackupFor(row, now);
+      } catch (error) {
+        // Hand the claim back so the next cycle tries again.
+        await db
+          .update(failureAlertDeliveries)
+          .set({ backupSentAt: null })
+          .where(eq(failureAlertDeliveries.id, row.id));
+        throw error;
+      }
     } catch (error) {
       logSystemError(
         ErrorCategory.EXTERNAL_SERVICE,
@@ -714,12 +740,18 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
   const incident = row.incidentId
     ? (
         await db
-          .select({ workflowId: workflowFailureIncidents.workflowId })
+          .select({
+            workflowId: workflowFailureIncidents.workflowId,
+            resolvedAt: workflowFailureIncidents.resolvedAt,
+          })
           .from(workflowFailureIncidents)
           .where(eq(workflowFailureIncidents.id, row.incidentId))
           .limit(1)
       )[0]
     : undefined;
+  if (incident?.resolvedAt) {
+    return 0;
+  }
   // A grouped alert follows the org's setup; a single one its workflow's.
   const policy = incident
     ? await loadEffectivePolicy(row.organizationId, incident.workflowId)
@@ -755,7 +787,7 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
     ) {
       continue;
     }
-    const recipient = channel.destination || channel.kind;
+    const recipient = channelRecipient(channel);
     if (has(channel.kind, recipient)) {
       continue;
     }

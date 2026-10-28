@@ -40,6 +40,10 @@ import { quotaNotifyClaimKey } from "@/lib/redis-keys";
 /**
  * Owners only. They are the ones who can change the plan or the pay-as-you-go
  * spend caps, which is the entire point of the email.
+ *
+ * An owner with no deliverable address is skipped, and because the caller does
+ * not claim the notification for a skipped org, they are still told once they
+ * become reachable.
  */
 async function resolveOwnerEmails(organizationId: string): Promise<string[]> {
   return reachableEmails(await loadOrgMembers(organizationId, ["owner"]));

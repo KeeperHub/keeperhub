@@ -2081,21 +2081,6 @@
           "method": "btree",
           "with": {}
         },
-        "idx_failure_alert_channels_org": {
-          "name": "idx_failure_alert_channels_org",
-          "columns": [
-            {
-              "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "idx_failure_alert_channels_workflow": {
           "name": "idx_failure_alert_channels_workflow",
           "columns": [
@@ -2326,7 +2311,7 @@
             }
           ],
           "isUnique": false,
-          "where": "\"failure_alert_deliveries\".\"is_backup\" = false AND \"failure_alert_deliveries\".\"backup_sent_at\" IS NULL",
+          "where": "\"failure_alert_deliveries\".\"is_backup\" = false AND \"failure_alert_deliveries\".\"backup_sent_at\" IS NULL AND \"failure_alert_deliveries\".\"state\" IN ('pending', 'retrying', 'sending', 'failed', 'capped')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -9272,6 +9257,21 @@
           "columns": [
             {
               "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_workflow_failure_incidents_workflow": {
+          "name": "idx_workflow_failure_incidents_workflow",
+          "columns": [
+            {
+              "expression": "workflow_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

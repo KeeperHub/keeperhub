@@ -207,7 +207,7 @@ function renderAlert(
   const open = workflowUrl(appUrl, workflow.id);
   const foot = footer(input);
   const nextStep =
-    "It keeps running on its trigger until someone fixes, mutes or pauses it. Mute and Pause are in the workflow's Properties.";
+    "It keeps running on its trigger until someone fixes, mutes or pauses it. To mute or pause it, open the workflow and use the Properties panel.";
 
   const text = `${backup.text}${headline}.
 
@@ -263,6 +263,8 @@ function renderGrouped(
 
 ${lines.join("\n")}
 
+See all failing workflows: ${settingsUrl(appUrl, input.organizationId)}
+
 ${foot.text}`;
   const html = emailLayout(
     escapeHtml(headline),
@@ -274,7 +276,7 @@ ${foot.text}`;
           `<li><a href="${escapeHtml(runsUrl(appUrl, w.id))}">${escapeHtml(w.name)}</a>: ${plural(w.failureCount, "failed run", "failed runs")} in a row</li>`
       )
       .join("")}</ul>
-    <p>${emailButton(runsUrl(appUrl, workflows[0]?.id ?? ""), `View ${workflows[0]?.name ?? "the first workflow"}`)}</p>`,
+    <p>${emailButton(settingsUrl(appUrl, input.organizationId), "See all failing workflows")}</p>`,
     foot.html
   );
   return {

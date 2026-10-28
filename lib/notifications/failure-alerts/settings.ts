@@ -279,7 +279,14 @@ type ChannelInput = {
   integrationId: string;
   destination: string;
   role: FailureAlertChannelRole;
+  /**
+   * Only for a channel put back by Undo after its row was deleted: it comes
+   * back paused with this reason rather than live. Can pause, never unpause.
+   */
+  pausedReason?: string;
 };
+
+const MAX_PAUSED_REASON = 500;
 
 export function parseThreshold(raw: unknown): number {
   const value = typeof raw === "number" ? raw : Number(raw);
@@ -314,13 +321,55 @@ export async function parseChannels(
   if (!Array.isArray(raw)) {
     return [];
   }
+  const items = raw as Record<string, unknown>[];
   const connections = new Map(
     (await loadUsableConnections(organizationId)).map((c) => [c.id, c])
   );
+  const savedIds = items.flatMap((item) =>
+    typeof item?.id === "string" ? [item.id] : []
+  );
+  const saved =
+    savedIds.length > 0
+      ? await db
+          .select({
+            id: failureAlertChannels.id,
+            kind: failureAlertChannels.kind,
+            integrationId: failureAlertChannels.integrationId,
+            destination: failureAlertChannels.destination,
+          })
+          .from(failureAlertChannels)
+          .where(
+            and(
+              eq(failureAlertChannels.organizationId, organizationId),
+              inArray(failureAlertChannels.id, savedIds)
+            )
+          )
+      : [];
   const parsed: ChannelInput[] = [];
-  for (const item of raw as Record<string, unknown>[]) {
+  for (const item of items) {
     const integrationId = String(item?.integrationId ?? "");
     const connection = connections.get(integrationId);
+    // A saved channel whose connection was deleted or unshared since stays as
+    // it is, so it does not block every other change until someone removes
+    // it. It cannot send; the row already says so and the sender pauses it.
+    const unchanged = connection
+      ? undefined
+      : saved.find(
+          (row) =>
+            row.id === item?.id &&
+            row.integrationId === integrationId &&
+            row.destination === String(item?.destination ?? "").trim()
+        );
+    if (unchanged) {
+      parsed.push({
+        id: unchanged.id,
+        kind: unchanged.kind,
+        integrationId,
+        destination: unchanged.destination,
+        role: item?.role === "backup" ? "backup" : "always",
+      });
+      continue;
+    }
     if (!connection) {
       throw new SettingsError(
         "Pick a connection that is shared with the whole organization."
@@ -355,6 +404,10 @@ export async function parseChannels(
       integrationId,
       destination: target,
       role: item?.role === "backup" ? "backup" : "always",
+      pausedReason:
+        typeof item?.pausedReason === "string" && item.pausedReason.trim()
+          ? item.pausedReason.trim().slice(0, MAX_PAUSED_REASON)
+          : undefined,
     });
   }
   return parsed;
@@ -386,23 +439,43 @@ export async function replaceChannels(
     .from(failureAlertChannels)
     .where(scope);
   const existingIds = new Set(existing.map((row) => row.id));
+  // Ids the list names are spoken for: adoption below must not take them.
+  const named = new Set(
+    channels.flatMap((channel) =>
+      channel.id && existingIds.has(channel.id) ? [channel.id] : []
+    )
+  );
   const keep = new Set<string>();
-
-  for (const channel of channels) {
+  const matched = channels.map((channel) => {
     // Matched by id, or by connection and destination: a second save that
     // raced the first one's new row adopts it instead of adding a twin.
     const current =
-      (channel.id && existingIds.has(channel.id)
+      (channel.id && named.has(channel.id)
         ? existing.find((row) => row.id === channel.id)
         : undefined) ??
       existing.find(
         (row) =>
-          !keep.has(row.id) &&
+          !(keep.has(row.id) || named.has(row.id)) &&
           row.integrationId === channel.integrationId &&
           row.destination === channel.destination
       );
     if (current) {
       keep.add(current.id);
+    }
+    return { channel, current };
+  });
+
+  // Removals first, so a kept row may move onto a destination a removed row
+  // held without tripping the unique index.
+  const removed = [...existingIds].filter((id) => !keep.has(id));
+  if (removed.length > 0) {
+    await tx
+      .delete(failureAlertChannels)
+      .where(and(scope, inArray(failureAlertChannels.id, removed)));
+  }
+
+  for (const { channel, current } of matched) {
+    if (current) {
       const retargeted =
         current.integrationId !== channel.integrationId ||
         current.destination !== channel.destination;
@@ -436,14 +509,10 @@ export async function replaceChannels(
       destination: channel.destination,
       role: channel.role,
       createdBy: userId,
+      ...(channel.pausedReason
+        ? { pausedAt: new Date(), pausedReason: channel.pausedReason }
+        : {}),
     });
-  }
-
-  const removed = [...existingIds].filter((id) => !keep.has(id));
-  if (removed.length > 0) {
-    await tx
-      .delete(failureAlertChannels)
-      .where(and(scope, inArray(failureAlertChannels.id, removed)));
   }
 }
 

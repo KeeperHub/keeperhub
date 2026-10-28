@@ -2,6 +2,7 @@ import "server-only";
 
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getErrorMessage } from "@/lib/utils";
+import { DELIVERY_BUDGET_MS } from "./constants";
 import {
   closeInactiveIncidents,
   type EvaluationStats,
@@ -67,10 +68,13 @@ export async function runFailureAlertCycle(
   await stage("close-inactive", () => closeInactiveIncidents(now, evaluation));
   await stage("requeue-lost", () => requeueLostAlerts(now, evaluation));
   await stage("reminders", () => queueReminders(now, evaluation));
-  await stage("deliver", () => drainOutbox(now, appUrl, drain));
+  const deliveryDeadline = Date.now() + DELIVERY_BUDGET_MS;
+  await stage("deliver", () => drainOutbox(appUrl, drain, deliveryDeadline));
   await stage("backups", () => fireBackups(now, drain));
   // Backups queued this cycle go out now rather than a minute later.
-  await stage("deliver-backups", () => drainOutbox(now, appUrl, drain));
+  await stage("deliver-backups", () =>
+    drainOutbox(appUrl, drain, deliveryDeadline)
+  );
   await stage("health", () => runHealthChecks(now, drain));
   await stage("prune", () => pruneOldRecords(now));
 

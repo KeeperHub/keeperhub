@@ -3,15 +3,21 @@ import { cn } from "@/lib/utils";
 
 type NoticeTone = "info" | "warning" | "danger";
 
+/**
+ * Amber text and border for warning badges and icons outside a Notice. No
+ * warning token exists yet, so the palette classes live here, in one place.
+ */
+export const WARNING_TEXT =
+  "border-yellow-500/40 text-yellow-600 dark:text-yellow-400";
+
 const TONE_CLASS: Record<NoticeTone, string> = {
   info: "border-border bg-muted/30 text-muted-foreground",
-  // No warning token exists yet, so the amber stays a palette class.
   warning:
     "border-yellow-500/40 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300",
   danger: "border-destructive/50 bg-destructive/15 text-foreground",
 };
 
-/** A small boxed note beside a field: a hint, a warning, or a problem. */
+/** A boxed note: a hint, a warning, or a problem, beside a field or as a status box. */
 export function Notice({
   tone,
   children,

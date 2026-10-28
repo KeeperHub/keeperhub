@@ -1,12 +1,12 @@
 "use client";
 
-import { Download, Loader2, RefreshCw } from "lucide-react";
+import { Download, Loader2, Mail, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { IntegrationIcon } from "@/components/ui/integration-icon";
-import { Notice } from "@/components/ui/notice";
+import { Notice, WARNING_TEXT } from "@/components/ui/notice";
 import {
   Select,
   SelectContent,
@@ -20,13 +20,14 @@ import {
   type HistoryEntry,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
+import { formatWhen } from "./format";
 
 const KIND_LABEL: Record<string, string> = {
   alert: "Alert",
   reminder: "Reminder",
-  recovery: "Recovered",
-  channel_paused: "Channel paused",
-  launch_notice: "Notifications on",
+  recovery: "Running again",
+  channel_paused: "Channel stopped working",
+  launch_notice: "Notifications turned on",
 };
 
 const STATE_LABEL: Record<string, string> = {
@@ -47,18 +48,9 @@ function stateTone(state: string): string {
     return "text-destructive";
   }
   if (state === "retrying" || state === "pending" || state === "sending") {
-    return "text-yellow-600 dark:text-yellow-400";
+    return WARNING_TEXT;
   }
   return "text-muted-foreground";
-}
-
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 function channelLine(entry: HistoryEntry): string {
@@ -108,14 +100,16 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
         {entry.attempts > 1 ? ` (${entry.attempts} tries)` : ""}
       </span>
       <span className="col-start-1 row-start-2 text-muted-foreground text-xs tabular-nums @xl/settings:row-start-1">
-        {formatTime(entry.createdAt)}
+        {formatWhen(entry.createdAt)}
       </span>
       <span className="col-span-2 col-start-1 row-start-3 flex min-w-0 flex-col gap-0.5 text-muted-foreground text-xs @xl/settings:col-span-1 @xl/settings:col-start-2 @xl/settings:row-start-2">
         {paused && entry.channel === "email" ? (
           <span className="break-words">Told {entry.recipient} by email</span>
         ) : (
           <span className="flex min-w-0 items-center gap-1.5">
-            {entry.channel === "email" ? null : (
+            {entry.channel === "email" ? (
+              <Mail aria-hidden="true" className="size-3 shrink-0" />
+            ) : (
               <IntegrationIcon
                 className="size-3 shrink-0"
                 integration={entry.channel}

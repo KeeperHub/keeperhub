@@ -126,7 +126,6 @@ export const failureAlertChannels = pgTable(
       table.integrationId,
       table.destination
     ),
-    index("idx_failure_alert_channels_org").on(table.organizationId),
     index("idx_failure_alert_channels_workflow").on(table.workflowId),
   ]
 );
@@ -234,6 +233,7 @@ export const workflowFailureIncidents = pgTable(
       .on(table.workflowId)
       .where(sql`${table.resolvedAt} IS NULL`),
     index("idx_workflow_failure_incidents_org").on(table.organizationId),
+    index("idx_workflow_failure_incidents_workflow").on(table.workflowId),
   ]
 );
 
@@ -313,9 +313,13 @@ export const failureAlertDeliveries = pgTable(
     }).onDelete("cascade"),
     uniqueIndex("uq_failure_alert_deliveries_dedup").on(table.dedupKey),
     index("idx_failure_alert_deliveries_incident").on(table.incidentId),
+    // Only rows that may still need plan B, so delivered primaries (most of
+    // the table) never sit in it.
     index("idx_failure_alert_deliveries_backup_due")
       .on(table.backupAt)
-      .where(sql`${table.isBackup} = false AND ${table.backupSentAt} IS NULL`),
+      .where(
+        sql`${table.isBackup} = false AND ${table.backupSentAt} IS NULL AND ${table.state} IN ('pending', 'retrying', 'sending', 'failed', 'capped')`
+      ),
     index("idx_failure_alert_deliveries_due")
       .on(table.nextAttemptAt)
       .where(sql`${table.state} IN ('pending', 'retrying', 'sending')`),

@@ -48,8 +48,7 @@ export type ChannelConfig = {
   pausedAt: Date | null;
 };
 
-export type WorkflowOverride =
-  typeof workflowFailureAlertOverrides.$inferSelect;
+type WorkflowOverride = typeof workflowFailureAlertOverrides.$inferSelect;
 
 /** What applies to one workflow once its override is laid over the org rule. */
 export type EffectivePolicy = {

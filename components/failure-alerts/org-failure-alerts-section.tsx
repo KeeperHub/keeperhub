@@ -34,6 +34,7 @@ import {
   type DraftChannel,
   draftsFromViews,
 } from "./channel-list-editor";
+import { failedRuns } from "./format";
 import { memberLabel } from "./member-label";
 import { TestResultLine } from "./test-result-line";
 
@@ -354,8 +355,7 @@ export function OrgFailureAlertsSection({
                   {w.name}
                 </Link>
                 <span className="text-destructive text-xs">
-                  {w.failureCount} failed run{w.failureCount === 1 ? "" : "s"}{" "}
-                  in a row
+                  {failedRuns(w.failureCount)} in a row
                 </span>
               </li>
             ))}
@@ -506,7 +506,9 @@ export function OrgFailureAlertsSection({
                 ({roleLabel(m.role)})
               </span>
               {!m.reachable && (
-                <span className="text-muted-foreground text-xs">
+                // Its own line under the name on phones, indented past the
+                // checkbox so it reads as part of this member's row.
+                <span className="basis-full pl-6 text-muted-foreground text-xs @xl/settings:basis-auto @xl/settings:pl-0">
                   No email yet. They can add one in{" "}
                   <Link className="underline" href="/settings/security">
                     Account security

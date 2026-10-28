@@ -51,16 +51,16 @@ export const RETRY_DELAYS_MS = [
 ] as const;
 
 /**
- * A row left in "sending" this long belongs to an evaluator that died. Each
- * row's clock restarts just before it is sent, and one send is bounded by a
- * 10 s timeout (two calls for PagerDuty), so this is far above a live send.
+ * A row left in "sending" this long belongs to an evaluator that died. A live
+ * row waits at most the delivery budget plus one send (10 s timeout, two calls
+ * for PagerDuty) before it is sent or handed back, far below this.
  */
 export const STALE_SENDING_MS = 5 * 60 * 1000;
 
 /**
- * Rows are claimed a few at a time, so none waits long in "sending" behind a
- * slow batch, and draining stops after a budget so a cycle ends well inside
- * its minute.
+ * Rows are claimed a few at a time. Both drains of a cycle share one budget,
+ * checked before every row, and rows not reached by then go back to the queue,
+ * so a cycle ends inside its minute and no claimed row waits long.
  */
 export const DELIVERY_BATCH = 25;
 export const DELIVERY_BUDGET_MS = 40 * 1000;

@@ -114,16 +114,16 @@ ALTER TABLE "workflow_failure_alert_overrides" ADD CONSTRAINT "workflow_failure_
 ALTER TABLE "workflow_failure_incidents" ADD CONSTRAINT "workflow_failure_incidents_workflow_fk" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workflow_failure_incidents" ADD CONSTRAINT "workflow_failure_incidents_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_failure_alert_channels_destination" ON "failure_alert_channels" USING btree ("organization_id",coalesce("workflow_id", ''),"integration_id","destination");--> statement-breakpoint
-CREATE INDEX "idx_failure_alert_channels_org" ON "failure_alert_channels" USING btree ("organization_id");--> statement-breakpoint
 CREATE INDEX "idx_failure_alert_channels_workflow" ON "failure_alert_channels" USING btree ("workflow_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_failure_alert_deliveries_dedup" ON "failure_alert_deliveries" USING btree ("dedup_key");--> statement-breakpoint
 CREATE INDEX "idx_failure_alert_deliveries_incident" ON "failure_alert_deliveries" USING btree ("incident_id");--> statement-breakpoint
-CREATE INDEX "idx_failure_alert_deliveries_backup_due" ON "failure_alert_deliveries" USING btree ("backup_at") WHERE "failure_alert_deliveries"."is_backup" = false AND "failure_alert_deliveries"."backup_sent_at" IS NULL;--> statement-breakpoint
+CREATE INDEX "idx_failure_alert_deliveries_backup_due" ON "failure_alert_deliveries" USING btree ("backup_at") WHERE "failure_alert_deliveries"."is_backup" = false AND "failure_alert_deliveries"."backup_sent_at" IS NULL AND "failure_alert_deliveries"."state" IN ('pending', 'retrying', 'sending', 'failed', 'capped');--> statement-breakpoint
 CREATE INDEX "idx_failure_alert_deliveries_due" ON "failure_alert_deliveries" USING btree ("next_attempt_at") WHERE "failure_alert_deliveries"."state" IN ('pending', 'retrying', 'sending');--> statement-breakpoint
 CREATE INDEX "idx_failure_alert_deliveries_org_created" ON "failure_alert_deliveries" USING btree ("organization_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "idx_failure_alert_queue_due" ON "workflow_failure_alert_queue" USING btree ("due_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_workflow_failure_incidents_open" ON "workflow_failure_incidents" USING btree ("workflow_id") WHERE "workflow_failure_incidents"."resolved_at" IS NULL;--> statement-breakpoint
 CREATE INDEX "idx_workflow_failure_incidents_org" ON "workflow_failure_incidents" USING btree ("organization_id");--> statement-breakpoint
+CREATE INDEX "idx_workflow_failure_incidents_workflow" ON "workflow_failure_incidents" USING btree ("workflow_id");--> statement-breakpoint
 -- Mark a workflow for the failure-alert evaluator whenever one of its runs
 -- reaches a final success or error. Every code path that ends a run writes
 -- this table, so one trigger covers all of them. The evaluator decides

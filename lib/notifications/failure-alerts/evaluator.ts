@@ -31,6 +31,7 @@ import {
   loadOrgMembers,
   type OrgMember,
 } from "@/lib/notifications/org-recipients";
+import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
 import {
   ALERT_REQUEUE_AFTER_MS,
   BACKUP_AFTER_MS,
@@ -50,10 +51,21 @@ import {
   loadOrgPolicy,
   resolveRecipientEmails,
 } from "./policy";
-import { type DeliveryInsert, insertDeliveries, type Tx } from "./queue-rows";
+import {
+  channelRecipient,
+  type DeliveryInsert,
+  groupScope,
+  incidentScope,
+  insertDeliveries,
+  type Tx,
+} from "./queue-rows";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
 import { decide, type StreakRun, summarizeStreak } from "./streak";
-import { runsOnItsOwn, workflowTriggerType } from "./workflow-trigger";
+import {
+  AUTOMATIC_TRIGGERS,
+  runsOnItsOwn,
+  workflowTriggerType,
+} from "./workflow-trigger";
 
 const MIN_STREAK_WINDOW = 10;
 const STREAK_WINDOW_MULTIPLIER = 4;
@@ -66,8 +78,7 @@ type WorkflowRow = {
   enabled: boolean;
   deletedAt: Date | null;
   deactivatedAt: Date | null;
-  // biome-ignore lint/suspicious/noExplicitAny: workflow nodes are JSONB validated at application level
-  nodes: any[];
+  nodes: TriggerNodeLike[];
 };
 
 type IncidentRow = typeof workflowFailureIncidents.$inferSelect;
@@ -250,88 +261,97 @@ async function closeIncident(params: {
   stats: EvaluationStats;
 }): Promise<void> {
   const { incident, reason, now, stats } = params;
-  const closed = await db
-    .update(workflowFailureIncidents)
-    .set({
-      resolvedAt: now,
-      resolvedReason: reason,
-      resolvingExecutionId: params.resolvingExecutionId,
-    })
-    .where(
-      and(
-        eq(workflowFailureIncidents.id, incident.id),
-        isNull(workflowFailureIncidents.resolvedAt)
+  // One transaction: an incident closed without its PagerDuty resolve queued
+  // would never be revisited, and the page would stay open.
+  await db.transaction(async (tx) => {
+    const closed = await tx
+      .update(workflowFailureIncidents)
+      .set({
+        resolvedAt: now,
+        resolvedReason: reason,
+        resolvingExecutionId: params.resolvingExecutionId,
+      })
+      .where(
+        and(
+          eq(workflowFailureIncidents.id, incident.id),
+          isNull(workflowFailureIncidents.resolvedAt)
+        )
       )
-    )
-    .returning({ id: workflowFailureIncidents.id });
-  if (closed.length === 0) {
-    return;
-  }
-  stats.incidentsResolved += 1;
-
-  const prior = await db
-    .select({
-      channel: failureAlertDeliveries.channel,
-      channelId: failureAlertDeliveries.channelId,
-      recipient: failureAlertDeliveries.recipient,
-      state: failureAlertDeliveries.state,
-      isBackup: failureAlertDeliveries.isBackup,
-    })
-    .from(failureAlertDeliveries)
-    .where(
-      and(
-        eq(failureAlertDeliveries.organizationId, incident.organizationId),
-        sql`(${failureAlertDeliveries.incidentId} = ${incident.id} OR ${failureAlertDeliveries.context} @> ${JSON.stringify({ incidentIds: [incident.id] })}::jsonb)`,
-        inArray(failureAlertDeliveries.kind, ["alert", "reminder"])
-      )
-    );
-
-  await db
-    .update(failureAlertDeliveries)
-    .set({
-      state: "skipped",
-      lastError: SKIPPED_BECAUSE[reason],
-      updatedAt: now,
-    })
-    .where(
-      and(
-        eq(failureAlertDeliveries.incidentId, incident.id),
-        inArray(failureAlertDeliveries.state, ["pending", "retrying"])
-      )
-    );
-
-  const rows: DeliveryInsert[] = [];
-  const seen = new Set<string>();
-  const wantRecovery = reason === "success" && params.notifyRecovery;
-  for (const row of prior) {
-    const pagerDuty = row.channel === "pagerduty";
-    if (!(pagerDuty || wantRecovery)) {
-      continue;
+      .returning({ id: workflowFailureIncidents.id });
+    if (closed.length === 0) {
+      return;
     }
-    // A page still in flight may land after this resolve; send the resolve a
-    // little later so it arrives second.
-    const inFlight = pagerDuty && row.state === "sending";
-    if (!(row.state === "delivered" || inFlight)) {
-      continue;
+    stats.incidentsResolved += 1;
+
+    const prior = await tx
+      .select({
+        channel: failureAlertDeliveries.channel,
+        channelId: failureAlertDeliveries.channelId,
+        recipient: failureAlertDeliveries.recipient,
+        state: failureAlertDeliveries.state,
+        attempts: failureAlertDeliveries.attempts,
+      })
+      .from(failureAlertDeliveries)
+      .where(
+        and(
+          eq(failureAlertDeliveries.organizationId, incident.organizationId),
+          sql`(${failureAlertDeliveries.incidentId} = ${incident.id} OR ${failureAlertDeliveries.context} @> ${JSON.stringify({ incidentIds: [incident.id] })}::jsonb)`,
+          inArray(failureAlertDeliveries.kind, ["alert", "reminder"])
+        )
+      );
+
+    await tx
+      .update(failureAlertDeliveries)
+      .set({
+        state: "skipped",
+        lastError: SKIPPED_BECAUSE[reason],
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(failureAlertDeliveries.incidentId, incident.id),
+          inArray(failureAlertDeliveries.state, ["pending", "retrying"])
+        )
+      );
+
+    const rows: DeliveryInsert[] = [];
+    const seen = new Set<string>();
+    const wantRecovery = reason === "success" && params.notifyRecovery;
+    for (const row of prior) {
+      const pagerDuty = row.channel === "pagerduty";
+      // A page still in flight may land after this resolve; send the resolve
+      // a little later so it arrives second.
+      const inFlight = pagerDuty && row.state === "sending";
+      // A page that timed out may still have reached PagerDuty. Resolving a
+      // key PagerDuty never saw is harmless, so every attempted page gets one.
+      const maybePaged = pagerDuty && row.attempts > 0;
+      const reached = row.state === "delivered";
+      if (
+        !(pagerDuty
+          ? reached || inFlight || maybePaged
+          : wantRecovery && reached)
+      ) {
+        continue;
+      }
+      const key = `${row.channel}:${row.channelId ?? ""}:${row.recipient}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      rows.push({
+        scope: incidentScope(incident.id),
+        organizationId: incident.organizationId,
+        incidentId: incident.id,
+        kind: "recovery",
+        sequence: 0,
+        channel: row.channel,
+        channelId: row.channelId,
+        recipient: row.recipient,
+        nextAttemptAt: inFlight ? new Date(now.getTime() + 2 * 60 * 1000) : now,
+      });
     }
-    const key = `${row.channel}:${row.channelId ?? ""}:${row.recipient}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    rows.push({
-      scope: `i:${incident.id}`,
-      organizationId: incident.organizationId,
-      incidentId: incident.id,
-      kind: "recovery",
-      sequence: 0,
-      channel: row.channel,
-      channelId: row.channelId,
-      recipient: row.recipient,
-      nextAttemptAt: inFlight ? new Date(now.getTime() + 2 * 60 * 1000) : now,
-    });
-  }
-  stats.messagesQueued += await insertDeliveries(rows);
+    stats.messagesQueued += await insertDeliveries(rows, tx);
+  });
 }
 
 /**
@@ -507,7 +527,7 @@ export function buildMessageRows(params: {
       ...base,
       channel: channel.kind,
       channelId: channel.id,
-      recipient: channel.destination || channel.kind,
+      recipient: channelRecipient(channel),
       backupAt: backupAt(channel.kind),
     });
   }
@@ -536,7 +556,7 @@ function rowsForPolicy(
   now: Date
 ): DeliveryInsert[] {
   return buildMessageRows({
-    scope: `i:${incidentId}`,
+    scope: incidentScope(incidentId),
     organizationId,
     incidentId,
     kind,
@@ -597,7 +617,7 @@ async function queueAlerts(
         const orgChannels = await loadChannels(organizationId, null);
         rows.push(
           ...buildMessageRows({
-            scope: `g:${incidents[0].id}`,
+            scope: groupScope(incidents[0].id),
             organizationId,
             incidentId: null,
             kind: "alert",
@@ -616,7 +636,7 @@ async function queueAlerts(
           );
           rows.push(
             ...buildMessageRows({
-              scope: `i:${incident.id}`,
+              scope: incidentScope(incident.id),
               organizationId,
               incidentId: incident.id,
               kind: "alert",
@@ -685,9 +705,15 @@ export async function requeueLostAlerts(
         )
       )
     )
+    // A stable order, so two overlapping cycles group the same incidents the
+    // same way and their grouped alerts share one dedup key.
+    .orderBy(workflowFailureIncidents.id)
     .limit(100);
-  if (lost.length > 0) {
-    await queueAlerts(lost, now, stats);
+  const enabled = lost.filter((incident) =>
+    isFailureAlertsEnabledForOrg(incident.organizationId)
+  );
+  if (enabled.length > 0) {
+    await queueAlerts(enabled, now, stats);
   }
 }
 
@@ -712,7 +738,28 @@ export async function closeInactiveIncidents(
     })
     .from(workflowFailureIncidents)
     .innerJoin(workflows, eq(workflows.id, workflowFailureIncidents.workflowId))
-    .where(isNull(workflowFailureIncidents.resolvedAt))
+    .where(
+      and(
+        isNull(workflowFailureIncidents.resolvedAt),
+        // Only the inactive ones, so a long list of open incidents during a
+        // wide outage cannot crowd them out of the batch.
+        sql`(${workflows.enabled} = false
+          OR ${workflows.deletedAt} IS NOT NULL
+          OR ${workflows.deactivatedAt} IS NOT NULL
+          OR NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements(
+              CASE WHEN jsonb_typeof(${workflows.nodes}) = 'array'
+                THEN ${workflows.nodes} ELSE '[]'::jsonb END
+            ) AS node
+            WHERE node->'data'->>'type' = 'trigger'
+              AND node->'data'->'config'->>'triggerType' IN (${sql.join(
+                AUTOMATIC_TRIGGERS.map((trigger) => sql`${trigger}`),
+                sql`, `
+              )})
+          ))`
+      )
+    )
+    .orderBy(workflowFailureIncidents.openedAt)
     .limit(500);
 
   for (const row of open) {
@@ -772,18 +819,24 @@ export async function queueReminders(
         lt(workflowFailureIncidents.reminderCount, MAX_REMINDERS)
       )
     )
+    .orderBy(workflowFailureIncidents.lastNotifiedAt)
     .limit(100);
 
   for (const incident of due) {
     try {
-      if (!isFailureAlertsEnabledForOrg(incident.organizationId)) {
-        continue;
-      }
-      const policy = await loadEffectivePolicy(
-        incident.organizationId,
-        incident.workflowId
-      );
-      if (!policy.remindDaily || isMuted(policy, now)) {
+      const policy = isFailureAlertsEnabledForOrg(incident.organizationId)
+        ? await loadEffectivePolicy(
+            incident.organizationId,
+            incident.workflowId
+          )
+        : null;
+      if (!policy?.remindDaily || isMuted(policy, now)) {
+        // Not owed a reminder today. Move its clock on without counting one,
+        // so it leaves the due list instead of crowding out other orgs'.
+        await db
+          .update(workflowFailureIncidents)
+          .set({ lastNotifiedAt: now })
+          .where(eq(workflowFailureIncidents.id, incident.id));
         continue;
       }
       const sequence = incident.reminderCount + 1;
