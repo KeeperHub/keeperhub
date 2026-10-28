@@ -40,7 +40,7 @@ const SENDGRID_API_URL =
  * Point it at your own asset, or set it empty to send no logo at all - the
  * templates omit the image entirely rather than rendering a broken one.
  */
-const EMAIL_LOGO_URL =
+export const EMAIL_LOGO_URL =
   process.env.EMAIL_LOGO_URL ??
   "https://raw.githubusercontent.com/KeeperHub/keeperhub/staging/public/keeperhub_logo_email.png";
 // end keeperhub code //
@@ -81,7 +81,7 @@ function normalizeEmail(email: string): string {
 }
 
 /** Escape user-controlled strings before interpolating into email HTML. */
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -91,9 +91,56 @@ function escapeHtml(value: string): string {
 }
 
 /**
+ * What happened to one send, in enough detail to decide whether to try again.
+ *
+ * `sendEmail` collapses this to a boolean, which is all a sign-up code needs.
+ * Failure alerts retry and fall back, and a boolean cannot tell a rate limit
+ * (wait and retry) from a rejected API key (page our own on-call) from a
+ * malformed address (never retry).
+ */
+export type EmailSendResult = {
+  ok: boolean;
+  /** HTTP status from the provider; absent when the request never completed. */
+  status?: number;
+  /** True for timeouts, network faults, 408, 425, 429 and 5xx. */
+  retryable: boolean;
+  /** Milliseconds the provider asked us to wait before retrying, when it said. */
+  retryAfterMs?: number;
+  /** True when the key or sender is ours to fix (401, 403, no key configured). */
+  platformFault: boolean;
+  error?: string;
+};
+
+const RETRYABLE_EMAIL_STATUSES: ReadonlySet<number> = new Set([
+  408, 425, 429, 500, 502, 503, 504,
+]);
+
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) {
+    return;
+  }
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
+}
+
+/**
  * Send an email using SendGrid
  */
 export async function sendEmail(options: SendEmailOptions): Promise<boolean> {
+  const result = await sendEmailDetailed(options);
+  return result.ok;
+}
+
+/**
+ * Send an email using SendGrid and report the provider's answer.
+ */
+export async function sendEmailDetailed(
+  options: SendEmailOptions
+): Promise<EmailSendResult> {
   const apiKey = process.env.SENDGRID_API_KEY;
   const fromAddress = process.env.FROM_ADDRESS || "noreply@keeperhub.com";
   const toAddress = normalizeEmail(options.to);
@@ -112,7 +159,12 @@ export async function sendEmail(options: SendEmailOptions): Promise<boolean> {
         }
       );
     }
-    return false;
+    return {
+      ok: false,
+      retryable: false,
+      platformFault: true,
+      error: "Email is not configured on this deployment.",
+    };
   }
 
   const emailData = {
@@ -163,10 +215,22 @@ export async function sendEmail(options: SendEmailOptions): Promise<boolean> {
           service: "sendgrid",
         }
       );
-      return false;
+      return {
+        ok: false,
+        status: response.status,
+        retryable: RETRYABLE_EMAIL_STATUSES.has(response.status),
+        retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")),
+        platformFault: response.status === 401 || response.status === 403,
+        error: `The email service returned HTTP ${response.status}.`,
+      };
     }
 
-    return true;
+    return {
+      ok: true,
+      status: response.status,
+      retryable: false,
+      platformFault: false,
+    };
   } catch (error) {
     logUserError(
       ErrorCategory.EXTERNAL_SERVICE,
@@ -176,7 +240,12 @@ export async function sendEmail(options: SendEmailOptions): Promise<boolean> {
         service: "sendgrid",
       }
     );
-    return false;
+    return {
+      ok: false,
+      retryable: true,
+      platformFault: false,
+      error: "The email service did not answer in time.",
+    };
   }
 }
 

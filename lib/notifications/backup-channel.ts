@@ -26,8 +26,9 @@ import {
   SLACK_POST_MESSAGE_URL,
   telegramSendMessageUrl,
 } from "@/lib/notifications/messaging-endpoints";
-import { safeFetch } from "@/lib/safe-fetch";
+import { SsrfBlockedError, safeFetch } from "@/lib/safe-fetch";
 import { getErrorMessage } from "@/lib/utils";
+import { isRetryableHttpStatus } from "@/lib/workflow/retry-policy";
 
 const REQUEST_TIMEOUT_MS = 10_000;
 
@@ -39,6 +40,14 @@ export type BackupOutcome = {
   delivered: boolean;
   channel?: BackupChannel;
   error?: string;
+  /** HTTP status of the provider's answer, when there was one. */
+  status?: number;
+  /**
+   * Whether another attempt could help: a timeout, a rate limit or a 5xx.
+   * False for a deleted webhook, a revoked token or a bot removed from the
+   * chat, which keep failing until someone fixes the connection.
+   */
+  retryable?: boolean;
 };
 
 type Credentials = Record<string, string | undefined>;
@@ -85,6 +94,8 @@ async function postDiscord(
         delivered: false,
         channel: "discord",
         error: `Discord returned HTTP ${response.status}.`,
+        status: response.status,
+        retryable: isRetryableHttpStatus(response.status),
       };
 }
 
@@ -123,6 +134,12 @@ async function postSlack(
         delivered: false,
         channel: "slack",
         error: body.error ?? `Slack returned HTTP ${response.status}.`,
+        status: response.status,
+        // Slack answers most failures with HTTP 200 and an error code, so the
+        // status alone cannot tell a rate limit from a revoked token.
+        retryable: response.ok
+          ? body.error === "ratelimited"
+          : isRetryableHttpStatus(response.status),
       };
 }
 
@@ -157,6 +174,8 @@ async function postTelegram(
         delivered: false,
         channel: "telegram",
         error: `Telegram returned HTTP ${response.status}.`,
+        status: response.status,
+        retryable: isRetryableHttpStatus(response.status),
       };
 }
 
@@ -216,6 +235,9 @@ export async function sendBackupNotification(params: {
       attempted: true,
       delivered: false,
       error: `Backup notification failed: ${getErrorMessage(error)}`,
+      // A network fault or timeout may clear; a host the SSRF guard refused
+      // will be refused identically every time.
+      retryable: !(error instanceof SsrfBlockedError),
     };
   }
 }
