@@ -36,14 +36,15 @@ import {
   workflowEnableToggleAtom,
 } from "@/lib/workflow/store";
 import { fetchView } from "./api";
+import { ChannelListEditor } from "./channel-list-editor";
+import { failedRuns, formatWhen, toLocalInput } from "./format";
+import { memberLabel } from "./member-label";
 import {
-  ChannelListEditor,
   channelsPayload,
   type DraftChannel,
   draftsFromViews,
-} from "./channel-list-editor";
-import { failedRuns, formatWhen } from "./format";
-import { memberLabel } from "./member-label";
+  nextKey,
+} from "./method-drafts";
 import { NotificationHistory } from "./notification-history";
 
 type Loaded = WorkflowAlertView & { canManage: boolean };
@@ -95,13 +96,19 @@ function summary(view: Loaded): string {
   return `${who}${also}, after ${failedRuns(view.effective.threshold)} in a row${describeTimeLimit(view.effective.timeLimitMinutes)}.${pause}`;
 }
 
-function isMutedView(view: Loaded): boolean {
-  return Boolean(view.override.mutedUntil || view.override.muteUntilSuccess);
+function incidentTitle(
+  incident: NonNullable<Loaded["status"]["incident"]>,
+  pausedByAlert: boolean
+): string {
+  if (incident.openedBy === "missed") {
+    return `Not running: its scheduled run was due ${timeAgo(incident.since)}`;
+  }
+  const runs = `${failedRuns(incident.failureCount)} in a row`;
+  return pausedByAlert ? `Paused after ${runs}` : `Failing: ${runs}`;
 }
 
-function toLocalInput(date: Date): string {
-  const pad = (n: number): string => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+function isMutedView(view: Loaded): boolean {
+  return Boolean(view.override.mutedUntil || view.override.muteUntilSuccess);
 }
 
 /**
@@ -272,9 +279,13 @@ export function WorkflowFailureAlerts({
   const canManage = view.canManage;
   const muted = isMutedView(view);
   const custom = view.effective.source === "custom";
-  // Off because its own alert paused it, and nobody has turned it back on.
+  // Off because its alert paused it, and not turned back on since.
+  const pausedAt = view.status.incident?.workflowPausedAt ?? null;
+  const resumedAt = view.status.incident?.workflowResumedAt ?? null;
   const pausedByAlert =
-    Boolean(view.status.incident?.workflowPausedAt) && !enabled;
+    pausedAt !== null &&
+    (resumedAt === null || resumedAt < pausedAt) &&
+    !enabled;
   const thresholdInvalid =
     threshold.trim() !== "" &&
     !(
@@ -424,11 +435,13 @@ export function WorkflowFailureAlerts({
 
       {applies && view.status.incident && (
         // Muted means someone already knows, so the box stops shouting.
-        <Notice className="p-3 text-sm" tone={muted ? "warning" : "danger"}>
+        <Notice
+          className="p-3 text-sm"
+          tone={muted || pausedByAlert ? "warning" : "danger"}
+        >
           <div className="space-y-2">
             <p className="font-medium">
-              {pausedByAlert ? "Paused after " : "Failing: "}
-              {failedRuns(view.status.incident.failureCount)} in a row
+              {incidentTitle(view.status.incident, pausedByAlert)}
             </p>
             {pausedByAlert && (
               <p className="text-xs">
@@ -465,6 +478,16 @@ export function WorkflowFailureAlerts({
                   Pause workflow
                 </Button>
               )}
+              {enableToggle && pausedByAlert && (
+                <Button
+                  onClick={() => enableToggle.toggle(true)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Turn back on
+                </Button>
+              )}
             </div>
           </div>
         </Notice>
@@ -499,6 +522,8 @@ export function WorkflowFailureAlerts({
                   : `Muted until ${formatWhen(view.override.mutedUntil ?? "")}`}
                 {view.override.mutedBy ? ` by ${view.override.mutedBy}` : ""}.
                 Failures still show in Runs.
+                {view.override.pauseWorkflow &&
+                  " It is still paused at the limit, and people are told."}
               </span>
             </p>
           ) : (
@@ -509,9 +534,9 @@ export function WorkflowFailureAlerts({
               Nobody can be reached right now. Add an email or a channel in{" "}
               <Link
                 className="underline underline-offset-4"
-                href={`/settings/${view.organizationId}/notifications`}
+                href={`/settings/${view.organizationId}/alerts`}
               >
-                Notification settings
+                Alerts settings
               </Link>
               .
             </Notice>
@@ -710,15 +735,15 @@ export function WorkflowFailureAlerts({
                   className="pl-6 text-muted-foreground text-xs"
                   id="wf-pause-workflow-help"
                 >
-                  Stops its runs after{" "}
+                  Turns this workflow off when its alert goes out (after{" "}
                   {failedRuns(
                     threshold.trim() && !thresholdInvalid
                       ? Number(threshold)
                       : view.org.threshold
                   )}{" "}
-                  in a row, and the alert says so. Turn it back on with the
-                  Enable switch once fixed. Only per workflow: the org setting
-                  never pauses workflows.
+                  in a row, or the time limit). Any failure counts, including
+                  RPC or network errors. Turn it back on with the Enable switch
+                  once fixed. Applies to this workflow only.
                 </p>
               </div>
               <div className="space-y-2">
@@ -787,10 +812,16 @@ export function WorkflowFailureAlerts({
                     onCheckedChange={(checked) =>
                       setCustomChannels(
                         checked === true
-                          ? draftsFromViews(view.org.channels).map((c) => ({
-                              ...c,
-                              id: undefined,
-                              key: `copy-${c.key}`,
+                          ? view.org.channels.map((c) => ({
+                              key: nextKey(),
+                              kind: c.kind,
+                              integrationId: c.integrationId,
+                              destination: c.destination,
+                              role: c.role,
+                              // A paused org method is copied paused.
+                              pausedReason: c.pausedAt
+                                ? (c.pausedReason ?? "It stopped working.")
+                                : undefined,
                             }))
                           : null
                       )
@@ -802,12 +833,12 @@ export function WorkflowFailureAlerts({
                 </div>
                 {customChannels !== null && (
                   <ChannelListEditor
-                    canManage
                     channels={customChannels}
                     connections={view.connections}
                     onChange={setCustomChannels}
                     onConnectionsChanged={refreshConnections}
                     organizationId={view.organizationId}
+                    savedChannels={view.override.channels}
                   />
                 )}
               </div>
@@ -840,9 +871,9 @@ export function WorkflowFailureAlerts({
       <div className="ml-1 flex flex-wrap gap-x-4 text-muted-foreground text-xs">
         <Link
           className={FOOTER_LINK}
-          href={`/settings/${view.organizationId}/notifications`}
+          href={`/settings/${view.organizationId}/alerts`}
         >
-          Notification settings
+          Alerts settings
         </Link>
         <button
           aria-expanded={showHistory}

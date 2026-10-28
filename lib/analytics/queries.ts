@@ -17,12 +17,8 @@ import { db } from "@/lib/db";
 import { logInputField, logOutputField } from "@/lib/db/execution-log-fields";
 import type { TransactionHashEntry } from "@/lib/db/schema";
 import {
-  failureAlertChannels,
-  failureAlertDeliveries,
-  integrations,
   workflowExecutionLogs,
   workflowExecutions,
-  workflowFailureIncidents,
   workflows,
 } from "@/lib/db/schema";
 import {
@@ -46,14 +42,21 @@ import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 import { analyticsCacheKey, cachedAnalytics } from "./cache";
 import { likePattern } from "./like-pattern";
+import { notificationsExcludedBy } from "./notification-runs";
 import {
-  groupedIncidentIds,
-  type NotificationRow,
-  notificationStatesFor,
-  notificationStatus,
-  notificationsExcludedBy,
-  toNotificationRun,
-} from "./notification-runs";
+  fetchNotificationRuns,
+  getNotificationRunsTotal,
+  newestNotificationChange,
+} from "./notification-runs-query";
+import {
+  cursorAfter,
+  type KeyedRun,
+  keysetTime,
+  mergeKeyedRuns,
+  parseRunCursor,
+  type RunCursor,
+  runCursorCondition,
+} from "./run-cursor";
 import { MAX_RUN_LIMIT } from "./runs-query";
 import type { BucketSqlInterval } from "./time-range";
 import {
@@ -91,9 +94,6 @@ export function normalizeStatus(
   source: RunSource,
   errorType?: string | null
 ): NormalizedStatus {
-  if (source === "notification") {
-    return notificationStatus(status);
-  }
   if (source === "direct") {
     if (status === "completed") {
       return "success";
@@ -531,91 +531,6 @@ function directFilterConditions(
   const gas = gasCondition(filters.gas ?? [], directGasCondition);
   if (gas) {
     conditions.push(gas);
-  }
-  return conditions;
-}
-
-/**
- * A failure notification's incident, whichever way the delivery names it: its
- * own incident, or one of the incidents a grouped message lists. `alias` is the
- * incidents table as aliased in the calling subquery.
- */
-function deliveryCoversIncident(alias: string): SQL {
-  const incidentId = sql.raw(`${alias}.id`);
-  return sql`(${incidentId} = ${failureAlertDeliveries.incidentId}
-    OR ${failureAlertDeliveries.context} @> jsonb_build_object('incidentIds', jsonb_build_array(${incidentId})))`;
-}
-
-function notificationSearchCondition(
-  term: string,
-  organizationId: string
-): SQL {
-  const pattern = likePattern(term);
-  return sql`(
-    ${failureAlertDeliveries.id} ILIKE ${pattern} ESCAPE '\\'
-    OR ${failureAlertDeliveries.recipient} ILIKE ${pattern} ESCAPE '\\'
-    OR EXISTS (
-      SELECT 1
-        FROM ${workflowFailureIncidents} AS search_inc
-        JOIN ${workflows} AS search_wf ON search_wf.id = search_inc.workflow_id
-       WHERE search_inc.organization_id = ${organizationId}
-         AND ${deliveryCoversIncident("search_inc")}
-         AND search_wf.name ILIKE ${pattern} ESCAPE '\\'
-    )
-  )`;
-}
-
-/**
- * Notifications about a workflow in the project. A grouped message is in it
- * when any workflow it lists is; a notice about no workflow is in none.
- */
-function notificationProjectCondition(
-  projectId: string,
-  organizationId: string
-): SQL {
-  return sql`EXISTS (
-    SELECT 1
-      FROM ${workflowFailureIncidents} AS project_inc
-      JOIN ${workflows} AS project_wf ON project_wf.id = project_inc.workflow_id
-     WHERE project_inc.organization_id = ${organizationId}
-       AND project_wf.project_id = ${projectId}
-       AND ${deliveryCoversIncident("project_inc")}
-  )`;
-}
-
-/**
- * Every notification-side predicate, org and window included. Callers check
- * resolveSources first: network, gas and duration filters leave no
- * notification in play, so they are not expressed here.
- */
-function notificationConditions(
-  organizationId: string,
-  rangeStart: Date,
-  rangeEnd: Date,
-  filters: RunQueryFilters,
-  projectId: string | undefined,
-  skipStatuses = false
-): SQL[] {
-  const conditions: SQL[] = [
-    eq(failureAlertDeliveries.organizationId, organizationId),
-    gte(failureAlertDeliveries.createdAt, rangeStart),
-    lt(failureAlertDeliveries.createdAt, rangeEnd),
-  ];
-  const statuses = filters.statuses ?? [];
-  if (!skipStatuses && statuses.length > 0) {
-    const states = notificationStatesFor(statuses);
-    conditions.push(
-      states.length > 0
-        ? inArray(failureAlertDeliveries.state, states)
-        : sql`false`
-    );
-  }
-  const search = filters.search?.trim();
-  if (search) {
-    conditions.push(notificationSearchCondition(search, organizationId));
-  }
-  if (projectId) {
-    conditions.push(notificationProjectCondition(projectId, organizationId));
   }
   return conditions;
 }
@@ -1532,7 +1447,10 @@ export async function getUnifiedRuns(
 ): Promise<{
   runs: UnifiedRun[];
   nextCursor: string | null;
+  /** Runs matching the filters. Notifications are listed but never counted. */
   total: number;
+  /** Every row the listing pages through, notifications included. */
+  listTotal: number;
   page: number;
   pageSize: number;
   /**
@@ -1557,12 +1475,13 @@ export async function getUnifiedRuns(
   const rangeEnd = getTimeRangeEnd(customEnd);
   const pageLimit = Math.min(limit, MAX_RUN_LIMIT);
   const wanted = resolveSources(filters, projectId);
-  const offset = cursor ? 0 : (page - 1) * pageLimit;
+  const keyset = parseRunCursor(cursor);
+  const offset = keyset ? 0 : (page - 1) * pageLimit;
 
   // Fetch enough rows from each source to fill the requested page after merging.
   // We need offset + pageLimit + 1 rows from each source to correctly paginate
   // the merged, sorted result set.
-  const fetchLimit = cursor ? pageLimit + 1 : offset + pageLimit + 1;
+  const fetchLimit = keyset ? pageLimit + 1 : offset + pageLimit + 1;
 
   // Fire run fetches and count queries in parallel. The retention cutoff joins
   // them rather than running on its own: it is a single indexed row read, and
@@ -1572,6 +1491,7 @@ export async function getUnifiedRuns(
     directRuns,
     notificationRuns,
     total,
+    notificationTotal,
     stepLogRetentionCutoff,
   ] = await Promise.all([
     wanted.workflow
@@ -1580,32 +1500,32 @@ export async function getUnifiedRuns(
           rangeStart,
           rangeEnd,
           filters,
-          cursor,
+          keyset,
           fetchLimit,
           projectId
         )
-      : ([] as UnifiedRun[]),
+      : ([] as KeyedRun[]),
     wanted.direct
       ? fetchDirectRuns(
           organizationId,
           rangeStart,
           rangeEnd,
           filters,
-          cursor,
+          keyset,
           fetchLimit
         )
-      : ([] as UnifiedRun[]),
+      : ([] as KeyedRun[]),
     wanted.notification
       ? fetchNotificationRuns(
           organizationId,
           rangeStart,
           rangeEnd,
           filters,
-          cursor,
+          keyset,
           fetchLimit,
           projectId
         )
-      : ([] as UnifiedRun[]),
+      : ([] as KeyedRun[]),
     getUnifiedRunsTotal(
       organizationId,
       rangeStart,
@@ -1613,24 +1533,35 @@ export async function getUnifiedRuns(
       filters,
       projectId
     ),
+    wanted.notification
+      ? getNotificationRunsTotal(
+          organizationId,
+          rangeStart,
+          rangeEnd,
+          filters,
+          projectId
+        )
+      : 0,
     getOrgLogRetentionCutoff(organizationId, getRetentionConfig()),
   ]);
 
-  // Merge the sources, sort by time, then apply offset for the requested page
-  const allRuns = [...workflowRuns, ...directRuns, ...notificationRuns].sort(
-    (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
-  );
+  // Merge the sources in the keyset order, then apply offset for the
+  // requested page. The cursor names the last row exactly, time to the
+  // microsecond plus source and id, so rows sharing its time are not skipped.
+  const allRuns = mergeKeyedRuns([workflowRuns, directRuns, notificationRuns]);
 
-  const sliceStart = cursor ? 0 : offset;
+  const sliceStart = keyset ? 0 : offset;
   const sliced = allRuns.slice(sliceStart, sliceStart + pageLimit + 1);
   const hasMore = sliced.length > pageLimit;
   const pagedRuns = sliced.slice(0, pageLimit);
-  const nextCursor = hasMore ? (pagedRuns.at(-1)?.startedAt ?? null) : null;
+  const last = pagedRuns.at(-1);
+  const nextCursor = hasMore && last ? cursorAfter(last) : null;
 
   return {
-    runs: pagedRuns,
+    runs: pagedRuns.map((row) => row.run),
     nextCursor,
     total,
+    listTotal: total + notificationTotal,
     page,
     pageSize: pageLimit,
     stepLogRetentionCutoff: stepLogRetentionCutoff?.toISOString() ?? null,
@@ -1642,10 +1573,10 @@ async function fetchWorkflowRuns(
   rangeStart: Date,
   rangeEnd: Date,
   filters: RunQueryFilters,
-  cursor: string | undefined,
+  cursor: RunCursor | undefined,
   limit: number,
   projectId?: string
-): Promise<UnifiedRun[]> {
+): Promise<KeyedRun[]> {
   // Scope to org's workflows via subquery so leftJoin still enforces org isolation
   const orgWorkflowIds = db
     .select({ id: workflows.id })
@@ -1676,7 +1607,14 @@ async function fetchWorkflowRuns(
   );
 
   if (cursor) {
-    conditions.push(lt(workflowExecutions.startedAt, new Date(cursor)));
+    conditions.push(
+      runCursorCondition(
+        cursor,
+        "workflow",
+        workflowExecutions.startedAt,
+        workflowExecutions.id
+      )
+    );
   }
 
   // Restrict the gas/network aggregation to the executions this page will
@@ -1817,6 +1755,7 @@ async function fetchWorkflowRuns(
       errorCode: workflowExecutions.errorCode,
       errorType: workflowExecutions.errorType,
       errorCategory: workflowExecutions.errorCategory,
+      at: keysetTime(workflowExecutions.startedAt),
     })
     .from(workflowExecutions)
     .leftJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
@@ -1832,38 +1771,41 @@ async function fetchWorkflowRuns(
     .limit(limit);
 
   return result.map((row) => ({
-    id: row.id,
-    source: "workflow" as const,
-    status: normalizeStatus(row.status, "workflow", row.errorType),
-    startedAt: row.startedAt.toISOString(),
-    completedAt: row.completedAt?.toISOString() ?? null,
-    durationMs: row.duration ? Number(row.duration) : null,
-    workflowId: row.workflowId,
-    workflowName: row.workflowName ?? "(Deleted)",
-    directType: null,
-    network: row.network ?? row.ledgerNetworks?.[0] ?? null,
-    networks: unionNetworks(
-      row.networks,
-      row.ledgerNetworks,
-      row.transactionHashes
-    ),
-    gasNetworks: unionNetworks(
-      row.gasNetworks,
-      row.ledgerNetworks,
-      row.transactionHashes
-    ),
-    gasCostWei:
-      row.gasCostWei && row.gasCostWei !== "0" ? row.gasCostWei : null,
-    transactionHashes: row.transactionHashes,
-    gasUsedWei: firstNonZero(row.gasUsedWei, row.runGasUsedWei),
-    totalSteps: row.totalSteps ? Number(row.totalSteps) : null,
-    completedSteps: row.completedSteps ? Number(row.completedSteps) : null,
-    // Redact on read so rows persisted before URL redaction existed do not
-    // re-display provider RPC URLs.
-    error: row.error === null ? null : redactSecretUrls(row.error),
-    errorCode: row.errorCode ?? null,
-    errorType: row.errorType ?? null,
-    errorCategory: row.errorCategory ?? null,
+    at: row.at,
+    run: {
+      id: row.id,
+      source: "workflow" as const,
+      status: normalizeStatus(row.status, "workflow", row.errorType),
+      startedAt: row.startedAt.toISOString(),
+      completedAt: row.completedAt?.toISOString() ?? null,
+      durationMs: row.duration ? Number(row.duration) : null,
+      workflowId: row.workflowId,
+      workflowName: row.workflowName ?? "(Deleted)",
+      directType: null,
+      network: row.network ?? row.ledgerNetworks?.[0] ?? null,
+      networks: unionNetworks(
+        row.networks,
+        row.ledgerNetworks,
+        row.transactionHashes
+      ),
+      gasNetworks: unionNetworks(
+        row.gasNetworks,
+        row.ledgerNetworks,
+        row.transactionHashes
+      ),
+      gasCostWei:
+        row.gasCostWei && row.gasCostWei !== "0" ? row.gasCostWei : null,
+      transactionHashes: row.transactionHashes,
+      gasUsedWei: firstNonZero(row.gasUsedWei, row.runGasUsedWei),
+      totalSteps: row.totalSteps ? Number(row.totalSteps) : null,
+      completedSteps: row.completedSteps ? Number(row.completedSteps) : null,
+      // Redact on read so rows persisted before URL redaction existed do not
+      // re-display provider RPC URLs.
+      error: row.error === null ? null : redactSecretUrls(row.error),
+      errorCode: row.errorCode ?? null,
+      errorType: row.errorType ?? null,
+      errorCategory: row.errorCategory ?? null,
+    },
   }));
 }
 
@@ -1872,9 +1814,9 @@ async function fetchDirectRuns(
   rangeStart: Date,
   rangeEnd: Date,
   filters: RunQueryFilters,
-  cursor: string | undefined,
+  cursor: RunCursor | undefined,
   limit: number
-): Promise<UnifiedRun[]> {
+): Promise<KeyedRun[]> {
   const conditions = [
     eq(directExecutions.organizationId, organizationId),
     gte(directExecutions.createdAt, rangeStart),
@@ -1883,7 +1825,14 @@ async function fetchDirectRuns(
   ];
 
   if (cursor) {
-    conditions.push(lt(directExecutions.createdAt, new Date(cursor)));
+    conditions.push(
+      runCursorCondition(
+        cursor,
+        "direct",
+        directExecutions.createdAt,
+        directExecutions.id
+      )
+    );
   }
 
   const result = await db
@@ -1896,174 +1845,57 @@ async function fetchDirectRuns(
       network: directExecutions.network,
       transactionHash: directExecutions.transactionHash,
       gasUsedWei: directExecutions.gasUsedWei,
+      at: keysetTime(directExecutions.createdAt),
     })
     .from(directExecutions)
     .where(and(...conditions))
-    .orderBy(desc(directExecutions.createdAt))
+    // `id` breaks ties the way the keyset compares them (see run-cursor.ts).
+    .orderBy(desc(directExecutions.createdAt), desc(directExecutions.id))
     .limit(limit);
 
   return result.map((row) => ({
-    id: row.id,
-    source: "direct" as const,
-    status: normalizeStatus(row.status, "direct"),
-    startedAt: row.createdAt.toISOString(),
-    completedAt: row.completedAt?.toISOString() ?? null,
-    durationMs: row.completedAt
-      ? row.completedAt.getTime() - row.createdAt.getTime()
-      : null,
-    workflowId: null,
-    workflowName: null,
-    directType: row.type as UnifiedRun["directType"],
-    network: row.network,
-    networks: row.network ? [row.network] : [],
-    gasNetworks: row.network && row.gasUsedWei ? [row.network] : [],
-    gasCostWei: row.gasUsedWei,
-    // Direct executions are genuinely single-tx. Synthesize the entry so
-    // consumers can render workflow + direct runs through the same array
-    // shape; nodeId/nodeName carry sentinel values since direct executions
-    // have no canvas node. Consumers must discriminate on `source === "direct"`
-    // rather than the nodeId/nodeName literals -- a workflow node could
-    // theoretically share the same id, and the sentinel is presentational.
-    transactionHashes: row.transactionHash
-      ? [
-          {
-            hash: row.transactionHash,
-            nodeId: "direct",
-            nodeName: "Direct execution",
-            ...(row.network ? { network: row.network } : {}),
-          },
-        ]
-      : [],
-    gasUsedWei: row.gasUsedWei,
-    totalSteps: null,
-    completedSteps: null,
-    error: null,
-    errorCode: null,
-    errorType: null,
-    errorCategory: null,
+    at: row.at,
+    run: {
+      id: row.id,
+      source: "direct" as const,
+      status: normalizeStatus(row.status, "direct"),
+      startedAt: row.createdAt.toISOString(),
+      completedAt: row.completedAt?.toISOString() ?? null,
+      durationMs: row.completedAt
+        ? row.completedAt.getTime() - row.createdAt.getTime()
+        : null,
+      workflowId: null,
+      workflowName: null,
+      directType: row.type as UnifiedRun["directType"],
+      network: row.network,
+      networks: row.network ? [row.network] : [],
+      gasNetworks: row.network && row.gasUsedWei ? [row.network] : [],
+      gasCostWei: row.gasUsedWei,
+      // Direct executions are genuinely single-tx. Synthesize the entry so
+      // consumers can render workflow + direct runs through the same array
+      // shape; nodeId/nodeName carry sentinel values since direct executions
+      // have no canvas node. Consumers must discriminate on `source === "direct"`
+      // rather than the nodeId/nodeName literals -- a workflow node could
+      // theoretically share the same id, and the sentinel is presentational.
+      transactionHashes: row.transactionHash
+        ? [
+            {
+              hash: row.transactionHash,
+              nodeId: "direct",
+              nodeName: "Direct execution",
+              ...(row.network ? { network: row.network } : {}),
+            },
+          ]
+        : [],
+      gasUsedWei: row.gasUsedWei,
+      totalSteps: null,
+      completedSteps: null,
+      error: null,
+      errorCode: null,
+      errorType: null,
+      errorCategory: null,
+    },
   }));
-}
-
-/**
- * Failure notifications as run rows, newest first. Workflow names resolve the
- * way the Settings > Notifications history resolves them: a message about one
- * incident through that incident, a grouped one through the incident ids its
- * context lists.
- */
-async function fetchNotificationRuns(
-  organizationId: string,
-  rangeStart: Date,
-  rangeEnd: Date,
-  filters: RunQueryFilters,
-  cursor: string | undefined,
-  limit: number,
-  projectId?: string
-): Promise<UnifiedRun[]> {
-  const conditions = notificationConditions(
-    organizationId,
-    rangeStart,
-    rangeEnd,
-    filters,
-    projectId
-  );
-  if (cursor) {
-    conditions.push(lt(failureAlertDeliveries.createdAt, new Date(cursor)));
-  }
-
-  const rows: NotificationRow[] = await db
-    .select({
-      id: failureAlertDeliveries.id,
-      kind: failureAlertDeliveries.kind,
-      channel: failureAlertDeliveries.channel,
-      recipient: failureAlertDeliveries.recipient,
-      connectionName: integrations.name,
-      state: failureAlertDeliveries.state,
-      attempts: failureAlertDeliveries.attempts,
-      isBackup: failureAlertDeliveries.isBackup,
-      lastError: failureAlertDeliveries.lastError,
-      context: failureAlertDeliveries.context,
-      createdAt: failureAlertDeliveries.createdAt,
-      updatedAt: failureAlertDeliveries.updatedAt,
-      deliveredAt: failureAlertDeliveries.deliveredAt,
-      workflowId: workflowFailureIncidents.workflowId,
-      workflowName: workflows.name,
-    })
-    .from(failureAlertDeliveries)
-    .leftJoin(
-      failureAlertChannels,
-      eq(failureAlertChannels.id, failureAlertDeliveries.channelId)
-    )
-    .leftJoin(
-      integrations,
-      eq(integrations.id, failureAlertChannels.integrationId)
-    )
-    .leftJoin(
-      workflowFailureIncidents,
-      eq(workflowFailureIncidents.id, failureAlertDeliveries.incidentId)
-    )
-    .leftJoin(workflows, eq(workflows.id, workflowFailureIncidents.workflowId))
-    .where(and(...conditions))
-    .orderBy(
-      desc(failureAlertDeliveries.createdAt),
-      desc(failureAlertDeliveries.id)
-    )
-    .limit(limit);
-
-  const groupedIds = new Set<string>();
-  for (const row of rows) {
-    for (const id of groupedIncidentIds(row.context)) {
-      groupedIds.add(id);
-    }
-  }
-  const groupedNames = new Map<string, { id: string; name: string }>();
-  if (groupedIds.size > 0) {
-    const named = await db
-      .select({
-        incidentId: workflowFailureIncidents.id,
-        id: workflows.id,
-        name: workflows.name,
-      })
-      .from(workflowFailureIncidents)
-      .innerJoin(
-        workflows,
-        eq(workflows.id, workflowFailureIncidents.workflowId)
-      )
-      .where(
-        and(
-          eq(workflowFailureIncidents.organizationId, organizationId),
-          inArray(workflowFailureIncidents.id, [...groupedIds])
-        )
-      );
-    for (const row of named) {
-      groupedNames.set(row.incidentId, { id: row.id, name: row.name });
-    }
-  }
-
-  return rows.map((row) => toNotificationRun(row, groupedNames));
-}
-
-async function getNotificationRunsTotal(
-  organizationId: string,
-  rangeStart: Date,
-  rangeEnd: Date,
-  filters: RunQueryFilters,
-  projectId?: string
-): Promise<number> {
-  const result = await db
-    .select({ count: count() })
-    .from(failureAlertDeliveries)
-    .where(
-      and(
-        ...notificationConditions(
-          organizationId,
-          rangeStart,
-          rangeEnd,
-          filters,
-          projectId
-        )
-      )
-    );
-  return Number(result[0]?.count) || 0;
 }
 
 async function getWorkflowRunsTotal(
@@ -2276,35 +2108,9 @@ async function computeRunFacets(
           .groupBy(sql`1`)
       : [];
 
-  // Counted whenever the listing shows notifications, so a status count and
-  // the rows ticking it returns agree.
-  const notificationRows =
-    wanted.notification && dimensions.has("status")
-      ? (
-          await db
-            .select({ state: failureAlertDeliveries.state, value: count() })
-            .from(failureAlertDeliveries)
-            .where(
-              and(
-                ...notificationConditions(
-                  organizationId,
-                  rangeStart,
-                  rangeEnd,
-                  filters,
-                  projectId,
-                  true
-                )
-              )
-            )
-            .groupBy(failureAlertDeliveries.state)
-        ).map((row) => ({
-          status: notificationStatus(row.state),
-          value: row.value,
-        }))
-      : [];
-
   const statusCounts: StatusFacets = {};
-  for (const row of [...workflowRows, ...directRows, ...notificationRows]) {
+  // Runs only: notifications are listed beside runs but never counted.
+  for (const row of [...workflowRows, ...directRows]) {
     const status = row.status as NormalizedStatus;
     statusCounts[status] =
       (statusCounts[status] ?? 0) + (Number(row.value) || 0);
@@ -2437,8 +2243,9 @@ async function getUnifiedRunsTotal(
 ): Promise<number> {
   const wanted = resolveSources(filters, projectId);
 
-  // Run the count queries in parallel
-  const [workflowTotal, directTotal, notificationTotal] = await Promise.all([
+  // Runs only. Notifications are listed but never counted in a figure a reader
+  // sees; getUnifiedRuns counts them separately, for paging alone.
+  const [workflowTotal, directTotal] = await Promise.all([
     wanted.workflow
       ? getWorkflowRunsTotal(
           organizationId,
@@ -2451,18 +2258,9 @@ async function getUnifiedRunsTotal(
     wanted.direct
       ? getDirectRunsTotal(organizationId, rangeStart, rangeEnd, filters)
       : 0,
-    wanted.notification
-      ? getNotificationRunsTotal(
-          organizationId,
-          rangeStart,
-          rangeEnd,
-          filters,
-          projectId
-        )
-      : 0,
   ]);
 
-  return workflowTotal + directTotal + notificationTotal;
+  return workflowTotal + directTotal;
 }
 
 // Redact on read so rows persisted before URL redaction existed do not
@@ -2642,10 +2440,9 @@ export async function getSpendCapData(organizationId: string): Promise<{
  * The active-run count is deliberately left unbounded: the summary's activeRuns
  * is unbounded too, and the two have to agree.
  *
- * The last part is the newest change to a failure notification in the window,
- * so a new message, and one whose delivery settles, both refresh the list. It
- * reads updated_at rather than created_at for the second case; the org's
- * notifications in one window are few, so the org/created_at index bounds it.
+ * The last part is the newest change to a failure notification in the window
+ * (newestNotificationChange), so a new message and one whose delivery settles
+ * both refresh the list.
  */
 export async function getAnalyticsChecksum(
   organizationId: string,
@@ -2693,18 +2490,7 @@ export async function getAnalyticsChecksum(
         )
       )
       .then((r) => Number(r[0]?.count) || 0),
-    db
-      .select({
-        maxUpdated: sql<string>`COALESCE(MAX(${failureAlertDeliveries.updatedAt}), '1970-01-01')::text`,
-      })
-      .from(failureAlertDeliveries)
-      .where(
-        and(
-          eq(failureAlertDeliveries.organizationId, organizationId),
-          gte(failureAlertDeliveries.createdAt, rangeStart)
-        )
-      )
-      .then((r) => r[0]?.maxUpdated ?? ""),
+    newestNotificationChange(organizationId, rangeStart),
   ]);
 
   return `${wfMax}|${deMax}|${activeCount}|${notificationMax}`;

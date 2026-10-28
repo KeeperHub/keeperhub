@@ -4,6 +4,7 @@ import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getErrorMessage } from "@/lib/utils";
 import { DELIVERY_BUDGET_MS } from "./constants";
 import {
+  checkMissedSchedules,
   closeInactiveIncidents,
   type EvaluationStats,
   emptyStats,
@@ -11,6 +12,7 @@ import {
   queueReminders,
   requeueLostAlerts,
 } from "./evaluator";
+import { endExpiredOrgPauses } from "./org-pause";
 import {
   type DrainStats,
   drainOutbox,
@@ -64,7 +66,11 @@ export async function runFailureAlertCycle(
     }
   };
 
+  await stage("end-pauses", async () => {
+    await endExpiredOrgPauses(now);
+  });
   await stage("evaluate", () => evaluateQueuedWorkflows(now, evaluation));
+  await stage("missed-schedules", () => checkMissedSchedules(now, evaluation));
   await stage("close-inactive", () => closeInactiveIncidents(now, evaluation));
   await stage("requeue-lost", () => requeueLostAlerts(now, evaluation));
   await stage("reminders", () => queueReminders(now, evaluation));

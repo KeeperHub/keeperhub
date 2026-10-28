@@ -54,12 +54,17 @@ export type OrgSettingsView = {
   connections: ConnectionView[];
   emailUsage: { used: number; limit: number } | null;
   customWorkflows: { id: string; name: string }[];
+  /** Org-wide pause: no alerts until `until`. */
+  pause: { until: string; reason: string | null; by: string | null } | null;
   /** Workflows with an open failure incident right now. */
   failingNow: {
     workflowId: string;
     name: string;
     failureCount: number;
     openedAt: string;
+    /** "missed": a scheduled run did not start; dueAt is when it was due. */
+    openedBy: "count" | "time" | "missed";
+    dueAt: string;
   }[];
   /**
    * The viewer's own connections that are not shared with the org: shown
@@ -135,8 +140,13 @@ export type WorkflowAlertView = {
       threshold: number;
       lastNotifiedAt: string;
       deliveredTo: string[];
+      openedBy: "count" | "time" | "missed";
+      /** First failure, or when the missed run was due. */
+      since: string;
       /** When this incident last turned the workflow off, if it did. */
       workflowPausedAt: string | null;
+      /** When someone last turned it back on after that. */
+      workflowResumedAt: string | null;
     } | null;
   };
   members: MemberView[];
@@ -201,17 +211,35 @@ export const FAILURE_ALERT_KIND_LABEL: Record<FailureAlertMessageKind, string> =
     recovery: "Running again",
     channel_paused: "Channel stopped working",
     launch_notice: "Notifications turned on",
+    alerts_paused: "Alerts paused",
+    alerts_resumed: "Alerts back on",
   };
 
-/** Which channel a pause notice is about, or why a backup was sent. */
+/** Which channel a pause notice is about, why a backup was sent, or a workflow pause. */
 export function historyNote(
   context: Record<string, unknown> | null
 ): string | null {
   if (typeof context?.channelLabel === "string") {
     return context.channelLabel;
   }
-  if (typeof context?.backupReason === "string") {
-    return `Sent because ${context.backupReason}`;
+  const notes: string[] = [];
+  if (context?.pausedAgain === true) {
+    notes.push("Paused the workflow again after it was turned back on");
+  } else if (context?.workflowPaused === true) {
+    notes.push("Paused the workflow");
   }
-  return null;
+  if (typeof context?.backupReason === "string") {
+    notes.push(`Sent because ${context.backupReason}`);
+  }
+  return notes.length > 0 ? notes.join(". ") : null;
 }
+
+/** One example message as each channel shows it. */
+export type MessagePreview = {
+  sample: "alert" | "missed" | "paused" | "recovery";
+  subject: string;
+  html: string;
+  /** Slack, Discord and Telegram. */
+  chat: string;
+  pagerDutySummary: string;
+};

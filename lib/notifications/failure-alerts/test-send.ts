@@ -8,7 +8,7 @@ import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import { createSlidingWindowLimiter } from "@/lib/rate-limit/sliding-window";
 import { getRedis } from "@/lib/redis";
 import { TESTS_PER_DAY_PER_ORG, TESTS_PER_MINUTE_PER_USER } from "./constants";
-import { renderMessage } from "./messages";
+import { appBaseUrl, renderMessage } from "./messages";
 import { resolveRecipientEmails } from "./policy";
 import {
   type DeliveryOutcome,
@@ -186,6 +186,8 @@ async function testEmail(
   const rendered = renderMessage({
     kind: "test",
     orgName: name,
+    organizationId,
+    appUrl: appBaseUrl(),
     channelLabel: "email",
   });
   let last: DeliveryOutcome = { ok: true, retryable: false, message: "" };
@@ -233,6 +235,8 @@ export async function sendTest(params: {
   const rendered = renderMessage({
     kind: "test",
     orgName: name,
+    organizationId,
+    appUrl: appBaseUrl(),
     channelLabel: label,
   });
   const config = {

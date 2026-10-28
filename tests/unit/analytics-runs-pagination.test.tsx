@@ -37,4 +37,51 @@ describe("runs table pager", () => {
     expect(nextIsDisabled(render(MAX_PAGE - 1))).toBe(false);
     expect(nextIsDisabled(render(3))).toBe(false);
   });
+
+  it("never shows notifications as part of a count of runs", () => {
+    // 10 runs and 40 notifications listed: paging covers all 50 rows, but the
+    // only figure shown is the page, not "1-50 of 10".
+    const html = renderToStaticMarkup(
+      <Pagination
+        listTotal={50}
+        loading={false}
+        onPageChange={() => undefined}
+        page={1}
+        pageSize={20}
+        total={10}
+      />
+    );
+    expect(html).toContain("Page 1 of 3");
+    expect(html).not.toContain(" of 10");
+    expect(nextIsDisabled(html)).toBe(false);
+  });
+
+  it("keeps the row range when nothing but runs is listed", () => {
+    const html = renderToStaticMarkup(
+      <Pagination
+        listTotal={120}
+        loading={false}
+        onPageChange={() => undefined}
+        page={2}
+        pageSize={50}
+        total={120}
+      />
+    );
+    expect(html).toContain("51\u2013100 of 120");
+  });
+
+  it("pages over notifications even when no run matches", () => {
+    const html = renderToStaticMarkup(
+      <Pagination
+        listTotal={60}
+        loading={false}
+        onPageChange={() => undefined}
+        page={1}
+        pageSize={50}
+        total={0}
+      />
+    );
+    expect(html).toContain("Page 1 of 2");
+    expect(nextIsDisabled(html)).toBe(false);
+  });
 });

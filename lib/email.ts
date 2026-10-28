@@ -80,9 +80,14 @@ export function emailLayout(
 </html>`.trim();
 }
 
-/** A primary button for emailLayout bodies. */
-export function emailButton(href: string, label: string): string {
-  return `<a href="${escapeHtml(href)}" style="display:inline-block; background:#1a1a2e; color:#fff; padding:12px 20px; border-radius:8px; text-decoration:none; margin: 0 8px 8px 0;">${escapeHtml(label)}</a>`;
+/** A button for emailLayout bodies; "danger" for the one action an urgent email asks for. */
+export function emailButton(
+  href: string,
+  label: string,
+  tone: "primary" | "danger" = "primary"
+): string {
+  const background = tone === "danger" ? "#b91c1c" : "#1a1a2e";
+  return `<a href="${escapeHtml(href)}" style="display:inline-block; background:${background}; color:#fff; padding:12px 20px; border-radius:8px; text-decoration:none; margin: 0 8px 8px 0;">${escapeHtml(label)}</a>`;
 }
 
 // Cap the outbound SendGrid call so a stalled connection surfaces as a

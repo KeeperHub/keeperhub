@@ -1,120 +1,137 @@
 "use client";
 
-import { Check, ChevronRight, Gem, Loader2 } from "lucide-react";
+import { ChevronRight, Pause as PauseIcon, Plus } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { timeAgo } from "@/components/settings/hub/relative-time";
+import { SectionHeader, SettingsCard } from "@/components/settings/hub/section";
+import { FormSkeleton } from "@/components/settings/hub/skeletons";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Notice } from "@/components/ui/notice";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  MAX_THRESHOLD,
-  MIN_THRESHOLD,
-  TIME_LIMIT_OPTIONS_MINUTES,
-} from "@/lib/notifications/failure-alerts/constants";
-import type {
-  OrgSettingsView,
-  TestResult,
+  type ChannelView,
+  channelLabel,
+  type OrgSettingsView,
 } from "@/lib/notifications/failure-alerts/view-types";
-import { roleLabel } from "@/lib/organization/role-label";
-import { cn } from "@/lib/utils";
-import { fetchView, sendFailureAlertTest } from "./api";
-import {
-  ChannelListEditor,
-  channelsPayload,
-  type DraftChannel,
-  draftsFromViews,
-} from "./channel-list-editor";
+import { fetchView } from "./api";
 import { failedRuns } from "./format";
-import { memberLabel } from "./member-label";
-import { TestResultLine } from "./test-result-line";
+import { MessagePreviewDialog } from "./message-preview-dialog";
+import { ChannelMethodCard, EmailMethodCard } from "./method-card";
+import {
+  type ChannelPayload,
+  channelPayload,
+  type DraftChannel,
+  draftFromView,
+  newMethodDraft,
+  sameTarget,
+} from "./method-drafts";
+import { NotificationHistory } from "./notification-history";
+import { AlertsPausedNotice, PauseAlertsForm } from "./pause-alerts";
+import {
+  type RulesDraft,
+  rulesDraftFrom,
+  WhenToNotify,
+} from "./when-to-notify";
 
-type Loaded = OrgSettingsView & { canManage: boolean; viewerUserId: string };
-
-const TIME_LIMIT_LABEL: Record<number, string> = {
-  60: "1 hour",
-  360: "6 hours",
-  1440: "24 hours",
+type Loaded = OrgSettingsView & {
+  canManage: boolean;
+  viewerUserId: string;
 };
-const DEFAULT_TIME_LIMIT = 360;
 
-type Form = {
-  threshold: number;
-  timeLimitMinutes: number | null;
-  remindDaily: boolean;
-  notifyRecovery: boolean;
-  recipients: string[];
-  channels: DraftChannel[];
-};
+const ALERTS_DESCRIPTION =
+  "Tells your team when a workflow that runs on its own keeps failing: by default, an email to the owners after 5 failed runs in a row. Scheduled runs that do not start are reported too.";
 
-function formFrom(data: Loaded): Form {
-  return {
-    threshold: data.threshold,
-    timeLimitMinutes: data.timeLimitMinutes,
-    remindDaily: data.remindDaily,
-    notifyRecovery: data.notifyRecovery,
-    recipients: [...data.recipientUserIds],
-    channels: draftsFromViews(data.channels),
-  };
-}
-
-type SaveState = "idle" | "saving" | "saved" | "error";
-
-function isValidThreshold(value: string): boolean {
-  const n = Number(value);
-  return (
-    value.trim() !== "" &&
-    Number.isInteger(n) &&
-    n >= MIN_THRESHOLD &&
-    n <= MAX_THRESHOLD
-  );
-}
-
-const THRESHOLD_ERROR = `Use a whole number from ${MIN_THRESHOLD} to ${MAX_THRESHOLD}.`;
+type PutResult = { ok: true; body: Loaded } | { ok: false; error: string };
 
 /** The tap targets below sm stay at least 44px tall. */
 const SUMMARY_CLASS =
   "flex min-h-11 cursor-pointer list-none items-center gap-1 text-muted-foreground text-xs hover:text-foreground sm:min-h-0";
 
+function savedChannelsPayload(channels: ChannelView[]): ChannelPayload[] {
+  return channels.map((c) => channelPayload(draftFromView(c)));
+}
+
+/** The settings exactly as last saved: the base every card's Save starts from. */
+function basePayload(saved: Loaded): Record<string, unknown> {
+  return {
+    threshold: saved.threshold,
+    timeLimitMinutes: saved.timeLimitMinutes,
+    remindDaily: saved.remindDaily,
+    notifyRecovery: saved.notifyRecovery,
+    recipientUserIds: saved.recipientUserIds,
+    channels: savedChannelsPayload(saved.channels),
+  };
+}
+
+/** Saved cards follow the server's list, keeping their drafts; new ones stay last. */
+function reconcile(cards: DraftChannel[], saved: Loaded): DraftChannel[] {
+  const byId = new Map(cards.filter((c) => c.id).map((c) => [c.id, c]));
+  return [
+    ...saved.channels.map((view) => byId.get(view.id) ?? draftFromView(view)),
+    ...cards.filter((c) => !c.id),
+  ];
+}
+
+/** The only working channel when nobody can be emailed, so a backup can be suggested. */
+function soleWorkingMethod(data: Loaded): string | null {
+  const emailable = data.members.some(
+    (m) => m.reachable && data.recipientUserIds.includes(m.userId)
+  );
+  const working = data.channels.filter((c) => !c.pausedAt);
+  if (emailable || working.length !== 1) {
+    return null;
+  }
+  const [only] = working;
+  return channelLabel(only.kind, only.destination, only.connectionName);
+}
+
+/** The pause in force, if it has not run out yet. */
+function activePause(data: Loaded): OrgSettingsView["pause"] {
+  const pause = data.pause;
+  return pause && new Date(pause.until).getTime() > Date.now() ? pause : null;
+}
+
+function LoadingCards(): React.ReactElement {
+  return (
+    <>
+      <SettingsCard title="When to notify">
+        <FormSkeleton rows={4} />
+      </SettingsCard>
+      <SettingsCard title="How to notify">
+        <FormSkeleton rows={4} />
+      </SettingsCard>
+    </>
+  );
+}
+
 /**
- * The org-wide failure notification settings. Every change saves as it is
- * made: a channel someone added and tested is never lost to a Save button at
- * the bottom of the card.
+ * The Alerts settings page: pause, failing now, the rules every method
+ * follows, one card per method, and the history. Each part saves on its own,
+ * on top of what was last saved, so an unsaved edit elsewhere is never sent.
  */
 export function OrgFailureAlertsSection({
   organizationId,
 }: {
-  organizationId: string;
+  organizationId: string | null;
 }): React.ReactElement {
   const [data, setData] = useState<Loaded | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
-  const [form, setForm] = useState<Form | null>(null);
-  const [thresholdInput, setThresholdInput] = useState("");
-  const [saveState, setSaveState] = useState<SaveState>("idle");
-  const [emailTesting, setEmailTesting] = useState(false);
-  const [emailResult, setEmailResult] = useState<TestResult | null>(null);
-  const [moreOpen, setMoreOpen] = useState(false);
-  // The last state the server accepted, to roll back to when a save fails.
-  const savedRef = useRef<Form | null>(null);
-  // Saves run one after another so an older one never lands last.
-  const queueRef = useRef<Promise<void>>(Promise.resolve());
-  const url = `/api/organizations/${encodeURIComponent(organizationId)}/failure-alerts`;
+  const [rules, setRules] = useState<RulesDraft | null>(null);
+  const [recipients, setRecipients] = useState<string[]>([]);
+  const [cards, setCards] = useState<DraftChannel[]>([]);
+  const [pausing, setPausing] = useState(false);
+  const savedRef = useRef<Loaded | null>(null);
+  const cardsRef = useRef<DraftChannel[]>([]);
+  cardsRef.current = cards;
+  // Saves run one after another, each on top of the one before.
+  const queueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const url = `/api/organizations/${encodeURIComponent(organizationId ?? "")}/failure-alerts`;
 
-  const apply = useCallback((next: Loaded) => {
-    const nextForm = formFrom(next);
-    setData(next);
-    setForm(nextForm);
-    setThresholdInput(String(nextForm.threshold));
-    savedRef.current = nextForm;
+  const accept = useCallback((body: Loaded): void => {
+    savedRef.current = body;
+    setData(body);
+    setCards((current) => reconcile(current, body));
   }, []);
 
   const load = useCallback(
@@ -125,223 +142,341 @@ export function OrgFailureAlertsSection({
         if (!isActive()) {
           return;
         }
-        apply(body);
-        // Open on load only when something in it is not the default; after
-        // that it stays the way the person left it.
-        setMoreOpen(
-          body.timeLimitMinutes !== null ||
-            !body.remindDaily ||
-            !body.notifyRecovery
-        );
+        accept(body);
+        setRules(rulesDraftFrom(body));
+        setRecipients([...body.recipientUserIds]);
       } catch {
         if (isActive()) {
           setLoadFailed(true);
         }
       }
     },
-    [apply, url]
+    [accept, url]
   );
 
   useEffect(() => {
+    if (!organizationId) {
+      return;
+    }
     let active = true;
     load(() => active).catch(() => undefined);
     return () => {
       active = false;
     };
-  }, [load]);
+  }, [load, organizationId]);
 
-  const persist = useCallback(
-    (next: Form): void => {
-      setForm(next);
-      setSaveState("saving");
-      queueRef.current = queueRef.current.then(async () => {
+  /** Health or connections changed on the server: refresh, keep every draft. */
+  const refresh = useCallback(async (): Promise<void> => {
+    try {
+      accept(await fetchView<Loaded>(url));
+    } catch {
+      // The next save or reload picks it up.
+    }
+  }, [accept, url]);
+
+  const send = useCallback(
+    (
+      method: "PUT" | "DELETE",
+      path: string,
+      build: ((saved: Loaded) => Record<string, unknown>) | null
+    ): Promise<PutResult> => {
+      const run = async (): Promise<PutResult> => {
+        const saved = savedRef.current;
+        if (!saved) {
+          return { ok: false, error: "The settings are still loading." };
+        }
         try {
-          const res = await fetch(url, {
-            method: "PUT",
+          const res = await fetch(`${url}${path}`, {
+            method,
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              threshold: next.threshold,
-              timeLimitMinutes: next.timeLimitMinutes,
-              remindDaily: next.remindDaily,
-              notifyRecovery: next.notifyRecovery,
-              recipientUserIds: next.recipients,
-              channels: channelsPayload(next.channels),
-            }),
+            body: build ? JSON.stringify(build(saved)) : undefined,
           });
           const body = (await res.json().catch(() => ({}))) as Loaded & {
             error?: string;
           };
           if (!res.ok) {
-            throw new Error(body.error ?? "Could not save");
+            return {
+              ok: false,
+              error: body.error ?? `Could not save (HTTP ${res.status}).`,
+            };
           }
-          // Keep what the session knows about tests; the server adds ids and
-          // health to new channels.
-          const tested = new Map(
-            next.channels.map((c) => [
-              `${c.integrationId}|${c.destination}`,
-              c.testedOk,
-            ])
-          );
-          const merged = formFrom(body);
-          merged.channels = merged.channels.map((c) => ({
-            ...c,
-            testedOk: tested.get(`${c.integrationId}|${c.destination}`),
-          }));
-          setData(body);
-          setForm(merged);
-          setThresholdInput(String(merged.threshold));
-          savedRef.current = merged;
-          setSaveState("saved");
-        } catch (error) {
-          const previous = savedRef.current;
-          if (previous) {
-            setForm(previous);
-            setThresholdInput(String(previous.threshold));
-          }
-          setSaveState("error");
-          toast.error(
-            error instanceof Error ? error.message : "Could not save"
-          );
+          return { ok: true, body };
+        } catch {
+          return {
+            ok: false,
+            error:
+              "Could not reach KeeperHub. Check your connection and try again.",
+          };
         }
-      });
+      };
+      const next = queueRef.current.then(run);
+      queueRef.current = next;
+      return next;
     },
     [url]
   );
 
-  /** A connection made from the Add form: refresh the list, keep the form. */
-  const refreshConnections = useCallback(async () => {
-    const res = await fetch(url);
-    if (res.ok) {
-      const body = (await res.json()) as Loaded;
-      setData((prev) =>
-        prev
-          ? {
-              ...prev,
-              connections: body.connections,
-              unsharedConnections: body.unsharedConnections,
-            }
-          : prev
-      );
-    }
-  }, [url]);
+  const put = useCallback(
+    (build: (saved: Loaded) => Record<string, unknown>): Promise<PutResult> =>
+      send("PUT", "", build),
+    [send]
+  );
 
-  if (!(data && form)) {
+  if (!(data && rules)) {
+    const header = (
+      <SectionHeader description={ALERTS_DESCRIPTION} title="Alerts" />
+    );
     if (loadFailed) {
       return (
-        <Notice role="alert" tone="danger">
-          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            Could not load the failure notification settings.
-            <Button
-              className="h-auto px-0 text-xs"
-              onClick={() => load()}
-              type="button"
-              variant="link"
-            >
-              Retry
-            </Button>
-          </span>
-        </Notice>
+        <>
+          {header}
+          <Notice role="alert" tone="danger">
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              Could not load the failure notification settings.
+              <Button
+                className="h-auto px-0 text-xs"
+                onClick={() => load()}
+                type="button"
+                variant="link"
+              >
+                Retry
+              </Button>
+            </span>
+          </Notice>
+        </>
       );
     }
     return (
-      <div className="flex items-center gap-2 text-muted-foreground text-sm">
-        <Loader2 className="size-4 animate-spin" />
-        Loading
-      </div>
+      <>
+        {header}
+        <LoadingCards />
+      </>
     );
   }
 
+  const orgId = organizationId ?? "";
   const canManage = data.canManage;
-  const disabled = !canManage;
-  const change = (patch: Partial<Form>): void => persist({ ...form, ...patch });
+  const pause = activePause(data);
+  const singleMethod = soleWorkingMethod(data);
 
-  const thresholdInvalid = !isValidThreshold(thresholdInput);
-
-  // An invalid number stays in the box with the error under it, so it can be
-  // corrected rather than silently swapped back.
-  const commitThreshold = (): void => {
-    const value = Number(thresholdInput);
-    if (thresholdInvalid || value === form.threshold) {
-      return;
+  const pauseAlerts = async (body: {
+    until: string;
+    reason?: string;
+  }): Promise<string | null> => {
+    const result = await send("PUT", "/pause", () => body);
+    if (!result.ok) {
+      return result.error;
     }
-    change({ threshold: value });
+    accept(result.body);
+    setPausing(false);
+    return null;
   };
 
-  const toggleRecipient = (userId: string, checked: boolean): void => {
-    const next = checked
-      ? [...new Set([...form.recipients, userId])]
-      : form.recipients.filter((id) => id !== userId);
-    if (next.length === 0) {
-      toast.error("Someone has to get the email. Tick another person first.");
-      return;
+  const resumeAlerts = async (): Promise<string | null> => {
+    const result = await send("DELETE", "/pause", null);
+    if (!result.ok) {
+      return result.error;
     }
-    change({ recipients: next });
+    accept(result.body);
+    return null;
   };
 
-  /** Save when the channel list itself changed, not when a test updated a row. */
-  const changeChannels = (channels: DraftChannel[]): void => {
-    const before = JSON.stringify(channelsPayload(form.channels));
-    const after = JSON.stringify(channelsPayload(channels));
-    if (before === after) {
-      setForm({ ...form, channels });
-      return;
+  const saveRules = async (): Promise<string | null> => {
+    const draft = rules;
+    const result = await put((saved) => ({
+      ...basePayload(saved),
+      threshold: Number(draft.threshold),
+      timeLimitMinutes: draft.timeLimitMinutes,
+      remindDaily: draft.remindDaily,
+      notifyRecovery: draft.notifyRecovery,
+    }));
+    if (!result.ok) {
+      return result.error;
     }
-    persist({ ...form, channels });
+    accept(result.body);
+    setRules(rulesDraftFrom(result.body));
+    return null;
   };
 
-  const testEmail = async (): Promise<void> => {
-    setEmailTesting(true);
-    setEmailResult(null);
-    setEmailResult(
-      await sendFailureAlertTest(organizationId, { channel: "email", to: "me" })
+  const saveRecipients = async (): Promise<string | null> => {
+    const chosen = recipients;
+    const result = await put((saved) => ({
+      ...basePayload(saved),
+      recipientUserIds: chosen,
+    }));
+    if (!result.ok) {
+      return result.error;
+    }
+    accept(result.body);
+    setRecipients([...result.body.recipientUserIds]);
+    return null;
+  };
+
+  const saveCard = async (key: string): Promise<string | null> => {
+    const card = cardsRef.current.find((c) => c.key === key);
+    if (!card) {
+      return "This method is no longer on the page.";
+    }
+    const result = await put((saved) => {
+      const channels = savedChannelsPayload(saved.channels);
+      const index = card.id ? channels.findIndex((c) => c.id === card.id) : -1;
+      const mine = channelPayload({
+        ...card,
+        destination: card.destination.trim(),
+      });
+      if (index >= 0) {
+        channels[index] = mine;
+      } else {
+        channels.push({ ...mine, id: undefined });
+      }
+      return { ...basePayload(saved), channels };
+    });
+    if (!result.ok) {
+      return result.error;
+    }
+    // A new card takes the id of the row the server made for it.
+    const taken = new Set(
+      cardsRef.current.filter((c) => c.key !== key && c.id).map((c) => c.id)
     );
-    setEmailTesting(false);
+    const id = result.body.channels.some((v) => v.id === card.id)
+      ? card.id
+      : result.body.channels.find(
+          (v) =>
+            !taken.has(v.id) &&
+            sameTarget(v, { ...card, destination: card.destination.trim() })
+        )?.id;
+    setCards((current) =>
+      current.map((c) =>
+        c.key === key
+          ? {
+              ...c,
+              id,
+              destination: c.destination.trim(),
+              fresh: false,
+              pausedReason: undefined,
+            }
+          : c
+      )
+    );
+    accept(result.body);
+    return null;
   };
 
-  const reachableChosen = data.members.some(
-    (m) => m.reachable && form.recipients.includes(m.userId)
-  );
-  const liveChannels = form.channels.filter((c) => !c.view?.pausedAt);
-  const unreachable = !reachableChosen && liveChannels.length === 0;
+  const restore = async (view: ChannelView, index: number): Promise<void> => {
+    const result = await put((saved) => {
+      const channels = savedChannelsPayload(saved.channels);
+      if (!channels.some((c) => sameTarget(c, view))) {
+        // A paused channel comes back paused, not live.
+        channels.splice(Math.min(index, channels.length), 0, {
+          kind: view.kind,
+          integrationId: view.integrationId,
+          destination: view.destination,
+          role: view.role,
+          pausedReason: view.pausedAt
+            ? (view.pausedReason ?? "It stopped working.")
+            : undefined,
+        });
+      }
+      return { ...basePayload(saved), channels };
+    });
+    if (result.ok) {
+      accept(result.body);
+    } else {
+      toast.error(result.error);
+    }
+  };
+
+  const removeCard = async (key: string, label: string): Promise<void> => {
+    const card = cardsRef.current.find((c) => c.key === key);
+    if (!card) {
+      return;
+    }
+    const view = card.id
+      ? savedRef.current?.channels.find((c) => c.id === card.id)
+      : undefined;
+    if (!view) {
+      setCards((current) => current.filter((c) => c.key !== key));
+      return;
+    }
+    const index = savedRef.current?.channels.indexOf(view) ?? 0;
+    const result = await put((saved) => ({
+      ...basePayload(saved),
+      channels: savedChannelsPayload(
+        saved.channels.filter((c) => c.id !== view.id)
+      ),
+    }));
+    if (!result.ok) {
+      toast.error(result.error);
+      return;
+    }
+    accept(result.body);
+    toast(`${label} removed`, {
+      action: { label: "Undo", onClick: () => restore(view, index) },
+    });
+  };
 
   return (
-    <div className="space-y-6" data-testid="failure-alerts-settings">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        {data.enabled ? (
-          <p className="text-muted-foreground text-xs">
-            On for every workflow that runs on its own. Runs started by hand
-            never count.
-          </p>
-        ) : (
-          <p className="text-muted-foreground text-xs">
-            Being switched on for organizations in stages; not on here yet. What
-            you set now applies when it is.
-          </p>
-        )}
-        <SaveIndicator state={saveState} />
-      </div>
-
-      {!canManage && (
-        <p className="text-muted-foreground text-xs">
-          Only owners and admins can change these settings.
-        </p>
+    <div
+      className="flex flex-col gap-4 md:gap-6"
+      data-testid="failure-alerts-settings"
+    >
+      <SectionHeader
+        action={
+          canManage && !pause && !pausing ? (
+            <Button
+              onClick={() => setPausing(true)}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              <PauseIcon className="size-3.5" />
+              Pause alerts
+            </Button>
+          ) : undefined
+        }
+        description={ALERTS_DESCRIPTION}
+        title="Alerts"
+      />
+      {pause && (
+        <AlertsPausedNotice
+          canManage={canManage}
+          onResume={resumeAlerts}
+          pause={pause}
+        />
       )}
-
-      {unreachable && (
+      {pausing && !pause && (
+        <PauseAlertsForm
+          onCancel={() => setPausing(false)}
+          onPause={pauseAlerts}
+        />
+      )}
+      {data.unreachable && (
         <Notice className="p-3" role="alert" tone="danger">
-          Nobody would be told about a failing workflow: nobody ticked below has
-          an email KeeperHub can reach and there is no working channel. Add an
+          Nobody would be told about a failing workflow: nobody chosen for email
+          has an address KeeperHub can reach and no other method works. Add an
           email in{" "}
           <Link className="underline" href="/settings/security">
             Account security
           </Link>
-          , or add a Telegram, Discord, Slack or PagerDuty channel.
+          , or add a Telegram, Discord, Slack or PagerDuty method.
         </Notice>
       )}
-
+      {singleMethod && (
+        <Notice className="p-3" tone="warning">
+          Only {singleMethod} can reach anyone: nobody chosen for email has an
+          address KeeperHub can reach. Add a backup method, or an email in{" "}
+          <Link className="underline" href="/settings/security">
+            Account security
+          </Link>
+          , so you still hear about failing workflows if {singleMethod} stops
+          working.
+        </Notice>
+      )}
       {data.failingNow.length > 0 && (
-        <section className="space-y-2">
-          <h3 className="font-medium text-sm">Failing now</h3>
+        <SettingsCard
+          description="Workflows with an alert open right now."
+          title="Failing now"
+        >
           <ul className="divide-y rounded-md border">
             {data.failingNow.map((w) => (
               <li
@@ -355,280 +490,145 @@ export function OrgFailureAlertsSection({
                   {w.name}
                 </Link>
                 <span className="text-destructive text-xs">
-                  {failedRuns(w.failureCount)} in a row
+                  {w.openedBy === "missed"
+                    ? `Not running: due ${timeAgo(w.dueAt)}`
+                    : `${failedRuns(w.failureCount)} in a row`}
                 </span>
               </li>
             ))}
           </ul>
-        </section>
+        </SettingsCard>
       )}
 
-      <section className="space-y-2">
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <Label htmlFor="failure-threshold">Alert after</Label>
-          <Input
-            aria-describedby={
-              thresholdInvalid ? "failure-threshold-error" : undefined
-            }
-            aria-invalid={thresholdInvalid}
-            className="h-8 w-16"
-            disabled={disabled}
-            id="failure-threshold"
-            inputMode="numeric"
-            max={MAX_THRESHOLD}
-            min={MIN_THRESHOLD}
-            onBlur={commitThreshold}
-            onChange={(e) => setThresholdInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                commitThreshold();
-              }
-            }}
-            type="number"
-            value={thresholdInput}
+      <SettingsCard
+        description="These rules apply to every method below."
+        title="When to notify"
+      >
+        <div className="space-y-4">
+          <p className="text-muted-foreground text-xs">
+            {data.enabled
+              ? "On for every workflow that runs on its own. Runs started by hand never count."
+              : "Being switched on for organizations in stages; not on here yet. What you set now applies when it is."}
+            {canManage
+              ? ""
+              : " Only owners and admins can change these settings."}
+          </p>
+          <WhenToNotify
+            canManage={canManage}
+            draft={rules}
+            onChange={setRules}
+            onSave={saveRules}
+            saved={data}
           />
-          <span>failed runs in a row</span>
-        </div>
-        {thresholdInvalid && (
-          <p className="text-destructive text-xs" id="failure-threshold-error">
-            {THRESHOLD_ERROR}
-          </p>
-        )}
-
-        <details
-          className="group"
-          onToggle={(e) => setMoreOpen(e.currentTarget.open)}
-          open={moreOpen}
-        >
-          <summary className={SUMMARY_CLASS}>
-            <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
-            More options
-          </summary>
-          <div className="mt-3 space-y-3 border-l pl-4 text-sm">
-            <div className="flex flex-wrap items-center gap-2">
-              <Checkbox
-                checked={form.timeLimitMinutes !== null}
-                disabled={disabled}
-                id="failure-time-limit"
-                onCheckedChange={(checked) =>
-                  change({
-                    timeLimitMinutes:
-                      checked === true ? DEFAULT_TIME_LIMIT : null,
-                  })
-                }
-              />
-              <Label className="font-normal" htmlFor="failure-time-limit">
-                Also alert when a workflow keeps failing for
-              </Label>
-              <Select
-                disabled={disabled || form.timeLimitMinutes === null}
-                onValueChange={(v) => change({ timeLimitMinutes: Number(v) })}
-                value={String(form.timeLimitMinutes ?? DEFAULT_TIME_LIMIT)}
-              >
-                <SelectTrigger
-                  aria-label="How long"
-                  className="h-8 w-28"
-                  size="sm"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {TIME_LIMIT_OPTIONS_MINUTES.map((minutes) => (
-                    <SelectItem key={minutes} value={String(minutes)}>
-                      {TIME_LIMIT_LABEL[minutes]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+          {data.customWorkflows.length > 0 && (
             <p className="text-muted-foreground text-xs">
-              For slow schedules: a workflow every 4 hours needs 20 hours to
-              fail 5 times.
-            </p>
-            <label className="flex items-center gap-2" htmlFor="failure-remind">
-              <Checkbox
-                checked={form.remindDaily}
-                disabled={disabled}
-                id="failure-remind"
-                onCheckedChange={(checked) =>
-                  change({ remindDaily: checked === true })
-                }
-              />
-              Remind once a day while it keeps failing
-            </label>
-            <label
-              className="flex items-center gap-2"
-              htmlFor="failure-recovery"
-            >
-              <Checkbox
-                checked={form.notifyRecovery}
-                disabled={disabled}
-                id="failure-recovery"
-                onCheckedChange={(checked) =>
-                  change({ notifyRecovery: checked === true })
-                }
-              />
-              Tell me when it works again
-            </label>
-          </div>
-        </details>
-      </section>
-
-      <section className="space-y-3">
-        <h3 className="font-medium text-sm">Email</h3>
-        <ul className="space-y-2">
-          {data.members.map((m) => (
-            <li
-              className="flex flex-wrap items-center gap-2 text-sm"
-              key={m.userId}
-            >
-              <Checkbox
-                checked={form.recipients.includes(m.userId)}
-                disabled={disabled || !m.reachable}
-                id={`failure-recipient-${m.userId}`}
-                onCheckedChange={(checked) =>
-                  toggleRecipient(m.userId, checked === true)
-                }
-              />
-              <Label
-                className={cn(
-                  "min-w-0 cursor-pointer break-all font-normal",
-                  // Disabled only because mail cannot reach them: the name
-                  // still has to be readable, so skip the faded look.
-                  !m.reachable &&
-                    "text-muted-foreground peer-disabled:opacity-100"
-                )}
-                htmlFor={`failure-recipient-${m.userId}`}
-              >
-                {memberLabel(m)}
-              </Label>
-              <span className="text-muted-foreground text-xs">
-                ({roleLabel(m.role)})
-              </span>
-              {!m.reachable && (
-                // Its own line under the name on phones, indented past the
-                // checkbox so it reads as part of this member's row.
-                <span className="basis-full pl-6 text-muted-foreground text-xs @xl/settings:basis-auto @xl/settings:pl-0">
-                  No email yet. They can add one in{" "}
-                  <Link className="underline" href="/settings/security">
-                    Account security
+              {data.customWorkflows.length === 1
+                ? "1 workflow has its own settings: "
+                : `${data.customWorkflows.length} workflows have their own settings: `}
+              {data.customWorkflows.map((w, i) => (
+                <span key={w.id}>
+                  {i > 0 ? ", " : null}
+                  <Link
+                    className="underline underline-offset-4"
+                    href={`/workflows/${w.id}`}
+                  >
+                    {w.name}
                   </Link>
-                  .
                 </span>
-              )}
-            </li>
-          ))}
-        </ul>
-        {canManage && (
-          <Button
-            disabled={emailTesting}
-            onClick={testEmail}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            {emailTesting ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : null}
-            Send me a test email
-          </Button>
-        )}
-        {emailResult && <TestResultLine result={emailResult} />}
-      </section>
-
-      <section className="space-y-3">
-        <h3 className="font-medium text-sm">Also send to</h3>
-        <ChannelListEditor
-          canManage={canManage}
-          channels={form.channels}
-          connections={data.connections}
-          onChange={changeChannels}
-          onConnectionsChanged={refreshConnections}
-          organizationId={organizationId}
-          unsharedConnections={data.unsharedConnections}
-        />
-        <details className="group text-xs">
-          <summary className={SUMMARY_CLASS}>
-            <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
-            How delivery works
-          </summary>
-          <ul className="mt-2 list-disc space-y-1 pl-8 text-muted-foreground">
-            <li>
-              Each alert goes out once per failing streak, not on every failed
-              run.
-            </li>
-            <li>
-              If email or chat cannot deliver for 15 minutes, or PagerDuty for
-              2, the alert goes to your backup channels and to email, saying
-              what failed. Retries continue for 24 hours.
-            </li>
-            <li>
-              A channel that stops working is paused and you are told once.
-              Every channel is also checked quietly once a week, without sending
-              anything.
-            </li>
-            <li>
-              Only connections shared with the whole organization can be used.
-            </li>
-          </ul>
-        </details>
-      </section>
-
-      {data.emailUsage && (
-        <div className="flex items-start gap-3 rounded-md border bg-muted/40 p-3 text-xs">
-          <Gem className="mt-0.5 size-4 shrink-0 text-accent-foreground" />
-          <p className="flex-1 text-muted-foreground">
-            {data.emailUsage.used >= data.emailUsage.limit
-              ? `All ${data.emailUsage.limit} alert emails for this month are used. Until the 1st, alerts go to your channels and show in KeeperHub.`
-              : `Free plan: ${data.emailUsage.limit} alert emails a month, ${data.emailUsage.used} used. Chat and PagerDuty are not counted.`}
-          </p>
+              ))}
+            </p>
+          )}
         </div>
-      )}
+      </SettingsCard>
 
-      {data.customWorkflows.length > 0 && (
-        <p className="text-muted-foreground text-xs">
-          {data.customWorkflows.length === 1
-            ? "1 workflow has its own settings: "
-            : `${data.customWorkflows.length} workflows have their own settings: `}
-          {data.customWorkflows.map((w, i) => (
-            <span key={w.id}>
-              {i > 0 ? ", " : null}
-              <Link
-                className="underline underline-offset-4"
-                href={`/workflows/${w.id}`}
-              >
-                {w.name}
-              </Link>
-            </span>
-          ))}
-        </p>
-      )}
+      <SettingsCard
+        action={<MessagePreviewDialog organizationId={orgId} />}
+        description="Each method saves on its own. Saving checks that it can receive notifications, and every saved method is checked again each day."
+        title="How to notify"
+      >
+        <div className="space-y-4" data-testid="failure-alerts-methods">
+          <ul className="space-y-3">
+            <EmailMethodCard
+              canManage={canManage}
+              emailUsage={data.emailUsage}
+              members={data.members}
+              onChange={setRecipients}
+              onSave={saveRecipients}
+              organizationId={orgId}
+              recipients={recipients}
+              savedRecipients={data.recipientUserIds}
+            />
+            {cards.map((card) => (
+              <ChannelMethodCard
+                canManage={canManage}
+                connections={data.connections}
+                draft={card}
+                key={card.key}
+                onChange={(next) =>
+                  setCards((current) =>
+                    current.map((c) => (c.key === next.key ? next : c))
+                  )
+                }
+                onConnectionsChanged={refresh}
+                onRemove={(label) => removeCard(card.key, label)}
+                onSave={() => saveCard(card.key)}
+                onTested={refresh}
+                organizationId={orgId}
+                saved={data.channels.find((c) => c.id === card.id)}
+                unsharedConnections={data.unsharedConnections}
+              />
+            ))}
+          </ul>
+          {canManage && (
+            <Button
+              onClick={() =>
+                setCards((current) => [
+                  ...current,
+                  newMethodDraft(data.connections),
+                ])
+              }
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              <Plus className="size-3.5" />
+              Add a method
+            </Button>
+          )}
+          <details className="group text-xs">
+            <summary className={SUMMARY_CLASS}>
+              <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
+              How delivery works
+            </summary>
+            <ul className="mt-2 list-disc space-y-1 pl-8 text-muted-foreground">
+              <li>
+                Each alert goes out once per failing streak, not on every failed
+                run.
+              </li>
+              <li>
+                If email or chat cannot deliver for 15 minutes, or PagerDuty for
+                2, the alert goes to your backup methods and to email, saying
+                what failed. Retries continue for 24 hours.
+              </li>
+              <li>
+                A method that stops working is paused and you are told once.
+                Every method is also checked quietly every day, without sending
+                anything.
+              </li>
+              <li>
+                Only connections shared with the whole organization can be used.
+              </li>
+            </ul>
+          </details>
+        </div>
+      </SettingsCard>
+
+      <SettingsCard
+        description="What was sent, where, and whether it arrived."
+        title="Recent notifications"
+      >
+        <NotificationHistory organizationId={orgId} />
+      </SettingsCard>
     </div>
-  );
-}
-
-function SaveIndicator({ state }: { state: SaveState }): React.ReactElement {
-  return (
-    <output
-      aria-live="polite"
-      className="flex items-center gap-1 text-muted-foreground text-xs"
-      data-state={state}
-      data-testid="failure-alerts-save-state"
-    >
-      {state === "saving" && (
-        <>
-          <Loader2 className="size-3 animate-spin" />
-          Saving
-        </>
-      )}
-      {state === "saved" && (
-        <>
-          <Check className="size-3 text-keeperhub-green-dark" />
-          Saved
-        </>
-      )}
-      {state === "error" && <span className="text-destructive">Not saved</span>}
-      {state === "idle" && "Changes save automatically"}
-    </output>
   );
 }

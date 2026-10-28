@@ -15,7 +15,7 @@ type Authenticated = Exclude<DualAuthContext, { error: string }> & {
   userId: string;
 };
 
-type OrgAccess = {
+export type OrgAccess = {
   userId: string;
   role: string;
   canManage: boolean;

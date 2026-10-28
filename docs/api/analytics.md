@@ -155,7 +155,7 @@ Same as the summary endpoint, including `projectId`: it excludes direct executio
 GET /api/analytics/runs
 ```
 
-Returns a unified list of workflow executions, direct executions and system notifications with pagination. A system notification is one failure notification KeeperHub sent the organization (an alert, reminder, recovery notice or channel notice) on one channel to one recipient. System notifications appear only in this list: the summary, time series and network breakdown count runs alone.
+Returns a unified list of workflow executions, direct executions and system notifications with pagination. A system notification is one failure notification KeeperHub sent the organization (an alert, reminder, recovery notice or channel notice) on one channel to one recipient. System notifications are listed but never counted: the summary, time series, network breakdown, filter counts and the `total` below count runs alone.
 
 ### Query Parameters
 
@@ -218,6 +218,7 @@ Returns a unified list of workflow executions, direct executions and system noti
   ],
   "nextCursor": null,
   "total": 1250,
+  "listTotal": 1262,
   "page": 1,
   "pageSize": 50,
   "stepLogRetentionCutoff": "2024-01-01T00:00:00Z"
@@ -259,6 +260,14 @@ rather than on the sentinel strings. The verification the direct execution
 recorded lives in that execution's own receipts, which this endpoint does not
 read.
 
+`total` is the number of runs (workflow and direct executions) matching the
+filters; system notifications are not part of it. `listTotal` is the number of
+rows the listing pages through, system notifications included. Use `listTotal`
+to work out how many pages there are, and `total` wherever a count of runs is
+shown. The two are equal when no system notification matches.
+
+`nextCursor` is opaque: pass it back unchanged as `cursor`.
+
 ### System notifications
 
 A row with `source: "notification"` is one failure notification. It shares the
@@ -267,10 +276,11 @@ run fields above, read as follows:
 - `startedAt` is when the notification was queued. `completedAt` is when it was
   delivered, or when KeeperHub stopped trying (failed, monthly email limit
   reached, or withdrawn); it is `null` while delivery is still in progress.
-- `status` is `success` once delivered, `error` when delivery failed or the
-  monthly email limit stopped it, `pending` while queued, `running` while
-  sending or retrying, and `cancelled` when it was withdrawn before it went out
-  (for example because the workflow recovered first).
+  `durationMs` is always `null`.
+- `status` is `success` once delivered, `error` when delivery failed,
+  `skipped` when the monthly email limit stopped it, `pending` while queued,
+  `running` while sending or retrying, and `cancelled` when it was withdrawn
+  before it went out (for example because the workflow recovered first).
 - `workflowId` and `workflowName` are set when the notification is about exactly
   one workflow, and `null` otherwise.
 - Network, gas, step and error fields are always empty.
@@ -298,7 +308,7 @@ The `notification` object, present only on these rows, carries the rest:
 | Field | Description |
 |-------|-------------|
 | `title` | A readable name: the kind and the workflow (`Alert: Monitor ETH Balance`), the number of workflows for a message that covers several (`Alert: 3 workflows`), or the kind alone for a notice about no workflow |
-| `kind` | `alert`, `reminder`, `recovery`, `channel_paused` (a channel stopped working) or `launch_notice` (failure notifications were turned on) |
+| `kind` | `alert`, `reminder`, `recovery`, `channel_paused` (a channel stopped working), `launch_notice` (failure notifications were turned on), `alerts_paused` or `alerts_resumed` |
 | `state` | The delivery state behind `status`: `pending`, `sending`, `delivered`, `retrying`, `failed`, `capped` (monthly email limit) or `skipped` (withdrawn) |
 | `channel` | `email`, `slack`, `discord`, `telegram` or `pagerduty` |
 | `recipient` | The email address, or the channel's destination |

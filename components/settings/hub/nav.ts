@@ -1,5 +1,6 @@
 import {
   Bell,
+  BellRing,
   Bot,
   Building2,
   CreditCard,
@@ -246,32 +247,57 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
         adminOnly: true,
       },
       {
-        segment: "notifications",
+        segment: "alerts",
         scope: "org",
-        label: "Notifications",
-        icon: Bell,
-        description:
-          "Failing-workflow alerts, execution digests and who receives them.",
+        label: "Alerts",
+        icon: BellRing,
+        description: "When and how your team hears about failing workflows.",
         panels: [
           {
-            title: "Workflow failure notifications",
+            title: "When to notify",
             tags: [
               "failure alerts",
               "failed runs",
+              "failing workflows",
               "consecutive failures",
+              "threshold",
+              "time limit",
+              "daily reminder",
+              "recovery message",
+              "missed run",
+              "scheduled run did not start",
+              "pause alerts",
+              "maintenance",
+            ],
+          },
+          {
+            title: "How to notify",
+            tags: [
+              "email recipients",
               "pagerduty",
               "telegram",
               "discord",
               "slack",
               "backup channel",
               "test notification",
-              "mute",
+              "alert methods",
             ],
           },
           {
             title: "Recent notifications",
             tags: ["notification history", "delivery log", "sent alerts"],
           },
+        ],
+        tags: ["alerts", "failure", "failing", "pause", "incidents", "on call"],
+      },
+      {
+        segment: "notifications",
+        scope: "org",
+        label: "Notifications",
+        icon: Bell,
+        description: "Execution digests and who receives them.",
+        panels: [
+          { title: "Workflow failure alerts" },
           {
             title: "Execution digest",
             tags: [
@@ -281,11 +307,10 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
               "weekly summary",
               "subscribers",
               "recipients",
-              "email alerts",
             ],
           },
         ],
-        tags: ["email", "alerts"],
+        tags: ["email", "digest"],
         adminOnly: true,
       },
       {

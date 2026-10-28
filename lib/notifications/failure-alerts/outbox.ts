@@ -3,6 +3,7 @@ import "server-only";
 import {
   and,
   eq,
+  gte,
   inArray,
   isNotNull,
   isNull,
@@ -19,6 +20,7 @@ import {
   failureAlertEmailUsage,
   integrations,
   organization,
+  workflowExecutions,
   workflowFailureIncidents,
   workflows,
 } from "@/lib/db/schema";
@@ -229,6 +231,56 @@ type Rendered = {
 };
 
 /** Build what one outbox row says. Null when what it was about is gone. */
+const HISTORY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Successful runs in the 30 days before a streak, to show how unusual it is. */
+async function runsBefore(
+  workflowId: string,
+  firstFailedAt: Date
+): Promise<{ successes: number; lastSuccessAt: Date | null }> {
+  const [row] = await db
+    .select({
+      successes: sql<number>`count(*)::int`,
+      lastSuccessAt: sql`max(${workflowExecutions.completedAt})`.mapWith(
+        workflowExecutions.completedAt
+      ),
+    })
+    .from(workflowExecutions)
+    .where(
+      and(
+        eq(workflowExecutions.workflowId, workflowId),
+        eq(workflowExecutions.status, "success"),
+        lt(workflowExecutions.startedAt, firstFailedAt),
+        gte(
+          workflowExecutions.startedAt,
+          new Date(firstFailedAt.getTime() - HISTORY_WINDOW_MS)
+        )
+      )
+    );
+  return {
+    successes: row?.successes ?? 0,
+    lastSuccessAt: row?.lastSuccessAt ?? null,
+  };
+}
+
+/** Whether this alert or reminder announces a pause, from what it was queued with. */
+function pausedVariant(
+  kind: string,
+  context: Record<string, unknown>,
+  incident: { workflowPausedAt: Date | null }
+): "first" | "again" | undefined {
+  if (context.pausedAgain === true) {
+    return "again";
+  }
+  if (context.workflowPaused === true) {
+    return "first";
+  }
+  // A re-queued alert lost its context; the incident still knows.
+  return kind === "alert" && incident.workflowPausedAt !== null
+    ? "first"
+    : undefined;
+}
+
 async function renderRow(
   row: DeliveryRow,
   ctx: Context
@@ -249,6 +301,20 @@ async function renderRow(
       kind: "channel_paused",
       channelLabel: String(context.channelLabel ?? "A channel"),
       reason: String(context.reason ?? ""),
+    };
+  } else if (row.kind === "alerts_paused") {
+    input = {
+      ...org,
+      kind: "alerts_paused",
+      until: new Date(String(context.until)),
+      reason: typeof context.reason === "string" ? context.reason : null,
+      by: typeof context.by === "string" ? context.by : null,
+    };
+  } else if (row.kind === "alerts_resumed") {
+    input = {
+      ...org,
+      kind: "alerts_resumed",
+      by: typeof context.by === "string" ? context.by : null,
     };
   } else if (row.kind === "launch_notice") {
     input = {
@@ -292,6 +358,10 @@ async function renderRow(
       firstFailedAt: incident.firstFailedAt,
       lastError: incident.lastError,
       openedBy: incident.openedBy,
+      before:
+        row.kind === "recovery"
+          ? undefined
+          : await runsBefore(workflow.id, incident.firstFailedAt),
     };
     input =
       row.kind === "recovery"
@@ -302,12 +372,11 @@ async function renderRow(
             workflow,
             incident: alertIncident,
             backupReason,
-            // An alert says so when its incident paused the workflow; a
-            // reminder only when it was queued for pausing it again.
-            workflowPaused:
-              row.kind === "reminder"
-                ? context.pausedAgain === true
-                : incident.workflowPausedAt !== null,
+            paused: pausedVariant(row.kind, context, incident),
+            pausedFailures:
+              typeof context.failures === "number"
+                ? context.failures
+                : undefined,
           };
     const link = runsUrl(ctx.appUrl, workflow.id);
     return {
@@ -838,9 +907,8 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
 }
 
 /**
- * The weekly silent check: confirm each channel still works without sending
- * anything a person would see. A channel that is dead for good is paused and
- * the org is told before a real alert needs it.
+ * The daily silent check, sending nothing a person would see: a dead channel
+ * is paused and the org told; a paused one that works again comes back.
  */
 export async function runHealthChecks(
   now: Date,
@@ -858,14 +926,11 @@ export async function runHealthChecks(
     })
     .from(failureAlertChannels)
     .where(
-      and(
-        isNull(failureAlertChannels.pausedAt),
-        or(
-          isNull(failureAlertChannels.lastHealthCheckAt),
-          lt(
-            failureAlertChannels.lastHealthCheckAt,
-            new Date(now.getTime() - HEALTH_CHECK_INTERVAL_MS)
-          )
+      or(
+        isNull(failureAlertChannels.lastHealthCheckAt),
+        lt(
+          failureAlertChannels.lastHealthCheckAt,
+          new Date(now.getTime() - HEALTH_CHECK_INTERVAL_MS)
         )
       )
     )
@@ -880,14 +945,19 @@ export async function runHealthChecks(
       stats.healthChecks += 1;
       await db
         .update(failureAlertChannels)
-        .set({ lastHealthCheckAt: now })
+        .set({
+          lastHealthCheckAt: now,
+          ...(channel.pausedAt && outcome.ok
+            ? { pausedAt: null, pausedReason: null }
+            : {}),
+        })
         .where(eq(failureAlertChannels.id, channel.id));
-      if (!(outcome.ok || outcome.retryable)) {
+      if (!(outcome.ok || outcome.retryable || channel.pausedAt)) {
         await recordChannelHealth(channel.id, outcome, now);
         if (
           await pauseChannel(
             channel.id,
-            `The weekly check found it no longer works: ${outcome.message}`,
+            `The daily check found it no longer works: ${outcome.message}`,
             channel.organizationId,
             now
           )

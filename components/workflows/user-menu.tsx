@@ -251,7 +251,7 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
               <DropdownMenuItem
                 data-testid="failure-alerts-menu-item"
                 onClick={() =>
-                  router.push(`/settings/${organization.id}/notifications`)
+                  router.push(`/settings/${organization.id}/alerts`)
                 }
               >
                 <AlertTriangle className="size-4 text-destructive" />

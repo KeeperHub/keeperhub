@@ -1,3 +1,4 @@
+import type { FailureIncidentTrigger } from "@/lib/db/schema-failure-alerts";
 import { emailButton, emailLayout, escapeHtml } from "@/lib/email";
 import {
   MAX_SUMMARY_CHARS,
@@ -19,7 +20,9 @@ type AlertIncident = {
   failureCount: number;
   firstFailedAt: Date;
   lastError: string | null;
-  openedBy: "count" | "time";
+  openedBy: FailureIncidentTrigger;
+  /** Successful runs in the 30 days before it started failing. */
+  before?: { successes: number; lastSuccessAt: Date | null };
 };
 
 export type RenderedMessage = {
@@ -40,11 +43,11 @@ export type MessageInput =
       workflow: AlertWorkflow;
       incident: AlertIncident;
       backupReason?: string;
-      /**
-       * KeeperHub turned the workflow off, as its settings ask: on an alert,
-       * when it was first paused; on a reminder, when it was paused again.
-       */
-      workflowPaused?: boolean;
+      /** KeeperHub turned the workflow off: first time, or again after a resume. */
+      paused?: "first" | "again";
+      /** Failed runs that led to this pause, when not the incident's count. */
+      pausedFailures?: number;
+      testNote?: string;
     })
   | (OrgFields & {
       kind: "grouped";
@@ -58,6 +61,7 @@ export type MessageInput =
       kind: "recovery";
       workflow: AlertWorkflow;
       incident: AlertIncident;
+      testNote?: string;
     })
   | (OrgFields & {
       kind: "channel_paused";
@@ -65,11 +69,29 @@ export type MessageInput =
       reason: string;
     })
   | (OrgFields & {
+      kind: "alerts_paused";
+      until: Date;
+      reason: string | null;
+      by: string | null;
+    })
+  | (OrgFields & { kind: "alerts_resumed"; by: string | null })
+  | (OrgFields & {
       kind: "launch_notice";
       threshold: number;
       failingNow: (AlertWorkflow & { failureCount: number })[];
     })
-  | { kind: "test"; orgName: string; channelLabel: string };
+  | (OrgFields & {
+      kind: "test";
+      channelLabel: string;
+      sample?: SampleKind;
+    });
+
+/** Example messages for the preview and the Test buttons. */
+export type SampleKind = "alert" | "missed" | "paused" | "recovery";
+
+export function appBaseUrl(): string {
+  return process.env.NEXT_PUBLIC_APP_URL ?? "https://app.keeperhub.com";
+}
 
 const MAX_ERROR_CHARS = 300;
 const WHITESPACE = /\s+/g;
@@ -131,7 +153,7 @@ function workflowUrl(appUrl: string, workflowId: string): string {
 }
 
 function settingsUrl(appUrl: string, organizationId: string): string {
-  return `${appUrl}/settings/${encodeURIComponent(organizationId)}/notifications`;
+  return `${appUrl}/settings/${encodeURIComponent(organizationId)}/alerts`;
 }
 
 function summaryOf(text: string): string {
@@ -144,26 +166,56 @@ function failingHeadline(
   still: boolean,
   now: Date
 ): string {
+  if (incident.openedBy === "missed") {
+    return `${workflow.name} ${still ? "still has" : "has"} not run: it was due at ${formatUtc(incident.firstFailedAt)}`;
+  }
   const runs = `${plural(incident.failureCount, "failed run", "failed runs")} in a row`;
   if (incident.openedBy === "time" && !still) {
     return `${workflow.name} has been failing for ${formatDuration(now.getTime() - incident.firstFailedAt.getTime())} (${runs})`;
   }
-  return `${workflow.name} is ${still ? "still " : ""}failing: ${runs}`;
+  return still
+    ? `${workflow.name} is still failing: ${plural(incident.failureCount, "failed run", "failed runs")}`
+    : `${workflow.name} failed ${plural(incident.failureCount, "time", "times")} in a row`;
 }
 
 function pausedHeadline(
   workflow: AlertWorkflow,
-  incident: AlertIncident,
+  failures: number,
   again: boolean
 ): string {
   if (again) {
-    return `${workflow.name} kept failing after it was turned back on and was paused again`;
+    return `${workflow.name} was paused again: ${plural(failures, "more failed run", "more failed runs")} after it was turned back on`;
   }
-  return `${workflow.name} was paused after ${plural(incident.failureCount, "failed run", "failed runs")} in a row`;
+  return `${workflow.name} was paused after ${plural(failures, "failed run", "failed runs")} in a row`;
 }
 
 const PAUSED_NEXT_STEP =
-  "KeeperHub turned it off, as this workflow's notification settings ask, so it stops running. Fix the cause, then turn it back on with the Enable switch in the workflow editor.";
+  "KeeperHub turned it off because this workflow is set to pause at its failure limit. It will not run until someone turns it back on: fix the cause, then use the Enable switch in the workflow editor.";
+
+function joinBanners(
+  ...banners: { html: string; text: string; chat: string }[]
+): { html: string; text: string; chat: string } {
+  return {
+    html: banners.map((b) => b.html).join(""),
+    text: banners.map((b) => b.text).join(""),
+    chat: banners.map((b) => b.chat).join(""),
+  };
+}
+
+function testBanner(note: string | undefined): {
+  html: string;
+  text: string;
+  chat: string;
+} {
+  if (!note) {
+    return { html: "", text: "", chat: "" };
+  }
+  return {
+    html: `<div style="background: #eff6ff; border: 1px solid #93c5fd; border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; color: #1e3a8a;">${escapeHtml(note)}</div>`,
+    text: `${note}\n\n`,
+    chat: `${note}\n`,
+  };
+}
 
 function backupBanner(reason: string | undefined): {
   html: string;
@@ -206,9 +258,34 @@ export function renderMessage(
       return renderChannelPaused(input);
     case "launch_notice":
       return renderLaunchNotice(input);
+    case "alerts_paused":
+    case "alerts_resumed":
+      return renderOrgPause(input);
     default:
       return renderTest(input);
   }
+}
+
+const MISSED_DETAIL =
+  "Its schedule was due and no run started. This is usually a KeeperHub scheduling problem, not your workflow; our team is alerted too.";
+const FAILING_NEXT_STEP =
+  "It keeps running and failing until someone fixes, mutes or pauses it.";
+const MISSED_NEXT_STEP =
+  "You can run it by hand from the editor; you will be told when it runs on its own again.";
+
+/** "Before this: 214 successful runs in 30 days, the last at 12:15 UTC." */
+function historyLine(incident: AlertIncident): string | null {
+  const before = incident.before;
+  if (!before) {
+    return null;
+  }
+  if (before.successes === 0) {
+    return "It has not succeeded in the 30 days before this.";
+  }
+  const last = before.lastSuccessAt
+    ? `, the last at ${formatUtc(before.lastSuccessAt)}`
+    : "";
+  return `Before this: ${plural(before.successes, "successful run", "successful runs")} in 30 days${last}.`;
 }
 
 function renderAlert(
@@ -216,52 +293,78 @@ function renderAlert(
   now: Date
 ): RenderedMessage {
   const { workflow, incident, orgName, appUrl } = input;
-  const headline = input.workflowPaused
-    ? pausedHeadline(workflow, incident, input.kind === "reminder")
-    : failingHeadline(workflow, incident, input.kind === "reminder", now);
-  const backup = backupBanner(input.backupReason);
-  const error = shortError(incident.lastError);
-  const hint = errorHint(incident.lastError);
+  const missed = incident.openedBy === "missed";
+  const reminder = input.kind === "reminder";
+  const headline = input.paused
+    ? pausedHeadline(
+        workflow,
+        input.pausedFailures ?? incident.failureCount,
+        input.paused === "again"
+      )
+    : failingHeadline(workflow, incident, reminder, now);
+  const banners = joinBanners(
+    testBanner(input.testNote),
+    backupBanner(input.backupReason)
+  );
+  const hint = missed ? null : errorHint(incident.lastError);
   const runs = runsUrl(appUrl, workflow.id);
   const open = workflowUrl(appUrl, workflow.id);
   const foot = footer(input);
-  const nextStep = input.workflowPaused
-    ? PAUSED_NEXT_STEP
-    : "It keeps running on its trigger until someone fixes, mutes or pauses it. To mute or pause it, open the workflow and use the Properties panel.";
+  let nextStep = FAILING_NEXT_STEP;
+  if (input.paused) {
+    nextStep = PAUSED_NEXT_STEP;
+  } else if (missed) {
+    nextStep = MISSED_NEXT_STEP;
+  }
+  const label = reminder ? "Still failing" : "Action needed";
+  const since = missed
+    ? `Due at ${formatUtc(incident.firstFailedAt)}.`
+    : `Failing since ${formatUtc(incident.firstFailedAt)}.`;
+  const history = missed ? null : historyLine(incident);
+  const detail = missed
+    ? MISSED_DETAIL
+    : `Last error: ${shortError(incident.lastError)}`;
 
-  const text = `${backup.text}${headline}.
+  // The same lines, in the same order, for email text, chat and the HTML.
+  const lines = [since, history, detail, hint, nextStep].filter(
+    (line): line is string => Boolean(line)
+  );
+  const links = missed
+    ? [`Open the workflow: ${open}`]
+    : [`Open the failing workflow: ${open}`, `Failed runs: ${runs}`];
 
-Organization: ${orgName}
-Trigger: ${workflow.triggerLabel}
-Failing since: ${formatUtc(incident.firstFailedAt)}
-Last error: ${error}
-${hint ? `${hint}\n` : ""}
-${nextStep}
-View failed runs: ${runs}
-Open the workflow: ${open}
+  const text = `${banners.text}${label}: ${headline}.
 
+${lines.join("\n")}
+
+${links.join("\n")}
+
+${workflow.triggerLabel} trigger, ${orgName}.
 ${foot.text}`;
 
   const html = emailLayout(
-    escapeHtml(headline),
-    `${backup.html}
-    <div style="background: #f5f5f5; border-radius: 8px; padding: 20px; margin: 0 0 20px; font-size: 14px;">
-      <div><strong>Organization:</strong> ${escapeHtml(orgName)}</div>
-      <div><strong>Trigger:</strong> ${escapeHtml(workflow.triggerLabel)}</div>
-      <div><strong>Failing since:</strong> ${formatUtc(incident.firstFailedAt)}</div>
-      <div><strong>Last error:</strong> <code>${escapeHtml(error)}</code></div>
+    `<span style="display:inline-block; background:#b91c1c; color:#fff; font-size:12px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; padding:3px 8px; border-radius:4px; margin-bottom:8px;">${label}</span><br>${escapeHtml(headline)}`,
+    `${banners.html}
+    <div style="border-left: 4px solid #b91c1c; background: #fef2f2; border-radius: 6px; padding: 14px 16px; margin: 0 0 20px; font-size: 14px;">
+      <div><strong>${escapeHtml(since)}</strong></div>
+      ${history ? `<div>${escapeHtml(history)}</div>` : ""}
+      ${
+        missed
+          ? `<div style="margin-top: 8px;">${escapeHtml(MISSED_DETAIL)}</div>`
+          : `<div style="margin-top: 8px;">Last error: <code>${escapeHtml(shortError(incident.lastError))}</code></div>`
+      }
       ${hint ? `<div style="margin-top: 8px;">${escapeHtml(hint)}</div>` : ""}
     </div>
-    <p>${escapeHtml(nextStep)}</p>
-    <p>${emailButton(runs, "View failed runs")}${emailButton(open, "Open the workflow")}</p>`,
+    <p>${emailButton(open, missed ? "Open the workflow" : "Open the failing workflow", "danger")}${missed ? "" : emailButton(runs, "View failed runs")}</p>
+    <p style="color: #555; font-size: 13px;">${escapeHtml(nextStep)} ${escapeHtml(workflow.triggerLabel)} trigger, ${escapeHtml(orgName)}.</p>`,
     foot.html
   );
 
   return {
-    subject: `${input.backupReason ? "[Backup] " : ""}[${orgName}] ${headline}`,
+    subject: `${input.testNote ? "[Test] " : ""}${input.backupReason ? "[Backup] " : ""}[${orgName}] ${label}: ${headline}`,
     text,
     html,
-    chat: `[${orgName}] ${backup.chat}${headline}.\nLast error: ${error}${hint ? `\n${hint}` : ""}\nTrigger: ${workflow.triggerLabel}\n${runs}`,
+    chat: `[${orgName}] ${banners.chat}${label}: ${headline}.\n${lines.join("\n")}\n${links.join("\n")}`,
     summary: summaryOf(`${orgName}: ${headline}`),
   };
 }
@@ -271,8 +374,8 @@ function renderGrouped(
 ): RenderedMessage {
   const { workflows, orgName, appUrl } = input;
   const headline = `${workflows.length} workflows started failing`;
-  const cause =
-    "This often means a shared cause, such as an RPC provider or a wallet out of gas.";
+  const anyPaused = workflows.some((w) => w.workflowPaused);
+  const cause = `This often means a shared cause, such as an RPC provider or a wallet out of gas.${anyPaused ? " Paused workflows stay off until someone turns them back on." : ""}`;
   const backup = backupBanner(input.backupReason);
   const foot = footer(input);
   const pausedNote = (w: { workflowPaused?: boolean }): string =>
@@ -317,18 +420,22 @@ function renderRecovery(
   const { workflow, incident, orgName, appUrl } = input;
   const span = formatDuration(now.getTime() - incident.firstFailedAt.getTime());
   const headline = `${workflow.name} is running again`;
-  const detail = `It succeeded after ${plural(incident.failureCount, "failed run", "failed runs")} over ${span}.`;
+  const detail =
+    incident.openedBy === "missed"
+      ? `It started again ${span} after it was due.`
+      : `It succeeded after ${plural(incident.failureCount, "failed run", "failed runs")} over ${span}.`;
   const link = runsUrl(appUrl, workflow.id);
   const foot = footer(input);
+  const test = testBanner(input.testNote);
   return {
-    subject: `[${orgName}] ${headline}`,
-    text: `${headline}. ${detail}\n\nView runs: ${link}\n\n${foot.text}`,
+    subject: `${input.testNote ? "[Test] " : ""}[${orgName}] Resolved: ${headline}`,
+    text: `${test.text}${headline}. ${detail}\n\nView runs: ${link}\n\n${foot.text}`,
     html: emailLayout(
       escapeHtml(headline),
-      `<p>${escapeHtml(detail)}</p><p>${emailButton(link, "View runs")}</p>`,
+      `${test.html}<p>${escapeHtml(detail)}</p><p>${emailButton(link, "View runs")}</p>`,
       foot.html
     ),
-    chat: `[${orgName}] ${headline}. ${detail}\n${link}`,
+    chat: `[${orgName}] ${test.chat}${headline}. ${detail}\n${link}`,
     summary: summaryOf(`${orgName}: ${headline}`),
   };
 }
@@ -346,6 +453,35 @@ function renderChannelPaused(
     html: emailLayout(
       escapeHtml(headline),
       `<p>${escapeHtml(detail)}</p><p>${emailButton(link, "Fix the channel")}</p>`,
+      foot.html
+    ),
+    chat: `[${input.orgName}] ${headline}. ${detail}\n${link}`,
+    summary: summaryOf(`${input.orgName}: ${headline}`),
+  };
+}
+
+function renderOrgPause(
+  input: Extract<MessageInput, { kind: "alerts_paused" | "alerts_resumed" }>
+): RenderedMessage {
+  const paused = input.kind === "alerts_paused";
+  const headline = paused
+    ? `Alerts for ${input.orgName} are paused until ${formatUtc(input.until)}`
+    : `Alerts for ${input.orgName} are back on`;
+  let detail: string;
+  if (paused) {
+    const who = input.by ? `${input.by} paused them` : "They were paused";
+    detail = `${who}${input.reason ? `: ${input.reason.replace(TRAILING_DOTS, "")}` : ""}. Workflows keep running; failures are not reported until then.`;
+  } else {
+    detail = `${input.by ? `${input.by} turned them back on` : "The pause ended"}. Any workflow still failing is reported now.`;
+  }
+  const link = settingsUrl(input.appUrl, input.organizationId);
+  const foot = footer(input);
+  return {
+    subject: `[${input.orgName}] ${headline}`,
+    text: `${headline}.\n\n${detail}\n\nAlerts settings: ${link}\n\n${foot.text}`,
+    html: emailLayout(
+      escapeHtml(headline),
+      `<p>${escapeHtml(detail)}</p><p>${emailButton(link, "Alerts settings")}</p>`,
       foot.html
     ),
     chat: `[${input.orgName}] ${headline}. ${detail}\n${link}`,
@@ -390,19 +526,61 @@ function renderLaunchNotice(
   };
 }
 
+const SAMPLE_WORKFLOW: AlertWorkflow = {
+  id: "",
+  name: "Example keeper",
+  triggerLabel: "Schedule",
+};
+
+/** A message of the given kind about an example workflow, exactly as it would be sent. */
+export function renderSample(
+  org: OrgFields,
+  sample: SampleKind,
+  testNote?: string,
+  now: Date = new Date()
+): RenderedMessage {
+  const incident: AlertIncident = {
+    failureCount: 5,
+    firstFailedAt: new Date(now.getTime() - 47 * 60 * 1000),
+    lastError: "execution reverted: insufficient funds for gas * price + value",
+    openedBy: sample === "missed" ? "missed" : "count",
+    before: {
+      successes: 214,
+      lastSuccessAt: new Date(now.getTime() - 52 * 60 * 1000),
+    },
+  };
+  if (sample === "recovery") {
+    return renderMessage(
+      {
+        ...org,
+        kind: "recovery",
+        workflow: SAMPLE_WORKFLOW,
+        incident,
+        testNote,
+      },
+      now
+    );
+  }
+  return renderMessage(
+    {
+      ...org,
+      kind: "alert",
+      workflow: SAMPLE_WORKFLOW,
+      incident,
+      testNote,
+      paused: sample === "paused" ? "first" : undefined,
+    },
+    now
+  );
+}
+
+/** A real-format example marked as a test, so people see what an alert looks like. */
 function renderTest(
   input: Extract<MessageInput, { kind: "test" }>
 ): RenderedMessage {
-  const line = `KeeperHub test, no action needed. Failure notifications for ${input.orgName} can reach ${input.channelLabel}.`;
-  return {
-    subject: `[${input.orgName}] KeeperHub test notification`,
-    text: line,
-    html: emailLayout(
-      "Test notification",
-      `<p>${escapeHtml(line)}</p>`,
-      "Sent from the Test button in Settings, Notifications."
-    ),
-    chat: line,
-    summary: summaryOf(`Test notification for ${input.orgName}`),
-  };
+  return renderSample(
+    input,
+    input.sample ?? "alert",
+    `Test from Settings, Notifications, sent to ${input.channelLabel}. Nothing is failing: this is how a real alert looks.`
+  );
 }

@@ -43,9 +43,11 @@ import {
 import { loadOrgPolicy, resolveRecipientEmails } from "./policy";
 import type { Tx } from "./queue-rows";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
+import { checkChannelSilently } from "./senders";
 import {
   type ChannelView,
   type ConnectionView,
+  channelLabel,
   type HistoryEntry,
   historyNote,
   type MemberView,
@@ -158,6 +160,8 @@ async function loadFailingNow(
       name: workflows.name,
       failureCount: workflowFailureIncidents.failureCount,
       openedAt: workflowFailureIncidents.openedAt,
+      openedBy: workflowFailureIncidents.openedBy,
+      dueAt: workflowFailureIncidents.firstFailedAt,
     })
     .from(workflowFailureIncidents)
     .innerJoin(workflows, eq(workflows.id, workflowFailureIncidents.workflowId))
@@ -169,7 +173,11 @@ async function loadFailingNow(
     )
     .orderBy(desc(workflowFailureIncidents.openedAt))
     .limit(50);
-  return rows.map((row) => ({ ...row, openedAt: row.openedAt.toISOString() }));
+  return rows.map((row) => ({
+    ...row,
+    openedAt: row.openedAt.toISOString(),
+    dueAt: row.dueAt.toISOString(),
+  }));
 }
 
 async function loadEmailUsage(
@@ -231,7 +239,8 @@ export async function loadOrgSettingsView(
             isNotNull(workflowFailureAlertOverrides.recipientUserIds),
             eq(workflowFailureAlertOverrides.customChannels, true),
             isNotNull(workflowFailureAlertOverrides.mutedUntil),
-            eq(workflowFailureAlertOverrides.muteUntilSuccess, true)
+            eq(workflowFailureAlertOverrides.muteUntilSuccess, true),
+            eq(workflowFailureAlertOverrides.pauseWorkflow, true)
           )
         )
       )
@@ -258,6 +267,14 @@ export async function loadOrgSettingsView(
     unsharedConnections,
     emailUsage,
     customWorkflows: custom,
+    pause:
+      policy.pausedUntil && policy.pausedUntil > new Date()
+        ? {
+            until: policy.pausedUntil.toISOString(),
+            reason: policy.pauseReason,
+            by: policy.pausedBy,
+          }
+        : null,
     failingNow,
     unreachable: !isReachable(
       resolveRecipientEmails(policy.recipientUserIds, members),
@@ -288,6 +305,7 @@ type ChannelInput = {
 };
 
 const MAX_PAUSED_REASON = 500;
+const TRAILING_PERIOD = /\.+$/;
 
 export function parseThreshold(raw: unknown): number {
   const value = typeof raw === "number" ? raw : Number(raw);
@@ -314,10 +332,14 @@ export function parseTimeLimit(raw: unknown): number | null {
   return value;
 }
 
-/** Validate channel rows against the org's shared connections. */
+/**
+ * Validate channel rows against the org's shared connections. With verify, a
+ * new or retargeted channel must pass a silent check before it can be saved.
+ */
 export async function parseChannels(
   raw: unknown,
-  organizationId: string
+  organizationId: string,
+  options: { verify?: boolean } = {}
 ): Promise<ChannelInput[]> {
   if (!Array.isArray(raw)) {
     return [];
@@ -411,7 +433,57 @@ export async function parseChannels(
           : undefined,
     });
   }
+  if (options.verify) {
+    await verifyNewTargets(parsed, saved, connections, organizationId);
+  }
   return parsed;
+}
+
+/** Refuse a new or changed target that cannot receive notifications. */
+async function verifyNewTargets(
+  parsed: ChannelInput[],
+  saved: { id: string; integrationId: string; destination: string }[],
+  connections: Map<string, ConnectionView>,
+  organizationId: string
+): Promise<void> {
+  // A paused channel put back by Undo is restored as it was, paused.
+  const fresh = parsed.filter(
+    (p) =>
+      !(
+        p.pausedReason ||
+        saved.some(
+          (row) =>
+            row.id === p.id &&
+            row.integrationId === p.integrationId &&
+            row.destination === p.destination
+        )
+      )
+  );
+  const results = await Promise.all(
+    fresh.map(async (channel) => ({
+      channel,
+      outcome: await checkChannelSilently(
+        { ...channel, id: channel.id ?? "new", pausedAt: null },
+        organizationId
+      ),
+    }))
+  );
+  const failed = results.find((r) => !r.outcome.ok);
+  if (!failed) {
+    return;
+  }
+  const { channel, outcome } = failed;
+  const label = channelLabel(
+    channel.kind,
+    channel.destination,
+    connections.get(channel.integrationId)?.name
+  );
+  const reason = outcome.message.replace(TRAILING_PERIOD, "");
+  throw new SettingsError(
+    outcome.retryable
+      ? `${label} could not be checked right now (${reason}). Try saving again in a minute.`
+      : `${label} cannot receive notifications: ${reason}. Fix it, then save.`
+  );
 }
 
 /**
@@ -555,7 +627,9 @@ export async function parseOrgSettings(
     remindDaily: body.remindDaily !== false,
     notifyRecovery: body.notifyRecovery !== false,
     recipientUserIds: [...new Set(requested)],
-    channels: await parseChannels(body.channels, organizationId),
+    channels: await parseChannels(body.channels, organizationId, {
+      verify: true,
+    }),
   };
 }
 

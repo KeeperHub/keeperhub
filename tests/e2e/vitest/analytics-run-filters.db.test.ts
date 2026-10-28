@@ -696,17 +696,22 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
     options?: RunQueryFilters & {
       limit?: number;
       cursor?: string;
+      page?: number;
       projectId?: string;
     }
   ) => Promise<{
     runs: UnifiedRun[];
     total: number;
+    listTotal: number;
     nextCursor: string | null;
   }>;
   let getRunFacets: (
     organizationId: string,
     range: "7d",
-    options?: RunQueryFilters & { projectId?: string }
+    options?: RunQueryFilters & {
+      projectId?: string;
+      dimensions?: FacetDimension[];
+    }
   ) => Promise<RunFacets>;
   let getAnalyticsSummary: (
     organizationId: string,
@@ -878,10 +883,14 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
   });
 
   it("lists notifications beside runs when no source is chosen", async () => {
-    const { runs, total } = await getUnifiedRuns(N_ORG, "7d", { limit: 50 });
+    const { runs, total, listTotal } = await getUnifiedRuns(N_ORG, "7d", {
+      limit: 50,
+    });
 
     expect(runs.map((run) => run.id)).toEqual([RUN, ...ALL_DELIVERIES]);
-    expect(total).toBe(6);
+    // Listed, never counted: the total is the one run; paging sees all six.
+    expect(total).toBe(1);
+    expect(listTotal).toBe(6);
     expect(runs.map((run) => run.id)).not.toContain(D_OTHER);
 
     const byId = new Map(runs.map((run) => [run.id, run]));
@@ -922,7 +931,8 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
     expect(only.runs.map((run) => run.id).sort()).toEqual(
       [...ALL_DELIVERIES].sort()
     );
-    expect(only.total).toBe(5);
+    expect(only.total).toBe(0);
+    expect(only.listTotal).toBe(5);
 
     expect(await ids({ sources: ["workflow", "direct"] })).toEqual([RUN]);
   });
@@ -958,11 +968,26 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
     expect(await ids({ projectId: N_PROJECT })).toEqual(
       [RUN, D_ALERT, D_GROUPED].sort()
     );
-    const { total } = await getUnifiedRuns(N_ORG, "7d", {
+    const { total, listTotal } = await getUnifiedRuns(N_ORG, "7d", {
       projectId: N_PROJECT,
       limit: 50,
     });
-    expect(total).toBe(3);
+    expect(total).toBe(1);
+    expect(listTotal).toBe(3);
+  });
+
+  it("pages by page number over every listed row, notifications included", async () => {
+    const first = await getUnifiedRuns(N_ORG, "7d", { limit: 2, page: 1 });
+    expect(first.total).toBe(1);
+    const pages = Math.ceil(first.listTotal / 2);
+    expect(pages).toBe(3);
+
+    const seen: string[] = [];
+    for (let page = 1; page <= pages; page += 1) {
+      const result = await getUnifiedRuns(N_ORG, "7d", { limit: 2, page });
+      seen.push(...result.runs.map((run) => run.id));
+    }
+    expect(seen).toEqual([RUN, ...ALL_DELIVERIES]);
   });
 
   it("pages through notifications and runs with the cursor", async () => {
@@ -979,19 +1004,81 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
     expect(seen).toEqual([RUN, ...ALL_DELIVERIES]);
   });
 
-  it("counts notifications in the status facets the list shows them under", async () => {
-    const all = await getRunFacets(N_ORG, "7d", { search: "" });
-    expect(all.statusCounts).toEqual({
-      success: 3,
-      error: 1,
-      pending: 1,
-      cancelled: 1,
-    });
+  // Every delivery of one message is written in one transaction, so they share
+  // created_at to the microsecond. A cursor of time alone (and cut to the
+  // millisecond) skipped the rest of such a group at a page boundary.
+  it("pages through rows that share one timestamp without skipping any", async () => {
+    const tiedAt = `${minutesAgo(5).toISOString().slice(0, 23)}456`;
+    const tied = ["t1", "t2", "t3", "t4", "t5"].map(
+      (suffix) => `${N}${suffix}`
+    );
+    const tiedRun = `${N}run_tied`;
+    for (const id of tied) {
+      await queryClient`
+        INSERT INTO failure_alert_deliveries
+          (id, dedup_key, organization_id, kind, channel, recipient, state,
+           created_at, updated_at)
+        VALUES (${id}, ${id}, ${N_ORG}, 'alert', 'email', ${`${id}@notifs.test`},
+                'pending', ${tiedAt}::timestamp, ${tiedAt}::timestamp)`;
+    }
+    // A run at the very same instant, so the tie also spans sources.
+    await queryClient`
+      INSERT INTO workflow_executions (id, workflow_id, user_id, status, started_at)
+      VALUES (${tiedRun}, ${WF_OUT}, ${N_USER}, 'running', ${tiedAt}::timestamp)`;
+    try {
+      for (const sources of [
+        ["notification"] as RunQueryFilters["sources"],
+        undefined,
+      ]) {
+        const seen: string[] = [];
+        let cursor: string | undefined;
+        for (let page = 0; page < 20; page += 1) {
+          const result = await getUnifiedRuns(N_ORG, "7d", {
+            limit: 2,
+            cursor,
+            sources,
+          });
+          seen.push(...result.runs.map((run) => run.id));
+          if (!result.nextCursor) {
+            break;
+          }
+          cursor = result.nextCursor;
+        }
+        const expected = sources
+          ? [...tied, ...ALL_DELIVERIES]
+          : [RUN, tiedRun, ...tied, ...ALL_DELIVERIES];
+        expect(seen.length, String(sources)).toBe(new Set(seen).size);
+        expect([...seen].sort(), String(sources)).toEqual([...expected].sort());
 
-    const runsOnly = await getRunFacets(N_ORG, "7d", {
-      sources: ["workflow"],
+        // Page by page matches one unpaged read, order included.
+        const { runs } = await getUnifiedRuns(N_ORG, "7d", {
+          limit: 50,
+          sources,
+        });
+        expect(seen).toEqual(runs.map((run) => run.id));
+      }
+    } finally {
+      await queryClient`DELETE FROM failure_alert_deliveries WHERE id IN ${queryClient(tied)}`;
+      await queryClient`DELETE FROM workflow_executions WHERE id = ${tiedRun}`;
+    }
+  });
+
+  it("never counts notifications in the filter counts", async () => {
+    // Listed by default, and filterable by status, but the counts beside the
+    // options are counts of runs.
+    const all = await getRunFacets(N_ORG, "7d", { search: "" });
+    expect(all.statusCounts).toEqual({ success: 1 });
+
+    const onlyNotifications = await getRunFacets(N_ORG, "7d", {
+      sources: ["notification"],
     });
-    expect(runsOnly.statusCounts).toEqual({ success: 1 });
+    expect(onlyNotifications.statusCounts).toEqual({});
+
+    const gas = await getRunFacets(N_ORG, "7d", {
+      dimensions: ["gas"],
+      sources: ["notification"],
+    });
+    expect(gas.gasCounts).toEqual({ sponsored: 0, wallet: 0, free: 0 });
   });
 
   it("keeps notifications out of the summary", async () => {

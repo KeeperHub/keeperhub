@@ -67,6 +67,24 @@ describe("findSettingsMatches", () => {
     ]);
   });
 
+  it("finds Alerts by what it alerts about, for every member", () => {
+    for (const query of [
+      "alerts",
+      "failure",
+      "failing",
+      "PagerDuty",
+      "Telegram",
+      "Discord",
+      "Slack",
+      "missed run",
+      "pause",
+    ]) {
+      expect(
+        findSettingsMatches(query, MEMBER).map((m) => m.item.segment)
+      ).toContain("alerts");
+    }
+  });
+
   it("returns nothing for an empty or unmatched query", () => {
     expect(results("  ")).toEqual([]);
     expect(results("zzzz")).toEqual([]);
@@ -100,6 +118,12 @@ describe("isSettingsItemVisible", () => {
         isSettingsItemVisible(item(`/settings/org-1/${segment}`), OWNER)
       ).toBe(true);
     }
+  });
+
+  it("opens Alerts to every member of the organization", () => {
+    expect(isSettingsItemVisible(item("/settings/org-1/alerts"), MEMBER)).toBe(
+      true
+    );
   });
 
   it("tells the account security page from the organization one", () => {

@@ -4,7 +4,7 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/lib/db", () => ({ db: {} }));
 
 const { buildMessageRows } = await import(
-  "@/lib/notifications/failure-alerts/evaluator"
+  "@/lib/notifications/failure-alerts/queue-rows"
 );
 const { nextRetryDelayMs } = await import(
   "@/lib/notifications/failure-alerts/outbox"
@@ -169,7 +169,7 @@ describe("renderMessage", () => {
       now
     );
     expect(message.subject).toBe(
-      "[Acme] OETH Vault TVL Watchdog is failing: 5 failed runs in a row"
+      "[Acme] Action needed: OETH Vault TVL Watchdog failed 5 times in a row"
     );
     expect(message.chat).toContain("execution reverted (RPC 429)");
     expect(message.chat).toContain("https://app.test/workflows/wf-1?tab=runs");
@@ -228,9 +228,18 @@ describe("renderMessage", () => {
     const message = renderMessage({
       kind: "test",
       orgName: "Acme",
+      organizationId: "org",
+      appUrl: "https://app.keeperhub.com",
       channelLabel: "Slack #ops",
     });
-    expect(message.chat).toContain("KeeperHub test, no action needed");
+    expect(message.subject).toMatch(
+      /^\[Test\] \[Acme\] Action needed: Example keeper failed 5 times in a row/
+    );
+    expect(message.chat).toContain(
+      "Nothing is failing: this is how a real alert looks"
+    );
+    expect(message.chat).toContain("Last error:");
+    expect(message.html).toContain("Last error:");
   });
 });
 
@@ -257,17 +266,38 @@ describe("message wording after review", () => {
     const message = renderMessage({ ...base, kind: "alert", incident }, now);
     expect(message.chat.startsWith("[Acme] ")).toBe(true);
     expect(message.text).toContain(
-      "Change who gets these: https://app.test/settings/org-1/notifications"
+      "Change who gets these: https://app.test/settings/org-1/alerts"
     );
     expect(message.text).toContain(
-      "Open the workflow: https://app.test/workflows/wf-1"
+      "Open the failing workflow: https://app.test/workflows/wf-1"
     );
+  });
+
+  it("shows how unusual the failure is", () => {
+    const message = renderMessage(
+      {
+        ...base,
+        kind: "alert",
+        incident: {
+          ...incident,
+          before: {
+            successes: 214,
+            lastSuccessAt: new Date("2026-10-28T11:00:00Z"),
+          },
+        },
+      },
+      now
+    );
+    expect(message.text).toContain(
+      "Before this: 214 successful runs in 30 days, the last at 2026-10-28 11:00 UTC."
+    );
+    expect(message.chat).toContain("Before this: 214 successful runs");
   });
 
   it("words a reminder as still failing, once", () => {
     const message = renderMessage({ ...base, kind: "reminder", incident }, now);
     expect(message.subject).toBe(
-      "[Acme] Rebalance vault is still failing: 6 failed runs in a row"
+      "[Acme] Still failing: Rebalance vault is still failing: 6 failed runs"
     );
   });
 

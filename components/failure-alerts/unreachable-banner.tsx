@@ -36,9 +36,9 @@ export function FailureAlertsUnreachableBanner({
         {/* Outside the truncated text, so the way to fix it never gets cut. */}
         <Link
           className="shrink-0 font-medium underline underline-offset-4"
-          href={`/settings/${organizationId}/notifications`}
+          href={`/settings/${organizationId}/alerts`}
         >
-          Notification settings
+          Alerts settings
         </Link>
       </p>
     </output>

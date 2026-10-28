@@ -34,6 +34,7 @@ vi.mock("@/lib/analytics/queries", () => ({
 
 import { GET } from "@/app/api/analytics/runs/route";
 import { getUnifiedRuns } from "@/lib/analytics/queries";
+import { encodeRunCursor } from "@/lib/analytics/run-cursor";
 import { MAX_RUN_LIMIT } from "@/lib/analytics/runs-query";
 
 function oauthRequest(status: string): NextRequest {
@@ -365,6 +366,21 @@ describe("GET /api/analytics/runs pagination parsing", () => {
     const options = await optionsFor({ cursor });
 
     expect(options?.cursor).toBe(cursor);
+  });
+
+  it("forwards the keyset cursor the listing now mints, and no look-alike", async () => {
+    const minted = encodeRunCursor({
+      at: "2026-09-01T12:34:56.789123",
+      source: "notification",
+      id: "delivery_1",
+    });
+    expect((await optionsFor({ cursor: minted }))?.cursor).toBe(minted);
+
+    const forged = Buffer.from(
+      "2026-09-01T12:34:56.789123~notification~x'; DROP",
+      "utf8"
+    ).toString("base64url");
+    expect((await optionsFor({ cursor: forged }))?.cursor).toBeUndefined();
   });
 
   it("keeps every forwarded cursor inside the range Postgres holds", async () => {

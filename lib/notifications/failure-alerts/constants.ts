@@ -66,6 +66,19 @@ export const DELIVERY_BATCH = 25;
 export const DELIVERY_BUDGET_MS = 40 * 1000;
 export const MAX_WORKFLOWS_PER_RUN = 500;
 
+/** Longest org-wide pause, so a forgotten one cannot silence alerts for long. */
+export const MAX_ORG_PAUSE_MS = 7 * 24 * 60 * 60 * 1000;
+export const MAX_PAUSE_REASON = 200;
+
+/** A scheduled workflow this late with no run counts as not running. */
+export const MISSED_RUN_GRACE_MS = 10 * 60 * 1000;
+/** Schedules checked for a missed run per cycle. */
+export const MISSED_SCAN_LIMIT = 2000;
+/** This many late schedules at once points at the scheduler: page our on-call. */
+export const MISSED_RUNS_PLATFORM_ALERT = 20;
+/** Queue or outbox rows waiting this long mean the evaluator is not running. */
+export const BACKLOG_ALERT_MS = 10 * 60 * 1000;
+
 /** An open incident with no alert queued after this long lost it in a crash. */
 export const ALERT_REQUEUE_AFTER_MS = 2 * 60 * 1000;
 
@@ -80,7 +93,7 @@ export const TESTS_PER_MINUTE_PER_USER = 5;
 export const TESTS_PER_DAY_PER_ORG = 30;
 
 /** Silent channel checks. */
-export const HEALTH_CHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+export const HEALTH_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /** History shown on the Notifications page. */
 export const HISTORY_PAGE_SIZE = 50;

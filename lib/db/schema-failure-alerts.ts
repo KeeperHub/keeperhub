@@ -56,6 +56,10 @@ export const orgFailureAlertSettings = pgTable(
     recipientUserIds: jsonb("recipient_user_ids").$type<string[] | null>(),
     countingSince: timestamp("counting_since"),
     launchNoticeSentAt: timestamp("launch_notice_sent_at"),
+    // Org-wide pause (maintenance): no alerts until then.
+    pausedUntil: timestamp("paused_until"),
+    pauseReason: text("pause_reason"),
+    pausedBy: text("paused_by"),
     updatedBy: text("updated_by"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -186,9 +190,13 @@ export const workflowFailureAlertQueue = pgTable(
 
 export type FailureIncidentResolution =
   | "success"
+  | "ran"
   | "disabled"
   | "deleted"
   | "manual_trigger";
+
+/** What opened an incident: N failures, a time limit, or a schedule that did not run. */
+export type FailureIncidentTrigger = "count" | "time" | "missed";
 
 /**
  * One failing streak that reached the threshold. At most one open per
@@ -204,8 +212,7 @@ export const workflowFailureIncidents = pgTable(
     organizationId: text("organization_id").notNull(),
     workflowId: text("workflow_id").notNull(),
     openedAt: timestamp("opened_at").notNull().defaultNow(),
-    // "count" or "time": which rule opened it, for the message wording.
-    openedBy: text("opened_by").notNull().$type<"count" | "time">(),
+    openedBy: text("opened_by").notNull().$type<FailureIncidentTrigger>(),
     threshold: integer("threshold").notNull(),
     failureCount: integer("failure_count").notNull(),
     firstFailedAt: timestamp("first_failed_at").notNull(),
@@ -220,6 +227,9 @@ export const workflowFailureIncidents = pgTable(
     // When this incident last turned its workflow off (pauseWorkflow). While
     // the workflow stays off the incident stays open: stopped is not fixed.
     workflowPausedAt: timestamp("workflow_paused_at"),
+    // When someone last turned the workflow back on, set by a trigger on
+    // workflows.enabled. A pause older than this no longer holds the incident.
+    workflowResumedAt: timestamp("workflow_resumed_at"),
     resolvedAt: timestamp("resolved_at"),
     resolvedReason: text("resolved_reason").$type<FailureIncidentResolution>(),
     resolvingExecutionId: text("resolving_execution_id"),
@@ -248,7 +258,9 @@ export type FailureAlertMessageKind =
   | "reminder"
   | "recovery"
   | "channel_paused"
-  | "launch_notice";
+  | "launch_notice"
+  | "alerts_paused"
+  | "alerts_resumed";
 
 export type FailureAlertDeliveryChannel = "email" | FailureAlertChannelKind;
 

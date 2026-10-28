@@ -1,7 +1,6 @@
 "use client";
 
-import { NotificationHistory } from "@/components/failure-alerts/notification-history";
-import { OrgFailureAlertsSection } from "@/components/failure-alerts/org-failure-alerts-section";
+import Link from "next/link";
 import { ExecutionDigestSection } from "@/components/organization/execution-digest-section";
 import { SectionHeader, SettingsCard } from "./section";
 import { useSettingsContext } from "./settings-context";
@@ -13,28 +12,24 @@ export function NotificationsSection(): React.ReactElement {
   return (
     <>
       <SectionHeader
-        description="Alerts and recurring emails about your workflows, and who on the team receives them."
+        description="Recurring emails about your workflows, and who on the team receives them."
         title="Notifications"
       />
-      <SettingsCard
-        description="Tells your team when a workflow that runs on its own keeps failing."
-        title="Workflow failure notifications"
-      >
-        {organizationId ? (
-          <OrgFailureAlertsSection organizationId={organizationId} />
-        ) : (
-          <FormSkeleton rows={4} />
-        )}
-      </SettingsCard>
-      <SettingsCard
-        description="What was sent, where, and whether it arrived."
-        title="Recent notifications"
-      >
-        {organizationId ? (
-          <NotificationHistory organizationId={organizationId} />
-        ) : (
-          <FormSkeleton rows={3} />
-        )}
+      <SettingsCard title="Workflow failure alerts">
+        <p className="text-muted-foreground text-sm">
+          Workflow failure alerts are under{" "}
+          <Link
+            className="text-foreground underline underline-offset-4"
+            href={
+              organizationId
+                ? `/settings/${organizationId}/alerts`
+                : "/settings"
+            }
+          >
+            Alerts
+          </Link>
+          .
+        </p>
       </SettingsCard>
       <SettingsCard
         description="A rollup of executions, failures and gas spend."

@@ -253,7 +253,16 @@ export type RunsFilters = RunQueryFilters & {
 export type RunsResponse = {
   runs: UnifiedRun[];
   nextCursor: string | null;
+  /**
+   * Runs (workflow and direct) matching the filters. System notifications are
+   * listed beside them but never counted in this or any other figure.
+   */
   total: number;
+  /**
+   * Every row the listing pages through, notifications included. For paging
+   * only: it is not a count of runs and is never shown as one.
+   */
+  listTotal: number;
   page: number;
   pageSize: number;
   /**

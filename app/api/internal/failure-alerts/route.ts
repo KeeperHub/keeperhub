@@ -15,6 +15,7 @@ import { NextResponse } from "next/server";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { runFailureAlertCycle } from "@/lib/notifications/failure-alerts/cycle";
+import { appBaseUrl } from "@/lib/notifications/failure-alerts/messages";
 
 export const dynamic = "force-dynamic";
 
@@ -28,9 +29,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   try {
-    const appUrl =
-      process.env.NEXT_PUBLIC_APP_URL ?? "https://app.keeperhub.com";
-    const report = await runFailureAlertCycle(appUrl);
+    const report = await runFailureAlertCycle(appBaseUrl());
     return NextResponse.json(report, {
       status: report.errors.length > 0 ? 500 : 200,
     });

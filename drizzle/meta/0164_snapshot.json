@@ -4034,6 +4034,24 @@
           "primaryKey": false,
           "notNull": false
         },
+        "paused_until": {
+          "name": "paused_until",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pause_reason": {
+          "name": "pause_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "paused_by": {
+          "name": "paused_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "updated_by": {
           "name": "updated_by",
           "type": "text",
@@ -9225,6 +9243,12 @@
         },
         "workflow_paused_at": {
           "name": "workflow_paused_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "workflow_resumed_at": {
+          "name": "workflow_resumed_at",
           "type": "timestamp",
           "primaryKey": false,
           "notNull": false

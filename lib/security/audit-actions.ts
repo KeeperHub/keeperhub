@@ -114,6 +114,14 @@ const ACTION_MAP: Record<string, AuditActionDescription> = {
     phrase: "changed workflow failure notifications",
     kind: "change",
   },
+  "org.failure_alerts_paused": {
+    phrase: "paused failure alerts for the organization",
+    kind: "change",
+  },
+  "org.failure_alerts_resumed": {
+    phrase: "turned failure alerts back on",
+    kind: "change",
+  },
   "org.failure_alert_tested": {
     phrase: "tested a failure notification channel",
     kind: "change",

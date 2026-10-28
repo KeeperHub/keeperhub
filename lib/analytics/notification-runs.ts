@@ -16,19 +16,21 @@ import type {
 /**
  * Failure notifications listed beside runs in the analytics runs table: one row
  * per message sent (a delivery), so a reader can see what the org was told and
- * whether it arrived next to the runs that caused it. Pure, so the server query
- * and the table share it and it can be tested without a database.
+ * whether it arrived next to the runs that caused it. Pure, so it can be tested
+ * without a database; the SQL is in notification-runs-query.ts.
  */
 
 /**
- * A delivery state as a run status. Skipped is a message withdrawn before it
- * went out (its incident resolved, or what it was about is gone), which is a
- * cancellation, not the run list's "refused by the plan" skip.
+ * A delivery state as a run status, for the status filter and its counts (the
+ * table labels notification rows by their own state). Capped is a message the
+ * plan refused, which is what the list's "skipped" means. A skipped delivery is
+ * one withdrawn before it went out (its incident resolved, or what it was about
+ * is gone), which is a cancellation.
  */
 const STATUS_BY_STATE: Record<FailureAlertDeliveryState, NormalizedStatus> = {
   delivered: "success",
   failed: "error",
-  capped: "error",
+  capped: "skipped",
   pending: "pending",
   sending: "running",
   retrying: "running",
@@ -163,9 +165,9 @@ export function toNotificationRun(
     status: notificationStatus(row.state),
     startedAt: row.createdAt.toISOString(),
     completedAt: completed?.toISOString() ?? null,
-    durationMs: completed
-      ? Math.max(0, completed.getTime() - row.createdAt.getTime())
-      : null,
+    // Not a run: the time a message took to arrive is no duration a reader
+    // filters runs by, and the duration filter leaves notifications out.
+    durationMs: null,
     workflowId: only?.id ?? null,
     workflowName: only?.name ?? null,
     directType: null,

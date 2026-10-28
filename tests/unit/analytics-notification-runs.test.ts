@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { notificationBadge } from "@/components/analytics/runs-table";
 import {
   type NotificationRow,
   notificationStatesFor,
@@ -38,7 +39,8 @@ describe("notificationStatus", () => {
   it("maps each delivery state onto a status the runs list already has", () => {
     expect(notificationStatus("delivered")).toBe("success");
     expect(notificationStatus("failed")).toBe("error");
-    expect(notificationStatus("capped")).toBe("error");
+    // Refused by the plan: the list's "skipped", not an error.
+    expect(notificationStatus("capped")).toBe("skipped");
     expect(notificationStatus("pending")).toBe("pending");
     expect(notificationStatus("sending")).toBe("running");
     expect(notificationStatus("retrying")).toBe("running");
@@ -47,19 +49,17 @@ describe("notificationStatus", () => {
   });
 
   it("selects the delivery states behind a status filter", () => {
-    expect(notificationStatesFor(["error"]).sort()).toEqual([
-      "capped",
-      "failed",
-    ]);
+    expect(notificationStatesFor(["error"])).toEqual(["failed"]);
+    expect(notificationStatesFor(["skipped"])).toEqual(["capped"]);
     expect(notificationStatesFor(["running"]).sort()).toEqual([
       "retrying",
       "sending",
     ]);
     expect(notificationStatesFor(["cancelled"])).toEqual(["skipped"]);
     // Statuses a notification can never have select nothing.
-    expect(
-      notificationStatesFor(["system_error", "external_error", "skipped"])
-    ).toEqual([]);
+    expect(notificationStatesFor(["system_error", "external_error"])).toEqual(
+      []
+    );
   });
 });
 
@@ -96,6 +96,20 @@ describe("notificationTitle", () => {
     ).toBe("Alert: 3 workflows");
   });
 
+  it("titles the alerts-paused and alerts-back-on notices, which name no workflow", () => {
+    expect(notificationTitle("alerts_paused", [], null)).toBe("Alerts paused");
+    expect(notificationTitle("alerts_resumed", [], null)).toBe(
+      "Alerts back on"
+    );
+    const run = toNotificationRun(
+      row({ kind: "alerts_paused", workflowId: null, workflowName: null }),
+      NO_GROUPS
+    );
+    expect(run.notification?.title).toBe("Alerts paused");
+    expect(run.notification?.workflows).toEqual([]);
+    expect(run.workflowId).toBeNull();
+  });
+
   it("names the channel of a pause notice and nothing for a launch notice", () => {
     expect(notificationTitle("channel_paused", [], "Slack #ops")).toBe(
       "Channel stopped working: Slack #ops"
@@ -116,7 +130,8 @@ describe("toNotificationRun", () => {
       status: "success",
       startedAt: CREATED.toISOString(),
       completedAt: LATER.toISOString(),
-      durationMs: 4000,
+      // Not a run: no duration, which is also what the duration filter assumes.
+      durationMs: null,
       workflowId: "wf_nightly",
       workflowName: "Nightly sync",
       network: null,
@@ -186,7 +201,7 @@ describe("toNotificationRun", () => {
         NO_GROUPS
       );
       expect(run.completedAt).toBe(LATER.toISOString());
-      expect(run.durationMs).toBe(4000);
+      expect(run.durationMs).toBeNull();
       expect(run.notification?.lastError).toBe("why");
     }
   });
@@ -230,5 +245,42 @@ describe("toNotificationRun", () => {
     );
     expect(paused.notification?.workflows).toEqual([]);
     expect(paused.workflowId).toBeNull();
+  });
+});
+
+describe("notificationBadge", () => {
+  const detail = toNotificationRun(row(), NO_GROUPS).notification;
+  if (!detail) {
+    throw new Error("a notification row carries its detail");
+  }
+
+  it("labels each outcome in notification words, not run words", () => {
+    expect(notificationBadge(detail)).toMatchObject({
+      label: "Delivered",
+      tooltip: null,
+    });
+    expect(
+      notificationBadge({ ...detail, state: "failed", lastError: "403" })
+    ).toMatchObject({
+      label: "Not delivered",
+      tooltip: "Could not be delivered: 403",
+    });
+    expect(notificationBadge({ ...detail, state: "capped" })).toMatchObject({
+      label: "Over plan limit",
+      tooltip: "Not sent: Free plan monthly email limit reached",
+    });
+    expect(
+      notificationBadge({
+        ...detail,
+        state: "skipped",
+        lastError: "The workflow is running again.",
+      })
+    ).toMatchObject({
+      label: "Withdrawn",
+      tooltip: "Withdrawn: The workflow is running again.",
+    });
+    for (const state of ["pending", "sending", "retrying"]) {
+      expect(notificationBadge({ ...detail, state }).label).toBe("Sending");
+    }
   });
 });

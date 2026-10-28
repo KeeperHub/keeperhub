@@ -19,3 +19,9 @@ export function formatWhen(iso: string): string {
     timeZoneName: "short",
   });
 }
+
+/** A date as a datetime-local input holds it, in the viewer's time zone. */
+export function toLocalInput(date: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}

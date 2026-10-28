@@ -14,37 +14,41 @@ import {
 import { db } from "@/lib/db";
 import {
   failureAlertDeliveries,
+  organization,
   orgFailureAlertSettings,
   workflowExecutions,
   workflowFailureAlertOverrides,
   workflowFailureAlertQueue,
   workflowFailureIncidents,
+  workflowSchedules,
   workflows,
 } from "@/lib/db/schema";
-import type {
-  FailureAlertDeliveryChannel,
-  FailureAlertMessageKind,
-  FailureIncidentResolution,
-} from "@/lib/db/schema-failure-alerts";
+import type { FailureIncidentResolution } from "@/lib/db/schema-failure-alerts";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
-import {
-  loadOrgMembers,
-  type OrgMember,
-} from "@/lib/notifications/org-recipients";
-import { recordAuditEvent } from "@/lib/security/audit-log";
+import { loadOrgMembers } from "@/lib/notifications/org-recipients";
+import { workflowExecutableConditions } from "@/lib/workflow/executable";
 import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
 import {
   ALERT_REQUEUE_AFTER_MS,
-  BACKUP_AFTER_MS,
   DEFAULT_THRESHOLD,
   GROUP_ALERTS_FROM,
   MAX_REMINDERS,
   MAX_WORKFLOWS_PER_RUN,
+  MISSED_RUNS_PLATFORM_ALERT,
+  MISSED_SCAN_LIMIT,
   REMINDER_INTERVAL_MS,
 } from "./constants";
+import { missedDueAt, ranRecentlyCutoff } from "./missed-runs";
+import { activePause } from "./org-pause";
 import {
-  type ChannelConfig,
-  type EffectivePolicy,
+  HELD_SQL,
+  heldByPause,
+  isHeld,
+  pauseOpenIncident,
+  recordPause,
+  turnOffForIncident,
+} from "./pause";
+import {
   ensureOrgSettings,
   isMuted,
   loadChannels,
@@ -53,11 +57,12 @@ import {
   resolveRecipientEmails,
 } from "./policy";
 import {
-  channelRecipient,
+  buildMessageRows,
   type DeliveryInsert,
   groupScope,
   incidentScope,
   insertDeliveries,
+  rowsForPolicy,
   type Tx,
 } from "./queue-rows";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
@@ -88,6 +93,8 @@ type OpenedIncident = {
   id: string;
   organizationId: string;
   workflowId: string;
+  /** Its workflow was turned off as the incident opened. */
+  workflowPaused?: boolean;
 };
 
 export type EvaluationStats = {
@@ -96,6 +103,7 @@ export type EvaluationStats = {
   incidentsResolved: number;
   remindersQueued: number;
   messagesQueued: number;
+  schedulesLate: number;
 };
 
 export function emptyStats(): EvaluationStats {
@@ -105,6 +113,7 @@ export function emptyStats(): EvaluationStats {
     incidentsResolved: 0,
     remindersQueued: 0,
     messagesQueued: 0,
+    schedulesLate: 0,
   };
 }
 
@@ -235,77 +244,9 @@ function inactiveResolution(
   return null;
 }
 
-/**
- * True while an incident's own pause keeps its workflow off. The incident then
- * stays open: the workflow is stopped, not fixed, and its PagerDuty page and
- * the "Failing" state should stay until someone turns it back on and it works.
- */
-function heldByPause(
-  incident: Pick<IncidentRow, "workflowPausedAt">,
-  workflow: WorkflowRow,
-  reason: FailureIncidentResolution
-): boolean {
-  return (
-    reason === "disabled" &&
-    incident.workflowPausedAt !== null &&
-    workflow.deactivatedAt === null &&
-    runsOnItsOwn(workflowTriggerType(workflow.nodes))
-  );
-}
-
-/**
- * Turn a workflow off for its incident, the way its Enable switch does: every
- * trigger checks `enabled` before it starts a run. False when it was already
- * off (someone paused it first), which leaves the incident as it was.
- */
-async function pauseWorkflowFor(
-  workflow: WorkflowRow,
-  incidentId: string,
-  failureCount: number,
-  now: Date
-): Promise<boolean> {
-  const paused = await db.transaction(async (tx) => {
-    const updated = await tx
-      .update(workflows)
-      .set({ enabled: false, updatedAt: now })
-      .where(
-        and(
-          eq(workflows.id, workflow.id),
-          eq(workflows.enabled, true),
-          isNull(workflows.deletedAt)
-        )
-      )
-      .returning({ id: workflows.id });
-    if (updated.length === 0) {
-      return false;
-    }
-    await tx
-      .update(workflowFailureIncidents)
-      .set({ workflowPausedAt: now })
-      .where(eq(workflowFailureIncidents.id, incidentId));
-    return true;
-  });
-  if (paused) {
-    await recordAuditEvent({
-      actor: {
-        userId: null,
-        organizationId: workflow.organizationId,
-        authMethod: "internal",
-        actorLabel: "Failure notifications",
-      },
-      action: "workflow.paused_by_failure_alerts",
-      resourceType: "workflow",
-      resourceId: workflow.id,
-      before: { enabled: true },
-      after: { enabled: false },
-      metadata: { incidentId, failureCount },
-    });
-  }
-  return paused;
-}
-
 const SKIPPED_BECAUSE: Record<FailureIncidentResolution, string> = {
   success: "The workflow recovered before this was delivered.",
+  ran: "The workflow ran before this was delivered.",
   disabled: "The workflow was paused before this was delivered.",
   deleted: "The workflow was deleted before this was delivered.",
   manual_trigger:
@@ -386,7 +327,8 @@ async function closeIncident(params: {
 
     const rows: DeliveryInsert[] = [];
     const seen = new Set<string>();
-    const wantRecovery = reason === "success" && params.notifyRecovery;
+    const wantRecovery =
+      (reason === "success" || reason === "ran") && params.notifyRecovery;
     for (const row of prior) {
       const pagerDuty = row.channel === "pagerduty";
       // A page still in flight may land after this resolve; send the resolve
@@ -464,12 +406,30 @@ async function evaluateWorkflow(
   await queueLaunchNotice(workflow.organizationId, now, stats);
 
   const policy = await loadEffectivePolicy(workflow.organizationId, workflowId);
+  const orgPause = activePause(policy.orgPausedUntil, now);
   const window = Math.max(
     MIN_STREAK_WINDOW,
     policy.threshold * STREAK_WINDOW_MULTIPLIER
   );
   const runs = await loadRecentRuns(workflowId, window);
   const summary = summarizeStreak(runs, policy.countingSince, window);
+
+  // A late schedule's incident ends with any run; failures then count as usual.
+  if (open?.openedBy === "missed") {
+    if (runs.some((run) => run.startedAt > open.firstFailedAt)) {
+      await closeIncident({
+        incident: open,
+        reason: "ran",
+        resolvingExecutionId: runs[0]?.id ?? null,
+        notifyRecovery: policy.notifyRecovery,
+        now,
+        stats,
+      });
+      // Now closed: the run that ended it may itself start a failing streak.
+      return await evaluateWorkflow(workflowId, now, opened, stats);
+    }
+    return null;
+  }
 
   if (policy.muteUntilSuccess && summary.latestSuccessRunId) {
     await db
@@ -490,12 +450,21 @@ async function evaluateWorkflow(
       .where(eq(workflowFailureIncidents.id, open.id));
   }
 
-  // Turned back on but still failing: pause it again, counting only the runs
-  // since the last pause, and say so.
-  if (open?.workflowPausedAt && policy.pauseWorkflow) {
-    const sincePause = summarizeStreak(runs, open.workflowPausedAt, window);
-    if (sincePause.failures >= policy.threshold) {
-      await pauseAgain(workflow, open, policy, sincePause.failures, now, stats);
+  // Set to pause at its limit and past it while its incident is open: the box
+  // was ticked after the alert went out, or it was turned back on and kept
+  // failing (then only runs since the last pause count).
+  if (open && policy.pauseWorkflow && !orgPause) {
+    const since = open.workflowPausedAt;
+    const streak = since ? summarizeStreak(runs, since, window) : summary;
+    if (streak.failures >= policy.threshold) {
+      stats.messagesQueued += await pauseOpenIncident({
+        workflow,
+        incident: open,
+        policy,
+        failures: streak.failures,
+        again: since !== null,
+        now,
+      });
       return null;
     }
   }
@@ -516,7 +485,7 @@ async function evaluateWorkflow(
       incident: open,
       reason: "success",
       resolvingExecutionId: summary.latestSuccessRunId,
-      notifyRecovery: policy.notifyRecovery,
+      notifyRecovery: policy.notifyRecovery && !orgPause,
       now,
       stats,
     });
@@ -524,6 +493,10 @@ async function evaluateWorkflow(
   }
   if (decision.kind !== "open") {
     return null;
+  }
+  // Org-wide pause: nothing opens (and nothing is paused) until it ends.
+  if (orgPause) {
+    return orgPause;
   }
   // A mute silences alerts, not the pause someone asked for. A workflow
   // turned off without a word would be worse than the alert, so pausing one
@@ -536,172 +509,47 @@ async function evaluateWorkflow(
     return null;
   }
 
-  const inserted = await db
-    .insert(workflowFailureIncidents)
-    .values({
-      organizationId: workflow.organizationId,
-      workflowId,
-      openedBy: decision.by,
-      threshold: policy.threshold,
-      failureCount: summary.failures,
-      firstFailedAt: summary.firstFailedAt,
-      lastFailedAt: summary.lastFailedAt,
-      lastFailedExecutionId: summary.lastFailedRunId,
-      lastError: summary.lastError,
-      lastNotifiedAt: now,
-    })
-    .onConflictDoNothing()
-    .returning({ id: workflowFailureIncidents.id });
-  if (inserted[0]) {
+  const { firstFailedAt, lastFailedAt } = summary;
+  // Opening and pausing are one transaction, so an incident that should have
+  // paused its workflow never exists without the pause.
+  const result = await db.transaction(async (tx: Tx) => {
+    const [row] = await tx
+      .insert(workflowFailureIncidents)
+      .values({
+        organizationId: workflow.organizationId,
+        workflowId,
+        openedBy: decision.by,
+        threshold: policy.threshold,
+        failureCount: summary.failures,
+        firstFailedAt,
+        lastFailedAt,
+        lastFailedExecutionId: summary.lastFailedRunId,
+        lastError: summary.lastError,
+        lastNotifiedAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: workflowFailureIncidents.id });
+    if (!row) {
+      return null;
+    }
+    const paused =
+      policy.pauseWorkflow &&
+      (await turnOffForIncident(tx, workflowId, row.id, now));
+    return { id: row.id, paused };
+  });
+  if (result) {
     stats.incidentsOpened += 1;
-    if (policy.pauseWorkflow) {
-      // Before the alert is queued, so the alert says it was paused.
-      await pauseWorkflowFor(workflow, inserted[0].id, summary.failures, now);
+    if (result.paused) {
+      await recordPause(workflow, result.id, summary.failures);
     }
     opened.push({
-      id: inserted[0].id,
+      id: result.id,
       organizationId: workflow.organizationId,
       workflowId,
+      workflowPaused: result.paused,
     });
   }
   return null;
-}
-
-/**
- * The rows for one message to everyone the policy names. With nobody to
- * email and no chat channel, one failed email row is written so the backup
- * channels fire and the history shows nobody could be reached.
- */
-export function buildMessageRows(params: {
-  scope: string;
-  organizationId: string;
-  incidentId: string | null;
-  kind: FailureAlertMessageKind;
-  sequence: number;
-  emails: string[];
-  channels: ChannelConfig[];
-  includePagerDuty: boolean;
-  context?: Record<string, unknown>;
-  now: Date;
-}): DeliveryInsert[] {
-  const base = {
-    scope: params.scope,
-    organizationId: params.organizationId,
-    incidentId: params.incidentId,
-    kind: params.kind,
-    sequence: params.sequence,
-    context: params.context,
-    nextAttemptAt: params.now,
-  };
-  const backupAt = (channel: FailureAlertDeliveryChannel): Date =>
-    new Date(params.now.getTime() + BACKUP_AFTER_MS[channel]);
-
-  const rows: DeliveryInsert[] = params.emails.map((email) => ({
-    ...base,
-    channel: "email",
-    recipient: email,
-    backupAt: backupAt("email"),
-  }));
-
-  for (const channel of params.channels) {
-    if (channel.pausedAt || channel.role !== "always") {
-      continue;
-    }
-    if (channel.kind === "pagerduty" && !params.includePagerDuty) {
-      continue;
-    }
-    rows.push({
-      ...base,
-      channel: channel.kind,
-      channelId: channel.id,
-      recipient: channelRecipient(channel),
-      backupAt: backupAt(channel.kind),
-    });
-  }
-
-  if (params.emails.length === 0) {
-    rows.push({
-      ...base,
-      channel: "email",
-      recipient: "(nobody reachable)",
-      state: "failed",
-      lastError:
-        "Nobody in the organization has an email address KeeperHub can reach.",
-      backupAt: params.now,
-    });
-  }
-  return rows;
-}
-
-function rowsForPolicy(
-  policy: EffectivePolicy,
-  members: OrgMember[],
-  organizationId: string,
-  incidentId: string,
-  kind: FailureAlertMessageKind,
-  sequence: number,
-  now: Date,
-  context?: Record<string, unknown>
-): DeliveryInsert[] {
-  return buildMessageRows({
-    scope: incidentScope(incidentId),
-    organizationId,
-    incidentId,
-    kind,
-    sequence,
-    context,
-    emails: resolveRecipientEmails(policy.recipientUserIds, members),
-    channels: policy.channels,
-    // PagerDuty owns escalation: it gets the incident and its resolve, never
-    // our reminders.
-    includePagerDuty: kind === "alert",
-    now,
-  });
-}
-
-/**
- * Pause a workflow that kept failing after someone turned it back on, and
- * tell the same people. Sent as the incident's next reminder, so the claim on
- * the reminder count keeps two evaluators from both sending it.
- */
-async function pauseAgain(
-  workflow: WorkflowRow,
-  incident: IncidentRow,
-  policy: EffectivePolicy,
-  failures: number,
-  now: Date,
-  stats: EvaluationStats
-): Promise<void> {
-  if (!(await pauseWorkflowFor(workflow, incident.id, failures, now))) {
-    return;
-  }
-  const sequence = incident.reminderCount + 1;
-  const claimed = await db
-    .update(workflowFailureIncidents)
-    .set({ reminderCount: sequence, lastNotifiedAt: now })
-    .where(
-      and(
-        eq(workflowFailureIncidents.id, incident.id),
-        eq(workflowFailureIncidents.reminderCount, incident.reminderCount)
-      )
-    )
-    .returning({ id: workflowFailureIncidents.id });
-  if (claimed.length === 0) {
-    return;
-  }
-  const members = await loadOrgMembers(workflow.organizationId);
-  stats.messagesQueued += await insertDeliveries(
-    rowsForPolicy(
-      policy,
-      members,
-      workflow.organizationId,
-      incident.id,
-      "reminder",
-      sequence,
-      now,
-      { pausedAgain: true }
-    )
-  );
 }
 
 /** Queue rows and mark the incidents alerted, all or nothing. */
@@ -796,7 +644,8 @@ async function queueAlerts(
               incident.id,
               "alert",
               0,
-              now
+              now,
+              incident.workflowPaused ? { workflowPaused: true } : undefined
             )
           );
         }
@@ -878,7 +727,7 @@ export async function closeInactiveIncidents(
         // Only the inactive ones, so a long list of open incidents during a
         // wide outage cannot crowd them out of the batch. A workflow its own
         // incident paused is held open (heldByPause), so it is left out too.
-        sql`((${workflows.enabled} = false AND ${workflowFailureIncidents.workflowPausedAt} IS NULL)
+        sql`((${workflows.enabled} = false AND NOT ${HELD_SQL})
           OR ${workflows.deletedAt} IS NOT NULL
           OR ${workflows.deactivatedAt} IS NOT NULL
           OR NOT EXISTS (
@@ -964,10 +813,12 @@ export async function queueReminders(
           )
         : null;
       // A workflow its incident paused is not "still failing": it is off.
-      const pausedByUs =
-        incident.workflowPausedAt !== null &&
-        !(await loadWorkflow(incident.workflowId))?.enabled;
-      if (!policy?.remindDaily || isMuted(policy, now) || pausedByUs) {
+      if (
+        !policy?.remindDaily ||
+        isMuted(policy, now) ||
+        isHeld(incident) ||
+        activePause(policy.orgPausedUntil, now)
+      ) {
         // Not owed a reminder today. Move its clock on without counting one,
         // so it leaves the due list instead of crowding out other orgs'.
         await db
@@ -1126,6 +977,120 @@ async function findFailingWorkflows(organizationId: string): Promise<
 }
 
 /** Drain the queue of workflows to evaluate and queue the resulting alerts. */
+/**
+ * Scheduled workflows that should have run and did not: due by their cron or
+ * interval, past the grace, with no run row since. Many at once pages our team.
+ */
+export async function checkMissedSchedules(
+  now: Date,
+  stats: EvaluationStats
+): Promise<void> {
+  const candidates = await db
+    .select({
+      workflowId: workflows.id,
+      organizationId: workflows.organizationId,
+      nodes: workflows.nodes,
+      cronExpression: workflowSchedules.cronExpression,
+      timezone: workflowSchedules.timezone,
+      intervalSeconds: workflowSchedules.intervalSeconds,
+      anchorAt: workflowSchedules.anchorAt,
+      scheduleUpdatedAt: workflowSchedules.updatedAt,
+      lastStartedAt: sql`(SELECT max(${workflowExecutions.startedAt})
+        FROM ${workflowExecutions}
+        WHERE ${workflowExecutions.workflowId} = ${workflows.id})`.mapWith(
+        workflowExecutions.startedAt
+      ),
+    })
+    .from(workflowSchedules)
+    .innerJoin(workflows, eq(workflows.id, workflowSchedules.workflowId))
+    .innerJoin(organization, eq(organization.id, workflows.organizationId))
+    .where(
+      and(
+        eq(workflowSchedules.enabled, true),
+        workflowExecutableConditions(),
+        sql`NOT EXISTS (SELECT 1 FROM ${workflowExecutions}
+          WHERE ${workflowExecutions.workflowId} = ${workflows.id}
+            AND ${workflowExecutions.startedAt} >= ${ranRecentlyCutoff(now).toISOString()})`,
+        sql`NOT EXISTS (SELECT 1 FROM ${workflowFailureIncidents}
+          WHERE ${workflowFailureIncidents.workflowId} = ${workflows.id}
+            AND ${workflowFailureIncidents.resolvedAt} IS NULL)`
+      )
+    )
+    .orderBy(workflowSchedules.id)
+    .limit(MISSED_SCAN_LIMIT);
+
+  const opened: OpenedIncident[] = [];
+  for (const row of candidates) {
+    if (
+      !isFailureAlertsEnabledForOrg(row.organizationId) ||
+      workflowTriggerType(row.nodes) !== "Schedule"
+    ) {
+      continue;
+    }
+    try {
+      await ensureOrgSettings(row.organizationId, now);
+      const policy = await loadEffectivePolicy(
+        row.organizationId,
+        row.workflowId
+      );
+      const counting = policy.countingSince?.getTime() ?? 0;
+      const dueAt = missedDueAt({
+        schedule: row,
+        lastStartedAt: row.lastStartedAt,
+        notBefore: new Date(
+          Math.max(counting, row.scheduleUpdatedAt.getTime())
+        ),
+        now,
+      });
+      if (!dueAt) {
+        continue;
+      }
+      stats.schedulesLate += 1;
+      if (isMuted(policy, now) || activePause(policy.orgPausedUntil, now)) {
+        continue;
+      }
+      const [inserted] = await db
+        .insert(workflowFailureIncidents)
+        .values({
+          organizationId: row.organizationId,
+          workflowId: row.workflowId,
+          openedBy: "missed",
+          threshold: policy.threshold,
+          failureCount: 0,
+          firstFailedAt: dueAt,
+          lastFailedAt: dueAt,
+          lastNotifiedAt: now,
+        })
+        .onConflictDoNothing()
+        .returning({ id: workflowFailureIncidents.id });
+      if (inserted) {
+        stats.incidentsOpened += 1;
+        opened.push({
+          id: inserted.id,
+          organizationId: row.organizationId,
+          workflowId: row.workflowId,
+        });
+      }
+    } catch (error) {
+      logSystemError(
+        ErrorCategory.WORKFLOW_ENGINE,
+        "[FailureAlerts] Could not check a schedule for a missed run",
+        error,
+        { workflow_id: row.workflowId }
+      );
+    }
+  }
+  if (stats.schedulesLate >= MISSED_RUNS_PLATFORM_ALERT) {
+    logSystemError(
+      ErrorCategory.WORKFLOW_ENGINE,
+      "[FailureAlerts] Many scheduled workflows have not run; the scheduler may be down",
+      new Error(`${stats.schedulesLate} schedules late`),
+      { late: String(stats.schedulesLate) }
+    );
+  }
+  await queueAlerts(opened, now, stats);
+}
+
 export async function evaluateQueuedWorkflows(
   now: Date,
   stats: EvaluationStats

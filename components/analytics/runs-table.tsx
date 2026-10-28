@@ -13,6 +13,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { MouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { formatWhen } from "@/components/failure-alerts/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -258,29 +259,16 @@ const STATUS_TOOLTIPS: Partial<Record<NormalizedStatus, string>> = {
     "The run failed inside KeeperHub: dispatch, the queue, or a run that was reaped after it timed out. There is nothing to fix in your workflow.",
 };
 
-function StatusBadge({
-  source,
-  status,
+function BadgeWithTooltip({
+  badge,
+  tooltip,
 }: {
-  source: RunSource;
-  status: NormalizedStatus;
+  badge: ReactNode;
+  tooltip: string | null | undefined;
 }): ReactNode {
-  const badge = (
-    <Badge
-      className={cn("capitalize", STATUS_DISPLAY[status].badge)}
-      variant="outline"
-    >
-      {STATUS_DISPLAY[status].label}
-    </Badge>
-  );
-
-  // The tooltips explain why a run ended that way; a notification is not a run.
-  const tooltip =
-    source === "notification" ? undefined : STATUS_TOOLTIPS[status];
   if (!tooltip) {
     return badge;
   }
-
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -288,6 +276,92 @@ function StatusBadge({
       </TooltipTrigger>
       <TooltipContent className="max-w-xs">{tooltip}</TooltipContent>
     </Tooltip>
+  );
+}
+
+function StatusBadge({ status }: { status: NormalizedStatus }): ReactNode {
+  return (
+    <BadgeWithTooltip
+      badge={
+        <Badge
+          className={cn("capitalize", STATUS_DISPLAY[status].badge)}
+          variant="outline"
+        >
+          {STATUS_DISPLAY[status].label}
+        </Badge>
+      }
+      tooltip={STATUS_TOOLTIPS[status]}
+    />
+  );
+}
+
+const MONTHLY_LIMIT_TEXT = "Not sent: Free plan monthly email limit reached";
+
+/**
+ * A notification's own outcome. The run badges would misread it: a message
+ * that could not be delivered is not a failed run, and a pause notice that
+ * arrived is not a success of anything. Exported for its unit test.
+ */
+export function notificationBadge(detail: NotificationRunDetail): {
+  label: string;
+  className: string;
+  tooltip: string | null;
+} {
+  switch (detail.state) {
+    case "delivered":
+      return {
+        label: "Delivered",
+        className: STATUS_DISPLAY.success.badge,
+        tooltip: null,
+      };
+    case "failed":
+      return {
+        label: "Not delivered",
+        className: "border-destructive/20 bg-destructive/10 text-destructive",
+        tooltip: detail.lastError
+          ? `Could not be delivered: ${detail.lastError}`
+          : "Could not be delivered",
+      };
+    case "capped":
+      return {
+        label: "Over plan limit",
+        className:
+          "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20",
+        tooltip: MONTHLY_LIMIT_TEXT,
+      };
+    case "skipped":
+      return {
+        label: "Withdrawn",
+        className: STATUS_DISPLAY.skipped.badge,
+        tooltip: detail.lastError ? `Withdrawn: ${detail.lastError}` : null,
+      };
+    default:
+      return {
+        label: "Sending",
+        className: STATUS_DISPLAY.running.badge,
+        tooltip:
+          detail.attempts > 0 && detail.lastError
+            ? `Retrying: ${detail.lastError}`
+            : null,
+      };
+  }
+}
+
+function NotificationStatusBadge({
+  detail,
+}: {
+  detail: NotificationRunDetail;
+}): ReactNode {
+  const { label, className, tooltip } = notificationBadge(detail);
+  return (
+    <BadgeWithTooltip
+      badge={
+        <Badge className={className} variant="outline">
+          {label}
+        </Badge>
+      }
+      tooltip={tooltip}
+    />
   );
 }
 
@@ -539,13 +613,42 @@ function NotificationDetailItem({
  * Where a notification went and what happened to it. A notification has no
  * steps, so this replaces the step rows a run expands into.
  */
+function plural(count: number, word: string): string {
+  return `${count} ${word}${count === 1 ? "" : "s"}`;
+}
+
+/** What became of the message, in the words the notification history uses. */
+function notificationOutcome(
+  detail: NotificationRunDetail,
+  completedAt: string | null
+): string {
+  switch (detail.state) {
+    case "delivered":
+      return completedAt ? `Delivered ${formatWhen(completedAt)}` : "Delivered";
+    case "failed":
+      return `Gave up after ${plural(detail.attempts, "attempt")}`;
+    case "capped":
+      return MONTHLY_LIMIT_TEXT;
+    case "skipped":
+      return "Withdrawn before it was sent";
+    default:
+      return detail.attempts > 0
+        ? `Sending, ${plural(detail.attempts, "attempt")} so far`
+        : "Queued";
+  }
+}
+
 function NotificationDetailRows({
+  completedAt,
   detail,
 }: {
+  completedAt: string | null;
   detail: NotificationRunDetail;
 }): ReactNode {
-  // A pause notice names its channel in the title already.
-  const note = detail.kind === "channel_paused" ? null : detail.note;
+  // historyNote: why a backup was sent. A pause notice's note is its channel,
+  // which the title already names.
+  const backupReason =
+    detail.isBackup && detail.kind !== "channel_paused" ? detail.note : null;
   return (
     <tr>
       <td className="py-2 pr-3 pl-10 text-muted-foreground text-xs" colSpan={8}>
@@ -557,15 +660,12 @@ function NotificationDetailRows({
               detail.connectionName
             )}
           </NotificationDetailItem>
+          <NotificationDetailItem label="Outcome">
+            {notificationOutcome(detail, completedAt)}
+          </NotificationDetailItem>
           <NotificationDetailItem label="Backup">
-            {detail.isBackup ? "Yes" : "No"}
+            {detail.isBackup ? (backupReason ?? "Yes") : "No"}
           </NotificationDetailItem>
-          <NotificationDetailItem label="Attempts">
-            {detail.attempts}
-          </NotificationDetailItem>
-          {note ? (
-            <NotificationDetailItem label="Note">{note}</NotificationDetailItem>
-          ) : null}
           {detail.lastError && detail.state !== "delivered" ? (
             <NotificationDetailItem label="Reason">
               {detail.lastError}
@@ -607,7 +707,12 @@ function ExpandedRunDetail({
   steps: StepLog[];
 }): ReactNode {
   if (run.notification) {
-    return <NotificationDetailRows detail={run.notification} />;
+    return (
+      <NotificationDetailRows
+        completedAt={run.completedAt}
+        detail={run.notification}
+      />
+    );
   }
   return (
     <ExpandedStepRows
@@ -701,11 +806,12 @@ function ExpandableRunRow({
           <div className="flex items-center gap-1.5">
             <span
               className={cn(
-                "text-sm font-medium",
+                "min-w-0 max-w-xs truncate text-sm font-medium",
                 // A notification title is a sentence that already reads right.
                 !notification && "capitalize",
                 isDeleted && "italic text-muted-foreground line-through"
               )}
+              title={runName}
             >
               {runName}
             </span>
@@ -724,7 +830,11 @@ function ExpandableRunRow({
           </div>
         </td>
         <td className="py-3 pr-3">
-          <StatusBadge source={run.source} status={run.status} />
+          {notification ? (
+            <NotificationStatusBadge detail={notification} />
+          ) : (
+            <StatusBadge status={run.status} />
+          )}
         </td>
         <td className="py-3 pr-3">
           <SourceBadge source={run.source} />
@@ -785,23 +895,31 @@ export function Pagination({
   page,
   pageSize,
   total,
+  listTotal = total,
   onPageChange,
   loading,
 }: {
   page: number;
   pageSize: number;
+  /** Runs matching the filters: the only figure the pager shows as a count. */
   total: number;
+  /** Rows the listing pages through, notifications included. */
+  listTotal?: number;
   onPageChange: (page: number) => void;
   loading: boolean;
 }): ReactNode {
   // Capped at the route's page ceiling, so Next stops where the server does.
-  const totalPages = runsPageCount(total, pageSize);
-  if (total <= pageSize) {
+  const totalPages = runsPageCount(listTotal, pageSize);
+  if (listTotal <= pageSize) {
     return null;
   }
 
-  const rangeStart = (page - 1) * pageSize + 1;
-  const rangeEnd = Math.min(page * pageSize, total);
+  // Notifications are listed but never counted, so with any on the list a
+  // row range "of N runs" would not add up: the pager names the page instead.
+  const label =
+    listTotal === total
+      ? `${((page - 1) * pageSize + 1).toLocaleString()}\u2013${Math.min(page * pageSize, total).toLocaleString()} of ${total.toLocaleString()}`
+      : `Page ${page.toLocaleString()} of ${totalPages.toLocaleString()}`;
 
   return (
     <nav
@@ -809,8 +927,7 @@ export function Pagination({
       className="flex flex-wrap items-center gap-x-2 gap-y-1"
     >
       <span className="whitespace-nowrap font-medium text-muted-foreground text-xs tabular-nums">
-        {rangeStart.toLocaleString()}&ndash;{rangeEnd.toLocaleString()} of{" "}
-        {total.toLocaleString()}
+        {label}
       </span>
       <div className="flex items-center gap-2">
         <Button
@@ -1036,8 +1153,9 @@ export function RunsTable(): ReactNode {
                 moves under the title rather than both squeezing, and the
                 arrows stay together. */}
             <CardTitle className="flex flex-wrap items-center justify-between gap-y-2">
-              <span>Workflow Runs</span>
+              <span>Runs</span>
               <Pagination
+                listTotal={runsData?.listTotal ?? runsData?.total ?? 0}
                 loading={pageLoading}
                 onPageChange={(p) => {
                   handlePageChange(p).catch(() => {

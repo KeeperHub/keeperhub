@@ -58,6 +58,9 @@ CREATE TABLE "org_failure_alert_settings" (
 	"recipient_user_ids" jsonb,
 	"counting_since" timestamp,
 	"launch_notice_sent_at" timestamp,
+	"paused_until" timestamp,
+	"pause_reason" text,
+	"paused_by" text,
 	"updated_by" text,
 	"created_at" timestamp DEFAULT now() NOT NULL,
 	"updated_at" timestamp DEFAULT now() NOT NULL
@@ -100,6 +103,7 @@ CREATE TABLE "workflow_failure_incidents" (
 	"last_notified_at" timestamp DEFAULT now() NOT NULL,
 	"alert_queued_at" timestamp,
 	"workflow_paused_at" timestamp,
+	"workflow_resumed_at" timestamp,
 	"resolved_at" timestamp,
 	"resolved_reason" text,
 	"resolving_execution_id" text
@@ -163,3 +167,33 @@ CREATE TRIGGER queue_workflow_failure_alert_check
   FOR EACH ROW
   WHEN (NEW.status IN ('success', 'error'))
   EXECUTE FUNCTION public.queue_workflow_failure_alert_check();
+--> statement-breakpoint
+-- Record when a workflow its failure incident paused is turned back on, by
+-- any path (editor, API, MCP, admin): the incident then stops holding it, so
+-- turning it off again later is the owner's own pause. Errors are swallowed
+-- like the run trigger's, so an Enable switch can never fail because of this.
+CREATE OR REPLACE FUNCTION public.mark_failure_incident_resumed()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  BEGIN
+    UPDATE workflow_failure_incidents
+      SET workflow_resumed_at = now()
+      WHERE workflow_id = NEW.id
+        AND resolved_at IS NULL
+        AND workflow_paused_at IS NOT NULL;
+  EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'mark_failure_incident_resumed failed: %', SQLERRM;
+  END;
+  RETURN NEW;
+END;
+$$;
+--> statement-breakpoint
+DROP TRIGGER IF EXISTS mark_failure_incident_resumed ON workflows;
+--> statement-breakpoint
+CREATE TRIGGER mark_failure_incident_resumed
+  AFTER UPDATE OF enabled ON workflows
+  FOR EACH ROW
+  WHEN (OLD.enabled = false AND NEW.enabled = true)
+  EXECUTE FUNCTION public.mark_failure_incident_resumed();

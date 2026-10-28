@@ -2,6 +2,17 @@ import "server-only";
 
 import { db } from "@/lib/db";
 import { failureAlertDeliveries } from "@/lib/db/schema";
+import type {
+  FailureAlertDeliveryChannel,
+  FailureAlertMessageKind,
+} from "@/lib/db/schema-failure-alerts";
+import type { OrgMember } from "@/lib/notifications/org-recipients";
+import { BACKUP_AFTER_MS } from "./constants";
+import {
+  type ChannelConfig,
+  type EffectivePolicy,
+  resolveRecipientEmails,
+} from "./policy";
 
 export type DeliveryInsert = Omit<
   typeof failureAlertDeliveries.$inferInsert,
@@ -67,6 +78,99 @@ export async function insertDeliveries(
     .onConflictDoNothing({ target: failureAlertDeliveries.dedupKey })
     .returning({ id: failureAlertDeliveries.id });
   return inserted.length;
+}
+
+/**
+ * The rows for one message to everyone the policy names. With nobody to
+ * email and no chat channel, one failed email row is written so the backup
+ * channels fire and the history shows nobody could be reached.
+ */
+export function buildMessageRows(params: {
+  scope: string;
+  organizationId: string;
+  incidentId: string | null;
+  kind: FailureAlertMessageKind;
+  sequence: number;
+  emails: string[];
+  channels: ChannelConfig[];
+  includePagerDuty: boolean;
+  context?: Record<string, unknown>;
+  now: Date;
+}): DeliveryInsert[] {
+  const base = {
+    scope: params.scope,
+    organizationId: params.organizationId,
+    incidentId: params.incidentId,
+    kind: params.kind,
+    sequence: params.sequence,
+    context: params.context,
+    nextAttemptAt: params.now,
+  };
+  const backupAt = (channel: FailureAlertDeliveryChannel): Date =>
+    new Date(params.now.getTime() + BACKUP_AFTER_MS[channel]);
+
+  const rows: DeliveryInsert[] = params.emails.map((email) => ({
+    ...base,
+    channel: "email",
+    recipient: email,
+    backupAt: backupAt("email"),
+  }));
+
+  for (const channel of params.channels) {
+    if (channel.pausedAt || channel.role !== "always") {
+      continue;
+    }
+    if (channel.kind === "pagerduty" && !params.includePagerDuty) {
+      continue;
+    }
+    rows.push({
+      ...base,
+      channel: channel.kind,
+      channelId: channel.id,
+      recipient: channelRecipient(channel),
+      backupAt: backupAt(channel.kind),
+    });
+  }
+
+  if (params.emails.length === 0) {
+    rows.push({
+      ...base,
+      channel: "email",
+      recipient: "(nobody reachable)",
+      state: "failed",
+      lastError:
+        "Nobody in the organization has an email address KeeperHub can reach.",
+      backupAt: params.now,
+    });
+  }
+  return rows;
+}
+
+/** One message about one incident, to everyone its policy names. */
+export function rowsForPolicy(
+  policy: EffectivePolicy,
+  members: OrgMember[],
+  organizationId: string,
+  incidentId: string,
+  kind: FailureAlertMessageKind,
+  sequence: number,
+  now: Date,
+  context?: Record<string, unknown>
+): DeliveryInsert[] {
+  return buildMessageRows({
+    scope: incidentScope(incidentId),
+    organizationId,
+    incidentId,
+    kind,
+    sequence,
+    context,
+    emails: resolveRecipientEmails(policy.recipientUserIds, members),
+    channels: policy.channels,
+    // PagerDuty owns escalation: it gets the incident and its resolve, never
+    // our reminders.
+    includePagerDuty: kind === "alert",
+    now,
+  });
 }
 
 export type { Tx };

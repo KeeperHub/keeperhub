@@ -2082,7 +2082,7 @@ export function registerTools(
 
   server.tool(
     "list_executions",
-    "List workflow and direct executions for the organization with cursor pagination, plus the failure notifications KeeperHub sent it (source notification). Wraps GET /api/analytics/runs.",
+    "List workflow and direct executions for the organization with cursor pagination, plus the failure notifications KeeperHub sent it (source notification). Notifications are listed but never counted: total counts runs only, and listTotal counts every listed row for paging. Wraps GET /api/analytics/runs.",
     {
       cursor: z
         .string()

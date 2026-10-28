@@ -183,7 +183,11 @@ export async function loadWorkflowAlertView(
                 ? d.recipient
                 : `${d.channel} ${d.recipient}`
             ),
+            openedBy: incident.openedBy,
+            since: incident.firstFailedAt.toISOString(),
             workflowPausedAt: incident.workflowPausedAt?.toISOString() ?? null,
+            workflowResumedAt:
+              incident.workflowResumedAt?.toISOString() ?? null,
           }
         : null,
     },
@@ -278,7 +282,7 @@ export async function saveWorkflowOverride(params: {
 
   const customChannels = body.customChannels === true;
   const channels = customChannels
-    ? await parseChannels(body.channels, organizationId)
+    ? await parseChannels(body.channels, organizationId, { verify: true })
     : [];
   const mute = parseMute(body, now);
   const pauseWorkflow = body.pauseWorkflow === true;

@@ -98,4 +98,11 @@ describe("normalizeRunsResponse", () => {
     expect(run.networks).toEqual([]);
     expect(runGasDisplay(run)).toBe("-");
   });
+
+  it("pages over the run total when a stale server sends no listTotal", () => {
+    expect(normalizeRunsResponse(LEGACY_RESPONSE).listTotal).toBe(1);
+    expect(
+      normalizeRunsResponse({ ...LEGACY_RESPONSE, listTotal: 7 }).listTotal
+    ).toBe(7);
+  });
 });

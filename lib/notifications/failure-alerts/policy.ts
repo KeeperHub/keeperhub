@@ -26,6 +26,10 @@ type OrgPolicy = {
   /** Null: the organization's owners. */
   recipientUserIds: string[] | null;
   countingSince: Date | null;
+  /** Org-wide pause (maintenance); alerts stay off until then. */
+  pausedUntil: Date | null;
+  pauseReason: string | null;
+  pausedBy: string | null;
   isDefault: boolean;
 };
 
@@ -36,6 +40,9 @@ export const DEFAULT_ORG_POLICY: OrgPolicy = {
   notifyRecovery: true,
   recipientUserIds: null,
   countingSince: null,
+  pausedUntil: null,
+  pauseReason: null,
+  pausedBy: null,
   isDefault: true,
 };
 
@@ -62,6 +69,8 @@ export type EffectivePolicy = {
   muteUntilSuccess: boolean;
   /** Turn the workflow off when its alert goes out. Never set org-wide. */
   pauseWorkflow: boolean;
+  /** The org-wide pause, if one is set (it may have run out). */
+  orgPausedUntil: Date | null;
   countingSince: Date | null;
   source: "default" | "org" | "custom";
 };
@@ -84,6 +93,9 @@ export async function loadOrgPolicy(
     notifyRecovery: row.notifyRecovery,
     recipientUserIds: row.recipientUserIds ?? null,
     countingSince: row.countingSince,
+    pausedUntil: row.pausedUntil,
+    pauseReason: row.pauseReason,
+    pausedBy: row.pausedBy,
     isDefault: false,
   };
 }
@@ -195,6 +207,7 @@ export function mergePolicy(
     mutedUntil: override?.mutedUntil ?? null,
     muteUntilSuccess: override?.muteUntilSuccess ?? false,
     pauseWorkflow: override?.pauseWorkflow ?? false,
+    orgPausedUntil: org.pausedUntil,
     countingSince: org.countingSince,
     source,
   };
