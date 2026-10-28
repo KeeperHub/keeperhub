@@ -27,8 +27,5 @@ export function isWalletEmail(email: string | null | undefined): boolean {
 export function walletAddressFromEmail(
   email: string | null | undefined
 ): string | null {
-  if (!(typeof email === "string" && isWalletEmail(email))) {
-    return null;
-  }
-  return email.split("@")[0];
+  return email && isWalletEmail(email) ? email.split("@")[0] : null;
 }
