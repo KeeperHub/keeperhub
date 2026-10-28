@@ -72,6 +72,33 @@ describe("MCP agent utility tool handlers", () => {
     }
   });
 
+  it("list_executions offers every source the route filters on, notifications included", async () => {
+    const { server, tools } = makeMockServer();
+    const { registerTools } = await import("@/lib/mcp/tools");
+    const { parseRunFilters } = await import(
+      "@/lib/analytics/parse-run-filters"
+    );
+    registerTools(
+      server as unknown as McpServer,
+      "http://localhost:3000",
+      "Bearer oauth-token"
+    );
+    const tool = tools.find((t) => t.name === "list_executions");
+    if (!tool) {
+      throw new Error("list_executions not registered");
+    }
+
+    const source = tool.schema.source as unknown as {
+      safeParse: (value: unknown) => { success: boolean };
+    };
+    for (const value of ["workflow", "direct", "notification"]) {
+      expect(source.safeParse(value).success).toBe(true);
+      const params = new URLSearchParams({ source: value });
+      expect(parseRunFilters(params).sources).toEqual([value]);
+    }
+    expect(source.safeParse("telepathy").success).toBe(false);
+  });
+
   it("list_executions surfaces 401 from analytics runs", async () => {
     vi.stubGlobal(
       "fetch",

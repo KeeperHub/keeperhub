@@ -66,4 +66,36 @@ describe("normalizeRunsResponse", () => {
 
     expect(response.runs[0].gasNetworks).toEqual(["8453"]);
   });
+
+  it("passes a notification row's detail through untouched", () => {
+    const notification = {
+      title: "Alert: Nightly sync",
+      kind: "alert",
+      state: "delivered",
+      channel: "email",
+      recipient: "ops@example.com",
+      connectionName: null,
+      isBackup: false,
+      attempts: 1,
+      lastError: null,
+      note: null,
+      workflows: [{ id: "wf", name: "Nightly sync" }],
+    };
+    const [run] = normalizeRunsResponse({
+      ...LEGACY_RESPONSE,
+      runs: [
+        {
+          ...LEGACY_RESPONSE.runs[0],
+          source: "notification",
+          network: null,
+          networks: undefined,
+          notification,
+        },
+      ],
+    }).runs;
+
+    expect(run.notification).toEqual(notification);
+    expect(run.networks).toEqual([]);
+    expect(runGasDisplay(run)).toBe("-");
+  });
 });

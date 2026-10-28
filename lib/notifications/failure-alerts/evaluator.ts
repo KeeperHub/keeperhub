@@ -31,6 +31,7 @@ import {
   loadOrgMembers,
   type OrgMember,
 } from "@/lib/notifications/org-recipients";
+import { recordAuditEvent } from "@/lib/security/audit-log";
 import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
 import {
   ALERT_REQUEUE_AFTER_MS,
@@ -234,6 +235,75 @@ function inactiveResolution(
   return null;
 }
 
+/**
+ * True while an incident's own pause keeps its workflow off. The incident then
+ * stays open: the workflow is stopped, not fixed, and its PagerDuty page and
+ * the "Failing" state should stay until someone turns it back on and it works.
+ */
+function heldByPause(
+  incident: Pick<IncidentRow, "workflowPausedAt">,
+  workflow: WorkflowRow,
+  reason: FailureIncidentResolution
+): boolean {
+  return (
+    reason === "disabled" &&
+    incident.workflowPausedAt !== null &&
+    workflow.deactivatedAt === null &&
+    runsOnItsOwn(workflowTriggerType(workflow.nodes))
+  );
+}
+
+/**
+ * Turn a workflow off for its incident, the way its Enable switch does: every
+ * trigger checks `enabled` before it starts a run. False when it was already
+ * off (someone paused it first), which leaves the incident as it was.
+ */
+async function pauseWorkflowFor(
+  workflow: WorkflowRow,
+  incidentId: string,
+  failureCount: number,
+  now: Date
+): Promise<boolean> {
+  const paused = await db.transaction(async (tx) => {
+    const updated = await tx
+      .update(workflows)
+      .set({ enabled: false, updatedAt: now })
+      .where(
+        and(
+          eq(workflows.id, workflow.id),
+          eq(workflows.enabled, true),
+          isNull(workflows.deletedAt)
+        )
+      )
+      .returning({ id: workflows.id });
+    if (updated.length === 0) {
+      return false;
+    }
+    await tx
+      .update(workflowFailureIncidents)
+      .set({ workflowPausedAt: now })
+      .where(eq(workflowFailureIncidents.id, incidentId));
+    return true;
+  });
+  if (paused) {
+    await recordAuditEvent({
+      actor: {
+        userId: null,
+        organizationId: workflow.organizationId,
+        authMethod: "internal",
+        actorLabel: "Failure notifications",
+      },
+      action: "workflow.paused_by_failure_alerts",
+      resourceType: "workflow",
+      resourceId: workflow.id,
+      before: { enabled: true },
+      after: { enabled: false },
+      metadata: { incidentId, failureCount },
+    });
+  }
+  return paused;
+}
+
 const SKIPPED_BECAUSE: Record<FailureIncidentResolution, string> = {
   success: "The workflow recovered before this was delivered.",
   disabled: "The workflow was paused before this was delivered.",
@@ -377,7 +447,7 @@ async function evaluateWorkflow(
   );
   const org = await loadOrgPolicy(workflow.organizationId);
   if (inactiveReason) {
-    if (open) {
+    if (open && !heldByPause(open, workflow, inactiveReason)) {
       await closeIncident({
         incident: open,
         reason: inactiveReason,
@@ -420,6 +490,16 @@ async function evaluateWorkflow(
       .where(eq(workflowFailureIncidents.id, open.id));
   }
 
+  // Turned back on but still failing: pause it again, counting only the runs
+  // since the last pause, and say so.
+  if (open?.workflowPausedAt && policy.pauseWorkflow) {
+    const sincePause = summarizeStreak(runs, open.workflowPausedAt, window);
+    if (sincePause.failures >= policy.threshold) {
+      await pauseAgain(workflow, open, policy, sincePause.failures, now, stats);
+      return null;
+    }
+  }
+
   const decision = decide({
     summary,
     threshold: policy.threshold,
@@ -445,7 +525,10 @@ async function evaluateWorkflow(
   if (decision.kind !== "open") {
     return null;
   }
-  if (isMuted(policy, now)) {
+  // A mute silences alerts, not the pause someone asked for. A workflow
+  // turned off without a word would be worse than the alert, so pausing one
+  // always opens the incident and tells people.
+  if (isMuted(policy, now) && !policy.pauseWorkflow) {
     // Alerts start again if it is still failing when the mute ends.
     return policy.muteUntilSuccess ? null : policy.mutedUntil;
   }
@@ -471,6 +554,10 @@ async function evaluateWorkflow(
     .returning({ id: workflowFailureIncidents.id });
   if (inserted[0]) {
     stats.incidentsOpened += 1;
+    if (policy.pauseWorkflow) {
+      // Before the alert is queued, so the alert says it was paused.
+      await pauseWorkflowFor(workflow, inserted[0].id, summary.failures, now);
+    }
     opened.push({
       id: inserted[0].id,
       organizationId: workflow.organizationId,
@@ -553,7 +640,8 @@ function rowsForPolicy(
   incidentId: string,
   kind: FailureAlertMessageKind,
   sequence: number,
-  now: Date
+  now: Date,
+  context?: Record<string, unknown>
 ): DeliveryInsert[] {
   return buildMessageRows({
     scope: incidentScope(incidentId),
@@ -561,6 +649,7 @@ function rowsForPolicy(
     incidentId,
     kind,
     sequence,
+    context,
     emails: resolveRecipientEmails(policy.recipientUserIds, members),
     channels: policy.channels,
     // PagerDuty owns escalation: it gets the incident and its resolve, never
@@ -568,6 +657,51 @@ function rowsForPolicy(
     includePagerDuty: kind === "alert",
     now,
   });
+}
+
+/**
+ * Pause a workflow that kept failing after someone turned it back on, and
+ * tell the same people. Sent as the incident's next reminder, so the claim on
+ * the reminder count keeps two evaluators from both sending it.
+ */
+async function pauseAgain(
+  workflow: WorkflowRow,
+  incident: IncidentRow,
+  policy: EffectivePolicy,
+  failures: number,
+  now: Date,
+  stats: EvaluationStats
+): Promise<void> {
+  if (!(await pauseWorkflowFor(workflow, incident.id, failures, now))) {
+    return;
+  }
+  const sequence = incident.reminderCount + 1;
+  const claimed = await db
+    .update(workflowFailureIncidents)
+    .set({ reminderCount: sequence, lastNotifiedAt: now })
+    .where(
+      and(
+        eq(workflowFailureIncidents.id, incident.id),
+        eq(workflowFailureIncidents.reminderCount, incident.reminderCount)
+      )
+    )
+    .returning({ id: workflowFailureIncidents.id });
+  if (claimed.length === 0) {
+    return;
+  }
+  const members = await loadOrgMembers(workflow.organizationId);
+  stats.messagesQueued += await insertDeliveries(
+    rowsForPolicy(
+      policy,
+      members,
+      workflow.organizationId,
+      incident.id,
+      "reminder",
+      sequence,
+      now,
+      { pausedAgain: true }
+    )
+  );
 }
 
 /** Queue rows and mark the incidents alerted, all or nothing. */
@@ -742,8 +876,9 @@ export async function closeInactiveIncidents(
       and(
         isNull(workflowFailureIncidents.resolvedAt),
         // Only the inactive ones, so a long list of open incidents during a
-        // wide outage cannot crowd them out of the batch.
-        sql`(${workflows.enabled} = false
+        // wide outage cannot crowd them out of the batch. A workflow its own
+        // incident paused is held open (heldByPause), so it is left out too.
+        sql`((${workflows.enabled} = false AND ${workflowFailureIncidents.workflowPausedAt} IS NULL)
           OR ${workflows.deletedAt} IS NOT NULL
           OR ${workflows.deactivatedAt} IS NOT NULL
           OR NOT EXISTS (
@@ -763,19 +898,17 @@ export async function closeInactiveIncidents(
     .limit(500);
 
   for (const row of open) {
-    const reason = inactiveResolution(
-      {
-        id: row.incident.workflowId,
-        name: row.name,
-        organizationId: row.incident.organizationId,
-        enabled: row.enabled,
-        deletedAt: row.deletedAt,
-        deactivatedAt: row.deactivatedAt,
-        nodes: row.nodes,
-      },
-      workflowTriggerType(row.nodes)
-    );
-    if (!reason) {
+    const workflow = {
+      id: row.incident.workflowId,
+      name: row.name,
+      organizationId: row.incident.organizationId,
+      enabled: row.enabled,
+      deletedAt: row.deletedAt,
+      deactivatedAt: row.deactivatedAt,
+      nodes: row.nodes,
+    };
+    const reason = inactiveResolution(workflow, workflowTriggerType(row.nodes));
+    if (!reason || heldByPause(row.incident, workflow, reason)) {
       continue;
     }
     try {
@@ -830,7 +963,11 @@ export async function queueReminders(
             incident.workflowId
           )
         : null;
-      if (!policy?.remindDaily || isMuted(policy, now)) {
+      // A workflow its incident paused is not "still failing": it is off.
+      const pausedByUs =
+        incident.workflowPausedAt !== null &&
+        !(await loadWorkflow(incident.workflowId))?.enabled;
+      if (!policy?.remindDaily || isMuted(policy, now) || pausedByUs) {
         // Not owed a reminder today. Move its clock on without counting one,
         // so it leaves the due list instead of crowding out other orgs'.
         await db

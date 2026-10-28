@@ -14,21 +14,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import type { FailureAlertMessageKind } from "@/lib/db/schema-failure-alerts";
 import { HISTORY_PAGE_SIZE } from "@/lib/notifications/failure-alerts/constants";
 import {
   CHANNEL_LABEL,
+  FAILURE_ALERT_KIND_LABEL,
   type HistoryEntry,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import { formatWhen } from "./format";
-
-const KIND_LABEL: Record<string, string> = {
-  alert: "Alert",
-  reminder: "Reminder",
-  recovery: "Running again",
-  channel_paused: "Channel stopped working",
-  launch_notice: "Notifications turned on",
-};
 
 const STATE_LABEL: Record<string, string> = {
   pending: "Queued",
@@ -70,7 +64,9 @@ function channelLine(entry: HistoryEntry): string {
  */
 function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
   const paused = entry.kind === "channel_paused";
-  let title = KIND_LABEL[entry.kind] ?? entry.kind;
+  let title =
+    FAILURE_ALERT_KIND_LABEL[entry.kind as FailureAlertMessageKind] ??
+    entry.kind;
   if (paused && entry.note) {
     title = `${title}: ${entry.note}`;
   }

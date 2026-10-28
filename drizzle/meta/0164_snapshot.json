@@ -9034,6 +9034,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "pause_workflow": {
+          "name": "pause_workflow",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "updated_by": {
           "name": "updated_by",
           "type": "text",
@@ -9212,6 +9219,12 @@
         },
         "alert_queued_at": {
           "name": "alert_queued_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "workflow_paused_at": {
+          "name": "workflow_paused_at",
           "type": "timestamp",
           "primaryKey": false,
           "notNull": false

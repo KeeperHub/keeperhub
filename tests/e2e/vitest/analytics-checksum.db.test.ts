@@ -66,6 +66,7 @@ describe.skipIf(SKIP)("getAnalyticsChecksum", () => {
   ) => Promise<string>;
 
   async function cleanup(): Promise<void> {
+    await queryClient`DELETE FROM failure_alert_deliveries WHERE id LIKE ${`${PREFIX}%`}`;
     await queryClient`DELETE FROM workflow_executions WHERE id LIKE ${`${PREFIX}%`}`;
     await queryClient`DELETE FROM workflows WHERE id LIKE ${`${PREFIX}%`}`;
     await queryClient`DELETE FROM member WHERE organization_id LIKE ${`${PREFIX}%`}`;
@@ -166,8 +167,10 @@ describe.skipIf(SKIP)("getAnalyticsChecksum", () => {
   it("returns the newest run in the window, across every workflow in the org", async () => {
     const checksum = await getAnalyticsChecksum(ORG_ID, daysAgo(30));
 
-    // max started_at | max direct created_at | active runs
-    expect(checksum).toBe(`${pgText(NEWEST_IN_WINDOW)}|${SENTINEL}|1`);
+    // max started_at | max direct created_at | active runs | newest notification change
+    expect(checksum).toBe(
+      `${pgText(NEWEST_IN_WINDOW)}|${SENTINEL}|1|${SENTINEL}`
+    );
   });
 
   it("ignores runs that started before the window", async () => {
@@ -176,8 +179,10 @@ describe.skipIf(SKIP)("getAnalyticsChecksum", () => {
     const wide = await getAnalyticsChecksum(ORG_ID, daysAgo(25));
     const narrow = await getAnalyticsChecksum(ORG_ID, daysAgo(10));
 
-    expect(wide).toBe(`${pgText(NEWEST_IN_WINDOW)}|${SENTINEL}|1`);
-    expect(narrow).toBe(`${pgText(NEWEST_IN_WINDOW)}|${SENTINEL}|1`);
+    expect(wide).toBe(`${pgText(NEWEST_IN_WINDOW)}|${SENTINEL}|1|${SENTINEL}`);
+    expect(narrow).toBe(
+      `${pgText(NEWEST_IN_WINDOW)}|${SENTINEL}|1|${SENTINEL}`
+    );
   });
 
   it("falls back to the window start excluding everything", async () => {
@@ -185,12 +190,42 @@ describe.skipIf(SKIP)("getAnalyticsChecksum", () => {
 
     // Nothing started in the last day, so both timestamps collapse to the
     // sentinel. The active count is deliberately unwindowed and still counts.
-    expect(checksum).toBe(`${SENTINEL}|${SENTINEL}|1`);
+    expect(checksum).toBe(`${SENTINEL}|${SENTINEL}|1|${SENTINEL}`);
   });
 
   it("returns the sentinel for an organization with no runs", async () => {
     const checksum = await getAnalyticsChecksum(EMPTY_ORG_ID, daysAgo(30));
 
-    expect(checksum).toBe(`${SENTINEL}|${SENTINEL}|0`);
+    expect(checksum).toBe(`${SENTINEL}|${SENTINEL}|0|${SENTINEL}`);
+  });
+
+  it("changes when a notification in the window is sent or settles", async () => {
+    const sent = atSecond(daysAgo(3));
+    const settled = atSecond(daysAgo(1));
+    await queryClient`
+      INSERT INTO failure_alert_deliveries
+        (id, dedup_key, organization_id, kind, channel, recipient, state, created_at, updated_at)
+      VALUES (${`${PREFIX}delivery`}, ${`${PREFIX}delivery`}, ${ORG_ID}, 'launch_notice',
+              'email', 'ops@checksum.test', 'pending', ${pgText(sent)}, ${pgText(sent)})`;
+    try {
+      expect(await getAnalyticsChecksum(ORG_ID, daysAgo(30))).toBe(
+        `${pgText(NEWEST_IN_WINDOW)}|${SENTINEL}|1|${pgText(sent)}`
+      );
+
+      await queryClient`
+        UPDATE failure_alert_deliveries
+           SET state = 'delivered', updated_at = ${pgText(settled)}
+         WHERE id = ${`${PREFIX}delivery`}`;
+      expect(await getAnalyticsChecksum(ORG_ID, daysAgo(30))).toBe(
+        `${pgText(NEWEST_IN_WINDOW)}|${SENTINEL}|1|${pgText(settled)}`
+      );
+
+      // Sent before the window: it cannot change what the window lists.
+      expect(await getAnalyticsChecksum(ORG_ID, daysAgo(2.5))).toBe(
+        `${pgText(NEWEST_IN_WINDOW)}|${SENTINEL}|1|${SENTINEL}`
+      );
+    } finally {
+      await queryClient`DELETE FROM failure_alert_deliveries WHERE id = ${`${PREFIX}delivery`}`;
+    }
   });
 });

@@ -5,6 +5,7 @@
 import type {
   FailureAlertChannelKind,
   FailureAlertChannelRole,
+  FailureAlertMessageKind,
 } from "@/lib/db/schema-failure-alerts";
 
 export type ChannelView = {
@@ -113,6 +114,8 @@ export type WorkflowAlertView = {
     muteUntilSuccess: boolean;
     muteReason: string | null;
     mutedBy: string | null;
+    /** Turn the workflow off when its alert goes out. Workflow-only. */
+    pauseWorkflow: boolean;
   };
   effective: {
     threshold: number;
@@ -132,6 +135,8 @@ export type WorkflowAlertView = {
       threshold: number;
       lastNotifiedAt: string;
       deliveredTo: string[];
+      /** When this incident last turned the workflow off, if it did. */
+      workflowPausedAt: string | null;
     } | null;
   };
   members: MemberView[];
@@ -186,4 +191,27 @@ export function channelLabel(
   const name = CHANNEL_LABEL[kind as keyof typeof CHANNEL_LABEL] ?? kind;
   const where = kind === "discord" ? connectionName : destination;
   return where ? `${name} ${where}` : name;
+}
+
+/** What each kind of message is called in the history and analytics lists. */
+export const FAILURE_ALERT_KIND_LABEL: Record<FailureAlertMessageKind, string> =
+  {
+    alert: "Alert",
+    reminder: "Reminder",
+    recovery: "Running again",
+    channel_paused: "Channel stopped working",
+    launch_notice: "Notifications turned on",
+  };
+
+/** Which channel a pause notice is about, or why a backup was sent. */
+export function historyNote(
+  context: Record<string, unknown> | null
+): string | null {
+  if (typeof context?.channelLabel === "string") {
+    return context.channelLabel;
+  }
+  if (typeof context?.backupReason === "string") {
+    return `Sent because ${context.backupReason}`;
+  }
+  return null;
 }

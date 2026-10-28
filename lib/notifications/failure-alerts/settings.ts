@@ -43,12 +43,13 @@ import {
 import { loadOrgPolicy, resolveRecipientEmails } from "./policy";
 import type { Tx } from "./queue-rows";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
-import type {
-  ChannelView,
-  ConnectionView,
-  HistoryEntry,
-  MemberView,
-  OrgSettingsView,
+import {
+  type ChannelView,
+  type ConnectionView,
+  type HistoryEntry,
+  historyNote,
+  type MemberView,
+  type OrgSettingsView,
 } from "./view-types";
 
 export const CHANNEL_KINDS: readonly FailureAlertChannelKind[] = [
@@ -731,16 +732,6 @@ export async function loadHistory(
           : grouped,
     };
   });
-}
-
-function historyNote(context: Record<string, unknown> | null): string | null {
-  if (typeof context?.channelLabel === "string") {
-    return context.channelLabel;
-  }
-  if (typeof context?.backupReason === "string") {
-    return `Sent because ${context.backupReason}`;
-  }
-  return null;
 }
 
 const CSV_HEADER = [

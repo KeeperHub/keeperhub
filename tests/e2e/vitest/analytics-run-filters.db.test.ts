@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type {
+  AnalyticsSummary,
   FacetDimension,
   NormalizedStatus,
   RunFacets,
@@ -10,10 +11,13 @@ import type {
   UnifiedRun,
 } from "../../../lib/analytics/types";
 import {
+  failureAlertDeliveries,
   organization,
+  projects,
   users,
   workflowExecutionLogs,
   workflowExecutions,
+  workflowFailureIncidents,
   workflows,
 } from "../../../lib/db/schema";
 import { ExecutionErrorType } from "../../../lib/errors/execution-error-type";
@@ -660,5 +664,345 @@ describe.skipIf(SKIP)("analytics run filters", () => {
         expect(runs.find((run) => run.id === id)?.gasUsedWei).toBe("21000");
       }
     );
+  });
+});
+
+// Failure notifications listed beside runs. Their own organization, so the
+// fixture above keeps its exact counts.
+describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
+  const N = "test_run_notifs_";
+  const N_ORG = `${N}org`;
+  const N_OTHER_ORG = `${N}org_other`;
+  const N_USER = `${N}user`;
+  const N_PROJECT = `${N}project`;
+  const WF_IN = `${N}wf_in`;
+  const WF_OUT = `${N}wf_out`;
+  const INC_IN = `${N}inc_in`;
+  const INC_OUT = `${N}inc_out`;
+  const RUN = `${N}run`;
+  const D_ALERT = `${N}d_alert`;
+  const D_FAILED = `${N}d_failed`;
+  const D_GROUPED = `${N}d_grouped`;
+  const D_PAUSED = `${N}d_paused`;
+  const D_LAUNCH = `${N}d_launch`;
+  const D_OTHER = `${N}d_other`;
+  const ALL_DELIVERIES = [D_ALERT, D_FAILED, D_GROUPED, D_PAUSED, D_LAUNCH];
+
+  let queryClient: ReturnType<typeof postgres>;
+  let db: ReturnType<typeof drizzle>;
+  let getUnifiedRuns: (
+    organizationId: string,
+    range: "7d",
+    options?: RunQueryFilters & {
+      limit?: number;
+      cursor?: string;
+      projectId?: string;
+    }
+  ) => Promise<{
+    runs: UnifiedRun[];
+    total: number;
+    nextCursor: string | null;
+  }>;
+  let getRunFacets: (
+    organizationId: string,
+    range: "7d",
+    options?: RunQueryFilters & { projectId?: string }
+  ) => Promise<RunFacets>;
+  let getAnalyticsSummary: (
+    organizationId: string,
+    range: "custom",
+    customStart?: string,
+    customEnd?: string
+  ) => Promise<AnalyticsSummary>;
+
+  function minutesAgo(minutes: number): Date {
+    return new Date(Date.now() - minutes * 60 * 1000);
+  }
+
+  async function cleanup(): Promise<void> {
+    await queryClient`DELETE FROM failure_alert_deliveries WHERE id LIKE ${`${N}%`}`;
+    await queryClient`DELETE FROM workflow_failure_incidents WHERE id LIKE ${`${N}%`}`;
+    await queryClient`DELETE FROM workflow_executions WHERE id LIKE ${`${N}%`}`;
+    await queryClient`DELETE FROM workflows WHERE id LIKE ${`${N}%`}`;
+    await queryClient`DELETE FROM projects WHERE id LIKE ${`${N}%`}`;
+    await queryClient`DELETE FROM users WHERE id LIKE ${`${N}%`}`;
+    await queryClient`DELETE FROM organization WHERE id LIKE ${`${N}%`}`;
+  }
+
+  async function ids(
+    filters: RunQueryFilters & { projectId?: string } = {}
+  ): Promise<string[]> {
+    const { runs } = await getUnifiedRuns(N_ORG, "7d", {
+      ...filters,
+      limit: 50,
+    });
+    return runs.map((run) => run.id).sort();
+  }
+
+  beforeAll(async () => {
+    queryClient = postgres(DATABASE_URL);
+    db = drizzle(queryClient);
+    await cleanup();
+    const now = new Date();
+
+    await db.insert(organization).values([
+      { id: N_ORG, name: "notifs org", slug: N_ORG, createdAt: now },
+      {
+        id: N_OTHER_ORG,
+        name: "notifs other",
+        slug: N_OTHER_ORG,
+        createdAt: now,
+      },
+    ]);
+    await db.insert(users).values({
+      id: N_USER,
+      email: `${N_USER}@keeperhub.test`,
+      emailVerified: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(projects).values({
+      id: N_PROJECT,
+      name: "Treasury",
+      organizationId: N_ORG,
+      userId: N_USER,
+    });
+    await db.insert(workflows).values([
+      {
+        id: WF_IN,
+        name: "Treasury sweep",
+        userId: N_USER,
+        organizationId: N_ORG,
+        projectId: N_PROJECT,
+        enabled: true,
+        nodes: [],
+        edges: [],
+      },
+      {
+        id: WF_OUT,
+        name: "Oracle watch",
+        userId: N_USER,
+        organizationId: N_ORG,
+        enabled: true,
+        nodes: [],
+        edges: [],
+      },
+    ]);
+    await db.insert(workflowExecutions).values({
+      id: RUN,
+      workflowId: WF_IN,
+      userId: N_USER,
+      status: "success",
+      duration: "1000",
+      startedAt: minutesAgo(1),
+      completedAt: minutesAgo(1),
+    });
+    await db.insert(workflowFailureIncidents).values(
+      [
+        { id: INC_IN, workflowId: WF_IN },
+        { id: INC_OUT, workflowId: WF_OUT },
+      ].map((incident) => ({
+        ...incident,
+        organizationId: N_ORG,
+        openedBy: "count" as const,
+        threshold: 3,
+        failureCount: 3,
+        firstFailedAt: minutesAgo(60),
+        lastFailedAt: minutesAgo(30),
+        // Resolved, so the open-incident unique index never collides with
+        // anything else the database holds for these workflows.
+        resolvedAt: minutesAgo(1),
+      }))
+    );
+
+    const delivery = (
+      id: string,
+      minutes: number,
+      fields: Partial<typeof failureAlertDeliveries.$inferInsert>
+    ): typeof failureAlertDeliveries.$inferInsert => ({
+      id,
+      dedupKey: id,
+      organizationId: N_ORG,
+      kind: "alert",
+      channel: "email",
+      recipient: "ops@notifs.test",
+      state: "delivered",
+      attempts: 1,
+      createdAt: minutesAgo(minutes),
+      updatedAt: minutesAgo(minutes - 0.5),
+      ...fields,
+    });
+    await db.insert(failureAlertDeliveries).values([
+      delivery(D_ALERT, 10, {
+        incidentId: INC_IN,
+        deliveredAt: minutesAgo(9.5),
+      }),
+      delivery(D_FAILED, 20, {
+        kind: "reminder",
+        incidentId: INC_OUT,
+        channel: "slack",
+        recipient: "#oncall",
+        state: "failed",
+        attempts: 4,
+        lastError: "channel_not_found",
+      }),
+      delivery(D_GROUPED, 30, {
+        context: { incidentIds: [INC_IN, INC_OUT] },
+        state: "pending",
+        attempts: 0,
+      }),
+      delivery(D_PAUSED, 40, {
+        kind: "channel_paused",
+        context: { channelLabel: "Slack #oncall" },
+        state: "skipped",
+        lastError: "What this message was about no longer exists.",
+      }),
+      delivery(D_LAUNCH, 50, {
+        kind: "launch_notice",
+        deliveredAt: minutesAgo(49.5),
+      }),
+      delivery(D_OTHER, 15, {
+        organizationId: N_OTHER_ORG,
+        deliveredAt: minutesAgo(14.5),
+      }),
+    ]);
+
+    ({ getUnifiedRuns, getRunFacets, getAnalyticsSummary } = await import(
+      "@/lib/analytics/queries"
+    ));
+  });
+
+  afterAll(async () => {
+    await cleanup();
+    await queryClient.end();
+  });
+
+  it("lists notifications beside runs when no source is chosen", async () => {
+    const { runs, total } = await getUnifiedRuns(N_ORG, "7d", { limit: 50 });
+
+    expect(runs.map((run) => run.id)).toEqual([RUN, ...ALL_DELIVERIES]);
+    expect(total).toBe(6);
+    expect(runs.map((run) => run.id)).not.toContain(D_OTHER);
+
+    const byId = new Map(runs.map((run) => [run.id, run]));
+    expect(byId.get(D_ALERT)).toMatchObject({
+      source: "notification",
+      status: "success",
+      workflowId: WF_IN,
+      notification: { title: "Alert: Treasury sweep" },
+    });
+    expect(byId.get(D_FAILED)).toMatchObject({
+      status: "error",
+      workflowId: WF_OUT,
+      notification: {
+        title: "Reminder: Oracle watch",
+        lastError: "channel_not_found",
+        attempts: 4,
+      },
+    });
+    expect(byId.get(D_GROUPED)).toMatchObject({
+      status: "pending",
+      workflowId: null,
+      notification: { title: "Alert: 2 workflows" },
+    });
+    expect(byId.get(D_PAUSED)).toMatchObject({
+      status: "cancelled",
+      notification: { title: "Channel stopped working: Slack #oncall" },
+    });
+    expect(byId.get(D_LAUNCH)?.notification?.title).toBe(
+      "Notifications turned on"
+    );
+  });
+
+  it("narrows to notifications, or away from them, by source", async () => {
+    const only = await getUnifiedRuns(N_ORG, "7d", {
+      sources: ["notification"],
+      limit: 50,
+    });
+    expect(only.runs.map((run) => run.id).sort()).toEqual(
+      [...ALL_DELIVERIES].sort()
+    );
+    expect(only.total).toBe(5);
+
+    expect(await ids({ sources: ["workflow", "direct"] })).toEqual([RUN]);
+  });
+
+  it("filters notifications by status", async () => {
+    expect(await ids({ statuses: ["error"] })).toEqual([D_FAILED]);
+    expect(await ids({ statuses: ["cancelled"] })).toEqual([D_PAUSED]);
+    expect(await ids({ statuses: ["success"] })).toEqual(
+      [RUN, D_ALERT, D_LAUNCH].sort()
+    );
+    expect(await ids({ statuses: ["system_error"] })).toEqual([]);
+  });
+
+  it("searches workflow names, grouped ones included, and recipients", async () => {
+    expect(await ids({ search: "treasury" })).toEqual(
+      [RUN, D_ALERT, D_GROUPED].sort()
+    );
+    expect(await ids({ search: "oncall" })).toEqual([D_FAILED]);
+  });
+
+  it("drops notifications under a network, gas or duration filter", async () => {
+    for (const filters of [
+      { networks: ["8453"] },
+      { gas: ["free"] as RunQueryFilters["gas"] },
+      { durationMaxMs: 60_000 },
+    ]) {
+      const listed = await ids({ ...filters, sources: ["notification"] });
+      expect(listed).toEqual([]);
+    }
+  });
+
+  it("keeps only notifications about the project's workflows", async () => {
+    expect(await ids({ projectId: N_PROJECT })).toEqual(
+      [RUN, D_ALERT, D_GROUPED].sort()
+    );
+    const { total } = await getUnifiedRuns(N_ORG, "7d", {
+      projectId: N_PROJECT,
+      limit: 50,
+    });
+    expect(total).toBe(3);
+  });
+
+  it("pages through notifications and runs with the cursor", async () => {
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 5; page += 1) {
+      const result = await getUnifiedRuns(N_ORG, "7d", { limit: 2, cursor });
+      seen.push(...result.runs.map((run) => run.id));
+      if (!result.nextCursor) {
+        break;
+      }
+      cursor = result.nextCursor;
+    }
+    expect(seen).toEqual([RUN, ...ALL_DELIVERIES]);
+  });
+
+  it("counts notifications in the status facets the list shows them under", async () => {
+    const all = await getRunFacets(N_ORG, "7d", { search: "" });
+    expect(all.statusCounts).toEqual({
+      success: 3,
+      error: 1,
+      pending: 1,
+      cancelled: 1,
+    });
+
+    const runsOnly = await getRunFacets(N_ORG, "7d", {
+      sources: ["workflow"],
+    });
+    expect(runsOnly.statusCounts).toEqual({ success: 1 });
+  });
+
+  it("keeps notifications out of the summary", async () => {
+    const summary = await getAnalyticsSummary(
+      N_ORG,
+      "custom",
+      minutesAgo(120).toISOString(),
+      new Date().toISOString()
+    );
+    expect(summary.totalRuns).toBe(1);
+    expect(summary.successCount).toBe(1);
+    expect(summary.errorCount).toBe(0);
   });
 });

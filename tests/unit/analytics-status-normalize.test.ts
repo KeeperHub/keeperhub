@@ -33,6 +33,13 @@ describe("normalizeStatus", () => {
     expect(normalizeStatus("failed", "direct")).toBe("error");
   });
 
+  it("maps notification delivery states, so a cancelled delivery is not a plan skip", () => {
+    expect(normalizeStatus("delivered", "notification")).toBe("success");
+    expect(normalizeStatus("capped", "notification")).toBe("error");
+    expect(normalizeStatus("retrying", "notification")).toBe("running");
+    expect(normalizeStatus("skipped", "notification")).toBe("cancelled");
+  });
+
   it("lifts error rows tagged error_type=external to external_error", () => {
     expect(normalizeStatus("error", "workflow", "external")).toBe(
       "external_error"

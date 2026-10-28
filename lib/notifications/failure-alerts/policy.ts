@@ -60,6 +60,8 @@ export type EffectivePolicy = {
   channels: ChannelConfig[];
   mutedUntil: Date | null;
   muteUntilSuccess: boolean;
+  /** Turn the workflow off when its alert goes out. Never set org-wide. */
+  pauseWorkflow: boolean;
   countingSince: Date | null;
   source: "default" | "org" | "custom";
 };
@@ -166,7 +168,8 @@ export function mergePolicy(
     (override.threshold !== null ||
       override.timeLimitMinutes !== null ||
       override.recipientUserIds !== null ||
-      override.customChannels);
+      override.customChannels ||
+      override.pauseWorkflow);
 
   let timeLimitMinutes = org.timeLimitMinutes;
   if (
@@ -191,6 +194,7 @@ export function mergePolicy(
     channels: override?.customChannels ? workflowChannels : orgChannels,
     mutedUntil: override?.mutedUntil ?? null,
     muteUntilSuccess: override?.muteUntilSuccess ?? false,
+    pauseWorkflow: override?.pauseWorkflow ?? false,
     countingSince: org.countingSince,
     source,
   };

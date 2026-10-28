@@ -26,6 +26,13 @@ describe("parseRunFilters", () => {
     expect(parse("status=bogus&source=telepathy").sources).toBeUndefined();
   });
 
+  it("reads the notification source beside the run sources", () => {
+    expect(parse("source=notification").sources).toEqual(["notification"]);
+    expect(
+      parse("source=workflow&source=direct&source=notification").sources
+    ).toEqual(["workflow", "direct", "notification"]);
+  });
+
   it("de-duplicates repeated values", () => {
     expect(parse("network=8453&network=8453").networks).toEqual(["8453"]);
   });
@@ -73,6 +80,14 @@ describe("buildRunsQuery", () => {
     expect(parsed.durationMinMs).toBe(30_000);
     expect(parsed.durationMaxMs).toBeUndefined();
     expect(parsed.search).toBe("nightly");
+  });
+
+  it("carries the notification source through to the parser", () => {
+    const query = buildRunsQuery({
+      range: "24h",
+      sources: ["workflow", "notification"],
+    });
+    expect(parse(query).sources).toEqual(["workflow", "notification"]);
   });
 
   it("omits the status dimension for the facet request", () => {

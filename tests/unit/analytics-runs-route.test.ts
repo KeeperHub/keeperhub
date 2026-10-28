@@ -122,6 +122,47 @@ describe("GET /api/analytics/runs status filter", () => {
   });
 });
 
+describe("GET /api/analytics/runs source filter", () => {
+  function sourceRequest(...sources: string[]): NextRequest {
+    const params = new URLSearchParams();
+    for (const source of sources) {
+      params.append("source", source);
+    }
+    return {
+      method: "GET",
+      headers: new Headers({ Authorization: "Bearer fake-jwt" }),
+      nextUrl: { searchParams: params },
+    } as unknown as NextRequest;
+  }
+
+  it("forwards the notification source so the list can show only notifications", async () => {
+    await GET(sourceRequest("notification"));
+
+    expect(getUnifiedRuns).toHaveBeenCalledWith(
+      "org_from_jwt",
+      expect.anything(),
+      expect.objectContaining({ sources: ["notification"] })
+    );
+  });
+
+  it("forwards notifications alongside the run sources", async () => {
+    await GET(sourceRequest("workflow", "notification"));
+
+    expect(getUnifiedRuns).toHaveBeenCalledWith(
+      "org_from_jwt",
+      expect.anything(),
+      expect.objectContaining({ sources: ["workflow", "notification"] })
+    );
+  });
+
+  it("sends no source when none is asked for, which lists all three", async () => {
+    await GET(sourceRequest());
+
+    const [, , options] = vi.mocked(getUnifiedRuns).mock.calls[0] ?? [];
+    expect(options?.sources).toBeUndefined();
+  });
+});
+
 describe("GET /api/analytics/runs pagination parsing", () => {
   function paginationRequest(query: Record<string, string>): NextRequest {
     return {

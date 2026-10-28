@@ -91,7 +91,8 @@ function summary(view: Loaded): string {
         `${channelLabel(c.kind, c.destination, c.connectionName)}${c.role === "backup" ? " (backup)" : ""}`
     );
   const also = channels.length > 0 ? `, plus ${channels.join(", ")}` : "";
-  return `${who}${also}, after ${failedRuns(view.effective.threshold)} in a row${describeTimeLimit(view.effective.timeLimitMinutes)}.`;
+  const pause = view.override.pauseWorkflow ? " Then pauses the workflow." : "";
+  return `${who}${also}, after ${failedRuns(view.effective.threshold)} in a row${describeTimeLimit(view.effective.timeLimitMinutes)}.${pause}`;
 }
 
 function isMutedView(view: Loaded): boolean {
@@ -133,6 +134,7 @@ export function WorkflowFailureAlerts({
     null
   );
   const [muteDate, setMuteDate] = useState("");
+  const [pauseWorkflow, setPauseWorkflow] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const muteButtonRef = useRef<HTMLButtonElement>(null);
   const customButtonRef = useRef<HTMLButtonElement>(null);
@@ -154,6 +156,7 @@ export function WorkflowFailureAlerts({
     }
     setTimeLimit(limit);
     setCustomRecipients(next.override.recipientUserIds);
+    setPauseWorkflow(next.override.pauseWorkflow);
     setCustomChannels(
       next.override.customChannels
         ? draftsFromViews(next.override.channels)
@@ -269,6 +272,9 @@ export function WorkflowFailureAlerts({
   const canManage = view.canManage;
   const muted = isMutedView(view);
   const custom = view.effective.source === "custom";
+  // Off because its own alert paused it, and nobody has turned it back on.
+  const pausedByAlert =
+    Boolean(view.status.incident?.workflowPausedAt) && !enabled;
   const thresholdInvalid =
     threshold.trim() !== "" &&
     !(
@@ -284,6 +290,7 @@ export function WorkflowFailureAlerts({
     recipientUserIds: view.override.recipientUserIds,
     customChannels: view.override.customChannels,
     channels: channelsPayload(draftsFromViews(view.override.channels)),
+    pauseWorkflow: view.override.pauseWorkflow,
   });
 
   const put = async (
@@ -364,6 +371,7 @@ export function WorkflowFailureAlerts({
         channels: customChannels ? channelsPayload(customChannels) : [],
         mutedUntil: view.override.mutedUntil,
         muteUntilSuccess: view.override.muteUntilSuccess,
+        pauseWorkflow,
       },
       "Saved for this workflow"
     );
@@ -419,8 +427,15 @@ export function WorkflowFailureAlerts({
         <Notice className="p-3 text-sm" tone={muted ? "warning" : "danger"}>
           <div className="space-y-2">
             <p className="font-medium">
-              Failing: {failedRuns(view.status.incident.failureCount)} in a row
+              {pausedByAlert ? "Paused after " : "Failing: "}
+              {failedRuns(view.status.incident.failureCount)} in a row
             </p>
+            {pausedByAlert && (
+              <p className="text-xs">
+                KeeperHub turned it off, as set for this workflow. Fix the
+                cause, then turn it back on with the Enable switch.
+              </p>
+            )}
             <p className="text-xs">
               {view.status.incident.deliveredTo.length > 0
                 ? `Alert sent ${timeAgo(view.status.incident.openedAt)} to ${view.status.incident.deliveredTo.join(", ")}.`
@@ -676,6 +691,35 @@ export function WorkflowFailureAlerts({
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    aria-describedby="wf-pause-workflow-help"
+                    checked={pauseWorkflow}
+                    id="wf-pause-workflow"
+                    onCheckedChange={(checked) =>
+                      setPauseWorkflow(checked === true)
+                    }
+                  />
+                  <Label className="text-xs" htmlFor="wf-pause-workflow">
+                    Pause this workflow when it reaches the limit
+                  </Label>
+                </div>
+                <p
+                  className="pl-6 text-muted-foreground text-xs"
+                  id="wf-pause-workflow-help"
+                >
+                  Stops its runs after{" "}
+                  {failedRuns(
+                    threshold.trim() && !thresholdInvalid
+                      ? Number(threshold)
+                      : view.org.threshold
+                  )}{" "}
+                  in a row, and the alert says so. Turn it back on with the
+                  Enable switch once fixed. Only per workflow: the org setting
+                  never pauses workflows.
+                </p>
               </div>
               <div className="space-y-2">
                 <div className="flex items-center gap-2">

@@ -17,8 +17,12 @@ import { db } from "@/lib/db";
 import { logInputField, logOutputField } from "@/lib/db/execution-log-fields";
 import type { TransactionHashEntry } from "@/lib/db/schema";
 import {
+  failureAlertChannels,
+  failureAlertDeliveries,
+  integrations,
   workflowExecutionLogs,
   workflowExecutions,
+  workflowFailureIncidents,
   workflows,
 } from "@/lib/db/schema";
 import {
@@ -42,6 +46,14 @@ import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 import { analyticsCacheKey, cachedAnalytics } from "./cache";
 import { likePattern } from "./like-pattern";
+import {
+  groupedIncidentIds,
+  type NotificationRow,
+  notificationStatesFor,
+  notificationStatus,
+  notificationsExcludedBy,
+  toNotificationRun,
+} from "./notification-runs";
 import { MAX_RUN_LIMIT } from "./runs-query";
 import type { BucketSqlInterval } from "./time-range";
 import {
@@ -79,6 +91,9 @@ export function normalizeStatus(
   source: RunSource,
   errorType?: string | null
 ): NormalizedStatus {
+  if (source === "notification") {
+    return notificationStatus(status);
+  }
   if (source === "direct") {
     if (status === "completed") {
       return "success";
@@ -520,18 +535,111 @@ function directFilterConditions(
   return conditions;
 }
 
-/** Whether each source is in play, given the source filter and project scope. */
+/**
+ * A failure notification's incident, whichever way the delivery names it: its
+ * own incident, or one of the incidents a grouped message lists. `alias` is the
+ * incidents table as aliased in the calling subquery.
+ */
+function deliveryCoversIncident(alias: string): SQL {
+  const incidentId = sql.raw(`${alias}.id`);
+  return sql`(${incidentId} = ${failureAlertDeliveries.incidentId}
+    OR ${failureAlertDeliveries.context} @> jsonb_build_object('incidentIds', jsonb_build_array(${incidentId})))`;
+}
+
+function notificationSearchCondition(
+  term: string,
+  organizationId: string
+): SQL {
+  const pattern = likePattern(term);
+  return sql`(
+    ${failureAlertDeliveries.id} ILIKE ${pattern} ESCAPE '\\'
+    OR ${failureAlertDeliveries.recipient} ILIKE ${pattern} ESCAPE '\\'
+    OR EXISTS (
+      SELECT 1
+        FROM ${workflowFailureIncidents} AS search_inc
+        JOIN ${workflows} AS search_wf ON search_wf.id = search_inc.workflow_id
+       WHERE search_inc.organization_id = ${organizationId}
+         AND ${deliveryCoversIncident("search_inc")}
+         AND search_wf.name ILIKE ${pattern} ESCAPE '\\'
+    )
+  )`;
+}
+
+/**
+ * Notifications about a workflow in the project. A grouped message is in it
+ * when any workflow it lists is; a notice about no workflow is in none.
+ */
+function notificationProjectCondition(
+  projectId: string,
+  organizationId: string
+): SQL {
+  return sql`EXISTS (
+    SELECT 1
+      FROM ${workflowFailureIncidents} AS project_inc
+      JOIN ${workflows} AS project_wf ON project_wf.id = project_inc.workflow_id
+     WHERE project_inc.organization_id = ${organizationId}
+       AND project_wf.project_id = ${projectId}
+       AND ${deliveryCoversIncident("project_inc")}
+  )`;
+}
+
+/**
+ * Every notification-side predicate, org and window included. Callers check
+ * resolveSources first: network, gas and duration filters leave no
+ * notification in play, so they are not expressed here.
+ */
+function notificationConditions(
+  organizationId: string,
+  rangeStart: Date,
+  rangeEnd: Date,
+  filters: RunQueryFilters,
+  projectId: string | undefined,
+  skipStatuses = false
+): SQL[] {
+  const conditions: SQL[] = [
+    eq(failureAlertDeliveries.organizationId, organizationId),
+    gte(failureAlertDeliveries.createdAt, rangeStart),
+    lt(failureAlertDeliveries.createdAt, rangeEnd),
+  ];
+  const statuses = filters.statuses ?? [];
+  if (!skipStatuses && statuses.length > 0) {
+    const states = notificationStatesFor(statuses);
+    conditions.push(
+      states.length > 0
+        ? inArray(failureAlertDeliveries.state, states)
+        : sql`false`
+    );
+  }
+  const search = filters.search?.trim();
+  if (search) {
+    conditions.push(notificationSearchCondition(search, organizationId));
+  }
+  if (projectId) {
+    conditions.push(notificationProjectCondition(projectId, organizationId));
+  }
+  return conditions;
+}
+
+/**
+ * Whether each source is in play, given the filters and project scope. No
+ * source selected means all three, notifications included.
+ */
 function resolveSources(
-  sources: RunSource[] | undefined,
+  filters: RunQueryFilters,
   projectId: string | undefined
-): { workflow: boolean; direct: boolean } {
-  const selected = sources ?? [];
+): { workflow: boolean; direct: boolean; notification: boolean } {
+  const selected: RunSource[] = filters.sources ?? [];
   const all = selected.length === 0;
   return {
     workflow: all || selected.includes("workflow"),
     // A project scopes to its workflows, and a direct execution belongs to no
     // workflow, so no direct run can be in a project.
     direct: (all || selected.includes("direct")) && !projectId,
+    // A project is applied inside the notification query instead: a message
+    // about one of the project's workflows is in it.
+    notification:
+      (all || selected.includes("notification")) &&
+      !notificationsExcludedBy(filters),
   };
 }
 
@@ -1448,7 +1556,7 @@ export async function getUnifiedRuns(
   const rangeStart = getTimeRangeStart(range, customStart);
   const rangeEnd = getTimeRangeEnd(customEnd);
   const pageLimit = Math.min(limit, MAX_RUN_LIMIT);
-  const wanted = resolveSources(filters.sources, projectId);
+  const wanted = resolveSources(filters, projectId);
   const offset = cursor ? 0 : (page - 1) * pageLimit;
 
   // Fetch enough rows from each source to fill the requested page after merging.
@@ -1459,41 +1567,57 @@ export async function getUnifiedRuns(
   // Fire run fetches and count queries in parallel. The retention cutoff joins
   // them rather than running on its own: it is a single indexed row read, and
   // serialising it would add a round trip to every page of the runs table.
-  const [workflowRuns, directRuns, total, stepLogRetentionCutoff] =
-    await Promise.all([
-      wanted.workflow
-        ? fetchWorkflowRuns(
-            organizationId,
-            rangeStart,
-            rangeEnd,
-            filters,
-            cursor,
-            fetchLimit,
-            projectId
-          )
-        : ([] as UnifiedRun[]),
-      wanted.direct
-        ? fetchDirectRuns(
-            organizationId,
-            rangeStart,
-            rangeEnd,
-            filters,
-            cursor,
-            fetchLimit
-          )
-        : ([] as UnifiedRun[]),
-      getUnifiedRunsTotal(
-        organizationId,
-        rangeStart,
-        rangeEnd,
-        filters,
-        projectId
-      ),
-      getOrgLogRetentionCutoff(organizationId, getRetentionConfig()),
-    ]);
+  const [
+    workflowRuns,
+    directRuns,
+    notificationRuns,
+    total,
+    stepLogRetentionCutoff,
+  ] = await Promise.all([
+    wanted.workflow
+      ? fetchWorkflowRuns(
+          organizationId,
+          rangeStart,
+          rangeEnd,
+          filters,
+          cursor,
+          fetchLimit,
+          projectId
+        )
+      : ([] as UnifiedRun[]),
+    wanted.direct
+      ? fetchDirectRuns(
+          organizationId,
+          rangeStart,
+          rangeEnd,
+          filters,
+          cursor,
+          fetchLimit
+        )
+      : ([] as UnifiedRun[]),
+    wanted.notification
+      ? fetchNotificationRuns(
+          organizationId,
+          rangeStart,
+          rangeEnd,
+          filters,
+          cursor,
+          fetchLimit,
+          projectId
+        )
+      : ([] as UnifiedRun[]),
+    getUnifiedRunsTotal(
+      organizationId,
+      rangeStart,
+      rangeEnd,
+      filters,
+      projectId
+    ),
+    getOrgLogRetentionCutoff(organizationId, getRetentionConfig()),
+  ]);
 
-  // Merge both sources, sort by time, then apply offset for the requested page
-  const allRuns = [...workflowRuns, ...directRuns].sort(
+  // Merge the sources, sort by time, then apply offset for the requested page
+  const allRuns = [...workflowRuns, ...directRuns, ...notificationRuns].sort(
     (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
   );
 
@@ -1820,6 +1944,128 @@ async function fetchDirectRuns(
   }));
 }
 
+/**
+ * Failure notifications as run rows, newest first. Workflow names resolve the
+ * way the Settings > Notifications history resolves them: a message about one
+ * incident through that incident, a grouped one through the incident ids its
+ * context lists.
+ */
+async function fetchNotificationRuns(
+  organizationId: string,
+  rangeStart: Date,
+  rangeEnd: Date,
+  filters: RunQueryFilters,
+  cursor: string | undefined,
+  limit: number,
+  projectId?: string
+): Promise<UnifiedRun[]> {
+  const conditions = notificationConditions(
+    organizationId,
+    rangeStart,
+    rangeEnd,
+    filters,
+    projectId
+  );
+  if (cursor) {
+    conditions.push(lt(failureAlertDeliveries.createdAt, new Date(cursor)));
+  }
+
+  const rows: NotificationRow[] = await db
+    .select({
+      id: failureAlertDeliveries.id,
+      kind: failureAlertDeliveries.kind,
+      channel: failureAlertDeliveries.channel,
+      recipient: failureAlertDeliveries.recipient,
+      connectionName: integrations.name,
+      state: failureAlertDeliveries.state,
+      attempts: failureAlertDeliveries.attempts,
+      isBackup: failureAlertDeliveries.isBackup,
+      lastError: failureAlertDeliveries.lastError,
+      context: failureAlertDeliveries.context,
+      createdAt: failureAlertDeliveries.createdAt,
+      updatedAt: failureAlertDeliveries.updatedAt,
+      deliveredAt: failureAlertDeliveries.deliveredAt,
+      workflowId: workflowFailureIncidents.workflowId,
+      workflowName: workflows.name,
+    })
+    .from(failureAlertDeliveries)
+    .leftJoin(
+      failureAlertChannels,
+      eq(failureAlertChannels.id, failureAlertDeliveries.channelId)
+    )
+    .leftJoin(
+      integrations,
+      eq(integrations.id, failureAlertChannels.integrationId)
+    )
+    .leftJoin(
+      workflowFailureIncidents,
+      eq(workflowFailureIncidents.id, failureAlertDeliveries.incidentId)
+    )
+    .leftJoin(workflows, eq(workflows.id, workflowFailureIncidents.workflowId))
+    .where(and(...conditions))
+    .orderBy(
+      desc(failureAlertDeliveries.createdAt),
+      desc(failureAlertDeliveries.id)
+    )
+    .limit(limit);
+
+  const groupedIds = new Set<string>();
+  for (const row of rows) {
+    for (const id of groupedIncidentIds(row.context)) {
+      groupedIds.add(id);
+    }
+  }
+  const groupedNames = new Map<string, { id: string; name: string }>();
+  if (groupedIds.size > 0) {
+    const named = await db
+      .select({
+        incidentId: workflowFailureIncidents.id,
+        id: workflows.id,
+        name: workflows.name,
+      })
+      .from(workflowFailureIncidents)
+      .innerJoin(
+        workflows,
+        eq(workflows.id, workflowFailureIncidents.workflowId)
+      )
+      .where(
+        and(
+          eq(workflowFailureIncidents.organizationId, organizationId),
+          inArray(workflowFailureIncidents.id, [...groupedIds])
+        )
+      );
+    for (const row of named) {
+      groupedNames.set(row.incidentId, { id: row.id, name: row.name });
+    }
+  }
+
+  return rows.map((row) => toNotificationRun(row, groupedNames));
+}
+
+async function getNotificationRunsTotal(
+  organizationId: string,
+  rangeStart: Date,
+  rangeEnd: Date,
+  filters: RunQueryFilters,
+  projectId?: string
+): Promise<number> {
+  const result = await db
+    .select({ count: count() })
+    .from(failureAlertDeliveries)
+    .where(
+      and(
+        ...notificationConditions(
+          organizationId,
+          rangeStart,
+          rangeEnd,
+          filters,
+          projectId
+        )
+      )
+    );
+  return Number(result[0]?.count) || 0;
+}
+
 async function getWorkflowRunsTotal(
   organizationId: string,
   rangeStart: Date,
@@ -1963,7 +2209,7 @@ async function computeRunFacets(
 ): Promise<RunFacets> {
   const rangeStart = getTimeRangeStart(range, customStart);
   const rangeEnd = getTimeRangeEnd(customEnd);
-  const wanted = resolveSources(filters.sources, projectId);
+  const wanted = resolveSources(filters, projectId);
 
   // Both of these read the step logs, the table that took prod down when the
   // run filters walked it too eagerly, so neither is computed unless asked for.
@@ -2030,8 +2276,35 @@ async function computeRunFacets(
           .groupBy(sql`1`)
       : [];
 
+  // Counted whenever the listing shows notifications, so a status count and
+  // the rows ticking it returns agree.
+  const notificationRows =
+    wanted.notification && dimensions.has("status")
+      ? (
+          await db
+            .select({ state: failureAlertDeliveries.state, value: count() })
+            .from(failureAlertDeliveries)
+            .where(
+              and(
+                ...notificationConditions(
+                  organizationId,
+                  rangeStart,
+                  rangeEnd,
+                  filters,
+                  projectId,
+                  true
+                )
+              )
+            )
+            .groupBy(failureAlertDeliveries.state)
+        ).map((row) => ({
+          status: notificationStatus(row.state),
+          value: row.value,
+        }))
+      : [];
+
   const statusCounts: StatusFacets = {};
-  for (const row of [...workflowRows, ...directRows]) {
+  for (const row of [...workflowRows, ...directRows, ...notificationRows]) {
     const status = row.status as NormalizedStatus;
     statusCounts[status] =
       (statusCounts[status] ?? 0) + (Number(row.value) || 0);
@@ -2052,7 +2325,7 @@ async function computeNetworkFacets(
   filters: RunQueryFilters,
   projectId?: string
 ): Promise<Record<string, number>> {
-  const wanted = resolveSources(filters.sources, projectId);
+  const wanted = resolveSources(filters, projectId);
   const withoutNetworks: RunQueryFilters = { ...filters, networks: undefined };
 
   // Driven from the run row rather than from the step logs, with each run's
@@ -2162,10 +2435,10 @@ async function getUnifiedRunsTotal(
   filters: RunQueryFilters,
   projectId?: string
 ): Promise<number> {
-  const wanted = resolveSources(filters.sources, projectId);
+  const wanted = resolveSources(filters, projectId);
 
-  // Run both count queries in parallel
-  const [workflowTotal, directTotal] = await Promise.all([
+  // Run the count queries in parallel
+  const [workflowTotal, directTotal, notificationTotal] = await Promise.all([
     wanted.workflow
       ? getWorkflowRunsTotal(
           organizationId,
@@ -2178,9 +2451,18 @@ async function getUnifiedRunsTotal(
     wanted.direct
       ? getDirectRunsTotal(organizationId, rangeStart, rangeEnd, filters)
       : 0,
+    wanted.notification
+      ? getNotificationRunsTotal(
+          organizationId,
+          rangeStart,
+          rangeEnd,
+          filters,
+          projectId
+        )
+      : 0,
   ]);
 
-  return workflowTotal + directTotal;
+  return workflowTotal + directTotal + notificationTotal;
 }
 
 // Redact on read so rows persisted before URL redaction existed do not
@@ -2359,6 +2641,11 @@ export async function getSpendCapData(organizationId: string): Promise<{
  *
  * The active-run count is deliberately left unbounded: the summary's activeRuns
  * is unbounded too, and the two have to agree.
+ *
+ * The last part is the newest change to a failure notification in the window,
+ * so a new message, and one whose delivery settles, both refresh the list. It
+ * reads updated_at rather than created_at for the second case; the org's
+ * notifications in one window are few, so the org/created_at index bounds it.
  */
 export async function getAnalyticsChecksum(
   organizationId: string,
@@ -2368,7 +2655,7 @@ export async function getAnalyticsChecksum(
   // has no column to map a Date through, the way the comparison helpers do.
   const from = rangeStart.toISOString();
 
-  const [wfMax, deMax, activeCount] = await Promise.all([
+  const [wfMax, deMax, activeCount, notificationMax] = await Promise.all([
     db
       .execute<{ max_started: string }>(
         sql`
@@ -2406,7 +2693,19 @@ export async function getAnalyticsChecksum(
         )
       )
       .then((r) => Number(r[0]?.count) || 0),
+    db
+      .select({
+        maxUpdated: sql<string>`COALESCE(MAX(${failureAlertDeliveries.updatedAt}), '1970-01-01')::text`,
+      })
+      .from(failureAlertDeliveries)
+      .where(
+        and(
+          eq(failureAlertDeliveries.organizationId, organizationId),
+          gte(failureAlertDeliveries.createdAt, rangeStart)
+        )
+      )
+      .then((r) => r[0]?.maxUpdated ?? ""),
   ]);
 
-  return `${wfMax}|${deMax}|${activeCount}`;
+  return `${wfMax}|${deMax}|${activeCount}|${notificationMax}`;
 }

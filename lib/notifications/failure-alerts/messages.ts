@@ -40,10 +40,18 @@ export type MessageInput =
       workflow: AlertWorkflow;
       incident: AlertIncident;
       backupReason?: string;
+      /**
+       * KeeperHub turned the workflow off, as its settings ask: on an alert,
+       * when it was first paused; on a reminder, when it was paused again.
+       */
+      workflowPaused?: boolean;
     })
   | (OrgFields & {
       kind: "grouped";
-      workflows: (AlertWorkflow & { failureCount: number })[];
+      workflows: (AlertWorkflow & {
+        failureCount: number;
+        workflowPaused?: boolean;
+      })[];
       backupReason?: string;
     })
   | (OrgFields & {
@@ -143,6 +151,20 @@ function failingHeadline(
   return `${workflow.name} is ${still ? "still " : ""}failing: ${runs}`;
 }
 
+function pausedHeadline(
+  workflow: AlertWorkflow,
+  incident: AlertIncident,
+  again: boolean
+): string {
+  if (again) {
+    return `${workflow.name} kept failing after it was turned back on and was paused again`;
+  }
+  return `${workflow.name} was paused after ${plural(incident.failureCount, "failed run", "failed runs")} in a row`;
+}
+
+const PAUSED_NEXT_STEP =
+  "KeeperHub turned it off, as this workflow's notification settings ask, so it stops running. Fix the cause, then turn it back on with the Enable switch in the workflow editor.";
+
 function backupBanner(reason: string | undefined): {
   html: string;
   text: string;
@@ -194,20 +216,18 @@ function renderAlert(
   now: Date
 ): RenderedMessage {
   const { workflow, incident, orgName, appUrl } = input;
-  const headline = failingHeadline(
-    workflow,
-    incident,
-    input.kind === "reminder",
-    now
-  );
+  const headline = input.workflowPaused
+    ? pausedHeadline(workflow, incident, input.kind === "reminder")
+    : failingHeadline(workflow, incident, input.kind === "reminder", now);
   const backup = backupBanner(input.backupReason);
   const error = shortError(incident.lastError);
   const hint = errorHint(incident.lastError);
   const runs = runsUrl(appUrl, workflow.id);
   const open = workflowUrl(appUrl, workflow.id);
   const foot = footer(input);
-  const nextStep =
-    "It keeps running on its trigger until someone fixes, mutes or pauses it. To mute or pause it, open the workflow and use the Properties panel.";
+  const nextStep = input.workflowPaused
+    ? PAUSED_NEXT_STEP
+    : "It keeps running on its trigger until someone fixes, mutes or pauses it. To mute or pause it, open the workflow and use the Properties panel.";
 
   const text = `${backup.text}${headline}.
 
@@ -255,9 +275,11 @@ function renderGrouped(
     "This often means a shared cause, such as an RPC provider or a wallet out of gas.";
   const backup = backupBanner(input.backupReason);
   const foot = footer(input);
+  const pausedNote = (w: { workflowPaused?: boolean }): string =>
+    w.workflowPaused ? ", paused" : "";
   const lines = workflows.map(
     (w) =>
-      `- ${w.name}: ${plural(w.failureCount, "failed run", "failed runs")} in a row (${runsUrl(appUrl, w.id)})`
+      `- ${w.name}: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)} (${runsUrl(appUrl, w.id)})`
   );
   const text = `${backup.text}${headline} in ${orgName}. ${cause}
 
@@ -273,7 +295,7 @@ ${foot.text}`;
     <ul style="padding-left: 20px;">${workflows
       .map(
         (w) =>
-          `<li><a href="${escapeHtml(runsUrl(appUrl, w.id))}">${escapeHtml(w.name)}</a>: ${plural(w.failureCount, "failed run", "failed runs")} in a row</li>`
+          `<li><a href="${escapeHtml(runsUrl(appUrl, w.id))}">${escapeHtml(w.name)}</a>: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}</li>`
       )
       .join("")}</ul>
     <p>${emailButton(settingsUrl(appUrl, input.organizationId), "See all failing workflows")}</p>`,

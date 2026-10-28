@@ -260,14 +260,18 @@ async function renderRow(
       })[],
     };
   } else if (Array.isArray(context.incidentIds)) {
-    const list: (AlertWorkflow & { failureCount: number })[] = [];
+    const list: Extract<MessageInput, { kind: "grouped" }>["workflows"] = [];
     for (const id of context.incidentIds as string[]) {
       const incident = await ctx.incident(id);
       const workflow = incident
         ? await ctx.workflow(incident.workflowId)
         : null;
       if (incident && workflow && !incident.resolvedAt) {
-        list.push({ ...workflow, failureCount: incident.failureCount });
+        list.push({
+          ...workflow,
+          failureCount: incident.failureCount,
+          workflowPaused: incident.workflowPausedAt !== null,
+        });
       }
     }
     if (list.length === 0) {
@@ -298,6 +302,12 @@ async function renderRow(
             workflow,
             incident: alertIncident,
             backupReason,
+            // An alert says so when its incident paused the workflow; a
+            // reminder only when it was queued for pausing it again.
+            workflowPaused:
+              row.kind === "reminder"
+                ? context.pausedAgain === true
+                : incident.workflowPausedAt !== null,
           };
     const link = runsUrl(ctx.appUrl, workflow.id);
     return {

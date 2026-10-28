@@ -29,6 +29,8 @@ import {
 import { STATUS_DISPLAY } from "@/lib/analytics/status-display";
 import type {
   NormalizedStatus,
+  NotificationRunDetail,
+  RunSource,
   StepLog,
   UnifiedRun,
 } from "@/lib/analytics/types";
@@ -54,6 +56,7 @@ import {
   useChainDisplay,
 } from "@/lib/hooks/use-chain-display";
 import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
+import { channelLabel } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import { ProjectDrawer } from "./project-drawer";
 
@@ -255,7 +258,13 @@ const STATUS_TOOLTIPS: Partial<Record<NormalizedStatus, string>> = {
     "The run failed inside KeeperHub: dispatch, the queue, or a run that was reaped after it timed out. There is nothing to fix in your workflow.",
 };
 
-function StatusBadge({ status }: { status: NormalizedStatus }): ReactNode {
+function StatusBadge({
+  source,
+  status,
+}: {
+  source: RunSource;
+  status: NormalizedStatus;
+}): ReactNode {
   const badge = (
     <Badge
       className={cn("capitalize", STATUS_DISPLAY[status].badge)}
@@ -265,7 +274,9 @@ function StatusBadge({ status }: { status: NormalizedStatus }): ReactNode {
     </Badge>
   );
 
-  const tooltip = STATUS_TOOLTIPS[status];
+  // The tooltips explain why a run ended that way; a notification is not a run.
+  const tooltip =
+    source === "notification" ? undefined : STATUS_TOOLTIPS[status];
   if (!tooltip) {
     return badge;
   }
@@ -280,10 +291,16 @@ function StatusBadge({ status }: { status: NormalizedStatus }): ReactNode {
   );
 }
 
-function SourceBadge({ source }: { source: string }): ReactNode {
+const SOURCE_LABEL: Record<RunSource, string> = {
+  workflow: "Workflow",
+  direct: "Direct",
+  notification: "System notification",
+};
+
+function SourceBadge({ source }: { source: RunSource }): ReactNode {
   return (
-    <Badge className="capitalize" variant="secondary">
-      {source}
+    <Badge className="whitespace-nowrap" variant="secondary">
+      {SOURCE_LABEL[source] ?? source}
     </Badge>
   );
 }
@@ -503,6 +520,105 @@ function ExpandedStepRows({
   );
 }
 
+function NotificationDetailItem({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}): ReactNode {
+  return (
+    <div className="flex min-w-0 gap-2">
+      <dt className="shrink-0 text-muted-foreground/70">{label}</dt>
+      <dd className="min-w-0 wrap-anywhere">{children}</dd>
+    </div>
+  );
+}
+
+/**
+ * Where a notification went and what happened to it. A notification has no
+ * steps, so this replaces the step rows a run expands into.
+ */
+function NotificationDetailRows({
+  detail,
+}: {
+  detail: NotificationRunDetail;
+}): ReactNode {
+  // A pause notice names its channel in the title already.
+  const note = detail.kind === "channel_paused" ? null : detail.note;
+  return (
+    <tr>
+      <td className="py-2 pr-3 pl-10 text-muted-foreground text-xs" colSpan={8}>
+        <dl className="flex flex-col gap-1">
+          <NotificationDetailItem label="Sent to">
+            {channelLabel(
+              detail.channel,
+              detail.recipient,
+              detail.connectionName
+            )}
+          </NotificationDetailItem>
+          <NotificationDetailItem label="Backup">
+            {detail.isBackup ? "Yes" : "No"}
+          </NotificationDetailItem>
+          <NotificationDetailItem label="Attempts">
+            {detail.attempts}
+          </NotificationDetailItem>
+          {note ? (
+            <NotificationDetailItem label="Note">{note}</NotificationDetailItem>
+          ) : null}
+          {detail.lastError && detail.state !== "delivered" ? (
+            <NotificationDetailItem label="Reason">
+              {detail.lastError}
+            </NotificationDetailItem>
+          ) : null}
+          {detail.workflows.length > 1 ? (
+            <NotificationDetailItem label="Workflows">
+              <span className="flex flex-wrap gap-x-3 gap-y-0.5">
+                {detail.workflows.map((workflow) => (
+                  <a
+                    className="underline-offset-4 hover:underline"
+                    href={`/workflows/${workflow.id}`}
+                    key={workflow.id}
+                    onClick={(e) => e.stopPropagation()}
+                    rel="noopener"
+                    target="_blank"
+                  >
+                    {workflow.name}
+                  </a>
+                ))}
+              </span>
+            </NotificationDetailItem>
+          ) : null}
+        </dl>
+      </td>
+    </tr>
+  );
+}
+
+function ExpandedRunDetail({
+  loadingSteps,
+  retentionCutoff,
+  run,
+  steps,
+}: {
+  loadingSteps: boolean;
+  retentionCutoff?: string | null;
+  run: UnifiedRun;
+  steps: StepLog[];
+}): ReactNode {
+  if (run.notification) {
+    return <NotificationDetailRows detail={run.notification} />;
+  }
+  return (
+    <ExpandedStepRows
+      loadingSteps={loadingSteps}
+      retentionCutoff={retentionCutoff}
+      run={run}
+      steps={steps}
+    />
+  );
+}
+
 type ExpandableRunRowProps = {
   retentionCutoff?: string | null;
   run: UnifiedRun;
@@ -530,7 +646,8 @@ function ExpandableRunRow({
 
     setExpanded(true);
 
-    if (run.source === "direct" || steps.length > 0) {
+    // Only workflow runs have steps to fetch.
+    if (run.source !== "workflow" || steps.length > 0) {
       return;
     }
 
@@ -547,10 +664,20 @@ function ExpandableRunRow({
   }, [expanded, steps.length, run.id, run.source]);
 
   const isDeleted = run.workflowName === "(Deleted)";
-  const runName =
-    run.source === "workflow"
-      ? (run.workflowName ?? "Unnamed Workflow")
-      : (run.directType ?? "Direct Execution");
+  const notification = run.notification;
+  let runName: string;
+  if (notification) {
+    runName = notification.title;
+  } else if (run.source === "workflow") {
+    runName = run.workflowName ?? "Unnamed Workflow";
+  } else {
+    runName = run.directType ?? "Direct Execution";
+  }
+  // A notification links to its workflow only when it is about exactly one.
+  const linksToWorkflow =
+    (run.source === "workflow" || run.source === "notification") &&
+    Boolean(run.workflowId) &&
+    !isDeleted;
 
   const ChevronIcon = expanded ? ChevronDown : ChevronRight;
 
@@ -574,13 +701,15 @@ function ExpandableRunRow({
           <div className="flex items-center gap-1.5">
             <span
               className={cn(
-                "text-sm font-medium capitalize",
+                "text-sm font-medium",
+                // A notification title is a sentence that already reads right.
+                !notification && "capitalize",
                 isDeleted && "italic text-muted-foreground line-through"
               )}
             >
               {runName}
             </span>
-            {run.source === "workflow" && run.workflowId && !isDeleted ? (
+            {linksToWorkflow ? (
               <a
                 aria-label={`Open ${runName} in a new tab`}
                 className="opacity-0 transition-opacity group-hover:opacity-100"
@@ -595,7 +724,7 @@ function ExpandableRunRow({
           </div>
         </td>
         <td className="py-3 pr-3">
-          <StatusBadge status={run.status} />
+          <StatusBadge source={run.source} status={run.status} />
         </td>
         <td className="py-3 pr-3">
           <SourceBadge source={run.source} />
@@ -630,7 +759,7 @@ function ExpandableRunRow({
         </td>
       </tr>
       {expanded ? (
-        <ExpandedStepRows
+        <ExpandedRunDetail
           loadingSteps={loadingSteps}
           retentionCutoff={retentionCutoff}
           run={run}

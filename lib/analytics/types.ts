@@ -12,7 +12,36 @@ export type { TransactionHashEntry } from "@/lib/db/schema";
 
 export type TimeRange = "1h" | "24h" | "7d" | "30d" | "custom";
 
-export type RunSource = "workflow" | "direct";
+/**
+ * "notification" is a failure notification KeeperHub sent the organization (an
+ * alert, reminder, recovery or notice), listed beside the runs it was about.
+ * It is a list row only: the summary, chart and network breakdown count runs.
+ */
+export type RunSource = "workflow" | "direct" | "notification";
+
+/** What a notification row carries beyond the run fields it shares. */
+export type NotificationRunDetail = {
+  /** "Alert: Nightly sync", "Alert: 3 workflows", "Notifications turned on". */
+  title: string;
+  /** alert | reminder | recovery | channel_paused | launch_notice */
+  kind: string;
+  /** The delivery's own state, which `status` normalizes. */
+  state: string;
+  /** email | slack | discord | telegram | pagerduty */
+  channel: string;
+  /** Email address, or the channel's destination. */
+  recipient: string;
+  /** The connection a chat or PagerDuty channel sends through. */
+  connectionName: string | null;
+  /** Sent because another channel failed. */
+  isBackup: boolean;
+  attempts: number;
+  /** Why it failed, or why it was not sent. */
+  lastError: string | null;
+  /** Which channel a pause notice is about, or why a backup was sent. */
+  note: string | null;
+  workflows: { id: string; name: string }[];
+};
 
 export type DirectType =
   | "transfer"
@@ -89,6 +118,8 @@ export type UnifiedRun = {
   errorCode: string | null;
   errorType: ExecutionErrorType | null;
   errorCategory: string | null;
+  /** Set on notification rows only. */
+  notification?: NotificationRunDetail;
 };
 
 export type AnalyticsSummary = {
@@ -175,7 +206,10 @@ export type RunQueryFilters = {
   durationMinMs?: number;
   /** Exclusive upper bound on run duration, in milliseconds. */
   durationMaxMs?: number;
-  /** Matches a workflow name or a run id, case-insensitively. */
+  /**
+   * Matches a workflow name or a run id, case-insensitively; on notification
+   * rows also the recipient.
+   */
   search?: string;
 };
 

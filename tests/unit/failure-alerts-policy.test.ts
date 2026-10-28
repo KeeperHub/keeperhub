@@ -25,6 +25,7 @@ function override(
     muteUntilSuccess: false,
     muteReason: null,
     mutedBy: null,
+    pauseWorkflow: false,
     updatedBy: null,
     updatedAt: new Date(),
     ...patch,
@@ -61,6 +62,20 @@ describe("mergePolicy", () => {
     expect(policy.threshold).toBe(3);
     expect(policy.timeLimitMinutes).toBe(60);
     expect(policy.channels).toEqual([orgChannel]);
+    expect(policy.source).toBe("custom");
+  });
+
+  it("pauses the workflow only when its own override asks", () => {
+    expect(mergePolicy(DEFAULT_ORG_POLICY, [], null, []).pauseWorkflow).toBe(
+      false
+    );
+    const policy = mergePolicy(
+      DEFAULT_ORG_POLICY,
+      [],
+      override({ pauseWorkflow: true }),
+      []
+    );
+    expect(policy.pauseWorkflow).toBe(true);
     expect(policy.source).toBe("custom");
   });
 

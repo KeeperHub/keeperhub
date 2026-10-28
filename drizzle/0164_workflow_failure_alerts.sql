@@ -74,6 +74,7 @@ CREATE TABLE "workflow_failure_alert_overrides" (
 	"mute_until_success" boolean DEFAULT false NOT NULL,
 	"mute_reason" text,
 	"muted_by" text,
+	"pause_workflow" boolean DEFAULT false NOT NULL,
 	"updated_by" text,
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
@@ -98,6 +99,7 @@ CREATE TABLE "workflow_failure_incidents" (
 	"reminder_count" integer DEFAULT 0 NOT NULL,
 	"last_notified_at" timestamp DEFAULT now() NOT NULL,
 	"alert_queued_at" timestamp,
+	"workflow_paused_at" timestamp,
 	"resolved_at" timestamp,
 	"resolved_reason" text,
 	"resolving_execution_id" text

@@ -159,6 +159,7 @@ export async function loadWorkflowAlertView(
       mutedBy:
         members.find((m) => m.userId === override?.mutedBy)?.deliverable ??
         null,
+      pauseWorkflow: override?.pauseWorkflow ?? false,
     },
     effective: {
       threshold: policy.threshold,
@@ -182,6 +183,7 @@ export async function loadWorkflowAlertView(
                 ? d.recipient
                 : `${d.channel} ${d.recipient}`
             ),
+            workflowPausedAt: incident.workflowPausedAt?.toISOString() ?? null,
           }
         : null,
     },
@@ -279,6 +281,7 @@ export async function saveWorkflowOverride(params: {
     ? await parseChannels(body.channels, organizationId)
     : [];
   const mute = parseMute(body, now);
+  const pauseWorkflow = body.pauseWorkflow === true;
 
   const empty =
     threshold === null &&
@@ -286,7 +289,8 @@ export async function saveWorkflowOverride(params: {
     recipientUserIds === null &&
     !customChannels &&
     !mute.mutedUntil &&
-    !mute.muteUntilSuccess;
+    !mute.muteUntilSuccess &&
+    !pauseWorkflow;
 
   if (empty) {
     await db.transaction(async (tx: Tx) => {
@@ -311,6 +315,7 @@ export async function saveWorkflowOverride(params: {
     muteUntilSuccess: mute.muteUntilSuccess,
     muteReason: mute.muteReason,
     mutedBy: muted ? userId : null,
+    pauseWorkflow,
     updatedBy: userId,
     updatedAt: now,
   };
@@ -339,5 +344,6 @@ export async function saveWorkflowOverride(params: {
     })),
     mutedUntil: mute.mutedUntil?.toISOString() ?? null,
     muteUntilSuccess: mute.muteUntilSuccess,
+    pauseWorkflow,
   };
 }

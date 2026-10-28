@@ -80,6 +80,7 @@ const STATUS_GROUPS: StatusGroup[] = [
 const SOURCE_OPTIONS: Array<{ value: RunSource; label: string }> = [
   { value: "workflow", label: "Workflow" },
   { value: "direct", label: "Direct" },
+  { value: "notification", label: "System notifications" },
 ];
 
 const SEARCH_DEBOUNCE_MS = 300;

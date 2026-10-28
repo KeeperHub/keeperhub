@@ -150,6 +150,9 @@ export const workflowFailureAlertOverrides = pgTable(
     muteUntilSuccess: boolean("mute_until_success").notNull().default(false),
     muteReason: text("mute_reason"),
     mutedBy: text("muted_by"),
+    // Turn the workflow off when its alert goes out. Per workflow only, on
+    // purpose: an org-wide switch could stop every automation at once.
+    pauseWorkflow: boolean("pause_workflow").notNull().default(false),
     updatedBy: text("updated_by"),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
@@ -214,6 +217,9 @@ export const workflowFailureIncidents = pgTable(
     // Set in the same transaction that queues the alert. An open incident
     // without it lost its alert (a crash between the two) and is re-queued.
     alertQueuedAt: timestamp("alert_queued_at"),
+    // When this incident last turned its workflow off (pauseWorkflow). While
+    // the workflow stays off the incident stays open: stopped is not fixed.
+    workflowPausedAt: timestamp("workflow_paused_at"),
     resolvedAt: timestamp("resolved_at"),
     resolvedReason: text("resolved_reason").$type<FailureIncidentResolution>(),
     resolvingExecutionId: text("resolving_execution_id"),
