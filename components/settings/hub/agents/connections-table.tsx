@@ -21,6 +21,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { truncateAddress } from "@/lib/address-utils";
+import { isWalletEmail } from "@/lib/auth/wallet-constants";
 import {
   effectiveScope,
   SUPPORTED_SCOPES,
@@ -86,15 +88,31 @@ function LastUsed({
 }: {
   session: McpConnectionRow;
 }): React.ReactElement {
-  if (!session.lastUsedAt) {
-    return <span className="text-muted-foreground text-xs">Not used yet</span>;
-  }
+  return <LastUsedText at={session.lastUsedAt} />;
+}
+
+/**
+ * When something was last used, cut short in its column with the whole of it
+ * in the title: the browser's locale sets the wording, and the day count has
+ * no cap, so no column width fits every value.
+ */
+function LastUsedText({ at }: { at: string | null }): React.ReactElement {
+  const text = at ? relativeTime(at) : "Not used yet";
   return (
-    <span className="text-muted-foreground text-xs">
-      <span className={NARROW_ONLY}>Last used </span>
-      {relativeTime(session.lastUsedAt)}
+    <span className="block truncate text-muted-foreground text-xs" title={text}>
+      {at && <span className={NARROW_ONLY}>Last used </span>}
+      {text}
     </span>
   );
+}
+
+/**
+ * A wallet member's email is a synthetic `<address>@wallet...`. Cut from the
+ * end, members whose addresses share a prefix all read the same, so it is
+ * shown as the short address, which keeps the tail that tells them apart.
+ */
+function shownEmail(email: string): string {
+  return isWalletEmail(email) ? truncateAddress(email.split("@")[0]) : email;
 }
 
 /** The most recent moment any of this person's sessions was used. */
@@ -216,15 +234,17 @@ export function ConnectionsTable({
 
       {/* Fixed widths, so a long address is cut short in its own column
           rather than widening the table past the card. The other columns
-          take only what their longest value needs, since the first one gets
-          what is left in a settings column as narrow as 36rem. */}
+          take what their controls need and a little more, so a select or a
+          button a few pixels wider does not run into the next column; the
+          first one gets what is left in a settings column as narrow as
+          36rem. */}
       <Table className="table-fixed">
         <TableHeader>
           <TableRow className={SETTINGS_HEAD_ROW}>
             <TableHead className="truncate">Person and sessions</TableHead>
-            <TableHead className="w-44">Access</TableHead>
+            <TableHead className="w-48">Access</TableHead>
             <TableHead className="w-28">Last used</TableHead>
-            <TableHead className="w-20" />
+            <TableHead className="w-24" />
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -280,12 +300,19 @@ export function ConnectionsTable({
                       />
                       <span className="flex min-w-0 flex-col">
                         <span className="truncate font-medium">
-                          {group.userName || group.userEmail}
+                          {group.userName || shownEmail(group.userEmail)}
                         </span>
-                        {/* The address gives way, not what is connected. */}
-                        <span className="flex min-w-0 gap-1 text-muted-foreground text-xs">
-                          <span className="truncate">{group.userEmail}</span>
-                          <span className="shrink-0">
+                        {/* The address gives way, not what is connected:
+                            where both do not fit, the summary drops under
+                            it. */}
+                        <span className="flex min-w-0 flex-wrap gap-x-1 text-muted-foreground text-xs">
+                          <span
+                            className="max-w-full truncate"
+                            title={group.userEmail}
+                          >
+                            {shownEmail(group.userEmail)}
+                          </span>
+                          <span className="whitespace-normal">
                             · {sessionSummary(group)}
                           </span>
                         </span>
@@ -331,17 +358,7 @@ export function ConnectionsTable({
                     )}
                   </TableCell>
                   <TableCell className={UNDER_PERSON} role="cell">
-                    {(() => {
-                      const latest = lastUsedAcross(group);
-                      return (
-                        <span className="text-muted-foreground text-xs">
-                          {latest && (
-                            <span className={NARROW_ONLY}>Last used </span>
-                          )}
-                          {latest ? relativeTime(latest) : "Not used yet"}
-                        </span>
-                      );
-                    })()}
+                    <LastUsedText at={lastUsedAcross(group)} />
                   </TableCell>
                   <TableCell role="cell" />
                 </TableRow>,
@@ -364,13 +381,13 @@ export function ConnectionsTable({
                             can hold several sessions under the same name. The
                             client id is what tells them apart, and it is public
                             in OAuth, so a leading fragment is safe to show. */}
-                        <span className="flex min-w-0 flex-wrap gap-x-1 text-muted-foreground text-xs">
-                          {/* Cut short only in a table row: a stacked one has
-                              room below to wrap into. */}
-                          <span className="@xl/settings:truncate">
+                        {/* Wraps rather than being cut short: how long ago
+                            is the point of the line. */}
+                        <span className="flex min-w-0 flex-wrap gap-x-1 whitespace-normal text-muted-foreground text-xs">
+                          <span>
                             Connected {relativeTime(session.connectedAt)}
                           </span>
-                          <span className="shrink-0">
+                          <span className="shrink-0 whitespace-nowrap">
                             ·{" "}
                             <span className="font-mono">
                               {session.clientId.slice(0, 8)}
