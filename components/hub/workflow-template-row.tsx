@@ -31,8 +31,15 @@ function voteCountColorClass(userVote: VoteDirection | null): string {
   return "text-foreground";
 }
 
+const compactUses = new Intl.NumberFormat("en-US", { notation: "compact" });
+
 function usesLabel(count: number): string {
   return count.toLocaleString("en-US");
+}
+
+// The narrow Uses track fits four digits; larger counts go compact (123K).
+function narrowUsesLabel(count: number): string {
+  return count < 10_000 ? usesLabel(count) : compactUses.format(count);
 }
 
 export function WorkflowTemplateRow({
@@ -94,12 +101,12 @@ export function WorkflowTemplateRow({
       </span>
 
       <div className="pointer-events-none relative z-[2] min-w-0">
-        <span className="block font-semibold text-foreground text-sm @max-xl:line-clamp-2 @max-xl:wrap-anywhere @xl:truncate">
+        <span className="block font-semibold text-foreground text-sm @max-workflow-list-full:line-clamp-2 @max-workflow-list-full:wrap-anywhere @workflow-list-full:truncate">
           {workflow.name}
         </span>
         {/* Narrow tables have no badge column, so the badges sit here. */}
         {badges ? (
-          <div className="pointer-events-auto mt-1 flex flex-wrap items-center gap-1.5 @xl:hidden">
+          <div className="pointer-events-auto mt-1 flex flex-wrap items-center gap-1 @xl:hidden">
             {badges}
           </div>
         ) : null}
@@ -119,7 +126,8 @@ export function WorkflowTemplateRow({
       </div>
 
       <span className="pointer-events-none relative z-[2] text-right font-semibold text-foreground text-sm tabular-nums">
-        {usesLabel(uses)}
+        <span className="@xl:hidden">{narrowUsesLabel(uses)}</span>
+        <span className="hidden @xl:inline">{usesLabel(uses)}</span>
       </span>
 
       {onVote ? (
@@ -127,7 +135,7 @@ export function WorkflowTemplateRow({
           <button
             aria-label="Upvote"
             aria-pressed={upActive}
-            className={`relative rounded p-0.5 transition-colors after:absolute after:-inset-1.5 after:content-[''] duration-150 motion-reduce:transition-none ${
+            className={`relative rounded p-0.5 transition-colors duration-150 after:absolute after:-inset-1.5 after:content-[''] motion-reduce:transition-none ${
               upActive
                 ? "cursor-default text-[var(--color-text-accent)]"
                 : "text-muted-foreground/50 hover:text-[var(--color-text-accent)]"
@@ -155,7 +163,7 @@ export function WorkflowTemplateRow({
           <button
             aria-label="Downvote"
             aria-pressed={downActive}
-            className={`relative rounded p-0.5 transition-colors after:absolute after:-inset-1.5 after:content-[''] duration-150 motion-reduce:transition-none ${
+            className={`relative rounded p-0.5 transition-colors duration-150 after:absolute after:-inset-1.5 after:content-[''] motion-reduce:transition-none ${
               downActive
                 ? "cursor-default text-[var(--color-text-error)]"
                 : "text-muted-foreground/50 hover:text-[var(--color-text-error)]"

@@ -269,7 +269,13 @@ test.describe("Workflows list columns", () => {
   const token = `hublist${suffix}`;
   const featured = `${token} rebalance collateral across chains when the health factor drops`;
   const plain = `${token} wrap stETH`;
-  const tagNames = [`Liquidations ${suffix}`, `Cross-chain ${suffix}`];
+  // A row shows up to three tags and they should fit on one line at 1280px.
+  // Real tag names spelled backwards: the same width, and no clash with them.
+  const tagNames = ["DeFi", "Monitoring", "Liquidations"].map((name) =>
+    [...name].reverse().join("")
+  );
+  // The widest count the Uses column has to hold, injected into the feed.
+  const featuredUses = 123_456;
   const workflowIds: string[] = [];
   const tagIds: string[] = [];
 
@@ -307,13 +313,36 @@ test.describe("Workflows list columns", () => {
     row.getByText("Featured", { exact: true }).filter({ visible: true });
 
   async function openList(page: Page, width: number): Promise<void> {
+    await page.route("**/api/workflows/public*", async (route) => {
+      const response = await route.fetch();
+      const feed = (await response.json()) as {
+        name: string;
+        duplicateCount: number;
+      }[];
+      for (const workflow of feed) {
+        if (workflow.name === featured) {
+          workflow.duplicateCount = featuredUses;
+        }
+      }
+      await route.fulfill({ response, json: feed });
+    });
     await open(page, width, `/hub?tab=workflows&q=${token}`);
     await page.getByRole("radio", { name: "View as list" }).click();
     await expect(rowOf(page, plain)).toBeVisible({ timeout: 15_000 });
   }
 
+  // Its centre is drawn on top 5px outside each vote button: the tap area.
+  async function tapAreaHits(button: Locator, dx: number): Promise<boolean> {
+    return await button.evaluate((element, offset) => {
+      const rect = element.getBoundingClientRect();
+      const x = offset < 0 ? rect.left + offset : rect.right + offset;
+      const hit = document.elementFromPoint(x, rect.top + rect.height / 2);
+      return hit !== null && element.contains(hit);
+    }, dx);
+  }
+
   // 1024px is the narrowest table: the nav and the sort sidebar both show.
-  test("names and votes are readable and line up from 320 to 1920px", async ({
+  test("names, uses and votes are readable and line up from 320 to 1920px", async ({
     page,
   }) => {
     await openList(page, 320);
@@ -330,7 +359,8 @@ test.describe("Workflows list columns", () => {
             box(row.getByText(name)),
             box(row.getByRole("button", { name: "Downvote" })),
           ]);
-          expect(nameBox.width).toBeGreaterThanOrEqual(64);
+          // 6rem: before the narrow tier dropped the icon, 320px left 78px.
+          expect(nameBox.width).toBeGreaterThanOrEqual(96);
           expect(right(nameBox)).toBeLessThanOrEqual(uses.x);
           expect(right(rowBox)).toBeLessThanOrEqual(width);
           expect(right(downBox)).toBeLessThanOrEqual(right(rowBox));
@@ -338,6 +368,34 @@ test.describe("Workflows list columns", () => {
             1
           );
         }
+        // Compact on narrow tables, in full from the badge column on.
+        const count = await box(
+          rowOf(page, featured)
+            .getByText(/^(123K|123,456)$/)
+            .filter({ visible: true })
+        );
+        const featuredName = await box(
+          rowOf(page, featured).getByText(featured)
+        );
+        expect(count.x).toBeGreaterThanOrEqual(right(featuredName));
+        expect(right(count)).toBeLessThanOrEqual(right(uses) + 1);
+      });
+    }
+  });
+
+  test("the vote buttons take taps 5px outside their icons", async ({
+    page,
+  }) => {
+    await openList(page, 320);
+    const row = rowOf(page, plain);
+    for (const width of [320, 1280]) {
+      await atWidth(page, width, async () => {
+        const up = row.getByRole("button", { name: "Upvote" });
+        const down = row.getByRole("button", { name: "Downvote" });
+        expect(await tapAreaHits(up, -5)).toBe(true);
+        expect(await tapAreaHits(down, 5)).toBe(true);
+        expect(await tapAreaHits(up, 5)).toBe(true);
+        expect(await tapAreaHits(down, -5)).toBe(true);
       });
     }
   });
@@ -386,6 +444,13 @@ test.describe("Workflows list columns", () => {
         expect(tagBox.x).toBeGreaterThan(right(nameBox));
         const tags = await box(header(page, "Tags"));
         expect(Math.abs(tagBox.x - tags.x)).toBeLessThanOrEqual(1);
+        const tops = await Promise.all(
+          tagNames.map(
+            async (tagName) =>
+              (await box(row.getByText(tagName, { exact: true }))).y
+          )
+        );
+        expect(Math.max(...tops) - Math.min(...tops)).toBeLessThan(1);
       });
     }
   });

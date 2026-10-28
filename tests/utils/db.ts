@@ -409,7 +409,8 @@ export async function deleteTestWorkflow(workflowId: string): Promise<void> {
 }
 
 /**
- * Create a Hub public tag; delete it with deleteTestPublicTag
+ * Create a Hub public tag, or take over one a crashed run left behind; delete
+ * it with deleteTestPublicTag
  */
 export async function createTestPublicTag(name: string): Promise<string> {
   const sql = getDbConnection();
@@ -419,10 +420,12 @@ export async function createTestPublicTag(name: string): Promise<string> {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "");
-    await sql`
+    const rows = await sql`
       INSERT INTO public_tags (id, name, slug) VALUES (${id}, ${name}, ${slug})
+      ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+      RETURNING id
     `;
-    return id;
+    return rows[0].id as string;
   } finally {
     await sql.end();
   }
