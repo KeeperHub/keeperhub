@@ -17,7 +17,7 @@
     "test:unit": "vitest run tests/unit"
   },
   "dependencies": {
-    "@aws-sdk/client-sqs": "^3.1152.0",
+    "@aws-sdk/client-sqs": "^3.1156.0",
     "@kubernetes/client-node": "^1.0.0",
     "cron-parser": "^5.10.2",
     "ethers": "^6.17.0",
