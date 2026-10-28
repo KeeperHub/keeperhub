@@ -115,6 +115,22 @@ function shownEmail(email: string): string {
   return isWalletEmail(email) ? truncateAddress(email.split("@")[0]) : email;
 }
 
+/**
+ * The person's name, else their sign-in. Wallet accounts made before sign-up
+ * gave them a generated handle carry their address as their name, so that is
+ * shown short too.
+ */
+function shownName(group: McpUserGroup): string {
+  const { userName, userEmail } = group;
+  if (isWalletEmail(userEmail)) {
+    const address = userEmail.split("@")[0];
+    if (!userName || userName.toLowerCase() === address.toLowerCase()) {
+      return truncateAddress(address);
+    }
+  }
+  return userName || userEmail;
+}
+
 /** The most recent moment any of this person's sessions was used. */
 function lastUsedAcross(group: McpUserGroup): string | null {
   let latest: string | null = null;
@@ -300,7 +316,7 @@ export function ConnectionsTable({
                       />
                       <span className="flex min-w-0 flex-col">
                         <span className="truncate font-medium">
-                          {group.userName || shownEmail(group.userEmail)}
+                          {shownName(group)}
                         </span>
                         {/* The address gives way, not what is connected:
                             where both do not fit, the summary drops under

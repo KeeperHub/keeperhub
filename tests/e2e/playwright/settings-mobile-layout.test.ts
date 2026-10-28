@@ -50,8 +50,11 @@ const SHARED_HEADER_FROM = 390;
 const ONE_LINE = 24;
 // A section's code is compiled on first visit in development.
 const FIRST_VISIT = { timeout: 20_000 };
-// A wallet member's sign-in, the longest name a settings row carries.
-const WALLET_EMAIL = `0x${"0".repeat(32)}deadbeef@${WALLET_EMAIL_DOMAIN}`;
+// A wallet member's address and sign-in, the longest name a settings row
+// carries. Accounts made before sign-up gave wallets a generated handle carry
+// the address as their name too.
+const WALLET_ADDRESS = `0x${"0".repeat(32)}deadbeef`;
+const WALLET_EMAIL = `${WALLET_ADDRESS}@${WALLET_EMAIL_DOMAIN}`;
 // How the agents table shows it: the short checksummed address, which keeps
 // the tail that tells wallet members apart.
 const WALLET_SHORT = "0x0000...Beef";
@@ -119,7 +122,7 @@ const AGENTS = {
     },
     {
       userId: "agents-wallet",
-      userName: "",
+      userName: WALLET_ADDRESS,
       userEmail: WALLET_EMAIL,
       role: "member",
       maxScope: null,
@@ -551,8 +554,11 @@ test.describe("the connected agents table", () => {
           expect(await textFits(table.locator("th").first())).toBe(true);
         }
 
-        // A wallet member reads as their short address, whole, with the
-        // full sign-in in its title.
+        // A wallet member named by their address reads as the short address
+        // on both lines, whole, with the full sign-in in its title.
+        await expect(
+          wallet.getByText(WALLET_SHORT, { exact: true })
+        ).toHaveCount(2);
         const short = wallet.getByText(WALLET_SHORT, { exact: true }).last();
         expect(await textFits(short)).toBe(true);
         await endsInside(short, wallet);
