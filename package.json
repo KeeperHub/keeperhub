@@ -116,7 +116,7 @@
     "@x402/next": "^2.28.0",
     "@xyflow/react": "^12.12.0",
     "ai": "^5.0.281",
-    "better-auth": "1.7.2",
+    "better-auth": "1.7.7",
     "bs58": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -202,7 +202,7 @@
     ],
     "overrides_better_auth_comment": "Pinned to 1.7.2. better-auth 1.7.3 restored the 1.6 account core schema and no longer writes accounts.issuer, which KEEP-1311 (drizzle/0148) added as NOT NULL - so every credential signup fails on the insert. Unpin only together with the 1.7 upgrade-guide cleanup.",
     "overrides": {
-      "better-auth": "1.7.2",
+      "better-auth": "1.7.7",
       "toml": "^5.0.1",
       "jayson": "^5.0.0",
       "fflate": "^0.7.5",
