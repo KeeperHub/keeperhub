@@ -86,6 +86,10 @@ async function headerParts(page: Page): Promise<{ title: Box; search: Box }> {
   return { title: await box(header.locator("h2")), search: await box(search) };
 }
 
+function centreX(target: Box): number {
+  return target.x + target.width / 2;
+}
+
 function centreY(target: Box): number {
   return target.y + target.height / 2;
 }
@@ -381,6 +385,68 @@ test.describe("settings on wider screens", () => {
         .evaluate((cell) => getComputedStyle(cell).position);
       expect(scrollable).toBe(scrolls);
       expect(pinned).toBe(scrolls ? "sticky" : "static");
+    }
+  });
+  test("the save badge sits under the plan switch's Annual end in a narrow column", async ({
+    page,
+  }) => {
+    // A phone, and a tablet beside the rail, both get the narrow column.
+    for (const [size, stacked] of [
+      [{ width: 390, height: PHONE_HEIGHT }, true],
+      [TABLET, true],
+      [DESKTOP, false],
+    ] as const) {
+      await page.setViewportSize(size);
+      await openOrgSettings(page, "plans");
+      const interval = page.locator(".khp-interval");
+      await expect(interval.locator(".khp-save-badge")).toBeVisible(
+        FIRST_VISIT
+      );
+      // All four boxes in one frame: the page moves once the owner's role
+      // and billing load, and two separate reads could straddle that.
+      const { column, toggle, annual, save } = await interval.evaluate(
+        (element) => {
+          const rect = (
+            name: string,
+            node: Element | null | undefined
+          ): Box => {
+            if (!node) {
+              throw new Error(`${name} is not rendered`);
+            }
+            const { x, y, width, height } = node.getBoundingClientRect();
+            return { x, y, width, height };
+          };
+          const buttons = [...element.querySelectorAll(".khp-interval-btn")];
+          return {
+            column: rect("the plan cards", element.parentElement),
+            toggle: rect(
+              "the plan switch",
+              element.querySelector(".khp-interval-group")
+            ),
+            annual: rect(
+              "the Annual button",
+              buttons.find((button) => button.textContent?.trim() === "Annual")
+            ),
+            save: rect(
+              "the save badge",
+              element.querySelector(".khp-save-badge")
+            ),
+          };
+        }
+      );
+      if (stacked) {
+        expect(save.y).toBeGreaterThanOrEqual(toggle.y + toggle.height);
+        expect(centreX(save)).toBeGreaterThanOrEqual(annual.x);
+        expect(centreX(save)).toBeLessThanOrEqual(annual.x + annual.width);
+        expect(Math.abs(centreX(toggle) - centreX(column))).toBeLessThanOrEqual(
+          1
+        );
+      } else {
+        const level = centreY(save);
+        expect(save.x).toBeGreaterThanOrEqual(toggle.x + toggle.width);
+        expect(level).toBeGreaterThanOrEqual(toggle.y);
+        expect(level).toBeLessThanOrEqual(toggle.y + toggle.height);
+      }
     }
   });
 });
