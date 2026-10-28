@@ -1,33 +1,32 @@
 import "server-only";
 
-import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { member } from "@/lib/db/schema";
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
-import type { AuthMethod } from "@/lib/middleware/auth-helpers";
-import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
+import {
+  type DualAuthContext,
+  getDualAuthContext,
+} from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
+import { getOrgRole } from "@/lib/security/org-role";
 import { SettingsError } from "./settings";
 
-export type OrgAccess = {
+type Authenticated = Exclude<DualAuthContext, { error: string }> & {
+  userId: string;
+};
+
+type OrgAccess = {
   userId: string;
   role: string;
   canManage: boolean;
-  authMethod: AuthMethod;
+  authMethod: Authenticated["authMethod"];
   apiKeyId: string | null;
   scope?: string;
 };
 
-/**
- * Who is asking, and whether they may change failure notifications. Owners
- * and admins manage them (the same people who manage members); any member
- * may read them. API-key callers are held to their own organization.
- */
-export async function resolveOrgAccess(
-  request: Request,
-  organizationId: string
-): Promise<OrgAccess | NextResponse> {
+/** Who is asking, before anything about the resource is looked up. */
+export async function authenticate(
+  request: Request
+): Promise<Authenticated | NextResponse> {
   const auth = await getDualAuthContext(request);
   if ("error" in auth) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
@@ -38,30 +37,45 @@ export async function resolveOrgAccess(
       { status: 400 }
     );
   }
-  if (auth.authMethod === "api-key" && auth.organizationId !== organizationId) {
+  return { ...auth, userId: auth.userId };
+}
+
+/**
+ * Whether they may read or change this org's failure notifications. Owners
+ * and admins manage them (the same people who manage members); any member may
+ * read them. An API key or OAuth token is held to the organization it was
+ * issued for, even when its user also belongs to others.
+ */
+export async function orgAccess(
+  auth: Authenticated,
+  organizationId: string
+): Promise<OrgAccess | NextResponse> {
+  if (auth.authMethod !== "session" && auth.organizationId !== organizationId) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
-  const [membership] = await db
-    .select({ role: member.role })
-    .from(member)
-    .where(
-      and(
-        eq(member.organizationId, organizationId),
-        eq(member.userId, auth.userId)
-      )
-    )
-    .limit(1);
-  if (!membership) {
+  const role = await getOrgRole(auth.userId, organizationId);
+  if (!role) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   return {
     userId: auth.userId,
-    role: membership.role,
-    canManage: membership.role === "owner" || membership.role === "admin",
+    role,
+    canManage: role === "owner" || role === "admin",
     authMethod: auth.authMethod,
     apiKeyId: auth.apiKeyId,
     scope: auth.scope,
   };
+}
+
+export async function resolveOrgAccess(
+  request: Request,
+  organizationId: string
+): Promise<OrgAccess | NextResponse> {
+  const auth = await authenticate(request);
+  if (auth instanceof NextResponse) {
+    return auth;
+  }
+  return await orgAccess(auth, organizationId);
 }
 
 /** For writes: owners and admins only, and a write scope for OAuth callers. */

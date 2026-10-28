@@ -1167,7 +1167,6 @@ export {
   failureAlertChannels,
   failureAlertDeliveries,
   failureAlertEmailUsage,
-  failureAlertHeartbeats,
   orgFailureAlertSettings,
   workflowFailureAlertOverrides,
   workflowFailureAlertQueue,

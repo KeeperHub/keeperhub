@@ -6,11 +6,8 @@ import {
   settingsErrorResponse,
 } from "@/lib/notifications/failure-alerts/route-auth";
 import { CHANNEL_KINDS } from "@/lib/notifications/failure-alerts/settings";
-import {
-  checkTestRateLimit,
-  sendTest,
-  type TestRequest,
-} from "@/lib/notifications/failure-alerts/test-send";
+import { sendTest } from "@/lib/notifications/failure-alerts/test-send";
+import type { TestRequest } from "@/lib/notifications/failure-alerts/view-types";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
 
 function parseRequest(body: Record<string, unknown>): TestRequest | null {
@@ -68,7 +65,6 @@ export async function POST(
       );
     }
 
-    await checkTestRateLimit(organizationId, access.userId);
     const result = await sendTest({
       organizationId,
       userId: access.userId,

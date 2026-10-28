@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Check, ChevronRight, Gem, Loader2 } from "lucide-react";
+import { Check, ChevronRight, Gem, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Notice } from "@/components/ui/notice";
 import {
   Select,
   SelectContent,
@@ -20,9 +21,13 @@ import {
   MIN_THRESHOLD,
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
-import type { OrgSettingsView } from "@/lib/notifications/failure-alerts/view-types";
+import type {
+  OrgSettingsView,
+  TestResult,
+} from "@/lib/notifications/failure-alerts/view-types";
+import { roleLabel } from "@/lib/organization/role-label";
 import { cn } from "@/lib/utils";
-import { sendFailureAlertTest, type TestResult } from "./api";
+import { fetchView, sendFailureAlertTest } from "./api";
 import {
   ChannelListEditor,
   channelsPayload,
@@ -63,6 +68,22 @@ function formFrom(data: Loaded): Form {
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
+function isValidThreshold(value: string): boolean {
+  const n = Number(value);
+  return (
+    value.trim() !== "" &&
+    Number.isInteger(n) &&
+    n >= MIN_THRESHOLD &&
+    n <= MAX_THRESHOLD
+  );
+}
+
+const THRESHOLD_ERROR = `Use a whole number from ${MIN_THRESHOLD} to ${MAX_THRESHOLD}.`;
+
+/** The tap targets below sm stay at least 44px tall. */
+const SUMMARY_CLASS =
+  "flex min-h-11 cursor-pointer list-none items-center gap-1 text-muted-foreground text-xs hover:text-foreground sm:min-h-0";
+
 /**
  * The org-wide failure notification settings. Every change saves as it is
  * made: a channel someone added and tested is never lost to a Save button at
@@ -74,6 +95,7 @@ export function OrgFailureAlertsSection({
   organizationId: string;
 }): React.ReactElement {
   const [data, setData] = useState<Loaded | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [form, setForm] = useState<Form | null>(null);
   const [thresholdInput, setThresholdInput] = useState("");
   const [saveState, setSaveState] = useState<SaveState>("idle");
@@ -94,31 +116,38 @@ export function OrgFailureAlertsSection({
     savedRef.current = nextForm;
   }, []);
 
+  const load = useCallback(
+    async (isActive: () => boolean = () => true): Promise<void> => {
+      setLoadFailed(false);
+      try {
+        const body = await fetchView<Loaded>(url);
+        if (!isActive()) {
+          return;
+        }
+        apply(body);
+        // Open on load only when something in it is not the default; after
+        // that it stays the way the person left it.
+        setMoreOpen(
+          body.timeLimitMinutes !== null ||
+            !body.remindDaily ||
+            !body.notifyRecovery
+        );
+      } catch {
+        if (isActive()) {
+          setLoadFailed(true);
+        }
+      }
+    },
+    [apply, url]
+  );
+
   useEffect(() => {
     let active = true;
-    fetch(url)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((body: Loaded | null) => {
-        if (active && body) {
-          apply(body);
-          // Open on load only when something in it is not the default; after
-          // that it stays the way the person left it.
-          setMoreOpen(
-            body.timeLimitMinutes !== null ||
-              !body.remindDaily ||
-              !body.notifyRecovery
-          );
-        }
-      })
-      .catch(() => {
-        if (active) {
-          toast.error("Could not load failure notification settings");
-        }
-      });
+    load(() => active).catch(() => undefined);
     return () => {
       active = false;
     };
-  }, [apply, url]);
+  }, [load]);
 
   const persist = useCallback(
     (next: Form): void => {
@@ -184,12 +213,35 @@ export function OrgFailureAlertsSection({
     if (res.ok) {
       const body = (await res.json()) as Loaded;
       setData((prev) =>
-        prev ? { ...prev, connections: body.connections } : prev
+        prev
+          ? {
+              ...prev,
+              connections: body.connections,
+              unsharedConnections: body.unsharedConnections,
+            }
+          : prev
       );
     }
   }, [url]);
 
   if (!(data && form)) {
+    if (loadFailed) {
+      return (
+        <Notice role="alert" tone="danger">
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            Could not load the failure notification settings.
+            <Button
+              className="h-auto px-0 text-xs"
+              onClick={() => load()}
+              type="button"
+              variant="link"
+            >
+              Retry
+            </Button>
+          </span>
+        </Notice>
+      );
+    }
     return (
       <div className="flex items-center gap-2 text-muted-foreground text-sm">
         <Loader2 className="size-4 animate-spin" />
@@ -202,20 +254,13 @@ export function OrgFailureAlertsSection({
   const disabled = !canManage;
   const change = (patch: Partial<Form>): void => persist({ ...form, ...patch });
 
+  const thresholdInvalid = !isValidThreshold(thresholdInput);
+
+  // An invalid number stays in the box with the error under it, so it can be
+  // corrected rather than silently swapped back.
   const commitThreshold = (): void => {
     const value = Number(thresholdInput);
-    if (value === form.threshold) {
-      return;
-    }
-    if (
-      !Number.isInteger(value) ||
-      value < MIN_THRESHOLD ||
-      value > MAX_THRESHOLD
-    ) {
-      toast.error(
-        `Failed runs in a row must be a whole number from ${MIN_THRESHOLD} to ${MAX_THRESHOLD}.`
-      );
-      setThresholdInput(String(form.threshold));
+    if (thresholdInvalid || value === form.threshold) {
       return;
     }
     change({ threshold: value });
@@ -282,7 +327,7 @@ export function OrgFailureAlertsSection({
       )}
 
       {unreachable && (
-        <Callout tone="danger">
+        <Notice className="p-3" role="alert" tone="danger">
           Nobody would be told about a failing workflow: nobody ticked below has
           an email KeeperHub can reach and there is no working channel. Add an
           email in{" "}
@@ -290,13 +335,42 @@ export function OrgFailureAlertsSection({
             Account security
           </Link>
           , or add a Telegram, Discord, Slack or PagerDuty channel.
-        </Callout>
+        </Notice>
+      )}
+
+      {data.failingNow.length > 0 && (
+        <section className="space-y-2">
+          <h3 className="font-medium text-sm">Failing now</h3>
+          <ul className="divide-y rounded-md border">
+            {data.failingNow.map((w) => (
+              <li
+                className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 px-3 py-2 text-sm"
+                key={w.workflowId}
+              >
+                <Link
+                  className="min-w-0 break-words font-medium underline underline-offset-4"
+                  href={`/workflows/${w.workflowId}?tab=runs`}
+                >
+                  {w.name}
+                </Link>
+                <span className="text-destructive text-xs">
+                  {w.failureCount} failed run{w.failureCount === 1 ? "" : "s"}{" "}
+                  in a row
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       <section className="space-y-2">
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <Label htmlFor="failure-threshold">Alert after</Label>
           <Input
+            aria-describedby={
+              thresholdInvalid ? "failure-threshold-error" : undefined
+            }
+            aria-invalid={thresholdInvalid}
             className="h-8 w-16"
             disabled={disabled}
             id="failure-threshold"
@@ -315,13 +389,18 @@ export function OrgFailureAlertsSection({
           />
           <span>failed runs in a row</span>
         </div>
+        {thresholdInvalid && (
+          <p className="text-destructive text-xs" id="failure-threshold-error">
+            {THRESHOLD_ERROR}
+          </p>
+        )}
 
         <details
           className="group"
           onToggle={(e) => setMoreOpen(e.currentTarget.open)}
           open={moreOpen}
         >
-          <summary className="flex cursor-pointer list-none items-center gap-1 text-muted-foreground text-xs hover:text-foreground">
+          <summary className={SUMMARY_CLASS}>
             <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
             More options
           </summary>
@@ -389,7 +468,7 @@ export function OrgFailureAlertsSection({
                   change({ notifyRecovery: checked === true })
                 }
               />
-              Tell us when it works again
+              Tell me when it works again
             </label>
           </div>
         </details>
@@ -414,13 +493,18 @@ export function OrgFailureAlertsSection({
               <Label
                 className={cn(
                   "min-w-0 cursor-pointer break-all font-normal",
-                  !m.reachable && "text-muted-foreground"
+                  // Disabled only because mail cannot reach them: the name
+                  // still has to be readable, so skip the faded look.
+                  !m.reachable &&
+                    "text-muted-foreground peer-disabled:opacity-100"
                 )}
                 htmlFor={`failure-recipient-${m.userId}`}
               >
                 {memberLabel(m)}
               </Label>
-              <span className="text-muted-foreground text-xs">({m.role})</span>
+              <span className="text-muted-foreground text-xs">
+                ({roleLabel(m.role)})
+              </span>
               {!m.reachable && (
                 <span className="text-muted-foreground text-xs">
                   No email yet. They can add one in{" "}
@@ -459,9 +543,10 @@ export function OrgFailureAlertsSection({
           onChange={changeChannels}
           onConnectionsChanged={refreshConnections}
           organizationId={organizationId}
+          unsharedConnections={data.unsharedConnections}
         />
         <details className="group text-xs">
-          <summary className="flex cursor-pointer list-none items-center gap-1 text-muted-foreground hover:text-foreground">
+          <summary className={SUMMARY_CLASS}>
             <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
             How delivery works
           </summary>
@@ -543,30 +628,5 @@ function SaveIndicator({ state }: { state: SaveState }): React.ReactElement {
       {state === "error" && <span className="text-destructive">Not saved</span>}
       {state === "idle" && "Changes save automatically"}
     </output>
-  );
-}
-
-function Callout({
-  tone,
-  children,
-}: {
-  tone: "danger";
-  children: React.ReactNode;
-}): React.ReactElement {
-  return (
-    <div
-      className={cn(
-        "flex items-start gap-2 rounded-md border p-3 text-xs",
-        tone === "danger" &&
-          "border-destructive/50 bg-destructive/15 text-foreground"
-      )}
-      role="alert"
-    >
-      <AlertTriangle
-        aria-hidden="true"
-        className="mt-0.5 size-3.5 shrink-0 text-destructive"
-      />
-      <div className="min-w-0">{children}</div>
-    </div>
   );
 }

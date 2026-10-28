@@ -28,9 +28,15 @@ import type {
 } from "@/lib/db/schema-failure-alerts";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import {
+  loadOrgMembers,
+  type OrgMember,
+} from "@/lib/notifications/org-recipients";
+import {
+  ALERT_REQUEUE_AFTER_MS,
   BACKUP_AFTER_MS,
   DEFAULT_THRESHOLD,
   GROUP_ALERTS_FROM,
+  MAX_REMINDERS,
   MAX_WORKFLOWS_PER_RUN,
   REMINDER_INTERVAL_MS,
 } from "./constants";
@@ -41,15 +47,13 @@ import {
   isMuted,
   loadChannels,
   loadEffectivePolicy,
-  loadOrgMembers,
   loadOrgPolicy,
   resolveRecipientEmails,
 } from "./policy";
+import { type DeliveryInsert, insertDeliveries, type Tx } from "./queue-rows";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
 import { decide, type StreakRun, summarizeStreak } from "./streak";
-
-/** Reminders stop after a week; the in-app notice and Runs still show it. */
-export const MAX_REMINDERS = 7;
+import { runsOnItsOwn, workflowTriggerType } from "./workflow-trigger";
 
 const MIN_STREAK_WINDOW = 10;
 const STREAK_WINDOW_MULTIPLIER = 4;
@@ -66,7 +70,9 @@ type WorkflowRow = {
   nodes: any[];
 };
 
-export type OpenedIncident = {
+type IncidentRow = typeof workflowFailureIncidents.$inferSelect;
+
+type OpenedIncident = {
   id: string;
   organizationId: string;
   workflowId: string;
@@ -88,16 +94,6 @@ export function emptyStats(): EvaluationStats {
     remindersQueued: 0,
     messagesQueued: 0,
   };
-}
-
-/** The trigger configured on the workflow's trigger node, e.g. "Schedule". */
-export function workflowTriggerType(
-  // biome-ignore lint/suspicious/noExplicitAny: workflow nodes are JSONB validated at application level
-  nodes: any[]
-): string | null {
-  const trigger = nodes.find((node) => node?.data?.type === "trigger");
-  const value = trigger?.data?.config?.triggerType;
-  return typeof value === "string" ? value : null;
 }
 
 /**
@@ -197,7 +193,7 @@ async function loadRecentRuns(
 
 async function loadOpenIncident(
   workflowId: string
-): Promise<typeof workflowFailureIncidents.$inferSelect | null> {
+): Promise<IncidentRow | null> {
   const [row] = await db
     .select()
     .from(workflowFailureIncidents)
@@ -211,49 +207,138 @@ async function loadOpenIncident(
   return row ?? null;
 }
 
-async function resolveIncident(
-  incidentId: string,
-  reason: FailureIncidentResolution,
-  resolvingExecutionId: string | null
-): Promise<boolean> {
-  const updated = await db
+function inactiveResolution(
+  workflow: WorkflowRow,
+  trigger: string | null
+): FailureIncidentResolution | null {
+  if (workflow.deletedAt) {
+    return "deleted";
+  }
+  if (workflow.deactivatedAt || !workflow.enabled) {
+    return "disabled";
+  }
+  if (!runsOnItsOwn(trigger)) {
+    return "manual_trigger";
+  }
+  return null;
+}
+
+const SKIPPED_BECAUSE: Record<FailureIncidentResolution, string> = {
+  success: "The workflow recovered before this was delivered.",
+  disabled: "The workflow was paused before this was delivered.",
+  deleted: "The workflow was deleted before this was delivered.",
+  manual_trigger:
+    "The workflow was switched to a manual trigger before this was delivered.",
+};
+
+/**
+ * Close an incident, whatever closed it.
+ *
+ * Messages still waiting are dropped. A PagerDuty page that went out (or is
+ * going out) is always resolved on the same key, whatever the reason and
+ * whether or not the org wants recovery messages: an incident left triggered
+ * keeps paging the on-call for a workflow that no longer fails or no longer
+ * runs. Email and chat get the "working again" message only when it really
+ * recovered and the org asked for it.
+ */
+async function closeIncident(params: {
+  incident: IncidentRow;
+  reason: FailureIncidentResolution;
+  resolvingExecutionId: string | null;
+  notifyRecovery: boolean;
+  now: Date;
+  stats: EvaluationStats;
+}): Promise<void> {
+  const { incident, reason, now, stats } = params;
+  const closed = await db
     .update(workflowFailureIncidents)
     .set({
-      resolvedAt: new Date(),
+      resolvedAt: now,
       resolvedReason: reason,
-      resolvingExecutionId,
+      resolvingExecutionId: params.resolvingExecutionId,
     })
     .where(
       and(
-        eq(workflowFailureIncidents.id, incidentId),
+        eq(workflowFailureIncidents.id, incident.id),
         isNull(workflowFailureIncidents.resolvedAt)
       )
     )
     .returning({ id: workflowFailureIncidents.id });
-  if (updated.length > 0) {
-    // Anything still waiting to go out about this streak is moot now.
-    await db
-      .update(failureAlertDeliveries)
-      .set({
-        state: "skipped",
-        lastError: "The workflow recovered before this was delivered.",
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(failureAlertDeliveries.incidentId, incidentId),
-          inArray(failureAlertDeliveries.state, ["pending", "retrying"])
-        )
-      );
+  if (closed.length === 0) {
+    return;
   }
-  return updated.length > 0;
+  stats.incidentsResolved += 1;
+
+  const prior = await db
+    .select({
+      channel: failureAlertDeliveries.channel,
+      channelId: failureAlertDeliveries.channelId,
+      recipient: failureAlertDeliveries.recipient,
+      state: failureAlertDeliveries.state,
+      isBackup: failureAlertDeliveries.isBackup,
+    })
+    .from(failureAlertDeliveries)
+    .where(
+      and(
+        eq(failureAlertDeliveries.organizationId, incident.organizationId),
+        sql`(${failureAlertDeliveries.incidentId} = ${incident.id} OR ${failureAlertDeliveries.context} @> ${JSON.stringify({ incidentIds: [incident.id] })}::jsonb)`,
+        inArray(failureAlertDeliveries.kind, ["alert", "reminder"])
+      )
+    );
+
+  await db
+    .update(failureAlertDeliveries)
+    .set({
+      state: "skipped",
+      lastError: SKIPPED_BECAUSE[reason],
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(failureAlertDeliveries.incidentId, incident.id),
+        inArray(failureAlertDeliveries.state, ["pending", "retrying"])
+      )
+    );
+
+  const rows: DeliveryInsert[] = [];
+  const seen = new Set<string>();
+  const wantRecovery = reason === "success" && params.notifyRecovery;
+  for (const row of prior) {
+    const pagerDuty = row.channel === "pagerduty";
+    if (!(pagerDuty || wantRecovery)) {
+      continue;
+    }
+    // A page still in flight may land after this resolve; send the resolve a
+    // little later so it arrives second.
+    const inFlight = pagerDuty && row.state === "sending";
+    if (!(row.state === "delivered" || inFlight)) {
+      continue;
+    }
+    const key = `${row.channel}:${row.channelId ?? ""}:${row.recipient}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    rows.push({
+      scope: `i:${incident.id}`,
+      organizationId: incident.organizationId,
+      incidentId: incident.id,
+      kind: "recovery",
+      sequence: 0,
+      channel: row.channel,
+      channelId: row.channelId,
+      recipient: row.recipient,
+      nextAttemptAt: inFlight ? new Date(now.getTime() + 2 * 60 * 1000) : now,
+    });
+  }
+  stats.messagesQueued += await insertDeliveries(rows);
 }
 
 /**
  * Evaluate one workflow. Returns when it should be looked at again without a
  * new run (the time limit or a mute ending), or null.
  */
-export async function evaluateWorkflow(
+async function evaluateWorkflow(
   workflowId: string,
   now: Date,
   opened: OpenedIncident[],
@@ -266,18 +351,27 @@ export async function evaluateWorkflow(
   stats.workflowsEvaluated += 1;
 
   const open = await loadOpenIncident(workflowId);
-  const trigger = workflowTriggerType(workflow.nodes);
-  const inactiveReason = inactiveResolution(workflow, trigger);
+  const inactiveReason = inactiveResolution(
+    workflow,
+    workflowTriggerType(workflow.nodes)
+  );
+  const org = await loadOrgPolicy(workflow.organizationId);
   if (inactiveReason) {
-    if (open && (await resolveIncident(open.id, inactiveReason, null))) {
-      stats.incidentsResolved += 1;
+    if (open) {
+      await closeIncident({
+        incident: open,
+        reason: inactiveReason,
+        resolvingExecutionId: null,
+        notifyRecovery: org.notifyRecovery,
+        now,
+        stats,
+      });
     }
     return null;
   }
 
-  if (await ensureOrgSettings(workflow.organizationId, now)) {
-    await queueLaunchNotice(workflow.organizationId, now, stats);
-  }
+  await ensureOrgSettings(workflow.organizationId, now);
+  await queueLaunchNotice(workflow.organizationId, now, stats);
 
   const policy = await loadEffectivePolicy(workflow.organizationId, workflowId);
   const window = Math.max(
@@ -318,12 +412,14 @@ export async function evaluateWorkflow(
     return decision.at;
   }
   if (decision.kind === "resolve" && open) {
-    if (await resolveIncident(open.id, "success", summary.latestSuccessRunId)) {
-      stats.incidentsResolved += 1;
-      if (policy.notifyRecovery) {
-        stats.messagesQueued += await queueRecovery(open.id, now);
-      }
-    }
+    await closeIncident({
+      incident: open,
+      reason: "success",
+      resolvingExecutionId: summary.latestSuccessRunId,
+      notifyRecovery: policy.notifyRecovery,
+      now,
+      stats,
+    });
     return null;
   }
   if (decision.kind !== "open") {
@@ -364,42 +460,13 @@ export async function evaluateWorkflow(
   return null;
 }
 
-function inactiveResolution(
-  workflow: WorkflowRow,
-  trigger: string | null
-): FailureIncidentResolution | null {
-  if (workflow.deletedAt) {
-    return "deleted";
-  }
-  if (workflow.deactivatedAt || !workflow.enabled) {
-    return "disabled";
-  }
-  if (!trigger || trigger === "Manual") {
-    return "manual_trigger";
-  }
-  return null;
-}
-
-type QueuedRow = typeof failureAlertDeliveries.$inferInsert;
-
-async function insertDeliveries(rows: QueuedRow[]): Promise<number> {
-  if (rows.length === 0) {
-    return 0;
-  }
-  const inserted = await db
-    .insert(failureAlertDeliveries)
-    .values(rows)
-    .onConflictDoNothing()
-    .returning({ id: failureAlertDeliveries.id });
-  return inserted.length;
-}
-
 /**
  * The rows for one message to everyone the policy names. With nobody to
  * email and no chat channel, one failed email row is written so the backup
  * channels fire and the history shows nobody could be reached.
  */
 export function buildMessageRows(params: {
+  scope: string;
   organizationId: string;
   incidentId: string | null;
   kind: FailureAlertMessageKind;
@@ -409,8 +476,9 @@ export function buildMessageRows(params: {
   includePagerDuty: boolean;
   context?: Record<string, unknown>;
   now: Date;
-}): QueuedRow[] {
+}): DeliveryInsert[] {
   const base = {
+    scope: params.scope,
     organizationId: params.organizationId,
     incidentId: params.incidentId,
     kind: params.kind,
@@ -421,7 +489,7 @@ export function buildMessageRows(params: {
   const backupAt = (channel: FailureAlertDeliveryChannel): Date =>
     new Date(params.now.getTime() + BACKUP_AFTER_MS[channel]);
 
-  const rows: QueuedRow[] = params.emails.map((email) => ({
+  const rows: DeliveryInsert[] = params.emails.map((email) => ({
     ...base,
     channel: "email",
     recipient: email,
@@ -458,13 +526,57 @@ export function buildMessageRows(params: {
   return rows;
 }
 
+function rowsForPolicy(
+  policy: EffectivePolicy,
+  members: OrgMember[],
+  organizationId: string,
+  incidentId: string,
+  kind: FailureAlertMessageKind,
+  sequence: number,
+  now: Date
+): DeliveryInsert[] {
+  return buildMessageRows({
+    scope: `i:${incidentId}`,
+    organizationId,
+    incidentId,
+    kind,
+    sequence,
+    emails: resolveRecipientEmails(policy.recipientUserIds, members),
+    channels: policy.channels,
+    // PagerDuty owns escalation: it gets the incident and its resolve, never
+    // our reminders.
+    includePagerDuty: kind === "alert",
+    now,
+  });
+}
+
+/** Queue rows and mark the incidents alerted, all or nothing. */
+async function queueAndMark(
+  rows: DeliveryInsert[],
+  incidentIds: string[],
+  now: Date
+): Promise<number> {
+  return await db.transaction(async (tx: Tx) => {
+    const queued = await insertDeliveries(rows, tx);
+    await tx
+      .update(workflowFailureIncidents)
+      .set({ alertQueuedAt: now })
+      .where(inArray(workflowFailureIncidents.id, incidentIds));
+    return queued;
+  });
+}
+
 /**
- * Queue alerts for the incidents this cycle opened. Three or more in one org
- * at once usually share a cause (an RPC outage, a wallet out of gas), so
- * email and chat get one grouped message; PagerDuty still gets one incident
- * per workflow so each resolves on its own.
+ * Queue alerts for newly opened incidents. Three or more in one org at once
+ * usually share a cause (an RPC outage, a wallet out of gas), so email and
+ * chat get one grouped message; PagerDuty still gets one incident per
+ * workflow so each resolves on its own.
+ *
+ * Each org's rows and the incidents' alertQueuedAt are written in one
+ * transaction, so a crash leaves either both or neither; an incident left
+ * without them is picked up by requeueLostAlerts.
  */
-export async function queueAlerts(
+async function queueAlerts(
   opened: OpenedIncident[],
   now: Date,
   stats: EvaluationStats
@@ -479,11 +591,13 @@ export async function queueAlerts(
   for (const [organizationId, incidents] of byOrg) {
     try {
       const members = await loadOrgMembers(organizationId);
+      const rows: DeliveryInsert[] = [];
       if (incidents.length >= GROUP_ALERTS_FROM) {
         const org = await loadOrgPolicy(organizationId);
         const orgChannels = await loadChannels(organizationId, null);
-        stats.messagesQueued += await insertDeliveries(
-          buildMessageRows({
+        rows.push(
+          ...buildMessageRows({
+            scope: `g:${incidents[0].id}`,
             organizationId,
             incidentId: null,
             kind: "alert",
@@ -500,8 +614,9 @@ export async function queueAlerts(
             organizationId,
             incident.workflowId
           );
-          stats.messagesQueued += await insertDeliveries(
-            buildMessageRows({
+          rows.push(
+            ...buildMessageRows({
+              scope: `i:${incident.id}`,
               organizationId,
               incidentId: incident.id,
               kind: "alert",
@@ -513,29 +628,34 @@ export async function queueAlerts(
             }).filter((row) => row.channel === "pagerduty")
           );
         }
-        continue;
-      }
-      for (const incident of incidents) {
-        const policy = await loadEffectivePolicy(
-          organizationId,
-          incident.workflowId
-        );
-        stats.messagesQueued += await insertDeliveries(
-          rowsForPolicy(
-            policy,
-            members,
+      } else {
+        for (const incident of incidents) {
+          const policy = await loadEffectivePolicy(
             organizationId,
-            incident.id,
-            "alert",
-            0,
-            now
-          )
-        );
+            incident.workflowId
+          );
+          rows.push(
+            ...rowsForPolicy(
+              policy,
+              members,
+              organizationId,
+              incident.id,
+              "alert",
+              0,
+              now
+            )
+          );
+        }
       }
+      stats.messagesQueued += await queueAndMark(
+        rows,
+        incidents.map((i) => i.id),
+        now
+      );
     } catch (error) {
       logSystemError(
         ErrorCategory.WORKFLOW_ENGINE,
-        "[FailureAlerts] Could not queue alerts",
+        "[FailureAlerts] Could not queue alerts; they will be re-queued",
         error,
         { organization_id: organizationId }
       );
@@ -543,71 +663,92 @@ export async function queueAlerts(
   }
 }
 
-function rowsForPolicy(
-  policy: EffectivePolicy,
-  members: Awaited<ReturnType<typeof loadOrgMembers>>,
-  organizationId: string,
-  incidentId: string,
-  kind: FailureAlertMessageKind,
-  sequence: number,
-  now: Date
-): QueuedRow[] {
-  return buildMessageRows({
-    organizationId,
-    incidentId,
-    kind,
-    sequence,
-    emails: resolveRecipientEmails(policy.recipientUserIds, members),
-    channels: policy.channels,
-    // PagerDuty owns escalation: it gets the incident and its resolve, never
-    // our reminders.
-    includePagerDuty: kind === "alert",
-    now,
-  });
+/** Open incidents whose alert never got queued, from a crash in between. */
+export async function requeueLostAlerts(
+  now: Date,
+  stats: EvaluationStats
+): Promise<void> {
+  const lost = await db
+    .select({
+      id: workflowFailureIncidents.id,
+      organizationId: workflowFailureIncidents.organizationId,
+      workflowId: workflowFailureIncidents.workflowId,
+    })
+    .from(workflowFailureIncidents)
+    .where(
+      and(
+        isNull(workflowFailureIncidents.resolvedAt),
+        isNull(workflowFailureIncidents.alertQueuedAt),
+        lt(
+          workflowFailureIncidents.openedAt,
+          new Date(now.getTime() - ALERT_REQUEUE_AFTER_MS)
+        )
+      )
+    )
+    .limit(100);
+  if (lost.length > 0) {
+    await queueAlerts(lost, now, stats);
+  }
 }
 
 /**
- * Tell everyone who got the alert that it is over. Only destinations the
- * alert actually reached get a recovery; PagerDuty gets a resolve on the same
- * key.
+ * Close incidents of workflows that were paused, deleted or switched to a
+ * manual trigger. Those changes write no run, so nothing queues the workflow;
+ * without this sweep the incident would stay open, reminders would keep
+ * going and a PagerDuty page would stay triggered.
  */
-async function queueRecovery(incidentId: string, now: Date): Promise<number> {
-  const prior = await db
+export async function closeInactiveIncidents(
+  now: Date,
+  stats: EvaluationStats
+): Promise<void> {
+  const open = await db
     .select({
-      organizationId: failureAlertDeliveries.organizationId,
-      channel: failureAlertDeliveries.channel,
-      channelId: failureAlertDeliveries.channelId,
-      recipient: failureAlertDeliveries.recipient,
+      incident: workflowFailureIncidents,
+      enabled: workflows.enabled,
+      deletedAt: workflows.deletedAt,
+      deactivatedAt: workflows.deactivatedAt,
+      nodes: workflows.nodes,
+      name: workflows.name,
     })
-    .from(failureAlertDeliveries)
-    .where(
-      and(
-        sql`(${failureAlertDeliveries.incidentId} = ${incidentId} OR ${failureAlertDeliveries.context} @> ${JSON.stringify({ incidentIds: [incidentId] })}::jsonb)`,
-        inArray(failureAlertDeliveries.kind, ["alert", "reminder"]),
-        eq(failureAlertDeliveries.state, "delivered")
-      )
-    );
+    .from(workflowFailureIncidents)
+    .innerJoin(workflows, eq(workflows.id, workflowFailureIncidents.workflowId))
+    .where(isNull(workflowFailureIncidents.resolvedAt))
+    .limit(500);
 
-  const seen = new Set<string>();
-  const rows: QueuedRow[] = [];
-  for (const row of prior) {
-    const key = `${row.channel}:${row.channelId ?? ""}:${row.recipient}`;
-    if (seen.has(key)) {
+  for (const row of open) {
+    const reason = inactiveResolution(
+      {
+        id: row.incident.workflowId,
+        name: row.name,
+        organizationId: row.incident.organizationId,
+        enabled: row.enabled,
+        deletedAt: row.deletedAt,
+        deactivatedAt: row.deactivatedAt,
+        nodes: row.nodes,
+      },
+      workflowTriggerType(row.nodes)
+    );
+    if (!reason) {
       continue;
     }
-    seen.add(key);
-    rows.push({
-      organizationId: row.organizationId,
-      incidentId,
-      kind: "recovery",
-      sequence: 0,
-      channel: row.channel,
-      channelId: row.channelId,
-      recipient: row.recipient,
-      nextAttemptAt: now,
-    });
+    try {
+      await closeIncident({
+        incident: row.incident,
+        reason,
+        resolvingExecutionId: null,
+        notifyRecovery: false,
+        now,
+        stats,
+      });
+    } catch (error) {
+      logSystemError(
+        ErrorCategory.WORKFLOW_ENGINE,
+        "[FailureAlerts] Could not close an incident of an inactive workflow",
+        error,
+        { incident_id: row.incident.id }
+      );
+    }
   }
-  return await insertDeliveries(rows);
 }
 
 /**
@@ -660,7 +801,7 @@ export async function queueReminders(
         continue;
       }
       const members = await loadOrgMembers(incident.organizationId);
-      const queued = await insertDeliveries(
+      stats.messagesQueued += await insertDeliveries(
         rowsForPolicy(
           policy,
           members,
@@ -672,7 +813,6 @@ export async function queueReminders(
         )
       );
       stats.remindersQueued += 1;
-      stats.messagesQueued += queued;
     } catch (error) {
       logSystemError(
         ErrorCategory.WORKFLOW_ENGINE,
@@ -687,13 +827,29 @@ export async function queueReminders(
 /**
  * The one-time "notifications are on" email for an organization that already
  * had workflows running before the feature reached it, listing the workflows
- * failing right now so nobody learns about them weeks later.
+ * failing right now so nobody learns about them weeks later. Claimed by
+ * setting launchNoticeSentAt, so it goes out once however the settings row
+ * came to exist.
  */
 async function queueLaunchNotice(
   organizationId: string,
   now: Date,
   stats: EvaluationStats
 ): Promise<void> {
+  const claimed = await db
+    .update(orgFailureAlertSettings)
+    .set({ launchNoticeSentAt: now })
+    .where(
+      and(
+        eq(orgFailureAlertSettings.organizationId, organizationId),
+        isNull(orgFailureAlertSettings.launchNoticeSentAt)
+      )
+    )
+    .returning({ organizationId: orgFailureAlertSettings.organizationId });
+  if (claimed.length === 0) {
+    return;
+  }
+
   const [earlier] = await db
     .select({ id: workflowExecutions.id })
     .from(workflowExecutions)
@@ -709,10 +865,13 @@ async function queueLaunchNotice(
   }
 
   const failingNow = await findFailingWorkflows(organizationId);
-  const members = await loadOrgMembers(organizationId);
-  const owners = resolveRecipientEmails(null, members);
-  const queued = await insertDeliveries(
+  const owners = resolveRecipientEmails(
+    null,
+    await loadOrgMembers(organizationId)
+  );
+  stats.messagesQueued += await insertDeliveries(
     owners.map((email) => ({
+      scope: `launch:${organizationId}`,
       organizationId,
       incidentId: null,
       kind: "launch_notice" as const,
@@ -723,19 +882,17 @@ async function queueLaunchNotice(
       context: { failingNow },
     }))
   );
-  stats.messagesQueued += queued;
-  await db
-    .update(orgFailureAlertSettings)
-    .set({ launchNoticeSentAt: now })
-    .where(eq(orgFailureAlertSettings.organizationId, organizationId));
 }
 
 const LAUNCH_SCAN_LIMIT = 200;
 
-async function findFailingWorkflows(
-  organizationId: string
-): Promise<
-  { id: string; name: string; triggerLabel: string; failureCount: number }[]
+async function findFailingWorkflows(organizationId: string): Promise<
+  {
+    id: string;
+    name: string;
+    triggerLabel: string;
+    failureCount: number;
+  }[]
 > {
   const candidates = await db
     .select({ id: workflows.id, name: workflows.name, nodes: workflows.nodes })
@@ -758,7 +915,7 @@ async function findFailingWorkflows(
   }[] = [];
   for (const candidate of candidates) {
     const trigger = workflowTriggerType(candidate.nodes);
-    if (!trigger || trigger === "Manual") {
+    if (!(trigger && runsOnItsOwn(trigger))) {
       continue;
     }
     const runs = await loadRecentRuns(

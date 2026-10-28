@@ -10,13 +10,14 @@ export const MAX_THRESHOLD = 20;
 
 /** The optional "or failing for" limit. Off unless someone turns it on. */
 export const TIME_LIMIT_OPTIONS_MINUTES = [60, 360, 1440] as const;
-export type TimeLimitMinutes = (typeof TIME_LIMIT_OPTIONS_MINUTES)[number];
 
 /** A mute can never be permanent: a broken workflow must not be forgotten. */
 export const MAX_MUTE_DAYS = 30;
 
 /** Reminders while a workflow keeps failing. */
 export const REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** Reminders stop after a week; the in-app notice and Runs still show it. */
+export const MAX_REMINDERS = 7;
 
 /** Free plan: alert emails accepted by the provider per org per UTC month. */
 export const FREE_PLAN_MONTHLY_EMAILS = 100;
@@ -49,12 +50,27 @@ export const RETRY_DELAYS_MS = [
   60 * 60 * 1000,
 ] as const;
 
-/** A row left in "sending" this long belongs to an evaluator that died. */
-export const STALE_SENDING_MS = 2 * 60 * 1000;
+/**
+ * A row left in "sending" this long belongs to an evaluator that died. Each
+ * row's clock restarts just before it is sent, and one send is bounded by a
+ * 10 s timeout (two calls for PagerDuty), so this is far above a live send.
+ */
+export const STALE_SENDING_MS = 5 * 60 * 1000;
 
-/** Rows drained per evaluator run, to keep one run inside its minute. */
-export const MAX_DELIVERIES_PER_RUN = 200;
+/**
+ * Rows are claimed a few at a time, so none waits long in "sending" behind a
+ * slow batch, and draining stops after a budget so a cycle ends well inside
+ * its minute.
+ */
+export const DELIVERY_BATCH = 25;
+export const DELIVERY_BUDGET_MS = 40 * 1000;
 export const MAX_WORKFLOWS_PER_RUN = 500;
+
+/** An open incident with no alert queued after this long lost it in a crash. */
+export const ALERT_REQUEUE_AFTER_MS = 2 * 60 * 1000;
+
+/** Delivery history and resolved incidents are kept this long. */
+export const RETENTION_DAYS = 90;
 
 /** Workflows opening incidents in one org in one run beyond this are grouped. */
 export const GROUP_ALERTS_FROM = 3;

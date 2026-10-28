@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import {
+  authenticate,
+  orgAccess,
   requireManager,
-  resolveOrgAccess,
   settingsErrorResponse,
 } from "@/lib/notifications/failure-alerts/route-auth";
 import { requeueForEvaluation } from "@/lib/notifications/failure-alerts/settings";
@@ -22,15 +23,20 @@ export async function GET(
 ): Promise<NextResponse> {
   try {
     const { workflowId } = await context.params;
+    // Authenticate before looking the workflow up, so an unknown id and one
+    // in another org answer the same way.
+    const auth = await authenticate(request);
+    if (auth instanceof NextResponse) {
+      return auth;
+    }
     const workflow = await loadWorkflowForAlerts(workflowId);
-    if (!workflow) {
+    const access = workflow
+      ? await orgAccess(auth, workflow.organizationId)
+      : null;
+    if (!(workflow && access) || access instanceof NextResponse) {
       return NextResponse.json({ error: "Workflow not found" }, { status: 404 });
     }
-    const access = await resolveOrgAccess(request, workflow.organizationId);
-    if (access instanceof NextResponse) {
-      return access;
-    }
-    const view = await loadWorkflowAlertView(workflow);
+    const view = await loadWorkflowAlertView(workflow, access.userId);
     return NextResponse.json({ ...view, canManage: access.canManage });
   } catch (error) {
     logSystemError(
@@ -53,13 +59,18 @@ export async function PUT(
 ): Promise<NextResponse> {
   try {
     const { workflowId } = await context.params;
-    const workflow = await loadWorkflowForAlerts(workflowId);
-    if (!workflow) {
-      return NextResponse.json({ error: "Workflow not found" }, { status: 404 });
+    // Authenticate before looking the workflow up, so an unknown id and one
+    // in another org answer the same way.
+    const auth = await authenticate(request);
+    if (auth instanceof NextResponse) {
+      return auth;
     }
-    const access = await resolveOrgAccess(request, workflow.organizationId);
-    if (access instanceof NextResponse) {
-      return access;
+    const workflow = await loadWorkflowForAlerts(workflowId);
+    const access = workflow
+      ? await orgAccess(auth, workflow.organizationId)
+      : null;
+    if (!(workflow && access) || access instanceof NextResponse) {
+      return NextResponse.json({ error: "Workflow not found" }, { status: 404 });
     }
     const denied = requireManager(access);
     if (denied) {
@@ -92,7 +103,7 @@ export async function PUT(
       metadata: buildAuditMetadata(request),
     });
 
-    const view = await loadWorkflowAlertView(workflow);
+    const view = await loadWorkflowAlertView(workflow, access.userId);
     return NextResponse.json({ ...view, canManage: true });
   } catch (error) {
     const handled = settingsErrorResponse(error);

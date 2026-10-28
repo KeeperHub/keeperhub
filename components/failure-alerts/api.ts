@@ -1,24 +1,7 @@
-import type { FailureAlertChannelKind } from "@/lib/db/schema-failure-alerts";
-
-/** What the test endpoint answers. */
-export type TestResult = {
-  delivered: boolean;
-  classification: "ok" | "transient" | "permanent";
-  status?: number;
-  message: string;
-  durationMs: number;
-  recipients?: string[];
-};
-
-export type TestBody =
-  | { channel: "email"; to: "me" | "recipients"; recipientUserIds?: string[] }
-  | {
-      channel: FailureAlertChannelKind;
-      integrationId: string;
-      destination: string;
-      channelId?: string;
-      pagerDutyMode?: "change" | "page";
-    };
+import type {
+  TestRequest,
+  TestResult,
+} from "@/lib/notifications/failure-alerts/view-types";
 
 /**
  * Send a test. Never throws: a refused request (rate limit, bad input) comes
@@ -26,7 +9,7 @@ export type TestBody =
  */
 export async function sendFailureAlertTest(
   organizationId: string,
-  body: TestBody
+  body: TestRequest
 ): Promise<TestResult> {
   const started = Date.now();
   try {
@@ -61,11 +44,11 @@ export async function sendFailureAlertTest(
   }
 }
 
-export const CHANNEL_LABEL: Record<FailureAlertChannelKind | "email", string> =
-  {
-    email: "Email",
-    slack: "Slack",
-    discord: "Discord",
-    telegram: "Telegram",
-    pagerduty: "PagerDuty",
-  };
+/** GET a settings view; throws on a network error or a non-OK answer. */
+export async function fetchView<T>(url: string): Promise<T> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return (await response.json()) as T;
+}

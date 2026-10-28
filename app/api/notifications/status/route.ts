@@ -49,12 +49,21 @@ export async function GET(
     // Owners and admins are the people who can act on a failing workflow or
     // fix the notification settings.
     if (role === "owner" || role === "admin") {
-      const alerts = await loadInAppAlertState(organizationId);
-      if (alerts.failingWorkflows > 0) {
-        types.push("workflows_failing");
-      }
-      if (alerts.unreachable) {
-        types.push("failure_alerts_unreachable");
+      // Its own catch, so a failure here never hides the billing notice.
+      try {
+        const alerts = await loadInAppAlertState(organizationId);
+        if (alerts.failingWorkflows > 0) {
+          types.push("workflows_failing");
+        }
+        if (alerts.unreachable) {
+          types.push("failure_alerts_unreachable");
+        }
+      } catch (error) {
+        logSystemWarn(
+          ErrorCategory.DATABASE,
+          "[notifications-status] failure-alert state unavailable",
+          error
+        );
       }
     }
 

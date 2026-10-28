@@ -4,20 +4,21 @@ import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   failureAlertChannels,
-  member,
   orgFailureAlertSettings,
-  users,
   workflowFailureAlertOverrides,
 } from "@/lib/db/schema";
 import type {
   FailureAlertChannelKind,
   FailureAlertChannelRole,
 } from "@/lib/db/schema-failure-alerts";
-import { deliverableAddress } from "@/lib/notifications/deliverable-address";
+import {
+  type OrgMember,
+  reachableEmails,
+} from "@/lib/notifications/org-recipients";
 import { DEFAULT_THRESHOLD } from "./constants";
 
 /** The org-wide rule, as stored or as the default when no row exists. */
-export type OrgPolicy = {
+type OrgPolicy = {
   threshold: number;
   timeLimitMinutes: number | null;
   remindDaily: boolean;
@@ -92,15 +93,11 @@ export async function loadOrgPolicy(
  */
 const COUNTING_SLACK_MS = 10 * 60 * 1000;
 
-/**
- * Make sure the org has a settings row and a start for the count. Returns true
- * when this call created it: the first time the evaluator sees the org with
- * the feature on, which is when the launch notice goes out.
- */
+/** Make sure the org has a settings row and a start for the count. */
 export async function ensureOrgSettings(
   organizationId: string,
   now: Date
-): Promise<boolean> {
+): Promise<void> {
   const countingSince = new Date(now.getTime() - COUNTING_SLACK_MS);
   const inserted = await db
     .insert(orgFailureAlertSettings)
@@ -108,7 +105,7 @@ export async function ensureOrgSettings(
     .onConflictDoNothing()
     .returning({ organizationId: orgFailureAlertSettings.organizationId });
   if (inserted.length > 0) {
-    return true;
+    return;
   }
   // A row saved from settings before the evaluator ever ran has no start yet.
   await db
@@ -120,7 +117,6 @@ export async function ensureOrgSettings(
         isNull(orgFailureAlertSettings.countingSince)
       )
     );
-  return false;
 }
 
 export async function loadChannels(
@@ -225,39 +221,6 @@ export function isMuted(policy: EffectivePolicy, now: Date): boolean {
   return policy.mutedUntil !== null && policy.mutedUntil > now;
 }
 
-export type OrgMember = {
-  userId: string;
-  role: string;
-  email: string | null;
-  name: string | null;
-  /** Where mail actually reaches them, or null (wallet-only, unverified). */
-  deliverable: string | null;
-};
-
-export async function loadOrgMembers(
-  organizationId: string
-): Promise<OrgMember[]> {
-  const rows = await db
-    .select({
-      userId: member.userId,
-      role: member.role,
-      email: users.email,
-      emailVerified: users.emailVerified,
-      stepUpEmail: users.stepUpEmail,
-      name: users.name,
-    })
-    .from(member)
-    .innerJoin(users, eq(users.id, member.userId))
-    .where(eq(member.organizationId, organizationId));
-  return rows.map((row) => ({
-    userId: row.userId,
-    role: row.role,
-    email: row.email,
-    name: row.name,
-    deliverable: deliverableAddress(row),
-  }));
-}
-
 /**
  * The addresses an alert goes to.
  *
@@ -271,26 +234,18 @@ export function resolveRecipientEmails(
   recipientUserIds: string[] | null,
   members: OrgMember[]
 ): string[] {
-  const reachable = (list: OrgMember[]): string[] => [
-    ...new Set(
-      list
-        .map((m) => m.deliverable)
-        .filter((email): email is string => Boolean(email))
-    ),
-  ];
-
   if (recipientUserIds !== null) {
     const chosen = new Set(recipientUserIds);
-    const emails = reachable(members.filter((m) => chosen.has(m.userId)));
+    const emails = reachableEmails(members.filter((m) => chosen.has(m.userId)));
     if (emails.length > 0) {
       return emails;
     }
   }
-  const owners = reachable(members.filter((m) => m.role === "owner"));
+  const owners = reachableEmails(members.filter((m) => m.role === "owner"));
   if (owners.length > 0) {
     return owners;
   }
-  return reachable(members.filter((m) => m.role === "admin"));
+  return reachableEmails(members.filter((m) => m.role === "admin"));
 }
 
 export async function loadChannelsByIds(

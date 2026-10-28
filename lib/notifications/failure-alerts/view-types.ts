@@ -53,6 +53,18 @@ export type OrgSettingsView = {
   connections: ConnectionView[];
   emailUsage: { used: number; limit: number } | null;
   customWorkflows: { id: string; name: string }[];
+  /** Workflows with an open failure incident right now. */
+  failingNow: {
+    workflowId: string;
+    name: string;
+    failureCount: number;
+    openedAt: string;
+  }[];
+  /**
+   * The viewer's own connections that are not shared with the org: shown
+   * greyed out, so a missing connection is explained rather than invisible.
+   */
+  unsharedConnections: ConnectionView[];
   /** Nobody can be emailed and no chat or PagerDuty channel works. */
   unreachable: boolean;
 };
@@ -116,6 +128,8 @@ export type WorkflowAlertView = {
     incident: {
       openedAt: string;
       failureCount: number;
+      /** The rule in force when it opened, which may since have changed. */
+      threshold: number;
       lastNotifiedAt: string;
       deliveredTo: string[];
     } | null;
@@ -123,3 +137,53 @@ export type WorkflowAlertView = {
   members: MemberView[];
   connections: ConnectionView[];
 };
+
+/** What a Test button asks for. */
+export type TestRequest =
+  | {
+      channel: "email";
+      to: "me" | "recipients";
+      recipientUserIds?: string[];
+    }
+  | {
+      channel: FailureAlertChannelKind;
+      integrationId: string;
+      destination: string;
+      /**
+       * A saved channel. When set, its stored connection and destination are
+       * tested and its health is updated; the two fields above are ignored.
+       */
+      channelId?: string;
+      /** PagerDuty: "change" pages nobody; "page" opens and resolves one. */
+      pagerDutyMode?: "change" | "page";
+    };
+
+/** What a Test button gets back. */
+export type TestResult = {
+  delivered: boolean;
+  classification: "ok" | "transient" | "permanent";
+  status?: number;
+  message: string;
+  durationMs: number;
+  recipients?: string[];
+};
+
+export const CHANNEL_LABEL: Record<FailureAlertChannelKind | "email", string> =
+  {
+    email: "Email",
+    slack: "Slack",
+    discord: "Discord",
+    telegram: "Telegram",
+    pagerduty: "PagerDuty",
+  };
+
+/** "Slack #ops", "Discord Origin alerts", "PagerDuty PABC123". */
+export function channelLabel(
+  kind: string,
+  destination: string,
+  connectionName?: string | null
+): string {
+  const name = CHANNEL_LABEL[kind as keyof typeof CHANNEL_LABEL] ?? kind;
+  const where = kind === "discord" ? connectionName : destination;
+  return where ? `${name} ${where}` : name;
+}

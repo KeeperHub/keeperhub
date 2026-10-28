@@ -20,6 +20,7 @@ CREATE TABLE "failure_alert_channels" (
 --> statement-breakpoint
 CREATE TABLE "failure_alert_deliveries" (
 	"id" text PRIMARY KEY NOT NULL,
+	"dedup_key" text NOT NULL,
 	"organization_id" text NOT NULL,
 	"incident_id" text,
 	"kind" text NOT NULL,
@@ -46,13 +47,6 @@ CREATE TABLE "failure_alert_email_usage" (
 	"period_start" timestamp NOT NULL,
 	"sent" integer DEFAULT 0 NOT NULL,
 	CONSTRAINT "failure_alert_email_usage_organization_id_period_start_pk" PRIMARY KEY("organization_id","period_start")
-);
---> statement-breakpoint
-CREATE TABLE "failure_alert_heartbeats" (
-	"job" text PRIMARY KEY NOT NULL,
-	"last_run_at" timestamp NOT NULL,
-	"last_duration_ms" integer,
-	"last_error" text
 );
 --> statement-breakpoint
 CREATE TABLE "org_failure_alert_settings" (
@@ -103,6 +97,7 @@ CREATE TABLE "workflow_failure_incidents" (
 	"last_error" text,
 	"reminder_count" integer DEFAULT 0 NOT NULL,
 	"last_notified_at" timestamp DEFAULT now() NOT NULL,
+	"alert_queued_at" timestamp,
 	"resolved_at" timestamp,
 	"resolved_reason" text,
 	"resolving_execution_id" text
@@ -110,7 +105,6 @@ CREATE TABLE "workflow_failure_incidents" (
 --> statement-breakpoint
 ALTER TABLE "failure_alert_channels" ADD CONSTRAINT "failure_alert_channels_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "failure_alert_channels" ADD CONSTRAINT "failure_alert_channels_workflow_fk" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "failure_alert_channels" ADD CONSTRAINT "failure_alert_channels_integration_fk" FOREIGN KEY ("integration_id") REFERENCES "public"."integrations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "failure_alert_deliveries" ADD CONSTRAINT "failure_alert_deliveries_incident_fk" FOREIGN KEY ("incident_id") REFERENCES "public"."workflow_failure_incidents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "failure_alert_deliveries" ADD CONSTRAINT "failure_alert_deliveries_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "failure_alert_email_usage" ADD CONSTRAINT "failure_alert_email_usage_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -119,9 +113,12 @@ ALTER TABLE "workflow_failure_alert_overrides" ADD CONSTRAINT "workflow_failure_
 ALTER TABLE "workflow_failure_alert_overrides" ADD CONSTRAINT "workflow_failure_alert_overrides_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workflow_failure_incidents" ADD CONSTRAINT "workflow_failure_incidents_workflow_fk" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workflow_failure_incidents" ADD CONSTRAINT "workflow_failure_incidents_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_failure_alert_channels_destination" ON "failure_alert_channels" USING btree ("organization_id",coalesce("workflow_id", ''),"integration_id","destination");--> statement-breakpoint
 CREATE INDEX "idx_failure_alert_channels_org" ON "failure_alert_channels" USING btree ("organization_id");--> statement-breakpoint
 CREATE INDEX "idx_failure_alert_channels_workflow" ON "failure_alert_channels" USING btree ("workflow_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "uq_failure_alert_deliveries_message" ON "failure_alert_deliveries" USING btree ("organization_id","incident_id","kind","sequence","channel","recipient","is_backup");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_failure_alert_deliveries_dedup" ON "failure_alert_deliveries" USING btree ("dedup_key");--> statement-breakpoint
+CREATE INDEX "idx_failure_alert_deliveries_incident" ON "failure_alert_deliveries" USING btree ("incident_id");--> statement-breakpoint
+CREATE INDEX "idx_failure_alert_deliveries_backup_due" ON "failure_alert_deliveries" USING btree ("backup_at") WHERE "failure_alert_deliveries"."is_backup" = false AND "failure_alert_deliveries"."backup_sent_at" IS NULL;--> statement-breakpoint
 CREATE INDEX "idx_failure_alert_deliveries_due" ON "failure_alert_deliveries" USING btree ("next_attempt_at") WHERE "failure_alert_deliveries"."state" IN ('pending', 'retrying', 'sending');--> statement-breakpoint
 CREATE INDEX "idx_failure_alert_deliveries_org_created" ON "failure_alert_deliveries" USING btree ("organization_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "idx_failure_alert_queue_due" ON "workflow_failure_alert_queue" USING btree ("due_at");--> statement-breakpoint
@@ -132,8 +129,10 @@ CREATE INDEX "idx_workflow_failure_incidents_org" ON "workflow_failure_incidents
 -- this table, so one trigger covers all of them. The evaluator decides
 -- whether the run counts (manual runs do not); this only queues.
 --
--- It must never stop a run from finishing: any error is swallowed, and the
--- evaluator's backstop sweep re-checks recent failures the queue missed.
+-- It must never stop a run from finishing, so any error is swallowed with a
+-- warning in the Postgres log. A run missed that way is counted when the
+-- workflow's next run ends, since the evaluator reads the whole streak from
+-- run history rather than counting queue entries.
 CREATE OR REPLACE FUNCTION public.queue_workflow_failure_alert_check()
 RETURNS trigger
 LANGUAGE plpgsql

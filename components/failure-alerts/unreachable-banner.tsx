@@ -26,16 +26,20 @@ export function FailureAlertsUnreachableBanner({
           aria-hidden="true"
           className="size-4 shrink-0 text-destructive"
         />
-        <span className="truncate">
-          You will not be told if a workflow keeps failing: add an email or a
-          Telegram, Discord, Slack or PagerDuty channel.{" "}
-          <Link
-            className="font-medium underline underline-offset-4"
-            href={`/settings/${organizationId}/notifications`}
-          >
-            Notification settings
-          </Link>
+        <span className="min-w-0 truncate">
+          <span className="sm:hidden">Nobody gets failure alerts.</span>
+          <span className="hidden sm:inline">
+            You will not be told if a workflow keeps failing: add an email or a
+            Telegram, Discord, Slack or PagerDuty channel.
+          </span>
         </span>
+        {/* Outside the truncated text, so the way to fix it never gets cut. */}
+        <Link
+          className="shrink-0 font-medium underline underline-offset-4"
+          href={`/settings/${organizationId}/notifications`}
+        >
+          Notification settings
+        </Link>
       </p>
     </output>
   );

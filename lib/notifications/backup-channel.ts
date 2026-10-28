@@ -135,11 +135,11 @@ async function postSlack(
         channel: "slack",
         error: body.error ?? `Slack returned HTTP ${response.status}.`,
         status: response.status,
-        // Slack answers most failures with HTTP 200 and an error code, so the
-        // status alone cannot tell a rate limit from a revoked token.
-        retryable: response.ok
-          ? body.error === "ratelimited"
-          : isRetryableHttpStatus(response.status),
+        retryable: slackFailureIsRetryable(
+          response.ok,
+          response.status,
+          body.error
+        ),
       };
 }
 
@@ -177,6 +177,18 @@ async function postTelegram(
         status: response.status,
         retryable: isRetryableHttpStatus(response.status),
       };
+}
+
+/**
+ * Slack answers most failures with HTTP 200 and an error code, so the status
+ * alone cannot tell a rate limit from a revoked token.
+ */
+export function slackFailureIsRetryable(
+  httpOk: boolean,
+  status: number,
+  error: string | undefined
+): boolean {
+  return httpOk ? error === "ratelimited" : isRetryableHttpStatus(status);
 }
 
 /**

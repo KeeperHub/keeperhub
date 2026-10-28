@@ -40,10 +40,50 @@ const SENDGRID_API_URL =
  * Point it at your own asset, or set it empty to send no logo at all - the
  * templates omit the image entirely rather than rendering a broken one.
  */
-export const EMAIL_LOGO_URL =
+const EMAIL_LOGO_URL =
   process.env.EMAIL_LOGO_URL ??
   "https://raw.githubusercontent.com/KeeperHub/keeperhub/staging/public/keeperhub_logo_email.png";
 // end keeperhub code //
+
+/**
+ * The branded HTML shell: logo header, white card with a title, the body, and
+ * a small footer. The older templates below inline their own copy of it; new
+ * ones use this. `title` and `footerHtml` are inserted as HTML, so escape any
+ * user-controlled text before passing it.
+ */
+export function emailLayout(
+  title: string,
+  bodyHtml: string,
+  footerHtml: string
+): string {
+  const logo = EMAIL_LOGO_URL
+    ? `<img src="${EMAIL_LOGO_URL}" alt="KeeperHub" style="max-width: 200px; height: auto;" />`
+    : "";
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 30px; border-radius: 12px 12px 0 0; text-align: center;">
+    ${logo}
+  </div>
+  <div style="background: #ffffff; padding: 30px; border: 1px solid #e5e5e5; border-top: none; border-radius: 0 0 12px 12px;">
+    <h2 style="color: #1a1a2e; margin-top: 0;">${title}</h2>
+    ${bodyHtml}
+    <hr style="border: none; border-top: 1px solid #e5e5e5; margin: 30px 0;">
+    <p style="color: #999; font-size: 12px; margin-bottom: 0;">${footerHtml}</p>
+  </div>
+</body>
+</html>`.trim();
+}
+
+/** A primary button for emailLayout bodies. */
+export function emailButton(href: string, label: string): string {
+  return `<a href="${escapeHtml(href)}" style="display:inline-block; background:#1a1a2e; color:#fff; padding:12px 20px; border-radius:8px; text-decoration:none; margin: 0 8px 8px 0;">${escapeHtml(label)}</a>`;
+}
 
 // Cap the outbound SendGrid call so a stalled connection surfaces as a
 // failed send (returns false) instead of hanging the request that's
@@ -98,7 +138,7 @@ export function escapeHtml(value: string): string {
  * (wait and retry) from a rejected API key (page our own on-call) from a
  * malformed address (never retry).
  */
-export type EmailSendResult = {
+type EmailSendResult = {
   ok: boolean;
   /** HTTP status from the provider; absent when the request never completed. */
   status?: number;

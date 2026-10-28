@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { IntegrationIcon } from "@/components/ui/integration-icon";
+import { Notice } from "@/components/ui/notice";
 import {
   Select,
   SelectContent,
@@ -14,9 +15,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { HISTORY_PAGE_SIZE } from "@/lib/notifications/failure-alerts/constants";
-import type { HistoryEntry } from "@/lib/notifications/failure-alerts/view-types";
+import {
+  CHANNEL_LABEL,
+  type HistoryEntry,
+} from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
-import { CHANNEL_LABEL } from "./api";
 
 const KIND_LABEL: Record<string, string> = {
   alert: "Alert",
@@ -58,6 +61,78 @@ function formatTime(iso: string): string {
   });
 }
 
+function channelLine(entry: HistoryEntry): string {
+  const name =
+    CHANNEL_LABEL[entry.channel as keyof typeof CHANNEL_LABEL] ?? entry.channel;
+  const where =
+    entry.channel === "discord"
+      ? (entry.connectionName ?? "")
+      : entry.recipient;
+  return `${name} ${where}`;
+}
+
+/**
+ * One delivery. In a narrow column (a phone, or the Properties panel) the date
+ * sits under the title and the details take the full width; from @xl the date
+ * gets a column of its own on the left.
+ */
+function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
+  const paused = entry.kind === "channel_paused";
+  let title = KIND_LABEL[entry.kind] ?? entry.kind;
+  if (paused && entry.note) {
+    title = `${title}: ${entry.note}`;
+  }
+  return (
+    <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-0.5 px-3 py-2 text-sm @xl/settings:grid-cols-[7rem_minmax(0,1fr)_auto]">
+      <span className="col-start-1 row-start-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 @xl/settings:col-start-2">
+        <span className="break-words font-medium">{title}</span>
+        {entry.isBackup && <Badge variant="outline">Backup</Badge>}
+        {entry.workflows.map((w) => (
+          <Link
+            className="min-w-0 break-words underline-offset-4 hover:underline"
+            href={`/workflows/${w.id}`}
+            key={w.id}
+          >
+            {w.name}
+          </Link>
+        ))}
+      </span>
+      <span
+        className={cn(
+          "col-start-2 row-start-1 text-right text-xs @xl/settings:col-start-3",
+          stateTone(entry.state)
+        )}
+        title={entry.attempts > 1 ? `${entry.attempts} attempts` : undefined}
+      >
+        {STATE_LABEL[entry.state] ?? entry.state}
+        {entry.attempts > 1 ? ` (${entry.attempts} tries)` : ""}
+      </span>
+      <span className="col-start-1 row-start-2 text-muted-foreground text-xs tabular-nums @xl/settings:row-start-1">
+        {formatTime(entry.createdAt)}
+      </span>
+      <span className="col-span-2 col-start-1 row-start-3 flex min-w-0 flex-col gap-0.5 text-muted-foreground text-xs @xl/settings:col-span-1 @xl/settings:col-start-2 @xl/settings:row-start-2">
+        {paused && entry.channel === "email" ? (
+          <span className="break-words">Told {entry.recipient} by email</span>
+        ) : (
+          <span className="flex min-w-0 items-center gap-1.5">
+            {entry.channel === "email" ? null : (
+              <IntegrationIcon
+                className="size-3 shrink-0"
+                integration={entry.channel}
+              />
+            )}
+            <span className="min-w-0 break-words">{channelLine(entry)}</span>
+          </span>
+        )}
+        {entry.note && !paused && <span>{entry.note}</span>}
+        {entry.lastError && entry.state !== "delivered" && (
+          <span className="break-words">{entry.lastError}</span>
+        )}
+      </span>
+    </li>
+  );
+}
+
 /**
  * Every failure notification the organization sent, newest first: alerts,
  * reminders, recoveries, backups and notices, with where each went and what
@@ -74,6 +149,8 @@ export function NotificationHistory({
 }): React.ReactElement {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  // The page that failed to load, so Retry asks for the same one again.
+  const [failed, setFailed] = useState<{ before?: string } | null>(null);
   const [more, setMore] = useState(false);
   const [channel, setChannel] = useState("all");
   const base = `/api/organizations/${encodeURIComponent(organizationId)}/failure-alerts/history`;
@@ -102,14 +179,18 @@ export function NotificationHistory({
   const load = useCallback(
     async (before?: string) => {
       setLoading(true);
+      setFailed(null);
       try {
         const res = await fetch(query(before));
-        const body = (await res.json().catch(() => ({}))) as {
-          entries?: HistoryEntry[];
-        };
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const body = (await res.json()) as { entries?: HistoryEntry[] };
         const page = body.entries ?? [];
         setEntries((prev) => (before ? [...prev, ...page] : page));
         setMore(page.length >= HISTORY_PAGE_SIZE);
+      } catch {
+        setFailed({ before });
       } finally {
         setLoading(false);
       }
@@ -161,7 +242,23 @@ export function NotificationHistory({
         )}
       </div>
 
-      {entries.length === 0 && !loading && (
+      {failed && (
+        <Notice role="alert" tone="danger">
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            Could not load the notification history.
+            <Button
+              className="h-auto px-0 text-xs"
+              onClick={() => load(failed.before)}
+              type="button"
+              variant="link"
+            >
+              Retry
+            </Button>
+          </span>
+        </Notice>
+      )}
+
+      {entries.length === 0 && !(loading || failed) && (
         <p className="text-muted-foreground text-sm">
           Nothing sent yet. Alerts, reminders, recoveries and backups show up
           here.
@@ -171,71 +268,12 @@ export function NotificationHistory({
       {entries.length > 0 && (
         <ul className="divide-y rounded-md border">
           {entries.map((entry) => (
-            <li
-              className="flex flex-wrap items-start gap-x-3 gap-y-1 px-3 py-2 text-sm"
-              key={entry.id}
-            >
-              <span className="w-28 shrink-0 text-muted-foreground text-xs tabular-nums">
-                {formatTime(entry.createdAt)}
-              </span>
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium">
-                    {KIND_LABEL[entry.kind] ?? entry.kind}
-                  </span>
-                  {entry.isBackup && <Badge variant="outline">Backup</Badge>}
-                  {entry.workflows.map((w) => (
-                    <Link
-                      className="truncate underline-offset-4 hover:underline"
-                      href={`/workflows/${w.id}`}
-                      key={w.id}
-                    >
-                      {w.name}
-                    </Link>
-                  ))}
-                </span>
-                <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground text-xs">
-                  {entry.channel === "email" ? null : (
-                    <IntegrationIcon
-                      className="size-3"
-                      integration={entry.channel}
-                    />
-                  )}
-                  <span className="truncate">
-                    {CHANNEL_LABEL[
-                      entry.channel as keyof typeof CHANNEL_LABEL
-                    ] ?? entry.channel}{" "}
-                    {entry.channel === "discord"
-                      ? (entry.connectionName ?? "")
-                      : entry.recipient}
-                  </span>
-                </span>
-                {entry.note && (
-                  <span className="text-muted-foreground text-xs">
-                    {entry.note}
-                  </span>
-                )}
-                {entry.lastError && entry.state !== "delivered" && (
-                  <span className="text-muted-foreground text-xs">
-                    {entry.lastError}
-                  </span>
-                )}
-              </span>
-              <span
-                className={cn("shrink-0 text-xs", stateTone(entry.state))}
-                title={
-                  entry.attempts > 1 ? `${entry.attempts} attempts` : undefined
-                }
-              >
-                {STATE_LABEL[entry.state] ?? entry.state}
-                {entry.attempts > 1 ? ` (${entry.attempts} tries)` : ""}
-              </span>
-            </li>
+            <HistoryRow entry={entry} key={entry.id} />
           ))}
         </ul>
       )}
 
-      {more && last && (
+      {more && last && !failed && (
         <Button
           disabled={loading}
           onClick={() => load(last.createdAt)}

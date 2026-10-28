@@ -1,8 +1,8 @@
 "use client";
 
 import { CheckCircle2, XCircle } from "lucide-react";
+import type { TestResult } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
-import type { TestResult } from "./api";
 
 /** The outcome of a Test button, with the provider's own error when it failed. */
 export function TestResultLine({

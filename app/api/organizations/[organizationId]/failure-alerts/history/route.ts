@@ -32,6 +32,12 @@ export async function GET(
 
     const url = new URL(request.url);
     const channel = url.searchParams.get("channel") ?? undefined;
+    if (channel && !CHANNELS.has(channel)) {
+      return NextResponse.json(
+        { error: "Unknown channel filter." },
+        { status: 400 }
+      );
+    }
     const workflowId = url.searchParams.get("workflowId") ?? undefined;
     const beforeRaw = url.searchParams.get("before");
     const before = beforeRaw ? new Date(beforeRaw) : undefined;
@@ -39,7 +45,7 @@ export async function GET(
     const limit = Number(url.searchParams.get("limit") ?? "") || undefined;
 
     const entries = await loadHistory(organizationId, {
-      channel: channel && CHANNELS.has(channel) ? channel : undefined,
+      channel,
       workflowId,
       before: before && !Number.isNaN(before.getTime()) ? before : undefined,
       limit: csv ? CSV_LIMIT : limit,

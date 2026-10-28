@@ -2,7 +2,10 @@ import "server-only";
 
 import { fetchCredentials } from "@/lib/credential-fetcher";
 import { sendEmailDetailed } from "@/lib/email";
-import { sendBackupNotification } from "@/lib/notifications/backup-channel";
+import {
+  sendBackupNotification,
+  slackFailureIsRetryable,
+} from "@/lib/notifications/backup-channel";
 import {
   isValidDiscordWebhookUrl,
   SLACK_AUTH_TEST_URL,
@@ -13,8 +16,13 @@ import { getErrorMessage } from "@/lib/utils";
 import { isRetryableHttpStatus } from "@/lib/workflow/retry-policy";
 import type { PagerDutyCredentials } from "@/plugins/pagerduty/credentials";
 import {
+  buildTriggerEvent,
+  CHANGE_EVENT_PATH,
+  MAX_SUMMARY_CHARS,
   postEvent,
   resolveRoutingKey,
+  serviceSwallowsEvents,
+  truncateRunes,
 } from "@/plugins/pagerduty/steps/pagerduty-core";
 import type { RenderedMessage } from "./messages";
 import type { ChannelConfig } from "./policy";
@@ -31,6 +39,11 @@ export type DeliveryOutcome = {
   retryAfterMs?: number;
   /** Ours to fix (our email key), so our on-call hears about it. */
   platformFault?: boolean;
+  /**
+   * Not delivered, but the channel itself is fine (a PagerDuty service in a
+   * maintenance window): use the backups, do not pause the channel.
+   */
+  channelHealthy?: boolean;
   message: string;
 };
 
@@ -43,6 +56,53 @@ const DELIVERED: DeliveryOutcome = {
   retryable: false,
   message: "Delivered",
 };
+
+const PLAIN_ERRORS: Record<string, Record<number, string>> = {
+  telegram: {
+    400: "Telegram could not find that chat. Check the chat ID, and that the bot was added to it",
+    401: "Telegram rejected the bot token. Reconnect the bot in Connections",
+    403: "The bot was removed from the chat or blocked. Add it back",
+    404: "Telegram rejected the bot token. Reconnect the bot in Connections",
+  },
+  discord: {
+    401: "Discord rejected this webhook. Create a new one and update the connection",
+    404: "This Discord webhook was deleted. Create a new one and update the connection",
+  },
+  pagerduty: {
+    400: "PagerDuty rejected the event. Check the service still has an Events API v2 integration",
+    401: "PagerDuty rejected the credentials. Reconnect PagerDuty in Connections",
+    403: "These PagerDuty credentials may not read the service. Check their permissions",
+    404: "The PagerDuty service no longer exists or cannot be seen with these credentials",
+  },
+};
+
+const SLACK_ERRORS: Record<string, string> = {
+  channel_not_found:
+    "Slack could not find that channel. Check the name, and invite the KeeperHub app to it",
+  not_in_channel: "The KeeperHub app is not in that channel. Invite it",
+  is_archived: "That Slack channel is archived",
+  invalid_auth: "Slack rejected the token. Reconnect Slack in Connections",
+  account_inactive:
+    "The Slack token was revoked. Reconnect Slack in Connections",
+  token_revoked: "The Slack token was revoked. Reconnect Slack in Connections",
+};
+
+/**
+ * Say what a provider's refusal means and what to do, keeping the code at the
+ * end for whoever has to look it up.
+ */
+export function explainFailure(
+  kind: string,
+  status: number | undefined,
+  raw: string
+): string {
+  if (kind === "slack") {
+    const plain = SLACK_ERRORS[raw];
+    return plain ? `${plain} (${raw}).` : raw;
+  }
+  const plain = status ? PLAIN_ERRORS[kind]?.[status] : undefined;
+  return plain ? `${plain} (HTTP ${status}).` : raw;
+}
 
 export async function sendEmailMessage(
   to: string,
@@ -85,7 +145,7 @@ const UNUSABLE_CONNECTION: DeliveryOutcome = {
     "The connection was deleted, is no longer shared with the organization, or its creator was deactivated.",
 };
 
-export type PagerDutyAction = "trigger" | "resolve" | "change";
+type PagerDutyAction = "trigger" | "resolve" | "change";
 
 export async function sendChannelMessage(params: {
   channel: ChannelConfig;
@@ -95,6 +155,8 @@ export async function sendChannelMessage(params: {
   dedupKey?: string;
   pagerDutyAction?: PagerDutyAction;
   details?: Record<string, unknown>;
+  /** PagerDuty only: where the incident links back to. */
+  link?: string;
 }): Promise<DeliveryOutcome> {
   const { channel, organizationId, rendered } = params;
   try {
@@ -110,6 +172,7 @@ export async function sendChannelMessage(params: {
         dedupKey: params.dedupKey,
         summary: rendered.summary,
         details: params.details,
+        link: params.link,
       });
     }
     const outcome = await sendBackupNotification({
@@ -126,7 +189,11 @@ export async function sendChannelMessage(params: {
       ok: false,
       status: outcome.status,
       retryable: outcome.retryable ?? false,
-      message: outcome.error ?? "The message could not be delivered.",
+      message: explainFailure(
+        channel.kind,
+        outcome.status,
+        outcome.error ?? "The message could not be delivered."
+      ),
     };
   } catch (error) {
     return {
@@ -137,6 +204,11 @@ export async function sendChannelMessage(params: {
   }
 }
 
+/**
+ * Trigger and resolve go through the PagerDuty node's own event builder, so
+ * the limits, cleaning and link-back are the same as a page from a workflow.
+ * A change event (the no-page test) has no builder of its own to reuse.
+ */
 async function sendPagerDuty(params: {
   credentials: PagerDutyCredentials;
   serviceId: string;
@@ -144,6 +216,7 @@ async function sendPagerDuty(params: {
   dedupKey?: string;
   summary: string;
   details?: Record<string, unknown>;
+  link?: string;
 }): Promise<DeliveryOutcome> {
   const service = await resolveRoutingKey(params.credentials, params.serviceId);
   if (!service.ok) {
@@ -152,43 +225,66 @@ async function sendPagerDuty(params: {
       status: service.failure.status,
       retryable: service.failure.retryable,
       retryAfterMs: service.failure.retryAfterMs,
-      message: service.failure.message,
+      message: explainFailure(
+        "pagerduty",
+        service.failure.status,
+        service.failure.message
+      ),
+    };
+  }
+  // A service in maintenance or disabled takes the event and pages nobody.
+  // Treat that as not delivered, so the backups fire, but leave the channel
+  // alone: nothing is broken.
+  if (
+    params.action === "trigger" &&
+    serviceSwallowsEvents(service.value.serviceStatus)
+  ) {
+    return {
+      ok: false,
+      retryable: false,
+      channelHealthy: true,
+      message: `The PagerDuty service is ${service.value.serviceStatus}, so nobody was paged.`,
     };
   }
 
   const timestamp = new Date().toISOString();
-  const body =
-    params.action === "change"
-      ? {
-          routing_key: service.value.routingKey,
-          payload: {
-            summary: params.summary,
-            timestamp,
-            source: "keeperhub",
-            custom_details: params.details ?? {},
-          },
-        }
-      : {
-          routing_key: service.value.routingKey,
-          event_action: params.action,
-          dedup_key: params.dedupKey,
-          ...(params.action === "trigger"
-            ? {
-                payload: {
-                  summary: params.summary,
-                  source: "keeperhub",
-                  severity: "error",
-                  timestamp,
-                  custom_details: params.details ?? {},
-                },
-              }
-            : {}),
-        };
+  let body: Record<string, unknown>;
+  if (params.action === "change") {
+    body = {
+      routing_key: service.value.routingKey,
+      payload: {
+        summary: truncateRunes(params.summary, MAX_SUMMARY_CHARS),
+        timestamp,
+        source: "keeperhub",
+        custom_details: params.details ?? {},
+      },
+    };
+  } else if (params.action === "resolve") {
+    body = {
+      routing_key: service.value.routingKey,
+      event_action: "resolve",
+      dedup_key: params.dedupKey,
+    };
+  } else {
+    body = buildTriggerEvent({
+      routingKey: service.value.routingKey,
+      dedupKey: params.dedupKey ?? "",
+      timestamp,
+      input: {
+        summary: params.summary,
+        severity: "error",
+        source: "keeperhub",
+        customDetails: params.details,
+        client: "KeeperHub",
+        clientUrl: params.link,
+      },
+    }).body;
+  }
 
   const result = await postEvent(
     params.credentials,
     body,
-    params.action === "change" ? "/v2/change/enqueue" : "/v2/enqueue"
+    params.action === "change" ? CHANGE_EVENT_PATH : "/v2/enqueue"
   );
   if (result.ok) {
     return DELIVERED;
@@ -198,7 +294,11 @@ async function sendPagerDuty(params: {
     status: result.failure.status,
     retryable: result.failure.retryable,
     retryAfterMs: result.failure.retryAfterMs,
-    message: result.failure.message,
+    message: explainFailure(
+      "pagerduty",
+      result.failure.status,
+      result.failure.message
+    ),
   };
 }
 
@@ -207,7 +307,9 @@ async function sendPagerDuty(params: {
  *
  * Discord: read the webhook. Telegram: read the chat. Slack: check the token.
  * PagerDuty: read the service and its Events API key. None of these post a
- * message, page anyone or leave a mark on a timeline.
+ * message, page anyone or leave a mark on a timeline. The plugins' own
+ * connection tests are not reused: they check credentials only (Discord's
+ * checks nothing), skip the SSRF guard and do not say whether to retry.
  */
 export async function checkChannelSilently(
   channel: ChannelConfig,
@@ -227,7 +329,7 @@ export async function checkChannelSilently(
             credentials.TELEGRAM_BOT_TOKEN ?? "",
             channel.destination
           ),
-          "Telegram"
+          "telegram"
         );
       case "slack":
         return await checkSlack(credentials.SLACK_API_KEY ?? "");
@@ -242,7 +344,11 @@ export async function checkChannelSilently(
               ok: false,
               status: service.failure.status,
               retryable: service.failure.retryable,
-              message: service.failure.message,
+              message: explainFailure(
+                "pagerduty",
+                service.failure.status,
+                service.failure.message
+              ),
             };
       }
     }
@@ -263,10 +369,10 @@ async function checkDiscord(webhookUrl: string): Promise<DeliveryOutcome> {
       message: "The Discord connection does not hold a Discord webhook URL.",
     };
   }
-  return await checkGet(webhookUrl, "Discord");
+  return await checkGet(webhookUrl, "discord");
 }
 
-async function checkGet(url: string, name: string): Promise<DeliveryOutcome> {
+async function checkGet(url: string, kind: string): Promise<DeliveryOutcome> {
   const response = await safeFetch(url, {
     plugin: PLUGIN,
     method: "GET",
@@ -279,7 +385,11 @@ async function checkGet(url: string, name: string): Promise<DeliveryOutcome> {
     ok: false,
     status: response.status,
     retryable: isRetryableHttpStatus(response.status),
-    message: `${name} returned HTTP ${response.status}.`,
+    message: explainFailure(
+      kind,
+      response.status,
+      `The check returned HTTP ${response.status}.`
+    ),
   };
 }
 
@@ -300,9 +410,15 @@ async function checkSlack(token: string): Promise<DeliveryOutcome> {
   return {
     ok: false,
     status: response.status,
-    retryable: response.ok
-      ? body.error === "ratelimited"
-      : isRetryableHttpStatus(response.status),
-    message: body.error ?? `Slack returned HTTP ${response.status}.`,
+    retryable: slackFailureIsRetryable(
+      response.ok,
+      response.status,
+      body.error
+    ),
+    message: explainFailure(
+      "slack",
+      response.status,
+      body.error ?? `Slack returned HTTP ${response.status}.`
+    ),
   };
 }

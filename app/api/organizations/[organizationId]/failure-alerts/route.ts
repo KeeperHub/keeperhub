@@ -25,7 +25,7 @@ export async function GET(
     if (access instanceof NextResponse) {
       return access;
     }
-    const view = await loadOrgSettingsView(organizationId);
+    const view = await loadOrgSettingsView(organizationId, access.userId);
     return NextResponse.json({
       ...view,
       canManage: access.canManage,
@@ -94,7 +94,7 @@ export async function PUT(
       metadata: buildAuditMetadata(request),
     });
 
-    const view = await loadOrgSettingsView(organizationId);
+    const view = await loadOrgSettingsView(organizationId, access.userId);
     return NextResponse.json({
       ...view,
       canManage: true,

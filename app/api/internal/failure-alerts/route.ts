@@ -8,8 +8,8 @@
  * with concurrencyPolicy Forbid. Replicas can still overlap during a deploy,
  * which is safe: every claim in the cycle uses SKIP LOCKED or a unique row.
  *
- * The job writes failure_alert_heartbeats on every run, so a stalled job is
- * visible to our own monitoring instead of every alert quietly stopping.
+ * A cycle whose stages failed answers 500, so the CronJob fails and our
+ * alerting on failed jobs sees it; the report still says what did run.
  */
 import { NextResponse } from "next/server";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
@@ -31,7 +31,9 @@ export async function GET(request: Request): Promise<NextResponse> {
     const appUrl =
       process.env.NEXT_PUBLIC_APP_URL ?? "https://app.keeperhub.com";
     const report = await runFailureAlertCycle(appUrl);
-    return NextResponse.json(report);
+    return NextResponse.json(report, {
+      status: report.errors.length > 0 ? 500 : 200,
+    });
   } catch (error) {
     logSystemError(
       ErrorCategory.WORKFLOW_ENGINE,

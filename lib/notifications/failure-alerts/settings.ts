@@ -28,6 +28,10 @@ import type {
   FailureAlertChannelKind,
   FailureAlertChannelRole,
 } from "@/lib/db/schema-failure-alerts";
+import {
+  loadOrgMembers,
+  type OrgMember,
+} from "@/lib/notifications/org-recipients";
 import { isPagerDutyId } from "@/plugins/pagerduty/steps/pagerduty-core";
 import {
   FREE_PLAN_MONTHLY_EMAILS,
@@ -36,22 +40,10 @@ import {
   MIN_THRESHOLD,
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "./constants";
-import {
-  loadOrgMembers,
-  loadOrgPolicy,
-  type OrgMember,
-  resolveRecipientEmails,
-} from "./policy";
+import { loadOrgPolicy, resolveRecipientEmails } from "./policy";
+import type { Tx } from "./queue-rows";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
 import type {
-  ChannelView,
-  ConnectionView,
-  HistoryEntry,
-  MemberView,
-  OrgSettingsView,
-} from "./view-types";
-
-export type {
   ChannelView,
   ConnectionView,
   HistoryEntry,
@@ -120,9 +112,14 @@ export async function loadChannelViews(
   }));
 }
 
-/** Connections every member of the org may use, of a kind that can alert. */
+/**
+ * Connections of a kind that can alert. Shared ones (`organization`
+ * visibility) can be used; with `ownerId`, that user's own unshared ones are
+ * returned instead, so the picker can explain why they are missing.
+ */
 export async function loadUsableConnections(
-  organizationId: string
+  organizationId: string,
+  ownerId?: string
 ): Promise<ConnectionView[]> {
   const rows = await db
     .select({
@@ -134,7 +131,12 @@ export async function loadUsableConnections(
     .where(
       and(
         eq(integrations.organizationId, organizationId),
-        eq(integrations.visibility, "organization"),
+        ownerId
+          ? and(
+              eq(integrations.createdBy, ownerId),
+              sql`${integrations.visibility} <> 'organization'`
+            )
+          : eq(integrations.visibility, "organization"),
         inArray(integrations.type, [...CHANNEL_KINDS])
       )
     )
@@ -144,6 +146,29 @@ export async function loadUsableConnections(
     name: row.name,
     kind: row.type as FailureAlertChannelKind,
   }));
+}
+
+async function loadFailingNow(
+  organizationId: string
+): Promise<OrgSettingsView["failingNow"]> {
+  const rows = await db
+    .select({
+      workflowId: workflowFailureIncidents.workflowId,
+      name: workflows.name,
+      failureCount: workflowFailureIncidents.failureCount,
+      openedAt: workflowFailureIncidents.openedAt,
+    })
+    .from(workflowFailureIncidents)
+    .innerJoin(workflows, eq(workflows.id, workflowFailureIncidents.workflowId))
+    .where(
+      and(
+        eq(workflowFailureIncidents.organizationId, organizationId),
+        isNull(workflowFailureIncidents.resolvedAt)
+      )
+    )
+    .orderBy(desc(workflowFailureIncidents.openedAt))
+    .limit(50);
+  return rows.map((row) => ({ ...row, openedAt: row.openedAt.toISOString() }));
 }
 
 async function loadEmailUsage(
@@ -168,38 +193,49 @@ export function isReachable(
 }
 
 export async function loadOrgSettingsView(
-  organizationId: string
+  organizationId: string,
+  viewerUserId: string
 ): Promise<OrgSettingsView> {
-  const [policy, members, channels, connections, emailUsage, custom] =
-    await Promise.all([
-      loadOrgPolicy(organizationId),
-      loadOrgMembers(organizationId),
-      loadChannelViews(organizationId, null),
-      loadUsableConnections(organizationId),
-      loadEmailUsage(organizationId),
-      db
-        .select({ id: workflows.id, name: workflows.name })
-        .from(workflowFailureAlertOverrides)
-        .innerJoin(
-          workflows,
-          eq(workflows.id, workflowFailureAlertOverrides.workflowId)
-        )
-        .where(
-          and(
-            eq(workflowFailureAlertOverrides.organizationId, organizationId),
-            isNull(workflows.deletedAt),
-            or(
-              isNotNull(workflowFailureAlertOverrides.threshold),
-              isNotNull(workflowFailureAlertOverrides.timeLimitMinutes),
-              isNotNull(workflowFailureAlertOverrides.recipientUserIds),
-              eq(workflowFailureAlertOverrides.customChannels, true),
-              isNotNull(workflowFailureAlertOverrides.mutedUntil),
-              eq(workflowFailureAlertOverrides.muteUntilSuccess, true)
-            )
+  const [
+    policy,
+    members,
+    channels,
+    connections,
+    unsharedConnections,
+    emailUsage,
+    failingNow,
+    custom,
+  ] = await Promise.all([
+    loadOrgPolicy(organizationId),
+    loadOrgMembers(organizationId),
+    loadChannelViews(organizationId, null),
+    loadUsableConnections(organizationId),
+    loadUsableConnections(organizationId, viewerUserId),
+    loadEmailUsage(organizationId),
+    loadFailingNow(organizationId),
+    db
+      .select({ id: workflows.id, name: workflows.name })
+      .from(workflowFailureAlertOverrides)
+      .innerJoin(
+        workflows,
+        eq(workflows.id, workflowFailureAlertOverrides.workflowId)
+      )
+      .where(
+        and(
+          eq(workflowFailureAlertOverrides.organizationId, organizationId),
+          isNull(workflows.deletedAt),
+          or(
+            isNotNull(workflowFailureAlertOverrides.threshold),
+            isNotNull(workflowFailureAlertOverrides.timeLimitMinutes),
+            isNotNull(workflowFailureAlertOverrides.recipientUserIds),
+            eq(workflowFailureAlertOverrides.customChannels, true),
+            isNotNull(workflowFailureAlertOverrides.mutedUntil),
+            eq(workflowFailureAlertOverrides.muteUntilSuccess, true)
           )
         )
-        .orderBy(workflows.name),
-    ]);
+      )
+      .orderBy(workflows.name),
+  ]);
 
   const recipientsAreDefault = policy.recipientUserIds === null;
   const recipientUserIds =
@@ -218,8 +254,10 @@ export async function loadOrgSettingsView(
     members: members.map(toMemberView),
     channels,
     connections,
+    unsharedConnections,
     emailUsage,
     customWorkflows: custom,
+    failingNow,
     unreachable: !isReachable(
       resolveRecipientEmails(policy.recipientUserIds, members),
       channels
@@ -235,7 +273,7 @@ export class SettingsError extends Error {
   }
 }
 
-export type ChannelInput = {
+type ChannelInput = {
   id?: string;
   kind: FailureAlertChannelKind;
   integrationId: string;
@@ -300,11 +338,22 @@ export async function parseChannels(
     if (connection.kind === "pagerduty" && !isPagerDutyId(destination)) {
       throw new SettingsError("Pick the PagerDuty service to page.");
     }
+    const target = connection.kind === "discord" ? "" : destination;
+    // The same connection and destination twice would send every alert twice.
+    if (
+      parsed.some(
+        (p) => p.integrationId === integrationId && p.destination === target
+      )
+    ) {
+      throw new SettingsError(
+        `${connection.name} is already in the list${target ? ` for ${target}` : ""}.`
+      );
+    }
     parsed.push({
       id: typeof item?.id === "string" ? item.id : undefined,
       kind: connection.kind,
       integrationId,
-      destination: connection.kind === "discord" ? "" : destination,
+      destination: target,
       role: item?.role === "backup" ? "backup" : "always",
     });
   }
@@ -316,6 +365,7 @@ export async function parseChannels(
  * kept keep their id, so their health and history stay attached.
  */
 export async function replaceChannels(
+  tx: Tx,
   organizationId: string,
   workflowId: string | null,
   channels: ChannelInput[],
@@ -327,7 +377,7 @@ export async function replaceChannels(
       ? isNull(failureAlertChannels.workflowId)
       : eq(failureAlertChannels.workflowId, workflowId)
   );
-  const existing = await db
+  const existing = await tx
     .select({
       id: failureAlertChannels.id,
       integrationId: failureAlertChannels.integrationId,
@@ -339,16 +389,24 @@ export async function replaceChannels(
   const keep = new Set<string>();
 
   for (const channel of channels) {
+    // Matched by id, or by connection and destination: a second save that
+    // raced the first one's new row adopts it instead of adding a twin.
     const current =
-      channel.id && existingIds.has(channel.id)
+      (channel.id && existingIds.has(channel.id)
         ? existing.find((row) => row.id === channel.id)
-        : undefined;
+        : undefined) ??
+      existing.find(
+        (row) =>
+          !keep.has(row.id) &&
+          row.integrationId === channel.integrationId &&
+          row.destination === channel.destination
+      );
     if (current) {
       keep.add(current.id);
       const retargeted =
         current.integrationId !== channel.integrationId ||
         current.destination !== channel.destination;
-      await db
+      await tx
         .update(failureAlertChannels)
         .set({
           kind: channel.kind,
@@ -370,7 +428,7 @@ export async function replaceChannels(
         .where(eq(failureAlertChannels.id, current.id));
       continue;
     }
-    await db.insert(failureAlertChannels).values({
+    await tx.insert(failureAlertChannels).values({
       organizationId,
       workflowId,
       kind: channel.kind,
@@ -383,13 +441,13 @@ export async function replaceChannels(
 
   const removed = [...existingIds].filter((id) => !keep.has(id));
   if (removed.length > 0) {
-    await db
+    await tx
       .delete(failureAlertChannels)
       .where(and(scope, inArray(failureAlertChannels.id, removed)));
   }
 }
 
-export type OrgSettingsInput = {
+type OrgSettingsInput = {
   threshold: number;
   timeLimitMinutes: number | null;
   remindDaily: boolean;
@@ -457,17 +515,34 @@ export async function saveOrgSettings(
     updatedBy: userId,
     updatedAt: now,
   };
-  await db
-    .insert(orgFailureAlertSettings)
-    .values({ organizationId, ...values })
-    .onConflictDoUpdate({
-      target: orgFailureAlertSettings.organizationId,
-      set: values,
-    });
-  await replaceChannels(organizationId, null, input.channels, userId);
+  await db.transaction(async (tx: Tx) => {
+    await lockOrgSettings(tx, organizationId);
+    await tx
+      .insert(orgFailureAlertSettings)
+      .values({ organizationId, ...values })
+      .onConflictDoUpdate({
+        target: orgFailureAlertSettings.organizationId,
+        set: values,
+      });
+    await replaceChannels(tx, organizationId, null, input.channels, userId);
+  });
 }
 
-export type HistoryFilter = {
+/**
+ * Serialise saves of one org's notification settings, so two that overlap
+ * (auto-save while an earlier save is in flight, two admins) apply one after
+ * the other instead of interleaving their channel changes.
+ */
+export async function lockOrgSettings(
+  tx: Tx,
+  organizationId: string
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${`failure-alerts:${organizationId}`}))`
+  );
+}
+
+type HistoryFilter = {
   channel?: string;
   workflowId?: string;
   before?: Date;
@@ -498,11 +573,14 @@ export async function loadHistory(
     conditions.push(lt(failureAlertDeliveries.createdAt, filter.before));
   }
   if (filter.workflowId) {
-    const incidentIds = db
-      .select({ id: workflowFailureIncidents.id })
-      .from(workflowFailureIncidents)
-      .where(eq(workflowFailureIncidents.workflowId, filter.workflowId));
-    conditions.push(inArray(failureAlertDeliveries.incidentId, incidentIds));
+    // Its own messages, and grouped alerts that listed it.
+    conditions.push(sql`EXISTS (
+      SELECT 1 FROM ${workflowFailureIncidents} i
+      WHERE i.workflow_id = ${filter.workflowId}
+        AND i.organization_id = ${organizationId}
+        AND (${failureAlertDeliveries.incidentId} = i.id
+          OR ${failureAlertDeliveries.context} @> jsonb_build_object('incidentIds', jsonb_build_array(i.id)))
+    )`);
   }
 
   const rows = await db
@@ -611,7 +689,7 @@ const CSV_HEADER = [
 ];
 
 const FORMULA_START = /^[=+\-@\t\r]/;
-const NEEDS_QUOTES = /[",\n]/;
+const NEEDS_QUOTES = /[",\n\r]/;
 
 function csvCell(value: string | number | boolean | null): string {
   let text = value === null ? "" : String(value);
@@ -666,7 +744,7 @@ export async function requeueForEvaluation(
   `);
 }
 
-export type InAppAlertState = {
+type InAppAlertState = {
   /** Workflows with an open failure incident. */
   failingWorkflows: number;
   /** Nobody can be emailed and no working chat or PagerDuty channel exists. */

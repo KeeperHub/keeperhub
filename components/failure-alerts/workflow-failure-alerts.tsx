@@ -1,15 +1,17 @@
 "use client";
 
 import { useAtomValue, useSetAtom } from "jotai";
-import { AlertTriangle, BellOff, Loader2 } from "lucide-react";
+import { BellOff, Loader2 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { timeAgo } from "@/components/settings/hub/relative-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Notice } from "@/components/ui/notice";
 import {
   Select,
   SelectContent,
@@ -23,14 +25,17 @@ import {
   MIN_THRESHOLD,
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
-import type { WorkflowAlertView } from "@/lib/notifications/failure-alerts/view-types";
-import { getRelativeTime } from "@/lib/utils/time";
+import {
+  channelLabel,
+  type WorkflowAlertView,
+} from "@/lib/notifications/failure-alerts/view-types";
+import { cn } from "@/lib/utils";
 import {
   isWorkflowEnabled,
   propertiesPanelActiveTabAtom,
   workflowEnableToggleAtom,
 } from "@/lib/workflow/store";
-import { CHANNEL_LABEL } from "./api";
+import { fetchView } from "./api";
 import {
   ChannelListEditor,
   channelsPayload,
@@ -50,6 +55,13 @@ const TIME_LABEL: Record<number, string> = {
 };
 
 const HOUR_MS = 60 * 60 * 1000;
+
+/** The first thing to focus when a panel opens. */
+const FOCUSABLE = "button:not([disabled]), input:not([disabled])";
+
+/** Footer links stay at least 44px tall below sm, for a thumb. */
+const FOOTER_LINK =
+  "inline-flex min-h-11 items-center underline underline-offset-4 hover:text-foreground sm:min-h-0";
 const MUTE_CHOICES: { label: string; ms: number | "success" }[] = [
   { label: "1 hour", ms: HOUR_MS },
   { label: "24 hours", ms: 24 * HOUR_MS },
@@ -72,7 +84,7 @@ function summary(view: Loaded): string {
     .filter((c) => !c.pausedAt)
     .map(
       (c) =>
-        `${CHANNEL_LABEL[c.kind]}${c.kind === "discord" ? "" : ` ${c.destination}`}${c.role === "backup" ? " (backup)" : ""}`
+        `${channelLabel(c.kind, c.destination, c.connectionName)}${c.role === "backup" ? " (backup)" : ""}`
     );
   const also = channels.length > 0 ? `, plus ${channels.join(", ")}` : "";
   return `${who}${also}, after ${view.effective.threshold} failed run${view.effective.threshold === 1 ? "" : "s"} in a row${describeTimeLimit(view.effective.timeLimitMinutes)}.`;
@@ -107,6 +119,7 @@ export function WorkflowFailureAlerts({
   triggerType: string | undefined;
 }): React.ReactElement | null {
   const [view, setView] = useState<Loaded | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [panel, setPanel] = useState<Panel>(null);
   const [saving, setSaving] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -114,7 +127,6 @@ export function WorkflowFailureAlerts({
   const enableToggle = useAtomValue(workflowEnableToggleAtom);
   const enabled = useAtomValue(isWorkflowEnabled);
 
-  // Customise form
   const [threshold, setThreshold] = useState("");
   const [timeLimit, setTimeLimit] = useState("org");
   const [customRecipients, setCustomRecipients] = useState<string[] | null>(
@@ -124,6 +136,11 @@ export function WorkflowFailureAlerts({
     null
   );
   const [muteDate, setMuteDate] = useState("");
+  const panelRef = useRef<HTMLDivElement>(null);
+  const muteButtonRef = useRef<HTMLButtonElement>(null);
+  const customButtonRef = useRef<HTMLButtonElement>(null);
+  // Which button opened the panel, to give focus back to when it closes.
+  const openerRef = useRef<Panel>(null);
 
   const url = `/api/workflows/${encodeURIComponent(workflowId)}/failure-alerts`;
 
@@ -147,16 +164,49 @@ export function WorkflowFailureAlerts({
     );
   }, []);
 
-  useEffect(() => {
-    fetch(url)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((body: Loaded | null) => {
-        if (body) {
+  const load = useCallback(
+    async (isActive: () => boolean = () => true): Promise<void> => {
+      setLoadFailed(false);
+      try {
+        const body = await fetchView<Loaded>(url);
+        if (isActive()) {
           apply(body);
         }
-      })
-      .catch(() => undefined);
-  }, [apply, url]);
+      } catch {
+        if (isActive()) {
+          setLoadFailed(true);
+        }
+      }
+    },
+    [apply, url]
+  );
+
+  useEffect(() => {
+    let active = true;
+    load(() => active).catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [load]);
+
+  useEffect(() => {
+    if (panel) {
+      panelRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+      return;
+    }
+    const opener = openerRef.current;
+    openerRef.current = null;
+    if (opener === "mute") {
+      muteButtonRef.current?.focus();
+    } else if (opener === "custom") {
+      customButtonRef.current?.focus();
+    }
+  }, [panel]);
+
+  const openPanel = (next: Exclude<Panel, null>): void => {
+    openerRef.current = next;
+    setPanel(next);
+  };
 
   const refreshConnections = useCallback(async () => {
     const res = await fetch(url);
@@ -172,10 +222,26 @@ export function WorkflowFailureAlerts({
     return (
       <div className="space-y-2">
         <Label className="ml-1">Notifications on fail</Label>
-        <div className="flex items-center gap-2 text-muted-foreground text-xs">
-          <Loader2 className="size-3.5 animate-spin" />
-          Loading
-        </div>
+        {loadFailed ? (
+          <Notice role="alert" tone="danger">
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              Could not load the failure notification settings.
+              <Button
+                className="h-auto px-0 text-xs"
+                onClick={() => load()}
+                type="button"
+                variant="link"
+              >
+                Retry
+              </Button>
+            </span>
+          </Notice>
+        ) : (
+          <div className="flex items-center gap-2 text-muted-foreground text-xs">
+            <Loader2 className="size-3.5 animate-spin" />
+            Loading
+          </div>
+        )}
       </div>
     );
   }
@@ -184,6 +250,13 @@ export function WorkflowFailureAlerts({
   const canManage = view.canManage;
   const muted = isMutedView(view);
   const custom = view.effective.source === "custom";
+  const thresholdInvalid =
+    threshold.trim() !== "" &&
+    !(
+      Number.isInteger(Number(threshold)) &&
+      Number(threshold) >= MIN_THRESHOLD &&
+      Number(threshold) <= MAX_THRESHOLD
+    );
 
   /** The override as stored, so a mute change keeps the custom fields. */
   const storedOverride = (): Record<string, unknown> => ({
@@ -252,20 +325,11 @@ export function WorkflowFailureAlerts({
   };
 
   const saveCustom = async (): Promise<void> => {
-    let parsedThreshold: number | null = null;
-    if (threshold.trim()) {
-      parsedThreshold = Number(threshold);
-      if (
-        !Number.isInteger(parsedThreshold) ||
-        parsedThreshold < MIN_THRESHOLD ||
-        parsedThreshold > MAX_THRESHOLD
-      ) {
-        toast.error(
-          `Failed runs in a row must be a whole number from ${MIN_THRESHOLD} to ${MAX_THRESHOLD}.`
-        );
-        return;
-      }
+    if (thresholdInvalid) {
+      document.getElementById("wf-failure-threshold")?.focus();
+      return;
     }
+    const parsedThreshold = threshold.trim() ? Number(threshold) : null;
     let timeLimitMinutes: number | null = null;
     if (timeLimit === "off") {
       timeLimitMinutes = 0;
@@ -326,69 +390,65 @@ export function WorkflowFailureAlerts({
       {!applies && (
         <p className="rounded-lg border border-dashed p-3 text-muted-foreground text-sm">
           Only runs started by hand, so failure alerts don't apply: you see the
-          result yourself. Use a Schedule, Event, Block or Webhook trigger to
-          get them.
+          result yourself. Use a Schedule, Event, Block, Webhook, Transfer or
+          Pyth Price trigger to get them.
         </p>
       )}
 
       {applies && view.status.incident && (
-        <div className="space-y-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm">
-          <p className="flex items-center gap-2 font-medium">
-            <AlertTriangle
-              aria-hidden="true"
-              className="size-4 text-destructive"
-            />
-            Failing, {view.status.incident.failureCount} runs in a row
-          </p>
-          <p className="text-xs">
-            Alert sent {getRelativeTime(view.status.incident.openedAt)}
-            {view.status.incident.deliveredTo.length > 0
-              ? ` to ${view.status.incident.deliveredTo.join(", ")}`
-              : ", not delivered yet"}
-            .
-          </p>
-          {view.status.lastError && (
-            <p className="break-words font-mono text-xs">
-              {view.status.lastError}
+        <Notice className="p-3 text-sm" tone="danger">
+          <div className="space-y-2">
+            <p className="font-medium">
+              Failing, {view.status.incident.failureCount} runs in a row
             </p>
-          )}
-          <div className="flex flex-wrap gap-2">
-            <Button
-              onClick={() => setActiveTab("runs")}
-              size="sm"
-              type="button"
-              variant="outline"
-            >
-              View failed runs
-            </Button>
-            {enableToggle && enabled && (
+            <p className="text-xs">
+              {view.status.incident.deliveredTo.length > 0
+                ? `Alert sent ${timeAgo(view.status.incident.openedAt)} to ${view.status.incident.deliveredTo.join(", ")}, after ${view.status.incident.threshold} failed runs in a row.`
+                : `Alert queued ${timeAgo(view.status.incident.openedAt)}, not delivered yet.`}
+            </p>
+            {view.status.lastError && (
+              <p className="break-words font-mono text-xs">
+                {view.status.lastError}
+              </p>
+            )}
+            <div className="flex flex-wrap gap-2">
               <Button
-                onClick={() => enableToggle.toggle(false)}
+                onClick={() => setActiveTab("runs")}
                 size="sm"
                 type="button"
                 variant="outline"
               >
-                Pause workflow
+                View failed runs
               </Button>
-            )}
+              {enableToggle && enabled && (
+                <Button
+                  onClick={() => enableToggle.toggle(false)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Pause workflow
+                </Button>
+              )}
+            </div>
           </div>
-        </div>
+        </Notice>
       )}
 
       {applies && !view.status.incident && view.status.failures > 0 && (
-        <div className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 p-3 text-sm">
-          <p className="font-medium text-yellow-700 dark:text-yellow-300">
+        <Notice className="p-3" tone="warning">
+          <p className="font-medium text-sm">
             Failing: {view.status.failures} failed run
             {view.status.failures === 1 ? "" : "s"} in a row
           </p>
-          <p className="text-xs">
+          <p className="text-foreground">
             {view.status.firstFailedAt
-              ? `Since ${getRelativeTime(view.status.firstFailedAt)}. `
+              ? `Started failing ${timeAgo(view.status.firstFailedAt)}. `
               : null}
             The alert goes out at {view.effective.threshold} failed runs
             {describeTimeLimit(view.effective.timeLimitMinutes)}.
           </p>
-        </div>
+        </Notice>
       )}
 
       {applies && (
@@ -411,9 +471,20 @@ export function WorkflowFailureAlerts({
             <p>{summary(view)}</p>
           )}
           {view.org.unreachable && !custom && (
-            <p className="text-destructive text-xs">
-              Nobody can be reached right now. Add an email or a channel in
-              notification settings.
+            <Notice tone="danger">
+              Nobody can be reached right now. Add an email or a channel in{" "}
+              <Link
+                className="underline underline-offset-4"
+                href={`/settings/${view.organizationId}/notifications`}
+              >
+                Notification settings
+              </Link>
+              .
+            </Notice>
+          )}
+          {!canManage && (
+            <p className="text-muted-foreground text-xs">
+              Only owners and admins can change these settings.
             </p>
           )}
 
@@ -423,6 +494,7 @@ export function WorkflowFailureAlerts({
                 <Button
                   disabled={saving}
                   onClick={unmute}
+                  ref={muteButtonRef}
                   size="sm"
                   type="button"
                   variant="outline"
@@ -431,7 +503,8 @@ export function WorkflowFailureAlerts({
                 </Button>
               ) : (
                 <Button
-                  onClick={() => setPanel("mute")}
+                  onClick={() => openPanel("mute")}
+                  ref={muteButtonRef}
                   size="sm"
                   type="button"
                   variant="outline"
@@ -440,7 +513,8 @@ export function WorkflowFailureAlerts({
                 </Button>
               )}
               <Button
-                onClick={() => setPanel("custom")}
+                onClick={() => openPanel("custom")}
+                ref={customButtonRef}
                 size="sm"
                 type="button"
                 variant="outline"
@@ -462,7 +536,11 @@ export function WorkflowFailureAlerts({
           )}
 
           {panel === "mute" && (
-            <div className="space-y-2" data-testid="failure-alerts-mute">
+            <div
+              className="space-y-2"
+              data-testid="failure-alerts-mute"
+              ref={panelRef}
+            >
               <p className="text-xs">Mute alerts for</p>
               <div className="flex flex-wrap gap-2">
                 {MUTE_CHOICES.map((choice) => (
@@ -516,7 +594,11 @@ export function WorkflowFailureAlerts({
           )}
 
           {panel === "custom" && (
-            <div className="space-y-4" data-testid="failure-alerts-custom">
+            <div
+              className="space-y-4"
+              data-testid="failure-alerts-custom"
+              ref={panelRef}
+            >
               <p className="text-muted-foreground text-xs">
                 Anything left on "Org setting" keeps following the org.
               </p>
@@ -525,14 +607,29 @@ export function WorkflowFailureAlerts({
                   Failed runs in a row
                 </Label>
                 <Input
+                  aria-describedby={
+                    thresholdInvalid ? "wf-failure-threshold-error" : undefined
+                  }
+                  aria-invalid={thresholdInvalid}
                   className="h-8"
                   id="wf-failure-threshold"
                   inputMode="numeric"
+                  max={MAX_THRESHOLD}
+                  min={MIN_THRESHOLD}
                   onChange={(e) => setThreshold(e.target.value)}
                   placeholder={`Org setting: ${view.org.threshold}`}
                   type="number"
                   value={threshold}
                 />
+                {thresholdInvalid && (
+                  <p
+                    className="text-destructive text-xs"
+                    id="wf-failure-threshold-error"
+                  >
+                    Use a whole number from {MIN_THRESHOLD} to {MAX_THRESHOLD},
+                    or leave it empty to follow the org.
+                  </p>
+                )}
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Or after failing for</Label>
@@ -603,7 +700,13 @@ export function WorkflowFailureAlerts({
                           }
                         />
                         <Label
-                          className="min-w-0 break-all font-normal"
+                          className={cn(
+                            "min-w-0 break-all font-normal",
+                            // Disabled only because mail cannot reach them:
+                            // the name still has to be readable.
+                            !m.reachable &&
+                              "text-muted-foreground peer-disabled:opacity-100"
+                          )}
                           htmlFor={`wf-recipient-${m.userId}`}
                         >
                           {memberLabel(m)}
@@ -671,15 +774,16 @@ export function WorkflowFailureAlerts({
         </div>
       )}
 
-      <div className="ml-1 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+      <div className="ml-1 flex flex-wrap gap-x-4 text-muted-foreground text-xs">
         <Link
-          className="underline-offset-4 hover:underline"
+          className={FOOTER_LINK}
           href={`/settings/${view.organizationId}/notifications`}
         >
-          Org setting
+          Notification settings
         </Link>
         <button
-          className="underline-offset-4 hover:underline"
+          aria-expanded={showHistory}
+          className={FOOTER_LINK}
           onClick={() => setShowHistory((open) => !open)}
           type="button"
         >

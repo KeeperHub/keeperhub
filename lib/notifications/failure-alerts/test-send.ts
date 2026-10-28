@@ -4,13 +4,12 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { failureAlertChannels, organization } from "@/lib/db/schema";
-import type { FailureAlertChannelKind } from "@/lib/db/schema-failure-alerts";
+import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import { createSlidingWindowLimiter } from "@/lib/rate-limit/sliding-window";
 import { getRedis } from "@/lib/redis";
 import { TESTS_PER_DAY_PER_ORG, TESTS_PER_MINUTE_PER_USER } from "./constants";
 import { renderMessage } from "./messages";
-import { channelLabel } from "./outbox";
-import { loadOrgMembers, resolveRecipientEmails } from "./policy";
+import { resolveRecipientEmails } from "./policy";
 import {
   type DeliveryOutcome,
   sendChannelMessage,
@@ -21,31 +20,7 @@ import {
   parseChannels,
   SettingsError,
 } from "./settings";
-
-export type TestRequest =
-  | {
-      channel: "email";
-      to: "me" | "recipients";
-      recipientUserIds?: string[];
-    }
-  | {
-      channel: FailureAlertChannelKind;
-      integrationId: string;
-      destination: string;
-      /** A saved channel, so its health is updated by the result. */
-      channelId?: string;
-      /** PagerDuty: "change" pages nobody; "page" opens and resolves one. */
-      pagerDutyMode?: "change" | "page";
-    };
-
-export type TestResult = {
-  delivered: boolean;
-  classification: "ok" | "transient" | "permanent";
-  status?: number;
-  message: string;
-  durationMs: number;
-  recipients?: string[];
-};
+import { channelLabel, type TestRequest, type TestResult } from "./view-types";
 
 // Fallbacks for a deployment without Redis: per pod, so looser, never open.
 const userLimiter = createSlidingWindowLimiter({
@@ -67,7 +42,9 @@ async function underLimit(
   if (redis) {
     try {
       const count = await redis.incr(key);
-      if (count === 1) {
+      // Checked on every call rather than only on the first, so a key whose
+      // expiry failed to set once heals itself instead of limiting for good.
+      if ((await redis.ttl(key)) < 0) {
         await redis.expire(key, windowSeconds);
       }
       return count <= limit;
@@ -78,7 +55,7 @@ async function underLimit(
   return fallback.check(key).allowed;
 }
 
-export async function checkTestRateLimit(
+async function checkTestRateLimit(
   organizationId: string,
   userId: string
 ): Promise<void> {
@@ -124,65 +101,43 @@ async function orgName(organizationId: string): Promise<string> {
   return row?.name ?? "your organization";
 }
 
+type ChannelTestRequest = Exclude<TestRequest, { channel: "email" }>;
+
 /**
- * Send one test through the same senders real alerts use, so a passing test
- * proves the real path. Tests never count toward the Free plan's emails.
+ * What to test. A saved channel is tested with its own stored connection and
+ * destination, never values from the request, so a test can only clear the
+ * pause on the channel it actually proved works.
  */
-export async function sendTest(params: {
-  organizationId: string;
-  userId: string;
-  request: TestRequest;
-}): Promise<TestResult> {
-  const { organizationId, userId, request } = params;
-  const started = Date.now();
-  const name = await orgName(organizationId);
-
-  if (request.channel === "email") {
-    const members = await loadOrgMembers(organizationId);
-    let recipients: string[];
-    if (request.to === "me") {
-      const me = members.find((m) => m.userId === userId);
-      if (!me?.deliverable) {
-        throw new SettingsError(
-          "You have no email KeeperHub can reach. Add one in Account security."
-        );
-      }
-      recipients = [me.deliverable];
-    } else {
-      recipients = resolveRecipientEmails(
-        Array.isArray(request.recipientUserIds)
-          ? request.recipientUserIds
-          : null,
-        members
-      );
-      if (recipients.length === 0) {
-        throw new SettingsError("Nobody you chose can receive email yet.");
-      }
+async function resolveTarget(
+  organizationId: string,
+  request: ChannelTestRequest
+): Promise<{
+  kind: ChannelTestRequest["channel"];
+  integrationId: string;
+  destination: string;
+  channelId?: string;
+}> {
+  if (request.channelId) {
+    const [saved] = await db
+      .select({
+        id: failureAlertChannels.id,
+        kind: failureAlertChannels.kind,
+        integrationId: failureAlertChannels.integrationId,
+        destination: failureAlertChannels.destination,
+      })
+      .from(failureAlertChannels)
+      .where(
+        and(
+          eq(failureAlertChannels.id, request.channelId),
+          eq(failureAlertChannels.organizationId, organizationId)
+        )
+      )
+      .limit(1);
+    if (!saved) {
+      throw new SettingsError("That channel no longer exists.", 404);
     }
-    const rendered = renderMessage({
-      kind: "test",
-      orgName: name,
-      channelLabel: "email",
-    });
-    let last: DeliveryOutcome = { ok: true, retryable: false, message: "" };
-    for (const to of recipients) {
-      last = await sendEmailMessage(to, rendered);
-      if (!last.ok) {
-        break;
-      }
-    }
-    return {
-      delivered: last.ok,
-      classification: classify(last),
-      status: last.status,
-      message: last.ok
-        ? `Test email accepted for ${recipients.join(", ")}.`
-        : last.message,
-      durationMs: Date.now() - started,
-      recipients,
-    };
+    return { ...saved, channelId: saved.id };
   }
-
   const [channel] = await parseChannels(
     [
       {
@@ -198,30 +153,99 @@ export async function sendTest(params: {
       `That connection is not a ${request.channel} connection.`
     );
   }
+  return channel;
+}
+
+async function testEmail(
+  organizationId: string,
+  userId: string,
+  request: Extract<TestRequest, { channel: "email" }>,
+  name: string
+): Promise<TestResult> {
+  const members = await loadOrgMembers(organizationId);
+  let recipients: string[];
+  if (request.to === "me") {
+    const me = members.find((m) => m.userId === userId);
+    if (!me?.deliverable) {
+      throw new SettingsError(
+        "You have no email KeeperHub can reach. Add one in Account security."
+      );
+    }
+    recipients = [me.deliverable];
+  } else {
+    recipients = resolveRecipientEmails(
+      Array.isArray(request.recipientUserIds) ? request.recipientUserIds : null,
+      members
+    );
+    if (recipients.length === 0) {
+      throw new SettingsError("Nobody you chose can receive email yet.");
+    }
+  }
+  await checkTestRateLimit(organizationId, userId);
+  const started = Date.now();
+  const rendered = renderMessage({
+    kind: "test",
+    orgName: name,
+    channelLabel: "email",
+  });
+  let last: DeliveryOutcome = { ok: true, retryable: false, message: "" };
+  for (const to of recipients) {
+    last = await sendEmailMessage(to, rendered);
+    if (!last.ok) {
+      break;
+    }
+  }
+  return {
+    delivered: last.ok,
+    classification: classify(last),
+    status: last.status,
+    message: last.ok
+      ? `Test email accepted for ${recipients.join(", ")}.`
+      : last.message,
+    durationMs: Date.now() - started,
+    recipients,
+  };
+}
+
+/**
+ * Send one test through the same senders real alerts use, so a passing test
+ * proves the real path. Validated before the rate limit is spent, and never
+ * counted toward the Free plan's emails.
+ */
+export async function sendTest(params: {
+  organizationId: string;
+  userId: string;
+  request: TestRequest;
+}): Promise<TestResult> {
+  const { organizationId, userId, request } = params;
+  const name = await orgName(organizationId);
+  if (request.channel === "email") {
+    return await testEmail(organizationId, userId, request, name);
+  }
+
+  const target = await resolveTarget(organizationId, request);
+  await checkTestRateLimit(organizationId, userId);
+  const started = Date.now();
   const connection = (await loadUsableConnections(organizationId)).find(
-    (c) => c.id === channel.integrationId
+    (c) => c.id === target.integrationId
   );
-  const label = channelLabel(
-    channel.kind,
-    channel.destination,
-    connection?.name
-  );
+  const label = channelLabel(target.kind, target.destination, connection?.name);
   const rendered = renderMessage({
     kind: "test",
     orgName: name,
     channelLabel: label,
   });
   const config = {
-    id: request.channelId ?? "test",
-    kind: channel.kind,
-    integrationId: channel.integrationId,
-    destination: channel.destination,
-    role: channel.role,
+    id: target.channelId ?? "test",
+    kind: target.kind,
+    integrationId: target.integrationId,
+    destination: target.destination,
+    role: "always" as const,
     pausedAt: null,
   };
 
   let outcome: DeliveryOutcome;
-  if (channel.kind === "pagerduty" && request.pagerDutyMode === "page") {
+  if (target.kind === "pagerduty" && request.pagerDutyMode === "page") {
     const dedupKey = `kh-fa-test-${randomUUID()}`;
     outcome = await sendChannelMessage({
       channel: config,
@@ -250,7 +274,7 @@ export async function sendTest(params: {
     });
   }
 
-  if (request.channelId) {
+  if (target.channelId) {
     const now = new Date();
     await db
       .update(failureAlertChannels)
@@ -264,7 +288,7 @@ export async function sendTest(params: {
       })
       .where(
         and(
-          eq(failureAlertChannels.id, request.channelId),
+          eq(failureAlertChannels.id, target.channelId),
           eq(failureAlertChannels.organizationId, organizationId)
         )
       );
@@ -273,7 +297,7 @@ export async function sendTest(params: {
   let message = outcome.message;
   if (outcome.ok) {
     message =
-      channel.kind === "pagerduty" && request.pagerDutyMode !== "page"
+      target.kind === "pagerduty" && request.pagerDutyMode !== "page"
         ? `Change event accepted by PagerDuty for ${label}. Nobody was paged.`
         : `Test delivered to ${label}.`;
   }

@@ -1,5 +1,5 @@
 {
-  "id": "d4dd3c71-13cd-441c-9ee9-977899f3416c",
+  "id": "2010f78b-e1df-4d2b-83e6-0a794d438029",
   "prevId": "5d3abb79-2d6b-441f-940a-fa5e227d40ad",
   "version": "7",
   "dialect": "postgresql",
@@ -2048,6 +2048,39 @@
         }
       },
       "indexes": {
+        "uq_failure_alert_channels_destination": {
+          "name": "uq_failure_alert_channels_destination",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "coalesce(\"workflow_id\", '')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "integration_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "destination",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "idx_failure_alert_channels_org": {
           "name": "idx_failure_alert_channels_org",
           "columns": [
@@ -2105,19 +2138,6 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "failure_alert_channels_integration_fk": {
-          "name": "failure_alert_channels_integration_fk",
-          "tableFrom": "failure_alert_channels",
-          "tableTo": "integrations",
-          "columnsFrom": [
-            "integration_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2134,6 +2154,12 @@
           "name": "id",
           "type": "text",
           "primaryKey": true,
+          "notNull": true
+        },
+        "dedup_key": {
+          "name": "dedup_key",
+          "type": "text",
+          "primaryKey": false,
           "notNull": true
         },
         "organization_id": {
@@ -2259,53 +2285,48 @@
         }
       },
       "indexes": {
-        "uq_failure_alert_deliveries_message": {
-          "name": "uq_failure_alert_deliveries_message",
+        "uq_failure_alert_deliveries_dedup": {
+          "name": "uq_failure_alert_deliveries_dedup",
           "columns": [
             {
-              "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "incident_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "sequence",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "channel",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "recipient",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "is_backup",
+              "expression": "dedup_key",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             }
           ],
           "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_failure_alert_deliveries_incident": {
+          "name": "idx_failure_alert_deliveries_incident",
+          "columns": [
+            {
+              "expression": "incident_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_failure_alert_deliveries_backup_due": {
+          "name": "idx_failure_alert_deliveries_backup_due",
+          "columns": [
+            {
+              "expression": "backup_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"failure_alert_deliveries\".\"is_backup\" = false AND \"failure_alert_deliveries\".\"backup_sent_at\" IS NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2431,43 +2452,6 @@
           ]
         }
       },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.failure_alert_heartbeats": {
-      "name": "failure_alert_heartbeats",
-      "schema": "",
-      "columns": {
-        "job": {
-          "name": "job",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "last_run_at": {
-          "name": "last_run_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "last_duration_ms": {
-          "name": "last_duration_ms",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_error": {
-          "name": "last_error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
@@ -9240,6 +9224,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "alert_queued_at": {
+          "name": "alert_queued_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
         },
         "resolved_at": {
           "name": "resolved_at",

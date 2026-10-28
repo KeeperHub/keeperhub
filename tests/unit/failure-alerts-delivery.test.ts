@@ -6,8 +6,20 @@ vi.mock("@/lib/db", () => ({ db: {} }));
 const { buildMessageRows } = await import(
   "@/lib/notifications/failure-alerts/evaluator"
 );
-const { channelLabel, nextRetryDelayMs } = await import(
+const { nextRetryDelayMs } = await import(
   "@/lib/notifications/failure-alerts/outbox"
+);
+const { channelLabel } = await import(
+  "@/lib/notifications/failure-alerts/view-types"
+);
+const { dedupKeyFor } = await import(
+  "@/lib/notifications/failure-alerts/queue-rows"
+);
+const { explainFailure } = await import(
+  "@/lib/notifications/failure-alerts/senders"
+);
+const { runsOnItsOwn, workflowTriggerType } = await import(
+  "@/lib/notifications/failure-alerts/workflow-trigger"
 );
 const { renderMessage } = await import(
   "@/lib/notifications/failure-alerts/messages"
@@ -31,6 +43,7 @@ const channel = (
 describe("buildMessageRows", () => {
   it("queues email per recipient and every live 'always' channel", () => {
     const rows = buildMessageRows({
+      scope: "i:inc",
       organizationId: "org",
       incidentId: "inc",
       kind: "alert",
@@ -55,6 +68,7 @@ describe("buildMessageRows", () => {
 
   it("gives PagerDuty two minutes and the rest fifteen before backups", () => {
     const rows = buildMessageRows({
+      scope: "i:inc",
       organizationId: "org",
       incidentId: "inc",
       kind: "alert",
@@ -72,6 +86,7 @@ describe("buildMessageRows", () => {
 
   it("never sends reminders to PagerDuty", () => {
     const rows = buildMessageRows({
+      scope: "i:inc",
       organizationId: "org",
       incidentId: "inc",
       kind: "reminder",
@@ -86,6 +101,7 @@ describe("buildMessageRows", () => {
 
   it("records that nobody could be emailed so the backups fire", () => {
     const rows = buildMessageRows({
+      scope: "i:inc",
       organizationId: "org",
       incidentId: "inc",
       kind: "alert",
@@ -145,6 +161,7 @@ describe("renderMessage", () => {
       {
         kind: "alert",
         orgName: "Acme",
+        organizationId: "org-1",
         workflow,
         incident,
         appUrl: "https://app.test",
@@ -163,6 +180,7 @@ describe("renderMessage", () => {
       {
         kind: "alert",
         orgName: "Acme",
+        organizationId: "org-1",
         workflow,
         incident,
         appUrl: "https://app.test",
@@ -181,6 +199,7 @@ describe("renderMessage", () => {
       {
         kind: "alert",
         orgName: "Acme",
+        organizationId: "org-1",
         workflow,
         incident: { ...incident, failureCount: 2, openedBy: "time" },
         appUrl: "https://app.test",
@@ -195,6 +214,7 @@ describe("renderMessage", () => {
       {
         kind: "alert",
         orgName: "Acme",
+        organizationId: "org-1",
         workflow: { ...workflow, name: "<script>x</script>" },
         incident,
         appUrl: "https://app.test",
@@ -211,5 +231,116 @@ describe("renderMessage", () => {
       channelLabel: "Slack #ops",
     });
     expect(message.chat).toContain("KeeperHub test, no action needed");
+  });
+});
+
+describe("message wording after review", () => {
+  const workflow = {
+    id: "wf-1",
+    name: "Rebalance vault",
+    triggerLabel: "Schedule",
+  };
+  const base = {
+    orgName: "Acme",
+    organizationId: "org-1",
+    appUrl: "https://app.test",
+    workflow,
+  };
+  const incident = {
+    failureCount: 6,
+    firstFailedAt: new Date("2026-10-28T10:00:00Z"),
+    lastError: "insufficient funds for gas * price + value",
+    openedBy: "count" as const,
+  };
+
+  it("puts the org first in chat and says how to change who gets it", () => {
+    const message = renderMessage({ ...base, kind: "alert", incident }, now);
+    expect(message.chat.startsWith("[Acme] ")).toBe(true);
+    expect(message.text).toContain(
+      "Change who gets these: https://app.test/settings/org-1/notifications"
+    );
+    expect(message.text).toContain(
+      "Open the workflow: https://app.test/workflows/wf-1"
+    );
+  });
+
+  it("words a reminder as still failing, once", () => {
+    const message = renderMessage({ ...base, kind: "reminder", incident }, now);
+    expect(message.subject).toBe(
+      "[Acme] Rebalance vault is still failing: 6 failed runs in a row"
+    );
+  });
+
+  it("hints at gas and RPC causes", () => {
+    const gas = renderMessage({ ...base, kind: "alert", incident }, now);
+    expect(gas.text).toContain("out of gas");
+    const rpc = renderMessage(
+      {
+        ...base,
+        kind: "alert",
+        incident: {
+          ...incident,
+          lastError: "request failed: 429 Too Many Requests",
+        },
+      },
+      now
+    );
+    expect(rpc.text).toContain("RPC provider problem");
+  });
+});
+
+describe("explainFailure", () => {
+  it("says what a provider refusal means and keeps the code", () => {
+    expect(explainFailure("telegram", 401, "Telegram returned HTTP 401.")).toBe(
+      "Telegram rejected the bot token. Reconnect the bot in Connections (HTTP 401)."
+    );
+    expect(explainFailure("discord", 404, "x")).toContain(
+      "webhook was deleted"
+    );
+    expect(explainFailure("slack", 200, "not_in_channel")).toBe(
+      "The KeeperHub app is not in that channel. Invite it (not_in_channel)."
+    );
+    expect(explainFailure("telegram", 500, "Telegram returned HTTP 500.")).toBe(
+      "Telegram returned HTTP 500."
+    );
+  });
+});
+
+describe("dedupKeyFor", () => {
+  const row = {
+    scope: "i:inc",
+    organizationId: "org",
+    incidentId: "inc",
+    kind: "alert" as const,
+    sequence: 0,
+    channel: "email" as const,
+    recipient: "a@x.dev",
+  };
+
+  it("is the same for the same message and differs for a backup or a group", () => {
+    expect(dedupKeyFor(row)).toBe(dedupKeyFor({ ...row }));
+    expect(dedupKeyFor(row)).not.toBe(dedupKeyFor({ ...row, isBackup: true }));
+    expect(dedupKeyFor({ ...row, scope: "g:a", incidentId: null })).not.toBe(
+      dedupKeyFor({ ...row, scope: "g:b", incidentId: null })
+    );
+  });
+});
+
+describe("workflowTriggerType", () => {
+  const nodes = (triggerType: string) => [
+    { data: { type: "trigger", config: { triggerType } } },
+  ];
+
+  it("reads the trigger like the editor does", () => {
+    expect(workflowTriggerType(nodes("Schedule"))).toBe("Schedule");
+    expect(workflowTriggerType(nodes("Pyth Price"))).toBe("Pyth Price");
+    expect(workflowTriggerType(nodes("Scheduled"))).toBeNull();
+    expect(workflowTriggerType([])).toBeNull();
+  });
+
+  it("counts every trigger that runs on its own, not Manual", () => {
+    expect(runsOnItsOwn("Transfer")).toBe(true);
+    expect(runsOnItsOwn("Manual")).toBe(false);
+    expect(runsOnItsOwn(null)).toBe(false);
   });
 });

@@ -39,7 +39,7 @@ export function isAutomatedRun(
   return Boolean(run.credentialType && run.credentialType !== "session");
 }
 
-export type StreakSummary = {
+type StreakSummary = {
   /** Consecutive automated failures, newest first, since the last success. */
   failures: number;
   firstFailedAt: Date | null;
@@ -110,7 +110,7 @@ export function summarizeStreak(
   return summary;
 }
 
-export type StreakDecision =
+type StreakDecision =
   | { kind: "none" }
   | { kind: "open"; by: "count" | "time" }
   | { kind: "resolve" }

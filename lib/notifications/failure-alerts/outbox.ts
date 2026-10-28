@@ -1,6 +1,16 @@
 import "server-only";
 
-import { and, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 import { getOrgPlan } from "@/lib/billing/plans-server";
 import { db } from "@/lib/db";
 import {
@@ -14,15 +24,17 @@ import {
 } from "@/lib/db/schema";
 import type { FailureAlertDeliveryState } from "@/lib/db/schema-failure-alerts";
 import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
+import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import {
+  DELIVERY_BATCH,
+  DELIVERY_BUDGET_MS,
   FREE_PLAN_MONTHLY_EMAILS,
   GIVE_UP_AFTER_MS,
   HEALTH_CHECK_INTERVAL_MS,
-  MAX_DELIVERIES_PER_RUN,
+  RETENTION_DAYS,
   RETRY_DELAYS_MS,
   STALE_SENDING_MS,
 } from "./constants";
-import { workflowTriggerType } from "./evaluator";
 import {
   type AlertWorkflow,
   type MessageInput,
@@ -32,18 +44,21 @@ import {
 } from "./messages";
 import {
   type ChannelConfig,
+  loadChannels,
   loadChannelsByIds,
   loadEffectivePolicy,
-  loadOrgMembers,
   loadOrgPolicy,
   resolveRecipientEmails,
 } from "./policy";
+import { type DeliveryInsert, insertDeliveries } from "./queue-rows";
 import {
   checkChannelSilently,
   type DeliveryOutcome,
   sendChannelMessage,
   sendEmailMessage,
 } from "./senders";
+import { CHANNEL_LABEL, channelLabel } from "./view-types";
+import { workflowTriggerType } from "./workflow-trigger";
 
 type DeliveryRow = typeof failureAlertDeliveries.$inferSelect;
 type IncidentRow = typeof workflowFailureIncidents.$inferSelect;
@@ -70,24 +85,6 @@ export function emptyDrainStats(): DrainStats {
   };
 }
 
-const CHANNEL_NAMES: Record<string, string> = {
-  email: "Email",
-  slack: "Slack",
-  discord: "Discord",
-  telegram: "Telegram",
-  pagerduty: "PagerDuty",
-};
-
-export function channelLabel(
-  kind: string,
-  destination: string,
-  connectionName?: string | null
-): string {
-  const name = CHANNEL_NAMES[kind] ?? kind;
-  const where = kind === "discord" ? connectionName : destination;
-  return where ? `${name} ${where}` : name;
-}
-
 /** Delay before the next attempt, honouring a provider's Retry-After. */
 export function nextRetryDelayMs(
   attempts: number,
@@ -97,20 +94,32 @@ export function nextRetryDelayMs(
   return Math.max(RETRY_DELAYS_MS[index], retryAfterMs ?? 0);
 }
 
+/** The scope a row was queued under, so its backups and recovery share it. */
+function scopeOf(row: DeliveryRow): string {
+  if (row.incidentId) {
+    return `i:${row.incidentId}`;
+  }
+  const ids = row.context?.incidentIds;
+  if (Array.isArray(ids) && ids.length > 0) {
+    return `g:${String(ids[0])}`;
+  }
+  return `row:${row.id}`;
+}
+
 /**
- * Claim due rows. "sending" rows older than two minutes belong to an
- * evaluator that died mid-send and are taken over.
+ * Claim a few due rows. "sending" rows untouched for STALE_SENDING_MS belong
+ * to an evaluator that died mid-send and are taken over.
  */
 async function claimDue(): Promise<DeliveryRow[]> {
   const rows = await db.execute<{ id: string }>(sql`
     UPDATE ${failureAlertDeliveries}
-    SET state = 'sending', attempts = attempts + 1, updated_at = now()
+    SET state = 'sending', updated_at = now()
     WHERE id IN (
       SELECT id FROM ${failureAlertDeliveries}
       WHERE (state IN ('pending', 'retrying') AND next_attempt_at <= now())
          OR (state = 'sending' AND updated_at < now() - (${STALE_SENDING_MS} * interval '1 millisecond'))
       ORDER BY next_attempt_at
-      LIMIT ${MAX_DELIVERIES_PER_RUN}
+      LIMIT ${DELIVERY_BATCH}
       FOR UPDATE SKIP LOCKED
     )
     RETURNING id
@@ -131,11 +140,18 @@ class Context {
   private readonly incidents = new Map<string, IncidentRow | null>();
   private readonly workflowsById = new Map<string, AlertWorkflow | null>();
   private readonly plans = new Map<string, string>();
-  channels = new Map<string, ChannelConfig>();
+  readonly channels = new Map<string, ChannelConfig>();
   readonly appUrl: string;
 
   constructor(appUrl: string) {
     this.appUrl = appUrl;
+  }
+
+  async loadChannels(ids: string[]): Promise<void> {
+    const missing = ids.filter((id) => !this.channels.has(id));
+    for (const [id, channel] of await loadChannelsByIds(missing)) {
+      this.channels.set(id, channel);
+    }
   }
 
   async orgName(organizationId: string): Promise<string> {
@@ -201,15 +217,22 @@ class Context {
   }
 }
 
+type Rendered = {
+  rendered: RenderedMessage;
+  details?: Record<string, unknown>;
+  link?: string;
+};
+
 /** Build what one outbox row says. Null when what it was about is gone. */
 async function renderRow(
   row: DeliveryRow,
   ctx: Context
-): Promise<{
-  rendered: RenderedMessage;
-  details?: Record<string, unknown>;
-} | null> {
-  const orgName = await ctx.orgName(row.organizationId);
+): Promise<Rendered | null> {
+  const org = {
+    orgName: await ctx.orgName(row.organizationId),
+    organizationId: row.organizationId,
+    appUrl: ctx.appUrl,
+  };
   const context = row.context ?? {};
   const backupReason =
     typeof context.backupReason === "string" ? context.backupReason : undefined;
@@ -217,23 +240,19 @@ async function renderRow(
 
   if (row.kind === "channel_paused") {
     input = {
+      ...org,
       kind: "channel_paused",
-      orgName,
       channelLabel: String(context.channelLabel ?? "A channel"),
       reason: String(context.reason ?? ""),
-      appUrl: ctx.appUrl,
-      organizationId: row.organizationId,
     };
   } else if (row.kind === "launch_notice") {
     input = {
+      ...org,
       kind: "launch_notice",
-      orgName,
       threshold: (await loadOrgPolicy(row.organizationId)).threshold,
       failingNow: (context.failingNow ?? []) as (AlertWorkflow & {
         failureCount: number;
       })[],
-      appUrl: ctx.appUrl,
-      organizationId: row.organizationId,
     };
   } else if (Array.isArray(context.incidentIds)) {
     const list: (AlertWorkflow & { failureCount: number })[] = [];
@@ -249,13 +268,7 @@ async function renderRow(
     if (list.length === 0) {
       return null;
     }
-    input = {
-      kind: "grouped",
-      orgName,
-      workflows: list,
-      appUrl: ctx.appUrl,
-      backupReason,
-    };
+    input = { ...org, kind: "grouped", workflows: list, backupReason };
   } else {
     const incident = row.incidentId ? await ctx.incident(row.incidentId) : null;
     const workflow = incident ? await ctx.workflow(incident.workflowId) : null;
@@ -270,31 +283,26 @@ async function renderRow(
     };
     input =
       row.kind === "recovery"
-        ? {
-            kind: "recovery",
-            orgName,
-            workflow,
-            incident: alertIncident,
-            appUrl: ctx.appUrl,
-          }
+        ? { ...org, kind: "recovery", workflow, incident: alertIncident }
         : {
+            ...org,
             kind: row.kind === "reminder" ? "reminder" : "alert",
-            orgName,
             workflow,
             incident: alertIncident,
-            appUrl: ctx.appUrl,
             backupReason,
           };
+    const link = runsUrl(ctx.appUrl, workflow.id);
     return {
       rendered: renderMessage(input),
+      link,
       details: {
-        organization: orgName,
+        organization: org.orgName,
         workflow: workflow.name,
         trigger: workflow.triggerLabel,
         failing_since: incident.firstFailedAt.toISOString(),
         failed_runs_in_a_row: incident.failureCount,
         last_error: incident.lastError,
-        runs: runsUrl(ctx.appUrl, workflow.id),
+        runs: link,
       },
     };
   }
@@ -339,6 +347,10 @@ async function releaseEmail(
   `);
 }
 
+/**
+ * The cap is on alert emails. One-time notices (notifications switched on, a
+ * channel paused) are rare and are how people learn the setup is broken.
+ */
 const CAPPED_KINDS: ReadonlySet<string> = new Set([
   "alert",
   "reminder",
@@ -355,8 +367,6 @@ async function sendRow(
   }
 
   if (row.channel === "email") {
-    // The cap is on alerts. One-time notices (notifications switched on, a
-    // channel paused) are rare and are how people learn the setup is broken.
     const counted = CAPPED_KINDS.has(row.kind);
     if (counted && !(await reserveEmail(row.organizationId, ctx))) {
       return "capped";
@@ -373,6 +383,7 @@ async function sendRow(
     return {
       ok: false,
       retryable: false,
+      channelHealthy: true,
       message: "The channel was removed from the notification settings.",
     };
   }
@@ -383,6 +394,7 @@ async function sendRow(
     dedupKey: row.incidentId ? `kh-fa-${row.incidentId}` : undefined,
     pagerDutyAction: row.kind === "recovery" ? "resolve" : "trigger",
     details: content.details,
+    link: content.link,
   });
 }
 
@@ -401,7 +413,7 @@ async function finishRow(
  * Pause a chat or PagerDuty channel that cannot work until someone fixes it,
  * and tell the people who receive failure emails, once.
  */
-export async function pauseChannel(
+async function pauseChannel(
   channelId: string,
   reason: string,
   organizationId: string,
@@ -435,30 +447,26 @@ export async function pauseChannel(
     org.recipientUserIds,
     await loadOrgMembers(organizationId)
   );
-  if (emails.length > 0) {
-    await db
-      .insert(failureAlertDeliveries)
-      .values(
-        emails.map((email) => ({
-          organizationId,
-          incidentId: null,
-          kind: "channel_paused" as const,
-          sequence: 0,
-          channel: "email" as const,
-          recipient: email,
-          nextAttemptAt: now,
-          context: {
-            channelLabel: channelLabel(
-              channel.kind,
-              channel.destination,
-              connection?.name
-            ),
-            reason,
-          },
-        }))
-      )
-      .onConflictDoNothing();
-  }
+  await insertDeliveries(
+    emails.map((email) => ({
+      scope: `paused:${channelId}:${now.toISOString()}`,
+      organizationId,
+      incidentId: null,
+      kind: "channel_paused" as const,
+      sequence: 0,
+      channel: "email" as const,
+      recipient: email,
+      nextAttemptAt: now,
+      context: {
+        channelLabel: channelLabel(
+          channel.kind,
+          channel.destination,
+          connection?.name
+        ),
+        reason,
+      },
+    }))
+  );
   return true;
 }
 
@@ -480,35 +488,51 @@ async function recordChannelHealth(
     .where(eq(failureAlertChannels.id, channelId));
 }
 
-/** Send everything due and record what happened. */
+/**
+ * Send everything due, a small batch at a time, until the queue is empty or
+ * the time budget is spent.
+ */
 export async function drainOutbox(
   now: Date,
   appUrl: string,
   stats: DrainStats
 ): Promise<void> {
-  const rows = await claimDue();
-  if (rows.length === 0) {
-    return;
-  }
+  const started = Date.now();
   const ctx = new Context(appUrl);
-  ctx.channels = await loadChannelsByIds(
-    rows.map((row) => row.channelId).filter((id): id is string => Boolean(id))
-  );
-
-  for (const row of rows) {
-    try {
-      await processRow(row, ctx, now, stats);
-    } catch (error) {
-      logSystemError(
-        ErrorCategory.EXTERNAL_SERVICE,
-        "[FailureAlerts] Delivery crashed; it will be retried",
-        error,
-        { delivery_id: row.id, channel: row.channel }
-      );
-      await finishRow(row, "retrying", {
-        nextAttemptAt: new Date(now.getTime() + RETRY_DELAYS_MS[0]),
-        lastError: "Internal error while sending; retrying.",
-      });
+  while (Date.now() - started < DELIVERY_BUDGET_MS) {
+    const rows = await claimDue();
+    if (rows.length === 0) {
+      return;
+    }
+    await ctx.loadChannels(
+      rows.map((row) => row.channelId).filter((id): id is string => Boolean(id))
+    );
+    for (const row of rows) {
+      try {
+        // Restart this row's clock: it may have waited behind slow sends in
+        // its batch, and must not look abandoned to another evaluator.
+        await db
+          .update(failureAlertDeliveries)
+          .set({ updatedAt: new Date(), attempts: row.attempts + 1 })
+          .where(eq(failureAlertDeliveries.id, row.id));
+        await processRow(
+          { ...row, attempts: row.attempts + 1 },
+          ctx,
+          now,
+          stats
+        );
+      } catch (error) {
+        logSystemError(
+          ErrorCategory.EXTERNAL_SERVICE,
+          "[FailureAlerts] Delivery crashed; it will be retried",
+          error,
+          { delivery_id: row.id, channel: row.channel }
+        );
+        await finishRow(row, "retrying", {
+          nextAttemptAt: new Date(Date.now() + RETRY_DELAYS_MS[0]),
+          lastError: "Internal error while sending; retrying.",
+        });
+      }
     }
   }
 }
@@ -534,7 +558,9 @@ async function processRow(
     return;
   }
 
-  await recordChannelHealth(row.channelId, outcome, now);
+  if (!outcome.channelHealthy) {
+    await recordChannelHealth(row.channelId, outcome, now);
+  }
 
   if (outcome.ok) {
     stats.delivered += 1;
@@ -547,7 +573,8 @@ async function processRow(
   }
 
   if (outcome.platformFault) {
-    // Our own email key or configuration: page our on-call, not the customer.
+    // Our own email key or configuration: page our on-call, and keep
+    // retrying, since the customer's alert is still owed once we fix it.
     logSystemError(
       ErrorCategory.INFRASTRUCTURE,
       "[FailureAlerts] Email provider refused our credentials",
@@ -557,7 +584,7 @@ async function processRow(
   }
 
   const expired = now.getTime() - row.createdAt.getTime() >= GIVE_UP_AFTER_MS;
-  if (outcome.retryable && !expired) {
+  if ((outcome.retryable || outcome.platformFault) && !expired) {
     stats.retrying += 1;
     await finishRow(row, "retrying", {
       nextAttemptAt: new Date(
@@ -574,7 +601,7 @@ async function processRow(
     lastStatus: outcome.status ?? null,
     lastError: outcome.message,
   });
-  if (row.channelId && !outcome.platformFault) {
+  if (row.channelId && !outcome.channelHealthy) {
     const reason = expired
       ? `It has failed for 24 hours: ${outcome.message}`
       : outcome.message;
@@ -585,23 +612,22 @@ async function processRow(
 }
 
 function describeFailure(row: DeliveryRow): string {
-  const name = CHANNEL_NAMES[row.channel] ?? row.channel;
   if (row.state === "capped") {
     return "the Free plan's alert emails for this month are used";
   }
   if (row.recipient === "(nobody reachable)") {
     return "nobody in the organization has an email address KeeperHub can reach";
   }
-  const status = row.lastStatus ? ` (HTTP ${row.lastStatus})` : "";
-  const paged =
-    row.channel === "pagerduty" ? ", nobody has been paged yet" : "";
-  return `${name} could not be reached${status}${paged}`;
+  const name =
+    CHANNEL_LABEL[row.channel as keyof typeof CHANNEL_LABEL] ?? row.channel;
+  const paged = row.channel === "pagerduty" ? ", so nobody has been paged" : "";
+  return `${name} could not deliver it${paged}`;
 }
 
 /**
  * Plan B. A message that failed for good, or is still not delivered when its
  * backup time comes, goes to the backup channels and, when it was not email
- * that failed, to the email recipients too. Claimed per row, and the unique
+ * that failed, to the email recipients too. Claimed per row, and the dedup
  * key stops two rows of the same message queuing the same backup twice.
  */
 export async function fireBackups(now: Date, stats: DrainStats): Promise<void> {
@@ -611,8 +637,9 @@ export async function fireBackups(now: Date, stats: DrainStats): Promise<void> {
     .where(
       and(
         eq(failureAlertDeliveries.isBackup, false),
-        inArray(failureAlertDeliveries.kind, ["alert", "reminder"]),
         isNull(failureAlertDeliveries.backupSentAt),
+        isNotNull(failureAlertDeliveries.backupAt),
+        inArray(failureAlertDeliveries.kind, ["alert", "reminder"]),
         or(
           inArray(failureAlertDeliveries.state, ["failed", "capped"]),
           and(
@@ -656,11 +683,11 @@ export async function fireBackups(now: Date, stats: DrainStats): Promise<void> {
 }
 
 async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
+  const scope = scopeOf(row);
   // Same message, every destination: what already got it needs no backup.
   const siblings = await db
     .select({
       channel: failureAlertDeliveries.channel,
-      channelId: failureAlertDeliveries.channelId,
       recipient: failureAlertDeliveries.recipient,
       state: failureAlertDeliveries.state,
     })
@@ -670,7 +697,7 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
         eq(failureAlertDeliveries.organizationId, row.organizationId),
         row.incidentId
           ? eq(failureAlertDeliveries.incidentId, row.incidentId)
-          : sql`${failureAlertDeliveries.context} = ${JSON.stringify(row.context ?? {})}::jsonb`,
+          : sql`${failureAlertDeliveries.dedupKey} LIKE ${`${scope}|%`}`,
         eq(failureAlertDeliveries.kind, row.kind),
         eq(failureAlertDeliveries.sequence, row.sequence)
       )
@@ -693,22 +720,39 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
           .limit(1)
       )[0]
     : undefined;
+  // A grouped alert follows the org's setup; a single one its workflow's.
   const policy = incident
     ? await loadEffectivePolicy(row.organizationId, incident.workflowId)
     : null;
-  const org = policy ? null : await loadOrgPolicy(row.organizationId);
-  const channels = policy?.channels ?? [];
+  const channels =
+    policy?.channels ?? (await loadChannels(row.organizationId, null));
+  const recipientUserIds = policy
+    ? policy.recipientUserIds
+    : (await loadOrgPolicy(row.organizationId)).recipientUserIds;
 
-  const targets: (typeof failureAlertDeliveries.$inferInsert)[] = [];
+  const targets: DeliveryInsert[] = [];
   const has = (channel: string, recipient: string): boolean =>
     siblings.some((s) => s.channel === channel && s.recipient === recipient);
   const reason = describeFailure(row);
+  const base = {
+    scope,
+    organizationId: row.organizationId,
+    incidentId: row.incidentId,
+    kind: row.kind,
+    sequence: row.sequence,
+    isBackup: true,
+    nextAttemptAt: now,
+    context: { ...(row.context ?? {}), backupReason: reason },
+  };
 
   for (const channel of channels) {
     if (channel.pausedAt || channel.role !== "backup") {
       continue;
     }
-    if (channel.kind === "pagerduty" && row.kind !== "alert") {
+    if (
+      channel.kind === "pagerduty" &&
+      (row.kind !== "alert" || !row.incidentId)
+    ) {
       continue;
     }
     const recipient = channel.destination || channel.kind;
@@ -716,22 +760,16 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
       continue;
     }
     targets.push({
-      organizationId: row.organizationId,
-      incidentId: row.incidentId,
-      kind: row.kind,
-      sequence: row.sequence,
+      ...base,
       channel: channel.kind,
       channelId: channel.id,
       recipient,
-      isBackup: true,
-      nextAttemptAt: now,
-      context: { ...(row.context ?? {}), backupReason: reason },
     });
   }
 
   if (row.channel !== "email") {
     const emails = resolveRecipientEmails(
-      policy?.recipientUserIds ?? org?.recipientUserIds ?? null,
+      recipientUserIds,
       await loadOrgMembers(row.organizationId)
     );
     // A page that did not go out is news even to someone who already has the
@@ -741,17 +779,7 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
       if (!pageFailed && has("email", email)) {
         continue;
       }
-      targets.push({
-        organizationId: row.organizationId,
-        incidentId: row.incidentId,
-        kind: row.kind,
-        sequence: row.sequence,
-        channel: "email",
-        recipient: email,
-        isBackup: true,
-        nextAttemptAt: now,
-        context: { ...(row.context ?? {}), backupReason: reason },
-      });
+      targets.push({ ...base, channel: "email", recipient: email });
     }
   }
 
@@ -764,12 +792,7 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
     );
     return 0;
   }
-  const inserted = await db
-    .insert(failureAlertDeliveries)
-    .values(targets)
-    .onConflictDoNothing()
-    .returning({ id: failureAlertDeliveries.id });
-  return inserted.length;
+  return await insertDeliveries(targets);
 }
 
 /**
@@ -839,4 +862,35 @@ export async function runHealthChecks(
       );
     }
   }
+}
+
+/**
+ * Keep history and incidents for RETENTION_DAYS. A few thousand rows per
+ * cycle, so a backlog clears over a few minutes without long locks.
+ */
+export async function pruneOldRecords(now: Date): Promise<void> {
+  const cutoff = new Date(now.getTime() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  await db.execute(sql`
+    DELETE FROM ${failureAlertDeliveries}
+    WHERE id IN (
+      SELECT id FROM ${failureAlertDeliveries}
+      WHERE created_at < ${cutoff.toISOString()}::timestamptz AT TIME ZONE 'UTC'
+      LIMIT 5000
+    )
+  `);
+  await db.delete(workflowFailureIncidents).where(
+    inArray(
+      workflowFailureIncidents.id,
+      db
+        .select({ id: workflowFailureIncidents.id })
+        .from(workflowFailureIncidents)
+        .where(
+          and(
+            isNotNull(workflowFailureIncidents.resolvedAt),
+            lt(workflowFailureIncidents.resolvedAt, cutoff)
+          )
+        )
+        .limit(1000)
+    )
+  );
 }

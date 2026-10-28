@@ -76,14 +76,13 @@ describe("historyToCsv", () => {
 
 describe("memberLabel", () => {
   it("shows a wallet member by address rather than the synthetic login", () => {
-    expect(
-      memberLabel({
-        email:
-          "0x7a3f0000000000000000000000000000000091c2@wallet.keeperhub.com",
-        name: null,
-        userId: "u",
-      })
-    ).toBe("0x7a3f...91c2");
+    const label = memberLabel({
+      email: "0x7a3f0000000000000000000000000000000091c2@wallet.keeperhub.com",
+      name: null,
+      userId: "u",
+    });
+    // truncateAddress checksums the address, so compare without case.
+    expect(label.toLowerCase()).toBe("0x7a3f...91c2");
     expect(memberLabel({ email: "a@x.dev", name: null, userId: "u" })).toBe(
       "a@x.dev"
     );

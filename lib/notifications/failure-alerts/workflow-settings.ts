@@ -10,18 +10,19 @@ import {
   workflowFailureIncidents,
   workflows,
 } from "@/lib/db/schema";
+import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import { MAX_MUTE_DAYS } from "./constants";
-import { workflowTriggerType } from "./evaluator";
 import {
   loadEffectivePolicy,
-  loadOrgMembers,
   loadOverride,
   resolveRecipientEmails,
 } from "./policy";
+import type { Tx } from "./queue-rows";
 import {
   loadChannelViews,
   loadOrgSettingsView,
   loadUsableConnections,
+  lockOrgSettings,
   parseChannels,
   parseThreshold,
   parseTimeLimit,
@@ -31,8 +32,7 @@ import {
 } from "./settings";
 import { summarizeStreak } from "./streak";
 import type { WorkflowAlertView } from "./view-types";
-
-export type { WorkflowAlertView } from "./view-types";
+import { runsOnItsOwn, workflowTriggerType } from "./workflow-trigger";
 
 export async function loadWorkflowForAlerts(workflowId: string): Promise<{
   id: string;
@@ -56,16 +56,19 @@ export async function loadWorkflowForAlerts(workflowId: string): Promise<{
 
 const STATUS_WINDOW = 80;
 
-export async function loadWorkflowAlertView(workflow: {
-  id: string;
-  organizationId: string;
-  enabled: boolean;
-  // biome-ignore lint/suspicious/noExplicitAny: workflow nodes are JSONB validated at application level
-  nodes: any[];
-}): Promise<WorkflowAlertView> {
+export async function loadWorkflowAlertView(
+  workflow: {
+    id: string;
+    organizationId: string;
+    enabled: boolean;
+    // biome-ignore lint/suspicious/noExplicitAny: workflow nodes are JSONB validated at application level
+    nodes: any[];
+  },
+  viewerUserId: string
+): Promise<WorkflowAlertView> {
   const [org, override, policy, members, connections, workflowChannels] =
     await Promise.all([
-      loadOrgSettingsView(workflow.organizationId),
+      loadOrgSettingsView(workflow.organizationId, viewerUserId),
       loadOverride(workflow.id),
       loadEffectivePolicy(workflow.organizationId, workflow.id),
       loadOrgMembers(workflow.organizationId),
@@ -128,7 +131,7 @@ export async function loadWorkflowAlertView(workflow: {
   return {
     workflowId: workflow.id,
     organizationId: workflow.organizationId,
-    applies: Boolean(trigger && trigger !== "Manual"),
+    applies: runsOnItsOwn(trigger),
     triggerType: trigger,
     enabled: workflow.enabled,
     org: {
@@ -173,6 +176,7 @@ export async function loadWorkflowAlertView(workflow: {
         ? {
             openedAt: incident.openedAt.toISOString(),
             failureCount: incident.failureCount,
+            threshold: incident.threshold,
             lastNotifiedAt: incident.lastNotifiedAt.toISOString(),
             deliveredTo: deliveredTo.map((d) =>
               d.channel === "email"
@@ -286,12 +290,15 @@ export async function saveWorkflowOverride(params: {
     !mute.muteUntilSuccess;
 
   if (empty) {
-    await db
-      .delete(workflowFailureAlertOverrides)
-      .where(eq(workflowFailureAlertOverrides.workflowId, workflowId));
-    await db
-      .delete(failureAlertChannels)
-      .where(eq(failureAlertChannels.workflowId, workflowId));
+    await db.transaction(async (tx: Tx) => {
+      await lockOrgSettings(tx, organizationId);
+      await tx
+        .delete(workflowFailureAlertOverrides)
+        .where(eq(workflowFailureAlertOverrides.workflowId, workflowId));
+      await tx
+        .delete(failureAlertChannels)
+        .where(eq(failureAlertChannels.workflowId, workflowId));
+    });
     return { reset: true };
   }
 
@@ -308,14 +315,17 @@ export async function saveWorkflowOverride(params: {
     updatedBy: userId,
     updatedAt: now,
   };
-  await db
-    .insert(workflowFailureAlertOverrides)
-    .values({ workflowId, organizationId, ...values })
-    .onConflictDoUpdate({
-      target: workflowFailureAlertOverrides.workflowId,
-      set: values,
-    });
-  await replaceChannels(organizationId, workflowId, channels, userId);
+  await db.transaction(async (tx: Tx) => {
+    await lockOrgSettings(tx, organizationId);
+    await tx
+      .insert(workflowFailureAlertOverrides)
+      .values({ workflowId, organizationId, ...values })
+      .onConflictDoUpdate({
+        target: workflowFailureAlertOverrides.workflowId,
+        set: values,
+      });
+    await replaceChannels(tx, organizationId, workflowId, channels, userId);
+  });
 
   return {
     threshold,

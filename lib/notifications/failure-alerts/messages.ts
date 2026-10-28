@@ -1,4 +1,8 @@
-import { EMAIL_LOGO_URL, escapeHtml } from "@/lib/email";
+import { emailButton, emailLayout, escapeHtml } from "@/lib/email";
+import {
+  MAX_SUMMARY_CHARS,
+  truncateRunes,
+} from "@/plugins/pagerduty/event-payload";
 
 /**
  * What each failure notification says, for every channel. Kept apart from the
@@ -11,7 +15,7 @@ export type AlertWorkflow = {
   triggerLabel: string;
 };
 
-export type AlertIncident = {
+type AlertIncident = {
   failureCount: number;
   firstFailedAt: Date;
   lastError: string | null;
@@ -24,61 +28,69 @@ export type RenderedMessage = {
   html: string;
   /** Plain text for Slack, Discord and Telegram. */
   chat: string;
-  /** PagerDuty summary (1024 characters max). */
+  /** PagerDuty summary. */
   summary: string;
 };
 
+type OrgFields = { orgName: string; organizationId: string; appUrl: string };
+
 export type MessageInput =
-  | {
+  | (OrgFields & {
       kind: "alert" | "reminder";
-      orgName: string;
       workflow: AlertWorkflow;
       incident: AlertIncident;
-      appUrl: string;
       backupReason?: string;
-    }
-  | {
+    })
+  | (OrgFields & {
       kind: "grouped";
-      orgName: string;
       workflows: (AlertWorkflow & { failureCount: number })[];
-      appUrl: string;
       backupReason?: string;
-    }
-  | {
+    })
+  | (OrgFields & {
       kind: "recovery";
-      orgName: string;
       workflow: AlertWorkflow;
       incident: AlertIncident;
-      appUrl: string;
-    }
-  | {
+    })
+  | (OrgFields & {
       kind: "channel_paused";
-      orgName: string;
       channelLabel: string;
       reason: string;
-      appUrl: string;
-      organizationId: string;
-    }
-  | {
+    })
+  | (OrgFields & {
       kind: "launch_notice";
-      orgName: string;
       threshold: number;
       failingNow: (AlertWorkflow & { failureCount: number })[];
-      appUrl: string;
-      organizationId: string;
-    }
+    })
   | { kind: "test"; orgName: string; channelLabel: string };
 
 const MAX_ERROR_CHARS = 300;
+const WHITESPACE = /\s+/g;
+const TRAILING_DOTS = /\.+$/;
 
 function shortError(error: string | null): string {
   if (!error) {
     return "No error message was recorded.";
   }
-  const oneLine = error.replace(/\s+/g, " ").trim();
-  return oneLine.length > MAX_ERROR_CHARS
-    ? `${oneLine.slice(0, MAX_ERROR_CHARS)}...`
-    : oneLine;
+  return truncateRunes(error.replace(WHITESPACE, " ").trim(), MAX_ERROR_CHARS);
+}
+
+const RPC_TROUBLE =
+  /\b(429|rate.?limit|too many requests|timed? ?out|timeout|ETIMEDOUT|ECONNRESET|503|502)\b/i;
+const GAS_TROUBLE =
+  /insufficient funds|out of gas|gas required exceeds|intrinsic gas/i;
+
+/** A first guess at the cause, for the errors that keep coming up. */
+function errorHint(error: string | null): string | null {
+  if (!error) {
+    return null;
+  }
+  if (GAS_TROUBLE.test(error)) {
+    return "This looks like the wallet running out of gas: check its balance.";
+  }
+  if (RPC_TROUBLE.test(error)) {
+    return "This looks like an RPC provider problem (rate limit or timeout), which often clears on its own.";
+  }
+  return null;
 }
 
 function formatUtc(date: Date): string {
@@ -98,70 +110,63 @@ function formatDuration(ms: number): string {
   return `${days} days`;
 }
 
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
 export function runsUrl(appUrl: string, workflowId: string): string {
   return `${appUrl}/workflows/${encodeURIComponent(workflowId)}?tab=runs`;
 }
 
-export function settingsUrl(appUrl: string, organizationId: string): string {
+function workflowUrl(appUrl: string, workflowId: string): string {
+  return `${appUrl}/workflows/${encodeURIComponent(workflowId)}`;
+}
+
+function settingsUrl(appUrl: string, organizationId: string): string {
   return `${appUrl}/settings/${encodeURIComponent(organizationId)}/notifications`;
+}
+
+function summaryOf(text: string): string {
+  return truncateRunes(`[KeeperHub] ${text}`, MAX_SUMMARY_CHARS);
 }
 
 function failingHeadline(
   workflow: AlertWorkflow,
   incident: AlertIncident,
+  still: boolean,
   now: Date
 ): string {
-  const runs = `${incident.failureCount} failed run${incident.failureCount === 1 ? "" : "s"} in a row`;
-  if (incident.openedBy === "time") {
+  const runs = `${plural(incident.failureCount, "failed run", "failed runs")} in a row`;
+  if (incident.openedBy === "time" && !still) {
     return `${workflow.name} has been failing for ${formatDuration(now.getTime() - incident.firstFailedAt.getTime())} (${runs})`;
   }
-  return `${workflow.name} is failing: ${runs}`;
-}
-
-function layout(title: string, bodyHtml: string, footerHtml: string): string {
-  const logo = EMAIL_LOGO_URL
-    ? `<img src="${EMAIL_LOGO_URL}" alt="KeeperHub" style="max-width: 200px; height: auto;" />`
-    : "";
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-</head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-  <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 30px; border-radius: 12px 12px 0 0; text-align: center;">
-    ${logo}
-  </div>
-  <div style="background: #ffffff; padding: 30px; border: 1px solid #e5e5e5; border-top: none; border-radius: 0 0 12px 12px;">
-    <h2 style="color: #1a1a2e; margin-top: 0;">${title}</h2>
-    ${bodyHtml}
-    <hr style="border: none; border-top: 1px solid #e5e5e5; margin: 30px 0;">
-    <p style="color: #999; font-size: 12px; margin-bottom: 0;">${footerHtml}</p>
-  </div>
-</body>
-</html>`.trim();
-}
-
-function button(href: string, label: string): string {
-  return `<a href="${escapeHtml(href)}" style="display:inline-block; background:#1a1a2e; color:#fff; padding:12px 20px; border-radius:8px; text-decoration:none; margin: 0 8px 8px 0;">${escapeHtml(label)}</a>`;
+  return `${workflow.name} is ${still ? "still " : ""}failing: ${runs}`;
 }
 
 function backupBanner(reason: string | undefined): {
   html: string;
   text: string;
+  chat: string;
 } {
   if (!reason) {
-    return { html: "", text: "" };
+    return { html: "", text: "", chat: "" };
   }
   return {
-    html: `<div style="background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; color: #92400e;"><strong>Backup alert:</strong> ${escapeHtml(reason)}</div>`,
-    text: `BACKUP ALERT: ${reason}\n\n`,
+    html: `<div style="background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; color: #92400e;"><strong>Backup alert:</strong> ${escapeHtml(reason)}.</div>`,
+    text: `BACKUP ALERT: ${reason}.\n\n`,
+    chat: `Backup alert: ${reason}.\n`,
   };
 }
 
-const FOOTER_TEXT =
-  "You get this because you receive workflow failure notifications for this organization.";
+function footer(input: OrgFields): { text: string; html: string } {
+  const link = settingsUrl(input.appUrl, input.organizationId);
+  const why =
+    "You get this because you receive workflow failure notifications for this organization.";
+  return {
+    text: `${why} Change who gets these: ${link}`,
+    html: `${escapeHtml(why)} <a href="${escapeHtml(link)}" style="color: #999;">Change who gets these</a>.`,
+  };
+}
 
 export function renderMessage(
   input: MessageInput,
@@ -189,48 +194,55 @@ function renderAlert(
   now: Date
 ): RenderedMessage {
   const { workflow, incident, orgName, appUrl } = input;
-  const headline = failingHeadline(workflow, incident, now);
-  const reminder = input.kind === "reminder" ? "Still failing: " : "";
+  const headline = failingHeadline(
+    workflow,
+    incident,
+    input.kind === "reminder",
+    now
+  );
   const backup = backupBanner(input.backupReason);
-  const subject = `${input.backupReason ? "[Backup] " : ""}[${orgName}] ${reminder}${headline}`;
   const error = shortError(incident.lastError);
-  const link = runsUrl(appUrl, workflow.id);
+  const hint = errorHint(incident.lastError);
+  const runs = runsUrl(appUrl, workflow.id);
+  const open = workflowUrl(appUrl, workflow.id);
+  const foot = footer(input);
+  const nextStep =
+    "It keeps running on its trigger until someone fixes, mutes or pauses it. Mute and Pause are in the workflow's Properties.";
 
-  const text = `${backup.text}${reminder}${headline}.
+  const text = `${backup.text}${headline}.
 
 Organization: ${orgName}
 Trigger: ${workflow.triggerLabel}
 Failing since: ${formatUtc(incident.firstFailedAt)}
 Last error: ${error}
+${hint ? `${hint}\n` : ""}
+${nextStep}
+View failed runs: ${runs}
+Open the workflow: ${open}
 
-It keeps running on its trigger until someone fixes or pauses it.
-View failed runs: ${link}
+${foot.text}`;
 
-${FOOTER_TEXT}`;
-
-  const html = layout(
-    escapeHtml(`${reminder}${headline}`),
+  const html = emailLayout(
+    escapeHtml(headline),
     `${backup.html}
-    <p>It keeps running on its trigger until someone fixes or pauses it.</p>
-    <div style="background: #f5f5f5; border-radius: 8px; padding: 20px; margin: 20px 0; font-size: 14px;">
+    <div style="background: #f5f5f5; border-radius: 8px; padding: 20px; margin: 0 0 20px; font-size: 14px;">
       <div><strong>Organization:</strong> ${escapeHtml(orgName)}</div>
       <div><strong>Trigger:</strong> ${escapeHtml(workflow.triggerLabel)}</div>
       <div><strong>Failing since:</strong> ${formatUtc(incident.firstFailedAt)}</div>
       <div><strong>Last error:</strong> <code>${escapeHtml(error)}</code></div>
+      ${hint ? `<div style="margin-top: 8px;">${escapeHtml(hint)}</div>` : ""}
     </div>
-    <p>${button(link, "View failed runs")}</p>`,
-    escapeHtml(FOOTER_TEXT)
+    <p>${escapeHtml(nextStep)}</p>
+    <p>${emailButton(runs, "View failed runs")}${emailButton(open, "Open the workflow")}</p>`,
+    foot.html
   );
 
-  const chatPrefix = input.backupReason
-    ? `Backup alert (${input.backupReason}). `
-    : "";
   return {
-    subject,
+    subject: `${input.backupReason ? "[Backup] " : ""}[${orgName}] ${headline}`,
     text,
     html,
-    chat: `${chatPrefix}${reminder}${headline}.\nLast error: ${error}\n${orgName}, ${workflow.triggerLabel}\n${link}`,
-    summary: `[KeeperHub] ${headline}`.slice(0, 1024),
+    chat: `[${orgName}] ${backup.chat}${headline}.\nLast error: ${error}${hint ? `\n${hint}` : ""}\nTrigger: ${workflow.triggerLabel}\n${runs}`,
+    summary: summaryOf(`${orgName}: ${headline}`),
   };
 }
 
@@ -239,37 +251,38 @@ function renderGrouped(
 ): RenderedMessage {
   const { workflows, orgName, appUrl } = input;
   const headline = `${workflows.length} workflows started failing`;
+  const cause =
+    "This often means a shared cause, such as an RPC provider or a wallet out of gas.";
   const backup = backupBanner(input.backupReason);
+  const foot = footer(input);
   const lines = workflows.map(
     (w) =>
-      `- ${w.name}: ${w.failureCount} failed run${w.failureCount === 1 ? "" : "s"} in a row (${runsUrl(appUrl, w.id)})`
+      `- ${w.name}: ${plural(w.failureCount, "failed run", "failed runs")} in a row (${runsUrl(appUrl, w.id)})`
   );
-  const text = `${backup.text}${headline} in ${orgName}. This often means a shared cause, such as an RPC provider or a wallet out of gas.
+  const text = `${backup.text}${headline} in ${orgName}. ${cause}
 
 ${lines.join("\n")}
 
-${FOOTER_TEXT}`;
-  const html = layout(
+${foot.text}`;
+  const html = emailLayout(
     escapeHtml(headline),
     `${backup.html}
-    <p>This often means a shared cause, such as an RPC provider or a wallet out of gas.</p>
+    <p>${escapeHtml(cause)}</p>
     <ul style="padding-left: 20px;">${workflows
       .map(
         (w) =>
-          `<li><a href="${escapeHtml(runsUrl(appUrl, w.id))}">${escapeHtml(w.name)}</a>: ${w.failureCount} failed run${w.failureCount === 1 ? "" : "s"} in a row</li>`
+          `<li><a href="${escapeHtml(runsUrl(appUrl, w.id))}">${escapeHtml(w.name)}</a>: ${plural(w.failureCount, "failed run", "failed runs")} in a row</li>`
       )
-      .join("")}</ul>`,
-    escapeHtml(FOOTER_TEXT)
+      .join("")}</ul>
+    <p>${emailButton(runsUrl(appUrl, workflows[0]?.id ?? ""), `View ${workflows[0]?.name ?? "the first workflow"}`)}</p>`,
+    foot.html
   );
-  const chatPrefix = input.backupReason
-    ? `Backup alert (${input.backupReason}). `
-    : "";
   return {
     subject: `${input.backupReason ? "[Backup] " : ""}[${orgName}] ${headline}`,
     text,
     html,
-    chat: `${chatPrefix}${headline} in ${orgName}:\n${lines.join("\n")}`,
-    summary: `[KeeperHub] ${headline} in ${orgName}`.slice(0, 1024),
+    chat: `[${orgName}] ${backup.chat}${headline}. ${cause}\n${lines.join("\n")}`,
+    summary: summaryOf(`${orgName}: ${headline}`),
   };
 }
 
@@ -280,18 +293,19 @@ function renderRecovery(
   const { workflow, incident, orgName, appUrl } = input;
   const span = formatDuration(now.getTime() - incident.firstFailedAt.getTime());
   const headline = `${workflow.name} is running again`;
-  const detail = `It succeeded after ${incident.failureCount} failed run${incident.failureCount === 1 ? "" : "s"} over ${span}.`;
+  const detail = `It succeeded after ${plural(incident.failureCount, "failed run", "failed runs")} over ${span}.`;
   const link = runsUrl(appUrl, workflow.id);
+  const foot = footer(input);
   return {
     subject: `[${orgName}] ${headline}`,
-    text: `${headline}. ${detail}\n\nView runs: ${link}\n\n${FOOTER_TEXT}`,
-    html: layout(
+    text: `${headline}. ${detail}\n\nView runs: ${link}\n\n${foot.text}`,
+    html: emailLayout(
       escapeHtml(headline),
-      `<p>${escapeHtml(detail)}</p><p>${button(link, "View runs")}</p>`,
-      escapeHtml(FOOTER_TEXT)
+      `<p>${escapeHtml(detail)}</p><p>${emailButton(link, "View runs")}</p>`,
+      foot.html
     ),
-    chat: `${headline}. ${detail}\n${link}`,
-    summary: `[KeeperHub] ${headline}`.slice(0, 1024),
+    chat: `[${orgName}] ${headline}. ${detail}\n${link}`,
+    summary: summaryOf(`${orgName}: ${headline}`),
   };
 }
 
@@ -300,17 +314,18 @@ function renderChannelPaused(
 ): RenderedMessage {
   const link = settingsUrl(input.appUrl, input.organizationId);
   const headline = `${input.channelLabel} stopped working for failure notifications`;
-  const detail = `${input.reason} It is paused until a test succeeds. Your other notification methods are still used.`;
+  const detail = `${input.reason.replace(TRAILING_DOTS, "")}. It is paused until a test succeeds. Your other notification methods are still used.`;
+  const foot = footer(input);
   return {
     subject: `[${input.orgName}] ${headline}`,
-    text: `${headline}.\n\n${detail}\n\nFix it: ${link}\n\n${FOOTER_TEXT}`,
-    html: layout(
+    text: `${headline}.\n\n${detail}\n\nFix it: ${link}\n\n${foot.text}`,
+    html: emailLayout(
       escapeHtml(headline),
-      `<p>${escapeHtml(detail)}</p><p>${button(link, "Fix the channel")}</p>`,
-      escapeHtml(FOOTER_TEXT)
+      `<p>${escapeHtml(detail)}</p><p>${emailButton(link, "Fix the channel")}</p>`,
+      foot.html
     ),
-    chat: `${headline}. ${detail}\n${link}`,
-    summary: `[KeeperHub] ${headline}`.slice(0, 1024),
+    chat: `[${input.orgName}] ${headline}. ${detail}\n${link}`,
+    summary: summaryOf(`${input.orgName}: ${headline}`),
   };
 }
 
@@ -319,7 +334,7 @@ function renderLaunchNotice(
 ): RenderedMessage {
   const link = settingsUrl(input.appUrl, input.organizationId);
   const headline = "Workflow failure notifications are on";
-  const rule = `KeeperHub now emails you when a workflow that runs on its own (schedule, event, block, webhook) fails ${input.threshold} times in a row. You can change who gets it, add Slack, Discord, Telegram or PagerDuty, and test each one in Settings, Notifications.`;
+  const rule = `KeeperHub now emails you when a workflow that runs on its own (schedule, event, block, webhook, transfer or Pyth price trigger) fails ${input.threshold} times in a row. You can change who gets it, add Slack, Discord, Telegram or PagerDuty, and test each one in Settings, Notifications.`;
   const failingText =
     input.failingNow.length > 0
       ? `\n\nThese workflows are failing right now:\n${input.failingNow
@@ -341,13 +356,13 @@ function renderLaunchNotice(
   return {
     subject: `[${input.orgName}] ${headline}`,
     text: `${rule}${failingText}\n\nSettings: ${link}`,
-    html: layout(
+    html: emailLayout(
       headline,
-      `<p>${escapeHtml(rule)}</p>${failingHtml}<p>${button(link, "Notification settings")}</p>`,
+      `<p>${escapeHtml(rule)}</p>${failingHtml}<p>${emailButton(link, "Notification settings")}</p>`,
       "You get this once, as an owner of the organization."
     ),
-    chat: `${headline}. ${rule}`,
-    summary: `[KeeperHub] ${headline}`,
+    chat: `[${input.orgName}] ${headline}. ${rule}`,
+    summary: summaryOf(`${input.orgName}: ${headline}`),
   };
 }
 
@@ -358,12 +373,12 @@ function renderTest(
   return {
     subject: `[${input.orgName}] KeeperHub test notification`,
     text: line,
-    html: layout(
+    html: emailLayout(
       "Test notification",
       `<p>${escapeHtml(line)}</p>`,
       "Sent from the Test button in Settings, Notifications."
     ),
     chat: line,
-    summary: `[KeeperHub] Test notification for ${input.orgName}`,
+    summary: summaryOf(`Test notification for ${input.orgName}`),
   };
 }

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { USDC_BASE_ADDRESS } from "@/lib/agentic-wallet/constants";
 import { getPaygSettings } from "@/lib/billing/payg/config-store";
 import { getPaygExecutionPriceRaw } from "@/lib/billing/payg/pricing";
@@ -15,18 +15,16 @@ import {
 } from "@/lib/billing/quota-threshold-core";
 import { getChainName } from "@/lib/chain-utils";
 import { db } from "@/lib/db";
-import {
-  executionQuotaNotifications,
-  member,
-  organization,
-  users,
-} from "@/lib/db/schema";
+import { executionQuotaNotifications, organization } from "@/lib/db/schema";
 import {
   type ExecutionQuotaPaygDetails,
   sendExecutionQuotaEmail,
 } from "@/lib/email";
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
-import { deliverableAddress } from "@/lib/notifications/deliverable-address";
+import {
+  loadOrgMembers,
+  reachableEmails,
+} from "@/lib/notifications/org-recipients";
 import { getRedis } from "@/lib/redis";
 import { quotaNotifyClaimKey } from "@/lib/redis-keys";
 
@@ -44,26 +42,7 @@ import { quotaNotifyClaimKey } from "@/lib/redis-keys";
  * spend caps, which is the entire point of the email.
  */
 async function resolveOwnerEmails(organizationId: string): Promise<string[]> {
-  const rows = await db
-    .select({
-      email: users.email,
-      emailVerified: users.emailVerified,
-      stepUpEmail: users.stepUpEmail,
-      name: users.name,
-    })
-    .from(member)
-    .innerJoin(users, eq(users.id, member.userId))
-    .where(
-      and(eq(member.organizationId, organizationId), eq(member.role, "owner"))
-    );
-
-  return [
-    ...new Set(
-      rows
-        .map((row) => deliverableAddress(row))
-        .filter((email): email is string => Boolean(email))
-    ),
-  ];
+  return reachableEmails(await loadOrgMembers(organizationId, ["owner"]));
 }
 
 /**

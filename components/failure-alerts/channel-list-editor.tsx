@@ -1,14 +1,18 @@
 "use client";
 
+import { useSetAtom } from "jotai";
 import { Loader2, Plus, X } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useId, useRef, useState } from "react";
+import { toast } from "sonner";
 import { ConfigureConnectionOverlay } from "@/components/overlays/add-connection-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
+import { timeAgo } from "@/components/settings/hub/relative-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IntegrationIcon } from "@/components/ui/integration-icon";
 import { Label } from "@/components/ui/label";
+import { Notice } from "@/components/ui/notice";
 import {
   Select,
   SelectContent,
@@ -21,13 +25,15 @@ import type {
   FailureAlertChannelKind,
   FailureAlertChannelRole,
 } from "@/lib/db/schema-failure-alerts";
-import type {
-  ChannelView,
-  ConnectionView,
+import { integrationsVersionAtom } from "@/lib/integrations-store";
+import {
+  CHANNEL_LABEL,
+  type ChannelView,
+  type ConnectionView,
+  type TestResult,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
-import { getRelativeTime } from "@/lib/utils/time";
-import { CHANNEL_LABEL, sendFailureAlertTest, type TestResult } from "./api";
+import { sendFailureAlertTest } from "./api";
 import { TestResultLine } from "./test-result-line";
 
 /** A channel as the form holds it: saved (with health) or just added. */
@@ -112,7 +118,7 @@ function HealthLine({
     return (
       <span className="text-destructive">
         {(view.pausedReason ?? "").replace(TRAILING_DOTS, "")} (
-        {getRelativeTime(view.pausedAt)}). Test it to turn it back on.
+        {timeAgo(view.pausedAt)}). Test it to turn it back on.
       </span>
     );
   }
@@ -122,15 +128,14 @@ function HealthLine({
   if (failedLast && view.lastFailedAt) {
     return (
       <span className="text-destructive">
-        Last delivery failed {getRelativeTime(view.lastFailedAt)}:{" "}
-        {view.lastError}
+        Last delivery failed {timeAgo(view.lastFailedAt)}: {view.lastError}
       </span>
     );
   }
   if (view.lastDeliveredAt) {
     return (
       <span className="text-muted-foreground">
-        Last delivered {getRelativeTime(view.lastDeliveredAt)}
+        Last delivered {timeAgo(view.lastDeliveredAt)}
       </span>
     );
   }
@@ -216,14 +221,17 @@ function ChannelRow({
   organizationId: string;
   canManage: boolean;
   onChange: (next: DraftChannel) => void;
-  onRemove: () => void;
+  onRemove: (label: string) => void;
 }): React.ReactElement {
   const connection = connections.find((c) => c.id === channel.integrationId);
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<TestResult | null>(null);
   const [pdMode, setPdMode] = useState<PagerDutyMode>("change");
   const [choosingPdMode, setChoosingPdMode] = useState(false);
-  const label = `${CHANNEL_LABEL[channel.kind]} ${destinationLabel(channel, connection?.name)}`;
+  const label = `${CHANNEL_LABEL[channel.kind]} ${destinationLabel(
+    channel,
+    connection?.name ?? channel.view?.connectionName ?? undefined
+  )}`;
 
   const runTest = useCallback(async () => {
     setTesting(true);
@@ -264,81 +272,100 @@ function ChannelRow({
       )}
       data-testid="failure-alert-channel"
     >
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted">
-          <IntegrationIcon className="size-4" integration={channel.kind} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="truncate">{label}</span>
-            {paused && (
-              <Badge
-                className="border-destructive/50 text-destructive"
-                variant="outline"
-              >
-                Paused
-              </Badge>
-            )}
-            {!paused && isUntested(channel) && (
-              <Badge
-                className="border-yellow-500/40 text-yellow-600 dark:text-yellow-400"
-                variant="outline"
-              >
-                Untested
-              </Badge>
-            )}
+      {/* Stacked in a narrow column (a phone, or the Properties panel) so the
+          name and its health line get the full width instead of a sliver
+          beside the controls. */}
+      <div className="flex flex-col gap-3 @xl/settings:flex-row @xl/settings:items-center">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted">
+            <IntegrationIcon className="size-4" integration={channel.kind} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+              <span className="min-w-0 break-words @xl/settings:truncate">
+                {label}
+              </span>
+              {paused && (
+                <Badge
+                  className="border-destructive/50 text-destructive"
+                  variant="outline"
+                >
+                  Paused
+                </Badge>
+              )}
+              {!paused && isUntested(channel) && (
+                <Badge
+                  className="border-yellow-500/40 text-yellow-600 dark:text-yellow-400"
+                  variant="outline"
+                >
+                  Untested
+                </Badge>
+              )}
+            </div>
+            <p className="text-xs">
+              <HealthLine channel={channel} />
+            </p>
           </div>
-          <p className="text-xs">
-            <HealthLine channel={channel} />
-          </p>
         </div>
-        <Select
-          disabled={!canManage}
-          onValueChange={(role) =>
-            onChange({ ...channel, role: role as FailureAlertChannelRole })
-          }
-          value={channel.role}
-        >
-          <SelectTrigger
-            aria-label={`When to use ${label}`}
-            className="h-8 w-40 text-xs"
-            size="sm"
+        <div className="flex items-center gap-2 @xl/settings:shrink-0">
+          <Select
+            disabled={!canManage}
+            onValueChange={(role) =>
+              onChange({ ...channel, role: role as FailureAlertChannelRole })
+            }
+            value={channel.role}
           >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="always">Always</SelectItem>
-            <SelectItem value="backup">Only as a backup</SelectItem>
-          </SelectContent>
-        </Select>
-        {canManage && (
-          <div className="flex items-center gap-1">
-            <Button
-              disabled={testing}
-              onClick={() =>
-                channel.kind === "pagerduty"
-                  ? setChoosingPdMode((open) => !open)
-                  : runTest()
-              }
+            <SelectTrigger
+              aria-label={`When to use ${label}`}
+              className="h-8 min-w-0 flex-1 text-xs @xl/settings:w-40 @xl/settings:flex-none"
               size="sm"
-              type="button"
-              variant={paused || isUntested(channel) ? "default" : "outline"}
             >
-              {testing ? <Loader2 className="size-3.5 animate-spin" /> : null}
-              Test
-            </Button>
-            <Button
-              aria-label={`Remove ${label}`}
-              onClick={onRemove}
-              size="icon"
-              type="button"
-              variant="ghost"
-            >
-              <X className="size-4" />
-            </Button>
-          </div>
-        )}
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="always">Always</SelectItem>
+              <SelectItem value="backup">Only as a backup</SelectItem>
+            </SelectContent>
+          </Select>
+          {canManage && (
+            <div className="flex shrink-0 items-center gap-1">
+              <Button
+                aria-expanded={
+                  channel.kind === "pagerduty" ? choosingPdMode : undefined
+                }
+                aria-label={`Test ${label}`}
+                disabled={testing}
+                onClick={() =>
+                  channel.kind === "pagerduty"
+                    ? setChoosingPdMode((open) => !open)
+                    : runTest()
+                }
+                size="sm"
+                type="button"
+                variant={paused || isUntested(channel) ? "default" : "outline"}
+              >
+                {testing ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                Test
+              </Button>
+              <Button
+                aria-label={`Remove ${label}`}
+                onClick={() => onRemove(label)}
+                size="icon"
+                type="button"
+                variant="ghost"
+              >
+                <X className="size-4" />
+              </Button>
+            </div>
+          )}
+        </div>
       </div>
+      {!connection && (
+        <Notice tone="danger">
+          Its connection was deleted or is no longer shared with the
+          organization.
+        </Notice>
+      )}
       {channel.role === "backup" && (
         <p className="text-muted-foreground text-xs">
           Gets an alert only when email or another channel could not deliver it,
@@ -381,25 +408,33 @@ function ChannelRow({
 function AddChannelForm({
   organizationId,
   connections,
+  unsharedConnections,
   onAdd,
   onCancel,
   onConnectionsChanged,
 }: {
   organizationId: string;
   connections: ConnectionView[];
+  unsharedConnections: ConnectionView[];
   onAdd: (channel: DraftChannel) => void;
   onCancel: () => void;
   onConnectionsChanged: () => Promise<void> | void;
 }): React.ReactElement {
   const { push } = useOverlay();
+  const setIntegrationsVersion = useSetAtom(integrationsVersionAtom);
+  const idPrefix = useId();
   const [kind, setKind] = useState<FailureAlertChannelKind>("telegram");
-  const [integrationId, setIntegrationId] = useState("");
+  // Start with a connection picked, as switching the channel type does.
+  const [integrationId, setIntegrationId] = useState(
+    () => connections.find((c) => c.kind === "telegram")?.id ?? ""
+  );
   const [destination, setDestination] = useState("");
   const [pdMode, setPdMode] = useState<PagerDutyMode>("change");
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<TestResult | null>(null);
 
   const ofKind = connections.filter((c) => c.kind === kind);
+  const unsharedOfKind = unsharedConnections.filter((c) => c.kind === kind);
   const needsDestination = kind !== "discord";
   const ready =
     Boolean(integrationId) && (!needsDestination || destination.trim());
@@ -415,6 +450,9 @@ function AddChannelForm({
     push(ConfigureConnectionOverlay, {
       type: kind,
       onSuccess: async (id: string) => {
+        // Workflow-node connection pickers that are open elsewhere refetch on
+        // this, so the new connection shows up there too.
+        setIntegrationsVersion((v) => v + 1);
         await onConnectionsChanged();
         setIntegrationId(id);
       },
@@ -455,28 +493,34 @@ function AddChannelForm({
         <legend className="mb-2 font-medium text-sm">Channel</legend>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {KINDS.map((option) => (
-            <button
-              aria-pressed={kind === option}
+            <label
               className={cn(
-                "flex flex-col items-center gap-1.5 rounded-md border px-2 py-3 text-xs transition-colors",
-                kind === option
-                  ? "border-foreground/60 bg-muted"
-                  : "hover:bg-muted/50"
+                "flex cursor-pointer flex-col items-center gap-1.5 rounded-md border px-2 py-3 text-xs transition-colors hover:bg-muted/50",
+                "has-[:checked]:border-foreground/60 has-[:checked]:bg-muted",
+                "has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/50"
               )}
+              htmlFor={`${idPrefix}-kind-${option}`}
               key={option}
-              onClick={() => pickKind(option)}
-              type="button"
             >
+              <input
+                checked={kind === option}
+                className="sr-only"
+                id={`${idPrefix}-kind-${option}`}
+                name={`${idPrefix}-kind`}
+                onChange={() => pickKind(option)}
+                type="radio"
+                value={option}
+              />
               <IntegrationIcon className="size-5" integration={option} />
               {CHANNEL_LABEL[option]}
-            </button>
+            </label>
           ))}
         </div>
       </fieldset>
 
       <div className="space-y-1.5">
         <Label htmlFor="failure-alert-connection">Connection</Label>
-        {ofKind.length > 0 ? (
+        {ofKind.length > 0 || unsharedOfKind.length > 0 ? (
           <Select
             onValueChange={setIntegrationId}
             value={integrationId || undefined}
@@ -490,9 +534,15 @@ function AddChannelForm({
                   {c.name}
                 </SelectItem>
               ))}
+              {unsharedOfKind.map((c) => (
+                <SelectItem disabled key={c.id} value={c.id}>
+                  {c.name} (not shared with the organization)
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
-        ) : (
+        ) : null}
+        {ofKind.length === 0 && (
           <p className="text-muted-foreground text-xs">
             No {CHANNEL_LABEL[kind]} connection shared with the organization
             yet.
@@ -507,11 +557,14 @@ function AddChannelForm({
           <Plus className="size-3" />
           New {CHANNEL_LABEL[kind]} connection
         </Button>
+        <p className="text-muted-foreground text-xs">
+          New connections are shared with the whole organization.
+        </p>
       </div>
 
       {kind === "slack" && (
         <div className="space-y-1.5">
-          <Label htmlFor="failure-alert-destination">Channel</Label>
+          <Label htmlFor="failure-alert-destination">Slack channel</Label>
           <Input
             id="failure-alert-destination"
             onChange={(e) => setDestination(e.target.value)}
@@ -531,9 +584,6 @@ function AddChannelForm({
             value={destination}
           />
           <p className="text-muted-foreground text-xs">
-            A numeric ID, or @name for a public channel. Add the bot to the
-            group, send it a message, then open
-            api.telegram.org/bot&lt;token&gt;/getUpdates: the ID is under chat.{" "}
             <a
               className="underline"
               href="https://docs.keeperhub.com/plugins/telegram"
@@ -542,19 +592,26 @@ function AddChannelForm({
             >
               Step by step
             </a>
+            . In short: a numeric ID, or @name for a public channel. Add the bot
+            to the group, send it a message, then open
+            api.telegram.org/bot&lt;token&gt;/getUpdates: the ID is under chat.
           </p>
         </div>
       )}
       {kind === "pagerduty" && (
         <div className="space-y-3">
-          <div className="space-y-1.5">
-            <Label>Service to page</Label>
+          {/* The service picker's trigger takes no id, so the fieldset's legend
+              is what names it. */}
+          <fieldset className="space-y-1.5">
+            <legend className="font-medium text-sm leading-none">
+              Service to page
+            </legend>
             <PagerDutyServiceField
               integrationId={integrationId || undefined}
               onChange={setDestination}
               value={destination}
             />
-          </div>
+          </fieldset>
           <PagerDutyModeChoice
             idPrefix="pd-new"
             onChange={setPdMode}
@@ -604,6 +661,7 @@ export function ChannelListEditor({
   organizationId,
   channels,
   connections,
+  unsharedConnections = [],
   canManage,
   onChange,
   onConnectionsChanged,
@@ -611,11 +669,47 @@ export function ChannelListEditor({
   organizationId: string;
   channels: DraftChannel[];
   connections: ConnectionView[];
+  /** The viewer's own connections that the org cannot use, shown disabled. */
+  unsharedConnections?: ConnectionView[];
   canManage: boolean;
   onChange: (channels: DraftChannel[]) => void;
   onConnectionsChanged: () => Promise<void> | void;
 }): React.ReactElement {
   const [adding, setAdding] = useState(false);
+  // An Undo can come long after the removal, so it works on the list as it
+  // is by then rather than the one it was removed from.
+  const latest = useRef({ channels, onChange });
+  latest.current = { channels, onChange };
+
+  const remove = (channel: DraftChannel, label: string): void => {
+    const index = channels.findIndex((c) => c.key === channel.key);
+    onChange(channels.filter((c) => c.key !== channel.key));
+    toast(`${label} removed`, {
+      action: {
+        label: "Undo",
+        onClick: () => {
+          const current = latest.current.channels;
+          const back = current.some(
+            (c) =>
+              c.kind === channel.kind &&
+              c.integrationId === channel.integrationId &&
+              c.destination === channel.destination
+          );
+          if (back) {
+            return;
+          }
+          const next = [...current];
+          // The saved row is gone, so it comes back as a new one.
+          next.splice(Math.min(index, next.length), 0, {
+            ...channel,
+            id: undefined,
+            key: nextKey(),
+          });
+          latest.current.onChange(next);
+        },
+      },
+    });
+  };
 
   return (
     <div className="space-y-2">
@@ -630,9 +724,7 @@ export function ChannelListEditor({
               onChange={(next) =>
                 onChange(channels.map((c) => (c.key === next.key ? next : c)))
               }
-              onRemove={() =>
-                onChange(channels.filter((c) => c.key !== channel.key))
-              }
+              onRemove={(label) => remove(channel, label)}
               organizationId={organizationId}
             />
           ))}
@@ -649,6 +741,7 @@ export function ChannelListEditor({
             onCancel={() => setAdding(false)}
             onConnectionsChanged={onConnectionsChanged}
             organizationId={organizationId}
+            unsharedConnections={unsharedConnections}
           />
         ) : (
           <Button

@@ -11,7 +11,7 @@ import {
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
-import { integrations, organization, workflows } from "@/lib/db/schema";
+import { organization, workflows } from "@/lib/db/schema";
 import { generateId } from "@/lib/utils/id";
 
 /**
@@ -75,6 +75,10 @@ export const orgFailureAlertSettings = pgTable(
  *
  * Health lives on the row so settings can show it and the evaluator can skip a
  * paused channel without reading the delivery log.
+ *
+ * `integrationId` deliberately has no foreign key: deleting a connection must
+ * not delete the channel silently. The next send finds the connection gone,
+ * pauses the channel and tells the org, which a cascade would skip.
  */
 export const failureAlertChannels = pgTable(
   "failure_alert_channels",
@@ -116,11 +120,12 @@ export const failureAlertChannels = pgTable(
       foreignColumns: [workflows.id],
       name: "failure_alert_channels_workflow_fk",
     }).onDelete("cascade"),
-    foreignKey({
-      columns: [table.integrationId],
-      foreignColumns: [integrations.id],
-      name: "failure_alert_channels_integration_fk",
-    }).onDelete("cascade"),
+    uniqueIndex("uq_failure_alert_channels_destination").on(
+      table.organizationId,
+      sql`coalesce(${table.workflowId}, '')`,
+      table.integrationId,
+      table.destination
+    ),
     index("idx_failure_alert_channels_org").on(table.organizationId),
     index("idx_failure_alert_channels_workflow").on(table.workflowId),
   ]
@@ -207,6 +212,9 @@ export const workflowFailureIncidents = pgTable(
     lastError: text("last_error"),
     reminderCount: integer("reminder_count").notNull().default(0),
     lastNotifiedAt: timestamp("last_notified_at").notNull().defaultNow(),
+    // Set in the same transaction that queues the alert. An open incident
+    // without it lost its alert (a crash between the two) and is re-queued.
+    alertQueuedAt: timestamp("alert_queued_at"),
     resolvedAt: timestamp("resolved_at"),
     resolvedReason: text("resolved_reason").$type<FailureIncidentResolution>(),
     resolvingExecutionId: text("resolving_execution_id"),
@@ -249,8 +257,12 @@ export type FailureAlertDeliveryState =
 
 /**
  * The outbox: one row per message, channel and recipient. The evaluator only
- * inserts; the drain step sends, retries and records the outcome. The unique
- * key makes a message impossible to queue twice.
+ * inserts; the drain step sends, retries and records the outcome.
+ *
+ * `dedupKey` names the message (incident or group, kind, sequence, channel,
+ * recipient, backup or not) and is unique, so a message can never be queued
+ * twice. A unique index over the nullable incident_id could not do that:
+ * Postgres treats NULLs as distinct, and grouped alerts and notices have none.
  */
 export const failureAlertDeliveries = pgTable(
   "failure_alert_deliveries",
@@ -258,6 +270,7 @@ export const failureAlertDeliveries = pgTable(
     id: text("id")
       .primaryKey()
       .$defaultFn(() => generateId()),
+    dedupKey: text("dedup_key").notNull(),
     organizationId: text("organization_id").notNull(),
     incidentId: text("incident_id"),
     kind: text("kind").notNull().$type<FailureAlertMessageKind>(),
@@ -298,15 +311,11 @@ export const failureAlertDeliveries = pgTable(
       foreignColumns: [organization.id],
       name: "failure_alert_deliveries_org_fk",
     }).onDelete("cascade"),
-    uniqueIndex("uq_failure_alert_deliveries_message").on(
-      table.organizationId,
-      table.incidentId,
-      table.kind,
-      table.sequence,
-      table.channel,
-      table.recipient,
-      table.isBackup
-    ),
+    uniqueIndex("uq_failure_alert_deliveries_dedup").on(table.dedupKey),
+    index("idx_failure_alert_deliveries_incident").on(table.incidentId),
+    index("idx_failure_alert_deliveries_backup_due")
+      .on(table.backupAt)
+      .where(sql`${table.isBackup} = false AND ${table.backupSentAt} IS NULL`),
     index("idx_failure_alert_deliveries_due")
       .on(table.nextAttemptAt)
       .where(sql`${table.state} IN ('pending', 'retrying', 'sending')`),
@@ -334,14 +343,3 @@ export const failureAlertEmailUsage = pgTable(
     }).onDelete("cascade"),
   ]
 );
-
-/**
- * Single-row heartbeat per job, so a stalled evaluator is visible to our own
- * monitoring instead of every alert quietly stopping.
- */
-export const failureAlertHeartbeats = pgTable("failure_alert_heartbeats", {
-  job: text("job").primaryKey(),
-  lastRunAt: timestamp("last_run_at").notNull(),
-  lastDurationMs: integer("last_duration_ms"),
-  lastError: text("last_error"),
-});
