@@ -1,5 +1,7 @@
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
+import type { ConnectionsResponse } from "@/components/settings/hub/hooks/use-mcp-connections";
 import { SETTINGS_NAV } from "@/components/settings/hub/nav";
+import { WALLET_EMAIL_DOMAIN } from "@/lib/auth/wallet-constants";
 import { expect, test } from "./fixtures";
 import {
   type Box,
@@ -48,6 +50,96 @@ const SHARED_HEADER_FROM = 390;
 const ONE_LINE = 24;
 // A section's code is compiled on first visit in development.
 const FIRST_VISIT = { timeout: 20_000 };
+// A wallet member's address and sign-in, the longest name a settings row
+// carries. Accounts made before sign-up gave wallets a generated handle carry
+// the address as their name too.
+const WALLET_ADDRESS = `0x${"0".repeat(32)}deadbeef`;
+const WALLET_EMAIL = `${WALLET_ADDRESS}@${WALLET_EMAIL_DOMAIN}`;
+// How the agents table shows it: the short checksummed address, which keeps
+// the tail that tells wallet members apart.
+const WALLET_SHORT = "0x0000...Beef";
+// An email long enough to be cut short in every layout but the widest.
+const LONG_EMAIL =
+  "a.rather.long.mailbox.name.for.layout@subdomain.example.com";
+const DAY = 86_400_000;
+// Days count up with no cap, so an old session reads "1,234 days ago".
+const OLD = 1234 * DAY;
+const AGENT_CLIENT =
+  "A client name long enough to need the whole row and then some";
+// What the row shows of the client id.
+const AGENT_ID = "a1b2c3d4";
+const OLD_AGENT_ID = "f6e5d4c3";
+// Where the agents table is at nearly its narrowest: a phone on its side,
+// with no rail, and an 11-inch tablet upright beside the rail.
+const NARROW_TABLES = [640, 834];
+// A small laptop beside the rail, where the table once pushed Revoke out.
+const SMALL_LAPTOP = 1024;
+// A long client name gets a line of its own rather than sharing one with its
+// badge, which left it a letter or two in the narrowest columns.
+const MIN_NAME = 100;
+// The agents list, served as is so every width sees the same rows: someone
+// with a session under a long client name and a long-standing one, a wallet
+// member with none, and someone with a long email and none.
+const AGENTS = {
+  canManage: true,
+  maxScope: null,
+  users: [
+    {
+      userId: "agents-owner",
+      userName: "Agents Owner",
+      userEmail: "agents-owner@example.com",
+      role: "owner",
+      maxScope: null,
+      canEdit: true,
+      sessions: [
+        {
+          id: "agents-session",
+          clientId: `${AGENT_ID}e5f6`,
+          clientName: AGENT_CLIENT,
+          userId: "agents-owner",
+          userName: "Agents Owner",
+          userEmail: "agents-owner@example.com",
+          scope: "mcp:read",
+          connectedAt: new Date(Date.now() - DAY).toISOString(),
+          expiresAt: new Date(Date.now() + DAY).toISOString(),
+          lastUsedAt: null,
+          revokedAt: null,
+        },
+        {
+          id: "agents-old-session",
+          clientId: `${OLD_AGENT_ID}b2a1`,
+          clientName: "Old client",
+          userId: "agents-owner",
+          userName: "Agents Owner",
+          userEmail: "agents-owner@example.com",
+          scope: "mcp:read",
+          connectedAt: new Date(Date.now() - OLD).toISOString(),
+          expiresAt: new Date(Date.now() + DAY).toISOString(),
+          lastUsedAt: new Date(Date.now() - OLD).toISOString(),
+          revokedAt: null,
+        },
+      ],
+    },
+    {
+      userId: "agents-wallet",
+      userName: WALLET_ADDRESS,
+      userEmail: WALLET_EMAIL,
+      role: "member",
+      maxScope: null,
+      canEdit: true,
+      sessions: [],
+    },
+    {
+      userId: "agents-long-email",
+      userName: "",
+      userEmail: LONG_EMAIL,
+      role: "member",
+      maxScope: null,
+      canEdit: true,
+      sessions: [],
+    },
+  ],
+} satisfies ConnectionsResponse;
 
 // These tests are about the settings layout, not what sits over it.
 test.beforeEach(async ({ page }) => {
@@ -447,6 +539,140 @@ test.describe("settings on wider screens", () => {
         expect(level).toBeGreaterThanOrEqual(toggle.y);
         expect(level).toBeLessThanOrEqual(toggle.y + toggle.height);
       }
+    }
+  });
+});
+
+test.describe("the connected agents table", () => {
+  test("cuts long names short rather than scrolling", async ({ page }) => {
+    await page.route("**/api/mcp/connections", async (route: Route) => {
+      if (route.request().method() !== "GET") {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({ json: AGENTS });
+    });
+
+    // The table's layout follows its column's width (container queries), so
+    // one visit, resized, covers every width.
+    await page.setViewportSize({
+      width: PHONE_WIDTHS[0],
+      height: TABLET.height,
+    });
+    await openOrgSettings(page, "agents");
+    const card = page.locator("main section").filter({
+      has: page.getByRole("heading", { name: "Connected agents" }),
+    });
+    const table = card.locator("table");
+    const rows = table.locator("tbody tr");
+    const wallet = rows.filter({ hasText: WALLET_SHORT });
+    const longEmail = rows.filter({ hasText: LONG_EMAIL });
+    const session = rows.filter({ hasText: AGENT_ID });
+    const oldSession = rows.filter({ hasText: OLD_AGENT_ID });
+    await expect(wallet).toBeVisible(FIRST_VISIT);
+
+    for (const width of [
+      ...PHONE_WIDTHS,
+      TABLET.width,
+      ...NARROW_TABLES,
+      SMALL_LAPTOP,
+      DESKTOP.width,
+    ]) {
+      await test.step(`${width}px`, async () => {
+        await page.setViewportSize({ width, height: TABLET.height });
+        await expect(session).toBeVisible();
+
+        // The table stays inside its card: nothing to scroll sideways to.
+        expect(
+          await card
+            .locator("[data-slot=table-container]")
+            .evaluate((element) => element.scrollWidth <= element.clientWidth)
+        ).toBe(true);
+
+        // Text ends inside the card, and as a table inside its own column,
+        // short of the cell beside it.
+        const cardBox = await box(card);
+        const asTable = await table.locator("thead tr").isVisible();
+        const endsBy = async (row: Locator, column: number): Promise<number> =>
+          asTable
+            ? (await box(row.locator("td").nth(column))).x
+            : cardBox.x + cardBox.width;
+        const endsInside = async (
+          text: Locator,
+          row: Locator,
+          column = 1
+        ): Promise<void> => {
+          const shown = await box(text);
+          expect(shown.x + shown.width).toBeLessThanOrEqual(
+            await endsBy(row, column)
+          );
+        };
+        const fitsOrEllipsis = async (text: Locator): Promise<void> => {
+          if (!(await textFits(text))) {
+            expect(
+              await text.evaluate(
+                (element) => getComputedStyle(element).textOverflow
+              )
+            ).toBe("ellipsis");
+          }
+        };
+        if (asTable) {
+          expect(await textFits(table.locator("th").first())).toBe(true);
+        }
+
+        // A wallet member named by their address reads as the short address
+        // on both lines, whole, with the full sign-in in its title.
+        await expect(
+          wallet.getByText(WALLET_SHORT, { exact: true })
+        ).toHaveCount(2);
+        const short = wallet.getByText(WALLET_SHORT, { exact: true }).last();
+        expect(await textFits(short)).toBe(true);
+        await endsInside(short, wallet);
+        expect(await short.getAttribute("title")).toBe(WALLET_EMAIL);
+
+        // A long email is what gives way, ending in an ellipsis, while what
+        // is connected stays readable, under the address if need be.
+        for (const address of await longEmail
+          .getByText(LONG_EMAIL, { exact: true })
+          .all()) {
+          await endsInside(address, longEmail);
+          await fitsOrEllipsis(address);
+        }
+        for (const person of [wallet, longEmail]) {
+          const summary = person.getByText("· No agents connected");
+          expect(await textFits(summary)).toBe(true);
+          await endsInside(summary, person);
+        }
+
+        // A long client name keeps a readable width, and when it was
+        // connected and the id that tells same-named sessions apart stay
+        // whole, however long ago that was.
+        const name = await box(session.getByText(AGENT_CLIENT));
+        expect(name.width).toBeGreaterThan(MIN_NAME);
+        for (const [row, id] of [
+          [session, AGENT_ID],
+          [oldSession, OLD_AGENT_ID],
+        ] as const) {
+          const connected = row.getByText(/^Connected /);
+          expect(await textFits(connected)).toBe(true);
+          await endsInside(connected, row);
+          const shownId = row.getByText(id, { exact: true });
+          expect(await textFits(shownId)).toBe(true);
+          await endsInside(shownId, row);
+
+          // When it was last used ends short of Revoke, cut short if it must
+          // be with the whole of it in the title.
+          const lastUsed = row.locator("td").nth(2).locator("[title]");
+          await endsInside(lastUsed, row, 3);
+          await fitsOrEllipsis(lastUsed);
+
+          // Revoke stays in reach.
+          const revoke = await box(row.getByRole("button", { name: "Revoke" }));
+          expect(revoke.x + revoke.width).toBeLessThanOrEqual(
+            cardBox.x + cardBox.width
+          );
+        }
+      });
     }
   });
 });
