@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loginIdentifier } from "@/components/settings/hub/members/login-identifier";
+import { loginIdentifier } from "@/lib/auth/login-identifier";
 import { WALLET_EMAIL_DOMAIN } from "@/lib/auth/wallet-constants";
 
 // A synthetic fixture (mostly zeros), not a deployed address.

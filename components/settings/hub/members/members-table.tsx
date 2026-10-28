@@ -20,6 +20,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import type { loginIdentifier } from "@/lib/auth/login-identifier";
 import { roleLabel } from "@/lib/organization/role-label";
 import { cn } from "@/lib/utils";
 import { ConfirmDeleteDialog } from "../confirm-delete-dialog";
@@ -31,7 +32,6 @@ import {
   SETTINGS_HEAD_ROW,
   SETTINGS_ROW,
 } from "../section";
-import { loginIdentifier } from "./login-identifier";
 
 const SKELETON_ROWS = ["a", "b"] as const;
 
@@ -47,6 +47,7 @@ export function MembersTable({
   members,
   loading,
   currentMemberId,
+  identifiers,
   canManage,
   updatingId,
   onRoleChange,
@@ -56,6 +57,8 @@ export function MembersTable({
   /** Draws the same rows blanked, so the card keeps its height. */
   loading: boolean;
   currentMemberId: string | null;
+  /** Each member's login identifier, by member id. */
+  identifiers: Map<string, ReturnType<typeof loginIdentifier>>;
   canManage: boolean;
   updatingId: string | null;
   onRoleChange: (member: OrgMember, role: string) => Promise<void>;
@@ -76,31 +79,56 @@ export function MembersTable({
         </TableHeader>
         <TableBody>
           {loading &&
-            SKELETON_ROWS.map((key) => (
-              <TableRow className={SETTINGS_ROW} key={key} role="row">
-                <TableCell className={MEMBER_CELL} role="cell">
-                  <div className="flex items-center gap-3">
-                    <Skeleton className="size-8 shrink-0 rounded-full" />
-                    <div className="flex flex-col gap-1.5">
-                      <Skeleton className="h-5 w-36" />
-                      <Skeleton className="h-4 w-52" />
+            SKELETON_ROWS.map((key, index) => {
+              // Rows load most privileged first, so the first is the owner,
+              // whose role nobody can change. Without the rights to change
+              // roles every role is fixed. A fixed role in a narrow column
+              // sits on the identifier's line, so the blank row draws it there
+              // too and the row keeps its height once loaded.
+              const roleFixed = index === 0 || !canManage;
+              return (
+                <TableRow className={SETTINGS_ROW} key={key} role="row">
+                  <TableCell className={MEMBER_CELL} role="cell">
+                    <div className="flex items-center gap-3">
+                      <Skeleton className="size-8 shrink-0 rounded-full" />
+                      <div className="flex min-w-0 flex-col">
+                        {/* Each bar sits inside the line box of the text it
+                            stands for, so loading rows are as tall as loaded
+                            ones. */}
+                        <Skeleton className="my-0.5 h-4 w-36 max-w-full" />
+                        <div className="flex min-w-0 items-center gap-2">
+                          <Skeleton className="my-0.5 h-3 w-52 min-w-0" />
+                          {roleFixed && (
+                            <Skeleton
+                              className={cn(
+                                BADGE,
+                                "shrink-0 border-transparent text-transparent",
+                                NARROW_ONLY
+                              )}
+                            >
+                              Member
+                            </Skeleton>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </TableCell>
-                {/* Without the rights to change roles every role is fixed,
-                    and in a narrow column takes no line of its own. */}
-                <TableCell
-                  className={cn(NARROW_UNDER_NAME, !canManage && NARROW_HIDDEN)}
-                  role="cell"
-                >
-                  <Skeleton className="h-5 w-20" />
-                </TableCell>
-                <TableCell className={NARROW_UNDER_NAME} role="cell">
-                  <Skeleton className="h-5 w-24" />
-                </TableCell>
-                <TableCell role="cell" />
-              </TableRow>
-            ))}
+                  </TableCell>
+                  <TableCell
+                    className={cn(
+                      NARROW_UNDER_NAME,
+                      roleFixed && NARROW_HIDDEN
+                    )}
+                    role="cell"
+                  >
+                    <Skeleton className="h-9 w-[120px]" />
+                  </TableCell>
+                  <TableCell className={NARROW_UNDER_NAME} role="cell">
+                    <Skeleton className="my-0.5 h-3 w-24 @xl/settings:h-4" />
+                  </TableCell>
+                  <TableCell role="cell" />
+                </TableRow>
+              );
+            })}
           {!loading &&
             members.map((member) => {
               const isSelf = member.id === currentMemberId;
@@ -108,7 +136,10 @@ export function MembersTable({
               // the leave flow, so the picker only offers the two editable roles.
               const roleEditable =
                 canManage && !isSelf && member.role !== "owner";
-              const identifier = loginIdentifier(member.user.email);
+              const identifier = identifiers.get(member.id) ?? {
+                shown: member.user.email,
+                full: member.user.email,
+              };
               return (
                 <TableRow className={SETTINGS_ROW} key={member.id} role="row">
                   <TableCell className={MEMBER_CELL} role="cell">
@@ -123,9 +154,13 @@ export function MembersTable({
                         </AvatarFallback>
                       </Avatar>
                       <div className="flex min-w-0 flex-col">
-                        <span className="flex items-center gap-2 truncate font-medium">
-                          {member.user.name}
-                          {isSelf && <span className={BADGE}>You</span>}
+                        <span className="flex min-w-0 items-center gap-2 font-medium">
+                          <span className="min-w-0 truncate">
+                            {member.user.name}
+                          </span>
+                          {isSelf && (
+                            <span className={cn(BADGE, "shrink-0")}>You</span>
+                          )}
                         </span>
                         <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
                           <span

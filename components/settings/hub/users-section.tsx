@@ -1,15 +1,15 @@
 "use client";
 
 import { UserPlus } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { InviteMemberForm } from "@/components/organization/invite-modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { loginIdentifier } from "@/lib/auth/login-identifier";
 import { useSession } from "@/lib/auth-client";
 import { useOrgMembers } from "./hooks/use-org-members";
 import { InvitationsCard } from "./invitations-card";
 import { MemberStats } from "./member-stats";
-import { loginIdentifier } from "./members/login-identifier";
 import { MembersTable } from "./members/members-table";
 import { invitationTiming } from "./relative-time";
 import { EmptyState, SectionHeader, SettingsCard } from "./section";
@@ -26,14 +26,6 @@ function roleRank(role: string): number {
   return role === "member" ? 2 : 3;
 }
 
-/** Search finds a member by the identifier the list shows, short or full. */
-function matchesIdentifier(email: string, needle: string): boolean {
-  const { shown, full } = loginIdentifier(email);
-  return (
-    shown.toLowerCase().includes(needle) || full.toLowerCase().includes(needle)
-  );
-}
-
 export function UsersSection(): React.ReactElement {
   const { isAdmin } = useSettingsContext();
   const { data: session } = useSession();
@@ -44,13 +36,22 @@ export function UsersSection(): React.ReactElement {
   const currentMemberId =
     members.members.find((m) => m.userId === session?.user?.id)?.id ?? null;
 
+  // Worked out once per member list, not on every keystroke in the search.
+  const identifiers = useMemo(
+    () =>
+      new Map(
+        members.members.map((m) => [m.id, loginIdentifier(m.user.email)])
+      ),
+    [members.members]
+  );
+
   const needle = query.trim().toLowerCase();
   const filtered = members.members
     .filter(
       (m) =>
         !needle ||
         (m.user.name ?? "").toLowerCase().includes(needle) ||
-        matchesIdentifier(m.user.email ?? "", needle)
+        (m.user.email ?? "").toLowerCase().includes(needle)
     )
     .slice()
     .sort(
@@ -91,6 +92,7 @@ export function UsersSection(): React.ReactElement {
           <MembersTable
             canManage={isAdmin}
             currentMemberId={currentMemberId}
+            identifiers={identifiers}
             loading={members.loading}
             members={filtered}
             onRemove={members.removeMember}
