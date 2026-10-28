@@ -15,6 +15,14 @@ export const WELCOME_STEPS = [
 
 export const WELCOME_STEP_COUNT = WELCOME_STEPS.length;
 
+// Keeps the form clear of the fixed app banner, the notch and the home indicator.
+const FORM_PADDING =
+  "pt-[calc(2rem+var(--app-banner-height,0px))] pr-[max(2rem,env(safe-area-inset-right))] pb-[calc(2rem+env(safe-area-inset-bottom))] pl-[max(2rem,env(safe-area-inset-left))] lg:px-12 lg:pt-[calc(3rem+var(--app-banner-height,0px))] lg:pb-[calc(3rem+env(safe-area-inset-bottom))]";
+
+// Keeps focused controls clear of the banner and Finish's focus ring in view.
+const SCROLL_PADDING =
+  "scroll-pt-[calc(var(--app-banner-height,0px)+1rem)] scroll-pb-12";
+
 type WelcomeShellProps = {
   stepIndex: number;
   title: string;
@@ -53,9 +61,21 @@ export function WelcomeShell({
   contentClassName,
   preview,
 }: WelcomeShellProps): React.ReactElement {
+  // The page never scrolls (globals.css): below lg the step does, from lg the form column.
   return (
-    <div className="grid min-h-screen grid-cols-1 lg:h-screen lg:grid-cols-5">
-      <div className="flex flex-col justify-between p-8 lg:col-span-2 lg:overflow-y-auto lg:p-12">
+    <div
+      className={cn(
+        "grid h-dvh grid-cols-1 max-lg:overflow-y-auto lg:grid-cols-5",
+        SCROLL_PADDING
+      )}
+    >
+      <div
+        className={cn(
+          "flex flex-col justify-between lg:col-span-2 lg:overflow-y-auto",
+          FORM_PADDING,
+          SCROLL_PADDING
+        )}
+      >
         <div className="flex flex-col gap-6">
           <p className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
             Step {stepIndex + 1} / {WELCOME_STEP_COUNT}
