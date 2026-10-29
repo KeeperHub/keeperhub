@@ -49,10 +49,10 @@ export const DELIVERY_BATCH = 25;
 export const DELIVERY_BUDGET_MS = 40 * 1000;
 export const MAX_WORKFLOWS_PER_RUN = 500;
 
-/** Longest org-wide pause, so a forgotten one cannot silence alerts for long. */
 /** "Or when it has been failing for 6 hours", on by default. */
 export const DEFAULT_TIME_LIMIT_MINUTES = 360;
 
+/** Longest org-wide pause, extensions included, so a forgotten one cannot silence alerts for long. */
 export const MAX_ORG_PAUSE_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_PAUSE_REASON = 200;
 
@@ -81,5 +81,5 @@ export const TESTS_PER_DAY_PER_ORG = 30;
 /** Silent channel checks. */
 export const HEALTH_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-/** History shown on the Notifications page. */
+/** History rows per page, on the Alerts page and the workflow panel. */
 export const HISTORY_PAGE_SIZE = 50;

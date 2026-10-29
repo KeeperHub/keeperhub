@@ -3,6 +3,7 @@ import "server-only";
 import {
   and,
   eq,
+  gt,
   gte,
   inArray,
   isNotNull,
@@ -28,6 +29,7 @@ import type { FailureAlertDeliveryState } from "@/lib/db/schema-failure-alerts";
 import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import {
+  BACKUP_AFTER_MS,
   DELIVERY_BATCH,
   FREE_PLAN_MONTHLY_EMAILS,
   GIVE_UP_AFTER_MS,
@@ -65,7 +67,12 @@ import {
   sendChannelMessage,
   sendEmailMessage,
 } from "./senders";
-import { CHANNEL_LABEL, channelLabel } from "./view-types";
+import { isReachable, loadChannelViews } from "./settings";
+import {
+  CHANNEL_LABEL,
+  channelLabel,
+  EMAILS_KEPT_FOR_NEW_FAILURES,
+} from "./view-types";
 import { workflowTriggerType } from "./workflow-trigger";
 
 type DeliveryRow = typeof failureAlertDeliveries.$inferSelect;
@@ -306,6 +313,10 @@ async function renderRow(
       kind: "cap_warning",
       used: Number(context.used ?? 0),
       limit: Number(context.limit ?? FREE_PLAN_MONTHLY_EMAILS),
+      chatWorks: isReachable(
+        [],
+        await loadChannelViews(row.organizationId, null)
+      ),
     };
   } else if (row.kind === "alerts_paused") {
     input = {
@@ -314,6 +325,10 @@ async function renderRow(
       until: new Date(String(context.until)),
       reason: typeof context.reason === "string" ? context.reason : null,
       by: typeof context.by === "string" ? context.by : null,
+      pausingWorkflows:
+        typeof context.pausingWorkflows === "number"
+          ? context.pausingWorkflows
+          : undefined,
     };
   } else if (row.kind === "alerts_resumed") {
     input = {
@@ -343,6 +358,7 @@ async function renderRow(
           failureCount: incident.failureCount,
           workflowPaused: incident.workflowPausedAt !== null,
           lastError: incident.lastError,
+          openedBy: incident.openedBy,
         });
       }
     }
@@ -423,7 +439,7 @@ async function reserveEmail(
   const limit =
     kind === "alert"
       ? FREE_PLAN_MONTHLY_EMAILS
-      : FREE_PLAN_MONTHLY_EMAILS - EMAILS_KEPT_FOR_NEW_ALERTS;
+      : FREE_PLAN_MONTHLY_EMAILS - EMAILS_KEPT_FOR_NEW_FAILURES;
   const rows = await db.execute<{ sent: number }>(sql`
     INSERT INTO ${failureAlertEmailUsage} (organization_id, period_start, sent)
     VALUES (${organizationId}, date_trunc('month', now() AT TIME ZONE 'UTC'), 1)
@@ -443,7 +459,6 @@ async function reserveEmail(
   return true;
 }
 
-const EMAILS_KEPT_FOR_NEW_ALERTS = 10;
 const CAP_WARNINGS = [80, FREE_PLAN_MONTHLY_EMAILS];
 
 /** Tell the email recipients once when the Free plan's alert emails run low or out. */
@@ -688,6 +703,16 @@ async function releaseRows(rows: DeliveryRow[]): Promise<void> {
   }
 }
 
+/** When a row first became due: an org pause holds rows, and backupAt keeps its wait after the hold. */
+function dueSince(row: DeliveryRow): Date {
+  const wait = BACKUP_AFTER_MS[row.channel];
+  if (row.isBackup || !row.backupAt || wait === undefined) {
+    return row.createdAt;
+  }
+  const due = row.backupAt.getTime() - wait;
+  return due > row.createdAt.getTime() ? new Date(due) : row.createdAt;
+}
+
 async function processRow(
   row: DeliveryRow,
   ctx: Context,
@@ -736,7 +761,7 @@ async function processRow(
     );
   }
 
-  const expired = now.getTime() - row.createdAt.getTime() >= GIVE_UP_AFTER_MS;
+  const expired = now.getTime() - dueSince(row).getTime() >= GIVE_UP_AFTER_MS;
   if ((outcome.retryable || outcome.platformFault) && !expired) {
     stats.retrying += 1;
     await finishRow(row, "retrying", {
@@ -789,7 +814,14 @@ export async function fireBackups(now: Date, stats: DrainStats): Promise<void> {
         isNotNull(failureAlertDeliveries.backupAt),
         inArray(failureAlertDeliveries.kind, ["alert", "reminder"]),
         or(
-          inArray(failureAlertDeliveries.state, ["failed", "capped"]),
+          // A never-sent failed row ("nobody reachable") held by an org pause waits for its end.
+          and(
+            inArray(failureAlertDeliveries.state, ["failed", "capped"]),
+            or(
+              gt(failureAlertDeliveries.attempts, 0),
+              lte(failureAlertDeliveries.nextAttemptAt, now)
+            )
+          ),
           and(
             inArray(failureAlertDeliveries.state, [
               "pending",

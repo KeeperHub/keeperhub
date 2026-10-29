@@ -3,14 +3,7 @@
 import { AlertTriangle } from "lucide-react";
 import Link from "next/link";
 
-/**
- * Top-of-app warning that nobody in the organization would hear about a
- * failing workflow: no member has an email KeeperHub can reach (wallet-only
- * accounts without a verified email) and no chat or PagerDuty channel works.
- *
- * Not dismissible. It goes away the moment someone adds an email or a
- * channel, which is the only way to fix what it describes.
- */
+/** Top-of-app warning that nobody can be told of a failure; not dismissible, as fixing it is the only way out. */
 export function FailureAlertsUnreachableBanner({
   organizationId,
 }: {

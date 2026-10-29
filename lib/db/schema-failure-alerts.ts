@@ -42,6 +42,8 @@ export const orgFailureAlertSettings = pgTable(
     launchNoticeSentAt: timestamp("launch_notice_sent_at"),
     // Org-wide pause (maintenance): no alerts until then.
     pausedUntil: timestamp("paused_until"),
+    // When the current pause began; extending it never reaches past 7 days from here.
+    pausedAt: timestamp("paused_at"),
     pauseReason: text("pause_reason"),
     pausedBy: text("paused_by"),
     // Bumped on every save; a save sent with an older one is refused.

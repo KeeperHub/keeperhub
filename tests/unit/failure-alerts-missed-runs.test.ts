@@ -3,6 +3,7 @@ import {
   graceFor,
   lastDueAt,
   missedDueAt,
+  nextDueAfter,
 } from "@/lib/notifications/failure-alerts/missed-runs";
 
 const every5 = {
@@ -38,14 +39,48 @@ describe("lastDueAt", () => {
 });
 
 describe("missedDueAt", () => {
-  it("flags a schedule with no run since it was due past the grace", () => {
+  it("names the first run it missed, not the latest", () => {
     const due = missedDueAt({
       schedule: every5,
       lastStartedAt: longAgo,
       notBefore: longAgo,
       now,
     });
-    expect(due?.toISOString()).toBe("2026-10-28T12:20:00.000Z");
+    expect(due?.toISOString()).toBe("2026-10-28T10:05:00.000Z");
+  });
+
+  it("starts after the last run, counting a slightly early run as on time", () => {
+    expect(
+      missedDueAt({
+        schedule: every5,
+        lastStartedAt: new Date("2026-10-28T12:04:30Z"),
+        notBefore: longAgo,
+        now,
+      })?.toISOString()
+    ).toBe("2026-10-28T12:10:00.000Z");
+  });
+
+  it("starts after notBefore when it never ran", () => {
+    expect(
+      missedDueAt({
+        schedule: every5,
+        lastStartedAt: null,
+        notBefore: new Date("2026-10-28T12:12:00Z"),
+        now,
+      })?.toISOString()
+    ).toBe("2026-10-28T12:15:00.000Z");
+  });
+
+  it("keeps the first missed time as an outage goes on, so a hold on it can end", () => {
+    const later = new Date("2026-10-28T13:30:00Z");
+    expect(
+      missedDueAt({
+        schedule: every5,
+        lastStartedAt: new Date("2026-10-28T12:00:10Z"),
+        notBefore: longAgo,
+        now: later,
+      })?.toISOString()
+    ).toBe("2026-10-28T12:05:00.000Z");
   });
 
   it("is fine when a run started at the due time", () => {
@@ -79,6 +114,28 @@ describe("missedDueAt", () => {
         now,
       })
     ).toBeNull();
+  });
+});
+
+describe("nextDueAfter", () => {
+  it("is strictly after the given time", () => {
+    expect(
+      nextDueAfter(every5, new Date("2026-10-28T12:05:00Z"))?.toISOString()
+    ).toBe("2026-10-28T12:10:00.000Z");
+  });
+
+  it("counts interval schedules from their anchor", () => {
+    const interval = {
+      ...every5,
+      intervalSeconds: 55 * 60,
+      anchorAt: new Date("2026-10-28T10:00:00Z"),
+    };
+    expect(
+      nextDueAfter(interval, new Date("2026-10-28T10:56:00Z"))?.toISOString()
+    ).toBe("2026-10-28T11:50:00.000Z");
+    expect(
+      nextDueAfter(interval, new Date("2026-10-28T09:00:00Z"))?.toISOString()
+    ).toBe("2026-10-28T10:55:00.000Z");
   });
 });
 

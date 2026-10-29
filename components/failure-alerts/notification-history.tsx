@@ -21,6 +21,7 @@ import {
   DELIVERY_STATE_LABEL,
   FAILURE_ALERT_KIND_LABEL,
   type HistoryEntry,
+  methodText,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import { formatWhen } from "./format";
@@ -39,20 +40,12 @@ function stateTone(state: string): string {
 }
 
 function channelLine(entry: HistoryEntry): string {
-  const name =
-    CHANNEL_LABEL[entry.channel as keyof typeof CHANNEL_LABEL] ?? entry.channel;
-  const where =
-    entry.channel === "discord"
-      ? (entry.connectionName ?? "")
-      : entry.recipient;
-  return `${name} ${where}`;
+  return entry.channel === "email"
+    ? `Email ${entry.recipient}`
+    : methodText(entry.channel, entry.recipient, entry.connectionName);
 }
 
-/**
- * One delivery. In a narrow column (a phone, or the Properties panel) the date
- * sits under the title and the details take the full width; from @xl the date
- * gets a column of its own on the left.
- */
+/** One delivery; the date sits under the title in a narrow column, in its own column from @xl. */
 function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
   const paused = entry.kind === "channel_paused";
   let title =
@@ -119,11 +112,7 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
   );
 }
 
-/**
- * Every alert the organization sent, newest first: alerts,
- * reminders, recoveries, backups and notices, with where each went and what
- * happened. Also scoped to one workflow from its Properties panel.
- */
+/** Everything the org sent, newest first, where it went and what happened; or one workflow's. */
 export function NotificationHistory({
   organizationId,
   workflowId,

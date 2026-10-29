@@ -54,7 +54,7 @@ describe("describeRule", () => {
       ],
     });
     expect(text).toContain(
-      "tells ana@x.io by email and Slack #ops, with PagerDuty PABC123 as a backup."
+      "tells ana@x.io by email and Ops (Slack #ops), with Ops (PagerDuty PABC123) as a backup."
     );
     expect(text).not.toContain("#old");
   });

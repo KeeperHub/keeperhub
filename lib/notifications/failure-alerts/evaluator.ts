@@ -68,7 +68,12 @@ import {
   type Tx,
 } from "./queue-rows";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
-import { decide, type StreakRun, summarizeStreak } from "./streak";
+import {
+  decide,
+  isAutomatedRun,
+  type StreakRun,
+  summarizeStreak,
+} from "./streak";
 import {
   AUTOMATIC_TRIGGERS,
   runsOnItsOwn,
@@ -78,6 +83,9 @@ import {
 const MIN_STREAK_WINDOW = 10;
 const STREAK_WINDOW_MULTIPLIER = 4;
 const LEASE = sql`now() + interval '5 minutes'`;
+/** isAutomatedRun in SQL: a person's run never says a schedule is working. */
+const AUTOMATED_RUN_SQL = sql`(${workflowExecutions.triggerSource} IS DISTINCT FROM 'manual'
+  OR ${workflowExecutions.triggeredByCredentialType} <> 'session')`;
 
 type WorkflowRow = {
   id: string;
@@ -121,10 +129,7 @@ export function emptyStats(): EvaluationStats {
   };
 }
 
-/**
- * Claim due workflows with a five-minute lease. The lease stays Postgres text:
- * a raw-query Date is parsed in local time and would never match outside UTC.
- */
+/** Claim due workflows with a five-minute lease, kept as Postgres text (a raw Date parses as local time). */
 async function claimQueue(): Promise<{ workflowId: string; lease: string }[]> {
   const rows = await db.execute<{ workflow_id: string; lease: string }>(sql`
     UPDATE ${workflowFailureAlertQueue}
@@ -251,10 +256,7 @@ const SKIPPED_BECAUSE: Record<FailureIncidentResolution, string> = {
     "The workflow was switched to a manual trigger before this was delivered.",
 };
 
-/**
- * Close an incident. Any page sent is always resolved, or it keeps paging the
- * on-call; email and chat hear "working again" only on a real, wanted recovery.
- */
+/** Close an incident: a page is always resolved; email and chat hear only a wanted recovery. */
 async function closeIncident(params: {
   incident: IncidentRow;
   reason: FailureIncidentResolution;
@@ -358,7 +360,6 @@ async function closeIncident(params: {
   });
 }
 
-/** Evaluate one workflow; returns when to recheck without a new run, or null. */
 const LAUNCH_SCANS_PER_CYCLE = 20;
 const cycles = new WeakMap<
   EvaluationStats,
@@ -378,6 +379,7 @@ function cycleState(stats: EvaluationStats): {
   return state;
 }
 
+/** Evaluate one workflow; returns when to recheck without a new run, or null. */
 async function evaluateWorkflow(
   workflowId: string,
   now: Date,
@@ -429,7 +431,9 @@ async function evaluateWorkflow(
 
   // A late schedule's incident ends with any run; failures then count as usual.
   if (open?.openedBy === "missed") {
-    const ranAgain = runs.find((run) => run.startedAt > open.firstFailedAt);
+    const ranAgain = runs.find(
+      (run) => isAutomatedRun(run) && run.startedAt > open.firstFailedAt
+    );
     if (ranAgain) {
       await closeIncident({
         incident: open,
@@ -439,7 +443,7 @@ async function evaluateWorkflow(
         now,
         stats,
         recoveryContext:
-          runs[0]?.status === "error" ? { ranButFailed: true } : undefined,
+          ranAgain.status === "error" ? { ranButFailed: true } : undefined,
       });
       // Now closed: the run that ended it may itself start a failing streak.
       return await evaluateWorkflow(workflowId, now, opened, stats);
@@ -450,7 +454,13 @@ async function evaluateWorkflow(
   if (policy.muteUntilSuccess && summary.latestSuccessRunId) {
     await db
       .update(workflowFailureAlertOverrides)
-      .set({ muteUntilSuccess: false, muteReason: null, mutedBy: null })
+      .set({
+        muteUntilSuccess: false,
+        mutedUntil: null,
+        muteReason: null,
+        mutedBy: null,
+        version: sql`${workflowFailureAlertOverrides.version} + 1`,
+      })
       .where(eq(workflowFailureAlertOverrides.workflowId, workflowId));
   }
 
@@ -707,9 +717,22 @@ export async function requeueLostAlerts(
     // Stable order, so overlapping cycles produce the same group dedup key.
     .orderBy(workflowFailureIncidents.id)
     .limit(100);
-  const enabled = lost.filter((incident) =>
-    isFailureAlertsEnabledForOrg(incident.organizationId)
-  );
+  const enabled: OpenedIncident[] = [];
+  const pauses = new Map<string, Date | null>();
+  for (const incident of lost) {
+    if (!isFailureAlertsEnabledForOrg(incident.organizationId)) {
+      continue;
+    }
+    if (!pauses.has(incident.organizationId)) {
+      const org = await loadOrgPolicy(incident.organizationId);
+      pauses.set(incident.organizationId, activePause(org.pausedUntil, now));
+    }
+    // Held like any alert during an org pause.
+    enabled.push({
+      ...incident,
+      holdUntil: pauses.get(incident.organizationId) ?? undefined,
+    });
+  }
   if (enabled.length > 0) {
     await queueAlerts(enabled, now, stats);
   }
@@ -980,7 +1003,6 @@ async function findFailingWorkflows(organizationId: string): Promise<
   return failing;
 }
 
-/** Drain the queue of workflows to evaluate and queue the resulting alerts. */
 /** Where the missed-run scan stopped, so each cycle covers the next slice. */
 let missedScanCursor: string | null = null;
 /** A scheduler outage is ours: customers hear only once it lasts this long. */
@@ -1004,9 +1026,8 @@ export async function checkMissedSchedules(
       scheduleCreatedAt: workflowSchedules.createdAt,
       lastStartedAt: sql`(SELECT max(${workflowExecutions.startedAt})
         FROM ${workflowExecutions}
-        WHERE ${workflowExecutions.workflowId} = ${workflows.id})`.mapWith(
-        workflowExecutions.startedAt
-      ),
+        WHERE ${workflowExecutions.workflowId} = ${workflows.id}
+          AND ${AUTOMATED_RUN_SQL})`.mapWith(workflowExecutions.startedAt),
     })
     .from(workflowSchedules)
     .innerJoin(workflows, eq(workflows.id, workflowSchedules.workflowId))
@@ -1020,7 +1041,8 @@ export async function checkMissedSchedules(
           : undefined,
         sql`NOT EXISTS (SELECT 1 FROM ${workflowExecutions}
           WHERE ${workflowExecutions.workflowId} = ${workflows.id}
-            AND ${workflowExecutions.startedAt} >= ${ranRecentlyCutoff(now).toISOString()})`,
+            AND ${workflowExecutions.startedAt} >= ${ranRecentlyCutoff(now).toISOString()}
+            AND ${AUTOMATED_RUN_SQL})`,
         sql`NOT EXISTS (SELECT 1 FROM ${workflowFailureIncidents}
           WHERE ${workflowFailureIncidents.workflowId} = ${workflows.id}
             AND ${workflowFailureIncidents.resolvedAt} IS NULL)`
@@ -1033,14 +1055,34 @@ export async function checkMissedSchedules(
       ? null
       : (candidates.at(-1)?.scheduleId ?? null);
 
-  // The cheap due check first; settings are read only for late schedules.
+  // Every org counts toward an outage; only rolled-out orgs hear about it.
+  const lateAnywhere = candidates.filter(
+    (row) =>
+      workflowTriggerType(row.nodes) === "Schedule" &&
+      missedDueAt({
+        schedule: row,
+        lastStartedAt: row.lastStartedAt,
+        notBefore: row.scheduleCreatedAt,
+        now,
+      }) !== null
+  );
+  stats.schedulesLate += lateAnywhere.length;
+  const platformWide =
+    lateAnywhere.length >= MISSED_RUNS_PLATFORM_ALERT &&
+    new Set(lateAnywhere.map((row) => row.organizationId)).size >= 3;
+  if (platformWide) {
+    logSystemError(
+      ErrorCategory.WORKFLOW_ENGINE,
+      "[FailureAlerts] Many scheduled workflows have not run; the scheduler may be down",
+      new Error(`${lateAnywhere.length} schedules late`),
+      { late: String(lateAnywhere.length) }
+    );
+  }
+
   const counting = new Map<string, Date | null>();
   const late: ((typeof candidates)[number] & { dueAt: Date })[] = [];
-  for (const row of candidates) {
-    if (
-      !isFailureAlertsEnabledForOrg(row.organizationId) ||
-      workflowTriggerType(row.nodes) !== "Schedule"
-    ) {
+  for (const row of lateAnywhere) {
+    if (!isFailureAlertsEnabledForOrg(row.organizationId)) {
       continue;
     }
     if (!counting.has(row.organizationId)) {
@@ -1062,19 +1104,6 @@ export async function checkMissedSchedules(
     if (dueAt) {
       late.push({ ...row, dueAt });
     }
-  }
-  stats.schedulesLate += late.length;
-
-  const platformWide =
-    late.length >= MISSED_RUNS_PLATFORM_ALERT &&
-    new Set(late.map((row) => row.organizationId)).size >= 3;
-  if (platformWide) {
-    logSystemError(
-      ErrorCategory.WORKFLOW_ENGINE,
-      "[FailureAlerts] Many scheduled workflows have not run; the scheduler may be down",
-      new Error(`${late.length} schedules late`),
-      { late: String(late.length) }
-    );
   }
 
   const opened: OpenedIncident[] = [];
@@ -1135,6 +1164,7 @@ export async function checkMissedSchedules(
   await queueAlerts(opened, now, stats);
 }
 
+/** Drain the queue of workflows to evaluate and queue the resulting alerts. */
 export async function evaluateQueuedWorkflows(
   now: Date,
   stats: EvaluationStats

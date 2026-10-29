@@ -38,13 +38,15 @@ import {
   CHANNEL_LABEL,
   type ChannelView,
   type ConnectionView,
-  channelLabel,
   type MemberView,
+  methodName,
+  methodText,
   type TestResult,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { roleLabel } from "@/lib/organization/role-label";
 import { cn } from "@/lib/utils";
 import { sendFailureAlertTest } from "./api";
+import { type ChoiceChip, ChoiceChips } from "./choice-chips";
 import { memberLabel } from "./member-label";
 import {
   BROKEN_STATUSES,
@@ -141,14 +143,12 @@ function Field({
   );
 }
 
-/**
- * The one layout every method shares: a row with icon, name, when it is used,
- * status and Edit; opened, the fields, then Test, Save and Remove.
- */
+/** Every method's row: icon, name, target, status, Edit; opened, fields then actions. */
 function MethodRow({
   kind,
   icon,
   name,
+  target,
   roleText,
   status,
   lastResort,
@@ -166,6 +166,8 @@ function MethodRow({
   kind: string;
   icon: ReactNode;
   name: string;
+  /** Where it sends, under the name. */
+  target?: string;
   roleText: string;
   status: MethodStatus;
   lastResort: boolean;
@@ -208,7 +210,7 @@ function MethodRow({
             <h4
               className="min-w-0 max-w-full truncate font-medium text-sm"
               id={nameId}
-              title={name}
+              title={target ? `${name} (${target})` : name}
             >
               {name}
             </h4>
@@ -221,14 +223,16 @@ function MethodRow({
             </Badge>
             {feedback}
           </div>
-          <p className="text-muted-foreground text-xs">{roleText}</p>
+          <p className="break-words text-muted-foreground text-xs">
+            {target ? `${target} · ${roleText}` : roleText}
+          </p>
           <p className="mt-0.5 break-words text-xs">{health}</p>
         </div>
         {toggle && (
           <Button
             aria-controls={expanded ? bodyId : undefined}
             aria-expanded={expanded}
-            aria-label={`${toggle.label} ${name}`}
+            aria-label={`${toggle.label} ${target ? `${name} (${target})` : name}`}
             className="w-full @xl/settings:w-auto"
             data-method-toggle=""
             onClick={toggle.onClick}
@@ -339,101 +343,26 @@ function SaveButton({
 
 type PagerDutyMode = "change" | "page";
 
-function PagerDutyModeChoice({
-  value,
-  onChange,
-  idPrefix,
-}: {
-  value: PagerDutyMode;
-  onChange: (mode: PagerDutyMode) => void;
-  idPrefix: string;
-}): React.ReactElement {
-  return (
-    <fieldset className="space-y-2">
-      <legend className="sr-only">How to test PagerDuty</legend>
-      <label
-        className="flex cursor-pointer items-start gap-2 text-sm"
-        htmlFor={`${idPrefix}-change`}
-      >
-        <input
-          checked={value === "change"}
-          className="mt-1 accent-current"
-          id={`${idPrefix}-change`}
-          name={`${idPrefix}-mode`}
-          onChange={() => onChange("change")}
-          type="radio"
-        />
-        <span>
-          Check the connection (recommended)
-          <span className="block text-muted-foreground text-xs">
-            Sends a change event. It never pages anyone.
-          </span>
-        </span>
-      </label>
-      <label
-        className="flex cursor-pointer items-start gap-2 text-sm"
-        htmlFor={`${idPrefix}-page`}
-      >
-        <input
-          checked={value === "page"}
-          className="mt-1 accent-current"
-          id={`${idPrefix}-page`}
-          name={`${idPrefix}-mode`}
-          onChange={() => onChange("page")}
-          type="radio"
-        />
-        <span>
-          Send a real test page
-          <span className="block text-muted-foreground text-xs">
-            Opens a "KeeperHub test" incident and resolves it straight away.
-            Whoever is on call may be paged.
-          </span>
-        </span>
-      </label>
-    </fieldset>
-  );
-}
+const PD_MODES: readonly ChoiceChip<PagerDutyMode>[] = [
+  {
+    value: "change",
+    label: "Check the connection (recommended)",
+    description: "Sends a change event. It never pages anyone.",
+  },
+  {
+    value: "page",
+    label: "Send a real test page",
+    description:
+      'Opens a "KeeperHub test" incident and resolves it straight away. Whoever is on call may be paged.',
+  },
+];
 
-function MethodPicker({
-  value,
-  onPick,
-  idPrefix,
-}: {
-  value: FailureAlertChannelKind;
-  onPick: (kind: FailureAlertChannelKind) => void;
-  idPrefix: string;
-}): React.ReactElement {
-  return (
-    <fieldset data-testid="failure-alert-method-picker">
-      <legend className="mb-1.5 font-medium text-xs">Choose how to send</legend>
-      <div className="grid grid-cols-2 gap-2 @xl/settings:grid-cols-4">
-        {CHANNEL_KINDS.map((option) => (
-          <label
-            className={cn(
-              "flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-md border px-2 py-2 text-xs transition-colors hover:bg-muted/50",
-              "has-[:checked]:border-foreground/60 has-[:checked]:bg-muted",
-              "has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/50"
-            )}
-            htmlFor={`${idPrefix}-kind-${option}`}
-            key={option}
-          >
-            <input
-              checked={value === option}
-              className="sr-only"
-              id={`${idPrefix}-kind-${option}`}
-              name={`${idPrefix}-kind`}
-              onChange={() => onPick(option)}
-              type="radio"
-              value={option}
-            />
-            <IntegrationIcon className="size-4" integration={option} />
-            {CHANNEL_LABEL[option]}
-          </label>
-        ))}
-      </div>
-    </fieldset>
-  );
-}
+const KIND_CHOICES: readonly ChoiceChip<FailureAlertChannelKind>[] =
+  CHANNEL_KINDS.map((kind) => ({
+    value: kind,
+    label: CHANNEL_LABEL[kind],
+    icon: <IntegrationIcon className="size-4" integration={kind} />,
+  }));
 
 function WhenToUse({
   id,
@@ -737,10 +666,7 @@ function DestinationField({
   return null;
 }
 
-/**
- * A Slack, Discord, Telegram or PagerDuty method. With onSave it saves on its
- * own (Settings); without, the list's owner saves it (a workflow's panel).
- */
+/** A chat or PagerDuty method; with onSave it saves itself, else its list's owner does. */
 export function ChannelMethodCard({
   organizationId,
   draft,
@@ -798,10 +724,12 @@ export function ChannelMethodCard({
       bodyRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
     }
   }, [isNew, bodyRef]);
-  const label = channelLabel(
+  const connectionName = connection?.name ?? saved?.connectionName;
+  const label = methodText(draft.kind, draft.destination, connectionName);
+  const { title, target } = methodName(
     draft.kind,
     draft.destination,
-    connection?.name ?? saved?.connectionName
+    connectionName
   );
   const problem = destinationProblem(draft);
   const ready =
@@ -933,9 +861,10 @@ export function ChannelMethodCard({
       body={
         <div className="space-y-4">
           {isNew && (
-            <MethodPicker
-              idPrefix={idPrefix}
-              onPick={(kind) =>
+            <ChoiceChips
+              className="@xl/settings:grid-cols-4"
+              legend="Choose how to send"
+              onChange={(kind) =>
                 edit({
                   kind,
                   integrationId:
@@ -943,6 +872,8 @@ export function ChannelMethodCard({
                   destination: "",
                 })
               }
+              options={KIND_CHOICES}
+              testId="failure-alert-method-picker"
               value={draft.kind}
             />
           )}
@@ -972,9 +903,12 @@ export function ChannelMethodCard({
           />
           {choosingPdMode && (
             <div className="space-y-3 rounded-md border p-3">
-              <PagerDutyModeChoice
-                idPrefix={`${idPrefix}-pd`}
+              <ChoiceChips
+                className="grid-cols-1 @xl/settings:grid-cols-2"
+                hideLegend
+                legend="How to test PagerDuty"
                 onChange={setPdMode}
+                options={PD_MODES}
                 value={pdMode}
               />
               <div className="flex justify-end gap-2">
@@ -1038,9 +972,10 @@ export function ChannelMethodCard({
       icon={<IntegrationIcon className="size-4" integration={draft.kind} />}
       kind={draft.kind}
       lastResort={lastResort}
-      name={label}
+      name={title}
       roleText={ROLE_TEXT[draft.role]}
       status={status}
+      target={target === title ? undefined : target}
       toggle={toggle}
       toggleRef={row.toggleRef}
     />

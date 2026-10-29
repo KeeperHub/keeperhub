@@ -213,7 +213,7 @@ test.describe("Failure alerts", () => {
     );
   });
 
-  test("workflow Properties: mute, unmute, customize with pause, reset", async ({
+  test("workflow Properties: mute, unmute, change for this workflow with pause, reset", async ({
     page,
   }) => {
     const section = await openProperties(page, fixture.failingId);
@@ -243,7 +243,7 @@ test.describe("Failure alerts", () => {
       .toBeNull();
 
     await expect(section).toHaveAttribute("data-muted", "false");
-    await section.getByTestId("failure-alerts-customize-open").click();
+    await section.getByTestId("failure-alerts-change-open").click();
     const custom = section.getByTestId("failure-alerts-custom");
     await expect(custom).toBeVisible();
     const threshold = custom.locator("#wf-failure-threshold");

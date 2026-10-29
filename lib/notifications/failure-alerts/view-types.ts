@@ -215,6 +215,50 @@ export function channelLabel(
   return where ? `${name} ${where}` : name;
 }
 
+/** A method as people name it: the connection as title, where it sends as subline. */
+export function methodName(
+  kind: string,
+  destination: string,
+  connectionName?: string | null
+): { title: string; target: string } {
+  const kindLabel = CHANNEL_LABEL[kind as keyof typeof CHANNEL_LABEL] ?? kind;
+  const target =
+    kind === "discord" ? kindLabel : channelLabel(kind, destination);
+  return { title: connectionName || kindLabel, target };
+}
+
+/** One-line form: "Keeper bot (Telegram -100123)", "Origin alerts (Discord)". */
+export function methodText(
+  kind: string,
+  destination: string,
+  connectionName?: string | null
+): string {
+  if (!connectionName) {
+    return channelLabel(kind, destination, connectionName);
+  }
+  const { title, target } = methodName(kind, destination, connectionName);
+  return `${title} (${target})`;
+}
+
+/** Free plan: the last emails of the month go only to alerts about new failures. */
+export const EMAILS_KEPT_FOR_NEW_FAILURES = 10;
+
+/** What still happens during an org pause, for the pause email and the Alerts page. */
+export function orgPauseEffect(pausingWorkflows: number | undefined): string {
+  if (pausingWorkflows === 0) {
+    return "Workflows keep running; failures are not reported until then.";
+  }
+  let which =
+    "any set to turn off at their limit still turn off; you are told about those";
+  if (pausingWorkflows === 1) {
+    which =
+      "the 1 set to turn off at its limit still turns off; you are told about it";
+  } else if (pausingWorkflows !== undefined) {
+    which = `the ${pausingWorkflows} set to turn off at their limit still turn off; you are told about those`;
+  }
+  return `Failures are not reported until then. Workflows keep running, but ${which} when the pause ends.`;
+}
+
 /** What each kind of message is called in the history and analytics lists. */
 export const FAILURE_ALERT_KIND_LABEL: Record<FailureAlertMessageKind, string> =
   {

@@ -1,21 +1,32 @@
 import "server-only";
 
-import { and, eq, gt, isNotNull, lte } from "drizzle-orm";
+import { and, count, eq, isNull, lte } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   failureAlertDeliveries,
   orgFailureAlertSettings,
+  workflowFailureAlertOverrides,
+  workflows,
 } from "@/lib/db/schema";
+import type { FailureAlertDeliveryChannel as DeliveryChannel } from "@/lib/db/schema-failure-alerts";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
-import { MAX_ORG_PAUSE_MS, MAX_PAUSE_REASON } from "./constants";
+import {
+  BACKUP_AFTER_MS,
+  MAX_ORG_PAUSE_MS,
+  MAX_PAUSE_REASON,
+} from "./constants";
 import {
   ensureOrgSettings,
   loadChannels,
   loadOrgPolicy,
   resolveRecipientEmails,
 } from "./policy";
-import { buildMessageRows, insertDeliveries } from "./queue-rows";
-import { requeueForEvaluation, SettingsError } from "./settings";
+import { buildMessageRows, insertDeliveries, type Tx } from "./queue-rows";
+import {
+  lockOrgSettings,
+  requeueForEvaluation,
+  SettingsError,
+} from "./settings";
 
 /** The org-wide pause is on until this time, or null. */
 export function activePause(pausedUntil: Date | null, now: Date): Date | null {
@@ -50,6 +61,74 @@ async function queuePauseNotice(
   );
 }
 
+/** Held messages (due when the pause ends) move to the new end; backups wait their usual time after it. */
+async function moveHeldRows(
+  tx: Tx,
+  organizationId: string,
+  heldUntil: Date,
+  to: Date
+): Promise<void> {
+  for (const [channel, wait] of Object.entries(BACKUP_AFTER_MS)) {
+    await tx
+      .update(failureAlertDeliveries)
+      .set({ nextAttemptAt: to, backupAt: new Date(to.getTime() + wait) })
+      .where(
+        and(
+          eq(failureAlertDeliveries.organizationId, organizationId),
+          eq(failureAlertDeliveries.state, "pending"),
+          eq(failureAlertDeliveries.channel, channel as DeliveryChannel),
+          eq(failureAlertDeliveries.nextAttemptAt, heldUntil)
+        )
+      );
+  }
+  // "Nobody reachable" rows are failed from the start; their backups go when the hold ends.
+  await tx
+    .update(failureAlertDeliveries)
+    .set({ nextAttemptAt: to, backupAt: to })
+    .where(
+      and(
+        eq(failureAlertDeliveries.organizationId, organizationId),
+        eq(failureAlertDeliveries.state, "failed"),
+        eq(failureAlertDeliveries.nextAttemptAt, heldUntil)
+      )
+    );
+}
+
+async function lockedPause(
+  tx: Tx,
+  organizationId: string
+): Promise<{ pausedUntil: Date | null; pausedAt: Date | null } | undefined> {
+  await lockOrgSettings(tx, organizationId);
+  const [row] = await tx
+    .select({
+      pausedUntil: orgFailureAlertSettings.pausedUntil,
+      pausedAt: orgFailureAlertSettings.pausedAt,
+    })
+    .from(orgFailureAlertSettings)
+    .where(eq(orgFailureAlertSettings.organizationId, organizationId));
+  return row;
+}
+
+/** Live workflows set to turn off at their limit: they still do during a pause. */
+async function countPausingWorkflows(organizationId: string): Promise<number> {
+  const [row] = await db
+    .select({ count: count() })
+    .from(workflowFailureAlertOverrides)
+    .innerJoin(
+      workflows,
+      eq(workflows.id, workflowFailureAlertOverrides.workflowId)
+    )
+    .where(
+      and(
+        eq(workflowFailureAlertOverrides.organizationId, organizationId),
+        eq(workflowFailureAlertOverrides.pauseWorkflow, true),
+        eq(workflows.enabled, true),
+        isNull(workflows.deletedAt)
+      )
+    );
+  return row?.count ?? 0;
+}
+
 export async function pauseOrgAlerts(params: {
   organizationId: string;
   until: unknown;
@@ -63,27 +142,47 @@ export async function pauseOrgAlerts(params: {
   if (!until || Number.isNaN(until.getTime()) || until <= now) {
     throw new SettingsError("Pick when alerts should start again.");
   }
-  if (until.getTime() - now.getTime() > MAX_ORG_PAUSE_MS) {
-    throw new SettingsError("Alerts can be paused for up to 7 days.");
-  }
   const reason =
     typeof params.reason === "string" && params.reason.trim()
       ? params.reason.trim().slice(0, MAX_PAUSE_REASON)
       : null;
   await ensureOrgSettings(organizationId, now);
-  await db
-    .update(orgFailureAlertSettings)
-    .set({
-      pausedUntil: until,
-      pauseReason: reason,
-      pausedBy: params.byEmail,
-      updatedAt: now,
-    })
-    .where(eq(orgFailureAlertSettings.organizationId, organizationId));
+  await db.transaction(async (tx: Tx) => {
+    const current = await lockedPause(tx, organizationId);
+    const ongoing = activePause(current?.pausedUntil ?? null, now);
+    // Changing an ongoing pause keeps its start, so extending cannot pass 7 days in all.
+    const startedAt = (ongoing && current?.pausedAt) || now;
+    const latest = new Date(startedAt.getTime() + MAX_ORG_PAUSE_MS);
+    if (until > latest) {
+      throw new SettingsError(
+        ongoing
+          ? `A pause can last up to 7 days in all, so this one can run until ${latest.toUTCString()} at most.`
+          : "Alerts can be paused for up to 7 days."
+      );
+    }
+    await tx
+      .update(orgFailureAlertSettings)
+      .set({
+        pausedUntil: until,
+        pausedAt: startedAt,
+        pauseReason: reason,
+        pausedBy: params.byEmail,
+        updatedAt: now,
+      })
+      .where(eq(orgFailureAlertSettings.organizationId, organizationId));
+    if (ongoing) {
+      await moveHeldRows(tx, organizationId, ongoing, until);
+    }
+  });
   await queuePauseNotice(
     organizationId,
     "alerts_paused",
-    { until: until.toISOString(), reason, by: params.byEmail },
+    {
+      until: until.toISOString(),
+      reason,
+      by: params.byEmail,
+      pausingWorkflows: await countPausingWorkflows(organizationId),
+    },
     now
   );
 }
@@ -97,19 +196,27 @@ export async function resumeOrgAlerts(params: {
   expiredOnly?: boolean;
 }): Promise<boolean> {
   const { organizationId, now } = params;
-  const cleared = await db
-    .update(orgFailureAlertSettings)
-    .set({ pausedUntil: null, pauseReason: null, pausedBy: null })
-    .where(
-      and(
-        eq(orgFailureAlertSettings.organizationId, organizationId),
-        params.expiredOnly
-          ? lte(orgFailureAlertSettings.pausedUntil, now)
-          : isNotNull(orgFailureAlertSettings.pausedUntil)
-      )
-    )
-    .returning({ organizationId: orgFailureAlertSettings.organizationId });
-  if (cleared.length === 0) {
+  const ended = await db.transaction(async (tx: Tx) => {
+    const pausedUntil = (await lockedPause(tx, organizationId))?.pausedUntil;
+    if (!pausedUntil || (params.expiredOnly && pausedUntil > now)) {
+      return false;
+    }
+    await tx
+      .update(orgFailureAlertSettings)
+      .set({
+        pausedUntil: null,
+        pausedAt: null,
+        pauseReason: null,
+        pausedBy: null,
+      })
+      .where(eq(orgFailureAlertSettings.organizationId, organizationId));
+    // Messages held for an early-ended pause go out now.
+    if (pausedUntil > now) {
+      await moveHeldRows(tx, organizationId, pausedUntil, now);
+    }
+    return true;
+  });
+  if (!ended) {
     return false;
   }
   await queuePauseNotice(
@@ -118,17 +225,7 @@ export async function resumeOrgAlerts(params: {
     { by: params.byEmail },
     now
   );
-  // Messages held for the pause go out now; anything still failing is re-checked.
-  await db
-    .update(failureAlertDeliveries)
-    .set({ nextAttemptAt: now, backupAt: now })
-    .where(
-      and(
-        eq(failureAlertDeliveries.organizationId, organizationId),
-        eq(failureAlertDeliveries.state, "pending"),
-        gt(failureAlertDeliveries.nextAttemptAt, now)
-      )
-    );
+  // Anything still failing is re-checked.
   await requeueForEvaluation(organizationId);
   return true;
 }

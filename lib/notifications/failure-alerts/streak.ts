@@ -1,12 +1,8 @@
+import { INSUFFICIENT_BALANCE_PATTERN } from "@/lib/errors/classify";
 import { isFundingShortfall } from "@/lib/errors/funding-shortfall";
 
-/**
- * Failing-streak rules:
- * - error counts; success ends the streak.
- * - Every other status is stepped over (system_error pages our on-call, not owners).
- * - Unfinished runs are stepped over until the reconciler settles them.
- * - Runs started by hand never count: the person saw the result.
- */
+// Streaks: error counts, success ends it; other statuses, unfinished runs and
+// runs started by a person are stepped over.
 
 export type StreakRun = {
   id: string;
@@ -43,18 +39,17 @@ type StreakSummary = {
   outOfFunds: number;
 };
 
-/** Our pre-send balance check, e.g. "Insufficient ETH balance. Have: 0.0004, Need: 0.0006". */
-const PREFLIGHT_SHORTFALL = /Insufficient \S+ balance\. Have:/;
-
 /** The chain or our pre-send check refused it: the wallet holds less than this run needs. */
 export function isOutOfFunds(error: string | null): boolean {
   return Boolean(
-    error && (isFundingShortfall(error) || PREFLIGHT_SHORTFALL.test(error))
+    error &&
+      (isFundingShortfall(error) ||
+        INSUFFICIENT_BALANCE_PATTERN.test(error.trim()))
   );
 }
 
 /** Two shortfalls in a row alert at once: waiting for more only burns runs. */
-export const OUT_OF_FUNDS_THRESHOLD = 2;
+const OUT_OF_FUNDS_THRESHOLD = 2;
 
 /** Summarise the current streak; `countingSince` keeps old history from alerting. */
 export function summarizeStreak(

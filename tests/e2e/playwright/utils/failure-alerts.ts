@@ -225,14 +225,18 @@ export type OverrideRow = {
   mutedUntil: Date | null;
 };
 
-// The workflow's saved override, or null when it follows the org.
+// The workflow's saved override, or null when it follows the org (a reset keeps an empty row).
 export async function readOverride(
   workflowId: string
 ): Promise<OverrideRow | null> {
   const sql = getDbConnection();
   try {
     const [row] = await sql`
-      SELECT threshold, pause_workflow, muted_until FROM alert_overrides WHERE workflow_id = ${workflowId}
+      SELECT threshold, pause_workflow, muted_until FROM alert_overrides
+      WHERE workflow_id = ${workflowId}
+        AND (threshold IS NOT NULL OR time_limit_minutes IS NOT NULL
+          OR recipient_user_ids IS NOT NULL OR custom_channels
+          OR muted_until IS NOT NULL OR mute_until_success OR pause_workflow)
     `;
     return row
       ? {

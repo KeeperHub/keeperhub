@@ -157,10 +157,7 @@ export function channelWorks(view: ChannelView): boolean {
   return !(view.pausedAt || view.connectionMissing || lastDeliveryFailed(view));
 }
 
-/**
- * Health of the saved target; a new or retargeted one has only this session's
- * test. `connectionKnown` is false when the picked connection is not listed.
- */
+/** Health of the saved target, else this session's test; `connectionKnown` false = connection not listed. */
 export function channelStatus(
   draft: DraftChannel,
   saved: ChannelView | undefined,

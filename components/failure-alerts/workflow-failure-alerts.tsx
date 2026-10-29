@@ -38,6 +38,7 @@ import { fetchView } from "./api";
 import { ChannelListEditor } from "./channel-list-editor";
 import {
   describeRule,
+  FUNDS_RULE,
   failedRuns,
   formatWhen,
   timeLimitLabel,
@@ -51,6 +52,7 @@ import {
   nextKey,
 } from "./method-drafts";
 import { NotificationHistory } from "./notification-history";
+import { SaveError, type SaveRefusal } from "./save-state";
 
 type Loaded = WorkflowAlertView & { canManage: boolean };
 type Panel = null | "mute" | "custom";
@@ -66,8 +68,8 @@ const FOCUSABLE = "button:not([disabled]), input:not([disabled])";
 /** Footer links stay at least 44px tall below sm, for a thumb. */
 const FOOTER_LINK =
   "inline-flex min-h-11 items-center text-foreground underline underline-offset-4 sm:min-h-0";
-const STALE_TOAST =
-  "These settings were changed by someone else. Reload to see the latest, then save again.";
+/** Panel buttons wrap their label instead of overflowing a narrow panel. */
+const WRAP_BUTTON = "h-auto min-h-8 min-w-0 max-w-full whitespace-normal";
 const MUTE_CHOICES: { id: string; label: string; ms: number | "success" }[] = [
   { id: "1h", label: "1 hour", ms: HOUR_MS },
   { id: "24h", label: "24 hours", ms: 24 * HOUR_MS },
@@ -90,6 +92,57 @@ function summary(view: Loaded): string {
   });
 }
 
+/** The rule as the open form would save it, so the summary follows each edit. */
+function draftSummary(
+  view: Loaded,
+  draft: {
+    threshold: string;
+    timeLimit: string;
+    recipients: string[] | null;
+    channels: DraftChannel[] | null;
+    pauseWorkflow: boolean;
+  }
+): string {
+  const threshold = Number(draft.threshold);
+  let timeLimitMinutes = view.org.timeLimitMinutes;
+  if (draft.timeLimit === "off") {
+    timeLimitMinutes = null;
+  } else if (draft.timeLimit !== "org") {
+    timeLimitMinutes = Number(draft.timeLimit);
+  }
+  const emails =
+    draft.recipients === null
+      ? view.effective.emails
+      : view.members
+          .filter((m) => m.reachable && draft.recipients?.includes(m.userId))
+          .map(memberLabel);
+  const channels =
+    draft.channels === null
+      ? view.org.channels
+      : draft.channels
+          .filter((c) => c.integrationId)
+          .map((c) => ({
+            kind: c.kind,
+            destination: c.destination,
+            connectionName:
+              view.connections.find((x) => x.id === c.integrationId)?.name ??
+              null,
+            role: c.role,
+            pausedAt: c.pausedReason ? "paused" : null,
+          }));
+  return describeRule({
+    threshold:
+      Number.isInteger(threshold) && threshold > 0
+        ? threshold
+        : view.org.threshold,
+    timeLimitMinutes,
+    emails,
+    channels,
+    pauseWorkflow: draft.pauseWorkflow,
+    scope: "workflow",
+  });
+}
+
 function incidentTitle(
   incident: NonNullable<Loaded["status"]["incident"]>,
   pausedByAlert: boolean
@@ -98,8 +151,10 @@ function incidentTitle(
     return `Did not run at ${formatWhen(incident.since)}`;
   }
   const runs = `${failedRuns(incident.failureCount)} in a row`;
-  if (incident.openedBy === "funding" && !pausedByAlert) {
-    return `Wallet out of funds: ${runs}`;
+  if (incident.openedBy === "funding") {
+    return pausedByAlert
+      ? `Paused: wallet out of funds, ${runs}`
+      : `Wallet out of funds: ${runs}`;
   }
   return pausedByAlert ? `Paused after ${runs}` : `Failing: ${runs}`;
 }
@@ -114,10 +169,7 @@ function isMutedView(view: Loaded): boolean {
   return Boolean(view.override.mutedUntil || view.override.muteUntilSuccess);
 }
 
-/**
- * "Alerts" in a workflow's Properties: what applies, whether
- * it is failing right now, a one-click mute, and a way to customise it.
- */
+/** "Alerts" in a workflow's Properties: the rule, what is failing, mute and change. */
 export function WorkflowFailureAlerts({
   workflowId,
   triggerType,
@@ -131,7 +183,7 @@ export function WorkflowFailureAlerts({
   const [panel, setPanel] = useState<Panel>(null);
   const [saving, setSaving] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const [staleError, setStaleError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<SaveRefusal | null>(null);
   const { organization } = useOrganization();
   const alertsEnabled = useAlertsEnabled(organization?.id);
   const setActiveTab = useSetAtom(propertiesPanelActiveTabAtom);
@@ -216,9 +268,8 @@ export function WorkflowFailureAlerts({
     }
   }, [panel]);
 
-  // Escape closes a panel like Cancel. A native listener on the panel's own
-  // DOM, so the Escape of a select opened from it (rendered in a portal)
-  // closes only that list.
+  // Escape closes a panel like Cancel; a native listener, so a portalled
+  // select's Escape closes only that list.
   useEffect(() => {
     const element = panelRef.current;
     if (!(panel && element && view)) {
@@ -232,6 +283,7 @@ export function WorkflowFailureAlerts({
       if (panel === "custom") {
         apply(view);
       }
+      setSaveError(null);
       setPanel(null);
     };
     element.addEventListener("keydown", onKeyDown);
@@ -324,7 +376,7 @@ export function WorkflowFailureAlerts({
     done: string
   ): Promise<boolean> => {
     setSaving(true);
-    setStaleError(null);
+    setSaveError(null);
     try {
       const res = await fetch(url, {
         method: "PUT",
@@ -334,13 +386,10 @@ export function WorkflowFailureAlerts({
       const data = (await res.json().catch(() => ({}))) as Loaded & {
         error?: string;
       };
-      if (res.status === 409) {
-        setStaleError(data.error ?? STALE_TOAST);
-        return false;
-      }
       if (!res.ok) {
-        toast.error(data.error ?? "Could not save. Try again.", {
-          id: SAVE_TOAST,
+        setSaveError({
+          message: data.error ?? `Could not save (HTTP ${res.status}).`,
+          stale: res.status === 409,
         });
         return false;
       }
@@ -348,7 +397,10 @@ export function WorkflowFailureAlerts({
       toast.success(done, { id: SAVE_TOAST });
       return true;
     } catch {
-      toast.error("Could not save. Try again.", { id: SAVE_TOAST });
+      setSaveError({
+        message:
+          "Could not reach KeeperHub. Check your connection and try again.",
+      });
       return false;
     } finally {
       setSaving(false);
@@ -426,6 +478,17 @@ export function WorkflowFailureAlerts({
     }
   };
 
+  const saveErrorBox = (
+    <SaveError
+      error={saveError}
+      onReload={() => {
+        setSaveError(null);
+        setPanel(null);
+        load().catch(() => undefined);
+      }}
+    />
+  );
+
   let tag: { label: string; className?: string } = { label: "Org rules" };
   if (!applies) {
     tag = { label: "Not used" };
@@ -484,7 +547,7 @@ export function WorkflowFailureAlerts({
             {pausedByAlert && (
               <p className="text-xs">
                 KeeperHub turned it off, as set for this workflow. Fix the
-                cause, then turn it back on with the Enable switch.
+                cause, then press Turn back on.
               </p>
             )}
             <p className="text-xs">
@@ -498,7 +561,23 @@ export function WorkflowFailureAlerts({
               </p>
             )}
             <div className="flex flex-wrap gap-2">
+              {view.status.incident.openedBy === "funding" && (
+                <Button
+                  asChild
+                  className={WRAP_BUTTON}
+                  size="sm"
+                  variant="outline"
+                >
+                  <Link
+                    data-testid="failure-alerts-add-funds"
+                    href={`/settings/${view.organizationId}/wallets`}
+                  >
+                    Add funds
+                  </Link>
+                </Button>
+              )}
               <Button
+                className={WRAP_BUTTON}
                 onClick={() => setActiveTab("runs")}
                 size="sm"
                 type="button"
@@ -508,6 +587,7 @@ export function WorkflowFailureAlerts({
               </Button>
               {enableToggle && enabled && (
                 <Button
+                  className={WRAP_BUTTON}
                   onClick={() => enableToggle.toggle(false)}
                   size="sm"
                   type="button"
@@ -518,6 +598,7 @@ export function WorkflowFailureAlerts({
               )}
               {enableToggle && pausedByAlert && (
                 <Button
+                  className={WRAP_BUTTON}
                   onClick={() => enableToggle.toggle(true)}
                   size="sm"
                   type="button"
@@ -566,8 +647,19 @@ export function WorkflowFailureAlerts({
               </span>
             </p>
           ) : (
-            <p role="status">{summary(view)}</p>
+            <p role="status">
+              {panel === "custom"
+                ? draftSummary(view, {
+                    threshold,
+                    timeLimit,
+                    recipients: customRecipients,
+                    channels: customChannels,
+                    pauseWorkflow,
+                  })
+                : summary(view)}
+            </p>
           )}
+          <p className="text-muted-foreground text-xs">{FUNDS_RULE}</p>
           {view.org.unreachable && !custom && (
             <Notice tone="danger">
               Nobody can be reached right now. Fix it in{" "}
@@ -586,33 +678,12 @@ export function WorkflowFailureAlerts({
             </p>
           )}
 
-          {staleError && (
-            <div data-stale="true" data-testid="failure-alert-save-error">
-              <Notice role="alert" tone="danger">
-                <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <span>
-                    <span className="font-medium">Not saved.</span> {staleError}
-                  </span>
-                  <Button
-                    className="h-auto px-0 text-xs"
-                    onClick={() => {
-                      setStaleError(null);
-                      setPanel(null);
-                      load().catch(() => undefined);
-                    }}
-                    type="button"
-                    variant="link"
-                  >
-                    Reload
-                  </Button>
-                </span>
-              </Notice>
-            </div>
-          )}
+          {panel !== "custom" && saveErrorBox}
           {canManage && panel === null && (
             <div className="flex flex-wrap gap-2">
               {muted ? (
                 <Button
+                  className={WRAP_BUTTON}
                   data-testid="failure-alerts-unmute"
                   disabled={saving}
                   onClick={unmute}
@@ -625,6 +696,7 @@ export function WorkflowFailureAlerts({
                 </Button>
               ) : (
                 <Button
+                  className={WRAP_BUTTON}
                   data-testid="failure-alerts-mute-open"
                   onClick={() => openPanel("mute")}
                   ref={muteButtonRef}
@@ -636,7 +708,8 @@ export function WorkflowFailureAlerts({
                 </Button>
               )}
               <Button
-                data-testid="failure-alerts-customize-open"
+                className={WRAP_BUTTON}
+                data-testid="failure-alerts-change-open"
                 onClick={() => openPanel("custom")}
                 ref={customButtonRef}
                 size="sm"
@@ -712,7 +785,10 @@ export function WorkflowFailureAlerts({
                 it is still failing.
               </p>
               <Button
-                onClick={() => setPanel(null)}
+                onClick={() => {
+                  setSaveError(null);
+                  setPanel(null);
+                }}
                 size="sm"
                 type="button"
                 variant="ghost"
@@ -746,7 +822,7 @@ export function WorkflowFailureAlerts({
                   max={MAX_THRESHOLD}
                   min={MIN_THRESHOLD}
                   onChange={(e) => setThreshold(e.target.value)}
-                  placeholder={`Org: ${view.org.threshold}`}
+                  placeholder={`${view.org.threshold} (org)`}
                   type="number"
                   value={threshold}
                 />
@@ -774,10 +850,10 @@ export function WorkflowFailureAlerts({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="org">
-                      Org:{" "}
                       {view.org.timeLimitMinutes
                         ? timeLimitLabel(view.org.timeLimitMinutes)
-                        : "off"}
+                        : "Off"}{" "}
+                      (org)
                     </SelectItem>
                     <SelectItem value="off">Off</SelectItem>
                     {TIME_LIMIT_OPTIONS_MINUTES.map((m) => (
@@ -806,8 +882,8 @@ export function WorkflowFailureAlerts({
                   className="pl-6 text-muted-foreground text-xs"
                   id="wf-pause-workflow-help"
                 >
-                  Turns it off when its alert goes out. Any failure counts. Turn
-                  it back on with the Enable switch.
+                  Turns it off when its alert goes out. Any failure counts. To
+                  start it again, fix the cause, then press Turn back on.
                 </p>
               </div>
               <div className="space-y-2">
@@ -827,8 +903,8 @@ export function WorkflowFailureAlerts({
                 </div>
                 {customRecipients === null ? (
                   <p className="text-muted-foreground text-xs">
-                    Org:{" "}
-                    {view.effective.emails.join(", ") || "nobody reachable"}
+                    {view.effective.emails.join(", ") || "Nobody reachable"}{" "}
+                    (org)
                   </p>
                 ) : (
                   <ul className="space-y-1.5">
@@ -906,10 +982,12 @@ export function WorkflowFailureAlerts({
                   />
                 )}
               </div>
+              {saveErrorBox}
               <div className="flex justify-end gap-2">
                 <Button
                   onClick={() => {
                     apply(view);
+                    setSaveError(null);
                     setPanel(null);
                   }}
                   size="sm"
@@ -940,14 +1018,15 @@ export function WorkflowFailureAlerts({
         >
           Org alert rules
         </Link>
-        <button
+        <Button
           aria-expanded={showHistory}
-          className={FOOTER_LINK}
+          className={cn(FOOTER_LINK, "h-auto px-0 font-normal text-xs")}
           onClick={() => setShowHistory((open) => !open)}
           type="button"
+          variant="link"
         >
           {showHistory ? "Hide sent alerts" : "Sent alerts for this workflow"}
-        </button>
+        </Button>
       </div>
       {showHistory && (
         <NotificationHistory

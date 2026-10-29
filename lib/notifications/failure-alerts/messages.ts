@@ -5,6 +5,7 @@ import {
   truncateRunes,
 } from "@/plugins/pagerduty/event-payload";
 import { isOutOfFunds } from "./streak";
+import { EMAILS_KEPT_FOR_NEW_FAILURES, orgPauseEffect } from "./view-types";
 
 // Message wording for every channel, apart from delivery so it is tested in one place.
 
@@ -56,6 +57,7 @@ export type MessageInput =
         failureCount: number;
         workflowPaused?: boolean;
         lastError?: string | null;
+        openedBy?: FailureIncidentTrigger;
       })[];
       backupReason?: string;
     })
@@ -77,9 +79,17 @@ export type MessageInput =
       until: Date;
       reason: string | null;
       by: string | null;
+      /** Workflows set to turn off at their limit; unknown when undefined. */
+      pausingWorkflows?: number;
     })
   | (OrgFields & { kind: "alerts_resumed"; by: string | null })
-  | (OrgFields & { kind: "cap_warning"; used: number; limit: number })
+  | (OrgFields & {
+      kind: "cap_warning";
+      used: number;
+      limit: number;
+      /** A Slack, Discord, Telegram or PagerDuty method works; unknown when undefined. */
+      chatWorks?: boolean;
+    })
   | (OrgFields & {
       kind: "launch_notice";
       threshold: number;
@@ -163,6 +173,10 @@ function settingsUrl(appUrl: string, organizationId: string): string {
   return `${appUrl}/settings/${encodeURIComponent(organizationId)}/alerts`;
 }
 
+function walletsUrl(appUrl: string, organizationId: string): string {
+  return `${appUrl}/settings/${encodeURIComponent(organizationId)}/wallets`;
+}
+
 function summaryOf(text: string): string {
   return truncateRunes(`[KeeperHub] ${text}`, MAX_SUMMARY_CHARS);
 }
@@ -191,12 +205,14 @@ function failingHeadline(
 function pausedHeadline(
   workflow: AlertWorkflow,
   failures: number,
-  again: boolean
+  again: boolean,
+  funding: boolean
 ): string {
+  const cause = funding ? "Wallet out of funds: " : "";
   if (again) {
-    return `${workflow.name} was paused again: ${plural(failures, "more failed run", "more failed runs")} after it was turned back on`;
+    return `${cause}${workflow.name} was paused again: ${plural(failures, "more failed run", "more failed runs")} after it was turned back on`;
   }
-  return `${workflow.name} was paused after ${plural(failures, "failed run", "failed runs")} in a row`;
+  return `${cause}${workflow.name} was paused after ${plural(failures, "failed run", "failed runs")} in a row`;
 }
 
 const PAUSED_NEXT_STEP =
@@ -312,7 +328,8 @@ function renderAlert(
     ? pausedHeadline(
         workflow,
         input.pausedFailures ?? incident.failureCount,
-        input.paused === "again"
+        input.paused === "again",
+        incident.openedBy === "funding"
       )
     : failingHeadline(workflow, incident, reminder, now);
   const banners = joinBanners(
@@ -322,6 +339,10 @@ function renderAlert(
   const hint = missed ? null : errorHint(incident.lastError);
   const runs = runsUrl(appUrl, workflow.id);
   const open = workflowUrl(appUrl, workflow.id);
+  const funds =
+    incident.openedBy === "funding"
+      ? walletsUrl(appUrl, input.organizationId)
+      : null;
   const foot = footer(input);
   let nextStep = FAILING_NEXT_STEP;
   if (input.paused) {
@@ -361,9 +382,18 @@ function renderAlert(
   const lines = [since, history, detail, hint, nextStep, lastLine].filter(
     (line): line is string => Boolean(line)
   );
-  const links = missed
-    ? [`Open the workflow: ${open}`]
-    : [`Open the failing workflow: ${open}`, `Failed runs: ${runs}`];
+  let links = [`Open the failing workflow: ${open}`, `Failed runs: ${runs}`];
+  if (missed) {
+    links = [`Open the workflow: ${open}`];
+  } else if (funds) {
+    links = [`Add funds: ${funds}`, ...links];
+  }
+  let buttons = `${emailButton(open, "Open the failing workflow", "danger")}${emailButton(runs, "View failed runs")}`;
+  if (missed) {
+    buttons = emailButton(open, "Open the workflow", "primary");
+  } else if (funds) {
+    buttons = `${emailButton(funds, "Add funds", "danger")}${emailButton(open, "Open the failing workflow")}`;
+  }
 
   const text = `${banners.text}${label}: ${headline}.
 
@@ -388,8 +418,9 @@ ${foot.text}`;
       ${hint ? `<div style="margin-top: 8px;">${escapeHtml(hint)}</div>` : ""}
       ${lastLine ? `<div style="margin-top: 8px;"><strong>${escapeHtml(lastLine)}</strong></div>` : ""}
     </div>
-    <p>${emailButton(open, missed ? "Open the workflow" : "Open the failing workflow", missed ? "primary" : "danger")}${missed ? "" : emailButton(runs, "View failed runs")}</p>
-    <p style="color: #555; font-size: 13px;">${escapeHtml(nextStep)} ${escapeHtml(workflow.triggerLabel)} trigger, ${escapeHtml(orgName)}.</p>`,
+    <p>${buttons}</p>
+    <p style="color: #555; font-size: 13px;">${escapeHtml(nextStep)}</p>
+    <p style="color: #555; font-size: 13px;">${escapeHtml(workflow.triggerLabel)} trigger, ${escapeHtml(orgName)}.</p>`,
     foot.html
   );
 
@@ -401,6 +432,14 @@ ${foot.text}`;
     summary: summaryOf(`${orgName}: ${headline}`),
   };
 }
+
+type GroupedWorkflow = Extract<
+  MessageInput,
+  { kind: "grouped" }
+>["workflows"][number];
+
+/** A grouped alert lists this many workflows, then "And N more". */
+const GROUPED_LIST_MAX = 10;
 
 function renderGrouped(
   input: Extract<MessageInput, { kind: "grouped" }>
@@ -417,28 +456,43 @@ function renderGrouped(
   const foot = footer(input);
   const pausedNote = (w: { workflowPaused?: boolean }): string =>
     w.workflowPaused ? ", paused" : "";
-  const lines = workflows.map(
+  const outOfFunds = (w: GroupedWorkflow): boolean =>
+    w.openedBy === "funding" || isOutOfFunds(w.lastError ?? null);
+  const fundsPrefix = (w: GroupedWorkflow): string =>
+    outOfFunds(w) ? "Wallet out of funds: " : "";
+  const shown = workflows.slice(0, GROUPED_LIST_MAX);
+  const more = workflows.length - shown.length;
+  const moreLine = more > 0 ? `And ${more} more.` : null;
+  const funds = workflows.some(outOfFunds)
+    ? walletsUrl(appUrl, input.organizationId)
+    : null;
+  const lines = shown.map(
     (w) =>
-      `- ${w.name}: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}${errorOf(w)} (${runsUrl(appUrl, w.id)})`
+      `- ${fundsPrefix(w)}${w.name}: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}${errorOf(w)} (${runsUrl(appUrl, w.id)})`
   );
+  if (moreLine) {
+    lines.push(moreLine);
+  }
+  const fundsLine = funds ? `Add funds: ${funds}\n` : "";
   const text = `${backup.text}${headline} in ${orgName}. ${cause}
 
 ${lines.join("\n")}
 
-See all failing workflows: ${settingsUrl(appUrl, input.organizationId)}
+${fundsLine}See all failing workflows: ${settingsUrl(appUrl, input.organizationId)}
 
 ${foot.text}`;
   const html = emailLayout(
     `<span style="display:inline-block; background:#b91c1c; color:#fff; font-size:12px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; padding:3px 8px; border-radius:4px; margin-bottom:8px;">Action needed</span><br>${escapeHtml(headline)}`,
     `${backup.html}
     <p>${escapeHtml(cause)}</p>
-    <ul style="padding-left: 20px;">${workflows
+    <ul style="padding-left: 20px;">${shown
       .map(
         (w) =>
-          `<li><a href="${escapeHtml(runsUrl(appUrl, w.id))}">${escapeHtml(w.name)}</a>: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}${w.lastError ? `<br><code style="font-size:12px;">${escapeHtml(truncateRunes(w.lastError.replace(WHITESPACE, " "), 120))}</code>` : ""}</li>`
+          `<li>${outOfFunds(w) ? "<strong>Wallet out of funds:</strong> " : ""}<a href="${escapeHtml(runsUrl(appUrl, w.id))}">${escapeHtml(w.name)}</a>: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}${w.lastError ? `<br><code style="font-size:12px;">${escapeHtml(truncateRunes(w.lastError.replace(WHITESPACE, " "), 120))}</code>` : ""}</li>`
       )
       .join("")}</ul>
-    <p>${emailButton(settingsUrl(appUrl, input.organizationId), "See all failing workflows", "danger")}</p>`,
+    ${moreLine ? `<p>${moreLine}</p>` : ""}
+    <p>${emailButton(settingsUrl(appUrl, input.organizationId), "See all failing workflows", "danger")}${funds ? emailButton(funds, "Add funds") : ""}</p>`,
     foot.html
   );
   return {
@@ -503,6 +557,26 @@ function renderChannelPaused(
   };
 }
 
+const ADD_CHAT = "Add Slack, Discord, Telegram or PagerDuty, or upgrade.";
+
+function capOutDetail(chatWorks: boolean | undefined): string {
+  if (chatWorks === false) {
+    return `From now until the 1st, nobody is told about new failures. ${ADD_CHAT}`;
+  }
+  if (chatWorks) {
+    return "Until the 1st, new failure alerts go only to your Slack, Discord, Telegram and PagerDuty methods, not email. Upgrade for unlimited alert emails.";
+  }
+  return "Until the 1st, new failure alerts go only to Slack, Discord, Telegram and PagerDuty, not email; without one of those, nobody is told. Add one, or upgrade for unlimited alert emails.";
+}
+
+function capLowDetail(input: { limit: number; chatWorks?: boolean }): string {
+  const from = input.limit - EMAILS_KEPT_FOR_NEW_FAILURES;
+  const kept = `After ${from}, only alerts about new failures go by email; reminders and recovery messages do not.`;
+  return input.chatWorks === false
+    ? `${kept} Once all ${input.limit} are used, nobody is told until the 1st. ${ADD_CHAT}`
+    : `${kept} Chat and PagerDuty are never counted.`;
+}
+
 function renderCapWarning(
   input: Extract<MessageInput, { kind: "cap_warning" }>
 ): RenderedMessage {
@@ -510,9 +584,7 @@ function renderCapWarning(
   const headline = out
     ? `${input.orgName} has used all ${input.limit} alert emails this month`
     : `${input.orgName} has used ${input.used} of its ${input.limit} alert emails this month`;
-  const detail = out
-    ? "New failure alerts reach Slack, Discord, Telegram and PagerDuty until next month, not email. Add a chat method, or upgrade for unlimited alert emails."
-    : "The last 10 are kept for new failures; reminders stop using email first. Chat and PagerDuty are never counted.";
+  const detail = out ? capOutDetail(input.chatWorks) : capLowDetail(input);
   const link = settingsUrl(input.appUrl, input.organizationId);
   const foot = footer(input);
   return {
@@ -538,7 +610,7 @@ function renderOrgPause(
   let detail: string;
   if (paused) {
     const who = input.by ? `${input.by} paused them` : "They were paused";
-    detail = `${who}${input.reason ? `: ${input.reason.replace(TRAILING_DOTS, "")}` : ""}. Workflows keep running; failures are not reported until then.`;
+    detail = `${who}${input.reason ? `: ${input.reason.replace(TRAILING_DOTS, "")}` : ""}. ${orgPauseEffect(input.pausingWorkflows)}`;
   } else {
     detail = `${input.by ? `${input.by} turned them back on` : "The pause ended"}. Any workflow still failing is reported now.`;
   }

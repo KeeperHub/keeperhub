@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import {
   failureAlertChannels,
   failureAlertDeliveries,
+  integrations,
   workflowExecutions,
   workflowFailureAlertOverrides,
   workflowFailureIncidents,
@@ -34,7 +35,7 @@ import {
   toMemberView,
 } from "./settings";
 import { summarizeStreak } from "./streak";
-import type { WorkflowAlertView } from "./view-types";
+import { methodText, type WorkflowAlertView } from "./view-types";
 import { runsOnItsOwn, workflowTriggerType } from "./workflow-trigger";
 
 export async function loadWorkflowForAlerts(workflowId: string): Promise<{
@@ -114,8 +115,17 @@ export async function loadWorkflowAlertView(
         .selectDistinct({
           channel: failureAlertDeliveries.channel,
           recipient: failureAlertDeliveries.recipient,
+          connectionName: integrations.name,
         })
         .from(failureAlertDeliveries)
+        .leftJoin(
+          failureAlertChannels,
+          eq(failureAlertChannels.id, failureAlertDeliveries.channelId)
+        )
+        .leftJoin(
+          integrations,
+          eq(integrations.id, failureAlertChannels.integrationId)
+        )
         .where(
           and(
             eq(failureAlertDeliveries.incidentId, incident.id),
@@ -183,7 +193,12 @@ export async function loadWorkflowAlertView(
             deliveredTo: deliveredTo.map((d) =>
               d.channel === "email"
                 ? d.recipient
-                : `${d.channel} ${d.recipient}`
+                : methodText(
+                    d.channel,
+                    // A chat row records its kind when it has no destination.
+                    d.recipient === d.channel ? "" : d.recipient,
+                    d.connectionName
+                  )
             ),
             openedBy: incident.openedBy,
             since: incident.firstFailedAt.toISOString(),
@@ -233,7 +248,7 @@ function parseMute(
   };
 }
 
-/** Save a workflow override; an empty one is removed with its channels. */
+/** Save a workflow override; an empty one clears the row and removes its channels. */
 export async function saveWorkflowOverride(params: {
   workflowId: string;
   organizationId: string;
@@ -310,9 +325,25 @@ export async function saveWorkflowOverride(params: {
   if (empty) {
     await db.transaction(async (tx: Tx) => {
       await lockOrgSettings(tx, organizationId);
-      checkVersion(expectedVersion, await currentVersion(tx));
+      const current = await currentVersion(tx);
+      checkVersion(expectedVersion, current);
+      // An all-empty row follows the org, and keeps its version so a stale tab is still refused.
       await tx
-        .delete(workflowFailureAlertOverrides)
+        .update(workflowFailureAlertOverrides)
+        .set({
+          threshold: null,
+          timeLimitMinutes: null,
+          recipientUserIds: null,
+          customChannels: false,
+          mutedUntil: null,
+          muteUntilSuccess: false,
+          muteReason: null,
+          mutedBy: null,
+          pauseWorkflow: false,
+          version: current + 1,
+          updatedBy: userId,
+          updatedAt: now,
+        })
         .where(eq(workflowFailureAlertOverrides.workflowId, workflowId));
       await tx
         .delete(failureAlertChannels)

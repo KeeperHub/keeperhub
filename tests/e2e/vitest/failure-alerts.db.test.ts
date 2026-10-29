@@ -264,6 +264,21 @@ async function makeOrg(
   return { orgId, userId, email, name };
 }
 
+/** Keeps an org in the database but outside the rollout. */
+function leaveRollout(org: Org): void {
+  orgIds.splice(orgIds.indexOf(org.orgId), 1);
+  setEnv("FAILURE_ALERTS_ROLLOUT", `orgs:${orgIds.join(",")}`);
+}
+
+async function addSchedule(workflowId: string): Promise<void> {
+  await db.insert(workflowSchedules).values({
+    workflowId,
+    cronExpression: "*/5 * * * *",
+    createdAt: at(-120),
+    updatedAt: at(-120),
+  });
+}
+
 async function makeWorkflow(
   org: Org,
   name: string,
@@ -771,6 +786,51 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(mailsTo(org)).toHaveLength(await deliveredEmailCount(org));
     });
 
+    it("a grouped email marks a workflow its wallet stopped, from how the incident opened", async () => {
+      const org = await makeOrg("omicron");
+      const names = ["Funds Keeper", "Plain Keeper A", "Plain Keeper B"];
+      for (const name of names) {
+        const id = await makeWorkflow(org, name);
+        await db.insert(workflowFailureIncidents).values({
+          organizationId: org.orgId,
+          workflowId: id,
+          openedBy: name === "Funds Keeper" ? "funding" : "count",
+          threshold: 5,
+          failureCount: 5,
+          firstFailedAt: at(-30),
+          lastFailedAt: at(-6),
+          lastError: "execution reverted",
+          openedAt: at(-5),
+        });
+      }
+      await runCycle();
+      const grouped = mailsTo(org).find((m) =>
+        names.every((n) => m.text.includes(wfName(n)))
+      );
+      expect(grouped?.text).toContain(
+        `Wallet out of funds: ${wfName("Funds Keeper")}`
+      );
+      expect(grouped?.text).not.toContain(
+        `Wallet out of funds: ${wfName("Plain Keeper A")}`
+      );
+    });
+
+    it("the low-email warning says nobody is told once used up when no chat method works", async () => {
+      const org = await makeOrg("pi");
+      await db.execute(sql`
+        INSERT INTO alert_email_usage (organization_id, period_start, sent)
+        VALUES (${org.orgId}, date_trunc('month', now() AT TIME ZONE 'UTC'), 79)
+      `);
+      const wf = await makeWorkflow(org, "Keeper near cap");
+      await addFailures(org, wf, 5);
+      await runCycle();
+      await runCycle();
+      const warning = (await sentEmails(org, "cap_warning")).length;
+      expect(warning).toBe(1);
+      const mail = mailsTo(org).find((m) => m.subject.includes("80 of"));
+      expect(mail?.text).toContain("nobody is told");
+    });
+
     it("three workflows failing in one cycle send one grouped email naming all three", async () => {
       const org = await makeOrg("delta");
       const names = ["Vault A", "Vault B", "Vault C"];
@@ -1101,11 +1161,70 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(await sentEmails(theta, "alert")).toHaveLength(1);
     });
 
+    it("a run started by a person does not end it", async () => {
+      await addRun(theta, wf, "success", { at: at(0.2), source: "manual" });
+      await runCycle();
+      expect((await incidentById(incidentId))?.resolvedAt).toBeNull();
+    });
+
     it("closes with a running-again message once it runs", async () => {
       await addRun(theta, wf, "success", { at: at(0.5) });
       await runCycle();
       expect((await incidentById(incidentId))?.resolvedReason).toBe("ran");
       expect(await sentEmails(theta, "recovery")).toHaveLength(1);
+    });
+  });
+
+  // Late schedules in orgs outside the rollout still point at a scheduler outage.
+  describe("missed runs during a scheduler outage", {
+    timeout: SUITE_TIMEOUT,
+  }, () => {
+    let mu: Org;
+    let longAgo: string;
+    let recent: string;
+    let lastRunAt: Date;
+    const outageWorkflows: string[] = [];
+
+    beforeAll(async () => {
+      for (const tag of ["byA", "byB", "byC"]) {
+        const bystander = await makeOrg(tag);
+        leaveRollout(bystander);
+        for (let i = 0; i < 7; i++) {
+          const id = await makeWorkflow(bystander, `Bystander ${tag} ${i}`);
+          await addSchedule(id);
+          outageWorkflows.push(id);
+        }
+      }
+      mu = await makeOrg("mu");
+      await db.insert(orgFailureAlertSettings).values({
+        organizationId: mu.orgId,
+        countingSince: at(-120),
+      });
+      longAgo = await makeWorkflow(mu, "Five Minute Poller");
+      recent = await makeWorkflow(mu, "Five Minute Pricer");
+      outageWorkflows.push(longAgo, recent);
+      for (const id of [longAgo, recent]) {
+        await addSchedule(id);
+      }
+      lastRunAt = at(-60);
+      await addRun(mu, longAgo, "success", { at: lastRunAt });
+      await addRun(mu, recent, "success", { at: at(-20) });
+    });
+
+    afterAll(async () => {
+      for (const id of outageWorkflows) {
+        await setEnabled(id, false);
+      }
+    });
+
+    it("holds a fresh miss, but not one that started over 30 minutes ago, and names its first missed run", async () => {
+      await runCycle();
+      expect(await openIncident(recent)).toBeUndefined();
+      const incident = await openIncident(longAgo);
+      expect(incident?.openedBy).toBe("missed");
+      const first = incident?.firstFailedAt.getTime() ?? 0;
+      expect(first).toBeGreaterThan(lastRunAt.getTime());
+      expect(first).toBeLessThanOrEqual(lastRunAt.getTime() + 6 * MINUTE);
     });
   });
 
@@ -1291,6 +1410,204 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     });
   });
 
+  // Steps run in order and share one org; its workflow turns off at its limit.
+  describe("messages held by an org pause", { timeout: SUITE_TIMEOUT }, () => {
+    let lambda: Org;
+    let wf: string;
+    let until: Date;
+    let incidentId: string | undefined;
+
+    const heldRows = async () =>
+      (await deliveriesOf(lambda.orgId)).filter(
+        (d) => d.incidentId === incidentId && !d.isBackup
+      );
+
+    beforeAll(async () => {
+      lambda = await makeOrg("lambda");
+      wf = await makeWorkflow(lambda, "Held Keeper");
+      await db.insert(workflowFailureAlertOverrides).values({
+        workflowId: wf,
+        organizationId: lambda.orgId,
+        threshold: 2,
+        pauseWorkflow: true,
+      });
+      until = at(60);
+      await orgPause.pauseOrgAlerts({
+        organizationId: lambda.orgId,
+        until: until.toISOString(),
+        reason: null,
+        byEmail: lambda.email,
+        now: new Date(),
+      });
+    });
+
+    afterAll(() => {
+      emailStatus = 202;
+    });
+
+    it("turns the workflow off and holds its message until the pause ends", async () => {
+      await addRun(lambda, wf, "error", { at: at(-2) });
+      await addRun(lambda, wf, "error", { at: at(-1) });
+      await runCycle();
+      incidentId = (await openIncident(wf))?.id;
+      expect(await isEnabled(wf)).toBe(false);
+      const rows = await heldRows();
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(row.state).toBe("pending");
+        expect(row.nextAttemptAt.getTime()).toBe(until.getTime());
+      }
+    });
+
+    it("the pause notice counts the workflows set to turn off", async () => {
+      const notice = (await deliveriesOf(lambda.orgId)).find(
+        (d) => d.kind === "alerts_paused"
+      );
+      expect(notice?.context?.pausingWorkflows).toBe(1);
+    });
+
+    it("extending the pause keeps them held until the new end", async () => {
+      until = at(120);
+      await orgPause.pauseOrgAlerts({
+        organizationId: lambda.orgId,
+        until: until.toISOString(),
+        reason: null,
+        byEmail: lambda.email,
+        now: new Date(),
+      });
+      await runCycle();
+      expect(await sentEmails(lambda, "alert")).toHaveLength(0);
+      for (const row of await heldRows()) {
+        expect(row.nextAttemptAt.getTime()).toBe(until.getTime());
+        expect(row.backupAt?.getTime()).toBe(until.getTime() + 15 * MINUTE);
+      }
+    });
+
+    it("refuses an extension past 7 days from when the pause began", async () => {
+      const [settingsRow] = await db
+        .select()
+        .from(orgFailureAlertSettings)
+        .where(eq(orgFailureAlertSettings.organizationId, lambda.orgId));
+      const began = settingsRow?.pausedAt?.getTime() ?? 0;
+      expect(began).toBeGreaterThan(0);
+      const error = await settingsError(() =>
+        orgPause.pauseOrgAlerts({
+          organizationId: lambda.orgId,
+          until: new Date(
+            began + 7 * 24 * 60 * MINUTE + 30 * MINUTE
+          ).toISOString(),
+          reason: null,
+          byEmail: null,
+          now: at(90),
+        })
+      );
+      expect(error.status).toBe(400);
+      expect(error.message).toContain("7 days");
+    });
+
+    it("resumed early, they go now, retry a passing error, and backups wait their usual time", async () => {
+      // As if the pause had held them for over a day.
+      await db
+        .update(failureAlertDeliveries)
+        .set({ createdAt: at(-25 * 60) })
+        .where(eq(failureAlertDeliveries.incidentId, incidentId ?? ""));
+      await orgPause.resumeOrgAlerts({
+        organizationId: lambda.orgId,
+        byEmail: lambda.email,
+        now: new Date(),
+      });
+      emailStatus = 503;
+      await runCycle();
+      const email = (await heldRows()).find((d) => d.channel === "email");
+      expect(email?.state, email?.lastError ?? "").toBe("retrying");
+      expect(email?.backupSentAt).toBeNull();
+      expect(email?.backupAt?.getTime()).toBeGreaterThan(at(10).getTime());
+    });
+  });
+
+  // Independent cases, each with its own paused org.
+  describe("nothing leaks out of an org pause", {
+    timeout: SUITE_TIMEOUT,
+  }, () => {
+    const pause = async (org: Org, until: Date): Promise<void> => {
+      await orgPause.pauseOrgAlerts({
+        organizationId: org.orgId,
+        until: until.toISOString(),
+        reason: null,
+        byEmail: null,
+        now: new Date(),
+      });
+    };
+
+    it("an alert re-queued after a crash waits for the pause to end", async () => {
+      const nu = await makeOrg("nu");
+      const until = at(60);
+      await pause(nu, until);
+      const lostWf = await makeWorkflow(nu, "Lost during pause");
+      const [lost] = await db
+        .insert(workflowFailureIncidents)
+        .values({
+          organizationId: nu.orgId,
+          workflowId: lostWf,
+          openedBy: "count",
+          threshold: 5,
+          failureCount: 5,
+          firstFailedAt: at(-30),
+          lastFailedAt: at(-6),
+          openedAt: at(-5),
+        })
+        .returning();
+      await runCycle();
+      expect((await incidentById(lost?.id))?.alertQueuedAt).toBeTruthy();
+      const rows = (await deliveriesOf(nu.orgId)).filter(
+        (d) => d.incidentId === lost?.id
+      );
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(row.nextAttemptAt.getTime()).toBe(until.getTime());
+      }
+      expect(await sentEmails(nu, "alert")).toHaveLength(0);
+    });
+
+    it("with nobody to email, backups wait for the pause to end", async () => {
+      const xi = await makeOrg("xi", { walletOnly: true });
+      const discord = await makeChannel(xi, "discord", "backup", "live");
+      const wf = await makeWorkflow(xi, "Unreachable during pause");
+      await db.insert(workflowFailureAlertOverrides).values({
+        workflowId: wf,
+        organizationId: xi.orgId,
+        threshold: 2,
+        pauseWorkflow: true,
+      });
+      await pause(xi, at(60));
+      await addRun(xi, wf, "error", { at: at(-2) });
+      await addRun(xi, wf, "error", { at: at(-1) });
+      await runCycle();
+      const incidentId = (await openIncident(wf))?.id;
+      expect(incidentId).toBeTruthy();
+      const forIncident = async () =>
+        (await deliveriesOf(xi.orgId)).filter(
+          (d) => d.incidentId === incidentId
+        );
+      const nobody = (await forIncident()).find(
+        (d) => d.recipient === "(nobody reachable)"
+      );
+      expect(nobody?.backupSentAt).toBeNull();
+      expect((await forIncident()).some((d) => d.isBackup)).toBe(false);
+
+      await orgPause.resumeOrgAlerts({
+        organizationId: xi.orgId,
+        byEmail: null,
+        now: new Date(),
+      });
+      await runCycle();
+      const backup = (await forIncident()).find(
+        (d) => d.isBackup && d.channelId === discord.id
+      );
+      expect(backup?.state, backup?.lastError ?? "").toBe("delivered");
+    });
+  });
+
   // Each case builds its own body against one org.
   describe("settings save rules", { timeout: SUITE_TIMEOUT }, () => {
     let zeta: Org;
@@ -1425,6 +1742,52 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         .from(workflowFailureAlertOverrides)
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       expect(row?.threshold).toBe(3);
+    });
+
+    it("refuses a save from a tab older than a reset with 409", async () => {
+      const wf = await makeWorkflow(zeta, "Reset keeper");
+      const save = (body: Record<string, unknown>) =>
+        workflowSettings.saveWorkflowOverride({
+          workflowId: wf,
+          organizationId: zeta.orgId,
+          userId: zeta.userId,
+          body,
+        });
+      await save({ threshold: 3, version: 0 });
+      await save({ version: 1 });
+      const error = await settingsError(() =>
+        save({ threshold: 8, version: 1 })
+      );
+      expect(error.status).toBe(409);
+      const [row] = await db
+        .select()
+        .from(workflowFailureAlertOverrides)
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      expect(row?.threshold).toBeNull();
+      expect(row?.version).toBe(2);
+      const view = await settings.loadOrgSettingsView(zeta.orgId, zeta.userId);
+      expect(view.customWorkflows.some((w) => w.id === wf)).toBe(false);
+    });
+
+    it("ends a mute until it works once it works, as a new version", async () => {
+      const wf = await makeWorkflow(zeta, "Mute until works");
+      await db.insert(workflowFailureAlertOverrides).values({
+        workflowId: wf,
+        organizationId: zeta.orgId,
+        muteUntilSuccess: true,
+        mutedUntil: at(30 * 24 * 60),
+        mutedBy: zeta.userId,
+        version: 3,
+      });
+      await addRun(zeta, wf, "success");
+      await runCycle();
+      const [row] = await db
+        .select()
+        .from(workflowFailureAlertOverrides)
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      expect(row?.muteUntilSuccess).toBe(false);
+      expect(row?.mutedUntil).toBeNull();
+      expect(row?.version).toBe(4);
     });
   });
 

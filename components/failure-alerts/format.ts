@@ -1,4 +1,4 @@
-import { channelLabel } from "@/lib/notifications/failure-alerts/view-types";
+import { methodText } from "@/lib/notifications/failure-alerts/view-types";
 
 /** "1 failed run" / "5 failed runs", worded the same everywhere in the feature. */
 export function failedRuns(count: number): string {
@@ -21,6 +21,10 @@ export function formatWhen(iso: string): string {
     timeZoneName: "short",
   });
 }
+
+/** Out-of-funds alerts skip the limit; said on the Rules card and in each workflow. */
+export const FUNDS_RULE =
+  "Wallet out of funds alerts go out after 2 failed runs, whatever the limit.";
 
 /** A date as a datetime-local input holds it, in the viewer's time zone. */
 export function toLocalInput(date: Date): string {
@@ -47,7 +51,7 @@ function joinList(items: string[]): string {
   return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 }
 
-const MAX_TARGET = 24;
+const MAX_TARGET = 18;
 
 function truncateMiddle(value: string): string {
   if (value.length <= MAX_TARGET) {
@@ -101,7 +105,11 @@ export function describeRule(input: {
     (c) => !(c.pausedAt || c.connectionMissing)
   );
   const name = (c: RuleChannel): string =>
-    truncateMiddle(channelLabel(c.kind, c.destination, c.connectionName));
+    methodText(
+      c.kind,
+      truncateMiddle(c.destination),
+      c.connectionName && truncateMiddle(c.connectionName)
+    );
   const always = live.filter((c) => c.role === "always").map(name);
   const backups = live.filter((c) => c.role === "backup").map(name);
   const targets = [emailPart, ...always].filter((t): t is string => t !== null);

@@ -221,6 +221,11 @@ describe("wallet out of funds", () => {
       isOutOfFunds("Insufficient ETH balance. Have: 0.0004, Need: 0.0006")
     ).toBe(true);
     expect(isOutOfFunds("execution reverted")).toBe(false);
+    expect(
+      isOutOfFunds(
+        'RPC failed on all endpoints: {"error":{"message":"Insufficient ETH balance. Have: 0.1, Need: 0.2"}}'
+      )
+    ).toBe(false);
     expect(isOutOfFunds(null)).toBe(false);
   });
 

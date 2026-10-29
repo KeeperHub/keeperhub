@@ -18,6 +18,7 @@ import {
   MIN_THRESHOLD,
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
+import { FUNDS_RULE } from "./format";
 import {
   type SaveAction,
   SaveError,
@@ -158,6 +159,7 @@ export function WhenToNotify({
         For slow schedules: a workflow that runs every 4 hours takes {4 * runs}{" "}
         hours to fail {runs} time{runs === 1 ? "" : "s"}.
       </p>
+      <p className="text-muted-foreground text-xs">{FUNDS_RULE}</p>
       <label className="flex items-center gap-2" htmlFor="failure-remind">
         <Checkbox
           checked={draft.remindDaily}

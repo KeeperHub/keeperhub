@@ -301,11 +301,7 @@ function StatusBadge({ status }: { status: NormalizedStatus }): ReactNode {
 
 const MONTHLY_LIMIT_TEXT = "Not sent: Free plan monthly email limit reached";
 
-/**
- * A notification's own outcome. The run badges would misread it: a message
- * that could not be delivered is not a failed run, and a pause notice that
- * arrived is not a success of anything. Exported for its unit test.
- */
+/** A notification's own outcome; run badges would misread an undelivered message as a failed run. */
 export function notificationBadge(detail: NotificationRunDetail): {
   label: string;
   className: string;

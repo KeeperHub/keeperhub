@@ -121,11 +121,7 @@ function LoadingCards(): React.ReactElement {
   );
 }
 
-/**
- * The Alerts settings page: status, the rules every method follows, one card
- * per method, workflows with their own settings, and what was sent. Each part
- * saves on its own, on top of what was last saved.
- */
+/** The Alerts settings page; each card saves on its own, on top of the last save. */
 export function OrgFailureAlertsSection({
   organizationId,
 }: {
@@ -535,6 +531,9 @@ export function OrgFailureAlertsSection({
         <PauseAlertsForm
           onCancel={() => setPausing(false)}
           onPause={pauseAlerts}
+          pausingWorkflows={
+            data.customWorkflows.filter((w) => w.pauseWorkflow).length
+          }
         />
       )}
 

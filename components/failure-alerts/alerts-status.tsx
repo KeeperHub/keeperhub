@@ -5,11 +5,13 @@ import Link from "next/link";
 import { timeAgo } from "@/components/settings/hub/relative-time";
 import { Notice, WARNING_TEXT } from "@/components/ui/notice";
 import {
-  channelLabel,
+  EMAILS_KEPT_FOR_NEW_FAILURES,
+  methodText,
   type OrgSettingsView,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import { failedRuns, formatWhen } from "./format";
+import { memberLabel } from "./member-label";
 import { channelWorks } from "./method-drafts";
 import { AlertsPausedNotice } from "./pause-alerts";
 
@@ -19,6 +21,45 @@ const ICON_CLASS = "mt-0.5 size-4 shrink-0";
 
 function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
+}
+
+const MAX_NAMED = 3;
+
+/** "a@x, b@y (email), Origin alerts (Discord) and 2 more". */
+function namesLine(emails: string[], methods: string[]): string {
+  const shownEmails = emails.slice(0, MAX_NAMED);
+  const shownMethods = methods.slice(0, MAX_NAMED - shownEmails.length);
+  const parts = [
+    ...(shownEmails.length > 0 ? [`${shownEmails.join(", ")} (email)`] : []),
+    ...shownMethods,
+  ];
+  const more =
+    emails.length + methods.length - shownEmails.length - shownMethods.length;
+  return more > 0 ? `${parts.join(", ")} and ${more} more` : parts.join(", ");
+}
+
+/** " (own rule: 3)" for a workflow with its own limit. */
+function ownRule(threshold: number | null | undefined): string {
+  return typeof threshold === "number" ? ` (own rule: ${threshold})` : "";
+}
+
+const ADD_CHAT = "Add Slack, Discord, Telegram or PagerDuty, or upgrade.";
+
+/** The Free plan email line: who still hears once the emails run out. */
+function capText(
+  usage: { used: number; limit: number },
+  chatWorks: boolean
+): string {
+  if (usage.used >= usage.limit) {
+    const used = `All ${usage.limit} alert emails for this month are used.`;
+    return chatWorks
+      ? `${used} Until the 1st, alerts go only to your chat and PagerDuty methods.`
+      : `${used} From now until the 1st, nobody is told about new failures. ${ADD_CHAT}`;
+  }
+  const head = `Free plan: ${usage.used} of ${usage.limit} alert emails used this month. After ${usage.limit - EMAILS_KEPT_FOR_NEW_FAILURES}, only alerts about new failures go by email.`;
+  return chatWorks
+    ? `${head} Chat and PagerDuty are not counted.`
+    : `${head} Once all ${usage.limit} are used, nobody is told until the 1st. ${ADD_CHAT}`;
 }
 
 function Headline({
@@ -52,18 +93,16 @@ function Headline({
           {title}
         </p>
         {children && (
-          <div className="text-muted-foreground text-xs">{children}</div>
+          <div className="break-words text-muted-foreground text-xs">
+            {children}
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-/**
- * "Is it working?" in one card: paused, nobody reachable, failing, a single
- * point of failure or all quiet; the last delivery; the email cap; and the
- * workflows failing now.
- */
+/** "Is it working?": state, who is reached, the email cap, and what is failing now. */
 export function AlertsStatus({
   data,
   canManage,
@@ -87,7 +126,10 @@ export function AlertsStatus({
   const broken = data.channels.filter((c) => !channelWorks(c));
   const routes = (emailWorks ? 1 : 0) + working.length;
   const label = (c: (typeof data.channels)[number]): string =>
-    channelLabel(c.kind, c.destination, c.connectionName);
+    methodText(c.kind, c.destination, c.connectionName);
+  const ownThreshold = new Map(
+    data.customWorkflows.map((w) => [w.id, w.threshold])
+  );
 
   let state: StatusState = "quiet";
   if (pause) {
@@ -100,12 +142,21 @@ export function AlertsStatus({
     state = "single";
   }
 
-  const reach = [
-    people.length > 0 ? plural(people.length, "person", "people") : "",
-    working.length > 0 ? plural(working.length, "method", "methods") : "",
+  const emailNames = emailWorks ? people.map(memberLabel) : [];
+  const always = working.filter((c) => c.role === "always").map(label);
+  const backups = working.filter((c) => c.role === "backup").map(label);
+  // Backups take the alert first when nothing else is set.
+  const primary =
+    emailNames.length + always.length > 0 ? always : [...always, ...backups];
+  const reachParts = [
+    emailNames.length + primary.length > 0
+      ? `Reached: ${namesLine(emailNames, primary)}.`
+      : "",
+    primary === always && backups.length > 0
+      ? `Backup: ${namesLine([], backups)}.`
+      : "",
   ].filter(Boolean);
-  const reachLine =
-    reach.length > 0 ? `${reach.join(" and ")} can be reached.` : "";
+  const reachLine = reachParts.join(" ");
   const onlyRoute = emailWorks
     ? "Email"
     : (working[0] && label(working[0])) || "";
@@ -121,6 +172,9 @@ export function AlertsStatus({
           canManage={canManage}
           onResume={onResume}
           pause={pause}
+          pausingWorkflows={
+            data.customWorkflows.filter((w) => w.pauseWorkflow).length
+          }
         />
       )}
       {state === "unreachable" && (
@@ -128,8 +182,9 @@ export function AlertsStatus({
           title="Nobody can be reached: nobody will be told when a workflow fails"
           tone="danger"
         >
-          No chosen person has an email KeeperHub can reach, and no other method
-          works.{" "}
+          {capped && people.length > 0
+            ? "This month's alert emails are used up, and no other method works."
+            : "No chosen person has an email KeeperHub can reach, and no other method works."}{" "}
           {canManage ? (
             <>
               Add a method below, or add an email in{" "}
@@ -181,10 +236,8 @@ export function AlertsStatus({
 
       {usage && usage.used >= usage.limit * 0.8 && (
         <div data-testid="failure-alerts-email-cap">
-          <Notice tone={capped ? "danger" : "warning"}>
-            {capped
-              ? `All ${usage.limit} alert emails for this month are used. Until the 1st, alerts go to chat and PagerDuty only, which still work.`
-              : `Free plan: ${usage.used} of ${usage.limit} alert emails used this month. After ${usage.limit}, alerts go to chat and PagerDuty only, which still work.`}
+          <Notice tone={capped && working.length === 0 ? "danger" : "warning"}>
+            {capText(usage, working.length > 0)}
           </Notice>
         </div>
       )}
@@ -212,7 +265,7 @@ export function AlertsStatus({
                 <span className="text-destructive text-xs">
                   {w.openedBy === "missed"
                     ? `Did not run at ${formatWhen(w.dueAt)}`
-                    : `${w.openedBy === "funding" ? "Wallet out of funds, " : ""}${failedRuns(w.failureCount)} in a row, alert sent ${timeAgo(w.openedAt)}`}
+                    : `${w.openedBy === "funding" ? "Wallet out of funds, " : ""}${failedRuns(w.failureCount)} in a row${ownRule(ownThreshold.get(w.workflowId))}, alert sent ${timeAgo(w.openedAt)}`}
                   {pause
                     ? `. Alerts held until ${formatWhen(pause.until)}`
                     : ""}

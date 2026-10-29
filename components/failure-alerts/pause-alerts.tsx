@@ -6,8 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Notice } from "@/components/ui/notice";
-import type { OrgSettingsView } from "@/lib/notifications/failure-alerts/view-types";
-import { cn } from "@/lib/utils";
+import {
+  type OrgSettingsView,
+  orgPauseEffect,
+} from "@/lib/notifications/failure-alerts/view-types";
+import { ChoiceChips } from "./choice-chips";
 import { formatWhen, toLocalInput } from "./format";
 
 type AlertsPause = NonNullable<OrgSettingsView["pause"]>;
@@ -28,10 +31,13 @@ type Choice = (typeof CHOICES)[number]["value"];
 /** The amber line at the top of Alerts while they are paused. */
 export function AlertsPausedNotice({
   pause,
+  pausingWorkflows,
   canManage,
   onResume,
 }: {
   pause: AlertsPause;
+  /** Workflows set to turn off at their limit. */
+  pausingWorkflows: number;
   canManage: boolean;
   onResume: () => Promise<string | null>;
 }): React.ReactElement {
@@ -52,8 +58,8 @@ export function AlertsPausedNotice({
           <p className="min-w-0 flex-1 basis-64">
             Alerts are paused until {formatWhen(pause.until)}
             {pause.by ? ` by ${pause.by}` : ""}
-            {pause.reason ? `: ${pause.reason}` : ""}. Workflows keep running;
-            failures are recorded, but nobody is told until then.
+            {pause.reason ? `: ${pause.reason}` : ""}.{" "}
+            {orgPauseEffect(pausingWorkflows)}
           </p>
           {canManage && (
             <Button
@@ -75,11 +81,14 @@ export function AlertsPausedNotice({
   );
 }
 
-/** Until when and why, then Pause or Cancel. */
+/** How long and why, then Pause or Cancel. */
 export function PauseAlertsForm({
+  pausingWorkflows,
   onPause,
   onCancel,
 }: {
+  /** Workflows set to turn off at their limit. */
+  pausingWorkflows: number;
   onPause: (body: { until: string; reason?: string }) => Promise<string | null>;
   onCancel: () => void;
 }): React.ReactElement {
@@ -130,36 +139,18 @@ export function PauseAlertsForm({
       <div className="space-y-1">
         <h2 className="font-semibold text-sm">Pause alerts</h2>
         <p className="text-muted-foreground text-xs">
-          For maintenance: workflows keep running, but no alert goes out until
-          then. Up to {MAX_PAUSE_DAYS} days.
+          For maintenance, up to {MAX_PAUSE_DAYS} days.{" "}
+          {orgPauseEffect(pausingWorkflows)}
         </p>
       </div>
-      <fieldset className="space-y-2">
-        <legend className="mb-1.5 font-medium text-xs">Until</legend>
-        <div className="grid grid-cols-2 gap-2 @xl/settings:grid-cols-4">
-          {CHOICES.map((option) => (
-            <label
-              className={cn(
-                "flex min-h-11 cursor-pointer items-center justify-center rounded-md border px-2 py-2 text-xs transition-colors hover:bg-muted/50 @xl/settings:min-h-9",
-                "has-[:checked]:border-foreground/60 has-[:checked]:bg-muted",
-                "has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/50"
-              )}
-              htmlFor={`${idPrefix}-${option.value}`}
-              key={option.value}
-            >
-              <input
-                checked={choice === option.value}
-                className="sr-only"
-                id={`${idPrefix}-${option.value}`}
-                name={`${idPrefix}-until`}
-                onChange={() => setChoice(option.value)}
-                type="radio"
-                value={option.value}
-              />
-              {option.label}
-            </label>
-          ))}
-        </div>
+      <div className="space-y-2">
+        <ChoiceChips
+          className="@xl/settings:grid-cols-4"
+          legend="Pause for"
+          onChange={setChoice}
+          options={CHOICES}
+          value={choice}
+        />
         {choice === "custom" && (
           <Input
             aria-describedby={invalid ? `${idPrefix}-invalid` : undefined}
@@ -178,7 +169,7 @@ export function PauseAlertsForm({
             {invalid}
           </p>
         )}
-      </fieldset>
+      </div>
       <div className="space-y-1.5">
         <Label className="text-xs" htmlFor={`${idPrefix}-reason`}>
           Reason (optional)
