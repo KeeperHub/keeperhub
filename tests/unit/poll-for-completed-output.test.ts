@@ -72,6 +72,84 @@ describe("pollForCompletedOutput", () => {
     expect(sleep).toHaveBeenCalledTimes(4);
   });
 
+  // A duplicate delivery while the first attempt is still executing: the
+  // success lands only when that attempt finishes, well past the base window.
+  it("keeps polling past timeoutMs while extendWhile holds and returns the late value", async () => {
+    const clock = fakeClock();
+    const sleep = vi.fn(clock.sleep);
+    const fetchFn = vi.fn(() =>
+      Promise.resolve(clock.now() >= 13_500 ? { outputRaw: "late" } : null)
+    );
+    const extendWhile = vi.fn().mockResolvedValue(true);
+    const result = await pollForCompletedOutput(fetchFn, {
+      timeoutMs: 3000,
+      intervalMs: 250,
+      extendWhile,
+      maxTimeoutMs: 60_000,
+      now: clock.now,
+      sleep,
+    });
+    expect(result).toEqual({ outputRaw: "late" });
+    expect(clock.now()).toBe(13_500);
+    expect(extendWhile).toHaveBeenCalled();
+  });
+
+  it("stops at timeoutMs once extendWhile turns false (attempt ended without success)", async () => {
+    const clock = fakeClock();
+    const sleep = vi.fn(clock.sleep);
+    const fetchFn = vi.fn().mockResolvedValue(null);
+    const extendWhile = vi
+      .fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValue(false);
+    const result = await pollForCompletedOutput(fetchFn, {
+      timeoutMs: 1000,
+      intervalMs: 250,
+      extendWhile,
+      maxTimeoutMs: 60_000,
+      now: clock.now,
+      sleep,
+    });
+    expect(result).toBeNull();
+    expect(extendWhile).toHaveBeenCalledTimes(3);
+    expect(clock.now()).toBe(1500);
+  });
+
+  it("gives up at maxTimeoutMs even while extendWhile still holds", async () => {
+    const clock = fakeClock();
+    const sleep = vi.fn(clock.sleep);
+    const fetchFn = vi.fn().mockResolvedValue(null);
+    const extendWhile = vi.fn().mockResolvedValue(true);
+    const result = await pollForCompletedOutput(fetchFn, {
+      timeoutMs: 1000,
+      intervalMs: 250,
+      extendWhile,
+      maxTimeoutMs: 5000,
+      now: clock.now,
+      sleep,
+    });
+    expect(result).toBeNull();
+    expect(clock.now()).toBe(5000);
+  });
+
+  it("does not extend when maxTimeoutMs is omitted", async () => {
+    const clock = fakeClock();
+    const sleep = vi.fn(clock.sleep);
+    const fetchFn = vi.fn().mockResolvedValue(null);
+    const extendWhile = vi.fn().mockResolvedValue(true);
+    const result = await pollForCompletedOutput(fetchFn, {
+      timeoutMs: 1000,
+      intervalMs: 250,
+      extendWhile,
+      now: clock.now,
+      sleep,
+    });
+    expect(result).toBeNull();
+    expect(extendWhile).not.toHaveBeenCalled();
+    expect(clock.now()).toBe(1000);
+  });
+
   it("does exactly one fetch and no sleep when timeoutMs is 0 (one-shot)", async () => {
     const clock = fakeClock();
     const sleep = vi.fn(clock.sleep);

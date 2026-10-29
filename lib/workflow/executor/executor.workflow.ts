@@ -255,9 +255,14 @@ function formatConditionValueForDisplay(value: unknown): unknown {
  * is committed, the real success lands ~0.3-0.5s later. The catch handler
  * polls the step authority for up to this window before falling back to
  * nullifying the node.
+ *
+ * A duplicate delivery of a step whose first attempt is still executing throws
+ * the same error; that success lands when the attempt finishes. While the node
+ * still has a 'running' row the poll extends up to the in-flight window.
  */
 const SPURIOUS_RECOVERY_POLL_TIMEOUT_MS = 3000;
 const SPURIOUS_RECOVERY_POLL_INTERVAL_MS = 250;
+const SPURIOUS_RECOVERY_INFLIGHT_TIMEOUT_MS = 60_000;
 
 /**
  * KEEP-398: SDK error shapes that indicate a spurious step-completion failure.
@@ -4061,7 +4066,8 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
               executionId,
               nodeId,
               SPURIOUS_RECOVERY_POLL_TIMEOUT_MS,
-              SPURIOUS_RECOVERY_POLL_INTERVAL_MS
+              SPURIOUS_RECOVERY_POLL_INTERVAL_MS,
+              SPURIOUS_RECOVERY_INFLIGHT_TIMEOUT_MS
             )
           )?.outputRaw;
         } catch (pollError) {
