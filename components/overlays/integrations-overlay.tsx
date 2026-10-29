@@ -91,7 +91,8 @@ export function IntegrationsOverlay({
               value={filter}
             />
           </div>
-          <div className="max-h-[300px] overflow-y-auto">
+          {/* Phones scroll the list with the sheet, not in a box of its own. */}
+          <div className="md:max-h-[300px] md:overflow-y-auto">
             <IntegrationsManager
               filter={filter}
               highlightId={highlightId}

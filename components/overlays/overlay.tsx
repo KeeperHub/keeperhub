@@ -44,7 +44,13 @@ export function Overlay({
   className,
 }: OverlayComponentProps) {
   return (
-    <div className={cn("flex max-h-[85vh] flex-col", className)}>
+    <div
+      className={cn(
+        // A full screen phone sheet (overlay-container) gives it all its height.
+        "flex max-h-[85vh] flex-col group-data-[expanded=true]/sheet:max-h-none group-data-[expanded=true]/sheet:min-h-0 group-data-[expanded=true]/sheet:flex-1",
+        className
+      )}
+    >
       {/* Header with smart back button detection */}
       {(title || description) && (
         <SmartOverlayHeader

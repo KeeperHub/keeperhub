@@ -121,7 +121,8 @@ export function ConnectionTypePicker({
             value={searchQuery}
           />
         </div>
-        <div className="max-h-[300px] space-y-1 overflow-y-auto">
+        {/* Phones scroll the list with the sheet, not in a box of its own. */}
+        <div className="space-y-1 md:max-h-[300px] md:overflow-y-auto">
           {filteredTypes.length === 0 ? (
             <p className="py-4 text-center text-muted-foreground text-sm">
               No services found
