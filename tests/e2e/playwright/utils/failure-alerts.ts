@@ -8,6 +8,8 @@ const ID_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
 const PASSWORD = "TestPassword123!";
 const MINUTE = 60_000;
 const FAILED_RUNS = 5;
+// CI turns alerts on for this org only (start-app's failure_alerts_rollout default).
+export const ALERTS_E2E_ORG_ID = "e2e-failure-alerts-org";
 
 function generateId(): string {
   return Array.from(
@@ -33,10 +35,11 @@ export type AlertsFixture = {
 
 // Own user, org and alert rows; the email pattern lets the global cleanup sweep leftovers.
 export async function seedFailureAlerts(): Promise<AlertsFixture> {
+  await cleanupLeftoverOrg();
   const suffix = generateId().slice(0, 10);
   const email = `test+failure-alerts-${suffix}@techops.services`;
   const userId = generateId();
-  const orgId = generateId();
+  const orgId = ALERTS_E2E_ORG_ID;
   const failingId = generateId();
   const alertedId = generateId();
   const failingName = `Failing Keeper ${suffix}`;
@@ -147,7 +150,7 @@ export async function seedFailureAlerts(): Promise<AlertsFixture> {
 
 // Removes only this fixture's rows; replica mode skips the audit log's append-only trigger, as cleanupTestUsers does.
 export async function cleanupFailureAlerts(
-  fixture: AlertsFixture
+  fixture: Pick<AlertsFixture, "orgId" | "userId" | "email">
 ): Promise<void> {
   const { orgId, userId, email } = fixture;
   const sql = getDbConnection();
@@ -188,6 +191,31 @@ export async function cleanupFailureAlerts(
     });
   } finally {
     await sql.end();
+  }
+}
+
+// The org id is fixed, so a run that crashed before cleanup would block the next seed.
+async function cleanupLeftoverOrg(): Promise<void> {
+  const sql = getDbConnection();
+  let owners: { userId: string; email: string }[];
+  try {
+    owners = (
+      await sql`
+        SELECT u.id, u.email FROM member m JOIN users u ON u.id = m.user_id
+        WHERE m.organization_id = ${ALERTS_E2E_ORG_ID}
+      `
+    ).map((row) => ({ userId: row.id as string, email: row.email as string }));
+  } finally {
+    await sql.end();
+  }
+  const [first, ...rest] = owners;
+  await cleanupFailureAlerts({
+    orgId: ALERTS_E2E_ORG_ID,
+    userId: first?.userId ?? "",
+    email: first?.email ?? ALERTS_E2E_ORG_ID,
+  });
+  for (const owner of rest) {
+    await cleanupFailureAlerts({ orgId: ALERTS_E2E_ORG_ID, ...owner });
   }
 }
 

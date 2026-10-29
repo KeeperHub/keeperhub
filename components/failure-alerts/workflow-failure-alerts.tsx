@@ -475,7 +475,7 @@ export function WorkflowFailureAlerts({
           className="scroll-mt-20 p-3 text-sm"
           tone={muted || pausedByAlert ? "warning" : "danger"}
         >
-          <div className="space-y-2">
+          <div className="min-w-0 space-y-2 break-words">
             <p className="font-medium">
               {incidentTitle(view.status.incident, pausedByAlert)}
             </p>
@@ -546,14 +546,14 @@ export function WorkflowFailureAlerts({
       )}
 
       {applies && (
-        <div className="space-y-3 rounded-lg border bg-muted/20 p-3 text-sm">
+        <div className="space-y-3 break-words rounded-lg border bg-muted/20 p-3 text-sm">
           {muted ? (
             <p className="flex items-start gap-2">
               <BellOff
                 aria-hidden="true"
                 className={cn("mt-0.5 size-4 shrink-0", WARNING_TEXT)}
               />
-              <span>
+              <span className="min-w-0">
                 {view.override.muteUntilSuccess
                   ? "Muted until it works again"
                   : `Muted until ${formatWhen(view.override.mutedUntil ?? "")}`}

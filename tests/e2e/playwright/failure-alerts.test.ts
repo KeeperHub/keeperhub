@@ -21,6 +21,8 @@ const MD = 768;
 // A section's code is compiled on first visit in development.
 const FIRST_VISIT = { timeout: 30_000 };
 const SAVE_TIMEOUT = { timeout: 30_000 };
+// Wording is still settling; replace with testids once the panel has them.
+const CUSTOMIZE_LABEL = /^(Customize|Change for this workflow)$/;
 const RESET_LABEL = /^(Use org setting|Reset to org rules)$/;
 
 let fixture: AlertsFixture;
@@ -238,15 +240,16 @@ test.describe("Failure alerts", () => {
       )
       .toBeNull();
 
-    await section.getByRole("button", { name: "Customize" }).click();
+    await section.getByRole("button", { name: CUSTOMIZE_LABEL }).click();
     const custom = section.getByTestId("failure-alerts-custom");
     await expect(custom).toBeVisible();
-    await custom.locator("#wf-failure-threshold").fill("2");
-    await custom.locator("#wf-pause-workflow").click();
-    await expect(custom.locator("#wf-pause-workflow")).toHaveAttribute(
-      "data-state",
-      "checked"
-    );
+    const threshold = custom.locator("#wf-failure-threshold");
+    const pauseBox = custom.locator("#wf-pause-workflow");
+    await pauseBox.click();
+    await threshold.fill("2");
+    // Both edits are still in the draft when Save is pressed.
+    await expect(threshold).toHaveValue("2");
+    await expect(pauseBox).toHaveAttribute("data-state", "checked");
     await custom.getByRole("button", { name: "Save", exact: true }).click();
     await expect(custom).toHaveCount(0, SAVE_TIMEOUT);
     await expect
