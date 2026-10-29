@@ -14,7 +14,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import { useOverlay } from "./overlay-provider";
 import type { OverlaySize } from "./types";
-import { useSheetExpand } from "./use-sheet-expand";
+import { useSheetExpand, useSheetViewport } from "./use-sheet-expand";
 
 const sizeClasses: Record<OverlaySize, string> = {
   sm: "max-w-sm",
@@ -344,11 +344,7 @@ function MobileOverlayContainer() {
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
   useSheetExpand(sheet, expandedRef, setExpanded);
-  // Vaul sizes the sheet inline for an open keyboard; drop that on each switch.
-  useLayoutEffect(() => {
-    sheet?.parentElement?.style.removeProperty("height");
-    sheet?.parentElement?.style.removeProperty("bottom");
-  }, [expanded, sheet]);
+  useSheetViewport(sheet?.parentElement ?? null);
 
   // Freeze the stack when open so content doesn't shift during exit animation
   if (isOpen) {
@@ -455,6 +451,9 @@ function MobileOverlayContainer() {
         <DrawerPrimitive.Content
           className={cn(
             "fixed inset-x-0 bottom-0 z-50 flex flex-col border-t bg-background shadow-2xl",
+            // Sized from the visible viewport above any on-screen keyboard,
+            // over Vaul's own inline keyboard sizing.
+            "bottom-[var(--sheet-keyboard,0px)]! h-auto!",
             expanded ? "rounded-none border-t-0" : "rounded-t-2xl"
           )}
           data-testid="overlay-sheet"
@@ -478,18 +477,18 @@ function MobileOverlayContainer() {
               "group/sheet flex flex-col pb-[env(safe-area-inset-bottom)] transition-[min-height,max-height,padding-top] duration-300 ease-out motion-reduce:transition-none",
               // Full screen stops under the app banner, which stays on top.
               expanded
-                ? "max-h-[calc(100dvh-var(--app-banner-height,0px))] min-h-[calc(100dvh-var(--app-banner-height,0px))] pt-[max(0px,calc(env(safe-area-inset-top)-var(--app-banner-height,0px)))]"
-                : "max-h-[90vh] min-h-0"
+                ? "max-h-[calc(var(--sheet-viewport,100dvh)-var(--app-banner-height,0px))] min-h-[calc(var(--sheet-viewport,100dvh)-var(--app-banner-height,0px))] pt-[max(0px,calc(env(safe-area-inset-top)-var(--app-banner-height,0px)))]"
+                : "max-h-[min(90vh,calc(var(--sheet-viewport,100dvh)-2rem))] min-h-0"
             )}
             data-expanded={expanded}
             ref={setSheet}
           >
-            {/* Drag handle; tapping it toggles full screen. The ::after makes
-                the tap area 44px tall without moving the header. */}
+            {/* Drag handle; tapping it toggles full screen. The ::after takes
+                the tap area 42px down, over the header's top padding. */}
             <button
               aria-label="Full screen"
               aria-pressed={expanded}
-              className="relative mx-auto flex h-6 w-24 shrink-0 items-end justify-center rounded-full after:absolute after:inset-x-0 after:-inset-y-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="relative z-10 mx-auto flex h-4.5 w-24 shrink-0 items-end justify-center rounded-full after:absolute after:inset-x-0 after:top-0 after:-bottom-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               data-testid="overlay-sheet-handle"
               onClick={() => setExpanded(!expanded)}
               type="button"

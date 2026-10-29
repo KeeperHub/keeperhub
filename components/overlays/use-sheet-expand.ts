@@ -112,3 +112,31 @@ export function useSheetExpand(
     };
   }, [sheet, expandedRef, setExpanded]);
 }
+
+/**
+ * Keeps --sheet-viewport (visible height) and --sheet-keyboard (what an
+ * on-screen keyboard covers) on the sheet, for its full screen size.
+ */
+export function useSheetViewport(content: HTMLElement | null): void {
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!(content && viewport)) {
+      return;
+    }
+    const update = (): void => {
+      const covered = window.innerHeight - viewport.height - viewport.offsetTop;
+      content.style.setProperty("--sheet-viewport", `${viewport.height}px`);
+      content.style.setProperty(
+        "--sheet-keyboard",
+        `${Math.max(0, covered)}px`
+      );
+    };
+    update();
+    viewport.addEventListener("resize", update);
+    viewport.addEventListener("scroll", update);
+    return () => {
+      viewport.removeEventListener("resize", update);
+      viewport.removeEventListener("scroll", update);
+    };
+  }, [content]);
+}
