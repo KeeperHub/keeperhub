@@ -450,7 +450,7 @@ function MobileOverlayContainer() {
         {/* Drawer container - let Vaul handle open/close animations */}
         <DrawerPrimitive.Content
           className={cn(
-            "fixed inset-x-0 bottom-0 z-50 flex flex-col border-t bg-background shadow-2xl",
+            "fixed inset-x-0 z-50 flex flex-col border-t bg-background shadow-2xl",
             // Sized from the visible viewport above any on-screen keyboard,
             // over Vaul's own inline keyboard sizing.
             "bottom-[var(--sheet-keyboard,0px)]! h-auto!",
@@ -483,8 +483,8 @@ function MobileOverlayContainer() {
             data-expanded={expanded}
             ref={setSheet}
           >
-            {/* Drag handle; tapping it toggles full screen. The ::after takes
-                the tap area 42px down, over the header's top padding. */}
+            {/* Drag handle; tapping it toggles full screen. The ::after makes
+                the tap area 42px tall, into the header's top padding. */}
             <button
               aria-label="Full screen"
               aria-pressed={expanded}
@@ -504,7 +504,9 @@ function MobileOverlayContainer() {
                 style={{
                   minHeight: minHeight > 0 && !expanded ? minHeight : "auto",
                 }}
-                transition={drawerSpring}
+                transition={
+                  shouldReduceMotion ? { duration: 0 } : drawerSpring
+                }
               >
                 {/* Content wrapper - all items rendered persistently to preserve state */}
                 <div

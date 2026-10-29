@@ -25,8 +25,8 @@ function isScrolledDown(
 }
 
 /**
- * Swipe or scroll up on a bottom sheet to open it full screen; swipe or scroll
- * down while its content is at the top to bring it back to its own height.
+ * Swipe up or wheel down on a bottom sheet to open it full screen; swipe down
+ * or wheel up while its content is at the top to bring it back to its own height.
  */
 export function useSheetExpand(
   sheet: HTMLElement | null,
@@ -115,7 +115,7 @@ export function useSheetExpand(
 
 /**
  * Keeps --sheet-viewport (visible height) and --sheet-keyboard (what an
- * on-screen keyboard covers) on the sheet, for its full screen size.
+ * on-screen keyboard covers) on Vaul's Content, which sizes the sheet.
  */
 export function useSheetViewport(content: HTMLElement | null): void {
   useEffect(() => {
@@ -126,8 +126,9 @@ export function useSheetViewport(content: HTMLElement | null): void {
     const update = (): void => {
       // Pinch-zoom shrinks the visual viewport too; only a keyboard counts.
       const zoomed = viewport.scale > 1;
-      const height = zoomed ? window.innerHeight : viewport.height;
-      const covered = window.innerHeight - height - viewport.offsetTop;
+      const layout = document.documentElement.clientHeight;
+      const height = zoomed ? layout : viewport.height;
+      const covered = layout - height - viewport.offsetTop;
       content.style.setProperty("--sheet-viewport", `${height}px`);
       content.style.setProperty(
         "--sheet-keyboard",

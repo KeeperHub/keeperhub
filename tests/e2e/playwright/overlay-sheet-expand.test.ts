@@ -2,9 +2,9 @@ import type { Locator, Page, Route } from "@playwright/test";
 import { expect, test } from "./fixtures";
 import { box, dismissPhoneOverlays } from "./utils/layout";
 
-// Below 768px overlays open as a bottom sheet. Swiping or scrolling up takes it
-// full screen; swiping down at the top of its content brings it back, and a
-// second swipe down closes it. Opened here the way the activity feed opens
+// Below 768px overlays open as a bottom sheet. Swiping up or a wheel down takes
+// it full screen; swiping down or a wheel up at the top of its content brings
+// it back, and a second swipe down closes it. Opened here the way the activity feed opens
 // Connections, with both lists served from stubs.
 
 const PHONE = { width: 390, height: 844 };
@@ -59,24 +59,15 @@ async function stubData(page: Page): Promise<void> {
 }
 
 type OpenOptions = {
-  // Keep the app's announcement banner, which stays above every overlay.
-  banner?: boolean;
   testId?: "overlay-sheet" | "overlay-window";
 };
 
 async function openConnections(
   page: Page,
   size: { width: number; height: number },
-  { banner = false, testId = "overlay-sheet" }: OpenOptions = {}
+  { testId = "overlay-sheet" }: OpenOptions = {}
 ): Promise<{ sheet: Locator; handle: Locator }> {
-  if (banner) {
-    await page.addInitScript(() => {
-      window.localStorage.setItem("keeperhub-mobile-warning-dismissed", "true");
-      window.localStorage.removeItem("kh-billing-announce-v1");
-    });
-  } else {
-    await dismissPhoneOverlays(page);
-  }
+  await dismissPhoneOverlays(page);
   await stubData(page);
   await page.setViewportSize(size);
   await page.goto("/activity", { waitUntil: "domcontentloaded" });
@@ -117,17 +108,48 @@ async function swipe(
   await cdp.detach();
 }
 
-// How far the sheet's content is scrolled.
-function contentScroll(sheet: Locator): Promise<number> {
+// The element the connection list scrolls in: how far it is scrolled, its box
+// rules, and whether the filter above the list scrolls with it. With
+// `momentumTicks`, two wheel ticks go either side of a jump back to the top.
+function listScroller(
+  sheet: Locator,
+  momentumTicks = false
+): Promise<{
+  scrollTop: number;
+  maxHeight: string;
+  overflowY: string;
+  holdsFilter: boolean;
+}> {
   return sheet
     .getByText("Sheet connection 1", { exact: true })
-    .evaluate((element) => {
+    .evaluate((element, ticks) => {
       let node: Element | null = element;
       while (node && node.scrollHeight <= node.clientHeight) {
         node = node.parentElement;
       }
-      return node?.scrollTop ?? 0;
-    });
+      if (ticks) {
+        const tick = (): boolean =>
+          element.dispatchEvent(
+            new WheelEvent("wheel", { bubbles: true, deltaY: -100 })
+          );
+        tick();
+        if (node) {
+          node.scrollTop = 0;
+        }
+        tick();
+      }
+      const style = node ? getComputedStyle(node) : null;
+      return {
+        scrollTop: node?.scrollTop ?? 0,
+        maxHeight: style?.maxHeight ?? "",
+        overflowY: style?.overflowY ?? "",
+        holdsFilter: Boolean(node?.querySelector("input")),
+      };
+    }, momentumTicks);
+}
+
+async function contentScroll(sheet: Locator): Promise<number> {
+  return (await listScroller(sheet)).scrollTop;
 }
 
 // The fixed banner's height, 0 when it is not shown.
@@ -185,6 +207,8 @@ test.describe("Overlay sheet on touch phones", () => {
     const { sheet, handle } = await openConnections(page, PHONE);
     const x = PHONE.width / 2;
     await expectOwnHeight(page, sheet, handle);
+    // The list scrolls with the sheet's content, not in a box of its own.
+    expect((await listScroller(sheet)).holdsFilter).toBe(true);
 
     const title = await box(sheet.getByText("Connections", { exact: true }));
     await swipe(page, x, title.y + 10, title.y - 90);
@@ -208,18 +232,15 @@ test.describe("Overlay sheet on touch phones", () => {
     await expect(sheet).toBeHidden();
   });
 
-  test("full screen stops under the announcement banner", async ({ page }) => {
-    const { sheet, handle } = await openConnections(
-      page,
-      { width: 360, height: 640 },
-      { banner: true }
+  test("full screen stops under the app banner", async ({ page }) => {
+    const { sheet, handle } = await openConnections(page, {
+      width: 360,
+      height: 640,
+    });
+    // The banner sets this while it shows; set here so billing need not be on.
+    await page.evaluate(() =>
+      document.documentElement.style.setProperty("--app-banner-height", "36px")
     );
-    const shown = await expect
-      .poll(() => bannerHeight(page), { timeout: 5000 })
-      .toBeGreaterThan(0)
-      .then(() => true)
-      .catch(() => false);
-    test.skip(!shown, "the announcement banner needs billing enabled");
     await handle.click();
     await expectFullScreen(page, sheet, handle);
   });
@@ -243,24 +264,7 @@ test.describe("Overlay sheet with a mouse", () => {
     // A wheel tick right after one that scrolled back to the top (trackpad
     // momentum) does not collapse; one after a pause does. Dispatched in one
     // go so the gap between them is well under the pause.
-    await sheet
-      .getByText("Sheet connection 1", { exact: true })
-      .evaluate((element) => {
-        let scroller: Element | null = element;
-        while (scroller && scroller.scrollHeight <= scroller.clientHeight) {
-          scroller = scroller.parentElement;
-        }
-        const tick = (): boolean =>
-          element.dispatchEvent(
-            new WheelEvent("wheel", { bubbles: true, deltaY: -100 })
-          );
-        tick();
-        if (scroller) {
-          scroller.scrollTop = 0;
-        }
-        tick();
-      });
-    expect(await contentScroll(sheet)).toBe(0);
+    expect((await listScroller(sheet, true)).scrollTop).toBe(0);
     await expect(handle).toHaveAttribute("aria-pressed", "true");
 
     // Just past the 300ms pause the guard waits for.
@@ -290,20 +294,10 @@ test.describe("Overlay sheet with a mouse", () => {
       { testId: "overlay-window" }
     );
     await expect(page.getByTestId("overlay-sheet-handle")).toHaveCount(0);
-    const listBox = await dialog
-      .getByText("Sheet connection 1", { exact: true })
-      .evaluate((element) => {
-        let node: Element | null = element;
-        while (node && getComputedStyle(node).maxHeight === "none") {
-          node = node.parentElement;
-        }
-        return node
-          ? {
-              maxHeight: getComputedStyle(node).maxHeight,
-              overflowY: getComputedStyle(node).overflowY,
-            }
-          : null;
-      });
-    expect(listBox).toEqual({ maxHeight: "300px", overflowY: "auto" });
+    expect(await listScroller(dialog)).toMatchObject({
+      maxHeight: "300px",
+      overflowY: "auto",
+      holdsFilter: false,
+    });
   });
 });
