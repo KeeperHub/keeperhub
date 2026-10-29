@@ -116,6 +116,31 @@ describe("pollForCompletedOutput", () => {
     expect(clock.now()).toBe(1500);
   });
 
+  it("returns a success that commits between the fetch and the in-flight check", async () => {
+    const clock = fakeClock();
+    const sleep = vi.fn(clock.sleep);
+    let committed = false;
+    const fetchFn = vi.fn(() =>
+      Promise.resolve(committed ? { outputRaw: "raced" } : null)
+    );
+    const extendWhile = vi.fn(() => {
+      if (clock.now() >= 2000) {
+        committed = true;
+        return Promise.resolve(false);
+      }
+      return Promise.resolve(true);
+    });
+    const result = await pollForCompletedOutput(fetchFn, {
+      timeoutMs: 1000,
+      intervalMs: 250,
+      extendWhile,
+      maxTimeoutMs: 60_000,
+      now: clock.now,
+      sleep,
+    });
+    expect(result).toEqual({ outputRaw: "raced" });
+  });
+
   it("gives up at maxTimeoutMs even while extendWhile still holds", async () => {
     const clock = fakeClock();
     const sleep = vi.fn(clock.sleep);

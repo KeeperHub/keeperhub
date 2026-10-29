@@ -45,8 +45,12 @@ export async function pollForCompletedOutput<T>(
     }
     if (now() >= deadline) {
       const { extendWhile } = options;
-      if (!extendWhile || now() >= maxDeadline || !(await extendWhile())) {
+      if (!extendWhile || now() >= maxDeadline) {
         return null;
+      }
+      if (!(await extendWhile())) {
+        // The attempt can commit between the fetch above and this check.
+        return fetchFn();
       }
     }
     await sleep(options.intervalMs);
