@@ -18,6 +18,7 @@ import type {
   WorkflowEdgeJson,
   WorkflowNodeJson,
 } from "@/lib/workflow/node-builders";
+import { publicTagSlug } from "@/lib/workflow/public-tag-slug";
 import {
   createManualWorkflow,
   createScheduledWorkflow,
@@ -410,23 +411,18 @@ export async function deleteTestWorkflow(workflowId: string): Promise<void> {
 }
 
 /**
- * Create a Hub public tag, or take over one with the same slug a crashed run
- * left behind; delete it with deleteTestPublicTag
+ * Create a Hub public tag; delete it with deleteTestPublicTag. Give it a name
+ * unique to the run: a clash fails instead of taking over a shared tag.
  */
 export async function createTestPublicTag(name: string): Promise<string> {
   const sql = getDbConnection();
   try {
     const id = generateId();
-    const slug = name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-    const rows = await sql`
-      INSERT INTO public_tags (id, name, slug) VALUES (${id}, ${name}, ${slug})
-      ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
-      RETURNING id
+    await sql`
+      INSERT INTO public_tags (id, name, slug)
+      VALUES (${id}, ${name}, ${publicTagSlug(name)})
     `;
-    return rows[0].id as string;
+    return id;
   } finally {
     await sql.end();
   }

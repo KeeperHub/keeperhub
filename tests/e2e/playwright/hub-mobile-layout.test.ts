@@ -269,13 +269,16 @@ test.describe("Workflows list columns", () => {
   const token = `hublist${suffix}`;
   const featured = `${token} rebalance collateral across chains when the health factor drops`;
   const plain = `${token} wrap stETH`;
-  // A row shows up to three tags and they should fit on one line at 1280px.
-  // Real tag names spelled backwards: the same width, and no clash with them.
-  const tagNames = ["DeFi", "Monitoring", "Liquidations"].map((name) =>
-    [...name].reverse().join("")
+  // A row shows up to three tags on one line. Long real names plus the run
+  // suffix, so the tags are new rows that only this test deletes.
+  const tagNames = ["Cross-chain Bridges", "Liquidations", "Monitoring"].map(
+    (name) => `${name} ${suffix}`
   );
-  // The widest count the Uses column has to hold, injected into the feed.
-  const featuredUses = 123_456;
+  // Counts injected into the feed: seven digits, and the widest compact label.
+  const uses = new Map([
+    [featured, { count: 1_234_567, label: "1.2M" }],
+    [plain, { count: 999_949, label: "999.9K" }],
+  ]);
   const workflowIds: string[] = [];
   const tagIds: string[] = [];
 
@@ -308,20 +311,29 @@ test.describe("Workflows list columns", () => {
     page.getByRole("row", { name: `Open ${name} preview` });
   const header = (page: Page, name: string): Locator =>
     page.getByRole("columnheader", { name, exact: true });
-  // The badge is rendered under the name and in its own column; one shows.
   const badgeOf = (row: Locator): Locator =>
-    row.getByText("Featured", { exact: true }).filter({ visible: true });
+    row.getByText("Featured", { exact: true });
+
+  test.afterEach(async ({ page }) => {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  });
 
   async function openList(page: Page, width: number): Promise<void> {
     await page.route("**/api/workflows/public*", async (route) => {
       const response = await route.fetch();
-      const feed = (await response.json()) as {
+      const feed: unknown = await response.json();
+      // An error body passes through so the test shows the real failure.
+      if (!Array.isArray(feed)) {
+        await route.fulfill({ response });
+        return;
+      }
+      for (const workflow of feed as {
         name: string;
         duplicateCount: number;
-      }[];
-      for (const workflow of feed) {
-        if (workflow.name === featured) {
-          workflow.duplicateCount = featuredUses;
+      }[]) {
+        const injected = uses.get(workflow.name);
+        if (injected) {
+          workflow.duplicateCount = injected.count;
         }
       }
       await route.fulfill({ response, json: feed });
@@ -331,7 +343,7 @@ test.describe("Workflows list columns", () => {
     await expect(rowOf(page, plain)).toBeVisible({ timeout: 15_000 });
   }
 
-  // Its centre is drawn on top 5px outside each vote button: the tap area.
+  // Whether a tap dx px left (dx < 0) or right of the button lands on it.
   async function tapAreaHits(button: Locator, dx: number): Promise<boolean> {
     return await button.evaluate((element, offset) => {
       const rect = element.getBoundingClientRect();
@@ -348,7 +360,7 @@ test.describe("Workflows list columns", () => {
     await openList(page, 320);
     for (const width of [320, 390, 768, 900, 1024, 1280, 1440, 1920]) {
       await atWidth(page, width, async () => {
-        const [uses, votes] = await Promise.all([
+        const [usesHeader, votes] = await Promise.all([
           box(header(page, "Uses")),
           box(header(page, "Votes")),
         ]);
@@ -361,43 +373,47 @@ test.describe("Workflows list columns", () => {
           ]);
           // 6rem: before the narrow tier dropped the icon, 320px left 78px.
           expect(nameBox.width).toBeGreaterThanOrEqual(96);
-          expect(right(nameBox)).toBeLessThanOrEqual(uses.x);
+          expect(right(nameBox)).toBeLessThanOrEqual(usesHeader.x);
           expect(right(rowBox)).toBeLessThanOrEqual(width);
           expect(right(downBox)).toBeLessThanOrEqual(right(rowBox));
           expect(Math.abs(right(votes) - right(downBox))).toBeLessThanOrEqual(
             1
           );
         }
-        // Compact on narrow tables, in full from the badge column on.
-        const count = await box(
-          rowOf(page, featured)
-            .getByText(/^(123K|123,456)$/)
-            .filter({ visible: true })
-        );
-        const featuredName = await box(
-          rowOf(page, featured).getByText(featured)
-        );
-        expect(count.x).toBeGreaterThanOrEqual(right(featuredName));
-        expect(right(count)).toBeLessThanOrEqual(right(uses) + 1);
+        // Each count stays inside the Uses track.
+        for (const [name, { label }] of uses) {
+          const row = rowOf(page, name);
+          const [count, nameBox] = await Promise.all([
+            box(row.getByText(label, { exact: true })),
+            box(row.getByText(name)),
+          ]);
+          expect(count.x).toBeGreaterThanOrEqual(right(nameBox));
+          expect(count.x).toBeGreaterThanOrEqual(usesHeader.x - 1);
+          expect(right(count)).toBeLessThanOrEqual(right(usesHeader) + 1);
+        }
       });
     }
   });
 
-  test("the vote buttons take taps 5px outside their icons", async ({
+  test("the vote buttons take taps 5px outside, but a tap on the score opens the preview", async ({
     page,
   }) => {
     await openList(page, 320);
     const row = rowOf(page, plain);
+    const up = row.getByRole("button", { name: "Upvote" });
+    const down = row.getByRole("button", { name: "Downvote" });
     for (const width of [320, 1280]) {
       await atWidth(page, width, async () => {
-        const up = row.getByRole("button", { name: "Upvote" });
-        const down = row.getByRole("button", { name: "Downvote" });
         expect(await tapAreaHits(up, -5)).toBe(true);
         expect(await tapAreaHits(down, 5)).toBe(true);
-        expect(await tapAreaHits(up, 5)).toBe(true);
-        expect(await tapAreaHits(down, -5)).toBe(true);
+        // 1px into the score from either side, past the 2px gap.
+        expect(await tapAreaHits(up, 3)).toBe(false);
+        expect(await tapAreaHits(down, -3)).toBe(false);
       });
     }
+    const upBox = await box(up);
+    await page.mouse.click(right(upBox) + 3, middle(upBox));
+    await expect(page).toHaveURL(new RegExp(`/workflows/${workflowIds[1]}`));
   });
 
   test("a narrow table puts Featured under the name; wider ones give it and the tags columns", async ({
@@ -442,15 +458,20 @@ test.describe("Workflows list columns", () => {
         expect(badgeBox.x).toBeGreaterThan(right(downBox));
         expect(Math.abs(middle(badgeBox) - middle(nameBox))).toBeLessThan(2);
         expect(tagBox.x).toBeGreaterThan(right(nameBox));
-        const tags = await box(header(page, "Tags"));
+        const [tags, usesHeader] = await Promise.all([
+          box(header(page, "Tags")),
+          box(header(page, "Uses")),
+        ]);
         expect(Math.abs(tagBox.x - tags.x)).toBeLessThanOrEqual(1);
-        const tops = await Promise.all(
-          tagNames.map(
-            async (tagName) =>
-              (await box(row.getByText(tagName, { exact: true }))).y
+        // Long names shorten: one line, all inside the Tags track.
+        const chips = await Promise.all(
+          tagNames.map((tagName) =>
+            box(row.getByText(tagName, { exact: true }))
           )
         );
+        const tops = chips.map((chip) => chip.y);
         expect(Math.max(...tops) - Math.min(...tops)).toBeLessThan(1);
+        expect(Math.max(...chips.map(right))).toBeLessThanOrEqual(usesHeader.x);
       });
     }
   });
