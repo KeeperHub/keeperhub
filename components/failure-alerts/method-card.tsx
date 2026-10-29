@@ -325,6 +325,7 @@ function SaveButton({
   return (
     <Button
       aria-label={`Save ${label}`}
+      data-testid="failure-alert-method-save-button"
       disabled={!(dirty && ready) || saving}
       onClick={onClick}
       size="sm"

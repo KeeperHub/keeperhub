@@ -68,11 +68,11 @@ const FOOTER_LINK =
   "inline-flex min-h-11 items-center text-foreground underline underline-offset-4 sm:min-h-0";
 const STALE_TOAST =
   "These settings were changed by someone else. Reload to see the latest, then save again.";
-const MUTE_CHOICES: { label: string; ms: number | "success" }[] = [
-  { label: "1 hour", ms: HOUR_MS },
-  { label: "24 hours", ms: 24 * HOUR_MS },
-  { label: "7 days", ms: 7 * 24 * HOUR_MS },
-  { label: "Until it works again", ms: "success" },
+const MUTE_CHOICES: { id: string; label: string; ms: number | "success" }[] = [
+  { id: "1h", label: "1 hour", ms: HOUR_MS },
+  { id: "24h", label: "24 hours", ms: 24 * HOUR_MS },
+  { id: "7d", label: "7 days", ms: 7 * 24 * HOUR_MS },
+  { id: "success", label: "Until it works again", ms: "success" },
 ];
 
 function describeTimeLimit(minutes: number | null): string {
@@ -441,6 +441,8 @@ export function WorkflowFailureAlerts({
   return (
     <div
       className="scroll-mt-20 space-y-3"
+      data-muted={muted}
+      data-source={custom ? "custom" : "org"}
       data-testid="workflow-failure-alerts"
     >
       <div className="ml-1 flex items-center gap-2">
@@ -611,6 +613,7 @@ export function WorkflowFailureAlerts({
             <div className="flex flex-wrap gap-2">
               {muted ? (
                 <Button
+                  data-testid="failure-alerts-unmute"
                   disabled={saving}
                   onClick={unmute}
                   ref={muteButtonRef}
@@ -622,6 +625,7 @@ export function WorkflowFailureAlerts({
                 </Button>
               ) : (
                 <Button
+                  data-testid="failure-alerts-mute-open"
                   onClick={() => openPanel("mute")}
                   ref={muteButtonRef}
                   size="sm"
@@ -632,6 +636,7 @@ export function WorkflowFailureAlerts({
                 </Button>
               )}
               <Button
+                data-testid="failure-alerts-customize-open"
                 onClick={() => openPanel("custom")}
                 ref={customButtonRef}
                 size="sm"
@@ -643,6 +648,7 @@ export function WorkflowFailureAlerts({
               {custom && (
                 <Button
                   className="h-auto min-h-11 px-0 text-xs sm:min-h-0"
+                  data-testid="failure-alerts-reset"
                   disabled={saving}
                   onClick={followOrgSetting}
                   type="button"
@@ -664,8 +670,9 @@ export function WorkflowFailureAlerts({
               <div className="flex flex-wrap gap-2">
                 {MUTE_CHOICES.map((choice) => (
                   <Button
+                    data-mute={choice.id}
                     disabled={saving}
-                    key={choice.label}
+                    key={choice.id}
                     onClick={() => mute(choice.ms)}
                     size="sm"
                     type="button"
@@ -912,6 +919,7 @@ export function WorkflowFailureAlerts({
                   Cancel
                 </Button>
                 <Button
+                  data-testid="failure-alerts-custom-save"
                   disabled={saving}
                   onClick={saveCustom}
                   size="sm"

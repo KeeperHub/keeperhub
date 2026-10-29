@@ -799,6 +799,8 @@ function ExpandableRunRow({
           "group cursor-pointer transition-colors hover:bg-muted/50",
           expanded && "bg-muted/30"
         )}
+        data-source={run.source}
+        data-testid="run-row"
         onClick={() => {
           handleToggleExpand().catch(() => {
             /* noop - errors handled with toast in handlePageChange */

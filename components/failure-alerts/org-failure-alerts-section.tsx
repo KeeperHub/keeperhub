@@ -506,6 +506,7 @@ export function OrgFailureAlertsSection({
         action={
           canManage && !pause && !pausing ? (
             <Button
+              data-testid="failure-alerts-pause"
               onClick={() => setPausing(true)}
               size="sm"
               type="button"
@@ -599,6 +600,7 @@ export function OrgFailureAlertsSection({
           </ul>
           {canManage && (
             <Button
+              data-testid="failure-alerts-add-method"
               onClick={addMethod}
               ref={addRef}
               size="sm"

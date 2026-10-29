@@ -1,10 +1,10 @@
 import type { FailureIncidentTrigger } from "@/lib/db/schema-failure-alerts";
 import { emailButton, emailLayout, escapeHtml } from "@/lib/email";
-import { isFundingShortfall } from "@/lib/errors/funding-shortfall";
 import {
   MAX_SUMMARY_CHARS,
   truncateRunes,
 } from "@/plugins/pagerduty/event-payload";
+import { isOutOfFunds } from "./streak";
 
 // Message wording for every channel, apart from delivery so it is tested in one place.
 
@@ -118,7 +118,7 @@ function errorHint(error: string | null): string | null {
   if (!error) {
     return null;
   }
-  if (isFundingShortfall(error)) {
+  if (isOutOfFunds(error)) {
     return "This looks like the wallet running out of funds: check its balance.";
   }
   if (GAS_LIMIT_TROUBLE.test(error)) {

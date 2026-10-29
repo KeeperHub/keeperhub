@@ -21,9 +21,6 @@ const MD = 768;
 // A section's code is compiled on first visit in development.
 const FIRST_VISIT = { timeout: 30_000 };
 const SAVE_TIMEOUT = { timeout: 30_000 };
-// Wording is still settling; replace with testids once the panel has them.
-const CUSTOMIZE_LABEL = /^(Customize|Change for this workflow)$/;
-const RESET_LABEL = /^(Use org setting|Reset to org rules)$/;
 
 let fixture: AlertsFixture;
 
@@ -160,16 +157,13 @@ test.describe("Failure alerts", () => {
     page,
   }) => {
     await openAlerts(page);
-    await page
-      .getByTestId("failure-alerts-methods")
-      .getByRole("button", { name: "Add a method" })
-      .click();
+    await page.getByTestId("failure-alerts-add-method").click();
     const fresh = methodCards(page).last();
     const picker = fresh.getByTestId("failure-alert-method-picker");
     await expect(picker).toBeVisible();
     // The only Discord connection holds no credentials, so the server's check fails without a network call.
     await picker.locator('input[value="discord"]').check({ force: true });
-    await fresh.getByRole("button", { name: /^Save / }).click();
+    await fresh.getByTestId("failure-alert-method-save-button").click();
     const refusal = fresh.getByTestId("failure-alert-save-error");
     await expect(refusal).toBeVisible(SAVE_TIMEOUT);
     await expect(refusal).toContainText("cannot receive notifications");
@@ -182,11 +176,11 @@ test.describe("Failure alerts", () => {
 
   test("pausing alerts shows the notice until Resume now", async ({ page }) => {
     await openAlerts(page);
-    await page.getByRole("button", { name: "Pause alerts" }).click();
+    await page.getByTestId("failure-alerts-pause").click();
     const form = page.getByTestId("failure-alerts-pause-form");
     await expect(form).toBeVisible();
     await form.getByLabel("Reason (optional)").fill("E2E maintenance");
-    await form.getByRole("button", { name: "Pause", exact: true }).click();
+    await form.getByTestId("failure-alerts-pause-submit").click();
 
     const paused = page.getByTestId("failure-alerts-paused");
     await expect(paused).toBeVisible(SAVE_TIMEOUT);
@@ -197,7 +191,7 @@ test.describe("Failure alerts", () => {
 
     await openAlerts(page);
     await expect(paused).toBeVisible();
-    await paused.getByRole("button", { name: "Resume now" }).click();
+    await paused.getByTestId("failure-alerts-resume").click();
     await expect(paused).toHaveCount(0, SAVE_TIMEOUT);
     await expect
       .poll(() => readOrgPause(fixture.orgId), SAVE_TIMEOUT)
@@ -208,10 +202,15 @@ test.describe("Failure alerts", () => {
 
   test("history lists the alerts that went out", async ({ page }) => {
     await openAlerts(page);
-    const history = page.getByTestId("failure-alert-history");
-    await expect(history.locator("li").first()).toBeVisible(FIRST_VISIT);
-    await expect(history).toContainText(fixture.failingName);
-    await expect(history).toContainText(fixture.alertedName);
+    const rows = page.getByTestId("failure-alert-history-row");
+    await expect(rows.first()).toBeVisible(FIRST_VISIT);
+    const alerts = rows.and(page.locator('[data-kind="alert"]'));
+    await expect(alerts.filter({ hasText: fixture.failingName })).toHaveCount(
+      1
+    );
+    await expect(alerts.filter({ hasText: fixture.alertedName })).toHaveCount(
+      1
+    );
   });
 
   test("workflow Properties: mute, unmute, customize with pause, reset", async ({
@@ -219,20 +218,23 @@ test.describe("Failure alerts", () => {
   }) => {
     const section = await openProperties(page, fixture.failingId);
 
-    await section.getByRole("button", { name: "Mute", exact: true }).click();
+    const muteOpen = section.getByTestId("failure-alerts-mute-open");
+    await expect(section).toHaveAttribute("data-source", "org");
+    await muteOpen.click();
     const mute = section.getByTestId("failure-alerts-mute");
     await expect(mute).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(mute).toHaveCount(0);
-    await section.getByRole("button", { name: "Mute", exact: true }).click();
-    await mute.getByRole("button", { name: "24 hours" }).click();
+    await muteOpen.click();
+    await mute.locator('[data-mute="24h"]').click();
     await expect
       .poll(
         async () => (await readOverride(fixture.failingId))?.mutedUntil,
         SAVE_TIMEOUT
       )
       .toBeTruthy();
-    await section.getByRole("button", { name: "Unmute" }).click();
+    await expect(section).toHaveAttribute("data-muted", "true");
+    await section.getByTestId("failure-alerts-unmute").click();
     await expect
       .poll(
         async () => (await readOverride(fixture.failingId))?.mutedUntil ?? null,
@@ -240,7 +242,8 @@ test.describe("Failure alerts", () => {
       )
       .toBeNull();
 
-    await section.getByRole("button", { name: CUSTOMIZE_LABEL }).click();
+    await expect(section).toHaveAttribute("data-muted", "false");
+    await section.getByTestId("failure-alerts-customize-open").click();
     const custom = section.getByTestId("failure-alerts-custom");
     await expect(custom).toBeVisible();
     const threshold = custom.locator("#wf-failure-threshold");
@@ -250,13 +253,14 @@ test.describe("Failure alerts", () => {
     // Both edits are still in the draft when Save is pressed.
     await expect(threshold).toHaveValue("2");
     await expect(pauseBox).toHaveAttribute("data-state", "checked");
-    await custom.getByRole("button", { name: "Save", exact: true }).click();
+    await custom.getByTestId("failure-alerts-custom-save").click();
     await expect(custom).toHaveCount(0, SAVE_TIMEOUT);
     await expect
       .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
       .toMatchObject({ threshold: 2, pauseWorkflow: true });
 
-    await section.getByRole("button", { name: RESET_LABEL }).click();
+    await expect(section).toHaveAttribute("data-source", "custom");
+    await section.getByTestId("failure-alerts-reset").click();
     await expect
       .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
       .toBeNull();
@@ -267,7 +271,11 @@ test.describe("Failure alerts", () => {
     const table = page.getByTestId("runs-table");
     await expect(table).toHaveAttribute("data-ready", "true", FIRST_VISIT);
     // This workflow never ran, so its name only shows through its alert.
-    await expect(table).toContainText(fixture.alertedName, SAVE_TIMEOUT);
+    const alertRow = table
+      .getByTestId("run-row")
+      .and(page.locator('[data-source="notification"]'))
+      .filter({ hasText: fixture.alertedName });
+    await expect(alertRow).toBeVisible(SAVE_TIMEOUT);
   });
 
   for (const width of WIDTHS) {

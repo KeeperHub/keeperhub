@@ -62,7 +62,12 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
     title = `${title}: ${entry.note}`;
   }
   return (
-    <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-0.5 px-3 py-2 text-sm @xl/settings:grid-cols-[7rem_minmax(0,1fr)_auto]">
+    <li
+      className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-0.5 px-3 py-2 text-sm @xl/settings:grid-cols-[7rem_minmax(0,1fr)_auto]"
+      data-kind={entry.kind}
+      data-state={entry.state}
+      data-testid="failure-alert-history-row"
+    >
       <span className="col-start-1 row-start-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 @xl/settings:col-start-2">
         <span className="break-words font-medium">{title}</span>
         {entry.isBackup && <Badge variant="outline">Backup</Badge>}

@@ -317,6 +317,21 @@ describe("message wording after review", () => {
     );
     expect(rpc.text).toContain("RPC provider problem");
   });
+
+  it("hints at funds when the balance check refuses before sending", () => {
+    const preflight = renderMessage(
+      {
+        ...base,
+        kind: "alert",
+        incident: {
+          ...incident,
+          lastError: "Insufficient ETH balance. Have: 0.0004, Need: 0.0006",
+        },
+      },
+      now
+    );
+    expect(preflight.text).toContain("running out of funds");
+  });
 });
 
 describe("explainFailure", () => {

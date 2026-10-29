@@ -57,6 +57,7 @@ export function AlertsPausedNotice({
           </p>
           {canManage && (
             <Button
+              data-testid="failure-alerts-resume"
               disabled={resuming}
               onClick={resume}
               size="sm"
@@ -201,6 +202,7 @@ export function PauseAlertsForm({
       )}
       <div className="flex flex-wrap gap-2">
         <Button
+          data-testid="failure-alerts-pause-submit"
           disabled={saving || !until || Boolean(invalid)}
           onClick={submit}
           size="sm"
