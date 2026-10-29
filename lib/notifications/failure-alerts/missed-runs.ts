@@ -92,9 +92,13 @@ export function missedDueAt(params: {
   if (!latest || latest <= params.notBefore) {
     return null;
   }
-  // A run up to the tolerance early still counts for that due time.
+  // A run up to the tolerance early still counts for that due time; under half an interval for 1-minute schedules.
+  const tolerance = Math.min(
+    DISPATCH_TOLERANCE_MS,
+    graceFor(params.schedule, params.now) / 4
+  );
   const ranUpTo = params.lastStartedAt
-    ? params.lastStartedAt.getTime() + DISPATCH_TOLERANCE_MS
+    ? params.lastStartedAt.getTime() + tolerance
     : Number.NEGATIVE_INFINITY;
   const first = nextDueAfter(
     params.schedule,

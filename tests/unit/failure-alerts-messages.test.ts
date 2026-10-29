@@ -33,7 +33,7 @@ describe("cap warning", () => {
   it("says chat and PagerDuty still get alerts when one works", () => {
     const message = cap(100, true);
     expect(message.text).toContain(
-      "new failure alerts go only to your Slack, Discord, Telegram and PagerDuty methods, not email"
+      "new failure alerts go only to your chat and PagerDuty methods, not email"
     );
     expect(message.text).not.toContain("nobody is told");
   });
@@ -73,6 +73,7 @@ describe("wallet out of funds", () => {
     expect(open).toBeGreaterThan(add);
     expect(message.html).toContain("Add funds");
     expect(message.text).toContain(`Add funds: ${WALLETS}`);
+    expect(message.text).not.toContain("This looks like the wallet");
   });
 
   it("keeps the trigger line apart from the advice", () => {

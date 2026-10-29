@@ -224,7 +224,6 @@ export function AlertsStatus({
             {plural(broken.length, "method needs", "methods need")} attention:
           </span>{" "}
           {broken.map(label).join(", ")}.
-          {routes > 0 ? " Everyone else is still reached." : ""}
         </p>
       )}
 

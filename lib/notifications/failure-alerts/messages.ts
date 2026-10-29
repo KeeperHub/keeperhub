@@ -216,7 +216,7 @@ function pausedHeadline(
 }
 
 const PAUSED_NEXT_STEP =
-  "KeeperHub turned it off because this workflow is set to pause at its failure limit. It will not run until someone turns it back on: fix the cause, then use the Enable switch in the workflow editor.";
+  "KeeperHub turned it off because this workflow is set to pause at its failure limit. It will not run until someone turns it back on: fix the cause, then press Turn back on in the workflow's Alerts panel.";
 
 function joinBanners(
   ...banners: { html: string; text: string; chat: string }[]
@@ -336,7 +336,11 @@ function renderAlert(
     testBanner(input.testNote),
     backupBanner(input.backupReason)
   );
-  const hint = missed ? null : errorHint(incident.lastError);
+  // A funds alert already says what to do; the hint would repeat it.
+  const hint =
+    missed || incident.openedBy === "funding"
+      ? null
+      : errorHint(incident.lastError);
   const runs = runsUrl(appUrl, workflow.id);
   const open = workflowUrl(appUrl, workflow.id);
   const funds =
@@ -564,7 +568,7 @@ function capOutDetail(chatWorks: boolean | undefined): string {
     return `From now until the 1st, nobody is told about new failures. ${ADD_CHAT}`;
   }
   if (chatWorks) {
-    return "Until the 1st, new failure alerts go only to your Slack, Discord, Telegram and PagerDuty methods, not email. Upgrade for unlimited alert emails.";
+    return "Until the 1st, new failure alerts go only to your chat and PagerDuty methods, not email. Upgrade for unlimited alert emails.";
   }
   return "Until the 1st, new failure alerts go only to Slack, Discord, Telegram and PagerDuty, not email; without one of those, nobody is told. Add one, or upgrade for unlimited alert emails.";
 }

@@ -83,6 +83,18 @@ describe("missedDueAt", () => {
     ).toBe("2026-10-28T12:05:00.000Z");
   });
 
+  it("names the next minute on a 1-minute schedule that ran on time", () => {
+    const everyMinute = { ...every5, cronExpression: "* * * * *" };
+    expect(
+      missedDueAt({
+        schedule: everyMinute,
+        lastStartedAt: new Date("2026-10-28T12:20:00Z"),
+        notBefore: longAgo,
+        now: new Date("2026-10-28T12:25:00Z"),
+      })?.toISOString()
+    ).toBe("2026-10-28T12:21:00.000Z");
+  });
+
   it("is fine when a run started at the due time", () => {
     expect(
       missedDueAt({

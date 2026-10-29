@@ -44,12 +44,12 @@ export function ChoiceChips<T extends string>({
           return (
             <label
               className={cn(
-                "flex min-h-11 min-w-0 cursor-pointer rounded-md border px-2 py-2 text-xs transition-colors hover:bg-muted/50 @xl/settings:min-h-9",
+                "flex min-h-11 min-w-0 cursor-pointer rounded-sm border px-2 py-2 text-xs transition-colors hover:bg-muted/50 @xl/settings:min-h-9",
                 option.description
                   ? "flex-col items-start justify-center gap-0.5 px-3 text-left"
                   : "items-center justify-center gap-2 text-center",
                 "has-[:checked]:border-foreground/60 has-[:checked]:bg-muted",
-                "has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/50"
+                "has-[:focus-visible]:border-ring has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50"
               )}
               htmlFor={id}
               key={option.value}

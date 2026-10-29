@@ -68,6 +68,7 @@ import {
   type Tx,
 } from "./queue-rows";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
+import { lockOrgSettings } from "./settings";
 import {
   decide,
   isAutomatedRun,
@@ -578,11 +579,31 @@ async function evaluateWorkflow(
 
 /** Queue rows and mark the incidents alerted, all or nothing. */
 async function queueAndMark(
+  organizationId: string,
   rows: DeliveryInsert[],
   incidentIds: string[],
   now: Date
 ): Promise<number> {
   return await db.transaction(async (tx: Tx) => {
+    // The pause may have changed since it was read: held rows follow its end as it is now.
+    await lockOrgSettings(tx, organizationId);
+    const [settings] = await tx
+      .select({ pausedUntil: orgFailureAlertSettings.pausedUntil })
+      .from(orgFailureAlertSettings)
+      .where(eq(orgFailureAlertSettings.organizationId, organizationId));
+    const holdEnd = (
+      activePause(settings?.pausedUntil ?? null, now) ?? now
+    ).getTime();
+    for (const row of rows) {
+      const due = row.nextAttemptAt?.getTime() ?? now.getTime();
+      const shift = due > now.getTime() ? holdEnd - due : 0;
+      if (shift !== 0 && row.nextAttemptAt) {
+        row.nextAttemptAt = new Date(due + shift);
+        row.backupAt = row.backupAt
+          ? new Date(row.backupAt.getTime() + shift)
+          : row.backupAt;
+      }
+    }
     const queued = await insertDeliveries(rows, tx);
     await tx
       .update(workflowFailureIncidents)
@@ -677,6 +698,7 @@ async function queueAlerts(
         );
       }
       stats.messagesQueued += await queueAndMark(
+        organizationId,
         rows,
         incidents.map((i) => i.id),
         now
