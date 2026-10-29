@@ -263,12 +263,10 @@ test.describe("Overlay sheet with a mouse", () => {
     expect(await contentScroll(sheet)).toBe(0);
     await expect(handle).toHaveAttribute("aria-pressed", "true");
 
-    await expect(async () => {
-      await page.mouse.wheel(0, -200);
-      await expect(handle).toHaveAttribute("aria-pressed", "false", {
-        timeout: 500,
-      });
-    }).toPass({ timeout: 5000 });
+    // Just past the 300ms pause the guard waits for.
+    await page.waitForTimeout(400);
+    await page.mouse.wheel(0, -200);
+    await expect(handle).toHaveAttribute("aria-pressed", "false");
     await expectOwnHeight(page, sheet, handle);
 
     await handle.click();

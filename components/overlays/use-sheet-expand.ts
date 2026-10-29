@@ -124,11 +124,14 @@ export function useSheetViewport(content: HTMLElement | null): void {
       return;
     }
     const update = (): void => {
-      const covered = window.innerHeight - viewport.height - viewport.offsetTop;
-      content.style.setProperty("--sheet-viewport", `${viewport.height}px`);
+      // Pinch-zoom shrinks the visual viewport too; only a keyboard counts.
+      const zoomed = viewport.scale > 1;
+      const height = zoomed ? window.innerHeight : viewport.height;
+      const covered = window.innerHeight - height - viewport.offsetTop;
+      content.style.setProperty("--sheet-viewport", `${height}px`);
       content.style.setProperty(
         "--sheet-keyboard",
-        `${Math.max(0, covered)}px`
+        `${zoomed ? 0 : Math.max(0, covered)}px`
       );
     };
     update();

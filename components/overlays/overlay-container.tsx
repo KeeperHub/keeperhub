@@ -474,7 +474,7 @@ function MobileOverlayContainer() {
               height change animates here. */}
           <div
             className={cn(
-              "group/sheet flex flex-col pb-[env(safe-area-inset-bottom)] transition-[min-height,max-height,padding-top] duration-300 ease-out motion-reduce:transition-none",
+              "group/sheet flex flex-col pb-[max(0px,calc(env(safe-area-inset-bottom)-var(--sheet-keyboard,0px)))] transition-[min-height,max-height,padding-top] duration-300 ease-out motion-reduce:transition-none",
               // Full screen stops under the app banner, which stays on top.
               expanded
                 ? "max-h-[calc(var(--sheet-viewport,100dvh)-var(--app-banner-height,0px))] min-h-[calc(var(--sheet-viewport,100dvh)-var(--app-banner-height,0px))] pt-[max(0px,calc(env(safe-area-inset-top)-var(--app-banner-height,0px)))]"
