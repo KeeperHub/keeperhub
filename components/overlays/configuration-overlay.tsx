@@ -54,6 +54,7 @@ import { TriggerConfig } from "../workflow/config/trigger-config";
 import { VersionHistoryContent } from "../workflow/version-history-content";
 import { WorkflowRuns } from "../workflow/workflow-runs";
 import { SYSTEM_ACTION_INTEGRATIONS } from "@/lib/integrations/system";
+import { FILL_FULL_SCREEN_SHEET } from "./overlay";
 import type { OverlayComponentProps } from "./types";
 
 
@@ -422,7 +423,12 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
   // If an edge is selected, show edge properties
   if (selectedEdge && !selectedNode) {
     return (
-      <div className="flex h-full max-h-[80vh] flex-col">
+      <div
+        className={cn(
+          "flex h-full max-h-[80vh] flex-col",
+          FILL_FULL_SCREEN_SHEET
+        )}
+      >
         <SmartOverlayHeader overlayId={overlayId} title="Connection" />
 
         <div className="flex-1 space-y-4 overflow-y-auto px-6 pt-4 pb-6">
@@ -462,7 +468,12 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
         : "properties";
 
     return (
-      <div className="flex h-full max-h-[80vh] flex-col">
+      <div
+        className={cn(
+          "flex h-full max-h-[80vh] flex-col",
+          FILL_FULL_SCREEN_SHEET
+        )}
+      >
         <SmartOverlayHeader overlayId={overlayId} title={getTabTitle()} />
 
         <div className="flex-1 overflow-y-auto">
@@ -618,7 +629,12 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
   }
 
   return (
-    <div className="flex h-full max-h-[80vh] flex-col">
+    <div
+      className={cn(
+        "flex h-full max-h-[80vh] flex-col",
+        FILL_FULL_SCREEN_SHEET
+      )}
+    >
       {/* Header with current tab name */}
       <SmartOverlayHeader overlayId={overlayId} title={getTabTitle()} />
 

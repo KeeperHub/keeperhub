@@ -58,11 +58,25 @@ async function stubData(page: Page): Promise<void> {
   });
 }
 
+type OpenOptions = {
+  // Keep the app's announcement banner, which stays above every overlay.
+  banner?: boolean;
+  testId?: "overlay-sheet" | "overlay-window";
+};
+
 async function openConnections(
   page: Page,
-  size: { width: number; height: number }
+  size: { width: number; height: number },
+  { banner = false, testId = "overlay-sheet" }: OpenOptions = {}
 ): Promise<{ sheet: Locator; handle: Locator }> {
-  await dismissPhoneOverlays(page);
+  if (banner) {
+    await page.addInitScript(() => {
+      window.localStorage.setItem("keeperhub-mobile-warning-dismissed", "true");
+      window.localStorage.removeItem("kh-billing-announce-v1");
+    });
+  } else {
+    await dismissPhoneOverlays(page);
+  }
   await stubData(page);
   await page.setViewportSize(size);
   await page.goto("/activity", { waitUntil: "domcontentloaded" });
@@ -70,7 +84,7 @@ async function openConnections(
     .getByText("Added an integration", { exact: false })
     .first()
     .click({ timeout: 30_000 });
-  const sheet = page.getByTestId("overlay-sheet");
+  const sheet = page.getByTestId(testId);
   await expect(
     sheet.getByText("Sheet connection 1", { exact: true })
   ).toBeVisible();
@@ -116,28 +130,51 @@ function contentScroll(sheet: Locator): Promise<number> {
     });
 }
 
+// The fixed banner's height, 0 when it is not shown.
+function bannerHeight(page: Page): Promise<number> {
+  return page.evaluate(
+    () =>
+      Number.parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue(
+          "--app-banner-height"
+        )
+      ) || 0
+  );
+}
+
 async function expectFullScreen(
   page: Page,
   sheet: Locator,
   handle: Locator
 ): Promise<void> {
-  await expect(handle).toHaveAttribute("aria-expanded", "true");
+  await expect(handle).toHaveAttribute("aria-pressed", "true");
+  const viewport = page.viewportSize()?.height ?? 0;
+  const top = await bannerHeight(page);
   await expect(async () => {
     const sheetBox = await box(sheet);
-    expect(Math.round(sheetBox.y)).toBe(0);
-    expect(Math.round(sheetBox.height)).toBe(page.viewportSize()?.height);
+    expect(Math.round(sheetBox.y)).toBe(top);
+    expect(Math.round(sheetBox.y + sheetBox.height)).toBe(viewport);
   }).toPass({ timeout: 5000 });
   // The actions stay on screen at the bottom.
   const done = await box(sheet.getByRole("button", { name: "Done" }));
-  expect(done.y + done.height).toBeLessThanOrEqual(PHONE.height);
+  expect(done.y + done.height).toBeLessThanOrEqual(viewport);
 }
 
-async function expectOwnHeight(sheet: Locator, handle: Locator): Promise<void> {
-  await expect(handle).toHaveAttribute("aria-expanded", "false");
+async function expectOwnHeight(
+  page: Page,
+  sheet: Locator,
+  handle: Locator
+): Promise<void> {
+  await expect(handle).toHaveAttribute("aria-pressed", "false");
+  const top = await bannerHeight(page);
   await expect(async () => {
-    expect((await box(sheet)).y).toBeGreaterThan(40);
+    expect((await box(sheet)).y).toBeGreaterThan(top + 40);
   }).toPass({ timeout: 5000 });
 }
+
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+});
 
 test.describe("Overlay sheet on touch phones", () => {
   test.use({ hasTouch: true });
@@ -147,7 +184,7 @@ test.describe("Overlay sheet on touch phones", () => {
   }) => {
     const { sheet, handle } = await openConnections(page, PHONE);
     const x = PHONE.width / 2;
-    await expectOwnHeight(sheet, handle);
+    await expectOwnHeight(page, sheet, handle);
 
     const title = await box(sheet.getByText("Connections", { exact: true }));
     await swipe(page, x, title.y + 10, title.y - 90);
@@ -156,74 +193,96 @@ test.describe("Overlay sheet on touch phones", () => {
     // Full screen, the list scrolls inside the sheet.
     await swipe(page, x, 600, 300);
     await expect.poll(() => contentScroll(sheet)).toBeGreaterThan(0);
-    await expect(handle).toHaveAttribute("aria-expanded", "true");
+    await expect(handle).toHaveAttribute("aria-pressed", "true");
 
     // A swipe down that starts mid-list only scrolls back to the top.
     await swipe(page, x, 300, 800);
     await expect.poll(() => contentScroll(sheet)).toBe(0);
-    await expect(handle).toHaveAttribute("aria-expanded", "true");
+    await expect(handle).toHaveAttribute("aria-pressed", "true");
 
     await swipe(page, x, 300, 500);
-    await expectOwnHeight(sheet, handle);
+    await expectOwnHeight(page, sheet, handle);
 
     const top = (await box(sheet)).y;
     await swipe(page, x, top + 20, PHONE.height - 10);
     await expect(sheet).toBeHidden();
   });
+
+  test("full screen stops under the announcement banner", async ({ page }) => {
+    const { sheet, handle } = await openConnections(
+      page,
+      { width: 360, height: 640 },
+      { banner: true }
+    );
+    await expect.poll(() => bannerHeight(page)).toBeGreaterThan(0);
+    await handle.click();
+    await expectFullScreen(page, sheet, handle);
+  });
 });
 
 test.describe("Overlay sheet with a mouse", () => {
-  test("wheel and the handle switch full screen on and off", async ({
-    page,
-  }) => {
+  test("wheel, the handle and Escape", async ({ page }) => {
     const size = { width: 700, height: 735 };
     const { sheet, handle } = await openConnections(page, size);
-    await expectOwnHeight(sheet, handle);
+    await expectOwnHeight(page, sheet, handle);
 
     const list = await box(
       sheet.getByText("Sheet connection 1", { exact: true })
     );
     await page.mouse.move(size.width / 2, list.y);
     await page.mouse.wheel(0, 200);
-    await expect(handle).toHaveAttribute("aria-expanded", "true");
+    await expectFullScreen(page, sheet, handle);
 
     await page.mouse.wheel(0, 400);
     await expect.poll(() => contentScroll(sheet)).toBeGreaterThan(0);
     // Scrolling back up to the top does not collapse in the same motion.
     await page.mouse.wheel(0, -2000);
     await expect.poll(() => contentScroll(sheet)).toBe(0);
-    await expect(handle).toHaveAttribute("aria-expanded", "true");
+    await expect(handle).toHaveAttribute("aria-pressed", "true");
 
     await expect(async () => {
       await page.mouse.wheel(0, -200);
-      await expect(handle).toHaveAttribute("aria-expanded", "false", {
+      await expect(handle).toHaveAttribute("aria-pressed", "false", {
         timeout: 500,
       });
     }).toPass({ timeout: 5000 });
+    await expectOwnHeight(page, sheet, handle);
 
     await handle.click();
-    await expect(handle).toHaveAttribute("aria-expanded", "true");
+    await expectFullScreen(page, sheet, handle);
     await handle.click();
-    await expectOwnHeight(sheet, handle);
+    await expectOwnHeight(page, sheet, handle);
+
+    // Escape closes the sheet from full screen too.
+    await handle.click();
+    await expect(handle).toHaveAttribute("aria-pressed", "true");
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
   });
 
   test("desktop keeps the centred dialog with its own list box", async ({
     page,
   }) => {
-    const { width, height } = { width: 1280, height: 900 };
-    await dismissPhoneOverlays(page);
-    await stubData(page);
-    await page.setViewportSize({ width, height });
-    await page.goto("/activity", { waitUntil: "domcontentloaded" });
-    await page
-      .getByText("Added an integration")
-      .first()
-      .click({ timeout: 30_000 });
-    const dialog = page.getByTestId("overlay-window");
-    await expect(
-      dialog.getByText("Sheet connection 1", { exact: true })
-    ).toBeVisible();
+    const { sheet: dialog } = await openConnections(
+      page,
+      { width: 1280, height: 900 },
+      { testId: "overlay-window" }
+    );
     await expect(page.getByTestId("overlay-sheet-handle")).toHaveCount(0);
-    expect((await box(dialog)).height).toBeLessThan(height * 0.85);
+    const listBox = await dialog
+      .getByText("Sheet connection 1", { exact: true })
+      .evaluate((element) => {
+        let node: Element | null = element;
+        while (node && getComputedStyle(node).maxHeight === "none") {
+          node = node.parentElement;
+        }
+        return node
+          ? {
+              maxHeight: getComputedStyle(node).maxHeight,
+              overflowY: getComputedStyle(node).overflowY,
+            }
+          : null;
+      });
+    expect(listBox).toEqual({ maxHeight: "300px", overflowY: "auto" });
   });
 });

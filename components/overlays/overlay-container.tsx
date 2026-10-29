@@ -343,17 +343,12 @@ function MobileOverlayContainer() {
   const [expanded, setExpanded] = useState(false);
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
-  useSheetExpand(sheet, expanded, setExpanded);
-  // Drop the size Vaul gave the sheet for a keyboard opened before full screen.
+  useSheetExpand(sheet, expandedRef, setExpanded);
+  // Vaul sizes the sheet inline for an open keyboard; drop that on each switch.
   useLayoutEffect(() => {
-    if (expanded && sheet?.parentElement) {
-      sheet.parentElement.style.removeProperty("height");
-      sheet.parentElement.style.removeProperty("bottom");
-    }
+    sheet?.parentElement?.style.removeProperty("height");
+    sheet?.parentElement?.style.removeProperty("bottom");
   }, [expanded, sheet]);
-  if (!isOpen && expanded) {
-    setExpanded(false);
-  }
 
   // Freeze the stack when open so content doesn't shift during exit animation
   if (isOpen) {
@@ -373,6 +368,9 @@ function MobileOverlayContainer() {
     // Reset minHeight on fresh open (not during push/pop)
     if (isFreshOpen) {
       setMinHeight(0);
+      // Reset here, not on close, so the exit slides out at full screen.
+      expandedRef.current = false;
+      setExpanded(false);
     }
 
     if (contentRef.current && !expandedRef.current) {
@@ -439,8 +437,7 @@ function MobileOverlayContainer() {
 
   return (
     <DrawerPrimitive.Root
-      // Full screen, a swipe down returns to the sheet's own height first,
-      // and Vaul must not lift the sheet above a keyboard: it already fills it.
+      // Full screen, a swipe down returns to the sheet's own height first.
       dismissible={!expanded}
       onAnimationEnd={handleAnimationEnd}
       onOpenChange={(open) => {
@@ -449,7 +446,6 @@ function MobileOverlayContainer() {
         }
       }}
       open={isOpen}
-      repositionInputs={!expanded}
     >
       <DrawerPrimitive.Portal>
         {/* Backdrop - let Vaul handle animations */}
@@ -462,6 +458,13 @@ function MobileOverlayContainer() {
             expanded ? "rounded-none border-t-0" : "rounded-t-2xl"
           )}
           data-testid="overlay-sheet"
+          // Not dismissible while full screen, so Vaul ignores Escape then.
+          onEscapeKeyDown={(event) => {
+            if (expanded && currentItem?.options.closeOnEscape !== false) {
+              event.preventDefault();
+              closeAll();
+            }
+          }}
         >
           {/* Accessible title for screen readers */}
           <DrawerPrimitive.Title className="sr-only">
@@ -481,11 +484,12 @@ function MobileOverlayContainer() {
             data-expanded={expanded}
             ref={setSheet}
           >
-            {/* Drag handle; tapping it toggles full screen */}
+            {/* Drag handle; tapping it toggles full screen. The ::after makes
+                the tap area 44px tall without moving the header. */}
             <button
-              aria-expanded={expanded}
-              aria-label={expanded ? "Collapse" : "Expand to full screen"}
-              className="mx-auto flex h-6 w-16 shrink-0 items-end justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Full screen"
+              aria-pressed={expanded}
+              className="relative mx-auto flex h-6 w-24 shrink-0 items-end justify-center rounded-full after:absolute after:inset-x-0 after:-inset-y-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               data-testid="overlay-sheet-handle"
               onClick={() => setExpanded(!expanded)}
               type="button"

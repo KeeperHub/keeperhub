@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { type RefObject, useEffect } from "react";
 
 // Upward travel that opens the sheet full screen; downward travel at the top
 // of the content that brings it back.
@@ -30,12 +30,10 @@ function isScrolledDown(
  */
 export function useSheetExpand(
   sheet: HTMLElement | null,
-  expanded: boolean,
+  // Read in the listeners, so they need not re-attach on every switch.
+  expandedRef: RefObject<boolean>,
   setExpanded: (expanded: boolean) => void
 ): void {
-  const expandedRef = useRef(expanded);
-  expandedRef.current = expanded;
-
   useEffect(() => {
     if (!sheet) {
       return;
@@ -112,5 +110,5 @@ export function useSheetExpand(
       sheet.removeEventListener("touchcancel", onTouchEnd);
       sheet.removeEventListener("wheel", onWheel);
     };
-  }, [sheet, setExpanded]);
+  }, [sheet, expandedRef, setExpanded]);
 }

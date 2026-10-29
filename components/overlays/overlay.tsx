@@ -10,6 +10,10 @@ type OverlayComponentProps = OverlayProps & {
   overlayId: string;
 };
 
+/** Lets an overlay's root fill a full screen phone sheet (overlay-container). */
+export const FILL_FULL_SCREEN_SHEET =
+  "group-data-[expanded=true]/sheet:max-h-none group-data-[expanded=true]/sheet:min-h-0 group-data-[expanded=true]/sheet:flex-1";
+
 /**
  * Base Overlay component for creating new overlays.
  * Provides consistent structure with header, content area, and footer.
@@ -46,8 +50,8 @@ export function Overlay({
   return (
     <div
       className={cn(
-        // A full screen phone sheet (overlay-container) gives it all its height.
-        "flex max-h-[85vh] flex-col group-data-[expanded=true]/sheet:max-h-none group-data-[expanded=true]/sheet:min-h-0 group-data-[expanded=true]/sheet:flex-1",
+        "flex max-h-[85vh] flex-col",
+        FILL_FULL_SCREEN_SHEET,
         className
       )}
     >
