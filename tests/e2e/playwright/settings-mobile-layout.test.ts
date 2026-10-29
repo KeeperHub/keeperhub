@@ -48,6 +48,8 @@ const MIN_HEADING_SHARE = 0.5;
 const SHARED_HEADER_FROM = 390;
 // A card title's line box (text-sm): taller means it wrapped.
 const ONE_LINE = 24;
+// Centres closer than this sit on the same line.
+const SAME_LINE = 2;
 // A section's code is compiled on first visit in development.
 const FIRST_VISIT = { timeout: 20_000 };
 // A wallet member's address and sign-in, the longest name a settings row
@@ -187,13 +189,13 @@ function centreY(target: Box): number {
 }
 
 // The members table's header row and its first member, once the list has
-// loaded (the skeleton rows before it have no email).
+// loaded (the skeleton rows before it have no identifier).
 async function membersTable(
   page: Page
 ): Promise<{ head: Locator; row: Locator }> {
   const table = page.locator("main table").first();
   const row = table.locator("tbody tr").first();
-  await expect(row).toContainText("@", FIRST_VISIT);
+  await expect(row.getByTestId("member-identifier")).toBeVisible(FIRST_VISIT);
   return { head: table.locator("thead tr"), row };
 }
 
@@ -366,6 +368,37 @@ test.describe("tables in a narrow column", () => {
     });
   }
 
+  for (const width of PHONE_WIDTHS) {
+    test(`put a fixed role beside the identifier, or under it, at ${width}px`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: PHONE_HEIGHT });
+      await openOrgSettings(page, "users");
+
+      // The owner is listed first, and an owner's role is fixed.
+      const { row } = await membersTable(page);
+      const identifierText = row.getByTestId("member-identifier");
+      const identifier = await box(identifierText);
+      const role = await box(row.getByTestId("member-role"));
+      const whole = await box(row);
+      expect(role.x + role.width).toBeLessThanOrEqual(whole.x + whole.width);
+      if (Math.abs(centreY(role) - centreY(identifier)) < SAME_LINE) {
+        // Beside it only when the identifier is shown whole.
+        expect(role.x).toBeGreaterThanOrEqual(identifier.x + identifier.width);
+        const cut = await identifierText.evaluate(
+          (el) => el.scrollWidth > el.clientWidth
+        );
+        expect(cut).toBe(false);
+      } else {
+        // Otherwise on the next line, lined up with the identifier.
+        expect(role.y).toBeGreaterThanOrEqual(identifier.y + identifier.height);
+        expect(Math.abs(role.x - identifier.x)).toBeLessThan(SAME_LINE);
+      }
+      // Not said a second time on a line of its own.
+      await expect(row.locator("td").nth(1)).toBeHidden();
+    });
+  }
+
   test("stay tables on a desktop", async ({ page }) => {
     await page.setViewportSize(DESKTOP);
     await openOrgSettings(page, "users");
@@ -373,6 +406,9 @@ test.describe("tables in a narrow column", () => {
     const { head, row } = await membersTable(page);
     await expect(head).toBeVisible();
     await expect(row.getByText("Joined")).toBeHidden();
+    // The Role column shows the role, so the member cell does not.
+    await expect(row.getByTestId("member-role")).toBeHidden();
+    await expect(row.locator("td").nth(1)).toBeVisible();
   });
 
   test("still read as rows and cells, each naming its column", async ({
@@ -384,8 +420,9 @@ test.describe("tables in a narrow column", () => {
     await expect(head).toBeHidden();
     // A grid row drops its implicit table roles in some engines.
     await expect(row).toHaveAttribute("role", "row");
-    // With the header row hidden, the cell says which column it is.
-    await expect(row.getByRole("cell", { name: /^Role\b/ })).toHaveCount(1);
+    // With the header row hidden, the role says it is the role. The owner's
+    // role is fixed, so it sits in the member cell rather than its own.
+    await expect(row.getByRole("cell", { name: /\bRole \w+$/ })).toHaveCount(1);
 
     await page.goto("/settings/security", { waitUntil: "domcontentloaded" });
     const session = page

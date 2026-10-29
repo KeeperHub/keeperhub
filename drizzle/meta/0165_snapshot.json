@@ -1,6 +1,6 @@
 {
-  "id": "b335780f-9f65-4d34-8204-9af4a7923121",
-  "prevId": "4c6c7092-b7a9-45e7-af84-e4917abb3e91",
+  "id": "4c6c7092-b7a9-45e7-af84-e4917abb3e91",
+  "prevId": "8fb254e1-be0f-45ed-8459-b048be956294",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -30,7 +30,7 @@
           "name": "issuer",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "user_id": {
           "name": "user_id",
@@ -4037,12 +4037,6 @@
         },
         "paused_until": {
           "name": "paused_until",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "paused_at": {
-          "name": "paused_at",
           "type": "timestamp",
           "primaryKey": false,
           "notNull": false

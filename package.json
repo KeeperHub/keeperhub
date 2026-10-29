@@ -200,7 +200,7 @@
     "neverBuiltDependencies": [
       "prisma"
     ],
-    "overrides_better_auth_comment": "Pinned to 1.7.2. better-auth 1.7.3 restored the 1.6 account core schema and no longer writes accounts.issuer, which KEEP-1311 (drizzle/0148) added as NOT NULL - so every credential signup fails on the insert. Unpin only together with the 1.7 upgrade-guide cleanup.",
+    "overrides_better_auth_comment": "better-auth 1.7.3+ no longer writes accounts.issuer; drizzle/0164 made the column nullable so new accounts insert. Keep the dependency and this override on the same version.",
     "overrides": {
       "better-auth": "1.7.7",
       "toml": "^5.0.1",
@@ -247,6 +247,7 @@
       "fast-uri": "^3.1.6",
       "kysely": "^0.28.17",
       "sharp": "^0.35.5",
+      "zod@>=4.0.0 <4.6.6": "^4.6.7",
       "esbuild@>=0.27.3 <0.28.1": "^0.28.1",
       "body-parser@<2": "^1.20.6",
       "body-parser@2": "^2.3.0",

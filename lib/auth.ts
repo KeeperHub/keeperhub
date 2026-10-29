@@ -21,6 +21,7 @@ import { verifySiweSignature } from "@/lib/auth/siwe-verify";
 import {
   isWalletEmail,
   WALLET_EMAIL_DOMAIN,
+  walletAddressFromEmail,
 } from "@/lib/auth/wallet-constants";
 import { isUserDeactivated } from "@/lib/auth-deactivation-guard";
 import { isDisposableEmailDomain } from "@/lib/auth-disposable-emails";
@@ -699,12 +700,11 @@ async function backstopWalletAddressBook(
       .where(eq(users.id, userId))
       .limit(1);
 
-    const email = userRow?.email;
-    if (!(email && isWalletEmail(email))) {
+    const walletAddress = walletAddressFromEmail(userRow?.email);
+    if (!walletAddress) {
       return;
     }
 
-    const walletAddress = email.split("@")[0];
     await recordWalletInAddressBook({
       organizationId,
       address: walletAddress,
@@ -801,8 +801,8 @@ export const auth = betterAuth({
           // Block any other local-part so attackers cannot self-register with
           // the wallet domain via the email+password flow and get classified
           // as a wallet account everywhere (bypassing TOTP enrollment gates).
-          if (email && isWalletEmail(email)) {
-            const localPart = email.split("@")[0] ?? "";
+          const localPart = walletAddressFromEmail(email);
+          if (localPart !== null) {
             if (!WALLET_LOCAL_PART_RE.test(localPart)) {
               throw new APIError("BAD_REQUEST", {
                 message: "This email domain is reserved.",
@@ -896,8 +896,8 @@ export const auth = betterAuth({
 
             // Auto-add the signing wallet to the address book so it is
             // immediately available for use in workflows.
-            if (isWallet) {
-              const walletAddress = user.email.split("@")[0];
+            const walletAddress = walletAddressFromEmail(user.email);
+            if (walletAddress) {
               recordWalletInAddressBook({
                 organizationId: org.id,
                 address: walletAddress,
