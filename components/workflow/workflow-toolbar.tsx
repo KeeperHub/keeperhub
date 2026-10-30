@@ -107,7 +107,10 @@ import {
   getIntegrationLabels,
 } from "@/plugins/registry";
 import { Panel } from "../ai-elements/panel";
-import { ConfigurationOverlay } from "../overlays/configuration-overlay";
+import {
+  CONFIGURATION_OVERLAY_OPTIONS,
+  ConfigurationOverlay,
+} from "../overlays/configuration-overlay";
 import { ConfirmOverlay } from "../overlays/confirm-overlay";
 import { useOverlay } from "../overlays/overlay-provider";
 import { WorkflowIOOverlay } from "../overlays/workflow-io-overlay";
@@ -119,6 +122,8 @@ import {
   TooltipTrigger,
 } from "../ui/tooltip";
 import { UserMenu } from "../workflows/user-menu";
+import { STEP_SIZE } from "./use-show-step-settings";
+
 type WorkflowToolbarProps = {
   workflowId?: string;
   persistent?: boolean;
@@ -1585,11 +1590,8 @@ function ToolbarActions({
     const position = screenToFlowPosition({ x: centerX, y: centerY });
 
     // Adjust for node dimensions to center it properly
-    // Action node is 192px wide and 192px tall (w-48 h-48 in Tailwind)
-    const nodeWidth = 192;
-    const nodeHeight = 192;
-    position.x -= nodeWidth / 2;
-    position.y -= nodeHeight / 2;
+    position.x -= STEP_SIZE / 2;
+    position.y -= STEP_SIZE / 2;
 
     // Check if there's already a node at this position
     const offset = 20; // Offset distance in pixels
@@ -1652,7 +1654,9 @@ function ToolbarActions({
       {/* Configuration, and Delete when something is selected - below lg */}
       <Button
         className="border hover:bg-black/5 lg:hidden dark:hover:bg-white/5"
-        onClick={() => openOverlay(ConfigurationOverlay, {})}
+        onClick={() =>
+          openOverlay(ConfigurationOverlay, {}, CONFIGURATION_OVERLAY_OPTIONS)
+        }
         size="icon"
         title="Configuration"
         variant="secondary"

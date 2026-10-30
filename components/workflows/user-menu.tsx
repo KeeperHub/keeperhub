@@ -1,6 +1,6 @@
 "use client";
 
-import { useSetAtom } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import {
   AlertTriangle,
   Copy,
@@ -9,15 +9,20 @@ import {
   Settings,
   Users,
 } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { ConnectButton } from "@/components/auth/connect-button";
 import {
   isAuthFlowInProgress,
   isSingleProviderSignInInitiated,
 } from "@/components/auth/dialog";
+import {
+  GETTING_STARTED_TITLE,
+  GettingStartedOverlay,
+} from "@/components/onboarding/getting-started-launcher";
 import { ManageOrgsModal } from "@/components/organization/manage-orgs-modal";
+import { useOverlay } from "@/components/overlays/overlay-provider";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -44,7 +49,11 @@ import {
 import { useActiveMember, useOrganization } from "@/lib/hooks/use-organization";
 import { getPersonInitials } from "@/lib/initials";
 import { isAnonymousUser } from "@/lib/is-anonymous";
-import { gettingStartedOpenAtom } from "@/lib/workflow/store";
+import { isPreAppPath } from "@/lib/pre-app-paths";
+import {
+  gettingStartedDockedAtom,
+  gettingStartedOpenAtom,
+} from "@/lib/workflow/store";
 
 export const UserMenu = (): React.ReactElement => {
   const { data: session, isPending } = useSession();
@@ -120,7 +129,29 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
   const { organization } = useOrganization();
   const { isAdmin } = useActiveMember();
   const router = useRouter();
-  const openGettingStarted = useSetAtom(gettingStartedOpenAtom);
+  const expandLauncher = useSetAtom(gettingStartedOpenAtom);
+  const launcherDocked = useAtomValue(gettingStartedDockedAtom);
+  const { open: openOverlay } = useOverlay();
+  // The guide stays out of the sign-in gates and the welcome pages.
+  const pathname = usePathname();
+  const showGettingStarted = !isPreAppPath(pathname ?? "");
+  // Set when the menu opens an overlay, so focus is not sent back to the
+  // avatar, which the overlay hides from screen readers.
+  const skipFocusReturn = useRef(false);
+  // The sidebar's launcher when it is drawn; otherwise (phones, settings)
+  // the same checklist in an overlay.
+  const openGettingStarted = (): void => {
+    if (launcherDocked) {
+      expandLauncher(true);
+    } else {
+      skipFocusReturn.current = true;
+      openOverlay(GettingStartedOverlay, undefined, {
+        // Names the phone sheet for screen readers.
+        title: GETTING_STARTED_TITLE,
+        size: "md",
+      });
+    }
+  };
   const { status: notificationStatus, refresh: refreshNotifications } =
     useNotificationStatus(isAdmin ? organization?.id : null);
   const showAvatarDot = notificationStatus.unreadCount > 0;
@@ -174,7 +205,16 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
             )}
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuContent
+          align="end"
+          className="w-56"
+          onCloseAutoFocus={(event) => {
+            if (skipFocusReturn.current) {
+              skipFocusReturn.current = false;
+              event.preventDefault();
+            }
+          }}
+        >
           <DropdownMenuLabel className="flex items-center gap-2">
             <div className="flex min-w-0 flex-1 flex-col space-y-1">
               <p className="truncate font-medium text-sm leading-none">
@@ -259,11 +299,15 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
               <DropdownMenuSeparator />
             </>
           )}
-          <DropdownMenuItem onClick={() => openGettingStarted(true)}>
-            <Rocket className="size-4" />
-            <span>Getting started</span>
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
+          {showGettingStarted && (
+            <>
+              <DropdownMenuItem onClick={openGettingStarted}>
+                <Rocket className="size-4" />
+                <span>{GETTING_STARTED_TITLE}</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          )}
           <DropdownMenuItem onClick={handleLogout}>
             <LogOut className="size-4" />
             <span>Logout</span>

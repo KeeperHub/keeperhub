@@ -14,8 +14,10 @@ export type {
 export {
   addTestOrganization,
   createApiKey,
+  createTestPublicTag,
   createTestWorkflow,
   deleteApiKey,
+  deleteTestPublicTag,
   deleteTestWorkflow,
   getUserIdByEmail,
   getUserOrganizationId,

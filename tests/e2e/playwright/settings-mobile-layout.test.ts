@@ -516,7 +516,7 @@ test.describe("settings on wider screens", () => {
       expect(pinned).toBe(scrolls ? "sticky" : "static");
     }
   });
-  test("the save badge sits under the plan switch's Annual end in a narrow column", async ({
+  test("the save badge sits centred under the plan switch in a narrow column", async ({
     page,
   }) => {
     // A phone, and a tablet beside the rail, both get the narrow column.
@@ -531,42 +531,33 @@ test.describe("settings on wider screens", () => {
       await expect(interval.locator(".khp-save-badge")).toBeVisible(
         FIRST_VISIT
       );
-      // All four boxes in one frame: the page moves once the owner's role
+      // All three boxes in one frame: the page moves once the owner's role
       // and billing load, and two separate reads could straddle that.
-      const { column, toggle, annual, save } = await interval.evaluate(
-        (element) => {
-          const rect = (
-            name: string,
-            node: Element | null | undefined
-          ): Box => {
-            if (!node) {
-              throw new Error(`${name} is not rendered`);
-            }
-            const { x, y, width, height } = node.getBoundingClientRect();
-            return { x, y, width, height };
-          };
-          const buttons = [...element.querySelectorAll(".khp-interval-btn")];
-          return {
-            column: rect("the plan cards", element.parentElement),
-            toggle: rect(
-              "the plan switch",
-              element.querySelector(".khp-interval-group")
-            ),
-            annual: rect(
-              "the Annual button",
-              buttons.find((button) => button.textContent?.trim() === "Annual")
-            ),
-            save: rect(
-              "the save badge",
-              element.querySelector(".khp-save-badge")
-            ),
-          };
-        }
-      );
+      const { column, toggle, save } = await interval.evaluate((element) => {
+        const rect = (name: string, node: Element | null | undefined): Box => {
+          if (!node) {
+            throw new Error(`${name} is not rendered`);
+          }
+          const { x, y, width, height } = node.getBoundingClientRect();
+          return { x, y, width, height };
+        };
+        return {
+          column: rect("the plan cards", element.parentElement),
+          toggle: rect(
+            "the plan switch",
+            element.querySelector(".khp-interval-group")
+          ),
+          save: rect(
+            "the save badge",
+            element.querySelector(".khp-save-badge")
+          ),
+        };
+      });
       if (stacked) {
         expect(save.y).toBeGreaterThanOrEqual(toggle.y + toggle.height);
-        expect(centreX(save)).toBeGreaterThanOrEqual(annual.x);
-        expect(centreX(save)).toBeLessThanOrEqual(annual.x + annual.width);
+        expect(Math.abs(centreX(save) - centreX(toggle))).toBeLessThanOrEqual(
+          1
+        );
         expect(Math.abs(centreX(toggle) - centreX(column))).toBeLessThanOrEqual(
           1
         );
