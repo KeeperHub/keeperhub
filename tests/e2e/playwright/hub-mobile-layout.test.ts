@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
+import { textContrast } from "./utils/contrast";
 import {
   createTestPublicTag,
   createTestWorkflow,
@@ -158,6 +159,84 @@ test.describe("Hub tab band", () => {
       });
     }
     expect(await tabOrder(page)).toEqual(["Protocols", "Demos", "Docs"]);
+  });
+});
+
+test.describe("Tab band text", () => {
+  // WCAG AA for body text; the links and the tabs not picked used to sit
+  // at 2.7:1 and 3.7:1 and read as disabled.
+  const READABLE = 4.5;
+
+  test("Demos, Docs and the tabs not picked are readable", async ({ page }) => {
+    await open(page, 1280, "/hub");
+    const band = tabBand(page);
+    await expect(band.tabs).toBeVisible({ timeout: 15_000 });
+    for (const width of [...PHONE_WIDTHS, ...TABLET_WIDTHS, 1024, 1280]) {
+      await atWidth(page, width, async () => {
+        for (const link of [band.demos, band.docs]) {
+          // Below 375px the label is screen-reader only; the icon is what shows.
+          const shown = width < 375 ? link.locator("svg") : link;
+          expect(await textContrast(shown)).toBeGreaterThanOrEqual(READABLE);
+        }
+        for (const name of ["Workflows", "Marketplace"]) {
+          const tab = band.tabs.getByRole("tab", { name });
+          await expect(tab).toHaveAttribute("data-state", "inactive");
+          expect(await textContrast(tab)).toBeGreaterThanOrEqual(READABLE);
+        }
+      });
+    }
+  });
+
+  test("hovering a tab not picked brightens its text", async ({ page }) => {
+    await open(page, 1280, "/hub");
+    const tab = tabBand(page).tabs.getByRole("tab", { name: "Workflows" });
+    await expect(tab).toBeVisible({ timeout: 15_000 });
+    const resting = await textContrast(tab);
+    await tab.hover();
+    await expect(async () => {
+      expect(await textContrast(tab)).toBeGreaterThan(resting + 1);
+    }).toPass({ timeout: 5000 });
+  });
+
+  test("Demos and Docs take the tabs' keyboard focus ring", async ({
+    page,
+  }) => {
+    await open(page, 1280, "/hub");
+    const band = tabBand(page);
+    await expect(band.tabs).toBeVisible({ timeout: 15_000 });
+    // Ring, gap and any outline, as drawn around a focused control.
+    const focusLook = (locator: Locator): Promise<string> =>
+      locator.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const outline =
+          style.outlineStyle === "none"
+            ? "none"
+            : `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}`;
+        return [
+          style.getPropertyValue("--tw-ring-offset-shadow"),
+          style.getPropertyValue("--tw-ring-shadow"),
+          outline,
+        ].join(" / ");
+      });
+    const protocols = band.tabs.getByRole("tab", { name: "Protocols" });
+    await protocols.focus();
+    await expect(protocols).toBeFocused();
+    const tabLook = await focusLook(protocols);
+    const accent = await page.evaluate(() =>
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--color-border-accent")
+        .trim()
+    );
+    // The hub ring: 2px of accent outside a 2px gap, and no outline.
+    expect(tabLook).toContain(`calc(2px + 2px) ${accent}`);
+    expect(tabLook).toMatch(/ \/ none$/);
+    for (const link of [band.demos, band.docs]) {
+      await page.keyboard.press("Tab");
+      await expect(link).toBeFocused();
+      await expect(async () => {
+        expect(await focusLook(link)).toBe(tabLook);
+      }).toPass({ timeout: 5000 });
+    }
   });
 });
 

@@ -20,6 +20,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import { useOverlay } from "./overlay-provider";
 import type { OverlaySize } from "./types";
+import { useSheetExpand, useSheetViewport } from "./use-sheet-expand";
 
 const sizeClasses: Record<OverlaySize, string> = {
   sm: "max-w-sm",
@@ -335,6 +336,28 @@ const OPEN_PRESS_GRACE_MS = 400;
 
 type OutsidePress = CustomEvent<{ originalEvent: PointerEvent }>;
 
+// Whether a point is on the sheet: in its rounded top corners only inside the
+// curve, since the backdrop shows (and takes taps) outside it.
+function isOnSheet(sheet: HTMLElement, x: number, y: number): boolean {
+  const rect = sheet.getBoundingClientRect();
+  if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+    return false;
+  }
+  const radius =
+    Number.parseFloat(getComputedStyle(sheet).borderTopLeftRadius) || 0;
+  const curveY = rect.top + radius;
+  if (y >= curveY) {
+    return true;
+  }
+  let curveX = x;
+  if (x < rect.left + radius) {
+    curveX = rect.left + radius;
+  } else if (x > rect.right - radius) {
+    curveX = rect.right - radius;
+  }
+  return Math.hypot(x - curveX, y - curveY) <= radius;
+}
+
 /**
  * The phone sheet's grace after opening: `settling` turns presses on it off,
  * `sheetRef` and `start` begin the grace (on mount, and on a reopen during
@@ -386,16 +409,12 @@ function useOpenPressGrace(): {
 
   const onPointerDownOutside = useCallback((event: OutsidePress) => {
     const press = event.detail.originalEvent;
-    // Radix reports a touch press on the click after it, so time the press
-    // itself (capped at now, should a browser use another clock).
+    // Radix reports a press on the click after it, so time the press itself
+    // (capped at now, should a browser use another clock).
     const pressedAt = Math.min(press.timeStamp, performance.now());
-    const rect = sheetNodeRef.current?.getBoundingClientRect();
+    const sheet = sheetNodeRef.current;
     const onSheet =
-      rect !== undefined &&
-      press.clientX >= rect.left &&
-      press.clientX <= rect.right &&
-      press.clientY >= rect.top &&
-      press.clientY <= rect.bottom;
+      sheet !== null && isOnSheet(sheet, press.clientX, press.clientY);
     if (onSheet || pressedAt - openedAtRef.current < OPEN_PRESS_GRACE_MS) {
       event.preventDefault();
     }
@@ -414,12 +433,16 @@ function MobileOverlayContainer() {
   const shouldReduceMotion = useReducedMotion();
   const [minHeight, setMinHeight] = useState<number>(0);
   const contentRef = useRef<HTMLDivElement>(null);
+  // State, not a ref: Vaul mounts the sheet a render after it opens.
+  const [sheet, setSheet] = useState<HTMLDivElement | null>(null);
   const wasOpenRef = useRef(false);
   const grace = useOpenPressGrace();
   const frozenStackRef = useRef(stack);
   const direction = useStackDirection(stack.length);
 
   const isOpen = stack.length > 0;
+  const [expanded, setExpanded, expandedRef] = useSheetExpand(sheet);
+  useSheetViewport(sheet?.parentElement ?? null);
 
   // Freeze the stack when open so content doesn't shift during exit animation
   if (isOpen) {
@@ -437,12 +460,17 @@ function MobileOverlayContainer() {
     wasOpenRef.current = isOpen;
 
     // Reset minHeight on fresh open (not during push/pop)
+    const reopenedFullScreen = isFreshOpen && expandedRef.current;
     if (isFreshOpen) {
       setMinHeight(0);
       grace.start();
+      // Reset here, not on close, so the exit slides out at full screen.
+      setExpanded(false);
     }
 
-    if (contentRef.current) {
+    // Reopened before the exit ended, the content still has its full screen
+    // size; the ResizeObserver measures it once it is back to its own.
+    if (contentRef.current && !expandedRef.current && !reopenedFullScreen) {
       const height = contentRef.current.offsetHeight;
       if (height > 0) {
         setMinHeight(height);
@@ -460,14 +488,15 @@ function MobileOverlayContainer() {
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const h = entry.contentRect.height;
-        if (h > 0) {
+        // Full screen stretches the content; keep the height it has on its own.
+        if (h > 0 && !expandedRef.current) {
           setMinHeight(h);
         }
       }
     });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [isOpen]);
+  }, [isOpen, expandedRef]);
 
   // Use live stack for options checks (only when open)
   const currentItem = stack.at(-1);
@@ -520,9 +549,13 @@ function MobileOverlayContainer() {
         {/* Drawer container - let Vaul handle open/close animations */}
         <DrawerPrimitive.Content
           className={cn(
-            "fixed inset-x-0 bottom-0 z-50 flex max-h-[90vh] flex-col",
-            "rounded-t-2xl border-t bg-background shadow-2xl"
+            "fixed inset-x-0 z-50 flex flex-col border-t bg-background shadow-2xl",
+            // Sized from the visible viewport above any on-screen keyboard,
+            // over Vaul's own inline keyboard sizing.
+            "bottom-[var(--sheet-keyboard,0px)]! h-auto!",
+            expanded ? "rounded-none border-t-0" : "rounded-t-2xl"
           )}
+          data-testid="overlay-sheet"
           onPointerDownOutside={grace.onPointerDownOutside}
           ref={grace.sheetRef}
           // Presses on the settling sheet fall through to the backdrop below
@@ -533,60 +566,101 @@ function MobileOverlayContainer() {
             {renderCurrentItem?.options.title || "Dialog"}
           </DrawerPrimitive.Title>
 
-          {/* Drag handle */}
-          <div className="mx-auto mt-3 h-1.5 w-12 shrink-0 rounded-full bg-muted-foreground/20" />
-
-          {/* Content area with height animation */}
-          <LayoutGroup>
-            <motion.div
-              className="relative flex-1 overflow-hidden"
-              layout={isOpen}
-              style={{ minHeight: minHeight > 0 ? minHeight : "auto" }}
-              transition={drawerSpring}
+          {/* Vaul's inline transition on Content would cancel this one, so the
+              height change animates here. --sheet-room is the height left for
+              the content under the handle, which caps the measured minHeight.
+              Full screen, Vaul does not drag (a swipe down collapses instead)
+              and the sheet stops under the app banner, which stays on top. */}
+          <div
+            className={cn(
+              "group/sheet flex flex-col pb-(--sheet-pad) transition-[min-height,max-height,padding-top] duration-300 ease-out [--sheet-pad:max(0px,calc(env(safe-area-inset-bottom)-var(--sheet-keyboard,0px)))] [--sheet-handle:--spacing(4.5)] [--sheet-room:calc(var(--sheet-max)-var(--sheet-handle)-var(--sheet-pad))] motion-reduce:transition-none",
+              expanded
+                ? "max-h-(--sheet-max) min-h-(--sheet-max) pt-[max(0px,calc(env(safe-area-inset-top)-var(--app-banner-height,0px)))] [--sheet-max:calc(var(--sheet-viewport,100dvh)-var(--app-banner-height,0px))]"
+                : "max-h-(--sheet-max) min-h-0 [--sheet-max:min(90vh,calc(var(--sheet-viewport,100dvh)-2rem))]"
+            )}
+            data-expanded={expanded}
+            data-sheet=""
+            data-vaul-no-drag={expanded ? "" : undefined}
+            ref={setSheet}
+          >
+            {/* Drag handle; tapping it toggles full screen. The ::after makes
+                the tap area 42px tall, into the header's top padding. */}
+            <button
+              aria-label="Full screen"
+              aria-pressed={expanded}
+              className="relative z-10 mx-auto flex h-(--sheet-handle) w-24 shrink-0 items-end justify-center rounded-full after:absolute after:inset-x-0 after:top-0 after:-bottom-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              data-testid="overlay-sheet-handle"
+              onClick={() => setExpanded(!expanded)}
+              type="button"
             >
-              {/* Content wrapper - all items rendered persistently to preserve state */}
-              <div className="relative" ref={contentRef}>
-                {renderStack.map((item, index) => {
-                  const isCurrent = index === currentIndex;
-                  const isPrevious = index < currentIndex;
+              <span className="h-1.5 w-12 rounded-full bg-muted-foreground/20" />
+            </button>
 
-                  // For push onto existing stack: new current item slides in from right
-                  // For first overlay (fresh open): no slide, drawer container handles entrance
-                  // For pop: returning item is already at -35%, animates to 0%
-                  const shouldSlideIn =
-                    isCurrent && isPushing && renderStack.length > 1;
-                  const initialValue = shouldSlideIn
-                    ? { x: "100%", scale: 1, opacity: 1 }
-                    : false;
+            {/* Content area with height animation */}
+            <LayoutGroup>
+              <motion.div
+                className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+                layout={isOpen}
+                style={{
+                  minHeight:
+                    minHeight > 0 && !expanded
+                      ? `min(${minHeight}px, var(--sheet-room))`
+                      : "auto",
+                }}
+                transition={shouldReduceMotion ? { duration: 0 } : drawerSpring}
+              >
+                {/* Content wrapper - all items rendered persistently to preserve state */}
+                {/* Content can shrink to fit a capped sheet, and grows to fill
+                    it full screen. */}
+                <div
+                  className={cn(
+                    "relative flex min-h-0 flex-col",
+                    expanded && "flex-1"
+                  )}
+                  ref={contentRef}
+                >
+                  {renderStack.map((item, index) => {
+                    const isCurrent = index === currentIndex;
+                    const isPrevious = index < currentIndex;
 
-                  return (
-                    <motion.div
-                      animate={{
-                        x: getOverlayXPosition(isCurrent, isPrevious),
-                        scale: isCurrent ? 1 : 0.94,
-                        opacity: isCurrent ? 1 : 0,
-                      }}
-                      aria-hidden={!isCurrent}
-                      className={cn(
-                        "w-full",
-                        isCurrent
-                          ? "relative"
-                          : "pointer-events-none absolute inset-0"
-                      )}
-                      initial={initialValue}
-                      key={item.id}
-                      transition={springTransition}
-                    >
-                      <item.component overlayId={item.id} {...item.props} />
-                    </motion.div>
-                  );
-                })}
-              </div>
-            </motion.div>
-          </LayoutGroup>
+                    // For push onto existing stack: new current item slides in from right
+                    // For first overlay (fresh open): no slide, drawer container handles entrance
+                    // For pop: returning item is already at -35%, animates to 0%
+                    const shouldSlideIn =
+                      isCurrent && isPushing && renderStack.length > 1;
+                    const initialValue = shouldSlideIn
+                      ? { x: "100%", scale: 1, opacity: 1 }
+                      : false;
 
-          {/* Safe area padding for iOS */}
-          <div className="h-safe-area-inset-bottom" />
+                    return (
+                      <motion.div
+                        animate={{
+                          x: getOverlayXPosition(isCurrent, isPrevious),
+                          scale: isCurrent ? 1 : 0.94,
+                          opacity: isCurrent ? 1 : 0,
+                        }}
+                        aria-hidden={!isCurrent}
+                        className={cn(
+                          // The overlay's root can shrink above a keyboard,
+                          // and fills the sheet full screen.
+                          "flex w-full min-h-0 flex-col [&>*]:min-h-0",
+                          isCurrent
+                            ? "relative"
+                            : "pointer-events-none absolute inset-0",
+                          expanded && "flex-1 [&>*]:max-h-none [&>*]:flex-1"
+                        )}
+                        initial={initialValue}
+                        key={item.id}
+                        transition={springTransition}
+                      >
+                        <item.component overlayId={item.id} {...item.props} />
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              </motion.div>
+            </LayoutGroup>
+          </div>
         </DrawerPrimitive.Content>
       </DrawerPrimitive.Portal>
     </DrawerPrimitive.Root>

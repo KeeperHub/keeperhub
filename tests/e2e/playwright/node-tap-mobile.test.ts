@@ -64,7 +64,7 @@ function trackSheetAndSecondTap(): void {
   w.secondPressAt = 0;
   w.sheetTookPresses = "";
   new MutationObserver((_, observer) => {
-    if (document.querySelector('[role="dialog"]')) {
+    if (document.querySelector('[role="dialog"][data-state="open"]')) {
       w.sheetOpenedAt = performance.now();
       observer.disconnect();
     }
@@ -72,7 +72,9 @@ function trackSheetAndSecondTap(): void {
   document.addEventListener(
     "pointerdown",
     (event) => {
-      const dialog = document.querySelector('[role="dialog"]');
+      const dialog = document.querySelector(
+        '[role="dialog"][data-state="open"]'
+      );
       if (dialog && w.sheetOpenedAt && !w.secondPressAt) {
         w.secondPressAt = event.timeStamp;
         w.sheetTookPresses = getComputedStyle(dialog).pointerEvents;
