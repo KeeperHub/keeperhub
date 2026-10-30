@@ -338,7 +338,7 @@ export function sanitizeNodeId(nodeId: string): string {
 }
 
 export function findActiveAtIndex(text: string): number {
-  const templatePattern = /\{\{[^}]+\}\}/g;
+  const templatePattern = /\{\{[^{}]+\}\}/g;
   const ranges: Array<{ start: number; end: number }> = [];
   for (const m of text.matchAll(templatePattern)) {
     ranges.push({ start: m.index, end: m.index + m[0].length });

@@ -17,6 +17,8 @@ import { splitTemplateRef } from "@/lib/workflow/template-ref";
 // Regex constants for performance
 const TEMPLATE_PATTERN = /\{\{([^}]+)\}\}/g;
 const ARRAY_ACCESS_PATTERN = /^([^[]+)\[(\d+)\]$/;
+// `[^{}]` keeps the scan linear; `[^}]` is quadratic on long runs of `{`.
+const HAS_TEMPLATE_PATTERN = /\{\{[^{}]+\}\}/;
 
 /** Pattern for {{@nodeId:DisplayName.field}} template references */
 const TEMPLATE_REF_PATTERN = /\{\{@([^:]+):([^}]+)\}\}/g;
@@ -581,7 +583,7 @@ export function formatTemplateForDisplay(template: string): string {
  * Check if a string contains template variables
  */
 export function hasTemplateVariables(str: string): boolean {
-  return /\{\{[^}]+\}\}/g.test(str);
+  return HAS_TEMPLATE_PATTERN.test(str);
 }
 export function extractTemplateVariables(template: string): string[] {
   if (!template || typeof template !== "string") {

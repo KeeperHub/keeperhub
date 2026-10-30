@@ -40,7 +40,7 @@ const RESERVED_CONFIG_KEYS = new Set([
   "useManualAbi",
 ]);
 
-const TEMPLATE_VALUE_PATTERN = /\{\{[^}]+}}/;
+const TEMPLATE_VALUE_PATTERN = /\{\{[^{}]+}}/;
 const DECIMAL_PATTERN = /^\d+(?:\.\d+)?$/;
 const FIXED_ARRAY_LENGTH_PATTERN = /\[(\d+)]$/;
 // The `nodes[N]` prefix the validator writes into every issue path, used to
