@@ -7,7 +7,13 @@ import {
   motion,
   useReducedMotion,
 } from "motion/react";
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { Drawer as DrawerPrimitive } from "vaul";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -322,9 +328,10 @@ function DesktopOverlayContainer() {
   );
 }
 
-// Presses outside a phone sheet are ignored this long after it opens, so the
-// second tap of a double tap that opened it does not close it again.
-const OUTSIDE_PRESS_GRACE_MS = 400;
+// Presses on and around a phone sheet are ignored this long after it opens,
+// so the second tap of a double tap that opened it neither closes it nor hits
+// a control the sheet slid under the finger.
+const OPEN_PRESS_GRACE_MS = 400;
 
 /**
  * Mobile drawer container with internal sliding content
@@ -338,13 +345,37 @@ function MobileOverlayContainer() {
   const contentRef = useRef<HTMLDivElement>(null);
   const wasOpenRef = useRef(false);
   const openedAtRef = useRef(0);
-  // From when the sheet is on screen: Vaul mounts it a render after opening
-  // (a reopen during the close animation is stamped on the fresh open below).
-  const markOpened = useCallback((node: HTMLDivElement | null) => {
-    if (node) {
-      openedAtRef.current = performance.now();
+  const [settling, setSettling] = useState(false);
+  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startGrace = useCallback(() => {
+    openedAtRef.current = performance.now();
+    setSettling(true);
+    if (settleTimerRef.current) {
+      clearTimeout(settleTimerRef.current);
     }
+    settleTimerRef.current = setTimeout(
+      () => setSettling(false),
+      OPEN_PRESS_GRACE_MS
+    );
   }, []);
+  useEffect(
+    () => () => {
+      if (settleTimerRef.current) {
+        clearTimeout(settleTimerRef.current);
+      }
+    },
+    []
+  );
+  // From when the sheet is on screen: Vaul mounts it a render after opening
+  // (a reopen during the close animation starts on the fresh open below).
+  const markOpened = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (node) {
+        startGrace();
+      }
+    },
+    [startGrace]
+  );
   const frozenStackRef = useRef(stack);
   const direction = useStackDirection(stack.length);
 
@@ -368,7 +399,7 @@ function MobileOverlayContainer() {
     // Reset minHeight on fresh open (not during push/pop)
     if (isFreshOpen) {
       setMinHeight(0);
-      openedAtRef.current = performance.now();
+      startGrace();
     }
 
     if (contentRef.current) {
@@ -453,11 +484,13 @@ function MobileOverlayContainer() {
             "rounded-t-2xl border-t bg-background shadow-2xl"
           )}
           ref={markOpened}
+          // Presses on the settling sheet fall through to the backdrop below
+          style={settling ? { pointerEvents: "none" } : undefined}
           // Timed from the press itself: Radix reports a touch press on the
           // click that follows it, which a busy page can delay.
           onPointerDownOutside={(event) => {
             const pressedAt = event.detail.originalEvent.timeStamp;
-            if (pressedAt - openedAtRef.current < OUTSIDE_PRESS_GRACE_MS) {
+            if (pressedAt - openedAtRef.current < OPEN_PRESS_GRACE_MS) {
               event.preventDefault();
             }
           }}

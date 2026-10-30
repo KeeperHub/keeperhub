@@ -50,13 +50,13 @@ function sheetClose(page: Page): Locator {
     .filter({ visible: true });
 }
 
-type TapTimes = { sheetOpenedAt: number; backdropPressedAt: number };
+type TapTimes = { sheetOpenedAt: number; secondPressAt: number };
 
-// In the page: when the sheet appears, and when the backdrop is pressed.
-function trackSheetAndBackdrop(): void {
+// In the page: when the sheet appears, and the first press after that.
+function trackSheetAndSecondTap(): void {
   const w = window as unknown as TapTimes;
   w.sheetOpenedAt = 0;
-  w.backdropPressedAt = 0;
+  w.secondPressAt = 0;
   new MutationObserver((_, observer) => {
     if (document.querySelector('[role="dialog"]')) {
       w.sheetOpenedAt = performance.now();
@@ -66,8 +66,8 @@ function trackSheetAndBackdrop(): void {
   document.addEventListener(
     "pointerdown",
     (event) => {
-      if (event.clientY < 60 && !w.backdropPressedAt) {
-        w.backdropPressedAt = performance.now();
+      if (w.sheetOpenedAt && !w.secondPressAt) {
+        w.secondPressAt = event.timeStamp;
       }
     },
     { capture: true }
@@ -133,27 +133,29 @@ test.describe("Tapping a step opens its settings", () => {
         x: trigger.x + trigger.width / 2,
         y: trigger.y + trigger.height / 2,
       };
-      // A double tap: the second tap lands on the backdrop of the sheet the
-      // first one opened, within its 400ms grace. A loaded runner can deliver
+      // A double tap: the second tap lands on the sheet the first one opened
+      // (or its backdrop), within its 400ms grace. A loaded runner can deliver
       // it later, so the page times both and a late pair is tried again.
       let judged = false;
       for (let attempt = 0; attempt < 5 && !judged; attempt += 1) {
         await expect(page.getByRole("dialog")).toHaveCount(0);
-        await page.evaluate(trackSheetAndBackdrop);
+        await page.evaluate(trackSheetAndSecondTap);
         await page.touchscreen.tap(point.x, point.y);
         await sheet(page).waitFor({ state: "attached" });
-        await page.touchscreen.tap(BACKDROP.x, BACKDROP.y);
+        await page.touchscreen.tap(point.x, point.y);
         // Past the grace, so a late close would have happened by now.
         await page.waitForTimeout(600);
         const gap = await page.evaluate(() => {
           const w = window as unknown as TapTimes;
-          return w.backdropPressedAt - w.sheetOpenedAt;
+          return w.secondPressAt - w.sheetOpenedAt;
         });
         judged = gap > 0 && gap < 350;
         if (judged) {
           await expect(sheet(page).locator("#label")).toHaveValue(
             "Manual Trigger"
           );
+          // Nothing the sheet slid under the finger was pressed.
+          await expect(page.getByRole("listbox")).toHaveCount(0);
         } else if (await sheet(page).isVisible()) {
           await sheetClose(page).tap();
           await expect(sheet(page)).toBeHidden();
