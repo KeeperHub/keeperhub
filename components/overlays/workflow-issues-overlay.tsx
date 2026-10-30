@@ -9,7 +9,10 @@ import { integrationsVersionAtom } from "@/lib/integrations-store";
 import type { IntegrationType } from "@/lib/types/integration";
 import type { WorkflowValidationIssue } from "@/lib/workflow/editor/run-validation";
 import { ConfigureConnectionOverlay } from "./add-connection-overlay";
-import { ConfigurationOverlay } from "./configuration-overlay";
+import {
+  CONFIGURATION_OVERLAY_OPTIONS,
+  ConfigurationOverlay,
+} from "./configuration-overlay";
 import { Overlay } from "./overlay";
 import { useOverlay } from "./overlay-provider";
 import type { OverlayComponentProps } from "./types";
@@ -89,7 +92,7 @@ export function WorkflowIssuesOverlay({
     // On mobile, push ConfigurationOverlay on top so back button returns here
     // On desktop, close all overlays since the sidebar shows the config
     if (isMobile) {
-      push(ConfigurationOverlay, {}, { title: "Configuration" });
+      push(ConfigurationOverlay, {}, CONFIGURATION_OVERLAY_OPTIONS);
     } else {
       closeAll();
     }

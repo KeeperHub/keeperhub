@@ -48,6 +48,30 @@ function sheetClose(page: Page): Locator {
     .filter({ visible: true });
 }
 
+type TapTimes = { sheetOpenedAt: number; backdropPressedAt: number };
+
+// In the page: when the sheet appears, and when the backdrop is pressed.
+function trackSheetAndBackdrop(): void {
+  const w = window as unknown as TapTimes;
+  w.sheetOpenedAt = 0;
+  w.backdropPressedAt = 0;
+  new MutationObserver((_, observer) => {
+    if (document.querySelector('[role="dialog"]')) {
+      w.sheetOpenedAt = performance.now();
+      observer.disconnect();
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.clientY < 60 && !w.backdropPressedAt) {
+        w.backdropPressedAt = performance.now();
+      }
+    },
+    { capture: true }
+  );
+}
+
 // A one-finger drag, as React Flow sees it from a real touch screen.
 async function touchDrag(
   page: Page,
@@ -107,13 +131,33 @@ test.describe("Tapping a step opens its settings", () => {
         x: trigger.x + trigger.width / 2,
         y: trigger.y + trigger.height / 2,
       };
-      await page.touchscreen.tap(point.x, point.y);
-      // waitFor resolves as the sheet appears; expect's retries could be late.
-      await sheet(page).waitFor();
-      // The second tap lands on the backdrop of a sheet that just opened.
-      await page.touchscreen.tap(BACKDROP.x, BACKDROP.y);
-      await page.waitForTimeout(600);
-      await expect(sheet(page).locator("#label")).toHaveValue("Manual Trigger");
+      // A double tap: the second tap lands on the backdrop of the sheet the
+      // first one opened, within its 400ms grace. A loaded runner can deliver
+      // it later, so the page times both and a late pair is tried again.
+      let judged = false;
+      for (let attempt = 0; attempt < 3 && !judged; attempt += 1) {
+        await expect(page.getByRole("dialog")).toHaveCount(0);
+        await page.evaluate(trackSheetAndBackdrop);
+        await page.touchscreen.tap(point.x, point.y);
+        await page.waitForTimeout(150);
+        await page.touchscreen.tap(BACKDROP.x, BACKDROP.y);
+        // Past the grace, so a late close would have happened by now.
+        await page.waitForTimeout(600);
+        const gap = await page.evaluate(() => {
+          const w = window as unknown as TapTimes;
+          return w.backdropPressedAt - w.sheetOpenedAt;
+        });
+        judged = gap > 0 && gap < 350;
+        if (judged) {
+          await expect(sheet(page).locator("#label")).toHaveValue(
+            "Manual Trigger"
+          );
+        } else if (await sheet(page).isVisible()) {
+          await sheetClose(page).tap();
+          await expect(sheet(page)).toBeHidden();
+        }
+      }
+      expect(judged, "a double tap within the grace").toBe(true);
       // Later, the same tap does close it.
       await page.touchscreen.tap(BACKDROP.x, BACKDROP.y);
       await expect(sheet(page)).toBeHidden();

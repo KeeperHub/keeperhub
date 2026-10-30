@@ -107,7 +107,10 @@ import {
   getIntegrationLabels,
 } from "@/plugins/registry";
 import { Panel } from "../ai-elements/panel";
-import { ConfigurationOverlay } from "../overlays/configuration-overlay";
+import {
+  CONFIGURATION_OVERLAY_OPTIONS,
+  ConfigurationOverlay,
+} from "../overlays/configuration-overlay";
 import { ConfirmOverlay } from "../overlays/confirm-overlay";
 import { useOverlay } from "../overlays/overlay-provider";
 import { WorkflowIOOverlay } from "../overlays/workflow-io-overlay";
@@ -1653,7 +1656,7 @@ function ToolbarActions({
       <Button
         className="border hover:bg-black/5 lg:hidden dark:hover:bg-white/5"
         onClick={() =>
-          openOverlay(ConfigurationOverlay, {}, { title: "Configuration" })
+          openOverlay(ConfigurationOverlay, {}, CONFIGURATION_OVERLAY_OPTIONS)
         }
         size="icon"
         title="Configuration"

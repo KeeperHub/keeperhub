@@ -4,7 +4,10 @@ import { useReactFlow } from "@xyflow/react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { usePathname } from "next/navigation";
 import { useCallback } from "react";
-import { ConfigurationOverlay } from "@/components/overlays/configuration-overlay";
+import {
+  CONFIGURATION_OVERLAY_OPTIONS,
+  ConfigurationOverlay,
+} from "@/components/overlays/configuration-overlay";
 import { useOverlayActions } from "@/components/overlays/overlay-provider";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
@@ -51,7 +54,12 @@ export function useShowStepSettings(): (newStep?: WorkflowNode) => void {
           { zoom: getZoom(), duration: 300 }
         );
       }
-      open(ConfigurationOverlay, {}, { title: "Configuration" });
+      // The sheet takes over: focus left on the canvas (a step's +) would
+      // let Escape reselect that step
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+      open(ConfigurationOverlay, {}, CONFIGURATION_OVERLAY_OPTIONS);
     },
     [
       isMobile,

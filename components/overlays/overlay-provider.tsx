@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import type {
+  OverlayActions,
   OverlayComponentProps,
   OverlayContextValue,
   OverlayOptions,
@@ -18,11 +19,6 @@ import type {
 } from "./types";
 
 const OverlayContext = createContext<OverlayContextValue | null>(null);
-
-type OverlayActions = Pick<
-  OverlayContextValue,
-  "open" | "push" | "pop" | "replace" | "closeAll" | "close"
->;
 
 // The actions alone never change, so their readers skip stack updates.
 const OverlayActionsContext = createContext<OverlayActions | null>(null);

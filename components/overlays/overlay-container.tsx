@@ -322,9 +322,9 @@ function DesktopOverlayContainer() {
   );
 }
 
-// How long after a sheet opens a press outside it still counts as part of
-// the double tap that opened it.
-const DOUBLE_TAP_MS = 400;
+// Presses outside a phone sheet are ignored this long after it opens, so the
+// second tap of a double tap that opened it does not close it again.
+const OUTSIDE_PRESS_GRACE_MS = 400;
 
 /**
  * Mobile drawer container with internal sliding content
@@ -338,6 +338,12 @@ function MobileOverlayContainer() {
   const contentRef = useRef<HTMLDivElement>(null);
   const wasOpenRef = useRef(false);
   const openedAtRef = useRef(0);
+  // From when the sheet is on screen: Vaul mounts it a render after opening.
+  const markOpened = useCallback((node: HTMLDivElement | null) => {
+    if (node) {
+      openedAtRef.current = performance.now();
+    }
+  }, []);
   const frozenStackRef = useRef(stack);
   const direction = useStackDirection(stack.length);
 
@@ -361,7 +367,6 @@ function MobileOverlayContainer() {
     // Reset minHeight on fresh open (not during push/pop)
     if (isFreshOpen) {
       setMinHeight(0);
-      openedAtRef.current = performance.now();
     }
 
     if (contentRef.current) {
@@ -445,10 +450,12 @@ function MobileOverlayContainer() {
             "fixed inset-x-0 bottom-0 z-50 flex max-h-[90vh] flex-col",
             "rounded-t-2xl border-t bg-background shadow-2xl"
           )}
-          // Any sheet opened by a double tap gets its second tap on the
-          // backdrop: that is not a request to close it.
+          ref={markOpened}
           onPointerDownOutside={(event) => {
-            if (performance.now() - openedAtRef.current < DOUBLE_TAP_MS) {
+            if (
+              performance.now() - openedAtRef.current <
+              OUTSIDE_PRESS_GRACE_MS
+            ) {
               event.preventDefault();
             }
           }}

@@ -161,3 +161,11 @@ export type OverlayFooterProps = {
   /** Children to render (alternative to actions) */
   children?: ReactNode;
 };
+
+/**
+ * The overlay actions alone, exposed by useOverlayActions()
+ */
+export type OverlayActions = Pick<
+  OverlayContextValue,
+  "open" | "push" | "pop" | "replace" | "closeAll" | "close"
+>;
