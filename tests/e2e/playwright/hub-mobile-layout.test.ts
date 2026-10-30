@@ -12,6 +12,7 @@ import {
   box,
   dismissPhoneOverlays,
   overlaps,
+  textContrast,
   textFits,
 } from "./utils/layout";
 
@@ -158,6 +159,41 @@ test.describe("Hub tab band", () => {
       });
     }
     expect(await tabOrder(page)).toEqual(["Protocols", "Demos", "Docs"]);
+  });
+});
+
+test.describe("Tab band text", () => {
+  // WCAG AA for body text; the links and the tabs not picked used to sit
+  // at 2.7:1 and 3.7:1 and read as disabled.
+  const READABLE = 4.5;
+
+  test("Demos, Docs and the tabs not picked are readable", async ({ page }) => {
+    await open(page, 1280, "/hub");
+    const band = tabBand(page);
+    await expect(band.tabs).toBeVisible({ timeout: 15_000 });
+    for (const width of [320, 390, 768, 1280]) {
+      await atWidth(page, width, async () => {
+        for (const link of [band.demos, band.docs]) {
+          expect(await textContrast(link)).toBeGreaterThanOrEqual(READABLE);
+        }
+        for (const name of ["Workflows", "Marketplace"]) {
+          const tab = band.tabs.getByRole("tab", { name });
+          await expect(tab).toHaveAttribute("data-state", "inactive");
+          expect(await textContrast(tab)).toBeGreaterThanOrEqual(READABLE);
+        }
+      });
+    }
+  });
+
+  test("hovering a tab not picked brightens its text", async ({ page }) => {
+    await open(page, 1280, "/hub");
+    const tab = tabBand(page).tabs.getByRole("tab", { name: "Workflows" });
+    await expect(tab).toBeVisible({ timeout: 15_000 });
+    const resting = await textContrast(tab);
+    await tab.hover();
+    await expect(async () => {
+      expect(await textContrast(tab)).toBeGreaterThan(resting + 1);
+    }).toPass({ timeout: 5000 });
   });
 });
 
