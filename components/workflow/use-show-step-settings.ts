@@ -56,8 +56,9 @@ export function useShowStepSettings(): (newStep?: WorkflowNode) => void {
       }
       // The sheet takes over: focus left on the canvas (a step's +) would
       // let Escape reselect that step
-      if (document.activeElement instanceof HTMLElement) {
-        document.activeElement.blur();
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement || focused instanceof SVGElement) {
+        focused.blur();
       }
       open(ConfigurationOverlay, {}, CONFIGURATION_OVERLAY_OPTIONS);
     },

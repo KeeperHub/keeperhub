@@ -338,7 +338,8 @@ function MobileOverlayContainer() {
   const contentRef = useRef<HTMLDivElement>(null);
   const wasOpenRef = useRef(false);
   const openedAtRef = useRef(0);
-  // From when the sheet is on screen: Vaul mounts it a render after opening.
+  // From when the sheet is on screen: Vaul mounts it a render after opening
+  // (a reopen during the close animation is stamped on the fresh open below).
   const markOpened = useCallback((node: HTMLDivElement | null) => {
     if (node) {
       openedAtRef.current = performance.now();
@@ -367,6 +368,7 @@ function MobileOverlayContainer() {
     // Reset minHeight on fresh open (not during push/pop)
     if (isFreshOpen) {
       setMinHeight(0);
+      openedAtRef.current = performance.now();
     }
 
     if (contentRef.current) {
@@ -451,11 +453,11 @@ function MobileOverlayContainer() {
             "rounded-t-2xl border-t bg-background shadow-2xl"
           )}
           ref={markOpened}
+          // Timed from the press itself: Radix reports a touch press on the
+          // click that follows it, which a busy page can delay.
           onPointerDownOutside={(event) => {
-            if (
-              performance.now() - openedAtRef.current <
-              OUTSIDE_PRESS_GRACE_MS
-            ) {
+            const pressedAt = event.detail.originalEvent.timeStamp;
+            if (pressedAt - openedAtRef.current < OUTSIDE_PRESS_GRACE_MS) {
               event.preventDefault();
             }
           }}

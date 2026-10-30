@@ -61,7 +61,9 @@ type ConfigurationOverlayProps = OverlayComponentProps;
 
 // Every opener names the phone sheet the same for screen readers: it shows the
 // workflow, or a step, whichever is selected.
-export const CONFIGURATION_OVERLAY_OPTIONS = { title: "Configuration" };
+export const CONFIGURATION_OVERLAY_OPTIONS = Object.freeze({
+  title: "Configuration",
+});
 
 // The workflow's Enable switch for where the toolbar's has no room: below xs,
 // and in the 768-1023px header beside a selection's Delete below switch-row
