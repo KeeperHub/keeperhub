@@ -105,6 +105,10 @@
   --container-org-name: 5.5rem;
   /* The marketplace leaderboard shows its Tags column from this width. */
   --container-leaderboard-full: 44rem;
+  /* The hub Workflows list shows its Tags column from @workflow-list-tags and
+     the original grid, with one-line names, from @workflow-list-full. */
+  --container-workflow-list-tags: 46rem;
+  --container-workflow-list-full: 56rem;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-anek-latin);

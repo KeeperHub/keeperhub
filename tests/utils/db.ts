@@ -18,6 +18,7 @@ import type {
   WorkflowEdgeJson,
   WorkflowNodeJson,
 } from "@/lib/workflow/node-builders";
+import { publicTagSlug } from "@/lib/workflow/public-tag-slug";
 import {
   createManualWorkflow,
   createScheduledWorkflow,
@@ -77,6 +78,8 @@ export type CreateTestWorkflowOptions = {
   edges?: WorkflowEdgeJson[];
   /** List the workflow on the marketplace under this slug and price. */
   listing?: { slug: string; priceUsdcPerCall: string };
+  /** Make it a public Hub template, optionally featured, with these public tag ids. */
+  hub?: { featured?: boolean; tagIds?: string[] };
 };
 
 export type TestWorkflow = {
@@ -273,6 +276,7 @@ export async function createTestWorkflow(
       nodes: fixtureNodes,
       edges: fixtureEdges,
       listing,
+      hub,
     } = options;
 
     // KEEP-458: when caller supplies a fixture's nodes/edges, insert them
@@ -327,6 +331,21 @@ export async function createTestWorkflow(
             price_usdc_per_call = ${listing.priceUsdcPerCall}
         WHERE id = ${workflowId}
       `;
+    }
+
+    if (hub) {
+      await sql`
+        UPDATE workflows
+        SET visibility = 'public', featured = ${hub.featured ?? false}
+        WHERE id = ${workflowId}
+      `;
+      for (const tagId of hub.tagIds ?? []) {
+        await sql`
+          INSERT INTO workflow_public_tags (workflow_id, public_tag_id)
+          VALUES (${workflowId}, ${tagId})
+          ON CONFLICT DO NOTHING
+        `;
+      }
     }
 
     // If schedule trigger, also create the schedule record
@@ -386,6 +405,36 @@ export async function deleteTestWorkflow(workflowId: string): Promise<void> {
     await sql`
       DELETE FROM workflows WHERE id = ${workflowId}
     `;
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
+ * Create a Hub public tag; delete it with deleteTestPublicTag. Give it a name
+ * unique to the run: a clash fails instead of taking over a shared tag.
+ */
+export async function createTestPublicTag(name: string): Promise<string> {
+  const sql = getDbConnection();
+  try {
+    const id = generateId();
+    await sql`
+      INSERT INTO public_tags (id, name, slug)
+      VALUES (${id}, ${name}, ${publicTagSlug(name)})
+    `;
+    return id;
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
+ * Delete a Hub public tag; its workflow links go with it
+ */
+export async function deleteTestPublicTag(id: string): Promise<void> {
+  const sql = getDbConnection();
+  try {
+    await sql`DELETE FROM public_tags WHERE id = ${id}`;
   } finally {
     await sql.end();
   }
