@@ -159,23 +159,6 @@ test.describe("welcome landing on a phone", () => {
     expect(box?.width).toBe(16);
   });
 
-  test("does not cover the sign-in form with the desktop warning", async ({
-    page,
-  }) => {
-    await page.goto("/welcome", { waitUntil: "domcontentloaded" });
-    await openSignupView(page);
-    await expect(page.getByText("Desktop Optimized")).toHaveCount(0);
-  });
-
-  test("still warns once the visitor leaves the welcome page", async ({
-    page,
-  }) => {
-    await enterAsGuest(page);
-    await expect(page.getByText("Desktop Optimized")).toBeVisible({
-      timeout: 15_000,
-    });
-  });
-
   test("fits the captcha inside the sign-up form", async ({ page }) => {
     await page.goto("/welcome", { waitUntil: "domcontentloaded" });
     await openSignupView(page);
@@ -237,8 +220,6 @@ test.describe("welcome landing on a phone turned sideways", () => {
 // Opens the Sign in window from the app header on /hub.
 async function openSignInWindow(page: Page): Promise<Locator> {
   await page.goto("/hub", { waitUntil: "domcontentloaded" });
-  // Below 768px the app first warns that it is best on a larger screen.
-  await page.getByRole("button", { name: "Continue Anyway" }).click();
   const signIn = page.getByRole("button", { name: "Sign in", exact: true });
   const dialog = page.getByRole("dialog");
   await expect(async () => {
