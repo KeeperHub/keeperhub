@@ -10,7 +10,3 @@ export type HubTabValue = (typeof HUB_TABS)[number];
 export function isHubTabValue(value: string): value is HubTabValue {
   return (HUB_TABS as readonly string[]).includes(value);
 }
-
-// The tab band's keyboard focus ring, shared by the tabs and the Demos/Docs links.
-export const HUB_BAND_FOCUS_RING =
-  "focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-hub-overlay)]";
