@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
+import { textContrast } from "./utils/contrast";
 import {
   createTestPublicTag,
   createTestWorkflow,
@@ -12,7 +13,6 @@ import {
   box,
   dismissPhoneOverlays,
   overlaps,
-  textContrast,
   textFits,
 } from "./utils/layout";
 
@@ -171,7 +171,7 @@ test.describe("Tab band text", () => {
     await open(page, 1280, "/hub");
     const band = tabBand(page);
     await expect(band.tabs).toBeVisible({ timeout: 15_000 });
-    for (const width of [320, 390, 768, 1280]) {
+    for (const width of [...PHONE_WIDTHS, ...TABLET_WIDTHS, 1024, 1280]) {
       await atWidth(page, width, async () => {
         for (const link of [band.demos, band.docs]) {
           expect(await textContrast(link)).toBeGreaterThanOrEqual(READABLE);
@@ -194,6 +194,28 @@ test.describe("Tab band text", () => {
     await expect(async () => {
       expect(await textContrast(tab)).toBeGreaterThan(resting + 1);
     }).toPass({ timeout: 5000 });
+  });
+
+  test("Demos takes the tabs' keyboard focus ring", async ({ page }) => {
+    await open(page, 1280, "/hub");
+    expect(await tabOrder(page)).toEqual(["Protocols", "Demos", "Docs"]);
+    const ring = (locator: Locator): Promise<string[]> =>
+      locator.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return [style.getPropertyValue("--tw-ring-color"), style.boxShadow];
+      });
+    const band = tabBand(page);
+    const protocols = band.tabs.getByRole("tab", { name: "Protocols" });
+    await protocols.focus();
+    await page.keyboard.press("Tab");
+    await expect(band.demos).toBeFocused();
+    const [demosColor, demosShadow] = await ring(band.demos);
+    await page.keyboard.press("Shift+Tab");
+    await expect(protocols).toBeFocused();
+    const [tabColor] = await ring(protocols);
+    expect(demosColor).not.toBe("");
+    expect(demosColor).toBe(tabColor);
+    expect(demosShadow).not.toBe("none");
   });
 });
 

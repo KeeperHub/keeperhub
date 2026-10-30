@@ -4,7 +4,11 @@ import { Box, Store, Workflow as WorkflowIcon } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTransition } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { type HubTabValue, isHubTabValue } from "./_tabs-shared";
+import {
+  HUB_BAND_FOCUS_RING,
+  type HubTabValue,
+  isHubTabValue,
+} from "./_tabs-shared";
 
 // Re-export for callers that already import from this file (matches the
 // public surface promised in 44-01-PLAN.md acceptance criteria).
@@ -20,8 +24,7 @@ type HubTabsShellProps = {
 };
 
 // Text colours use dark: to replace TabsTrigger's dark:text-muted-foreground (3.7:1).
-const PILL_CLASSES =
-  "inline-flex min-h-9 items-center gap-2 rounded-full px-2 py-2 text-sm font-normal @max-xl/hub-band:gap-1.5 dark:text-foreground/70 transition-colors duration-150 ease hover:bg-[var(--color-hub-icon-bg)]/40 dark:hover:text-foreground focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-hub-overlay)] data-[state=active]:bg-[var(--color-hub-icon-bg)] data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:hover:bg-[var(--color-hub-icon-bg)] motion-reduce:transition-none @xl/hub-band:px-4";
+const PILL_CLASSES = `${HUB_BAND_FOCUS_RING} inline-flex min-h-9 items-center gap-2 rounded-full px-2 py-2 text-sm font-normal @max-xl/hub-band:gap-1.5 dark:text-foreground/70 transition-colors duration-150 ease hover:bg-[var(--color-hub-icon-bg)]/40 dark:hover:text-foreground data-[state=active]:bg-[var(--color-hub-icon-bg)] data-[state=active]:font-semibold dark:data-[state=active]:text-foreground data-[state=active]:hover:bg-[var(--color-hub-icon-bg)] motion-reduce:transition-none @xl/hub-band:px-4`;
 
 const PILL_ICON_CLASSES =
   "size-4 text-muted-foreground group-data-[state=active]:text-[var(--color-text-accent)] max-xs:hidden";
