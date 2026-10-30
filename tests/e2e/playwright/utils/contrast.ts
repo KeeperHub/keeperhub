@@ -1,7 +1,8 @@
 import type { Locator } from "@playwright/test";
 
 // WCAG contrast of its text against the backgrounds painted behind it,
-// translucent layers blended in. Throws on a colour it cannot read.
+// translucent layers and opacity blended in. Throws on a colour it cannot
+// read and on background images, which it cannot measure.
 export async function textContrast(locator: Locator): Promise<number> {
   return await locator.evaluate((element) => {
     const ctx = document.createElement("canvas").getContext("2d", {
@@ -25,13 +26,21 @@ export async function textContrast(locator: Locator): Promise<number> {
       [0, 1, 2].map((i) => top[i] * top[3] + base[i] * (1 - top[3]));
     const layers: number[][] = [];
     for (let el: Element | null = element; el; el = el.parentElement) {
-      const layer = rgba(getComputedStyle(el).backgroundColor);
+      const style = getComputedStyle(el);
+      if (style.backgroundImage !== "none") {
+        throw new Error(`background image behind the text: ${el.tagName}`);
+      }
+      const layer = rgba(style.backgroundColor);
       if (layer[3] > 0) {
         layers.push(layer);
       }
       if (layer[3] === 1) {
         break;
       }
+    }
+    let opacity = 1;
+    for (let el: Element | null = element; el; el = el.parentElement) {
+      opacity *= Number(getComputedStyle(el).opacity);
     }
     const base = layers.pop();
     if (!base || base[3] < 1) {
@@ -41,7 +50,8 @@ export async function textContrast(locator: Locator): Promise<number> {
     for (const layer of layers.reverse()) {
       bg = over(layer, bg);
     }
-    const fg = over(rgba(getComputedStyle(element).color), bg);
+    const color = rgba(getComputedStyle(element).color);
+    const fg = over([...color.slice(0, 3), color[3] * opacity], bg);
     const luminance = (c: number[]): number => {
       const [r, g, b] = c.map((v) => {
         const s = v / 255;
