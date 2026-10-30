@@ -81,6 +81,38 @@ function storageKey(userId: string | undefined): string {
   return `kh:getting-started:v2:${userId ?? "anon"}`;
 }
 
+// Steps done and step workflows that another copy of this hook saved (the
+// sidebar card and the overlay can both be mounted), so a write keeps them.
+function withStoredProgress(
+  userId: string | undefined,
+  current: Persisted
+): Persisted {
+  let stored: Partial<Persisted> | null;
+  try {
+    const raw = localStorage.getItem(storageKey(userId));
+    stored = raw ? (JSON.parse(raw) as Partial<Persisted>) : null;
+  } catch {
+    return current;
+  }
+  const storedDone = Array.isArray(stored?.done) ? stored.done : [];
+  const storedWorkflows =
+    stored?.workflows && typeof stored.workflows === "object"
+      ? stored.workflows
+      : {};
+  const newDone = storedDone.filter((key) => !current.done.includes(key));
+  const changedWorkflows = Object.entries(storedWorkflows).some(
+    ([key, id]) => current.workflows[key] !== id
+  );
+  if (newDone.length === 0 && !changedWorkflows) {
+    return current;
+  }
+  return {
+    ...current,
+    done: [...current.done, ...newDone],
+    workflows: { ...current.workflows, ...storedWorkflows },
+  };
+}
+
 function readPersisted(userId: string | undefined): Persisted {
   const fallback: Persisted = {
     state: "collapsed",
@@ -205,7 +237,12 @@ export type GettingStarted = {
   chipContext: ChipContext;
 };
 
-export function useGettingStarted(): GettingStarted {
+export function useGettingStarted({
+  inOverlay = false,
+}: {
+  // Shown in the overlay: fetch and poll as the expanded card does.
+  inOverlay?: boolean;
+} = {}): GettingStarted {
   const { data: session } = useSession();
   const { data: activeOrg } = authClient.useActiveOrganization();
   const userId = session?.user?.id;
@@ -248,7 +285,17 @@ export function useGettingStarted(): GettingStarted {
   // synchronously so the value survives an immediate navigation.
   const persist = useCallback(
     (update: (prev: Persisted) => Persisted) => {
-      const next = update(persistedRef.current);
+      const merged = withStoredProgress(userId, persistedRef.current);
+      const next = update(merged);
+      // Unchanged: sync from storage but skip the write, so a stale copy
+      // cannot put back an older state.
+      if (next === merged) {
+        if (merged !== persistedRef.current) {
+          persistedRef.current = merged;
+          setPersisted(merged);
+        }
+        return;
+      }
       persistedRef.current = next;
       setPersisted(next);
       try {
@@ -260,6 +307,7 @@ export function useGettingStarted(): GettingStarted {
     [userId]
   );
 
+  const showing = inOverlay || persisted.state === "expanded";
   const workflowIds = Object.values(persisted.workflows).join(",");
   const fetchStatus = useCallback(() => {
     if (!isAuthenticated) {
@@ -289,7 +337,7 @@ export function useGettingStarted(): GettingStarted {
 
   // Fetch hub workflow ids for onboarding chips once per session.
   useEffect(() => {
-    if (!isAuthenticated || persisted.state === "dismissed") {
+    if (!isAuthenticated || (persisted.state === "dismissed" && !inOverlay)) {
       return;
     }
     fetch("/api/onboarding/recommendations")
@@ -302,12 +350,12 @@ export function useGettingStarted(): GettingStarted {
         }
       })
       .catch(() => undefined);
-  }, [isAuthenticated, persisted.state]);
+  }, [isAuthenticated, persisted.state, inOverlay]);
 
-  // Derive testnet workspace from org wallet balances when the launcher is expanded.
+  // Derive testnet workspace from org wallet balances while the checklist shows.
   // biome-ignore lint/correctness/useExhaustiveDependencies: activeOrgId is the refetch trigger on org switch; balances are scoped server-side
   useEffect(() => {
-    if (!isAuthenticated || persisted.state !== "expanded") {
+    if (!(isAuthenticated && showing)) {
       setTestnetWorkspace(resolveTestnetWorkspace(undefined));
       return;
     }
@@ -319,18 +367,18 @@ export function useGettingStarted(): GettingStarted {
         }
       })
       .catch(() => undefined);
-  }, [isAuthenticated, persisted.state, activeOrgId]);
+  }, [isAuthenticated, showing, activeOrgId]);
 
   // While the checklist is open, poll so an outcome completed elsewhere (an
   // in-app overlay, or running the draft in the builder) is reflected without
   // a manual refresh.
   useEffect(() => {
-    if (persisted.state !== "expanded") {
+    if (!showing) {
       return;
     }
     const id = setInterval(fetchStatus, 6000);
     return () => clearInterval(id);
-  }, [persisted.state, fetchStatus]);
+  }, [showing, fetchStatus]);
 
   // Latch satisfied real signals into `done` so completion survives the user
   // later deleting the workflow / key that produced it. Read persisted via ref

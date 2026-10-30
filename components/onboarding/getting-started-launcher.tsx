@@ -1,6 +1,6 @@
 "use client";
 
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { Check, ChevronDown, Compass, Info, Sparkles, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { usePathname, useRouter } from "next/navigation";
@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { ApiKeysOverlay } from "@/components/overlays/api-keys-overlay";
 import { ConnectAgentOverlay } from "@/components/overlays/connect-agent-overlay";
 import { IntegrationsOverlay } from "@/components/overlays/integrations-overlay";
+import { Overlay } from "@/components/overlays/overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
 import { WalletOverlay } from "@/components/overlays/wallet-overlay";
 import { Button } from "@/components/ui/button";
@@ -36,12 +37,18 @@ import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { cn } from "@/lib/utils";
 import {
   editorTourRequestedAtom,
+  gettingStartedDockedAtom,
   gettingStartedOpenAtom,
   pendingAiPromptAtom,
 } from "@/lib/workflow/store";
 
 // AI workflow generation is gated by this flag and is off in prod + staging.
 const AI_ENABLED = process.env.NEXT_PUBLIC_AI_PROMPT_ENABLED === "true";
+
+// 8px under the header plus the card's mb-2 above the pill, and the card's
+// heading row with its borders: what the step list cannot use.
+const CARD_GAP = 16;
+const CARD_HEADING_HEIGHT = 50;
 
 function ProgressRing({
   done,
@@ -156,7 +163,8 @@ function StepRow({
         )}
         <button
           aria-label={`More info about ${step.title}`}
-          className="mt-0.5 shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          // A 44px target on touch screens.
+          className="mt-0.5 flex shrink-0 items-center justify-center rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground touch-ui:-m-2 touch-ui:size-11"
           onClick={() => onInfo(step)}
           title="More info"
           type="button"
@@ -171,7 +179,7 @@ function StepRow({
             return (
               <button
                 className={cn(
-                  "inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2.5 py-1 text-xs transition-colors hover:bg-muted",
+                  "inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2.5 py-1 text-xs transition-colors hover:bg-muted touch-ui:min-h-11",
                   cloned && "border-keeperhub-green text-keeperhub-green"
                 )}
                 key={chip.id}
@@ -191,7 +199,7 @@ function StepRow({
       {step.offerTour && !locked && (
         <div className="px-2 pb-2 pl-9">
           <button
-            className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 font-medium text-primary text-xs transition-colors hover:bg-primary/20"
+            className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 font-medium text-primary text-xs transition-colors hover:bg-primary/20 touch-ui:min-h-11"
             onClick={() => onTour(step)}
             type="button"
           >
@@ -222,7 +230,7 @@ function StepInfoDialog({
     text.replaceAll("{credit}", creditLabel);
   return (
     <Dialog onOpenChange={(next) => !next && onClose()} open={step !== null}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{step?.title}</DialogTitle>
           <DialogDescription>
@@ -287,23 +295,20 @@ function StepInfoDialog({
 function ExpandedCard({
   gs,
   creditLabel,
+  listMaxHeight,
   onAction,
   onChip,
   onTour,
 }: {
   gs: GettingStarted;
   creditLabel: string;
+  listMaxHeight?: number;
   onAction: (step: Step) => void;
   onChip: (step: Step, chip: Chip) => void;
   onTour: (step: Step) => void;
 }): React.ReactElement {
   const [infoStep, setInfoStep] = useState<Step | null>(null);
-  const branches = getBranches(gs.chipContext);
-  // Single linear checklist: the agent branch (Wallet ready -> Connect your
-  // agent -> Run your first workflow). Monitor / Yield are no longer surfaced.
-  const steps = (branches.find((b) => b.key === "agent") ?? branches[0]).steps;
-  const total = steps.length;
-  const done = steps.filter((s) => gs.isStepComplete(s)).length;
+  const { steps, done, total } = checklistProgress(gs);
 
   return (
     // Grow in height (and scale in from the pill corner) on open; shrink height
@@ -320,7 +325,7 @@ function ExpandedCard({
     >
       <div className="flex items-center justify-between border-b px-4 py-3">
         <div className="flex items-center gap-2">
-          <span className="font-medium text-sm">Get started</span>
+          <span className="font-medium text-sm">Getting started</span>
           <span
             className="text-muted-foreground text-xs"
             data-done={done}
@@ -350,25 +355,22 @@ function ExpandedCard({
         </div>
       </div>
 
-      <div className="max-h-[60vh] space-y-1 overflow-y-auto px-2 py-2">
-        {steps.map((step, idx) => {
-          const locked = steps.slice(0, idx).some((s) => !gs.isStepComplete(s));
-          return (
-            <StepRow
-              complete={gs.isStepComplete(step)}
-              isChipCloned={(chip) =>
-                gs.hasLiveStepWorkflow(`${step.key}:${chip.id}`)
-              }
-              key={step.key}
-              locked={locked}
-              onAction={onAction}
-              onChip={onChip}
-              onInfo={setInfoStep}
-              onTour={onTour}
-              step={step}
-            />
-          );
-        })}
+      <div
+        className="max-h-[60vh] space-y-1 overflow-y-auto px-2 py-2"
+        style={
+          listMaxHeight === undefined
+            ? undefined
+            : { maxHeight: `min(60vh, ${listMaxHeight}px)` }
+        }
+      >
+        <StepList
+          gs={gs}
+          onAction={onAction}
+          onChip={onChip}
+          onInfo={setInfoStep}
+          onTour={onTour}
+          steps={steps}
+        />
       </div>
 
       <StepInfoDialog
@@ -382,33 +384,61 @@ function ExpandedCard({
   );
 }
 
-export function GettingStartedLauncher({
-  compact = false,
+// Single linear checklist: the agent branch (Wallet ready -> Connect your
+// agent -> Run your first workflow). Monitor / Yield are no longer surfaced.
+function checklistProgress(gs: GettingStarted): {
+  steps: Step[];
+  done: number;
+  total: number;
+} {
+  const branches = getBranches(gs.chipContext);
+  const steps = (branches.find((b) => b.key === "agent") ?? branches[0]).steps;
+  const done = steps.filter((s) => gs.isStepComplete(s)).length;
+  return { steps, done, total: steps.length };
+}
+
+function StepList({
+  gs,
+  steps,
+  onAction,
+  onChip,
+  onTour,
+  onInfo,
 }: {
-  // Icon-only pill for a collapsed sidebar. The label + count show otherwise.
-  compact?: boolean;
-} = {}): React.ReactElement | null {
-  const gs = useGettingStarted();
-  const gsRef = useRef(gs);
-  gsRef.current = gs;
-  const pathname = usePathname();
-  const router = useRouter();
-  const { open } = useOverlay();
-  const [, setPendingAiPrompt] = useAtom(pendingAiPromptAtom);
-  const [forceOpen, setForceOpen] = useAtom(gettingStartedOpenAtom);
-  const requestTour = useSetAtom(editorTourRequestedAtom);
+  gs: GettingStarted;
+  steps: Step[];
+  onAction: (step: Step) => void;
+  onChip: (step: Step, chip: Chip) => void;
+  onTour: (step: Step) => void;
+  onInfo: (step: Step) => void;
+}): React.ReactElement {
+  return (
+    <>
+      {steps.map((step, idx) => {
+        const locked = steps.slice(0, idx).some((s) => !gs.isStepComplete(s));
+        return (
+          <StepRow
+            complete={gs.isStepComplete(step)}
+            isChipCloned={(chip) =>
+              gs.hasLiveStepWorkflow(`${step.key}:${chip.id}`)
+            }
+            key={step.key}
+            locked={locked}
+            onAction={onAction}
+            onChip={onChip}
+            onInfo={onInfo}
+            onTour={onTour}
+            step={step}
+          />
+        );
+      })}
+    </>
+  );
+}
+
+// The env-driven free gas sponsorship amount, for the wallet info copy.
+function useCreditLabel(): string {
   const [creditLabel, setCreditLabel] = useState("$1");
-
-  // The user-menu "Getting started" entry flips this to reopen the launcher.
-  // gsRef avoids including the unstable `gs` object in deps.
-  useEffect(() => {
-    if (forceOpen) {
-      gsRef.current.setState("expanded");
-      setForceOpen(false);
-    }
-  }, [forceOpen, setForceOpen]);
-
-  // Fetch the env-driven free gas sponsorship amount for the wallet info copy.
   useEffect(() => {
     let cancelled = false;
     fetch("/api/gas-sponsorship")
@@ -423,24 +453,44 @@ export function GettingStartedLauncher({
       cancelled = true;
     };
   }, []);
+  return creditLabel;
+}
 
-  const path = pathname ?? "";
-  if (!gs.isAuthenticated || isPreAppPath(path)) {
-    return null;
-  }
-  if (gs.state === "dismissed") {
-    return null;
-  }
+/**
+ * What the checklist's steps, chips and tour buttons do. From the overlay a
+ * step's surface stacks on it (Back returns to the checklist), and the
+ * overlay closes before going to a workflow.
+ */
+function useStepActions(
+  gs: GettingStarted,
+  { inOverlay = false }: { inOverlay?: boolean } = {}
+): {
+  onAction: (step: Step) => void;
+  onChip: (step: Step, chip: Chip) => void;
+  onTour: (step: Step) => void;
+} {
+  const router = useRouter();
+  const { open, push, closeAll } = useOverlay();
+  const [, setPendingAiPrompt] = useAtom(pendingAiPromptAtom);
+  const requestTour = useSetAtom(editorTourRequestedAtom);
+
+  const openWorkflow = (id: string): void => {
+    if (inOverlay) {
+      closeAll();
+    }
+    router.push(`/workflows/${id}`);
+  };
 
   const openDeepLink = (target: DeepLinkTarget): void => {
+    const show = inOverlay ? push : open;
     if (target === "api-keys") {
-      open(ApiKeysOverlay);
+      show(ApiKeysOverlay);
     } else if (target === "connect-agent") {
-      open(ConnectAgentOverlay, undefined, { size: "2xl" });
+      show(ConnectAgentOverlay, undefined, { size: "2xl" });
     } else if (target === "integrations") {
-      open(IntegrationsOverlay);
+      show(IntegrationsOverlay);
     } else {
-      open(WalletOverlay);
+      show(WalletOverlay);
     }
   };
 
@@ -527,7 +577,7 @@ export function GettingStartedLauncher({
     } else if (AI_ENABLED) {
       setPendingAiPrompt(prompt);
     }
-    router.push(`/workflows/${id}`);
+    openWorkflow(id);
   };
 
   // Taking a step's action opens the relevant surface. Outcome steps only
@@ -587,7 +637,7 @@ export function GettingStartedLauncher({
     }
     // The step/chip mark themselves complete by deriving from this live clone
     // (see hasLiveStepWorkflow / isStepComplete) -- no separate latch to clobber.
-    router.push(`/workflows/${id}`);
+    openWorkflow(id);
   };
 
   // Chips with a configured starter workflow clone it; otherwise fall back to
@@ -611,12 +661,71 @@ export function GettingStartedLauncher({
     startStepWorkflow(step, prompt, { tour: true });
   };
 
+  return { onAction, onChip, onTour };
+}
+
+export function GettingStartedLauncher({
+  compact = false,
+}: {
+  // Icon-only pill for a collapsed sidebar. The label + count show otherwise.
+  compact?: boolean;
+} = {}): React.ReactElement | null {
+  const gs = useGettingStarted();
+  const gsRef = useRef(gs);
+  gsRef.current = gs;
+  const pathname = usePathname();
+  const [forceOpen, setForceOpen] = useAtom(gettingStartedOpenAtom);
+  const setDocked = useSetAtom(gettingStartedDockedAtom);
+  const creditLabel = useCreditLabel();
+  const { onAction, onChip, onTour } = useStepActions(gs);
+  const expanded = gs.state === "expanded";
+  const [wrapper, setWrapper] = useState<HTMLDivElement | null>(null);
+  const [listMaxHeight, setListMaxHeight] = useState<number>();
+
+  // The card grows up from the pill: keep it below the header in short
+  // windows, so its title and buttons stay on screen. Kept current while
+  // collapsed too, so it opens at the right height.
+  useEffect(() => {
+    const sidebar = wrapper?.offsetParent;
+    if (!(wrapper && sidebar)) {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      setListMaxHeight(wrapper.offsetTop - CARD_GAP - CARD_HEADING_HEIGHT);
+    });
+    observer.observe(sidebar);
+    return () => observer.disconnect();
+  }, [wrapper]);
+
+  // The user-menu "Getting started" entry flips this to reopen the launcher.
+  // gsRef avoids including the unstable `gs` object in deps.
+  useEffect(() => {
+    if (forceOpen) {
+      gsRef.current.setState("expanded");
+      setForceOpen(false);
+    }
+  }, [forceOpen, setForceOpen]);
+
+  // Tells the user menu to open this card rather than the overlay.
+  useEffect(() => {
+    setDocked(true);
+    return () => setDocked(false);
+  }, [setDocked]);
+
+  const path = pathname ?? "";
+  if (!gs.isAuthenticated || isPreAppPath(path)) {
+    return null;
+  }
+  if (gs.state === "dismissed") {
+    return null;
+  }
+
   // Lives in the sidebar, just above the Discord/Documentation footer. The pill
   // sits in-flow; the expanded card floats up from it (bottom-full) and bleeds
   // to the right over the canvas, which the sidebar does not clip.
-  const expanded = gs.state === "expanded";
+  const { done, total } = checklistProgress(gs);
   return (
-    <div className="relative px-2.5 pb-2">
+    <div className="relative px-2.5 pb-2" ref={setWrapper}>
       <AnimatePresence>
         {expanded && (
           <div className="absolute bottom-full left-2.5 z-50 mb-2">
@@ -624,6 +733,7 @@ export function GettingStartedLauncher({
               creditLabel={creditLabel}
               gs={gs}
               key="gs-card"
+              listMaxHeight={listMaxHeight}
               onAction={onAction}
               onChip={onChip}
               onTour={onTour}
@@ -642,12 +752,12 @@ export function GettingStartedLauncher({
         onClick={() => gs.setState(expanded ? "collapsed" : "expanded")}
         type="button"
       >
-        <ProgressRing done={launcherDone(gs)} total={launcherTotal(gs)} />
+        <ProgressRing done={done} total={total} />
         {compact ? null : (
           <>
             <Sparkles aria-hidden="true" className="size-3.5 text-primary" />
             <span className="truncate font-medium text-sm">
-              Getting started {launcherDone(gs)}/{launcherTotal(gs)}
+              Getting started {done}/{total}
             </span>
           </>
         )}
@@ -656,15 +766,58 @@ export function GettingStartedLauncher({
   );
 }
 
-function launcherTotal(gs: GettingStarted): number {
-  const branch = getBranches(gs.chipContext).find((b) => b.key === "agent");
-  return branch?.steps.length ?? 0;
-}
+/**
+ * The checklist where the sidebar is not drawn (phones, settings), opened
+ * from the user menu. It does not open, collapse or dismiss the card.
+ */
+export function GettingStartedOverlay({
+  overlayId,
+}: {
+  overlayId: string;
+}): React.ReactElement {
+  const gs = useGettingStarted({ inOverlay: true });
+  const creditLabel = useCreditLabel();
+  const { onAction, onChip, onTour } = useStepActions(gs, { inOverlay: true });
+  const [infoStep, setInfoStep] = useState<Step | null>(null);
+  const { steps, done, total } = checklistProgress(gs);
+  const docked = useAtomValue(gettingStartedDockedAtom);
+  const expandLauncher = useSetAtom(gettingStartedOpenAtom);
+  const { stack, close } = useOverlay();
+  const onTop = stack.at(-1)?.id === overlayId;
 
-function launcherDone(gs: GettingStarted): number {
-  const branch = getBranches(gs.chipContext).find((b) => b.key === "agent");
-  if (!branch) {
-    return 0;
-  }
-  return branch.steps.filter((s) => gs.isStepComplete(s)).length;
+  // Widening past 768px brings the sidebar back: hand over to its card, so
+  // two copies of the checklist never save over each other. Not while a
+  // step's window is open on top, which would lose what is in it.
+  useEffect(() => {
+    if (docked && onTop) {
+      close(overlayId);
+      expandLauncher(true);
+    }
+  }, [docked, onTop, close, overlayId, expandLauncher]);
+
+  return (
+    <Overlay
+      description={`${done} of ${total} done`}
+      overlayId={overlayId}
+      title="Getting started"
+    >
+      <div className="-mx-2 space-y-1" data-testid="gs-overlay">
+        <StepList
+          gs={gs}
+          onAction={onAction}
+          onChip={onChip}
+          onInfo={setInfoStep}
+          onTour={onTour}
+          steps={steps}
+        />
+      </div>
+      <StepInfoDialog
+        creditLabel={creditLabel}
+        onAction={onAction}
+        onClose={() => setInfoStep(null)}
+        onTour={onTour}
+        step={infoStep}
+      />
+    </Overlay>
+  );
 }
