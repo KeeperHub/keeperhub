@@ -7,13 +7,7 @@ import {
   motion,
   useReducedMotion,
 } from "motion/react";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { Drawer as DrawerPrimitive } from "vaul";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -330,69 +324,37 @@ function DesktopOverlayContainer() {
 }
 
 // Presses on and around a phone sheet are ignored this long after it opens,
-// so the second tap of a double tap that opened it neither closes it nor hits
-// a control the sheet slid under the finger.
+// so the second tap of a double tap that opened it neither closes it nor
+// presses a control the sheet slid under the finger.
 const OPEN_PRESS_GRACE_MS = 400;
 
 type OutsidePress = CustomEvent<{ originalEvent: PointerEvent }>;
 
-// Whether a point is on the sheet: in its rounded top corners only inside the
-// curve, since the backdrop shows (and takes taps) outside it.
-function isOnSheet(sheet: HTMLElement, x: number, y: number): boolean {
-  const rect = sheet.getBoundingClientRect();
-  if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
-    return false;
-  }
-  const radius =
-    Number.parseFloat(getComputedStyle(sheet).borderTopLeftRadius) || 0;
-  const curveY = rect.top + radius;
-  if (y >= curveY) {
-    return true;
-  }
-  let curveX = x;
-  if (x < rect.left + radius) {
-    curveX = rect.left + radius;
-  } else if (x > rect.right - radius) {
-    curveX = rect.right - radius;
-  }
-  return Math.hypot(x - curveX, y - curveY) <= radius;
-}
-
 /**
- * The phone sheet's grace after opening: `settling` turns presses on it off,
- * `sheetRef` and `start` begin the grace (on mount, and on a reopen during
- * the close animation), and `onPointerDownOutside` drops presses that came
- * within it or landed on the sheet itself.
+ * The phone sheet's grace after opening. `sheetRef` and `start` begin it (on
+ * mount, its first frame, and a reopen during the close animation); the
+ * capture handlers drop presses on the sheet within it, and
+ * `onPointerDownOutside` those around it.
  */
 function useOpenPressGrace(): {
-  settling: boolean;
   start: () => void;
   sheetRef: (node: HTMLDivElement | null) => void;
+  onPointerDownCapture: (event: React.PointerEvent) => void;
+  onClickCapture: (event: React.MouseEvent) => void;
   onPointerDownOutside: (event: OutsidePress) => void;
 } {
-  const [settling, setSettling] = useState(false);
   const openedAtRef = useRef(0);
-  const sheetNodeRef = useRef<HTMLDivElement | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const swallowClickRef = useRef(false);
 
   const start = useCallback(() => {
     openedAtRef.current = performance.now();
-    setSettling(true);
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-    }
-    timerRef.current = setTimeout(
-      () => setSettling(false),
-      OPEN_PRESS_GRACE_MS
-    );
   }, []);
 
-  useEffect(
-    () => () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-      }
-    },
+  // Capped at now, should a browser stamp events on another clock.
+  const inGrace = useCallback(
+    (timeStamp: number) =>
+      Math.min(timeStamp, performance.now()) - openedAtRef.current <
+      OPEN_PRESS_GRACE_MS,
     []
   );
 
@@ -400,7 +362,6 @@ function useOpenPressGrace(): {
   // and again on its first frame: a slow render must not use the grace up.
   const sheetRef = useCallback(
     (node: HTMLDivElement | null) => {
-      sheetNodeRef.current = node;
       if (node) {
         start();
         requestAnimationFrame(start);
@@ -409,20 +370,45 @@ function useOpenPressGrace(): {
     [start]
   );
 
-  const onPointerDownOutside = useCallback((event: OutsidePress) => {
-    const press = event.detail.originalEvent;
-    // Radix reports a press on the click after it, so time the press itself
-    // (capped at now, should a browser use another clock).
-    const pressedAt = Math.min(press.timeStamp, performance.now());
-    const sheet = sheetNodeRef.current;
-    const onSheet =
-      sheet !== null && isOnSheet(sheet, press.clientX, press.clientY);
-    if (onSheet || pressedAt - openedAtRef.current < OPEN_PRESS_GRACE_MS) {
+  // A press on the sheet in its grace neither focuses nor opens anything,
+  // and its click is dropped; swipes and the wheel still reach the sheet.
+  const onPointerDownCapture = useCallback(
+    (event: React.PointerEvent) => {
+      swallowClickRef.current = inGrace(event.timeStamp);
+      if (swallowClickRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    [inGrace]
+  );
+
+  // Keyboard clicks (detail 0) are never a dropped press's click.
+  const onClickCapture = useCallback((event: React.MouseEvent) => {
+    if (swallowClickRef.current && event.detail > 0) {
+      swallowClickRef.current = false;
       event.preventDefault();
+      event.stopPropagation();
     }
   }, []);
 
-  return { settling, start, sheetRef, onPointerDownOutside };
+  // Radix reports a press on the click after it, so this times the press.
+  const onPointerDownOutside = useCallback(
+    (event: OutsidePress) => {
+      if (inGrace(event.detail.originalEvent.timeStamp)) {
+        event.preventDefault();
+      }
+    },
+    [inGrace]
+  );
+
+  return {
+    start,
+    sheetRef,
+    onPointerDownCapture,
+    onClickCapture,
+    onPointerDownOutside,
+  };
 }
 
 /**
@@ -558,10 +544,10 @@ function MobileOverlayContainer() {
             expanded ? "rounded-none border-t-0" : "rounded-t-2xl"
           )}
           data-testid="overlay-sheet"
+          onClickCapture={grace.onClickCapture}
+          onPointerDownCapture={grace.onPointerDownCapture}
           onPointerDownOutside={grace.onPointerDownOutside}
           ref={grace.sheetRef}
-          // Presses on the settling sheet fall through to the backdrop below
-          style={grace.settling ? { pointerEvents: "none" } : undefined}
         >
           {/* Accessible title for screen readers */}
           <DrawerPrimitive.Title className="sr-only">

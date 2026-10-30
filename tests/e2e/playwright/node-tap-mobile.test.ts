@@ -50,21 +50,25 @@ function sheetClose(page: Page): Locator {
     .filter({ visible: true });
 }
 
-type TapTimes = {
+type SheetPress = {
   sheetOpenedAt: number;
-  secondPressAt: number;
-  sheetTookPresses: string;
+  pressedAt: number;
+  pressOnSheet: boolean;
+  pressDropped: boolean;
 };
 
-// In the page: when the sheet appears, and the first press after that with
-// whether the sheet took presses at that moment.
-function trackSheetAndSecondTap(): void {
-  const w = window as unknown as TapTimes;
+// In the page: when the sheet appears, and the first press after that, with
+// whether it landed on the sheet and whether the sheet dropped it.
+function trackSheetAndNextPress(): void {
+  const w = window as unknown as SheetPress;
   w.sheetOpenedAt = 0;
-  w.secondPressAt = 0;
-  w.sheetTookPresses = "";
+  w.pressedAt = 0;
+  w.pressOnSheet = false;
+  w.pressDropped = false;
+  const openSheet = () =>
+    document.querySelector('[role="dialog"][data-state="open"]');
   new MutationObserver((_, observer) => {
-    if (document.querySelector('[role="dialog"][data-state="open"]')) {
+    if (openSheet()) {
       w.sheetOpenedAt = performance.now();
       observer.disconnect();
     }
@@ -76,12 +80,14 @@ function trackSheetAndSecondTap(): void {
   document.addEventListener(
     "pointerdown",
     (event) => {
-      const dialog = document.querySelector(
-        '[role="dialog"][data-state="open"]'
-      );
-      if (dialog && w.sheetOpenedAt && !w.secondPressAt) {
-        w.secondPressAt = event.timeStamp;
-        w.sheetTookPresses = getComputedStyle(dialog).pointerEvents;
+      const sheetNode = openSheet();
+      if (sheetNode && w.sheetOpenedAt && !w.pressedAt) {
+        w.pressedAt = event.timeStamp;
+        w.pressOnSheet = sheetNode.contains(event.target as Node);
+        // Read once the event has gone through the page's handlers.
+        setTimeout(() => {
+          w.pressDropped = event.defaultPrevented;
+        }, 0);
       }
     },
     { capture: true }
@@ -139,45 +145,44 @@ test.describe("Tapping a step opens its settings", () => {
     }
   });
 
-  test("on a phone, a double tap leaves the sheet open", async ({ page }) => {
+  test("on a phone, a tap on the sheet as it opens presses nothing", async ({
+    page,
+  }) => {
     const id = await openWorkflow(page, PHONE);
     try {
       const trigger = await box(page.locator(".react-flow__node-trigger"));
-      const point = {
-        x: trigger.x + trigger.width / 2,
-        y: trigger.y + trigger.height / 2,
-      };
-      // A double tap: the second tap lands on the sheet the first one opened
-      // (or its backdrop), within its 400ms grace. A loaded runner can deliver
-      // it later, so the page times both and a late pair is tried again.
+      // The second tap of a double tap, on what slid under the finger: the
+      // sheet's tab bar, where Runs would otherwise open. A loaded runner can
+      // deliver it late or before the sheet covers that spot, so the page
+      // times it and a pair it cannot judge is tried again.
       let judged = false;
       for (let attempt = 0; attempt < 5 && !judged; attempt += 1) {
         await expect(page.getByRole("dialog")).toHaveCount(0);
-        await page.evaluate(trackSheetAndSecondTap);
-        await page.touchscreen.tap(point.x, point.y);
-        await sheet(page).waitFor({ state: "attached" });
-        await page.touchscreen.tap(point.x, point.y);
-        // Past the grace, so a late close would have happened by now.
-        await page.waitForTimeout(600);
-        const times = await page.evaluate(
-          () => ({ ...(window as unknown as TapTimes) }) as TapTimes
+        await page.evaluate(trackSheetAndNextPress);
+        await page.touchscreen.tap(
+          trigger.x + trigger.width / 2,
+          trigger.y + trigger.height / 2
         );
-        const gap = times.secondPressAt - times.sheetOpenedAt;
+        await sheet(page).waitFor({ state: "attached" });
+        await page.waitForTimeout(80);
+        await page.touchscreen.tap(PHONE.width / 2, PHONE.height - 30);
+        // Past the sheet's 400ms grace, so a late close or switch shows.
+        await page.waitForTimeout(600);
+        const press = await page.evaluate(
+          () => ({ ...(window as unknown as SheetPress) }) as SheetPress
+        );
+        const gap = press.pressedAt - press.sheetOpenedAt;
         // Well inside the grace, which starts a little before the page sees it
-        judged = gap > 0 && gap < 300;
+        judged = press.pressOnSheet && gap > 0 && gap < 300;
         if (judged) {
-          // The settling sheet took no presses: the tap fell through to the
-          // backdrop, whose grace ignored it.
-          expect(times.sheetTookPresses).toBe("none");
+          expect(press.pressDropped).toBe(true);
           await expect(sheet(page).locator("#label")).toHaveValue(
             "Manual Trigger"
           );
-          // Nothing the sheet slid under the finger was pressed.
           await expect(page.getByRole("listbox")).toHaveCount(0);
         } else {
-          // A late second tap may have opened a select in the settled sheet:
-          // Escape closes that first, then the sheet.
-          for (let press = 0; press < 3; press += 1) {
+          // Escape closes anything a late tap opened, then the sheet.
+          for (let key = 0; key < 3; key += 1) {
             if ((await page.getByRole("dialog").count()) === 0) {
               break;
             }
@@ -186,10 +191,31 @@ test.describe("Tapping a step opens its settings", () => {
           }
         }
       }
-      expect(judged, "a double tap delivered inside the grace").toBe(true);
-      // Later, the same tap does close it.
+      expect(judged, "a tap on the sheet delivered inside the grace").toBe(
+        true
+      );
+      // Later, a tap around the sheet does close it.
       await page.touchscreen.tap(BACKDROP.x, BACKDROP.y);
       await expect(sheet(page)).toBeHidden();
+    } finally {
+      await deleteTestWorkflow(id);
+    }
+  });
+
+  test("on a phone, a double tap leaves the sheet open", async ({ page }) => {
+    const id = await openWorkflow(page, PHONE);
+    try {
+      const trigger = await box(page.locator(".react-flow__node-trigger"));
+      const point = {
+        x: trigger.x + trigger.width / 2,
+        y: trigger.y + trigger.height / 2,
+      };
+      await page.touchscreen.tap(point.x, point.y);
+      await sheet(page).waitFor({ state: "attached" });
+      await page.touchscreen.tap(point.x, point.y);
+      await page.waitForTimeout(600);
+      // The sheet stays open on the tapped step.
+      await expect(sheet(page).locator("#label")).toHaveValue("Manual Trigger");
     } finally {
       await deleteTestWorkflow(id);
     }
