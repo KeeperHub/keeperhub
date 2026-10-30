@@ -1,5 +1,23 @@
 import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
+import { extendTailwindMerge } from 'tailwind-merge';
+
+// hub-focus-ring (app/globals.css) sets the ring and outline, so it replaces
+// a primitive's own ring classes such as Button's ring-[3px] ring-ring/50.
+const twMerge = extendTailwindMerge<'hub-focus-ring'>({
+  extend: {
+    classGroups: { 'hub-focus-ring': ['hub-focus-ring'] },
+    conflictingClassGroups: {
+      'hub-focus-ring': [
+        'ring-w',
+        'ring-color',
+        'ring-offset-w',
+        'outline-style',
+        'outline-w',
+        'outline-color',
+      ],
+    },
+  },
+});
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));

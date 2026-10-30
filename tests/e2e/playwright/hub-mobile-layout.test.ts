@@ -174,7 +174,9 @@ test.describe("Tab band text", () => {
     for (const width of [...PHONE_WIDTHS, ...TABLET_WIDTHS, 1024, 1280]) {
       await atWidth(page, width, async () => {
         for (const link of [band.demos, band.docs]) {
-          expect(await textContrast(link)).toBeGreaterThanOrEqual(READABLE);
+          // Below 375px the label is screen-reader only; the icon is what shows.
+          const shown = width < 375 ? link.locator("svg") : link;
+          expect(await textContrast(shown)).toBeGreaterThanOrEqual(READABLE);
         }
         for (const name of ["Workflows", "Marketplace"]) {
           const tab = band.tabs.getByRole("tab", { name });
@@ -200,22 +202,39 @@ test.describe("Tab band text", () => {
     page,
   }) => {
     await open(page, 1280, "/hub");
-    expect(await tabOrder(page)).toEqual(["Protocols", "Demos", "Docs"]);
-    const ring = (locator: Locator): Promise<string> =>
+    const band = tabBand(page);
+    await expect(band.tabs).toBeVisible({ timeout: 15_000 });
+    // Ring, gap and any outline, as drawn around a focused control.
+    const focusLook = (locator: Locator): Promise<string> =>
       locator.evaluate((element) => {
         const style = getComputedStyle(element);
-        return `${style.getPropertyValue("--tw-ring-offset-shadow")} / ${style.getPropertyValue("--tw-ring-shadow")}`;
+        const outline =
+          style.outlineStyle === "none"
+            ? "none"
+            : `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}`;
+        return [
+          style.getPropertyValue("--tw-ring-offset-shadow"),
+          style.getPropertyValue("--tw-ring-shadow"),
+          outline,
+        ].join(" / ");
       });
-    const band = tabBand(page);
     const protocols = band.tabs.getByRole("tab", { name: "Protocols" });
     await protocols.focus();
-    const tabRing = await ring(protocols);
-    expect(tabRing).toContain("2px");
+    await expect(protocols).toBeFocused();
+    const tabLook = await focusLook(protocols);
+    const accent = await page.evaluate(() =>
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--color-border-accent")
+        .trim()
+    );
+    // The hub ring: 2px of accent outside a 2px gap, and no outline.
+    expect(tabLook).toContain(`calc(2px + 2px) ${accent}`);
+    expect(tabLook).toMatch(/ \/ none$/);
     for (const link of [band.demos, band.docs]) {
       await page.keyboard.press("Tab");
       await expect(link).toBeFocused();
       await expect(async () => {
-        expect(await ring(link)).toBe(tabRing);
+        expect(await focusLook(link)).toBe(tabLook);
       }).toPass({ timeout: 5000 });
     }
   });

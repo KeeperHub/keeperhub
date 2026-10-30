@@ -1,5 +1,4 @@
 import { BookOpen, Play } from "lucide-react";
-import { HUB_BAND_FOCUS_RING } from "@/app/hub/_tabs-shared";
 import { Button } from "@/components/ui/button";
 
 // Demos + Docs links at the end of the hub tab band.
@@ -8,8 +7,10 @@ const LINKS = [
   { href: "https://docs.keeperhub.com", label: "Docs", Icon: BookOpen },
 ] as const;
 
-// While the band is under 36rem the links grow to the search box's height.
-const LINK_CLASSES = `${HUB_BAND_FOCUS_RING} text-xs transition-colors motion-reduce:transition-none @max-xl/hub-band:h-auto`;
+// The outline Button on the hub surface fill; while the band is under 36rem
+// the links grow to the search box's height.
+const LINK_CLASSES =
+  "text-xs shadow-none bg-[var(--color-hub-icon-bg)] hover:bg-[var(--color-hub-icon-bg-hover)] dark:bg-[var(--color-hub-icon-bg)] dark:hover:bg-[var(--color-hub-icon-bg-hover)] transition-colors motion-reduce:transition-none focus-visible:hub-focus-ring focus-visible:ring-offset-sidebar @max-xl/hub-band:h-auto";
 
 // Below 375px the search box needs the room, so the links show their icons
 // alone; the label stays as their accessible name.
