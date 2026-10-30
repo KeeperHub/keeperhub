@@ -21,8 +21,6 @@ import { Canvas } from "@/components/ai-elements/canvas";
 import { Connection } from "@/components/ai-elements/connection";
 import { Controls } from "@/components/ai-elements/controls";
 import { AIPrompt } from "@/components/ai-elements/prompt";
-import { ConfigurationOverlay } from "@/components/overlays/configuration-overlay";
-import { useOverlay } from "@/components/overlays/overlay-provider";
 import { useIsMobile } from "@/hooks/use-mobile";
 import "@xyflow/react/dist/style.css";
 
@@ -60,6 +58,7 @@ import { Panel } from "../ai-elements/panel";
 import { ActionNode } from "./nodes/action-node";
 import { AddNode } from "./nodes/add-node";
 import { TriggerNode } from "./nodes/trigger-node";
+import { useShowStepSettings } from "./use-show-step-settings";
 import {
   type ContextMenuState,
   useContextMenuHandlers,
@@ -104,7 +103,7 @@ export function WorkflowCanvas() {
   const pathname = usePathname();
   const isWorkflowRoute = pathname.startsWith("/workflows/");
   const isMobile = useIsMobile();
-  const { open: openOverlay } = useOverlay();
+  const showStepSettings = useShowStepSettings();
   const [nodes, setNodes] = useAtom(nodesAtom);
   const [edges, setEdges] = useAtom(edgesAtom);
   const [isGenerating] = useAtom(isGeneratingAtom);
@@ -113,8 +112,7 @@ export function WorkflowCanvas() {
   const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
   const previewRequests = useAtomValue(previewRequestsAtom);
   const isPanelAnimating = useAtomValue(isPanelAnimatingAtom);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useAtom(isSidebarCollapsedAtom);
-  const setIsPanelAnimating = useSetAtom(isPanelAnimatingAtom);
+  const isSidebarCollapsed = useAtomValue(isSidebarCollapsedAtom);
   const [isTransitioningFromHomepage, setIsTransitioningFromHomepage] = useAtom(
     isTransitioningFromHomepageAtom
   );
@@ -568,31 +566,13 @@ export function WorkflowCanvas() {
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
       setSelectedNode(node.id);
-      // Phones have no side panel: open the step's settings in the sheet
-      if (isMobile) {
-        if (isWorkflowRoute && node.type !== "add") {
-          setActiveTab("properties");
-          openOverlay(ConfigurationOverlay, {});
-        }
-        return;
-      }
-      // Don't auto-open sidebar during workflow switch
-      if (isSidebarCollapsed && !isLoadingWorkflow.current) {
-        setIsPanelAnimating(true);
-        setIsSidebarCollapsed(false);
-        setTimeout(() => setIsPanelAnimating(false), 350);
+      // Don't auto-open sidebar during workflow switch; a phone's sheet only
+      // ever opens from the user's own tap
+      if (isMobile || !isLoadingWorkflow.current) {
+        showStepSettings();
       }
     },
-    [
-      setSelectedNode,
-      isMobile,
-      isWorkflowRoute,
-      setActiveTab,
-      openOverlay,
-      isSidebarCollapsed,
-      setIsPanelAnimating,
-      setIsSidebarCollapsed,
-    ]
+    [setSelectedNode, isMobile, showStepSettings]
   );
 
   // Open node details from any tab
@@ -696,6 +676,7 @@ export function WorkflowCanvas() {
         addNode(newNode);
         setSelectedNode(newNode.id);
         setActiveTab("properties");
+        showStepSettings(newNode);
 
         // Deselect all other nodes and select only the new node
         // Need to do this after a delay because panOnDrag will clear selection
@@ -757,6 +738,7 @@ export function WorkflowCanvas() {
       setNodes,
       setSelectedNode,
       setActiveTab,
+      showStepSettings,
       setHasUnsavedChanges,
       triggerAutosave,
     ]
@@ -809,6 +791,8 @@ export function WorkflowCanvas() {
         className={`bg-background${isAnimatingLayout ? " [&_.react-flow__node]:transition-[transform] [&_.react-flow__node]:duration-300 [&_.react-flow__node]:ease-in-out" : ""}`}
         connectionLineComponent={Connection}
         connectionMode={ConnectionMode.Strict}
+        // A tap on a phone's small handles means the step, not a connection
+        connectOnClick={!isMobile}
         defaultEdgeOptions={{ type: "animated" }}
         edges={edges}
         edgeTypes={edgeTypes}

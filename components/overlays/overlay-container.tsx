@@ -322,6 +322,10 @@ function DesktopOverlayContainer() {
   );
 }
 
+// How long after a sheet opens a press outside it still counts as part of
+// the double tap that opened it.
+const DOUBLE_TAP_MS = 400;
+
 /**
  * Mobile drawer container with internal sliding content
  * Renders all stack items persistently in the same React tree location,
@@ -333,6 +337,7 @@ function MobileOverlayContainer() {
   const [minHeight, setMinHeight] = useState<number>(0);
   const contentRef = useRef<HTMLDivElement>(null);
   const wasOpenRef = useRef(false);
+  const openedAtRef = useRef(0);
   const frozenStackRef = useRef(stack);
   const direction = useStackDirection(stack.length);
 
@@ -356,6 +361,7 @@ function MobileOverlayContainer() {
     // Reset minHeight on fresh open (not during push/pop)
     if (isFreshOpen) {
       setMinHeight(0);
+      openedAtRef.current = performance.now();
     }
 
     if (contentRef.current) {
@@ -439,6 +445,13 @@ function MobileOverlayContainer() {
             "fixed inset-x-0 bottom-0 z-50 flex max-h-[90vh] flex-col",
             "rounded-t-2xl border-t bg-background shadow-2xl"
           )}
+          // A double tap that opened the sheet lands its second tap on the
+          // backdrop: that is not a request to close it.
+          onPointerDownOutside={(event) => {
+            if (performance.now() - openedAtRef.current < DOUBLE_TAP_MS) {
+              event.preventDefault();
+            }
+          }}
         >
           {/* Accessible title for screen readers */}
           <DrawerPrimitive.Title className="sr-only">
