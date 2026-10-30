@@ -89,6 +89,13 @@
   }
 }
 
+/* Keyboard focus ring on hub and /scan surfaces: the accent ring with a 2px
+   gap. Each surface sets the gap to its own background colour, e.g.
+   focus-visible:ring-offset-sidebar on /hub. */
+@utility hub-focus-ring {
+  @apply ring-2 ring-[var(--color-border-accent)] ring-offset-2 outline-none;
+}
+
 @theme inline {
   /* 375px and 420px: the phone header's switcher and wallet (see
      specs/design-system/components/navigation-sidebar.md). Like every
