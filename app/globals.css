@@ -762,15 +762,13 @@
       var(--background)
     );
   }
-  /* The "Save 20%" badge drops under the Monthly / Annual switch, at its
-     Annual end, instead of sitting beside it. ".khp" outranks the package's
+  /* The "Save 20%" badge drops under the Monthly / Annual switch, centred
+     below it, instead of sitting beside it. ".khp" outranks the package's
      own .khp-interval rule, whose stylesheet loads after this one. */
   .khp .khp-interval {
     flex-direction: column;
-    align-items: flex-end;
+    align-items: center;
     gap: --spacing(2);
-    width: fit-content;
-    margin-inline: auto;
   }
 }
 /* end keeperhub code */
