@@ -10,13 +10,12 @@ export async function textContrast(locator: Locator): Promise<number> {
     if (!ctx) {
       throw new Error("no 2d canvas");
     }
-    const SENTINEL = "#010203";
     const rgba = (css: string): number[] => {
-      ctx.fillStyle = SENTINEL;
-      ctx.fillStyle = css;
-      if (ctx.fillStyle === SENTINEL) {
+      // Canvas silently ignores a colour it cannot parse, so check first.
+      if (!CSS.supports("color", css)) {
         throw new Error(`unreadable colour: ${css}`);
       }
+      ctx.fillStyle = css;
       ctx.clearRect(0, 0, 1, 1);
       ctx.fillRect(0, 0, 1, 1);
       const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
