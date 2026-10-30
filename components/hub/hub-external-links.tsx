@@ -9,7 +9,7 @@ const LINKS = [
 ] as const;
 
 // While the band is under 36rem the links grow to the search box's height.
-const LINK_CLASSES = `${HUB_BAND_FOCUS_RING} text-xs motion-reduce:transition-none @max-xl/hub-band:h-auto`;
+const LINK_CLASSES = `${HUB_BAND_FOCUS_RING} text-xs transition-colors motion-reduce:transition-none @max-xl/hub-band:h-auto`;
 
 // Below 375px the search box needs the room, so the links show their icons
 // alone; the label stays as their accessible name.

@@ -23,8 +23,8 @@ type HubTabsShellProps = {
   actionsSlot?: React.ReactNode;
 };
 
-// Text colours use dark: to replace TabsTrigger's dark:text-muted-foreground (3.7:1).
-const PILL_CLASSES = `${HUB_BAND_FOCUS_RING} inline-flex min-h-9 items-center gap-2 rounded-full px-2 py-2 text-sm font-normal @max-xl/hub-band:gap-1.5 dark:text-foreground/70 transition-colors duration-150 ease hover:bg-[var(--color-hub-icon-bg)]/40 dark:hover:text-foreground data-[state=active]:bg-[var(--color-hub-icon-bg)] data-[state=active]:font-semibold dark:data-[state=active]:text-foreground data-[state=active]:hover:bg-[var(--color-hub-icon-bg)] motion-reduce:transition-none @xl/hub-band:px-4`;
+// Colours use dark: to replace TabsTrigger's own dark: ones (muted text at 3.7:1, a fainter picked fill).
+const PILL_CLASSES = `${HUB_BAND_FOCUS_RING} inline-flex min-h-9 items-center gap-2 rounded-full px-2 py-2 text-sm font-normal @max-xl/hub-band:gap-1.5 dark:text-foreground/70 transition-colors duration-150 ease hover:bg-[var(--color-hub-icon-bg)]/40 dark:hover:text-foreground dark:data-[state=active]:bg-[var(--color-hub-icon-bg)] data-[state=active]:font-semibold dark:data-[state=active]:text-foreground motion-reduce:transition-none @xl/hub-band:px-4`;
 
 const PILL_ICON_CLASSES =
   "size-4 text-muted-foreground group-data-[state=active]:text-[var(--color-text-accent)] max-xs:hidden";

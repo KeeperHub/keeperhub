@@ -196,26 +196,28 @@ test.describe("Tab band text", () => {
     }).toPass({ timeout: 5000 });
   });
 
-  test("Demos takes the tabs' keyboard focus ring", async ({ page }) => {
+  test("Demos and Docs take the tabs' keyboard focus ring", async ({
+    page,
+  }) => {
     await open(page, 1280, "/hub");
     expect(await tabOrder(page)).toEqual(["Protocols", "Demos", "Docs"]);
-    const ring = (locator: Locator): Promise<string[]> =>
+    const ring = (locator: Locator): Promise<string> =>
       locator.evaluate((element) => {
         const style = getComputedStyle(element);
-        return [style.getPropertyValue("--tw-ring-color"), style.boxShadow];
+        return `${style.getPropertyValue("--tw-ring-offset-shadow")} / ${style.getPropertyValue("--tw-ring-shadow")}`;
       });
     const band = tabBand(page);
     const protocols = band.tabs.getByRole("tab", { name: "Protocols" });
     await protocols.focus();
-    await page.keyboard.press("Tab");
-    await expect(band.demos).toBeFocused();
-    const [demosColor, demosShadow] = await ring(band.demos);
-    await page.keyboard.press("Shift+Tab");
-    await expect(protocols).toBeFocused();
-    const [tabColor] = await ring(protocols);
-    expect(demosColor).not.toBe("");
-    expect(demosColor).toBe(tabColor);
-    expect(demosShadow).not.toBe("none");
+    const tabRing = await ring(protocols);
+    expect(tabRing).toContain("2px");
+    for (const link of [band.demos, band.docs]) {
+      await page.keyboard.press("Tab");
+      await expect(link).toBeFocused();
+      await expect(async () => {
+        expect(await ring(link)).toBe(tabRing);
+      }).toPass({ timeout: 5000 });
+    }
   });
 });
 
