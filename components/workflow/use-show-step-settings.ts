@@ -17,7 +17,7 @@ import {
 } from "@/lib/workflow/store";
 
 // Steps are 192px square (w-48 h-48).
-const STEP_SIZE = 192;
+export const STEP_SIZE = 192;
 
 /**
  * Shows the selected step's settings: the side panel from md up, the
@@ -27,7 +27,7 @@ const STEP_SIZE = 192;
 export function useShowStepSettings(): (newStep?: WorkflowNode) => void {
   const isMobile = useIsMobile();
   const pathname = usePathname();
-  const { open } = useOverlayActions();
+  const { open, isOpen } = useOverlayActions();
   const { getZoom, setCenter } = useReactFlow();
   const isSidebarCollapsed = useAtomValue(isSidebarCollapsedAtom);
   const setSidebarCollapsed = useSetAtom(isSidebarCollapsedAtom);
@@ -54,6 +54,10 @@ export function useShowStepSettings(): (newStep?: WorkflowNode) => void {
           { zoom: getZoom(), duration: 300 }
         );
       }
+      // The taps of a double tap each land here; reopening would remount it
+      if (isOpen(ConfigurationOverlay)) {
+        return;
+      }
       // The sheet takes over: focus left on the canvas (a step's +) would
       // let Escape reselect that step
       const focused = document.activeElement;
@@ -71,6 +75,7 @@ export function useShowStepSettings(): (newStep?: WorkflowNode) => void {
       setCenter,
       getZoom,
       open,
+      isOpen,
     ]
   );
 }

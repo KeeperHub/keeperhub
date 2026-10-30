@@ -58,7 +58,7 @@ import { Panel } from "../ai-elements/panel";
 import { ActionNode } from "./nodes/action-node";
 import { AddNode } from "./nodes/add-node";
 import { TriggerNode } from "./nodes/trigger-node";
-import { useShowStepSettings } from "./use-show-step-settings";
+import { STEP_SIZE, useShowStepSettings } from "./use-show-step-settings";
 import {
   type ContextMenuState,
   useContextMenuHandlers,
@@ -658,9 +658,7 @@ export function WorkflowCanvas() {
         });
 
         // Center the node vertically at the cursor position
-        // Node height is 192px (h-48 in Tailwind)
-        const nodeHeight = 192;
-        position.y -= nodeHeight / 2;
+        position.y -= STEP_SIZE / 2;
 
         // Create new action node
         const newNode: WorkflowNode = {

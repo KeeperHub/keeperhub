@@ -51,6 +51,10 @@ export function OverlayProvider({ children }: OverlayProviderProps) {
     frozenStackRef.current = stack;
   }
 
+  // Read by isOpen, so it stays stable for useOverlayActions readers
+  const stackRef = useRef(stack);
+  stackRef.current = stack;
+
   const open = useCallback(
     <P,>(
       component: ComponentType<OverlayComponentProps<P>>,
@@ -174,6 +178,13 @@ export function OverlayProvider({ children }: OverlayProviderProps) {
     });
   }, []);
 
+  const isOpen = useCallback(
+    <P,>(component: ComponentType<OverlayComponentProps<P>>): boolean =>
+      stackRef.current.at(-1)?.component ===
+      (component as ComponentType<OverlayComponentProps>),
+    []
+  );
+
   const value = useMemo<OverlayContextValue>(
     () => ({
       stack,
@@ -183,15 +194,16 @@ export function OverlayProvider({ children }: OverlayProviderProps) {
       replace,
       closeAll,
       close,
+      isOpen,
       hasOverlays: stack.length > 0,
       depth: stack.length,
     }),
-    [stack, open, push, pop, replace, closeAll, close]
+    [stack, open, push, pop, replace, closeAll, close, isOpen]
   );
 
   const actions = useMemo<OverlayActions>(
-    () => ({ open, push, pop, replace, closeAll, close }),
-    [open, push, pop, replace, closeAll, close]
+    () => ({ open, push, pop, replace, closeAll, close, isOpen }),
+    [open, push, pop, replace, closeAll, close, isOpen]
   );
 
   return (

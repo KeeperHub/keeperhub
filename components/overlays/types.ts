@@ -108,6 +108,8 @@ export type OverlayContextValue = {
   closeAll: () => void;
   /** Close a specific overlay by ID */
   close: (id: string) => void;
+  /** Whether this component is the overlay on top of the stack */
+  isOpen: <P>(component: ComponentType<OverlayComponentProps<P>>) => boolean;
   /** Check if there are overlays in the stack */
   hasOverlays: boolean;
   /** Get the depth of the current overlay (0 = first, 1+ = pushed) */
@@ -167,5 +169,5 @@ export type OverlayFooterProps = {
  */
 export type OverlayActions = Pick<
   OverlayContextValue,
-  "open" | "push" | "pop" | "replace" | "closeAll" | "close"
+  "open" | "push" | "pop" | "replace" | "closeAll" | "close" | "isOpen"
 >;

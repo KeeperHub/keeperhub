@@ -7,7 +7,13 @@ import {
   motion,
   useReducedMotion,
 } from "motion/react";
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { Drawer as DrawerPrimitive } from "vaul";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -334,7 +340,8 @@ type OutsidePress = CustomEvent<{ originalEvent: PointerEvent }>;
  * The phone sheet's grace after opening. `sheetRef` and `start` begin it (on
  * mount, its first frame, and a reopen during the close animation); the
  * capture handlers drop presses on the sheet within it, and
- * `onPointerDownOutside` those around it.
+ * `onPointerDownOutside` those around it. The sheet carries `data-settling`
+ * for its length.
  */
 function useOpenPressGrace(): {
   start: () => void;
@@ -345,10 +352,29 @@ function useOpenPressGrace(): {
 } {
   const openedAtRef = useRef(0);
   const swallowClickRef = useRef(false);
+  const sheetNodeRef = useRef<HTMLDivElement | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const start = useCallback(() => {
     openedAtRef.current = performance.now();
+    sheetNodeRef.current?.setAttribute("data-settling", "");
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+    }
+    timerRef.current = setTimeout(
+      () => sheetNodeRef.current?.removeAttribute("data-settling"),
+      OPEN_PRESS_GRACE_MS
+    );
   }, []);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    },
+    []
+  );
 
   // Capped at now, should a browser stamp events on another clock.
   const inGrace = useCallback(
@@ -362,6 +388,7 @@ function useOpenPressGrace(): {
   // and again on its first frame: a slow render must not use the grace up.
   const sheetRef = useCallback(
     (node: HTMLDivElement | null) => {
+      sheetNodeRef.current = node;
       if (node) {
         start();
         requestAnimationFrame(start);
@@ -370,14 +397,14 @@ function useOpenPressGrace(): {
     [start]
   );
 
-  // A press on the sheet in its grace neither focuses nor opens anything,
-  // and its click is dropped; swipes and the wheel still reach the sheet.
+  // A press on the sheet in its grace neither focuses nor opens anything
+  // (Radix skips prevented presses), and its click is dropped. It still
+  // reaches Vaul, so a swipe that starts in the grace can move the sheet.
   const onPointerDownCapture = useCallback(
     (event: React.PointerEvent) => {
       swallowClickRef.current = inGrace(event.timeStamp);
       if (swallowClickRef.current) {
         event.preventDefault();
-        event.stopPropagation();
       }
     },
     [inGrace]
