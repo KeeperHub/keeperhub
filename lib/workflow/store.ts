@@ -171,7 +171,7 @@ export const editorTourRequestedAtom = atom<boolean>(false);
 // "Getting started" entry so a dismissed launcher can be reopened.
 export const gettingStartedOpenAtom = atom<boolean>(false);
 
-// True while the sidebar's launcher is mounted (only ever one). Without it
+// True while the sidebar's launcher can show (even dismissed). Otherwise
 // (phones, settings) the user-menu entry opens the checklist in an overlay.
 export const gettingStartedDockedAtom = atom<boolean>(false);
 

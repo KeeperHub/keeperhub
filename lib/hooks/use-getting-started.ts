@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { atom, useAtom, useSetAtom } from "jotai";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { authClient, useSession } from "@/lib/auth-client";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import {
@@ -75,60 +76,59 @@ type Persisted = {
   workflows: Record<string, string>;
 };
 
+// tests/e2e/playwright/getting-started.test.ts seeds this key too.
 function storageKey(userId: string | undefined): string {
   // v2: completion is now real-state + scoped-execution latched; drop any v1
   // state that latched steps from org-wide signals.
   return `kh:getting-started:v2:${userId ?? "anon"}`;
 }
 
-// Steps done and step workflows that another copy of this hook saved (the
-// sidebar card and the overlay can both be mounted), so a write keeps them.
-function withStoredProgress(
-  userId: string | undefined,
-  current: Persisted
-): Persisted {
-  let stored: Partial<Persisted> | null;
-  try {
-    const raw = localStorage.getItem(storageKey(userId));
-    stored = raw ? (JSON.parse(raw) as Partial<Persisted>) : null;
-  } catch {
-    return current;
+const FALLBACK: Persisted = {
+  state: "collapsed",
+  branch: "agent",
+  done: [],
+  workflows: {},
+};
+
+// One copy per signed-in user, shared by the sidebar card and the overlay so
+// they never save over each other. Null until a hook hydrates it.
+const storedAtom = atom<{
+  userId: string | undefined;
+  value: Persisted;
+} | null>(null);
+
+// Updates the latest value (so same-tick updates compose) and saves it at
+// once, to survive a navigation. An unchanged update is not saved.
+const persistAtom = atom(
+  null,
+  (get, set, update: (prev: Persisted) => Persisted) => {
+    const stored = get(storedAtom);
+    if (!stored) {
+      return;
+    }
+    const next = update(stored.value);
+    if (next === stored.value) {
+      return;
+    }
+    set(storedAtom, { userId: stored.userId, value: next });
+    try {
+      localStorage.setItem(storageKey(stored.userId), JSON.stringify(next));
+    } catch {
+      // localStorage unavailable
+    }
   }
-  const storedDone = Array.isArray(stored?.done) ? stored.done : [];
-  const storedWorkflows =
-    stored?.workflows && typeof stored.workflows === "object"
-      ? stored.workflows
-      : {};
-  const newDone = storedDone.filter((key) => !current.done.includes(key));
-  const changedWorkflows = Object.entries(storedWorkflows).some(
-    ([key, id]) => current.workflows[key] !== id
-  );
-  if (newDone.length === 0 && !changedWorkflows) {
-    return current;
-  }
-  return {
-    ...current,
-    done: [...current.done, ...newDone],
-    workflows: { ...current.workflows, ...storedWorkflows },
-  };
-}
+);
 
 function readPersisted(userId: string | undefined): Persisted {
-  const fallback: Persisted = {
-    state: "collapsed",
-    branch: "agent",
-    done: [],
-    workflows: {},
-  };
   if (typeof window === "undefined") {
-    return fallback;
+    return FALLBACK;
   }
   // Checked before the stored state, not only in place of it. A saved
   // Playwright session carries the localStorage written when the launcher
   // expanded during sign-in, so honouring the cookie only on a missing entry
   // left the card open in every test that reused that session.
   if (gettingStartedSuppressed()) {
-    return fallback;
+    return FALLBACK;
   }
   try {
     const raw = localStorage.getItem(storageKey(userId));
@@ -140,12 +140,12 @@ function readPersisted(userId: string | undefined): Persisted {
       // (userId undefined) stays collapsed and existing users do not flash open
       // before their stored collapsed state loads. Playwright suppresses the
       // auto-expand by cookie so the card never covers the canvas.
-      return userId ? { ...fallback, state: "expanded" } : fallback;
+      return userId ? { ...FALLBACK, state: "expanded" } : FALLBACK;
     }
     const parsed = JSON.parse(raw) as Partial<Persisted>;
     return {
-      state: parsed.state ?? fallback.state,
-      branch: parsed.branch ?? fallback.branch,
+      state: parsed.state ?? FALLBACK.state,
+      branch: parsed.branch ?? FALLBACK.branch,
       done: Array.isArray(parsed.done) ? parsed.done : [],
       workflows:
         parsed.workflows && typeof parsed.workflows === "object"
@@ -153,7 +153,7 @@ function readPersisted(userId: string | undefined): Persisted {
           : {},
     };
   } catch {
-    return fallback;
+    return FALLBACK;
   }
 }
 
@@ -249,9 +249,10 @@ export function useGettingStarted({
   const isAuthenticated =
     Boolean(session?.user) && !isAnonymousUser(session?.user);
   const activeOrgId = activeOrg?.id ?? null;
-  const [persisted, setPersisted] = useState<Persisted>(() =>
-    readPersisted(undefined)
-  );
+  const [stored, setStored] = useAtom(storedAtom);
+  const persist = useSetAtom(persistAtom);
+  const persisted =
+    stored && stored.userId === userId ? stored.value : FALLBACK;
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
   const [recommendedIds, setRecommendedIds] = useState<Record<string, string>>(
     {}
@@ -270,42 +271,31 @@ export function useGettingStarted({
     };
   }, [walletAddress, testnetWorkspace, recommendedIds]);
 
-  // Re-hydrate persisted state once the user id is known (the key is per-user).
+  // Read on every mount, so saves another tab made meanwhile are kept. Not
+  // under the test cookie: it reads as FALLBACK and would reset the other copy.
   useEffect(() => {
-    setPersisted(readPersisted(userId));
-  }, [userId]);
+    setStored((prev) =>
+      prev?.userId === userId && gettingStartedSuppressed()
+        ? prev
+        : { userId, value: readPersisted(userId) }
+    );
+  }, [userId, setStored]);
 
-  const persistedRef = useRef(persisted);
-  persistedRef.current = persisted;
-
-  // Functional updater over a synchronously-maintained ref. Reading the latest
-  // value from the ref (not the render closure) lets two mutations fired in the
-  // same tick compose -- e.g. setStepWorkflowId + completeStep on a chip clone --
-  // instead of the second clobbering the first. localStorage is written
-  // synchronously so the value survives an immediate navigation.
-  const persist = useCallback(
-    (update: (prev: Persisted) => Persisted) => {
-      const merged = withStoredProgress(userId, persistedRef.current);
-      const next = update(merged);
-      // Unchanged: sync from storage but skip the write, so a stale copy
-      // cannot put back an older state.
-      if (next === merged) {
-        if (merged !== persistedRef.current) {
-          persistedRef.current = merged;
-          setPersisted(merged);
-        }
-        return;
+  // Another tab saved: take its state. A removed key (a first visit) and the
+  // test cookie are ignored, as above.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent): void => {
+      if (
+        event.key === storageKey(userId) &&
+        event.newValue !== null &&
+        !gettingStartedSuppressed()
+      ) {
+        setStored({ userId, value: readPersisted(userId) });
       }
-      persistedRef.current = next;
-      setPersisted(next);
-      try {
-        localStorage.setItem(storageKey(userId), JSON.stringify(next));
-      } catch {
-        // localStorage unavailable
-      }
-    },
-    [userId]
-  );
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [userId, setStored]);
 
   const showing = inOverlay || persisted.state === "expanded";
   const workflowIds = Object.values(persisted.workflows).join(",");
@@ -352,7 +342,8 @@ export function useGettingStarted({
       .catch(() => undefined);
   }, [isAuthenticated, persisted.state, inOverlay]);
 
-  // Derive testnet workspace from org wallet balances while the checklist shows.
+  // Derive testnet workspace from org wallet balances while the checklist
+  // shows.
   // biome-ignore lint/correctness/useExhaustiveDependencies: activeOrgId is the refetch trigger on org switch; balances are scoped server-side
   useEffect(() => {
     if (!(isAuthenticated && showing)) {
@@ -380,9 +371,8 @@ export function useGettingStarted({
     return () => clearInterval(id);
   }, [showing, fetchStatus]);
 
-  // Latch satisfied real signals into `done` so completion survives the user
-  // later deleting the workflow / key that produced it. Read persisted via ref
-  // so this effect only reacts to status changes, not to every launcher action.
+  // Latch satisfied real signals into `done`, so completion survives deleting
+  // the workflow / key that produced it. Runs on status changes only.
   useEffect(() => {
     if (!status) {
       return;
