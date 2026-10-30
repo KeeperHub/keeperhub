@@ -44,8 +44,7 @@ export function Overlay({
   className,
 }: OverlayComponentProps) {
   return (
-    // min-h-0: a phone sheet capped above the keyboard can shrink it.
-    <div className={cn("flex max-h-[85vh] min-h-0 flex-col", className)}>
+    <div className={cn("flex max-h-[85vh] flex-col", className)}>
       {/* Header with smart back button detection */}
       {(title || description) && (
         <SmartOverlayHeader

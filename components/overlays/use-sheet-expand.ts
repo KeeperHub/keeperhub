@@ -74,7 +74,9 @@ export function useSheetExpand(
       if (Math.abs(dy) < Math.abs(touch.clientX - start.x)) {
         return;
       }
-      if (!expandedRef.current && dy <= -EXPAND_DISTANCE) {
+      // A swipe Vaul is dragging down is left to Vaul, which resets it on release.
+      const vaulDragging = sheet.closest(".vaul-dragging") !== null;
+      if (!(expandedRef.current || vaulDragging) && dy <= -EXPAND_DISTANCE) {
         start = null;
         setExpanded(true);
       } else if (

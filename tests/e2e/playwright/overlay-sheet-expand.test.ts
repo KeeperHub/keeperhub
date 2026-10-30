@@ -1,6 +1,7 @@
 import type { Locator, Page, Route } from "@playwright/test";
 import { expect, test } from "./fixtures";
 import { box, dismissPhoneOverlays } from "./utils/layout";
+import { gotoCanvas } from "./utils/workflow";
 
 // Below 768px overlays open as a bottom sheet. Swiping up or a wheel down takes
 // it full screen; swiping down or a wheel up at the top of its content brings
@@ -234,6 +235,23 @@ test.describe("Overlay sheet on touch phones", () => {
     await expect(sheet).toBeHidden();
   });
 
+  test("a swipe down and back up past its start leaves the sheet in place", async ({
+    page,
+  }) => {
+    const { sheet, handle } = await openConnections(page, PHONE);
+    // Vaul ignores drags in the first 500ms after the sheet opens.
+    await page.waitForTimeout(600);
+    const top = (await box(sheet)).y;
+    const title = await box(sheet.getByText("Connections", { exact: true }));
+    await swipe(page, PHONE.width / 2, title.y, title.y + 80, title.y - 40);
+
+    // Vaul dragged it down first, so the swipe stays Vaul's: it settles back.
+    await expect(handle).toHaveAttribute("aria-pressed", "false");
+    await expect(async () => {
+      expect(Math.round((await box(sheet)).y)).toBe(Math.round(top));
+    }).toPass({ timeout: 5000 });
+  });
+
   test("full screen stops under the app banner", async ({ page }) => {
     const { sheet, handle } = await openConnections(page, {
       width: 360,
@@ -277,6 +295,51 @@ test.describe("Overlay sheet on touch phones", () => {
 
     await fakeKeyboard(page, 0);
     await expectFullScreen(page, sheet, handle);
+  });
+});
+
+test.describe("Configuration overlay on a phone", () => {
+  test("an on-screen keyboard leaves its list scrollable above it", async ({
+    page,
+  }) => {
+    await dismissPhoneOverlays(page);
+    await page.setViewportSize(PHONE);
+    // A new workflow opens Configuration on the action picker.
+    await gotoCanvas(page);
+    await page.getByTitle("Configuration").click();
+    const sheet = page.getByTestId("overlay-sheet");
+    const search = sheet.getByPlaceholder("Search actions...");
+    await expect(search).toBeVisible();
+
+    const keyboard = 300;
+    const visible = PHONE.height - keyboard;
+    await search.focus();
+    await fakeKeyboard(page, keyboard);
+
+    // The panel shrinks to the room above the keyboard and its list scrolls
+    // there, instead of running on under it.
+    await expect(async () => {
+      const layout = await sheet.evaluate((element) => {
+        const root = element.querySelector('[aria-hidden="false"] > *');
+        let scroller: Element | null = null;
+        for (const node of root?.querySelectorAll("*") ?? []) {
+          if (
+            getComputedStyle(node).overflowY === "auto" &&
+            node.scrollHeight > node.clientHeight
+          ) {
+            scroller = node;
+          }
+        }
+        return {
+          root: root?.getBoundingClientRect().bottom ?? 0,
+          scroller: scroller?.getBoundingClientRect().bottom ?? 0,
+          scrollable: scroller !== null,
+        };
+      });
+      expect(layout.scrollable).toBe(true);
+      expect(layout.root).toBeLessThanOrEqual(visible);
+      expect(layout.scroller).toBeLessThanOrEqual(visible);
+    }).toPass({ timeout: 5000 });
   });
 });
 

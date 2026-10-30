@@ -378,7 +378,6 @@ function MobileOverlayContainer() {
 
   // Track content size so the drawer can shrink when the active view gets
   // shorter (e.g. switching tabs).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: expandedRef is a ref, read when the observer fires
   useLayoutEffect(() => {
     if (!(isOpen && contentRef.current)) {
       return;
@@ -395,7 +394,7 @@ function MobileOverlayContainer() {
     });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [isOpen]);
+  }, [isOpen, expandedRef]);
 
   // Use live stack for options checks (only when open)
   const currentItem = stack.at(-1);
@@ -468,7 +467,7 @@ function MobileOverlayContainer() {
               and the sheet stops under the app banner, which stays on top. */}
           <div
             className={cn(
-              "group/sheet flex flex-col pb-(--sheet-pad) transition-[min-height,max-height,padding-top] duration-300 ease-out [--sheet-pad:max(0px,calc(env(safe-area-inset-bottom)-var(--sheet-keyboard,0px)))] [--sheet-room:calc(var(--sheet-max)-1.125rem-var(--sheet-pad))] motion-reduce:transition-none",
+              "group/sheet flex flex-col pb-(--sheet-pad) transition-[min-height,max-height,padding-top] duration-300 ease-out [--sheet-pad:max(0px,calc(env(safe-area-inset-bottom)-var(--sheet-keyboard,0px)))] [--sheet-handle:--spacing(4.5)] [--sheet-room:calc(var(--sheet-max)-var(--sheet-handle)-var(--sheet-pad))] motion-reduce:transition-none",
               expanded
                 ? "max-h-(--sheet-max) min-h-(--sheet-max) pt-[max(0px,calc(env(safe-area-inset-top)-var(--app-banner-height,0px)))] [--sheet-max:calc(var(--sheet-viewport,100dvh)-var(--app-banner-height,0px))]"
                 : "max-h-(--sheet-max) min-h-0 [--sheet-max:min(90vh,calc(var(--sheet-viewport,100dvh)-2rem))]"
@@ -483,7 +482,7 @@ function MobileOverlayContainer() {
             <button
               aria-label="Full screen"
               aria-pressed={expanded}
-              className="relative z-10 mx-auto flex h-4.5 w-24 shrink-0 items-end justify-center rounded-full after:absolute after:inset-x-0 after:top-0 after:-bottom-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="relative z-10 mx-auto flex h-(--sheet-handle) w-24 shrink-0 items-end justify-center rounded-full after:absolute after:inset-x-0 after:top-0 after:-bottom-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               data-testid="overlay-sheet-handle"
               onClick={() => setExpanded(!expanded)}
               type="button"
@@ -536,13 +535,13 @@ function MobileOverlayContainer() {
                         }}
                         aria-hidden={!isCurrent}
                         className={cn(
-                          "flex w-full min-h-0 flex-col",
+                          // The overlay's root can shrink above a keyboard,
+                          // and fills the sheet full screen.
+                          "flex w-full min-h-0 flex-col [&>*]:min-h-0",
                           isCurrent
                             ? "relative"
                             : "pointer-events-none absolute inset-0",
-                          // Full screen, the overlay's root fills the sheet.
-                          expanded &&
-                            "flex-1 [&>*]:max-h-none [&>*]:min-h-0 [&>*]:flex-1"
+                          expanded && "flex-1 [&>*]:max-h-none [&>*]:flex-1"
                         )}
                         initial={initialValue}
                         key={item.id}
