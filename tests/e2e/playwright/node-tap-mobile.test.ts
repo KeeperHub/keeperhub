@@ -50,13 +50,19 @@ function sheetClose(page: Page): Locator {
     .filter({ visible: true });
 }
 
-type TapTimes = { sheetOpenedAt: number; secondPressAt: number };
+type TapTimes = {
+  sheetOpenedAt: number;
+  secondPressAt: number;
+  sheetTookPresses: string;
+};
 
-// In the page: when the sheet appears, and the first press after that.
+// In the page: when the sheet appears, and the first press after that with
+// whether the sheet took presses at that moment.
 function trackSheetAndSecondTap(): void {
   const w = window as unknown as TapTimes;
   w.sheetOpenedAt = 0;
   w.secondPressAt = 0;
+  w.sheetTookPresses = "";
   new MutationObserver((_, observer) => {
     if (document.querySelector('[role="dialog"]')) {
       w.sheetOpenedAt = performance.now();
@@ -66,8 +72,10 @@ function trackSheetAndSecondTap(): void {
   document.addEventListener(
     "pointerdown",
     (event) => {
-      if (w.sheetOpenedAt && !w.secondPressAt) {
+      const dialog = document.querySelector('[role="dialog"]');
+      if (dialog && w.sheetOpenedAt && !w.secondPressAt) {
         w.secondPressAt = event.timeStamp;
+        w.sheetTookPresses = getComputedStyle(dialog).pointerEvents;
       }
     },
     { capture: true }
@@ -145,23 +153,34 @@ test.describe("Tapping a step opens its settings", () => {
         await page.touchscreen.tap(point.x, point.y);
         // Past the grace, so a late close would have happened by now.
         await page.waitForTimeout(600);
-        const gap = await page.evaluate(() => {
-          const w = window as unknown as TapTimes;
-          return w.secondPressAt - w.sheetOpenedAt;
-        });
-        judged = gap > 0 && gap < 350;
+        const times = await page.evaluate(
+          () => ({ ...(window as unknown as TapTimes) }) as TapTimes
+        );
+        const gap = times.secondPressAt - times.sheetOpenedAt;
+        // Well inside the grace, which starts a little before the page sees it
+        judged = gap > 0 && gap < 300;
         if (judged) {
+          // The settling sheet took no presses: the tap fell through to the
+          // backdrop, whose grace ignored it.
+          expect(times.sheetTookPresses).toBe("none");
           await expect(sheet(page).locator("#label")).toHaveValue(
             "Manual Trigger"
           );
           // Nothing the sheet slid under the finger was pressed.
           await expect(page.getByRole("listbox")).toHaveCount(0);
-        } else if (await sheet(page).isVisible()) {
-          await sheetClose(page).tap();
-          await expect(sheet(page)).toBeHidden();
+        } else {
+          // A late second tap may have opened a select in the settled sheet:
+          // Escape closes that first, then the sheet.
+          for (let press = 0; press < 3; press += 1) {
+            if ((await page.getByRole("dialog").count()) === 0) {
+              break;
+            }
+            await page.keyboard.press("Escape");
+            await page.waitForTimeout(300);
+          }
         }
       }
-      test.skip(!judged, "the runner never delivered a tap inside the grace");
+      expect(judged, "a double tap delivered inside the grace").toBe(true);
       // Later, the same tap does close it.
       await page.touchscreen.tap(BACKDROP.x, BACKDROP.y);
       await expect(sheet(page)).toBeHidden();

@@ -333,6 +333,77 @@ function DesktopOverlayContainer() {
 // a control the sheet slid under the finger.
 const OPEN_PRESS_GRACE_MS = 400;
 
+type OutsidePress = CustomEvent<{ originalEvent: PointerEvent }>;
+
+/**
+ * The phone sheet's grace after opening: `settling` turns presses on it off,
+ * `sheetRef` and `start` begin the grace (on mount, and on a reopen during
+ * the close animation), and `onPointerDownOutside` drops presses that came
+ * within it or landed on the sheet itself.
+ */
+function useOpenPressGrace(): {
+  settling: boolean;
+  start: () => void;
+  sheetRef: (node: HTMLDivElement | null) => void;
+  onPointerDownOutside: (event: OutsidePress) => void;
+} {
+  const [settling, setSettling] = useState(false);
+  const openedAtRef = useRef(0);
+  const sheetNodeRef = useRef<HTMLDivElement | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const start = useCallback(() => {
+    openedAtRef.current = performance.now();
+    setSettling(true);
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+    }
+    timerRef.current = setTimeout(
+      () => setSettling(false),
+      OPEN_PRESS_GRACE_MS
+    );
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    },
+    []
+  );
+
+  // Vaul mounts the sheet a render after opening, so its grace starts here.
+  const sheetRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      sheetNodeRef.current = node;
+      if (node) {
+        start();
+      }
+    },
+    [start]
+  );
+
+  const onPointerDownOutside = useCallback((event: OutsidePress) => {
+    const press = event.detail.originalEvent;
+    // Radix reports a touch press on the click after it, so time the press
+    // itself (capped at now, should a browser use another clock).
+    const pressedAt = Math.min(press.timeStamp, performance.now());
+    const rect = sheetNodeRef.current?.getBoundingClientRect();
+    const onSheet =
+      rect !== undefined &&
+      press.clientX >= rect.left &&
+      press.clientX <= rect.right &&
+      press.clientY >= rect.top &&
+      press.clientY <= rect.bottom;
+    if (onSheet || pressedAt - openedAtRef.current < OPEN_PRESS_GRACE_MS) {
+      event.preventDefault();
+    }
+  }, []);
+
+  return { settling, start, sheetRef, onPointerDownOutside };
+}
+
 /**
  * Mobile drawer container with internal sliding content
  * Renders all stack items persistently in the same React tree location,
@@ -344,38 +415,7 @@ function MobileOverlayContainer() {
   const [minHeight, setMinHeight] = useState<number>(0);
   const contentRef = useRef<HTMLDivElement>(null);
   const wasOpenRef = useRef(false);
-  const openedAtRef = useRef(0);
-  const [settling, setSettling] = useState(false);
-  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const startGrace = useCallback(() => {
-    openedAtRef.current = performance.now();
-    setSettling(true);
-    if (settleTimerRef.current) {
-      clearTimeout(settleTimerRef.current);
-    }
-    settleTimerRef.current = setTimeout(
-      () => setSettling(false),
-      OPEN_PRESS_GRACE_MS
-    );
-  }, []);
-  useEffect(
-    () => () => {
-      if (settleTimerRef.current) {
-        clearTimeout(settleTimerRef.current);
-      }
-    },
-    []
-  );
-  // From when the sheet is on screen: Vaul mounts it a render after opening
-  // (a reopen during the close animation starts on the fresh open below).
-  const markOpened = useCallback(
-    (node: HTMLDivElement | null) => {
-      if (node) {
-        startGrace();
-      }
-    },
-    [startGrace]
-  );
+  const grace = useOpenPressGrace();
   const frozenStackRef = useRef(stack);
   const direction = useStackDirection(stack.length);
 
@@ -399,7 +439,7 @@ function MobileOverlayContainer() {
     // Reset minHeight on fresh open (not during push/pop)
     if (isFreshOpen) {
       setMinHeight(0);
-      startGrace();
+      grace.start();
     }
 
     if (contentRef.current) {
@@ -483,17 +523,10 @@ function MobileOverlayContainer() {
             "fixed inset-x-0 bottom-0 z-50 flex max-h-[90vh] flex-col",
             "rounded-t-2xl border-t bg-background shadow-2xl"
           )}
-          ref={markOpened}
+          onPointerDownOutside={grace.onPointerDownOutside}
+          ref={grace.sheetRef}
           // Presses on the settling sheet fall through to the backdrop below
-          style={settling ? { pointerEvents: "none" } : undefined}
-          // Timed from the press itself: Radix reports a touch press on the
-          // click that follows it, which a busy page can delay.
-          onPointerDownOutside={(event) => {
-            const pressedAt = event.detail.originalEvent.timeStamp;
-            if (pressedAt - openedAtRef.current < OPEN_PRESS_GRACE_MS) {
-              event.preventDefault();
-            }
-          }}
+          style={grace.settling ? { pointerEvents: "none" } : undefined}
         >
           {/* Accessible title for screen readers */}
           <DrawerPrimitive.Title className="sr-only">
