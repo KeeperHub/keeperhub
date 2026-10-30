@@ -21,6 +21,9 @@ import { Canvas } from "@/components/ai-elements/canvas";
 import { Connection } from "@/components/ai-elements/connection";
 import { Controls } from "@/components/ai-elements/controls";
 import { AIPrompt } from "@/components/ai-elements/prompt";
+import { ConfigurationOverlay } from "@/components/overlays/configuration-overlay";
+import { useOverlay } from "@/components/overlays/overlay-provider";
+import { useIsMobile } from "@/hooks/use-mobile";
 import "@xyflow/react/dist/style.css";
 
 import { PlayCircle, Zap } from "lucide-react";
@@ -100,6 +103,8 @@ const FIT_VIEW_DEFAULTS = { maxZoom: 1, minZoom: 0.1, padding: 0.2, duration: 0 
 export function WorkflowCanvas() {
   const pathname = usePathname();
   const isWorkflowRoute = pathname.startsWith("/workflows/");
+  const isMobile = useIsMobile();
+  const { open: openOverlay } = useOverlay();
   const [nodes, setNodes] = useAtom(nodesAtom);
   const [edges, setEdges] = useAtom(edgesAtom);
   const [isGenerating] = useAtom(isGeneratingAtom);
@@ -563,6 +568,14 @@ export function WorkflowCanvas() {
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
       setSelectedNode(node.id);
+      // Phones have no side panel: open the step's settings in the sheet
+      if (isMobile) {
+        if (isWorkflowRoute && node.type !== "add") {
+          setActiveTab("properties");
+          openOverlay(ConfigurationOverlay, {});
+        }
+        return;
+      }
       // Don't auto-open sidebar during workflow switch
       if (isSidebarCollapsed && !isLoadingWorkflow.current) {
         setIsPanelAnimating(true);
@@ -570,7 +583,16 @@ export function WorkflowCanvas() {
         setTimeout(() => setIsPanelAnimating(false), 350);
       }
     },
-    [setSelectedNode, isSidebarCollapsed, setIsPanelAnimating, setIsSidebarCollapsed]
+    [
+      setSelectedNode,
+      isMobile,
+      isWorkflowRoute,
+      setActiveTab,
+      openOverlay,
+      isSidebarCollapsed,
+      setIsPanelAnimating,
+      setIsSidebarCollapsed,
+    ]
   );
 
   // Open node details from any tab

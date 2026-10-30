@@ -12,6 +12,9 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { Plus } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useCallback, useMemo } from "react";
+import { ConfigurationOverlay } from "@/components/overlays/configuration-overlay";
+import { useOverlay } from "@/components/overlays/overlay-provider";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   addNodeAtom,
   autosaveAtom,
@@ -63,6 +66,8 @@ export function AddStepButton({
   const setSidebarCollapsed = useSetAtom(isSidebarCollapsedAtom);
   const setHasUnsavedChanges = useSetAtom(hasUnsavedChangesAtom);
   const triggerAutosave = useSetAtom(autosaveAtom);
+  const isMobile = useIsMobile();
+  const { open: openOverlay } = useOverlay();
 
   const outgoingEdges = useMemo(
     () =>
@@ -146,7 +151,10 @@ export function AddStepButton({
 
       addNode(newNode);
       setActiveTab("properties");
-      if (isSidebarCollapsed) {
+      // Phones have no side panel: pick the new step's action in the sheet
+      if (isMobile) {
+        openOverlay(ConfigurationOverlay, {});
+      } else if (isSidebarCollapsed) {
         setIsPanelAnimating(true);
         setSidebarCollapsed(false);
         setTimeout(() => setIsPanelAnimating(false), 350);
@@ -190,6 +198,8 @@ export function AddStepButton({
       setEdges,
       setNodes,
       setActiveTab,
+      isMobile,
+      openOverlay,
       isSidebarCollapsed,
       setIsPanelAnimating,
       setSidebarCollapsed,
