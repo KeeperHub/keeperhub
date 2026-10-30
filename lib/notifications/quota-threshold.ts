@@ -1,8 +1,7 @@
 import "server-only";
 
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { USDC_BASE_ADDRESS } from "@/lib/agentic-wallet/constants";
-import { isWalletEmail } from "@/lib/auth/wallet-constants";
 import { getPaygSettings } from "@/lib/billing/payg/config-store";
 import { getPaygExecutionPriceRaw } from "@/lib/billing/payg/pricing";
 import { getPaygTreasuryOrNull } from "@/lib/billing/payg/treasury";
@@ -16,18 +15,16 @@ import {
 } from "@/lib/billing/quota-threshold-core";
 import { getChainName } from "@/lib/chain-utils";
 import { db } from "@/lib/db";
-import {
-  executionQuotaNotifications,
-  member,
-  organization,
-  users,
-} from "@/lib/db/schema";
+import { executionQuotaNotifications, organization } from "@/lib/db/schema";
 import {
   type ExecutionQuotaPaygDetails,
   sendExecutionQuotaEmail,
 } from "@/lib/email";
-import { isAnonymousUser } from "@/lib/is-anonymous";
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
+import {
+  loadOrgMembers,
+  reachableEmails,
+} from "@/lib/notifications/org-recipients";
 import { getRedis } from "@/lib/redis";
 import { quotaNotifyClaimKey } from "@/lib/redis-keys";
 
@@ -43,57 +40,13 @@ import { quotaNotifyClaimKey } from "@/lib/redis-keys";
 /**
  * Owners only. They are the ones who can change the plan or the pay-as-you-go
  * spend caps, which is the entire point of the email.
+ *
+ * An owner with no deliverable address is skipped, and because the caller does
+ * not claim the notification for a skipped org, they are still told once they
+ * become reachable.
  */
 async function resolveOwnerEmails(organizationId: string): Promise<string[]> {
-  const rows = await db
-    .select({
-      email: users.email,
-      emailVerified: users.emailVerified,
-      stepUpEmail: users.stepUpEmail,
-      name: users.name,
-    })
-    .from(member)
-    .innerJoin(users, eq(users.id, member.userId))
-    .where(
-      and(eq(member.organizationId, organizationId), eq(member.role, "owner"))
-    );
-
-  return [
-    ...new Set(
-      rows
-        .map((row) => deliverableAddress(row))
-        .filter((email): email is string => Boolean(email))
-    ),
-  ];
-}
-
-/**
- * The address an owner can actually be reached at, or null.
- *
- * Not every account has a real inbox. Wallet (SIWE) accounts are minted with a
- * synthetic `<address>@wallet.keeperhub.com` login, and anonymous accounts get
- * a placeholder; mailing either is guaranteed to bounce and, on a shared
- * domain, hurts the sending reputation the rest of our mail depends on.
- *
- * So an address only qualifies if the user supplied it and proved they hold it:
- * a wallet owner's enrolled step-up email, which is written only after an
- * emailed code is confirmed, or a verified login email. An owner with neither
- * is skipped, and because the caller does not claim the notification for a
- * skipped org, they are still told once they become reachable.
- */
-function deliverableAddress(row: {
-  email: string | null;
-  emailVerified: boolean | null;
-  stepUpEmail: string | null;
-  name: string | null;
-}): string | null {
-  if (isWalletEmail(row.email)) {
-    return row.stepUpEmail;
-  }
-  if (isAnonymousUser({ name: row.name, email: row.email })) {
-    return null;
-  }
-  return row.emailVerified ? row.email : null;
+  return reachableEmails(await loadOrgMembers(organizationId, ["owner"]));
 }
 
 /**

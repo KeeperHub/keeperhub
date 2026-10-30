@@ -42,6 +42,21 @@ import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 import { analyticsCacheKey, cachedAnalytics } from "./cache";
 import { likePattern } from "./like-pattern";
+import { notificationsExcludedBy } from "./notification-runs";
+import {
+  fetchNotificationRuns,
+  getNotificationRunsTotal,
+  newestNotificationChange,
+} from "./notification-runs-query";
+import {
+  cursorAfter,
+  type KeyedRun,
+  keysetTime,
+  mergeKeyedRuns,
+  parseRunCursor,
+  type RunCursor,
+  runCursorCondition,
+} from "./run-cursor";
 import { MAX_RUN_LIMIT } from "./runs-query";
 import type { BucketSqlInterval } from "./time-range";
 import {
@@ -520,18 +535,27 @@ function directFilterConditions(
   return conditions;
 }
 
-/** Whether each source is in play, given the source filter and project scope. */
+/**
+ * Whether each source is in play, given the filters and project scope. No
+ * source selected means the runs, workflow and direct: notifications are listed
+ * only when asked for by name, so an API or MCP caller that never heard of
+ * them gets the listing it always had. The analytics page names all three.
+ */
 function resolveSources(
-  sources: RunSource[] | undefined,
+  filters: RunQueryFilters,
   projectId: string | undefined
-): { workflow: boolean; direct: boolean } {
-  const selected = sources ?? [];
+): { workflow: boolean; direct: boolean; notification: boolean } {
+  const selected: RunSource[] = filters.sources ?? [];
   const all = selected.length === 0;
   return {
     workflow: all || selected.includes("workflow"),
     // A project scopes to its workflows, and a direct execution belongs to no
     // workflow, so no direct run can be in a project.
     direct: (all || selected.includes("direct")) && !projectId,
+    // A project is applied inside the notification query instead: a message
+    // about one of the project's workflows is in it.
+    notification:
+      selected.includes("notification") && !notificationsExcludedBy(filters),
   };
 }
 
@@ -1424,7 +1448,10 @@ export async function getUnifiedRuns(
 ): Promise<{
   runs: UnifiedRun[];
   nextCursor: string | null;
+  /** Runs matching the filters. Notifications are listed but never counted. */
   total: number;
+  /** Every row the listing pages through, notifications included. */
+  listTotal: number;
   page: number;
   pageSize: number;
   /**
@@ -1448,65 +1475,94 @@ export async function getUnifiedRuns(
   const rangeStart = getTimeRangeStart(range, customStart);
   const rangeEnd = getTimeRangeEnd(customEnd);
   const pageLimit = Math.min(limit, MAX_RUN_LIMIT);
-  const wanted = resolveSources(filters.sources, projectId);
-  const offset = cursor ? 0 : (page - 1) * pageLimit;
+  const wanted = resolveSources(filters, projectId);
+  const keyset = parseRunCursor(cursor);
+  const offset = keyset ? 0 : (page - 1) * pageLimit;
 
   // Fetch enough rows from each source to fill the requested page after merging.
   // We need offset + pageLimit + 1 rows from each source to correctly paginate
   // the merged, sorted result set.
-  const fetchLimit = cursor ? pageLimit + 1 : offset + pageLimit + 1;
+  const fetchLimit = keyset ? pageLimit + 1 : offset + pageLimit + 1;
 
   // Fire run fetches and count queries in parallel. The retention cutoff joins
   // them rather than running on its own: it is a single indexed row read, and
   // serialising it would add a round trip to every page of the runs table.
-  const [workflowRuns, directRuns, total, stepLogRetentionCutoff] =
-    await Promise.all([
-      wanted.workflow
-        ? fetchWorkflowRuns(
-            organizationId,
-            rangeStart,
-            rangeEnd,
-            filters,
-            cursor,
-            fetchLimit,
-            projectId
-          )
-        : ([] as UnifiedRun[]),
-      wanted.direct
-        ? fetchDirectRuns(
-            organizationId,
-            rangeStart,
-            rangeEnd,
-            filters,
-            cursor,
-            fetchLimit
-          )
-        : ([] as UnifiedRun[]),
-      getUnifiedRunsTotal(
-        organizationId,
-        rangeStart,
-        rangeEnd,
-        filters,
-        projectId
-      ),
-      getOrgLogRetentionCutoff(organizationId, getRetentionConfig()),
-    ]);
+  const [
+    workflowRuns,
+    directRuns,
+    notificationRuns,
+    total,
+    notificationTotal,
+    stepLogRetentionCutoff,
+  ] = await Promise.all([
+    wanted.workflow
+      ? fetchWorkflowRuns(
+          organizationId,
+          rangeStart,
+          rangeEnd,
+          filters,
+          keyset,
+          fetchLimit,
+          projectId
+        )
+      : ([] as KeyedRun[]),
+    wanted.direct
+      ? fetchDirectRuns(
+          organizationId,
+          rangeStart,
+          rangeEnd,
+          filters,
+          keyset,
+          fetchLimit
+        )
+      : ([] as KeyedRun[]),
+    wanted.notification
+      ? fetchNotificationRuns(
+          organizationId,
+          rangeStart,
+          rangeEnd,
+          filters,
+          keyset,
+          fetchLimit,
+          projectId
+        )
+      : ([] as KeyedRun[]),
+    getUnifiedRunsTotal(
+      organizationId,
+      rangeStart,
+      rangeEnd,
+      filters,
+      projectId
+    ),
+    wanted.notification
+      ? getNotificationRunsTotal(
+          organizationId,
+          rangeStart,
+          rangeEnd,
+          filters,
+          projectId
+        )
+      : 0,
+    getOrgLogRetentionCutoff(organizationId, getRetentionConfig()),
+  ]);
 
-  // Merge both sources, sort by time, then apply offset for the requested page
-  const allRuns = [...workflowRuns, ...directRuns].sort(
-    (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
-  );
+  // Merge the sources in the keyset order, then apply offset for the
+  // requested page. The cursor names the last row exactly, time to the
+  // microsecond plus source and id, so rows sharing its time are not skipped.
+  const allRuns = mergeKeyedRuns([workflowRuns, directRuns, notificationRuns]);
 
-  const sliceStart = cursor ? 0 : offset;
+  const sliceStart = keyset ? 0 : offset;
   const sliced = allRuns.slice(sliceStart, sliceStart + pageLimit + 1);
   const hasMore = sliced.length > pageLimit;
   const pagedRuns = sliced.slice(0, pageLimit);
-  const nextCursor = hasMore ? (pagedRuns.at(-1)?.startedAt ?? null) : null;
+  const last = pagedRuns.at(-1);
+  const nextCursor = hasMore && last ? cursorAfter(last) : null;
 
   return {
-    runs: pagedRuns,
+    runs: pagedRuns.map((row) => row.run),
     nextCursor,
     total,
+    listTotal: total + notificationTotal,
     page,
     pageSize: pageLimit,
     stepLogRetentionCutoff: stepLogRetentionCutoff?.toISOString() ?? null,
@@ -1518,10 +1574,10 @@ async function fetchWorkflowRuns(
   rangeStart: Date,
   rangeEnd: Date,
   filters: RunQueryFilters,
-  cursor: string | undefined,
+  cursor: RunCursor | undefined,
   limit: number,
   projectId?: string
-): Promise<UnifiedRun[]> {
+): Promise<KeyedRun[]> {
   // Scope to org's workflows via subquery so leftJoin still enforces org isolation
   const orgWorkflowIds = db
     .select({ id: workflows.id })
@@ -1552,7 +1608,14 @@ async function fetchWorkflowRuns(
   );
 
   if (cursor) {
-    conditions.push(lt(workflowExecutions.startedAt, new Date(cursor)));
+    conditions.push(
+      runCursorCondition(
+        cursor,
+        "workflow",
+        workflowExecutions.startedAt,
+        workflowExecutions.id
+      )
+    );
   }
 
   // Restrict the gas/network aggregation to the executions this page will
@@ -1693,6 +1756,7 @@ async function fetchWorkflowRuns(
       errorCode: workflowExecutions.errorCode,
       errorType: workflowExecutions.errorType,
       errorCategory: workflowExecutions.errorCategory,
+      at: keysetTime(workflowExecutions.startedAt),
     })
     .from(workflowExecutions)
     .leftJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
@@ -1708,38 +1772,41 @@ async function fetchWorkflowRuns(
     .limit(limit);
 
   return result.map((row) => ({
-    id: row.id,
-    source: "workflow" as const,
-    status: normalizeStatus(row.status, "workflow", row.errorType),
-    startedAt: row.startedAt.toISOString(),
-    completedAt: row.completedAt?.toISOString() ?? null,
-    durationMs: row.duration ? Number(row.duration) : null,
-    workflowId: row.workflowId,
-    workflowName: row.workflowName ?? "(Deleted)",
-    directType: null,
-    network: row.network ?? row.ledgerNetworks?.[0] ?? null,
-    networks: unionNetworks(
-      row.networks,
-      row.ledgerNetworks,
-      row.transactionHashes
-    ),
-    gasNetworks: unionNetworks(
-      row.gasNetworks,
-      row.ledgerNetworks,
-      row.transactionHashes
-    ),
-    gasCostWei:
-      row.gasCostWei && row.gasCostWei !== "0" ? row.gasCostWei : null,
-    transactionHashes: row.transactionHashes,
-    gasUsedWei: firstNonZero(row.gasUsedWei, row.runGasUsedWei),
-    totalSteps: row.totalSteps ? Number(row.totalSteps) : null,
-    completedSteps: row.completedSteps ? Number(row.completedSteps) : null,
-    // Redact on read so rows persisted before URL redaction existed do not
-    // re-display provider RPC URLs.
-    error: row.error === null ? null : redactSecretUrls(row.error),
-    errorCode: row.errorCode ?? null,
-    errorType: row.errorType ?? null,
-    errorCategory: row.errorCategory ?? null,
+    at: row.at,
+    run: {
+      id: row.id,
+      source: "workflow" as const,
+      status: normalizeStatus(row.status, "workflow", row.errorType),
+      startedAt: row.startedAt.toISOString(),
+      completedAt: row.completedAt?.toISOString() ?? null,
+      durationMs: row.duration ? Number(row.duration) : null,
+      workflowId: row.workflowId,
+      workflowName: row.workflowName ?? "(Deleted)",
+      directType: null,
+      network: row.network ?? row.ledgerNetworks?.[0] ?? null,
+      networks: unionNetworks(
+        row.networks,
+        row.ledgerNetworks,
+        row.transactionHashes
+      ),
+      gasNetworks: unionNetworks(
+        row.gasNetworks,
+        row.ledgerNetworks,
+        row.transactionHashes
+      ),
+      gasCostWei:
+        row.gasCostWei && row.gasCostWei !== "0" ? row.gasCostWei : null,
+      transactionHashes: row.transactionHashes,
+      gasUsedWei: firstNonZero(row.gasUsedWei, row.runGasUsedWei),
+      totalSteps: row.totalSteps ? Number(row.totalSteps) : null,
+      completedSteps: row.completedSteps ? Number(row.completedSteps) : null,
+      // Redact on read so rows persisted before URL redaction existed do not
+      // re-display provider RPC URLs.
+      error: row.error === null ? null : redactSecretUrls(row.error),
+      errorCode: row.errorCode ?? null,
+      errorType: row.errorType ?? null,
+      errorCategory: row.errorCategory ?? null,
+    },
   }));
 }
 
@@ -1748,9 +1815,9 @@ async function fetchDirectRuns(
   rangeStart: Date,
   rangeEnd: Date,
   filters: RunQueryFilters,
-  cursor: string | undefined,
+  cursor: RunCursor | undefined,
   limit: number
-): Promise<UnifiedRun[]> {
+): Promise<KeyedRun[]> {
   const conditions = [
     eq(directExecutions.organizationId, organizationId),
     gte(directExecutions.createdAt, rangeStart),
@@ -1759,7 +1826,14 @@ async function fetchDirectRuns(
   ];
 
   if (cursor) {
-    conditions.push(lt(directExecutions.createdAt, new Date(cursor)));
+    conditions.push(
+      runCursorCondition(
+        cursor,
+        "direct",
+        directExecutions.createdAt,
+        directExecutions.id
+      )
+    );
   }
 
   const result = await db
@@ -1772,51 +1846,56 @@ async function fetchDirectRuns(
       network: directExecutions.network,
       transactionHash: directExecutions.transactionHash,
       gasUsedWei: directExecutions.gasUsedWei,
+      at: keysetTime(directExecutions.createdAt),
     })
     .from(directExecutions)
     .where(and(...conditions))
-    .orderBy(desc(directExecutions.createdAt))
+    // `id` breaks ties the way the keyset compares them (see run-cursor.ts).
+    .orderBy(desc(directExecutions.createdAt), desc(directExecutions.id))
     .limit(limit);
 
   return result.map((row) => ({
-    id: row.id,
-    source: "direct" as const,
-    status: normalizeStatus(row.status, "direct"),
-    startedAt: row.createdAt.toISOString(),
-    completedAt: row.completedAt?.toISOString() ?? null,
-    durationMs: row.completedAt
-      ? row.completedAt.getTime() - row.createdAt.getTime()
-      : null,
-    workflowId: null,
-    workflowName: null,
-    directType: row.type as UnifiedRun["directType"],
-    network: row.network,
-    networks: row.network ? [row.network] : [],
-    gasNetworks: row.network && row.gasUsedWei ? [row.network] : [],
-    gasCostWei: row.gasUsedWei,
-    // Direct executions are genuinely single-tx. Synthesize the entry so
-    // consumers can render workflow + direct runs through the same array
-    // shape; nodeId/nodeName carry sentinel values since direct executions
-    // have no canvas node. Consumers must discriminate on `source === "direct"`
-    // rather than the nodeId/nodeName literals -- a workflow node could
-    // theoretically share the same id, and the sentinel is presentational.
-    transactionHashes: row.transactionHash
-      ? [
-          {
-            hash: row.transactionHash,
-            nodeId: "direct",
-            nodeName: "Direct execution",
-            ...(row.network ? { network: row.network } : {}),
-          },
-        ]
-      : [],
-    gasUsedWei: row.gasUsedWei,
-    totalSteps: null,
-    completedSteps: null,
-    error: null,
-    errorCode: null,
-    errorType: null,
-    errorCategory: null,
+    at: row.at,
+    run: {
+      id: row.id,
+      source: "direct" as const,
+      status: normalizeStatus(row.status, "direct"),
+      startedAt: row.createdAt.toISOString(),
+      completedAt: row.completedAt?.toISOString() ?? null,
+      durationMs: row.completedAt
+        ? row.completedAt.getTime() - row.createdAt.getTime()
+        : null,
+      workflowId: null,
+      workflowName: null,
+      directType: row.type as UnifiedRun["directType"],
+      network: row.network,
+      networks: row.network ? [row.network] : [],
+      gasNetworks: row.network && row.gasUsedWei ? [row.network] : [],
+      gasCostWei: row.gasUsedWei,
+      // Direct executions are genuinely single-tx. Synthesize the entry so
+      // consumers can render workflow + direct runs through the same array
+      // shape; nodeId/nodeName carry sentinel values since direct executions
+      // have no canvas node. Consumers must discriminate on `source === "direct"`
+      // rather than the nodeId/nodeName literals -- a workflow node could
+      // theoretically share the same id, and the sentinel is presentational.
+      transactionHashes: row.transactionHash
+        ? [
+            {
+              hash: row.transactionHash,
+              nodeId: "direct",
+              nodeName: "Direct execution",
+              ...(row.network ? { network: row.network } : {}),
+            },
+          ]
+        : [],
+      gasUsedWei: row.gasUsedWei,
+      totalSteps: null,
+      completedSteps: null,
+      error: null,
+      errorCode: null,
+      errorType: null,
+      errorCategory: null,
+    },
   }));
 }
 
@@ -1937,13 +2016,26 @@ export function getRunFacets(
   );
 }
 
+/**
+ * Whether a source selection changes any count. Counts are of runs, and
+ * notifications are never in them, so a selection naming both run sources (the
+ * analytics page's default of all three) counts the same as none and may use
+ * the cached unfiltered facets.
+ */
+function sourcesNarrowCounts(sources: RunSource[] | undefined): boolean {
+  if (!sources || sources.length === 0) {
+    return false;
+  }
+  return !(sources.includes("workflow") && sources.includes("direct"));
+}
+
 function hasFilters(filters: RunQueryFilters): boolean {
   return Boolean(
     // Statuses reach this call for the network and gas dimensions, which do not
     // lift them - and the cache key does not name them, so a status-filtered
     // count must not be stored under, or served from, the unfiltered key.
     (filters.statuses?.length ?? 0) > 0 ||
-      (filters.sources?.length ?? 0) > 0 ||
+      sourcesNarrowCounts(filters.sources) ||
       (filters.networks?.length ?? 0) > 0 ||
       filters.durationMinMs !== undefined ||
       filters.durationMaxMs !== undefined ||
@@ -1963,7 +2055,7 @@ async function computeRunFacets(
 ): Promise<RunFacets> {
   const rangeStart = getTimeRangeStart(range, customStart);
   const rangeEnd = getTimeRangeEnd(customEnd);
-  const wanted = resolveSources(filters.sources, projectId);
+  const wanted = resolveSources(filters, projectId);
 
   // Both of these read the step logs, the table that took prod down when the
   // run filters walked it too eagerly, so neither is computed unless asked for.
@@ -2031,6 +2123,7 @@ async function computeRunFacets(
       : [];
 
   const statusCounts: StatusFacets = {};
+  // Runs only: notifications are listed beside runs but never counted.
   for (const row of [...workflowRows, ...directRows]) {
     const status = row.status as NormalizedStatus;
     statusCounts[status] =
@@ -2052,7 +2145,7 @@ async function computeNetworkFacets(
   filters: RunQueryFilters,
   projectId?: string
 ): Promise<Record<string, number>> {
-  const wanted = resolveSources(filters.sources, projectId);
+  const wanted = resolveSources(filters, projectId);
   const withoutNetworks: RunQueryFilters = { ...filters, networks: undefined };
 
   // Driven from the run row rather than from the step logs, with each run's
@@ -2162,9 +2255,10 @@ async function getUnifiedRunsTotal(
   filters: RunQueryFilters,
   projectId?: string
 ): Promise<number> {
-  const wanted = resolveSources(filters.sources, projectId);
+  const wanted = resolveSources(filters, projectId);
 
-  // Run both count queries in parallel
+  // Runs only. Notifications are listed but never counted in a figure a reader
+  // sees; getUnifiedRuns counts them separately, for paging alone.
   const [workflowTotal, directTotal] = await Promise.all([
     wanted.workflow
       ? getWorkflowRunsTotal(
@@ -2359,6 +2453,10 @@ export async function getSpendCapData(organizationId: string): Promise<{
  *
  * The active-run count is deliberately left unbounded: the summary's activeRuns
  * is unbounded too, and the two have to agree.
+ *
+ * The last part is the newest change to a failure notification in the window
+ * (newestNotificationChange), so a new message and one whose delivery settles
+ * both refresh the list.
  */
 export async function getAnalyticsChecksum(
   organizationId: string,
@@ -2368,7 +2466,7 @@ export async function getAnalyticsChecksum(
   // has no column to map a Date through, the way the comparison helpers do.
   const from = rangeStart.toISOString();
 
-  const [wfMax, deMax, activeCount] = await Promise.all([
+  const [wfMax, deMax, activeCount, notificationMax] = await Promise.all([
     db
       .execute<{ max_started: string }>(
         sql`
@@ -2406,7 +2504,8 @@ export async function getAnalyticsChecksum(
         )
       )
       .then((r) => Number(r[0]?.count) || 0),
+    newestNotificationChange(organizationId, rangeStart),
   ]);
 
-  return `${wfMax}|${deMax}|${activeCount}`;
+  return `${wfMax}|${deMax}|${activeCount}|${notificationMax}`;
 }

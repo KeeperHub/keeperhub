@@ -30,6 +30,8 @@ import {
   ChainDisplayProvider,
   useChainDisplay,
 } from "@/lib/hooks/use-chain-display";
+import { useAlertsEnabled } from "@/lib/hooks/use-notifications";
+import { useOrganization } from "@/lib/hooks/use-organization";
 import { FilterCheckbox, FilterPopover, FilterRadio } from "./filter-popover";
 import { useLazyFacet } from "./use-lazy-facet";
 
@@ -80,6 +82,7 @@ const STATUS_GROUPS: StatusGroup[] = [
 const SOURCE_OPTIONS: Array<{ value: RunSource; label: string }> = [
   { value: "workflow", label: "Workflow" },
   { value: "direct", label: "Direct" },
+  { value: "notification", label: "Alerts" },
 ];
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -176,10 +179,20 @@ function StatusFilter(): ReactNode {
 
 function SourceFilter(): ReactNode {
   const [sources, setSources] = useAtom(analyticsSourceFiltersAtom);
+  const { organization } = useOrganization();
+  const alertsEnabled = useAlertsEnabled(organization?.id);
+  // Alert rows exist only where alerts are switched on.
+  const options = useMemo(
+    () =>
+      SOURCE_OPTIONS.filter(
+        (option) => option.value !== "notification" || alertsEnabled === true
+      ),
+    [alertsEnabled]
+  );
   const clear = useCallback((): void => setSources([]), [setSources]);
   const selectAll = useCallback(
-    (): void => setSources(SOURCE_OPTIONS.map((option) => option.value)),
-    [setSources]
+    (): void => setSources(options.map((option) => option.value)),
+    [setSources, options]
   );
 
   return (
@@ -189,7 +202,7 @@ function SourceFilter(): ReactNode {
       onSelectAll={selectAll}
       selectedCount={sources.length}
     >
-      {SOURCE_OPTIONS.map((option) => (
+      {options.map((option) => (
         <FilterCheckbox
           checked={sources.includes(option.value)}
           key={option.value}

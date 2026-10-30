@@ -2082,7 +2082,7 @@ export function registerTools(
 
   server.tool(
     "list_executions",
-    "List workflow and direct executions for the organization with cursor pagination. Wraps GET /api/analytics/runs.",
+    "List workflow and direct executions for the organization with cursor pagination. Pass source notification to list the failure notifications KeeperHub sent the organization instead; they are never included otherwise. Notifications are listed but never counted: total counts runs only, and listTotal counts every listed row for paging. Wraps GET /api/analytics/runs.",
     {
       cursor: z
         .string()
@@ -2102,9 +2102,11 @@ export function registerTools(
           "Filter by status: pending, running, success, error, system_error, external_error, skipped, cancelled"
         ),
       source: z
-        .enum(["workflow", "direct"])
+        .enum(["workflow", "direct", "notification"])
         .optional()
-        .describe("Filter by execution source"),
+        .describe(
+          "Filter by source: workflow runs, direct executions, or notification (failure notifications sent to the organization). Omitted, workflow runs and direct executions are listed and notifications are not"
+        ),
       range: z
         .string()
         .optional()

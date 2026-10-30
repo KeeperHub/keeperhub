@@ -43,6 +43,17 @@ export function runsPageCount(total: number, pageSize: number): number {
   return Math.min(Math.max(1, Math.ceil(total / pageSize)), MAX_PAGE);
 }
 
+/**
+ * What the analytics page lists when the reader picked no source: runs and
+ * the failure notifications sent about them. Named explicitly because the
+ * API's own default leaves notifications out.
+ */
+const PAGE_DEFAULT_SOURCES: RunSource[] = [
+  "workflow",
+  "direct",
+  "notification",
+];
+
 export type RunsQueryInput = {
   range: TimeRange;
   statuses?: NormalizedStatus[];
@@ -76,7 +87,11 @@ export function buildRunsQuery(input: RunsQueryInput): string {
       params.append("status", status);
     }
   }
-  for (const source of input.sources ?? []) {
+  const sources =
+    input.sources && input.sources.length > 0
+      ? input.sources
+      : PAGE_DEFAULT_SOURCES;
+  for (const source of sources) {
     params.append("source", source);
   }
   for (const network of input.networks ?? []) {

@@ -87,6 +87,10 @@ inputs:
     description: 'ALLOW_TEST_ENDPOINTS - runtime production opt-in required alongside include_test_endpoints for testEndpointsEnabled() to return true under NODE_ENV=production.'
     required: false
     default: ''
+  failure_alerts_rollout:
+    description: 'FAILURE_ALERTS_ROLLOUT - which orgs get workflow failure alerts (off | all | orgs:<id>,... | percent:<n>). The default turns them on only for the org failure-alerts.test.ts seeds (ALERTS_E2E_ORG_ID).'
+    required: false
+    default: 'orgs:e2e-failure-alerts-org'
   sandbox_backend:
     description: 'SANDBOX_BACKEND - set "remote" for jobs that execute workflow step bundles against a live sandbox (start-sandbox). The Docker path forwards it to the container; empty leaves step execution unconfigured. The bare-metal path already hardcodes remote.'
     required: false
@@ -144,6 +148,7 @@ runs:
         TURNKEY_ORGANIZATION_ID: ${{ inputs.turnkey_organization_id }}
         SOLANA_WALLET_PROVISIONING_ENABLED: ${{ inputs.solana_wallet_provisioning_enabled }}
         ALLOW_TEST_ENDPOINTS: ${{ inputs.allow_test_endpoints }}
+        FAILURE_ALERTS_ROLLOUT: ${{ inputs.failure_alerts_rollout }}
         LOAD_TEST_BYPASS_TOKEN: ${{ inputs.load_test_bypass_token }}
         SAFE_FETCH_SHADOW: ${{ inputs.safe_fetch_shadow }}
         SANDBOX_BACKEND: ${{ inputs.sandbox_backend }}
@@ -200,6 +205,7 @@ runs:
           -e "TURNKEY_API_PRIVATE_KEY=${TURNKEY_API_PRIVATE_KEY}" \
           -e "TURNKEY_ORGANIZATION_ID=${TURNKEY_ORGANIZATION_ID}" \
           -e "ALLOW_TEST_ENDPOINTS=${ALLOW_TEST_ENDPOINTS}" \
+          -e "FAILURE_ALERTS_ROLLOUT=${FAILURE_ALERTS_ROLLOUT}" \
           -e "LOAD_TEST_BYPASS_TOKEN=${LOAD_TEST_BYPASS_TOKEN}" \
           -e "SAFE_FETCH_SHADOW=${SAFE_FETCH_SHADOW}" \
           "${IMAGE}"
@@ -307,3 +313,4 @@ runs:
         # build-time INCLUDE_TEST_ENDPOINTS above, it lets the credential
         # rate-limit bypass honor X-Test-API-Key under NODE_ENV=production.
         ALLOW_TEST_ENDPOINTS: ${{ inputs.allow_test_endpoints }}
+        FAILURE_ALERTS_ROLLOUT: ${{ inputs.failure_alerts_rollout }}

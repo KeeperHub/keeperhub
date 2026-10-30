@@ -1,0 +1,81 @@
+import "server-only";
+
+import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { getErrorMessage } from "@/lib/utils";
+import { DELIVERY_BUDGET_MS } from "./constants";
+import {
+  checkMissedSchedules,
+  closeInactiveIncidents,
+  type EvaluationStats,
+  emptyStats,
+  evaluateQueuedWorkflows,
+  queueReminders,
+  requeueLostAlerts,
+} from "./evaluator";
+import { endExpiredOrgPauses } from "./org-pause";
+import {
+  type DrainStats,
+  drainOutbox,
+  emptyDrainStats,
+  fireBackups,
+  pruneOldRecords,
+  runHealthChecks,
+} from "./outbox";
+import { isFailureAlertsRolloutActive } from "./rollout";
+
+type CycleReport = EvaluationStats &
+  DrainStats & { durationMs: number; disabled?: boolean; errors: string[] };
+
+/** One minute of alert work; stage errors are isolated and reported so the CronJob fails. */
+export async function runFailureAlertCycle(
+  appUrl: string,
+  now: Date = new Date()
+): Promise<CycleReport> {
+  const started = Date.now();
+  const evaluation = emptyStats();
+  const drain = emptyDrainStats();
+
+  if (!isFailureAlertsRolloutActive()) {
+    return {
+      ...evaluation,
+      ...drain,
+      durationMs: 0,
+      disabled: true,
+      errors: [],
+    };
+  }
+
+  const errors: string[] = [];
+  const stage = async (name: string, run: () => Promise<void>) => {
+    try {
+      await run();
+    } catch (error) {
+      errors.push(`${name}: ${getErrorMessage(error)}`);
+      logSystemError(
+        ErrorCategory.WORKFLOW_ENGINE,
+        `[FailureAlerts] Cycle stage failed: ${name}`,
+        error
+      );
+    }
+  };
+
+  await stage("end-pauses", async () => {
+    await endExpiredOrgPauses(now);
+  });
+  await stage("evaluate", () => evaluateQueuedWorkflows(now, evaluation));
+  await stage("missed-schedules", () => checkMissedSchedules(now, evaluation));
+  await stage("close-inactive", () => closeInactiveIncidents(now, evaluation));
+  await stage("requeue-lost", () => requeueLostAlerts(now, evaluation));
+  await stage("reminders", () => queueReminders(now, evaluation));
+  const deliveryDeadline = Date.now() + DELIVERY_BUDGET_MS;
+  await stage("deliver", () => drainOutbox(appUrl, drain, deliveryDeadline));
+  await stage("backups", () => fireBackups(now, drain));
+  // Backups queued this cycle go out now rather than a minute later.
+  await stage("deliver-backups", () =>
+    drainOutbox(appUrl, drain, deliveryDeadline)
+  );
+  await stage("health", () => runHealthChecks(now, drain));
+  await stage("prune", () => pruneOldRecords(now));
+
+  return { ...evaluation, ...drain, durationMs: Date.now() - started, errors };
+}

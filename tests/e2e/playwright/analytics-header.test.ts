@@ -127,7 +127,7 @@ test.describe("Analytics header", () => {
   });
 });
 
-test.describe("Workflow Runs card on phones", () => {
+test.describe("Runs card on phones", () => {
   // Signed in as the seeded analytics user rather than the persistent one:
   // only it has more than one page of runs, so only its card shows a count.
   test.use({ storageState: { cookies: [], origins: [] } });
@@ -137,7 +137,7 @@ test.describe("Workflow Runs card on phones", () => {
   }
 
   function title(page: Page): Locator {
-    return runsTable(page).getByText("Workflow Runs", { exact: true });
+    return runsTable(page).getByText("Runs", { exact: true });
   }
 
   async function expectTitleRowWhole(page: Page, label: string): Promise<void> {

@@ -11,8 +11,10 @@ type ArrayFields = "networks" | "gasNetworks" | "transactionHashes";
 type WireRun = Omit<UnifiedRun, ArrayFields> &
   Partial<Pick<UnifiedRun, ArrayFields>>;
 
-export type WireRunsResponse = Omit<RunsResponse, "runs"> & {
+export type WireRunsResponse = Omit<RunsResponse, "runs" | "listTotal"> & {
   runs?: WireRun[];
+  /** Absent from a server that predates notification rows. */
+  listTotal?: number;
 };
 
 export function normalizeRunsResponse(
@@ -20,6 +22,7 @@ export function normalizeRunsResponse(
 ): RunsResponse {
   return {
     ...response,
+    listTotal: response.listTotal ?? response.total,
     runs: (response.runs ?? []).map((run) => ({
       ...run,
       networks: run.networks ?? [],

@@ -26,8 +26,9 @@ import {
   SLACK_POST_MESSAGE_URL,
   telegramSendMessageUrl,
 } from "@/lib/notifications/messaging-endpoints";
-import { safeFetch } from "@/lib/safe-fetch";
+import { SsrfBlockedError, safeFetch } from "@/lib/safe-fetch";
 import { getErrorMessage } from "@/lib/utils";
+import { isRetryableHttpStatus } from "@/lib/workflow/retry-policy";
 
 const REQUEST_TIMEOUT_MS = 10_000;
 
@@ -39,6 +40,10 @@ export type BackupOutcome = {
   delivered: boolean;
   channel?: BackupChannel;
   error?: string;
+  /** HTTP status of the provider's answer, when there was one. */
+  status?: number;
+  /** A retry could help (timeout, rate limit, 5xx); false for broken connections. */
+  retryable?: boolean;
 };
 
 type Credentials = Record<string, string | undefined>;
@@ -85,6 +90,8 @@ async function postDiscord(
         delivered: false,
         channel: "discord",
         error: `Discord returned HTTP ${response.status}.`,
+        status: response.status,
+        retryable: isRetryableHttpStatus(response.status),
       };
 }
 
@@ -123,6 +130,12 @@ async function postSlack(
         delivered: false,
         channel: "slack",
         error: body.error ?? `Slack returned HTTP ${response.status}.`,
+        status: response.status,
+        retryable: slackFailureIsRetryable(
+          response.ok,
+          response.status,
+          body.error
+        ),
       };
 }
 
@@ -157,7 +170,18 @@ async function postTelegram(
         delivered: false,
         channel: "telegram",
         error: `Telegram returned HTTP ${response.status}.`,
+        status: response.status,
+        retryable: isRetryableHttpStatus(response.status),
       };
+}
+
+/** Slack fails with HTTP 200 plus an error code, so read the code, not the status. */
+export function slackFailureIsRetryable(
+  httpOk: boolean,
+  status: number,
+  error: string | undefined
+): boolean {
+  return httpOk ? error === "ratelimited" : isRetryableHttpStatus(status);
 }
 
 /**
@@ -216,6 +240,8 @@ export async function sendBackupNotification(params: {
       attempted: true,
       delivered: false,
       error: `Backup notification failed: ${getErrorMessage(error)}`,
+      // Network faults may clear; an SSRF-guard refusal never will.
+      retryable: !(error instanceof SsrfBlockedError),
     };
   }
 }

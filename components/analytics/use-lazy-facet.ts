@@ -2,6 +2,7 @@
 
 import { useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useRef } from "react";
+import { useRunSources } from "@/components/analytics/use-run-sources";
 import { buildRunsQuery } from "@/lib/analytics/runs-query";
 import type { FacetDimension, RunFacets } from "@/lib/analytics/types";
 import {
@@ -31,7 +32,7 @@ export function useLazyFacet(dimension: FacetDimension): () => void {
   const setFacets = useSetAtom(analyticsFacetsAtom);
   const range = useAtomValue(analyticsRangeAtom);
   const statuses = useAtomValue(analyticsStatusFiltersAtom);
-  const sources = useAtomValue(analyticsSourceFiltersAtom);
+  const sources = useRunSources(useAtomValue(analyticsSourceFiltersAtom));
   const networks = useAtomValue(analyticsNetworkFiltersAtom);
   const gas = useAtomValue(analyticsGasFiltersAtom);
   const duration = useAtomValue(analyticsDurationFilterAtom);

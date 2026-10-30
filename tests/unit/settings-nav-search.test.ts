@@ -8,6 +8,7 @@ import {
 
 const OWNER = { isAdmin: true, isOwner: true };
 const MEMBER = { isAdmin: false, isOwner: false };
+const MEMBER_WITH_ALERTS = { ...MEMBER, alertsEnabled: true };
 
 /** Every card the query surfaced, as "Section > Card". */
 function results(query: string, access = OWNER): string[] {
@@ -67,6 +68,45 @@ describe("findSettingsMatches", () => {
     ]);
   });
 
+  it("finds Alerts by what it alerts about, for every member", () => {
+    for (const query of [
+      "alerts",
+      "failure",
+      "failing",
+      "PagerDuty",
+      "Telegram",
+      "Discord",
+      "Slack",
+      "missed run",
+      "pause",
+    ]) {
+      expect(
+        findSettingsMatches(query, MEMBER_WITH_ALERTS).map(
+          (m) => m.item.segment
+        )
+      ).toContain("alerts");
+    }
+  });
+
+  it("deep links each Alerts card, old card names included", () => {
+    expect(results("how to notify", MEMBER_WITH_ALERTS)).toEqual([
+      "Alerts > Methods",
+    ]);
+    expect(results("recent notifications", MEMBER_WITH_ALERTS)).toEqual([
+      "Alerts > Sent alerts",
+    ]);
+  });
+
+  it("hides Alerts until alerts are switched on for the org", () => {
+    for (const alertsEnabled of [false, null, undefined]) {
+      expect(
+        findSettingsMatches("alerts", { ...OWNER, alertsEnabled }).some(
+          (m) => m.item.segment === "alerts"
+        )
+      ).toBe(false);
+    }
+  });
+
   it("returns nothing for an empty or unmatched query", () => {
     expect(results("  ")).toEqual([]);
     expect(results("zzzz")).toEqual([]);
@@ -100,6 +140,15 @@ describe("isSettingsItemVisible", () => {
         isSettingsItemVisible(item(`/settings/org-1/${segment}`), OWNER)
       ).toBe(true);
     }
+  });
+
+  it("opens Alerts to every member of the organization", () => {
+    expect(
+      isSettingsItemVisible(item("/settings/org-1/alerts"), MEMBER_WITH_ALERTS)
+    ).toBe(true);
+    expect(isSettingsItemVisible(item("/settings/org-1/alerts"), MEMBER)).toBe(
+      false
+    );
   });
 
   it("tells the account security page from the organization one", () => {

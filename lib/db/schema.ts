@@ -1161,6 +1161,15 @@ export {
   workflowPublicTags,
   workflowRatings,
 } from "./schema-extensions";
+export {
+  failureAlertChannels,
+  failureAlertDeliveries,
+  failureAlertEmailUsage,
+  orgFailureAlertSettings,
+  workflowFailureAlertOverrides,
+  workflowFailureAlertQueue,
+  workflowFailureIncidents,
+} from "./schema-failure-alerts";
 export { feedback, feedbackStatus } from "./schema-feedback";
 // Internal-service HMAC secrets (versioned, encrypted at rest). See
 // lib/internal-service-auth.ts for the verifier that consumes these.

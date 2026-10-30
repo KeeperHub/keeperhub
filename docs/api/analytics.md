@@ -155,7 +155,7 @@ Same as the summary endpoint, including `projectId`: it excludes direct executio
 GET /api/analytics/runs
 ```
 
-Returns a unified list of both workflow executions and direct executions with pagination.
+Returns a unified list of workflow executions and direct executions with pagination. Pass `source=notification` (alone or with the other sources) to list system notifications as well; they are never included otherwise. A system notification is one failure notification KeeperHub sent the organization (an alert, reminder, recovery notice or channel notice) on one channel to one recipient. System notifications are listed but never counted: the summary, time series, network breakdown, filter counts and the `total` below count runs alone.
 
 ### Query Parameters
 
@@ -165,16 +165,16 @@ Returns a unified list of both workflow executions and direct executions with pa
 | `customStart` | string | ISO timestamp for custom range start |
 | `customEnd` | string | ISO timestamp for custom range end |
 | `status` | string | Filter by status. Repeatable. One of `pending`, `running`, `success`, `error`, `system_error`, `external_error`, `skipped`, `cancelled` |
-| `source` | string | Filter by source: `workflow`, `direct`. Repeatable |
-| `network` | string | Restrict to these networks. Repeatable |
-| `gas` | string | How the run's gas was paid: `sponsored`, `wallet` or `free`. Repeatable. Any other value is dropped rather than refused, so `?gas=8453` returns the unfiltered list with no error: filter by chain with `network` above |
-| `durationMin` | number | Only runs at or above this duration, in milliseconds |
-| `durationMax` | number | Only runs strictly below this duration, in milliseconds. The bound is exclusive: a run of exactly this duration is not returned |
-| `search` | string | Match on the run id and the workflow name for workflow runs, and the run id, type and network for direct runs. No column holding an error message is searched, so searching an error string returns an empty page. Truncated to 128 characters |
+| `source` | string | Filter by source: `workflow`, `direct`, `notification`. Repeatable. Omitted, workflow and direct executions are listed and system notifications are not |
+| `network` | string | Restrict to these networks. Repeatable. System notifications have no network, so any value excludes them |
+| `gas` | string | How the run's gas was paid: `sponsored`, `wallet` or `free`. Repeatable. Any other value is dropped rather than refused, so `?gas=8453` returns the unfiltered list with no error: filter by chain with `network` above. Any accepted value excludes system notifications |
+| `durationMin` | number | Only runs at or above this duration, in milliseconds. Excludes system notifications |
+| `durationMax` | number | Only runs strictly below this duration, in milliseconds. The bound is exclusive: a run of exactly this duration is not returned. Excludes system notifications |
+| `search` | string | Match on the run id and the workflow name for workflow runs, the run id, type and network for direct runs, and the id, recipient and workflow name for system notifications. No column holding an error message is searched, so searching an error string returns an empty page. Truncated to 128 characters |
 | `limit` | number | Results per page (default: 50, capped at 100: a larger value is clamped rather than rejected) |
 | `cursor` | string | Pagination cursor from previous response |
 | `page` | number | One-based page number, an alternative to `cursor`. A value below 1, or one that is not a whole number, is ignored and the first page is served. A value above 200 is clamped to 200, so paging reaches the first 200 pages and further rows are reachable only with `cursor` |
-| `projectId` | string | Restrict the listing to one workflow project. Direct executions are excluded rather than filtered |
+| `projectId` | string | Restrict the listing to one workflow project. Direct executions are excluded rather than filtered. A system notification is kept when it is about a workflow in the project (for a message covering several workflows, any one of them); a notice about no workflow is excluded |
 
 ### Response
 
@@ -218,6 +218,7 @@ Returns a unified list of both workflow executions and direct executions with pa
   ],
   "nextCursor": null,
   "total": 1250,
+  "listTotal": 1262,
   "page": 1,
   "pageSize": 50,
   "stepLogRetentionCutoff": "2024-01-01T00:00:00Z"
@@ -258,6 +259,65 @@ the execution's single `transaction_hash`, with `nodeId: "direct"` and
 rather than on the sentinel strings. The verification the direct execution
 recorded lives in that execution's own receipts, which this endpoint does not
 read.
+
+`total` is the number of runs (workflow and direct executions) matching the
+filters; system notifications are not part of it. `listTotal` is the number of
+rows the listing pages through, system notifications included. Use `listTotal`
+to work out how many pages there are, and `total` wherever a count of runs is
+shown. The two are equal when no system notification matches.
+
+`nextCursor` is opaque: pass it back unchanged as `cursor`.
+
+### System notifications
+
+A row with `source: "notification"` is one failure notification. It shares the
+run fields above, read as follows:
+
+- `startedAt` is when the notification was queued. `completedAt` is when it was
+  delivered, or when KeeperHub stopped trying (failed, monthly email limit
+  reached, or withdrawn); it is `null` while delivery is still in progress.
+  `durationMs` is always `null`.
+- `status` is `success` once delivered, `error` when delivery failed,
+  `skipped` when the monthly email limit stopped it, `pending` while queued,
+  `running` while sending or retrying, and `cancelled` when it was withdrawn
+  before it went out (for example because the workflow recovered first).
+- `workflowId` and `workflowName` are set when the notification is about exactly
+  one workflow, and `null` otherwise.
+- Network, gas, step and error fields are always empty.
+
+The `notification` object, present only on these rows, carries the rest:
+
+```json
+{
+  "notification": {
+    "title": "Alert: Monitor ETH Balance",
+    "kind": "alert",
+    "state": "delivered",
+    "channel": "slack",
+    "recipient": "#ops",
+    "connectionName": "Ops workspace",
+    "isBackup": false,
+    "attempts": 1,
+    "lastError": null,
+    "note": null,
+    "workflows": [{ "id": "y3y0xneior3njl90uoyih", "name": "Monitor ETH Balance" }]
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `title` | A readable name: the kind and the workflow (`Alert: Monitor ETH Balance`), the number of workflows for a message that covers several (`Alert: 3 workflows`), or the kind alone for a notice about no workflow |
+| `kind` | `alert`, `reminder`, `recovery`, `channel_paused` (a channel stopped working), `launch_notice` (failure notifications were turned on), `alerts_paused` or `alerts_resumed` |
+| `state` | The delivery state behind `status`: `pending`, `sending`, `delivered`, `retrying`, `failed`, `capped` (monthly email limit) or `skipped` (withdrawn) |
+| `channel` | `email`, `slack`, `discord`, `telegram` or `pagerduty` |
+| `recipient` | The email address, or the channel's destination |
+| `connectionName` | The connection a chat or PagerDuty channel sends through; `null` for email |
+| `isBackup` | `true` when sent because another channel could not deliver |
+| `attempts` | How many times delivery was tried |
+| `lastError` | Why the last attempt failed, or why it was not sent |
+| `note` | Which channel a `channel_paused` notice is about, or why a backup was sent |
+| `workflows` | Every workflow the notification is about; empty for a notice about no workflow |
 
 An empty array means the run produced no on-chain write, or finalized before the
 column was backfilled.

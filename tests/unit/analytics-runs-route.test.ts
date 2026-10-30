@@ -34,6 +34,7 @@ vi.mock("@/lib/analytics/queries", () => ({
 
 import { GET } from "@/app/api/analytics/runs/route";
 import { getUnifiedRuns } from "@/lib/analytics/queries";
+import { encodeRunCursor } from "@/lib/analytics/run-cursor";
 import { MAX_RUN_LIMIT } from "@/lib/analytics/runs-query";
 
 function oauthRequest(status: string): NextRequest {
@@ -119,6 +120,47 @@ describe("GET /api/analytics/runs status filter", () => {
         statuses: ["error", "external_error", "system_error"],
       })
     );
+  });
+});
+
+describe("GET /api/analytics/runs source filter", () => {
+  function sourceRequest(...sources: string[]): NextRequest {
+    const params = new URLSearchParams();
+    for (const source of sources) {
+      params.append("source", source);
+    }
+    return {
+      method: "GET",
+      headers: new Headers({ Authorization: "Bearer fake-jwt" }),
+      nextUrl: { searchParams: params },
+    } as unknown as NextRequest;
+  }
+
+  it("forwards the notification source so the list can show only notifications", async () => {
+    await GET(sourceRequest("notification"));
+
+    expect(getUnifiedRuns).toHaveBeenCalledWith(
+      "org_from_jwt",
+      expect.anything(),
+      expect.objectContaining({ sources: ["notification"] })
+    );
+  });
+
+  it("forwards notifications alongside the run sources", async () => {
+    await GET(sourceRequest("workflow", "notification"));
+
+    expect(getUnifiedRuns).toHaveBeenCalledWith(
+      "org_from_jwt",
+      expect.anything(),
+      expect.objectContaining({ sources: ["workflow", "notification"] })
+    );
+  });
+
+  it("sends no source when none is asked for, which leaves notifications out", async () => {
+    await GET(sourceRequest());
+
+    const [, , options] = vi.mocked(getUnifiedRuns).mock.calls[0] ?? [];
+    expect(options?.sources).toBeUndefined();
   });
 });
 
@@ -324,6 +366,21 @@ describe("GET /api/analytics/runs pagination parsing", () => {
     const options = await optionsFor({ cursor });
 
     expect(options?.cursor).toBe(cursor);
+  });
+
+  it("forwards the keyset cursor the listing now mints, and no look-alike", async () => {
+    const minted = encodeRunCursor({
+      at: "2026-09-01T12:34:56.789123",
+      source: "notification",
+      id: "delivery_1",
+    });
+    expect((await optionsFor({ cursor: minted }))?.cursor).toBe(minted);
+
+    const forged = Buffer.from(
+      "2026-09-01T12:34:56.789123~notification~x'; DROP",
+      "utf8"
+    ).toString("base64url");
+    expect((await optionsFor({ cursor: forged }))?.cursor).toBeUndefined();
   });
 
   it("keeps every forwarded cursor inside the range Postgres holds", async () => {
