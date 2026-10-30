@@ -1652,7 +1652,9 @@ function ToolbarActions({
       {/* Configuration, and Delete when something is selected - below lg */}
       <Button
         className="border hover:bg-black/5 lg:hidden dark:hover:bg-white/5"
-        onClick={() => openOverlay(ConfigurationOverlay, {})}
+        onClick={() =>
+          openOverlay(ConfigurationOverlay, {}, { title: "Configuration" })
+        }
         size="icon"
         title="Configuration"
         variant="secondary"

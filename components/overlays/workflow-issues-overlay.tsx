@@ -89,7 +89,7 @@ export function WorkflowIssuesOverlay({
     // On mobile, push ConfigurationOverlay on top so back button returns here
     // On desktop, close all overlays since the sidebar shows the config
     if (isMobile) {
-      push(ConfigurationOverlay, {});
+      push(ConfigurationOverlay, {}, { title: "Configuration" });
     } else {
       closeAll();
     }

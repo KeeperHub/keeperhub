@@ -19,6 +19,14 @@ import type {
 
 const OverlayContext = createContext<OverlayContextValue | null>(null);
 
+type OverlayActions = Pick<
+  OverlayContextValue,
+  "open" | "push" | "pop" | "replace" | "closeAll" | "close"
+>;
+
+// The actions alone never change, so their readers skip stack updates.
+const OverlayActionsContext = createContext<OverlayActions | null>(null);
+
 // Separate context for frozen stack (used during exit animations)
 const FrozenStackContext = createContext<OverlayStackItem[]>([]);
 
@@ -185,11 +193,18 @@ export function OverlayProvider({ children }: OverlayProviderProps) {
     [stack, open, push, pop, replace, closeAll, close]
   );
 
+  const actions = useMemo<OverlayActions>(
+    () => ({ open, push, pop, replace, closeAll, close }),
+    [open, push, pop, replace, closeAll, close]
+  );
+
   return (
     <OverlayContext.Provider value={value}>
-      <FrozenStackContext.Provider value={frozenStackRef.current}>
-        {children}
-      </FrozenStackContext.Provider>
+      <OverlayActionsContext.Provider value={actions}>
+        <FrozenStackContext.Provider value={frozenStackRef.current}>
+          {children}
+        </FrozenStackContext.Provider>
+      </OverlayActionsContext.Provider>
     </OverlayContext.Provider>
   );
 }
@@ -202,6 +217,18 @@ export function useOverlay(): OverlayContextValue {
   const context = useContext(OverlayContext);
   if (!context) {
     throw new Error("useOverlay must be used within an OverlayProvider");
+  }
+  return context;
+}
+
+/**
+ * The overlay actions without the stack, for components that open overlays
+ * but do not render from the stack (they do not re-render when it changes).
+ */
+export function useOverlayActions(): OverlayActions {
+  const context = useContext(OverlayActionsContext);
+  if (!context) {
+    throw new Error("useOverlayActions must be used within an OverlayProvider");
   }
   return context;
 }

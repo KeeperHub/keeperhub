@@ -104,7 +104,7 @@ export function AddStepButton({
   }, [outgoingEdges, nodes, sourceNode]);
 
   const handleClick = useCallback(
-    (event: React.MouseEvent) => {
+    (event: React.MouseEvent<HTMLButtonElement>) => {
       event.stopPropagation();
       if (!sourceNode) {
         return;
@@ -144,6 +144,8 @@ export function AddStepButton({
       addNode(newNode);
       setActiveTab("properties");
       showStepSettings(newNode);
+      // Focus left here sits in the source step, where Escape would select it
+      event.currentTarget.blur();
 
       setTimeout(() => {
         setNodes((currentNodes) =>

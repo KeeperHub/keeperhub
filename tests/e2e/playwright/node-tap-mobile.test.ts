@@ -10,6 +10,8 @@ import { waitForCanvas } from "./utils/workflow";
 
 const PHONE = { width: 390, height: 844 };
 const TABLET = { width: 768, height: 1024 };
+// Above any sheet (they stop at 90vh), on the backdrop.
+const BACKDROP = { x: PHONE.width / 2, y: 40 };
 const NEW_STEP = '.react-flow__node-action.selected:not([data-id="action-1"])';
 
 test.use({ hasTouch: true });
@@ -36,7 +38,7 @@ async function openWorkflow(
 
 // Scoped to the sheet: the hidden side panel has its own #label and picker.
 function sheet(page: Page): Locator {
-  return page.getByRole("dialog", { name: "Step settings" });
+  return page.getByRole("dialog", { name: "Configuration" });
 }
 
 // The Configuration sheet, found by its Close button (a drawer on phones).
@@ -70,6 +72,7 @@ async function touchDrag(
     type: "touchEnd",
     touchPoints: [],
   });
+  await cdp.detach();
 }
 
 test.describe("Tapping a step opens its settings", () => {
@@ -105,12 +108,15 @@ test.describe("Tapping a step opens its settings", () => {
         y: trigger.y + trigger.height / 2,
       };
       await page.touchscreen.tap(point.x, point.y);
-      await expect(sheet(page)).toBeVisible();
-      // The trigger's sheet is short, so the second tap lands on the backdrop.
-      expect((await box(sheet(page))).y).toBeGreaterThan(point.y);
-      await page.touchscreen.tap(point.x, point.y);
+      // waitFor resolves as the sheet appears; expect's retries could be late.
+      await sheet(page).waitFor();
+      // The second tap lands on the backdrop of a sheet that just opened.
+      await page.touchscreen.tap(BACKDROP.x, BACKDROP.y);
       await page.waitForTimeout(600);
       await expect(sheet(page).locator("#label")).toHaveValue("Manual Trigger");
+      // Later, the same tap does close it.
+      await page.touchscreen.tap(BACKDROP.x, BACKDROP.y);
+      await expect(sheet(page)).toBeHidden();
     } finally {
       await deleteTestWorkflow(id);
     }
@@ -129,7 +135,7 @@ test.describe("Tapping a step opens its settings", () => {
 });
 
 test.describe("Adding a step on a phone opens its action picker", () => {
-  test("from the + beside a step, with the new step in view", async ({
+  test("from the + beside a step, centred for when the sheet closes", async ({
     page,
   }) => {
     const id = await openWorkflow(page, PHONE);
@@ -140,10 +146,17 @@ test.describe("Adding a step on a phone opens its action picker", () => {
         .tap();
       await expect(sheet(page).getByTestId("action-grid")).toBeVisible();
       await expect(page.locator(NEW_STEP)).toHaveCount(1);
+      await sheetClose(page).tap();
+      await expect(sheetClose(page)).toHaveCount(0);
       await expect
         .poll(async () => {
           const step = await box(page.locator(NEW_STEP));
-          return step.x >= 0 && step.x + step.width <= PHONE.width;
+          return (
+            step.x >= 0 &&
+            step.x + step.width <= PHONE.width &&
+            step.y >= 0 &&
+            step.y + step.height <= PHONE.height
+          );
         })
         .toBe(true);
     } finally {

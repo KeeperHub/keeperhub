@@ -566,13 +566,19 @@ export function WorkflowCanvas() {
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
       setSelectedNode(node.id);
-      // Don't auto-open sidebar during workflow switch; a phone's sheet only
-      // ever opens from the user's own tap
-      if (isMobile || !isLoadingWorkflow.current) {
+      if (isMobile) {
+        // The sheet opens on the tapped step, whatever tab it was left on,
+        // and even right after a load (the tap is the only way to open it)
+        setActiveTab("properties");
+        showStepSettings();
+        return;
+      }
+      // Don't auto-open sidebar during workflow switch
+      if (!isLoadingWorkflow.current) {
         showStepSettings();
       }
     },
-    [setSelectedNode, isMobile, showStepSettings]
+    [setSelectedNode, isMobile, setActiveTab, showStepSettings]
   );
 
   // Open node details from any tab

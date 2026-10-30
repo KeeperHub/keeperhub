@@ -445,7 +445,7 @@ function MobileOverlayContainer() {
             "fixed inset-x-0 bottom-0 z-50 flex max-h-[90vh] flex-col",
             "rounded-t-2xl border-t bg-background shadow-2xl"
           )}
-          // A double tap that opened the sheet lands its second tap on the
+          // Any sheet opened by a double tap gets its second tap on the
           // backdrop: that is not a request to close it.
           onPointerDownOutside={(event) => {
             if (performance.now() - openedAtRef.current < DOUBLE_TAP_MS) {

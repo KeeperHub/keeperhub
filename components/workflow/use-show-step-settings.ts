@@ -5,12 +5,11 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { usePathname } from "next/navigation";
 import { useCallback } from "react";
 import { ConfigurationOverlay } from "@/components/overlays/configuration-overlay";
-import { useOverlay } from "@/components/overlays/overlay-provider";
+import { useOverlayActions } from "@/components/overlays/overlay-provider";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   isPanelAnimatingAtom,
   isSidebarCollapsedAtom,
-  propertiesPanelActiveTabAtom,
   type WorkflowNode,
 } from "@/lib/workflow/store";
 
@@ -20,18 +19,16 @@ const STEP_SIZE = 192;
 /**
  * Shows the selected step's settings: the side panel from md up, the
  * Configuration sheet on phones, which have no side panel. Pass a step that
- * was just added to bring it into view on a phone.
+ * was just added to centre it, so it is in view once the sheet is closed.
  */
 export function useShowStepSettings(): (newStep?: WorkflowNode) => void {
   const isMobile = useIsMobile();
   const pathname = usePathname();
-  const { open, stack } = useOverlay();
+  const { open } = useOverlayActions();
   const { getZoom, setCenter } = useReactFlow();
-  const setActiveTab = useSetAtom(propertiesPanelActiveTabAtom);
   const isSidebarCollapsed = useAtomValue(isSidebarCollapsedAtom);
   const setSidebarCollapsed = useSetAtom(isSidebarCollapsedAtom);
   const setIsPanelAnimating = useSetAtom(isPanelAnimatingAtom);
-  const sheetOpen = stack.at(-1)?.component === ConfigurationOverlay;
 
   return useCallback(
     (newStep?: WorkflowNode) => {
@@ -54,13 +51,7 @@ export function useShowStepSettings(): (newStep?: WorkflowNode) => void {
           { zoom: getZoom(), duration: 300 }
         );
       }
-      // Unlike the side panel, the sheet is not already showing a tab the
-      // user chose, so it opens on the step itself.
-      setActiveTab("properties");
-      // Already open (a double tap): it follows the selection by itself.
-      if (!sheetOpen) {
-        open(ConfigurationOverlay, {}, { title: "Step settings" });
-      }
+      open(ConfigurationOverlay, {}, { title: "Configuration" });
     },
     [
       isMobile,
@@ -70,8 +61,6 @@ export function useShowStepSettings(): (newStep?: WorkflowNode) => void {
       pathname,
       setCenter,
       getZoom,
-      setActiveTab,
-      sheetOpen,
       open,
     ]
   );
