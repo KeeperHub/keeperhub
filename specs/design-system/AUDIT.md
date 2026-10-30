@@ -145,7 +145,6 @@ All other radius values use Tailwind classes (`rounded-md`, `rounded-lg`, `round
 |---|---|---|
 | navigation-sidebar.tsx | `z-40` | Sidebar overlay (2x) |
 | flyout-panel.tsx | `z-30` | Flyout panel (2x) |
-| mobile-warning-dialog.tsx | `z-50` | Mobile dialog |
 | hub/hub-hero.tsx | `-z-10` | Background layer |
 | workflows/page.tsx | `z-20` | Workflow controls |
 
