@@ -90,10 +90,10 @@ export const test = base.extend<{
     },
     { auto: true },
   ],
-  // The first-run "Get started" launcher auto-expands into a card wider than
-  // the sidebar, so it overhangs the canvas and intercepts clicks on workflow
-  // nodes. Every browser context is first-run, so it would expand in every
-  // test. Suppressed by default via a cookie the app checks
+  // The first-run "Getting started" launcher auto-expands into a card wider
+  // than the sidebar, so it overhangs the canvas and intercepts clicks on
+  // workflow nodes. Every browser context is first-run, so it would expand in
+  // every test. Suppressed by default via a cookie the app checks
   // (lib/onboarding/tours-disabled.ts); getting-started.test.ts opts back in
   // with `test.use({ disableGettingStarted: false })`.
   disableGettingStarted: [true, { option: true }],

@@ -2,7 +2,7 @@ import { Bot, LineChart, Sprout } from "lucide-react";
 import type { ComponentType } from "react";
 
 /**
- * Config for the first-run "Get started" launcher (KEEP-878). Three goal
+ * Config for the first-run "Getting started" launcher (KEEP-878). Three goal
  * branches, each an ordered path to first value. The launcher UI renders purely
  * from this config + the named completion signals resolved in
  * `lib/hooks/use-getting-started.ts`.
