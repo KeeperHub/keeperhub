@@ -22,6 +22,7 @@ import {
   selectedNodeAtom,
   type WorkflowNode,
 } from "@/lib/workflow/store";
+import { useShowStepSettings } from "./use-show-step-settings";
 
 export type ContextMenuType = "node" | "edge" | "pane" | null;
 
@@ -49,6 +50,7 @@ export function WorkflowContextMenu({
   const setSelectedNode = useSetAtom(selectedNodeAtom);
   const setActiveTab = useSetAtom(propertiesPanelActiveTabAtom);
   const { open: openOverlay } = useOverlay();
+  const showStepSettings = useShowStepSettings();
   const router = useRouter();
   const { data: session } = useSession();
   const isAnonymous = isAnonymousUser(session?.user);
@@ -125,9 +127,17 @@ export function WorkflowContextMenu({
       addNode(newNode);
       setSelectedNode(newNode.id);
       setActiveTab("properties");
+      showStepSettings(newNode);
     }
     onClose();
-  }, [menuState, addNode, setSelectedNode, setActiveTab, onClose]);
+  }, [
+    menuState,
+    addNode,
+    setSelectedNode,
+    setActiveTab,
+    showStepSettings,
+    onClose,
+  ]);
 
   // Close menu when clicking outside
   useEffect(() => {

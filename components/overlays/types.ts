@@ -108,6 +108,8 @@ export type OverlayContextValue = {
   closeAll: () => void;
   /** Close a specific overlay by ID */
   close: (id: string) => void;
+  /** Whether this component is the overlay on top of the stack */
+  isOpen: <P>(component: ComponentType<OverlayComponentProps<P>>) => boolean;
   /** Check if there are overlays in the stack */
   hasOverlays: boolean;
   /** Get the depth of the current overlay (0 = first, 1+ = pushed) */
@@ -161,3 +163,11 @@ export type OverlayFooterProps = {
   /** Children to render (alternative to actions) */
   children?: ReactNode;
 };
+
+/**
+ * The overlay actions alone, exposed by useOverlayActions()
+ */
+export type OverlayActions = Pick<
+  OverlayContextValue,
+  "open" | "push" | "pop" | "replace" | "closeAll" | "close" | "isOpen"
+>;

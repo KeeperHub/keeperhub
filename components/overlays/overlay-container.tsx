@@ -7,7 +7,13 @@ import {
   motion,
   useReducedMotion,
 } from "motion/react";
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { Drawer as DrawerPrimitive } from "vaul";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -323,6 +329,115 @@ function DesktopOverlayContainer() {
   );
 }
 
+// Presses on and around a phone sheet are ignored this long after it opens,
+// so the second tap of a double tap that opened it neither closes it nor
+// presses a control the sheet slid under the finger.
+const OPEN_PRESS_GRACE_MS = 400;
+
+type OutsidePress = CustomEvent<{ originalEvent: PointerEvent }>;
+
+/**
+ * The phone sheet's grace after opening. `sheetRef` and `start` begin it (on
+ * mount, its first frame, and a reopen during the close animation); the
+ * capture handlers drop presses on the sheet within it, and
+ * `onPointerDownOutside` those around it. The sheet carries `data-settling`
+ * for its length.
+ */
+function useOpenPressGrace(): {
+  start: () => void;
+  sheetRef: (node: HTMLDivElement | null) => void;
+  onPointerDownCapture: (event: React.PointerEvent) => void;
+  onClickCapture: (event: React.MouseEvent) => void;
+  onPointerDownOutside: (event: OutsidePress) => void;
+} {
+  const openedAtRef = useRef(0);
+  const swallowClickRef = useRef(false);
+  const sheetNodeRef = useRef<HTMLDivElement | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const start = useCallback(() => {
+    openedAtRef.current = performance.now();
+    sheetNodeRef.current?.setAttribute("data-settling", "");
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+    }
+    timerRef.current = setTimeout(
+      () => sheetNodeRef.current?.removeAttribute("data-settling"),
+      OPEN_PRESS_GRACE_MS
+    );
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    },
+    []
+  );
+
+  // Capped at now, should a browser stamp events on another clock.
+  const inGrace = useCallback(
+    (timeStamp: number) =>
+      Math.min(timeStamp, performance.now()) - openedAtRef.current <
+      OPEN_PRESS_GRACE_MS,
+    []
+  );
+
+  // Vaul mounts the sheet a render after opening, so its grace starts here,
+  // and again on its first frame: a slow render must not use the grace up.
+  const sheetRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      sheetNodeRef.current = node;
+      if (node) {
+        start();
+        requestAnimationFrame(start);
+      }
+    },
+    [start]
+  );
+
+  // A press on the sheet in its grace neither focuses nor opens anything
+  // (Radix skips prevented presses), and its click is dropped. It still
+  // reaches Vaul, so a swipe that starts in the grace can move the sheet.
+  const onPointerDownCapture = useCallback(
+    (event: React.PointerEvent) => {
+      swallowClickRef.current = inGrace(event.timeStamp);
+      if (swallowClickRef.current) {
+        event.preventDefault();
+      }
+    },
+    [inGrace]
+  );
+
+  // Keyboard clicks (detail 0) are never a dropped press's click.
+  const onClickCapture = useCallback((event: React.MouseEvent) => {
+    if (swallowClickRef.current && event.detail > 0) {
+      swallowClickRef.current = false;
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, []);
+
+  // Radix reports a press on the click after it, so this times the press.
+  const onPointerDownOutside = useCallback(
+    (event: OutsidePress) => {
+      if (inGrace(event.detail.originalEvent.timeStamp)) {
+        event.preventDefault();
+      }
+    },
+    [inGrace]
+  );
+
+  return {
+    start,
+    sheetRef,
+    onPointerDownCapture,
+    onClickCapture,
+    onPointerDownOutside,
+  };
+}
+
 /**
  * Mobile drawer container with internal sliding content
  * Renders all stack items persistently in the same React tree location,
@@ -336,6 +451,7 @@ function MobileOverlayContainer() {
   // State, not a ref: Vaul mounts the sheet a render after it opens.
   const [sheet, setSheet] = useState<HTMLDivElement | null>(null);
   const wasOpenRef = useRef(false);
+  const grace = useOpenPressGrace();
   const frozenStackRef = useRef(stack);
   const direction = useStackDirection(stack.length);
 
@@ -362,6 +478,7 @@ function MobileOverlayContainer() {
     const reopenedFullScreen = isFreshOpen && expandedRef.current;
     if (isFreshOpen) {
       setMinHeight(0);
+      grace.start();
       // Reset here, not on close, so the exit slides out at full screen.
       setExpanded(false);
     }
@@ -454,6 +571,10 @@ function MobileOverlayContainer() {
             expanded ? "rounded-none border-t-0" : "rounded-t-2xl"
           )}
           data-testid="overlay-sheet"
+          onClickCapture={grace.onClickCapture}
+          onPointerDownCapture={grace.onPointerDownCapture}
+          onPointerDownOutside={grace.onPointerDownOutside}
+          ref={grace.sheetRef}
         >
           {/* Accessible title for screen readers */}
           <DrawerPrimitive.Title className="sr-only">
