@@ -82,24 +82,23 @@ async function openConnections(
   return { sheet, handle: page.getByTestId("overlay-sheet-handle") };
 }
 
-// Raw touch events: Playwright's touchscreen only taps.
-async function swipe(
-  page: Page,
-  x: number,
-  fromY: number,
-  toY: number
-): Promise<void> {
+// Raw touch events: Playwright's touchscreen only taps. One finger through
+// each y in turn, then lifted.
+async function swipe(page: Page, x: number, ...ys: number[]): Promise<void> {
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Input.dispatchTouchEvent", {
     type: "touchStart",
-    touchPoints: [{ x, y: fromY }],
+    touchPoints: [{ x, y: ys[0] ?? 0 }],
   });
   const steps = 8;
-  for (let i = 1; i <= steps; i++) {
-    await cdp.send("Input.dispatchTouchEvent", {
-      type: "touchMove",
-      touchPoints: [{ x, y: fromY + ((toY - fromY) * i) / steps }],
-    });
+  for (const [index, toY] of ys.slice(1).entries()) {
+    const fromY = ys[index] ?? toY;
+    for (let i = 1; i <= steps; i++) {
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchMove",
+        touchPoints: [{ x, y: fromY + ((toY - fromY) * i) / steps }],
+      });
+    }
   }
   await cdp.send("Input.dispatchTouchEvent", {
     type: "touchEnd",
@@ -108,13 +107,25 @@ async function swipe(
   await cdp.detach();
 }
 
+// Stands in for an on-screen keyboard covering the bottom of the page: what
+// the browser reports through visualViewport, which the sheet sizes from.
+async function fakeKeyboard(page: Page, covered: number): Promise<void> {
+  await page.evaluate((height) => {
+    const viewport = window.visualViewport;
+    if (!viewport) {
+      return;
+    }
+    Object.defineProperty(viewport, "height", {
+      configurable: true,
+      get: () => window.innerHeight - height,
+    });
+    viewport.dispatchEvent(new Event("resize"));
+  }, covered);
+}
+
 // The element the connection list scrolls in: how far it is scrolled, its box
-// rules, and whether the filter above the list scrolls with it. With
-// `momentumTicks`, two wheel ticks go either side of a jump back to the top.
-function listScroller(
-  sheet: Locator,
-  momentumTicks = false
-): Promise<{
+// rules, and whether the filter above the list scrolls with it.
+function listScroller(sheet: Locator): Promise<{
   scrollTop: number;
   maxHeight: string;
   overflowY: string;
@@ -122,21 +133,10 @@ function listScroller(
 }> {
   return sheet
     .getByText("Sheet connection 1", { exact: true })
-    .evaluate((element, ticks) => {
+    .evaluate((element) => {
       let node: Element | null = element;
       while (node && node.scrollHeight <= node.clientHeight) {
         node = node.parentElement;
-      }
-      if (ticks) {
-        const tick = (): boolean =>
-          element.dispatchEvent(
-            new WheelEvent("wheel", { bubbles: true, deltaY: -100 })
-          );
-        tick();
-        if (node) {
-          node.scrollTop = 0;
-        }
-        tick();
       }
       const style = node ? getComputedStyle(node) : null;
       return {
@@ -145,7 +145,7 @@ function listScroller(
         overflowY: style?.overflowY ?? "",
         holdsFilter: Boolean(node?.querySelector("input")),
       };
-    }, momentumTicks);
+    });
 }
 
 async function contentScroll(sheet: Locator): Promise<number> {
@@ -210,8 +210,10 @@ test.describe("Overlay sheet on touch phones", () => {
     // The list scrolls with the sheet's content, not in a box of its own.
     expect((await listScroller(sheet)).holdsFilter).toBe(true);
 
+    // One gesture up (full screen) and back down past where it started only
+    // switches to full screen; it does not close the sheet.
     const title = await box(sheet.getByText("Connections", { exact: true }));
-    await swipe(page, x, title.y + 10, title.y - 90);
+    await swipe(page, x, title.y + 10, title.y - 30, title.y + 250);
     await expectFullScreen(page, sheet, handle);
 
     // Full screen, the list scrolls inside the sheet.
@@ -244,6 +246,38 @@ test.describe("Overlay sheet on touch phones", () => {
     await handle.click();
     await expectFullScreen(page, sheet, handle);
   });
+
+  test("an on-screen keyboard leaves the actions above it", async ({
+    page,
+  }) => {
+    const { sheet, handle } = await openConnections(page, PHONE);
+    const done = sheet.getByRole("button", { name: "Done" });
+    const keyboard = 300;
+    const visible = PHONE.height - keyboard;
+    await sheet.getByPlaceholder("Filter connections...").focus();
+    await fakeKeyboard(page, keyboard);
+
+    // At its own height the long list shrinks to fit; it does not push the
+    // actions under the keyboard.
+    await expect(async () => {
+      const doneBox = await box(done);
+      expect(doneBox.y + doneBox.height).toBeLessThanOrEqual(visible);
+      expect((await box(sheet)).y).toBeGreaterThanOrEqual(0);
+    }).toPass({ timeout: 5000 });
+
+    await handle.click();
+    await expect(handle).toHaveAttribute("aria-pressed", "true");
+    await expect(async () => {
+      const sheetBox = await box(sheet);
+      expect(Math.round(sheetBox.y)).toBe(0);
+      expect(Math.round(sheetBox.y + sheetBox.height)).toBe(visible);
+      const doneBox = await box(done);
+      expect(doneBox.y + doneBox.height).toBeLessThanOrEqual(visible);
+    }).toPass({ timeout: 5000 });
+
+    await fakeKeyboard(page, 0);
+    await expectFullScreen(page, sheet, handle);
+  });
 });
 
 test.describe("Overlay sheet with a mouse", () => {
@@ -261,10 +295,26 @@ test.describe("Overlay sheet with a mouse", () => {
 
     await page.mouse.wheel(0, 400);
     await expect.poll(() => contentScroll(sheet)).toBeGreaterThan(0);
-    // A wheel tick right after one that scrolled back to the top (trackpad
-    // momentum) does not collapse; one after a pause does. Dispatched in one
-    // go so the gap between them is well under the pause.
-    expect((await listScroller(sheet, true)).scrollTop).toBe(0);
+    // Trackpad momentum: wheel-up ticks 50ms apart keep coming for most of a
+    // second after the list is back at its top. None of them collapse.
+    await sheet
+      .getByText("Sheet connection 1", { exact: true })
+      .evaluate(async (element) => {
+        let scroller: Element | null = element;
+        while (scroller && scroller.scrollHeight <= scroller.clientHeight) {
+          scroller = scroller.parentElement;
+        }
+        for (let tick = 0; tick < 20; tick++) {
+          element.dispatchEvent(
+            new WheelEvent("wheel", { bubbles: true, deltaY: -40 })
+          );
+          if (scroller) {
+            scroller.scrollTop = Math.max(0, scroller.scrollTop - 150);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      });
+    expect(await contentScroll(sheet)).toBe(0);
     await expect(handle).toHaveAttribute("aria-pressed", "true");
 
     // Just past the 300ms pause the guard waits for.

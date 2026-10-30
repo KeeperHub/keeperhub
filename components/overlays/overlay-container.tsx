@@ -340,10 +340,7 @@ function MobileOverlayContainer() {
   const direction = useStackDirection(stack.length);
 
   const isOpen = stack.length > 0;
-  const [expanded, setExpanded] = useState(false);
-  const expandedRef = useRef(expanded);
-  expandedRef.current = expanded;
-  useSheetExpand(sheet, expandedRef, setExpanded);
+  const [expanded, setExpanded, expandedRef] = useSheetExpand(sheet);
   useSheetViewport(sheet?.parentElement ?? null);
 
   // Freeze the stack when open so content doesn't shift during exit animation
@@ -362,14 +359,16 @@ function MobileOverlayContainer() {
     wasOpenRef.current = isOpen;
 
     // Reset minHeight on fresh open (not during push/pop)
+    const reopenedFullScreen = isFreshOpen && expandedRef.current;
     if (isFreshOpen) {
       setMinHeight(0);
       // Reset here, not on close, so the exit slides out at full screen.
-      expandedRef.current = false;
       setExpanded(false);
     }
 
-    if (contentRef.current && !expandedRef.current) {
+    // Reopened before the exit ended, the content still has its full screen
+    // size; the ResizeObserver measures it once it is back to its own.
+    if (contentRef.current && !expandedRef.current && !reopenedFullScreen) {
       const height = contentRef.current.offsetHeight;
       if (height > 0) {
         setMinHeight(height);
@@ -379,6 +378,7 @@ function MobileOverlayContainer() {
 
   // Track content size so the drawer can shrink when the active view gets
   // shorter (e.g. switching tabs).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: expandedRef is a ref, read when the observer fires
   useLayoutEffect(() => {
     if (!(isOpen && contentRef.current)) {
       return;
@@ -433,8 +433,6 @@ function MobileOverlayContainer() {
 
   return (
     <DrawerPrimitive.Root
-      // Full screen, a swipe down returns to the sheet's own height first.
-      dismissible={!expanded}
       onAnimationEnd={handleAnimationEnd}
       onOpenChange={(open) => {
         if (!open) {
@@ -457,13 +455,6 @@ function MobileOverlayContainer() {
             expanded ? "rounded-none border-t-0" : "rounded-t-2xl"
           )}
           data-testid="overlay-sheet"
-          // Not dismissible while full screen, so Vaul ignores Escape then.
-          onEscapeKeyDown={(event) => {
-            if (expanded && currentItem?.options.closeOnEscape !== false) {
-              event.preventDefault();
-              closeAll();
-            }
-          }}
         >
           {/* Accessible title for screen readers */}
           <DrawerPrimitive.Title className="sr-only">
@@ -471,16 +462,20 @@ function MobileOverlayContainer() {
           </DrawerPrimitive.Title>
 
           {/* Vaul's inline transition on Content would cancel this one, so the
-              height change animates here. */}
+              height change animates here. --sheet-room is the height left for
+              the content under the handle, which caps the measured minHeight.
+              Full screen, Vaul does not drag (a swipe down collapses instead)
+              and the sheet stops under the app banner, which stays on top. */}
           <div
             className={cn(
-              "group/sheet flex flex-col pb-[max(0px,calc(env(safe-area-inset-bottom)-var(--sheet-keyboard,0px)))] transition-[min-height,max-height,padding-top] duration-300 ease-out motion-reduce:transition-none",
-              // Full screen stops under the app banner, which stays on top.
+              "group/sheet flex flex-col pb-(--sheet-pad) transition-[min-height,max-height,padding-top] duration-300 ease-out [--sheet-pad:max(0px,calc(env(safe-area-inset-bottom)-var(--sheet-keyboard,0px)))] [--sheet-room:calc(var(--sheet-max)-1.125rem-var(--sheet-pad))] motion-reduce:transition-none",
               expanded
-                ? "max-h-[calc(var(--sheet-viewport,100dvh)-var(--app-banner-height,0px))] min-h-[calc(var(--sheet-viewport,100dvh)-var(--app-banner-height,0px))] pt-[max(0px,calc(env(safe-area-inset-top)-var(--app-banner-height,0px)))]"
-                : "max-h-[min(90vh,calc(var(--sheet-viewport,100dvh)-2rem))] min-h-0"
+                ? "max-h-(--sheet-max) min-h-(--sheet-max) pt-[max(0px,calc(env(safe-area-inset-top)-var(--app-banner-height,0px)))] [--sheet-max:calc(var(--sheet-viewport,100dvh)-var(--app-banner-height,0px))]"
+                : "max-h-(--sheet-max) min-h-0 [--sheet-max:min(90vh,calc(var(--sheet-viewport,100dvh)-2rem))]"
             )}
             data-expanded={expanded}
+            data-sheet=""
+            data-vaul-no-drag={expanded ? "" : undefined}
             ref={setSheet}
           >
             {/* Drag handle; tapping it toggles full screen. The ::after makes
@@ -502,17 +497,20 @@ function MobileOverlayContainer() {
                 className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
                 layout={isOpen}
                 style={{
-                  minHeight: minHeight > 0 && !expanded ? minHeight : "auto",
+                  minHeight:
+                    minHeight > 0 && !expanded
+                      ? `min(${minHeight}px, var(--sheet-room))`
+                      : "auto",
                 }}
-                transition={
-                  shouldReduceMotion ? { duration: 0 } : drawerSpring
-                }
+                transition={shouldReduceMotion ? { duration: 0 } : drawerSpring}
               >
                 {/* Content wrapper - all items rendered persistently to preserve state */}
+                {/* Content can shrink to fit a capped sheet, and grows to fill
+                    it full screen. */}
                 <div
                   className={cn(
-                    "relative",
-                    expanded && "flex min-h-0 flex-1 flex-col"
+                    "relative flex min-h-0 flex-col",
+                    expanded && "flex-1"
                   )}
                   ref={contentRef}
                 >
@@ -538,11 +536,13 @@ function MobileOverlayContainer() {
                         }}
                         aria-hidden={!isCurrent}
                         className={cn(
-                          "w-full",
+                          "flex w-full min-h-0 flex-col",
                           isCurrent
                             ? "relative"
                             : "pointer-events-none absolute inset-0",
-                          expanded && "flex min-h-0 flex-1 flex-col"
+                          // Full screen, the overlay's root fills the sheet.
+                          expanded &&
+                            "flex-1 [&>*]:max-h-none [&>*]:min-h-0 [&>*]:flex-1"
                         )}
                         initial={initialValue}
                         key={item.id}
