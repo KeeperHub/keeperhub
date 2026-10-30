@@ -68,7 +68,11 @@ function trackSheetAndSecondTap(): void {
       w.sheetOpenedAt = performance.now();
       observer.disconnect();
     }
-  }).observe(document.body, { childList: true, subtree: true });
+  }).observe(document.body, {
+    attributeFilter: ["data-state"],
+    childList: true,
+    subtree: true,
+  });
   document.addEventListener(
     "pointerdown",
     (event) => {

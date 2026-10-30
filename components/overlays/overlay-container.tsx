@@ -396,12 +396,14 @@ function useOpenPressGrace(): {
     []
   );
 
-  // Vaul mounts the sheet a render after opening, so its grace starts here.
+  // Vaul mounts the sheet a render after opening, so its grace starts here,
+  // and again on its first frame: a slow render must not use the grace up.
   const sheetRef = useCallback(
     (node: HTMLDivElement | null) => {
       sheetNodeRef.current = node;
       if (node) {
         start();
+        requestAnimationFrame(start);
       }
     },
     [start]
