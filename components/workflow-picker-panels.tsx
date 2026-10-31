@@ -42,7 +42,7 @@ export function WorkflowsRootList({
   onSelectProject: (id: string) => void;
   isAnonymous: boolean;
 }): React.ReactNode {
-  const { projects, byProject, ungrouped, loading, projectsLoading } =
+  const { projects, byProject, ungrouped, loading, projectsFirstLoad } =
     usePickerData();
   const { status, types } = filter;
   const shownUngrouped = useMemo(
@@ -66,9 +66,8 @@ export function WorkflowsRootList({
         // which workflows it is about.
         filteredEmptyText={`${filter.emptyText} outside a project`}
         isAnonymous={isAnonymous}
-        // Until the projects load, a member whose workflows are all in
-        // projects would see the empty state.
-        loading={loading || projectsLoading}
+        // Else a member whose workflows are all in projects sees "No workflows".
+        loading={loading || projectsFirstLoad}
         onOpenWorkflow={onOpenWorkflow}
         onResetFilter={filter.isFiltered ? filter.reset : undefined}
         onSelectProject={onSelectProject}
@@ -124,10 +123,10 @@ export function ProjectWorkflowsList({
   projectName: string;
 }): React.ReactNode {
   const { byProject, tags, loading } = usePickerData();
-  const all = byProject[projectId ?? ""];
+  const all = byProject[projectId ?? ""] ?? NO_WORKFLOWS;
   const { status, types } = filter;
   const { shown, projectTags, byTagId, untagged } = useMemo(() => {
-    const filtered = applyPickerFilter(all ?? NO_WORKFLOWS, { status, types });
+    const filtered = applyPickerFilter(all, { status, types });
     return { shown: filtered, ...groupByTag(filtered, tags) };
   }, [all, status, types, tags]);
   return (
@@ -138,7 +137,7 @@ export function ProjectWorkflowsList({
         panelId={panelId}
         panelName={projectName}
         shownCount={shown.length}
-        workflows={all ?? NO_WORKFLOWS}
+        workflows={all}
       />
       <TagsPanel
         activeWorkflowId={activeWorkflowId}

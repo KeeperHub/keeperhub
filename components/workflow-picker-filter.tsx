@@ -51,6 +51,12 @@ export type PickerFilter = {
   emptyText: string;
 };
 
+type FilterPicks = Pick<PickerFilter, "status" | "types">;
+
+function isFilterOn({ status, types }: FilterPicks): boolean {
+  return status.size > 0 || types.size > 0;
+}
+
 export function usePickerFilter(
   // The state of the panel the filter belongs to. Closing the panel any way
   // at all (Escape, clicking outside, the close button) drops the filter.
@@ -60,7 +66,7 @@ export function usePickerFilter(
   const [types, setTypes] = useState<TriggerTypeFilter>(() => new Set());
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const isFiltered = status.size > 0 || types.size > 0;
+  const isFiltered = isFilterOn({ status, types });
 
   const clear = useCallback((): void => {
     setStatus(new Set());
@@ -114,9 +120,9 @@ export function usePickerFilter(
 // The workflows both menus let through.
 export function applyPickerFilter(
   workflows: WorkflowEntry[],
-  { status, types }: Pick<PickerFilter, "status" | "types">
+  { status, types }: FilterPicks
 ): WorkflowEntry[] {
-  if (status.size === 0 && types.size === 0) {
+  if (!isFilterOn({ status, types })) {
     return workflows;
   }
   return workflows.filter(

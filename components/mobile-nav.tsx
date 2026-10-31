@@ -90,9 +90,8 @@ export function MobileNav({
   }>({ view: MENU_VIEW, focus: null });
   const view = nav.view;
   const drawerRef = useRef<HTMLDivElement>(null);
-  // Taps pressed before a level was shown, or this soon after, are dropped:
-  // a double tap's second press would land on whatever the level put there.
-  // Restarted by a level change (not the reset on open) or its list loading.
+  // Drops taps just after a level change (not the reset on open) or its list
+  // loading.
   const grace = usePressGrace(LEVEL_TAP_GRACE_MS);
   const markLevelShown = grace.startThroughNextPaint;
   // The Escape that reached the drawer itself, not a tooltip or menu above.

@@ -33,6 +33,8 @@ type PickerData = {
   // The workflow list is loading.
   loading: boolean;
   projectsLoading: boolean;
+  // A member's projects have not loaded yet (a refresh does not count).
+  projectsFirstLoad: boolean;
   refetch: () => Promise<void>;
 };
 
@@ -67,6 +69,16 @@ export function PickerDataProvider({
   const { data: projects, isLoading: projectsLoading } = useProjects();
   const { data: tags } = useTags();
   const [loading, setLoading] = useState(true);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
+  if (!(projectsLoading || projectsLoaded)) {
+    setProjectsLoaded(true);
+  }
+  // Guests and signed-out visitors have no projects to wait for.
+  const projectsFirstLoad =
+    projectsLoading &&
+    !projectsLoaded &&
+    Boolean(session?.user) &&
+    !isAnonymousUser(session?.user);
   // A reply that lands after a newer list request was sent is dropped rather
   // than put back over the newer list.
   const latestFetch = useRef(createLatestRequest());
@@ -102,8 +114,8 @@ export function PickerDataProvider({
   );
 
   useEffect(() => {
-    // NAV-04: signed-out and anonymous visitors make no request; only
-    // authenticated users fetch the list.
+    // Signed-out and anonymous visitors make no request; only authenticated
+    // users fetch the list.
     if (isPending) {
       return;
     }
@@ -153,9 +165,18 @@ export function PickerDataProvider({
       tags,
       loading,
       projectsLoading,
+      projectsFirstLoad,
       refetch: () => fetchData(),
     }),
-    [entries, projects, tags, loading, projectsLoading, fetchData]
+    [
+      entries,
+      projects,
+      tags,
+      loading,
+      projectsLoading,
+      projectsFirstLoad,
+      fetchData,
+    ]
   );
 
   return (

@@ -123,6 +123,7 @@ function pickerData(
   overrides: Partial<{
     loading: boolean;
     projectsLoading: boolean;
+    projectsFirstLoad: boolean;
     projects: Project[];
     ungrouped: WorkflowEntry[];
   }> = {}
@@ -140,6 +141,7 @@ function pickerData(
     tags: [],
     loading: false,
     projectsLoading: false,
+    projectsFirstLoad: false,
     refetch: vi.fn(),
     ...overrides,
   };
@@ -642,6 +644,7 @@ describe("MobileNav", () => {
   it("shows no empty list while the projects are still loading", () => {
     mocks.picker = pickerData({
       projectsLoading: true,
+      projectsFirstLoad: true,
       projects: [],
       ungrouped: [],
     });

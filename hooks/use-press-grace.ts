@@ -10,13 +10,8 @@ const CLOCK_MISMATCH_MS = 60_000;
 export const LEVEL_TAP_GRACE_MS = 350;
 
 /**
- * Drops presses made too soon after `start()` (or before it, still queued):
- * the second tap of a double tap would otherwise land on whatever the change
- * put under the finger. The capture handlers go on the area to guard, and
- * judge only presses on its own DOM (not portaled menus); a dropped press
- * neither focuses nor opens anything (Radix skips prevented presses) and its
- * click is dropped. Keyboard clicks (detail 0) never are. `onStart` runs at
- * every (re)start.
+ * Drops presses on the guarded area (not its portals) made too soon after
+ * `start()`, so a double tap's second press misses what the change put there.
  */
 export function usePressGrace(
   graceMs: number,
@@ -31,16 +26,13 @@ export function usePressGrace(
   const startedAtRef = useRef(Number.NEGATIVE_INFINITY);
   const swallowClickRef = useRef(false);
   const frameRef = useRef<number | null>(null);
-  const onStartRef = useRef(onStart);
-  onStartRef.current = onStart;
 
   const start = useCallback((): void => {
     startedAtRef.current = performance.now();
-    onStartRef.current?.();
-  }, []);
+    onStart?.();
+  }, [onStart]);
 
-  // Now, and again at the frame that paints the change: a busy phone paints
-  // late, and the grace must not be used up before anything is seen.
+  // Again at the frame that paints the change: a busy phone paints late.
   const startThroughNextPaint = useCallback((): void => {
     start();
     if (frameRef.current !== null) {

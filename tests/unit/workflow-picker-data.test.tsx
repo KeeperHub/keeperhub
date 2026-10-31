@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getAll: vi.fn(),
   session: { data: null as unknown, isPending: false },
+  projects: { data: [] as unknown[], isLoading: false },
 }));
 
 vi.mock("@/lib/api-client", () => ({
@@ -15,7 +16,7 @@ vi.mock("@/lib/auth-client", () => ({
   useSession: () => mocks.session,
 }));
 vi.mock("@/lib/hooks/use-org-data", () => ({
-  useProjects: () => ({ data: [] }),
+  useProjects: () => mocks.projects,
   useTags: () => ({ data: [] }),
 }));
 
@@ -80,6 +81,7 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.projects = { data: [], isLoading: false };
   seen = null;
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -124,6 +126,27 @@ describe("PickerDataProvider", () => {
     };
     await render();
     expect(mocks.getAll).not.toHaveBeenCalled();
+  });
+
+  it("holds the list for a member's first projects load only", async () => {
+    // Without an active org the projects never load; nobody may wait on them.
+    mocks.projects = { data: [], isLoading: true };
+    mocks.session = { data: null, isPending: false };
+    await render();
+    expect(seen?.projectsFirstLoad).toBe(false);
+
+    mocks.session = signedIn("org-1") as typeof mocks.session;
+    mocks.getAll.mockResolvedValue([]);
+    await render();
+    expect(seen?.projectsFirstLoad).toBe(true);
+    mocks.projects = { data: [{ id: "p-1" }], isLoading: false };
+    await render();
+    expect(seen?.projectsFirstLoad).toBe(false);
+    // A refresh shows the list as it is.
+    mocks.projects = { data: [], isLoading: true };
+    await render();
+    expect(seen?.projectsLoading).toBe(true);
+    expect(seen?.projectsFirstLoad).toBe(false);
   });
 
   it("refetches on refetchSidebar and keeps the list when a refetch fails", async () => {
