@@ -4,6 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
+// Its background import of monaco-editor can outlive this file and fail at teardown.
+vi.mock("@/lib/monaco-loader-config", () => ({}));
 
 import { TemplateAutocomplete } from "@/components/ui/template-autocomplete";
 import {

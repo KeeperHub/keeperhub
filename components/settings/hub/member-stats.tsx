@@ -16,7 +16,7 @@ export function MemberStats({
   const admins = members.filter((m) => m.role === "admin").length;
 
   return (
-    <div className="grid gap-4 sm:grid-cols-3">
+    <div className="grid gap-4 @xs/settings:grid-cols-3 @max-xl/settings:gap-2">
       <StatTile
         hint={`${owners} owner${owners === 1 ? "" : "s"}, ${admins} admin${admins === 1 ? "" : "s"}`}
         label="Seats in use"

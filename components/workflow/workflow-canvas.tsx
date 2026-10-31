@@ -21,6 +21,7 @@ import { Canvas } from "@/components/ai-elements/canvas";
 import { Connection } from "@/components/ai-elements/connection";
 import { Controls } from "@/components/ai-elements/controls";
 import { AIPrompt } from "@/components/ai-elements/prompt";
+import { useIsMobile } from "@/hooks/use-mobile";
 import "@xyflow/react/dist/style.css";
 
 import { PlayCircle, Zap } from "lucide-react";
@@ -41,6 +42,7 @@ import {
   nodesAtom,
   onEdgesChangeAtom,
   onNodesChangeAtom,
+  previewRequestsAtom,
   propertiesPanelActiveTabAtom,
   rightPanelWidthAtom,
   selectedEdgeAtom,
@@ -56,6 +58,7 @@ import { Panel } from "../ai-elements/panel";
 import { ActionNode } from "./nodes/action-node";
 import { AddNode } from "./nodes/add-node";
 import { TriggerNode } from "./nodes/trigger-node";
+import { STEP_SIZE, useShowStepSettings } from "./use-show-step-settings";
 import {
   type ContextMenuState,
   useContextMenuHandlers,
@@ -99,15 +102,17 @@ const FIT_VIEW_DEFAULTS = { maxZoom: 1, minZoom: 0.1, padding: 0.2, duration: 0 
 export function WorkflowCanvas() {
   const pathname = usePathname();
   const isWorkflowRoute = pathname.startsWith("/workflows/");
+  const isMobile = useIsMobile();
+  const showStepSettings = useShowStepSettings();
   const [nodes, setNodes] = useAtom(nodesAtom);
   const [edges, setEdges] = useAtom(edgesAtom);
   const [isGenerating] = useAtom(isGeneratingAtom);
   const currentWorkflowId = useAtomValue(currentWorkflowIdAtom);
   const [showMinimap] = useAtom(showMinimapAtom);
   const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
+  const previewRequests = useAtomValue(previewRequestsAtom);
   const isPanelAnimating = useAtomValue(isPanelAnimatingAtom);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useAtom(isSidebarCollapsedAtom);
-  const setIsPanelAnimating = useSetAtom(isPanelAnimatingAtom);
+  const isSidebarCollapsed = useAtomValue(isSidebarCollapsedAtom);
   const [isTransitioningFromHomepage, setIsTransitioningFromHomepage] = useAtom(
     isTransitioningFromHomepageAtom
   );
@@ -561,14 +566,17 @@ export function WorkflowCanvas() {
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
       setSelectedNode(node.id);
-      // Don't auto-open sidebar during workflow switch
-      if (isSidebarCollapsed && !isLoadingWorkflow.current) {
-        setIsPanelAnimating(true);
-        setIsSidebarCollapsed(false);
-        setTimeout(() => setIsPanelAnimating(false), 350);
+      // The phone sheet opens on the tapped step, whatever tab it was left on
+      if (isMobile) {
+        setActiveTab("properties");
+      }
+      // Don't auto-open sidebar during workflow switch; on a phone the tap
+      // is how a step's settings open, so it always counts
+      if (isMobile || !isLoadingWorkflow.current) {
+        showStepSettings();
       }
     },
-    [setSelectedNode, isSidebarCollapsed, setIsPanelAnimating, setIsSidebarCollapsed]
+    [setSelectedNode, isMobile, setActiveTab, showStepSettings]
   );
 
   // Open node details from any tab
@@ -650,9 +658,7 @@ export function WorkflowCanvas() {
         });
 
         // Center the node vertically at the cursor position
-        // Node height is 192px (h-48 in Tailwind)
-        const nodeHeight = 192;
-        position.y -= nodeHeight / 2;
+        position.y -= STEP_SIZE / 2;
 
         // Create new action node
         const newNode: WorkflowNode = {
@@ -672,6 +678,7 @@ export function WorkflowCanvas() {
         addNode(newNode);
         setSelectedNode(newNode.id);
         setActiveTab("properties");
+        showStepSettings(newNode);
 
         // Deselect all other nodes and select only the new node
         // Need to do this after a delay because panOnDrag will clear selection
@@ -733,6 +740,7 @@ export function WorkflowCanvas() {
       setNodes,
       setSelectedNode,
       setActiveTab,
+      showStepSettings,
       setHasUnsavedChanges,
       triggerAutosave,
     ]
@@ -769,6 +777,9 @@ export function WorkflowCanvas() {
       className="relative h-full bg-background"
       data-testid="workflow-canvas"
       data-ready={isCanvasReady}
+      data-preview-request={previewRequests
+        .map((entry) => `${entry.version}:${entry.status}`)
+        .join(" ")}
       style={{
         opacity: isCanvasReady ? 1 : 0,
         width: rightPanelWidth ? `calc(100% - ${rightPanelWidth})` : "100%",
@@ -782,6 +793,8 @@ export function WorkflowCanvas() {
         className={`bg-background${isAnimatingLayout ? " [&_.react-flow__node]:transition-[transform] [&_.react-flow__node]:duration-300 [&_.react-flow__node]:ease-in-out" : ""}`}
         connectionLineComponent={Connection}
         connectionMode={ConnectionMode.Strict}
+        // A tap on a phone's small handles means the step, not a connection
+        connectOnClick={!isMobile}
         defaultEdgeOptions={{ type: "animated" }}
         edges={edges}
         edgeTypes={edgeTypes}

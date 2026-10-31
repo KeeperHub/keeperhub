@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   countTemplateTokens,
-  TEMPLATE_TOKEN_PATTERN,
   toStringValue,
 } from "@/components/ui/template-badge-utils";
 
@@ -60,11 +59,5 @@ describe("countTemplateTokens", () => {
   it("does not match malformed tokens", () => {
     expect(countTemplateTokens("{{@node1}}")).toBe(0);
     expect(countTemplateTokens("{@node1:field}")).toBe(0);
-  });
-});
-
-describe("TEMPLATE_TOKEN_PATTERN", () => {
-  it("is a global regex so match() returns all occurrences", () => {
-    expect(TEMPLATE_TOKEN_PATTERN.global).toBe(true);
   });
 });

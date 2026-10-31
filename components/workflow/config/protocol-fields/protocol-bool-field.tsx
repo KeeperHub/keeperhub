@@ -8,8 +8,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TemplateBadgeInput } from "@/components/ui/template-badge-input";
-
-const TEMPLATE_RE = /\{\{.+\}\}/;
+import { hasTemplateToken } from "@/lib/workflow/template-ref";
 
 type ProtocolBoolFieldProps = {
   fieldKey: string;
@@ -24,7 +23,7 @@ export function ProtocolBoolField({
   onChange,
   disabled,
 }: ProtocolBoolFieldProps): React.ReactNode {
-  const isTemplateValue = TEMPLATE_RE.test(value ?? "");
+  const isTemplateValue = hasTemplateToken(value ?? "");
 
   if (isTemplateValue) {
     return (

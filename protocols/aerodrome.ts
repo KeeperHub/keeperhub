@@ -34,7 +34,6 @@ const TEST_DATA: ProtocolTestData = {
       "swap-exact-tokens": "requires token balance, approval and a route",
       "add-liquidity": "requires token balances and approvals",
       "remove-liquidity": "requires an existing LP position",
-      vote: "requires a veAERO tokenId with voting power",
       "reset-votes": "requires a veAERO tokenId that has voted",
       "claim-rewards": "requires staked gauge positions",
       "create-lock": "requires an AERO balance and approval",
@@ -43,19 +42,19 @@ const TEST_DATA: ProtocolTestData = {
       "withdraw-lock": "requires an expired veAERO lock",
       "aero-approve": "requires an AERO balance for a meaningful allowance",
     },
-    // Base-wide invariants: nonzero total voting weight and thousands of
-    // deployed pools; the WETH/USDC volatile pool resolves to a real address.
-    // aero-balance-of reads the unprovisioned wallet's AERO (zero) and stays
-    // liveness-only. Unnamed outputs take no field; poolFor's output is named
-    // "pool".
+    // Base-wide invariants: thousands of deployed pools; the WETH/USDC
+    // volatile pool resolves to a real address. aero-balance-of reads the
+    // unprovisioned wallet's AERO (zero) and stays liveness-only. So does
+    // get-total-weight: every gauge was killed at the Aero launch, so votes
+    // can no longer add weight and each reset lowers it towards zero. Unnamed
+    // outputs take no field; poolFor's output is named "pool".
     expectations: {
-      "get-total-weight": [{ nonZero: true }],
       "get-all-pools-length": [{ nonZero: true }],
       "get-pool-for-pair": [{ field: "pool", notEmpty: true }],
     },
     // The Base event emitter wraps ETH for the pool swap and pulls AERO from
-    // the veAERO escrow under impersonation, then drives a swap, a lock, a
-    // vote, a lock/withdraw, and an epoch distribute - six of the seven events.
+    // the veAERO escrow under impersonation, then drives a swap and a
+    // lock/withdraw - four of the five events.
     // gauge-created stays skipped: every whitelisted Base pair already has a
     // gauge, so emitting it would need a freshly deployed token to pair and
     // gauge, which the self-contained emitter does not set up.
@@ -293,17 +292,6 @@ export default defineAbiProtocol({
         },
         {
           type: "function",
-          name: "vote",
-          stateMutability: "nonpayable",
-          inputs: [
-            { name: "_tokenId", type: "uint256" },
-            { name: "_poolVote", type: "address[]" },
-            { name: "_weights", type: "uint256[]" },
-          ],
-          outputs: [],
-        },
-        {
-          type: "function",
           name: "reset",
           stateMutability: "nonpayable",
           inputs: [{ name: "_tokenId", type: "uint256" }],
@@ -318,18 +306,6 @@ export default defineAbiProtocol({
         },
         {
           type: "event",
-          name: "Voted",
-          inputs: [
-            { name: "voter", type: "address", indexed: true },
-            { name: "pool", type: "address", indexed: true },
-            { name: "tokenId", type: "uint256", indexed: true },
-            { name: "weight", type: "uint256", indexed: false },
-            { name: "totalWeight", type: "uint256", indexed: false },
-            { name: "timestamp", type: "uint256", indexed: false },
-          ],
-        },
-        {
-          type: "event",
           name: "GaugeCreated",
           inputs: [
             { name: "poolFactory", type: "address", indexed: true },
@@ -340,15 +316,6 @@ export default defineAbiProtocol({
             { name: "feeVotingReward", type: "address", indexed: false },
             { name: "gauge", type: "address", indexed: false },
             { name: "creator", type: "address", indexed: false },
-          ],
-        },
-        {
-          type: "event",
-          name: "DistributeReward",
-          inputs: [
-            { name: "sender", type: "address", indexed: true },
-            { name: "gauge", type: "address", indexed: true },
-            { name: "amount", type: "uint256", indexed: false },
           ],
         },
       ]),
@@ -381,7 +348,7 @@ export default defineAbiProtocol({
           slug: "get-gauge-for-pool",
           label: "Get Gauge for Pool",
           description:
-            "Look up the gauge address for a pool to check status or vote",
+            "Look up the gauge address for a pool to check its status",
           inputs: {
             _pool: { label: "Pool Address" },
           },
@@ -389,26 +356,11 @@ export default defineAbiProtocol({
             result: { name: "gauge", label: "Gauge Address" },
           },
         },
-        vote: {
-          label: "Vote on Gauges",
-          description: "Cast votes for pool gauges using veAERO voting power",
-          inputs: {
-            _tokenId: { label: "veNFT Token ID" },
-            _poolVote: {
-              label: "Pool Addresses",
-              helpTip: "Add one pool address per array item.",
-            },
-            _weights: {
-              label: "Vote Weights",
-              helpTip: "Add one vote weight per array item.",
-            },
-          },
-        },
         reset: {
           slug: "reset-votes",
           label: "Reset Votes",
           description:
-            "Reset all gauge votes for a veNFT, required before changing vote allocations in a new epoch",
+            "Reset all gauge votes for a veNFT, required before a voted veNFT can be withdrawn",
           inputs: {
             _tokenId: { label: "veNFT Token ID" },
           },
@@ -425,20 +377,10 @@ export default defineAbiProtocol({
         },
       },
       events: {
-        Voted: {
-          slug: "voter-voted",
-          label: "Gauge Vote Cast",
-          description: "Fires when a veNFT holder casts votes for a pool gauge",
-        },
         GaugeCreated: {
           slug: "gauge-created",
           label: "Gauge Created",
           description: "Fires when a new gauge is created for a pool",
-        },
-        DistributeReward: {
-          slug: "distribute-reward",
-          label: "Reward Distributed",
-          description: "Fires when AERO emissions are distributed to a gauge",
         },
       },
     },

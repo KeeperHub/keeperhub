@@ -100,30 +100,23 @@ describe("Aerodrome Protocol Definition", () => {
     }
   });
 
-  it("has 21 actions (10 read, 11 write)", () => {
-    expect(aerodromeDef.actions).toHaveLength(21);
+  it("has 20 actions (10 read, 10 write)", () => {
+    expect(aerodromeDef.actions).toHaveLength(20);
     const readActions = aerodromeDef.actions.filter((a) => a.type === "read");
     const writeActions = aerodromeDef.actions.filter((a) => a.type === "write");
     expect(readActions).toHaveLength(10);
-    expect(writeActions).toHaveLength(11);
+    expect(writeActions).toHaveLength(10);
   });
 
-  it("has 7 events", () => {
-    expect(aerodromeDef.events).toHaveLength(7);
+  it("has 5 events", () => {
+    expect(aerodromeDef.events).toHaveLength(5);
   });
 
   it("describes scalar-array actions using the structured item editor", () => {
-    const vote = aerodromeDef.actions.find((action) => action.slug === "vote");
     const claimRewards = aerodromeDef.actions.find(
       (action) => action.slug === "claim-rewards"
     );
 
-    expect(
-      vote?.inputs.find((input) => input.name === "_poolVote")
-    ).toMatchObject({ label: "Pool Addresses", type: "address[]" });
-    expect(
-      vote?.inputs.find((input) => input.name === "_weights")
-    ).toMatchObject({ label: "Vote Weights", type: "uint256[]" });
     expect(
       claimRewards?.inputs.find((input) => input.name === "_gauges")
     ).toMatchObject({ label: "Gauge Addresses", type: "address[]" });

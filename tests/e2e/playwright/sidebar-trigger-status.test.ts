@@ -9,7 +9,6 @@ import {
 import { waitForCanvas } from "./utils/workflow";
 
 const ENABLE_BUTTON_REGEX = /^(Enable|Disable) workflow$/;
-const NEW_WORKFLOW_URL_REGEX = /\/workflows\/[^/]+$/;
 
 // The Workflows flyout, labelled with its title (FlyoutPanel is a section).
 function workflowsPanel(page: Page): Locator {
@@ -74,6 +73,30 @@ async function dismissTooltip(page: Page): Promise<void> {
     }
   });
   await expect(page.getByRole("tooltip")).toHaveCount(0);
+}
+
+// /workflows redirects to an existing workflow, so the new one is known by the
+// create reply, not by the first URL change. It opens on its empty action,
+// whose search box takes focus once the editor loads; a menu opened before
+// that closes as focus moves away.
+async function newWorkflowFromSidebar(
+  page: Page,
+  created: string[]
+): Promise<{ id: string; name: string }> {
+  const reply = page.waitForResponse(
+    (res) =>
+      res.url().endsWith("/api/workflows/create") &&
+      res.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "New Workflow" }).click();
+  const res = await reply;
+  expect(res.ok(), "create workflow").toBe(true);
+  const workflow = (await res.json()) as { id: string; name: string };
+  created.push(workflow.id);
+  await page.waitForURL(`**/workflows/${workflow.id}`);
+  await waitForCanvas(page);
+  await expect(page.getByTestId("action-search-input")).toBeFocused();
+  return workflow;
 }
 
 function pickerRow(page: Page, name: string): Locator {
@@ -518,9 +541,7 @@ test.describe("Sidebar trigger status icons", () => {
     // An open row with nothing picked stays open.
     await filterButton.click();
     await expect(panel.getByTestId("trigger-filters")).toBeVisible();
-    await page.getByRole("button", { name: "New Workflow" }).click();
-    await page.waitForURL(NEW_WORKFLOW_URL_REGEX);
-    created.push(new URL(page.url()).pathname.split("/").pop() ?? "");
+    await newWorkflowFromSidebar(page, created);
     await expect(filterButton).toHaveAttribute("aria-expanded", "true");
 
     // A new workflow is disabled; a filter for enabled ones lets it through.
@@ -528,19 +549,12 @@ test.describe("Sidebar trigger status icons", () => {
     await pickInMenu(page, "enabled");
     await closeMenu(page);
     await expect(filterButton).toHaveAttribute("data-filtered", "true");
-    await page.getByRole("button", { name: "New Workflow" }).click();
-    await page.waitForURL(
-      (url) =>
-        NEW_WORKFLOW_URL_REGEX.test(url.pathname) &&
-        !created.includes(url.pathname.split("/").pop() ?? "")
-    );
-    const newId = new URL(page.url()).pathname.split("/").pop() ?? "";
-    created.push(newId);
+    const second = await newWorkflowFromSidebar(page, created);
     await expect(filterButton).not.toHaveAttribute("data-filtered", "true");
     await expect(panel.getByTestId("trigger-filters")).toBeVisible();
     // The open workflow's row is the new one.
     await expect(
       panel.locator('[data-testid="workflow-picker-item"][aria-current="page"]')
-    ).toContainText("Untitled Workflow");
+    ).toContainText(second.name);
   });
 });

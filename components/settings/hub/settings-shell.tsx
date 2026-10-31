@@ -1,19 +1,50 @@
 "use client";
 
+import { ChevronLeft } from "lucide-react";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { SettingsAccessGate } from "./settings-access-gate";
 import { SettingsRail } from "./settings-rail";
 
+/**
+ * On a phone the rail gives way to the settings menu (the /settings index),
+ * so a section leads back to it from a bar that stays at the top while it
+ * scrolls.
+ *
+ * "A phone" is below Tailwind's md everywhere here, the app's own phone
+ * breakpoint (the header's menu button): the rail's max-md:hidden, this bar's
+ * md:hidden, and the menu's md:hidden and BELOW_MD_QUERY. The header drawer,
+ * whose Settings opens the menu, is md:hidden too. They move together, or a
+ * window between them has no way round settings. Inside a section, layouts
+ * follow the column's own width instead (@container/settings).
+ */
+function SettingsBackBar(): React.ReactElement {
+  return (
+    <div className="sticky top-0 z-10 flex h-12 shrink-0 items-center border-b bg-background px-1 md:hidden">
+      <Link
+        className="flex h-11 items-center gap-1 rounded-md pr-3 pl-2 font-medium text-sm transition-colors hover:bg-muted"
+        data-testid="settings-back-to-menu"
+        href="/settings"
+      >
+        <ChevronLeft className="size-4 shrink-0 text-muted-foreground" />
+        Settings
+      </Link>
+    </div>
+  );
+}
+
 export function SettingsShell({
   children,
 }: {
   children: ReactNode;
 }): React.ReactElement {
+  const pathname = usePathname();
   // The plan cards are a four-column grid built for a full page; the reading
   // width every other section wants would crush them into each other.
-  const wide = usePathname().endsWith("/plans");
+  const wide = pathname.endsWith("/plans");
+  const menu = pathname === "/settings";
 
   return (
     <div
@@ -28,9 +59,12 @@ export function SettingsShell({
       <div className="flex min-h-0 flex-1">
         <SettingsRail />
         <main className="min-w-0 flex-1 overflow-y-auto">
+          {!menu && <SettingsBackBar />}
+          {/* A container, so a section lays itself out by the room it has
+              beside the rail rather than by the width of the screen. */}
           <div
             className={cn(
-              "mx-auto flex w-full flex-col gap-6 px-8 py-8",
+              "@container/settings mx-auto flex w-full flex-col gap-4 px-4 py-5 md:gap-6 md:px-6 md:py-8 lg:px-8",
               wide ? "max-w-7xl" : "max-w-5xl"
             )}
           >

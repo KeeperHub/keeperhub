@@ -2,6 +2,7 @@ import { randomBytes, scrypt } from "node:crypto";
 import type postgres from "postgres";
 import { CREDENTIAL_ACCOUNT_ISSUER } from "../../../../lib/auth/account-issuer";
 import { getDbConnection } from "./connection";
+import { ANALYTICS_TEST_EMAIL, ANALYTICS_TEST_PASSWORD } from "./db";
 
 // ---------------------------------------------------------------------------
 // Password hashing (scrypt, compatible with Better Auth / @noble/hashes/scrypt)
@@ -91,8 +92,6 @@ type TestUserConfig = {
   password?: string;
 };
 
-const ANALYTICS_PASSWORD = "TestAnalytics123!";
-
 const PERSISTENT_USERS: TestUserConfig[] = [
   {
     email: "pr-test-do-not-delete@techops.services",
@@ -119,11 +118,11 @@ const PERSISTENT_USERS: TestUserConfig[] = [
     orgName: "E2E Bystander Organization",
   },
   {
-    email: "test-analytics@techops.services",
+    email: ANALYTICS_TEST_EMAIL,
     name: "E2E Analytics",
     orgSlug: "e2e-test-analytics-org",
     orgName: "E2E Analytics Organization",
-    password: ANALYTICS_PASSWORD,
+    password: ANALYTICS_TEST_PASSWORD,
   },
   {
     // Org carries a 'pro' plan (see seedPersistentTestUsers) so tests that need
@@ -307,7 +306,6 @@ export async function seedPersistentTestUsers(): Promise<void> {
 // Analytics seed data
 // ---------------------------------------------------------------------------
 
-const ANALYTICS_EMAIL = "test-analytics@techops.services";
 const ANALYTICS_SEED_PREFIX = "[Analytics Seed]";
 const ANALYTICS_NETWORKS = ["ethereum", "base", "polygon", "sepolia"] as const;
 
@@ -585,7 +583,7 @@ export async function seedAnalyticsData(): Promise<void> {
   const sql = getDbConnection();
   try {
     const userResult = await sql`
-      SELECT id FROM users WHERE email = ${ANALYTICS_EMAIL} LIMIT 1
+      SELECT id FROM users WHERE email = ${ANALYTICS_TEST_EMAIL} LIMIT 1
     `;
     if (userResult.length === 0) {
       return;

@@ -217,6 +217,32 @@ describe("app/sitemap.ts", () => {
     }
   });
 
+  it("lists one /hub/protocol/{slug} entry per registered protocol", async () => {
+    (db.select as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      from: vi.fn().mockResolvedValue([]),
+    });
+    const sitemapModule = await import("@/app/sitemap");
+    const result = await sitemapModule.default();
+    const { getRegisteredProtocols } = await import("@/lib/protocol-registry");
+    const urls: string[] = result.map((entry: { url: string }) => entry.url);
+
+    const protocols = getRegisteredProtocols();
+    expect(protocols.length).toBeGreaterThan(0);
+    for (const protocol of protocols) {
+      expect(
+        urls.some(
+          (url) => new URL(url).pathname === `/hub/protocol/${protocol.slug}`
+        ),
+        `sitemap is missing /hub/protocol/${protocol.slug}`
+      ).toBe(true);
+    }
+  });
+
+  it("regenerates at runtime so DB-backed entries reach the served sitemap", async () => {
+    const sitemapModule = await import("@/app/sitemap");
+    expect(sitemapModule.revalidate).toBeGreaterThan(0);
+  });
+
   it("gives the homepage the highest priority", async () => {
     (db.select as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       from: vi.fn().mockResolvedValue([]),

@@ -4,13 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
 import { DualFactorSteps } from "@/components/auth/dual-factor-steps";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { SignInGateDialog } from "@/components/auth/sign-in-gate-dialog";
 import { useDualFactorState } from "@/lib/mfa/use-dual-factor-state";
 
 type Mode = "stepup" | "oauth";
@@ -33,9 +27,8 @@ type Props = {
  *     /api/auth/oauth-mfa-finalize which atomically verifies both
  *     codes AND mints the session for the first time.
  *
- * Rendered as a locked-open Dialog (no Esc, no outside-click,
- * close button hidden) so the underlying page can't be visually
- * composed with the prompt.
+ * Rendered in the locked-open SignInGateDialog so the underlying
+ * page can't be visually composed with the prompt.
  */
 export function VerifyMfaForm({ next, mode }: Props): React.ReactElement {
   const router = useRouter();
@@ -95,29 +88,19 @@ export function VerifyMfaForm({ next, mode }: Props): React.ReactElement {
   };
 
   return (
-    <Dialog open>
-      <DialogContent
-        className="sm:max-w-md [&>button[type='button']]:hidden"
-        onEscapeKeyDown={(event) => event.preventDefault()}
-        onInteractOutside={(event) => event.preventDefault()}
-      >
-        <DialogHeader>
-          <DialogTitle>Confirm it's you</DialogTitle>
-          <DialogDescription>
-            Enter the code we just emailed you and the current code from your
-            authenticator app to continue.
-          </DialogDescription>
-        </DialogHeader>
-        <DualFactorSteps
-          busy={busy}
-          dual={dual}
-          onBack={() => router.replace("/")}
-          onPrefetchEmail={() => dual.prefetchEmail(emptyCodesFetch)}
-          onResendEmail={() => dual.resendEmail(emptyCodesFetch)}
-          onSubmit={handleSubmit}
-          submitLabel="Verify"
-        />
-      </DialogContent>
-    </Dialog>
+    <SignInGateDialog
+      description="Enter the code we just emailed you and the current code from your authenticator app to continue."
+      title="Confirm it's you"
+    >
+      <DualFactorSteps
+        busy={busy}
+        dual={dual}
+        onBack={() => router.replace("/")}
+        onPrefetchEmail={() => dual.prefetchEmail(emptyCodesFetch)}
+        onResendEmail={() => dual.resendEmail(emptyCodesFetch)}
+        onSubmit={handleSubmit}
+        submitLabel="Verify"
+      />
+    </SignInGateDialog>
   );
 }

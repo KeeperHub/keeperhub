@@ -76,7 +76,7 @@ export function HubViewToggle({
   const buttonClass = (active: boolean): string =>
     [
       "flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs transition-colors duration-100 motion-reduce:transition-none",
-      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-text-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-hub-card)]",
+      "focus-visible:hub-focus-ring focus-visible:ring-offset-sidebar",
       active
         ? "bg-[var(--color-bg-accent)] font-semibold text-[var(--color-text-accent)]"
         : "font-normal text-muted-foreground hover:text-foreground",

@@ -18,6 +18,7 @@ import type {
   WorkflowEdgeJson,
   WorkflowNodeJson,
 } from "@/lib/workflow/node-builders";
+import { publicTagSlug } from "@/lib/workflow/public-tag-slug";
 import {
   createManualWorkflow,
   createScheduledWorkflow,
@@ -75,6 +76,10 @@ export type CreateTestWorkflowOptions = {
    */
   nodes?: WorkflowNodeJson[];
   edges?: WorkflowEdgeJson[];
+  /** List the workflow on the marketplace under this slug and price. */
+  listing?: { slug: string; priceUsdcPerCall: string };
+  /** Make it a public Hub template, optionally featured, with these public tag ids. */
+  hub?: { featured?: boolean; tagIds?: string[] };
 };
 
 export type TestWorkflow = {
@@ -153,6 +158,65 @@ export async function getUserOrganizationId(
   }
 }
 
+/**
+ * Give a user one more organization, owned by them, for tests that switch
+ * between organizations. Remove it with removeTestOrganization.
+ */
+export async function addTestOrganization(
+  userEmail: string,
+  name: string
+): Promise<string> {
+  const sql = getDbConnection();
+  try {
+    const users = await sql`SELECT id FROM users WHERE email = ${userEmail}`;
+    if (users.length === 0) {
+      throw new Error(`User not found: ${userEmail}`);
+    }
+    const orgId = generateId();
+    const now = new Date();
+    await sql.begin(async (tx) => {
+      await tx`
+        INSERT INTO organization (id, name, slug, created_at)
+        VALUES (${orgId}, ${name}, ${`e2e-${orgId}`}, ${now})
+      `;
+      await tx`
+        INSERT INTO member (id, organization_id, user_id, role, created_at)
+        VALUES (${generateId()}, ${orgId}, ${users[0].id as string}, 'owner', ${now})
+      `;
+    });
+    return orgId;
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
+ * Remove an organization made by addTestOrganization. A session it was
+ * active in goes back to its user's seeded organization (owned, oldest
+ * first, as createTestWorkflow picks it), so later tests start there.
+ */
+export async function removeTestOrganization(orgId: string): Promise<void> {
+  const sql = getDbConnection();
+  try {
+    await sql.begin(async (tx) => {
+      await tx`
+        UPDATE sessions SET active_organization_id = (
+          SELECT organization_id FROM member
+          WHERE member.user_id = sessions.user_id
+            AND organization_id <> ${orgId}
+          ORDER BY (role = 'owner') DESC, created_at ASC
+          LIMIT 1
+        )
+        WHERE active_organization_id = ${orgId}
+      `;
+      await tx`DELETE FROM member WHERE organization_id = ${orgId}`;
+      await tx`DELETE FROM organization WHERE id = ${orgId}`;
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
 // ============================================================================
 // Workflow operations
 // ============================================================================
@@ -211,6 +275,8 @@ export async function createTestWorkflow(
       actionEndpoint,
       nodes: fixtureNodes,
       edges: fixtureEdges,
+      listing,
+      hub,
     } = options;
 
     // KEEP-458: when caller supplies a fixture's nodes/edges, insert them
@@ -255,6 +321,32 @@ export async function createTestWorkflow(
         now,
       ]
     );
+
+    if (listing) {
+      await sql`
+        UPDATE workflows
+        SET is_listed = true,
+            listed_slug = ${listing.slug},
+            listed_at = ${now},
+            price_usdc_per_call = ${listing.priceUsdcPerCall}
+        WHERE id = ${workflowId}
+      `;
+    }
+
+    if (hub) {
+      await sql`
+        UPDATE workflows
+        SET visibility = 'public', featured = ${hub.featured ?? false}
+        WHERE id = ${workflowId}
+      `;
+      for (const tagId of hub.tagIds ?? []) {
+        await sql`
+          INSERT INTO workflow_public_tags (workflow_id, public_tag_id)
+          VALUES (${workflowId}, ${tagId})
+          ON CONFLICT DO NOTHING
+        `;
+      }
+    }
 
     // If schedule trigger, also create the schedule record
     if (triggerType === "schedule") {
@@ -313,6 +405,36 @@ export async function deleteTestWorkflow(workflowId: string): Promise<void> {
     await sql`
       DELETE FROM workflows WHERE id = ${workflowId}
     `;
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
+ * Create a Hub public tag; delete it with deleteTestPublicTag. Give it a name
+ * unique to the run: a clash fails instead of taking over a shared tag.
+ */
+export async function createTestPublicTag(name: string): Promise<string> {
+  const sql = getDbConnection();
+  try {
+    const id = generateId();
+    await sql`
+      INSERT INTO public_tags (id, name, slug)
+      VALUES (${id}, ${name}, ${publicTagSlug(name)})
+    `;
+    return id;
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
+ * Delete a Hub public tag; its workflow links go with it
+ */
+export async function deleteTestPublicTag(id: string): Promise<void> {
+  const sql = getDbConnection();
+  try {
+    await sql`DELETE FROM public_tags WHERE id = ${id}`;
   } finally {
     await sql.end();
   }

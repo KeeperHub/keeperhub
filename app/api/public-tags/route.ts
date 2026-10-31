@@ -5,15 +5,8 @@ import { db } from "@/lib/db";
 import { publicTags, workflowPublicTags } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
+import { publicTagSlug } from "@/lib/workflow/public-tag-slug";
 import { isReservedSlug } from "@/lib/workflow/reserved-slugs";
-
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
 
 export async function GET(): Promise<NextResponse> {
   try {
@@ -72,7 +65,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
     }
 
-    const slug = slugify(name);
+    const slug = publicTagSlug(name);
 
     if (!slug) {
       return NextResponse.json({ error: "Invalid tag name" }, { status: 400 });

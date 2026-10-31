@@ -21,15 +21,16 @@ const EMPTY_POS_APPROVE = "50000";
 const EMPTY_POS_APPROVE_OWNER = "0x0ac48977074E7355E09809C80e4f411D446d063c";
 const EMPTY_POS_BURN = "100000";
 const EMPTY_POS_BURN_OWNER = "0xa8eBe1eeD676d5BfEB7F7B5933625281489aF8A3";
-// A live, in-range USDC/WETH 0.05% position for the liquidity writes, kept
-// separate from #1 so the get-position read expectation never moves. Verified
-// at mainnet block 25981008: ticks [190140, 205200] around a pool tick of
-// 198094, an EOA owner, fees accrued on both tokens, and a 1e13 liquidity
-// decrease returning both tokens. Setup transfers it to the test wallet like
-// the empty positions above; it rots only if its owner withdraws the liquidity
-// upstream (refresh with another in-range position then).
-const LIQUID_POS = "180205";
-const LIQUID_POS_OWNER = "0x6d64492e2b90f25F8Db3033942560377E166AB99";
+// A live USDC/WETH 0.05% position for the liquidity writes, kept separate
+// from #1 so the get-position read expectation never moves. Full range
+// (ticks [-887270, 887270]), so no price move can take it out of range.
+// Verified at mainnet block 26276285: ~9.9e14 liquidity, an EOA owner, fees
+// accrued on both tokens, and a 1e13 liquidity decrease returning both
+// tokens. Setup transfers it to the test wallet like the empty positions
+// above; it rots only if its owner withdraws the liquidity upstream (refresh
+// with another live position then - full-range ones last longest).
+const LIQUID_POS = "1038222";
+const LIQUID_POS_OWNER = "0x11847B6DCcED8fb70E65F6E444E14a8071E6dF6D";
 // Far enough ahead (2100-01-01) that a fork's clock never passes it.
 const FAR_DEADLINE = "4102444800";
 // uint128 max: the value Uniswap's own interface passes to collect everything.

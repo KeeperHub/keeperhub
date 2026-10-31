@@ -287,10 +287,8 @@ export const accounts = pgTable(
     id: text("id").primaryKey(),
     accountId: text("account_id").notNull(),
     providerId: text("provider_id").notNull(),
-    // Better Auth 1.7 keys an account on (issuer, accountId) rather than
-    // providerId alone, and matches credential sign-in on all three. A row
-    // without it is invisible to signInEmail. See CREDENTIAL_ACCOUNT_ISSUER.
-    issuer: text("issuer").notNull(),
+    // Written by Better Auth 1.7.0-1.7.2 only; 1.7.3+ leaves it null.
+    issuer: text("issuer"),
     userId: text("user_id")
       .notNull()
       .references(() => users.id),

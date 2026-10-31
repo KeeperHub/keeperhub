@@ -47,7 +47,9 @@ export function ProtocolDetailModal({
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>
       <DialogContent
-        className="overflow-y-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:max-w-4xl"
+        // On phones the default 16px margin and 24px padding left the rows
+        // too narrow, and the 16px close icon was the whole touch target.
+        className="max-w-[calc(100%-1rem)] overflow-y-auto p-4 [-ms-overflow-style:none] [scrollbar-width:none] max-sm:*:data-[slot=dialog-close]:top-1 max-sm:*:data-[slot=dialog-close]:right-1 max-sm:*:data-[slot=dialog-close]:p-3.5 sm:max-w-4xl sm:p-6 [&::-webkit-scrollbar]:hidden"
         ref={contentRef}
         style={{
           maxHeight: "80vh",

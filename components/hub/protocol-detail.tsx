@@ -38,6 +38,13 @@ type ProtocolDetailProps = {
 const TAB_TRIGGER_CLASS =
   "h-auto flex-none border-0 border-b-2 border-transparent rounded-none px-0 pb-2 data-[state=active]:border-b-[var(--color-text-accent)] data-[state=active]:bg-transparent data-[state=active]:shadow-none dark:data-[state=active]:border-b-[var(--color-text-accent)] dark:data-[state=active]:bg-transparent";
 
+// On phones the row's button moves under its text at full width; beside it
+// the text was squeezed to a word or two per line.
+const ROW_CLASS =
+  "flex flex-col gap-3 py-4 transition-colors hover:bg-muted/50 sm:flex-row sm:items-center sm:justify-between sm:gap-0 sm:px-4";
+
+const ROW_BUTTON_CLASS = "w-full shrink-0 max-sm:h-11 sm:ml-4 sm:w-auto";
+
 function ActionTypeBadge({
   type,
 }: {
@@ -74,10 +81,10 @@ export function ActionRow({
   const visibleInputs = action.inputs.filter((inp) => !inp.payer);
   return (
     <div
-      className={`flex items-center justify-between px-4 py-4 transition-colors hover:bg-muted/50 ${isLast ? "" : "border-b border-border/30"}`}
+      className={`${ROW_CLASS} ${isLast ? "" : "border-b border-border/30"}`}
     >
-      <div className="flex-1">
-        <div className="flex items-center gap-2">
+      <div className="sm:flex-1">
+        <div className="flex items-center gap-2 max-sm:flex-wrap">
           <span className="font-semibold text-sm">{action.label}</span>
           <ActionTypeBadge type={action.type} />
         </div>
@@ -110,7 +117,7 @@ export function ActionRow({
           )}
       </div>
       <Button
-        className="ml-4 shrink-0"
+        className={ROW_BUTTON_CLASS}
         disabled={isCreating}
         onClick={onUse}
         size="sm"
@@ -135,10 +142,10 @@ function EventRow({
 }): React.ReactElement {
   return (
     <div
-      className={`flex items-center justify-between px-4 py-4 transition-colors hover:bg-muted/50 ${isLast ? "" : "border-b border-border/30"}`}
+      className={`${ROW_CLASS} ${isLast ? "" : "border-b border-border/30"}`}
     >
-      <div className="flex-1">
-        <div className="flex items-center gap-2">
+      <div className="sm:flex-1">
+        <div className="flex items-center gap-2 max-sm:flex-wrap">
           <span className="font-semibold text-sm">{event.label}</span>
           <span className="rounded-full bg-blue-500/10 px-2 py-0.5 font-medium text-blue-400 text-[10px] uppercase tracking-wider">
             EVENT
@@ -158,7 +165,7 @@ function EventRow({
         </p>
       </div>
       <Button
-        className="ml-4 shrink-0"
+        className={ROW_BUTTON_CLASS}
         disabled={isCreating}
         onClick={onListen}
         size="sm"
@@ -402,12 +409,12 @@ export function ProtocolDetail({
         </Button>
       )}
 
-      <div className="flex items-start gap-4">
-        <div className="flex size-12 shrink-0 items-center justify-center rounded-lg bg-[var(--color-hub-icon-bg)]">
+      <div className="flex items-start gap-3 sm:gap-4">
+        <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[var(--color-hub-icon-bg)] sm:size-12">
           {protocol.icon ? (
             <Image
               alt={protocol.name}
-              className="rounded"
+              className="size-7 rounded sm:size-8"
               height={32}
               src={protocol.icon}
               width={32}
@@ -417,8 +424,9 @@ export function ProtocolDetail({
           )}
         </div>
         <div>
-          <div className="flex items-center gap-2">
-            <h2 className="font-bold text-2xl">{protocol.name}</h2>
+          {/* In the popup the close button sits over this row on phones. */}
+          <div className="flex items-center gap-2 max-sm:in-data-[slot=dialog-content]:pr-8">
+            <h2 className="font-bold text-xl sm:text-2xl">{protocol.name}</h2>
             {explorerUrl && (
               <a
                 className="text-muted-foreground hover:text-foreground transition-colors"

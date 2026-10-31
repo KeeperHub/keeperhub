@@ -12,14 +12,16 @@ import {
   recordUnresolved,
   type TemplateResolutionTracker,
 } from "@/lib/workflow/executor/template-resolution";
-import { splitTemplateRef } from "@/lib/workflow/template-ref";
+import {
+  findTemplateTokens,
+  hasTemplateToken,
+  parseStoredRef,
+  replaceTemplateTokens,
+  splitTemplateRef,
+} from "@/lib/workflow/template-ref";
 
 // Regex constants for performance
-const TEMPLATE_PATTERN = /\{\{([^}]+)\}\}/g;
 const ARRAY_ACCESS_PATTERN = /^([^[]+)\[(\d+)\]$/;
-
-/** Pattern for {{@nodeId:DisplayName.field}} template references */
-const TEMPLATE_REF_PATTERN = /\{\{@([^:]+):([^}]+)\}\}/g;
 
 /**
  * Extract the trimmed expression inside every `{{...}}` token in a string.
@@ -30,11 +32,7 @@ const TEMPLATE_REF_PATTERN = /\{\{@([^:]+):([^}]+)\}\}/g;
  * Useful for "did any template fail to resolve?" checks at step boundaries.
  */
 export function extractTemplateTokens(value: string): string[] {
-  const tokens: string[] = [];
-  for (const match of value.matchAll(TEMPLATE_PATTERN)) {
-    tokens.push(match[1].trim());
-  }
-  return tokens;
+  return findTemplateTokens(value).map((token) => token.body.trim());
 }
 
 /**
@@ -45,9 +43,13 @@ export function remapTemplateRefsInString(
   value: string,
   idMap: Map<string, string>
 ): string {
-  return value.replace(TEMPLATE_REF_PATTERN, (_, nodeId, rest) => {
-    const newId = idMap.get(nodeId) ?? nodeId;
-    return `{{@${newId}:${rest}}}`;
+  return replaceTemplateTokens(value, (token) => {
+    const ref = parseStoredRef(token.body);
+    if (!ref) {
+      return `{{${token.body}}}`;
+    }
+    const newId = idMap.get(ref.nodeId) ?? ref.nodeId;
+    return `{{@${newId}:${ref.rest}}}`;
   });
 }
 
@@ -260,8 +262,9 @@ export function processTemplate(
     return template;
   }
 
-  return template.replace(TEMPLATE_PATTERN, (match, expression) => {
-    const trimmed = expression.trim();
+  return replaceTemplateTokens(template, ({ body }) => {
+    const match = `{{${body}}}`;
+    const trimmed = body.trim();
 
     if (trimmed.startsWith("@")) {
       return processNewFormatReference(trimmed, nodeOutputs, match, tracker);
@@ -571,31 +574,24 @@ export function formatTemplateForDisplay(template: string): string {
   }
 
   // Match {{@nodeId:DisplayName...}} patterns and show only DisplayName part
-  return template.replace(
-    /\{\{@[^:]+:([^}]+)\}\}/g,
-    (_match, rest) => `{{${rest}}}`
-  );
+  return replaceTemplateTokens(template, ({ body }) => {
+    const ref = parseStoredRef(body);
+    return `{{${ref ? ref.rest : body}}}`;
+  });
 }
 
 /**
  * Check if a string contains template variables
  */
 export function hasTemplateVariables(str: string): boolean {
-  return /\{\{[^}]+\}\}/g.test(str);
+  return hasTemplateToken(str);
 }
 export function extractTemplateVariables(template: string): string[] {
   if (!template || typeof template !== "string") {
     return [];
   }
 
-  const pattern = /\{\{([^}]+)\}\}/g;
-  const variables: string[] = [];
-
-  for (const match of template.matchAll(pattern)) {
-    variables.push(match[1].trim());
-  }
-
-  return variables;
+  return extractTemplateTokens(template);
 }
 
 /**

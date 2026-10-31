@@ -1,12 +1,11 @@
 "use client";
 
 import { UserPlus } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { InviteMemberForm } from "@/components/organization/invite-modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { truncateAddress } from "@/lib/address-utils";
-import { isWalletEmail } from "@/lib/auth/wallet-constants";
+import { loginIdentifier } from "@/lib/auth/login-identifier";
 import { useSession } from "@/lib/auth-client";
 import { useOrgMembers } from "./hooks/use-org-members";
 import { InvitationsCard } from "./invitations-card";
@@ -36,6 +35,15 @@ export function UsersSection(): React.ReactElement {
 
   const currentMemberId =
     members.members.find((m) => m.userId === session?.user?.id)?.id ?? null;
+
+  // Worked out once per member list, not on every keystroke in the search.
+  const identifiers = useMemo(
+    () =>
+      new Map(
+        members.members.map((m) => [m.id, loginIdentifier(m.user.email)])
+      ),
+    [members.members]
+  );
 
   const needle = query.trim().toLowerCase();
   const filtered = members.members
@@ -84,6 +92,7 @@ export function UsersSection(): React.ReactElement {
           <MembersTable
             canManage={isAdmin}
             currentMemberId={currentMemberId}
+            identifiers={identifiers}
             loading={members.loading}
             members={filtered}
             onRemove={members.removeMember}
@@ -130,9 +139,7 @@ export function UsersSection(): React.ReactElement {
             badge: inv.role,
             // Wallet invitees carry a synthetic address rather than a mailbox,
             // and are never emailed, so show the wallet they sign in with.
-            label: isWalletEmail(inv.email)
-              ? truncateAddress(inv.email.split("@")[0])
-              : inv.email,
+            label: loginIdentifier(inv.email).shown,
             expired: inv.expiresAt
               ? new Date(inv.expiresAt) < new Date()
               : false,

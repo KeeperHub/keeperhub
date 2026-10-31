@@ -108,4 +108,14 @@ describe("isSettingsItemVisible", () => {
       true
     );
   });
+
+  it("leaves organization sections out when there is no organization", () => {
+    const noOrg = { ...OWNER, noOrganization: true };
+    expect(isSettingsItemVisible(item("/settings/org-1/billing"), noOrg)).toBe(
+      false
+    );
+    expect(isSettingsItemVisible(item("/settings/security"), noOrg)).toBe(true);
+    const matches = findSettingsMatches("billing", noOrg);
+    expect(matches.some((match) => match.item.scope === "org")).toBe(false);
+  });
 });

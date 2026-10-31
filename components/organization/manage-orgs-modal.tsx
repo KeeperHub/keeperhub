@@ -15,14 +15,17 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { isAddress } from "viem";
+import { createOrganization } from "@/components/organization/create-organization";
 import { ExecutionDigestSection } from "@/components/organization/execution-digest-section";
 import { MemberSessionsDialog } from "@/components/organization/member-sessions-dialog";
 import { MfaEnforcementSection } from "@/components/organization/mfa-enforcement-section";
 import { SpendCapSection } from "@/components/organization/spend-cap-section";
+import { switchAwayFrom } from "@/components/organization/switch-away";
+import { useDigestSettingsOpener } from "@/components/organization/use-digest-deep-link";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -561,44 +564,17 @@ export function ManageOrgsModal({
     role: activeOrgRole,
   } = useActiveMember();
   const router = useRouter();
-  const searchParams = useSearchParams();
+  // Out of the pages of an organization that is gone.
+  const goHome = useCallback(() => router.replace("/"), [router]);
   const { data: session } = authClient.useSession();
 
-  // Arrive from a digest email's "manage emails" link
-  // (`?digestSettings=<orgId>`): switch to that org so the whole context (org
-  // dropdown, role, plan) matches, then open the modal on the Notifications tab
-  // once the switch settles so it's correct on first paint. Runs once; the param
-  // is stripped via history so it can't re-trigger.
-  const deepLinkConsumedRef = useRef(false);
-  useEffect(() => {
-    if (!consumeDeepLink) {
-      return;
-    }
-    const deepLinkOrgId = searchParams.get("digestSettings");
-    if (!deepLinkOrgId) {
-      deepLinkConsumedRef.current = false;
-      return;
-    }
-    if (deepLinkConsumedRef.current) {
-      return;
-    }
-    deepLinkConsumedRef.current = true;
-    const url = new URL(window.location.href);
-    url.searchParams.delete("digestSettings");
-    window.history.replaceState(null, "", url.toString());
-    setActiveTab("notifications");
-    if (organization?.id === deepLinkOrgId) {
-      setOpen(true);
-      return;
-    }
-    switchOrganization(deepLinkOrgId).finally(() => setOpen(true));
-  }, [
-    consumeDeepLink,
-    searchParams,
-    organization?.id,
-    switchOrganization,
+  // Arrive from a digest email's "manage emails" link: once its org is the
+  // active one, open on the Notifications tab.
+  useDigestSettingsOpener({
+    enabled: Boolean(consumeDeepLink),
     setOpen,
-  ]);
+    setActiveTab,
+  });
 
   // Reset to the default tab when the modal closes so reopening it manually
   // doesn't land on the deep-linked Notifications tab.
@@ -914,7 +890,8 @@ export function ManageOrgsModal({
 
     setCreateLoading(true);
     try {
-      const { data, error } = await authClient.organization.create({
+      // Makes it the active org, under the switch lock.
+      const { data, error } = await createOrganization({
         name: orgName,
         slug: orgSlug,
       });
@@ -926,7 +903,6 @@ export function ManageOrgsModal({
 
       const orgId = (data as { id: string } | null)?.id;
       if (orgId) {
-        await authClient.organization.setActive({ organizationId: orgId });
         toast.success(`Organization "${orgName}" created`);
         setOrgName("");
         setOrgSlug("");
@@ -1215,17 +1191,18 @@ export function ManageOrgsModal({
     try {
       await api.organization.leave(managedOrg.id, {});
 
-      toast.success(`Left ${managedOrg.name}`);
       setShowLeaveDialog(false);
       setShowAssignOwnerDialog(false);
       setManagedOrgId(null);
 
-      if (isManagedOrgActive) {
-        const otherOrg = organizations.find((org) => org.id !== managedOrg.id);
-        if (otherOrg) {
-          await switchOrganization(otherOrg.id);
-        }
-      }
+      await switchAwayFrom({
+        removed: managedOrg,
+        wasActive: isManagedOrgActive,
+        organizations,
+        done: "Left",
+        switchOrganization,
+        goHome,
+      });
 
       refetchOrganizations();
       router.refresh();
@@ -1241,6 +1218,7 @@ export function ManageOrgsModal({
     setManagedOrgId,
     switchOrganization,
     router,
+    goHome,
   ]);
 
   const handleLeaveClick = useCallback(() => {
@@ -1277,16 +1255,17 @@ export function ManageOrgsModal({
         newOwnerMemberId: assignOwnerSelectedMemberId,
       });
 
-      toast.success(`Left ${managedOrg.name}`);
       setShowAssignOwnerDialog(false);
       setManagedOrgId(null);
 
-      if (isManagedOrgActive) {
-        const otherOrg = organizations.find((org) => org.id !== managedOrg.id);
-        if (otherOrg) {
-          await switchOrganization(otherOrg.id);
-        }
-      }
+      await switchAwayFrom({
+        removed: managedOrg,
+        wasActive: isManagedOrgActive,
+        organizations,
+        done: "Left",
+        switchOrganization,
+        goHome,
+      });
 
       refetchOrganizations();
       router.refresh();
@@ -1305,6 +1284,7 @@ export function ManageOrgsModal({
     setManagedOrgId,
     switchOrganization,
     router,
+    goHome,
   ]);
 
   const handleDeleteOrg = async () => {
@@ -1322,18 +1302,20 @@ export function ManageOrgsModal({
         return;
       }
 
-      toast.success(`Deleted ${managedOrg.name}`);
       setShowDeleteDialog(false);
       setManagedOrgId(null);
 
       // If we deleted the active org, switch to another org if available
-      if (isManagedOrgActive) {
-        const otherOrg = organizations.find((org) => org.id !== managedOrg.id);
-        if (otherOrg) {
-          await switchOrganization(otherOrg.id);
-        }
-      }
+      await switchAwayFrom({
+        removed: managedOrg,
+        wasActive: isManagedOrgActive,
+        organizations,
+        done: "Deleted",
+        switchOrganization,
+        goHome,
+      });
 
+      refetchOrganizations();
       router.refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "An error occurred");

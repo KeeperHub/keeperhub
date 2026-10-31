@@ -91,8 +91,10 @@ export function DeactivateAccountSection(): React.ReactElement {
   };
 
   return (
-    <Card className="border-destructive/50 py-0 shadow-none">
-      <CardContent className="p-4">
+    // In the settings hub's narrow column this already sits in a card of its
+    // own, so the second frame and its inset go.
+    <Card className="border-destructive/50 py-0 shadow-none @max-xl/settings:border-0 @max-xl/settings:bg-transparent">
+      <CardContent className="p-4 @max-xl/settings:p-0">
         <div className="space-y-4">
           <div>
             <h3 className="font-medium text-destructive">Deactivate Account</h3>
@@ -112,7 +114,9 @@ export function DeactivateAccountSection(): React.ReactElement {
             open={open}
           >
             <AlertDialogTrigger asChild>
-              <Button variant="destructive">Deactivate Account</Button>
+              <Button className="@max-xl/settings:w-full" variant="destructive">
+                Deactivate Account
+              </Button>
             </AlertDialogTrigger>
             <AlertDialogContent>
               <AlertDialogHeader>

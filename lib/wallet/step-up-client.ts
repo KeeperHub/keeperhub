@@ -2,7 +2,7 @@
 
 import { toHex } from "viem";
 import { truncateAddress } from "@/lib/address-utils";
-import { isWalletEmail } from "@/lib/auth/wallet-constants";
+import { walletAddressFromEmail } from "@/lib/auth/wallet-constants";
 import { authClient } from "@/lib/auth-client";
 import type {
   DiscoveredWallet,
@@ -55,10 +55,7 @@ async function discoverProviders(): Promise<Eip1193Provider[]> {
 async function getLoginWalletAddress(): Promise<string | null> {
   try {
     const session = await authClient.getSession();
-    const email = session?.data?.user?.email;
-    if (email && isWalletEmail(email)) {
-      return email.split("@")[0] ?? null;
-    }
+    return walletAddressFromEmail(session?.data?.user?.email);
   } catch {
     // No session or fetch failed; fall back to the active account below.
   }

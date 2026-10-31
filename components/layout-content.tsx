@@ -7,10 +7,18 @@ import { NavigationSidebar } from "@/components/navigation-sidebar";
 import { useRecordExitPath } from "@/components/settings/hub/hooks/use-exit-path";
 import { PersistentCanvas } from "@/components/workflow/persistent-canvas";
 import { WorkflowToolbar } from "@/components/workflow/workflow-toolbar";
+import {
+  isLinkedSignInPath,
+  isUnderRoute,
+  isWelcomePath,
+  MFA_GATE_PATHS,
+} from "@/lib/pre-app-paths";
 
 /**
- * Routes that must render without any auth-aware shell. The MFA gates
- * land here either with NO session at all (OAuth-deferred path, the
+ * Routes that render without the workflow shell behind them.
+ *
+ * The MFA gates (MFA_GATE_PATHS) must render without any auth-aware shell.
+ * They land here either with NO session at all (OAuth-deferred path, the
  * pending_oauth_mfa cookie carries no auth power) or with a session
  * that is intentionally restricted (`requires_mfa = true`, or a wallet
  * member hard-gated by org MFA enforcement). Rendering the navigation
@@ -19,24 +27,18 @@ import { WorkflowToolbar } from "@/components/workflow/workflow-toolbar";
  * factors, and the full layout wraps children in `pointer-events-none`
  * plus fires gated api-client calls that 403 -- which on /enforce-mfa
  * blocked the enrollment buttons and threw the dev error overlay.
+ *
+ * The welcome pages, the pages a visitor signs in on from a link (invite,
+ * device, OAuth consent) and shared execution views are full-screen pages of
+ * their own.
  */
-const BARE_LAYOUT_PATHS: ReadonlySet<string> = new Set([
-  "/verify-mfa",
-  "/enroll-mfa",
-  "/enforce-mfa",
-]);
-
-// Prefixes whose whole subtree renders bare. The welcome landing plus its
-// onboarding wizard (/welcome, /welcome/create-org, ...) are full-screen and
-// must not render the workflow shell behind them. Shared execution views are
-// standalone pages for the same reason.
-const BARE_LAYOUT_PREFIXES: readonly string[] = ["/welcome", "/executions"];
-
 function isBareLayoutPath(pathname: string): boolean {
-  if (BARE_LAYOUT_PATHS.has(pathname)) {
-    return true;
-  }
-  return BARE_LAYOUT_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  return (
+    MFA_GATE_PATHS.has(pathname) ||
+    isWelcomePath(pathname) ||
+    isLinkedSignInPath(pathname) ||
+    isUnderRoute(pathname, "/executions")
+  );
 }
 
 export function LayoutContent({

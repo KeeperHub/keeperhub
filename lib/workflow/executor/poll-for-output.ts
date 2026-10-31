@@ -10,6 +10,11 @@
  * than the throw. A one-shot read races that late write; this bounded poll
  * waits for it before the catch handler gives up and nullifies the node.
  *
+ * Past `timeoutMs`, polling continues up to `maxTimeoutMs` for as long as
+ * `extendWhile` resolves true. That covers a duplicate delivery of a step
+ * whose first attempt is still executing: its success lands only when that
+ * attempt finishes, which can be well past the base window.
+ *
  * Dependency-free (no server-only / DB / metrics) so it imports cleanly into
  * both the workflow bundle and unit tests, and avoids an import cycle with
  * get-completed-step-output.ts.
@@ -19,6 +24,8 @@ export async function pollForCompletedOutput<T>(
   options: {
     timeoutMs: number;
     intervalMs: number;
+    extendWhile?: () => Promise<boolean>;
+    maxTimeoutMs?: number;
     now?: () => number;
     sleep?: (ms: number) => Promise<void>;
   }
@@ -26,7 +33,10 @@ export async function pollForCompletedOutput<T>(
   const now = options.now ?? Date.now;
   const sleep =
     options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-  const deadline = now() + options.timeoutMs;
+  const start = now();
+  const deadline = start + options.timeoutMs;
+  const maxDeadline =
+    start + Math.max(options.timeoutMs, options.maxTimeoutMs ?? 0);
 
   for (;;) {
     const result = await fetchFn();
@@ -34,7 +44,14 @@ export async function pollForCompletedOutput<T>(
       return result;
     }
     if (now() >= deadline) {
-      return null;
+      const { extendWhile } = options;
+      if (!extendWhile || now() >= maxDeadline) {
+        return null;
+      }
+      if (!(await extendWhile())) {
+        // The attempt can commit between the fetch above and this check.
+        return fetchFn();
+      }
     }
     await sleep(options.intervalMs);
   }

@@ -2,8 +2,8 @@
 
 import { useCallback } from "react";
 import { toast } from "sonner";
+import { createOrganization } from "@/components/organization/create-organization";
 import { api } from "@/lib/api-client";
-import { authClient } from "@/lib/auth-client";
 import {
   type OrganizationWithRole,
   useOrganizations,
@@ -42,10 +42,8 @@ export function useOrganizationList(): OrganizationListState {
   const create = useCallback(
     async (name: string, slug: string): Promise<boolean> => {
       try {
-        const { data, error } = await authClient.organization.create({
-          name,
-          slug,
-        });
+        // Makes it the active org, under the switch lock.
+        const { data, error } = await createOrganization({ name, slug });
         if (error) {
           toast.error(error.message || "Failed to create organization");
           return false;
@@ -54,7 +52,6 @@ export function useOrganizationList(): OrganizationListState {
         if (!orgId) {
           return false;
         }
-        await authClient.organization.setActive({ organizationId: orgId });
         toast.success(`Organization "${name}" created`);
         await refetch();
         refreshAll();

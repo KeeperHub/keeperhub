@@ -1,8 +1,8 @@
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
+import { findTemplateTokens } from "@/lib/workflow/template-ref";
 import { findActionById } from "@/plugins/registry";
 
 // Regex patterns at top level for performance
-export const TEMPLATE_PATTERN = /\{\{([^}]+)\}\}/g;
 export const WHITESPACE_PATTERN = /\s+/;
 export const NON_ALPHANUMERIC_PATTERN = /[^a-zA-Z0-9]/g;
 export const ARRAY_INDEX_PATTERN = /^([^[]+)\[(\d+)\]$/;
@@ -18,10 +18,8 @@ export function findNodeReferences(template: string): Set<string> {
     return refs;
   }
 
-  let match: RegExpExecArray | null;
-  // biome-ignore lint/suspicious/noAssignInExpressions: pattern.exec() is the standard way to iterate regex matches
-  while ((match = TEMPLATE_PATTERN.exec(template)) !== null) {
-    const expression = match[1].trim();
+  for (const token of findTemplateTokens(template)) {
+    const expression = token.body.trim();
 
     // Handle @nodeId:DisplayName.field format
     if (expression.startsWith("@")) {

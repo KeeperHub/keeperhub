@@ -17,7 +17,10 @@ import {
 } from "@/components/ui/select";
 import { InvitePreview } from "@/components/welcome/previews";
 import { WelcomeShell } from "@/components/welcome/welcome-shell";
-import { isWalletEmail } from "@/lib/auth/wallet-constants";
+import {
+  isWalletEmail,
+  walletAddressFromEmail,
+} from "@/lib/auth/wallet-constants";
 import { authClient, useSession } from "@/lib/auth-client";
 import { useOrganization } from "@/lib/hooks/use-organization";
 import {
@@ -58,10 +61,7 @@ export function InviteMembersStep(): React.ReactElement {
   // every account kind: match their email (email/social) or, for wallet
   // accounts, the address in their synthetic email.
   const selfEmail = user?.email?.trim().toLowerCase();
-  const selfAddress =
-    selfEmail && isWalletEmail(selfEmail)
-      ? (selfEmail.split("@")[0] ?? "")
-      : "";
+  const selfAddress = walletAddressFromEmail(selfEmail) ?? "";
 
   const dupKeys = findDuplicateKeys(rows.map((row) => row.value));
   const isDuplicate = (row: InviteRow): boolean =>

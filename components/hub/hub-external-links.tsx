@@ -1,30 +1,38 @@
 import { BookOpen, Play } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
-// Demos + Docs anchor cluster. Originally rendered inside HubHero on the
-// right edge of the headline row; lifted into the tab-strip band so the
-// hero can stretch to full width and the anchors share a baseline with
-// the tab pills.
+// Demos + Docs links at the end of the hub tab band.
+const LINKS = [
+  { href: "https://youtube.com/@KeeperHub", label: "Demos", Icon: Play },
+  { href: "https://docs.keeperhub.com", label: "Docs", Icon: BookOpen },
+] as const;
+
+// The outline Button on the hub surface fill; while the band is under 36rem
+// the links grow to the search box's height.
+const LINK_CLASSES =
+  "text-xs shadow-none bg-[var(--color-hub-icon-bg)] hover:bg-[var(--color-hub-icon-bg-hover)] dark:bg-[var(--color-hub-icon-bg)] dark:hover:bg-[var(--color-hub-icon-bg-hover)] transition-colors motion-reduce:transition-none focus-visible:hub-focus-ring focus-visible:ring-offset-sidebar @max-xl/hub-band:h-auto";
+
+// Below 375px the search box needs the room, so the links show their icons
+// alone; the label stays as their accessible name.
+const LABEL_CLASSES = "max-xs:sr-only";
+
 export function HubExternalLinks(): React.ReactElement {
   return (
-    <div className="flex shrink-0 items-center gap-2">
-      <a
-        className="inline-flex items-center gap-1.5 rounded-md border border-border bg-[var(--color-hub-icon-bg)] px-2.5 py-1 text-muted-foreground text-xs transition-colors hover:border-border/60 hover:text-foreground motion-reduce:transition-none"
-        href="https://youtube.com/@KeeperHub"
-        rel="noopener noreferrer"
-        target="_blank"
-      >
-        <Play className="size-3" />
-        Demos
-      </a>
-      <a
-        className="inline-flex items-center gap-1.5 rounded-md border border-border bg-[var(--color-hub-icon-bg)] px-2.5 py-1 text-muted-foreground text-xs transition-colors hover:border-border/60 hover:text-foreground motion-reduce:transition-none"
-        href="https://docs.keeperhub.com"
-        rel="noopener noreferrer"
-        target="_blank"
-      >
-        <BookOpen className="size-3" />
-        Docs
-      </a>
+    <div className="flex shrink-0 items-center gap-2 @max-xl/hub-band:items-stretch">
+      {LINKS.map(({ href, label, Icon }) => (
+        <Button
+          asChild
+          className={LINK_CLASSES}
+          key={label}
+          size="sm"
+          variant="outline"
+        >
+          <a href={href} rel="noopener noreferrer" target="_blank">
+            <Icon className="size-3.5" />
+            <span className={LABEL_CLASSES}>{label}</span>
+          </a>
+        </Button>
+      ))}
     </div>
   );
 }

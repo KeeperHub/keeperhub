@@ -3,14 +3,16 @@ import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resol
 import { isSafeConditionExpression } from "@/lib/workflow/nodes/condition/safe-eval";
 import { DEFAULT_HTTP_METHOD } from "@/lib/workflow/nodes/http-request/constants";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
-import { splitTemplateRef } from "@/lib/workflow/template-ref";
+import {
+  replaceTemplateTokens,
+  splitTemplateRef,
+} from "@/lib/workflow/template-ref";
 import { findActionById, flattenConfigFields } from "@/plugins/registry";
 import {
   analyzeNodeUsage,
   buildAccessPath,
   getStepInfo,
   removeInvisibleChars,
-  TEMPLATE_PATTERN,
   toFriendlyVarName,
   toTypeScriptLiteral,
 } from "./shared";
@@ -230,8 +232,9 @@ export function generateWorkflowCode(
       return template;
     }
 
-    return template.replace(TEMPLATE_PATTERN, (match, expression) => {
-      const trimmed = expression.trim();
+    return replaceTemplateTokens(template, ({ body }) => {
+      const match = `{{${body}}}`;
+      const trimmed = body.trim();
 
       if (trimmed.startsWith("@")) {
         return processAtFormat(trimmed, match);
@@ -255,8 +258,9 @@ export function generateWorkflowCode(
     const cleaned = removeInvisibleChars(condition);
 
     // Then convert template references
-    const converted = cleaned.replace(TEMPLATE_PATTERN, (match, expression) => {
-      const trimmed = expression.trim();
+    const converted = replaceTemplateTokens(cleaned, ({ body }) => {
+      const match = `{{${body}}}`;
+      const trimmed = body.trim();
 
       if (trimmed.startsWith("@")) {
         return processAtFormatForExpression(trimmed, match);

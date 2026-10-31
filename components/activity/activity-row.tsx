@@ -273,20 +273,36 @@ export function ActivityRow({
 
   const header = (
     <>
-      <div className="flex items-baseline justify-between gap-2 text-sm leading-snug">
-        <span className="min-w-0 truncate">
-          <span className="font-medium">{actorLabel(actor)}</span>
-          {role && (
-            <span className="ml-1 text-muted-foreground text-xs">· {role}</span>
-          )}
+      {/* On phones a long action ("changed the organization's AI agent
+          limit") leaves no room for the name, so the action drops to a line of
+          its own and the name, role and badge wrap instead of truncating. */}
+      <div className="flex items-baseline justify-between gap-2 text-sm leading-snug max-sm:flex-wrap max-sm:gap-y-0.5">
+        <span className="min-w-0 truncate max-sm:flex max-sm:flex-1 max-sm:flex-wrap max-sm:items-baseline max-sm:gap-x-1.5 max-sm:gap-y-1 max-sm:whitespace-normal">
+          {/* On phones a long name or email can push the role to a line of
+              its own, so the separator dot is dropped there and a space (which
+              vanishes at a line start) stands in for the margin. */}
+          <span>
+            <span className="font-medium max-sm:wrap-anywhere">
+              {actorLabel(actor)}
+            </span>
+            <span className="sm:hidden"> </span>
+            {role && (
+              <span className="ml-1 text-muted-foreground text-xs max-sm:ml-0 max-sm:whitespace-nowrap">
+                <span className="max-sm:hidden">· </span>
+                {role}
+              </span>
+            )}
+          </span>
           {via && (
-            <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 font-medium text-[10px] text-foreground">
+            <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 font-medium text-[10px] text-foreground max-sm:ml-0 max-sm:max-w-full max-sm:truncate">
               {via}
             </span>
           )}
         </span>
-        <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-muted-foreground">
-          {capitalize(phrase)}
+        <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-muted-foreground max-sm:contents">
+          <span className="max-sm:order-last max-sm:basis-full max-sm:whitespace-normal">
+            {capitalize(phrase)}
+          </span>
           {/* Always reserve the chevron slot so non-openable rows keep their
               label aligned with openable ones. */}
           {canOpen ? (

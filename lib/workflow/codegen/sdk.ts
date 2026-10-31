@@ -1,7 +1,10 @@
 import "server-only";
 
 import { DEFAULT_HTTP_METHOD } from "@/lib/workflow/nodes/http-request/constants";
-import { splitTemplateRef } from "@/lib/workflow/template-ref";
+import {
+  replaceTemplateTokens,
+  splitTemplateRef,
+} from "@/lib/workflow/template-ref";
 import { findActionById } from "@/plugins/registry";
 import { synthesiseProtocolForSDK } from "./protocol-synthesiser";
 // System action codegen templates (not in plugin registry)
@@ -150,10 +153,9 @@ function convertTemplateToJSWithLabels(
     return template;
   }
 
-  const pattern = /\{\{([^}]+)\}\}/g;
-
-  return template.replace(pattern, (match, expression) => {
-    const trimmed = expression.trim();
+  return replaceTemplateTokens(template, ({ body }) => {
+    const match = `{{${body}}}`;
+    const trimmed = body.trim();
 
     if (trimmed.startsWith("@")) {
       return processNewFormatID(trimmed, match, nodeLabels);

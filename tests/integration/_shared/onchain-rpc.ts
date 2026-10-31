@@ -110,9 +110,10 @@ export function isRpcInfraError(err: unknown): boolean {
 // without stretching a healthy test.
 const MAX_ATTEMPTS = 4;
 const BASE_DELAY_MS = 750;
-// Headroom added to each test's own timeout to cover the retry backoff so a
-// retried-but-healthy test does not trip the per-test deadline.
-const RETRY_BUDGET_MS = 30_000;
+// Headroom added to each test's own timeout to cover the retry backoff and up
+// to two stalled calls, which RpcProviderManager holds for its 30s timeout
+// before retrying, so a retried-but-healthy test does not trip the deadline.
+const RETRY_BUDGET_MS = 70_000;
 const DEFAULT_TEST_TIMEOUT_MS = 15_000;
 
 function sleep(ms: number): Promise<void> {
