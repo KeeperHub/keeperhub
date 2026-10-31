@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { nanoid } from "nanoid";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -86,6 +86,7 @@ import {
   previewVersionAtom,
   propertiesPanelActiveTabAtom,
   redoAtom,
+  rightPanelWidthAtom,
   runsRefreshTriggerAtom,
   selectedEdgeAtom,
   selectedExecutionIdAtom,
@@ -2090,40 +2091,54 @@ function ReadOnlyBadge({ className }: { className?: string }) {
   );
 }
 
-// Use-template Button — placed next to Sign In for non-owners (HUB-01, HUB-02).
-function UseTemplateButton({
-  className,
+// Use template for a public workflow you do not own (HUB-01, HUB-02): at the
+// bottom on phones, from md centred between the sidebar and the right panel.
+function UseTemplateBar({
   isUsingTemplate,
   onUseTemplate,
 }: {
-  className?: string;
   isUsingTemplate: boolean;
   onUseTemplate: () => void;
 }) {
+  const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
   return (
-    <button
-      aria-label="Use this workflow as a template"
-      className={cn(
-        "inline-flex h-8 items-center rounded-md border px-2.5 font-normal text-xs transition-colors duration-150 hover:bg-[var(--color-bg-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50 motion-reduce:transition-none phone-ui:shrink-0 phone-ui:whitespace-nowrap",
-        className
-      )}
-      data-analytics="template_use_clicked"
-      disabled={isUsingTemplate}
-      onClick={onUseTemplate}
-      style={{
-        borderColor: "color-mix(in oklab, var(--color-text-accent) 50%, transparent)",
-        color: "var(--color-text-accent)",
-      }}
-      title="Use this workflow as a template in your account"
-      type="button"
+    <div
+      className="@container pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))] left-[max(1rem,env(safe-area-inset-left))] flex justify-center max-xs:right-3 max-xs:left-3 md:right-(--use-template-right) md:bottom-4 md:left-(--nav-content-offset,var(--nav-sidebar-width,60px)) md:px-17 md:transition-[left,right] md:duration-300 md:ease-out motion-reduce:transition-none"
+      data-testid="use-template-bar"
+      style={
+        { "--use-template-right": rightPanelWidth ?? "0px" } as CSSProperties
+      }
     >
-      {isUsingTemplate ? (
-        <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-      ) : (
-        <Copy className="mr-1.5 size-3.5" />
-      )}
-      {isUsingTemplate ? "Importing…" : "Use template"}
-    </button>
+      <div
+        className="pointer-events-auto flex w-full items-center gap-2.5 rounded-lg border bg-background py-2 pr-2 pl-3 shadow-lg md:w-auto"
+        // globals.css keeps toasts above it.
+        data-editor-toolbar=""
+        data-use-template-bar=""
+      >
+        <ReadOnlyBadge className="shrink-0" />
+        <p className="hidden min-w-0 flex-1 text-muted-foreground text-sm leading-4 @min-[21.5rem]:block md:flex-none">
+          <span className="@min-[36rem]:hidden">Copy it to edit and run it</span>
+          <span className="hidden @min-[36rem]:inline">
+            Read-only. Make your own copy to edit and run it.
+          </span>
+        </p>
+        <Button
+          aria-label="Use this workflow as a template"
+          className="ml-auto shrink-0 bg-keeperhub-green hover:bg-keeperhub-green-dark disabled:opacity-70"
+          data-analytics="template_use_clicked"
+          disabled={isUsingTemplate}
+          onClick={onUseTemplate}
+          title="Use this workflow as a template in your account"
+        >
+          {isUsingTemplate ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Copy className="size-4" />
+          )}
+          {isUsingTemplate ? "Importing…" : "Use template"}
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -2181,6 +2196,16 @@ export const WorkflowToolbar = ({
     ? "flex items-center gap-2"
     : "flex flex-col-reverse items-end gap-2 lg:flex-row lg:items-center";
 
+  const useTemplateBar = isWorkflowRoute &&
+    effectiveWorkflowId &&
+    !state.isOwner &&
+    state.workflowVisibility === "public" && (
+      <UseTemplateBar
+        isUsingTemplate={state.isDuplicating}
+        onUseTemplate={actions.handleUseTemplate}
+      />
+    );
+
   if (persistent) {
     return (
       <div className={containerClassName}>
@@ -2216,27 +2241,13 @@ export const WorkflowToolbar = ({
               <OrgSwitcher focusFallback={menuButtonRef} />
             </div>
           )}
-          {/* 16px (the gap and an ml-2) before what follows the logo and
-              switcher: the workflow's name from lg, and Use template in a
-              768-1023px window with a mouse (where name and badge hide). */}
+          {/* The workflow's name from lg, 16px (the gap and an ml-2) after
+              the logo and switcher. */}
           {isWorkflowRoute && state.currentWorkflowId && (
             <span className="hidden max-w-48 truncate font-medium text-foreground text-sm lg:ml-2 lg:inline-block">
               {state.workflowName}
             </span>
           )}
-          {isWorkflowRoute &&
-            effectiveWorkflowId &&
-            !state.isOwner &&
-            state.workflowVisibility === "public" && (
-              <>
-                <ReadOnlyBadge className="hidden lg:inline-flex" />
-                <UseTemplateButton
-                  className="mouse-tablet:ml-2"
-                  isUsingTemplate={state.isDuplicating}
-                  onUseTemplate={actions.handleUseTemplate}
-                />
-              </>
-            )}
         </div>
 
         {/* Right side: Actions + User Menu */}
@@ -2255,6 +2266,7 @@ export const WorkflowToolbar = ({
             </div>
           </div>
         </div>
+        {useTemplateBar}
       </div>
     );
   }
@@ -2280,18 +2292,6 @@ export const WorkflowToolbar = ({
               <OrgSwitcher />
             </div>
           )}
-          {isWorkflowRoute &&
-            effectiveWorkflowId &&
-            !state.isOwner &&
-            state.workflowVisibility === "public" && (
-              <>
-                <ReadOnlyBadge className="hidden lg:inline-flex" />
-                <UseTemplateButton
-                  isUsingTemplate={state.isDuplicating}
-                  onUseTemplate={actions.handleUseTemplate}
-                />
-              </>
-            )}
         </div>
       </Panel>
 
@@ -2309,6 +2309,7 @@ export const WorkflowToolbar = ({
           </div>
         </div>
       </div>
+      {useTemplateBar}
     </>
   );
 };

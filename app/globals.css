@@ -512,6 +512,14 @@
   }
 }
 
+/* From md, toasts 8px above the Use template bar (54px tall, 16px up), which
+   a narrow canvas puts under them. */
+@media (width >= 48rem) {
+  body:has([data-use-template-bar]) [data-sonner-toaster] {
+    --offset-bottom: 4.875rem !important;
+  }
+}
+
 /* Statuspage embedded widget overrides */
 #statuspage-widget .sp-widget {
   font-family: var(--font-anek-latin), sans-serif !important;
