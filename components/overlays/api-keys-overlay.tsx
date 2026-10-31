@@ -841,7 +841,7 @@ export function ApiKeysPanel({
   onKeyCreated,
 }: ApiKeysPanelProps) {
   const { push } = useOverlay();
-  const { isAdmin, role } = useActiveMember();
+  const { isAdmin, isViewer, role } = useActiveMember();
   const { data: session } = useSession();
   // Webhook keys are personal, so their creator is the current user.
   const currentUser = {
@@ -892,7 +892,9 @@ export function ApiKeysPanel({
     <div className="space-y-4">
       <div className="flex justify-end">
         <Button
-          disabled={activeTab === "organisation" && !canManageOrgKeys}
+          disabled={
+            isViewer || (activeTab === "organisation" && !canManageOrgKeys)
+          }
           onClick={createKey}
           variant="outline"
         >

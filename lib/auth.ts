@@ -11,7 +11,6 @@ import {
   siwe,
   twoFactor,
 } from "better-auth/plugins";
-import { createAccessControl } from "better-auth/plugins/access";
 import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { generateSiweNonce } from "viem/siwe";
@@ -23,6 +22,7 @@ import {
   WALLET_EMAIL_DOMAIN,
   walletAddressFromEmail,
 } from "@/lib/auth/wallet-constants";
+import { ac, orgRoles } from "@/lib/auth-access-control";
 import { isUserDeactivated } from "@/lib/auth-deactivation-guard";
 import { isDisposableEmailDomain } from "@/lib/auth-disposable-emails";
 import { DISPOSABLE_EMAIL_REJECTION_MESSAGE } from "@/lib/auth-disposable-emails-message";
@@ -43,6 +43,8 @@ import {
   logWarn,
 } from "@/lib/logging";
 import { revokeRefreshTokensForUserOrg } from "@/lib/mcp/oauth-store";
+import { revokeMcpGrantsOnViewerDowngrade } from "@/lib/org/viewer-downgrade";
+import { isViewerRole } from "@/lib/organization/role-label";
 import { recordAuditEvent } from "@/lib/security/audit-log";
 import {
   CLIENT_IP_HEADERS,
@@ -54,6 +56,7 @@ import {
   serializeRiskFlags,
   upsertTrustedCountry,
 } from "@/lib/security/login-risk";
+import { getOrgRole } from "@/lib/security/org-role";
 import { reportSessionBackstop } from "@/lib/security/session-backstop";
 import { TRUSTED_ORIGINS } from "@/lib/trusted-origins";
 import { generateHandle } from "@/lib/utils/wallet-handle";
@@ -84,45 +87,6 @@ import {
 
 // SIWE wallet emails are always `0x<40-hex>@wallet.keeperhub.com`.
 const WALLET_LOCAL_PART_RE = /^0x[0-9a-f]{40}$/i;
-
-// Define custom access control for organization resources
-const statement = {
-  workflow: ["create", "read", "update", "delete"],
-  credential: ["create", "read", "update", "delete"],
-  wallet: ["create", "read", "update", "delete"],
-  organization: ["read", "update", "delete"],
-  member: ["create", "read", "update", "delete"],
-  invitation: ["create", "cancel"],
-} as const;
-
-const ac = createAccessControl(statement);
-
-// Define role permissions aligned with requirements
-const memberRole = ac.newRole({
-  workflow: ["create", "read", "update", "delete"],
-  credential: ["read"],
-  wallet: ["read"], // Can use wallet, not manage
-  organization: ["read"],
-  member: ["read"],
-});
-
-const adminRole = ac.newRole({
-  workflow: ["create", "read", "update", "delete"],
-  credential: ["create", "read", "update", "delete"],
-  wallet: ["create", "read", "update", "delete"], // Can manage wallets
-  organization: ["update"],
-  member: ["create", "update", "delete"],
-  invitation: ["create", "cancel"],
-});
-
-const ownerRole = ac.newRole({
-  workflow: ["create", "read", "update", "delete"],
-  credential: ["create", "read", "update", "delete"],
-  wallet: ["create", "read", "update", "delete"],
-  organization: ["update", "delete"],
-  member: ["create", "update", "delete"],
-  invitation: ["create", "cancel"],
-});
 
 // Construct schema object for drizzle adapter
 const schema = {
@@ -421,11 +385,7 @@ const plugins = [
   organization({
     // Access control with custom roles
     ac,
-    roles: {
-      owner: ownerRole,
-      admin: adminRole,
-      member: memberRole,
-    },
+    roles: orgRoles,
 
     // Wallet (SIWE) accounts authenticate by signature and never verify their
     // synthetic email, so better-auth's default email-verification gate on
@@ -542,6 +502,13 @@ const plugins = [
           resourceId: data.member.id,
           before: { role: data.previousRole },
           after: { role: data.member.role },
+        });
+
+        await revokeMcpGrantsOnViewerDowngrade({
+          userId: data.member.userId,
+          organizationId: data.organization.id,
+          previousRole: data.previousRole,
+          role: data.member.role,
         });
       },
 
@@ -739,6 +706,11 @@ async function backstopProvisionWallet(
     // registration - so keep them out of the static graph and load on demand.
     const { organizationHasWallet } = await import("@/lib/web3/wallet-helpers");
     if (await organizationHasWallet(organizationId)) {
+      return;
+    }
+
+    // A viewer must never become the org wallet's owner.
+    if (isViewerRole(await getOrgRole(userId, organizationId))) {
       return;
     }
 

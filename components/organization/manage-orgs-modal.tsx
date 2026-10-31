@@ -332,6 +332,7 @@ function MembersListContent({
                   </SelectTrigger>
                   {/* One owner per org (DB-enforced), so becoming owner is a transfer, handled in the Leave Organization flow. */}
                   <SelectContent>
+                    <SelectItem value={"viewer"}>Viewer</SelectItem>
                     <SelectItem value={"member"}>Member</SelectItem>
                     <SelectItem value={"admin"}>Admin</SelectItem>
                   </SelectContent>
@@ -412,7 +413,9 @@ function MembersListContent({
             {entry.kind === "member" &&
               canInvite &&
               entry.userId !== currentUserId &&
-              (currentUserRole === "owner" || entry.role === "member") && (
+              (currentUserRole === "owner" ||
+                entry.role === "member" ||
+                entry.role === "viewer") && (
                 <Button
                   aria-label={`Remove ${entry.email}`}
                   disabled={removingMember === entry.id}
@@ -1054,7 +1057,7 @@ export function ManageOrgsModal({
       const { error: inviteError } = await authClient.organization.inviteMember(
         {
           email,
-          role: role as "member" | "admin" | "owner",
+          role: role as MemberRole,
           organizationId: managedOrgId,
         }
       );
@@ -1669,6 +1672,7 @@ export function ManageOrgsModal({
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
+                              <SelectItem value={"viewer"}>Viewer</SelectItem>
                               <SelectItem value={"member"}>Member</SelectItem>
                               <SelectItem value={"admin"}>Admin</SelectItem>
                               {isOwner && (

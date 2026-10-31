@@ -39,7 +39,7 @@ export function IntegrationsManager({
       highlightedRef.current.scrollIntoView({ block: "nearest" });
     }
   }, [highlightId]);
-  const { isAdmin } = useActiveMember();
+  const { isAdmin, isViewer } = useActiveMember();
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [loading, setLoading] = useState(true);
   const [_testingId, setTestingId] = useState<string | null>(null);
@@ -223,22 +223,26 @@ export function IntegrationsManager({
                   <History className="size-3" />
                 </Button>
               )}
-              <Button
-                className="size-7"
-                onClick={() => handleEdit(integration)}
-                size="icon"
-                variant="outline"
-              >
-                <Pencil className="size-3" />
-              </Button>
-              <Button
-                className="size-7"
-                onClick={() => handleDelete(integration)}
-                size="icon"
-                variant="outline"
-              >
-                <Trash2 className="size-3" />
-              </Button>
+              {!isViewer && (
+                <>
+                  <Button
+                    className="size-7"
+                    onClick={() => handleEdit(integration)}
+                    size="icon"
+                    variant="outline"
+                  >
+                    <Pencil className="size-3" />
+                  </Button>
+                  <Button
+                    className="size-7"
+                    onClick={() => handleDelete(integration)}
+                    size="icon"
+                    variant="outline"
+                  >
+                    <Trash2 className="size-3" />
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         ))}

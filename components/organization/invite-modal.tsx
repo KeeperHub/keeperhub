@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/select";
 import { authClient } from "@/lib/auth-client";
 import { useOrganization } from "@/lib/hooks/use-organization";
+import type { InviteRole } from "@/lib/organization/role-label";
 
 type InviteMode = "email" | "wallet";
 
@@ -45,7 +46,7 @@ export function InviteMemberForm({
   const [mode, setMode] = useState<InviteMode>("email");
   const [email, setEmail] = useState("");
   const [address, setAddress] = useState("");
-  const [role, setRole] = useState<"member" | "admin">("member");
+  const [role, setRole] = useState<InviteRole>("member");
   const [loading, setLoading] = useState(false);
   const [inviteId, setInviteId] = useState<string | null>(null);
   const { organization } = useOrganization();
@@ -176,13 +177,14 @@ export function InviteMemberForm({
           <div className="flex w-36 flex-col gap-1.5">
             <Label htmlFor="invite-role">Role</Label>
             <Select
-              onValueChange={(v) => setRole(v as "member" | "admin")}
+              onValueChange={(v) => setRole(v as InviteRole)}
               value={role}
             >
               <SelectTrigger id="invite-role">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="viewer">Viewer</SelectItem>
                 <SelectItem value="member">Member</SelectItem>
                 <SelectItem value="admin">Admin</SelectItem>
               </SelectContent>
@@ -279,14 +281,14 @@ export function InviteMemberForm({
         )}
         <div className="space-y-2">
           <Label htmlFor="role">Role</Label>
-          <Select
-            onValueChange={(v) => setRole(v as "member" | "admin")}
-            value={role}
-          >
+          <Select onValueChange={(v) => setRole(v as InviteRole)} value={role}>
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="viewer">
+                Viewer - Can view everything, change nothing
+              </SelectItem>
               <SelectItem value="member">
                 Member - Can create workflows
               </SelectItem>

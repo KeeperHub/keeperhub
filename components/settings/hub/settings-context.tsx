@@ -21,7 +21,7 @@ import {
   useOrganization,
   useOrganizations,
 } from "@/lib/hooks/use-organization";
-import type { OrgRole } from "@/lib/organization/role-label";
+import { isViewerRole, type OrgRole } from "@/lib/organization/role-label";
 
 type SettingsContextValue = {
   organizationId: string | null;
@@ -31,6 +31,8 @@ type SettingsContextValue = {
   roleLoading: boolean;
   isOwner: boolean;
   isAdmin: boolean;
+  /** False for viewers, who read everything in the org and change nothing. */
+  canEdit: boolean;
   isLoading: boolean;
   /**
    * Bumps on every active-organization change and on refreshAll(). Every
@@ -155,6 +157,7 @@ export function SettingsProvider({
   // disappears once the answer arrives.
   const isOwner = role === "owner";
   const isAdmin = role === "owner" || role === "admin";
+  const canEdit = role !== undefined && !isViewerRole(role);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: organizationId is a reload trigger, not a value this reads
   useEffect(() => {
@@ -167,6 +170,7 @@ export function SettingsProvider({
 
   const value = useMemo<SettingsContextValue>(
     () => ({
+      canEdit,
       isAdmin,
       isLoading: orgLoading || memberLoading,
       isOwner,
@@ -178,6 +182,7 @@ export function SettingsProvider({
       roleLoading,
     }),
     [
+      canEdit,
       isAdmin,
       isOwner,
       memberLoading,

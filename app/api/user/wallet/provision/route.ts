@@ -2,6 +2,8 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
 import { requireOrganization } from "@/lib/middleware/require-org";
+import { isViewerRole } from "@/lib/organization/role-label";
+import { VIEWER_READ_ONLY_ERROR } from "@/lib/security/viewer-policy";
 import { createProvisionWalletStreamStart } from "@/lib/turnkey/provision-wallet-stream";
 
 // Reject anonymous / unverified placeholder emails - those orgs never get a
@@ -25,6 +27,10 @@ export const GET = requireOrganization(
           { error: "No active organization" },
           { status: 400 }
         );
+      }
+
+      if (isViewerRole(context.member?.role)) {
+        return NextResponse.json(VIEWER_READ_ONLY_ERROR, { status: 403 });
       }
 
       const user = context.user;

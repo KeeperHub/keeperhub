@@ -23,9 +23,11 @@ vi.mock("@/lib/middleware/auth-helpers", () => ({
 }));
 
 vi.mock("@/lib/workflow/access", () => ({
-  getWorkflowAccess: vi
-    .fn()
-    .mockResolvedValue({ hasFullAccess: true, isDeleted: false }),
+  getWorkflowAccess: vi.fn().mockResolvedValue({
+    hasFullAccess: true,
+    canEdit: true,
+    isDeleted: false,
+  }),
 }));
 
 describe("KEEP-481: executions list coerces step counts to number|null", () => {

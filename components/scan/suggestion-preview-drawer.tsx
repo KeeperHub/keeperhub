@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/sheet";
 import { WorkflowCanvas } from "@/components/workflow/workflow-canvas";
 import { getChainName } from "@/lib/chain-utils";
+import { useActiveMember } from "@/lib/hooks/use-organization";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { buildWorkflow } from "@/lib/scan/factory";
 import {
@@ -86,6 +87,7 @@ export function SuggestionPreviewDrawer({
   const setIsOwner = useSetAtom(isWorkflowOwnerAtom);
   const setRightPanelWidth = useSetAtom(rightPanelWidthAtom);
   const { openAuthPrompt } = useAuthPrompt();
+  const { isViewer } = useActiveMember();
   const router = useRouter();
   const [needsWallet, setNeedsWallet] = useState<boolean>(false);
   const [isPersisting, setIsPersisting] = useState<boolean>(false);
@@ -413,7 +415,7 @@ export function SuggestionPreviewDrawer({
           {isAddress ? (
             <AddressActions
               address={value}
-              canBookmark={isAuthenticated}
+              canBookmark={isAuthenticated && !isViewer}
               chainId={activeSuggestion.chainId}
             />
           ) : null}
@@ -555,7 +557,13 @@ export function SuggestionPreviewDrawer({
           {/* CTAs — see FUNNEL-02/03/04/05 for the full branching logic.
               needsWallet replaces the normal CTA pair with a provision prompt
               (FUNNEL-05, write-type suggestion only, forward-compat). */}
-          {needsWallet ? (
+          {isViewer && (
+            <p className="mt-6 text-muted-foreground text-sm">
+              You have view-only access to this organization, so you cannot add
+              this workflow.
+            </p>
+          )}
+          {!isViewer && needsWallet && (
             <div className="mt-6">
               <p className="mb-3 text-sm text-muted-foreground">
                 This workflow requires a connected wallet. Set one up to
@@ -570,7 +578,8 @@ export function SuggestionPreviewDrawer({
                 Set up Wallet
               </Button>
             </div>
-          ) : (
+          )}
+          {!(isViewer || needsWallet) && (
             <div className="mt-6">
               <Button
                 className="w-full"

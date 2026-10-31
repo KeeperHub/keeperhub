@@ -8,6 +8,7 @@ import { api } from "@/lib/api-client";
 import { analyticsProjectIdAtom } from "@/lib/atoms/analytics";
 import { authClient } from "@/lib/auth-client";
 import { useOrganizationsData } from "@/lib/hooks/use-org-data";
+import { isViewerRole, type OrgRole } from "@/lib/organization/role-label";
 import { registerOrganizationRefetch } from "@/lib/refetch-organizations";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { latestVisibleWorkflow } from "@/lib/workflow/latest-workflow";
@@ -277,9 +278,11 @@ export function useActiveMember() {
   return {
     member: member || null,
     isLoading: isPending,
-    role: member?.role as "owner" | "admin" | "member" | undefined,
+    role: member?.role as OrgRole | undefined,
     isOwner: member?.role === "owner",
     isAdmin: member?.role === "admin" || member?.role === "owner",
+    // Viewers read everything in the org and change nothing.
+    isViewer: isViewerRole(member?.role),
   };
 }
 
@@ -302,7 +305,7 @@ export function usePermissions() {
   };
 
   const checkLocalPermission = (
-    role: "owner" | "admin" | "member",
+    role: OrgRole,
     resource: string,
     actions: string[]
   ) =>

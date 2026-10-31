@@ -8,10 +8,12 @@ import { Button } from "@/components/ui/button";
 import type { Project, Tag } from "@/lib/api-client";
 import { useProjectsTags } from "./hooks/use-projects-tags";
 import { EmptyState, SectionHeader, SettingsCard } from "./section";
+import { useSettingsContext } from "./settings-context";
 import { GroupingTable } from "./workspace/grouping-table";
 
 export function WorkspaceSection(): React.ReactElement {
   const data = useProjectsTags();
+  const { canEdit } = useSettingsContext();
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [editingTag, setEditingTag] = useState<Tag | null>(null);
   const [projectDialog, setProjectDialog] = useState(false);
@@ -35,10 +37,16 @@ export function WorkspaceSection(): React.ReactElement {
 
       <SettingsCard
         action={
-          <Button onClick={() => openProject(null)} size="sm" variant="outline">
-            <Plus className="size-3.5" />
-            New project
-          </Button>
+          canEdit ? (
+            <Button
+              onClick={() => openProject(null)}
+              size="sm"
+              variant="outline"
+            >
+              <Plus className="size-3.5" />
+              New project
+            </Button>
+          ) : undefined
         }
         bodyClassName="p-2"
         description="The top-level grouping in the workflows sidebar."
@@ -49,7 +57,7 @@ export function WorkspaceSection(): React.ReactElement {
         )}
         {(data.loadingProjects || data.projects.length > 0) && (
           <GroupingTable
-            canManage
+            canManage={canEdit}
             loading={data.loadingProjects}
             onDelete={async (id) => {
               const project = data.projects.find((p) => p.id === id);
@@ -68,10 +76,12 @@ export function WorkspaceSection(): React.ReactElement {
 
       <SettingsCard
         action={
-          <Button onClick={() => openTag(null)} size="sm" variant="outline">
-            <Plus className="size-3.5" />
-            New tag
-          </Button>
+          canEdit ? (
+            <Button onClick={() => openTag(null)} size="sm" variant="outline">
+              <Plus className="size-3.5" />
+              New tag
+            </Button>
+          ) : undefined
         }
         bodyClassName="p-2"
         description="Tags subdivide a project in the second sidebar panel."
@@ -82,7 +92,7 @@ export function WorkspaceSection(): React.ReactElement {
         )}
         {(data.loadingTags || data.tags.length > 0) && (
           <GroupingTable
-            canManage
+            canManage={canEdit}
             loading={data.loadingTags}
             onDelete={async (id) => {
               const tag = data.tags.find((t) => t.id === id);

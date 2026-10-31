@@ -18,6 +18,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, type SavedWorkflow } from "@/lib/api-client";
 import { authClient, useSession } from "@/lib/auth-client";
 import { getChainName, getExplorerUrl } from "@/lib/chain-utils";
+import { useActiveMember } from "@/lib/hooks/use-organization";
 import {
   buildEventAbiFragment,
   type ProtocolAction,
@@ -74,7 +75,8 @@ export function ActionRow({
   action: ProtocolAction;
   isLast: boolean;
   isCreating: boolean;
-  onUse: () => void;
+  // Absent for viewers, who cannot create workflows.
+  onUse?: () => void;
 }): React.ReactElement {
   // Payer inputs render no field anywhere, so the line counts the ones a
   // workflow actually fills.
@@ -116,15 +118,17 @@ export function ActionRow({
             </p>
           )}
       </div>
-      <Button
-        className={ROW_BUTTON_CLASS}
-        disabled={isCreating}
-        onClick={onUse}
-        size="sm"
-        variant="outline"
-      >
-        {isCreating ? "Creating..." : "Use in Workflow"}
-      </Button>
+      {onUse && (
+        <Button
+          className={ROW_BUTTON_CLASS}
+          disabled={isCreating}
+          onClick={onUse}
+          size="sm"
+          variant="outline"
+        >
+          {isCreating ? "Creating..." : "Use in Workflow"}
+        </Button>
+      )}
     </div>
   );
 }
@@ -138,7 +142,7 @@ function EventRow({
   event: ProtocolEvent;
   isLast: boolean;
   isCreating: boolean;
-  onListen: () => void;
+  onListen?: () => void;
 }): React.ReactElement {
   return (
     <div
@@ -164,16 +168,18 @@ function EventRow({
           )
         </p>
       </div>
-      <Button
-        className={ROW_BUTTON_CLASS}
-        disabled={isCreating}
-        onClick={onListen}
-        size="sm"
-        variant="outline"
-      >
-        <Headphones className="mr-1.5 size-3.5" />
-        {isCreating ? "Creating..." : "Listen to Event"}
-      </Button>
+      {onListen && (
+        <Button
+          className={ROW_BUTTON_CLASS}
+          disabled={isCreating}
+          onClick={onListen}
+          size="sm"
+          variant="outline"
+        >
+          <Headphones className="mr-1.5 size-3.5" />
+          {isCreating ? "Creating..." : "Listen to Event"}
+        </Button>
+      )}
     </div>
   );
 }
@@ -199,6 +205,7 @@ export function ProtocolDetail({
 }: ProtocolDetailProps): React.ReactElement {
   const router = useRouter();
   const { data: session } = useSession();
+  const { isViewer } = useActiveMember();
   const [creatingActionSlug, setCreatingActionSlug] = useState<string | null>(
     null
   );
@@ -487,7 +494,11 @@ export function ProtocolDetail({
                 isCreating={creatingActionSlug === action.slug}
                 isLast={index === protocol.actions.length - 1}
                 key={action.slug}
-                onUse={() => handleUseInWorkflow(protocol, action)}
+                onUse={
+                  isViewer
+                    ? undefined
+                    : () => handleUseInWorkflow(protocol, action)
+                }
               />
             ))}
           </div>
@@ -502,7 +513,11 @@ export function ProtocolDetail({
                   isCreating={creatingEventSlug === event.slug}
                   isLast={index === (protocol.events?.length ?? 0) - 1}
                   key={event.slug}
-                  onListen={() => handleListenToEvent(protocol, event)}
+                  onListen={
+                    isViewer
+                      ? undefined
+                      : () => handleListenToEvent(protocol, event)
+                  }
                 />
               ))}
             </div>

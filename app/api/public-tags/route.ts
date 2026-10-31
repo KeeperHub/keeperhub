@@ -4,7 +4,9 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { publicTags, workflowPublicTags } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { getActiveOrgId } from "@/lib/middleware/org-context";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
+import { viewerForbidden } from "@/lib/security/viewer-gate";
 import { publicTagSlug } from "@/lib/workflow/public-tag-slug";
 import { isReservedSlug } from "@/lib/workflow/reserved-slugs";
 
@@ -56,6 +58,13 @@ export async function POST(request: Request): Promise<NextResponse> {
     const session = await auth.api.getSession({ headers: request.headers });
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const forbidden = await viewerForbidden(
+      session.user.id,
+      getActiveOrgId(session)
+    );
+    if (forbidden) {
+      return forbidden;
     }
 
     const body = await request.json().catch(() => ({}));

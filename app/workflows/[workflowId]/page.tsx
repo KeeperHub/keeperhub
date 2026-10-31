@@ -23,6 +23,7 @@ import {
   getPendingClaim,
   useClaimWorkflow,
 } from "@/lib/hooks/use-claim-workflow";
+import { useActiveMember } from "@/lib/hooks/use-organization";
 import { SYSTEM_ACTION_INTEGRATIONS } from "@/lib/integrations/system";
 import {
   integrationsAtom,
@@ -57,6 +58,7 @@ import {
   isSidebarCollapsedAtom,
   isWorkflowEnabled,
   isWorkflowOwnerAtom,
+  isWorkflowViewerAtom,
   newlyCreatedNodeIdAtom,
   nodesAtom,
   previewVersionAtom,
@@ -203,6 +205,8 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     currentWorkflowVisibilityAtom
   );
   const [isOwner, setIsWorkflowOwner] = useAtom(isWorkflowOwnerAtom);
+  const setIsWorkflowViewer = useSetAtom(isWorkflowViewerAtom);
+  const { isViewer } = useActiveMember();
   const setIsWorkflowEnabled = useSetAtom(isWorkflowEnabled); // keeperhub custom field //
   const setCurrentWorkflowPublicTags = useSetAtom(
     currentWorkflowPublicTagsAtom
@@ -502,6 +506,9 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
         (workflow.visibility as WorkflowVisibility) ?? "private"
       );
       setIsWorkflowOwner(workflow.isOwner !== false); // Default to true if not set
+      setIsWorkflowViewer(
+        workflow.isOwner === false && workflow.canRead === true
+      );
       setIsWorkflowEnabled(workflow.enabled ?? false); // keeperhub custom field //
       setCurrentWorkflowProjectId(workflow.projectId ?? null);
       setCurrentWorkflowTagId(workflow.tagId ?? null);
@@ -538,6 +545,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     setCurrentWorkflowName,
     setCurrentWorkflowVisibility,
     setIsWorkflowOwner,
+    setIsWorkflowViewer,
     setIsWorkflowEnabled, // keeperhub custom field //
     setCurrentWorkflowProjectId,
     setCurrentWorkflowPublicTags,
@@ -574,6 +582,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
       setCurrentWorkflowDescription("");
       setCurrentWorkflowVisibility("private");
       setIsWorkflowOwner(true);
+      setIsWorkflowViewer(false);
       setNodes([]);
       setEdges([]);
       setSelectedNode(null);
@@ -586,6 +595,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
       setCurrentWorkflowDescription("");
       setCurrentWorkflowVisibility("private");
       setIsWorkflowOwner(true);
+      setIsWorkflowViewer(false);
       setNodes([]);
       setEdges([]);
       setSelectedNode(null);
@@ -599,6 +609,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     setCurrentWorkflowDescription,
     setCurrentWorkflowVisibility,
     setIsWorkflowOwner,
+    setIsWorkflowViewer,
     setNodes,
     setEdges,
     setSelectedNode,
@@ -876,7 +887,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
 
   // Keyboard shortcuts
   const handleSave = useCallback(async () => {
-    if (!currentWorkflowId || isGenerating) {
+    if (!currentWorkflowId || isGenerating || !isOwner) {
       return;
     }
     setIsSaving(true);
@@ -894,6 +905,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     nodes,
     edges,
     isGenerating,
+    isOwner,
     setIsSaving,
     setHasUnsavedChanges,
   ]);
@@ -935,13 +947,15 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
           e.preventDefault();
           e.stopPropagation();
           // Trigger execute via atom - the toolbar will handle it
-          setTriggerExecute(true);
+          if (isOwner) {
+            setTriggerExecute(true);
+          }
         }
         return true;
       }
       return false;
     },
-    [setTriggerExecute, isInputElement, isInMonacoEditor]
+    [setTriggerExecute, isInputElement, isInMonacoEditor, isOwner]
   );
 
   useEffect(() => {
@@ -1056,60 +1070,64 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
               The workflow you're looking for doesn't exist or has been deleted.
             </p>
             <div className="flex justify-center gap-3">
-              <Button
-                className="gap-2"
-                onClick={async () => {
-                  try {
-                    await ensureSession();
-                    const triggerId = `trigger-${Date.now()}`;
-                    const actionId = `action-${Date.now()}`;
-                    const triggerNode = {
-                      id: triggerId,
-                      type: "trigger" as const,
-                      position: { x: 400, y: 200 },
-                      data: {
-                        label: "",
+              {!isViewer && (
+                <Button
+                  className="gap-2"
+                  onClick={async () => {
+                    try {
+                      await ensureSession();
+                      const triggerId = `trigger-${Date.now()}`;
+                      const actionId = `action-${Date.now()}`;
+                      const triggerNode = {
+                        id: triggerId,
                         type: "trigger" as const,
-                        config: { triggerType: "Manual" },
-                        status: "idle" as const,
-                      },
-                    };
-                    const actionNode = {
-                      id: actionId,
-                      type: "action" as const,
-                      position: { x: 672, y: 200 },
-                      selected: true,
-                      data: {
-                        label: "",
-                        type: "action" as const,
-                        config: {},
-                        status: "idle" as const,
-                      },
-                    };
-                    const newWorkflow = await api.workflow.create({
-                      name: "Untitled Workflow",
-                      description: "",
-                      nodes: [triggerNode, actionNode],
-                      edges: [
-                        {
-                          id: `edge-${Date.now()}`,
-                          source: triggerId,
-                          target: actionId,
-                          type: "animated",
+                        position: { x: 400, y: 200 },
+                        data: {
+                          label: "",
+                          type: "trigger" as const,
+                          config: { triggerType: "Manual" },
+                          status: "idle" as const,
                         },
-                      ],
-                    });
-                    refetchSidebar({ workflowCreated: true });
-                    router.replace(`/workflows/${newWorkflow.id}`);
-                  } catch (error) {
-                    console.error("Failed to create workflow:", error);
-                    toast.error("Failed to create workflow. Please try again.");
-                  }
-                }}
-              >
-                <Plus className="size-4" />
-                Start building
-              </Button>
+                      };
+                      const actionNode = {
+                        id: actionId,
+                        type: "action" as const,
+                        position: { x: 672, y: 200 },
+                        selected: true,
+                        data: {
+                          label: "",
+                          type: "action" as const,
+                          config: {},
+                          status: "idle" as const,
+                        },
+                      };
+                      const newWorkflow = await api.workflow.create({
+                        name: "Untitled Workflow",
+                        description: "",
+                        nodes: [triggerNode, actionNode],
+                        edges: [
+                          {
+                            id: `edge-${Date.now()}`,
+                            source: triggerId,
+                            target: actionId,
+                            type: "animated",
+                          },
+                        ],
+                      });
+                      refetchSidebar({ workflowCreated: true });
+                      router.replace(`/workflows/${newWorkflow.id}`);
+                    } catch (error) {
+                      console.error("Failed to create workflow:", error);
+                      toast.error(
+                        "Failed to create workflow. Please try again."
+                      );
+                    }
+                  }}
+                >
+                  <Plus className="size-4" />
+                  Start building
+                </Button>
+              )}
               <Button
                 className="gap-2"
                 onClick={() => router.push("/hub")}

@@ -4,6 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api-client";
+import { useActiveMember } from "@/lib/hooks/use-organization";
 import {
   latestVisibleWorkflow,
   newestWorkflow,
@@ -22,6 +23,7 @@ type IndexState = "loading" | "empty" | "error";
 // among those the lists show.
 export default function WorkflowsIndexPage(): React.ReactElement | null {
   const router = useRouter();
+  const { isViewer } = useActiveMember();
   const searchParams = useSearchParams();
   const hasDeepLink = searchParams.get("digestSettings") !== null;
   const lastEdited = searchParams.get("latest") === "edited";
@@ -77,10 +79,18 @@ export default function WorkflowsIndexPage(): React.ReactElement | null {
   return (
     <div className="flex h-dvh w-full flex-col items-center justify-center gap-3 text-center">
       <h1 className="font-semibold text-xl">No workflows yet</h1>
-      <p className="text-muted-foreground text-sm">
-        Create your first workflow to get started.
-      </p>
-      <Button onClick={() => router.push("/")}>New workflow</Button>
+      {isViewer ? (
+        <p className="text-muted-foreground text-sm">
+          Workflows created in this organization will appear here.
+        </p>
+      ) : (
+        <>
+          <p className="text-muted-foreground text-sm">
+            Create your first workflow to get started.
+          </p>
+          <Button onClick={() => router.push("/")}>New workflow</Button>
+        </>
+      )}
     </div>
   );
 }

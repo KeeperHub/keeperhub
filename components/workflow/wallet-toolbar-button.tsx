@@ -18,6 +18,7 @@ import {
 import { WalletDigestMenu } from "@/components/workflow/wallet-digest-menu";
 import { toChecksumAddress, truncateAddress } from "@/lib/address-utils";
 import { isWalletEmail } from "@/lib/auth/wallet-constants";
+import { useActiveMember } from "@/lib/hooks/use-organization";
 import { authClient, useSession } from "@/lib/auth-client";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { usePinnedAccount } from "@/lib/wallet/use-default-account";
@@ -68,6 +69,7 @@ function AuthenticatedWalletToolbarButton(): React.ReactElement | null {
   const { data: activeOrg } = authClient.useActiveOrganization();
   const { hasWallet, walletAddress, isLoading } = useWalletInfo();
   const { isProvisioning } = useWalletProvisioning();
+  const { isViewer } = useActiveMember();
 
   const pinned = usePinnedAccount(activeOrg?.id ?? null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -93,6 +95,10 @@ function AuthenticatedWalletToolbarButton(): React.ReactElement | null {
           <span className="hidden sm:inline">Setting up wallet</span>
         </div>
       );
+    }
+
+    if (isViewer) {
+      return null;
     }
 
     return (

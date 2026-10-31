@@ -20,6 +20,7 @@ import {
 import { isAllowedRedirectUri } from "@/lib/mcp/redirect-uri";
 import { getScopePolicyForMint, policyCeiling } from "@/lib/mcp/scope-policy";
 import { getOrgContext } from "@/lib/middleware/org-context";
+import { isViewerRole } from "@/lib/organization/role-label";
 import { ConsentForm } from "./_components/consent-form";
 import { isConsentOrgMismatch } from "./_lib/consent-binding";
 
@@ -101,6 +102,11 @@ async function handleApprove(formData: FormData): Promise<void> {
   // rather than silently scope the token to a different org.
   const consentedOrgId = formData.get("organization_id") as string | null;
   if (isConsentOrgMismatch(consentedOrgId, organizationId)) {
+    errorRedirect(redirectUri, "access_denied", state ?? undefined);
+  }
+
+  // Viewers have UI-only access and are never issued an mcp token.
+  if (isViewerRole(orgContext.member?.role)) {
     errorRedirect(redirectUri, "access_denied", state ?? undefined);
   }
 
@@ -284,6 +290,24 @@ export default async function AuthorizePage({
   const consentOrgId = consentOrgContext.organization?.id ?? session.user.id;
   const consentOrgName =
     consentOrgContext.organization?.name ?? "your personal account";
+
+  if (isViewerRole(consentOrgContext.member?.role)) {
+    return (
+      <main className="pointer-events-auto fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+        <div className="w-full max-w-sm rounded-xl border bg-background px-4 shadow-2xl ring-1 ring-black/5">
+          <div className="flex flex-col gap-1.5 p-6 pb-0">
+            <h2 className="font-semibold text-lg leading-none tracking-tight">
+              View-only access
+            </h2>
+            <p className="text-muted-foreground text-sm">
+              You are a viewer in {consentOrgName}. Viewers can use KeeperHub in
+              the browser only, so this application cannot be connected.
+            </p>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   // The scopes the client asked for become the checkboxes that are ticked by
   // default. The user can untick any of them to narrow the grant (e.g. leave

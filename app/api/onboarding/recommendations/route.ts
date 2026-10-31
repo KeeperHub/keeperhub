@@ -1,8 +1,9 @@
-import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { member, workflows } from "@/lib/db/schema";
+import { VIEWER_ROLE } from "@/lib/organization/role-label";
 import { ONBOARDING_WORKFLOW_FIXTURES } from "@/scripts/seed/fixtures/onboarding-workflows";
 
 const CHIP_SLUGS = [
@@ -52,7 +53,7 @@ export async function GET(request: Request): Promise<NextResponse> {
         const memberRow = await db
           .select({ organizationId: member.organizationId })
           .from(member)
-          .where(eq(member.userId, userId))
+          .where(and(eq(member.userId, userId), ne(member.role, VIEWER_ROLE)))
           .limit(1);
 
         const orgId = memberRow[0]?.organizationId;

@@ -138,7 +138,7 @@ function MobileNavBody({
   const { data: session, isPending } = useSession();
   const { openAuthPrompt } = useAuthPrompt();
   const { open: openOverlay } = useOverlay();
-  const { isAdmin, isOwner } = useActiveMember();
+  const { isAdmin, isOwner, isViewer } = useActiveMember();
   const router = useRouter();
   const pathname = usePathname();
   const isAnonymous = isAnonymousUser(session?.user);
@@ -216,31 +216,33 @@ function MobileNavBody({
           <OrgSwitcher menu={{ disabled: busy, onPick }} />
         </div>
       )}
-      <div className="flex shrink-0 items-center border-b px-2.5 py-2.5">
-        <button
-          className={cn(
-            NEW_WORKFLOW_LOOK,
-            "flex h-11 w-full justify-center px-3 transition-colors disabled:opacity-60"
-          )}
-          data-testid="mobile-nav-new"
-          disabled={busy}
-          onClick={() => {
-            // A workflow that could not be made is reported in
-            // runNewWorkflow; anything after that is only logged.
-            newWorkflow().catch((error: unknown) => {
-              console.error("[MobileNav] New Workflow", error);
-            });
-          }}
-          type="button"
-        >
-          {creating ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <Plus className="size-3.5" />
-          )}
-          <span>New Workflow</span>
-        </button>
-      </div>
+      {!isViewer && (
+        <div className="flex shrink-0 items-center border-b px-2.5 py-2.5">
+          <button
+            className={cn(
+              NEW_WORKFLOW_LOOK,
+              "flex h-11 w-full justify-center px-3 transition-colors disabled:opacity-60"
+            )}
+            data-testid="mobile-nav-new"
+            disabled={busy}
+            onClick={() => {
+              // A workflow that could not be made is reported in
+              // runNewWorkflow; anything after that is only logged.
+              newWorkflow().catch((error: unknown) => {
+                console.error("[MobileNav] New Workflow", error);
+              });
+            }}
+            type="button"
+          >
+            {creating ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Plus className="size-3.5" />
+            )}
+            <span>New Workflow</span>
+          </button>
+        </div>
+      )}
       <nav
         aria-label="Main navigation"
         className="flex flex-1 flex-col gap-1 px-2.5 py-3"

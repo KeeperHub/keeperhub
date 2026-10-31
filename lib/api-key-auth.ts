@@ -26,6 +26,7 @@ import {
 import { db } from "@/lib/db";
 import { member, organizationApiKeys, users } from "@/lib/db/schema";
 import { ErrorCategory, logSecurityEvent, logSystemError } from "@/lib/logging";
+import { isViewerRole } from "@/lib/organization/role-label";
 
 export type ApiKeyAuthResult = {
   authenticated: boolean;
@@ -100,6 +101,7 @@ export async function authenticateApiKey(
         creatorName: users.name,
         creatorEmail: users.email,
         creatorMemberId: member.id,
+        creatorRole: member.role,
       })
       .from(organizationApiKeys)
       .leftJoin(users, eq(users.id, organizationApiKeys.createdBy))
@@ -192,6 +194,16 @@ export async function authenticateApiKey(
         authenticated: false,
         error: "API key creator is no longer a member of this organization",
         statusCode: 401,
+      };
+    }
+
+    // Viewers have UI-only access. A key minted before its creator was
+    // downgraded stops working as soon as the role changes.
+    if (apiKey.createdBy && isViewerRole(apiKey.creatorRole)) {
+      return {
+        authenticated: false,
+        error: "API key creator has view-only access to this organization",
+        statusCode: 403,
       };
     }
 
