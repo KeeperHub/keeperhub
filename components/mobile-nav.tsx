@@ -1,9 +1,20 @@
 "use client";
 
-import { Loader2, Menu, Plus } from "lucide-react";
-import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { ChevronRight, Loader2, Menu, Plus } from "lucide-react";
+import { useParams, usePathname, useRouter } from "next/navigation";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { useAuthPrompt } from "@/components/auth/provider";
+import {
+  type DrawerView,
+  LEVEL_TITLE_ATTR,
+  MobileNavWorkflows,
+} from "@/components/mobile-nav-workflows";
 import {
   FOOTER_LINKS,
   followNavItem,
@@ -24,13 +35,28 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { usePickerData } from "@/components/workflow-picker-data";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { usePressGrace } from "@/hooks/use-press-grace";
 import { useSession } from "@/lib/auth-client";
+import { isEscapeHandled, markEscapeHandled } from "@/lib/escape-key";
 import { useActiveMember } from "@/lib/hooks/use-organization";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { cn } from "@/lib/utils";
 import { getCustomLogo } from "@/lib/workflow/editor/extension-registry";
+
+const MENU_VIEW: DrawerView = { level: "menu" };
+
+// What takes focus once a level has drawn, found inside the drawer.
+type FocusTarget = (drawer: Element) => HTMLElement | null | undefined;
+
+const levelTitle: FocusTarget = (drawer) =>
+  drawer.querySelector<HTMLElement>(`[${LEVEL_TITLE_ATTR}]`);
+
+// Taps pressed before a level was shown, or this soon after, are dropped: a
+// double tap's second press would land on whatever the new level put there.
+const LEVEL_TAP_GRACE_MS = 350;
 
 // Items that open their index from anywhere inside their section, so they
 // count as already shown only there.
@@ -60,6 +86,55 @@ export function MobileNav({
   // so focus is not pulled back to this button. Cleared on every open (the
   // drawer opens only through this button).
   const skipFocusReturn = useRef(false);
+  // Which level the drawer shows (the menu, Workflows or a project), and
+  // what takes focus once it has drawn.
+  const [nav, setNav] = useState<{
+    view: DrawerView;
+    focus: FocusTarget | null;
+  }>({ view: MENU_VIEW, focus: null });
+  const view = nav.view;
+  const drawerRef = useRef<HTMLDivElement>(null);
+  // Restarted by a level change (not the reset on open) or its list loading,
+  // and again at the frame that paints it: a busy phone paints late.
+  const grace = usePressGrace(LEVEL_TAP_GRACE_MS);
+  const startGrace = grace.start;
+  const markLevelShown = useCallback((): void => {
+    startGrace();
+    requestAnimationFrame(startGrace);
+  }, [startGrace]);
+
+  useLayoutEffect(() => {
+    if (nav.focus) {
+      markLevelShown();
+    }
+  }, [nav, markLevelShown]);
+
+  useEffect(() => {
+    const drawer = drawerRef.current;
+    if (nav.focus && drawer) {
+      (nav.focus(drawer) ?? levelTitle(drawer))?.focus();
+    }
+  }, [nav]);
+
+  const goTo = useCallback((next: DrawerView, focus: FocusTarget): void => {
+    setNav({ view: next, focus });
+  }, []);
+
+  // Up one level, focusing the row that opened the one left.
+  const back = useCallback((): void => {
+    if (view.level === "project") {
+      const { projectId } = view;
+      goTo({ level: "workflows" }, (drawer) =>
+        [...drawer.querySelectorAll<HTMLElement>("[data-project-id]")].find(
+          (row) => row.dataset.projectId === projectId
+        )
+      );
+    } else if (view.level === "workflows") {
+      goTo(MENU_VIEW, (drawer) =>
+        drawer.querySelector<HTMLElement>('[data-nav-item="workflows"]')
+      );
+    }
+  }, [view, goTo]);
 
   // Widening past 768px brings the sidebar back; the button is hidden then.
   useEffect(() => {
@@ -69,16 +144,17 @@ export function MobileNav({
     }
   }, [isMobile]);
 
-  function close(returnFocus = false): void {
+  const close = useCallback((returnFocus = false): void => {
     skipFocusReturn.current = !returnFocus;
     setOpen(false);
-  }
+  }, []);
 
   return (
     <Sheet
       onOpenChange={(next) => {
         if (next) {
           skipFocusReturn.current = false;
+          setNav({ view: MENU_VIEW, focus: null });
         }
         setOpen(next);
       }}
@@ -110,15 +186,42 @@ export function MobileNav({
             event.preventDefault();
           }
         }}
+        // Escape goes up a level (the drawer closes from the menu), after
+        // any control inside that uses it, such as a filter menu.
+        onEscapeKeyDown={(event) => {
+          if (view.level !== "menu") {
+            event.preventDefault();
+          }
+        }}
+        onKeyDown={(event) => {
+          if (
+            event.key === "Escape" &&
+            view.level !== "menu" &&
+            !isEscapeHandled(event.nativeEvent)
+          ) {
+            markEscapeHandled(event.nativeEvent);
+            back();
+          }
+        }}
+        ref={drawerRef}
         side="left"
       >
         <SheetTitle className="sr-only">Navigation</SheetTitle>
-        {/* Scrolls on a short screen; the close button stays above it. */}
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        {/* Scrolls on a short screen; taps just after a level change are
+            dropped. */}
+        <div
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+          onClickCapture={grace.onClickCapture}
+          onPointerDownCapture={grace.onPointerDownCapture}
+        >
           <MobileNavBody
             creating={creating}
+            goTo={goTo}
+            onBack={back}
+            onLevelListShown={markLevelShown}
             onPick={close}
             setCreating={setCreating}
+            view={view}
           />
         </div>
       </SheetContent>
@@ -130,10 +233,18 @@ function MobileNavBody({
   creating,
   setCreating,
   onPick,
+  view,
+  goTo,
+  onBack,
+  onLevelListShown,
 }: {
   creating: boolean;
   setCreating: (creating: boolean) => void;
   onPick: (returnFocus?: boolean) => void;
+  view: DrawerView;
+  goTo: (next: DrawerView, focus: FocusTarget) => void;
+  onBack: () => void;
+  onLevelListShown: () => void;
 }): React.ReactNode {
   const { data: session, isPending } = useSession();
   const { openAuthPrompt } = useAuthPrompt();
@@ -141,6 +252,8 @@ function MobileNavBody({
   const { isAdmin, isOwner } = useActiveMember();
   const router = useRouter();
   const pathname = usePathname();
+  const params = useParams();
+  const { workflows, projects } = usePickerData();
   const isAnonymous = isAnonymousUser(session?.user);
   // A loading session looks anonymous (New Workflow would sign in
   // anonymously), and a pick while creating would race its navigation.
@@ -148,12 +261,62 @@ function MobileNavBody({
   const CustomLogo = getCustomLogo();
 
   const items = visibleNavItems(isAdmin, isOwner);
+  const activeWorkflowId =
+    typeof params.workflowId === "string" ? params.workflowId : undefined;
+  const activeProjectId = workflows.find(
+    (w) => w.id === activeWorkflowId
+  )?.projectId;
+  const activeProject = projects.find((p) => p.id === activeProjectId);
+  // Members get the Workflows level; a guest's list is never loaded (as in
+  // the sidebar), so a guest goes to their workflow as before.
+  const workflowsOpensLevel = Boolean(session?.user) && !isAnonymous;
+  // The open workflow opens nothing new, so focus returns.
+  const openWorkflow = useCallback(
+    (id: string): void => onPick(id === activeWorkflowId),
+    [onPick, activeWorkflowId]
+  );
+
+  const openProject = useCallback(
+    (projectId: string): void =>
+      goTo({ level: "project", projectId }, levelTitle),
+    [goTo]
+  );
+
+  // Workflows opens on the open workflow's project, if it is in one.
+  function openWorkflowsLevel(): void {
+    goTo(
+      activeProject
+        ? { level: "project", projectId: activeProject.id }
+        : { level: "workflows" },
+      levelTitle
+    );
+  }
+
+  if (view.level !== "menu") {
+    return (
+      <MobileNavWorkflows
+        activeProjectId={activeProject?.id ?? null}
+        activeWorkflowId={activeWorkflowId}
+        isAnonymous={isAnonymous}
+        onBack={onBack}
+        onListShown={onLevelListShown}
+        onOpenWorkflow={openWorkflow}
+        onSelectProject={openProject}
+        view={view}
+      />
+    );
+  }
 
   function pick(item: NavItemDef): void {
+    if (item.id === "workflows" && workflowsOpensLevel) {
+      openWorkflowsLevel();
+      return;
+    }
     // Nothing opens for the page already shown, so focus returns (unless
-    // an account-only item asks to sign in). Workflows and Settings count
-    // only on their index: from a workflow it goes to the latest one, and
-    // from a settings section back to the settings menu.
+    // an account-only item asks to sign in). Workflows (a guest's; members
+    // got its level above) and Settings count only on their index: from a
+    // workflow it goes to the latest one, from a settings section back to
+    // the settings menu.
     const index = INDEX_PATHS[item.id];
     const alreadyShown = index
       ? pathname === index
@@ -166,8 +329,8 @@ function MobileNavBody({
     followNavItem(item, {
       isAnonymous,
       openAuthPrompt,
-      // No room for the sidebar's workflow list: open the last-edited
-      // workflow (the /workflows index redirects), which needs a session.
+      // A guest opens their last-edited workflow (the /workflows index
+      // redirects); signed-out visitors sign in first, then land there.
       openWorkflows: () => {
         if (session?.user) {
           router.push("/workflows?latest=edited");
@@ -251,7 +414,24 @@ function MobileNavBody({
             disabled={busy}
             item={item}
             key={item.id}
+            label={
+              item.id === "workflows" && workflowsOpensLevel
+                ? [item.label, activeProject?.name, "opens a list"]
+                    .filter(Boolean)
+                    .join(", ")
+                : undefined
+            }
             onClick={() => pick(item)}
+            trailing={
+              item.id === "workflows" && workflowsOpensLevel ? (
+                <span className="ml-auto flex min-w-0 items-center gap-1 pl-2 text-muted-foreground text-xs">
+                  {activeProject ? (
+                    <span className="truncate">{activeProject.name}</span>
+                  ) : null}
+                  <ChevronRight className="size-4 shrink-0" />
+                </span>
+              ) : null
+            }
           />
         ))}
         <div className="mt-auto pt-2">
@@ -288,26 +468,38 @@ function MobileNavItem({
   active,
   disabled,
   onClick,
+  trailing,
+  label,
 }: {
   item: NavItemDef;
   active: boolean;
   disabled: boolean;
   onClick: () => void;
+  // Shown at the row's end, such as the chevron of an item opening a level.
+  trailing?: React.ReactNode;
+  // The accessible name, when the row says more than its label.
+  label?: string;
 }): React.ReactNode {
   return (
     <button
       aria-current={active ? "page" : undefined}
+      aria-label={label}
       className={cn(
         "flex h-11 w-full items-center gap-3 rounded-md px-2 text-left text-sm transition-colors hover:bg-muted disabled:opacity-60",
         active && "bg-muted"
       )}
+      data-nav-item={item.id}
       data-testid={`mobile-nav-${item.id}`}
       disabled={disabled}
       onClick={onClick}
       type="button"
     >
       <item.icon className="size-4 shrink-0" />
-      <span className="truncate">{item.label}</span>
+      {/* With something at the end, that gives way first. */}
+      <span className={cn("truncate", trailing && "shrink-0")}>
+        {item.label}
+      </span>
+      {trailing}
     </button>
   );
 }

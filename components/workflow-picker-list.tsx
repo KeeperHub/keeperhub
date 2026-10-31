@@ -13,7 +13,7 @@ import {
   TOOLTIP_DELAY_MS,
   TriggerStatusIcon,
 } from "@/components/workflow-trigger-status";
-import type { Tag } from "@/lib/api-client";
+import type { Project, Tag } from "@/lib/api-client";
 import { isEscapeHandled, markEscapeHandled } from "@/lib/escape-key";
 import { cn, toggleInSet } from "@/lib/utils";
 import type { WorkflowTriggerType } from "@/lib/workflow/store";
@@ -25,7 +25,15 @@ import {
   getTriggerTooltip,
 } from "@/lib/workflow/trigger-display";
 
-// The rows of the sidebar's workflow picker and the tag groups they sit in.
+// The rows of the workflow pickers (sidebar flyouts, phone drawer) and the
+// groups they sit in.
+
+// Touch rows are 44px tall (the phone drawer); the sidebar keeps 32px.
+export type PickerRowSize = "compact" | "touch";
+
+function rowPadding(size: PickerRowSize): string {
+  return size === "touch" ? "py-3" : "py-1.5";
+}
 
 export type WorkflowEntry = {
   id: string;
@@ -128,9 +136,14 @@ function useFocusTooltip(hasSomethingToShow: boolean): {
 export const WorkflowItem = memo(function WorkflowItem({
   workflow,
   activeWorkflowId,
+  size = "compact",
+  onOpen,
 }: {
   workflow: WorkflowEntry;
   activeWorkflowId: string | undefined;
+  size?: PickerRowSize;
+  // Called once the row has started navigating to its workflow.
+  onOpen?: (workflowId: string) => void;
 }): React.ReactNode {
   const router = useRouter();
   const status = getTriggerStatus(workflow);
@@ -147,12 +160,16 @@ export const WorkflowItem = memo(function WorkflowItem({
     <button
       aria-current={isActive ? "page" : undefined}
       className={cn(
-        "group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted outline-none focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset",
+        "group flex w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors hover:bg-muted outline-none focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset",
+        rowPadding(size),
         isActive && "bg-muted"
       )}
       data-testid="workflow-picker-item"
       onBlur={focusTooltip.onBlur}
-      onClick={() => router.push(`/workflows/${workflow.id}`)}
+      onClick={() => {
+        router.push(`/workflows/${workflow.id}`);
+        onOpen?.(workflow.id);
+      }}
       onFocus={focusTooltip.onFocus}
       onKeyDown={focusTooltip.onKeyDown}
       type="button"
@@ -249,16 +266,19 @@ function GroupHeader({
   foldable,
   collapsed,
   onToggle,
+  size,
   children,
 }: {
   foldable: boolean;
   collapsed: boolean;
   onToggle: () => void;
+  size: PickerRowSize;
   children: React.ReactNode;
 }): React.ReactNode {
+  const headerClass = cn(GROUP_HEADER_CLASS, size === "touch" && "min-h-11");
   if (!foldable) {
     return (
-      <div className={GROUP_HEADER_CLASS} data-testid="tag-group-header">
+      <div className={headerClass} data-testid="tag-group-header">
         <GroupChevron collapsed={false} hidden />
         {children}
       </div>
@@ -268,7 +288,7 @@ function GroupHeader({
     <button
       aria-expanded={!collapsed}
       className={cn(
-        GROUP_HEADER_CLASS,
+        headerClass,
         "outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset"
       )}
       data-testid="tag-group-header"
@@ -283,7 +303,7 @@ function GroupHeader({
 
 // What a list says when a trigger filter leaves nothing in it, with a way
 // back to every workflow instead of a dead end.
-export function FilteredEmpty({
+function FilteredEmpty({
   text,
   onReset,
 }: {
@@ -314,6 +334,8 @@ export function TagsPanel({
   onResetFilter,
   filteredEmptyText = "No matching workflows",
   expandAll = false,
+  size = "compact",
+  onOpenWorkflow,
 }: {
   projectTags: Tag[];
   workflowsByTagId: Record<string, WorkflowEntry[]>;
@@ -328,6 +350,8 @@ export function TagsPanel({
   // While a filter narrows the list, collapsed groups open so no
   // match hides behind a header.
   expandAll?: boolean;
+  size?: PickerRowSize;
+  onOpenWorkflow?: (workflowId: string) => void;
 }): React.ReactNode {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
 
@@ -368,6 +392,7 @@ export function TagsPanel({
               collapsed={isCollapsed}
               foldable={!expandAll}
               onToggle={() => toggle(tag.id)}
+              size={size}
             >
               <span
                 className="inline-block size-2 shrink-0 rounded-full"
@@ -383,6 +408,8 @@ export function TagsPanel({
                 <WorkflowItem
                   activeWorkflowId={activeWorkflowId}
                   key={w.id}
+                  onOpen={onOpenWorkflow}
+                  size={size}
                   workflow={w}
                 />
               ))}
@@ -403,6 +430,7 @@ export function TagsPanel({
                     collapsed={isCollapsed}
                     foldable={!expandAll}
                     onToggle={() => toggle(UNTAGGED_KEY)}
+                    size={size}
                   >
                     <span className="truncate">Untagged</span>
                     <span className="ml-auto normal-case tracking-normal">
@@ -415,6 +443,8 @@ export function TagsPanel({
                     <WorkflowItem
                       activeWorkflowId={activeWorkflowId}
                       key={w.id}
+                      onOpen={onOpenWorkflow}
+                      size={size}
                       workflow={w}
                     />
                   ))}
@@ -422,6 +452,130 @@ export function TagsPanel({
             );
           })()}
         </>
+      )}
+    </div>
+  );
+}
+
+// The Workflows list: projects (each opening its own list), then the
+// workflows outside any project.
+export function ProjectsPanel({
+  projects,
+  ungrouped,
+  ungroupedTotal,
+  byProject,
+  activeWorkflowId,
+  selectedProjectId,
+  onSelectProject,
+  loading,
+  isAnonymous,
+  onResetFilter,
+  filteredEmptyText,
+  size = "compact",
+  onOpenWorkflow,
+}: {
+  projects: Project[];
+  // The workflows outside any project that the filter lets through ...
+  ungrouped: WorkflowEntry[];
+  // ... and how many there are before filtering.
+  ungroupedTotal: number;
+  byProject: Record<string, WorkflowEntry[]>;
+  activeWorkflowId: string | undefined;
+  selectedProjectId: string | null;
+  onSelectProject: (id: string) => void;
+  loading: boolean;
+  isAnonymous: boolean;
+  // Set while a trigger filter narrows the workflows outside any project;
+  // the filter leaves the project list as it is.
+  onResetFilter?: () => void;
+  filteredEmptyText: string;
+  size?: PickerRowSize;
+  onOpenWorkflow?: (workflowId: string) => void;
+}): React.ReactNode {
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  const hasAny = projects.length > 0 || ungroupedTotal > 0;
+
+  if (!hasAny) {
+    return (
+      <p className="py-4 text-center text-muted-foreground text-sm">
+        {isAnonymous ? "Sign in to save workflows" : "No workflows found"}
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {projects.length > 0 && (
+        <p className="px-2 pt-1 pb-1.5 font-medium text-muted-foreground text-xs uppercase tracking-wider">
+          Projects
+        </p>
+      )}
+      {projects.map((project) => {
+        const projectWorkflows = byProject[project.id] ?? [];
+        const isActive = project.id === selectedProjectId;
+        return (
+          <button
+            className={cn(
+              "flex w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors hover:bg-muted outline-none focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset",
+              rowPadding(size),
+              isActive && "bg-muted"
+            )}
+            data-project-id={project.id}
+            data-testid="workflow-picker-project"
+            key={project.id}
+            onClick={() => onSelectProject(project.id)}
+            type="button"
+          >
+            <span
+              className="inline-block size-2.5 shrink-0 rounded-full"
+              style={{
+                backgroundColor: project.color ?? "var(--color-text-muted)",
+              }}
+            />
+            <TruncatedTooltip side="right" text={project.name} />
+            <span className="ml-auto flex items-center gap-1 text-muted-foreground text-xs">
+              {projectWorkflows.length}
+              <ChevronRight className="size-3.5" />
+            </span>
+          </button>
+        );
+      })}
+
+      {ungroupedTotal > 0 && (
+        <>
+          {projects.length > 0 && (
+            <>
+              <div className="my-1 border-t" />
+              <p className="px-2 pt-1 pb-1.5 font-medium text-muted-foreground text-xs uppercase tracking-wider">
+                Other Workflows
+              </p>
+            </>
+          )}
+          {ungrouped.map((w) => (
+            <WorkflowItem
+              activeWorkflowId={activeWorkflowId}
+              key={w.id}
+              onOpen={onOpenWorkflow}
+              size={size}
+              workflow={w}
+            />
+          ))}
+          {ungrouped.length === 0 && onResetFilter && (
+            <FilteredEmpty onReset={onResetFilter} text={filteredEmptyText} />
+          )}
+        </>
+      )}
+      {isAnonymous && hasAny && (
+        <p className="mt-2 border-t px-2 pt-2 text-center text-muted-foreground/70 text-xs">
+          Sign in to create more
+        </p>
       )}
     </div>
   );

@@ -132,6 +132,7 @@ export function PickerFilterButton({
   panelName,
   hasWorkflows,
   loading,
+  className,
 }: {
   filter: PickerFilter;
   // The id of the row this button shows and hides.
@@ -141,9 +142,11 @@ export function PickerFilterButton({
   // Whether the panel's list has anything to filter.
   hasWorkflows: boolean;
   loading: boolean;
+  className?: string;
 }): React.ReactNode {
   return (
     <TriggerFilterButton
+      className={className}
       controls={panelId}
       // An open row keeps its button working even once the list empties, so
       // a leftover filter can always be cleared.
