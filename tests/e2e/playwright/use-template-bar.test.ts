@@ -275,6 +275,35 @@ test.describe("Use template bar, signed in", () => {
         expectWideBar(page, { allowFallback: true })
       );
     }
+    // 768 with the flyout leaves about 58px of canvas: the header takes over,
+    // and the zoom controls drop back to the bottom.
+    await atWidth(page, 768, async () => {
+      await expect(card(page)).toBeHidden();
+      await expect(page.getByTestId("header-use-template")).toBeVisible();
+      const controls = await box(page.locator(".workflow-controls-panel"));
+      expect(bottom(controls)).toBeGreaterThan(HEIGHT - 40);
+    });
+  });
+
+  test("keyboard focus follows the button between bar and header", async ({
+    page,
+  }) => {
+    await open(page, 1024, foreignId);
+    const flyout = page.getByRole("region", { name: "Workflows" });
+    if (!(await flyout.isVisible())) {
+      await page.getByTestId("nav-workflows").click();
+    }
+    await expect(flyout).toBeVisible();
+    const inBar = card(page).getByRole("button", {
+      name: "Use template",
+      exact: true,
+    });
+    await expect(inBar).toBeVisible();
+    await inBar.focus();
+    await page.setViewportSize({ width: 768, height: HEIGHT });
+    await expect(page.getByTestId("header-use-template")).toBeFocused();
+    await page.setViewportSize({ width: 1024, height: HEIGHT });
+    await expect(inBar).toBeFocused();
   });
 
   // A failed copy toasts every time; with the right panel collapsed the
@@ -298,13 +327,27 @@ test.describe("Use template bar, signed in", () => {
           for (const shown of await page
             .locator("[data-sonner-toast]:visible")
             .all()) {
-            const toastBox = await box(shown);
-            expect(await overlaps(toastBox, cardBox)).toBe(false);
-            expect(bottom(toastBox)).toBeLessThanOrEqual(cardBox.y);
+            expect(await overlaps(await box(shown), cardBox)).toBe(false);
           }
         }).toPass({ timeout: 3000 });
       });
     }
+  });
+
+  // Over the right panel a toast cannot reach the bar, so it stays put.
+  test("a toast over the right panel is not lifted", async ({ page }) => {
+    await page.route("**/api/workflows/*/duplicate", (route) =>
+      route.fulfill({ status: 500, body: "{}" })
+    );
+    await open(page, 1280, foreignId);
+    await templateButton(page).click();
+    const toast = page
+      .locator('[data-sonner-toast][data-front="true"]')
+      .filter({ hasText: "Failed to duplicate workflow" });
+    await expect(toast).toBeVisible();
+    await expect(async () => {
+      expect(bottom(await box(toast))).toBeGreaterThan(HEIGHT - 40);
+    }).toPass({ timeout: 3000 });
   });
 
   test("copies the workflow and opens the copy", async ({ page }) => {
@@ -336,6 +379,11 @@ test.describe("Use template bar, signed in", () => {
         timeout: 15_000,
       });
       await expect(card(page)).toHaveCount(0);
+      if (width >= 768) {
+        // No bar, so the zoom controls keep their place at the bottom.
+        const controls = await box(page.locator(".workflow-controls-panel"));
+        expect(bottom(controls)).toBeGreaterThan(HEIGHT - 40);
+      }
     }
   });
 });
