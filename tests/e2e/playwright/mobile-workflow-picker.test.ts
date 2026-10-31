@@ -1,4 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
+import { LEVEL_TAP_GRACE_MS } from "@/hooks/use-press-grace";
 import { expect, test } from "./fixtures";
 import {
   createTestWorkflow,
@@ -10,11 +11,9 @@ import { waitForCanvas } from "./utils/workflow";
 
 const PHONE = { width: 390, height: 844 };
 const DESKTOP = { width: 1280, height: 800 };
-// Past the drawer's LEVEL_TAP_GRACE_MS (components/mobile-nav.tsx), which
-// drops taps right after a level change; a test's next tap waits it out.
-const AFTER_TAP_GRACE_MS = 400;
-// Long enough for a wrong pick to have navigated and closed the drawer.
-const SETTLE_MS = 1000;
+// The drawer drops taps right after a level change; a test's next tap waits
+// the grace out.
+const AFTER_TAP_GRACE_MS = LEVEL_TAP_GRACE_MS + 50;
 
 function drawer(page: Page): Locator {
   return page.getByTestId("mobile-nav");
@@ -177,11 +176,11 @@ test.describe("Workflows in the phone drawer", () => {
         [x, y]
       );
       expect(under).toBe(true);
-      // A picked row would close the drawer (data-state flips at once) and
-      // navigate once the route loads.
+      // A picked row would have closed the drawer, so Back still being there
+      // to go up a level shows the second tap opened nothing.
       await expect(drawer(page)).toHaveAttribute("data-state", "open");
-      await page.waitForTimeout(SETTLE_MS);
-      await expect(drawer(page)).toHaveAttribute("data-state", "open");
+      await tapAfterLevelChange(page.getByTestId("mobile-nav-back"));
+      await expect(levelTitle(page)).toHaveText("Workflows");
       await expect(page).toHaveURL(new RegExp(`/workflows/${first.id}$`));
     });
 

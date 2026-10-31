@@ -3,6 +3,7 @@
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { memo, useEffect, useRef, useState } from "react";
+import { ProjectColorDot } from "@/components/projects/project-color-dot";
 import {
   Tooltip,
   TooltipContent,
@@ -533,12 +534,7 @@ export function ProjectsPanel({
             onClick={() => onSelectProject(project.id)}
             type="button"
           >
-            <span
-              className="inline-block size-2.5 shrink-0 rounded-full"
-              style={{
-                backgroundColor: project.color ?? "var(--color-text-muted)",
-              }}
-            />
+            <ProjectColorDot color={project.color} />
             <TruncatedTooltip side="right" text={project.name} />
             <span className="ml-auto flex items-center gap-1 text-muted-foreground text-xs">
               {projectWorkflows.length}

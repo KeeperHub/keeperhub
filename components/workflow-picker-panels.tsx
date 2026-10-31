@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import type { Tag } from "@/lib/api-client";
 import { usePickerData } from "./workflow-picker-data";
 import {
@@ -41,8 +42,13 @@ export function WorkflowsRootList({
   onSelectProject: (id: string) => void;
   isAnonymous: boolean;
 }): React.ReactNode {
-  const { projects, byProject, ungrouped, loading } = usePickerData();
-  const shownUngrouped = applyPickerFilter(ungrouped, filter);
+  const { projects, byProject, ungrouped, loading, projectsLoading } =
+    usePickerData();
+  const { status, types } = filter;
+  const shownUngrouped = useMemo(
+    () => applyPickerFilter(ungrouped, { status, types }),
+    [ungrouped, status, types]
+  );
   return (
     <>
       <PickerFilterRow
@@ -60,7 +66,9 @@ export function WorkflowsRootList({
         // which workflows it is about.
         filteredEmptyText={`${filter.emptyText} outside a project`}
         isAnonymous={isAnonymous}
-        loading={loading}
+        // Until the projects load, a member whose workflows are all in
+        // projects would see the empty state.
+        loading={loading || projectsLoading}
         onOpenWorkflow={onOpenWorkflow}
         onResetFilter={filter.isFiltered ? filter.reset : undefined}
         onSelectProject={onSelectProject}
@@ -73,6 +81,8 @@ export function WorkflowsRootList({
     </>
   );
 }
+
+const NO_WORKFLOWS: WorkflowEntry[] = [];
 
 // A project's tags that hold any of the given workflows (with their counts),
 // the workflows under each, and the untagged ones.
@@ -114,9 +124,12 @@ export function ProjectWorkflowsList({
   projectName: string;
 }): React.ReactNode {
   const { byProject, tags, loading } = usePickerData();
-  const all = byProject[projectId ?? ""] ?? [];
-  const shown = applyPickerFilter(all, filter);
-  const { projectTags, byTagId, untagged } = groupByTag(shown, tags);
+  const all = byProject[projectId ?? ""];
+  const { status, types } = filter;
+  const { shown, projectTags, byTagId, untagged } = useMemo(() => {
+    const filtered = applyPickerFilter(all ?? NO_WORKFLOWS, { status, types });
+    return { shown: filtered, ...groupByTag(filtered, tags) };
+  }, [all, status, types, tags]);
   return (
     <>
       <PickerFilterRow
@@ -125,7 +138,7 @@ export function ProjectWorkflowsList({
         panelId={panelId}
         panelName={projectName}
         shownCount={shown.length}
-        workflows={all}
+        workflows={all ?? NO_WORKFLOWS}
       />
       <TagsPanel
         activeWorkflowId={activeWorkflowId}

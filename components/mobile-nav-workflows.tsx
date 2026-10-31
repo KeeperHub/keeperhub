@@ -2,6 +2,7 @@
 
 import { ChevronLeft } from "lucide-react";
 import { useEffect, useLayoutEffect } from "react";
+import { ProjectColorDot } from "@/components/projects/project-color-dot";
 import { usePickerData } from "./workflow-picker-data";
 import { PickerFilterButton, usePickerFilter } from "./workflow-picker-filter";
 import {
@@ -27,7 +28,6 @@ export function MobileNavWorkflows({
   view,
   activeWorkflowId,
   activeProjectId,
-  isAnonymous,
   onBack,
   onSelectProject,
   onOpenWorkflow,
@@ -37,7 +37,6 @@ export function MobileNavWorkflows({
   activeWorkflowId: string | undefined;
   // The project the open workflow is in.
   activeProjectId: string | null;
-  isAnonymous: boolean;
   onBack: () => void;
   onSelectProject: (projectId: string) => void;
   onOpenWorkflow: (workflowId: string) => void;
@@ -108,15 +107,7 @@ export function MobileNavWorkflows({
           {...{ [LEVEL_TITLE_ATTR]: "" }}
           tabIndex={-1}
         >
-          {project ? (
-            <span
-              aria-hidden="true"
-              className="inline-block size-2.5 shrink-0 rounded-full"
-              style={{
-                backgroundColor: project.color ?? "var(--color-text-muted)",
-              }}
-            />
-          ) : null}
+          {project ? <ProjectColorDot color={project.color} /> : null}
           <span className="truncate">{title}</span>
         </h2>
         {/* A 44px target around the 24px button. */}
@@ -144,7 +135,8 @@ export function MobileNavWorkflows({
           <WorkflowsRootList
             activeWorkflowId={activeWorkflowId}
             filter={rootFilter}
-            isAnonymous={isAnonymous}
+            // The level is for members only; guests go to their workflow.
+            isAnonymous={false}
             onOpenWorkflow={onOpenWorkflow}
             onSelectProject={onSelectProject}
             panelId={ROOT_FILTER_ROW_ID}

@@ -124,6 +124,7 @@ function pickerData(
     loading: boolean;
     projectsLoading: boolean;
     projects: Project[];
+    ungrouped: WorkflowEntry[];
   }> = {}
 ): unknown {
   const workflows = [
@@ -608,8 +609,50 @@ describe("MobileNav", () => {
     pressEscape();
     expect(document.querySelector("[data-testid=trigger-filters]")).toBeNull();
     expect(levelTitle()).toBe("Workflows");
+    // Focus is back on the filter button, whose tooltip takes the next one.
+    expect(document.querySelector("[role=tooltip]")).not.toBeNull();
+    pressEscape();
+    expect(levelTitle()).toBe("Workflows");
     pressEscape();
     expect(item("workflows")).not.toBeNull();
+  });
+
+  it("leaves the level alone when Escape closes a row's tooltip", () => {
+    // Every name reads as cut off, so its tooltip can open.
+    vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockReturnValue(200);
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(100);
+    render();
+    openDrawer();
+    click(item("workflows"));
+    const row = projectRow("p-1");
+    row?.focus();
+    act(() => {
+      row
+        ?.querySelector("span.truncate")
+        ?.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    });
+    expect(document.querySelector("[role=tooltip]")).not.toBeNull();
+    pressEscape();
+    expect(document.querySelector("[role=tooltip]")).toBeNull();
+    expect(levelTitle()).toBe("Workflows");
+    pressEscape();
+    expect(item("workflows")).not.toBeNull();
+  });
+
+  it("shows no empty list while the projects are still loading", () => {
+    mocks.picker = pickerData({
+      projectsLoading: true,
+      projects: [],
+      ungrouped: [],
+    });
+    render();
+    openDrawer();
+    click(item("workflows"));
+    expect(drawer()?.textContent).not.toContain("No workflows found");
+    expect(drawer()?.querySelector(".animate-spin")).not.toBeNull();
+    mocks.picker = pickerData({ ungrouped: [] });
+    render();
+    expect(projectRow("p-1")).not.toBeNull();
   });
 
   it("starts from the menu each time it opens", () => {

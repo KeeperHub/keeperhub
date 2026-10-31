@@ -28,15 +28,20 @@ let pendingOptions: RefetchOptions | null = null;
 
 /**
  * Register a refetch callback (the workflow list's PickerDataProvider, and
- * NavigationSidebar for its panels and filters). Replays any pending
- * refetch that fired before registration, to the first callback only.
+ * NavigationSidebar for its panels and filters). A refetch that fired with
+ * none registered is replayed to every callback registering in that same
+ * commit (a child's effects run before its parent's).
  */
 export function registerSidebarRefetch(callback: RefetchCallback): () => void {
   refetchCallbacks.add(callback);
 
   if (pendingOptions !== null) {
     const opts = pendingOptions;
-    pendingOptions = null;
+    queueMicrotask(() => {
+      if (pendingOptions === opts) {
+        pendingOptions = null;
+      }
+    });
     try {
       callback(opts);
     } catch {
@@ -53,7 +58,7 @@ export function registerSidebarRefetch(callback: RefetchCallback): () => void {
  * Trigger all registered sidebar refetch callbacks.
  * Call this after org switch, project/tag changes, or any action
  * that changes sidebar data. Queues the call if no callbacks are
- * registered yet, replaying when the first one registers.
+ * registered yet, replaying when the next ones register.
  */
 export function refetchSidebar(options?: RefetchOptions): void {
   if (refetchCallbacks.size === 0) {

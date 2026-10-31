@@ -351,14 +351,10 @@ function useOpenPressGrace(): {
   onClickCapture: (event: React.MouseEvent) => void;
   onPointerDownOutside: (event: OutsidePress) => void;
 } {
-  const press = usePressGrace(OPEN_PRESS_GRACE_MS);
-  const startPress = press.start;
-  const inGrace = press.inGrace;
   const sheetNodeRef = useRef<HTMLDivElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const start = useCallback(() => {
-    startPress();
+  const markSettling = useCallback(() => {
     sheetNodeRef.current?.setAttribute("data-settling", "");
     if (timerRef.current) {
       clearTimeout(timerRef.current);
@@ -367,7 +363,10 @@ function useOpenPressGrace(): {
       () => sheetNodeRef.current?.removeAttribute("data-settling"),
       OPEN_PRESS_GRACE_MS
     );
-  }, [startPress]);
+  }, []);
+
+  const press = usePressGrace(OPEN_PRESS_GRACE_MS, markSettling);
+  const { start, startThroughNextPaint, inGrace } = press;
 
   useEffect(
     () => () => {
@@ -378,17 +377,15 @@ function useOpenPressGrace(): {
     []
   );
 
-  // Vaul mounts the sheet a render after opening, so its grace starts here,
-  // and again on its first frame: a slow render must not use the grace up.
+  // Vaul mounts the sheet a render after opening, so its grace starts here.
   const sheetRef = useCallback(
     (node: HTMLDivElement | null) => {
       sheetNodeRef.current = node;
       if (node) {
-        start();
-        requestAnimationFrame(start);
+        startThroughNextPaint();
       }
     },
-    [start]
+    [startThroughNextPaint]
   );
 
   // Radix reports a press on the click after it, so this times the press.

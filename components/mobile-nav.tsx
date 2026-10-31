@@ -37,7 +37,7 @@ import {
 } from "@/components/ui/sheet";
 import { usePickerData } from "@/components/workflow-picker-data";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { usePressGrace } from "@/hooks/use-press-grace";
+import { LEVEL_TAP_GRACE_MS, usePressGrace } from "@/hooks/use-press-grace";
 import { useSession } from "@/lib/auth-client";
 import { isEscapeHandled, markEscapeHandled } from "@/lib/escape-key";
 import { useActiveMember } from "@/lib/hooks/use-organization";
@@ -53,10 +53,6 @@ type FocusTarget = (drawer: Element) => HTMLElement | null | undefined;
 
 const levelTitle: FocusTarget = (drawer) =>
   drawer.querySelector<HTMLElement>(`[${LEVEL_TITLE_ATTR}]`);
-
-// Taps pressed before a level was shown, or this soon after, are dropped: a
-// double tap's second press would land on whatever the new level put there.
-const LEVEL_TAP_GRACE_MS = 350;
 
 // Items that open their index from anywhere inside their section, so they
 // count as already shown only there.
@@ -94,14 +90,13 @@ export function MobileNav({
   }>({ view: MENU_VIEW, focus: null });
   const view = nav.view;
   const drawerRef = useRef<HTMLDivElement>(null);
-  // Restarted by a level change (not the reset on open) or its list loading,
-  // and again at the frame that paints it: a busy phone paints late.
+  // Taps pressed before a level was shown, or this soon after, are dropped:
+  // a double tap's second press would land on whatever the level put there.
+  // Restarted by a level change (not the reset on open) or its list loading.
   const grace = usePressGrace(LEVEL_TAP_GRACE_MS);
-  const startGrace = grace.start;
-  const markLevelShown = useCallback((): void => {
-    startGrace();
-    requestAnimationFrame(startGrace);
-  }, [startGrace]);
+  const markLevelShown = grace.startThroughNextPaint;
+  // The Escape that reached the drawer itself, not a tooltip or menu above.
+  const drawerEscapeRef = useRef<KeyboardEvent | null>(null);
 
   useLayoutEffect(() => {
     if (nav.focus) {
@@ -186,9 +181,10 @@ export function MobileNav({
             event.preventDefault();
           }
         }}
-        // Escape goes up a level (the drawer closes from the menu), after
-        // any control inside that uses it, such as a filter menu.
+        // Escape goes up a level (the drawer closes from the menu), unless
+        // a layer above it (tooltip, menu) or a control inside used it.
         onEscapeKeyDown={(event) => {
+          drawerEscapeRef.current = event;
           if (view.level !== "menu") {
             event.preventDefault();
           }
@@ -197,6 +193,7 @@ export function MobileNav({
           if (
             event.key === "Escape" &&
             view.level !== "menu" &&
+            drawerEscapeRef.current === event.nativeEvent &&
             !isEscapeHandled(event.nativeEvent)
           ) {
             markEscapeHandled(event.nativeEvent);
@@ -297,7 +294,6 @@ function MobileNavBody({
       <MobileNavWorkflows
         activeProjectId={activeProject?.id ?? null}
         activeWorkflowId={activeWorkflowId}
-        isAnonymous={isAnonymous}
         onBack={onBack}
         onListShown={onLevelListShown}
         onOpenWorkflow={openWorkflow}

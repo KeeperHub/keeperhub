@@ -114,15 +114,13 @@ export function usePickerFilter(
 // The workflows both menus let through.
 export function applyPickerFilter(
   workflows: WorkflowEntry[],
-  filter: PickerFilter
+  { status, types }: Pick<PickerFilter, "status" | "types">
 ): WorkflowEntry[] {
-  if (!filter.isFiltered) {
+  if (status.size === 0 && types.size === 0) {
     return workflows;
   }
   return workflows.filter(
-    (w) =>
-      matchesTriggerFilter(w, filter.status) &&
-      matchesTriggerTypeFilter(w, filter.types)
+    (w) => matchesTriggerFilter(w, status) && matchesTriggerTypeFilter(w, types)
   );
 }
 
