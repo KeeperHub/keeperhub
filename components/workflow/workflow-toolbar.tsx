@@ -2097,11 +2097,36 @@ function ReadOnlyBadge({ className }: { className?: string }) {
 function UseTemplateBar({
   isUsingTemplate,
   onUseTemplate,
+  onShownChange,
 }: {
   isUsingTemplate: boolean;
   onUseTemplate: () => void;
+  onShownChange: (shown: boolean) => void;
 }) {
   const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [shown, setShown] = useState(true);
+  // Too narrow a canvas hides the card (a container query); the header then
+  // offers the button instead.
+  useEffect(() => {
+    const card = cardRef.current;
+    const bar = card?.parentElement;
+    if (!(card && bar)) {
+      return;
+    }
+    const update = (): void => {
+      const isShown = getComputedStyle(card).display !== "none";
+      setShown(isShown);
+      onShownChange(isShown);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(bar);
+    return () => {
+      observer.disconnect();
+      onShownChange(true);
+    };
+  }, [onShownChange]);
   return (
     <div
       className="@container pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))] left-[max(1rem,env(safe-area-inset-left))] flex justify-center max-xs:right-3 max-xs:left-3 md:right-(--use-template-right) md:left-(--nav-content-offset,var(--nav-sidebar-width,60px)) md:px-4 md:motion-safe:transition-[left,right] md:motion-safe:duration-200 md:motion-safe:ease-out"
@@ -2112,10 +2137,13 @@ function UseTemplateBar({
     >
       <div
         className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2.5 rounded-lg border bg-background py-2 pr-2 pl-3 shadow-lg @max-[3.75rem]:hidden @max-[9.5rem]:pl-2 max-md:w-full"
-        data-use-template-bar=""
+        data-testid="use-template-card"
+        // globals.css lifts the zoom controls and toasts while it shows.
+        data-use-template-bar={shown ? "" : undefined}
+        ref={cardRef}
       >
         <ReadOnlyBadge className="hidden shrink-0 @min-[15.5rem]:inline-flex" />
-        <p className="hidden min-w-0 flex-1 text-foreground/80 text-sm leading-4 @min-[21rem]:block md:flex-none">
+        <p className="hidden min-w-0 flex-1 truncate whitespace-nowrap text-foreground/80 text-sm leading-4 @min-[24.5rem]:block md:flex-none">
           <span className="@min-[36rem]:hidden">Copy to edit and run</span>
           <span className="hidden @min-[36rem]:inline">
             Read-only. Make your own copy to edit and run it.
@@ -2123,7 +2151,7 @@ function UseTemplateBar({
         </p>
         <Button
           aria-busy={isUsingTemplate}
-          className="ml-auto shrink-0 bg-keeperhub-green hover:bg-keeperhub-green-dark focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-70 @max-[9.5rem]:size-9 @max-[9.5rem]:px-0"
+          className="ml-auto shrink-0 bg-keeperhub-green hover:bg-keeperhub-green-dark focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-70 @max-[9.5rem]:size-9 @max-[9.5rem]:has-[>svg]:px-0"
           data-analytics="template_use_clicked"
           disabled={isUsingTemplate}
           onClick={onUseTemplate}
@@ -2140,6 +2168,35 @@ function UseTemplateBar({
         </Button>
       </div>
     </div>
+  );
+}
+
+// Use template in the header, while the canvas is too narrow for the bar.
+function HeaderUseTemplateButton({
+  isUsingTemplate,
+  onUseTemplate,
+}: {
+  isUsingTemplate: boolean;
+  onUseTemplate: () => void;
+}) {
+  return (
+    <Button
+      aria-busy={isUsingTemplate}
+      className="shrink-0 bg-keeperhub-green hover:bg-keeperhub-green-dark focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-70"
+      data-analytics="template_use_clicked"
+      data-testid="header-use-template"
+      disabled={isUsingTemplate}
+      onClick={onUseTemplate}
+      size="sm"
+      title="Use this workflow as a template in your account"
+    >
+      {isUsingTemplate ? (
+        <Loader2 className="size-4 animate-spin" />
+      ) : (
+        <Copy className="size-4" />
+      )}
+      {isUsingTemplate ? "Importing…" : "Use template"}
+    </Button>
   );
 }
 
@@ -2197,15 +2254,25 @@ export const WorkflowToolbar = ({
     ? "flex items-center gap-2"
     : "flex flex-col-reverse items-end gap-2 lg:flex-row lg:items-center";
 
-  const useTemplateBar = isWorkflowRoute &&
-    effectiveWorkflowId &&
+  const offersTemplate =
+    isWorkflowRoute &&
+    Boolean(effectiveWorkflowId) &&
     !state.isOwner &&
-    state.workflowVisibility === "public" && (
-      <UseTemplateBar
-        isUsingTemplate={state.isDuplicating}
-        onUseTemplate={actions.handleUseTemplate}
-      />
-    );
+    state.workflowVisibility === "public";
+  const [useTemplateBarShown, setUseTemplateBarShown] = useState(true);
+  const useTemplateBar = offersTemplate && (
+    <UseTemplateBar
+      isUsingTemplate={state.isDuplicating}
+      onShownChange={setUseTemplateBarShown}
+      onUseTemplate={actions.handleUseTemplate}
+    />
+  );
+  const headerUseTemplate = offersTemplate && !useTemplateBarShown && (
+    <HeaderUseTemplateButton
+      isUsingTemplate={state.isDuplicating}
+      onUseTemplate={actions.handleUseTemplate}
+    />
+  );
 
   if (persistent) {
     return (
@@ -2261,6 +2328,7 @@ export const WorkflowToolbar = ({
                 workflowId={effectiveWorkflowId}
               />
             )}
+            {headerUseTemplate}
             <div className="flex items-center gap-2">
               <WalletToolbarButton />
               <UserMenu />

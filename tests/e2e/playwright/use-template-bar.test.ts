@@ -21,7 +21,6 @@ import {
 const PHONE_WIDTHS = [320, 375, 390, 430] as const;
 const WIDE_WIDTHS = [768, 1024, 1280, 1920] as const;
 const HEIGHT = 844;
-const RE_URL_DELIMS = /[/?#]/;
 
 const right = (b: Box): number => b.x + b.width;
 const bottom = (b: Box): number => b.y + b.height;
@@ -36,25 +35,28 @@ function templateButton(page: Page): Locator {
 }
 
 function card(page: Page): Locator {
-  return page.locator("[data-use-template-bar]");
+  return page.getByTestId("use-template-card");
 }
 
-// panelWidth: the right panel's width in %, as its resize handle saves it.
+// panel: the right panel's saved width (%) or collapsed state.
 async function open(
   page: Page,
   width: number,
   id: string,
-  panelWidth?: number
+  panel?: { width?: number; collapsed?: boolean }
 ): Promise<void> {
   await dismissPhoneOverlays(page);
-  if (panelWidth) {
-    await page.context().addCookies([
-      {
-        name: "sidebar-width",
-        value: String(panelWidth),
-        url: process.env.BASE_URL || "http://localhost:3000",
-      },
-    ]);
+  const url = process.env.BASE_URL || "http://localhost:3000";
+  const cookies = [
+    ...(panel?.width
+      ? [{ name: "sidebar-width", value: String(panel.width), url }]
+      : []),
+    ...(panel?.collapsed
+      ? [{ name: "sidebar-collapsed", value: "true", url }]
+      : []),
+  ];
+  if (cookies.length > 0) {
+    await page.context().addCookies(cookies);
   }
   await page.setViewportSize({ width, height: HEIGHT });
   await page.goto(`/workflows/${id}`, { waitUntil: "domcontentloaded" });
@@ -74,7 +76,7 @@ async function atWidth(
 
 // Every corner (3px in, past the rounding, which hit testing follows) and the
 // centre of the element are drawn on top.
-async function wholyOnTop(locator: Locator): Promise<boolean> {
+async function whollyOnTop(locator: Locator): Promise<boolean> {
   return await locator.evaluate((element) => {
     const r = element.getBoundingClientRect();
     const points = [
@@ -138,7 +140,7 @@ async function expectCardSound(page: Page): Promise<Box> {
   expect(await overlaps(cardBox, controls)).toBe(false);
   expect(cardBox.y).toBeGreaterThan(bottom(header));
   expect(bottom(cardBox)).toBeLessThanOrEqual(HEIGHT - 16 + 0.5);
-  expect(await wholyOnTop(button)).toBe(true);
+  expect(await whollyOnTop(button)).toBe(true);
   expect(await textFits(button)).toBe(true);
   expect(
     await page.evaluate(
@@ -156,13 +158,29 @@ async function expectPhoneBar(page: Page, width: number): Promise<void> {
 }
 
 // From md the card is centred on the canvas left free between the sidebar
-// (with any open flyout) and the right panel, 16px inside it.
-async function expectWideBar(page: Page): Promise<void> {
-  if (!(await templateButton(page).isVisible())) {
-    // A canvas narrower than the card (a flyout over it) hides the card.
-    await expect(card(page)).toBeHidden();
+// (with any open flyout) and the right panel, 16px inside it. Only where
+// that canvas is narrower than the card (a flyout over it) may the card give
+// way, and then the header offers the button.
+async function expectWideBar(
+  page: Page,
+  { allowFallback = false } = {}
+): Promise<void> {
+  const fallback = page.getByTestId("header-use-template");
+  if (allowFallback && !(await card(page).isVisible())) {
+    await expect(fallback).toBeVisible();
+    await expect(templateButton(page)).toHaveCount(1);
+    expect(await whollyOnTop(fallback)).toBe(true);
+    expect(await textFits(fallback)).toBe(true);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth - window.innerWidth
+      )
+    ).toBeLessThanOrEqual(0);
+    await headerControlsApart(page);
     return;
   }
+  await expect(templateButton(page)).toBeVisible();
+  await expect(fallback).toHaveCount(0);
   const cardBox = await expectCardSound(page);
   const canvas = await box(page.getByTestId("workflow-canvas"));
   const navEdge = await page.evaluate(() => {
@@ -237,7 +255,7 @@ test.describe("Use template bar, signed in", () => {
   });
 
   test("from 768px: a 50% right panel and the minimap", async ({ page }) => {
-    await open(page, WIDE_WIDTHS[0], foreignId, 50);
+    await open(page, WIDE_WIDTHS[0], foreignId, { width: 50 });
     await page.getByTitle("Show minimap").click();
     await expect(page.locator(".react-flow__minimap")).toBeVisible();
     for (const width of WIDE_WIDTHS) {
@@ -253,38 +271,57 @@ test.describe("Use template bar, signed in", () => {
     }
     await expect(flyout).toBeVisible();
     for (const width of WIDE_WIDTHS) {
-      await atWidth(page, width, () => expectWideBar(page));
+      await atWidth(page, width, () =>
+        expectWideBar(page, { allowFallback: true })
+      );
     }
   });
 
-  test("a toast shown meanwhile sits above the bar", async ({ page }) => {
-    await open(page, 390, foreignId);
-    // The source has a paid step: the paid-features notice, when billing is on.
-    const toast = page.locator("[data-sonner-toast]").first();
-    const shown = await toast
-      .waitFor({ state: "visible", timeout: 10_000 })
-      .then(() => true)
-      .catch(() => false);
-    test.skip(!shown, "No toast on this deployment (billing off)");
-    for (const width of [390, 1024]) {
-      await atWidth(page, width, async () => {
-        expect(await overlaps(await box(toast), await box(card(page)))).toBe(
-          false
-        );
+  // A failed copy toasts every time; with the right panel collapsed the
+  // toast (bottom right) is over the canvas, where the bar is.
+  test("a toast sits above the bar", async ({ page }) => {
+    await page.route("**/api/workflows/*/duplicate", (route) =>
+      route.fulfill({ status: 500, body: "{}" })
+    );
+    await open(page, 390, foreignId, { collapsed: true });
+    for (const width of [390, 768, 1024, 1920]) {
+      await test.step(`${width}px`, async () => {
+        await page.setViewportSize({ width, height: HEIGHT });
+        await templateButton(page).click();
+        // The newest toast is the one in front of the stack.
+        const toast = page
+          .locator('[data-sonner-toast][data-front="true"]')
+          .filter({ hasText: "Failed to duplicate workflow" });
+        await expect(toast).toBeVisible();
+        await expect(async () => {
+          const cardBox = await box(card(page));
+          for (const shown of await page
+            .locator("[data-sonner-toast]:visible")
+            .all()) {
+            const toastBox = await box(shown);
+            expect(await overlaps(toastBox, cardBox)).toBe(false);
+            expect(bottom(toastBox)).toBeLessThanOrEqual(cardBox.y);
+          }
+        }).toPass({ timeout: 3000 });
       });
     }
   });
 
   test("copies the workflow and opens the copy", async ({ page }) => {
     await open(page, 1280, copyableId);
+    const duplicated = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith(`/api/workflows/${copyableId}/duplicate`)
+    );
     await templateButton(page).click();
-    await expect(page).not.toHaveURL(new RegExp(copyableId), {
+    const response = await duplicated;
+    expect(response.ok()).toBe(true);
+    const copy = (await response.json()) as { id: string };
+    ids.push(copy.id);
+    await expect(page).toHaveURL(new RegExp(`/workflows/${copy.id}`), {
       timeout: 15_000,
     });
-    const copyId = page.url().split("/workflows/")[1]?.split(RE_URL_DELIMS)[0];
-    if (copyId) {
-      ids.push(copyId);
-    }
     await expect(page.getByTestId("workflow-actions")).toBeVisible({
       timeout: 15_000,
     });
