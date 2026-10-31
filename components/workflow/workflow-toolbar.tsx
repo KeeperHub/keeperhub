@@ -25,6 +25,7 @@ import {
   forwardRef,
   type RefObject,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -2171,7 +2172,8 @@ function UseTemplateBar({
   const cardRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const { focusMoved } = buttonProps;
-  useEffect(() => {
+  // Before paint, so the first frame is right.
+  useLayoutEffect(() => {
     const card = cardRef.current;
     const bar = card?.parentElement;
     if (!(card && bar)) {
@@ -2179,26 +2181,31 @@ function UseTemplateBar({
     }
     // The container query decides; this mirrors it for the header and for
     // globals.css, which lifts the zoom controls (and toasts, where they
-    // would reach the card) while the card shows.
-    const observer = new ResizeObserver(() => {
+    // would come within 16px of the card) while the card shows.
+    const update = (commit: (apply: () => void) => void): void => {
       const shown = getComputedStyle(card).display !== "none";
       const underToasts =
         shown &&
         (window.innerWidth < TOASTS_FULL_WIDTH_BELOW_PX ||
           card.getBoundingClientRect().right >
-            window.innerWidth - TOAST_SPAN_PX);
+            window.innerWidth - TOAST_SPAN_PX - 16);
       card.toggleAttribute("data-use-template-bar", shown);
       card.toggleAttribute("data-under-toasts", underToasts);
-      // Commit before paint, so the two buttons never both show or hide.
-      flushSync(() => onShownChange(shown));
+      commit(() => onShownChange(shown));
       if (shown && focusMoved.current && focusIsLost()) {
         buttonRef.current?.focus();
       }
-    });
+    };
+    update((apply) => apply());
+    // Commit before paint, so the two buttons never both show or hide.
+    const observer = new ResizeObserver(() => update(flushSync));
     observer.observe(bar);
+    observer.observe(card);
     return () => {
       observer.disconnect();
       onShownChange(true);
+      // Gone (another page): nothing to hand focus to.
+      focusMoved.current = false;
     };
   }, [onShownChange, focusMoved]);
   return (
@@ -2300,6 +2307,10 @@ export const WorkflowToolbar = ({
     state.workflowVisibility === "public";
   const [useTemplateBarShown, setUseTemplateBarShown] = useState(true);
   const useTemplateFocusMoved = useRef(false);
+  // A new workflow starts with no focus to hand over.
+  useEffect(() => {
+    useTemplateFocusMoved.current = false;
+  }, [effectiveWorkflowId]);
   const useTemplateProps = {
     focusMoved: useTemplateFocusMoved,
     isUsingTemplate: state.isDuplicating,

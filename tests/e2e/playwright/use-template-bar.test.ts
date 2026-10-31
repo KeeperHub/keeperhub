@@ -369,6 +369,13 @@ test.describe("Use template bar, signed in", () => {
       timeout: 15_000,
     });
     await expect(card(page)).toHaveCount(0);
+    // Back on the source, the button the copy started from does not grab
+    // focus on its own.
+    await page.goBack();
+    await expect(templateButton(page)).toBeVisible({ timeout: 15_000 });
+    await page.setViewportSize({ width: 1024, height: HEIGHT });
+    await expect(templateButton(page)).toBeVisible();
+    await expect(templateButton(page)).not.toBeFocused();
   });
 
   test("not shown on your own workflow", async ({ page }) => {
