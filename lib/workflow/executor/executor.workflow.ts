@@ -116,7 +116,13 @@ import {
 import { ARRAY_SOURCE_RE } from "@/lib/workflow/nodes/for-each/utils";
 import { triggerStep } from "@/lib/workflow/nodes/trigger/step";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
-import { splitTemplateRef } from "@/lib/workflow/template-ref";
+import {
+  findTemplateTokens,
+  parseStoredRef,
+  replaceTemplateTokens,
+  splitTemplateRef,
+  type TemplateToken,
+} from "@/lib/workflow/template-ref";
 import { LEGACY_ACTION_MAPPINGS } from "@/plugins/legacy-mappings";
 import { findActionById, flattenConfigFields } from "@/plugins/registry";
 
@@ -511,13 +517,18 @@ export function evaluateConditionExpression(
       const resolvedValues: Record<string, unknown> = {};
       const tokenLiterals: Record<string, string> = {};
       let transformedExpression = conditionExpression;
-      const templatePattern = /\{\{@([^:]+):([^}]+)\}\}/g;
       const varCounter = { value: 0 };
       const unresolvedFields: string[] = [];
 
-      transformedExpression = transformedExpression.replace(
-        templatePattern,
-        (match, nodeId, rest) => {
+      transformedExpression = replaceTemplateTokens(
+        transformedExpression,
+        ({ body }) => {
+          const match = `{{${body}}}`;
+          const ref = parseStoredRef(body);
+          if (!ref) {
+            return match;
+          }
+          const { nodeId, rest } = ref;
           const varName = replaceTemplateVariable(
             match,
             nodeId,
@@ -542,9 +553,9 @@ export function evaluateConditionExpression(
 
       // Mirror the substitution against the original expression so the value
       // side keeps the author's literals (quotes, operators) intact.
-      const resolvedExpression = conditionExpression.replace(
-        templatePattern,
-        (match: string) => tokenLiterals[match] ?? match
+      const resolvedExpression = replaceTemplateTokens(
+        conditionExpression,
+        ({ body }) => tokenLiterals[`{{${body}}}`] ?? `{{${body}}}`
       );
 
       // KEEP-468: any `{{...}}` token left after stored-format substitution
@@ -554,9 +565,10 @@ export function evaluateConditionExpression(
       // as a misleading "Unexpected token '{'" syntax error. Fail closed
       // explicitly with a clear message that points the author at the right
       // grammar.
-      const leftoverTemplateMatches =
-        transformedExpression.match(/\{\{[^}]+\}\}/g);
-      if (leftoverTemplateMatches && leftoverTemplateMatches.length > 0) {
+      const leftoverTemplateMatches = findTemplateTokens(
+        transformedExpression
+      ).map(({ body }) => `{{${body}}}`);
+      if (leftoverTemplateMatches.length > 0) {
         throw new Error(
           `Condition contains unresolved template reference(s): ${[...new Set(leftoverTemplateMatches)].join(", ")}. Use stored format \`{{@nodeId:Label.field}}\` for condition references.`
         );
@@ -1063,20 +1075,18 @@ function renderTemplateValue(
 }
 
 /**
- * Matches a stored ref `{{@nodeId:Label.field}}` OR a display ref
+ * True for a stored ref `{{@nodeId:Label.field}}` OR a display ref
  * `{{Label.field}}`. The display form is the fallback for tokens the editor
  * never converted to stored format (mirrors extractTemplateParameters).
  *
- * One alternation, so both forms resolve in a single pass. Two passes read
- * the text the first pass substituted, so every `{{...}}` inside an upstream
- * node's output became a reference the author appeared to have written.
+ * Both forms resolve in a single pass. Two passes read the text the first
+ * pass substituted, so every `{{...}}` inside an upstream node's output
+ * became a reference the author appeared to have written.
  * processCodeTemplates has always resolved code fields in one pass.
  */
-const configTemplatePattern = (): RegExp =>
-  /\{\{@([^:]+):([^}]+)\}\}|\{\{([^@}][^}]*)\}\}/g;
-
-/** Any `{{...}}`, used to find a token the reference patterns cannot match. */
-const anyTemplateToken = (): RegExp => /\{\{[^}]+\}\}/g;
+function isReferenceToken({ body }: TemplateToken): boolean {
+  return !body.startsWith("@") || parseStoredRef(body) !== null;
+}
 
 /**
  * Resolve one matched reference to the text that replaces it. `escapeValue`,
@@ -1084,27 +1094,26 @@ const anyTemplateToken = (): RegExp => /\{\{[^}]+\}\}/g;
  * never to the author's own surrounding text.
  */
 function resolveConfigMatch(
-  match: RegExpExecArray,
+  { body }: TemplateToken,
   outputs: NodeOutputs,
   tracker?: TemplateResolutionTracker,
   path?: string,
   escapeValue?: (substituted: string) => string
 ): string {
-  const [full, storedNodeId, storedRest, displayRef] = match;
-  if (storedNodeId !== undefined && storedRest !== undefined) {
+  const full = `{{${body}}}`;
+  const stored = parseStoredRef(body);
+  if (stored) {
     const substituted = replaceConfigTemplate(
       full,
-      storedNodeId,
-      storedRest,
+      stored.nodeId,
+      stored.rest,
       outputs,
       tracker,
       path
     );
     return escapeValue ? escapeValue(substituted) : substituted;
   }
-  if (displayRef === undefined) {
-    return full;
-  }
+  const displayRef = body;
   const resolved = resolveDisplayTemplate(displayRef, outputs);
   if (resolved === null || resolved === undefined) {
     recordUnresolved(tracker, {
@@ -1140,12 +1149,12 @@ function recordAuthoredLeftovers(
   if (!(tracker && authored.includes("{{"))) {
     return;
   }
-  for (const leftover of authored.matchAll(anyTemplateToken())) {
+  for (const leftover of findTemplateTokens(authored)) {
     if (tracker.unresolved.length >= MAX_TRACKED_LEFTOVERS) {
       return;
     }
     recordUnresolved(tracker, {
-      token: leftover[0],
+      token: `{{${leftover.body}}}`,
       reason: "literal-leftover",
       detail: "Reference left in rendered config; resolver did not match.",
       path: path || undefined,
@@ -1177,17 +1186,17 @@ export function renderTemplateString(
   escapeValue?: (substituted: string) => string,
   path = ""
 ): string {
-  const pattern = configTemplatePattern();
   let result = "";
   let cursor = 0;
-  let match = pattern.exec(value);
-  while (match !== null) {
-    const authored = value.slice(cursor, match.index);
+  for (const token of findTemplateTokens(value)) {
+    if (!isReferenceToken(token)) {
+      continue;
+    }
+    const authored = value.slice(cursor, token.start);
     recordAuthoredLeftovers(authored, tracker, path);
     result +=
-      authored + resolveConfigMatch(match, outputs, tracker, path, escapeValue);
-    cursor = match.index + match[0].length;
-    match = pattern.exec(value);
+      authored + resolveConfigMatch(token, outputs, tracker, path, escapeValue);
+    cursor = token.end;
   }
   const tail = value.slice(cursor);
   recordAuthoredLeftovers(tail, tracker, path);
@@ -1411,10 +1420,6 @@ function resolveDisplayCodeRef(
   return formatCodeValue(resolved);
 }
 
-// Matches a stored ref `{{@nodeId:Label.field}}` OR a display ref
-// `{{Label.field}}` in one pass so offsets align with the comment scan below.
-const CODE_TEMPLATE_PATTERN = /\{\{@([^:]+):([^}]+)\}\}|\{\{([^@}][^}]*)\}\}/g;
-
 export function processCodeTemplates(
   code: string,
   outputs: NodeOutputs,
@@ -1425,35 +1430,30 @@ export function processCodeTemplates(
   // original code so match offsets line up with the comment ranges.
   const commentRanges = computeCommentRanges(code);
 
-  return code.replace(
-    CODE_TEMPLATE_PATTERN,
-    (
-      full: string,
-      storedNodeId: string | undefined,
-      storedRest: string | undefined,
-      displayRef: string | undefined,
-      offset: number
-    ) => {
-      if (offsetInRanges(offset, commentRanges)) {
-        return full;
-      }
-      const line = lineNumberAt(code, offset);
-      if (storedNodeId !== undefined && storedRest !== undefined) {
-        return resolveStoredCodeRef(
-          full,
-          storedNodeId,
-          storedRest,
-          outputs,
-          tracker,
-          line
-        );
-      }
-      if (displayRef !== undefined) {
-        return resolveDisplayCodeRef(full, displayRef, outputs, tracker, line);
-      }
+  // Stored refs and display refs resolve in one pass so offsets align with
+  // the comment scan.
+  return replaceTemplateTokens(code, (token) => {
+    const full = `{{${token.body}}}`;
+    if (
+      !isReferenceToken(token) ||
+      offsetInRanges(token.start, commentRanges)
+    ) {
       return full;
     }
-  );
+    const line = lineNumberAt(code, token.start);
+    const stored = parseStoredRef(token.body);
+    if (stored) {
+      return resolveStoredCodeRef(
+        full,
+        stored.nodeId,
+        stored.rest,
+        outputs,
+        tracker,
+        line
+      );
+    }
+    return resolveDisplayCodeRef(full, token.body, outputs, tracker, line);
+  });
 }
 
 /**
@@ -1495,6 +1495,38 @@ export function resolveDisplayTemplateChecked(
   }
 
   return resolveFromOutputDataChecked(entry.data, fieldPath);
+}
+
+/**
+ * Replace each token `replace` accepts, leaving the rest as written. With
+ * `quoted`, only a token wrapped in a pair of single quotes is replaced, and
+ * the quotes go with it.
+ */
+function replaceQueryTokens(
+  query: string,
+  quoted: boolean,
+  replace: (token: TemplateToken, match: string) => string | null
+): string {
+  const pad = quoted ? 1 : 0;
+  let result = "";
+  let last = 0;
+  for (const token of findTemplateTokens(query)) {
+    const start = token.start - pad;
+    const end = token.end + pad;
+    if (
+      quoted &&
+      !(start >= last && query[start] === "'" && query[token.end] === "'")
+    ) {
+      continue;
+    }
+    const replacement = replace(token, query.slice(start, end));
+    if (replacement === null) {
+      continue;
+    }
+    result += query.slice(last, start) + replacement;
+    last = end;
+  }
+  return result + query.slice(last);
 }
 
 /**
@@ -1557,13 +1589,20 @@ export function extractTemplateParameters(
     return `$${paramIndex}`;
   };
 
+  const stored = (token: TemplateToken, match: string): string | null => {
+    const ref = parseStoredRef(token.body);
+    return ref ? replaceStored(match, ref.nodeId, ref.rest) : null;
+  };
+  const display = (token: TemplateToken, match: string): string | null =>
+    token.body.startsWith("@") ? null : replaceDisplay(match, token.body);
+
   // Stored format: fully-quoted first (strip both quotes), then unquoted
-  let result = query.replace(/'\{\{@([^:]+):([^}]+)\}\}'/g, replaceStored);
-  result = result.replace(/\{\{@([^:]+):([^}]+)\}\}/g, replaceStored);
+  let result = replaceQueryTokens(query, true, stored);
+  result = replaceQueryTokens(result, false, stored);
 
   // Display format: fully-quoted first (strip both quotes), then unquoted
-  result = result.replace(/'\{\{([^@}][^}]*)\}\}'/g, replaceDisplay);
-  result = result.replace(/\{\{([^@}][^}]*)\}\}/g, replaceDisplay);
+  result = replaceQueryTokens(result, true, display);
+  result = replaceQueryTokens(result, false, display);
 
   return { parameterizedQuery: result, paramValues };
 }
