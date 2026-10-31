@@ -123,7 +123,7 @@ function pickerData(
   overrides: Partial<{
     loading: boolean;
     projectsLoading: boolean;
-    projectsFirstLoad: boolean;
+    awaitingProjects: boolean;
     projects: Project[];
     ungrouped: WorkflowEntry[];
   }> = {}
@@ -141,7 +141,7 @@ function pickerData(
     tags: [],
     loading: false,
     projectsLoading: false,
-    projectsFirstLoad: false,
+    awaitingProjects: false,
     refetch: vi.fn(),
     ...overrides,
   };
@@ -644,7 +644,7 @@ describe("MobileNav", () => {
   it("shows no empty list while the projects are still loading", () => {
     mocks.picker = pickerData({
       projectsLoading: true,
-      projectsFirstLoad: true,
+      awaitingProjects: true,
       projects: [],
       ungrouped: [],
     });
@@ -656,6 +656,17 @@ describe("MobileNav", () => {
     mocks.picker = pickerData({ ungrouped: [] });
     render();
     expect(projectRow("p-1")).not.toBeNull();
+  });
+
+  it("keeps the list shown while the projects refresh", () => {
+    mocks.picker = pickerData({ projectsLoading: true, projects: [] });
+    render();
+    openDrawer();
+    click(item("workflows"));
+    expect(drawer()?.querySelector(".animate-spin")).toBeNull();
+    expect(rows().map((r) => r.textContent)).toEqual([
+      expect.stringContaining("Loose monitor"),
+    ]);
   });
 
   it("starts from the menu each time it opens", () => {

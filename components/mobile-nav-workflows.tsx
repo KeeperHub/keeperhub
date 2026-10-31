@@ -58,8 +58,8 @@ export function MobileNavWorkflows({
   const listsLoaded = !(loading || projectsLoading);
   const projectGone = view.level === "project" && listsLoaded && !project;
 
-  // Rows that appear late can land under a tap meant for the spinner. A
-  // project's rows depend on the workflow list only.
+  // Rows that appear late (after a load or a projects refresh) can land under
+  // a tap meant for what was there. A project's rows need the list only.
   const shownListLoaded = view.level === "project" ? !loading : listsLoaded;
   useLayoutEffect(() => {
     if (shownListLoaded) {

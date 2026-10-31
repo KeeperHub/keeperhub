@@ -1,5 +1,6 @@
 "use client";
 
+import { useAtomValue } from "jotai";
 import {
   createContext,
   useCallback,
@@ -11,6 +12,7 @@ import {
 } from "react";
 import type { Project, SavedWorkflow, Tag } from "@/lib/api-client";
 import { api } from "@/lib/api-client";
+import { activeOrgScopeAtom } from "@/lib/atoms/organization";
 import { useSession } from "@/lib/auth-client";
 import { useProjects, useTags } from "@/lib/hooks/use-org-data";
 import { isAnonymousUser } from "@/lib/is-anonymous";
@@ -32,9 +34,10 @@ type PickerData = {
   tags: Tag[];
   // The workflow list is loading.
   loading: boolean;
+  // The projects are loading, a refresh too.
   projectsLoading: boolean;
-  // A member's projects have not loaded yet (a refresh does not count).
-  projectsFirstLoad: boolean;
+  // A member's projects for their org have not loaded yet (not a refresh).
+  awaitingProjects: boolean;
   refetch: () => Promise<void>;
 };
 
@@ -69,16 +72,25 @@ export function PickerDataProvider({
   const { data: projects, isLoading: projectsLoading } = useProjects();
   const { data: tags } = useTags();
   const [loading, setLoading] = useState(true);
-  const [projectsLoaded, setProjectsLoaded] = useState(false);
-  if (!(projectsLoading || projectsLoaded)) {
-    setProjectsLoaded(true);
+  // The org the projects last loaded for (undefined: none yet).
+  const orgScope = useAtomValue(activeOrgScopeAtom);
+  const [projectsLoadedFor, setProjectsLoadedFor] = useState<
+    string | null | undefined
+  >(undefined);
+  if (!projectsLoading && projectsLoadedFor !== orgScope) {
+    setProjectsLoadedFor(orgScope);
   }
-  // Guests and signed-out visitors have no projects to wait for.
-  const projectsFirstLoad =
+  // Guests, signed-out visitors and a member without an org (whose projects
+  // never load) have no projects to wait for.
+  const awaitingProjects =
     projectsLoading &&
-    !projectsLoaded &&
+    projectsLoadedFor !== orgScope &&
     Boolean(session?.user) &&
-    !isAnonymousUser(session?.user);
+    !isAnonymousUser(session?.user) &&
+    Boolean(
+      (session?.session as { activeOrganizationId?: string | null })
+        ?.activeOrganizationId
+    );
   // A reply that lands after a newer list request was sent is dropped rather
   // than put back over the newer list.
   const latestFetch = useRef(createLatestRequest());
@@ -165,7 +177,7 @@ export function PickerDataProvider({
       tags,
       loading,
       projectsLoading,
-      projectsFirstLoad,
+      awaitingProjects,
       refetch: () => fetchData(),
     }),
     [
@@ -174,7 +186,7 @@ export function PickerDataProvider({
       tags,
       loading,
       projectsLoading,
-      projectsFirstLoad,
+      awaitingProjects,
       fetchData,
     ]
   );

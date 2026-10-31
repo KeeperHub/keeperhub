@@ -15,6 +15,7 @@ export const LEVEL_TAP_GRACE_MS = 350;
  */
 export function usePressGrace(
   graceMs: number,
+  // Runs at every (re)start; keep it stable (useCallback).
   onStart?: () => void
 ): {
   start: () => void;
@@ -77,6 +78,7 @@ export function usePressGrace(
   const onClickCapture = useCallback((event: React.MouseEvent): void => {
     const swallow = swallowClickRef.current;
     swallowClickRef.current = false;
+    // Keyboard clicks (detail 0) are never dropped.
     if (swallow && event.detail > 0 && isOwnTarget(event)) {
       event.preventDefault();
       event.stopPropagation();

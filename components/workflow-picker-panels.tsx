@@ -42,7 +42,7 @@ export function WorkflowsRootList({
   onSelectProject: (id: string) => void;
   isAnonymous: boolean;
 }): React.ReactNode {
-  const { projects, byProject, ungrouped, loading, projectsFirstLoad } =
+  const { projects, byProject, ungrouped, loading, awaitingProjects } =
     usePickerData();
   const { status, types } = filter;
   const shownUngrouped = useMemo(
@@ -67,7 +67,7 @@ export function WorkflowsRootList({
         filteredEmptyText={`${filter.emptyText} outside a project`}
         isAnonymous={isAnonymous}
         // Else a member whose workflows are all in projects sees "No workflows".
-        loading={loading || projectsFirstLoad}
+        loading={loading || awaitingProjects}
         onOpenWorkflow={onOpenWorkflow}
         onResetFilter={filter.isFiltered ? filter.reset : undefined}
         onSelectProject={onSelectProject}
