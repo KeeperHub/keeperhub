@@ -15,11 +15,17 @@ const mocks = vi.hoisted(() => ({
   member: { isAdmin: false, isOwner: false },
   isMobile: true,
   pathname: "/hub",
+  params: {} as Record<string, string>,
+  picker: null as unknown,
 }));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: mocks.push }),
   usePathname: () => mocks.pathname,
+  useParams: () => mocks.params,
+}));
+vi.mock("@/components/workflow-picker-data", () => ({
+  usePickerData: () => mocks.picker,
 }));
 vi.mock("@/components/auth/provider", () => ({
   useAuthPrompt: () => ({ openAuthPrompt: mocks.openAuthPrompt }),
@@ -73,15 +79,75 @@ vi.mock("@/components/organization/org-switcher", () => ({
 
 import { MobileNav } from "@/components/mobile-nav";
 import type { OrgSwitcherMenu } from "@/components/organization/org-switcher";
+import type { WorkflowEntry } from "@/components/workflow-picker-list";
+import type { Project } from "@/lib/api-client";
 
 const signedIn = {
   data: { user: { name: "Dana", email: "dana@example.com" } },
   isPending: false,
 };
 const signedOut = { data: null, isPending: false };
+const anonymous = {
+  data: {
+    user: {
+      name: "Guest",
+      email: "temp@http://localhost:3000",
+      isAnonymous: true,
+    },
+  },
+  isPending: false,
+};
+
+function project(id: string, name: string): Project {
+  return { id, name, color: "#98C379" } as Project;
+}
+
+function entry(
+  id: string,
+  name: string,
+  projectId: string | null = null
+): WorkflowEntry {
+  return {
+    id,
+    name,
+    projectId,
+    updatedAt: "2026-10-01T00:00:00.000Z",
+    triggerType: "Schedule",
+    triggerConfig: { scheduleCron: "*/5 * * * *" },
+    enabled: true,
+  };
+}
+
+// One project with two workflows, and one workflow outside any project.
+function pickerData(
+  overrides: Partial<{
+    loading: boolean;
+    projectsLoading: boolean;
+    projects: Project[];
+  }> = {}
+): unknown {
+  const workflows = [
+    entry("wf-a", "Relayer balance", "p-1"),
+    entry("wf-b", "Challenger bot", "p-1"),
+    entry("wf-c", "Loose monitor"),
+  ];
+  return {
+    workflows,
+    byProject: { "p-1": workflows.slice(0, 2) },
+    ungrouped: workflows.slice(2),
+    projects: [project("p-1", "Chronicle")],
+    tags: [],
+    loading: false,
+    projectsLoading: false,
+    refetch: vi.fn(),
+    ...overrides,
+  };
+}
 
 let container: HTMLDivElement;
 let root: Root;
+// What performance.now() returns; taps move it.
+let clock = 0;
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -108,6 +174,25 @@ beforeEach(() => {
   mocks.member = { isAdmin: false, isOwner: false };
   mocks.isMobile = true;
   mocks.pathname = "/hub";
+  mocks.params = {};
+  mocks.picker = pickerData();
+  clock = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => clock);
+  // Radix measures a row tooltip's trigger with an observer jsdom lacks.
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe(): void {
+        // jsdom does no layout
+      }
+      unobserve(): void {
+        // jsdom does no layout
+      }
+      disconnect(): void {
+        // jsdom does no layout
+      }
+    }
+  );
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -117,6 +202,8 @@ afterEach(() => {
   act(() => root.unmount());
   landing.remove();
   container.remove();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 function render(): void {
@@ -166,6 +253,64 @@ function item(id: string): HTMLButtonElement | null {
   return document.querySelector<HTMLButtonElement>(
     `[data-testid=mobile-nav-${id}]`
   );
+}
+
+function levelTitle(): string | null | undefined {
+  return document.querySelector("[data-testid=mobile-nav-level-title]")
+    ?.textContent;
+}
+
+function rows(): HTMLButtonElement[] {
+  return [
+    ...document.querySelectorAll<HTMLButtonElement>(
+      "[data-testid=workflow-picker-item]"
+    ),
+  ];
+}
+
+function projectRow(id: string): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>(
+    `[data-testid=workflow-picker-project][data-project-id="${id}"]`
+  );
+}
+
+// A tap pressed at `at` (the press's timeStamp) and handled at `handledAt`
+// (performance.now() then; a busy phone handles it late): a pointerdown, then
+// a pointer click (detail 1). element.click() is a key press's (detail 0).
+function tap(element: HTMLElement | null, at: number, handledAt = at): void {
+  if (!element) {
+    throw new Error("element not found");
+  }
+  clock = handledAt;
+  const press = new Event("pointerdown", { bubbles: true, cancelable: true });
+  Object.defineProperty(press, "timeStamp", { value: at });
+  const click = new MouseEvent("click", {
+    bubbles: true,
+    cancelable: true,
+    detail: 1,
+  });
+  act(() => {
+    element.dispatchEvent(press);
+    element.dispatchEvent(click);
+  });
+}
+
+function back(): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>(
+    "[data-testid=mobile-nav-back]"
+  );
+}
+
+function pressEscape(): void {
+  act(() => {
+    (document.activeElement ?? document.body).dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      })
+    );
+  });
 }
 
 function orgSwitcher(): HTMLButtonElement | null {
@@ -224,13 +369,18 @@ describe("MobileNav", () => {
     expect(isOpen()).toBe(false);
   });
 
-  it("opens the latest workflow for Workflows", () => {
+  it("opens Workflows inside the drawer: projects, then the rest", () => {
     render();
     openDrawer();
     click(item("workflows"));
-    expect(mocks.push).toHaveBeenCalledWith("/workflows?latest=edited");
+    expect(mocks.push).not.toHaveBeenCalled();
+    expect(isOpen()).toBe(true);
+    expect(levelTitle()).toBe("Workflows");
+    expect(projectRow("p-1")?.textContent).toContain("Chronicle");
+    expect(rows().map((r) => r.textContent)).toEqual([
+      expect.stringContaining("Loose monitor"),
+    ]);
   });
-
   it("opens the address book overlay", () => {
     render();
     openDrawer();
@@ -379,14 +529,22 @@ describe("MobileNav", () => {
     expect(isOpen()).toBe(false);
   });
 
-  it("goes to the latest workflow for Workflows from inside a workflow", () => {
-    mocks.pathname = "/workflows/abc";
+  it("opens on the open workflow's project, which the menu names", () => {
+    mocks.pathname = "/workflows/wf-a";
+    mocks.params = { workflowId: "wf-a" };
     render();
     openDrawer();
+    expect(item("workflows")?.textContent).toContain("Chronicle");
+    expect(item("workflows")?.getAttribute("aria-label")).toBe(
+      "Workflows, Chronicle, opens a list"
+    );
     click(item("workflows"));
-    expect(mocks.push).toHaveBeenCalledWith("/workflows?latest=edited");
+    expect(levelTitle()).toBe("Chronicle");
+    expect(rows().map((r) => r.getAttribute("aria-current"))).toEqual([
+      "page",
+      null,
+    ]);
   });
-
   it("asks a visitor on a shared workflow to sign in for Workflows", () => {
     mocks.session = signedOut;
     mocks.pathname = "/workflows/shared";
@@ -399,15 +557,231 @@ describe("MobileNav", () => {
     });
   });
 
-  it("only closes for Workflows on the workflows index", () => {
-    mocks.pathname = "/workflows";
+  it("opens a project from the list, and back goes up a level at a time", async () => {
     render();
     openDrawer();
     click(item("workflows"));
-    expect(mocks.push).not.toHaveBeenCalled();
+    click(projectRow("p-1"));
+    expect(levelTitle()).toBe("Chronicle");
+    await settleFocus();
+    expect(document.activeElement?.getAttribute("data-testid")).toBe(
+      "mobile-nav-level-title"
+    );
+    click(back());
+    expect(levelTitle()).toBe("Workflows");
+    expect(document.activeElement).toBe(projectRow("p-1"));
+    click(back());
+    expect(levelTitle()).toBeUndefined();
+    expect(document.activeElement).toBe(item("workflows"));
+    expect(isOpen()).toBe(true);
+  });
+
+  it("goes up a level on Escape, and closes from the menu", () => {
+    mocks.params = { workflowId: "wf-a" };
+    render();
+    openDrawer();
+    click(item("workflows"));
+    pressEscape();
+    expect(levelTitle()).toBe("Workflows");
+    pressEscape();
+    expect(item("workflows")).not.toBeNull();
+    expect(isOpen()).toBe(true);
+    pressEscape();
     expect(isOpen()).toBe(false);
   });
 
+  it("lets the filter button use an Escape before the level does", () => {
+    render();
+    openDrawer();
+    click(item("workflows"));
+    const filterButton = document.querySelector<HTMLButtonElement>(
+      "[data-testid=trigger-filter-button]"
+    );
+    click(filterButton);
+    expect(
+      document.querySelector("[data-testid=trigger-filters]")
+    ).not.toBeNull();
+    // Escape on a menu button, with its menu shut, hides the unused row.
+    document
+      .querySelector<HTMLButtonElement>("[data-testid=status-filter]")
+      ?.focus();
+    pressEscape();
+    expect(document.querySelector("[data-testid=trigger-filters]")).toBeNull();
+    expect(levelTitle()).toBe("Workflows");
+    pressEscape();
+    expect(item("workflows")).not.toBeNull();
+  });
+
+  it("starts from the menu each time it opens", () => {
+    mocks.params = { workflowId: "wf-a" };
+    render();
+    openDrawer();
+    click(item("workflows"));
+    // Picking a workflow closes the drawer while it is on a project.
+    click(rows()[1] ?? null);
+    expect(isOpen()).toBe(false);
+    openDrawer();
+    expect(levelTitle()).toBeUndefined();
+    expect(item("workflows")).not.toBeNull();
+  });
+
+  it("drops a second tap made just after a level opened", () => {
+    render();
+    openDrawer();
+    tap(item("workflows"), 1000);
+    expect(levelTitle()).toBe("Workflows");
+    tap(projectRow("p-1"), 1200);
+    expect(levelTitle()).toBe("Workflows");
+    tap(projectRow("p-1"), 1400);
+    expect(levelTitle()).toBe("Chronicle");
+    // A key press is never dropped.
+    click(rows()[0] ?? null);
+    expect(mocks.push).toHaveBeenCalledWith("/workflows/wf-a");
+  });
+
+  it("drops a quick second press, however late it is handled", () => {
+    render();
+    openDrawer();
+    tap(item("workflows"), 1000);
+    tap(projectRow("p-1"), 1100, 1900);
+    expect(levelTitle()).toBe("Workflows");
+  });
+
+  it("measures the window from the frame that paints the level", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((frame) => {
+      frames.push(frame);
+      return frames.length;
+    });
+    render();
+    openDrawer();
+    tap(item("workflows"), 1000);
+    // A busy phone paints the level 300ms after it was committed.
+    clock = 1300;
+    for (const frame of frames.splice(0)) {
+      act(() => frame(1300));
+    }
+    tap(projectRow("p-1"), 1500);
+    expect(levelTitle()).toBe("Workflows");
+    tap(projectRow("p-1"), 1700);
+    expect(levelTitle()).toBe("Chronicle");
+  });
+
+  it("drops a tap just after a level's list finishes loading", () => {
+    mocks.picker = pickerData({ loading: true });
+    render();
+    openDrawer();
+    tap(item("workflows"), 1000);
+    expect(projectRow("p-1")).toBeNull();
+    // The rows appear under a finger that meant to tap the spinner.
+    clock = 3000;
+    mocks.picker = pickerData();
+    render();
+    tap(projectRow("p-1"), 3100);
+    expect(levelTitle()).toBe("Workflows");
+    tap(projectRow("p-1"), 3400);
+    expect(levelTitle()).toBe("Chronicle");
+  });
+
+  it("lets through a pointer click that came without a press", () => {
+    render();
+    openDrawer();
+    tap(item("workflows"), 1000);
+    // A dropped tap, then a screen reader's click: detail 1, no pointerdown.
+    tap(projectRow("p-1"), 1100);
+    act(() => {
+      projectRow("p-1")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })
+      );
+    });
+    expect(levelTitle()).toBe("Chronicle");
+  });
+
+  // Guards against the window restarting on every data change.
+  it("keeps taps working after a refresh of a loaded list", () => {
+    render();
+    openDrawer();
+    tap(item("workflows"), 1000);
+    clock = 2000;
+    mocks.picker = pickerData();
+    render();
+    tap(projectRow("p-1"), 2100);
+    expect(levelTitle()).toBe("Chronicle");
+  });
+
+  it("keeps a project's rows tappable while the projects refresh", () => {
+    mocks.params = { workflowId: "wf-a" };
+    render();
+    openDrawer();
+    tap(item("workflows"), 1000);
+    expect(levelTitle()).toBe("Chronicle");
+    clock = 1500;
+    mocks.picker = pickerData({ projectsLoading: true });
+    render();
+    clock = 2000;
+    mocks.picker = pickerData();
+    render();
+    const challenger =
+      rows().find((row) => row.textContent?.includes("Challenger bot")) ?? null;
+    tap(challenger, 2100);
+    expect(mocks.push).toHaveBeenCalledWith("/workflows/wf-b");
+  });
+
+  it("lets through a tap stamped on another clock", () => {
+    render();
+    openDrawer();
+    tap(item("workflows"), 100_000);
+    // Pressed "at 20": an event clock far behind performance.now().
+    tap(projectRow("p-1"), 20, 100_100);
+    expect(levelTitle()).toBe("Chronicle");
+  });
+
+  it("goes back to the list when the project is gone", () => {
+    mocks.params = { workflowId: "wf-a" };
+    render();
+    openDrawer();
+    click(item("workflows"));
+    expect(levelTitle()).toBe("Chronicle");
+    mocks.picker = pickerData({ projects: [] });
+    render();
+    expect(levelTitle()).toBe("Workflows");
+  });
+
+  it("waits for the list before deciding a project is gone", () => {
+    mocks.params = { workflowId: "wf-a" };
+    render();
+    openDrawer();
+    click(item("workflows"));
+    mocks.picker = pickerData({ loading: true, projects: [] });
+    render();
+    expect(levelTitle()).toBe("Project");
+  });
+
+  it("sends a guest to their latest workflow, as before", () => {
+    mocks.session = anonymous;
+    render();
+    openDrawer();
+    expect(item("workflows")?.hasAttribute("aria-label")).toBe(false);
+    click(item("workflows"));
+    expect(mocks.push).toHaveBeenCalledWith("/workflows?latest=edited");
+    expect(isOpen()).toBe(false);
+  });
+
+  it("names a member's Workflows row as opening a list", () => {
+    render();
+    openDrawer();
+    expect(item("workflows")?.getAttribute("aria-label")).toBe(
+      "Workflows, opens a list"
+    );
+  });
+
+  it("gives the drawer's rows the touch size", () => {
+    render();
+    openDrawer();
+    click(item("workflows"));
+    expect(rows()[0]?.className).toContain("py-3");
+    expect(projectRow("p-1")?.className).toContain("py-3");
+  });
   it("returns focus to the button when nothing opens", async () => {
     render();
     openDrawer();
@@ -452,15 +826,30 @@ describe("MobileNav", () => {
     expect(document.activeElement).toBe(landing);
   });
 
-  it("leaves focus with the workflow Workflows opens", async () => {
+  it("opens a picked workflow and leaves focus with it", async () => {
     render();
     openDrawer();
     click(item("workflows"));
+    click(rows()[0] ?? null);
     await settleFocus();
-    expect(mocks.push).toHaveBeenCalledWith("/workflows?latest=edited");
+    expect(mocks.push).toHaveBeenCalledWith("/workflows/wf-c");
+    expect(isOpen()).toBe(false);
     expect(document.activeElement).toBe(landing);
   });
 
+  it("returns focus to the button when the open workflow is picked", async () => {
+    mocks.pathname = "/workflows/wf-a";
+    mocks.params = { workflowId: "wf-a" };
+    // The same page: nothing takes focus.
+    mocks.push.mockImplementation(() => undefined);
+    render();
+    openDrawer();
+    click(item("workflows"));
+    click(rows()[0] ?? null);
+    await settleFocus();
+    expect(isOpen()).toBe(false);
+    expect(document.activeElement).toBe(trigger());
+  });
   it("leaves focus with a new workflow", async () => {
     mocks.startNewWorkflow.mockResolvedValue({ id: "wf-9", created: true });
     render();

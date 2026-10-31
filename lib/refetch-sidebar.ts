@@ -27,8 +27,9 @@ const refetchCallbacks: Set<RefetchCallback> = new Set();
 let pendingOptions: RefetchOptions | null = null;
 
 /**
- * Register a refetch callback (called from NavigationSidebar).
- * Replays any pending refetch that fired before registration.
+ * Register a refetch callback (the workflow list's PickerDataProvider, and
+ * NavigationSidebar for its panels and filters). Replays any pending
+ * refetch that fired before registration, to the first callback only.
  */
 export function registerSidebarRefetch(callback: RefetchCallback): () => void {
   refetchCallbacks.add(callback);
