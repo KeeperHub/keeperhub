@@ -20,7 +20,16 @@ import {
 } from "lucide-react";
 import { nanoid } from "nanoid";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  forwardRef,
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { flushSync } from "react-dom";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -86,6 +95,7 @@ import {
   previewVersionAtom,
   propertiesPanelActiveTabAtom,
   redoAtom,
+  rightPanelWidthAtom,
   runsRefreshTriggerAtom,
   selectedEdgeAtom,
   selectedExecutionIdAtom,
@@ -2075,12 +2085,12 @@ function RunButtonGroup({
   return button;
 }
 
-// Read-only badge - pill with a strong accent outline on the toolbar
+// Read-only badge: a neutral pill, so the green button stays the one accent.
 function ReadOnlyBadge({ className }: { className?: string }) {
   return (
     <Badge
       className={cn(
-        "border-2 border-[var(--color-text-accent)]/60 bg-[var(--color-bg-accent)]/10 font-semibold text-[var(--color-text-accent)] text-xs uppercase tracking-wider backdrop-blur-sm dark:border-[var(--color-text-accent)]/50 dark:bg-transparent",
+        "border-border bg-transparent font-semibold text-foreground/80 text-xs uppercase tracking-wider",
         className
       )}
       variant="outline"
@@ -2090,41 +2100,150 @@ function ReadOnlyBadge({ className }: { className?: string }) {
   );
 }
 
-// Use-template Button — placed next to Sign In for non-owners (HUB-01, HUB-02).
-function UseTemplateButton({
-  className,
-  isUsingTemplate,
-  onUseTemplate,
-}: {
-  className?: string;
+// Sonner's toasts from 600px wide: 356px wide, 24px in from the right edge.
+const TOAST_SPAN_PX = 356 + 24;
+const TOASTS_FULL_WIDTH_BELOW_PX = 600;
+
+// Nothing visible holds focus: the body, or an element now hidden (browsers
+// move focus off a hidden element lazily).
+function focusIsLost(): boolean {
+  const active = document.activeElement;
+  return (
+    !active || active === document.body || active.getClientRects().length === 0
+  );
+}
+
+type UseTemplateButtonProps = {
   isUsingTemplate: boolean;
   onUseTemplate: () => void;
-}) {
+  // Whether a Use template button held focus when it was last hidden, so the
+  // one that takes its place picks focus up.
+  focusMoved: RefObject<boolean>;
+};
+
+const UseTemplateButton = forwardRef<
+  HTMLButtonElement,
+  UseTemplateButtonProps & { className?: string; testId?: string }
+>(function UseTemplateButton(
+  { className, focusMoved, isUsingTemplate, onUseTemplate, testId },
+  ref
+) {
   return (
-    <button
-      aria-label="Use this workflow as a template"
+    <Button
+      aria-busy={isUsingTemplate}
       className={cn(
-        "inline-flex h-8 items-center rounded-md border px-2.5 font-normal text-xs transition-colors duration-150 hover:bg-[var(--color-bg-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50 motion-reduce:transition-none phone-ui:shrink-0 phone-ui:whitespace-nowrap",
+        "shrink-0 bg-keeperhub-green hover:bg-keeperhub-green-dark focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-70",
         className
       )}
       data-analytics="template_use_clicked"
+      data-testid={testId}
       disabled={isUsingTemplate}
-      onClick={onUseTemplate}
-      style={{
-        borderColor: "color-mix(in oklab, var(--color-text-accent) 50%, transparent)",
-        color: "var(--color-text-accent)",
+      onBlur={(event) => {
+        // Hidden while focused: keep the flag for the other button.
+        if (event.currentTarget.getClientRects().length > 0) {
+          focusMoved.current = false;
+        }
       }}
+      onClick={onUseTemplate}
+      onFocus={() => {
+        focusMoved.current = true;
+      }}
+      ref={ref}
       title="Use this workflow as a template in your account"
-      type="button"
     >
       {isUsingTemplate ? (
-        <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+        <Loader2 className="size-4 animate-spin" />
       ) : (
-        <Copy className="mr-1.5 size-3.5" />
+        <Copy className="size-4" />
       )}
       {isUsingTemplate ? "Importing…" : "Use template"}
-    </button>
+    </Button>
   );
+});
+
+// Use template for a public workflow you do not own (HUB-01, HUB-02), across
+// the bottom of the free canvas; its content steps down as the canvas
+// narrows, and below the button's width the header offers it instead.
+function UseTemplateBar({
+  onShownChange,
+  ...buttonProps
+}: UseTemplateButtonProps & { onShownChange: (shown: boolean) => void }) {
+  const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const { focusMoved } = buttonProps;
+  // Before paint, so the first frame is right.
+  useLayoutEffect(() => {
+    const card = cardRef.current;
+    const bar = card?.parentElement;
+    if (!(card && bar)) {
+      return;
+    }
+    // The container query decides; this mirrors it for the header and for
+    // globals.css, which lifts the zoom controls (and toasts, where they
+    // would come within 16px of the card) while the card shows.
+    const update = (commit: (apply: () => void) => void): void => {
+      const shown = getComputedStyle(card).display !== "none";
+      const underToasts =
+        shown &&
+        (window.innerWidth < TOASTS_FULL_WIDTH_BELOW_PX ||
+          card.getBoundingClientRect().right >
+            window.innerWidth - TOAST_SPAN_PX - 16);
+      card.toggleAttribute("data-use-template-bar", shown);
+      card.toggleAttribute("data-under-toasts", underToasts);
+      commit(() => onShownChange(shown));
+      if (shown && focusMoved.current && focusIsLost()) {
+        buttonRef.current?.focus();
+      }
+    };
+    update((apply) => apply());
+    // Commit before paint, so the two buttons never both show or hide.
+    const observer = new ResizeObserver(() => update(flushSync));
+    observer.observe(bar);
+    observer.observe(card);
+    return () => {
+      observer.disconnect();
+      onShownChange(true);
+      // Gone (another page): nothing to hand focus to.
+      focusMoved.current = false;
+    };
+  }, [onShownChange, focusMoved]);
+  return (
+    <div
+      className="@container pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))] left-[max(1rem,env(safe-area-inset-left))] flex justify-center max-xs:right-3 max-xs:left-3 md:right-(--use-template-right) md:left-(--nav-content-offset,var(--nav-sidebar-width,60px)) md:px-4 md:motion-safe:transition-[left,right] md:motion-safe:duration-200 md:motion-safe:ease-out"
+      data-testid="use-template-bar"
+      style={
+        { "--use-template-right": rightPanelWidth ?? "0px" } as CSSProperties
+      }
+    >
+      <div
+        className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2.5 rounded-lg border bg-background py-2 pr-2 pl-3 shadow-lg @max-[9.5rem]:hidden max-md:w-full"
+        data-testid="use-template-card"
+        ref={cardRef}
+      >
+        <ReadOnlyBadge className="hidden shrink-0 @min-[15.5rem]:inline-flex" />
+        <p className="hidden min-w-0 flex-1 truncate text-foreground/80 text-sm leading-4 @min-[24.5rem]:block md:flex-none">
+          <span className="@min-[36rem]:hidden">Copy to edit and run</span>
+          <span className="hidden @min-[36rem]:inline">
+            Read-only. Make your own copy to edit and run it.
+          </span>
+        </p>
+        <UseTemplateButton {...buttonProps} className="ml-auto" ref={buttonRef} />
+      </div>
+    </div>
+  );
+}
+
+// Use template in the header, while the canvas is too narrow for the bar.
+function HeaderUseTemplateButton(props: UseTemplateButtonProps) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const { focusMoved } = props;
+  useEffect(() => {
+    if (focusMoved.current && focusIsLost()) {
+      ref.current?.focus();
+    }
+  }, [focusMoved]);
+  return <UseTemplateButton {...props} ref={ref} testId="header-use-template" />;
 }
 
 export const WorkflowToolbar = ({
@@ -2181,6 +2300,32 @@ export const WorkflowToolbar = ({
     ? "flex items-center gap-2"
     : "flex flex-col-reverse items-end gap-2 lg:flex-row lg:items-center";
 
+  const offersTemplate =
+    isWorkflowRoute &&
+    Boolean(effectiveWorkflowId) &&
+    !state.isOwner &&
+    state.workflowVisibility === "public";
+  const [useTemplateBarShown, setUseTemplateBarShown] = useState(true);
+  const useTemplateFocusMoved = useRef(false);
+  // A new workflow starts with no focus to hand over.
+  useEffect(() => {
+    useTemplateFocusMoved.current = false;
+  }, [effectiveWorkflowId]);
+  const useTemplateProps = {
+    focusMoved: useTemplateFocusMoved,
+    isUsingTemplate: state.isDuplicating,
+    onUseTemplate: actions.handleUseTemplate,
+  };
+  const useTemplateBar = offersTemplate && (
+    <UseTemplateBar
+      {...useTemplateProps}
+      onShownChange={setUseTemplateBarShown}
+    />
+  );
+  const headerUseTemplate = offersTemplate && !useTemplateBarShown && (
+    <HeaderUseTemplateButton {...useTemplateProps} />
+  );
+
   if (persistent) {
     return (
       <div className={containerClassName}>
@@ -2216,27 +2361,13 @@ export const WorkflowToolbar = ({
               <OrgSwitcher focusFallback={menuButtonRef} />
             </div>
           )}
-          {/* 16px (the gap and an ml-2) before what follows the logo and
-              switcher: the workflow's name from lg, and Use template in a
-              768-1023px window with a mouse (where name and badge hide). */}
+          {/* The workflow's name from lg, 16px (the gap and an ml-2) after
+              the logo and switcher. */}
           {isWorkflowRoute && state.currentWorkflowId && (
             <span className="hidden max-w-48 truncate font-medium text-foreground text-sm lg:ml-2 lg:inline-block">
               {state.workflowName}
             </span>
           )}
-          {isWorkflowRoute &&
-            effectiveWorkflowId &&
-            !state.isOwner &&
-            state.workflowVisibility === "public" && (
-              <>
-                <ReadOnlyBadge className="hidden lg:inline-flex" />
-                <UseTemplateButton
-                  className="mouse-tablet:ml-2"
-                  isUsingTemplate={state.isDuplicating}
-                  onUseTemplate={actions.handleUseTemplate}
-                />
-              </>
-            )}
         </div>
 
         {/* Right side: Actions + User Menu */}
@@ -2249,12 +2380,14 @@ export const WorkflowToolbar = ({
                 workflowId={effectiveWorkflowId}
               />
             )}
+            {headerUseTemplate}
             <div className="flex items-center gap-2">
               <WalletToolbarButton />
               <UserMenu />
             </div>
           </div>
         </div>
+        {useTemplateBar}
       </div>
     );
   }
@@ -2280,18 +2413,6 @@ export const WorkflowToolbar = ({
               <OrgSwitcher />
             </div>
           )}
-          {isWorkflowRoute &&
-            effectiveWorkflowId &&
-            !state.isOwner &&
-            state.workflowVisibility === "public" && (
-              <>
-                <ReadOnlyBadge className="hidden lg:inline-flex" />
-                <UseTemplateButton
-                  isUsingTemplate={state.isDuplicating}
-                  onUseTemplate={actions.handleUseTemplate}
-                />
-              </>
-            )}
         </div>
       </Panel>
 
@@ -2304,11 +2425,13 @@ export const WorkflowToolbar = ({
               workflowId={effectiveWorkflowId}
             />
           )}
+          {headerUseTemplate}
           <div className="flex items-center gap-2">
             <UserMenu />
           </div>
         </div>
       </div>
+      {useTemplateBar}
     </>
   );
 };

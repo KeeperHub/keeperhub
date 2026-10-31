@@ -512,6 +512,18 @@
   }
 }
 
+/* The Use template bar spans the bottom of the canvas: the zoom controls
+   (and minimap) sit above it at every width, as on phones, and so do toasts
+   where they would reach it (data-under-toasts). */
+body:has([data-use-template-bar]) .workflow-controls-panel {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 5.5rem) !important;
+}
+body:has([data-use-template-bar][data-under-toasts]) [data-sonner-toaster] {
+  --above-use-template: calc(max(1rem, env(safe-area-inset-bottom)) + 3.875rem);
+  --mobile-offset-bottom: var(--above-use-template) !important;
+  --offset-bottom: var(--above-use-template) !important;
+}
+
 /* Statuspage embedded widget overrides */
 #statuspage-widget .sp-widget {
   font-family: var(--font-anek-latin), sans-serif !important;
