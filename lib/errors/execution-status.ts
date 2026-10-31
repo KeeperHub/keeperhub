@@ -63,6 +63,46 @@ export const NODE_EXECUTION_STATUSES = [
 
 export type NodeExecutionStatus = (typeof NODE_EXECUTION_STATUSES)[number];
 
+/**
+ * Every status a row in `direct_executions` can carry. A `const` object plus a
+ * derived type, the same idiom as `ExecutionErrorType`, so call sites write
+ * `DirectExecutionStatus.FAILED` rather than the raw string and a renamed or
+ * added status is a type error everywhere it has to be handled.
+ *
+ * `UNCONFIRMED` is not final: a transaction was broadcast but the chain has
+ * not yet said whether it landed, and the reconciler settles the row later.
+ */
+export const DirectExecutionStatus = {
+  PENDING: "pending",
+  RUNNING: "running",
+  UNCONFIRMED: "unconfirmed",
+  COMPLETED: "completed",
+  FAILED: "failed",
+} as const;
+
+export type DirectExecutionStatus =
+  (typeof DirectExecutionStatus)[keyof typeof DirectExecutionStatus];
+
+export const DIRECT_EXECUTION_STATUSES: readonly DirectExecutionStatus[] =
+  Object.values(DirectExecutionStatus);
+
+/** Final direct-execution statuses: once written, a row never leaves them. */
+export const DIRECT_EXECUTION_TERMINAL_STATUSES = [
+  DirectExecutionStatus.COMPLETED,
+  DirectExecutionStatus.FAILED,
+] as const;
+
+export type DirectExecutionTerminalStatus =
+  (typeof DIRECT_EXECUTION_TERMINAL_STATUSES)[number];
+
+export function isDirectExecutionTerminalStatus(
+  status: DirectExecutionStatus
+): status is DirectExecutionTerminalStatus {
+  return (DIRECT_EXECUTION_TERMINAL_STATUSES as readonly string[]).includes(
+    status
+  );
+}
+
 /** Map an error_type to the execution status that should be persisted. */
 export function statusForErrorType(
   errorType: ExecutionErrorType | null | undefined

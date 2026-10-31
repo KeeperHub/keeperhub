@@ -1156,6 +1156,13 @@
       "when": 1790830100000,
       "tag": "0164_account_issuer_nullable",
       "breakpoints": true
+    },
+    {
+      "idx": 165,
+      "version": "7",
+      "when": 1793459049286,
+      "tag": "0165_event_outbox",
+      "breakpoints": true
     }
   ]
 }

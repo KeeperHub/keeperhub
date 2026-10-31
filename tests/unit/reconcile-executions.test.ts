@@ -318,7 +318,7 @@ describe("direct executions", () => {
     await run([directRow()], []);
 
     const { sql, params } = render(directUpdates()[0].where);
-    expect(sql).toMatch(/"id" = \$1 and .*"status" = \$2/);
+    expect(sql).toMatch(/"id" = \$1 and .*"status" in \(\$2\)/);
     expect(params).toEqual(["de_1", "unconfirmed"]);
   });
 
