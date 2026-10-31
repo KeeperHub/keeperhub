@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getAll: vi.fn(),
   session: { data: null as unknown, isPending: false },
   projects: { data: [] as unknown[], isLoading: false },
+  activeOrg: { data: null as unknown, isPending: false },
 }));
 
 vi.mock("@/lib/api-client", () => ({
@@ -14,6 +15,7 @@ vi.mock("@/lib/api-client", () => ({
 }));
 vi.mock("@/lib/auth-client", () => ({
   useSession: () => mocks.session,
+  authClient: { useActiveOrganization: () => mocks.activeOrg },
 }));
 vi.mock("@/lib/hooks/use-org-data", () => ({
   useProjects: () => mocks.projects,
@@ -92,6 +94,7 @@ async function settle(): Promise<void> {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.projects = { data: [], isLoading: false };
+  mocks.activeOrg = { data: null, isPending: false };
   getDefaultStore().set(activeOrgScopeAtom, null);
   seen = null;
   container = document.createElement("div");
@@ -141,8 +144,9 @@ describe("PickerDataProvider", () => {
 
   it("holds the list for a member's first projects load in an org only", async () => {
     mocks.projects = { data: [], isLoading: true };
+    mocks.activeOrg = { data: null, isPending: true };
     mocks.getAll.mockResolvedValue([]);
-    // Signed out, or a guest: their projects never load.
+    // Signed out, or a guest: no projects to wait for.
     mocks.session = { data: null, isPending: false };
     await render();
     expect(seen?.awaitingProjects).toBe(false);
@@ -155,15 +159,14 @@ describe("PickerDataProvider", () => {
     };
     await render();
     expect(seen?.awaitingProjects).toBe(false);
-    // A member without an org: nothing loads either.
-    mocks.session = signedIn(null) as typeof mocks.session;
-    await render();
-    expect(seen?.awaitingProjects).toBe(false);
 
+    // A member, while the active org is looked up.
     mocks.session = signedIn("org-1") as typeof mocks.session;
     await render();
     expect(seen?.awaitingProjects).toBe(true);
+    mocks.activeOrg = { data: { id: "org-1" }, isPending: false };
     await setScope("org-1");
+    expect(seen?.awaitingProjects).toBe(true);
     mocks.projects = { data: [{ id: "p-1" }], isLoading: false };
     await render();
     expect(seen?.awaitingProjects).toBe(false);
@@ -174,8 +177,20 @@ describe("PickerDataProvider", () => {
     expect(seen?.awaitingProjects).toBe(false);
     // Another org's projects are a first load again.
     mocks.session = signedIn("org-2") as typeof mocks.session;
+    mocks.activeOrg = { data: { id: "org-2" }, isPending: false };
     await setScope("org-2");
     expect(seen?.awaitingProjects).toBe(true);
+  });
+
+  it("does not hold the list when the projects can never load", async () => {
+    // The session names an org, but none is active: deleted, or its lookup
+    // failed. The projects store has no scope and never loads.
+    mocks.projects = { data: [], isLoading: true };
+    mocks.activeOrg = { data: null, isPending: false };
+    mocks.session = signedIn("org-gone") as typeof mocks.session;
+    mocks.getAll.mockResolvedValue([]);
+    await render();
+    expect(seen?.awaitingProjects).toBe(false);
   });
 
   it("refetches on refetchSidebar and keeps the list when a refetch fails", async () => {

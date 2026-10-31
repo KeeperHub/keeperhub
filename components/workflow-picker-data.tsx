@@ -13,7 +13,7 @@ import {
 import type { Project, SavedWorkflow, Tag } from "@/lib/api-client";
 import { api } from "@/lib/api-client";
 import { activeOrgScopeAtom } from "@/lib/atoms/organization";
-import { useSession } from "@/lib/auth-client";
+import { authClient, useSession } from "@/lib/auth-client";
 import { useProjects, useTags } from "@/lib/hooks/use-org-data";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { createLatestRequest } from "@/lib/latest-request";
@@ -72,25 +72,25 @@ export function PickerDataProvider({
   const { data: projects, isLoading: projectsLoading } = useProjects();
   const { data: tags } = useTags();
   const [loading, setLoading] = useState(true);
-  // The org the projects last loaded for (undefined: none yet).
+  // The projects load for this scope, which OrgDataSync sets from the
+  // active org; with none (or its lookup failed) they never load.
   const orgScope = useAtomValue(activeOrgScopeAtom);
+  const activeOrg = authClient.useActiveOrganization();
+  const projectsCanLoad =
+    orgScope !== null || activeOrg.isPending || activeOrg.data != null;
+  // The org the projects last loaded for (undefined: none yet).
   const [projectsLoadedFor, setProjectsLoadedFor] = useState<
     string | null | undefined
   >(undefined);
   if (!projectsLoading && projectsLoadedFor !== orgScope) {
     setProjectsLoadedFor(orgScope);
   }
-  // Guests, signed-out visitors and a member without an org (whose projects
-  // never load) have no projects to wait for.
+  // Guests and signed-out visitors have no projects to wait for.
   const awaitingProjects =
     projectsLoading &&
     projectsLoadedFor !== orgScope &&
-    Boolean(session?.user) &&
-    !isAnonymousUser(session?.user) &&
-    Boolean(
-      (session?.session as { activeOrganizationId?: string | null })
-        ?.activeOrganizationId
-    );
+    projectsCanLoad &&
+    !isAnonymousUser(session?.user);
   // A reply that lands after a newer list request was sent is dropped rather
   // than put back over the newer list.
   const latestFetch = useRef(createLatestRequest());
