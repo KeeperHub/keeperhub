@@ -16,7 +16,7 @@ export function ProfileForm({
 }): React.ReactElement {
   return (
     <div className="flex flex-col gap-5">
-      <div className="grid gap-5 sm:grid-cols-2">
+      <div className="grid gap-5 @lg/settings:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="profile-name">Name</Label>
           <Input

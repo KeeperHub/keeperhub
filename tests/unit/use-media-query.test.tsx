@@ -5,7 +5,14 @@ import { createRequire } from "node:module";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BELOW_LG_QUERY, useIsMobile, useMediaQuery } from "@/hooks/use-mobile";
+import {
+  BELOW_LG_QUERY,
+  BELOW_MD_QUERY,
+  BELOW_SM_QUERY,
+  mediaQueryMatches,
+  useIsMobile,
+  useMediaQuery,
+} from "@/hooks/use-mobile";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -84,6 +91,14 @@ describe("useMediaQuery", () => {
     expect(seen.at(-1)).toBe(true);
   });
 
+  it("answers right now from the hook's own list", () => {
+    render();
+    expect(mediaQueryMatches("(width < 48rem)")).toBe(true);
+    change(false);
+    expect(mediaQueryMatches("(width < 48rem)")).toBe(false);
+    expect(window.matchMedia).toHaveBeenCalledOnce();
+  });
+
   it("builds one list per query, however often it renders", () => {
     render();
     render();
@@ -127,7 +142,9 @@ function tailwindBreakpoint(name: string): string {
 }
 
 describe("breakpoint queries", () => {
-  it("match Tailwind's md and lg", () => {
+  it("match Tailwind's sm, md and lg", () => {
+    expect(BELOW_SM_QUERY).toBe(`(width < ${tailwindBreakpoint("sm")})`);
+    expect(BELOW_MD_QUERY).toBe(`(width < ${tailwindBreakpoint("md")})`);
     expect(BELOW_LG_QUERY).toBe(`(width < ${tailwindBreakpoint("lg")})`);
     function MobileProbe(): null {
       useIsMobile();

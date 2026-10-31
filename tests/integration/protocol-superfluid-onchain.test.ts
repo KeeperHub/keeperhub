@@ -558,6 +558,14 @@ describe("Superfluid on-chain integration", () => {
       // -- which is the whole point. This is the load-bearing assertion of
       // the hardening, validated against a real RPC rather than a regex
       // shape sample.
+      //
+      // Some nodes report the empty revert as `data="0x"`, others drop the
+      // data field and ethers reports `missing revert data` with data=null.
+      // When both endpoints agree on the second shape, estimateGasError
+      // throws it so the positive tests retry it as RPC noise -- but here a
+      // data-less revert is the very outcome under test, so it is the answer,
+      // not noise. Without this, every itOnchain attempt fails whenever the
+      // endpoints happen to answer that way.
       const msg = await estimateGasError(
         "grant-flow-operator",
         {
@@ -567,7 +575,12 @@ describe("Superfluid on-chain integration", () => {
           flowRateAllowance: DUMMY_FLOW_RATE,
         },
         SEPOLIA_FUSDC
-      );
+      ).catch((error: unknown) => {
+        if (isAmbiguousMissingRevertData(error)) {
+          return String(error);
+        }
+        throw error;
+      });
       // Sanity: must not be the empty-string "simulated" case.
       expect(msg).not.toBe("");
       // The actual guard: a real misroute must surface as a dispatch failure.

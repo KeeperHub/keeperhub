@@ -58,6 +58,8 @@ export function AnalyticsHeader({
   const lastUpdated = useAtomValue(analyticsLastUpdatedAtom);
   const [timeAgo, setTimeAgo] = useState<string>("");
   const [refreshing, setRefreshing] = useState(false);
+  // State rather than a ref so the Custom popover re-renders once it exists.
+  const [rangeNav, setRangeNav] = useState<HTMLElement | null>(null);
 
   // Update the "time ago" display every 5 seconds
   useEffect(() => {
@@ -115,44 +117,63 @@ export function AnalyticsHeader({
   );
 
   return (
-    <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex items-center gap-3">
+    <header className="flex flex-wrap items-center gap-3">
+      <div className="mr-auto flex items-center gap-3">
         <h1 className="text-2xl font-semibold tracking-tight">Analytics</h1>
       </div>
 
-      <div className="flex items-center gap-3">
-        <nav aria-label="Time range" className="flex items-center gap-1">
+      {/* On phones the range buttons get a row of their own under the title,
+          and refresh moves up beside the title. It stays after them in the
+          DOM, so Tab reaches it last there: putting it first would move that
+          mismatch to wider screens, where the order matches the screen.
+
+          From sm the two are one group beside the title, moving under it
+          together when they do not fit. Inside the group the range buttons
+          wrap first (the nav can shrink to its widest button), so refresh
+          stays on Custom's row and only takes a row of its own when even
+          that does not fit. */}
+      <div className="contents sm:flex sm:flex-wrap sm:items-end sm:gap-3">
+        <nav
+          aria-label="Time range"
+          className="order-last flex w-full flex-wrap items-center gap-1 sm:order-none sm:w-auto sm:min-w-min sm:grow sm:basis-0"
+          ref={setRangeNav}
+        >
           {rangeButtons}
-          <DateRangeFilter />
+          <DateRangeFilter phoneAnchor={rangeNav} />
         </nav>
 
-        {onRefetch ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                disabled={refreshing}
-                onClick={() => {
-                  handleRefresh().catch(() => {
-                    /* errors handled in handleRefresh */
-                  });
-                }}
-                size="icon-sm"
-                variant="outline"
-              >
-                <RefreshCw
-                  className={cn("size-4", refreshing && "animate-spin")}
-                />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Refresh data</TooltipContent>
-          </Tooltip>
-        ) : null}
+        <div className="flex items-center gap-3">
+          {onRefetch ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label="Refresh data"
+                  disabled={refreshing}
+                  onClick={() => {
+                    handleRefresh().catch(() => {
+                      /* errors handled in handleRefresh */
+                    });
+                  }}
+                  size="icon-sm"
+                  variant="outline"
+                >
+                  <RefreshCw
+                    className={cn("size-4", refreshing && "animate-spin")}
+                  />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Load the latest numbers</TooltipContent>
+            </Tooltip>
+          ) : null}
 
-        {lastUpdated ? (
-          <span className="text-xs text-muted-foreground">
-            Updated {timeAgo}
-          </span>
-        ) : null}
+          {/* As wide as its longest wording, so ticking from "just now" to
+            "59m ago" never moves refresh to another row and back. */}
+          {lastUpdated ? (
+            <span className="min-w-24 whitespace-nowrap text-xs text-muted-foreground tabular-nums">
+              Updated {timeAgo}
+            </span>
+          ) : null}
+        </div>
       </div>
     </header>
   );

@@ -37,7 +37,7 @@ export function CreateOrgForm({
       title="New organization"
     >
       <div className="flex flex-col gap-4">
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-4 @lg/settings:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="new-org-name">Name</Label>
             <Input

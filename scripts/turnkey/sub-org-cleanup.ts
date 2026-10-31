@@ -27,6 +27,8 @@ export type CleanupOptions = {
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const KEY_PREFIX_PATTERN = /^[0-9a-f]{16,}$/i;
+// A compressed P-256 public key, the format Turnkey API keys use.
+const PUBLIC_KEY_PATTERN = /^0[23][0-9a-f]{64}$/i;
 const LIST_SEPARATOR = /[\s,]+/;
 const MAX_REQUESTS_PER_SECOND = 30;
 
@@ -51,6 +53,29 @@ function parseNumber(
     throw new Error(`${name} must be a number between ${min} and ${max}`);
   }
   return value;
+}
+
+/**
+ * The job deletes sub-orgs owned only by its own key. If an app used the same
+ * key, its real wallets would look exactly like e2e leftovers. `appKeys` holds
+ * the live public key of every app, read at run time; the job refuses to run
+ * when one of them is its own key or when any of them is not a valid key.
+ */
+function assertNoAppUsesKey(appKeys: string, apiPublicKey: string): void {
+  const keys = appKeys.split(LIST_SEPARATOR).filter(Boolean);
+  if (keys.length === 0) {
+    throw new Error("APP_PUBLIC_KEYS is required");
+  }
+  for (const key of keys) {
+    if (!PUBLIC_KEY_PATTERN.test(key)) {
+      throw new Error("APP_PUBLIC_KEYS holds a value that is not a public key");
+    }
+    if (key.toLowerCase() === apiPublicKey.toLowerCase()) {
+      throw new Error(
+        "An app uses the same Turnkey key as this job, so its wallets would look like e2e leftovers. Refusing to run"
+      );
+    }
+  }
 }
 
 /**
@@ -79,6 +104,8 @@ export function parseOptions(env: Env): CleanupOptions {
       "EXPECTED_KEY_PREFIX does not match the API public key this job runs with"
     );
   }
+
+  assertNoAppUsesKey(required(env, "APP_PUBLIC_KEYS"), apiPublicKey);
 
   const maxSubOrgs = parseNumber(
     env,
@@ -404,4 +431,125 @@ export async function mapWithConcurrency<T, R>(
     Array.from({ length: Math.min(concurrency, items.length) }, run)
   );
   return results;
+}
+
+/**
+ * Formats an error for the job log. Node's fetch reports network failures as
+ * a bare "fetch failed" and keeps the reason (ECONNRESET, ETIMEDOUT, ...) in
+ * `cause`, so the cause code is appended. URLs are left to the caller to
+ * redact.
+ */
+export function describeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = error instanceof Error ? error.cause : undefined;
+  const reason = causeCode(cause) ?? causeMessage(cause);
+  return reason ? `${message} (${reason})` : message;
+}
+
+function causeCode(cause: unknown): string | undefined {
+  if (!cause || typeof cause !== "object" || !("code" in cause)) {
+    return;
+  }
+  const code = (cause as { code: unknown }).code;
+  if (typeof code === "number" || (typeof code === "string" && code !== "")) {
+    return String(code);
+  }
+  return;
+}
+
+function causeMessage(cause: unknown): string | undefined {
+  return cause instanceof Error && cause.message !== ""
+    ? cause.message
+    : undefined;
+}
+
+const SUB_ORG_NOT_FOUND = "no organization found";
+
+/** True when Turnkey says the sub-org does not exist (any more). */
+export function isSubOrgNotFound(error: unknown): boolean {
+  return describeError(error).includes(SUB_ORG_NOT_FOUND);
+}
+
+// Turnkey API errors carry a gRPC status code. These four are the ones that
+// can succeed on a later attempt: DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED
+// (rate limit), INTERNAL and UNAVAILABLE.
+const TRANSIENT_TURNKEY_CODES: ReadonlySet<number> = new Set([4, 8, 13, 14]);
+const HTTP_STATUS_PREFIX = /^(\d{3}) /;
+
+/**
+ * True for errors a retry can fix: a network failure (fetch puts the reason
+ * code in `cause`), a Turnkey rate limit or server error, or an HTTP 429 or
+ * 5xx that came back without a JSON body. Auth, permission and validation
+ * errors are final.
+ */
+export function isTransientError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  if (causeCode(error.cause)) {
+    return true;
+  }
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "number") {
+    return TRANSIENT_TURNKEY_CODES.has(code);
+  }
+  const status = Number(HTTP_STATUS_PREFIX.exec(error.message)?.[1]);
+  return status === 429 || status >= 500;
+}
+
+export function shouldRetryTurnkeyRead(error: unknown): boolean {
+  return !isSubOrgNotFound(error) && isTransientError(error);
+}
+
+/**
+ * Builds the wrapper for every Turnkey read. Each attempt, retries included,
+ * waits for the rate limiter first, so retries never push the job above its
+ * configured rate.
+ */
+export function createTurnkeyReader(
+  limit: () => Promise<void>,
+  options: {
+    attempts: number;
+    baseDelayMs: number;
+    sleep?: (ms: number) => Promise<void>;
+  }
+): <T>(call: () => Promise<T>) => Promise<T> {
+  return (call) =>
+    withRetry(
+      async () => {
+        await limit();
+        return call();
+      },
+      { ...options, shouldRetry: shouldRetryTurnkeyRead }
+    );
+}
+
+/**
+ * Retries a call with growing pauses and no pause after the last attempt.
+ * Only for idempotent calls: `shouldRetry` stops on errors that will not
+ * change.
+ */
+export async function withRetry<T>(
+  call: () => Promise<T>,
+  options: {
+    attempts: number;
+    baseDelayMs: number;
+    shouldRetry?: (error: unknown) => boolean;
+    sleep?: (ms: number) => Promise<void>;
+  }
+): Promise<T> {
+  const sleep =
+    options.sleep ??
+    ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await call();
+    } catch (error) {
+      const retryable = options.shouldRetry?.(error) ?? true;
+      if (!retryable || attempt >= options.attempts) {
+        throw error;
+      }
+      await sleep(options.baseDelayMs * attempt);
+    }
+  }
 }

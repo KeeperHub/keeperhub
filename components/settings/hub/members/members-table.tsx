@@ -20,17 +20,34 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import type { loginIdentifier } from "@/lib/auth/login-identifier";
 import { roleLabel } from "@/lib/organization/role-label";
+import { cn } from "@/lib/utils";
 import { ConfirmDeleteDialog } from "../confirm-delete-dialog";
 import type { OrgMember } from "../hooks/use-org-members";
-import { SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import {
+  NARROW_HIDDEN,
+  NARROW_ONLY,
+  NARROW_UNDER_NAME,
+  SETTINGS_HEAD_ROW,
+  SETTINGS_ROW,
+} from "../section";
 
 const SKELETON_ROWS = ["a", "b"] as const;
+
+const BADGE = "rounded-full border px-2 py-0.5 text-[0.6875rem]";
+
+// Just past the narrow layout a long identifier would push Joined and the
+// actions out of the card, so there the member column takes whatever the
+// others leave and the identifier truncates. Wider columns fit it as it is.
+const MEMBER_CELL =
+  "@xl/settings:@max-4xl/settings:w-full @xl/settings:@max-4xl/settings:max-w-0";
 
 export function MembersTable({
   members,
   loading,
   currentMemberId,
+  identifiers,
   canManage,
   updatingId,
   onRoleChange,
@@ -40,6 +57,8 @@ export function MembersTable({
   /** Draws the same rows blanked, so the card keeps its height. */
   loading: boolean;
   currentMemberId: string | null;
+  /** Each member's login identifier, by member id. */
+  identifiers: Map<string, ReturnType<typeof loginIdentifier>>;
   canManage: boolean;
   updatingId: string | null;
   onRoleChange: (member: OrgMember, role: string) => Promise<void>;
@@ -60,26 +79,56 @@ export function MembersTable({
         </TableHeader>
         <TableBody>
           {loading &&
-            SKELETON_ROWS.map((key) => (
-              <TableRow className={SETTINGS_ROW} key={key}>
-                <TableCell>
-                  <div className="flex items-center gap-3">
-                    <Skeleton className="size-8 shrink-0 rounded-full" />
-                    <div className="flex flex-col gap-1.5">
-                      <Skeleton className="h-5 w-36" />
-                      <Skeleton className="h-4 w-52" />
+            SKELETON_ROWS.map((key, index) => {
+              // Rows load most privileged first, so the first is the owner,
+              // whose role nobody can change. Without the rights to change
+              // roles every role is fixed. A fixed role in a narrow column
+              // sits on the identifier's line, so the blank row draws it there
+              // too and the row keeps its height once loaded.
+              const roleFixed = index === 0 || !canManage;
+              return (
+                <TableRow className={SETTINGS_ROW} key={key} role="row">
+                  <TableCell className={MEMBER_CELL} role="cell">
+                    <div className="flex items-center gap-3">
+                      <Skeleton className="size-8 shrink-0 rounded-full" />
+                      <div className="flex min-w-0 flex-col">
+                        {/* Each bar sits inside the line box of the text it
+                            stands for, so loading rows are as tall as loaded
+                            ones. */}
+                        <Skeleton className="my-0.5 h-4 w-36 max-w-full" />
+                        <div className="flex min-w-0 items-center gap-2">
+                          <Skeleton className="my-0.5 h-3 w-52 min-w-0" />
+                          {roleFixed && (
+                            <Skeleton
+                              className={cn(
+                                BADGE,
+                                "shrink-0 border-transparent text-transparent",
+                                NARROW_ONLY
+                              )}
+                            >
+                              Member
+                            </Skeleton>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <Skeleton className="h-5 w-20" />
-                </TableCell>
-                <TableCell>
-                  <Skeleton className="h-5 w-24" />
-                </TableCell>
-                <TableCell />
-              </TableRow>
-            ))}
+                  </TableCell>
+                  <TableCell
+                    className={cn(
+                      NARROW_UNDER_NAME,
+                      roleFixed && NARROW_HIDDEN
+                    )}
+                    role="cell"
+                  >
+                    <Skeleton className="h-9 w-[120px]" />
+                  </TableCell>
+                  <TableCell className={NARROW_UNDER_NAME} role="cell">
+                    <Skeleton className="my-0.5 h-3 w-24 @xl/settings:h-4" />
+                  </TableCell>
+                  <TableCell role="cell" />
+                </TableRow>
+              );
+            })}
           {!loading &&
             members.map((member) => {
               const isSelf = member.id === currentMemberId;
@@ -87,9 +136,13 @@ export function MembersTable({
               // the leave flow, so the picker only offers the two editable roles.
               const roleEditable =
                 canManage && !isSelf && member.role !== "owner";
+              const identifier = identifiers.get(member.id) ?? {
+                shown: member.user.email,
+                full: member.user.email,
+              };
               return (
-                <TableRow className={SETTINGS_ROW} key={member.id}>
-                  <TableCell>
+                <TableRow className={SETTINGS_ROW} key={member.id} role="row">
+                  <TableCell className={MEMBER_CELL} role="cell">
                     <div className="flex items-center gap-3">
                       <Avatar className="size-8">
                         <AvatarImage
@@ -101,28 +154,57 @@ export function MembersTable({
                         </AvatarFallback>
                       </Avatar>
                       <div className="flex min-w-0 flex-col">
-                        <span className="flex items-center gap-2 truncate font-medium">
-                          {member.user.name}
+                        <span className="flex min-w-0 items-center gap-2 font-medium">
+                          <span className="min-w-0 truncate">
+                            {member.user.name}
+                          </span>
                           {isSelf && (
-                            <span className="rounded-full border px-2 py-0.5 text-[0.6875rem]">
-                              You
-                            </span>
+                            <span className={cn(BADGE, "shrink-0")}>You</span>
                           )}
                         </span>
-                        <span className="truncate text-muted-foreground text-xs">
-                          {member.user.email}
+                        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                          <span
+                            className="max-w-full truncate text-muted-foreground text-xs"
+                            data-testid="member-identifier"
+                            title={identifier.full}
+                          >
+                            {identifier.shown}
+                          </span>
+                          {/* In a narrow column a fixed role sits on the
+                              identifier's line, or just under it when the
+                              identifier needs the whole line. An editable one
+                              keeps a line of its own: its picker would leave
+                              the identifier no room on a phone. */}
+                          {!roleEditable && (
+                            <span
+                              className={cn(BADGE, "shrink-0", NARROW_ONLY)}
+                              data-testid="member-role"
+                            >
+                              <span className="sr-only">Role </span>
+                              {roleLabel(member.role)}
+                            </span>
+                          )}
                         </span>
                       </div>
                     </div>
                   </TableCell>
-                  <TableCell>
+                  <TableCell
+                    className={cn(
+                      NARROW_UNDER_NAME,
+                      !roleEditable && NARROW_HIDDEN
+                    )}
+                    role="cell"
+                  >
                     {roleEditable ? (
                       <Select
                         disabled={updatingId === member.id}
                         onValueChange={(role) => onRoleChange(member, role)}
                         value={member.role}
                       >
-                        <SelectTrigger className="h-8 w-[120px]">
+                        <SelectTrigger
+                          aria-label="Role"
+                          className="h-8 w-[120px]"
+                        >
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -131,15 +213,17 @@ export function MembersTable({
                         </SelectContent>
                       </Select>
                     ) : (
-                      <span className="rounded-full border px-2 py-0.5 text-[0.6875rem]">
-                        {roleLabel(member.role)}
-                      </span>
+                      <span className={BADGE}>{roleLabel(member.role)}</span>
                     )}
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell
+                    className={cn("text-muted-foreground", NARROW_UNDER_NAME)}
+                    role="cell"
+                  >
+                    <span className={NARROW_ONLY}>Joined </span>
                     {new Date(member.createdAt).toLocaleDateString()}
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="text-right" role="cell">
                     {canManage && !isSelf && (
                       <Button
                         aria-label={`Remove ${member.user.name}`}

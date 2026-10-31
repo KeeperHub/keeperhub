@@ -31,7 +31,7 @@ export type McpUserGroup = {
   sessions: McpConnectionRow[];
 };
 
-type ConnectionsResponse = {
+export type ConnectionsResponse = {
   users: McpUserGroup[];
   canManage: boolean;
   maxScope: string | null;

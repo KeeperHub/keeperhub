@@ -4,8 +4,14 @@ import { Info } from "lucide-react";
 import { type ReactNode, useMemo } from "react";
 import { groupByDate } from "@/lib/activity/time-groups";
 import type { SecurityAuditEvent } from "@/lib/api-client";
+import { cn } from "@/lib/utils";
 import { DAY_MS, HOUR_MS } from "@/lib/utils/duration";
 import { ActivityRow } from "./activity-row";
+import {
+  PHONE_PAGE_FILL,
+  PHONE_PAGE_SCROLLER,
+  PHONE_STICKY_HEADING,
+} from "./phone-scroll";
 
 // Synthetic sample rows shown to members, who can't read the real audit log
 // (the endpoint 403s them). Names/emails are fictional and IPs are from the
@@ -102,9 +108,25 @@ export function ActivityMemberPreview(): ReactNode {
   }, []);
 
   return (
-    <div className="pointer-events-auto fixed inset-0 flex flex-col overflow-hidden bg-sidebar">
-      <div className="flex min-h-0 flex-1 flex-col transition-[margin-left] duration-200 ease-out md:ml-[var(--nav-content-offset,var(--nav-sidebar-width,60px))]">
-        <div className="flex min-h-0 flex-1 flex-col gap-6 p-6 pt-[calc(5rem+var(--app-banner-height,0px))]">
+    // Same phone layout as the admin feed: the whole page scrolls.
+    <div
+      className={cn(
+        "pointer-events-auto fixed inset-0 flex flex-col overflow-hidden bg-sidebar",
+        PHONE_PAGE_SCROLLER
+      )}
+    >
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col transition-[margin-left] duration-200 ease-out md:ml-[var(--nav-content-offset,var(--nav-sidebar-width,60px))]",
+          PHONE_PAGE_FILL
+        )}
+      >
+        <div
+          className={cn(
+            "flex min-h-0 flex-1 flex-col gap-6 p-6 pt-[calc(5rem+var(--app-banner-height,0px))] max-sm:gap-4 max-sm:px-4 max-sm:pb-[max(1rem,env(safe-area-inset-bottom))]",
+            PHONE_PAGE_FILL
+          )}
+        >
           <div className="space-y-1">
             <h1 className="font-semibold text-2xl tracking-tight">
               Organization activity
@@ -125,10 +147,20 @@ export function ActivityMemberPreview(): ReactNode {
             </div>
           </div>
 
-          <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto">
+          <div
+            className={cn(
+              "thin-scrollbar min-h-0 flex-1 overflow-y-auto max-sm:overflow-visible",
+              PHONE_PAGE_FILL
+            )}
+          >
             {groups.map((group) => (
               <div key={group.label}>
-                <p className="sticky top-0 z-10 mb-2 border-border/60 border-b bg-background pt-6 pb-2 font-medium text-muted-foreground text-xs uppercase tracking-wide first:pt-0">
+                <p
+                  className={cn(
+                    "sticky top-0 z-10 mb-2 border-border/60 border-b bg-background pt-6 pb-2 font-medium text-muted-foreground text-xs uppercase tracking-wide first:pt-0",
+                    PHONE_STICKY_HEADING
+                  )}
+                >
                   {group.label}
                 </p>
                 <ul>

@@ -28,7 +28,7 @@ export function OrgDetailsCard({
       title="Organization details"
     >
       <div className="flex flex-col gap-5">
-        <div className="grid gap-5 sm:grid-cols-2">
+        <div className="grid gap-5 @lg/settings:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="org-name">Name</Label>
             <Input

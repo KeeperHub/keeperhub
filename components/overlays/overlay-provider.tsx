@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import type {
+  OverlayActions,
   OverlayComponentProps,
   OverlayContextValue,
   OverlayOptions,
@@ -18,6 +19,9 @@ import type {
 } from "./types";
 
 const OverlayContext = createContext<OverlayContextValue | null>(null);
+
+// The actions alone never change, so their readers skip stack updates.
+const OverlayActionsContext = createContext<OverlayActions | null>(null);
 
 // Separate context for frozen stack (used during exit animations)
 const FrozenStackContext = createContext<OverlayStackItem[]>([]);
@@ -46,6 +50,10 @@ export function OverlayProvider({ children }: OverlayProviderProps) {
   if (stack.length > 0) {
     frozenStackRef.current = stack;
   }
+
+  // Read by isOpen, so it stays stable for useOverlayActions readers
+  const stackRef = useRef(stack);
+  stackRef.current = stack;
 
   const open = useCallback(
     <P,>(
@@ -170,6 +178,13 @@ export function OverlayProvider({ children }: OverlayProviderProps) {
     });
   }, []);
 
+  const isOpen = useCallback(
+    <P,>(component: ComponentType<OverlayComponentProps<P>>): boolean =>
+      stackRef.current.at(-1)?.component ===
+      (component as ComponentType<OverlayComponentProps>),
+    []
+  );
+
   const value = useMemo<OverlayContextValue>(
     () => ({
       stack,
@@ -179,17 +194,25 @@ export function OverlayProvider({ children }: OverlayProviderProps) {
       replace,
       closeAll,
       close,
+      isOpen,
       hasOverlays: stack.length > 0,
       depth: stack.length,
     }),
-    [stack, open, push, pop, replace, closeAll, close]
+    [stack, open, push, pop, replace, closeAll, close, isOpen]
+  );
+
+  const actions = useMemo<OverlayActions>(
+    () => ({ open, push, pop, replace, closeAll, close, isOpen }),
+    [open, push, pop, replace, closeAll, close, isOpen]
   );
 
   return (
     <OverlayContext.Provider value={value}>
-      <FrozenStackContext.Provider value={frozenStackRef.current}>
-        {children}
-      </FrozenStackContext.Provider>
+      <OverlayActionsContext.Provider value={actions}>
+        <FrozenStackContext.Provider value={frozenStackRef.current}>
+          {children}
+        </FrozenStackContext.Provider>
+      </OverlayActionsContext.Provider>
     </OverlayContext.Provider>
   );
 }
@@ -202,6 +225,18 @@ export function useOverlay(): OverlayContextValue {
   const context = useContext(OverlayContext);
   if (!context) {
     throw new Error("useOverlay must be used within an OverlayProvider");
+  }
+  return context;
+}
+
+/**
+ * The overlay actions without the stack, for components that open overlays
+ * but do not render from the stack (they do not re-render when it changes).
+ */
+export function useOverlayActions(): OverlayActions {
+  const context = useContext(OverlayActionsContext);
+  if (!context) {
+    throw new Error("useOverlayActions must be used within an OverlayProvider");
   }
   return context;
 }

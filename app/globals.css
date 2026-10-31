@@ -45,6 +45,56 @@
     }
   }
 }
+/* Where typing brings up an on-screen keyboard: phones (below sm), and touch
+   screens of any width. */
+@custom-variant soft-keyboard {
+  @media (width < --theme(--breakpoint-sm)) {
+    @slot;
+  }
+  @variant touch {
+    @slot;
+  }
+}
+
+/* A window that holds a code entry (marked data-keyboard-safe, as
+   DualFactorSteps is) sits near the top on phones and touch screens, so the
+   on-screen keyboard does not cover its field and buttons. It is never taller
+   than what the keyboard leaves visible: --visual-viewport-height and -top
+   come from useVisualViewportVars while the code entry is mounted (dvh does
+   not shrink for the keyboard); the window itself scrolls the rest. A screen
+   640px or wider with a mouse keeps the centred window. */
+@utility keyboard-safe-window {
+  @variant soft-keyboard {
+    &:has([data-keyboard-safe]) {
+      --keyboard-safe-top: max(12dvh, calc(env(safe-area-inset-top) + 1rem));
+      --keyboard-safe-bottom: max(1rem, env(safe-area-inset-bottom));
+      --tw-translate-y: 0;
+      top: calc(var(--visual-viewport-top, 0px) + var(--keyboard-safe-top));
+      max-height: calc(
+        var(--visual-viewport-height, 100dvh) -
+        var(--keyboard-safe-top) -
+        var(--keyboard-safe-bottom)
+      );
+      overflow-y: auto;
+      /* Follow the keyboard at once: a duration such as DialogContent's
+         duration-200 would otherwise animate top and max-height (WebKit for
+         up to 1.5s), leaving the bottom under the keyboard meanwhile. */
+      transition-property: none;
+      /* Phones, and short screens such as a phone turned sideways, keep
+         every pixel above the keyboard. */
+      @media (width < --theme(--breakpoint-sm)) or (height < 40rem) {
+        --keyboard-safe-top: calc(env(safe-area-inset-top) + 1rem);
+      }
+    }
+  }
+}
+
+/* Keyboard focus ring on hub and /scan surfaces: the accent ring with a 2px
+   gap. Each surface sets the gap to its own background colour, e.g.
+   focus-visible:ring-offset-sidebar on /hub. */
+@utility hub-focus-ring {
+  @apply ring-2 ring-[var(--color-border-accent)] ring-offset-2 outline-none;
+}
 
 @theme inline {
   /* 375px and 420px: the phone header's switcher and wallet (see
@@ -53,8 +103,19 @@
      max width of their own. */
   --breakpoint-xs: 23.4375rem;
   --breakpoint-wallet: 26.25rem;
+  /* 390px and 840px: the workflow editor's Enable switch beside Run. In the
+     phone bar Run keeps its label from run-label; in the 768-1023px header
+     the switch has room beside a selection's Delete from switch-row. */
+  --breakpoint-run-label: 24.375rem;
+  --breakpoint-switch-row: 52.5rem;
   /* The header org switcher's name gives way to initials below this. */
   --container-org-name: 5.5rem;
+  /* The marketplace leaderboard shows its Tags column from this width. */
+  --container-leaderboard-full: 44rem;
+  /* The hub Workflows list shows its Tags column from @workflow-list-tags and
+     the original grid, with one-line names, from @workflow-list-full. */
+  --container-workflow-list-tags: 46rem;
+  --container-workflow-list-full: 56rem;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-anek-latin);
@@ -98,6 +159,8 @@
 }
 
 :root {
+  /* The persistent header's height (its row, without the app banner). */
+  --header-height: 60px;
   --radius: 0.625rem;
   --background: oklch(0.9842 0.0034 247.86);
   --foreground: oklch(0.2101 0.0318 264.66);
@@ -425,10 +488,27 @@
   }
 }
 
-/* Safe area support for mobile devices */
-@media (max-width: 768px) {
+/* Above the editor's phone toolbar (below md), clear of the safe area */
+@media (width < 48rem) {
   .workflow-controls-panel {
     bottom: calc(env(safe-area-inset-bottom, 0px) + 5.5rem) !important;
+  }
+  /* The AI prompt 8px above the toolbar (54px tall at the toolbar's bottom
+     offset), narrow enough to stay clear of the zoom controls at the right. */
+  .workflow-prompt {
+    bottom: calc(max(1rem, env(safe-area-inset-bottom)) + 3.875rem);
+    max-width: calc(100% - 6rem);
+  }
+  /* While the editor's toolbar is on the page, toasts sit 8px above it, not
+     on it: Sonner's offsets below 600px (full width) and from 600px. They
+     are set inline on the toaster, hence !important. */
+  body:has([data-editor-toolbar]) [data-sonner-toaster] {
+    --above-editor-toolbar: calc(
+      max(1rem, env(safe-area-inset-bottom)) +
+      3.875rem
+    );
+    --mobile-offset-bottom: var(--above-editor-toolbar) !important;
+    --offset-bottom: var(--above-editor-toolbar) !important;
   }
 }
 
@@ -643,3 +723,52 @@
     padding-inline: --spacing(3);
   }
 }
+
+/* start custom keeperhub code */
+/* The plan cards come from keeperhub-pricing-ui. A plan's two figures share
+   a row only while both fit: in the four-column grid "250,000" and "$25" ran
+   into each other. Each still takes half the row, as the package's grid
+   gives it, but never less than its own width, so the second one wraps
+   under the first instead. These rules lean on the package's class names;
+   the same fix belongs in the package (the marketing site uses it too),
+   after which they can go. */
+.khp-metrics .khp-metrics-box {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.khp-metrics .khp-metric {
+  flex: 1 1 0;
+  min-width: max-content;
+}
+/* In a narrow settings column (a phone, or a tablet beside the rail; the
+   same 36rem as the column's other narrow layouts) the comparison scrolls
+   sideways in its frame with the feature names held in place, rather than
+   five columns squeezed into it: 40rem is five 8rem columns, enough for
+   "All EVM + Solana" on two lines. The pinned names paint the table frame's
+   own translucent slate over the page, so they match it in either theme. */
+@container settings (width < 36rem) {
+  .khp-table-wrap .khp-table {
+    min-width: 40rem;
+  }
+  .khp-table-wrap .khp-th--feature,
+  .khp-table-wrap .khp-td--label {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background-color: color-mix(
+      in srgb,
+      --theme(--color-slate-800) 30%,
+      var(--background)
+    );
+  }
+  /* The "Save 20%" badge drops under the Monthly / Annual switch, centred
+     below it, instead of sitting beside it. ".khp" outranks the package's
+     own .khp-interval rule, whose stylesheet loads after this one. */
+  .khp .khp-interval {
+    flex-direction: column;
+    align-items: center;
+    gap: --spacing(2);
+  }
+}
+/* end keeperhub code */

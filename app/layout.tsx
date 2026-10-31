@@ -11,7 +11,6 @@ import { FeatureSessionInvalidator } from "@/components/feature-session-invalida
 import { GlobalModals } from "@/components/global-modals";
 import { PendingTemplateRunner } from "@/components/hub/pending-template-runner";
 import { LayoutContent } from "@/components/layout-content";
-import { MobileWarningDialog } from "@/components/mobile-warning-dialog";
 import { EditorWalkthrough } from "@/components/onboarding/editor-walkthrough";
 import { OrgDataSync } from "@/components/org-data-sync";
 import { OverlayProvider } from "@/components/overlays/overlay-provider";
@@ -160,7 +159,6 @@ const RootLayout = async ({ children }: RootLayoutProps) => {
                 <LayoutContent>{children}</LayoutContent>
                 <Toaster />
                 <GlobalModals />
-                <MobileWarningDialog />
                 <EditorWalkthrough />
               </OverlayProvider>
             </AuthProvider>

@@ -24,14 +24,12 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ButtonGroup } from "@/components/ui/button-group";
 import { MobileNav } from "@/components/mobile-nav";
 import { useSwitcherOffering } from "@/components/organization/org-switch-runner";
 import { OrgSwitcher } from "@/components/organization/org-switcher";
 import { GoLiveOverlay } from "@/components/overlays/go-live-overlay";
 import { ListingOverlay } from "@/components/overlays/listing-overlay";
 import { ManualRunInputOverlay } from "@/components/overlays/manual-run-input-overlay";
-import { Switch } from "@/components/ui/switch";
 import { WalletToolbarButton } from "@/components/workflow/wallet-toolbar-button";
 import { BUILTIN_NODE_ID } from "@/lib/workflow/editor/builtin-variables";
 import { useAuthPrompt } from "@/components/auth/provider";
@@ -93,6 +91,7 @@ import {
   selectedExecutionIdAtom,
   selectedNodeAtom,
   shouldShowEnableSwitch,
+  workflowEnableToggleAtom,
   triggerExecuteAtom,
   undoAtom,
   updateNodeDataAtom,
@@ -101,6 +100,7 @@ import {
   WorkflowTriggerEnum,
   type WorkflowVisibility,
 } from "@/lib/workflow/store";
+import { findStoredRefTokens } from "@/lib/workflow/template-ref";
 import {
   findActionById,
   flattenConfigFields,
@@ -108,7 +108,10 @@ import {
   getIntegrationLabels,
 } from "@/plugins/registry";
 import { Panel } from "../ai-elements/panel";
-import { ConfigurationOverlay } from "../overlays/configuration-overlay";
+import {
+  CONFIGURATION_OVERLAY_OPTIONS,
+  ConfigurationOverlay,
+} from "../overlays/configuration-overlay";
 import { ConfirmOverlay } from "../overlays/confirm-overlay";
 import { useOverlay } from "../overlays/overlay-provider";
 import { WorkflowIOOverlay } from "../overlays/workflow-io-overlay";
@@ -120,6 +123,8 @@ import {
   TooltipTrigger,
 } from "../ui/tooltip";
 import { UserMenu } from "../workflows/user-menu";
+import { STEP_SIZE } from "./use-show-step-settings";
+
 type WorkflowToolbarProps = {
   workflowId?: string;
   persistent?: boolean;
@@ -199,12 +204,9 @@ function extractTemplateReferences(
     return [];
   }
 
-  const pattern = /\{\{@([^:]+):([^}]+)\}\}/g;
-  const matches = value.matchAll(pattern);
-
-  return Array.from(matches).map((match) => ({
-    nodeId: match[1],
-    displayText: match[2],
+  return findStoredRefTokens(value).map((ref) => ({
+    nodeId: ref.nodeId,
+    displayText: ref.rest,
   }));
 }
 
@@ -1523,6 +1525,20 @@ function ToolbarActions({
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
   const hasSelection = selectedNode || selectedEdge;
 
+  // The Configuration sheet's Enable switch runs this toolbar's toggle (its
+  // validation, sign-in prompt and API call) as it is at that moment.
+  const setEnableToggle = useSetAtom(workflowEnableToggleAtom);
+  const toggleEnabledRef = useRef(actions.handleToggleEnabled);
+  useEffect(() => {
+    toggleEnabledRef.current = actions.handleToggleEnabled;
+  });
+  useEffect(() => {
+    setEnableToggle({
+      toggle: (enabled: boolean) => toggleEnabledRef.current(enabled),
+    });
+    return () => setEnableToggle(null);
+  }, [setEnableToggle]);
+
   // Hide owner-only toolbar actions (Run, Save, Edit, Settings) only for
   // non-owners. Shared-link viewers of public/unlisted workflows still see
   // the workflow exactly as the owner does (read-only canvas + the same
@@ -1572,11 +1588,8 @@ function ToolbarActions({
     const position = screenToFlowPosition({ x: centerX, y: centerY });
 
     // Adjust for node dimensions to center it properly
-    // Action node is 192px wide and 192px tall (w-48 h-48 in Tailwind)
-    const nodeWidth = 192;
-    const nodeHeight = 192;
-    position.x -= nodeWidth / 2;
-    position.y -= nodeHeight / 2;
+    position.x -= STEP_SIZE / 2;
+    position.y -= STEP_SIZE / 2;
 
     // Check if there's already a node at this position
     const offset = 20; // Offset distance in pixels
@@ -1627,42 +1640,43 @@ function ToolbarActions({
   const shouldDisplayEnableWorkflowSwitch = shouldShowEnableSwitch(triggerType);
 
   return (
-    <>
-      {/* Properties - Mobile Vertical (always visible) */}
-      <ButtonGroup className="flex lg:hidden" orientation="vertical">
+    // In the header from md up (its buttons sit in the header's row); on
+    // phones a bar floating at the bottom of the canvas, with Run at its end.
+    // Below xs the bar takes 4px more on each side and Run shows its icon
+    // alone, so a selection's Delete still fits at 320px.
+    <div
+      className="flex items-center gap-1 max-md:fixed max-md:right-[max(1rem,env(safe-area-inset-right))] max-md:bottom-[max(1rem,env(safe-area-inset-bottom))] max-md:left-[max(1rem,env(safe-area-inset-left))] max-md:rounded-lg max-md:border max-md:bg-background max-md:p-2 max-md:shadow-lg max-xs:right-3 max-xs:left-3 max-xs:px-1.5 wallet:gap-2 md:contents"
+      data-editor-toolbar=""
+      data-testid="workflow-actions"
+    >
+      {/* Configuration, and Delete when something is selected - below lg */}
+      <Button
+        className="border hover:bg-black/5 lg:hidden dark:hover:bg-white/5"
+        onClick={() =>
+          openOverlay(ConfigurationOverlay, {}, CONFIGURATION_OVERLAY_OPTIONS)
+        }
+        size="icon"
+        title="Configuration"
+        variant="secondary"
+      >
+        <Settings2 className="size-4" />
+      </Button>
+      {hasSelection && (
         <Button
-          className="border hover:bg-black/5 dark:hover:bg-white/5"
-          onClick={() => openOverlay(ConfigurationOverlay, {})}
+          className="border hover:bg-black/5 lg:hidden dark:hover:bg-white/5"
+          onClick={handleDeleteConfirm}
           size="icon"
-          title="Configuration"
+          title="Delete"
           variant="secondary"
         >
-          <Settings2 className="size-4" />
+          <Trash2 className="size-4" />
         </Button>
-        {/* Delete - Show when node or edge is selected */}
-        {hasSelection && (
-          <Button
-            className="border hover:bg-black/5 dark:hover:bg-white/5"
-            onClick={handleDeleteConfirm}
-            size="icon"
-            title="Delete"
-            variant="secondary"
-          >
-            <Trash2 className="size-4" />
-          </Button>
-        )}
-      </ButtonGroup>
+      )}
 
-      {/* Save/Download - Mobile Vertical */}
-      <div className="flex flex-col gap-1 lg:hidden">
-        <SaveButton handleSave={actions.handleSave} state={state} />
-        <DownloadButton actions={actions} state={state} />
-      </div>
-
-      {/* Save/Download - Desktop Horizontal */}
-      <div className="hidden items-center gap-2 lg:flex">
+      {/* Save/Download - one group from lg, with the saving note */}
+      <div className="contents lg:flex lg:items-center lg:gap-2">
         {state.isSaving && !isAnonymousUser(state.session?.user) && (
-          <span className="flex items-center gap-1 text-muted-foreground text-xs">
+          <span className="hidden items-center gap-1 text-muted-foreground text-xs lg:flex">
             <Loader2 className="size-3 animate-spin" />
             Saving...
           </span>
@@ -1677,52 +1691,79 @@ function ToolbarActions({
       {/* Listing Button */}
       <ListingButton actions={actions} state={state} />
 
-      {shouldDisplayEnableWorkflowSwitch && (
-        <button
-          className="relative hidden h-8 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background lg:inline-flex"
-          onClick={() => actions.handleToggleEnabled(!state.isEnabled)}
-          style={{
-            width: 98,
-            backgroundColor: state.isEnabled
-              ? "var(--color-keeperhub-green)"
-              : "var(--color-input)",
-          }}
-          title={state.isEnabled ? "Disable workflow" : "Enable workflow"}
-          type="button"
-        >
-          <span
-            className="pointer-events-none absolute inset-0 flex items-center pl-3 pr-2 font-medium text-sm transition-opacity"
-            style={{
-              justifyContent: "flex-start",
-              opacity: state.isEnabled ? 1 : 0,
-              color: "var(--color-background)",
-            }}
-          >
-            Disable
-          </span>
-          <span
-            className="pointer-events-none absolute inset-0 flex items-center pl-2 pr-3 font-medium text-sm transition-opacity"
-            style={{
-              justifyContent: "flex-end",
-              opacity: state.isEnabled ? 0 : 1,
-              color: "var(--color-foreground)",
-            }}
-          >
-            Enable
-          </span>
-          <span
-            className="pointer-events-none block size-6 rounded-full bg-background shadow-lg ring-0 transition-transform"
-            style={{
-              transform: state.isEnabled
-                ? "translateX(66px)"
-                : "translateX(2px)",
-            }}
+      <div className="flex shrink-0 items-center gap-1 max-md:ml-auto wallet:gap-2">
+        {shouldDisplayEnableWorkflowSwitch && (
+          <EnableWorkflowSwitch
+            enabled={state.isEnabled}
+            hasSelection={Boolean(hasSelection)}
+            onToggle={actions.handleToggleEnabled}
           />
-        </button>
-      )}
+        )}
+        <RunButtonGroup
+          actions={actions}
+          iconOnlyBelow={runIconOnlyBelow(
+            shouldDisplayEnableWorkflowSwitch,
+            Boolean(hasSelection)
+          )}
+          state={state}
+        />
+      </div>
+    </div>
+  );
+}
 
-      <RunButtonGroup actions={actions} state={state} />
-    </>
+// The workflow's Enable switch. From lg the 98px pill with its word; below lg
+// a compact switch beside Run, with a 44px square tap area. It hides where it
+// has no room (below xs, and in the 768-1023px header beside a selection's
+// Delete below switch-row); the Configuration sheet has it there instead
+// (WorkflowEnabledRow), on the same conditions.
+function EnableWorkflowSwitch({
+  enabled,
+  hasSelection,
+  onToggle,
+}: {
+  enabled: boolean;
+  hasSelection: boolean;
+  onToggle: (enabled: boolean) => Promise<void>;
+}): React.ReactElement {
+  const label = enabled ? "Disable workflow" : "Enable workflow";
+  return (
+    <button
+      aria-checked={enabled}
+      aria-label={label}
+      className={cn(
+        "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background max-xs:hidden max-lg:before:absolute max-lg:before:-inset-x-0.5 max-lg:before:-inset-y-3 lg:h-8 lg:w-24.5",
+        enabled ? "bg-keeperhub-green" : "bg-input",
+        hasSelection && "tablet-width:max-switch-row:hidden"
+      )}
+      onClick={() => onToggle(!enabled)}
+      role="switch"
+      title={label}
+      type="button"
+    >
+      <span
+        className={cn(
+          "pointer-events-none absolute inset-0 hidden items-center justify-start pr-2 pl-3 font-medium text-background text-sm transition-opacity lg:flex",
+          enabled ? "opacity-100" : "opacity-0"
+        )}
+      >
+        Disable
+      </span>
+      <span
+        className={cn(
+          "pointer-events-none absolute inset-0 hidden items-center justify-end pr-3 pl-2 font-medium text-foreground text-sm transition-opacity lg:flex",
+          enabled ? "opacity-0" : "opacity-100"
+        )}
+      >
+        Enable
+      </span>
+      <span
+        className={cn(
+          "pointer-events-none block size-5 rounded-full bg-background shadow-lg ring-0 transition-transform lg:size-6",
+          enabled ? "translate-x-5 lg:translate-x-16.5" : "lg:translate-x-0.5"
+        )}
+      />
+    </button>
   );
 }
 
@@ -1896,13 +1937,45 @@ function ListingButton({
 }
 
 // Run Button Group Component
+// On a phone Run gives up its label (it stays its name) below a width that
+// depends on what shares the bar with it: below xs, below run-label beside
+// the Enable switch, and below sm beside the switch and a selection's
+// Delete. Its longer in-progress labels (Waiting..., Checking...) show only
+// from lg: below it the bar and the 768-1023px header have no room for them.
+const RUN_ICON_ONLY = {
+  xs: { button: "max-xs:min-w-9 max-xs:px-0", label: "max-xs:sr-only" },
+  withSwitch: {
+    button: "max-run-label:min-w-9 max-run-label:px-0",
+    label: "max-run-label:sr-only",
+  },
+  withSwitchAndDelete: {
+    button: "max-sm:min-w-9 max-sm:px-0",
+    label: "max-sm:sr-only",
+  },
+} as const;
+
+type RunIconOnlyBelow = keyof typeof RUN_ICON_ONLY;
+
+function runIconOnlyBelow(
+  hasEnableSwitch: boolean,
+  hasSelection: boolean
+): RunIconOnlyBelow {
+  if (!hasEnableSwitch) {
+    return "xs";
+  }
+  return hasSelection ? "withSwitchAndDelete" : "withSwitch";
+}
+
 function RunButtonGroup({
   state,
   actions,
+  iconOnlyBelow = "xs",
 }: {
   state: ReturnType<typeof useWorkflowState>;
   actions: ReturnType<typeof useWorkflowActions>;
+  iconOnlyBelow?: RunIconOnlyBelow;
 }) {
+  const iconOnly = RUN_ICON_ONLY[iconOnlyBelow];
   const triggerType = state.nodes.find((node) => node.data.type === "trigger")
     ?.data.config?.triggerType;
 
@@ -1923,12 +1996,16 @@ function RunButtonGroup({
   if (state.isExecuting) {
     return (
       <Button
-        className="min-w-20 bg-destructive text-white hover:bg-destructive/90"
+        className={cn(
+          "min-w-20 bg-destructive text-white hover:bg-destructive/90",
+          iconOnly.button
+        )}
         onClick={() => actions.handleCancel()}
         title="Stop Execution"
       >
         <div className="flex items-center gap-2">
-          <Square className="size-3.5 fill-current" /> Stop
+          <Square className="size-3.5 fill-current" />
+          <span className={iconOnly.label}>Stop</span>
         </div>
       </Button>
     );
@@ -1936,7 +2013,10 @@ function RunButtonGroup({
 
   const button = (
     <Button
-      className="min-w-20 bg-keeperhub-green hover:bg-keeperhub-green-dark disabled:opacity-70 disabled:[&>svg]:text-muted-foreground"
+      className={cn(
+        "min-w-20 bg-keeperhub-green hover:bg-keeperhub-green-dark disabled:opacity-70 disabled:[&>svg]:text-muted-foreground",
+        iconOnly.button
+      )}
       data-tour="workflow-run"
       disabled={disabled}
       onClick={() => actions.handleExecute()}
@@ -1955,17 +2035,21 @@ function RunButtonGroup({
                 isPreflighting and outlasts the check itself. Nothing is being
                 checked while the author is typing, so it does not spin. */}
             <TextCursorInput className="size-4" />
-            Waiting...
+            <span className={cn("max-lg:sr-only", iconOnly.label)}>
+              Waiting...
+            </span>
           </>
         ) : actions.isPreflighting ? (
           <>
             <Loader2 className="size-4 animate-spin" />
-            Checking...
+            <span className={cn("max-lg:sr-only", iconOnly.label)}>
+              Checking...
+            </span>
           </>
         ) : (
           <>
             <Play className="size-4" />
-            Run
+            <span className={iconOnly.label}>Run</span>
           </>
         )}
       </div>
@@ -2083,8 +2167,14 @@ export const WorkflowToolbar = ({
     ? "flex items-center gap-2"
     : "flex flex-col gap-2 rounded-none border-none bg-transparent p-0 lg:flex-row lg:items-center";
 
+  // globals.css gives every element min-width: 0, so in a crowded header
+  // each flex item would shrink below its content. From md the right side
+  // is never squeezed: at 768-1023px the left side, and the org switcher in
+  // it, gives way instead; from lg the logo and the switcher are shrink-0
+  // too, so only the workflow's name (truncating, at most 192px) makes room,
+  // and the right side stays 8px clear of it.
   const rightSectionClassName = persistent
-    ? "flex items-center gap-2"
+    ? "flex items-center gap-2 md:shrink-0 lg:ml-2"
     : "pointer-events-auto absolute top-4 right-4 z-10";
 
   const rightContentClassName = persistent
@@ -2103,7 +2193,7 @@ export const WorkflowToolbar = ({
             return CustomLogo ? (
               // On phones a 26px-wide tap area around the 18px mark, without
               // moving anything.
-              <a className="max-md:-mx-1 max-md:px-1" href="/">
+              <a className="max-md:-mx-1 max-md:px-1 lg:shrink-0" href="/">
                 {/* Only as wide as the mark on phones, where the header is
                     short of room; the square box from md up. */}
                 <CustomLogo className="h-7 w-4.5 shrink-0 md:w-7" />
@@ -2119,7 +2209,7 @@ export const WorkflowToolbar = ({
           {showOrgSwitcher && (
             <div
               className={cn(
-                "flex max-xs:hidden sm:ml-2 sm:max-lg:min-w-19 lg:block",
+                "flex max-xs:hidden sm:ml-2 sm:max-lg:min-w-19 lg:block lg:shrink-0",
                 !switcherOffering && "mouse-tablet:hidden"
               )}
             >
