@@ -2076,12 +2076,12 @@ function RunButtonGroup({
   return button;
 }
 
-// Read-only badge - pill with a strong accent outline on the toolbar
+// Read-only badge: a neutral pill, so the green button stays the one accent.
 function ReadOnlyBadge({ className }: { className?: string }) {
   return (
     <Badge
       className={cn(
-        "border-2 border-[var(--color-text-accent)]/60 bg-[var(--color-bg-accent)]/10 font-semibold text-[var(--color-text-accent)] text-xs uppercase tracking-wider backdrop-blur-sm dark:border-[var(--color-text-accent)]/50 dark:bg-transparent",
+        "border-border bg-transparent font-semibold text-foreground/80 text-xs uppercase tracking-wider",
         className
       )}
       variant="outline"
@@ -2091,8 +2091,9 @@ function ReadOnlyBadge({ className }: { className?: string }) {
   );
 }
 
-// Use template for a public workflow you do not own (HUB-01, HUB-02): at the
-// bottom on phones, from md centred between the sidebar and the right panel.
+// Use template for a public workflow you do not own (HUB-01, HUB-02), across
+// the bottom of the free canvas; globals.css lifts the zoom controls and
+// toasts above it. Its content steps down as the canvas narrows.
 function UseTemplateBar({
   isUsingTemplate,
   onUseTemplate,
@@ -2103,28 +2104,26 @@ function UseTemplateBar({
   const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
   return (
     <div
-      className="@container pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))] left-[max(1rem,env(safe-area-inset-left))] flex justify-center max-xs:right-3 max-xs:left-3 md:right-(--use-template-right) md:bottom-4 md:left-(--nav-content-offset,var(--nav-sidebar-width,60px)) md:px-17 md:transition-[left,right] md:duration-300 md:ease-out motion-reduce:transition-none"
+      className="@container pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))] left-[max(1rem,env(safe-area-inset-left))] flex justify-center max-xs:right-3 max-xs:left-3 md:right-(--use-template-right) md:left-(--nav-content-offset,var(--nav-sidebar-width,60px)) md:px-4 md:motion-safe:transition-[left,right] md:motion-safe:duration-200 md:motion-safe:ease-out"
       data-testid="use-template-bar"
       style={
         { "--use-template-right": rightPanelWidth ?? "0px" } as CSSProperties
       }
     >
       <div
-        className="pointer-events-auto flex w-full items-center gap-2.5 rounded-lg border bg-background py-2 pr-2 pl-3 shadow-lg md:w-auto"
-        // globals.css keeps toasts above it.
-        data-editor-toolbar=""
+        className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2.5 rounded-lg border bg-background py-2 pr-2 pl-3 shadow-lg @max-[3.75rem]:hidden @max-[9.5rem]:pl-2 max-md:w-full"
         data-use-template-bar=""
       >
-        <ReadOnlyBadge className="shrink-0" />
-        <p className="hidden min-w-0 flex-1 text-muted-foreground text-sm leading-4 @min-[21.5rem]:block md:flex-none">
-          <span className="@min-[36rem]:hidden">Copy it to edit and run it</span>
+        <ReadOnlyBadge className="hidden shrink-0 @min-[15.5rem]:inline-flex" />
+        <p className="hidden min-w-0 flex-1 text-foreground/80 text-sm leading-4 @min-[21rem]:block md:flex-none">
+          <span className="@min-[36rem]:hidden">Copy to edit and run</span>
           <span className="hidden @min-[36rem]:inline">
             Read-only. Make your own copy to edit and run it.
           </span>
         </p>
         <Button
-          aria-label="Use this workflow as a template"
-          className="ml-auto shrink-0 bg-keeperhub-green hover:bg-keeperhub-green-dark disabled:opacity-70"
+          aria-busy={isUsingTemplate}
+          className="ml-auto shrink-0 bg-keeperhub-green hover:bg-keeperhub-green-dark focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-70 @max-[9.5rem]:size-9 @max-[9.5rem]:px-0"
           data-analytics="template_use_clicked"
           disabled={isUsingTemplate}
           onClick={onUseTemplate}
@@ -2135,7 +2134,9 @@ function UseTemplateBar({
           ) : (
             <Copy className="size-4" />
           )}
-          {isUsingTemplate ? "Importing…" : "Use template"}
+          <span className="@max-[9.5rem]:sr-only">
+            {isUsingTemplate ? "Importing…" : "Use template"}
+          </span>
         </Button>
       </div>
     </div>

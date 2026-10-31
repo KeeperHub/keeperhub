@@ -512,12 +512,15 @@
   }
 }
 
-/* From md, toasts 8px above the Use template bar (54px tall, 16px up), which
-   a narrow canvas puts under them. */
-@media (width >= 48rem) {
-  body:has([data-use-template-bar]) [data-sonner-toaster] {
-    --offset-bottom: 4.875rem !important;
-  }
+/* The Use template bar spans the bottom of the canvas: the zoom controls
+   (and minimap) and toasts sit above it at every width, as on phones. */
+body:has([data-use-template-bar]) .workflow-controls-panel {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 5.5rem) !important;
+}
+body:has([data-use-template-bar]) [data-sonner-toaster] {
+  --above-use-template: calc(max(1rem, env(safe-area-inset-bottom)) + 3.875rem);
+  --mobile-offset-bottom: var(--above-use-template) !important;
+  --offset-bottom: var(--above-use-template) !important;
 }
 
 /* Statuspage embedded widget overrides */
