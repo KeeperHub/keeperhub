@@ -536,9 +536,9 @@ export function ProjectsPanel({
           >
             <ProjectColorDot color={project.color} />
             <TruncatedTooltip side="right" text={project.name} />
-            <span className="ml-auto flex items-center gap-1 text-muted-foreground text-xs">
+            <span className="ml-auto flex shrink-0 items-center gap-1 text-muted-foreground text-xs">
               {projectWorkflows.length}
-              <ChevronRight className="size-3.5" />
+              <ChevronRight className="size-3.5 shrink-0" />
             </span>
           </button>
         );
