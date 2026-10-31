@@ -1,8 +1,6 @@
-import { splitTemplateRef } from "@/lib/workflow/template-ref";
+import { findStoredRef, splitTemplateRef } from "@/lib/workflow/template-ref";
 import { findActionById } from "@/plugins/registry";
 import { BUILTIN_NODE_ID } from "./builtin-variables";
-
-const TEMPLATE_REF_PATTERN = /\{\{@([^:]+):([^}]+)\}\}/;
 
 /** Minimal node shape needed by template helpers */
 export type TemplateNode = {
@@ -23,12 +21,12 @@ export function doesNodeExist(
   template: string,
   nodes: ReadonlyArray<{ id: string }>
 ): boolean {
-  const match = template.match(TEMPLATE_REF_PATTERN);
-  if (!match) {
+  const ref = findStoredRef(template);
+  if (!ref) {
     return false;
   }
 
-  const nodeId = match[1];
+  const { nodeId } = ref;
   if (nodeId === BUILTIN_NODE_ID) {
     return true;
   }
@@ -43,13 +41,12 @@ export function getDisplayTextForTemplate(
   template: string,
   nodes: readonly TemplateNode[]
 ): string {
-  const match = template.match(TEMPLATE_REF_PATTERN);
-  if (!match) {
+  const ref = findStoredRef(template);
+  if (!ref) {
     return template;
   }
 
-  const nodeId = match[1];
-  const rest = match[2];
+  const { nodeId, rest } = ref;
 
   const node = nodes.find((n) => n.id === nodeId);
   if (!node) {

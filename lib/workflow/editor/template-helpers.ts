@@ -8,6 +8,7 @@ import {
 } from "@/lib/workflow/nodes/workflow-state/utils";
 import type { ExecutionLogEntry, WorkflowNode } from "@/lib/workflow/store";
 import { WorkflowTriggerEnum } from "@/lib/workflow/store";
+import { findTemplateTokens } from "@/lib/workflow/template-ref";
 import { findActionById } from "@/plugins/registry";
 
 // ---------------------------------------------------------------------------
@@ -77,7 +78,9 @@ export function findDuplicateTemplateLabels(
   displayValue: string,
   nodes: WorkflowNode[]
 ): string[] {
-  const displayRefs = [...displayValue.matchAll(/\{\{([^@}][^}]*)\}\}/g)];
+  const displayRefs = findTemplateTokens(displayValue)
+    .map((token) => token.body)
+    .filter((body) => !body.startsWith("@"));
   if (displayRefs.length === 0) {
     return [];
   }
@@ -89,8 +92,7 @@ export function findDuplicateTemplateLabels(
   }
 
   const warnings = new Set<string>();
-  for (const match of displayRefs) {
-    const ref = match[1];
+  for (const ref of displayRefs) {
     const dotIndex = ref.indexOf(".");
     const label = (dotIndex === -1 ? ref : ref.substring(0, dotIndex))
       .toLowerCase()
@@ -338,18 +340,19 @@ export function sanitizeNodeId(nodeId: string): string {
 }
 
 export function findActiveAtIndex(text: string): number {
-  const templatePattern = /\{\{[^{}]+\}\}/g;
-  const ranges: Array<{ start: number; end: number }> = [];
-  for (const m of text.matchAll(templatePattern)) {
-    ranges.push({ start: m.index, end: m.index + m[0].length });
-  }
-
+  const tokens = findTemplateTokens(text);
+  // Tokens are sorted and disjoint, so walking backwards only ever needs the
+  // last token that starts at or before `i`.
+  let tokenIndex = tokens.length - 1;
   for (let i = text.length - 1; i >= 0; i--) {
-    if (text[i] === "@") {
-      const isInsideTemplate = ranges.some((r) => i >= r.start && i < r.end);
-      if (!isInsideTemplate) {
-        return i;
-      }
+    if (text[i] !== "@") {
+      continue;
+    }
+    while (tokenIndex >= 0 && tokens[tokenIndex].start > i) {
+      tokenIndex--;
+    }
+    if (tokenIndex < 0 || i >= tokens[tokenIndex].end) {
+      return i;
     }
   }
   return -1;

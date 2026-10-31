@@ -100,6 +100,7 @@ import {
   WorkflowTriggerEnum,
   type WorkflowVisibility,
 } from "@/lib/workflow/store";
+import { findStoredRefTokens } from "@/lib/workflow/template-ref";
 import {
   findActionById,
   flattenConfigFields,
@@ -203,12 +204,9 @@ function extractTemplateReferences(
     return [];
   }
 
-  const pattern = /\{\{@([^:]+):([^}]+)\}\}/g;
-  const matches = value.matchAll(pattern);
-
-  return Array.from(matches).map((match) => ({
-    nodeId: match[1],
-    displayText: match[2],
+  return findStoredRefTokens(value).map((ref) => ({
+    nodeId: ref.nodeId,
+    displayText: ref.rest,
   }));
 }
 

@@ -9,8 +9,13 @@
  *   - tests/unit/template-autocomplete-foreach.test.ts
  */
 
-/** Matches `{{@nodeId:Label.fieldPath}}` templates used by array sources. */
-export const ARRAY_SOURCE_RE = /^\{\{@([^:]+):([^.}]+)\.?([^}]*)\}\}$/;
+/**
+ * Matches `{{@nodeId:Label.fieldPath}}` templates used by array sources. The
+ * label must end at a dot or the closing braces so it cannot trade characters
+ * with the field path, which would backtrack quadratically.
+ */
+export const ARRAY_SOURCE_RE =
+  /^\{\{@([^:]+):([^.}]+)(?:\.|(?=\}))([^}]*)\}\}$/;
 
 /**
  * Traverse a dot-path into a nested value, returning null on failure.

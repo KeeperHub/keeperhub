@@ -14,6 +14,7 @@ import {
 } from "@/lib/web3/solidity-values";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST } from "@/lib/workflow/executor/system-action-types";
+import { hasTemplateToken } from "@/lib/workflow/template-ref";
 import {
   type ActionConfigField,
   type ActionConfigFieldBase,
@@ -40,7 +41,6 @@ const RESERVED_CONFIG_KEYS = new Set([
   "useManualAbi",
 ]);
 
-const TEMPLATE_VALUE_PATTERN = /\{\{[^{}]+}}/;
 const DECIMAL_PATTERN = /^\d+(?:\.\d+)?$/;
 const FIXED_ARRAY_LENGTH_PATTERN = /\[(\d+)]$/;
 // The `nodes[N]` prefix the validator writes into every issue path, used to
@@ -356,7 +356,7 @@ function flattenConfigFields(
 }
 
 function valueContainsTemplate(value: unknown): boolean {
-  return typeof value === "string" && TEMPLATE_VALUE_PATTERN.test(value);
+  return typeof value === "string" && hasTemplateToken(value);
 }
 
 function isJsonArrayString(value: unknown): boolean {
