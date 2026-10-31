@@ -164,7 +164,10 @@ describe("PickerDataProvider", () => {
     mocks.session = signedIn("org-1") as typeof mocks.session;
     await render();
     expect(seen?.awaitingProjects).toBe(true);
+    // Found, a render before OrgDataSync sets the scope from it.
     mocks.activeOrg = { data: { id: "org-1" }, isPending: false };
+    await render();
+    expect(seen?.awaitingProjects).toBe(true);
     await setScope("org-1");
     expect(seen?.awaitingProjects).toBe(true);
     mocks.projects = { data: [{ id: "p-1" }], isLoading: false };

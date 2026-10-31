@@ -400,7 +400,7 @@ export function TagsPanel({
                 style={{ backgroundColor: tag.color }}
               />
               <TruncatedTooltip side="right" text={tag.name} />
-              <span className="ml-auto normal-case tracking-normal">
+              <span className="ml-auto shrink-0 normal-case tracking-normal">
                 {tag.workflowCount}
               </span>
             </GroupHeader>
@@ -434,7 +434,7 @@ export function TagsPanel({
                     size={size}
                   >
                     <span className="truncate">Untagged</span>
-                    <span className="ml-auto normal-case tracking-normal">
+                    <span className="ml-auto shrink-0 normal-case tracking-normal">
                       {untaggedWorkflows.length}
                     </span>
                   </GroupHeader>
