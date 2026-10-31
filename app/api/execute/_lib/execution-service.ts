@@ -39,7 +39,10 @@ type CompleteParams = {
 };
 
 export type CompleteExecutionOutcome = {
-  status: "completed" | "failed" | "unconfirmed";
+  status: Exclude<
+    DirectExecutionStatus,
+    typeof DirectExecutionStatus.PENDING | typeof DirectExecutionStatus.RUNNING
+  >;
   error?: string;
 };
 
@@ -202,7 +205,12 @@ export async function failExecution(
   executionId: string,
   error: string,
   params: FailParams = {}
-): Promise<{ status: "failed" | "unconfirmed" }> {
+): Promise<{
+  status: Exclude<
+    CompleteExecutionOutcome["status"],
+    typeof DirectExecutionStatus.COMPLETED
+  >;
+}> {
   let receipts: DirectExecutionReceiptEntry[] = [];
 
   // A hash without a `chainId` cannot be verified. Fail closed here as well as
