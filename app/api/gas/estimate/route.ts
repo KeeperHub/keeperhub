@@ -16,6 +16,7 @@ import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { resolveSignerForNode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
 import { getChainGasDefaults } from "@/lib/web3/gas-defaults";
 import { getOrganizationWalletAddress } from "@/lib/web3/wallet-helpers";
+import { hasTemplateToken } from "@/lib/workflow/template-ref";
 import { buildCallsWithMeta } from "@/plugins/web3/steps/batch-write-contract-core";
 
 type EstimateConfig = {
@@ -37,7 +38,6 @@ type ActionSlug =
   | "transfer-token"
   | "batch-write-contract";
 
-const TEMPLATE_REF_PATTERN = /\{\{.*?\}\}/;
 const VALID_SLUGS: ActionSlug[] = [
   "write-contract",
   "transfer-funds",
@@ -49,7 +49,7 @@ function hasTemplateRefs(value: string | undefined): boolean {
   if (!value) {
     return false;
   }
-  return TEMPLATE_REF_PATTERN.test(value);
+  return hasTemplateToken(value);
 }
 
 function badRequest(error: string): NextResponse {

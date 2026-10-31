@@ -6,16 +6,13 @@ import { useEffect, useRef, useState } from "react";
 import { doesNodeExist, getDisplayTextForTemplate } from "@/lib/workflow/editor/template-utils";
 import { cn } from "@/lib/utils";
 import { nodesAtom, selectedNodeAtom } from "@/lib/workflow/store";
+import { findStoredRefTokens, findTemplateTokens } from "@/lib/workflow/template-ref";
 import {
   AUTOCOMPLETE_MENU_HEIGHT,
   TemplateAutocomplete,
   type TemplateAutocompleteCloseReason,
 } from "./template-autocomplete";
-import {
-  countTemplateTokens,
-  TEMPLATE_TOKEN_PATTERN,
-  toStringValue,
-} from "./template-badge-utils";
+import { countTemplateTokens, toStringValue } from "./template-badge-utils";
 
 // Guards `selection.getRangeAt(0)`, which throws IndexSizeError when
 // rangeCount is 0 (e.g. focus moved off the editable before keydown fired).
@@ -115,15 +112,9 @@ function caretRect(): DOMRect | null {
 
 // Helper to find all template pattern ranges in text
 function findTemplateRanges(text: string): Array<{ start: number; end: number }> {
-  const templatePattern = /\{\{@[^}]+\}\}/g;
-  const ranges: Array<{ start: number; end: number }> = [];
-  let match;
-
-  while ((match = templatePattern.exec(text)) !== null) {
-    ranges.push({ start: match.index, end: match.index + match[0].length });
-  }
-
-  return ranges;
+  return findTemplateTokens(text)
+    .filter((token) => token.body.startsWith("@"))
+    .map(({ start, end }) => ({ start, end }));
 }
 
 // Helper to check if a position is inside any template range
@@ -486,15 +477,11 @@ export function TemplateBadgeEditor({
     }
 
     // Match template patterns: {{@nodeId:DisplayName.field}} or {{@nodeId:DisplayName}}.
-    // Fresh instance per call: the shared constant is /g and exec() would leave
-    // lastIndex state behind for other consumers.
-    const pattern = new RegExp(TEMPLATE_TOKEN_PATTERN.source, "g");
     let lastIndex = 0;
-    let match;
 
-    while ((match = pattern.exec(text)) !== null) {
-      const [fullMatch] = match;
-      const matchStart = match.index;
+    for (const token of findStoredRefTokens(text)) {
+      const fullMatch = text.slice(token.start, token.end);
+      const matchStart = token.start;
 
       // Add text before the template
       if (matchStart > lastIndex) {
@@ -517,7 +504,7 @@ export function TemplateBadgeEditor({
       badge.title = EDIT_BADGE_HINT;
       container.appendChild(badge);
 
-      lastIndex = pattern.lastIndex;
+      lastIndex = token.end;
     }
 
     // Add remaining text

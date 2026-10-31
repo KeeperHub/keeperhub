@@ -174,6 +174,10 @@ export const editorTourRequestedAtom = atom<boolean>(false);
 // "Getting started" entry so a dismissed launcher can be reopened.
 export const gettingStartedOpenAtom = atom<boolean>(false);
 
+// True while the sidebar's launcher can show (even dismissed). Otherwise
+// (phones, settings) the user-menu entry opens the checklist in an overlay.
+export const gettingStartedDockedAtom = atom<boolean>(false);
+
 // A getting-started chip seeds a preset prompt here, then navigates to a fresh
 // builder. The AI prompt box (components/ai-elements/prompt.tsx) consumes it on
 // mount, prefills + generates, and resets to null.

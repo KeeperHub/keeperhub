@@ -8,7 +8,7 @@ import {
   useNodes,
   useUpdateNodeInternals,
 } from "@xyflow/react";
-import { useAtomValue, useSetAtom } from "jotai";
+import { useSetAtom } from "jotai";
 import { Plus } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useCallback, useMemo } from "react";
@@ -18,15 +18,13 @@ import {
   autosaveAtom,
   edgesAtom,
   hasUnsavedChangesAtom,
-  isPanelAnimatingAtom,
-  isSidebarCollapsedAtom,
   nodesAtom,
   propertiesPanelActiveTabAtom,
   type WorkflowEdge,
   type WorkflowNode,
 } from "@/lib/workflow/store";
+import { STEP_SIZE, useShowStepSettings } from "./use-show-step-settings";
 
-const NODE_SIZE = 192;
 const NODE_GAP = 80;
 
 // How far the button sits from the node edge (px)
@@ -59,12 +57,10 @@ export function AddStepButton({
   const setEdges = useSetAtom(edgesAtom);
   const setNodes = useSetAtom(nodesAtom);
   const setActiveTab = useSetAtom(propertiesPanelActiveTabAtom);
-  const setIsPanelAnimating = useSetAtom(isPanelAnimatingAtom);
-  const isSidebarCollapsed = useAtomValue(isSidebarCollapsedAtom);
-  const setSidebarCollapsed = useSetAtom(isSidebarCollapsedAtom);
   const setHasUnsavedChanges = useSetAtom(hasUnsavedChangesAtom);
   const { isViewer } = useActiveMember();
   const triggerAutosave = useSetAtom(autosaveAtom);
+  const showStepSettings = useShowStepSettings();
 
   const outgoingEdges = useMemo(
     () =>
@@ -116,7 +112,7 @@ export function AddStepButton({
       }
 
       const sourceX =
-        sourceNode.internals.positionAbsolute.x + NODE_SIZE + NODE_GAP;
+        sourceNode.internals.positionAbsolute.x + STEP_SIZE + NODE_GAP;
       const sourceY = sourceNode.internals.positionAbsolute.y;
 
       // Place below existing targets to avoid overlap
@@ -126,7 +122,7 @@ export function AddStepButton({
         const targetNodes = nodes.filter((n) => targetIds.has(n.id));
         if (targetNodes.length > 0) {
           const maxY = Math.max(...targetNodes.map((n) => n.position.y));
-          newY = maxY + NODE_SIZE + NODE_GAP;
+          newY = maxY + STEP_SIZE + NODE_GAP;
         }
       }
 
@@ -148,11 +144,7 @@ export function AddStepButton({
 
       addNode(newNode);
       setActiveTab("properties");
-      if (isSidebarCollapsed) {
-        setIsPanelAnimating(true);
-        setSidebarCollapsed(false);
-        setTimeout(() => setIsPanelAnimating(false), 350);
-      }
+      showStepSettings(newNode);
 
       setTimeout(() => {
         setNodes((currentNodes) =>
@@ -192,9 +184,7 @@ export function AddStepButton({
       setEdges,
       setNodes,
       setActiveTab,
-      isSidebarCollapsed,
-      setIsPanelAnimating,
-      setSidebarCollapsed,
+      showStepSettings,
       setHasUnsavedChanges,
       triggerAutosave,
     ]

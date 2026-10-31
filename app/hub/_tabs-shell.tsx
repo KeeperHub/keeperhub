@@ -19,11 +19,13 @@ type HubTabsShellProps = {
   actionsSlot?: React.ReactNode;
 };
 
+// TabsTrigger's dark: picked fill outranks a plain one, so the hub fill is set
+// both ways; its focus border gives way to the hub focus ring.
 const PILL_CLASSES =
-  "inline-flex min-h-9 items-center gap-2 rounded-full px-2 py-2 text-sm font-normal @max-xl/hub-band:gap-1.5 text-muted-foreground/70 transition-colors duration-150 ease hover:bg-[var(--color-hub-icon-bg)]/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-hub-overlay)] data-[state=active]:bg-[var(--color-hub-icon-bg)] data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:hover:bg-[var(--color-hub-icon-bg)] motion-reduce:transition-none @xl/hub-band:px-4";
+  "inline-flex min-h-9 items-center gap-2 rounded-full px-2 py-2 text-sm font-normal @max-xl/hub-band:gap-1.5 text-muted-foreground transition-colors duration-150 ease hover:bg-[var(--color-hub-icon-bg)]/40 hover:text-foreground dark:hover:text-foreground focus-visible:hub-focus-ring focus-visible:ring-offset-sidebar focus-visible:border-transparent data-[state=active]:bg-[var(--color-hub-icon-bg)] dark:data-[state=active]:bg-[var(--color-hub-icon-bg)] data-[state=active]:font-semibold data-[state=active]:text-foreground motion-reduce:transition-none @xl/hub-band:px-4";
 
 const PILL_ICON_CLASSES =
-  "size-4 text-muted-foreground/50 group-data-[state=active]:text-[var(--color-text-accent)] max-xs:hidden";
+  "size-4 text-muted-foreground group-data-[state=active]:text-[var(--color-text-accent)] max-xs:hidden";
 
 export function HubTabsShell({
   initialTab,

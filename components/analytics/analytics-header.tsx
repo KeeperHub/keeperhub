@@ -58,6 +58,8 @@ export function AnalyticsHeader({
   const lastUpdated = useAtomValue(analyticsLastUpdatedAtom);
   const [timeAgo, setTimeAgo] = useState<string>("");
   const [refreshing, setRefreshing] = useState(false);
+  // State rather than a ref so the Custom popover re-renders once it exists.
+  const [rangeNav, setRangeNav] = useState<HTMLElement | null>(null);
 
   // Update the "time ago" display every 5 seconds
   useEffect(() => {
@@ -134,9 +136,10 @@ export function AnalyticsHeader({
         <nav
           aria-label="Time range"
           className="order-last flex w-full flex-wrap items-center gap-1 sm:order-none sm:w-auto sm:min-w-min sm:grow sm:basis-0"
+          ref={setRangeNav}
         >
           {rangeButtons}
-          <DateRangeFilter />
+          <DateRangeFilter phoneAnchor={rangeNav} />
         </nav>
 
         <div className="flex items-center gap-3">

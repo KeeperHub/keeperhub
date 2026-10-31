@@ -1,7 +1,10 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
+import { textContrast } from "./utils/contrast";
 import {
+  createTestPublicTag,
   createTestWorkflow,
+  deleteTestPublicTag,
   deleteTestWorkflow,
   PERSISTENT_TEST_USER_EMAIL,
 } from "./utils/db";
@@ -159,6 +162,84 @@ test.describe("Hub tab band", () => {
   });
 });
 
+test.describe("Tab band text", () => {
+  // WCAG AA for body text; the links and the tabs not picked used to sit
+  // at 2.7:1 and 3.7:1 and read as disabled.
+  const READABLE = 4.5;
+
+  test("Demos, Docs and the tabs not picked are readable", async ({ page }) => {
+    await open(page, 1280, "/hub");
+    const band = tabBand(page);
+    await expect(band.tabs).toBeVisible({ timeout: 15_000 });
+    for (const width of [...PHONE_WIDTHS, ...TABLET_WIDTHS, 1024, 1280]) {
+      await atWidth(page, width, async () => {
+        for (const link of [band.demos, band.docs]) {
+          // Below 375px the label is screen-reader only; the icon is what shows.
+          const shown = width < 375 ? link.locator("svg") : link;
+          expect(await textContrast(shown)).toBeGreaterThanOrEqual(READABLE);
+        }
+        for (const name of ["Workflows", "Marketplace"]) {
+          const tab = band.tabs.getByRole("tab", { name });
+          await expect(tab).toHaveAttribute("data-state", "inactive");
+          expect(await textContrast(tab)).toBeGreaterThanOrEqual(READABLE);
+        }
+      });
+    }
+  });
+
+  test("hovering a tab not picked brightens its text", async ({ page }) => {
+    await open(page, 1280, "/hub");
+    const tab = tabBand(page).tabs.getByRole("tab", { name: "Workflows" });
+    await expect(tab).toBeVisible({ timeout: 15_000 });
+    const resting = await textContrast(tab);
+    await tab.hover();
+    await expect(async () => {
+      expect(await textContrast(tab)).toBeGreaterThan(resting + 1);
+    }).toPass({ timeout: 5000 });
+  });
+
+  test("Demos and Docs take the tabs' keyboard focus ring", async ({
+    page,
+  }) => {
+    await open(page, 1280, "/hub");
+    const band = tabBand(page);
+    await expect(band.tabs).toBeVisible({ timeout: 15_000 });
+    // Ring, gap and any outline, as drawn around a focused control.
+    const focusLook = (locator: Locator): Promise<string> =>
+      locator.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const outline =
+          style.outlineStyle === "none"
+            ? "none"
+            : `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}`;
+        return [
+          style.getPropertyValue("--tw-ring-offset-shadow"),
+          style.getPropertyValue("--tw-ring-shadow"),
+          outline,
+        ].join(" / ");
+      });
+    const protocols = band.tabs.getByRole("tab", { name: "Protocols" });
+    await protocols.focus();
+    await expect(protocols).toBeFocused();
+    const tabLook = await focusLook(protocols);
+    const accent = await page.evaluate(() =>
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--color-border-accent")
+        .trim()
+    );
+    // The hub ring: 2px of accent outside a 2px gap, and no outline.
+    expect(tabLook).toContain(`calc(2px + 2px) ${accent}`);
+    expect(tabLook).toMatch(/ \/ none$/);
+    for (const link of [band.demos, band.docs]) {
+      await page.keyboard.press("Tab");
+      await expect(link).toBeFocused();
+      await expect(async () => {
+        expect(await focusLook(link)).toBe(tabLook);
+      }).toPass({ timeout: 5000 });
+    }
+  });
+});
+
 test.describe("Marketplace leaderboard columns", () => {
   // Unique per run so ?q= shows only these listings. The second price is
   // the widest label the narrow price column has to hold.
@@ -258,6 +339,220 @@ test.describe("Marketplace leaderboard columns", () => {
       ).toBeVisible();
     }
     await expect(row.getByText("0 calls")).toBeHidden();
+  });
+});
+
+test.describe("Workflows list columns", () => {
+  // Unique per run so ?q= shows only these templates.
+  const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const token = `hublist${suffix}`;
+  const featured = `${token} rebalance collateral across chains when the health factor drops`;
+  const plain = `${token} wrap stETH`;
+  // A row shows up to three tags on one line. Long real names plus the run
+  // suffix, so the tags are new rows that only this test deletes.
+  const tagNames = ["Cross-chain Bridges", "Liquidations", "Monitoring"].map(
+    (name) => `${name} ${suffix}`
+  );
+  // Counts injected into the feed: seven digits, and the widest compact label.
+  const uses = new Map([
+    [featured, { count: 1_234_567, label: "1.2M" }],
+    [plain, { count: 999_949, label: "999.9K" }],
+  ]);
+  const workflowIds: string[] = [];
+  const tagIds: string[] = [];
+
+  test.beforeAll(async () => {
+    for (const name of tagNames) {
+      tagIds.push(await createTestPublicTag(name));
+    }
+    for (const [name, isFeatured] of [
+      [featured, true],
+      [plain, false],
+    ] as const) {
+      const workflow = await createTestWorkflow(PERSISTENT_TEST_USER_EMAIL, {
+        name,
+        hub: { featured: isFeatured, tagIds },
+      });
+      workflowIds.push(workflow.id);
+    }
+  });
+
+  test.afterAll(async () => {
+    for (const id of workflowIds) {
+      await deleteTestWorkflow(id);
+    }
+    for (const id of tagIds) {
+      await deleteTestPublicTag(id);
+    }
+  });
+
+  const rowOf = (page: Page, name: string): Locator =>
+    page.getByRole("row", { name: `Open ${name} preview` });
+  const header = (page: Page, name: string): Locator =>
+    page.getByRole("columnheader", { name, exact: true });
+  const badgeOf = (row: Locator): Locator =>
+    row.getByText("Featured", { exact: true });
+
+  test.afterEach(async ({ page }) => {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  });
+
+  async function openList(page: Page, width: number): Promise<void> {
+    await page.route("**/api/workflows/public*", async (route) => {
+      const response = await route.fetch();
+      const feed: unknown = await response.json();
+      // An error body passes through so the test shows the real failure.
+      if (!Array.isArray(feed)) {
+        await route.fulfill({ response });
+        return;
+      }
+      for (const workflow of feed as {
+        name: string;
+        duplicateCount: number;
+      }[]) {
+        const injected = uses.get(workflow.name);
+        if (injected) {
+          workflow.duplicateCount = injected.count;
+        }
+      }
+      await route.fulfill({ response, json: feed });
+    });
+    await open(page, width, `/hub?tab=workflows&q=${token}`);
+    await page.getByRole("radio", { name: "View as list" }).click();
+    await expect(rowOf(page, plain)).toBeVisible({ timeout: 15_000 });
+  }
+
+  // Whether a tap dx px left (dx < 0) or right of the button lands on it.
+  async function tapAreaHits(button: Locator, dx: number): Promise<boolean> {
+    return await button.evaluate((element, offset) => {
+      const rect = element.getBoundingClientRect();
+      const x = offset < 0 ? rect.left + offset : rect.right + offset;
+      const hit = document.elementFromPoint(x, rect.top + rect.height / 2);
+      return hit !== null && element.contains(hit);
+    }, dx);
+  }
+
+  // 1024px is the narrowest table: the nav and the sort sidebar both show.
+  test("names, uses and votes are readable and line up from 320 to 1920px", async ({
+    page,
+  }) => {
+    await openList(page, 320);
+    for (const width of [320, 390, 768, 900, 1024, 1280, 1440, 1920]) {
+      await atWidth(page, width, async () => {
+        const [usesHeader, votes] = await Promise.all([
+          box(header(page, "Uses")),
+          box(header(page, "Votes")),
+        ]);
+        for (const name of [featured, plain]) {
+          const row = rowOf(page, name);
+          const [rowBox, nameBox, downBox] = await Promise.all([
+            box(row),
+            box(row.getByText(name)),
+            box(row.getByRole("button", { name: "Downvote" })),
+          ]);
+          // 6rem: before the narrow tier dropped the icon, 320px left 78px.
+          expect(nameBox.width).toBeGreaterThanOrEqual(96);
+          expect(right(nameBox)).toBeLessThanOrEqual(usesHeader.x);
+          expect(right(rowBox)).toBeLessThanOrEqual(width);
+          expect(right(downBox)).toBeLessThanOrEqual(right(rowBox));
+          expect(Math.abs(right(votes) - right(downBox))).toBeLessThanOrEqual(
+            1
+          );
+        }
+        // Each count stays inside the Uses track.
+        for (const [name, { label }] of uses) {
+          const row = rowOf(page, name);
+          const [count, nameBox] = await Promise.all([
+            box(row.getByText(label, { exact: true })),
+            box(row.getByText(name)),
+          ]);
+          expect(count.x).toBeGreaterThanOrEqual(right(nameBox));
+          expect(count.x).toBeGreaterThanOrEqual(usesHeader.x - 1);
+          expect(right(count)).toBeLessThanOrEqual(right(usesHeader) + 1);
+        }
+      });
+    }
+  });
+
+  test("the vote buttons take taps 5px outside, but a tap on the score opens the preview", async ({
+    page,
+  }) => {
+    await openList(page, 320);
+    const row = rowOf(page, plain);
+    const up = row.getByRole("button", { name: "Upvote" });
+    const down = row.getByRole("button", { name: "Downvote" });
+    for (const width of [320, 1280]) {
+      await atWidth(page, width, async () => {
+        expect(await tapAreaHits(up, -5)).toBe(true);
+        expect(await tapAreaHits(down, 5)).toBe(true);
+        // 1px into the score from either side, past the 2px gap.
+        expect(await tapAreaHits(up, 3)).toBe(false);
+        expect(await tapAreaHits(down, -3)).toBe(false);
+      });
+    }
+    const upBox = await box(up);
+    await page.mouse.click(right(upBox) + 3, middle(upBox));
+    await expect(page).toHaveURL(new RegExp(`/workflows/${workflowIds[1]}`));
+  });
+
+  test("a narrow table puts Featured under the name; wider ones give it and the tags columns", async ({
+    page,
+  }) => {
+    await openList(page, 390);
+    const row = rowOf(page, featured);
+    const name = row.getByText(featured);
+    const tag = row.getByText(tagNames[0], { exact: true });
+
+    await atWidth(page, 390, async () => {
+      const [nameBox, badgeBox] = await Promise.all([
+        box(name),
+        box(badgeOf(row)),
+      ]);
+      expect(badgeBox.y).toBeGreaterThanOrEqual(bottom(nameBox));
+      await expect(header(page, "Tags")).toBeHidden();
+      await expect(tag).toBeHidden();
+    });
+
+    // 900px has the badge column only, 1280px the compact Tags column and
+    // 1920px the original grid.
+    await atWidth(page, 900, async () => {
+      const [nameBox, badgeBox, downBox] = await Promise.all([
+        box(name),
+        box(badgeOf(row)),
+        box(row.getByRole("button", { name: "Downvote" })),
+      ]);
+      expect(badgeBox.x).toBeGreaterThan(right(downBox));
+      expect(Math.abs(middle(badgeBox) - middle(nameBox))).toBeLessThan(2);
+      await expect(header(page, "Tags")).toBeHidden();
+    });
+
+    for (const width of [1280, 1920]) {
+      await atWidth(page, width, async () => {
+        const [nameBox, badgeBox, downBox, tagBox] = await Promise.all([
+          box(name),
+          box(badgeOf(row)),
+          box(row.getByRole("button", { name: "Downvote" })),
+          box(tag),
+        ]);
+        expect(badgeBox.x).toBeGreaterThan(right(downBox));
+        expect(Math.abs(middle(badgeBox) - middle(nameBox))).toBeLessThan(2);
+        expect(tagBox.x).toBeGreaterThan(right(nameBox));
+        const [tags, usesHeader] = await Promise.all([
+          box(header(page, "Tags")),
+          box(header(page, "Uses")),
+        ]);
+        expect(Math.abs(tagBox.x - tags.x)).toBeLessThanOrEqual(1);
+        // Long names shorten: one line, all inside the Tags track.
+        const chips = await Promise.all(
+          tagNames.map((tagName) =>
+            box(row.getByText(tagName, { exact: true }))
+          )
+        );
+        const tops = chips.map((chip) => chip.y);
+        expect(Math.max(...tops) - Math.min(...tops)).toBeLessThan(1);
+        expect(Math.max(...chips.map(right))).toBeLessThanOrEqual(usesHeader.x);
+      });
+    }
   });
 });
 

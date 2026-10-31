@@ -24,6 +24,8 @@
  * - Comments
  */
 
+import { replaceTemplateTokens } from "@/lib/workflow/template-ref";
+
 // Dangerous patterns that should never appear in conditions
 const DANGEROUS_PATTERNS = [
   // Assignment operators
@@ -367,7 +369,10 @@ export function preValidateConditionExpression(
 
   // Strip template variables before keyword check — node IDs like @process
   // are safe and should not trigger false positives
-  const expressionWithoutTemplates = expression.replace(/\{\{@[^}]+\}\}/g, "");
+  const expressionWithoutTemplates = replaceTemplateTokens(
+    expression,
+    ({ body }) => (body.startsWith("@") ? "" : `{{${body}}}`)
+  );
 
   const lowerExpression = expressionWithoutTemplates.toLowerCase();
   for (const keyword of dangerousKeywords) {
