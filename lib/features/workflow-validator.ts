@@ -58,31 +58,41 @@ export function validateWorkflowFeatures(
 // Helper to extract the bits the validator needs from a raw workflow JSONB
 // payload. Nodes live in `workflow.nodes` as a JSONB array; each node carries
 // `data.config.actionType` (set by the action grid when the action is picked).
-// Tolerant of unknown shapes — unknown nodes are simply ignored.
+// Fails closed: a non-string id or actionType is coerced, never skipped.
 type UnknownNode = {
   id?: unknown;
   data?: unknown;
 };
+
+function coerceActionType(value: unknown): string | undefined {
+  if (value === undefined || value === null) {
+    return;
+  }
+  return normalizeActionType(typeof value === "string" ? value : String(value));
+}
 
 export function extractActionTypeNodes(nodes: unknown): WorkflowNodeRef[] {
   if (!Array.isArray(nodes)) {
     return [];
   }
   const refs: WorkflowNodeRef[] = [];
-  for (const raw of nodes) {
+  for (const [index, raw] of nodes.entries()) {
     if (typeof raw !== "object" || raw === null) {
       continue;
     }
     const node = raw as UnknownNode;
-    const id = typeof node.id === "string" ? node.id : null;
     const data = asRecord(node.data);
     const config = data ? asRecord(data.config) : null;
-    const actionType = normalizeActionType(
+    const actionType = coerceActionType(
       readNodeConfigField(data, config, "actionType")
     );
-    if (!(id && actionType)) {
+    if (!actionType) {
       continue;
     }
+    const id =
+      typeof node.id === "string" && node.id !== ""
+        ? node.id
+        : String(node.id ?? `nodes[${index}]`);
     refs.push({ id, actionType });
   }
   return refs;

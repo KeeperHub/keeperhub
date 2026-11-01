@@ -29,6 +29,38 @@ function actionNode(
 }
 
 describe("validateWorkflowActionConfigs", () => {
+  it("rejects a non-string actionType", () => {
+    const node = {
+      id: "node-1",
+      type: "action",
+      data: { type: "action", config: { actionType: ["code/run-code"] } },
+    };
+    const result = validateWorkflowActionConfigs([node]);
+    expect(result.valid).toBe(false);
+    expect(result.issues).toMatchObject([
+      {
+        code: "INVALID_ACTION_TYPE",
+        path: "nodes[0].data.config.actionType",
+        nodeId: "node-1",
+      },
+    ]);
+  });
+
+  it("rejects a non-string node id", () => {
+    const result = validateWorkflowActionConfigs([
+      { ...actionNode("HTTP Request", {}), id: 123 },
+    ]);
+    expect(result.valid).toBe(false);
+    expect(result.issues).toMatchObject([
+      { code: "INVALID_NODE_ID", path: "nodes[0].id" },
+    ]);
+  });
+
+  it("allows a node with no id", () => {
+    const { id: _id, ...node } = actionNode("HTTP Request", {});
+    expect(validateWorkflowActionConfigs([node]).valid).toBe(true);
+  });
+
   it("accepts the valid workflow import fixture", () => {
     const fixture = JSON.parse(
       readFileSync(
