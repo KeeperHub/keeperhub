@@ -63,6 +63,8 @@ const SUMMARY_FIELDS_PER_NODE = 3;
 // keys elides the very field that blocks the save. Rank the blocking codes
 // first; ties keep emission order, since the sort is stable.
 const SUMMARY_NAME_PRIORITY: Record<ActionConfigValidationIssueCode, number> = {
+  INVALID_NODE_ID: 0,
+  INVALID_ACTION_TYPE: 0,
   UNKNOWN_ACTION_TYPE: 0,
   MISSING_REQUIRED_FIELD: 1,
   INVALID_FIELD_TYPE: 1,
@@ -166,6 +168,8 @@ function sanitiseFieldName(field: string): string {
 }
 
 export type ActionConfigValidationIssueCode =
+  | "INVALID_NODE_ID"
+  | "INVALID_ACTION_TYPE"
   | "UNKNOWN_ACTION_TYPE"
   | "UNKNOWN_FIELD"
   | "MISSING_REQUIRED_FIELD"
@@ -190,7 +194,7 @@ export type ActionConfigValidationResult = {
 };
 
 export type WorkflowNodeForValidation = {
-  id?: string;
+  id?: unknown;
   type?: unknown;
   data?: {
     type?: unknown;
@@ -680,6 +684,16 @@ export function validateWorkflowActionConfigs(
   const issues: ActionConfigValidationIssue[] = [];
 
   for (const [nodeIndex, node] of nodes.entries()) {
+    if (node.id !== undefined && typeof node.id !== "string") {
+      issues.push({
+        code: "INVALID_NODE_ID",
+        path: `nodes[${nodeIndex}].id`,
+        expected: "string",
+        received: node.id,
+        message: "Node id must be a string.",
+      });
+    }
+
     if (!isActionNode(node)) {
       continue;
     }
@@ -690,6 +704,23 @@ export function validateWorkflowActionConfigs(
     }
 
     const actionType = config.actionType;
+    if (
+      actionType !== undefined &&
+      actionType !== null &&
+      typeof actionType !== "string"
+    ) {
+      const identity = nodeIdentity(node, `nodes[${nodeIndex}]`);
+      issues.push({
+        code: "INVALID_ACTION_TYPE",
+        path: `nodes[${nodeIndex}].data.config.actionType`,
+        expected: "string",
+        received: actionType,
+        nodeId: identity.nodeId,
+        nodeLabel: identity.nodeLabel,
+        message: "Action type must be a string.",
+      });
+      continue;
+    }
     if (typeof actionType !== "string" || actionType.trim() === "") {
       continue;
     }

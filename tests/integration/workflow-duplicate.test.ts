@@ -197,6 +197,53 @@ describe("Workflow duplicate API", () => {
   // the annotation silently becomes a promise that a deploy_template call is
   // safe to auto-approve when it can immediately start executing. Breaking
   // here is the loud version of that.
+  it("blocks duplicating a paid node, including a malformed one, when the plan gate rejects it", async () => {
+    const { enforceWorkflowFeatures } = await import(
+      "@/lib/features/route-guard"
+    );
+    const blockedResponse = new Response(null, { status: 403 });
+    vi.mocked(enforceWorkflowFeatures).mockResolvedValueOnce({
+      blocked: true,
+      response: blockedResponse as never,
+    });
+    mockDbQuery.workflows.findFirst.mockResolvedValue({
+      ...sourceWorkflow,
+      nodes: [
+        sourceWorkflow.nodes[0],
+        {
+          id: "action-1",
+          type: "action",
+          position: { x: 0, y: 100 },
+          data: {
+            label: "Code",
+            type: "action",
+            config: { actionType: ["code/run-code"], code: "return 1;" },
+            status: "idle",
+          },
+        },
+      ],
+    });
+    const { db } = await import("@/lib/db");
+    const { POST } = await import(
+      "@/app/api/workflows/[workflowId]/duplicate/route"
+    );
+
+    const response = await POST(
+      new Request("http://localhost/api/workflows/source-wf-1/duplicate", {
+        method: "POST",
+      }),
+      { params: Promise.resolve({ workflowId: "source-wf-1" }) }
+    );
+
+    expect(response.status).toBe(403);
+    expect(vi.mocked(enforceWorkflowFeatures).mock.calls[0]?.[0]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ actionType: "code/run-code" }),
+      ])
+    );
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
   it("creates the clone disabled so deploy_template stays non-destructive", async () => {
     const { POST } = await import(
       "@/app/api/workflows/[workflowId]/duplicate/route"
