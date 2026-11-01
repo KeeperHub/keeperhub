@@ -9,7 +9,6 @@ import {
 } from "./utils/db";
 import {
   type Box,
-  box,
   dismissPhoneOverlays,
   isOnTop,
   overlaps,
@@ -23,6 +22,16 @@ const WIDE_WIDTHS = [768, 1024, 1280, 1920] as const;
 const HEIGHT = 844;
 // The button's name, the same while it imports.
 const NAME = "Use template: copy this workflow to your account";
+
+// Inside toPass a check must fail, not wait: an element that went away
+// mid-transition fails the attempt, and the next one measures again.
+async function box(locator: Locator): Promise<Box> {
+  const found = await locator.boundingBox({ timeout: 1000 });
+  if (!found) {
+    throw new Error("element is not rendered");
+  }
+  return found;
+}
 
 const right = (b: Box): number => b.x + b.width;
 const bottom = (b: Box): number => b.y + b.height;
@@ -312,6 +321,9 @@ test.describe("Use template bar, signed in", () => {
       await page.getByTestId("nav-workflows").click();
     }
     await expect(flyout).toBeVisible();
+    // Past the flyout's slide: 768 leaves no room, so the header has it.
+    await expect(card(page)).toBeHidden();
+    await expect(headerButton(page)).toBeVisible();
     for (const width of WIDE_WIDTHS) {
       await atWidth(page, width, () =>
         expectWideBar(page, { allowFallback: true })
@@ -325,6 +337,54 @@ test.describe("Use template bar, signed in", () => {
       const controls = await box(page.locator(".workflow-controls-panel"));
       expect(bottom(controls)).toBeGreaterThan(HEIGHT - 40);
     });
+  });
+
+  // However little canvas the flyout and the right panel leave, "Preview"
+  // shows once from 768px: in the card, or in the header beside the card's
+  // button or beside the header's.
+  test("from 768px: the read-only badge is always on screen", async ({
+    page,
+  }) => {
+    for (const panel of [{ collapsed: true }, { width: 30 }, { width: 50 }]) {
+      await open(page, 1024, foreignId, panel);
+      const flyout = page.getByRole("region", { name: "Workflows" });
+      if (!(await flyout.isVisible())) {
+        await page.getByTestId("nav-workflows").click();
+      }
+      await expect(flyout).toBeVisible();
+      for (const width of [768, 1024, 1280]) {
+        await atWidth(page, width, async () => {
+          const badges = page
+            .getByText("Preview", { exact: true })
+            .filter({ visible: true });
+          await expect(badges).toHaveCount(1);
+          expect(await isOnTop(badges)).toBe(true);
+          await expect(
+            page.getByRole("button", { name: NAME }).filter({ visible: true })
+          ).toHaveCount(1);
+        });
+      }
+    }
+  });
+
+  // A first toast, with none up before it, is lifted at once.
+  test("the first toast on a page sits above the bar", async ({ page }) => {
+    await page.route("**/api/workflows/*/duplicate", (route) =>
+      route.fulfill({ status: 500, body: "{}" })
+    );
+    // A trigger alone raises no paid-features toast on load.
+    await open(page, 1024, copyableId, { collapsed: true });
+    await expect(page.locator("[data-sonner-toast]")).toHaveCount(0);
+    await templateButton(page).click();
+    const toast = page
+      .locator("[data-sonner-toast]")
+      .filter({ hasText: "Failed to duplicate workflow" });
+    await expect(toast).toBeVisible();
+    await expect(async () => {
+      expect(await overlaps(await box(toast), await box(card(page)))).toBe(
+        false
+      );
+    }).toPass({ timeout: 3000 });
   });
 
   test("keyboard focus follows the button between bar and header", async ({

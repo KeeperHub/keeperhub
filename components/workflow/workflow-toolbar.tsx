@@ -2102,9 +2102,12 @@ function ReadOnlyBadge({ className }: { className?: string }) {
 // Use template's name, the same while it imports (aria-busy says so); it
 // starts with the words on the button.
 const USE_TEMPLATE_LABEL = "Use template: copy this workflow to your account";
-// Below this width (the card's button and padding) the free canvas has no
-// room for the bar, and the header offers Use template instead.
-const BAR_MIN_WIDTH_REM = 9.5;
+// What the free canvas has room for: nothing (the header takes the button
+// and the read-only badge), the button alone (the header takes the badge),
+// or both. The widths: the card's button, then its badge too, with padding.
+type BarFit = "none" | "button" | "full";
+const BUTTON_FITS_REM = 9.5;
+const BADGE_FITS_REM = 15.5;
 // The card lifts the zoom controls and toasts that come this close to it.
 const LIFT_GAP_PX = 16;
 
@@ -2146,7 +2149,7 @@ function UseTemplateButton({
       disabled={isUsingTemplate}
       onClick={onUseTemplate}
       ref={ref}
-      title="Use this workflow as a template in your account"
+      title={USE_TEMPLATE_LABEL}
     >
       {isUsingTemplate ? (
         <Loader2 className="size-4 animate-spin" />
@@ -2159,18 +2162,18 @@ function UseTemplateButton({
 }
 
 // Use template for a public workflow you do not own (HUB-01, HUB-02), across
-// the bottom of the free canvas. It measures that canvas: too narrow, and it
-// asks the toolbar to put the button in the header; otherwise it shows the
-// button in its card, stepping the card's text down as the canvas narrows,
-// and lifts the zoom controls and toasts only where they come near the card.
+// the bottom of the free canvas. It measures that canvas and tells the
+// toolbar what fits (the toolbar puts the rest in the header); its card
+// steps its text down as the canvas narrows, and it lifts the zoom controls
+// and toasts only where they come near the card.
 function UseTemplateBar({
   children,
-  onShownChange,
-  shown,
+  fit,
+  onFitChange,
 }: {
   children: React.ReactNode;
-  onShownChange: (shown: boolean) => void;
-  shown: boolean;
+  fit: BarFit;
+  onFitChange: (fit: BarFit) => void;
 }): React.ReactElement {
   const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
   const [track, setTrack] = useState<HTMLDivElement | null>(null);
@@ -2185,18 +2188,25 @@ function UseTemplateBar({
     if (!bar) {
       return;
     }
-    const rootFontPx = Number.parseFloat(
-      getComputedStyle(document.documentElement).fontSize
-    );
-    const minWidth = BAR_MIN_WIDTH_REM * (rootFontPx || 16);
-    let reported = shown;
+    let reported = fit;
     let controls: Element | null = null;
     const update = (): void => {
-      const fits = bar.clientWidth >= minWidth;
-      if (fits !== shown) {
+      // The bar's rem offsets and padding resize it when the root font
+      // changes, so a fresh read here sees that too.
+      const remPx =
+        Number.parseFloat(getComputedStyle(document.documentElement).fontSize) ||
+        16;
+      const width = bar.clientWidth;
+      let fits: BarFit = "none";
+      if (width >= BADGE_FITS_REM * remPx) {
+        fits = "full";
+      } else if (width >= BUTTON_FITS_REM * remPx) {
+        fits = "button";
+      }
+      if (fits !== fit) {
         if (fits !== reported) {
           reported = fits;
-          onShownChange(fits);
+          onFitChange(fits);
         }
         return;
       }
@@ -2211,15 +2221,13 @@ function UseTemplateBar({
         }
         controls = found;
       }
-      const rect = fits ? card?.getBoundingClientRect() : undefined;
+      const rect = card?.getBoundingClientRect();
       const next: BarLifts = rect
         ? {
             controls: nearSideways(rect, controls),
             toasts: nearSideways(
               rect,
-              document.querySelector(
-                '[data-sonner-toaster][data-y-position="bottom"]'
-              )
+              document.querySelector("[data-sonner-toaster]")
             ),
           }
         : NO_LIFTS;
@@ -2236,7 +2244,7 @@ function UseTemplateBar({
       observer.observe(card);
     }
     return () => observer.disconnect();
-  }, [track, card, shown, onShownChange, toastsUp]);
+  }, [track, card, fit, onFitChange, toastsUp]);
   return (
     <div
       className="pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))] left-[max(1rem,env(safe-area-inset-left))] flex max-xs:right-3 max-xs:left-3 md:right-(--use-template-right) md:left-(--nav-content-offset,var(--nav-sidebar-width,60px)) md:px-4 md:motion-safe:transition-[left,right] md:motion-safe:duration-200 md:motion-safe:ease-out"
@@ -2248,13 +2256,13 @@ function UseTemplateBar({
       }
     >
       <div className="@container flex w-full min-w-0 justify-center" ref={setTrack}>
-        {shown && (
+        {fit !== "none" && (
           <div
             className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2.5 rounded-lg border bg-background py-2 pr-2 pl-3 shadow-lg max-md:w-full"
             data-testid="use-template-card"
             ref={setCard}
           >
-            <ReadOnlyBadge className="hidden shrink-0 @min-[15.5rem]:inline-flex" />
+            {fit === "full" && <ReadOnlyBadge className="shrink-0" />}
             <p className="hidden min-w-0 flex-1 truncate text-foreground/80 text-sm leading-4 @min-[24.5rem]:block md:flex-none">
               <span className="@min-[36rem]:hidden">Copy to edit and run</span>
               <span className="hidden @min-[36rem]:inline">
@@ -2328,17 +2336,22 @@ export const WorkflowToolbar = ({
     Boolean(effectiveWorkflowId) &&
     !state.isOwner &&
     state.workflowVisibility === "public";
-  // One Use template button: in the bar, or in the header (with the badge)
-  // while the free canvas is too narrow for the bar.
-  const [barShown, setBarShown] = useState(true);
+  // One Use template button and one read-only badge, each in the bar's card
+  // or, where the free canvas has no room for it, in the header.
+  const [barFit, setBarFit] = useState<BarFit>("full");
+  const barFitRef = useRef(barFit);
   const useTemplateRef = useRef<HTMLButtonElement | null>(null);
   const refocusUseTemplate = useRef(false);
-  const onBarShownChange = useCallback((shown: boolean): void => {
-    // The button is about to move; focus moves with it if it had it.
+  const onBarFitChange = useCallback((fit: BarFit): void => {
+    // Moving between bar and header remounts the button: focus goes with it
+    // if it had it.
+    const moves = (fit === "none") !== (barFitRef.current === "none");
+    barFitRef.current = fit;
     refocusUseTemplate.current =
+      moves &&
       useTemplateRef.current !== null &&
       useTemplateRef.current === document.activeElement;
-    setBarShown(shown);
+    setBarFit(fit);
   }, []);
   const setUseTemplateButton = useCallback(
     (button: HTMLButtonElement | null): void => {
@@ -2350,23 +2363,25 @@ export const WorkflowToolbar = ({
     },
     []
   );
+  const buttonInBar = barFit !== "none";
   const useTemplateButton = offersTemplate && (
     <UseTemplateButton
-      className={barShown ? "ml-auto" : undefined}
+      className={buttonInBar ? "ml-auto" : undefined}
       isUsingTemplate={state.isDuplicating}
       onUseTemplate={actions.handleUseTemplate}
       ref={setUseTemplateButton}
     />
   );
   const useTemplateBar = offersTemplate && (
-    <UseTemplateBar onShownChange={onBarShownChange} shown={barShown}>
-      {barShown && useTemplateButton}
+    <UseTemplateBar fit={barFit} onFitChange={onBarFitChange}>
+      {buttonInBar && useTemplateButton}
     </UseTemplateBar>
   );
-  const headerUseTemplate = offersTemplate && !barShown && (
+  // Phones (below md) never had the badge in their crowded header.
+  const headerUseTemplate = offersTemplate && barFit !== "full" && (
     <>
-      <ReadOnlyBadge className="shrink-0" />
-      {useTemplateButton}
+      <ReadOnlyBadge className="shrink-0 max-md:hidden" />
+      {!buttonInBar && useTemplateButton}
     </>
   );
 

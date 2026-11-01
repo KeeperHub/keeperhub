@@ -489,8 +489,8 @@
 }
 
 /* Clearances above a bar at the bottom of the editor (the phone toolbar, the
-   Use template bar), clear of the safe area: the zoom controls, and the AI
-   prompt and toasts 8px above the bar (54px tall at its bottom offset). */
+   Use template bar), clear of the safe area: the zoom controls, and toasts
+   (and the phone AI prompt) 8px above the bar, 54px tall at its offset. */
 :root {
   --controls-above-bottom-bar: calc(env(safe-area-inset-bottom, 0px) + 5.5rem);
   --above-bottom-bar: calc(max(1rem, env(safe-area-inset-bottom)) + 3.875rem);
