@@ -321,7 +321,8 @@ test.describe("Use template bar, signed in", () => {
       await page.getByTestId("nav-workflows").click();
     }
     await expect(flyout).toBeVisible();
-    // Past the flyout's slide: 768 leaves no room, so the header has it.
+    // 768 with the flyout leaves no room: once the card gives way, the header
+    // has the button.
     await expect(card(page)).toBeHidden();
     await expect(headerButton(page)).toBeVisible();
     for (const width of WIDE_WIDTHS) {
@@ -367,7 +368,7 @@ test.describe("Use template bar, signed in", () => {
     }
   });
 
-  // A first toast, with none up before it, is lifted at once.
+  // A first toast, with none up before it, is lifted too.
   test("the first toast on a page sits above the bar", async ({ page }) => {
     await page.route("**/api/workflows/*/duplicate", (route) =>
       route.fulfill({ status: 500, body: "{}" })
@@ -490,6 +491,7 @@ test.describe("Use template bar, signed in", () => {
       await expect(card(page)).toHaveCount(0);
       if (width >= 768) {
         // No bar, so the zoom controls keep their place at the bottom.
+        await expect(page.locator(".workflow-controls-panel")).toBeVisible();
         const controls = await box(page.locator(".workflow-controls-panel"));
         expect(bottom(controls)).toBeGreaterThan(HEIGHT - 40);
       }

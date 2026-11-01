@@ -1975,6 +1975,10 @@ function runIconOnlyBelow(
   return hasSelection ? "withSwitchAndDelete" : "withSwitch";
 }
 
+// The editor's filled green buttons (Run, Use template).
+const GREEN_BUTTON_CLASSES =
+  "bg-keeperhub-green hover:bg-keeperhub-green-dark disabled:opacity-70";
+
 function RunButtonGroup({
   state,
   actions,
@@ -2023,7 +2027,8 @@ function RunButtonGroup({
   const button = (
     <Button
       className={cn(
-        "min-w-20 bg-keeperhub-green hover:bg-keeperhub-green-dark disabled:opacity-70 disabled:[&>svg]:text-muted-foreground",
+        GREEN_BUTTON_CLASSES,
+        "min-w-20 disabled:[&>svg]:text-muted-foreground",
         iconOnly.button
       )}
       data-tour="workflow-run"
@@ -2085,7 +2090,11 @@ function RunButtonGroup({
 }
 
 // Read-only badge: a neutral pill, so the green button stays the one accent.
-function ReadOnlyBadge({ className }: { className?: string }) {
+function ReadOnlyBadge({
+  className,
+}: {
+  className?: string;
+}): React.ReactElement {
   return (
     <Badge
       className={cn(
@@ -2142,14 +2151,14 @@ function UseTemplateButton({
       aria-busy={isUsingTemplate}
       aria-label={USE_TEMPLATE_LABEL}
       className={cn(
-        "shrink-0 bg-keeperhub-green hover:bg-keeperhub-green-dark focus-visible:hub-focus-ring focus-visible:ring-offset-background disabled:opacity-70",
+        GREEN_BUTTON_CLASSES,
+        "shrink-0 focus-visible:hub-focus-ring focus-visible:ring-offset-background",
         className
       )}
       data-analytics="template_use_clicked"
       disabled={isUsingTemplate}
       onClick={onUseTemplate}
       ref={ref}
-      title={USE_TEMPLATE_LABEL}
     >
       {isUsingTemplate ? (
         <Loader2 className="size-4 animate-spin" />
@@ -2167,11 +2176,13 @@ function UseTemplateButton({
 // steps its text down as the canvas narrows, and it lifts the zoom controls
 // and toasts only where they come near the card.
 function UseTemplateBar({
-  children,
+  badge,
+  button,
   fit,
   onFitChange,
 }: {
-  children: React.ReactNode;
+  badge: React.ReactNode;
+  button: React.ReactNode;
   fit: BarFit;
   onFitChange: (fit: BarFit) => void;
 }): React.ReactElement {
@@ -2179,7 +2190,7 @@ function UseTemplateBar({
   const [track, setTrack] = useState<HTMLDivElement | null>(null);
   const [card, setCard] = useState<HTMLDivElement | null>(null);
   const [lifts, setLifts] = useState<BarLifts>(NO_LIFTS);
-  const liftsRef = useRef(lifts);
+  // Measured again when toasts first show: the toaster mounts with them.
   const toastsUp = useSonner().toasts.length > 0;
   // Before paint, so the first frame is right; then on every resize, acting
   // only on a change.
@@ -2231,11 +2242,12 @@ function UseTemplateBar({
             ),
           }
         : NO_LIFTS;
-      const now = liftsRef.current;
-      if (next.controls !== now.controls || next.toasts !== now.toasts) {
-        liftsRef.current = next;
-        setLifts(next);
-      }
+      // Same lifts: React bails out without rendering.
+      setLifts((now) =>
+        now.controls === next.controls && now.toasts === next.toasts
+          ? now
+          : next
+      );
     };
     const observer = new ResizeObserver(update);
     update();
@@ -2262,14 +2274,14 @@ function UseTemplateBar({
             data-testid="use-template-card"
             ref={setCard}
           >
-            {fit === "full" && <ReadOnlyBadge className="shrink-0" />}
+            {badge}
             <p className="hidden min-w-0 flex-1 truncate text-foreground/80 text-sm leading-4 @min-[24.5rem]:block md:flex-none">
               <span className="@min-[36rem]:hidden">Copy to edit and run</span>
               <span className="hidden @min-[36rem]:inline">
                 Read-only. Make your own copy to edit and run it.
               </span>
             </p>
-            {children}
+            {button}
           </div>
         )}
       </div>
@@ -2339,20 +2351,21 @@ export const WorkflowToolbar = ({
   // One Use template button and one read-only badge, each in the bar's card
   // or, where the free canvas has no room for it, in the header.
   const [barFit, setBarFit] = useState<BarFit>("full");
-  const barFitRef = useRef(barFit);
   const useTemplateRef = useRef<HTMLButtonElement | null>(null);
   const refocusUseTemplate = useRef(false);
-  const onBarFitChange = useCallback((fit: BarFit): void => {
-    // Moving between bar and header remounts the button: focus goes with it
-    // if it had it.
-    const moves = (fit === "none") !== (barFitRef.current === "none");
-    barFitRef.current = fit;
-    refocusUseTemplate.current =
-      moves &&
-      useTemplateRef.current !== null &&
-      useTemplateRef.current === document.activeElement;
-    setBarFit(fit);
-  }, []);
+  const onBarFitChange = useCallback(
+    (fit: BarFit): void => {
+      // Moving between bar and header remounts the button: focus goes with
+      // it if it had it.
+      const moves = (fit === "none") !== (barFit === "none");
+      refocusUseTemplate.current =
+        moves &&
+        useTemplateRef.current !== null &&
+        useTemplateRef.current === document.activeElement;
+      setBarFit(fit);
+    },
+    [barFit]
+  );
   const setUseTemplateButton = useCallback(
     (button: HTMLButtonElement | null): void => {
       useTemplateRef.current = button;
@@ -2364,6 +2377,7 @@ export const WorkflowToolbar = ({
     []
   );
   const buttonInBar = barFit !== "none";
+  const badgeInBar = barFit === "full";
   const useTemplateButton = offersTemplate && (
     <UseTemplateButton
       className={buttonInBar ? "ml-auto" : undefined}
@@ -2373,12 +2387,15 @@ export const WorkflowToolbar = ({
     />
   );
   const useTemplateBar = offersTemplate && (
-    <UseTemplateBar fit={barFit} onFitChange={onBarFitChange}>
-      {buttonInBar && useTemplateButton}
-    </UseTemplateBar>
+    <UseTemplateBar
+      badge={badgeInBar && <ReadOnlyBadge className="shrink-0" />}
+      button={buttonInBar && useTemplateButton}
+      fit={barFit}
+      onFitChange={onBarFitChange}
+    />
   );
   // Phones (below md) never had the badge in their crowded header.
-  const headerUseTemplate = offersTemplate && barFit !== "full" && (
+  const headerUseTemplate = offersTemplate && !badgeInBar && (
     <>
       <ReadOnlyBadge className="shrink-0 max-md:hidden" />
       {!buttonInBar && useTemplateButton}
