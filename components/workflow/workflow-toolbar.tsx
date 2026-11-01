@@ -22,15 +22,14 @@ import { nanoid } from "nanoid";
 import { usePathname, useRouter } from "next/navigation";
 import {
   type CSSProperties,
-  forwardRef,
-  type RefObject,
+  type Ref,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
-import { flushSync } from "react-dom";
-import { toast } from "sonner";
+import { toast, useSonner } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MobileNav } from "@/components/mobile-nav";
@@ -2100,54 +2099,52 @@ function ReadOnlyBadge({ className }: { className?: string }) {
   );
 }
 
-// Sonner's toasts from 600px wide: 356px wide, 24px in from the right edge.
-const TOAST_SPAN_PX = 356 + 24;
-const TOASTS_FULL_WIDTH_BELOW_PX = 600;
+// Use template's name, the same while it imports (aria-busy says so); it
+// starts with the words on the button.
+const USE_TEMPLATE_LABEL = "Use template: copy this workflow to your account";
+// Below this width (the card's button and padding) the free canvas has no
+// room for the bar, and the header offers Use template instead.
+const BAR_MIN_WIDTH_REM = 9.5;
+// The card lifts the zoom controls and toasts that come this close to it.
+const LIFT_GAP_PX = 16;
 
-// Nothing visible holds focus: the body, or an element now hidden (browsers
-// move focus off a hidden element lazily).
-function focusIsLost(): boolean {
-  const active = document.activeElement;
+type BarLifts = { controls: boolean; toasts: boolean };
+const NO_LIFTS: BarLifts = { controls: false, toasts: false };
+
+// Whether the element's horizontal span comes within LIFT_GAP_PX of rect's.
+function nearSideways(rect: DOMRect, element: Element | null): boolean {
+  if (!element) {
+    return false;
+  }
+  const other = element.getBoundingClientRect();
   return (
-    !active || active === document.body || active.getClientRects().length === 0
+    rect.left < other.right + LIFT_GAP_PX &&
+    other.left < rect.right + LIFT_GAP_PX
   );
 }
 
-type UseTemplateButtonProps = {
+function UseTemplateButton({
+  className,
+  isUsingTemplate,
+  onUseTemplate,
+  ref,
+}: {
+  className?: string;
   isUsingTemplate: boolean;
   onUseTemplate: () => void;
-  // Whether a Use template button held focus when it was last hidden, so the
-  // one that takes its place picks focus up.
-  focusMoved: RefObject<boolean>;
-};
-
-const UseTemplateButton = forwardRef<
-  HTMLButtonElement,
-  UseTemplateButtonProps & { className?: string; testId?: string }
->(function UseTemplateButton(
-  { className, focusMoved, isUsingTemplate, onUseTemplate, testId },
-  ref
-) {
+  ref: Ref<HTMLButtonElement>;
+}): React.ReactElement {
   return (
     <Button
       aria-busy={isUsingTemplate}
+      aria-label={USE_TEMPLATE_LABEL}
       className={cn(
-        "shrink-0 bg-keeperhub-green hover:bg-keeperhub-green-dark focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-70",
+        "shrink-0 bg-keeperhub-green hover:bg-keeperhub-green-dark focus-visible:hub-focus-ring focus-visible:ring-offset-background disabled:opacity-70",
         className
       )}
       data-analytics="template_use_clicked"
-      data-testid={testId}
       disabled={isUsingTemplate}
-      onBlur={(event) => {
-        // Hidden while focused: keep the flag for the other button.
-        if (event.currentTarget.getClientRects().length > 0) {
-          focusMoved.current = false;
-        }
-      }}
       onClick={onUseTemplate}
-      onFocus={() => {
-        focusMoved.current = true;
-      }}
       ref={ref}
       title="Use this workflow as a template in your account"
     >
@@ -2159,91 +2156,117 @@ const UseTemplateButton = forwardRef<
       {isUsingTemplate ? "Importing…" : "Use template"}
     </Button>
   );
-});
+}
 
 // Use template for a public workflow you do not own (HUB-01, HUB-02), across
-// the bottom of the free canvas; its content steps down as the canvas
-// narrows, and below the button's width the header offers it instead.
+// the bottom of the free canvas. It measures that canvas: too narrow, and it
+// asks the toolbar to put the button in the header; otherwise it shows the
+// button in its card, stepping the card's text down as the canvas narrows,
+// and lifts the zoom controls and toasts only where they come near the card.
 function UseTemplateBar({
+  children,
   onShownChange,
-  ...buttonProps
-}: UseTemplateButtonProps & { onShownChange: (shown: boolean) => void }) {
+  shown,
+}: {
+  children: React.ReactNode;
+  onShownChange: (shown: boolean) => void;
+  shown: boolean;
+}): React.ReactElement {
   const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
-  const cardRef = useRef<HTMLDivElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const { focusMoved } = buttonProps;
-  // Before paint, so the first frame is right.
+  const [track, setTrack] = useState<HTMLDivElement | null>(null);
+  const [card, setCard] = useState<HTMLDivElement | null>(null);
+  const [lifts, setLifts] = useState<BarLifts>(NO_LIFTS);
+  const liftsRef = useRef(lifts);
+  const toastsUp = useSonner().toasts.length > 0;
+  // Before paint, so the first frame is right; then on every resize, acting
+  // only on a change.
   useLayoutEffect(() => {
-    const card = cardRef.current;
-    const bar = card?.parentElement;
-    if (!(card && bar)) {
+    const bar = track;
+    if (!bar) {
       return;
     }
-    // The container query decides; this mirrors it for the header and for
-    // globals.css, which lifts the zoom controls (and toasts, where they
-    // would come within 16px of the card) while the card shows.
-    const update = (commit: (apply: () => void) => void): void => {
-      const shown = getComputedStyle(card).display !== "none";
-      const underToasts =
-        shown &&
-        (window.innerWidth < TOASTS_FULL_WIDTH_BELOW_PX ||
-          card.getBoundingClientRect().right >
-            window.innerWidth - TOAST_SPAN_PX - 16);
-      card.toggleAttribute("data-use-template-bar", shown);
-      card.toggleAttribute("data-under-toasts", underToasts);
-      commit(() => onShownChange(shown));
-      if (shown && focusMoved.current && focusIsLost()) {
-        buttonRef.current?.focus();
+    const rootFontPx = Number.parseFloat(
+      getComputedStyle(document.documentElement).fontSize
+    );
+    const minWidth = BAR_MIN_WIDTH_REM * (rootFontPx || 16);
+    let reported = shown;
+    let controls: Element | null = null;
+    const update = (): void => {
+      const fits = bar.clientWidth >= minWidth;
+      if (fits !== shown) {
+        if (fits !== reported) {
+          reported = fits;
+          onShownChange(fits);
+        }
+        return;
+      }
+      // The zoom controls mount with the canvas, maybe after the bar.
+      const found = document.querySelector(".workflow-controls-panel");
+      if (found !== controls) {
+        if (controls) {
+          observer.unobserve(controls);
+        }
+        if (found) {
+          observer.observe(found);
+        }
+        controls = found;
+      }
+      const rect = fits ? card?.getBoundingClientRect() : undefined;
+      const next: BarLifts = rect
+        ? {
+            controls: nearSideways(rect, controls),
+            toasts: nearSideways(
+              rect,
+              document.querySelector(
+                '[data-sonner-toaster][data-y-position="bottom"]'
+              )
+            ),
+          }
+        : NO_LIFTS;
+      const now = liftsRef.current;
+      if (next.controls !== now.controls || next.toasts !== now.toasts) {
+        liftsRef.current = next;
+        setLifts(next);
       }
     };
-    update((apply) => apply());
-    // Commit before paint, so the two buttons never both show or hide.
-    const observer = new ResizeObserver(() => update(flushSync));
+    const observer = new ResizeObserver(update);
+    update();
     observer.observe(bar);
-    observer.observe(card);
-    return () => {
-      observer.disconnect();
-      onShownChange(true);
-      // Gone (another page): nothing to hand focus to.
-      focusMoved.current = false;
-    };
-  }, [onShownChange, focusMoved]);
+    if (card) {
+      observer.observe(card);
+    }
+    return () => observer.disconnect();
+  }, [track, card, shown, onShownChange, toastsUp]);
   return (
     <div
-      className="@container pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))] left-[max(1rem,env(safe-area-inset-left))] flex justify-center max-xs:right-3 max-xs:left-3 md:right-(--use-template-right) md:left-(--nav-content-offset,var(--nav-sidebar-width,60px)) md:px-4 md:motion-safe:transition-[left,right] md:motion-safe:duration-200 md:motion-safe:ease-out"
+      className="pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))] left-[max(1rem,env(safe-area-inset-left))] flex max-xs:right-3 max-xs:left-3 md:right-(--use-template-right) md:left-(--nav-content-offset,var(--nav-sidebar-width,60px)) md:px-4 md:motion-safe:transition-[left,right] md:motion-safe:duration-200 md:motion-safe:ease-out"
+      data-lifts-controls={lifts.controls || undefined}
+      data-lifts-toasts={lifts.toasts || undefined}
       data-testid="use-template-bar"
       style={
         { "--use-template-right": rightPanelWidth ?? "0px" } as CSSProperties
       }
     >
-      <div
-        className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2.5 rounded-lg border bg-background py-2 pr-2 pl-3 shadow-lg @max-[9.5rem]:hidden max-md:w-full"
-        data-testid="use-template-card"
-        ref={cardRef}
-      >
-        <ReadOnlyBadge className="hidden shrink-0 @min-[15.5rem]:inline-flex" />
-        <p className="hidden min-w-0 flex-1 truncate text-foreground/80 text-sm leading-4 @min-[24.5rem]:block md:flex-none">
-          <span className="@min-[36rem]:hidden">Copy to edit and run</span>
-          <span className="hidden @min-[36rem]:inline">
-            Read-only. Make your own copy to edit and run it.
-          </span>
-        </p>
-        <UseTemplateButton {...buttonProps} className="ml-auto" ref={buttonRef} />
+      <div className="@container flex w-full min-w-0 justify-center" ref={setTrack}>
+        {shown && (
+          <div
+            className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2.5 rounded-lg border bg-background py-2 pr-2 pl-3 shadow-lg max-md:w-full"
+            data-testid="use-template-card"
+            ref={setCard}
+          >
+            <ReadOnlyBadge className="hidden shrink-0 @min-[15.5rem]:inline-flex" />
+            <p className="hidden min-w-0 flex-1 truncate text-foreground/80 text-sm leading-4 @min-[24.5rem]:block md:flex-none">
+              <span className="@min-[36rem]:hidden">Copy to edit and run</span>
+              <span className="hidden @min-[36rem]:inline">
+                Read-only. Make your own copy to edit and run it.
+              </span>
+            </p>
+            {children}
+          </div>
+        )}
       </div>
     </div>
   );
-}
-
-// Use template in the header, while the canvas is too narrow for the bar.
-function HeaderUseTemplateButton(props: UseTemplateButtonProps) {
-  const ref = useRef<HTMLButtonElement>(null);
-  const { focusMoved } = props;
-  useEffect(() => {
-    if (focusMoved.current && focusIsLost()) {
-      ref.current?.focus();
-    }
-  }, [focusMoved]);
-  return <UseTemplateButton {...props} ref={ref} testId="header-use-template" />;
 }
 
 export const WorkflowToolbar = ({
@@ -2305,25 +2328,46 @@ export const WorkflowToolbar = ({
     Boolean(effectiveWorkflowId) &&
     !state.isOwner &&
     state.workflowVisibility === "public";
-  const [useTemplateBarShown, setUseTemplateBarShown] = useState(true);
-  const useTemplateFocusMoved = useRef(false);
-  // A new workflow starts with no focus to hand over.
-  useEffect(() => {
-    useTemplateFocusMoved.current = false;
-  }, [effectiveWorkflowId]);
-  const useTemplateProps = {
-    focusMoved: useTemplateFocusMoved,
-    isUsingTemplate: state.isDuplicating,
-    onUseTemplate: actions.handleUseTemplate,
-  };
-  const useTemplateBar = offersTemplate && (
-    <UseTemplateBar
-      {...useTemplateProps}
-      onShownChange={setUseTemplateBarShown}
+  // One Use template button: in the bar, or in the header (with the badge)
+  // while the free canvas is too narrow for the bar.
+  const [barShown, setBarShown] = useState(true);
+  const useTemplateRef = useRef<HTMLButtonElement | null>(null);
+  const refocusUseTemplate = useRef(false);
+  const onBarShownChange = useCallback((shown: boolean): void => {
+    // The button is about to move; focus moves with it if it had it.
+    refocusUseTemplate.current =
+      useTemplateRef.current !== null &&
+      useTemplateRef.current === document.activeElement;
+    setBarShown(shown);
+  }, []);
+  const setUseTemplateButton = useCallback(
+    (button: HTMLButtonElement | null): void => {
+      useTemplateRef.current = button;
+      if (button && refocusUseTemplate.current) {
+        refocusUseTemplate.current = false;
+        button.focus();
+      }
+    },
+    []
+  );
+  const useTemplateButton = offersTemplate && (
+    <UseTemplateButton
+      className={barShown ? "ml-auto" : undefined}
+      isUsingTemplate={state.isDuplicating}
+      onUseTemplate={actions.handleUseTemplate}
+      ref={setUseTemplateButton}
     />
   );
-  const headerUseTemplate = offersTemplate && !useTemplateBarShown && (
-    <HeaderUseTemplateButton {...useTemplateProps} />
+  const useTemplateBar = offersTemplate && (
+    <UseTemplateBar onShownChange={onBarShownChange} shown={barShown}>
+      {barShown && useTemplateButton}
+    </UseTemplateBar>
+  );
+  const headerUseTemplate = offersTemplate && !barShown && (
+    <>
+      <ReadOnlyBadge className="shrink-0" />
+      {useTemplateButton}
+    </>
   );
 
   if (persistent) {

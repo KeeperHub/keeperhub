@@ -39,6 +39,7 @@ import {
   isPanelAnimatingAtom,
   isSidebarCollapsedAtom,
   isTransitioningFromHomepageAtom,
+  isWorkflowOwnerAtom,
   nodesAtom,
   onEdgesChangeAtom,
   onNodesChangeAtom,
@@ -108,6 +109,7 @@ export function WorkflowCanvas() {
   const [edges, setEdges] = useAtom(edgesAtom);
   const [isGenerating] = useAtom(isGeneratingAtom);
   const currentWorkflowId = useAtomValue(currentWorkflowIdAtom);
+  const isOwner = useAtomValue(isWorkflowOwnerAtom);
   const [showMinimap] = useAtom(showMinimapAtom);
   const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
   const previewRequests = useAtomValue(previewRequestsAtom);
@@ -840,8 +842,10 @@ export function WorkflowCanvas() {
         )}
       </Canvas>
 
-      {/* AI Prompt - gated by NEXT_PUBLIC_AI_PROMPT_ENABLED feature flag */}
+      {/* AI Prompt - gated by NEXT_PUBLIC_AI_PROMPT_ENABLED feature flag; only
+          for a workflow you can edit (Use template takes its place). */}
       {currentWorkflowId &&
+        isOwner &&
         process.env.NEXT_PUBLIC_AI_PROMPT_ENABLED === "true" && (
           <AIPrompt workflowId={currentWorkflowId} />
         )}

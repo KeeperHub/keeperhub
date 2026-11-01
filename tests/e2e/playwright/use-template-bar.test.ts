@@ -21,6 +21,8 @@ import {
 const PHONE_WIDTHS = [320, 375, 390, 430] as const;
 const WIDE_WIDTHS = [768, 1024, 1280, 1920] as const;
 const HEIGHT = 844;
+// The button's name, the same while it imports.
+const NAME = "Use template: copy this workflow to your account";
 
 const right = (b: Box): number => b.x + b.width;
 const bottom = (b: Box): number => b.y + b.height;
@@ -31,7 +33,13 @@ const inside = (inner: Box, outer: Box): boolean =>
   bottom(inner) <= bottom(outer) + 0.5;
 
 function templateButton(page: Page): Locator {
-  return page.getByRole("button", { name: "Use template", exact: true });
+  return page.getByRole("button", { name: NAME, exact: true });
+}
+
+function headerButton(page: Page): Locator {
+  return page
+    .getByTestId("header-right")
+    .getByRole("button", { name: NAME, exact: true });
 }
 
 function card(page: Page): Locator {
@@ -122,7 +130,7 @@ async function expectCardSound(page: Page): Promise<Box> {
   const button = templateButton(page);
   await expect(
     page.getByTestId("header-left").getByRole("button", {
-      name: "Use template",
+      name: NAME,
       exact: true,
     })
   ).toHaveCount(0);
@@ -160,15 +168,22 @@ async function expectPhoneBar(page: Page, width: number): Promise<void> {
 // From md the card is centred on the canvas left free between the sidebar
 // (with any open flyout) and the right panel, 16px inside it. Only where
 // that canvas is narrower than the card (a flyout over it) may the card give
-// way, and then the header offers the button.
+// way, and then the header offers the button, with the read-only badge.
 async function expectWideBar(
   page: Page,
   { allowFallback = false } = {}
 ): Promise<void> {
-  const fallback = page.getByTestId("header-use-template");
+  const fallback = headerButton(page);
   if (allowFallback && !(await card(page).isVisible())) {
     await expect(fallback).toBeVisible();
     await expect(templateButton(page)).toHaveCount(1);
+    const badge = page
+      .getByTestId("header-right")
+      .getByText("Preview", { exact: true });
+    await expect(badge).toBeVisible();
+    // A pill: its rounded corners are not hit, so its centre.
+    expect(await isOnTop(badge)).toBe(true);
+    expect(await textFits(badge)).toBe(true);
     expect(await whollyOnTop(fallback)).toBe(true);
     expect(await textFits(fallback)).toBe(true);
     expect(
@@ -254,6 +269,33 @@ test.describe("Use template bar, signed in", () => {
     }
   });
 
+  // The card lifts the zoom controls only where it comes near them.
+  test("the zoom controls go up only when the card comes near them", async ({
+    page,
+  }) => {
+    const controlsBottom = async (): Promise<number> =>
+      bottom(await box(page.locator(".workflow-controls-panel")));
+    // 1920px, right panel collapsed: the card is far from the controls.
+    await open(page, 1920, foreignId, { collapsed: true });
+    await expect(card(page)).toBeVisible();
+    await expect(async () => {
+      expect(await controlsBottom()).toBeGreaterThan(HEIGHT - 40);
+    }).toPass({ timeout: 3000 });
+    // At 1024px the minimap beside them reaches under the card: up they go.
+    await page.setViewportSize({ width: 1024, height: HEIGHT });
+    await page.getByTitle("Show minimap").click();
+    await expect(page.locator(".react-flow__minimap")).toBeVisible();
+    await atWidth(page, 1024, async () => {
+      await expectWideBar(page);
+      expect(await controlsBottom()).toBeLessThan(HEIGHT - 60);
+    });
+    // Hidden again, the minimap no longer reaches: back down.
+    await page.getByTitle("Hide minimap").click();
+    await expect(async () => {
+      expect(await controlsBottom()).toBeGreaterThan(HEIGHT - 40);
+    }).toPass({ timeout: 3000 });
+  });
+
   test("from 768px: a 50% right panel and the minimap", async ({ page }) => {
     await open(page, WIDE_WIDTHS[0], foreignId, { width: 50 });
     await page.getByTitle("Show minimap").click();
@@ -279,7 +321,7 @@ test.describe("Use template bar, signed in", () => {
     // and the zoom controls drop back to the bottom.
     await atWidth(page, 768, async () => {
       await expect(card(page)).toBeHidden();
-      await expect(page.getByTestId("header-use-template")).toBeVisible();
+      await expect(headerButton(page)).toBeVisible();
       const controls = await box(page.locator(".workflow-controls-panel"));
       expect(bottom(controls)).toBeGreaterThan(HEIGHT - 40);
     });
@@ -294,14 +336,11 @@ test.describe("Use template bar, signed in", () => {
       await page.getByTestId("nav-workflows").click();
     }
     await expect(flyout).toBeVisible();
-    const inBar = card(page).getByRole("button", {
-      name: "Use template",
-      exact: true,
-    });
+    const inBar = card(page).getByRole("button", { name: NAME, exact: true });
     await expect(inBar).toBeVisible();
     await inBar.focus();
     await page.setViewportSize({ width: 768, height: HEIGHT });
-    await expect(page.getByTestId("header-use-template")).toBeFocused();
+    await expect(headerButton(page)).toBeFocused();
     await page.setViewportSize({ width: 1024, height: HEIGHT });
     await expect(inBar).toBeFocused();
   });
@@ -309,14 +348,17 @@ test.describe("Use template bar, signed in", () => {
   // A failed copy toasts every time; with the right panel collapsed the
   // toast (bottom right) is over the canvas, where the bar is.
   test("a toast sits above the bar", async ({ page }) => {
-    await page.route("**/api/workflows/*/duplicate", (route) =>
-      route.fulfill({ status: 500, body: "{}" })
-    );
+    await page.route("**/api/workflows/*/duplicate", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await route.fulfill({ status: 500, body: "{}" });
+    });
     await open(page, 390, foreignId, { collapsed: true });
     for (const width of [390, 768, 1024, 1920]) {
       await test.step(`${width}px`, async () => {
         await page.setViewportSize({ width, height: HEIGHT });
         await templateButton(page).click();
+        // While it imports the button keeps its name and says it is busy.
+        await expect(templateButton(page)).toHaveAttribute("aria-busy", "true");
         // The newest toast is the one in front of the stack.
         const toast = page
           .locator('[data-sonner-toast][data-front="true"]')
