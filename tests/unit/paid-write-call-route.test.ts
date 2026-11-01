@@ -82,6 +82,13 @@ vi.mock("@/lib/db/schema", () => ({
   workflowExecutions: { id: "id" },
   tags: { id: "id", name: "name" },
   organization: { id: "id", deactivatedAt: "deactivated_at" },
+  users: {
+    id: "id",
+    isAnonymous: "is_anonymous",
+    email: "email",
+    name: "name",
+    deactivatedAt: "deactivated_at",
+  },
 }));
 
 vi.mock("@/lib/payments/x402/payment-gate", () => ({
@@ -212,6 +219,11 @@ function setupDbSelectWorkflow(row: unknown): void {
     from: vi.fn().mockReturnValue({
       leftJoin: vi.fn().mockReturnValue({
         innerJoin: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(row ? [row] : []),
+            }),
+          }),
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue(row ? [row] : []),
           }),

@@ -133,6 +133,9 @@ vi.mock("@/lib/db", () => ({
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         leftJoin: vi.fn(() => ({
+          leftJoin: vi.fn(() => ({
+            where: vi.fn(() => ({ limit: mockOwnerLimit })),
+          })),
           where: vi.fn(() => ({ limit: mockOwnerLimit })),
         })),
       })),

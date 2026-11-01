@@ -98,6 +98,13 @@ vi.mock("@/lib/db/schema", () => ({
   workflowExecutions: { id: "id" },
   tags: { id: "id", name: "name" },
   organization: { id: "id", deactivatedAt: "deactivated_at" },
+  users: {
+    id: "id",
+    isAnonymous: "is_anonymous",
+    email: "email",
+    name: "name",
+    deactivatedAt: "deactivated_at",
+  },
 }));
 
 vi.mock("@/lib/payments/x402/payment-gate", () => ({
@@ -234,6 +241,11 @@ function setupDbSelectWorkflow(row: unknown) {
     from: vi.fn().mockReturnValue({
       leftJoin: vi.fn().mockReturnValue({
         innerJoin: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(row ? [row] : []),
+            }),
+          }),
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue(row ? [row] : []),
           }),
@@ -408,6 +420,36 @@ describe("POST /api/mcp/workflows/[slug]/call", () => {
     const request = makeRequest("unlisted-wf");
     const params = Promise.resolve({ slug: "unlisted-wf" });
     const response = await POST(request, { params });
+    expect(response.status).toBe(404);
+  });
+
+  it("returns 404 for a listing owned by an anonymous account", async () => {
+    setupDbSelectWorkflow({
+      ...LISTED_WORKFLOW,
+      ownerIsAnonymous: true,
+      ownerEmail: "abc@anonymous.placeholder.invalid",
+      ownerName: "Anonymous",
+      ownerDeactivatedAt: null,
+    });
+    const { POST } = await import("@/app/api/mcp/workflows/[slug]/call/route");
+    const response = await POST(makeRequest("anon-wf"), {
+      params: Promise.resolve({ slug: "anon-wf" }),
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("returns 404 for a listing whose owner is deactivated", async () => {
+    setupDbSelectWorkflow({
+      ...LISTED_WORKFLOW,
+      ownerIsAnonymous: false,
+      ownerEmail: "owner@example.com",
+      ownerName: "Owner",
+      ownerDeactivatedAt: new Date(),
+    });
+    const { POST } = await import("@/app/api/mcp/workflows/[slug]/call/route");
+    const response = await POST(makeRequest("deactivated-wf"), {
+      params: Promise.resolve({ slug: "deactivated-wf" }),
+    });
     expect(response.status).toBe(404);
   });
 
