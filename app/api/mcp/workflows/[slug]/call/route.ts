@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
 import { start } from "workflow/api";
 import { checkConcurrencyLimit } from "@/app/api/execute/_lib/concurrency-limit";
+import { isAnonymousUserShape } from "@/lib/auth-anonymous-guard";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { priceQualifiesForMarketplaceExemption } from "@/lib/billing/marketplace-billing";
 import { chargePaygIfBillable } from "@/lib/billing/payg/charge";
@@ -10,6 +11,7 @@ import { resolveExecutionOrgMetadata } from "@/lib/db/org-helpers";
 import {
   organization,
   tags,
+  users,
   workflowExecutions,
   workflows,
 } from "@/lib/db/schema";
@@ -390,10 +392,18 @@ async function createAndStartExecution(
 
 async function lookupWorkflow(slug: string): Promise<CallRouteWorkflow | null> {
   const rows = await db
-    .select({ ...CALL_ROUTE_COLUMNS, tagName: tags.name })
+    .select({
+      ...CALL_ROUTE_COLUMNS,
+      tagName: tags.name,
+      ownerIsAnonymous: users.isAnonymous,
+      ownerEmail: users.email,
+      ownerName: users.name,
+      ownerDeactivatedAt: users.deactivatedAt,
+    })
     .from(workflows)
     .leftJoin(tags, eq(workflows.tagId, tags.id))
     .innerJoin(organization, eq(workflows.organizationId, organization.id))
+    .leftJoin(users, eq(workflows.userId, users.id))
     .where(
       and(
         eq(workflows.listedSlug, slug),
@@ -402,7 +412,29 @@ async function lookupWorkflow(slug: string): Promise<CallRouteWorkflow | null> {
       )
     )
     .limit(1);
-  return rows[0] ?? null;
+  const row = rows[0];
+  if (!row) {
+    return null;
+  }
+  const {
+    ownerIsAnonymous,
+    ownerEmail,
+    ownerName,
+    ownerDeactivatedAt,
+    ...workflow
+  } = row;
+  // A listing owned by an anonymous or deactivated account is never served.
+  if (
+    ownerDeactivatedAt ||
+    isAnonymousUserShape({
+      isAnonymous: ownerIsAnonymous,
+      email: ownerEmail,
+      name: ownerName,
+    })
+  ) {
+    return null;
+  }
+  return workflow;
 }
 
 function validateBody(

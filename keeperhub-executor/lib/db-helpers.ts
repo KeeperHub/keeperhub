@@ -452,6 +452,7 @@ export type DiscardReason =
   | "org_deactivated"
   | "halted"
   | "disabled"
+  | "anonymous_owner"
   | "schedule_invalid"
   | "upstream_invalid";
 
