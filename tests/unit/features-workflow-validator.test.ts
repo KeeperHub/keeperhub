@@ -81,16 +81,45 @@ describe("extractActionTypeNodes", () => {
     ]);
   });
 
-  it("skips nodes missing id or actionType", () => {
+  it("skips nodes without an actionType", () => {
     const raw = [
       { id: "n1" },
-      { data: { config: { actionType: "HTTP Request" } } },
       { id: "n3", data: { config: {} } },
       null,
       "garbage",
-      { id: "n4", data: { config: { actionType: 42 } } },
     ];
     expect(extractActionTypeNodes(raw)).toEqual([]);
+  });
+
+  it("keeps a node whose id is missing or not a string", () => {
+    const raw = [
+      { data: { config: { actionType: "HTTP Request" } } },
+      { id: 123, data: { config: { actionType: "HTTP Request" } } },
+    ];
+    const refs = extractActionTypeNodes(raw);
+    expect(refs).toEqual([
+      { id: "nodes[0]", actionType: "HTTP Request" },
+      { id: "123", actionType: "HTTP Request" },
+    ]);
+    expect(validateWorkflowFeatures(refs, "free")[0]?.featureId).toBe(
+      "action.http-request"
+    );
+  });
+
+  it("coerces a non-string actionType so the plan gate still sees it", () => {
+    const raw = [
+      { id: "n1", data: { config: { actionType: ["code/run-code"] } } },
+      { id: "n2", data: { config: { actionType: ["webhook/send-webhook"] } } },
+    ];
+    const refs = extractActionTypeNodes(raw);
+    expect(refs).toEqual([
+      { id: "n1", actionType: "code/run-code" },
+      { id: "n2", actionType: "webhook/send-webhook" },
+    ]);
+    const featureIds = validateWorkflowFeatures(refs, "free")
+      .map((v) => v.featureId)
+      .sort();
+    expect(featureIds).toEqual(["action.code", "action.webhook"]);
   });
 
   it("returns empty array for non-array nodes input", () => {

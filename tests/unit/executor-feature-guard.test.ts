@@ -140,6 +140,22 @@ describe("checkWorkflowFeaturesForExecutor", () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
+  it("blocks gated nodes with an array actionType or numeric id for a free org", async () => {
+    const db = makeDb([{ plan: "free" }]);
+
+    const result = await checkWorkflowFeaturesForExecutor(db, "org_1", [
+      { id: "code1", data: { config: { actionType: ["code/run-code"] } } },
+      { id: 123, data: { config: { actionType: "HTTP Request" } } },
+    ]);
+
+    expect(result.allowed).toBe(false);
+    if (result.allowed) {
+      return;
+    }
+    const featureIds = result.violations.map((v) => v.featureId).sort();
+    expect(featureIds).toEqual(["action.code", "action.http-request"]);
+  });
+
   it("treats missing subscription row as free plan and blocks gated nodes", async () => {
     const db = makeDb([]); // no row returned
 
