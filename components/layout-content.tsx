@@ -7,6 +7,7 @@ import { NavigationSidebar } from "@/components/navigation-sidebar";
 import { useRecordExitPath } from "@/components/settings/hub/hooks/use-exit-path";
 import { PersistentCanvas } from "@/components/workflow/persistent-canvas";
 import { WorkflowToolbar } from "@/components/workflow/workflow-toolbar";
+import { PickerDataProvider } from "@/components/workflow-picker-data";
 import {
   isLinkedSignInPath,
   isUnderRoute,
@@ -53,10 +54,14 @@ export function LayoutContent({
   }
   return (
     <ReactFlowProvider>
-      <WorkflowToolbar persistent />
-      <PersistentCanvas />
-      <div className="pointer-events-none relative z-10">{children}</div>
-      <NavigationSidebar />
+      {/* The sidebar's flyouts and the phone drawer (in the toolbar) list the
+          same workflows. */}
+      <PickerDataProvider>
+        <WorkflowToolbar persistent />
+        <PersistentCanvas />
+        <div className="pointer-events-none relative z-10">{children}</div>
+        <NavigationSidebar />
+      </PickerDataProvider>
     </ReactFlowProvider>
   );
 }

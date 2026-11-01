@@ -152,6 +152,7 @@ export function TriggerFilterButton({
   ref,
   disabled = false,
   filtered = false,
+  className,
 }: {
   open: boolean;
   onToggle: () => void;
@@ -165,6 +166,7 @@ export function TriggerFilterButton({
   // A filter is on. The row of menus then stays in view, so the shortened
   // list always shows why: a click clears the filters and only then hides it.
   filtered?: boolean;
+  className?: string;
 }): React.ReactNode {
   let tip = "Filter";
   if (open && filtered) {
@@ -187,7 +189,8 @@ export function TriggerFilterButton({
             "relative size-6 shrink-0 rounded-md border p-1 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-foreground/60 disabled:pointer-events-none disabled:opacity-40",
             open
               ? "border-foreground/40 bg-foreground/10 text-foreground"
-              : "border-transparent text-muted-foreground hover:bg-muted hover:text-foreground"
+              : "border-transparent text-muted-foreground hover:bg-muted hover:text-foreground",
+            className
           )}
           data-filtered={filtered || undefined}
           data-testid="trigger-filter-button"

@@ -17,6 +17,7 @@ import {
 import { Drawer as DrawerPrimitive } from "vaul";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { usePressGrace } from "@/hooks/use-press-grace";
 import { cn } from "@/lib/utils";
 import { useOverlay } from "./overlay-provider";
 import type { OverlaySize } from "./types";
@@ -350,13 +351,10 @@ function useOpenPressGrace(): {
   onClickCapture: (event: React.MouseEvent) => void;
   onPointerDownOutside: (event: OutsidePress) => void;
 } {
-  const openedAtRef = useRef(0);
-  const swallowClickRef = useRef(false);
   const sheetNodeRef = useRef<HTMLDivElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const start = useCallback(() => {
-    openedAtRef.current = performance.now();
+  const markSettling = useCallback(() => {
     sheetNodeRef.current?.setAttribute("data-settling", "");
     if (timerRef.current) {
       clearTimeout(timerRef.current);
@@ -367,6 +365,9 @@ function useOpenPressGrace(): {
     );
   }, []);
 
+  const press = usePressGrace(OPEN_PRESS_GRACE_MS, markSettling);
+  const { start, startThroughNextPaint, inGrace } = press;
+
   useEffect(
     () => () => {
       if (timerRef.current) {
@@ -376,48 +377,16 @@ function useOpenPressGrace(): {
     []
   );
 
-  // Capped at now, should a browser stamp events on another clock.
-  const inGrace = useCallback(
-    (timeStamp: number) =>
-      Math.min(timeStamp, performance.now()) - openedAtRef.current <
-      OPEN_PRESS_GRACE_MS,
-    []
-  );
-
-  // Vaul mounts the sheet a render after opening, so its grace starts here,
-  // and again on its first frame: a slow render must not use the grace up.
+  // Vaul mounts the sheet a render after opening, so its grace starts here.
   const sheetRef = useCallback(
     (node: HTMLDivElement | null) => {
       sheetNodeRef.current = node;
       if (node) {
-        start();
-        requestAnimationFrame(start);
+        startThroughNextPaint();
       }
     },
-    [start]
+    [startThroughNextPaint]
   );
-
-  // A press on the sheet in its grace neither focuses nor opens anything
-  // (Radix skips prevented presses), and its click is dropped. It still
-  // reaches Vaul, so a swipe that starts in the grace can move the sheet.
-  const onPointerDownCapture = useCallback(
-    (event: React.PointerEvent) => {
-      swallowClickRef.current = inGrace(event.timeStamp);
-      if (swallowClickRef.current) {
-        event.preventDefault();
-      }
-    },
-    [inGrace]
-  );
-
-  // Keyboard clicks (detail 0) are never a dropped press's click.
-  const onClickCapture = useCallback((event: React.MouseEvent) => {
-    if (swallowClickRef.current && event.detail > 0) {
-      swallowClickRef.current = false;
-      event.preventDefault();
-      event.stopPropagation();
-    }
-  }, []);
 
   // Radix reports a press on the click after it, so this times the press.
   const onPointerDownOutside = useCallback(
@@ -432,8 +401,9 @@ function useOpenPressGrace(): {
   return {
     start,
     sheetRef,
-    onPointerDownCapture,
-    onClickCapture,
+    // A dropped press still reaches Vaul: a swipe begun in the grace moves it.
+    onPointerDownCapture: press.onPointerDownCapture,
+    onClickCapture: press.onClickCapture,
     onPointerDownOutside,
   };
 }
