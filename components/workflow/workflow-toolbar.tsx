@@ -2200,7 +2200,8 @@ function UseTemplateBar({
       return;
     }
     let reported = fit;
-    let controls: Element | null = null;
+    let controls: HTMLElement | null = null;
+    let watched: Element[] = [];
     const update = (): void => {
       // The bar's rem offsets and padding resize it when the root font
       // changes, so a fresh read here sees that too.
@@ -2221,14 +2222,21 @@ function UseTemplateBar({
         }
         return;
       }
-      // The zoom controls mount with the canvas, maybe after the bar.
-      const found = document.querySelector(".workflow-controls-panel");
+      // The zoom controls mount with the canvas, maybe after the bar. Their
+      // box is watched too: when the right panel opens, the canvas narrows
+      // over 300ms and moves them without resizing them.
+      const found = document.querySelector<HTMLElement>(
+        ".workflow-controls-panel"
+      );
       if (found !== controls) {
-        if (controls) {
-          observer.unobserve(controls);
+        for (const element of watched) {
+          observer.unobserve(element);
         }
-        if (found) {
-          observer.observe(found);
+        watched = [found, found?.offsetParent].filter(
+          (element): element is Element => element instanceof Element
+        );
+        for (const element of watched) {
+          observer.observe(element);
         }
         controls = found;
       }

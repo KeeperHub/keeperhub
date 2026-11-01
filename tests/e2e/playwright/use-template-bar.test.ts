@@ -305,6 +305,28 @@ test.describe("Use template bar, signed in", () => {
     }).toPass({ timeout: 3000 });
   });
 
+  // Reopening the right panel narrows the canvas over 300ms, sliding the
+  // controls towards the card without resizing them: they must still go up.
+  test("reopening the right panel lifts the controls clear of the card", async ({
+    page,
+  }) => {
+    await open(page, 1024, foreignId, { width: 50 });
+    const controls = page.locator(".workflow-controls-panel");
+    const clear = async (): Promise<void> => {
+      expect(await overlaps(await box(controls), await box(card(page)))).toBe(
+        false
+      );
+    };
+    await expect(clear).toPass({ timeout: 3000 });
+    await page.keyboard.press("ControlOrMeta+b");
+    await expect(async () => {
+      expect(bottom(await box(controls))).toBeGreaterThan(HEIGHT - 40);
+    }).toPass({ timeout: 3000 });
+    await page.keyboard.press("ControlOrMeta+b");
+    // Well before any unrelated resize could re-measure.
+    await expect(clear).toPass({ timeout: 1500 });
+  });
+
   test("from 768px: a 50% right panel and the minimap", async ({ page }) => {
     await open(page, WIDE_WIDTHS[0], foreignId, { width: 50 });
     await page.getByTitle("Show minimap").click();
