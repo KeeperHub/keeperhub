@@ -1,6 +1,7 @@
 import { eq, inArray } from "drizzle-orm";
 import { revalidateTag } from "next/cache";
 import { NextResponse } from "next/server";
+import { logAnonymousExecutionBlock } from "@/lib/auth-anonymous-guard";
 import { db } from "@/lib/db";
 import { publicTags, workflowPublicTags, workflows } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
@@ -27,6 +28,16 @@ export async function PUT(
     const authContext = await getDualAuthContext(request);
     if ("error" in authContext) {
       return authFailureResponse(authContext, request.headers);
+    }
+
+    if (authContext.isAnonymous) {
+      logAnonymousExecutionBlock("workflow_go_live", authContext.userId, {
+        workflowId,
+      });
+      return NextResponse.json(
+        { error: "Sign up to share workflows" },
+        { status: 403 }
+      );
     }
 
     const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE, {
