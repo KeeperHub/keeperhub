@@ -94,6 +94,7 @@ import {
   TemplateResolutionError,
   type TemplateResolutionTracker,
 } from "@/lib/workflow/executor/template-resolution";
+import { readActionType } from "@/lib/workflow/node-config-read";
 import {
   isMissingReference,
   makeMissingReference,
@@ -687,7 +688,7 @@ export async function preloadStepFunctions(
     if (node.data.type !== "action") {
       continue;
     }
-    const actionType = node.data.config?.actionType as string | undefined;
+    const actionType = readActionType(node.data.config);
     if (actionType) {
       actionTypes.add(actionType);
     }
@@ -3821,7 +3822,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
         };
       } else if (node.data.type === "action") {
         const config = node.data.config || {};
-        const actionType = config.actionType as string | undefined;
+        const actionType = readActionType(config);
 
         console.log("[Workflow Executor] Executing action node:", actionType);
 

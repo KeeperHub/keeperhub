@@ -19,6 +19,14 @@ export function readNodeConfigField(
   return fromConfig === undefined ? data?.[field] : fromConfig;
 }
 
+/** `config.actionType` when it is a string; any other shape counts as missing. */
+export function readActionType(
+  config: UnknownRecord | null | undefined
+): string | undefined {
+  const value = config?.actionType;
+  return typeof value === "string" ? value : undefined;
+}
+
 /**
  * Normalize colon-separated action types (`code:run-code`) to the slash form
  * (`code/run-code`).
