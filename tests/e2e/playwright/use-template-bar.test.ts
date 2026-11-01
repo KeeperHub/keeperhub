@@ -305,9 +305,9 @@ test.describe("Use template bar, signed in", () => {
     }).toPass({ timeout: 3000 });
   });
 
-  // Reopening the right panel narrows the canvas over 300ms, sliding the
-  // controls towards the card without resizing them: they must still go up.
-  test("reopening the right panel lifts the controls clear of the card", async ({
+  // Collapsing or reopening the right panel resizes the canvas over 300ms,
+  // sliding the controls without resizing them: the lift must follow.
+  test("collapsing and reopening the right panel re-measures the controls' lift", async ({
     page,
   }) => {
     await open(page, 1024, foreignId, { width: 50 });
@@ -323,7 +323,7 @@ test.describe("Use template bar, signed in", () => {
       expect(bottom(await box(controls))).toBeGreaterThan(HEIGHT - 40);
     }).toPass({ timeout: 3000 });
     await page.keyboard.press("ControlOrMeta+b");
-    // Well before any unrelated resize could re-measure.
+    // Well past the 300ms slide; without the fix nothing re-measures at all.
     await expect(clear).toPass({ timeout: 1500 });
   });
 

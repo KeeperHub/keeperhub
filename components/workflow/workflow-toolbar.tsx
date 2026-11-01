@@ -2191,6 +2191,7 @@ function UseTemplateBar({
   const [card, setCard] = useState<HTMLDivElement | null>(null);
   const [lifts, setLifts] = useState<BarLifts>(NO_LIFTS);
   // Measured again when toasts first show: the toaster mounts with them.
+  // The lift outlives the last toast, so its exit stays clear of the card.
   const toastsUp = useSonner().toasts.length > 0;
   // Before paint, so the first frame is right; then on every resize, acting
   // only on a change.
@@ -2222,9 +2223,9 @@ function UseTemplateBar({
         }
         return;
       }
-      // The zoom controls mount with the canvas, maybe after the bar. Their
-      // box is watched too: when the right panel opens, the canvas narrows
-      // over 300ms and moves them without resizing them.
+      // The zoom controls mount with the canvas, maybe after the bar. Also
+      // watch the box they sit in: the right panel resizes it over 300ms,
+      // moving them without resizing them.
       const found = document.querySelector<HTMLElement>(
         ".workflow-controls-panel"
       );
