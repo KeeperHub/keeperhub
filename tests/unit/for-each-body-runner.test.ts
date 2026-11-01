@@ -693,6 +693,35 @@ describe("runBodyNode: missing actionType", () => {
     expect(bodyResults.broken?.success).toBe(false);
     expect(bodyResults.broken?.error).toContain("no action type configured");
   });
+
+  it("records a failure result when actionType is not a string", async () => {
+    const node: WorkflowNode = {
+      id: "array-type",
+      type: "action",
+      position: { x: 0, y: 0 },
+      data: {
+        type: "action",
+        label: "array-type",
+        config: { actionType: ["HTTP Request"] },
+      },
+    };
+    const nodes = [makeForEach("for-each"), node];
+    const edges = [edge("for-each", "array-type", "loop")];
+    const stepResultFor = vi.fn(() => ({ success: true }));
+
+    const { bodyResults } = await runIteration({
+      nodes,
+      edges,
+      forEachNodeId: "for-each",
+      stepResultFor,
+    });
+
+    expect(stepResultFor).not.toHaveBeenCalled();
+    expect(bodyResults["array-type"]?.success).toBe(false);
+    expect(bodyResults["array-type"]?.error).toContain(
+      "no action type configured"
+    );
+  });
 });
 
 // ===========================================================================
