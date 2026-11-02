@@ -1156,6 +1156,13 @@
       "when": 1790830100000,
       "tag": "0164_account_issuer_nullable",
       "breakpoints": true
+    },
+    {
+      "idx": 165,
+      "version": "7",
+      "when": 1793627038019,
+      "tag": "0165_keep_1042_drop_dead_exec_log_indexes",
+      "breakpoints": true
     }
   ]
 }
