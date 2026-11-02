@@ -17,7 +17,7 @@
     "test:integration": "vitest run tests/integration"
   },
   "dependencies": {
-    "@aws-sdk/client-sqs": "^3.1156.0",
+    "@aws-sdk/client-sqs": "^3.1160.0",
     "ethers": "^6.17.0",
     "ioredis": "^5.11.1",
     "uuid": "^14.0.3",
