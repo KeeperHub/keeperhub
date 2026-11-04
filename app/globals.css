@@ -161,6 +161,10 @@
 :root {
   /* The persistent header's height (its row, without the app banner). */
   --header-height: 60px;
+  /* The top banner slot; --app-banner-height takes it while one shows. */
+  --app-banner-slot-height: 36px;
+  /* Above modals, below toasts. */
+  --z-banner: 55;
   --radius: 0.625rem;
   --background: oklch(0.9842 0.0034 247.86);
   --foreground: oklch(0.2101 0.0318 264.66);

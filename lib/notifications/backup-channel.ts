@@ -37,8 +37,6 @@ import { isRetryableHttpStatus } from "@/lib/workflow/retry-policy";
 
 const REQUEST_TIMEOUT_MS = 10_000;
 
-type BackupChannel = ChatChannel;
-
 /** Marked-up variants, fullest first, so outside text is escaped and each provider's limit is met. */
 type BackupMessage = readonly ChatText[];
 
@@ -46,7 +44,7 @@ export type BackupOutcome = {
   /** False when the node did not ask for a backup, or had nothing to send through. */
   attempted: boolean;
   delivered: boolean;
-  channel?: BackupChannel;
+  channel?: ChatChannel;
   error?: string;
   /** HTTP status of the provider's answer, when there was one. */
   status?: number;
@@ -56,7 +54,7 @@ export type BackupOutcome = {
 
 type Credentials = Record<string, string | undefined>;
 
-function detectChannel(credentials: Credentials): BackupChannel | null {
+function detectChannel(credentials: Credentials): ChatChannel | null {
   if (credentials.webhookUrl) {
     return "discord";
   }

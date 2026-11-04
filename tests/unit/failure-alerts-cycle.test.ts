@@ -1,3 +1,5 @@
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // A query recorder standing in for drizzle: every chain resolves through `answer`.
@@ -7,6 +9,9 @@ const fake = vi.hoisted(() => {
     via: "db" | "tx";
     table?: unknown;
     sets?: unknown;
+    query?: unknown;
+    where?: unknown;
+    orderBy?: unknown[];
   };
   const state = {
     ops: [] as Op[],
@@ -35,6 +40,12 @@ const fake = vi.hoisted(() => {
           if (prop === "set" || prop === "values") {
             op.sets = args[0];
           }
+          if (prop === "where") {
+            op.where = args[0];
+          }
+          if (prop === "orderBy") {
+            op.orderBy = args;
+          }
           return proxy;
         };
       },
@@ -53,8 +64,8 @@ const fake = vi.hoisted(() => {
       update: (table: unknown) => start("update", table),
       insert: (table: unknown) => start("insert", table),
       delete: (table: unknown) => start("delete", table),
-      execute: (_query: unknown) => {
-        const op: Op = { kind: "execute", via };
+      execute: (query: unknown) => {
+        const op: Op = { kind: "execute", via, query };
         state.ops.push(op);
         return Promise.resolve(state.answer(op));
       },
@@ -133,9 +144,8 @@ const {
   inactiveResolution,
   queueReminders,
 } = await import("@/lib/notifications/failure-alerts/evaluator");
-const { drainOutbox, emptyDrainStats, runHealthChecks } = await import(
-  "@/lib/notifications/failure-alerts/outbox"
-);
+const { drainOutbox, emptyDrainStats, fireBackups, runHealthChecks } =
+  await import("@/lib/notifications/failure-alerts/outbox");
 
 const now = new Date("2026-11-04T12:00:00Z");
 const savedRollout = process.env.FAILURE_ALERTS_ROLLOUT;
@@ -161,17 +171,13 @@ describe("inactiveResolution", () => {
     deactivatedAt: null,
     enabled: true,
     orgDeactivatedAt: null,
-    orgHaltedAt: null,
   };
 
-  it("treats a deactivated or halted org like a paused workflow", () => {
+  it("treats a deactivated org like a paused workflow", () => {
     expect(inactiveResolution(live, "Schedule")).toBeNull();
     expect(
       inactiveResolution({ ...live, orgDeactivatedAt: now }, "Schedule")
     ).toBe("disabled");
-    expect(inactiveResolution({ ...live, orgHaltedAt: now }, "Schedule")).toBe(
-      "disabled"
-    );
   });
 });
 
@@ -281,9 +287,36 @@ describe("evaluateQueuedWorkflows", () => {
     expect(opsOn("select", schema.workflows)).toHaveLength(1);
   });
 
+  it("never claims a workflow twice in one cycle", async () => {
+    const queries: unknown[] = [];
+    fake.state.answer = (op) => {
+      if (op.kind === "execute") {
+        queries.push(op.query);
+        return queries.length === 1 ? claimed(500, "out") : [];
+      }
+      if (op.kind === "select" && op.table === schema.workflows) {
+        return [];
+      }
+      return [];
+    };
+    await evaluateQueuedWorkflows(now, emptyStats(), Date.now() + 60_000);
+    const dialect = new PgDialect();
+    const [first, , second] = queries.map(
+      (query) => dialect.sqlToQuery(query as SQL).params
+    );
+    expect(first).not.toContain("out0");
+    expect(second).toContain("out0");
+    expect(second).toContain("out499");
+  });
+
   it("hands back what the budget did not reach", async () => {
     const clock = vi.spyOn(Date, "now");
-    clock.mockReturnValueOnce(0).mockReturnValue(100);
+    // Cycle start and the loop check fall inside the budget, then it runs out.
+    clock
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValue(100);
     let executes = 0;
     fake.state.answer = (op) => {
       if (op.kind === "execute") {
@@ -306,7 +339,12 @@ describe("evaluateQueuedWorkflows", () => {
 });
 
 describe("drainOutbox", () => {
-  const delivery = (id: string, organizationId: string, recipient: string) => ({
+  const delivery = (
+    id: string,
+    organizationId: string,
+    recipient: string,
+    createdAt: Date = new Date()
+  ) => ({
     id,
     organizationId,
     incidentId: "inc",
@@ -319,8 +357,41 @@ describe("drainOutbox", () => {
     attempts: 0,
     isBackup: false,
     backupAt: null,
-    createdAt: now,
+    createdAt,
     state: "sending",
+  });
+
+  it("drops a row queued over an hour ago instead of sending it", async () => {
+    let claims = 0;
+    const old = new Date(Date.now() - 61 * 60 * 1000);
+    fake.state.answer = (op) => {
+      if (op.kind === "execute") {
+        claims += 1;
+        return claims === 1 ? [{ id: "d1" }, { id: "d2" }] : [];
+      }
+      if (op.kind === "select" && op.table === schema.failureAlertDeliveries) {
+        return [
+          delivery("d1", "in", "a@x.dev", old),
+          delivery(
+            "d2",
+            "in",
+            "b@x.dev",
+            new Date(Date.now() - 59 * 60 * 1000)
+          ),
+        ];
+      }
+      return [];
+    };
+    await drainOutbox("http://app", emptyDrainStats(), Date.now() + 60_000);
+    const dropped = opsOn("update", schema.failureAlertDeliveries).filter(
+      (op) =>
+        (op.sets as { lastError?: string })?.lastError ===
+        "Dropped: queued more than an hour ago."
+    );
+    expect(dropped).toHaveLength(1);
+    expect(
+      vi.mocked(senders.sendEmailMessage).mock.calls.map((call) => call[0])
+    ).not.toContain("a@x.dev");
   });
 
   it("skips rows of orgs outside the rollout and reads the run history once per incident", async () => {
@@ -378,6 +449,14 @@ describe("drainOutbox", () => {
   });
 });
 
+describe("fireBackups", () => {
+  it("reads the oldest due backups first", async () => {
+    await fireBackups(now, emptyDrainStats());
+    const [read] = opsOn("select", schema.failureAlertDeliveries);
+    expect(read?.orderBy).toEqual([schema.failureAlertDeliveries.backupAt]);
+  });
+});
+
 describe("runHealthChecks", () => {
   it("checks no channel of an org outside the rollout", async () => {
     fake.state.answer = (op) =>
@@ -387,30 +466,47 @@ describe("runHealthChecks", () => {
     expect(opsOn("select", schema.failureAlertChannels)).toHaveLength(1);
   });
 
+  const channel = (id: string, organizationId: string) => ({
+    id,
+    organizationId,
+    kind: "telegram",
+    integrationId: "i1",
+    destination: "-1001",
+    role: "always",
+    pausedAt: null,
+  });
+
   it("checks the due channels of orgs in the rollout", async () => {
-    let selects = 0;
-    fake.state.answer = (op) => {
-      if (op.kind !== "select") {
-        return [];
-      }
-      selects += 1;
-      return selects === 1
-        ? [{ organizationId: "out" }, { organizationId: "in" }]
-        : [
-            {
-              id: "c1",
-              organizationId: "in",
-              kind: "telegram",
-              integrationId: "i1",
-              destination: "-1001",
-              role: "always",
-              pausedAt: null,
-            },
-          ];
-    };
+    fake.state.answer = (op) =>
+      op.kind === "select" ? [channel("c0", "out"), channel("c1", "in")] : [];
     const stats = emptyDrainStats();
     await runHealthChecks(now, stats);
     expect(senders.checkChannelSilently).toHaveBeenCalledTimes(1);
     expect(stats.healthChecks).toBe(1);
+  });
+
+  it("pages past channels outside the rollout instead of rereading them", async () => {
+    const page = Array.from({ length: 500 }, (_, i) =>
+      channel(`c${String(i).padStart(3, "0")}`, "out")
+    );
+    const wheres: unknown[] = [];
+    fake.state.answer = (op) => {
+      if (op.kind !== "select") {
+        return [];
+      }
+      wheres.push(op.where);
+      return wheres.length === 1 ? page : [];
+    };
+    await runHealthChecks(now, emptyDrainStats());
+    await runHealthChecks(now, emptyDrainStats());
+    await runHealthChecks(now, emptyDrainStats());
+    const dialect = new PgDialect();
+    const params = wheres.map(
+      (where) => dialect.sqlToQuery(where as SQL).params
+    );
+    expect(params[0]).not.toContain("c499");
+    expect(params[1]).toContain("c499");
+    // An empty page wraps back to the top.
+    expect(params[2]).not.toContain("c499");
   });
 });

@@ -3,9 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/db", () => ({ db: {} }));
 
-const { pauseActorName, renderMessage, renderSample } = await import(
-  "@/lib/notifications/failure-alerts/messages"
-);
+const { pauseActorName, redactErrorSecrets, renderMessage, renderSample } =
+  await import("@/lib/notifications/failure-alerts/messages");
 const { CHAT_LIMITS, fitChat } = await import("@/lib/notifications/chat-text");
 const { methodName, methodText, orgPauseEffect } = await import(
   "@/lib/notifications/failure-alerts/view-types"
@@ -134,6 +133,47 @@ describe("grouped alert", () => {
     expect(message.text).toContain("- Wallet out of funds: Workflow 3: ");
     expect(message.html).toContain("<strong>Wallet out of funds:</strong>");
     expect(message.text).toContain(`Add funds: ${WALLETS}`);
+  });
+
+  it("lists turned-off workflows first, then out of funds, then most failures", () => {
+    const message = renderMessage({
+      ...org,
+      kind: "grouped",
+      workflows: [
+        { ...row(1), failureCount: 9 },
+        { ...row(2), failureCount: 3, workflowPaused: true },
+        { ...row(3, "Insufficient ETH balance. Have: 0.1, Need: 0.2") },
+        { ...row(4), failureCount: 12 },
+      ],
+    });
+    expect(message.subject).toContain(
+      "4 workflows started failing, 1 turned off"
+    );
+    const order = (text: string) =>
+      [2, 3, 4, 1].map((i) => text.indexOf(`Workflow ${i}`));
+    for (const text of [message.text, message.chat, message.html]) {
+      const at = order(text);
+      expect(at.every((n) => n > -1)).toBe(true);
+      expect([...at].sort((a, b) => a - b)).toEqual(at);
+    }
+    expect(message.text).toContain(
+      "Workflow 2: 3 failed runs in a row, turned off"
+    );
+  });
+
+  it("keeps a turned-off workflow listed among 40 on Discord", () => {
+    const workflows = Array.from({ length: 40 }, (_, i) => ({
+      ...row(i),
+      name: `${"Long workflow name ".repeat(4)}${i}`,
+      failureCount: 50 - i,
+      lastError: "e".repeat(400),
+      workflowPaused: i === 39,
+    }));
+    const message = renderMessage({ ...org, kind: "grouped", workflows });
+    const discord = fitChat(message.chatVariants, "discord");
+    expect(discord.length).toBeLessThanOrEqual(CHAT_LIMITS.discord);
+    expect(discord).toContain(" 39: 11 failed runs in a row, turned off");
+    expect(discord).toContain("40 workflows started failing, 1 turned off");
   });
 
   it("lists 10 workflows, then how many more", () => {
@@ -369,6 +409,13 @@ describe("chat escaping", () => {
     expect(telegram.match(/<code>/g)).toHaveLength(1);
   });
 
+  it("keeps @names in outside text from becoming Telegram mentions", () => {
+    const telegram = fitChat(message.chatVariants, "telegram");
+    expect(telegram).toContain("@\u2060everyone");
+    // The workflow name is in the first line; the error's code span cannot mention.
+    expect(telegram.split("\n")[0]).not.toContain("@everyone");
+  });
+
   it("shows the preview unescaped", () => {
     expect(message.chat).toContain(
       `Last error: ${HOSTILE.replace("`tick`", "'tick'")}`
@@ -389,6 +436,191 @@ describe("chat escaping", () => {
     expect(slack).toContain(
       "&lt;@U123&gt; paused them: &lt;!channel&gt; upgrade"
     );
+  });
+});
+
+describe("error text", () => {
+  const SECRET_ERROR =
+    "fetch https://eth-mainnet.g.alchemy.com/v2/abcdefghijklmnop1234 failed; " +
+    "POST https://rpc.example.com/x?key=s3cr3t-key; Authorization: Bearer eyJhbGciOi.payload.sig; " +
+    "api_key=sk_live_123456 password: hunter2 " +
+    "https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXXXXXXXXXXXXXX " +
+    "https://api.telegram.org/bot123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/sendMessage";
+  const incident = {
+    failureCount: 3,
+    firstFailedAt: new Date("2026-10-28T11:00:00Z"),
+    lastError: SECRET_ERROR,
+    openedBy: "count" as const,
+  };
+  const LEAKS = [
+    "abcdefghijklmnop1234",
+    "s3cr3t-key",
+    "eyJhbGciOi",
+    "sk_live_123456",
+    "hunter2",
+    "XXXXXXXXXXXXXXXXXXXXXXXX",
+    "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
+  ];
+
+  it("masks keys, tokens and secret URLs in every channel", () => {
+    const alert = renderMessage(
+      { ...org, kind: "alert", workflow, incident },
+      now
+    );
+    const grouped = renderMessage({
+      ...org,
+      kind: "grouped",
+      workflows: [1, 2].map((i) => ({
+        ...workflow,
+        id: `wf-${i}`,
+        failureCount: 3,
+        lastError: SECRET_ERROR,
+      })),
+    });
+    const paused = renderMessage({
+      ...org,
+      kind: "channel_paused",
+      channelLabel: "Telegram -100",
+      reason: SECRET_ERROR,
+    });
+    for (const message of [alert, grouped, paused]) {
+      const outputs = [
+        message.text,
+        message.html,
+        message.chat,
+        message.summary,
+        ...CHANNELS.map((c) => fitChat(message.chatVariants, c)),
+      ];
+      for (const out of outputs) {
+        for (const leak of LEAKS) {
+          expect(out).not.toContain(leak);
+        }
+      }
+    }
+    expect(alert.text).toContain("Bearer [REDACTED]");
+    expect(alert.text).toContain("api_key=[REDACTED]");
+  });
+
+  it("leaves ordinary error text alone", () => {
+    const text =
+      "execution reverted: Unsupported token: 0xA0b8 at https://example.com/hook";
+    expect(redactErrorSecrets(text)).toBe(text);
+  });
+
+  it("ends shortened error text with an ellipsis", () => {
+    const long = renderMessage(
+      {
+        ...org,
+        kind: "alert",
+        workflow,
+        incident: { ...incident, lastError: "e".repeat(500) },
+      },
+      now
+    );
+    expect(long.text).toContain(`Last error: ${"e".repeat(299)}…\n`);
+    const grouped = renderMessage({
+      ...org,
+      kind: "grouped",
+      workflows: [1, 2].map((i) => ({
+        ...workflow,
+        id: `wf-${i}`,
+        failureCount: 3,
+        lastError: "e".repeat(500),
+      })),
+    });
+    expect(grouped.text).toContain(`: ${"e".repeat(119)}… (`);
+    const short = renderMessage(
+      {
+        ...org,
+        kind: "alert",
+        workflow,
+        incident: { ...incident, lastError: "RPC 429" },
+      },
+      now
+    );
+    expect(short.text).toContain("Last error: RPC 429\n");
+  });
+});
+
+describe("wording", () => {
+  const missed = {
+    failureCount: 1,
+    firstFailedAt: new Date("2026-10-28T11:13:00Z"),
+    lastError: null,
+    openedBy: "missed" as const,
+  };
+
+  it("says when a missed run was due once, and only what the code does", () => {
+    const message = renderMessage(
+      { ...org, kind: "alert", workflow, incident: missed },
+      now
+    );
+    expect(message.subject).toBe(
+      "[Acme] Check: Keeper did not run when it was due"
+    );
+    expect(message.text.match(/11:13 UTC/g)).toHaveLength(1);
+    expect(message.text).toContain(
+      "Due at 2026-10-28 11:13 UTC, 47 minutes ago."
+    );
+    expect(message.text).toContain("it is reported to our team");
+    expect(message.text).not.toContain("looking into it");
+  });
+
+  it("names the org once in pause notices and cap warnings", () => {
+    const messages = [
+      renderMessage({
+        ...org,
+        kind: "alerts_paused",
+        until: new Date("2026-10-28T16:00:00Z"),
+        reason: null,
+        by: "Ana",
+      }),
+      renderMessage({ ...org, kind: "alerts_resumed", by: null }),
+      renderMessage({ ...org, kind: "cap_warning", used: 100, limit: 100 }),
+      renderMessage({ ...org, kind: "cap_warning", used: 80, limit: 100 }),
+    ];
+    for (const message of messages) {
+      expect(message.subject.match(/Acme/g)).toHaveLength(1);
+      expect(message.chat.split("\n")[0]?.match(/Acme/g)).toHaveLength(1);
+    }
+    expect(messages[0]?.subject).toBe(
+      "[Acme] Alerts are paused until 2026-10-28 16:00 UTC"
+    );
+    expect(messages[3]?.subject).toBe(
+      "[Acme] 80 of the 100 alert emails for this month are used"
+    );
+  });
+
+  it("says how a paused method comes back, by kind", () => {
+    const paused = (channelKind?: string) =>
+      renderMessage({
+        ...org,
+        kind: "channel_paused",
+        channelLabel: "Slack #ops",
+        channelKind,
+        reason: "channel_not_found.",
+      }).text;
+    expect(paused("slack")).toContain(
+      "It is paused until a test from the Alerts page succeeds."
+    );
+    expect(paused("slack")).not.toContain("by itself");
+    expect(paused("discord")).toContain(
+      "it is checked every day and turns back on by itself when it works, or when a test succeeds."
+    );
+    expect(paused()).toContain("apart from Slack");
+  });
+
+  it("links samples to the Alerts page, and the funds sample to Add funds", () => {
+    const ALERTS = "https://app.test/settings/org-1/alerts";
+    for (const sample of ["alert", "missed", "paused", "recovery"] as const) {
+      const message = renderSample(org, sample, "Test", now);
+      expect(message.text).not.toContain("/workflows/");
+      expect(message.chat).not.toContain("/workflows/");
+      expect(message.text).toContain(ALERTS);
+    }
+    const alert = renderSample(org, "alert", "Test", now);
+    expect(alert.text).toContain(`Add funds: ${WALLETS}`);
+    expect(alert.html).toContain(`href="${WALLETS}"`);
   });
 });
 

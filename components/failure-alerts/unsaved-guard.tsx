@@ -1,18 +1,12 @@
 "use client";
 
-import {
-  AppRouterContext,
-  type AppRouterInstance,
-} from "next/dist/shared/lib/app-router-context.shared-runtime";
 import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import {
-  type ReactNode,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+  addLeaveGuard,
+  GUARD_ENTRY_KEY,
+  onGuardEntry,
+} from "@/components/navigation-guard";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -53,8 +47,11 @@ function leavingLink(event: MouseEvent): string | null {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-/** True when href points at another page than the one shown. */
-function leavesPage(href: string): boolean {
+/** True when href points at another page than the one shown (undefined: always). */
+function leavesPage(href: string | undefined): boolean {
+  if (href === undefined) {
+    return true;
+  }
   const url = new URL(href, window.location.href);
   return (
     url.origin !== window.location.origin ||
@@ -62,46 +59,8 @@ function leavesPage(href: string): boolean {
   );
 }
 
-/** Set by a dirty guard: takes a router navigation over (true) or lets it run. */
-let interceptLeave: ((href: string, go: () => void) => boolean) | null = null;
-
-type Navigate = AppRouterInstance["push"];
-
-/** The router with push and replace asking the active guard first. */
-export function guardRouter(router: AppRouterInstance): AppRouterInstance {
-  const wrap =
-    (navigate: Navigate): Navigate =>
-    (href, options) => {
-      if (interceptLeave?.(href, () => navigate(href, options))) {
-        return;
-      }
-      navigate(href, options);
-    };
-  return { ...router, push: wrap(router.push), replace: wrap(router.replace) };
-}
-
-/** Wraps the app so every useRouter() navigation passes the unsaved guard. */
-export function LeaveGuardRouter({
-  children,
-}: {
-  children: ReactNode;
-}): React.ReactElement {
-  const router = useContext(AppRouterContext);
-  const guarded = useMemo(
-    () => (router ? guardRouter(router) : null),
-    [router]
-  );
-  if (!guarded) {
-    return <>{children}</>;
-  }
-  return (
-    <AppRouterContext.Provider value={guarded}>
-      {children}
-    </AppRouterContext.Provider>
-  );
-}
-
-const SENTINEL = "__unsavedGuard";
+/** How long Back-then-Leave waits for history to move before going to the fallback. */
+const BACK_FALLBACK_MS = 600;
 
 /**
  * Asks before leaving with unsaved changes: the browser's own prompt for a
@@ -109,13 +68,19 @@ const SENTINEL = "__unsavedGuard";
  */
 export function UnsavedChangesGuard({
   dirty,
+  backFallback = "/",
 }: {
   dirty: boolean;
+  /** Where Back then Leave goes when there is no earlier page in the tab. */
+  backFallback?: string;
 }): React.ReactElement {
   const router = useRouter();
   const routerRef = useRef(router);
   routerRef.current = router;
-  const [pending, setPending] = useState<(() => void) | null>(null);
+  const fallbackRef = useRef(backFallback);
+  fallbackRef.current = backFallback;
+  const [asking, setAsking] = useState(false);
+  const answerRef = useRef<((leave: boolean) => void) | null>(null);
   // Set on Leave, so the navigation it starts is not asked about again.
   const leavingRef = useRef(false);
 
@@ -124,11 +89,22 @@ export function UnsavedChangesGuard({
       return;
     }
     leavingRef.current = false;
-    const ask = (go: () => void): void => {
-      setPending(() => go);
-    };
+    let backTimer: ReturnType<typeof setTimeout> | undefined;
+    const ask = (): Promise<boolean> =>
+      new Promise((resolve) => {
+        answerRef.current?.(false);
+        answerRef.current = (leave: boolean) => {
+          if (leave) {
+            leavingRef.current = true;
+          }
+          resolve(leave);
+        };
+        setAsking(true);
+      });
     const onBeforeUnload = (event: BeforeUnloadEvent): void => {
-      event.preventDefault();
+      if (!leavingRef.current) {
+        event.preventDefault();
+      }
     };
     const onClick = (event: MouseEvent): void => {
       const href = leavingLink(event);
@@ -137,55 +113,78 @@ export function UnsavedChangesGuard({
       }
       event.preventDefault();
       event.stopPropagation();
-      ask(() => routerRef.current.push(href));
+      // The guarded router asks, then goes.
+      routerRef.current.push(href);
     };
     // Back lands on a copy of this page pushed below, then asks.
-    const pushSentinel = (): void => {
+    const pushGuardEntry = (): void => {
       window.history.pushState(
-        { ...window.history.state, [SENTINEL]: true },
+        { ...window.history.state, [GUARD_ENTRY_KEY]: true },
         "",
         window.location.href
       );
     };
+    const goBack = (): void => {
+      // No earlier page in this tab (opened from an email): history stays.
+      backTimer = setTimeout(() => {
+        routerRef.current.replace(fallbackRef.current);
+        leavingRef.current = false;
+      }, BACK_FALLBACK_MS);
+      window.history.go(-2);
+    };
     const onPopState = (): void => {
       if (leavingRef.current) {
+        clearTimeout(backTimer);
         return;
       }
-      pushSentinel();
-      ask(() => window.history.go(-2));
+      pushGuardEntry();
+      ask()
+        .then((leave) => {
+          if (leave) {
+            goBack();
+          }
+        })
+        .catch(() => undefined);
     };
-    pushSentinel();
-    interceptLeave = (href, go) => {
-      if (leavingRef.current || !leavesPage(href)) {
-        return false;
-      }
-      ask(go);
-      return true;
-    };
+    pushGuardEntry();
+    const removeGuard = addLeaveGuard((href) =>
+      leavingRef.current || !leavesPage(href) ? null : ask()
+    );
     window.addEventListener("beforeunload", onBeforeUnload);
     window.addEventListener("popstate", onPopState);
     document.addEventListener("click", onClick, true);
     return () => {
-      interceptLeave = null;
+      clearTimeout(backTimer);
+      removeGuard();
+      answerRef.current?.(false);
+      answerRef.current = null;
+      setAsking(false);
       window.removeEventListener("beforeunload", onBeforeUnload);
       window.removeEventListener("popstate", onPopState);
       document.removeEventListener("click", onClick, true);
       // Saved while still here: drop the extra history entry.
-      if (!leavingRef.current && window.history.state?.[SENTINEL]) {
+      if (!leavingRef.current && onGuardEntry()) {
         leavingRef.current = true;
         window.history.back();
       }
     };
   }, [dirty]);
 
+  const close = (leave: boolean): void => {
+    const answer = answerRef.current;
+    answerRef.current = null;
+    setAsking(false);
+    answer?.(leave);
+  };
+
   return (
     <AlertDialog
       onOpenChange={(open) => {
         if (!open) {
-          setPending(null);
+          close(false);
         }
       }}
-      open={pending !== null}
+      open={asking}
     >
       <AlertDialogContent data-testid="failure-alerts-unsaved-dialog">
         <AlertDialogHeader>
@@ -197,16 +196,7 @@ export function UnsavedChangesGuard({
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Stay</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={() => {
-              const go = pending;
-              setPending(null);
-              if (go) {
-                leavingRef.current = true;
-                go();
-              }
-            }}
-          >
+          <AlertDialogAction onClick={() => close(true)}>
             Leave
           </AlertDialogAction>
         </AlertDialogFooter>

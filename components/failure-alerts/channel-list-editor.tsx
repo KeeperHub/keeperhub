@@ -1,9 +1,10 @@
 "use client";
 
 import { Plus } from "lucide-react";
-import { useRef } from "react";
+import { type Ref, useRef } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { MAX_CHANNELS } from "@/lib/notifications/failure-alerts/constants";
 import type {
   ChannelView,
   ConnectionView,
@@ -15,6 +16,42 @@ import {
   nextKey,
   sameTarget,
 } from "./method-drafts";
+
+/** "Add a method", off once the list holds as many methods as a save takes. */
+export function AddMethodButton({
+  count,
+  onClick,
+  buttonRef,
+  testId,
+}: {
+  count: number;
+  onClick: () => void;
+  buttonRef: Ref<HTMLButtonElement>;
+  testId?: string;
+}): React.ReactElement {
+  const full = count >= MAX_CHANNELS;
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <Button
+        data-testid={testId}
+        disabled={full}
+        onClick={onClick}
+        ref={buttonRef}
+        size="sm"
+        type="button"
+        variant="outline"
+      >
+        <Plus className="size-3.5" />
+        Add a method
+      </Button>
+      {full && (
+        <p className="text-muted-foreground text-xs">
+          Up to {MAX_CHANNELS} chat or PagerDuty methods.
+        </p>
+      )}
+    </div>
+  );
+}
 
 /**
  * A workflow's own methods, as the same cards as Settings. Nothing saves here:
@@ -96,19 +133,14 @@ export function ChannelListEditor({
           ))}
         </ul>
       )}
-      <Button
+      <AddMethodButton
+        buttonRef={addRef}
+        count={channels.length}
         onClick={() => {
           onChange([...channels, newMethodDraft(connections)]);
           focusMethodAt(listRef, channels.length, null);
         }}
-        ref={addRef}
-        size="sm"
-        type="button"
-        variant="outline"
-      >
-        <Plus className="size-3.5" />
-        Add a method
-      </Button>
+      />
     </div>
   );
 }

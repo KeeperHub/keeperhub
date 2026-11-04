@@ -4,6 +4,7 @@ import {
   normalizeRunsResponse,
   type WireRunsResponse,
 } from "@/lib/analytics/runs-response";
+import type { NotificationRunDetail } from "@/lib/analytics/types";
 
 // A response shaped by a server older than this bundle: the run carries the
 // fields that server knew about and none of the ones added since.
@@ -68,7 +69,7 @@ describe("normalizeRunsResponse", () => {
   });
 
   it("passes a notification row's detail through untouched", () => {
-    const notification = {
+    const notification: NotificationRunDetail = {
       title: "Alert: Nightly sync",
       kind: "alert",
       state: "delivered",

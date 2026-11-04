@@ -22,6 +22,7 @@ function runs(spec: string[], source = "schedule"): StreakRun[] {
       startedAt,
       completedAt: new Date(startedAt.getTime() + 1000),
       error: plainStatus === "error" ? `boom ${index}` : null,
+      errorType: override === "system" ? "system" : null,
     };
   });
 }
@@ -104,6 +105,23 @@ describe("summarizeStreak", () => {
     expect(summary.failures).toBe(2);
   });
 
+  it("steps over our own platform errors: they neither count nor end the streak", () => {
+    const summary = summarizeStreak(
+      runs(["error", "error:system", "error", "error:system", "error"]),
+      null,
+      10
+    );
+    expect(summary.failures).toBe(3);
+    expect(summary.lastFailedRunId).toBe("run-0");
+    const onlyPlatform = summarizeStreak(
+      runs(["error:system", "error:system", "success"]),
+      null,
+      10
+    );
+    expect(onlyPlatform.failures).toBe(0);
+    expect(onlyPlatform.latestSuccessRunId).toBe("run-2");
+  });
+
   it("flags a window full of failures as possibly longer", () => {
     const summary = summarizeStreak(runs(["error", "error", "error"]), null, 3);
     expect(summary.truncated).toBe(true);
@@ -160,10 +178,22 @@ describe("decide", () => {
     ).toEqual({ kind: "open", by: "time" });
   });
 
+  it("never opens the time rule on a single failure", () => {
+    expect(
+      decide({
+        summary: failing(1, 600),
+        threshold: 5,
+        timeLimitMinutes: 360,
+        hasOpenIncident: false,
+        now,
+      })
+    ).toEqual({ kind: "none" });
+  });
+
   it("asks to be looked at again when the time limit falls due", () => {
     expect(
       decide({
-        summary: failing(1, 60),
+        summary: failing(2, 60),
         threshold: 5,
         timeLimitMinutes: 360,
         hasOpenIncident: false,
@@ -212,6 +242,7 @@ describe("wallet out of funds", () => {
     startedAt: at(minutesAgo),
     completedAt: at(minutesAgo),
     error,
+    errorType: null,
   });
   const shortfall = "insufficient funds for gas * price + value: have 4 want 6";
 

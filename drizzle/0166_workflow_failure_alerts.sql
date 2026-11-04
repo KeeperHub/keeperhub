@@ -1,3 +1,5 @@
+SET lock_timeout = '3s';
+
 CREATE TABLE "alert_methods" (
 	"id" text PRIMARY KEY NOT NULL,
 	"organization_id" text NOT NULL,

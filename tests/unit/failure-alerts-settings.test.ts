@@ -59,7 +59,9 @@ describe("parseChannels", () => {
 
   it("refuses more than 20 channels before loading or checking any", async () => {
     const many = Array.from({ length: 21 }, () => ({ integrationId: "i" }));
-    await expect(parseChannels(many, "org")).rejects.toThrow(/at most 20/);
+    await expect(parseChannels(many, "org")).rejects.toThrow(
+      "You can have up to 20 chat or PagerDuty methods. Remove one to save."
+    );
   });
 });
 

@@ -1,8 +1,10 @@
 import { INSUFFICIENT_BALANCE_PATTERN } from "@/lib/errors/classify";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { isFundingShortfall } from "@/lib/errors/funding-shortfall";
+import { MIN_TIME_RULE_FAILURES } from "./constants";
 
-// Streaks: error counts, success ends it; other statuses, unfinished runs and
-// runs started by a person are stepped over.
+// Streaks: error counts, success ends it; other statuses, unfinished runs,
+// our own platform errors and runs started by a person are stepped over.
 
 export type StreakRun = {
   id: string;
@@ -12,7 +14,15 @@ export type StreakRun = {
   startedAt: Date;
   completedAt: Date | null;
   error: string | null;
+  errorType: string | null;
 };
+
+/** Our own platform failed the run: not the workflow's fault, so it is as if it never ran. */
+export function isPlatformError(
+  run: Pick<StreakRun, "status" | "errorType">
+): boolean {
+  return run.status === "error" && run.errorType === ExecutionErrorType.SYSTEM;
+}
 
 /** "manual" also covers API calls; only a browser session is a person. */
 export function isAutomatedRun(
@@ -76,7 +86,7 @@ export function summarizeStreak(
       ended = true;
       break;
     }
-    if (!isAutomatedRun(run)) {
+    if (!isAutomatedRun(run) || isPlatformError(run)) {
       continue;
     }
     if (run.status === "success") {
@@ -137,7 +147,12 @@ export function decide(params: {
   if (summary.outOfFunds >= OUT_OF_FUNDS_THRESHOLD) {
     return { kind: "open", by: "funding" };
   }
-  if (timeLimitMinutes && summary.firstFailedAt) {
+  // The time rule never fires on a single failure.
+  if (
+    timeLimitMinutes &&
+    summary.firstFailedAt &&
+    summary.failures >= MIN_TIME_RULE_FAILURES
+  ) {
     const dueAt = new Date(
       summary.firstFailedAt.getTime() + timeLimitMinutes * 60 * 1000
     );

@@ -40,8 +40,9 @@ async function fetchStatus(
       credentials: "include",
       headers: { "X-Organization-Id": organizationId },
     });
+    // An error says nothing about alerts: unknown, not off.
     if (!response.ok) {
-      return { ...EMPTY_STATUS, alertsEnabled: false };
+      return EMPTY_STATUS;
     }
     const data = (await response.json()) as Partial<NotificationStatus>;
     return {
@@ -50,7 +51,7 @@ async function fetchStatus(
       alertsEnabled: data.alertsEnabled === true,
     };
   } catch {
-    return { ...EMPTY_STATUS, alertsEnabled: false };
+    return EMPTY_STATUS;
   }
 }
 
@@ -63,7 +64,19 @@ function loadStatus(
     return cached.request;
   }
   const request = fetchStatus(organizationId);
-  shared.set(organizationId, { at: Date.now(), request });
+  const entry = { at: Date.now(), request };
+  shared.set(organizationId, entry);
+  // A failed answer is not shared: the next caller asks again.
+  request
+    .then((status) => {
+      if (
+        status.alertsEnabled === null &&
+        shared.get(organizationId) === entry
+      ) {
+        shared.delete(organizationId);
+      }
+    })
+    .catch(() => undefined);
   return request;
 }
 

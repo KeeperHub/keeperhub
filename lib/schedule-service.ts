@@ -1,12 +1,12 @@
 import { CronExpressionParser } from "cron-parser";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import {
   IntervalTooSmallError,
   parseIntervalSeconds,
   validateCronExpression,
 } from "@/lib/cron-utils";
 import { db } from "@/lib/db";
-import { workflowSchedules } from "@/lib/db/schema";
+import { workflowSchedules, workflows } from "@/lib/db/schema";
 import {
   ErrorCategory,
   logSystemError,
@@ -412,6 +412,24 @@ export async function setScheduleEnabled(
   console.log(
     `[Schedule] ${enabled ? "Enabled" : "Disabled"} schedule for workflow ${workflowId}`
   );
+}
+
+/** Missed-run alerts count from updated_at: bump it when an org can run again (un-halt, reactivation). */
+export async function restartOrgScheduleCounting(
+  organizationId: string
+): Promise<void> {
+  await db
+    .update(workflowSchedules)
+    .set({ updatedAt: new Date() })
+    .where(
+      inArray(
+        workflowSchedules.workflowId,
+        db
+          .select({ id: workflows.id })
+          .from(workflows)
+          .where(eq(workflows.organizationId, organizationId))
+      )
+    );
 }
 
 /**

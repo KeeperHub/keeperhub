@@ -468,8 +468,9 @@ function ChannelHealth({
           TRAILING_DOTS,
           ""
         )}
-        . It turns back on by itself when the daily check passes, or Test it
-        now.
+        {saved.kind === "slack"
+          ? ". Test it to turn it back on."
+          : ". It turns back on by itself when the daily check passes, or Test it now."}
       </span>
     );
   }

@@ -403,7 +403,7 @@ export async function parseChannels(
   }
   if (raw.length > MAX_CHANNELS) {
     throw new SettingsError(
-      `Add at most ${MAX_CHANNELS} chat or PagerDuty methods.`
+      `You can have up to ${MAX_CHANNELS} chat or PagerDuty methods. Remove one to save.`
     );
   }
   const items = raw as Record<string, unknown>[];

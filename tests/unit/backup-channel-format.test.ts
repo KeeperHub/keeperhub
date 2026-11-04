@@ -70,6 +70,7 @@ describe("backup channel formatting", () => {
     const body = await bodyFor({ TELEGRAM_BOT_TOKEN: "1:abc" }, variants);
     expect(body.parse_mode).toBe("HTML");
     expect(String(body.text).length).toBeLessThanOrEqual(4096);
-    expect(String(body.text)).toBe("Failing: &lt;!channel&gt; @everyone");
+    // A word joiner after "@" keeps Telegram from turning it into a mention.
+    expect(String(body.text)).toBe("Failing: &lt;!channel&gt; @\u2060everyone");
   });
 });

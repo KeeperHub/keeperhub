@@ -28,8 +28,8 @@ export const BACKUP_AFTER_MS = {
   pagerduty: 2 * 60 * 1000,
 } as const;
 
-/** Retries keep going after the backups fire, until this much time passes. */
-export const GIVE_UP_AFTER_MS = 24 * 60 * 60 * 1000;
+/** A message not sent within this long of being queued is dropped: it would only confuse. */
+export const STALE_DELIVERY_MS = 60 * 60 * 1000;
 
 /** Delay before attempt N+1 (index N-1); the last repeats. Under a minute waits a cycle. */
 export const RETRY_DELAYS_MS = [
@@ -53,6 +53,11 @@ export const EVALUATE_BUDGET_MS = 15 * 1000;
 
 /** "Or when it has been failing for 6 hours", on by default. */
 export const DEFAULT_TIME_LIMIT_MINUTES = 360;
+/** The time rule needs this many failures in a row; one failed run is not a streak. */
+export const MIN_TIME_RULE_FAILURES = 2;
+
+/** A success holds its incident this long before it is announced; a failure inside it continues the incident. */
+export const RECOVERY_HOLD_MS = 30 * 60 * 1000;
 
 /** Longest org-wide pause, extensions included, so a forgotten one cannot silence alerts for long. */
 export const MAX_ORG_PAUSE_MS = 7 * 24 * 60 * 60 * 1000;

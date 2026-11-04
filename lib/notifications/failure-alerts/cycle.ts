@@ -25,9 +25,17 @@ import {
 import { isFailureAlertsRolloutActive } from "./rollout";
 
 type CycleReport = EvaluationStats &
-  DrainStats & { durationMs: number; disabled?: boolean; errors: string[] };
+  DrainStats & {
+    durationMs: number;
+    disabled?: boolean;
+    errors: string[];
+    warnings: string[];
+  };
 
-/** One minute of alert work; stage errors are isolated and reported so the CronJob fails. */
+/** Only these fail the CronJob; a failure elsewhere is logged and the cycle goes on. */
+const JOB_FAILING_STAGES = new Set(["evaluate", "deliver", "deliver-backups"]);
+
+/** One minute of alert work; each stage's error is isolated and logged. */
 export async function runFailureAlertCycle(
   appUrl: string,
   now: Date = new Date()
@@ -37,11 +45,13 @@ export async function runFailureAlertCycle(
   const drain = emptyDrainStats();
 
   const errors: string[] = [];
+  const warnings: string[] = [];
   const stage = async (name: string, run: () => Promise<void>) => {
     try {
       await run();
     } catch (error) {
-      errors.push(`${name}: ${getErrorMessage(error)}`);
+      const failed = JOB_FAILING_STAGES.has(name) ? errors : warnings;
+      failed.push(`${name}: ${getErrorMessage(error)}`);
       logSystemError(
         ErrorCategory.WORKFLOW_ENGINE,
         `[FailureAlerts] Cycle stage failed: ${name}`,
@@ -59,6 +69,7 @@ export async function runFailureAlertCycle(
       durationMs: Date.now() - started,
       disabled: true,
       errors,
+      warnings,
     };
   }
 
@@ -80,5 +91,11 @@ export async function runFailureAlertCycle(
   await stage("health", () => runHealthChecks(now, drain));
   await stage("prune", () => pruneOldRecords(now));
 
-  return { ...evaluation, ...drain, durationMs: Date.now() - started, errors };
+  return {
+    ...evaluation,
+    ...drain,
+    durationMs: Date.now() - started,
+    errors,
+    warnings,
+  };
 }

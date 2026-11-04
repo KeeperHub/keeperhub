@@ -1,6 +1,6 @@
 /**
  * Once-a-minute failure alert cycle, called by the `failure-alerts` CronJob (HMAC).
- * Overlapping replicas are safe (SKIP LOCKED); failed stages answer 500.
+ * Overlapping replicas are safe (SKIP LOCKED); a failed evaluate or deliver stage answers 500.
  */
 import { NextResponse } from "next/server";
 import { authenticateInternalService } from "@/lib/internal-service-auth";

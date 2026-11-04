@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuthPrompt } from "@/components/auth/provider";
+import { confirmLeave } from "@/components/navigation-guard";
 import { GettingStartedLauncher } from "@/components/onboarding/getting-started-launcher";
 import { AddressBookOverlay } from "@/components/overlays/address-book-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
@@ -394,6 +395,10 @@ export function NavigationSidebar(): React.ReactNode {
   const offsets = computePanelOffsets(currentWidth, navState.state.panels);
 
   async function handleNewWorkflow(): Promise<void> {
+    // Unsaved changes on the page are asked about before a workflow is made.
+    if (!(await confirmLeave("/workflows"))) {
+      return;
+    }
     await runNewWorkflow({
       isAnonymous,
       hasSession: Boolean(session),

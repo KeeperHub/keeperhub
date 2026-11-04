@@ -29,11 +29,27 @@ function view(members: OrgSettingsView["members"]): OrgSettingsView {
   } as unknown as OrgSettingsView;
 }
 
-function render(data: OrgSettingsView): string {
+function render(data: OrgSettingsView, viewerUserId?: string): string {
   return renderToStaticMarkup(
-    <AlertsStatus canManage data={data} onResume={async () => null} />
+    <AlertsStatus
+      canManage
+      data={data}
+      onResume={async () => null}
+      viewerUserId={viewerUserId}
+    />
   );
 }
+
+const member = (
+  userId: string,
+  email: string
+): OrgSettingsView["members"][number] => ({
+  userId,
+  role: "member",
+  email,
+  name: null,
+  reachable: false,
+});
 
 describe("alerts status when nobody can be reached", () => {
   it("names the chosen people without a reachable email and how to fix it", () => {
@@ -58,7 +74,27 @@ describe("alerts status when nobody can be reached", () => {
     expect(html).toContain("ann@example.com and 0x1234");
     expect(html).toContain("have no email KeeperHub can reach");
     expect(html).toContain("choose other people under Email");
-    // The viewer's own account page fixes nothing for other members.
-    expect(html).not.toContain("/settings/security");
+    expect(html).toContain("They can add one in");
+    expect(html).toContain('href="/settings/security"');
+  });
+
+  it("tells the viewer they can fix their own account", () => {
+    const html = render(view([member("me", "me@example.com")]), "me");
+    expect(html).toContain("You have no email KeeperHub can reach");
+    expect(html).toContain("You can add one in");
+    expect(html).toContain('href="/settings/security"');
+  });
+
+  it("lists at most three names, then how many more", () => {
+    const html = render(
+      view(
+        ["a", "b", "c", "d", "e"].map((id) => member(id, `${id}@example.com`))
+      ),
+      "e"
+    );
+    expect(html).toContain(
+      "a@example.com, b@example.com, c@example.com and 2 more have no email"
+    );
+    expect(html).toContain("Each of you can add one in");
   });
 });

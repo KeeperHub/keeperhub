@@ -154,6 +154,8 @@ let testSend: TestSend;
 let orgPause: OrgPause;
 let watchdog: Watchdog;
 let createIntegration: CreateIntegration;
+let syncWorkflowSchedule: typeof import("@/lib/schedule-service")["syncWorkflowSchedule"];
+let resetOrgCircuitBreaker: typeof import("@/lib/execute/org-circuit-breaker")["resetOrgCircuitBreaker"];
 
 const savedEnv: Record<string, string | undefined> = {};
 const orgIds: string[] = [];
@@ -309,7 +311,12 @@ async function addRun(
   org: Org,
   workflowId: string,
   status: "success" | "error" | "skipped" | "system_error",
-  options: { at?: Date; source?: string; credential?: string } = {}
+  options: {
+    at?: Date;
+    source?: string;
+    credential?: string;
+    errorType?: "system" | "user";
+  } = {}
 ): Promise<void> {
   const startedAt = options.at ?? new Date();
   await db.insert(workflowExecutions).values({
@@ -323,7 +330,22 @@ async function addRun(
     startedAt,
     completedAt: new Date(startedAt.getTime() + 1000),
     error: status === "error" ? "execution reverted (RPC 429)" : null,
+    errorType: options.errorType ?? null,
   });
+}
+
+/** Skip the 30-minute recovery hold: make held recovery rows due now. */
+async function endRecoveryHold(orgId: string): Promise<void> {
+  await db
+    .update(failureAlertDeliveries)
+    .set({ nextAttemptAt: new Date() })
+    .where(
+      and(
+        eq(failureAlertDeliveries.organizationId, orgId),
+        eq(failureAlertDeliveries.kind, "recovery"),
+        eq(failureAlertDeliveries.state, "pending")
+      )
+    );
 }
 
 async function addFailures(
@@ -538,6 +560,10 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     testSend = await import("@/lib/notifications/failure-alerts/test-send");
     orgPause = await import("@/lib/notifications/failure-alerts/org-pause");
     watchdog = await import("@/lib/notifications/failure-alerts/watchdog");
+    ({ syncWorkflowSchedule } = await import("@/lib/schedule-service"));
+    ({ resetOrgCircuitBreaker } = await import(
+      "@/lib/execute/org-circuit-breaker"
+    ));
   }, 60_000);
 
   afterAll(async () => {
@@ -625,10 +651,20 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(await sentEmails(acme, "reminder")).toHaveLength(1);
     });
 
-    it("resolves on an automated success and sends a recovery email", async () => {
+    it("resolves on an automated success and sends the recovery after the 30-minute hold", async () => {
       await addRun(acme, wf, "success");
       await runCycle();
       expect(await openIncident(wf)).toBeUndefined();
+      expect(await sentEmails(acme, "recovery")).toHaveLength(0);
+      const held = (await deliveriesOf(acme.orgId)).find(
+        (d) => d.kind === "recovery"
+      );
+      expect(held?.state).toBe("pending");
+      expect(held?.nextAttemptAt.getTime()).toBeGreaterThan(
+        Date.now() + 25 * 60 * 1000
+      );
+      await endRecoveryHold(acme.orgId);
+      await runCycle();
       expect(await sentEmails(acme, "recovery")).toHaveLength(1);
     });
 
@@ -964,6 +1000,8 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
 
       await addRun(org, wf, "success");
       await runCycle();
+      await endRecoveryHold(org.orgId);
+      await runCycle();
       const resolveRow = (await deliveriesOf(org.orgId)).find(
         (d) => d.channelId === channel.id && d.kind === "recovery"
       );
@@ -1266,6 +1304,87 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     });
   });
 
+  // Steps run in order: schedules that come back after a gap count from their return.
+  describe("missed runs after a gap", { timeout: SUITE_TIMEOUT }, () => {
+    let pi: Org;
+    let haltedOrg: Org;
+    let reenabled: string;
+    let recron: string;
+    let unhalted: string;
+    let backAt: Date;
+
+    const scheduleNodes = (cron: string) =>
+      [
+        {
+          id: "trigger",
+          type: "trigger",
+          position: { x: 0, y: 0 },
+          data: {
+            type: "trigger",
+            label: "Trigger",
+            config: { triggerType: "Schedule", scheduleCron: cron },
+          },
+        },
+      ] as Parameters<typeof syncWorkflowSchedule>[1];
+
+    beforeAll(async () => {
+      pi = await makeOrg("regap");
+      haltedOrg = await makeOrg("unhalted");
+      for (const org of [pi, haltedOrg]) {
+        await db.insert(orgFailureAlertSettings).values({
+          organizationId: org.orgId,
+          countingSince: at(-300),
+        });
+      }
+      reenabled = await makeWorkflow(pi, "Turned Back On");
+      await addSchedule(reenabled);
+      await addRun(pi, reenabled, "success", { at: at(-118) });
+      await setEnabled(reenabled, false);
+      recron = await makeWorkflow(pi, "Cron Changed");
+      await db.insert(workflowSchedules).values({
+        workflowId: recron,
+        cronExpression: "0 0 1 1 *",
+        createdAt: at(-120),
+        updatedAt: at(-120),
+      });
+      unhalted = await makeWorkflow(haltedOrg, "Back From Halt");
+      await addSchedule(unhalted);
+      await db
+        .update(organization)
+        .set({ haltedAt: at(-120) })
+        .where(eq(organization.id, haltedOrg.orgId));
+      await runCycle();
+    });
+
+    it("does not alert when a workflow, a new cron or a halted org comes back", async () => {
+      // The same writes the enable toggle, a cron save and Reset make.
+      backAt = new Date();
+      await setEnabled(reenabled, true);
+      await syncWorkflowSchedule(reenabled, scheduleNodes("*/5 * * * *"));
+      await syncWorkflowSchedule(recron, scheduleNodes("*/5 * * * *"));
+      const reset = await resetOrgCircuitBreaker({
+        organizationId: haltedOrg.orgId,
+        requestedByUserId: haltedOrg.userId,
+      });
+      expect(reset).toEqual({ reset: true, wasHalted: true });
+      await runCycle();
+      for (const id of [reenabled, recron, unhalted]) {
+        expect(await openIncident(id)).toBeUndefined();
+      }
+    });
+
+    it("still alerts when it then misses a run", async () => {
+      await cycle.runFailureAlertCycle(APP, at(16));
+      for (const id of [reenabled, recron, unhalted]) {
+        const incident = await openIncident(id);
+        expect(incident?.openedBy).toBe("missed");
+        expect(incident?.firstFailedAt.getTime()).toBeGreaterThan(
+          backAt.getTime()
+        );
+      }
+    });
+  });
+
   // Deactivation does not reach workflows.deactivated_at, and halting stops dispatch.
   describe("deactivated and halted orgs", { timeout: SUITE_TIMEOUT }, () => {
     const cases: { org: Org; wf: string; incidentId?: string }[] = [];
@@ -1283,7 +1402,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       }
     });
 
-    it("closes their incidents and sends no reminder", async () => {
+    it("closes a deactivated org's incident, holds a halted org's quietly, and sends no reminder", async () => {
       expect(cases.every((item) => item.incidentId)).toBe(true);
       const [halted, deactivated] = cases;
       await db
@@ -1301,12 +1420,231 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
           .where(eq(workflowFailureIncidents.id, item.incidentId ?? ""));
       }
       await runCycle();
+      const kept = await incidentById(halted.incidentId);
+      expect(kept?.resolvedAt).toBeNull();
+      expect((await incidentById(deactivated.incidentId))?.resolvedReason).toBe(
+        "disabled"
+      );
       for (const item of cases) {
-        expect((await incidentById(item.incidentId))?.resolvedReason).toBe(
-          "disabled"
-        );
         expect(await sentEmails(item.org, "reminder")).toHaveLength(0);
       }
+
+      // Lifting the halt continues the same incident: no second alert.
+      const alertsBefore = (await deliveriesOf(halted.org.orgId)).filter(
+        (d) => d.kind === "alert"
+      ).length;
+      await db
+        .update(organization)
+        .set({ haltedAt: null })
+        .where(eq(organization.id, halted.org.orgId));
+      await addFailures(halted.org, halted.wf, 2, -1);
+      await runCycle();
+      expect((await openIncident(halted.wf))?.id).toBe(halted.incidentId);
+      expect(
+        (await deliveriesOf(halted.org.orgId)).filter((d) => d.kind === "alert")
+      ).toHaveLength(alertsBefore);
+    });
+  });
+
+  describe("flapping workflows", { timeout: SUITE_TIMEOUT }, () => {
+    it("reopens the same incident on a failure inside the recovery hold, with no new alert or page", async () => {
+      const org = await makeOrg("flap");
+      await db.insert(orgFailureAlertSettings).values({
+        organizationId: org.orgId,
+        countingSince: at(-24 * 60),
+      });
+      const pd = await makeChannel(org, "pagerduty", "always", "live");
+      const wf = await makeWorkflow(org, "Flapping keeper");
+      await addFailures(org, wf, 5, -20);
+      await runCycle();
+      const first = await openIncident(wf);
+      expect(first).toBeTruthy();
+      const alerts = (await deliveriesOf(org.orgId)).filter(
+        (d) => d.kind === "alert"
+      ).length;
+
+      await addRun(org, wf, "success", { at: at(-10) });
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      await addRun(org, wf, "error", { at: at(-5) });
+      await runCycle();
+
+      expect((await openIncident(wf))?.id).toBe(first?.id);
+      const rows = await deliveriesOf(org.orgId);
+      expect(rows.filter((d) => d.kind === "alert")).toHaveLength(alerts);
+      const recoveries = rows.filter((d) => d.kind === "recovery");
+      expect(recoveries.length).toBeGreaterThan(0);
+      expect(recoveries.every((d) => d.state === "skipped")).toBe(true);
+      expect(await sentEmails(org, "recovery")).toHaveLength(0);
+      const resolves = () =>
+        callsTo("events.pagerduty.com/v2/enqueue")
+          .map(
+            (c) =>
+              JSON.parse(c.body) as { event_action: string; dedup_key: string }
+          )
+          .filter((e) => e.dedup_key === `kh-fa-${first?.id}`);
+      expect(
+        resolves().filter((e) => e.event_action === "resolve")
+      ).toHaveLength(0);
+
+      // Healthy again for the whole hold: one recovery, and the same page resolved.
+      await addRun(org, wf, "success", { at: at(-1) });
+      await runCycle();
+      await endRecoveryHold(org.orgId);
+      await runCycle();
+      expect(await sentEmails(org, "recovery")).toHaveLength(1);
+      const pageResolve = (await deliveriesOf(org.orgId)).find(
+        (d) =>
+          d.channelId === pd.id && d.kind === "recovery" && d.sequence === 1
+      );
+      expect(pageResolve?.state, pageResolve?.lastError ?? "").toBe(
+        "delivered"
+      );
+      expect(
+        resolves().filter((e) => e.event_action === "resolve")
+      ).toHaveLength(1);
+      expect(
+        resolves().filter((e) => e.event_action === "trigger")
+      ).toHaveLength(1);
+
+      // The recovery went out: a later streak is a new incident.
+      await addFailures(org, wf, 5, 0);
+      await runCycle();
+      const next = await openIncident(wf);
+      expect(next?.id).toBeTruthy();
+      expect(next?.id).not.toBe(first?.id);
+    });
+
+    it("opens a new incident when the failure comes after the hold", async () => {
+      const org = await makeOrg("flapafter");
+      await db.insert(orgFailureAlertSettings).values({
+        organizationId: org.orgId,
+        countingSince: at(-24 * 60),
+      });
+      const wf = await makeWorkflow(org, "Settled keeper");
+      await addFailures(org, wf, 5, -120);
+      await runCycle();
+      const first = await openIncident(wf);
+      await addRun(org, wf, "success", { at: at(-100) });
+      await runCycle();
+      await db
+        .update(workflowFailureIncidents)
+        .set({ resolvedAt: at(-95) })
+        .where(eq(workflowFailureIncidents.id, first?.id ?? ""));
+      await addRun(org, wf, "error", { at: at(-5) });
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      expect((await incidentById(first?.id))?.resolvedReason).toBe("success");
+    });
+  });
+
+  describe("platform errors and the time rule", {
+    timeout: SUITE_TIMEOUT,
+  }, () => {
+    let org: Org;
+
+    beforeAll(async () => {
+      org = await makeOrg("sys");
+      await db.insert(orgFailureAlertSettings).values({
+        organizationId: org.orgId,
+        threshold: 3,
+        timeLimitMinutes: 60,
+        countingSince: at(-24 * 60),
+      });
+    });
+
+    it("steps over our own platform errors: they neither count nor break the streak", async () => {
+      const ours = await makeWorkflow(org, "Platform failures");
+      await addRun(org, ours, "error", { at: at(-4), errorType: "system" });
+      await addRun(org, ours, "error", { at: at(-3), errorType: "system" });
+      await addRun(org, ours, "error", { at: at(-2), errorType: "system" });
+      await runCycle();
+      expect(await openIncident(ours)).toBeUndefined();
+
+      const mixed = await makeWorkflow(org, "Mixed failures");
+      await addRun(org, mixed, "error", { at: at(-5), errorType: "user" });
+      await addRun(org, mixed, "error", { at: at(-4), errorType: "system" });
+      await addRun(org, mixed, "error", { at: at(-3) });
+      await addRun(org, mixed, "error", { at: at(-2), errorType: "system" });
+      await addRun(org, mixed, "error", { at: at(-1) });
+      await runCycle();
+      const incident = await openIncident(mixed);
+      expect(incident?.openedBy).toBe("count");
+      expect(incident?.failureCount).toBe(3);
+    });
+
+    it("needs two failures for the time rule, and never turns the workflow off for it", async () => {
+      const once = await makeWorkflow(org, "One slow failure");
+      await addRun(org, once, "error", { at: at(-120) });
+      await runCycle();
+      expect(await openIncident(once)).toBeUndefined();
+
+      const twice = await makeWorkflow(org, "Two slow failures");
+      await db.insert(workflowFailureAlertOverrides).values({
+        workflowId: twice,
+        organizationId: org.orgId,
+        pauseWorkflow: true,
+      });
+      await addRun(org, twice, "error", { at: at(-120) });
+      await addRun(org, twice, "error", { at: at(-30) });
+      await runCycle();
+      const incident = await openIncident(twice);
+      expect(incident?.openedBy).toBe("time");
+      expect(incident?.workflowPausedAt).toBeNull();
+      expect(await isEnabled(twice)).toBe(true);
+    });
+  });
+
+  describe("stale deliveries", { timeout: SUITE_TIMEOUT }, () => {
+    it("drops rows queued over an hour ago and their backups, but retries younger ones", async () => {
+      const org = await makeOrg("stale");
+      const insert = async (
+        tag: string,
+        patch: Partial<typeof failureAlertDeliveries.$inferInsert>
+      ): Promise<string> => {
+        const id = nextId("delivery_");
+        await db.insert(failureAlertDeliveries).values({
+          id,
+          organizationId: org.orgId,
+          kind: "alerts_resumed",
+          sequence: 0,
+          channel: "email",
+          recipient: org.email,
+          dedupKey: `${id}-${tag}`,
+          ...patch,
+        });
+        return id;
+      };
+      const old = await insert("old", {
+        state: "retrying",
+        attempts: 3,
+        createdAt: at(-61),
+        nextAttemptAt: at(-1),
+      });
+      const young = await insert("young", {
+        state: "retrying",
+        attempts: 2,
+        createdAt: at(-50),
+        nextAttemptAt: at(-1),
+      });
+      const failedOld = await insert("failedold", {
+        kind: "alert",
+        state: "failed",
+        attempts: 1,
+        createdAt: at(-61),
+        nextAttemptAt: at(-61),
+        backupAt: at(-46),
+      });
+      await runCycle();
+      const rows = await deliveriesOf(org.orgId);
+      const byId = (id: string) => rows.find((d) => d.id === id);
+      expect(byId(old)?.state).toBe("skipped");
+      expect(byId(old)?.lastError).toBe(
+        "Dropped: queued more than an hour ago."
+      );
+      expect(byId(young)?.state).toBe("delivered");
+      expect(byId(failedOld)?.backupSentAt).not.toBeNull();
+      expect(rows.filter((d) => d.isBackup)).toHaveLength(0);
     });
   });
 

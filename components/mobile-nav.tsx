@@ -25,6 +25,7 @@ import {
   SETTINGS_NAV_ITEM,
   visibleNavItems,
 } from "@/components/nav-items";
+import { askLeave } from "@/components/navigation-guard";
 import { OrgSwitcher } from "@/components/organization/org-switcher";
 import { AddressBookOverlay } from "@/components/overlays/address-book-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
@@ -342,6 +343,12 @@ function MobileNavBody({
   }
 
   async function newWorkflow(): Promise<void> {
+    // Unsaved changes on the page are asked about before a workflow is made;
+    // with none, it starts at once.
+    const asked = askLeave("/workflows");
+    if (asked && !(await asked)) {
+      return;
+    }
     setCreating(true);
     // onSettled runs whether or not the workflow was made.
     await runNewWorkflow({

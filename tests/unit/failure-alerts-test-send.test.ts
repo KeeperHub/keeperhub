@@ -61,8 +61,26 @@ describe("email tests count each recipient against the daily limit", () => {
         "org-wide",
         members.map((m) => m.userId)
       )
-    ).rejects.toMatchObject({ status: 429 });
+    ).rejects.toMatchObject({
+      status: 429,
+      message: "A test can email at most 30 people. Choose fewer people.",
+    });
     expect(sendEmailMessage).not.toHaveBeenCalled();
+  });
+
+  it("a refused test takes none of the sends that are left", async () => {
+    const three = ["u1", "u2", "u3"];
+    for (let i = 0; i < 9; i++) {
+      await emailTest(`partial-${i}`, "org-partial", three);
+    }
+    await expect(
+      emailTest("partial-four", "org-partial", ["u1", "u2", "u3", "u4"])
+    ).rejects.toMatchObject({
+      status: 429,
+      message: "This test would email 4 people; 3 test emails are left today.",
+    });
+    await emailTest("partial-three", "org-partial", three);
+    expect(sendEmailMessage).toHaveBeenCalledTimes(30);
   });
 
   it("spends the day's sends by recipients, not by tests", async () => {

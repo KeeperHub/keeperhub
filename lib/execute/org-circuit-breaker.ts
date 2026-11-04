@@ -3,6 +3,7 @@ import "server-only";
 import { and, eq, isNotNull } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { member, organization } from "@/lib/db/schema";
+import { restartOrgScheduleCounting } from "@/lib/schedule-service";
 
 /**
  * Org-level incident circuit breaker (self-serve kill switch).
@@ -153,6 +154,9 @@ export async function resetOrgCircuitBreaker(params: {
       )
     )
     .returning({ id: organization.id });
+  if (cleared) {
+    await restartOrgScheduleCounting(params.organizationId);
+  }
 
   return { reset: true, wasHalted: Boolean(cleared) };
 }

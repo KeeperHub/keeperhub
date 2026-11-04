@@ -32,17 +32,18 @@ import {
   BACKUP_AFTER_MS,
   DELIVERY_BATCH,
   FREE_PLAN_MONTHLY_EMAILS,
-  GIVE_UP_AFTER_MS,
   HEALTH_CHECK_INTERVAL_MS,
   MAX_REMINDERS,
   RETENTION_DAYS,
   RETRY_DELAYS_MS,
+  STALE_DELIVERY_MS,
   STALE_SENDING_MS,
 } from "./constants";
 import {
   type AlertWorkflow,
   type MessageInput,
   type RenderedMessage,
+  redactErrorSecrets,
   renderMessage,
   runsUrl,
 } from "./messages";
@@ -326,6 +327,10 @@ async function renderRow(
       ...org,
       kind: "channel_paused",
       channelLabel: String(context.channelLabel ?? "A channel"),
+      channelKind:
+        typeof context.channelKind === "string"
+          ? context.channelKind
+          : undefined,
       reason: String(context.reason ?? ""),
     };
   } else if (row.kind === "cap_warning") {
@@ -392,7 +397,11 @@ async function renderRow(
     const workflow = incident ? await ctx.workflow(incident.workflowId) : null;
     // A "still failing" message must not land after the workflow recovered,
     // e.g. a row taken over from a crashed evaluator after the close.
-    const stale = row.kind !== "recovery" && Boolean(incident?.resolvedAt);
+    // A recovery is stale once its incident reopened.
+    const stale =
+      row.kind === "recovery"
+        ? !incident?.resolvedAt
+        : Boolean(incident?.resolvedAt);
     if (!(incident && workflow) || stale) {
       return null;
     }
@@ -437,7 +446,9 @@ async function renderRow(
         trigger: workflow.triggerLabel,
         failing_since: incident.firstFailedAt.toISOString(),
         failed_runs_in_a_row: incident.failureCount,
-        last_error: incident.lastError,
+        last_error: incident.lastError
+          ? redactErrorSecrets(incident.lastError)
+          : null,
         runs: link,
       },
     };
@@ -646,6 +657,7 @@ async function pauseChannel(
             channel.destination,
             connection?.name
           ),
+          channelKind: channel.kind,
           reason,
         },
       })),
@@ -685,11 +697,12 @@ export async function drainOutbox(
     if (claimed.length === 0) {
       return;
     }
-    const { kept: rows, dropped } = splitByRollout(
+    const { kept, dropped } = splitByRollout(
       claimed,
       (row) => row.organizationId
     );
     await skipOutsideRollout(dropped);
+    const rows = await dropStale(kept);
     await ctx.loadChannels(
       rows.map((row) => row.channelId).filter((id): id is string => Boolean(id))
     );
@@ -743,6 +756,31 @@ async function skipOutsideRollout(rows: DeliveryRow[]): Promise<void> {
         rows.map((row) => row.id)
       )
     );
+}
+
+const STALE_TEXT = "Dropped: queued more than an hour ago.";
+
+/** Queued over an hour ago, so no longer news: such a row is never sent, nor a backup for it. */
+function isStale(row: DeliveryRow, now: Date): boolean {
+  return now.getTime() - dueSince(row).getTime() >= STALE_DELIVERY_MS;
+}
+
+/** Skip claimed rows that waited too long; returns the rest. */
+async function dropStale(rows: DeliveryRow[]): Promise<DeliveryRow[]> {
+  const now = new Date();
+  const stale = rows.filter((row) => isStale(row, now));
+  if (stale.length > 0) {
+    await db
+      .update(failureAlertDeliveries)
+      .set({ state: "skipped", lastError: STALE_TEXT, updatedAt: now })
+      .where(
+        inArray(
+          failureAlertDeliveries.id,
+          stale.map((row) => row.id)
+        )
+      );
+  }
+  return rows.filter((row) => !stale.includes(row));
 }
 
 /** Hand claimed rows the budget did not reach back to the queue, due now. */
@@ -812,13 +850,15 @@ async function processRow(
     );
   }
 
-  const expired = now.getTime() - dueSince(row).getTime() >= GIVE_UP_AFTER_MS;
+  const retryAt = new Date(
+    now.getTime() + nextRetryDelayMs(row.attempts, outcome.retryAfterMs)
+  );
+  // A retry that would land after the hour is dropped anyway: fail now instead.
+  const expired = isStale(row, retryAt);
   if ((outcome.retryable || outcome.platformFault) && !expired) {
     stats.retrying += 1;
     await finishRow(row, "retrying", {
-      nextAttemptAt: new Date(
-        now.getTime() + nextRetryDelayMs(row.attempts, outcome.retryAfterMs)
-      ),
+      nextAttemptAt: retryAt,
       lastStatus: outcome.status ?? null,
       lastError: outcome.message,
     });
@@ -830,13 +870,19 @@ async function processRow(
     lastStatus: outcome.status ?? null,
     lastError: outcome.message,
   });
-  if (row.channelId && !outcome.channelHealthy) {
-    const reason = expired
-      ? `It has failed for 24 hours: ${outcome.message}`
-      : outcome.message;
-    if (await pauseChannel(row.channelId, reason, row.organizationId, now)) {
-      stats.channelsPaused += 1;
-    }
+  // An hour of retryable errors may be the provider's outage: the daily check judges the channel.
+  if (
+    row.channelId &&
+    !outcome.channelHealthy &&
+    !expired &&
+    (await pauseChannel(
+      row.channelId,
+      outcome.message,
+      row.organizationId,
+      now
+    ))
+  ) {
+    stats.channelsPaused += 1;
   }
 }
 
@@ -884,11 +930,14 @@ export async function fireBackups(now: Date, stats: DrainStats): Promise<void> {
         )
       )
     )
+    .orderBy(failureAlertDeliveries.backupAt)
     .limit(100);
 
-  const { kept, dropped } = splitByRollout(due, (row) => row.organizationId);
+  const split = splitByRollout(due, (row) => row.organizationId);
+  const kept = split.kept.filter((row) => !isStale(row, now));
+  // Outside the rollout, or queued over an hour ago: no backup is owed; mark them so they stop crowding the list.
+  const dropped = due.filter((row) => !kept.includes(row));
   if (dropped.length > 0) {
-    // Outside the rollout no backup is owed; mark them so they stop crowding the list.
     await db
       .update(failureAlertDeliveries)
       .set({ backupSentAt: now })
@@ -1056,35 +1105,16 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
 }
 
 const HEALTH_CHECKS_PER_CYCLE = 20;
+/** Channels read per cycle: ones outside the rollout stay due, so the scan pages through them. */
+const HEALTH_SCAN_PAGE = 500;
+let healthScanCursor: string | null = null;
 
 /** Daily silent check: pause dead channels, restore paused ones that work again. */
 export async function runHealthChecks(
   now: Date,
   stats: DrainStats
 ): Promise<void> {
-  const isDue = or(
-    isNull(failureAlertChannels.lastHealthCheckAt),
-    lt(
-      failureAlertChannels.lastHealthCheckAt,
-      new Date(now.getTime() - HEALTH_CHECK_INTERVAL_MS)
-    )
-  );
-  // Orgs first, longest unchecked first, so orgs outside the rollout never crowd the batch.
-  const orgs = await db
-    .select({ organizationId: failureAlertChannels.organizationId })
-    .from(failureAlertChannels)
-    .where(isDue)
-    .groupBy(failureAlertChannels.organizationId)
-    .orderBy(
-      sql`min(COALESCE(${failureAlertChannels.lastHealthCheckAt}, '-infinity'::timestamp))`
-    );
-  const enabled = splitByRollout(orgs, (row) => row.organizationId)
-    .kept.slice(0, HEALTH_CHECKS_PER_CYCLE)
-    .map((row) => row.organizationId);
-  if (enabled.length === 0) {
-    return;
-  }
-  const due = await db
+  const rows = await db
     .select({
       id: failureAlertChannels.id,
       organizationId: failureAlertChannels.organizationId,
@@ -1095,9 +1125,31 @@ export async function runHealthChecks(
       pausedAt: failureAlertChannels.pausedAt,
     })
     .from(failureAlertChannels)
-    .where(and(isDue, inArray(failureAlertChannels.organizationId, enabled)))
-    .orderBy(sql`${failureAlertChannels.lastHealthCheckAt} ASC NULLS FIRST`)
-    .limit(HEALTH_CHECKS_PER_CYCLE);
+    .where(
+      and(
+        or(
+          isNull(failureAlertChannels.lastHealthCheckAt),
+          lt(
+            failureAlertChannels.lastHealthCheckAt,
+            new Date(now.getTime() - HEALTH_CHECK_INTERVAL_MS)
+          )
+        ),
+        healthScanCursor
+          ? gt(failureAlertChannels.id, healthScanCursor)
+          : undefined
+      )
+    )
+    .orderBy(failureAlertChannels.id)
+    .limit(HEALTH_SCAN_PAGE);
+  const kept = splitByRollout(rows, (row) => row.organizationId).kept;
+  const due = kept.slice(0, HEALTH_CHECKS_PER_CYCLE);
+  // Resume after the last channel taken, or from the top once the list ends.
+  if (kept.length > due.length) {
+    healthScanCursor = due.at(-1)?.id ?? null;
+  } else {
+    healthScanCursor =
+      rows.length < HEALTH_SCAN_PAGE ? null : (rows.at(-1)?.id ?? null);
+  }
 
   for (const channel of due) {
     try {

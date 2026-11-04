@@ -236,7 +236,12 @@ function buildBackupMessage(params: {
     : [];
   // Fullest first; the reason is dropped before the alert itself is cut.
   return [
-    [...head, "\nWhy PagerDuty did not take it: ", { code: params.reason }, ...link],
+    [
+      ...head,
+      "\nWhy PagerDuty did not take it: ",
+      { code: params.reason },
+      ...link,
+    ],
     [...head, ...link],
   ];
 }

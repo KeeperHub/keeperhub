@@ -890,8 +890,10 @@ export function WorkflowFailureAlerts({
                   className="pl-6 text-muted-foreground text-xs"
                   id="wf-pause-workflow-help"
                 >
-                  Turns it off when its alert goes out. Any failure counts. To
-                  start it again, fix the cause, then press Turn back on.
+                  Turns it off when it fails that many runs in a row or the
+                  wallet runs out of funds; the time limit only alerts. Errors
+                  on KeeperHub's side do not count. To start it again, fix the
+                  cause, then press Turn back on.
                 </p>
               </div>
               <div className="space-y-2">

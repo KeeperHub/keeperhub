@@ -3,10 +3,8 @@
 import { type ComponentProps, useEffect } from "react";
 import { cn } from "@/lib/utils";
 
-/** The one fixed banner slot's height; pages offset by it via --app-banner-height. */
-const APP_BANNER_HEIGHT = "36px";
-// Above modals (50) and below toasts (60).
-const APP_BANNER_Z_INDEX = 55;
+/** The banner slot's height token; pages offset by it via --app-banner-height. */
+const APP_BANNER_HEIGHT = "var(--app-banner-slot-height)";
 
 /** Sets --app-banner-height while a banner shows, so fixed chrome moves down. */
 export function useAppBannerOffset(visible: boolean): void {
@@ -38,7 +36,7 @@ export function AppBannerSlot({
       )}
       style={{
         height: APP_BANNER_HEIGHT,
-        zIndex: APP_BANNER_Z_INDEX,
+        zIndex: "var(--z-banner)",
         ...style,
       }}
       {...props}

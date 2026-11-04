@@ -27,6 +27,9 @@ const ENTITIES: Record<string, string> = {
 };
 // Discord renders a backslash-escaped punctuation mark as itself.
 const DISCORD_MARKDOWN = /[\\*_~`|[\]()<>#@]/g;
+// Telegram links @name even in HTML mode; a word joiner after "@" stops it.
+const TELEGRAM_MENTION = /@(?=\w)/g;
+const WORD_JOINER = "\u2060";
 const ELLIPSIS = "…";
 
 /** One line, no control or bidi characters. */
@@ -51,6 +54,9 @@ function formatUser(text: string, format: Format): string {
   const value = clean(text);
   if (format === "discord") {
     return value.replace(DISCORD_MARKDOWN, "\\$&");
+  }
+  if (format === "telegram") {
+    return escapeEntities(value).replace(TELEGRAM_MENTION, `@${WORD_JOINER}`);
   }
   return formatOwn(value, format);
 }

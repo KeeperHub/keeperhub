@@ -152,7 +152,9 @@ export function WhenToNotify({
       </div>
       <p className="text-muted-foreground text-xs">
         For slow schedules: a workflow that runs every 4 hours takes {4 * runs}{" "}
-        hours to fail {runs} time{runs === 1 ? "" : "s"}.
+        hours to fail {runs} time{runs === 1 ? "" : "s"}. The time limit needs
+        at least 2 failed runs in a row and never pauses a workflow. Errors on
+        KeeperHub's side do not count.
       </p>
       <p className="text-muted-foreground text-xs">{FUNDS_RULE}</p>
       <label className="flex items-center gap-2" htmlFor="failure-remind">

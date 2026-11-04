@@ -1,12 +1,11 @@
 import "server-only";
 
-import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   failureAlertChannels,
   failureAlertDeliveries,
   integrations,
-  workflowExecutions,
   workflowFailureAlertOverrides,
   workflowFailureIncidents,
   workflows,
@@ -35,6 +34,7 @@ import {
   toMemberView,
 } from "./settings";
 import { summarizeStreak } from "./streak";
+import { loadStreakRuns } from "./streak-runs";
 import { methodText, type WorkflowAlertView } from "./view-types";
 import { runsOnItsOwn, workflowTriggerType } from "./workflow-trigger";
 
@@ -78,26 +78,7 @@ export async function loadWorkflowAlertView(
       loadChannelViews(workflow.organizationId, workflow.id),
     ]);
 
-  const runs = await db
-    .select({
-      id: workflowExecutions.id,
-      status: workflowExecutions.status,
-      triggerSource: workflowExecutions.triggerSource,
-      credentialType: workflowExecutions.triggeredByCredentialType,
-      startedAt: workflowExecutions.startedAt,
-      completedAt: workflowExecutions.completedAt,
-      error: workflowExecutions.error,
-    })
-    .from(workflowExecutions)
-    .where(
-      and(
-        eq(workflowExecutions.workflowId, workflow.id),
-        isNotNull(workflowExecutions.completedAt),
-        isNull(workflowExecutions.deletedAt)
-      )
-    )
-    .orderBy(desc(workflowExecutions.startedAt))
-    .limit(STATUS_WINDOW);
+  const runs = await loadStreakRuns(workflow.id, STATUS_WINDOW);
   const summary = summarizeStreak(runs, policy.countingSince, STATUS_WINDOW);
 
   const [incident] = await db

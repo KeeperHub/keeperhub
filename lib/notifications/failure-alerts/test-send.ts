@@ -5,7 +5,6 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { failureAlertChannels, organization } from "@/lib/db/schema";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
-import { createSlidingWindowLimiter } from "@/lib/rate-limit/sliding-window";
 import { getRedis } from "@/lib/redis";
 import { TESTS_PER_DAY_PER_ORG, TESTS_PER_MINUTE_PER_USER } from "./constants";
 import { appBaseUrl, renderMessage } from "./messages";
@@ -22,83 +21,80 @@ import {
 } from "./settings";
 import { channelLabel, type TestRequest, type TestResult } from "./view-types";
 
-// Fallbacks for a deployment without Redis: per pod, so looser, never open.
-const userLimiter = createSlidingWindowLimiter({
-  limit: TESTS_PER_MINUTE_PER_USER,
-  windowMs: 60_000,
-});
-const orgLimiter = createSlidingWindowLimiter({
-  limit: TESTS_PER_DAY_PER_ORG,
-  windowMs: 24 * 60 * 60 * 1000,
-});
+/** Per-pod windows for a deployment without Redis: looser, never open. */
+const localWindows = new Map<string, number[]>();
 
-/** Takes `weight` slots; a refused call gives its slots back. */
-async function underLimit(
+/** Takes `weight` slots, or none when they do not all fit; `left` is what remains. */
+async function takeSlots(
   key: string,
   limit: number,
   windowSeconds: number,
-  fallback: ReturnType<typeof createSlidingWindowLimiter>,
   weight = 1
-): Promise<boolean> {
-  if (weight > limit) {
-    return false;
-  }
+): Promise<{ ok: boolean; left: number }> {
   const redis = getRedis();
   if (redis) {
     try {
       const count = await redis.incrby(key, weight);
-      // Checked on every call rather than only on the first, so a key whose
-      // expiry failed to set once heals itself instead of limiting for good.
+      // Checked on every call, so a key whose expiry failed to set once heals itself.
       if ((await redis.ttl(key)) < 0) {
         await redis.expire(key, windowSeconds);
       }
       if (count > limit) {
         await redis.decrby(key, weight);
-        return false;
+        return { ok: false, left: Math.max(0, limit - (count - weight)) };
       }
-      return true;
+      return { ok: true, left: limit - count };
     } catch {
       // Fall through to the in-memory window.
     }
   }
-  for (let slot = 0; slot < weight; slot++) {
-    if (!fallback.check(key).allowed) {
-      return false;
-    }
+  const now = Date.now();
+  const recent = (localWindows.get(key) ?? []).filter(
+    (t) => t > now - windowSeconds * 1000
+  );
+  const left = limit - recent.length;
+  if (weight > left) {
+    localWindows.set(key, recent);
+    return { ok: false, left: Math.max(0, left) };
   }
-  return true;
+  localWindows.set(key, [...recent, ...new Array<number>(weight).fill(now)]);
+  return { ok: true, left: left - weight };
 }
 
-/** Each email a test sends counts toward the org's daily tests. */
+/** Each email a test sends counts toward the org's daily tests; `emails` is unset for chat tests. */
 async function checkTestRateLimit(
   organizationId: string,
   userId: string,
-  sends = 1
+  emails?: number
 ): Promise<void> {
-  const perUser = await underLimit(
+  if (emails !== undefined && emails > TESTS_PER_DAY_PER_ORG) {
+    throw new SettingsError(
+      `A test can email at most ${TESTS_PER_DAY_PER_ORG} people. Choose fewer people.`,
+      429
+    );
+  }
+  const perUser = await takeSlots(
     `failure-alert-test:user:${userId}`,
     TESTS_PER_MINUTE_PER_USER,
-    60,
-    userLimiter
+    60
   );
-  if (!perUser) {
+  if (!perUser.ok) {
     throw new SettingsError(
       `You can send ${TESTS_PER_MINUTE_PER_USER} tests a minute. Try again in a minute.`,
       429
     );
   }
-  const perOrg = await underLimit(
+  const perOrg = await takeSlots(
     `failure-alert-test:org:${organizationId}`,
     TESTS_PER_DAY_PER_ORG,
     24 * 60 * 60,
-    orgLimiter,
-    sends
+    emails ?? 1
   );
-  if (!perOrg) {
+  if (!perOrg.ok) {
     throw new SettingsError(
-      sends > 1
-        ? `This test would send ${sends} emails, more than this organization has left of its ${TESTS_PER_DAY_PER_ORG} test sends today. Choose fewer people or try again tomorrow.`
-        : `This organization has used its ${TESTS_PER_DAY_PER_ORG} tests for today. Try again tomorrow.`,
+      emails === undefined
+        ? `This organization has used its ${TESTS_PER_DAY_PER_ORG} tests for today. Try again tomorrow.`
+        : `This test would email ${emails} ${emails === 1 ? "person" : "people"}; ${perOrg.left} test ${perOrg.left === 1 ? "email is" : "emails are"} left today.`,
       429
     );
   }

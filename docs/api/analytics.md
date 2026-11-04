@@ -294,9 +294,12 @@ run fields above, read as follows:
   reached, or withdrawn); it is `null` while delivery is still in progress.
   `durationMs` is always `null`.
 - `status` is `success` once delivered, `error` when delivery failed,
-  `skipped` when the monthly email limit stopped it, `pending` while queued,
+  `skipped` when the monthly email limit stopped it, `pending` while queued
+  (a recovery notice waits 30 minutes, in case the workflow fails again),
   `running` while sending or retrying, and `cancelled` when it was withdrawn
-  before it went out (for example because the workflow recovered first).
+  before it went out (for example because the workflow recovered first, failed
+  again before its recovery notice went out, or it was still unsent an hour
+  after it was queued).
 - `workflowId` and `workflowName` are set when the notification is about exactly
   one workflow, and `null` otherwise.
 - Network, gas, step and error fields are always empty.

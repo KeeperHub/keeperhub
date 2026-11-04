@@ -38,6 +38,7 @@ import {
   MAX_WORKFLOWS_PER_RUN,
   MISSED_RUNS_PLATFORM_ALERT,
   MISSED_SCAN_LIMIT,
+  RECOVERY_HOLD_MS,
   REMINDER_INTERVAL_MS,
 } from "./constants";
 import { missedDueAt, ranRecentlyCutoff } from "./missed-runs";
@@ -70,12 +71,8 @@ import {
 } from "./queue-rows";
 import { isFailureAlertsEnabledForOrg, splitByRollout } from "./rollout";
 import { lockOrgSettings } from "./settings";
-import {
-  decide,
-  isAutomatedRun,
-  type StreakRun,
-  summarizeStreak,
-} from "./streak";
+import { decide, isAutomatedRun, summarizeStreak } from "./streak";
+import { loadStreakRuns } from "./streak-runs";
 import {
   AUTOMATIC_TRIGGERS,
   runsOnItsOwn,
@@ -134,14 +131,24 @@ export function emptyStats(): EvaluationStats {
   };
 }
 
-/** Claim due workflows with a five-minute lease, kept as Postgres text (a raw Date parses as local time). */
-async function claimQueue(): Promise<{ workflowId: string; lease: string }[]> {
+/** One claim's rows share its lease, kept as Postgres text (a raw Date parses as local time). */
+type Claimed = { workflowId: string; lease: string };
+
+/** Claim due workflows with a five-minute lease, skipping ones this cycle already took. */
+async function claimQueue(skip: ReadonlySet<string>): Promise<Claimed[]> {
+  const notSkipped =
+    skip.size > 0
+      ? sql`AND workflow_id NOT IN (${sql.join(
+          [...skip].map((id) => sql`${id}`),
+          sql`, `
+        )})`
+      : sql``;
   const rows = await db.execute<{ workflow_id: string; lease: string }>(sql`
     UPDATE ${workflowFailureAlertQueue}
     SET due_at = ${LEASE}
     WHERE workflow_id IN (
       SELECT workflow_id FROM ${workflowFailureAlertQueue}
-      WHERE due_at <= now()
+      WHERE due_at <= now() ${notSkipped}
       ORDER BY due_at
       LIMIT ${MAX_WORKFLOWS_PER_RUN}
       FOR UPDATE SKIP LOCKED
@@ -177,24 +184,17 @@ async function releaseQueue(
   `);
 }
 
-type Claimed = { workflowId: string; lease: string };
-
-/** Run `apply` once per lease (one claim shares one), on that lease's workflow ids. */
-async function perLease(
-  rows: Claimed[],
-  apply: (ids: string[], lease: string) => Promise<unknown>
-): Promise<void> {
-  const byLease = new Map<string, string[]>();
-  for (const row of rows) {
-    byLease.set(row.lease, [...(byLease.get(row.lease) ?? []), row.workflowId]);
-  }
-  for (const [lease, ids] of byLease) {
-    await apply(ids, lease);
-  }
-}
+const idList = (ids: string[]) =>
+  sql.join(
+    ids.map((id) => sql`${id}`),
+    sql`, `
+  );
 
 /** Drop claimed rows of orgs outside the rollout (or gone) in bulk, keeping the rest. */
-async function dropOutsideRollout(claimed: Claimed[]): Promise<Claimed[]> {
+async function dropOutsideRollout(
+  claimed: Claimed[],
+  lease: string
+): Promise<Claimed[]> {
   if (claimed.length === 0) {
     return [];
   }
@@ -211,29 +211,26 @@ async function dropOutsideRollout(claimed: Claimed[]): Promise<Claimed[]> {
   const { kept, dropped } = splitByRollout(claimed, (row) =>
     orgOf.get(row.workflowId)
   );
-  await perLease(dropped, (ids, lease) =>
-    db.execute(sql`
+  if (dropped.length > 0) {
+    await db.execute(sql`
       DELETE FROM ${workflowFailureAlertQueue}
-      WHERE workflow_id IN (${sql.join(
-        ids.map((id) => sql`${id}`),
-        sql`, `
-      )}) AND due_at = ${lease}::timestamp
-    `)
-  );
+      WHERE workflow_id IN (${idList(dropped.map((row) => row.workflowId))})
+        AND due_at = ${lease}::timestamp
+    `);
+  }
   return kept;
 }
 
 /** Hand back claimed rows the budget did not reach, due now. */
-async function handBack(rows: Claimed[]): Promise<void> {
-  await perLease(rows, (ids, lease) =>
-    db.execute(sql`
-      UPDATE ${workflowFailureAlertQueue} SET due_at = now()
-      WHERE workflow_id IN (${sql.join(
-        ids.map((id) => sql`${id}`),
-        sql`, `
-      )}) AND due_at = ${lease}::timestamp
-    `)
-  );
+async function handBack(rows: Claimed[], lease: string): Promise<void> {
+  if (rows.length === 0) {
+    return;
+  }
+  await db.execute(sql`
+    UPDATE ${workflowFailureAlertQueue} SET due_at = now()
+    WHERE workflow_id IN (${idList(rows.map((row) => row.workflowId))})
+      AND due_at = ${lease}::timestamp
+  `);
 }
 
 /** While the rollout is off nothing is evaluated: the trigger still queues every run, so clear it. */
@@ -269,32 +266,6 @@ async function loadWorkflow(workflowId: string): Promise<WorkflowRow | null> {
   return row ?? null;
 }
 
-async function loadRecentRuns(
-  workflowId: string,
-  limit: number
-): Promise<StreakRun[]> {
-  return await db
-    .select({
-      id: workflowExecutions.id,
-      status: workflowExecutions.status,
-      triggerSource: workflowExecutions.triggerSource,
-      credentialType: workflowExecutions.triggeredByCredentialType,
-      startedAt: workflowExecutions.startedAt,
-      completedAt: workflowExecutions.completedAt,
-      error: workflowExecutions.error,
-    })
-    .from(workflowExecutions)
-    .where(
-      and(
-        eq(workflowExecutions.workflowId, workflowId),
-        isNotNull(workflowExecutions.completedAt),
-        isNull(workflowExecutions.deletedAt)
-      )
-    )
-    .orderBy(desc(workflowExecutions.startedAt))
-    .limit(limit);
-}
-
 async function loadOpenIncident(
   workflowId: string
 ): Promise<IncidentRow | null> {
@@ -311,14 +282,11 @@ async function loadOpenIncident(
   return row ?? null;
 }
 
+/** A halted org is not inactive: its incidents stay open but quiet, so lifting the halt does not re-alert. */
 export function inactiveResolution(
   workflow: Pick<
     WorkflowRow,
-    | "deletedAt"
-    | "deactivatedAt"
-    | "enabled"
-    | "orgDeactivatedAt"
-    | "orgHaltedAt"
+    "deletedAt" | "deactivatedAt" | "enabled" | "orgDeactivatedAt"
   >,
   trigger: string | null
 ): FailureIncidentResolution | null {
@@ -328,8 +296,7 @@ export function inactiveResolution(
   if (
     workflow.deactivatedAt ||
     !workflow.enabled ||
-    workflow.orgDeactivatedAt ||
-    workflow.orgHaltedAt
+    workflow.orgDeactivatedAt
   ) {
     return "disabled";
   }
@@ -337,6 +304,78 @@ export function inactiveResolution(
     return "manual_trigger";
   }
   return null;
+}
+
+/** Reopen the incident a recent success closed, unless its recovery already went out. */
+async function reopenRecovered(
+  workflowId: string,
+  failedAt: Date,
+  now: Date
+): Promise<IncidentRow | null> {
+  const [last] = await db
+    .select()
+    .from(workflowFailureIncidents)
+    .where(
+      and(
+        eq(workflowFailureIncidents.workflowId, workflowId),
+        isNotNull(workflowFailureIncidents.resolvedAt)
+      )
+    )
+    .orderBy(desc(workflowFailureIncidents.resolvedAt))
+    .limit(1);
+  if (
+    !last?.resolvedAt ||
+    last.resolvedReason !== "success" ||
+    failedAt.getTime() >= last.resolvedAt.getTime() + RECOVERY_HOLD_MS
+  ) {
+    return null;
+  }
+  return await db.transaction(async (tx: Tx) => {
+    const recovery = and(
+      eq(failureAlertDeliveries.incidentId, last.id),
+      eq(failureAlertDeliveries.kind, "recovery")
+    );
+    const held = await tx
+      .select({
+        state: failureAlertDeliveries.state,
+        attempts: failureAlertDeliveries.attempts,
+      })
+      .from(failureAlertDeliveries)
+      .where(recovery)
+      .for("update");
+    if (
+      held.some(
+        (row) =>
+          row.attempts > 0 ||
+          !(row.state === "pending" || row.state === "skipped")
+      )
+    ) {
+      return null;
+    }
+    await tx
+      .update(failureAlertDeliveries)
+      .set({
+        state: "skipped",
+        lastError: "The workflow failed again before this was sent.",
+        updatedAt: now,
+      })
+      .where(and(recovery, eq(failureAlertDeliveries.state, "pending")));
+    const [row] = await tx
+      .update(workflowFailureIncidents)
+      .set({
+        resolvedAt: null,
+        resolvedReason: null,
+        resolvingExecutionId: null,
+      })
+      .where(
+        and(
+          eq(workflowFailureIncidents.id, last.id),
+          isNotNull(workflowFailureIncidents.resolvedAt)
+        )
+      )
+      .returning();
+    return row ?? null;
+  });
 }
 
 const SKIPPED_BECAUSE: Record<FailureIncidentResolution, string> = {
@@ -416,6 +455,21 @@ async function closeIncident(params: {
     const seen = new Set<string>();
     const wantRecovery =
       (reason === "success" || reason === "ran") && params.notifyRecovery;
+    // A reopened incident recovers again: a new sequence, so its rows are not deduped away.
+    const [prev] = await tx
+      .select({
+        next: sql<number>`coalesce(max(${failureAlertDeliveries.sequence}) + 1, 0)::int`,
+      })
+      .from(failureAlertDeliveries)
+      .where(
+        and(
+          eq(failureAlertDeliveries.incidentId, incident.id),
+          eq(failureAlertDeliveries.kind, "recovery")
+        )
+      );
+    // A success is announced (and the page resolved) only after the hold; a failure in it reopens.
+    const sendAt =
+      reason === "success" ? new Date(now.getTime() + RECOVERY_HOLD_MS) : now;
     for (const row of prior) {
       const pagerDuty = row.channel === "pagerduty";
       // Delay the resolve so it lands after a page still in flight.
@@ -440,12 +494,17 @@ async function closeIncident(params: {
         organizationId: incident.organizationId,
         incidentId: incident.id,
         kind: "recovery",
-        sequence: 0,
+        sequence: prev?.next ?? 0,
         channel: row.channel,
         channelId: row.channelId,
         recipient: row.recipient,
         context: params.recoveryContext,
-        nextAttemptAt: inFlight ? new Date(now.getTime() + 2 * 60 * 1000) : now,
+        nextAttemptAt: new Date(
+          Math.max(
+            sendAt.getTime(),
+            inFlight ? now.getTime() + 2 * 60 * 1000 : 0
+          )
+        ),
       });
     }
     stats.messagesQueued += await insertDeliveries(rows, tx);
@@ -484,7 +543,7 @@ async function evaluateWorkflow(
   }
   stats.workflowsEvaluated += 1;
 
-  const open = await loadOpenIncident(workflowId);
+  let open = await loadOpenIncident(workflowId);
   const inactiveReason = inactiveResolution(
     workflow,
     workflowTriggerType(workflow.nodes)
@@ -503,13 +562,26 @@ async function evaluateWorkflow(
     }
     return null;
   }
+  if (workflow.orgHaltedAt) {
+    return null;
+  }
 
   // Once per org per cycle: on rollout day thousands of runs share a few orgs.
   const cycle = cycleState(stats);
   if (!cycle.orgsSeen.has(workflow.organizationId)) {
     cycle.orgsSeen.add(workflow.organizationId);
     await ensureOrgSettings(workflow.organizationId, now);
-    await queueLaunchNotice(workflow.organizationId, now, stats);
+    // A failed notice is retried next cycle and must not hold up this evaluation.
+    await queueLaunchNotice(workflow.organizationId, now, stats).catch(
+      (error: unknown) => {
+        logSystemError(
+          ErrorCategory.WORKFLOW_ENGINE,
+          "[FailureAlerts] Could not queue the launch notice",
+          error,
+          { organization_id: workflow.organizationId }
+        );
+      }
+    );
   }
 
   const policy = await loadEffectivePolicy(workflow.organizationId, workflowId);
@@ -518,13 +590,14 @@ async function evaluateWorkflow(
     MIN_STREAK_WINDOW,
     policy.threshold * STREAK_WINDOW_MULTIPLIER
   );
-  const runs = await loadRecentRuns(workflowId, window);
+  const runs = await loadStreakRuns(workflowId, window);
   const summary = summarizeStreak(runs, policy.countingSince, window);
 
   // A late schedule's incident ends with any run; failures then count as usual.
   if (open?.openedBy === "missed") {
+    const dueAt = open.firstFailedAt;
     const ranAgain = runs.find(
-      (run) => isAutomatedRun(run) && run.startedAt > open.firstFailedAt
+      (run) => isAutomatedRun(run) && run.startedAt > dueAt
     );
     if (ranAgain) {
       await closeIncident({
@@ -541,6 +614,11 @@ async function evaluateWorkflow(
       return await evaluateWorkflow(workflowId, now, opened, stats);
     }
     return null;
+  }
+
+  // A failure inside the recovery hold continues that incident: no new alert or page.
+  if (!open && summary.firstFailedAt) {
+    open = await reopenRecovered(workflowId, summary.firstFailedAt, now);
   }
 
   if (policy.muteUntilSuccess && summary.latestSuccessRunId) {
@@ -612,12 +690,14 @@ async function evaluateWorkflow(
   if (decision.kind !== "open") {
     return null;
   }
+  // Only the count and out-of-funds rules turn a workflow off; the time rule only tells.
+  const pauses = policy.pauseWorkflow && decision.by !== "time";
   // An org pause holds alerts but still turns the workflow off (it may spend gas).
-  if (orgPause && !policy.pauseWorkflow) {
+  if (orgPause && !pauses) {
     return orgPause;
   }
   // A mute never hides a pause: turning a workflow off silently is worse.
-  if (isMuted(policy, now) && !policy.pauseWorkflow) {
+  if (isMuted(policy, now) && !pauses) {
     // Alerts start again if it is still failing when the mute ends.
     return policy.mutedUntil;
   }
@@ -648,8 +728,7 @@ async function evaluateWorkflow(
       return null;
     }
     const paused =
-      policy.pauseWorkflow &&
-      (await turnOffForIncident(tx, workflowId, row.id, now));
+      pauses && (await turnOffForIncident(tx, workflowId, row.id, now));
     return { id: row.id, paused };
   });
   if (result) {
@@ -877,8 +956,7 @@ export async function closeInactiveIncidents(
         sql`((${workflows.enabled} = false AND NOT ${HELD_SQL})
           OR ${workflows.deletedAt} IS NOT NULL
           OR ${workflows.deactivatedAt} IS NOT NULL
-          OR ((${organization.deactivatedAt} IS NOT NULL
-            OR ${organization.haltedAt} IS NOT NULL) AND NOT ${HELD_SQL})
+          OR (${organization.deactivatedAt} IS NOT NULL AND NOT ${HELD_SQL})
           OR NOT EXISTS (
             SELECT 1 FROM jsonb_array_elements(
               CASE WHEN jsonb_typeof(${workflows.nodes}) = 'array'
@@ -975,6 +1053,7 @@ export async function queueReminders(
         !policy?.remindDaily ||
         isMuted(policy, now) ||
         isHeld(incident) ||
+        workflow.orgHaltedAt ||
         inactiveResolution(workflow, workflowTriggerType(workflow.nodes)) ||
         activePause(policy.orgPausedUntil, now)
       ) {
@@ -1140,7 +1219,7 @@ async function findFailingWorkflows(organizationId: string): Promise<
     if (!(trigger && runsOnItsOwn(trigger))) {
       continue;
     }
-    const runs = await loadRecentRuns(
+    const runs = await loadStreakRuns(
       candidate.id,
       DEFAULT_THRESHOLD * STREAK_WINDOW_MULTIPLIER
     );
@@ -1177,7 +1256,11 @@ export async function checkMissedSchedules(
       timezone: workflowSchedules.timezone,
       intervalSeconds: workflowSchedules.intervalSeconds,
       anchorAt: workflowSchedules.anchorAt,
-      scheduleCreatedAt: workflowSchedules.createdAt,
+      // Bumped on create, enable, cron change, each run and org resume: no miss counts before it.
+      scheduleSince:
+        sql`greatest(${workflowSchedules.createdAt}, ${workflowSchedules.updatedAt})`.mapWith(
+          workflowSchedules.updatedAt
+        ),
       lastStartedAt: sql`(SELECT max(${workflowExecutions.startedAt})
         FROM ${workflowExecutions}
         WHERE ${workflowExecutions.workflowId} = ${workflows.id}
@@ -1216,7 +1299,7 @@ export async function checkMissedSchedules(
       missedDueAt({
         schedule: row,
         lastStartedAt: row.lastStartedAt,
-        notBefore: row.scheduleCreatedAt,
+        notBefore: row.scheduleSince,
         now,
       }) !== null
   );
@@ -1253,7 +1336,7 @@ export async function checkMissedSchedules(
       schedule: row,
       lastStartedAt: row.lastStartedAt,
       notBefore: new Date(
-        Math.max(since.getTime(), row.scheduleCreatedAt.getTime())
+        Math.max(since.getTime(), row.scheduleSince.getTime())
       ),
       now,
     });
@@ -1327,20 +1410,28 @@ export async function evaluateQueuedWorkflows(
   deadline: number = Date.now() + EVALUATE_BUDGET_MS
 ): Promise<void> {
   const opened: OpenedIncident[] = [];
+  const started = Date.now();
+  const seen = new Set<string>();
   let full = true;
   while (full && Date.now() < deadline) {
-    const claimed = await claimQueue();
+    const claimed = await claimQueue(seen);
     full = claimed.length >= MAX_WORKFLOWS_PER_RUN;
-    const live = await dropOutsideRollout(claimed);
-    for (const [index, { workflowId, lease }] of live.entries()) {
+    const lease = claimed[0]?.lease ?? "";
+    for (const row of claimed) {
+      seen.add(row.workflowId);
+    }
+    // Rechecks are dated from this batch's time, so they are not due again within the budget.
+    const batchNow = new Date(now.getTime() + Date.now() - started);
+    const live = await dropOutsideRollout(claimed, lease);
+    for (const [index, { workflowId }] of live.entries()) {
       if (Date.now() >= deadline) {
-        await handBack(live.slice(index));
+        await handBack(live.slice(index), lease);
         break;
       }
       try {
         const recheckAt = await evaluateWorkflow(
           workflowId,
-          now,
+          batchNow,
           opened,
           stats
         );

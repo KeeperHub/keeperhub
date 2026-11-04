@@ -87,7 +87,7 @@ export function notificationTitle(
 
 export type NotificationRow = {
   id: string;
-  kind: string;
+  kind: FailureAlertMessageKind;
   channel: string;
   recipient: string;
   connectionName: string | null;

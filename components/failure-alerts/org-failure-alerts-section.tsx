@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronRight, Pause as PauseIcon, Plus } from "lucide-react";
+import { ChevronRight, Pause as PauseIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -11,16 +11,15 @@ import {
 import { FormSkeleton } from "@/components/settings/hub/skeletons";
 import { Button } from "@/components/ui/button";
 import { Notice } from "@/components/ui/notice";
-import {
-  invalidateNotificationStatus,
-  useAlertsEnabled,
-} from "@/lib/hooks/use-notifications";
+import { useSession } from "@/lib/auth-client";
+import { invalidateNotificationStatus } from "@/lib/hooks/use-notifications";
 import type {
   ChannelView,
   OrgSettingsView,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { AlertsStatus } from "./alerts-status";
-import { fetchView } from "./api";
+import { fetchView, ViewError } from "./api";
+import { AddMethodButton } from "./channel-list-editor";
 import { CustomWorkflowsList } from "./custom-workflows";
 import { describeRule } from "./format";
 import { memberLabel } from "./member-label";
@@ -131,9 +130,12 @@ export function OrgFailureAlertsSection({
 }: {
   organizationId: string | null;
 }): React.ReactElement {
-  const alertsEnabled = useAlertsEnabled(organizationId);
+  const { data: session } = useSession();
   const [data, setData] = useState<Loaded | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
+  // "missing": the GET answered 404 (alerts are off for the org).
+  const [loadFailed, setLoadFailed] = useState<false | "missing" | "error">(
+    false
+  );
   const [rules, setRules] = useState<RulesDraft | null>(null);
   const [recipients, setRecipients] = useState<string[]>([]);
   const [cards, setCards] = useState<DraftChannel[]>([]);
@@ -170,9 +172,13 @@ export function OrgFailureAlertsSection({
         ]);
         setRules(rulesDraftFrom(body));
         setRecipients([...body.recipientUserIds]);
-      } catch {
+      } catch (error) {
         if (isActive()) {
-          setLoadFailed(true);
+          setLoadFailed(
+            error instanceof ViewError && error.status === 404
+              ? "missing"
+              : "error"
+          );
         }
       }
     },
@@ -261,8 +267,8 @@ export function OrgFailureAlertsSection({
     [send]
   );
 
-  // Outside the rollout the settings GET answers 404; the status hook says why.
-  if ((loadFailed && alertsEnabled === false) || data?.enabled === false) {
+  // Outside the rollout the settings GET answers 404.
+  if (loadFailed === "missing" || data?.enabled === false) {
     return (
       <div data-testid="failure-alerts-unavailable">
         <SectionHeader description={ALERTS_DESCRIPTION} title="Alerts" />
@@ -279,7 +285,7 @@ export function OrgFailureAlertsSection({
     const header = (
       <SectionHeader description={ALERTS_DESCRIPTION} title="Alerts" />
     );
-    if (loadFailed && alertsEnabled !== null) {
+    if (loadFailed === "error") {
       return (
         <>
           {header}
@@ -505,7 +511,10 @@ export function OrgFailureAlertsSection({
       className="flex flex-col gap-4 md:gap-6"
       data-testid="failure-alerts-settings"
     >
-      <UnsavedChangesGuard dirty={anyDirty} />
+      <UnsavedChangesGuard
+        backFallback={`/settings/${encodeURIComponent(orgId)}`}
+        dirty={anyDirty}
+      />
       <SectionHeader
         action={
           canManage && !pause && !pausing ? (
@@ -550,6 +559,7 @@ export function OrgFailureAlertsSection({
           canManage={canManage}
           data={data}
           onResume={resumeAlerts}
+          viewerUserId={session?.user?.id}
         />
       </SettingsCard>
 
@@ -606,17 +616,12 @@ export function OrgFailureAlertsSection({
             ))}
           </ul>
           {canManage && (
-            <Button
-              data-testid="failure-alerts-add-method"
+            <AddMethodButton
+              buttonRef={addRef}
+              count={cards.length}
               onClick={addMethod}
-              ref={addRef}
-              size="sm"
-              type="button"
-              variant="outline"
-            >
-              <Plus className="size-3.5" />
-              Add a method
-            </Button>
+              testId="failure-alerts-add-method"
+            />
           )}
           <details className="group text-xs">
             <summary className={SUMMARY_CLASS}>
@@ -626,17 +631,21 @@ export function OrgFailureAlertsSection({
             <ul className="mt-2 list-disc space-y-1 pl-8 text-muted-foreground">
               <li>
                 Each alert goes out once per failing streak, not on every failed
-                run.
+                run. A workflow that fails again within 30 minutes of recovering
+                continues the same alert, and the recovery is sent once it has
+                worked for 30 minutes.
               </li>
               <li>
                 If email or chat cannot deliver for 15 minutes, or PagerDuty for
                 2, the alert goes to your backup methods and to email, saying
-                what failed. Retries continue for 24 hours.
+                what failed. Retries continue for an hour; a message still not
+                sent an hour after it was queued is dropped.
               </li>
               <li>
                 A method that stops working is paused and everyone is told once.
                 It is checked again every day and turns back on by itself when
-                it works.
+                it works; a paused Slack method turns back on when a test
+                passes.
               </li>
               <li>
                 Only connections shared with the whole organization can be used.

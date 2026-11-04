@@ -25,6 +25,11 @@ function plural(count: number, one: string, many: string): string {
 
 const MAX_NAMED = 3;
 
+/** "a, b and c", or "a, b and 2 more" when some are left out. */
+function withMore(parts: string[], more: number): string {
+  return more > 0 ? `${parts.join(", ")} and ${more} more` : joinList(parts);
+}
+
 /** "a@x, b@y (email), Origin alerts (Discord) and 2 more". */
 function namesLine(emails: string[], methods: string[]): string {
   const shownEmails = emails.slice(0, MAX_NAMED);
@@ -33,36 +38,49 @@ function namesLine(emails: string[], methods: string[]): string {
     ...(shownEmails.length > 0 ? [`${shownEmails.join(", ")} (email)`] : []),
     ...shownMethods,
   ];
-  const more =
-    emails.length + methods.length - shownEmails.length - shownMethods.length;
-  return more > 0 ? `${parts.join(", ")} and ${more} more` : parts.join(", ");
+  return withMore(
+    parts,
+    emails.length + methods.length - shownEmails.length - shownMethods.length
+  );
 }
 
-/** "a, b and 2 more". */
-function shortList(names: string[]): string {
-  const shown = names.slice(0, MAX_NAMED);
-  const more = names.length - shown.length;
-  return more > 0 ? `${shown.join(", ")} and ${more} more` : joinList(shown);
-}
-
-/** Why email reaches nobody: the cap, nobody chosen, or who lacks an email. */
+/**
+ * Why email reaches nobody (the cap, nobody chosen, or who lacks an email),
+ * and who can add one in Account security.
+ */
 function noEmailLine(
   data: OrgSettingsView,
   capped: boolean,
-  reachable: number
-): string {
+  reachable: number,
+  viewerUserId: string | null | undefined
+): { text: string; fixer: string | null } {
   if (capped && reachable > 0) {
-    return "This month's alert emails are used up, and no other method works.";
+    return {
+      text: "This month's alert emails are used up, and no other method works.",
+      fixer: null,
+    };
   }
-  const chosen = data.members.filter((m) =>
-    data.recipientUserIds.includes(m.userId)
+  const unreachable = data.members.filter(
+    (m) => data.recipientUserIds.includes(m.userId) && !m.reachable
   );
-  const unreachable = chosen.filter((m) => !m.reachable).map(memberLabel);
   if (unreachable.length === 0) {
-    return "Nobody is chosen for email, and no other method works.";
+    return {
+      text: "Nobody is chosen for email, and no other method works.",
+      fixer: null,
+    };
   }
-  const verb = unreachable.length === 1 ? "has" : "have";
-  return `${shortList(unreachable)} ${verb} no email KeeperHub can reach, and no other method works.`;
+  const self = unreachable.some((m) => m.userId === viewerUserId);
+  if (self && unreachable.length === 1) {
+    return {
+      text: "You have no email KeeperHub can reach, and no other method works.",
+      fixer: "You can",
+    };
+  }
+  const names = unreachable.slice(0, MAX_NAMED).map(memberLabel);
+  return {
+    text: `${withMore(names, unreachable.length - names.length)} ${unreachable.length === 1 ? "has" : "have"} no email KeeperHub can reach, and no other method works.`,
+    fixer: self ? "Each of you can" : "They can",
+  };
 }
 
 /** " (own rule: 3)" for a workflow with its own limit. */
@@ -134,10 +152,12 @@ export function AlertsStatus({
   data,
   canManage,
   onResume,
+  viewerUserId,
 }: {
   data: OrgSettingsView;
   canManage: boolean;
   onResume: () => Promise<string | null>;
+  viewerUserId?: string | null;
 }): React.ReactElement {
   const pause =
     data.pause && new Date(data.pause.until).getTime() > Date.now()
@@ -184,6 +204,7 @@ export function AlertsStatus({
       : "",
   ].filter(Boolean);
   const reachLine = reachParts.join(" ");
+  const noEmail = noEmailLine(data, capped, people.length, viewerUserId);
   const onlyRoute = emailWorks
     ? "Email"
     : (working[0] && label(working[0])) || "";
@@ -209,7 +230,16 @@ export function AlertsStatus({
           title="Nobody can be reached: nobody will be told when a workflow fails"
           tone="danger"
         >
-          {noEmailLine(data, capped, people.length)}{" "}
+          {noEmail.text}{" "}
+          {noEmail.fixer && (
+            <>
+              {noEmail.fixer} add one in{" "}
+              <Link className="underline" href="/settings/security">
+                Account security
+              </Link>
+              .{" "}
+            </>
+          )}
           {canManage
             ? "Add a method below, or choose other people under Email."
             : "Ask an owner or admin to fix it."}

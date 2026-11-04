@@ -69,6 +69,37 @@ describe("useNotificationStatus", () => {
     expect(seen.a?.alertsEnabled).toBe(true);
   });
 
+  it("reads a failed status request as unknown and asks again next time", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 500 })
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(reply(true)),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await act(async () => {
+      root.render(<Probe id="e" org="org-error" />);
+    });
+    expect(seen.e?.alertsEnabled).toBeNull();
+
+    await act(async () => {
+      invalidateNotificationStatus("org-error");
+    });
+    expect(seen.e?.alertsEnabled).toBeNull();
+
+    // Not cached: a remount asks again.
+    act(() => root.unmount());
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Probe id="e" org="org-error" />);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(seen.e?.alertsEnabled).toBe(true);
+  });
+
   it("resets on an org change and drops the old org's late answer", async () => {
     const first = deferred();
     const second = deferred();

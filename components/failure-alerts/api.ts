@@ -47,11 +47,20 @@ export async function sendFailureAlertTest(
   }
 }
 
+/** A non-OK answer to a settings GET, with its HTTP status. */
+export class ViewError extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super(`HTTP ${status}`);
+    this.status = status;
+  }
+}
+
 /** GET a settings view; throws on a network error or a non-OK answer. */
 export async function fetchView<T>(url: string): Promise<T> {
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
+    throw new ViewError(response.status);
   }
   return (await response.json()) as T;
 }

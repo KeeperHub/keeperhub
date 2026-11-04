@@ -5,10 +5,8 @@ import {
   type ChatText,
   formatChat,
 } from "@/lib/notifications/chat-text";
-import {
-  MAX_SUMMARY_CHARS,
-  truncateRunes,
-} from "@/plugins/pagerduty/event-payload";
+import { redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
+import { MAX_SUMMARY_CHARS } from "@/plugins/pagerduty/event-payload";
 import { isOutOfFunds } from "./streak";
 import { EMAILS_KEPT_FOR_NEW_FAILURES, orgPauseEffect } from "./view-types";
 
@@ -79,6 +77,8 @@ export type MessageInput =
   | (OrgFields & {
       kind: "channel_paused";
       channelLabel: string;
+      /** slack, discord, telegram or pagerduty; unknown on older notices. */
+      channelKind?: string;
       reason: string;
     })
   | (OrgFields & {
@@ -134,12 +134,42 @@ export function appBaseUrl(): string {
 const MAX_ERROR_CHARS = 300;
 const WHITESPACE = /\s+/g;
 const TRAILING_DOTS = /\.+$/;
+const ELLIPSIS = "…";
+
+// Chat webhook URLs carry their secret in the path; the rest go through redactSecretUrls.
+const CHAT_WEBHOOK_URL =
+  /\bhttps?:\/\/(?:hooks\.slack\.com|(?:[\w-]+\.)?discord(?:app)?\.com\/api\/webhooks|api\.telegram\.org)[^\s)'"<>]*/gi;
+const BEARER_TOKEN = /\bBearer\s+[\w.~+/=-]+/gi;
+const TELEGRAM_BOT_TOKEN = /\b\d{6,}:[\w-]{30,}/g;
+const SECRET_PAIR =
+  /\b(api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key|secret|password)(["']?\s*[=:]\s*["']?)[^\s"'&,;]+/gi;
+
+/** Error text with keys, tokens and secret-bearing URLs masked, for anything we send. */
+export function redactErrorSecrets(text: string): string {
+  return redactSecretUrls(text.replace(CHAT_WEBHOOK_URL, "[REDACTED-URL]"))
+    .replace(BEARER_TOKEN, "Bearer [REDACTED]")
+    .replace(TELEGRAM_BOT_TOKEN, "[REDACTED]")
+    .replace(SECRET_PAIR, "$1$2[REDACTED]");
+}
+
+/** At most `max` characters, ending in "…" when shortened. */
+function clip(text: string, max: number): string {
+  const runes = [...text];
+  return runes.length <= max
+    ? text
+    : `${runes.slice(0, max - 1).join("")}${ELLIPSIS}`;
+}
+
+/** Error text as sent: one line, secrets masked, shortened. */
+function errorExcerpt(error: string, max: number): string {
+  return clip(redactErrorSecrets(error.replace(WHITESPACE, " ").trim()), max);
+}
 
 function shortError(error: string | null): string {
   if (!error) {
     return "No error message was recorded.";
   }
-  return truncateRunes(error.replace(WHITESPACE, " ").trim(), MAX_ERROR_CHARS);
+  return errorExcerpt(error, MAX_ERROR_CHARS);
 }
 
 const RPC_TROUBLE =
@@ -200,8 +230,23 @@ function walletsUrl(appUrl: string, organizationId: string): string {
   return `${appUrl}/settings/${encodeURIComponent(organizationId)}/wallets`;
 }
 
+/** Where an alert's links go; the samples have no workflow, so they open the Alerts page. */
+function workflowLinks(
+  input: OrgFields,
+  workflowId: string
+): { open: string; runs: string } {
+  if (!workflowId) {
+    const alerts = settingsUrl(input.appUrl, input.organizationId);
+    return { open: alerts, runs: alerts };
+  }
+  return {
+    open: workflowUrl(input.appUrl, workflowId),
+    runs: runsUrl(input.appUrl, workflowId),
+  };
+}
+
 function summaryOf(text: string): string {
-  return truncateRunes(`[KeeperHub] ${text}`, MAX_SUMMARY_CHARS);
+  return clip(`[KeeperHub] ${text}`, MAX_SUMMARY_CHARS);
 }
 
 /** Outside text (names, reasons): escaped for each chat provider. */
@@ -248,7 +293,7 @@ function failingHeadline(
   if (incident.openedBy === "missed") {
     return [
       name,
-      ` ${still ? "still has" : "has"} not run since ${formatUtc(incident.firstFailedAt)}`,
+      still ? " still has not run" : " did not run when it was due",
     ];
   }
   if (incident.openedBy === "funding" && !still) {
@@ -364,7 +409,7 @@ export function renderMessage(
 }
 
 const MISSED_DETAIL =
-  "Its scheduled run did not start. This is usually a KeeperHub scheduling problem, not your workflow; our team is alerted and looking into it.";
+  "Its scheduled run did not start. This is usually a KeeperHub scheduling problem, not your workflow, and it is reported to our team.";
 const FUNDING_NEXT_STEP =
   "Add funds to the wallet that pays for it; the next run picks them up. The error above shows what it had and what it needed.";
 const FAILING_NEXT_STEP =
@@ -412,8 +457,7 @@ function renderAlert(
     missed || incident.openedBy === "funding"
       ? null
       : errorHint(incident.lastError);
-  const runs = runsUrl(appUrl, workflow.id);
-  const open = workflowUrl(appUrl, workflow.id);
+  const { open, runs } = workflowLinks(input, workflow.id);
   const funds =
     incident.openedBy === "funding"
       ? walletsUrl(appUrl, input.organizationId)
@@ -443,7 +487,7 @@ function renderAlert(
   const accent = missed && !input.paused ? "#b45309" : "#b91c1c";
   const tint = missed && !input.paused ? "#fffbeb" : "#fef2f2";
   const since = missed
-    ? `Due at ${formatUtc(incident.firstFailedAt)}.`
+    ? `Due at ${formatUtc(incident.firstFailedAt)}, ${formatDuration(now.getTime() - incident.firstFailedAt.getTime())} ago.`
     : `Failing since ${formatUtc(incident.firstFailedAt)}.`;
   const history = missed ? null : historyLine(incident);
   const detail = missed
@@ -555,27 +599,42 @@ type GroupedWorkflow = Extract<
 const GROUPED_LIST_MAX = 10;
 const GROUPED_ERROR_CHARS = 120;
 
+function outOfFunds(w: GroupedWorkflow): boolean {
+  return w.openedBy === "funding" || isOutOfFunds(w.lastError ?? null);
+}
+
+function groupedRank(w: GroupedWorkflow): number {
+  if (w.workflowPaused) {
+    return 0;
+  }
+  return outOfFunds(w) ? 1 : 2;
+}
+
+/** Turned off first, then out of funds, then most failures, so a short list keeps them. */
+function sortGrouped(workflows: GroupedWorkflow[]): GroupedWorkflow[] {
+  return [...workflows].sort(
+    (a, b) => groupedRank(a) - groupedRank(b) || b.failureCount - a.failureCount
+  );
+}
+
 function renderGrouped(
   input: Extract<MessageInput, { kind: "grouped" }>
 ): RenderedMessage {
-  const { workflows, orgName, appUrl } = input;
-  const headline = `${workflows.length} workflows started failing`;
+  const { orgName, appUrl } = input;
+  const workflows = sortGrouped(input.workflows);
+  const turnedOff = workflows.filter((w) => w.workflowPaused).length;
+  const headline = `${plural(workflows.length, "workflow", "workflows")} started failing${turnedOff > 0 ? `, ${turnedOff} turned off` : ""}`;
   const errorText = (w: { lastError?: string | null }): string | null =>
-    w.lastError
-      ? truncateRunes(w.lastError.replace(WHITESPACE, " "), GROUPED_ERROR_CHARS)
-      : null;
+    w.lastError ? errorExcerpt(w.lastError, GROUPED_ERROR_CHARS) : null;
   const errorOf = (w: { lastError?: string | null }): string => {
     const error = errorText(w);
     return error ? `: ${error}` : "";
   };
-  const anyPaused = workflows.some((w) => w.workflowPaused);
-  const cause = `This often means a shared cause, such as an RPC provider or a wallet out of gas.${anyPaused ? " Paused workflows stay off until someone turns them back on." : ""}`;
+  const cause = `This often means a shared cause, such as an RPC provider or a wallet out of gas.${turnedOff > 0 ? " Workflows KeeperHub turned off stay off until someone turns them back on." : ""}`;
   const backup = backupBanner(input.backupReason);
   const foot = footer(input);
   const pausedNote = (w: { workflowPaused?: boolean }): string =>
-    w.workflowPaused ? ", paused" : "";
-  const outOfFunds = (w: GroupedWorkflow): boolean =>
-    w.openedBy === "funding" || isOutOfFunds(w.lastError ?? null);
+    w.workflowPaused ? ", turned off" : "";
   const fundsPrefix = (w: GroupedWorkflow): string =>
     outOfFunds(w) ? "Wallet out of funds: " : "";
   const shown = workflows.slice(0, GROUPED_LIST_MAX);
@@ -656,7 +715,7 @@ function renderRecovery(
   input: Extract<MessageInput, { kind: "recovery" }>,
   now: Date
 ): RenderedMessage {
-  const { workflow, incident, orgName, appUrl } = input;
+  const { workflow, incident, orgName } = input;
   const span = formatDuration(now.getTime() - incident.firstFailedAt.getTime());
   let tail = " is running again";
   let detail = `It succeeded after ${plural(incident.failureCount, "failed run", "failed runs")} (${span}).`;
@@ -671,7 +730,7 @@ function renderRecovery(
   const headlineParts = [user(workflow.name), tail];
   const headline = plain(headlineParts);
   const prefix = input.ranButFailed ? "Started again" : "Resolved";
-  const link = runsUrl(appUrl, workflow.id);
+  const link = workflowLinks(input, workflow.id).runs;
   const foot = footer(input);
   const test = testBanner(input.testNote);
   return {
@@ -694,6 +753,17 @@ function renderRecovery(
   };
 }
 
+/** How a paused method comes back: the daily check proves all but Slack (token only). */
+function channelResumeText(kind: string | undefined): string {
+  if (kind === "slack") {
+    return "It is paused until a test from the Alerts page succeeds.";
+  }
+  if (kind) {
+    return "It is paused; it is checked every day and turns back on by itself when it works, or when a test succeeds.";
+  }
+  return "It is paused until a test succeeds; apart from Slack, it is also checked every day and turns back on by itself when it works.";
+}
+
 function renderChannelPaused(
   input: Extract<MessageInput, { kind: "channel_paused" }>
 ): RenderedMessage {
@@ -704,8 +774,8 @@ function renderChannelPaused(
     " stopped working for failure notifications",
   ];
   const detailParts = [
-    user(input.reason.replace(TRAILING_DOTS, "")),
-    ". It is paused until a test succeeds. Your other notification methods are still used.",
+    user(redactErrorSecrets(input.reason).replace(TRAILING_DOTS, "")),
+    `. ${channelResumeText(input.channelKind)} Your other notification methods are still used.`,
   ];
   const headline = plain(headlineParts);
   const detail = plain(detailParts);
@@ -755,11 +825,11 @@ function renderCapWarning(
   input: Extract<MessageInput, { kind: "cap_warning" }>
 ): RenderedMessage {
   const out = input.used >= input.limit;
+  // The org name is already in the [Org] tag and the subject.
   const headlineParts = [
-    user(input.orgName),
     out
-      ? ` has used all ${input.limit} alert emails this month`
-      : ` has used ${input.used} of its ${input.limit} alert emails this month`,
+      ? `All ${input.limit} alert emails for this month are used`
+      : `${input.used} of the ${input.limit} alert emails for this month are used`,
   ];
   const headline = plain(headlineParts);
   const detail = out ? capOutDetail(input.chatWorks) : capLowDetail(input);
@@ -785,9 +855,9 @@ function renderOrgPause(
 ): RenderedMessage {
   const paused = input.kind === "alerts_paused";
   const headlineParts = [
-    "Alerts for ",
-    user(input.orgName),
-    paused ? ` are paused until ${formatUtc(input.until)}` : " are back on",
+    paused
+      ? `Alerts are paused until ${formatUtc(input.until)}`
+      : "Alerts are back on",
   ];
   const headline = plain(headlineParts);
   let detailParts: ChatPart[];
@@ -871,6 +941,7 @@ function renderLaunchNotice(
   };
 }
 
+// No id: its links open the Alerts page.
 const SAMPLE_WORKFLOW: AlertWorkflow = {
   id: "",
   name: "Example keeper",
@@ -884,11 +955,13 @@ export function renderSample(
   testNote?: string,
   now: Date = new Date()
 ): RenderedMessage {
+  // Two shortfalls in a row open a funds alert, so the sample is one, with its Add funds link.
   const incident: AlertIncident = {
     failureCount: 5,
     firstFailedAt: new Date(now.getTime() - 47 * 60 * 1000),
-    lastError: "execution reverted: insufficient funds for gas * price + value",
-    openedBy: sample === "missed" ? "missed" : "count",
+    lastError:
+      "insufficient funds for gas * price + value: have 120000000000000 want 340000000000000",
+    openedBy: sample === "missed" ? "missed" : "funding",
     before: {
       successes: 214,
       lastSuccessAt: new Date(now.getTime() - 52 * 60 * 1000),
