@@ -100,6 +100,8 @@ export type HistoryEntry = {
   attempts: number;
   lastStatus: number | null;
   lastError: string | null;
+  /** When a queued row is next tried: later than now for a held recovery. */
+  nextAttemptAt: string;
   /** Which channel a pause notice is about, or why a backup was sent. */
   note: string | null;
   workflows: { id: string; name: string }[];
@@ -272,7 +274,7 @@ export const FAILURE_ALERT_KIND_LABEL: Record<FailureAlertMessageKind, string> =
     cap_warning: "Email limit warning",
   };
 
-/** Which channel a pause notice is about, why a backup was sent, or a workflow pause. */
+/** Which channel a pause notice is about, why a backup was sent, or a workflow turned off. */
 export function historyNote(
   context: Record<string, unknown> | null
 ): string | null {
@@ -281,9 +283,9 @@ export function historyNote(
   }
   const notes: string[] = [];
   if (context?.pausedAgain === true) {
-    notes.push("Paused the workflow again after it was turned back on");
+    notes.push("Turned the workflow off again after it was turned back on");
   } else if (context?.workflowPaused === true) {
-    notes.push("Paused the workflow");
+    notes.push("Turned the workflow off");
   }
   if (typeof context?.backupReason === "string") {
     notes.push(`Sent because ${context.backupReason}`);
@@ -302,6 +304,13 @@ export type MessagePreview = {
 };
 
 /** One word per delivery state, the same in history, analytics and emails. */
+/** Set on a row too old to send; it reads as not delivered, not withdrawn. */
+export const STALE_DROP_TEXT = "Dropped: queued more than an hour ago.";
+
+export function wasDropped(state: string, lastError: string | null): boolean {
+  return state === "skipped" && lastError === STALE_DROP_TEXT;
+}
+
 export const DELIVERY_STATE_LABEL: Record<string, string> = {
   pending: "Queued",
   sending: "Sending",

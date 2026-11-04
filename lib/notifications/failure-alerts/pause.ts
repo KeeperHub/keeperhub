@@ -111,6 +111,8 @@ export async function pauseOpenIncident(params: {
   policy: EffectivePolicy;
   failures: number;
   again: boolean;
+  /** Turned off because the wallet ran out of funds, not the failure limit. */
+  outOfFunds?: boolean;
   now: Date;
   /** Org-wide pause: turn it off now, tell people when the pause ends. */
   holdUntil?: Date;
@@ -147,9 +149,11 @@ export async function pauseOpenIncident(params: {
           "reminder",
           sequence,
           params.holdUntil ?? now,
-          again
-            ? { pausedAgain: true, failures }
-            : { workflowPaused: true, failures }
+          {
+            ...(again ? { pausedAgain: true } : { workflowPaused: true }),
+            failures,
+            ...(params.outOfFunds ? { outOfFunds: true } : {}),
+          }
         ),
         tx
       );

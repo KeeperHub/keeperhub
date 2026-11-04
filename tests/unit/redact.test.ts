@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { redactSensitiveData } from "@/lib/utils/redact";
+import { redactErrorSecrets, redactSensitiveData } from "@/lib/utils/redact";
 
 describe("redactSensitiveData", () => {
   it("redacts exact-match sensitive keys", () => {
@@ -66,5 +66,30 @@ describe("redactSensitiveData", () => {
     expect(result.result.currentATokenBalance).toBe("1000");
     expect(result.result.liquidityRate).toBe("12345");
     expect(result.config.apiKey).not.toBe("secret-key");
+  });
+});
+
+describe("redactErrorSecrets", () => {
+  it("masks the sensitive names in error text, in both forms", () => {
+    const out = redactErrorSecrets(
+      "Authorization: Bearer abc.def; authorization=Basic dXNlcjpwYXNz; client_secret: s3cr; token=t0k; key=k3y; pwd=p4ss"
+    );
+    for (const leak of [
+      "abc.def",
+      "dXNlcjpwYXNz",
+      "s3cr",
+      "t0k",
+      "k3y",
+      "p4ss",
+    ]) {
+      expect(out).not.toContain(leak);
+    }
+    expect(out).toContain("Authorization: Bearer [REDACTED]");
+  });
+
+  it("keeps prose that only names a token or key readable", () => {
+    const text =
+      "execution reverted: Unsupported token: 0xA0b8, key: missing, auth: failed";
+    expect(redactErrorSecrets(text)).toBe(text);
   });
 });

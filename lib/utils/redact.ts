@@ -4,6 +4,7 @@
  */
 
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 
 /**
  * List of sensitive field keys that should be redacted
@@ -235,4 +236,24 @@ export function stripCredentials(obj: any): any {
   }
 
   return stripped;
+}
+
+// Chat webhook URLs carry their secret in the path; the rest go through redactSecretUrls.
+const CHAT_WEBHOOK_URL =
+  /\bhttps?:\/\/(?:hooks\.slack\.com|(?:[\w-]+\.)?discord(?:app)?\.com\/api\/webhooks|api\.telegram\.org)[^\s)'"<>]*/gi;
+const AUTH_SCHEME_TOKEN = /\b(Bearer|Basic)\s+[\w.~+/=-]+/gi;
+const TELEGRAM_BOT_TOKEN = /\b\d{6,}:[\w-]{30,}/g;
+// SENSITIVE_KEYS as they appear in text, as "name=value" or "name: value".
+const SECRET_PAIR =
+  /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|private[_-]?key|(?:client[_-]?)?secret|password|passwd|pwd|authorization)(["']?\s*[=:]\s*["']?)(?!(?:Bearer|Basic) \[REDACTED\])[^\s"'&,;]+/gi;
+// Too common in prose ("Unsupported token: 0x..."): only "name=value".
+const SECRET_ASSIGNMENT = /\b(key|token|auth)(["']?\s*=\s*["']?)[^\s"'&,;]+/gi;
+
+/** Error text with keys, tokens and secret-bearing URLs masked, for anything sent outside. */
+export function redactErrorSecrets(text: string): string {
+  return redactSecretUrls(text.replace(CHAT_WEBHOOK_URL, "[REDACTED-URL]"))
+    .replace(AUTH_SCHEME_TOKEN, "$1 [REDACTED]")
+    .replace(TELEGRAM_BOT_TOKEN, "[REDACTED]")
+    .replace(SECRET_PAIR, "$1$2[REDACTED]")
+    .replace(SECRET_ASSIGNMENT, "$1$2[REDACTED]");
 }

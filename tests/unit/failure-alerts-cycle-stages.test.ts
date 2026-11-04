@@ -62,6 +62,7 @@ describe("failure alert cycle stages", () => {
   it.each([
     ["evaluate", () => vi.mocked(evaluator.evaluateQueuedWorkflows)],
     ["deliver", () => vi.mocked(outbox.drainOutbox)],
+    ["backups", () => vi.mocked(outbox.fireBackups)],
   ])(
     "fails the job when the %s stage fails, after the rest ran",
     async (name, target) => {

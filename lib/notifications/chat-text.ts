@@ -28,7 +28,8 @@ const ENTITIES: Record<string, string> = {
 // Discord renders a backslash-escaped punctuation mark as itself.
 const DISCORD_MARKDOWN = /[\\*_~`|[\]()<>#@]/g;
 // Telegram links @name even in HTML mode; a word joiner after "@" stops it.
-const TELEGRAM_MENTION = /@(?=\w)/g;
+// Only where "@" starts a word, so a@b.com stays as typed.
+const TELEGRAM_MENTION = /(?<!\w)@(?=\w)/g;
 const WORD_JOINER = "\u2060";
 const ELLIPSIS = "…";
 
@@ -39,6 +40,7 @@ function clean(text: string): string {
     .trim();
 }
 
+// Slack has no escape for * _ ~, so names may render bold or italic; no mention or link can be built.
 /** Slack mrkdwn and Telegram HTML both need these three escaped. */
 function escapeEntities(text: string): string {
   return text.replace(ANGLES_AND_AMP, (c) => ENTITIES[c] ?? c);

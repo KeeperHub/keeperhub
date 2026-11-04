@@ -2,7 +2,11 @@ import type {
   FailureAlertChannelKind,
   FailureAlertChannelRole,
 } from "@/lib/db/schema-failure-alerts";
+import { MAX_CHANNELS } from "@/lib/notifications/failure-alerts/constants";
 import type { ChannelView } from "@/lib/notifications/failure-alerts/view-types";
+
+/** Shown when the list is full, by Add a method and a refused Undo. */
+export const METHODS_FULL = `Up to ${MAX_CHANNELS} chat or PagerDuty methods. Remove one to add another.`;
 
 /** A chat or PagerDuty method as a card holds it: saved (with an id) or new. */
 export type DraftChannel = {
@@ -112,16 +116,36 @@ export function needsDestination(kind: FailureAlertChannelKind): boolean {
   return kind !== "discord";
 }
 
+/** What makes two methods the same: where they send. */
+export type MethodTarget = Pick<
+  DraftChannel,
+  "kind" | "integrationId" | "destination"
+>;
+
 /** Same place to send to: a test of one counts for the other. */
-export function sameTarget(
-  a: Pick<DraftChannel, "kind" | "integrationId" | "destination">,
-  b: Pick<DraftChannel, "kind" | "integrationId" | "destination">
-): boolean {
+export function sameTarget(a: MethodTarget, b: MethodTarget): boolean {
   return (
     a.kind === b.kind &&
     a.integrationId === b.integrationId &&
     a.destination === b.destination
   );
+}
+
+/** The list with a removed method back at its place; null if it is back already, "full" at the cap. */
+export function restoreMethod<T extends MethodTarget>(
+  current: T[],
+  restored: T,
+  index: number
+): T[] | "full" | null {
+  if (current.some((c) => sameTarget(c, restored))) {
+    return null;
+  }
+  if (current.length >= MAX_CHANNELS) {
+    return "full";
+  }
+  const next = [...current];
+  next.splice(Math.min(index, next.length), 0, restored);
+  return next;
 }
 
 /** Differs from what was saved, or was never saved. */

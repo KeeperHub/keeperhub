@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { toast } from "sonner";
-import { askLeave } from "@/components/navigation-guard";
+import { confirmLeave } from "@/components/navigation-guard";
 import { currentActiveOrgId } from "@/lib/hooks/use-organization";
 
 export type OfferedOrg = {
@@ -284,11 +284,7 @@ function showFailure(
  */
 export function runOrgSwitch(request: SwitchRequest): Promise<boolean | null> {
   // A page with unsaved changes asks first; Stay leaves everything as it is.
-  const asked = askLeave();
-  if (asked) {
-    return asked.then((leave) => (leave ? startOrgSwitch(request) : null));
-  }
-  return startOrgSwitch(request);
+  return confirmLeave(undefined, () => startOrgSwitch(request));
 }
 
 function startOrgSwitch(request: SwitchRequest): Promise<boolean | null> {

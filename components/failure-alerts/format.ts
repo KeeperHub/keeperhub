@@ -1,4 +1,9 @@
-import { methodText } from "@/lib/notifications/failure-alerts/view-types";
+import {
+  DELIVERY_STATE_LABEL,
+  type HistoryEntry,
+  methodText,
+  wasDropped,
+} from "@/lib/notifications/failure-alerts/view-types";
 
 /** "1 failed run" / "5 failed runs", worded the same everywhere in the feature. */
 export function failedRuns(count: number): string {
@@ -20,6 +25,45 @@ export function formatWhen(iso: string): string {
     minute: "2-digit",
     timeZoneName: "short",
   });
+}
+
+/** "14:05 UTC". */
+function utcTime(iso: string): string {
+  return `${new Date(iso).toISOString().slice(11, 16)} UTC`;
+}
+
+export type DeliveryTone = "delivered" | "failed" | "waiting" | "muted";
+
+/** A history row's outcome: a held row says when it goes, a dropped one reads as not delivered. */
+export function deliveryStatus(
+  entry: Pick<HistoryEntry, "state" | "kind" | "lastError" | "nextAttemptAt">,
+  now: Date = new Date()
+): { label: string; tone: DeliveryTone } {
+  const { state } = entry;
+  if (wasDropped(state, entry.lastError)) {
+    return { label: DELIVERY_STATE_LABEL.failed, tone: "failed" };
+  }
+  if (state === "pending" && new Date(entry.nextAttemptAt) > now) {
+    const at = utcTime(entry.nextAttemptAt);
+    return {
+      label:
+        entry.kind === "recovery"
+          ? `Sends at ${at} if it keeps working`
+          : `Scheduled for ${at}`,
+      tone: "waiting",
+    };
+  }
+  const label = DELIVERY_STATE_LABEL[state] ?? state;
+  if (state === "delivered") {
+    return { label, tone: "delivered" };
+  }
+  if (state === "failed" || state === "capped") {
+    return { label, tone: "failed" };
+  }
+  if (state === "retrying" || state === "pending" || state === "sending") {
+    return { label, tone: "waiting" };
+  }
+  return { label, tone: "muted" };
 }
 
 /** Out-of-funds alerts skip the limit; said on the Rules card and in each workflow. */
@@ -127,7 +171,11 @@ export function describeRule(input: {
 
   let sentence = `${subject} ${count}, KeeperHub tells ${who}${backupPart}.`;
   if (input.pauseWorkflow) {
-    sentence += " Then KeeperHub turns this workflow off.";
+    const runs =
+      input.threshold === 1
+        ? failedRuns(1)
+        : `${failedRuns(input.threshold)} in a row`;
+    sentence += ` KeeperHub turns this workflow off only after ${runs} or when its wallet runs out of funds.`;
   }
   if (input.scope === "org") {
     sentence +=

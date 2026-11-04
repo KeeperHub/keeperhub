@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/db", () => ({ db: {} }));
 
-const { pauseActorName, redactErrorSecrets, renderMessage, renderSample } =
-  await import("@/lib/notifications/failure-alerts/messages");
+const { pauseActorName, renderMessage, renderSample } = await import(
+  "@/lib/notifications/failure-alerts/messages"
+);
+const { redactErrorSecrets } = await import("@/lib/utils/redact");
 const { CHAT_LIMITS, fitChat } = await import("@/lib/notifications/chat-text");
 const { methodName, methodText, orgPauseEffect } = await import(
   "@/lib/notifications/failure-alerts/view-types"
@@ -84,14 +86,18 @@ describe("wallet out of funds", () => {
     expect(message.html).toMatch(/<p[^>]*>Schedule trigger, Acme\.<\/p>/);
   });
 
-  it("names the cause when it pauses the workflow", () => {
+  it("names the cause when it turns the workflow off", () => {
     const message = renderMessage(
       { ...org, kind: "alert", workflow, incident, paused: "first" },
       now
     );
     expect(message.subject).toContain(
-      "Wallet out of funds: Keeper was paused after 2 failed runs in a row"
+      "Wallet out of funds: Keeper was turned off after 2 failed runs in a row"
     );
+    expect(message.text).toContain(
+      "set to turn off when it fails too often or runs out of funds"
+    );
+    expect(message.text).not.toContain("failure limit");
     expect(message.html).toContain(WALLETS);
   });
 
@@ -130,8 +136,11 @@ describe("grouped alert", () => {
     });
     expect(message.text).toContain("- Wallet out of funds: Workflow 1: ");
     expect(message.text).toContain("- Workflow 2: ");
-    expect(message.text).toContain("- Wallet out of funds: Workflow 3: ");
-    expect(message.html).toContain("<strong>Wallet out of funds:</strong>");
+    // Opened by funds, but the latest error is something else.
+    expect(message.text).toContain(
+      "- Workflow 3: 5 failed runs in a row, ran out of funds earlier: RPC 429"
+    );
+    expect(message.html.match(/Wallet out of funds:/g)).toHaveLength(1);
     expect(message.text).toContain(`Add funds: ${WALLETS}`);
   });
 
@@ -416,6 +425,14 @@ describe("chat escaping", () => {
     expect(telegram.split("\n")[0]).not.toContain("@everyone");
   });
 
+  it("leaves email addresses whole on Telegram", () => {
+    const telegram = fitChat(
+      [[{ user: "a@b.com (@ops) @lead,@x" }]],
+      "telegram"
+    );
+    expect(telegram).toBe("a@b.com (@\u2060ops) @\u2060lead,@\u2060x");
+  });
+
   it("shows the preview unescaped", () => {
     expect(message.chat).toContain(
       `Last error: ${HOSTILE.replace("`tick`", "'tick'")}`
@@ -621,6 +638,129 @@ describe("wording", () => {
     const alert = renderSample(org, "alert", "Test", now);
     expect(alert.text).toContain(`Add funds: ${WALLETS}`);
     expect(alert.html).toContain(`href="${WALLETS}"`);
+  });
+
+  it("gives samples one Alerts settings link, not two named for a workflow", () => {
+    const ALERTS = "https://app.test/settings/org-1/alerts";
+    for (const sample of ["alert", "missed", "paused", "recovery"] as const) {
+      const message = renderSample(org, sample, "Test", now);
+      for (const text of [message.text, message.chat]) {
+        expect(text).toContain(`Open Alerts settings: ${ALERTS}`);
+        const links = text
+          .split("\n")
+          .filter((line) => line.includes(ALERTS))
+          .filter((line) => !line.includes("Change who gets these"));
+        expect(links).toEqual([`Open Alerts settings: ${ALERTS}`]);
+        expect(text).not.toContain("Open the failing workflow");
+        expect(text).not.toContain("Failed runs:");
+      }
+      expect(message.html).toContain(">Open Alerts settings</a>");
+    }
+  });
+
+  it("uses 2 failed runs in the funds samples, like a real funds alert", () => {
+    const paused = renderSample(org, "paused", undefined, now);
+    expect(paused.subject).toContain(
+      "Wallet out of funds: Example keeper was turned off after 2 failed runs in a row"
+    );
+  });
+
+  it("says a workflow is turned off, never paused", () => {
+    const incident = {
+      failureCount: 5,
+      firstFailedAt: new Date("2026-10-28T11:00:00Z"),
+      lastError: "reverted",
+      openedBy: "count" as const,
+    };
+    const first = renderMessage(
+      { ...org, kind: "alert", workflow, incident, paused: "first" },
+      now
+    );
+    const again = renderMessage(
+      {
+        ...org,
+        kind: "alert",
+        workflow,
+        incident,
+        paused: "again",
+        pausedFailures: 2,
+      },
+      now
+    );
+    const failing = renderMessage(
+      { ...org, kind: "alert", workflow, incident },
+      now
+    );
+    const last = renderMessage(
+      {
+        ...org,
+        kind: "reminder",
+        workflow,
+        incident,
+        reminderNumber: 7,
+        maxReminders: 7,
+      },
+      now
+    );
+    expect(first.subject).toContain(
+      "Keeper was turned off after 5 failed runs in a row"
+    );
+    expect(again.subject).toContain(
+      "Keeper was turned off again: 2 more failed runs after it was turned back on"
+    );
+    expect(failing.text).toContain("fixes, mutes or turns it off.");
+    expect(last.text).toContain("until it works or someone turns it off.");
+    for (const message of [first, again, failing, last]) {
+      expect(`${message.text}${message.chat}`).not.toMatch(/\bpause/i);
+    }
+  });
+
+  it("measures a recovery to when it closed, not when it was sent", () => {
+    const incident = {
+      failureCount: 3,
+      firstFailedAt: new Date("2026-10-28T11:00:00Z"),
+      lastError: "reverted",
+      openedBy: "count" as const,
+    };
+    const resolvedAt = new Date("2026-10-28T11:20:00Z");
+    // Sent 30 minutes after the close, at the end of the recovery hold.
+    const sentAt = new Date("2026-10-28T11:50:00Z");
+    const message = renderMessage(
+      { ...org, kind: "recovery", workflow, incident, resolvedAt },
+      sentAt
+    );
+    expect(message.text).toContain(
+      "It succeeded after 3 failed runs (20 minutes). Working since 2026-10-28 11:20 UTC."
+    );
+    const missed = renderMessage(
+      {
+        ...org,
+        kind: "recovery",
+        workflow,
+        incident: { ...incident, openedBy: "missed" },
+        resolvedAt,
+      },
+      sentAt
+    );
+    expect(missed.text).toContain(
+      "It started again 20 minutes after it was due."
+    );
+    // The run's own start wins over the close, which a cycle may date later.
+    const ranAt = new Date("2026-10-28T11:12:00Z");
+    const exact = renderMessage(
+      {
+        ...org,
+        kind: "recovery",
+        workflow,
+        incident: { ...incident, openedBy: "missed" },
+        resolvedAt,
+        ranAt,
+      },
+      sentAt
+    );
+    expect(exact.text).toContain(
+      "It started again 12 minutes after it was due."
+    );
   });
 });
 

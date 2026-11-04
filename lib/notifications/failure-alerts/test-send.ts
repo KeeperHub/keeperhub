@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { failureAlertChannels, organization } from "@/lib/db/schema";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
+import { createSlidingWindowLimiter } from "@/lib/rate-limit/sliding-window";
 import { getRedis } from "@/lib/redis";
 import { TESTS_PER_DAY_PER_ORG, TESTS_PER_MINUTE_PER_USER } from "./constants";
 import { appBaseUrl, renderMessage } from "./messages";
@@ -22,10 +23,20 @@ import {
 import { channelLabel, type TestRequest, type TestResult } from "./view-types";
 
 /** Per-pod windows for a deployment without Redis: looser, never open. */
-const localWindows = new Map<string, number[]>();
+const localWindows = {
+  user: createSlidingWindowLimiter({
+    limit: TESTS_PER_MINUTE_PER_USER,
+    windowMs: 60 * 1000,
+  }),
+  org: createSlidingWindowLimiter({
+    limit: TESTS_PER_DAY_PER_ORG,
+    windowMs: 24 * 60 * 60 * 1000,
+  }),
+};
 
 /** Takes `weight` slots, or none when they do not all fit; `left` is what remains. */
 async function takeSlots(
+  scope: keyof typeof localWindows,
   key: string,
   limit: number,
   windowSeconds: number,
@@ -48,17 +59,8 @@ async function takeSlots(
       // Fall through to the in-memory window.
     }
   }
-  const now = Date.now();
-  const recent = (localWindows.get(key) ?? []).filter(
-    (t) => t > now - windowSeconds * 1000
-  );
-  const left = limit - recent.length;
-  if (weight > left) {
-    localWindows.set(key, recent);
-    return { ok: false, left: Math.max(0, left) };
-  }
-  localWindows.set(key, [...recent, ...new Array<number>(weight).fill(now)]);
-  return { ok: true, left: left - weight };
+  const local = localWindows[scope].check(key, weight);
+  return { ok: local.allowed, left: local.remaining };
 }
 
 /** Each email a test sends counts toward the org's daily tests; `emails` is unset for chat tests. */
@@ -74,6 +76,7 @@ async function checkTestRateLimit(
     );
   }
   const perUser = await takeSlots(
+    "user",
     `failure-alert-test:user:${userId}`,
     TESTS_PER_MINUTE_PER_USER,
     60
@@ -85,6 +88,7 @@ async function checkTestRateLimit(
     );
   }
   const perOrg = await takeSlots(
+    "org",
     `failure-alert-test:org:${organizationId}`,
     TESTS_PER_DAY_PER_ORG,
     24 * 60 * 60,
@@ -93,8 +97,8 @@ async function checkTestRateLimit(
   if (!perOrg.ok) {
     throw new SettingsError(
       emails === undefined
-        ? `This organization has used its ${TESTS_PER_DAY_PER_ORG} tests for today. Try again tomorrow.`
-        : `This test would email ${emails} ${emails === 1 ? "person" : "people"}; ${perOrg.left} test ${perOrg.left === 1 ? "email is" : "emails are"} left today.`,
+        ? `This organization has used today's ${TESTS_PER_DAY_PER_ORG} test messages (each test email counts as one). Try again tomorrow.`
+        : `This test would email ${emails} ${emails === 1 ? "person" : "people"}; ${perOrg.left} test ${perOrg.left === 1 ? "email is" : "emails are"} left today. Choose fewer people, or try again later.`,
       429
     );
   }

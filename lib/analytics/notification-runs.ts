@@ -100,6 +100,7 @@ export type NotificationRow = {
   createdAt: Date;
   updatedAt: Date;
   deliveredAt: Date | null;
+  nextAttemptAt: Date;
   /** The incident's workflow, for a message about one incident. */
   workflowId: string | null;
   workflowName: string | null;
@@ -147,6 +148,7 @@ export function toHistoryEntry(
     attempts: row.attempts,
     lastStatus: row.lastStatus,
     lastError: row.lastError,
+    nextAttemptAt: row.nextAttemptAt.toISOString(),
     note: historyNote(row.context),
     workflows: notificationWorkflows(row, groupedNames),
   };

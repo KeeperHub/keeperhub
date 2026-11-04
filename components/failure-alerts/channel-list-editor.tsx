@@ -12,9 +12,10 @@ import type {
 import { ChannelMethodCard, focusMethodAt } from "./method-card";
 import {
   type DraftChannel,
+  METHODS_FULL,
   newMethodDraft,
   nextKey,
-  sameTarget,
+  restoreMethod,
 } from "./method-drafts";
 
 /** "Add a method", off once the list holds as many methods as a save takes. */
@@ -44,11 +45,7 @@ export function AddMethodButton({
         <Plus className="size-3.5" />
         Add a method
       </Button>
-      {full && (
-        <p className="text-muted-foreground text-xs">
-          Up to {MAX_CHANNELS} chat or PagerDuty methods.
-        </p>
-      )}
+      {full && <p className="text-muted-foreground text-xs">{METHODS_FULL}</p>}
     </div>
   );
 }
@@ -92,21 +89,24 @@ export function ChannelListEditor({
       action: {
         label: "Undo",
         onClick: () => {
-          const current = latest.current.channels;
-          if (current.some((c) => sameTarget(c, channel))) {
-            return;
-          }
-          const next = [...current];
           // It comes back as a new row, and a paused one comes back paused.
-          next.splice(Math.min(index, next.length), 0, {
-            ...channel,
-            id: undefined,
-            key: nextKey(),
-            pausedReason: view?.pausedAt
-              ? (view.pausedReason ?? "It stopped working.")
-              : channel.pausedReason,
-          });
-          latest.current.onChange(next);
+          const next = restoreMethod(
+            latest.current.channels,
+            {
+              ...channel,
+              id: undefined,
+              key: nextKey(),
+              pausedReason: view?.pausedAt
+                ? (view.pausedReason ?? "It stopped working.")
+                : channel.pausedReason,
+            },
+            index
+          );
+          if (next === "full") {
+            toast.error(METHODS_FULL);
+          } else if (next) {
+            latest.current.onChange(next);
+          }
         },
       },
     });

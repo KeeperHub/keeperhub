@@ -1,7 +1,7 @@
 import { INSUFFICIENT_BALANCE_PATTERN } from "@/lib/errors/classify";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { isFundingShortfall } from "@/lib/errors/funding-shortfall";
-import { MIN_TIME_RULE_FAILURES } from "./constants";
+import { MIN_TIME_RULE_FAILURES, OUT_OF_FUNDS_THRESHOLD } from "./constants";
 
 // Streaks: error counts, success ends it; other statuses, unfinished runs,
 // our own platform errors and runs started by a person are stepped over.
@@ -18,7 +18,7 @@ export type StreakRun = {
 };
 
 /** Our own platform failed the run: not the workflow's fault, so it is as if it never ran. */
-export function isPlatformError(
+function isPlatformError(
   run: Pick<StreakRun, "status" | "errorType">
 ): boolean {
   return run.status === "error" && run.errorType === ExecutionErrorType.SYSTEM;
@@ -57,9 +57,6 @@ export function isOutOfFunds(error: string | null): boolean {
         INSUFFICIENT_BALANCE_PATTERN.test(error.trim()))
   );
 }
-
-/** Two shortfalls in a row alert at once: waiting for more only burns runs. */
-const OUT_OF_FUNDS_THRESHOLD = 2;
 
 /** Summarise the current streak; `countingSince` keeps old history from alerting. */
 export function summarizeStreak(

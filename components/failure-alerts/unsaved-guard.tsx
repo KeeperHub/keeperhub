@@ -59,9 +59,6 @@ function leavesPage(href: string | undefined): boolean {
   );
 }
 
-/** How long Back-then-Leave waits for history to move before going to the fallback. */
-const BACK_FALLBACK_MS = 600;
-
 /**
  * Asks before leaving with unsaved changes: the browser's own prompt for a
  * reload or close, and a dialog for links, router navigation and Back.
@@ -89,7 +86,6 @@ export function UnsavedChangesGuard({
       return;
     }
     leavingRef.current = false;
-    let backTimer: ReturnType<typeof setTimeout> | undefined;
     const ask = (): Promise<boolean> =>
       new Promise((resolve) => {
         answerRef.current?.(false);
@@ -125,16 +121,18 @@ export function UnsavedChangesGuard({
       );
     };
     const goBack = (): void => {
-      // No earlier page in this tab (opened from an email): history stays.
-      backTimer = setTimeout(() => {
-        routerRef.current.replace(fallbackRef.current);
-        leavingRef.current = false;
-      }, BACK_FALLBACK_MS);
-      window.history.go(-2);
+      // The copy just pushed cut forward entries: more than two means an earlier page.
+      if (window.history.length > 2) {
+        window.history.go(-2);
+        return;
+      }
+      // Opened from an email, say: no earlier page in this tab.
+      routerRef.current.replace(fallbackRef.current);
+      leavingRef.current = false;
     };
     const onPopState = (): void => {
-      if (leavingRef.current) {
-        clearTimeout(backTimer);
+      // Back from a same-page entry onto the copy stays on the page.
+      if (leavingRef.current || onGuardEntry()) {
         return;
       }
       pushGuardEntry();
@@ -154,7 +152,6 @@ export function UnsavedChangesGuard({
     window.addEventListener("popstate", onPopState);
     document.addEventListener("click", onClick, true);
     return () => {
-      clearTimeout(backTimer);
       removeGuard();
       answerRef.current?.(false);
       answerRef.current = null;

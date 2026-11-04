@@ -1,12 +1,16 @@
 import { CronExpressionParser } from "cron-parser";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import {
   IntervalTooSmallError,
   parseIntervalSeconds,
   validateCronExpression,
 } from "@/lib/cron-utils";
 import { db } from "@/lib/db";
-import { workflowSchedules, workflows } from "@/lib/db/schema";
+import {
+  workflowFailureIncidents,
+  workflowSchedules,
+  workflows,
+} from "@/lib/db/schema";
 import {
   ErrorCategory,
   logSystemError,
@@ -179,13 +183,20 @@ export type ScheduleSyncResult =
       error: string;
     };
 
+/** Missed-run alerts count from updated_at, so only a real change (or a restart) moves it. */
+function restartIf(restart: boolean | undefined): { updatedAt?: Date } {
+  return restart ? { updatedAt: new Date() } : {};
+}
+
 /**
  * Sync workflow schedule based on trigger configuration.
  * Called when a workflow is saved.
  */
 export async function syncWorkflowSchedule(
   workflowId: string,
-  nodes: WorkflowNode[]
+  nodes: WorkflowNode[],
+  /** The workflow is being turned back on: missed runs count from now. */
+  options: { restart?: boolean } = {}
 ): Promise<ScheduleSyncResult> {
   let scheduleConfig: ExtractedScheduleConfig | null;
   try {
@@ -259,6 +270,10 @@ export async function syncWorkflowSchedule(
     const nextRunAt = computeNextRunTime(cronExpression, timezone);
 
     if (existingSchedule) {
+      const changed =
+        existingSchedule.cronExpression !== cronExpression ||
+        existingSchedule.intervalSeconds !== null ||
+        existingSchedule.timezone !== timezone;
       await db
         .update(workflowSchedules)
         .set({
@@ -267,7 +282,7 @@ export async function syncWorkflowSchedule(
           anchorAt: null,
           timezone,
           nextRunAt,
-          updatedAt: new Date(),
+          ...restartIf(changed || options.restart),
         })
         .where(eq(workflowSchedules.workflowId, workflowId));
 
@@ -310,6 +325,7 @@ export async function syncWorkflowSchedule(
   const nextRunAt = computeNextIntervalRunTime(intervalSeconds, anchorAt);
 
   if (existingSchedule) {
+    const changed = intervalChanged || existingSchedule.timezone !== timezone;
     await db
       .update(workflowSchedules)
       .set({
@@ -318,7 +334,7 @@ export async function syncWorkflowSchedule(
         anchorAt,
         timezone,
         nextRunAt,
-        updatedAt: new Date(),
+        ...restartIf(changed || options.restart),
       })
       .where(eq(workflowSchedules.workflowId, workflowId));
 
@@ -358,9 +374,10 @@ export async function syncWorkflowSchedule(
 export async function syncPersistedWorkflowSchedule(
   workflowId: string,
   nodes: WorkflowNode[],
-  endpoint: string
+  endpoint: string,
+  options: { restart?: boolean } = {}
 ): Promise<void> {
-  const result = await syncWorkflowSchedule(workflowId, nodes);
+  const result = await syncWorkflowSchedule(workflowId, nodes, options);
   if (!result.synced) {
     logSystemWarn(
       ErrorCategory.WORKFLOW_ENGINE,
@@ -407,29 +424,59 @@ export async function setScheduleEnabled(
       enabled,
       updatedAt: new Date(),
     })
-    .where(eq(workflowSchedules.workflowId, workflowId));
+    // Only a real change moves updated_at (missed-run alerts count from it).
+    .where(
+      and(
+        eq(workflowSchedules.workflowId, workflowId),
+        ne(workflowSchedules.enabled, enabled)
+      )
+    );
 
   console.log(
     `[Schedule] ${enabled ? "Enabled" : "Disabled"} schedule for workflow ${workflowId}`
   );
 }
 
-/** Missed-run alerts count from updated_at: bump it when an org can run again (un-halt, reactivation). */
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * An org that can run again (un-halt, reactivation): missed runs and failure
+ * reminders count from now. Runs in the caller's transaction; never fails it.
+ */
 export async function restartOrgScheduleCounting(
+  tx: Tx,
   organizationId: string
 ): Promise<void> {
-  await db
-    .update(workflowSchedules)
-    .set({ updatedAt: new Date() })
-    .where(
-      inArray(
-        workflowSchedules.workflowId,
-        db
-          .select({ id: workflows.id })
-          .from(workflows)
-          .where(eq(workflows.organizationId, organizationId))
-      )
+  const now = new Date();
+  try {
+    // A savepoint, so a failure here cannot roll back the resume itself.
+    await tx.transaction(async (inner) => {
+      const orgWorkflows = inner
+        .select({ id: workflows.id })
+        .from(workflows)
+        .where(eq(workflows.organizationId, organizationId));
+      await inner
+        .update(workflowSchedules)
+        .set({ updatedAt: now })
+        .where(inArray(workflowSchedules.workflowId, orgWorkflows));
+      await inner
+        .update(workflowFailureIncidents)
+        .set({ lastNotifiedAt: now })
+        .where(
+          and(
+            eq(workflowFailureIncidents.organizationId, organizationId),
+            isNull(workflowFailureIncidents.resolvedAt)
+          )
+        );
+    });
+  } catch (error) {
+    logSystemWarn(
+      ErrorCategory.DATABASE,
+      "[Schedule] Could not restart missed-run counting after a resume",
+      error,
+      { organization_id: organizationId }
     );
+  }
 }
 
 /**

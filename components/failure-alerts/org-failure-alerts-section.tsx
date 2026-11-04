@@ -36,7 +36,10 @@ import {
   type DraftChannel,
   draftFromView,
   isChannelDirty,
+  METHODS_FULL,
+  type MethodTarget,
   newMethodDraft,
+  restoreMethod,
   sameTarget,
 } from "./method-drafts";
 import { NotificationHistory } from "./notification-history";
@@ -445,21 +448,29 @@ export function OrgFailureAlertsSection({
   };
 
   const restore = async (view: ChannelView, index: number): Promise<void> => {
+    // Unsaved cards count too, so the page never shows more than the cap.
+    if (restoreMethod<MethodTarget>(cardsRef.current, view, index) === "full") {
+      toast.error(METHODS_FULL);
+      return;
+    }
     const result = await put((saved) => {
       const channels = savedChannelsPayload(saved.channels);
-      if (!channels.some((c) => sameTarget(c, view))) {
-        // A paused channel comes back paused, not live.
-        channels.splice(Math.min(index, channels.length), 0, {
-          kind: view.kind,
-          integrationId: view.integrationId,
-          destination: view.destination,
-          role: view.role,
-          pausedReason: view.pausedAt
-            ? (view.pausedReason ?? "It stopped working.")
-            : undefined,
-        });
-      }
-      return { ...basePayload(saved), channels };
+      // A paused channel comes back paused, not live.
+      const item: ChannelPayload = {
+        kind: view.kind,
+        integrationId: view.integrationId,
+        destination: view.destination,
+        role: view.role,
+        pausedReason: view.pausedAt
+          ? (view.pausedReason ?? "It stopped working.")
+          : undefined,
+      };
+      const next = restoreMethod(channels, item, index);
+      // Full only if saved elsewhere meanwhile: sent so the server says why.
+      return {
+        ...basePayload(saved),
+        channels: next === "full" ? [...channels, item] : (next ?? channels),
+      };
     });
     if (result.ok) {
       accept(result.body);
@@ -632,8 +643,8 @@ export function OrgFailureAlertsSection({
               <li>
                 Each alert goes out once per failing streak, not on every failed
                 run. A workflow that fails again within 30 minutes of recovering
-                continues the same alert, and the recovery is sent once it has
-                worked for 30 minutes.
+                continues the same alert, and the recovery is sent 30 minutes
+                after it first succeeds, if it has not failed again.
               </li>
               <li>
                 If email or chat cannot deliver for 15 minutes, or PagerDuty for
@@ -644,7 +655,7 @@ export function OrgFailureAlertsSection({
               <li>
                 A method that stops working is paused and everyone is told once.
                 It is checked again every day and turns back on by itself when
-                it works; a paused Slack method turns back on when a test
+                it works, except Slack, which turns back on only when a test
                 passes.
               </li>
               <li>

@@ -141,6 +141,7 @@ export async function loadNotificationRows(
       createdAt: failureAlertDeliveries.createdAt,
       updatedAt: failureAlertDeliveries.updatedAt,
       deliveredAt: failureAlertDeliveries.deliveredAt,
+      nextAttemptAt: failureAlertDeliveries.nextAttemptAt,
       workflowId: workflowFailureIncidents.workflowId,
       workflowName: workflows.name,
       at: keysetTime(failureAlertDeliveries.createdAt),

@@ -61,6 +61,8 @@ import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
 import {
   channelLabel,
   DELIVERY_STATE_LABEL,
+  STALE_DROP_TEXT,
+  wasDropped,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import { ProjectDrawer } from "./project-drawer";
@@ -308,8 +310,11 @@ export function notificationBadge(detail: NotificationRunDetail): {
   tooltip: string | null;
 } {
   // The words the Alerts history uses, so both screens name a state alike.
-  const label = DELIVERY_STATE_LABEL[detail.state] ?? detail.state;
-  switch (detail.state) {
+  const state = wasDropped(detail.state, detail.lastError)
+    ? "failed"
+    : detail.state;
+  const label = DELIVERY_STATE_LABEL[state] ?? state;
+  switch (state) {
     case "delivered":
       return {
         label,
@@ -632,7 +637,9 @@ function notificationOutcome(
     case "capped":
       return MONTHLY_LIMIT_TEXT;
     case "skipped":
-      return "Withdrawn before it was sent";
+      return wasDropped(detail.state, detail.lastError)
+        ? STALE_DROP_TEXT
+        : "Withdrawn before it was sent";
     default:
       return detail.attempts > 0
         ? `Sending, ${plural(detail.attempts, "attempt")} so far`

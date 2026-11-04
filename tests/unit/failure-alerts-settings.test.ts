@@ -100,6 +100,7 @@ describe("historyToCsv", () => {
         attempts: 3,
         lastStatus: 503,
         lastError: "Service, unavailable",
+        nextAttemptAt: "2026-10-28T12:00:00.000Z",
         note: "Sent because Email could not be reached",
         workflows: [{ id: "w", name: '=HYPERLINK("x")' }],
       },

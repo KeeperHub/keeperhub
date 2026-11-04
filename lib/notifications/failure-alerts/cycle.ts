@@ -33,7 +33,12 @@ type CycleReport = EvaluationStats &
   };
 
 /** Only these fail the CronJob; a failure elsewhere is logged and the cycle goes on. */
-const JOB_FAILING_STAGES = new Set(["evaluate", "deliver", "deliver-backups"]);
+const JOB_FAILING_STAGES = new Set([
+  "evaluate",
+  "deliver",
+  "backups",
+  "deliver-backups",
+]);
 
 /** One minute of alert work; each stage's error is isolated and logged. */
 export async function runFailureAlertCycle(
@@ -82,11 +87,13 @@ export async function runFailureAlertCycle(
   await stage("requeue-lost", () => requeueLostAlerts(now, evaluation));
   await stage("reminders", () => queueReminders(now, evaluation));
   const deliveryDeadline = Date.now() + DELIVERY_BUDGET_MS;
-  await stage("deliver", () => drainOutbox(appUrl, drain, deliveryDeadline));
+  await stage("deliver", () =>
+    drainOutbox(appUrl, drain, deliveryDeadline, now)
+  );
   await stage("backups", () => fireBackups(now, drain));
   // Backups queued this cycle go out now rather than a minute later.
   await stage("deliver-backups", () =>
-    drainOutbox(appUrl, drain, deliveryDeadline)
+    drainOutbox(appUrl, drain, deliveryDeadline, now)
   );
   await stage("health", () => runHealthChecks(now, drain));
   await stage("prune", () => pruneOldRecords(now));

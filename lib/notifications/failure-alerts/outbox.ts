@@ -28,12 +28,14 @@ import {
 import type { FailureAlertDeliveryState } from "@/lib/db/schema-failure-alerts";
 import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
+import { redactErrorSecrets } from "@/lib/utils/redact";
 import {
   BACKUP_AFTER_MS,
   DELIVERY_BATCH,
   FREE_PLAN_MONTHLY_EMAILS,
   HEALTH_CHECK_INTERVAL_MS,
   MAX_REMINDERS,
+  PAGERDUTY_RESOLVE_STALE_MS,
   RETENTION_DAYS,
   RETRY_DELAYS_MS,
   STALE_DELIVERY_MS,
@@ -43,7 +45,6 @@ import {
   type AlertWorkflow,
   type MessageInput,
   type RenderedMessage,
-  redactErrorSecrets,
   renderMessage,
   runsUrl,
 } from "./messages";
@@ -75,6 +76,7 @@ import {
   CHANNEL_LABEL,
   channelLabel,
   EMAILS_KEPT_FOR_NEW_FAILURES,
+  STALE_DROP_TEXT,
 } from "./view-types";
 import { workflowTriggerType } from "./workflow-trigger";
 
@@ -409,7 +411,9 @@ async function renderRow(
       failureCount: incident.failureCount,
       firstFailedAt: incident.firstFailedAt,
       lastError: incident.lastError,
-      openedBy: incident.openedBy,
+      // A wallet that ran dry turned it off: say so, whatever opened it.
+      openedBy:
+        context.outOfFunds === true ? ("funding" as const) : incident.openedBy,
       before:
         row.kind === "recovery" ? undefined : await ctx.runsBefore(incident),
     };
@@ -421,6 +425,11 @@ async function renderRow(
             workflow,
             incident: alertIncident,
             ranButFailed: context.ranButFailed === true,
+            resolvedAt: incident.resolvedAt,
+            ranAt:
+              typeof context.ranAt === "string"
+                ? new Date(context.ranAt)
+                : null,
           }
         : {
             ...org,
@@ -689,7 +698,9 @@ async function recordChannelHealth(
 export async function drainOutbox(
   appUrl: string,
   stats: DrainStats,
-  deadline: number
+  deadline: number,
+  /** The cycle's time, so staleness here agrees with fireBackups. */
+  now: Date = new Date()
 ): Promise<void> {
   const ctx = new Context(appUrl);
   while (Date.now() < deadline) {
@@ -702,7 +713,7 @@ export async function drainOutbox(
       (row) => row.organizationId
     );
     await skipOutsideRollout(dropped);
-    const rows = await dropStale(kept);
+    const rows = await skipHalted(await dropStale(kept, now));
     await ctx.loadChannels(
       rows.map((row) => row.channelId).filter((id): id is string => Boolean(id))
     );
@@ -758,21 +769,29 @@ async function skipOutsideRollout(rows: DeliveryRow[]): Promise<void> {
     );
 }
 
-const STALE_TEXT = "Dropped: queued more than an hour ago.";
+/** A PagerDuty resolve only cleans up, so it keeps trying for a day. */
+function isPagerDutyResolve(row: DeliveryRow): boolean {
+  return row.kind === "recovery" && row.channel === "pagerduty";
+}
 
-/** Queued over an hour ago, so no longer news: such a row is never sent, nor a backup for it. */
+/** Due over an hour ago, so no longer news: such a row is never sent, nor a backup for it. */
 function isStale(row: DeliveryRow, now: Date): boolean {
-  return now.getTime() - dueSince(row).getTime() >= STALE_DELIVERY_MS;
+  const limit = isPagerDutyResolve(row)
+    ? PAGERDUTY_RESOLVE_STALE_MS
+    : STALE_DELIVERY_MS;
+  return now.getTime() - dueSince(row).getTime() >= limit;
 }
 
 /** Skip claimed rows that waited too long; returns the rest. */
-async function dropStale(rows: DeliveryRow[]): Promise<DeliveryRow[]> {
-  const now = new Date();
+async function dropStale(
+  rows: DeliveryRow[],
+  now: Date
+): Promise<DeliveryRow[]> {
   const stale = rows.filter((row) => isStale(row, now));
   if (stale.length > 0) {
     await db
       .update(failureAlertDeliveries)
-      .set({ state: "skipped", lastError: STALE_TEXT, updatedAt: now })
+      .set({ state: "skipped", lastError: STALE_DROP_TEXT, updatedAt: now })
       .where(
         inArray(
           failureAlertDeliveries.id,
@@ -792,7 +811,57 @@ async function releaseRows(rows: DeliveryRow[]): Promise<void> {
   }
 }
 
-/** When a row first became due: an org pause holds rows, and backupAt keeps its wait after the hold. */
+const HALTED_TEXT = "The organization was halted before this was delivered.";
+/** Incident messages a halted org is not sent (its incidents stay open and quiet). */
+const QUIET_WHILE_HALTED: ReadonlySet<string> = new Set([
+  "alert",
+  "reminder",
+  "recovery",
+]);
+
+/** Orgs among these that are halted right now. */
+async function haltedOrgs(organizationIds: string[]): Promise<Set<string>> {
+  const ids = [...new Set(organizationIds)];
+  if (ids.length === 0) {
+    return new Set();
+  }
+  const rows = await db
+    .select({ id: organization.id })
+    .from(organization)
+    .where(
+      and(inArray(organization.id, ids), isNotNull(organization.haltedAt))
+    );
+  return new Set(rows.map((row) => row.id));
+}
+
+/** Halted: skip, not hold, so lifting the halt sends nothing old. A PagerDuty resolve still goes, or the page stays open. */
+async function skipHalted(rows: DeliveryRow[]): Promise<DeliveryRow[]> {
+  const halted = await haltedOrgs(
+    rows
+      .filter((row) => QUIET_WHILE_HALTED.has(row.kind))
+      .map((row) => row.organizationId)
+  );
+  const quiet = rows.filter(
+    (row) =>
+      halted.has(row.organizationId) &&
+      QUIET_WHILE_HALTED.has(row.kind) &&
+      !isPagerDutyResolve(row)
+  );
+  if (quiet.length > 0) {
+    await db
+      .update(failureAlertDeliveries)
+      .set({ state: "skipped", lastError: HALTED_TEXT, updatedAt: new Date() })
+      .where(
+        inArray(
+          failureAlertDeliveries.id,
+          quiet.map((row) => row.id)
+        )
+      );
+  }
+  return rows.filter((row) => !quiet.includes(row));
+}
+
+/** When a row first became due: backupAt keeps its wait after any hold (org pause, recovery hold). */
 function dueSince(row: DeliveryRow): Date {
   const wait = BACKUP_AFTER_MS[row.channel];
   if (row.isBackup || !row.backupAt || wait === undefined) {
@@ -874,7 +943,7 @@ async function processRow(
   if (
     row.channelId &&
     !outcome.channelHealthy &&
-    !expired &&
+    !(expired && outcome.retryable) &&
     (await pauseChannel(
       row.channelId,
       outcome.message,
@@ -934,8 +1003,11 @@ export async function fireBackups(now: Date, stats: DrainStats): Promise<void> {
     .limit(100);
 
   const split = splitByRollout(due, (row) => row.organizationId);
-  const kept = split.kept.filter((row) => !isStale(row, now));
-  // Outside the rollout, or queued over an hour ago: no backup is owed; mark them so they stop crowding the list.
+  const halted = await haltedOrgs(split.kept.map((row) => row.organizationId));
+  const kept = split.kept.filter(
+    (row) => !(isStale(row, now) || halted.has(row.organizationId))
+  );
+  // Outside the rollout, halted, or due over an hour ago: no backup is owed; mark them so they stop crowding the list.
   const dropped = due.filter((row) => !kept.includes(row));
   if (dropped.length > 0) {
     await db
@@ -1107,6 +1179,7 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
 const HEALTH_CHECKS_PER_CYCLE = 20;
 /** Channels read per cycle: ones outside the rollout stay due, so the scan pages through them. */
 const HEALTH_SCAN_PAGE = 500;
+/** Per pod: a restart or another pod starts from the top, which only repeats checks. */
 let healthScanCursor: string | null = null;
 
 /** Daily silent check: pause dead channels, restore paused ones that work again. */

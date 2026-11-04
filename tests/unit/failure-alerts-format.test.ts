@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  deliveryStatus,
   describeRule,
   type RuleChannel,
 } from "@/components/failure-alerts/format";
+import { STALE_DROP_TEXT } from "@/lib/notifications/failure-alerts/view-types";
 
 const slack: RuleChannel = {
   kind: "slack",
@@ -65,10 +67,16 @@ describe("describeRule", () => {
     );
   });
 
-  it("says the workflow turns itself off", () => {
-    expect(describeRule({ ...base, pauseWorkflow: true })).toMatch(
-      /Then KeeperHub turns this workflow off\.$/
+  it("says the workflow turns off only on the count or out of funds", () => {
+    const text = describeRule({
+      ...base,
+      timeLimitMinutes: 360,
+      pauseWorkflow: true,
+    });
+    expect(text).toMatch(
+      /KeeperHub turns this workflow off only after 5 failed runs in a row or when its wallet runs out of funds\.$/
     );
+    expect(text).not.toContain("Then KeeperHub");
   });
 
   it("shortens a long target in the middle", () => {
@@ -81,5 +89,53 @@ describe("describeRule", () => {
     });
     expect(text).toContain("..");
     expect(text).not.toContain("-1002233445566778899");
+  });
+});
+
+describe("deliveryStatus", () => {
+  const now = new Date("2026-11-04T14:00:00.000Z");
+  const row = {
+    state: "pending",
+    kind: "recovery",
+    lastError: null,
+    nextAttemptAt: "2026-11-04T14:25:00.000Z",
+  };
+
+  it("says when a held recovery goes out", () => {
+    expect(deliveryStatus(row, now)).toEqual({
+      label: "Sends at 14:25 UTC if it keeps working",
+      tone: "waiting",
+    });
+  });
+
+  it("names the time for any other row due later", () => {
+    expect(deliveryStatus({ ...row, kind: "alert" }, now).label).toBe(
+      "Scheduled for 14:25 UTC"
+    );
+  });
+
+  it("calls a row due now queued", () => {
+    expect(
+      deliveryStatus({ ...row, nextAttemptAt: now.toISOString() }, now).label
+    ).toBe("Queued");
+  });
+
+  it("shows a dropped row as not delivered, a withdrawn one muted", () => {
+    expect(
+      deliveryStatus(
+        { ...row, state: "skipped", lastError: STALE_DROP_TEXT },
+        now
+      )
+    ).toEqual({ label: "Not delivered", tone: "failed" });
+    expect(
+      deliveryStatus(
+        {
+          ...row,
+          state: "skipped",
+          lastError: "The workflow is running again.",
+        },
+        now
+      )
+    ).toEqual({ label: "Withdrawn", tone: "muted" });
   });
 });

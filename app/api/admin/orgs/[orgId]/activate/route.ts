@@ -42,6 +42,7 @@ export async function POST(
         .update(organization)
         .set({ deactivatedAt: null })
         .where(eq(organization.id, orgId));
+      await restartOrgScheduleCounting(tx, orgId);
 
       const [{ value: workflowsStillDeactivated }] = await tx
         .select({ value: count() })
@@ -69,7 +70,6 @@ export async function POST(
         { status: 409 }
       );
     }
-    await restartOrgScheduleCounting(result.orgId);
 
     await recordAuditEvent({
       actor: {

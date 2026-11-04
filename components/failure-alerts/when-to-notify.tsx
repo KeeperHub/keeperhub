@@ -13,9 +13,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  DEFAULT_TIME_LIMIT_MINUTES,
   MAX_REMINDERS,
   MAX_THRESHOLD,
   MIN_THRESHOLD,
+  MIN_TIME_RULE_FAILURES,
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
 import { FUNDS_RULE, timeLimitLabel } from "./format";
@@ -35,8 +37,6 @@ export type RulesDraft = {
 };
 
 type SavedRules = Omit<RulesDraft, "threshold"> & { threshold: number };
-
-const DEFAULT_TIME_LIMIT = 360;
 
 export function rulesDraftFrom(rules: SavedRules): RulesDraft {
   return { ...rules, threshold: String(rules.threshold) };
@@ -121,7 +121,8 @@ export function WhenToNotify({
           id="failure-time-limit"
           onCheckedChange={(checked) =>
             change({
-              timeLimitMinutes: checked === true ? DEFAULT_TIME_LIMIT : null,
+              timeLimitMinutes:
+                checked === true ? DEFAULT_TIME_LIMIT_MINUTES : null,
             })
           }
         />
@@ -132,7 +133,7 @@ export function WhenToNotify({
           disabled={disabled || draft.timeLimitMinutes === null}
           key={draft.timeLimitMinutes === null ? "off" : "on"}
           onValueChange={(v) => change({ timeLimitMinutes: Number(v) })}
-          value={String(draft.timeLimitMinutes ?? DEFAULT_TIME_LIMIT)}
+          value={String(draft.timeLimitMinutes ?? DEFAULT_TIME_LIMIT_MINUTES)}
         >
           <SelectTrigger aria-label="How long" className="h-9 w-28" size="sm">
             {draft.timeLimitMinutes === null ? (
@@ -153,10 +154,12 @@ export function WhenToNotify({
       <p className="text-muted-foreground text-xs">
         For slow schedules: a workflow that runs every 4 hours takes {4 * runs}{" "}
         hours to fail {runs} time{runs === 1 ? "" : "s"}. The time limit needs
-        at least 2 failed runs in a row and never pauses a workflow. Errors on
-        KeeperHub's side do not count.
+        at least {MIN_TIME_RULE_FAILURES} failed runs in a row and never turns a
+        workflow off.
       </p>
-      <p className="text-muted-foreground text-xs">{FUNDS_RULE}</p>
+      <p className="text-muted-foreground text-xs">
+        {FUNDS_RULE} Errors on KeeperHub's side never count toward either limit.
+      </p>
       <label className="flex items-center gap-2" htmlFor="failure-remind">
         <Checkbox
           checked={draft.remindDaily}

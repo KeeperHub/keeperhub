@@ -29,7 +29,7 @@ type Sample = MessagePreview["sample"];
 const SAMPLE_LABEL: Record<Sample, string> = {
   alert: "A workflow keeps failing",
   missed: "A scheduled workflow did not run",
-  paused: "A workflow was paused at its limit",
+  paused: "A workflow was turned off at its limit",
   recovery: "It is running again",
 };
 

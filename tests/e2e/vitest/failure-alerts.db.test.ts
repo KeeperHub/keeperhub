@@ -530,7 +530,7 @@ async function settingsError(run: () => Promise<unknown>): Promise<{
   return { message: "" };
 }
 
-const PAUSED_WORDING = /paused/i;
+const PAUSED_WORDING = /turned off/i;
 const TEST_WORDING = /test/i;
 const PAGED_WORDING = /paged/i;
 const EMAIL_WORDING = /email/i;
@@ -823,7 +823,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(mailsTo(org)).toHaveLength(await deliveredEmailCount(org));
     });
 
-    it("a grouped email marks a workflow its wallet stopped, from how the incident opened", async () => {
+    it("a grouped email notes a workflow that ran out of funds earlier, from how the incident opened", async () => {
       const org = await makeOrg("omicron");
       const names = ["Funds Keeper", "Plain Keeper A", "Plain Keeper B"];
       for (const name of names) {
@@ -844,11 +844,13 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       const grouped = mailsTo(org).find((m) =>
         names.every((n) => m.text.includes(wfName(n)))
       );
+      // Its latest error is not a funds error, so no "Wallet out of funds:" prefix.
       expect(grouped?.text).toContain(
-        `Wallet out of funds: ${wfName("Funds Keeper")}`
+        `${wfName("Funds Keeper")}: 5 failed runs in a row, ran out of funds earlier`
       );
+      expect(grouped?.text).not.toContain("Wallet out of funds:");
       expect(grouped?.text).not.toContain(
-        `Wallet out of funds: ${wfName("Plain Keeper A")}`
+        `${wfName("Plain Keeper A")}: 5 failed runs in a row, ran out of funds earlier`
       );
     });
 
@@ -1360,7 +1362,9 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       // The same writes the enable toggle, a cron save and Reset make.
       backAt = new Date();
       await setEnabled(reenabled, true);
-      await syncWorkflowSchedule(reenabled, scheduleNodes("*/5 * * * *"));
+      await syncWorkflowSchedule(reenabled, scheduleNodes("*/5 * * * *"), {
+        restart: true,
+      });
       await syncWorkflowSchedule(recron, scheduleNodes("*/5 * * * *"));
       const reset = await resetOrgCircuitBreaker({
         organizationId: haltedOrg.orgId,
@@ -2542,6 +2546,285 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     it("a cycle reports no failed stages", async () => {
       const report = await runCycle();
       expect(report.errors).toEqual([]);
+    });
+  });
+
+  describe("reopened incidents, funds, halts and late deliveries", {
+    timeout: SUITE_TIMEOUT,
+  }, () => {
+    type Evaluator =
+      typeof import("@/lib/notifications/failure-alerts/evaluator");
+    let ev: Evaluator;
+
+    const fundsFailure = async (org: Org, wf: string, minutes: number) => {
+      const startedAt = at(minutes);
+      await db.insert(workflowExecutions).values({
+        id: nextId("run_"),
+        workflowId: wf,
+        userId: org.userId,
+        organizationId: org.orgId,
+        status: "error",
+        triggerSource: "schedule",
+        startedAt,
+        completedAt: new Date(startedAt.getTime() + 1000),
+        error: "Insufficient ETH balance to cover gas",
+      });
+    };
+
+    const countingOrg = async (tag: string, patch = {}): Promise<Org> => {
+      const org = await makeOrg(tag);
+      await db.insert(orgFailureAlertSettings).values({
+        organizationId: org.orgId,
+        countingSince: at(-24 * 60),
+        ...patch,
+      });
+      return org;
+    };
+
+    beforeAll(async () => {
+      ev = await import("@/lib/notifications/failure-alerts/evaluator");
+    });
+
+    afterAll(() => {
+      emailStatus = 202;
+    });
+
+    it("a reopened incident sends the alert its success withdrew before delivery", async () => {
+      const org = await countingOrg("reopenqueued");
+      const wf = await makeWorkflow(org, "Reopen queued");
+      await addFailures(org, wf, 5, -20);
+      // Evaluate only: the alert is queued but not yet sent.
+      await ev.evaluateQueuedWorkflows(new Date(), ev.emptyStats());
+      const first = await openIncident(wf);
+      await addRun(org, wf, "success", { at: at(-10) });
+      await ev.evaluateQueuedWorkflows(new Date(), ev.emptyStats());
+      expect(await openIncident(wf)).toBeUndefined();
+      await addRun(org, wf, "error", { at: at(-5) });
+      await runCycle();
+      expect((await openIncident(wf))?.id).toBe(first?.id);
+      expect(await sentEmails(org, "alert")).toHaveLength(1);
+    });
+
+    it("a reopened incident sends an alert that was still retrying at the success", async () => {
+      const org = await countingOrg("reopenretry");
+      const wf = await makeWorkflow(org, "Reopen retrying");
+      await addFailures(org, wf, 5, -20);
+      emailStatus = 503;
+      await runCycle();
+      emailStatus = 202;
+      const alert = (await deliveriesOf(org.orgId)).find(
+        (d) => d.kind === "alert" && d.channel === "email"
+      );
+      expect(alert?.state).toBe("retrying");
+      await addRun(org, wf, "success", { at: at(-10) });
+      await runCycle();
+      await addRun(org, wf, "error", { at: at(-5) });
+      await runCycle();
+      expect(await openIncident(wf)).toBeDefined();
+      expect(await sentEmails(org, "alert")).toHaveLength(1);
+    });
+
+    it("a reopened incident's alert held by an org pause waits for the pause to end", async () => {
+      const org = await countingOrg("reopenheld");
+      const wf = await makeWorkflow(org, "Reopen held");
+      await db.insert(workflowFailureAlertOverrides).values({
+        workflowId: wf,
+        organizationId: org.orgId,
+        pauseWorkflow: true,
+      });
+      const until = at(120);
+      await orgPause.pauseOrgAlerts({
+        organizationId: org.orgId,
+        until: until.toISOString(),
+        reason: null,
+        by: "An owner",
+        now: new Date(),
+      });
+      await addFailures(org, wf, 5, -20);
+      await runCycle();
+      expect(await isEnabled(wf)).toBe(false);
+      // Turned back on by hand, works once, then fails inside the recovery hold.
+      await setEnabled(wf, true);
+      await addRun(org, wf, "success", { at: at(-10) });
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      await addRun(org, wf, "error", { at: at(-5) });
+      await runCycle();
+      expect(await openIncident(wf)).toBeDefined();
+      const held = (await deliveriesOf(org.orgId)).find(
+        (d) => d.kind === "alert" && d.channel === "email"
+      );
+      expect(held?.state).toBe("pending");
+      expect(held?.nextAttemptAt.getTime()).toBe(until.getTime());
+      expect(await sentEmails(org, "alert")).toHaveLength(0);
+
+      await orgPause.resumeOrgAlerts({
+        organizationId: org.orgId,
+        by: "An owner",
+        now: new Date(),
+      });
+      await runCycle();
+      expect(await sentEmails(org, "alert")).toHaveLength(1);
+    });
+
+    it("out of funds after a time-rule incident still turns the workflow off", async () => {
+      const org = await countingOrg("oofafter", {
+        threshold: 5,
+        timeLimitMinutes: 60,
+      });
+      const wf = await makeWorkflow(org, "Dry after time rule");
+      await db.insert(workflowFailureAlertOverrides).values({
+        workflowId: wf,
+        organizationId: org.orgId,
+        pauseWorkflow: true,
+      });
+      await addRun(org, wf, "error", { at: at(-120) });
+      await addRun(org, wf, "error", { at: at(-90) });
+      await runCycle();
+      expect((await openIncident(wf))?.openedBy).toBe("time");
+      expect(await isEnabled(wf)).toBe(true);
+      await fundsFailure(org, wf, -3);
+      await fundsFailure(org, wf, -2);
+      await runCycle();
+      expect(await isEnabled(wf)).toBe(false);
+      expect(await sentEmails(org, "reminder")).toHaveLength(1);
+      const turnedOff = mailsAbout(org, "Dry after time rule").at(-1);
+      expect(turnedOff?.text).toMatch(/funds/i);
+    });
+
+    it("two out-of-funds failures with no incident turn it off", async () => {
+      const org = await countingOrg("oofnew", {
+        threshold: 5,
+        timeLimitMinutes: 60,
+      });
+      const wf = await makeWorkflow(org, "Dry wallet");
+      await db.insert(workflowFailureAlertOverrides).values({
+        workflowId: wf,
+        organizationId: org.orgId,
+        pauseWorkflow: true,
+      });
+      await fundsFailure(org, wf, -3);
+      await fundsFailure(org, wf, -2);
+      await runCycle();
+      expect((await openIncident(wf))?.openedBy).toBe("funding");
+      expect(await isEnabled(wf)).toBe(false);
+    });
+
+    it("keeps retrying a recovery for an hour after the hold, and a PagerDuty resolve for longer", async () => {
+      const org = await countingOrg("latefix");
+      const pd = await makeChannel(org, "pagerduty", "always", "live");
+      const wf = await makeWorkflow(org, "Late recovery");
+      await addFailures(org, wf, 5, -200);
+      await runCycle();
+      await addRun(org, wf, "success", { at: at(-190) });
+      await runCycle();
+      const incidentId = (await deliveriesOf(org.orgId)).find(
+        (d) => d.kind === "recovery"
+      )?.incidentId;
+      // Recovery email due 55 minutes ago; PagerDuty resolve due 170 minutes ago (5xx since).
+      await db
+        .update(failureAlertDeliveries)
+        .set({
+          state: "retrying",
+          attempts: 4,
+          createdAt: at(-100),
+          nextAttemptAt: at(-1),
+          backupAt: at(-55 + 15),
+        })
+        .where(
+          and(
+            eq(failureAlertDeliveries.organizationId, org.orgId),
+            eq(failureAlertDeliveries.kind, "recovery"),
+            eq(failureAlertDeliveries.channel, "email")
+          )
+        );
+      await db
+        .update(failureAlertDeliveries)
+        .set({
+          state: "retrying",
+          attempts: 6,
+          createdAt: at(-200),
+          nextAttemptAt: at(-1),
+          backupAt: at(-170 + 2),
+        })
+        .where(
+          and(
+            eq(failureAlertDeliveries.organizationId, org.orgId),
+            eq(failureAlertDeliveries.kind, "recovery"),
+            eq(failureAlertDeliveries.channelId, pd.id)
+          )
+        );
+      await runCycle();
+      const rows = (await deliveriesOf(org.orgId)).filter(
+        (d) => d.kind === "recovery" && d.incidentId === incidentId
+      );
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        expect(row.state, row.lastError ?? "").toBe("delivered");
+      }
+    });
+
+    it("sends a halted org nothing it queued before the halt, nor after it is lifted", async () => {
+      const org = await countingOrg("haltedqueue");
+      const wf = await makeWorkflow(org, "Halted with queue");
+      await addFailures(org, wf, 5, -20);
+      await ev.evaluateQueuedWorkflows(new Date(), ev.emptyStats());
+      await db
+        .update(organization)
+        .set({ haltedAt: new Date() })
+        .where(eq(organization.id, org.orgId));
+      await runCycle();
+      const alert = (await deliveriesOf(org.orgId)).find(
+        (d) => d.kind === "alert" && d.channel === "email"
+      );
+      expect(alert?.state).toBe("skipped");
+      expect(alert?.lastError).toMatch(/halted/);
+      const reset = await resetOrgCircuitBreaker({
+        organizationId: org.orgId,
+        requestedByUserId: org.userId,
+      });
+      expect(reset).toEqual({ reset: true, wasHalted: true });
+      await runCycle();
+      expect(await sentEmails(org, "alert")).toHaveLength(0);
+      expect((await openIncident(wf))?.resolvedAt).toBeNull();
+    });
+
+    it("lifting a halt restarts the reminder clock", async () => {
+      const org = await countingOrg("haltclock");
+      const wf = await makeWorkflow(org, "Halt clock");
+      await addFailures(org, wf, 5, -20);
+      await runCycle();
+      const incident = await openIncident(wf);
+      await db
+        .update(organization)
+        .set({ haltedAt: new Date() })
+        .where(eq(organization.id, org.orgId));
+      await db
+        .update(workflowFailureIncidents)
+        .set({ lastNotifiedAt: at(-25 * 60) })
+        .where(eq(workflowFailureIncidents.id, incident?.id ?? ""));
+      await resetOrgCircuitBreaker({
+        organizationId: org.orgId,
+        requestedByUserId: org.userId,
+      });
+      const after = await incidentById(incident?.id);
+      expect(after?.lastNotifiedAt.getTime()).toBeGreaterThan(
+        Date.now() - MINUTE
+      );
+      await runCycle();
+      expect(await sentEmails(org, "reminder")).toHaveLength(0);
+    });
+
+    it("a not-running incident ends with any run that started, even one our platform failed", async () => {
+      const org = await countingOrg("missedsys");
+      const wf = await makeWorkflow(org, "Missed then platform error");
+      await addSchedule(wf);
+      await runCycle();
+      const incident = await openIncident(wf);
+      expect(incident?.openedBy).toBe("missed");
+      await addRun(org, wf, "error", { at: at(-1), errorType: "system" });
+      await runCycle();
+      expect((await incidentById(incident?.id))?.resolvedReason).toBe("ran");
     });
   });
 });

@@ -156,10 +156,10 @@ function incidentTitle(
   const runs = `${failedRuns(incident.failureCount)} in a row`;
   if (incident.openedBy === "funding") {
     return pausedByAlert
-      ? `Paused: wallet out of funds, ${runs}`
+      ? `Turned off: wallet out of funds, ${runs}`
       : `Wallet out of funds: ${runs}`;
   }
-  return pausedByAlert ? `Paused after ${runs}` : `Failing: ${runs}`;
+  return pausedByAlert ? `Turned off after ${runs}` : `Failing: ${runs}`;
 }
 
 /** "1 more failed run" before the alert, for a workflow that turns itself off. */
@@ -331,7 +331,7 @@ export function WorkflowFailureAlerts({
                 type="button"
                 variant="link"
               >
-                Retry
+                Try again
               </Button>
             </span>
           </Notice>
@@ -349,7 +349,7 @@ export function WorkflowFailureAlerts({
   const canManage = view.canManage;
   const muted = isMutedView(view);
   const custom = view.effective.source === "custom";
-  // Off because its alert paused it, and not turned back on since.
+  // Off because its alert turned it off, and not turned back on since.
   const pausedAt = view.status.incident?.workflowPausedAt ?? null;
   const resumedAt = view.status.incident?.workflowResumedAt ?? null;
   const pausedByAlert =
@@ -601,7 +601,7 @@ export function WorkflowFailureAlerts({
                   type="button"
                   variant="outline"
                 >
-                  Pause workflow
+                  Turn workflow off
                 </Button>
               )}
               {enableToggle && pausedByAlert && (
@@ -651,7 +651,7 @@ export function WorkflowFailureAlerts({
                 {view.override.mutedBy ? ` by ${view.override.mutedBy}` : ""}.
                 Failures still show in Runs; nobody is told.
                 {view.override.pauseWorkflow &&
-                  " It is still paused at the limit, and people are told."}
+                  " It is still turned off at the limit, and people are told."}
               </span>
             </p>
           ) : (
@@ -883,7 +883,7 @@ export function WorkflowFailureAlerts({
                     }
                   />
                   <Label className="text-xs" htmlFor="wf-pause-workflow">
-                    Pause this workflow when it reaches the limit
+                    Turn this workflow off when it reaches the limit
                   </Label>
                 </div>
                 <p
@@ -891,9 +891,9 @@ export function WorkflowFailureAlerts({
                   id="wf-pause-workflow-help"
                 >
                   Turns it off when it fails that many runs in a row or the
-                  wallet runs out of funds; the time limit only alerts. Errors
-                  on KeeperHub's side do not count. To start it again, fix the
-                  cause, then press Turn back on.
+                  wallet runs out of funds; the time limit never turns a
+                  workflow off. Errors on KeeperHub's side do not count. To
+                  start it again, fix the cause, then press Turn back on.
                 </p>
               </div>
               <div className="space-y-2">

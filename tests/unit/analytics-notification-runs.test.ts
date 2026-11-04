@@ -9,6 +9,7 @@ import {
   toHistoryEntry,
   toNotificationRun,
 } from "@/lib/analytics/notification-runs";
+import { STALE_DROP_TEXT } from "@/lib/notifications/failure-alerts/view-types";
 
 const CREATED = new Date("2026-10-01T10:00:00.000Z");
 const LATER = new Date("2026-10-01T10:00:04.000Z");
@@ -29,6 +30,7 @@ function row(overrides: Partial<NotificationRow> = {}): NotificationRow {
     createdAt: CREATED,
     updatedAt: LATER,
     deliveredAt: LATER,
+    nextAttemptAt: CREATED,
     workflowId: "wf_nightly",
     workflowName: "Nightly sync",
     ...overrides,
@@ -263,6 +265,7 @@ describe("toHistoryEntry", () => {
       attempts: 1,
       lastStatus: 202,
       lastError: null,
+      nextAttemptAt: CREATED.toISOString(),
       note: null,
       workflows: [{ id: "wf_nightly", name: "Nightly sync" }],
     });
@@ -314,6 +317,14 @@ describe("notificationBadge", () => {
       label: "Withdrawn",
       tooltip: "Withdrawn: The workflow is running again.",
     });
+    // Too old to send: not delivered, not a withdrawal.
+    expect(
+      notificationBadge({
+        ...detail,
+        state: "skipped",
+        lastError: STALE_DROP_TEXT,
+      })
+    ).toMatchObject({ label: "Not delivered" });
     // The Alerts history's words for a message still on its way.
     expect(notificationBadge({ ...detail, state: "pending" }).label).toBe(
       "Queued"

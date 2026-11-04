@@ -52,6 +52,9 @@ function installHistory(urls: string[]): void {
   vi.spyOn(window.history, "back").mockImplementation(() =>
     window.history.go(-1)
   );
+  vi.spyOn(window.history, "length", "get").mockImplementation(
+    () => entries.length
+  );
 }
 
 const paths = (): string[] =>
@@ -118,7 +121,6 @@ beforeEach(() => {
   (
     globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
   ).IS_REACT_ACT_ENVIRONMENT = true;
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -129,7 +131,6 @@ afterEach(() => {
   container.remove();
   vi.restoreAllMocks();
   vi.clearAllMocks();
-  vi.useRealTimers();
 });
 
 describe("UnsavedChangesGuard", () => {
@@ -175,15 +176,21 @@ describe("UnsavedChangesGuard", () => {
     link.remove();
   });
 
-  it("lets navigation within the page and a clean form through", () => {
+  it("keeps a same-page push a push, and Back from it stays without asking", () => {
     installHistory(["/settings/org-1/alerts"]);
     render(true);
     act(() => guarded.push("/settings/org-1/alerts?highlight=methods"));
     expect(dialogOpen()).toBe(false);
-    expect(entries.map((e) => e.url)).toEqual([
+    expect(paths()).toEqual([
       "/settings/org-1/alerts",
-      "/settings/org-1/alerts?highlight=methods",
+      "/settings/org-1/alerts",
+      "/settings/org-1/alerts",
     ]);
+    expect(entries[2].url).toBe("/settings/org-1/alerts?highlight=methods");
+    act(() => window.history.back());
+    expect(dialogOpen()).toBe(false);
+    expect(index).toBe(1);
+    expect(entries).toHaveLength(3);
   });
 
   it("drops the guard entry once saved, then lets navigation through", () => {
@@ -197,29 +204,28 @@ describe("UnsavedChangesGuard", () => {
     expect(dialogOpen()).toBe(false);
   });
 
-  it("Back then Leave goes to the page before", async () => {
+  it("Back then Leave goes to the page before (history length 3)", async () => {
     installHistory(["/workflows", "/settings/org-1/alerts"]);
     render(true);
     act(() => window.history.back());
     expect(dialogOpen()).toBe(true);
     // Back was held on the page.
     expect(index).toBe(2);
+    expect(window.history.length).toBe(3);
 
     await choose("Leave");
     expect(paths()[index]).toBe("/workflows");
-    act(() => vi.advanceTimersByTime(1000));
+    expect(index).toBe(0);
     expect(baseRouter.replace).not.toHaveBeenCalled();
   });
 
-  it("Back then Leave with no earlier page goes to the fallback and keeps guarding", async () => {
+  it("Back then Leave with no earlier page (history length 2) goes to the fallback and keeps guarding", async () => {
     installHistory(["/settings/org-1/alerts"]);
     render(true);
     act(() => window.history.back());
+    expect(window.history.length).toBe(2);
     await choose("Leave");
-    // History could not move two back.
-    expect(index).toBe(1);
-
-    act(() => vi.advanceTimersByTime(1000));
+    expect(window.history.go).not.toHaveBeenCalledWith(-2);
     expect(paths()).toEqual(["/settings/org-1/alerts", "/settings/org-1"]);
     expect(index).toBe(1);
 
@@ -230,7 +236,8 @@ describe("UnsavedChangesGuard", () => {
   });
 
   it("does not prompt on unload once Leave was chosen", async () => {
-    installHistory(["/settings/org-1/alerts"]);
+    // Back then Leave goes to a page off the app.
+    installHistory(["/elsewhere", "/settings/org-1/alerts"]);
     render(true);
     const before = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(before);
@@ -243,23 +250,54 @@ describe("UnsavedChangesGuard", () => {
     expect(after.defaultPrevented).toBe(false);
   });
 
-  it("confirmLeave asks first and Stay resolves false", async () => {
+  it("confirmLeave runs at once when nobody asks; Stay runs nothing", async () => {
     installHistory(["/settings/org-1/alerts"]);
-    await expect(confirmLeave("/workflows")).resolves.toBe(true);
+    const proceed = vi.fn(() => "went");
+    const first = confirmLeave("/workflows", proceed);
+    // Synchronous, so callers keep their timing.
+    expect(proceed).toHaveBeenCalledTimes(1);
+    await expect(first).resolves.toBe("went");
 
     render(true);
-    let answer: boolean | undefined;
+    let answer: string | null | undefined;
     act(() => {
-      confirmLeave("/workflows")
-        .then((leave) => {
-          answer = leave;
+      confirmLeave("/workflows", proceed)
+        .then((result) => {
+          answer = result;
         })
         .catch(() => undefined);
     });
     expect(dialogOpen()).toBe(true);
     await choose("Stay");
-    expect(answer).toBe(false);
+    expect(answer).toBeNull();
+    expect(proceed).toHaveBeenCalledTimes(1);
     expect(index).toBe(1);
+  });
+
+  it("Leave for an action that stays on the same path leaves no dead Back", async () => {
+    installHistory(["/workflows", "/settings/org-1/alerts"]);
+    render(true);
+    const start = vi.fn(() => Promise.resolve(true));
+    act(() => {
+      runOrgSwitch({
+        orgId: "org-4",
+        name: "Same",
+        start,
+        announce: false,
+      }).catch(() => undefined);
+    });
+    await choose("Leave");
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(start).toHaveBeenCalledTimes(1);
+    // The page reloads clean for the new org.
+    render(false);
+    unmount();
+    // Back goes straight to the page before.
+    expect(index).toBe(1);
+    expect(entries[index].state?.__leaveGuard).toBeUndefined();
+    expect(paths()[index - 1]).toBe("/workflows");
   });
 
   it("an org switch asks first; Leave switches without an extra entry", async () => {

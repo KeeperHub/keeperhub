@@ -7,9 +7,8 @@ import {
 import { type ReactNode, useContext, useMemo } from "react";
 
 /**
- * Asked before an in-app navigation: null lets it through, a promise answers
- * true to leave or false to stay. `href` is undefined when an action leaves
- * the page's state whatever the URL (switching organization).
+ * Asked before an in-app navigation: null lets it through, else answers true to
+ * leave. `href` is undefined for an action that leaves whatever the URL.
  */
 type LeaveGuard = (href: string | undefined) => Promise<boolean> | null;
 
@@ -26,7 +25,30 @@ export function addLeaveGuard(guard: LeaveGuard): () => void {
   };
 }
 
-function pendingAnswers(href: string | undefined): Promise<boolean>[] {
+/** True when the shown history entry is a guard's copy of the page. */
+export function onGuardEntry(): boolean {
+  return Boolean(window.history.state?.[GUARD_ENTRY_KEY]);
+}
+
+/** Steps back off a guard's copy of the page, so leaving adds no dead entry. */
+function dropGuardEntry(): Promise<void> {
+  if (!onGuardEntry()) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    window.addEventListener("popstate", () => resolve(), { once: true });
+    window.history.back();
+  });
+}
+
+/**
+ * Asks every guard, then runs `proceed`: at once when none asks, after Leave
+ * otherwise. Stay resolves null and runs nothing.
+ */
+export function confirmLeave<T>(
+  href: string | undefined,
+  proceed: () => T | Promise<T>
+): Promise<T | null> {
   const answers: Promise<boolean>[] = [];
   for (const guard of guards) {
     const answer = guard(href);
@@ -34,29 +56,16 @@ function pendingAnswers(href: string | undefined): Promise<boolean>[] {
       answers.push(answer);
     }
   }
-  return answers;
-}
-
-/** True when the shown history entry is a guard's copy of the page. */
-export function onGuardEntry(): boolean {
-  return Boolean(window.history.state?.[GUARD_ENTRY_KEY]);
-}
-
-/** Asks every guard now: null when none asks, else whether to leave. */
-export function askLeave(href?: string): Promise<boolean> | null {
-  const answers = pendingAnswers(href);
   if (answers.length === 0) {
-    return null;
+    return Promise.resolve(proceed());
   }
-  return Promise.all(answers).then((leave) => leave.every(Boolean));
-}
-
-/**
- * Asks every guard before an action that acts first and navigates after
- * (switching organization, creating a workflow). False means stay.
- */
-export function confirmLeave(href?: string): Promise<boolean> {
-  return askLeave(href) ?? Promise.resolve(true);
+  return Promise.all(answers).then(async (leave) => {
+    if (!leave.every(Boolean)) {
+      return null;
+    }
+    await dropGuardEntry();
+    return proceed();
+  });
 }
 
 type Navigate = AppRouterInstance["push"];
@@ -64,33 +73,14 @@ type Navigate = AppRouterInstance["push"];
 /** The router with push and replace asking the guards first. */
 export function guardRouter(router: AppRouterInstance): AppRouterInstance {
   const wrap =
-    (navigate: Navigate, isPush: boolean): Navigate =>
+    (navigate: Navigate): Navigate =>
     (href, options) => {
-      const go = (): void => {
-        // A push from a guard's copy of the page takes that entry's place.
-        if (isPush && onGuardEntry()) {
-          router.replace(href, options);
-        } else {
-          navigate(href, options);
-        }
-      };
-      const asked = askLeave(href);
-      if (!asked) {
-        go();
-        return;
-      }
-      asked
-        .then((leave) => {
-          if (leave) {
-            go();
-          }
-        })
-        .catch(() => undefined);
+      confirmLeave(href, () => navigate(href, options)).catch(() => undefined);
     };
   return {
     ...router,
-    push: wrap(router.push, true),
-    replace: wrap(router.replace, false),
+    push: wrap(router.push),
+    replace: wrap(router.replace),
   };
 }
 

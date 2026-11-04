@@ -77,7 +77,8 @@ describe("email tests count each recipient against the daily limit", () => {
       emailTest("partial-four", "org-partial", ["u1", "u2", "u3", "u4"])
     ).rejects.toMatchObject({
       status: 429,
-      message: "This test would email 4 people; 3 test emails are left today.",
+      message:
+        "This test would email 4 people; 3 test emails are left today. Choose fewer people, or try again later.",
     });
     await emailTest("partial-three", "org-partial", three);
     expect(sendEmailMessage).toHaveBeenCalledTimes(30);

@@ -322,7 +322,8 @@ async function validateWorkflowAccess(
 async function handlePostUpdateSideEffects(
   workflowId: string,
   body: Record<string, unknown>,
-  persistedNodes: unknown
+  persistedNodes: unknown,
+  wasEnabled: boolean
 ): Promise<void> {
   // Tags are Hub-discovery only; clear them on any demote off of "public",
   // including demote-to-unlisted (link-only) and demote-to-private.
@@ -351,7 +352,9 @@ async function handlePostUpdateSideEffects(
     await syncPersistedWorkflowSchedule(
       workflowId,
       persistedNodes as Parameters<typeof syncPersistedWorkflowSchedule>[1],
-      "/api/workflows/[workflowId]"
+      "/api/workflows/[workflowId]",
+      // Turned back on: missed runs count from now, not from while it was off.
+      { restart: body.enabled === true && !wasEnabled }
     );
   }
 }
@@ -900,7 +903,12 @@ export async function PATCH(
       throw dbError;
     }
 
-    await handlePostUpdateSideEffects(workflowId, body, updatedWorkflow.nodes);
+    await handlePostUpdateSideEffects(
+      workflowId,
+      body,
+      updatedWorkflow.nodes,
+      existingWorkflow.enabled
+    );
 
     // Resolve project/tag names so a move/tagging shows "Project: A -> B" in
     // the activity feed rather than opaque ids.

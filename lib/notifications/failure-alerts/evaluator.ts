@@ -31,6 +31,7 @@ import { workflowExecutableConditions } from "@/lib/workflow/executable";
 import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
 import {
   ALERT_REQUEUE_AFTER_MS,
+  BACKUP_AFTER_MS,
   DEFAULT_THRESHOLD,
   EVALUATE_BUDGET_MS,
   GROUP_ALERTS_FROM,
@@ -38,6 +39,8 @@ import {
   MAX_WORKFLOWS_PER_RUN,
   MISSED_RUNS_PLATFORM_ALERT,
   MISSED_SCAN_LIMIT,
+  OUT_OF_FUNDS_THRESHOLD,
+  PAGERDUTY_IN_FLIGHT_MS,
   RECOVERY_HOLD_MS,
   REMINDER_INTERVAL_MS,
 } from "./constants";
@@ -71,7 +74,7 @@ import {
 } from "./queue-rows";
 import { isFailureAlertsEnabledForOrg, splitByRollout } from "./rollout";
 import { lockOrgSettings } from "./settings";
-import { decide, isAutomatedRun, summarizeStreak } from "./streak";
+import { decide, summarizeStreak } from "./streak";
 import { loadStreakRuns } from "./streak-runs";
 import {
   AUTOMATIC_TRIGGERS,
@@ -374,8 +377,55 @@ async function reopenRecovered(
         )
       )
       .returning();
+    if (row) {
+      await reviveWithdrawn(tx, row, now);
+    }
     return row ?? null;
   });
+}
+
+/** Alerts and reminders the success withdrew before delivery are owed again: due now, or when an org pause ends. */
+async function reviveWithdrawn(
+  tx: Tx,
+  incident: IncidentRow,
+  now: Date
+): Promise<void> {
+  const [settings] = await tx
+    .select({ pausedUntil: orgFailureAlertSettings.pausedUntil })
+    .from(orgFailureAlertSettings)
+    .where(eq(orgFailureAlertSettings.organizationId, incident.organizationId));
+  const due = activePause(settings?.pausedUntil ?? null, now) ?? now;
+  const withdrawn = await tx
+    .select({
+      id: failureAlertDeliveries.id,
+      channel: failureAlertDeliveries.channel,
+      attempts: failureAlertDeliveries.attempts,
+      backupAt: failureAlertDeliveries.backupAt,
+    })
+    .from(failureAlertDeliveries)
+    .where(
+      and(
+        eq(failureAlertDeliveries.incidentId, incident.id),
+        inArray(failureAlertDeliveries.kind, ["alert", "reminder"]),
+        eq(failureAlertDeliveries.state, "skipped"),
+        eq(failureAlertDeliveries.lastError, SKIPPED_BECAUSE.success)
+      )
+    );
+  for (const row of withdrawn) {
+    await tx
+      .update(failureAlertDeliveries)
+      .set({
+        state: row.attempts > 0 ? "retrying" : "pending",
+        nextAttemptAt: due,
+        // backupAt also marks when it first became due (see dueSince).
+        backupAt: row.backupAt
+          ? new Date(due.getTime() + BACKUP_AFTER_MS[row.channel])
+          : null,
+        lastError: null,
+        updatedAt: now,
+      })
+      .where(eq(failureAlertDeliveries.id, row.id));
+  }
 }
 
 const SKIPPED_BECAUSE: Record<FailureIncidentResolution, string> = {
@@ -386,6 +436,31 @@ const SKIPPED_BECAUSE: Record<FailureIncidentResolution, string> = {
   manual_trigger:
     "The workflow was switched to a manual trigger before this was delivered.",
 };
+
+/** The newest automated run started after `since`, however it ended (or still running). */
+async function latestRunSince(
+  workflowId: string,
+  since: Date
+): Promise<{ id: string; status: string; startedAt: Date } | null> {
+  const [run] = await db
+    .select({
+      id: workflowExecutions.id,
+      status: workflowExecutions.status,
+      startedAt: workflowExecutions.startedAt,
+    })
+    .from(workflowExecutions)
+    .where(
+      and(
+        eq(workflowExecutions.workflowId, workflowId),
+        gt(workflowExecutions.startedAt, since),
+        isNull(workflowExecutions.deletedAt),
+        AUTOMATED_RUN_SQL
+      )
+    )
+    .orderBy(desc(workflowExecutions.startedAt))
+    .limit(1);
+  return run ?? null;
+}
 
 /** Close an incident: a page is always resolved; email and chat hear only a wanted recovery. */
 async function closeIncident(params: {
@@ -489,6 +564,10 @@ async function closeIncident(params: {
         continue;
       }
       seen.add(key);
+      const due = Math.max(
+        sendAt.getTime(),
+        inFlight ? now.getTime() + PAGERDUTY_IN_FLIGHT_MS : 0
+      );
       rows.push({
         scope: incidentScope(incident.id),
         organizationId: incident.organizationId,
@@ -499,12 +578,9 @@ async function closeIncident(params: {
         channelId: row.channelId,
         recipient: row.recipient,
         context: params.recoveryContext,
-        nextAttemptAt: new Date(
-          Math.max(
-            sendAt.getTime(),
-            inFlight ? now.getTime() + 2 * 60 * 1000 : 0
-          )
-        ),
+        nextAttemptAt: new Date(due),
+        // Not a backup trigger (recoveries have none): dueSince reads the hold from it.
+        backupAt: new Date(due + BACKUP_AFTER_MS[row.channel]),
       });
     }
     stats.messagesQueued += await insertDeliveries(rows, tx);
@@ -595,10 +671,7 @@ async function evaluateWorkflow(
 
   // A late schedule's incident ends with any run; failures then count as usual.
   if (open?.openedBy === "missed") {
-    const dueAt = open.firstFailedAt;
-    const ranAgain = runs.find(
-      (run) => isAutomatedRun(run) && run.startedAt > dueAt
-    );
+    const ranAgain = await latestRunSince(workflowId, open.firstFailedAt);
     if (ranAgain) {
       await closeIncident({
         incident: open,
@@ -607,8 +680,10 @@ async function evaluateWorkflow(
         notifyRecovery: policy.notifyRecovery,
         now,
         stats,
-        recoveryContext:
-          ranAgain.status === "error" ? { ranButFailed: true } : undefined,
+        recoveryContext: {
+          ranAt: ranAgain.startedAt.toISOString(),
+          ...(ranAgain.status === "error" ? { ranButFailed: true } : {}),
+        },
       });
       // Now closed: the run that ended it may itself start a failing streak.
       return await evaluateWorkflow(workflowId, now, opened, stats);
@@ -646,18 +721,20 @@ async function evaluateWorkflow(
       .where(eq(workflowFailureIncidents.id, open.id));
   }
 
-  // Pause box ticked after the alert, or re-enabled and still failing (runs
-  // since the last pause count).
+  // Pause box ticked after the alert, re-enabled and still failing, or out of
+  // funds after a time-rule alert (runs since the last pause count).
   if (open && policy.pauseWorkflow) {
     const since = open.workflowPausedAt;
     const streak = since ? summarizeStreak(runs, since, window) : summary;
-    if (streak.failures >= policy.threshold) {
+    const outOfFunds = streak.outOfFunds >= OUT_OF_FUNDS_THRESHOLD;
+    if (streak.failures >= policy.threshold || outOfFunds) {
       stats.messagesQueued += await pauseOpenIncident({
         workflow,
         incident: open,
         policy,
         failures: streak.failures,
         again: since !== null,
+        outOfFunds,
         now,
         holdUntil: orgPause ?? undefined,
       });
@@ -1236,7 +1313,7 @@ async function findFailingWorkflows(organizationId: string): Promise<
   return failing;
 }
 
-/** Where the missed-run scan stopped, so each cycle covers the next slice. */
+/** Where the missed-run scan stopped; per pod, so a restart or another pod only rescans from the top. */
 let missedScanCursor: string | null = null;
 /** A scheduler outage is ours: customers hear only once it lasts this long. */
 const PLATFORM_HOLD_MS = 30 * 60 * 1000;
@@ -1256,7 +1333,7 @@ export async function checkMissedSchedules(
       timezone: workflowSchedules.timezone,
       intervalSeconds: workflowSchedules.intervalSeconds,
       anchorAt: workflowSchedules.anchorAt,
-      // Bumped on create, enable, cron change, each run and org resume: no miss counts before it.
+      // Moved on create, re-enable, a cron/interval/timezone change, each run and org resume: no miss counts before it.
       scheduleSince:
         sql`greatest(${workflowSchedules.createdAt}, ${workflowSchedules.updatedAt})`.mapWith(
           workflowSchedules.updatedAt

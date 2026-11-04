@@ -396,23 +396,22 @@ export function NavigationSidebar(): React.ReactNode {
 
   async function handleNewWorkflow(): Promise<void> {
     // Unsaved changes on the page are asked about before a workflow is made.
-    if (!(await confirmLeave("/workflows"))) {
-      return;
-    }
-    await runNewWorkflow({
-      isAnonymous,
-      hasSession: Boolean(session),
-      push: (href) => router.push(href),
-      onCreated: async (workflowId) => {
-        // Same as refetchSidebar({ workflowCreated: true }), awaited so the
-        // list holds the new workflow before the panel opens on it.
-        showAllRootWorkflows();
-        await refetch();
-        navState.setPanelState("projects", "open");
-        sessionStorage.setItem("animate-sidebar", "true");
-        router.push(`/workflows/${workflowId}`);
-      },
-    });
+    await confirmLeave("/workflows", () =>
+      runNewWorkflow({
+        isAnonymous,
+        hasSession: Boolean(session),
+        push: (href) => router.push(href),
+        onCreated: async (workflowId) => {
+          // Same as refetchSidebar({ workflowCreated: true }), awaited so the
+          // list holds the new workflow before the panel opens on it.
+          showAllRootWorkflows();
+          await refetch();
+          navState.setPanelState("projects", "open");
+          sessionStorage.setItem("animate-sidebar", "true");
+          router.push(`/workflows/${workflowId}`);
+        },
+      })
+    );
   }
 
   function handleNavClick(item: NavItemDef): void {

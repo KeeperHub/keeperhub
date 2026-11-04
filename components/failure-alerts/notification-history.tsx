@@ -18,26 +18,19 @@ import type { FailureAlertMessageKind } from "@/lib/db/schema-failure-alerts";
 import { HISTORY_PAGE_SIZE } from "@/lib/notifications/failure-alerts/constants";
 import {
   CHANNEL_LABEL,
-  DELIVERY_STATE_LABEL,
   FAILURE_ALERT_KIND_LABEL,
   type HistoryEntry,
   methodText,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
-import { formatWhen } from "./format";
+import { type DeliveryTone, deliveryStatus, formatWhen } from "./format";
 
-function stateTone(state: string): string {
-  if (state === "delivered") {
-    return "text-keeperhub-green-dark";
-  }
-  if (state === "failed" || state === "capped") {
-    return "text-destructive";
-  }
-  if (state === "retrying" || state === "pending" || state === "sending") {
-    return WARNING_TEXT;
-  }
-  return "text-muted-foreground";
-}
+const TONE_CLASS: Record<DeliveryTone, string> = {
+  delivered: "text-keeperhub-green-dark",
+  failed: "text-destructive",
+  waiting: WARNING_TEXT,
+  muted: "text-muted-foreground",
+};
 
 function channelLine(entry: HistoryEntry): string {
   return entry.channel === "email"
@@ -54,6 +47,7 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
   if (paused && entry.note) {
     title = `${title}: ${entry.note}`;
   }
+  const status = deliveryStatus(entry);
   return (
     <li
       className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-0.5 px-3 py-2 text-sm @xl/settings:grid-cols-[7rem_minmax(0,1fr)_auto]"
@@ -77,11 +71,11 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
       <span
         className={cn(
           "col-start-2 row-start-1 text-right text-xs @xl/settings:col-start-3",
-          stateTone(entry.state)
+          TONE_CLASS[status.tone]
         )}
         title={entry.attempts > 1 ? `${entry.attempts} attempts` : undefined}
       >
-        {DELIVERY_STATE_LABEL[entry.state] ?? entry.state}
+        {status.label}
         {entry.attempts > 1 ? ` (${entry.attempts} tries)` : ""}
       </span>
       <span className="col-start-1 row-start-2 text-muted-foreground text-xs tabular-nums @xl/settings:row-start-1">
@@ -124,7 +118,7 @@ export function NotificationHistory({
 }): React.ReactElement {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  // The page that failed to load, so Retry asks for the same one again.
+  // The page that failed to load, so Try again asks for the same one again.
   const [failed, setFailed] = useState<{ cursor?: string } | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [channel, setChannel] = useState("all");
