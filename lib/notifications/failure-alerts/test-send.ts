@@ -32,32 +32,48 @@ const orgLimiter = createSlidingWindowLimiter({
   windowMs: 24 * 60 * 60 * 1000,
 });
 
+/** Takes `weight` slots; a refused call gives its slots back. */
 async function underLimit(
   key: string,
   limit: number,
   windowSeconds: number,
-  fallback: ReturnType<typeof createSlidingWindowLimiter>
+  fallback: ReturnType<typeof createSlidingWindowLimiter>,
+  weight = 1
 ): Promise<boolean> {
+  if (weight > limit) {
+    return false;
+  }
   const redis = getRedis();
   if (redis) {
     try {
-      const count = await redis.incr(key);
+      const count = await redis.incrby(key, weight);
       // Checked on every call rather than only on the first, so a key whose
       // expiry failed to set once heals itself instead of limiting for good.
       if ((await redis.ttl(key)) < 0) {
         await redis.expire(key, windowSeconds);
       }
-      return count <= limit;
+      if (count > limit) {
+        await redis.decrby(key, weight);
+        return false;
+      }
+      return true;
     } catch {
       // Fall through to the in-memory window.
     }
   }
-  return fallback.check(key).allowed;
+  for (let slot = 0; slot < weight; slot++) {
+    if (!fallback.check(key).allowed) {
+      return false;
+    }
+  }
+  return true;
 }
 
+/** Each email a test sends counts toward the org's daily tests. */
 async function checkTestRateLimit(
   organizationId: string,
-  userId: string
+  userId: string,
+  sends = 1
 ): Promise<void> {
   const perUser = await underLimit(
     `failure-alert-test:user:${userId}`,
@@ -75,11 +91,14 @@ async function checkTestRateLimit(
     `failure-alert-test:org:${organizationId}`,
     TESTS_PER_DAY_PER_ORG,
     24 * 60 * 60,
-    orgLimiter
+    orgLimiter,
+    sends
   );
   if (!perOrg) {
     throw new SettingsError(
-      `This organization has used its ${TESTS_PER_DAY_PER_ORG} tests for today. Try again tomorrow.`,
+      sends > 1
+        ? `This test would send ${sends} emails, more than this organization has left of its ${TESTS_PER_DAY_PER_ORG} test sends today. Choose fewer people or try again tomorrow.`
+        : `This organization has used its ${TESTS_PER_DAY_PER_ORG} tests for today. Try again tomorrow.`,
       429
     );
   }
@@ -177,7 +196,7 @@ async function testEmail(
       throw new SettingsError("Nobody you chose can receive email yet.");
     }
   }
-  await checkTestRateLimit(organizationId, userId);
+  await checkTestRateLimit(organizationId, userId, recipients.length);
   const started = Date.now();
   const rendered = renderMessage({
     kind: "test",

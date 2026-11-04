@@ -84,7 +84,7 @@ export async function PUT(
         remindDaily: input.remindDaily,
         notifyRecovery: input.notifyRecovery,
         recipientUserIds: input.recipientUserIds,
-        channels: input.channels.map((c) => ({
+        channels: input.channels?.map((c) => ({
           kind: c.kind,
           integrationId: c.integrationId,
           destination: c.destination,

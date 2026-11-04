@@ -60,7 +60,9 @@ import {
   groupScope,
   incidentScope,
   insertDeliveries,
+  type Tx,
 } from "./queue-rows";
+import { splitByRollout } from "./rollout";
 import {
   checkChannelSilently,
   type DeliveryOutcome,
@@ -152,6 +154,7 @@ class Context {
   private readonly incidents = new Map<string, IncidentRow | null>();
   private readonly workflowsById = new Map<string, AlertWorkflow | null>();
   private readonly plans = new Map<string, string>();
+  private readonly history = new Map<string, Promise<RunsBefore>>();
   readonly channels = new Map<string, ChannelConfig>();
   readonly appUrl: string;
 
@@ -227,6 +230,22 @@ class Context {
     this.workflowsById.set(id, value);
     return value;
   }
+
+  /** One history query per incident, however many rows announce it. */
+  runsBefore(incident: IncidentRow): Promise<RunsBefore> {
+    let cached = this.history.get(incident.id);
+    if (!cached) {
+      cached = runsBefore(incident.workflowId, incident.firstFailedAt).catch(
+        (error: unknown) => {
+          // A failed read is not kept: the next row asks again.
+          this.history.delete(incident.id);
+          throw error;
+        }
+      );
+      this.history.set(incident.id, cached);
+    }
+    return cached;
+  }
 }
 
 type Rendered = {
@@ -238,11 +257,13 @@ type Rendered = {
 /** Build what one outbox row says. Null when what it was about is gone. */
 const HISTORY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
+type RunsBefore = { successes: number; lastSuccessAt: Date | null };
+
 /** Successful runs in the 30 days before a streak, to show how unusual it is. */
 async function runsBefore(
   workflowId: string,
   firstFailedAt: Date
-): Promise<{ successes: number; lastSuccessAt: Date | null }> {
+): Promise<RunsBefore> {
   const [row] = await db
     .select({
       successes: sql<number>`count(*)::int`,
@@ -381,9 +402,7 @@ async function renderRow(
       lastError: incident.lastError,
       openedBy: incident.openedBy,
       before:
-        row.kind === "recovery"
-          ? undefined
-          : await runsBefore(workflow.id, incident.firstFailedAt),
+        row.kind === "recovery" ? undefined : await ctx.runsBefore(incident),
     };
     input =
       row.kind === "recovery"
@@ -581,55 +600,59 @@ async function pauseChannel(
   organizationId: string,
   now: Date
 ): Promise<boolean> {
-  const paused = await db
-    .update(failureAlertChannels)
-    .set({ pausedAt: now, pausedReason: reason })
-    .where(
-      and(
-        eq(failureAlertChannels.id, channelId),
-        isNull(failureAlertChannels.pausedAt)
-      )
-    )
-    .returning({
-      kind: failureAlertChannels.kind,
-      destination: failureAlertChannels.destination,
-      integrationId: failureAlertChannels.integrationId,
-    });
-  const channel = paused[0];
-  if (!channel) {
-    return false;
-  }
-  const [connection] = await db
-    .select({ name: integrations.name })
-    .from(integrations)
-    .where(eq(integrations.id, channel.integrationId))
-    .limit(1);
   const org = await loadOrgPolicy(organizationId);
   const emails = resolveRecipientEmails(
     org.recipientUserIds,
     await loadOrgMembers(organizationId)
   );
-  await insertDeliveries(
-    emails.map((email) => ({
-      scope: `paused:${channelId}:${now.toISOString()}`,
-      organizationId,
-      incidentId: null,
-      kind: "channel_paused" as const,
-      sequence: 0,
-      channel: "email" as const,
-      recipient: email,
-      nextAttemptAt: now,
-      context: {
-        channelLabel: channelLabel(
-          channel.kind,
-          channel.destination,
-          connection?.name
-        ),
-        reason,
-      },
-    }))
-  );
-  return true;
+  // Pause and notice together, so a failed insert never pauses a channel silently.
+  return await db.transaction(async (tx: Tx) => {
+    const paused = await tx
+      .update(failureAlertChannels)
+      .set({ pausedAt: now, pausedReason: reason })
+      .where(
+        and(
+          eq(failureAlertChannels.id, channelId),
+          isNull(failureAlertChannels.pausedAt)
+        )
+      )
+      .returning({
+        kind: failureAlertChannels.kind,
+        destination: failureAlertChannels.destination,
+        integrationId: failureAlertChannels.integrationId,
+      });
+    const channel = paused[0];
+    if (!channel) {
+      return false;
+    }
+    const [connection] = await tx
+      .select({ name: integrations.name })
+      .from(integrations)
+      .where(eq(integrations.id, channel.integrationId))
+      .limit(1);
+    await insertDeliveries(
+      emails.map((email) => ({
+        scope: `paused:${channelId}:${now.toISOString()}`,
+        organizationId,
+        incidentId: null,
+        kind: "channel_paused" as const,
+        sequence: 0,
+        channel: "email" as const,
+        recipient: email,
+        nextAttemptAt: now,
+        context: {
+          channelLabel: channelLabel(
+            channel.kind,
+            channel.destination,
+            connection?.name
+          ),
+          reason,
+        },
+      })),
+      tx
+    );
+    return true;
+  });
 }
 
 async function recordChannelHealth(
@@ -658,10 +681,15 @@ export async function drainOutbox(
 ): Promise<void> {
   const ctx = new Context(appUrl);
   while (Date.now() < deadline) {
-    const rows = await claimDue();
-    if (rows.length === 0) {
+    const claimed = await claimDue();
+    if (claimed.length === 0) {
       return;
     }
+    const { kept: rows, dropped } = splitByRollout(
+      claimed,
+      (row) => row.organizationId
+    );
+    await skipOutsideRollout(dropped);
     await ctx.loadChannels(
       rows.map((row) => row.channelId).filter((id): id is string => Boolean(id))
     );
@@ -692,6 +720,29 @@ export async function drainOutbox(
       }
     }
   }
+}
+
+const OUTSIDE_ROLLOUT =
+  "Failure notifications are not on for this organization.";
+
+/** Rows of orgs outside the rollout are never sent, and never claimed again. */
+async function skipOutsideRollout(rows: DeliveryRow[]): Promise<void> {
+  if (rows.length === 0) {
+    return;
+  }
+  await db
+    .update(failureAlertDeliveries)
+    .set({
+      state: "skipped",
+      lastError: OUTSIDE_ROLLOUT,
+      updatedAt: new Date(),
+    })
+    .where(
+      inArray(
+        failureAlertDeliveries.id,
+        rows.map((row) => row.id)
+      )
+    );
 }
 
 /** Hand claimed rows the budget did not reach back to the queue, due now. */
@@ -835,7 +886,21 @@ export async function fireBackups(now: Date, stats: DrainStats): Promise<void> {
     )
     .limit(100);
 
-  for (const row of due) {
+  const { kept, dropped } = splitByRollout(due, (row) => row.organizationId);
+  if (dropped.length > 0) {
+    // Outside the rollout no backup is owed; mark them so they stop crowding the list.
+    await db
+      .update(failureAlertDeliveries)
+      .set({ backupSentAt: now })
+      .where(
+        inArray(
+          failureAlertDeliveries.id,
+          dropped.map((row) => row.id)
+        )
+      );
+  }
+
+  for (const row of kept) {
     try {
       const claimed = await db
         .update(failureAlertDeliveries)
@@ -990,11 +1055,35 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
   return await insertDeliveries(targets);
 }
 
+const HEALTH_CHECKS_PER_CYCLE = 20;
+
 /** Daily silent check: pause dead channels, restore paused ones that work again. */
 export async function runHealthChecks(
   now: Date,
   stats: DrainStats
 ): Promise<void> {
+  const isDue = or(
+    isNull(failureAlertChannels.lastHealthCheckAt),
+    lt(
+      failureAlertChannels.lastHealthCheckAt,
+      new Date(now.getTime() - HEALTH_CHECK_INTERVAL_MS)
+    )
+  );
+  // Orgs first, longest unchecked first, so orgs outside the rollout never crowd the batch.
+  const orgs = await db
+    .select({ organizationId: failureAlertChannels.organizationId })
+    .from(failureAlertChannels)
+    .where(isDue)
+    .groupBy(failureAlertChannels.organizationId)
+    .orderBy(
+      sql`min(COALESCE(${failureAlertChannels.lastHealthCheckAt}, '-infinity'::timestamp))`
+    );
+  const enabled = splitByRollout(orgs, (row) => row.organizationId)
+    .kept.slice(0, HEALTH_CHECKS_PER_CYCLE)
+    .map((row) => row.organizationId);
+  if (enabled.length === 0) {
+    return;
+  }
   const due = await db
     .select({
       id: failureAlertChannels.id,
@@ -1006,16 +1095,9 @@ export async function runHealthChecks(
       pausedAt: failureAlertChannels.pausedAt,
     })
     .from(failureAlertChannels)
-    .where(
-      or(
-        isNull(failureAlertChannels.lastHealthCheckAt),
-        lt(
-          failureAlertChannels.lastHealthCheckAt,
-          new Date(now.getTime() - HEALTH_CHECK_INTERVAL_MS)
-        )
-      )
-    )
-    .limit(20);
+    .where(and(isDue, inArray(failureAlertChannels.organizationId, enabled)))
+    .orderBy(sql`${failureAlertChannels.lastHealthCheckAt} ASC NULLS FIRST`)
+    .limit(HEALTH_CHECKS_PER_CYCLE);
 
   for (const channel of due) {
     try {

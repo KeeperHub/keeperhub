@@ -32,6 +32,7 @@ import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
 import {
   ALERT_REQUEUE_AFTER_MS,
   DEFAULT_THRESHOLD,
+  EVALUATE_BUDGET_MS,
   GROUP_ALERTS_FROM,
   MAX_REMINDERS,
   MAX_WORKFLOWS_PER_RUN,
@@ -67,7 +68,7 @@ import {
   rowsForPolicy,
   type Tx,
 } from "./queue-rows";
-import { isFailureAlertsEnabledForOrg } from "./rollout";
+import { isFailureAlertsEnabledForOrg, splitByRollout } from "./rollout";
 import { lockOrgSettings } from "./settings";
 import {
   decide,
@@ -96,6 +97,9 @@ type WorkflowRow = {
   deletedAt: Date | null;
   deactivatedAt: Date | null;
   nodes: TriggerNodeLike[];
+  /** A deactivated or halted org runs nothing, whatever its workflows say. */
+  orgDeactivatedAt: Date | null;
+  orgHaltedAt: Date | null;
 };
 
 type IncidentRow = typeof workflowFailureIncidents.$inferSelect;
@@ -173,6 +177,78 @@ async function releaseQueue(
   `);
 }
 
+type Claimed = { workflowId: string; lease: string };
+
+/** Run `apply` once per lease (one claim shares one), on that lease's workflow ids. */
+async function perLease(
+  rows: Claimed[],
+  apply: (ids: string[], lease: string) => Promise<unknown>
+): Promise<void> {
+  const byLease = new Map<string, string[]>();
+  for (const row of rows) {
+    byLease.set(row.lease, [...(byLease.get(row.lease) ?? []), row.workflowId]);
+  }
+  for (const [lease, ids] of byLease) {
+    await apply(ids, lease);
+  }
+}
+
+/** Drop claimed rows of orgs outside the rollout (or gone) in bulk, keeping the rest. */
+async function dropOutsideRollout(claimed: Claimed[]): Promise<Claimed[]> {
+  if (claimed.length === 0) {
+    return [];
+  }
+  const owners = await db
+    .select({ id: workflows.id, organizationId: workflows.organizationId })
+    .from(workflows)
+    .where(
+      inArray(
+        workflows.id,
+        claimed.map((row) => row.workflowId)
+      )
+    );
+  const orgOf = new Map(owners.map((row) => [row.id, row.organizationId]));
+  const { kept, dropped } = splitByRollout(claimed, (row) =>
+    orgOf.get(row.workflowId)
+  );
+  await perLease(dropped, (ids, lease) =>
+    db.execute(sql`
+      DELETE FROM ${workflowFailureAlertQueue}
+      WHERE workflow_id IN (${sql.join(
+        ids.map((id) => sql`${id}`),
+        sql`, `
+      )}) AND due_at = ${lease}::timestamp
+    `)
+  );
+  return kept;
+}
+
+/** Hand back claimed rows the budget did not reach, due now. */
+async function handBack(rows: Claimed[]): Promise<void> {
+  await perLease(rows, (ids, lease) =>
+    db.execute(sql`
+      UPDATE ${workflowFailureAlertQueue} SET due_at = now()
+      WHERE workflow_id IN (${sql.join(
+        ids.map((id) => sql`${id}`),
+        sql`, `
+      )}) AND due_at = ${lease}::timestamp
+    `)
+  );
+}
+
+/** While the rollout is off nothing is evaluated: the trigger still queues every run, so clear it. */
+export async function clearQueueWhileOff(): Promise<void> {
+  await db.execute(sql`
+    DELETE FROM ${workflowFailureAlertQueue}
+    WHERE workflow_id IN (
+      SELECT workflow_id FROM ${workflowFailureAlertQueue}
+      WHERE due_at <= now()
+      LIMIT 5000
+      FOR UPDATE SKIP LOCKED
+    )
+  `);
+}
+
 async function loadWorkflow(workflowId: string): Promise<WorkflowRow | null> {
   const [row] = await db
     .select({
@@ -183,8 +259,11 @@ async function loadWorkflow(workflowId: string): Promise<WorkflowRow | null> {
       deletedAt: workflows.deletedAt,
       deactivatedAt: workflows.deactivatedAt,
       nodes: workflows.nodes,
+      orgDeactivatedAt: organization.deactivatedAt,
+      orgHaltedAt: organization.haltedAt,
     })
     .from(workflows)
+    .leftJoin(organization, eq(organization.id, workflows.organizationId))
     .where(eq(workflows.id, workflowId))
     .limit(1);
   return row ?? null;
@@ -232,14 +311,26 @@ async function loadOpenIncident(
   return row ?? null;
 }
 
-function inactiveResolution(
-  workflow: WorkflowRow,
+export function inactiveResolution(
+  workflow: Pick<
+    WorkflowRow,
+    | "deletedAt"
+    | "deactivatedAt"
+    | "enabled"
+    | "orgDeactivatedAt"
+    | "orgHaltedAt"
+  >,
   trigger: string | null
 ): FailureIncidentResolution | null {
   if (workflow.deletedAt) {
     return "deleted";
   }
-  if (workflow.deactivatedAt || !workflow.enabled) {
+  if (
+    workflow.deactivatedAt ||
+    !workflow.enabled ||
+    workflow.orgDeactivatedAt ||
+    workflow.orgHaltedAt
+  ) {
     return "disabled";
   }
   if (!runsOnItsOwn(trigger)) {
@@ -773,9 +864,12 @@ export async function closeInactiveIncidents(
       deactivatedAt: workflows.deactivatedAt,
       nodes: workflows.nodes,
       name: workflows.name,
+      orgDeactivatedAt: organization.deactivatedAt,
+      orgHaltedAt: organization.haltedAt,
     })
     .from(workflowFailureIncidents)
     .innerJoin(workflows, eq(workflows.id, workflowFailureIncidents.workflowId))
+    .leftJoin(organization, eq(organization.id, workflows.organizationId))
     .where(
       and(
         isNull(workflowFailureIncidents.resolvedAt),
@@ -783,6 +877,8 @@ export async function closeInactiveIncidents(
         sql`((${workflows.enabled} = false AND NOT ${HELD_SQL})
           OR ${workflows.deletedAt} IS NOT NULL
           OR ${workflows.deactivatedAt} IS NOT NULL
+          OR ((${organization.deactivatedAt} IS NOT NULL
+            OR ${organization.haltedAt} IS NOT NULL) AND NOT ${HELD_SQL})
           OR NOT EXISTS (
             SELECT 1 FROM jsonb_array_elements(
               CASE WHEN jsonb_typeof(${workflows.nodes}) = 'array'
@@ -808,6 +904,8 @@ export async function closeInactiveIncidents(
       deletedAt: row.deletedAt,
       deactivatedAt: row.deactivatedAt,
       nodes: row.nodes,
+      orgDeactivatedAt: row.orgDeactivatedAt,
+      orgHaltedAt: row.orgHaltedAt,
     };
     const reason = inactiveResolution(workflow, workflowTriggerType(row.nodes));
     if (!reason || heldByPause(row.incident, workflow, reason)) {
@@ -839,8 +937,18 @@ export async function queueReminders(
   stats: EvaluationStats
 ): Promise<void> {
   const due = await db
-    .select()
+    .select({
+      incident: workflowFailureIncidents,
+      enabled: workflows.enabled,
+      deletedAt: workflows.deletedAt,
+      deactivatedAt: workflows.deactivatedAt,
+      nodes: workflows.nodes,
+      orgDeactivatedAt: organization.deactivatedAt,
+      orgHaltedAt: organization.haltedAt,
+    })
     .from(workflowFailureIncidents)
+    .innerJoin(workflows, eq(workflows.id, workflowFailureIncidents.workflowId))
+    .leftJoin(organization, eq(organization.id, workflows.organizationId))
     .where(
       and(
         isNull(workflowFailureIncidents.resolvedAt),
@@ -854,7 +962,7 @@ export async function queueReminders(
     .orderBy(workflowFailureIncidents.lastNotifiedAt)
     .limit(100);
 
-  for (const incident of due) {
+  for (const { incident, ...workflow } of due) {
     try {
       const policy = isFailureAlertsEnabledForOrg(incident.organizationId)
         ? await loadEffectivePolicy(
@@ -862,11 +970,12 @@ export async function queueReminders(
             incident.workflowId
           )
         : null;
-      // A workflow its incident paused is not "still failing": it is off.
+      // A workflow its incident paused, or one that cannot run, is not "still failing".
       if (
         !policy?.remindDaily ||
         isMuted(policy, now) ||
         isHeld(incident) ||
+        inactiveResolution(workflow, workflowTriggerType(workflow.nodes)) ||
         activePause(policy.orgPausedUntil, now)
       ) {
         // Not owed today: move its clock so it stops crowding the due list.
@@ -877,31 +986,39 @@ export async function queueReminders(
         continue;
       }
       const sequence = incident.reminderCount + 1;
-      const claimed = await db
-        .update(workflowFailureIncidents)
-        .set({ reminderCount: sequence, lastNotifiedAt: now })
-        .where(
-          and(
-            eq(workflowFailureIncidents.id, incident.id),
-            eq(workflowFailureIncidents.reminderCount, incident.reminderCount)
+      const members = await loadOrgMembers(incident.organizationId);
+      // Claim and rows together, so a failed insert never uses up a reminder.
+      const queued = await db.transaction(async (tx: Tx) => {
+        const claimed = await tx
+          .update(workflowFailureIncidents)
+          .set({ reminderCount: sequence, lastNotifiedAt: now })
+          .where(
+            and(
+              eq(workflowFailureIncidents.id, incident.id),
+              eq(workflowFailureIncidents.reminderCount, incident.reminderCount)
+            )
           )
-        )
-        .returning({ id: workflowFailureIncidents.id });
-      if (claimed.length === 0) {
+          .returning({ id: workflowFailureIncidents.id });
+        if (claimed.length === 0) {
+          return null;
+        }
+        return await insertDeliveries(
+          rowsForPolicy(
+            policy,
+            members,
+            incident.organizationId,
+            incident.id,
+            "reminder",
+            sequence,
+            now
+          ),
+          tx
+        );
+      });
+      if (queued === null) {
         continue;
       }
-      const members = await loadOrgMembers(incident.organizationId);
-      stats.messagesQueued += await insertDeliveries(
-        rowsForPolicy(
-          policy,
-          members,
-          incident.organizationId,
-          incident.id,
-          "reminder",
-          sequence,
-          now
-        )
-      );
+      stats.messagesQueued += queued;
       stats.remindersQueued += 1;
     } catch (error) {
       logSystemError(
@@ -939,7 +1056,22 @@ async function queueLaunchNotice(
     return;
   }
   cycle.launchScans += 1;
+  try {
+    stats.messagesQueued += await buildLaunchNotice(organizationId, now);
+  } catch (error) {
+    // Hand the claim back, or the notice would be lost for good.
+    await db
+      .update(orgFailureAlertSettings)
+      .set({ launchNoticeSentAt: null })
+      .where(eq(orgFailureAlertSettings.organizationId, organizationId));
+    throw error;
+  }
+}
 
+async function buildLaunchNotice(
+  organizationId: string,
+  now: Date
+): Promise<number> {
   const [earlier] = await db
     .select({ id: workflowExecutions.id })
     .from(workflowExecutions)
@@ -951,7 +1083,7 @@ async function queueLaunchNotice(
     )
     .limit(1);
   if (!earlier) {
-    return;
+    return 0;
   }
 
   const failingNow = await findFailingWorkflows(organizationId);
@@ -959,7 +1091,7 @@ async function queueLaunchNotice(
     null,
     await loadOrgMembers(organizationId)
   );
-  stats.messagesQueued += await insertDeliveries(
+  return await insertDeliveries(
     owners.map((email) => ({
       scope: `launch:${organizationId}`,
       organizationId,
@@ -1108,10 +1240,12 @@ export async function checkMissedSchedules(
       continue;
     }
     if (!counting.has(row.organizationId)) {
-      counting.set(
-        row.organizationId,
-        (await loadOrgPolicy(row.organizationId)).countingSince
-      );
+      const stored = (await loadOrgPolicy(row.organizationId)).countingSince;
+      if (!stored) {
+        // Store the start, so later cycles measure from it rather than from their own now.
+        await ensureOrgSettings(row.organizationId, now);
+      }
+      counting.set(row.organizationId, stored);
     }
     // A new org starts counting now, so nothing before this cycle is "late".
     const since = counting.get(row.organizationId) ?? now;
@@ -1186,25 +1320,40 @@ export async function checkMissedSchedules(
   await queueAlerts(opened, now, stats);
 }
 
-/** Drain the queue of workflows to evaluate and queue the resulting alerts. */
+/** Drain the queue in batches until it is empty or the budget runs out, then queue the alerts. */
 export async function evaluateQueuedWorkflows(
   now: Date,
-  stats: EvaluationStats
+  stats: EvaluationStats,
+  deadline: number = Date.now() + EVALUATE_BUDGET_MS
 ): Promise<void> {
-  const claimed = await claimQueue();
   const opened: OpenedIncident[] = [];
-  for (const { workflowId, lease } of claimed) {
-    try {
-      const recheckAt = await evaluateWorkflow(workflowId, now, opened, stats);
-      await releaseQueue(workflowId, lease, recheckAt);
-    } catch (error) {
-      // Leave the lease, so the workflow returns in five minutes.
-      logSystemError(
-        ErrorCategory.WORKFLOW_ENGINE,
-        "[FailureAlerts] Could not evaluate workflow",
-        error,
-        { workflow_id: workflowId }
-      );
+  let full = true;
+  while (full && Date.now() < deadline) {
+    const claimed = await claimQueue();
+    full = claimed.length >= MAX_WORKFLOWS_PER_RUN;
+    const live = await dropOutsideRollout(claimed);
+    for (const [index, { workflowId, lease }] of live.entries()) {
+      if (Date.now() >= deadline) {
+        await handBack(live.slice(index));
+        break;
+      }
+      try {
+        const recheckAt = await evaluateWorkflow(
+          workflowId,
+          now,
+          opened,
+          stats
+        );
+        await releaseQueue(workflowId, lease, recheckAt);
+      } catch (error) {
+        // Leave the lease, so the workflow returns in five minutes.
+        logSystemError(
+          ErrorCategory.WORKFLOW_ENGINE,
+          "[FailureAlerts] Could not evaluate workflow",
+          error,
+          { workflow_id: workflowId }
+        );
+      }
     }
   }
   await queueAlerts(opened, now, stats);

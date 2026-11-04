@@ -44,7 +44,7 @@ export function timeLimitLabel(minutes: number): string {
 }
 
 /** "a", "a and b", "a, b and c". */
-function joinList(items: string[]): string {
+export function joinList(items: string[]): string {
   if (items.length <= 1) {
     return items.join("");
   }

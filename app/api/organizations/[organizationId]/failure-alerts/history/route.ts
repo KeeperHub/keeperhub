@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { parseRunCursor } from "@/lib/analytics/run-cursor";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { resolveOrgAccess } from "@/lib/notifications/failure-alerts/route-auth";
 import {
@@ -15,7 +16,7 @@ const CHANNELS = new Set([
 ]);
 const CSV_LIMIT = 500;
 
-/** Sent notifications, newest first; any member. `?format=csv` gives up to 500 rows. */
+/** Sent notifications, newest first; any member. `?cursor=` pages; `?format=csv` gives up to 500 rows. */
 export async function GET(
   request: Request,
   context: { params: Promise<{ organizationId: string }> }
@@ -36,15 +37,18 @@ export async function GET(
       );
     }
     const workflowId = url.searchParams.get("workflowId") ?? undefined;
-    const beforeRaw = url.searchParams.get("before");
-    const before = beforeRaw ? new Date(beforeRaw) : undefined;
+    const cursorRaw = url.searchParams.get("cursor");
+    const cursor = parseRunCursor(cursorRaw);
+    if (cursorRaw && !cursor) {
+      return NextResponse.json({ error: "Invalid cursor." }, { status: 400 });
+    }
     const csv = url.searchParams.get("format") === "csv";
     const limit = Number(url.searchParams.get("limit") ?? "") || undefined;
 
-    const entries = await loadHistory(organizationId, {
+    const { entries, nextCursor } = await loadHistory(organizationId, {
       channel,
       workflowId,
-      before: before && !Number.isNaN(before.getTime()) ? before : undefined,
+      cursor,
       limit: csv ? CSV_LIMIT : limit,
     });
 
@@ -54,10 +58,12 @@ export async function GET(
           "Content-Type": "text/csv; charset=utf-8",
           "Content-Disposition":
             'attachment; filename="failure-notifications.csv"',
+          // The next 500 rows, for callers that page through a full export.
+          ...(nextCursor ? { "X-Next-Cursor": nextCursor } : {}),
         },
       });
     }
-    return NextResponse.json({ entries });
+    return NextResponse.json({ entries, nextCursor });
   } catch (error) {
     logSystemError(
       ErrorCategory.DATABASE,

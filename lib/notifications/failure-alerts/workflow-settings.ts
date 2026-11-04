@@ -299,9 +299,14 @@ export async function saveWorkflowOverride(params: {
   }
 
   const customChannels = body.customChannels === true;
-  const channels = customChannels
-    ? await parseChannels(body.channels, organizationId, { verify: true })
-    : [];
+  // Own channels left out of the body stay as they are; only [] clears them.
+  let channels: Awaited<ReturnType<typeof parseChannels>> | null = [];
+  if (customChannels) {
+    channels =
+      body.channels === undefined
+        ? null
+        : await parseChannels(body.channels, organizationId, { verify: true });
+  }
   const mute = parseMute(body, now);
   const expectedVersion = parseVersion(body.version);
   const currentVersion = async (tx: Tx): Promise<number> => {
@@ -378,7 +383,9 @@ export async function saveWorkflowOverride(params: {
         target: workflowFailureAlertOverrides.workflowId,
         set: next,
       });
-    await replaceChannels(tx, organizationId, workflowId, channels, userId);
+    if (channels) {
+      await replaceChannels(tx, organizationId, workflowId, channels, userId);
+    }
   });
 
   return {
@@ -386,7 +393,7 @@ export async function saveWorkflowOverride(params: {
     timeLimitMinutes,
     recipientUserIds,
     customChannels,
-    channels: channels.map((c) => ({
+    channels: channels?.map((c) => ({
       kind: c.kind,
       integrationId: c.integrationId,
       destination: c.destination,

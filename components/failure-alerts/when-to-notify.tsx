@@ -18,7 +18,7 @@ import {
   MIN_THRESHOLD,
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
-import { FUNDS_RULE } from "./format";
+import { FUNDS_RULE, timeLimitLabel } from "./format";
 import {
   type SaveAction,
   SaveError,
@@ -36,11 +36,6 @@ export type RulesDraft = {
 
 type SavedRules = Omit<RulesDraft, "threshold"> & { threshold: number };
 
-const TIME_LIMIT_LABEL: Record<number, string> = {
-  60: "1 hour",
-  360: "6 hours",
-  1440: "24 hours",
-};
 const DEFAULT_TIME_LIMIT = 360;
 
 export function rulesDraftFrom(rules: SavedRules): RulesDraft {
@@ -149,7 +144,7 @@ export function WhenToNotify({
           <SelectContent>
             {TIME_LIMIT_OPTIONS_MINUTES.map((minutes) => (
               <SelectItem key={minutes} value={String(minutes)}>
-                {TIME_LIMIT_LABEL[minutes]}
+                {timeLimitLabel(minutes)}
               </SelectItem>
             ))}
           </SelectContent>

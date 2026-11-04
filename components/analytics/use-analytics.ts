@@ -148,7 +148,8 @@ export function useAnalytics(): UseAnalyticsReturn {
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const fetchData = useCallback(async (): Promise<void> => {
-    if (!activeOrgId) {
+    // Sources are null until alerts are known: one fetch, not two.
+    if (!(activeOrgId && sourceFilters)) {
       return;
     }
 

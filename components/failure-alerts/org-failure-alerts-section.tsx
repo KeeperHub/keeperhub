@@ -11,6 +11,10 @@ import {
 import { FormSkeleton } from "@/components/settings/hub/skeletons";
 import { Button } from "@/components/ui/button";
 import { Notice } from "@/components/ui/notice";
+import {
+  invalidateNotificationStatus,
+  useAlertsEnabled,
+} from "@/lib/hooks/use-notifications";
 import type {
   ChannelView,
   OrgSettingsView,
@@ -127,6 +131,7 @@ export function OrgFailureAlertsSection({
 }: {
   organizationId: string | null;
 }): React.ReactElement {
+  const alertsEnabled = useAlertsEnabled(organizationId);
   const [data, setData] = useState<Loaded | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [rules, setRules] = useState<RulesDraft | null>(null);
@@ -230,6 +235,8 @@ export function OrgFailureAlertsSection({
               },
             };
           }
+          // The banner and nav read health and unreachable state from status.
+          invalidateNotificationStatus(organizationId ?? undefined);
           return { ok: true, body };
         } catch {
           return {
@@ -245,7 +252,7 @@ export function OrgFailureAlertsSection({
       queueRef.current = next;
       return next;
     },
-    [url]
+    [organizationId, url]
   );
 
   const put = useCallback(
@@ -254,11 +261,25 @@ export function OrgFailureAlertsSection({
     [send]
   );
 
+  // Outside the rollout the settings GET answers 404; the status hook says why.
+  if ((loadFailed && alertsEnabled === false) || data?.enabled === false) {
+    return (
+      <div data-testid="failure-alerts-unavailable">
+        <SectionHeader description={ALERTS_DESCRIPTION} title="Alerts" />
+        <SettingsCard className="mt-4 md:mt-6">
+          <EmptyState>
+            Alerts are not available for this organization yet.
+          </EmptyState>
+        </SettingsCard>
+      </div>
+    );
+  }
+
   if (!(data && rules)) {
     const header = (
       <SectionHeader description={ALERTS_DESCRIPTION} title="Alerts" />
     );
-    if (loadFailed) {
+    if (loadFailed && alertsEnabled !== null) {
       return (
         <>
           {header}
@@ -283,19 +304,6 @@ export function OrgFailureAlertsSection({
         {header}
         <LoadingCards />
       </>
-    );
-  }
-
-  if (!data.enabled) {
-    return (
-      <div data-testid="failure-alerts-unavailable">
-        <SectionHeader description={ALERTS_DESCRIPTION} title="Alerts" />
-        <SettingsCard className="mt-4 md:mt-6">
-          <EmptyState>
-            Alerts are not available for this organization yet.
-          </EmptyState>
-        </SettingsCard>
-      </div>
     );
   }
 

@@ -1,3 +1,4 @@
+import { invalidateNotificationStatus } from "@/lib/hooks/use-notifications";
 import type {
   TestRequest,
   TestResult,
@@ -32,6 +33,8 @@ export async function sendFailureAlertTest(
         durationMs: Date.now() - started,
       };
     }
+    // A test can mark a method working or paused, which the banner reflects.
+    invalidateNotificationStatus(organizationId);
     return data as TestResult;
   } catch {
     return {

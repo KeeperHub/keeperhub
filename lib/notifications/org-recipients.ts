@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { member, users } from "@/lib/db/schema";
 import { deliverableAddress } from "@/lib/notifications/deliverable-address";
@@ -16,7 +16,7 @@ export type OrgMember = {
   deliverable: string | null;
 };
 
-/** Members of the org, optionally only those with one of these roles. */
+/** Active members of the org (deactivated accounts keep member rows), optionally by role. */
 export async function loadOrgMembers(
   organizationId: string,
   roles?: string[]
@@ -33,12 +33,11 @@ export async function loadOrgMembers(
     .from(member)
     .innerJoin(users, eq(users.id, member.userId))
     .where(
-      roles
-        ? and(
-            eq(member.organizationId, organizationId),
-            inArray(member.role, roles)
-          )
-        : eq(member.organizationId, organizationId)
+      and(
+        eq(member.organizationId, organizationId),
+        isNull(users.deactivatedAt),
+        roles ? inArray(member.role, roles) : undefined
+      )
     );
   return rows.map((row) => ({
     userId: row.userId,

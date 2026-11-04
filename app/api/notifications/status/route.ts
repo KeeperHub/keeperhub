@@ -1,12 +1,11 @@
-import { headers } from "next/headers";
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { isBillingEnabled } from "@/lib/billing/feature-flag";
 import { isBillingLimitReached } from "@/lib/billing/limit-status";
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
-import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
+import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { isFailureAlertsEnabledForOrg } from "@/lib/notifications/failure-alerts/rollout";
 import { loadInAppAlertState } from "@/lib/notifications/failure-alerts/settings";
+import { getOrgRole } from "@/lib/security/org-role";
 
 export type NotificationType =
   | "billing_limit_reached"
@@ -30,17 +29,22 @@ export async function GET(
   request: Request
 ): Promise<NextResponse<NotificationStatusResponse>> {
   try {
-    const authContext = await resolveOrganizationId(request);
-    if ("error" in authContext) {
+    // The caller names its org in X-Organization-Id; a non-member gets an error here.
+    const authContext = await getDualAuthContext(request);
+    if (
+      "error" in authContext ||
+      !authContext.userId ||
+      !authContext.organizationId
+    ) {
       return NextResponse.json(EMPTY_RESPONSE);
     }
     const { organizationId } = authContext;
+    const role = await getOrgRole(authContext.userId, organizationId);
+    if (!role) {
+      return NextResponse.json(EMPTY_RESPONSE);
+    }
 
     const types: NotificationType[] = [];
-    const activeMember = await auth.api.getActiveMember({
-      headers: await headers(),
-    });
-    const role = activeMember?.role;
 
     if (
       isBillingEnabled() &&

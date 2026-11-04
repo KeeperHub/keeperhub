@@ -7,10 +7,17 @@ import {
   inArray,
   isNotNull,
   isNull,
-  lt,
   or,
+  type SQL,
   sql,
 } from "drizzle-orm";
+import { toHistoryEntry } from "@/lib/analytics/notification-runs";
+import { loadNotificationRows } from "@/lib/analytics/notification-runs-query";
+import {
+  encodeRunCursor,
+  type RunCursor,
+  runCursorCondition,
+} from "@/lib/analytics/run-cursor";
 import { getOrgPlan } from "@/lib/billing/plans-server";
 import { db } from "@/lib/db";
 import {
@@ -34,8 +41,10 @@ import {
 } from "@/lib/notifications/org-recipients";
 import { isPagerDutyId } from "@/plugins/pagerduty/steps/pagerduty-core";
 import {
+  CHANNEL_CHECK_CONCURRENCY,
   FREE_PLAN_MONTHLY_EMAILS,
   HISTORY_PAGE_SIZE,
+  MAX_CHANNELS,
   MAX_THRESHOLD,
   MIN_THRESHOLD,
   TIME_LIMIT_OPTIONS_MINUTES,
@@ -43,13 +52,12 @@ import {
 import { loadOrgPolicy, resolveRecipientEmails } from "./policy";
 import type { Tx } from "./queue-rows";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
-import { checkChannelSilently } from "./senders";
+import { checkChannelSilently, type DeliveryOutcome } from "./senders";
 import {
   type ChannelView,
   type ConnectionView,
   channelLabel,
   type HistoryEntry,
-  historyNote,
   type MemberView,
   type OrgSettingsView,
 } from "./view-types";
@@ -391,7 +399,12 @@ export async function parseChannels(
   options: { verify?: boolean } = {}
 ): Promise<ChannelInput[]> {
   if (!Array.isArray(raw)) {
-    return [];
+    throw new SettingsError("channels must be a list.");
+  }
+  if (raw.length > MAX_CHANNELS) {
+    throw new SettingsError(
+      `Add at most ${MAX_CHANNELS} chat or PagerDuty methods.`
+    );
   }
   const items = raw as Record<string, unknown>[];
   const connections = new Map(
@@ -509,16 +522,26 @@ async function verifyNewTargets(
         )
       )
   );
-  const results = await Promise.all(
-    fresh.map(async (channel) => ({
-      channel,
-      outcome: await checkChannelSilently(
-        { ...channel, id: channel.id ?? "new", pausedAt: null },
-        organizationId
-      ),
-    }))
-  );
-  const failed = results.find((r) => !r.outcome.ok);
+  let failed: { channel: ChannelInput; outcome: DeliveryOutcome } | undefined;
+  // A few at a time, stopping at the first failure.
+  for (
+    let start = 0;
+    start < fresh.length && !failed;
+    start += CHANNEL_CHECK_CONCURRENCY
+  ) {
+    const results = await Promise.all(
+      fresh
+        .slice(start, start + CHANNEL_CHECK_CONCURRENCY)
+        .map(async (channel) => ({
+          channel,
+          outcome: await checkChannelSilently(
+            { ...channel, id: channel.id ?? "new", pausedAt: null },
+            organizationId
+          ),
+        }))
+    );
+    failed = results.find((r) => !r.outcome.ok);
+  }
   if (!failed) {
     return;
   }
@@ -643,7 +666,8 @@ type OrgSettingsInput = {
   remindDaily: boolean;
   notifyRecovery: boolean;
   recipientUserIds: string[];
-  channels: ChannelInput[];
+  /** Null when the body left channels out: they stay as they are. */
+  channels: ChannelInput[] | null;
   /** The version the editor loaded; absent (API callers) skips the check. */
   version: number | null;
 };
@@ -691,9 +715,10 @@ export async function parseOrgSettings(
     remindDaily: body.remindDaily !== false,
     notifyRecovery: body.notifyRecovery !== false,
     recipientUserIds: [...new Set(requested)],
-    channels: await parseChannels(body.channels, organizationId, {
-      verify: true,
-    }),
+    channels:
+      body.channels === undefined
+        ? null
+        : await parseChannels(body.channels, organizationId, { verify: true }),
     version: parseVersion(body.version),
   };
 }
@@ -739,7 +764,9 @@ export async function saveOrgSettings(
         target: orgFailureAlertSettings.organizationId,
         set: next,
       });
-    await replaceChannels(tx, organizationId, null, input.channels, userId);
+    if (input.channels) {
+      await replaceChannels(tx, organizationId, null, input.channels, userId);
+    }
   });
 }
 
@@ -756,19 +783,18 @@ export async function lockOrgSettings(
 type HistoryFilter = {
   channel?: string;
   workflowId?: string;
-  before?: Date;
+  /** Resume after this row; (created, id) so rows sharing a time are not skipped. */
+  cursor?: RunCursor;
   limit?: number;
 };
 
-/** Everything sent, newest first, with destination and outcome. */
+/** Everything sent, newest first, and the cursor for the next page if there may be one. */
 export async function loadHistory(
   organizationId: string,
   filter: HistoryFilter
-): Promise<HistoryEntry[]> {
+): Promise<{ entries: HistoryEntry[]; nextCursor: string | null }> {
   const limit = Math.min(Math.max(filter.limit ?? HISTORY_PAGE_SIZE, 1), 500);
-  const conditions = [
-    eq(failureAlertDeliveries.organizationId, organizationId),
-  ];
+  const conditions: SQL[] = [];
   if (filter.channel) {
     conditions.push(
       eq(
@@ -777,8 +803,15 @@ export async function loadHistory(
       )
     );
   }
-  if (filter.before) {
-    conditions.push(lt(failureAlertDeliveries.createdAt, filter.before));
+  if (filter.cursor) {
+    conditions.push(
+      runCursorCondition(
+        filter.cursor,
+        "notification",
+        failureAlertDeliveries.createdAt,
+        failureAlertDeliveries.id
+      )
+    );
   }
   if (filter.workflowId) {
     // Its own messages, and grouped alerts that listed it.
@@ -791,85 +824,19 @@ export async function loadHistory(
     )`);
   }
 
-  const rows = await db
-    .select({
-      delivery: failureAlertDeliveries,
-      connectionName: integrations.name,
-      workflowId: workflowFailureIncidents.workflowId,
-      workflowName: workflows.name,
-    })
-    .from(failureAlertDeliveries)
-    .leftJoin(
-      failureAlertChannels,
-      eq(failureAlertChannels.id, failureAlertDeliveries.channelId)
-    )
-    .leftJoin(
-      integrations,
-      eq(integrations.id, failureAlertChannels.integrationId)
-    )
-    .leftJoin(
-      workflowFailureIncidents,
-      eq(workflowFailureIncidents.id, failureAlertDeliveries.incidentId)
-    )
-    .leftJoin(workflows, eq(workflows.id, workflowFailureIncidents.workflowId))
-    .where(and(...conditions))
-    .orderBy(desc(failureAlertDeliveries.createdAt))
-    .limit(limit);
-
-  const groupedIds = new Set<string>();
-  for (const { delivery } of rows) {
-    const ids = delivery.context?.incidentIds;
-    if (Array.isArray(ids)) {
-      for (const id of ids) {
-        groupedIds.add(String(id));
-      }
-    }
-  }
-  const groupedNames = new Map<string, { id: string; name: string }>();
-  if (groupedIds.size > 0) {
-    const named = await db
-      .select({
-        incidentId: workflowFailureIncidents.id,
-        id: workflows.id,
-        name: workflows.name,
-      })
-      .from(workflowFailureIncidents)
-      .innerJoin(
-        workflows,
-        eq(workflows.id, workflowFailureIncidents.workflowId)
-      )
-      .where(inArray(workflowFailureIncidents.id, [...groupedIds]));
-    for (const row of named) {
-      groupedNames.set(row.incidentId, { id: row.id, name: row.name });
-    }
-  }
-
-  return rows.map(({ delivery, connectionName, workflowId, workflowName }) => {
-    const grouped = Array.isArray(delivery.context?.incidentIds)
-      ? (delivery.context.incidentIds as string[])
-          .map((id) => groupedNames.get(id))
-          .filter((w): w is { id: string; name: string } => Boolean(w))
-      : [];
-    return {
-      id: delivery.id,
-      createdAt: delivery.createdAt.toISOString(),
-      deliveredAt: iso(delivery.deliveredAt),
-      kind: delivery.kind,
-      channel: delivery.channel,
-      recipient: delivery.recipient,
-      connectionName,
-      isBackup: delivery.isBackup,
-      state: delivery.state,
-      attempts: delivery.attempts,
-      lastStatus: delivery.lastStatus,
-      lastError: delivery.lastError,
-      note: historyNote(delivery.context),
-      workflows:
-        workflowId && workflowName
-          ? [{ id: workflowId, name: workflowName }]
-          : grouped,
-    };
-  });
+  const { rows, groupedNames } = await loadNotificationRows(
+    organizationId,
+    conditions,
+    limit
+  );
+  const last = rows.at(-1);
+  return {
+    entries: rows.map((row) => toHistoryEntry(row, groupedNames)),
+    nextCursor:
+      last && rows.length === limit
+        ? encodeRunCursor({ at: last.at, source: "notification", id: last.id })
+        : null,
+  };
 }
 
 const CSV_HEADER = [

@@ -48,6 +48,8 @@ export const STALE_SENDING_MS = 5 * 60 * 1000;
 export const DELIVERY_BATCH = 25;
 export const DELIVERY_BUDGET_MS = 40 * 1000;
 export const MAX_WORKFLOWS_PER_RUN = 500;
+/** Queue batches are claimed until this runs out, leaving the minute's rest to delivery. */
+export const EVALUATE_BUDGET_MS = 15 * 1000;
 
 /** "Or when it has been failing for 6 hours", on by default. */
 export const DEFAULT_TIME_LIMIT_MINUTES = 360;
@@ -80,6 +82,11 @@ export const TESTS_PER_DAY_PER_ORG = 30;
 
 /** Silent channel checks. */
 export const HEALTH_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** Silent checks run at once on save, so a long list cannot burst a bot token. */
+export const CHANNEL_CHECK_CONCURRENCY = 4;
+
+/** Chat and PagerDuty methods per org, and per workflow with its own list. */
+export const MAX_CHANNELS = 20;
 
 /** History rows per page, on the Alerts page and the workflow panel. */
 export const HISTORY_PAGE_SIZE = 50;

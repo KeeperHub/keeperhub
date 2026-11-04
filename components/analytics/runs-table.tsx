@@ -647,10 +647,8 @@ function NotificationDetailRows({
   completedAt: string | null;
   detail: NotificationRunDetail;
 }): ReactNode {
-  // historyNote: why a backup was sent. A pause notice's note is its channel,
-  // which the title already names.
-  const backupReason =
-    detail.isBackup && detail.kind !== "channel_paused" ? detail.note : null;
+  // A pause notice's note is its channel, which the title already names.
+  const note = detail.kind === "channel_paused" ? null : detail.note;
   return (
     <tr>
       <td className="py-2 pr-3 pl-10 text-muted-foreground text-xs" colSpan={8}>
@@ -666,8 +664,11 @@ function NotificationDetailRows({
             {notificationOutcome(detail, completedAt)}
           </NotificationDetailItem>
           <NotificationDetailItem label="Backup">
-            {detail.isBackup ? (backupReason ?? "Yes") : "No"}
+            {detail.isBackup ? "Yes" : "No"}
           </NotificationDetailItem>
+          {note ? (
+            <NotificationDetailItem label="Note">{note}</NotificationDetailItem>
+          ) : null}
           {detail.lastError && detail.state !== "delivered" ? (
             <NotificationDetailItem label="Reason">
               {detail.lastError}
@@ -1035,6 +1036,9 @@ export function RunsTable(): ReactNode {
 
   const handlePageChange = useCallback(
     async (newPage: number): Promise<void> => {
+      if (!sources) {
+        return;
+      }
       setPageLoading(true);
 
       // Update URL without full navigation
@@ -1094,24 +1098,31 @@ export function RunsTable(): ReactNode {
   // without a page - so a ?page= left in the URL outlives the result it
   // described, and the restore below would replay it against a filter set that
   // never produced it. Dropping it keeps the URL and the rendered page in step.
-  const filterKey = JSON.stringify([
-    range,
-    statuses,
-    sources,
-    networks,
-    gas,
-    duration,
-    search,
-    projectId,
-    customStart,
-    customEnd,
-  ]);
+  // Null until the sources are known; the first known set is not a change.
+  const filterKey = sources
+    ? JSON.stringify([
+        range,
+        statuses,
+        sources,
+        networks,
+        gas,
+        duration,
+        search,
+        projectId,
+        customStart,
+        customEnd,
+      ])
+    : null;
   const lastFilterKey = useRef(filterKey);
   useEffect(() => {
-    if (lastFilterKey.current === filterKey) {
+    if (filterKey === null || lastFilterKey.current === filterKey) {
       return;
     }
+    const first = lastFilterKey.current === null;
     lastFilterKey.current = filterKey;
+    if (first) {
+      return;
+    }
     const url = new URL(window.location.href);
     if (!url.searchParams.has("page")) {
       return;

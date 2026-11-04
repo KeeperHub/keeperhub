@@ -3,6 +3,10 @@
 import { Info, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import {
+  AppBannerSlot,
+  useAppBannerOffset,
+} from "@/components/app-banner-slot";
 import { QuotaBanner } from "@/components/billing/quota-banner";
 import { FailureAlertsUnreachableBanner } from "@/components/failure-alerts/unreachable-banner";
 import { useSession } from "@/lib/auth-client";
@@ -37,15 +41,7 @@ export function AppBanner(): React.ReactElement | null {
     Boolean(organization?.id) &&
     hasNotificationType(status, "failure_alerts_unreachable");
 
-  useEffect(() => {
-    if (!unreachable) {
-      return;
-    }
-    document.documentElement.style.setProperty("--app-banner-height", "36px");
-    return (): void => {
-      document.documentElement.style.removeProperty("--app-banner-height");
-    };
-  }, [unreachable]);
+  useAppBannerOffset(unreachable);
 
   if (unreachable && organization?.id) {
     return <FailureAlertsUnreachableBanner organizationId={organization.id} />;
@@ -106,16 +102,7 @@ function BillingBanner(): React.ReactElement | null {
     }
   }, [quotaKey]);
 
-  useEffect(() => {
-    if (visible) {
-      document.documentElement.style.setProperty("--app-banner-height", "36px");
-    } else {
-      document.documentElement.style.removeProperty("--app-banner-height");
-    }
-    return (): void => {
-      document.documentElement.style.removeProperty("--app-banner-height");
-    };
-  }, [visible]);
+  useAppBannerOffset(visible);
 
   const handleDismissQuota = useCallback((): void => {
     if (!quotaKey) {
@@ -147,8 +134,8 @@ function BillingBanner(): React.ReactElement | null {
   }
 
   return (
-    <div
-      className="pointer-events-auto fixed top-0 right-0 left-0 z-[55] flex h-9 items-center justify-center border-b border-keeperhub-green/30 bg-keeperhub-green/10 px-12 text-sm backdrop-blur-sm"
+    <AppBannerSlot
+      className="border-keeperhub-green/30 bg-keeperhub-green/10 px-12"
       data-testid="app-banner"
     >
       <p className="flex items-center gap-2 truncate text-foreground">
@@ -175,6 +162,6 @@ function BillingBanner(): React.ReactElement | null {
       >
         <X className="size-3.5" />
       </button>
-    </div>
+    </AppBannerSlot>
   );
 }

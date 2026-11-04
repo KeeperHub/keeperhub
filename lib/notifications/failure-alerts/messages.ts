@@ -1,6 +1,11 @@
 import type { FailureIncidentTrigger } from "@/lib/db/schema-failure-alerts";
 import { emailButton, emailLayout, escapeHtml } from "@/lib/email";
 import {
+  type ChatPart,
+  type ChatText,
+  formatChat,
+} from "@/lib/notifications/chat-text";
+import {
   MAX_SUMMARY_CHARS,
   truncateRunes,
 } from "@/plugins/pagerduty/event-payload";
@@ -28,8 +33,10 @@ export type RenderedMessage = {
   subject: string;
   text: string;
   html: string;
-  /** Plain text for Slack, Discord and Telegram. */
+  /** Chat text as the preview shows it. */
   chat: string;
+  /** Chat text with outside text marked, fullest first; senders send the first that fits. */
+  chatVariants: ChatText[];
   /** PagerDuty summary. */
   summary: string;
 };
@@ -103,6 +110,22 @@ export type MessageInput =
 
 /** Example messages for the preview and the Test buttons. */
 export type SampleKind = "alert" | "missed" | "paused" | "recovery";
+
+const EMAIL_LIKE = /@/;
+
+/** How a pause notice names who did it: their name, never an email; else their role. */
+export function pauseActorName(
+  member: { name: string | null; role: string } | undefined
+): string | null {
+  const name = member?.name?.trim();
+  if (name && !EMAIL_LIKE.test(name)) {
+    return name;
+  }
+  if (!member) {
+    return null;
+  }
+  return member.role === "owner" ? "An owner" : "An admin";
+}
 
 export function appBaseUrl(): string {
   return process.env.NEXT_PUBLIC_APP_URL ?? "https://app.keeperhub.com";
@@ -181,25 +204,69 @@ function summaryOf(text: string): string {
   return truncateRunes(`[KeeperHub] ${text}`, MAX_SUMMARY_CHARS);
 }
 
+/** Outside text (names, reasons): escaped for each chat provider. */
+function user(text: string): ChatPart {
+  return { user: text };
+}
+
+function plain(parts: ChatText): string {
+  return formatChat(parts, "plain");
+}
+
+function orgTag(orgName: string): ChatPart[] {
+  return ["[", user(orgName), "] "];
+}
+
+/** Lines joined by newlines; null lines are left out. */
+function joinLines(lines: (ChatText | string | null)[]): ChatPart[] {
+  const out: ChatPart[] = [];
+  for (const line of lines) {
+    if (line === null) {
+      continue;
+    }
+    if (out.length > 0) {
+      out.push("\n");
+    }
+    out.push(...(typeof line === "string" ? [line] : line));
+  }
+  return out;
+}
+
+function chatOf(
+  variants: ChatText[]
+): Pick<RenderedMessage, "chat" | "chatVariants"> {
+  return { chat: plain(variants[0] ?? []), chatVariants: variants };
+}
+
 function failingHeadline(
   workflow: AlertWorkflow,
   incident: AlertIncident,
   still: boolean,
   now: Date
-): string {
+): ChatPart[] {
+  const name = user(workflow.name);
   if (incident.openedBy === "missed") {
-    return `${workflow.name} ${still ? "still has" : "has"} not run since ${formatUtc(incident.firstFailedAt)}`;
+    return [
+      name,
+      ` ${still ? "still has" : "has"} not run since ${formatUtc(incident.firstFailedAt)}`,
+    ];
   }
   if (incident.openedBy === "funding" && !still) {
-    return `Wallet out of funds: ${workflow.name} cannot pay for its transaction`;
+    return ["Wallet out of funds: ", name, " cannot pay for its transaction"];
   }
   const runs = `${plural(incident.failureCount, "failed run", "failed runs")} in a row`;
   if (incident.openedBy === "time" && !still) {
-    return `${workflow.name} has been failing for ${formatDuration(now.getTime() - incident.firstFailedAt.getTime())} (${runs})`;
+    return [
+      name,
+      ` has been failing for ${formatDuration(now.getTime() - incident.firstFailedAt.getTime())} (${runs})`,
+    ];
   }
   return still
-    ? `${workflow.name}: ${plural(incident.failureCount, "failed run", "failed runs")} in a row`
-    : `${workflow.name} failed ${plural(incident.failureCount, "time", "times")} in a row`;
+    ? [name, `: ${runs}`]
+    : [
+        name,
+        ` failed ${plural(incident.failureCount, "time", "times")} in a row`,
+      ];
 }
 
 function pausedHeadline(
@@ -207,54 +274,57 @@ function pausedHeadline(
   failures: number,
   again: boolean,
   funding: boolean
-): string {
+): ChatPart[] {
   const cause = funding ? "Wallet out of funds: " : "";
   if (again) {
-    return `${cause}${workflow.name} was paused again: ${plural(failures, "more failed run", "more failed runs")} after it was turned back on`;
+    return [
+      cause,
+      user(workflow.name),
+      ` was paused again: ${plural(failures, "more failed run", "more failed runs")} after it was turned back on`,
+    ];
   }
-  return `${cause}${workflow.name} was paused after ${plural(failures, "failed run", "failed runs")} in a row`;
+  return [
+    cause,
+    user(workflow.name),
+    ` was paused after ${plural(failures, "failed run", "failed runs")} in a row`,
+  ];
 }
 
 const PAUSED_NEXT_STEP =
   "KeeperHub turned it off because this workflow is set to pause at its failure limit. It will not run until someone turns it back on: fix the cause, then press Turn back on in the workflow's Alerts panel.";
 
-function joinBanners(
-  ...banners: { html: string; text: string; chat: string }[]
-): { html: string; text: string; chat: string } {
+type Banner = { html: string; text: string; chat: ChatPart[] };
+
+const NO_BANNER: Banner = { html: "", text: "", chat: [] };
+
+function joinBanners(...banners: Banner[]): Banner {
   return {
     html: banners.map((b) => b.html).join(""),
     text: banners.map((b) => b.text).join(""),
-    chat: banners.map((b) => b.chat).join(""),
+    chat: banners.flatMap((b) => b.chat),
   };
 }
 
-function testBanner(note: string | undefined): {
-  html: string;
-  text: string;
-  chat: string;
-} {
+function testBanner(note: string | undefined): Banner {
   if (!note) {
-    return { html: "", text: "", chat: "" };
+    return NO_BANNER;
   }
   return {
     html: `<div style="background: #eff6ff; border: 1px solid #93c5fd; border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; color: #1e3a8a;">${escapeHtml(note)}</div>`,
     text: `${note}\n\n`,
-    chat: `${note}\n`,
+    // The note names the channel, which people type.
+    chat: [user(note), "\n"],
   };
 }
 
-function backupBanner(reason: string | undefined): {
-  html: string;
-  text: string;
-  chat: string;
-} {
+function backupBanner(reason: string | undefined): Banner {
   if (!reason) {
-    return { html: "", text: "", chat: "" };
+    return NO_BANNER;
   }
   return {
     html: `<div style="background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; color: #92400e;"><strong>Backup alert:</strong> ${escapeHtml(reason)}.</div>`,
     text: `BACKUP ALERT: ${reason}.\n\n`,
-    chat: `Backup alert: ${reason}.\n`,
+    chat: ["Backup alert: ", user(reason), ".\n"],
   };
 }
 
@@ -324,7 +394,7 @@ function renderAlert(
   const { workflow, incident, orgName, appUrl } = input;
   const missed = incident.openedBy === "missed";
   const reminder = input.kind === "reminder";
-  const headline = input.paused
+  const headlineParts = input.paused
     ? pausedHeadline(
         workflow,
         input.pausedFailures ?? incident.failureCount,
@@ -332,6 +402,7 @@ function renderAlert(
         incident.openedBy === "funding"
       )
     : failingHeadline(workflow, incident, reminder, now);
+  const headline = plain(headlineParts);
   const banners = joinBanners(
     testBanner(input.testNote),
     backupBanner(input.backupReason)
@@ -432,9 +503,47 @@ ${foot.text}`;
     subject: `${input.testNote ? "[Test] " : ""}${input.backupReason ? "[Backup] " : ""}[${orgName}] ${label}: ${headline}`,
     text,
     html,
-    chat: `[${orgName}] ${banners.chat}${label}: ${headline}.\n${lines.join("\n")}\n${links.join("\n")}`,
+    ...chatOf(
+      alertChatVariants({
+        top: [
+          ...orgTag(orgName),
+          ...banners.chat,
+          `${label}: `,
+          ...headlineParts,
+          ".",
+        ],
+        lastError: missed ? null : incident.lastError,
+        middle: [since, history, hint, nextStep, lastLine],
+        detail: missed ? MISSED_DETAIL : null,
+        links,
+      })
+    ),
     summary: summaryOf(`${orgName}: ${headline}`),
   };
+}
+
+/** Fullest first, then without the error text, then headline and links only. */
+function alertChatVariants(parts: {
+  top: ChatPart[];
+  lastError: string | null;
+  middle: (string | null)[];
+  detail: string | null;
+  links: string[];
+}): ChatText[] {
+  const [since, history, ...rest] = parts.middle;
+  const withDetail = (detail: ChatText | string | null): ChatText =>
+    joinLines([parts.top, since, history, detail, ...rest, ...parts.links]);
+  let detail: ChatText | string | null = parts.detail;
+  if (detail === null) {
+    detail = parts.lastError
+      ? ["Last error: ", { code: shortError(parts.lastError) }]
+      : `Last error: ${shortError(null)}`;
+  }
+  return [
+    withDetail(detail),
+    withDetail(parts.detail ?? "Last error: see the failed runs."),
+    joinLines([parts.top, ...parts.links]),
+  ];
 }
 
 type GroupedWorkflow = Extract<
@@ -444,16 +553,21 @@ type GroupedWorkflow = Extract<
 
 /** A grouped alert lists this many workflows, then "And N more". */
 const GROUPED_LIST_MAX = 10;
+const GROUPED_ERROR_CHARS = 120;
 
 function renderGrouped(
   input: Extract<MessageInput, { kind: "grouped" }>
 ): RenderedMessage {
   const { workflows, orgName, appUrl } = input;
   const headline = `${workflows.length} workflows started failing`;
-  const errorOf = (w: { lastError?: string | null }): string =>
+  const errorText = (w: { lastError?: string | null }): string | null =>
     w.lastError
-      ? `: ${truncateRunes(w.lastError.replace(WHITESPACE, " "), 120)}`
-      : "";
+      ? truncateRunes(w.lastError.replace(WHITESPACE, " "), GROUPED_ERROR_CHARS)
+      : null;
+  const errorOf = (w: { lastError?: string | null }): string => {
+    const error = errorText(w);
+    return error ? `: ${error}` : "";
+  };
   const anyPaused = workflows.some((w) => w.workflowPaused);
   const cause = `This often means a shared cause, such as an RPC provider or a wallet out of gas.${anyPaused ? " Paused workflows stay off until someone turns them back on." : ""}`;
   const backup = backupBanner(input.backupReason);
@@ -478,11 +592,41 @@ function renderGrouped(
     lines.push(moreLine);
   }
   const fundsLine = funds ? `Add funds: ${funds}\n` : "";
+  const seeAll = `See all failing workflows: ${settingsUrl(appUrl, input.organizationId)}`;
+  const chatLine = (w: GroupedWorkflow, withError: boolean): ChatPart[] => {
+    const error = withError ? errorText(w) : null;
+    return [
+      `- ${fundsPrefix(w)}`,
+      user(w.name),
+      `: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}`,
+      ...(error ? [": ", { code: error }] : []),
+      ` (${runsUrl(appUrl, w.id)})`,
+    ];
+  };
+  const chatList = (count: number, withError: boolean): ChatText => {
+    const rest = workflows.length - count;
+    return joinLines([
+      [
+        ...orgTag(orgName),
+        ...backup.chat,
+        `Action needed: ${headline}. ${cause}`,
+      ],
+      ...workflows.slice(0, count).map((w) => chatLine(w, withError)),
+      rest > 0 ? `And ${rest} more.` : null,
+      funds ? `Add funds: ${funds}` : null,
+      seeAll,
+    ]);
+  };
+  // Drop the error text first, then list fewer workflows.
+  const chatVariants = [chatList(shown.length, true)];
+  for (let count = shown.length; count >= 1; count -= 1) {
+    chatVariants.push(chatList(count, false));
+  }
   const text = `${backup.text}${headline} in ${orgName}. ${cause}
 
 ${lines.join("\n")}
 
-${fundsLine}See all failing workflows: ${settingsUrl(appUrl, input.organizationId)}
+${fundsLine}${seeAll}
 
 ${foot.text}`;
   const html = emailLayout(
@@ -492,7 +636,7 @@ ${foot.text}`;
     <ul style="padding-left: 20px;">${shown
       .map(
         (w) =>
-          `<li>${outOfFunds(w) ? "<strong>Wallet out of funds:</strong> " : ""}<a href="${escapeHtml(runsUrl(appUrl, w.id))}">${escapeHtml(w.name)}</a>: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}${w.lastError ? `<br><code style="font-size:12px;">${escapeHtml(truncateRunes(w.lastError.replace(WHITESPACE, " "), 120))}</code>` : ""}</li>`
+          `<li>${outOfFunds(w) ? "<strong>Wallet out of funds:</strong> " : ""}<a href="${escapeHtml(runsUrl(appUrl, w.id))}">${escapeHtml(w.name)}</a>: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}${w.lastError ? `<br><code style="font-size:12px;">${escapeHtml(errorText(w) ?? "")}</code>` : ""}</li>`
       )
       .join("")}</ul>
     ${moreLine ? `<p>${moreLine}</p>` : ""}
@@ -503,7 +647,7 @@ ${foot.text}`;
     subject: `${input.backupReason ? "[Backup] " : ""}[${orgName}] Action needed: ${headline}`,
     text,
     html,
-    chat: `[${orgName}] ${backup.chat}Action needed: ${headline}. ${cause}\n${lines.join("\n")}`,
+    ...chatOf(chatVariants),
     summary: summaryOf(`${orgName}: ${headline}`),
   };
 }
@@ -514,16 +658,18 @@ function renderRecovery(
 ): RenderedMessage {
   const { workflow, incident, orgName, appUrl } = input;
   const span = formatDuration(now.getTime() - incident.firstFailedAt.getTime());
-  let headline = `${workflow.name} is running again`;
+  let tail = " is running again";
   let detail = `It succeeded after ${plural(incident.failureCount, "failed run", "failed runs")} (${span}).`;
   if (incident.openedBy === "missed") {
-    headline = input.ranButFailed
-      ? `${workflow.name} ran, but the run failed`
-      : `${workflow.name} is running again`;
+    tail = input.ranButFailed
+      ? " ran, but the run failed"
+      : " is running again";
     detail = input.ranButFailed
       ? `It started ${span} after it was due. You will be told if it keeps failing.`
       : `It started again ${span} after it was due.`;
   }
+  const headlineParts = [user(workflow.name), tail];
+  const headline = plain(headlineParts);
   const prefix = input.ranButFailed ? "Started again" : "Resolved";
   const link = runsUrl(appUrl, workflow.id);
   const foot = footer(input);
@@ -536,7 +682,14 @@ function renderRecovery(
       `${test.html}<p>${escapeHtml(detail)}</p><p>${emailButton(link, "View runs")}</p>`,
       foot.html
     ),
-    chat: `[${orgName}] ${test.chat}${headline}. ${detail}\n${link}`,
+    ...chatOf([
+      [
+        ...orgTag(orgName),
+        ...test.chat,
+        ...headlineParts,
+        `. ${detail}\n${link}`,
+      ],
+    ]),
     summary: summaryOf(`${orgName}: ${headline}`),
   };
 }
@@ -545,8 +698,17 @@ function renderChannelPaused(
   input: Extract<MessageInput, { kind: "channel_paused" }>
 ): RenderedMessage {
   const link = settingsUrl(input.appUrl, input.organizationId);
-  const headline = `${input.channelLabel} stopped working for failure notifications`;
-  const detail = `${input.reason.replace(TRAILING_DOTS, "")}. It is paused until a test succeeds. Your other notification methods are still used.`;
+  // The label and the provider's reason are outside text.
+  const headlineParts = [
+    user(input.channelLabel),
+    " stopped working for failure notifications",
+  ];
+  const detailParts = [
+    user(input.reason.replace(TRAILING_DOTS, "")),
+    ". It is paused until a test succeeds. Your other notification methods are still used.",
+  ];
+  const headline = plain(headlineParts);
+  const detail = plain(detailParts);
   const foot = footer(input);
   return {
     subject: `[${input.orgName}] ${headline}`,
@@ -556,7 +718,15 @@ function renderChannelPaused(
       `<p>${escapeHtml(detail)}</p><p>${emailButton(link, "Fix the channel")}</p>`,
       foot.html
     ),
-    chat: `[${input.orgName}] ${headline}. ${detail}\n${link}`,
+    ...chatOf([
+      [
+        ...orgTag(input.orgName),
+        ...headlineParts,
+        ". ",
+        ...detailParts,
+        `\n${link}`,
+      ],
+    ]),
     summary: summaryOf(`${input.orgName}: ${headline}`),
   };
 }
@@ -585,9 +755,13 @@ function renderCapWarning(
   input: Extract<MessageInput, { kind: "cap_warning" }>
 ): RenderedMessage {
   const out = input.used >= input.limit;
-  const headline = out
-    ? `${input.orgName} has used all ${input.limit} alert emails this month`
-    : `${input.orgName} has used ${input.used} of its ${input.limit} alert emails this month`;
+  const headlineParts = [
+    user(input.orgName),
+    out
+      ? ` has used all ${input.limit} alert emails this month`
+      : ` has used ${input.used} of its ${input.limit} alert emails this month`,
+  ];
+  const headline = plain(headlineParts);
   const detail = out ? capOutDetail(input.chatWorks) : capLowDetail(input);
   const link = settingsUrl(input.appUrl, input.organizationId);
   const foot = footer(input);
@@ -599,7 +773,9 @@ function renderCapWarning(
       `<p>${escapeHtml(detail)}</p><p>${emailButton(link, "Alerts settings")}</p>`,
       foot.html
     ),
-    chat: `[${input.orgName}] ${headline}. ${detail}\n${link}`,
+    ...chatOf([
+      [...orgTag(input.orgName), ...headlineParts, `. ${detail}\n${link}`],
+    ]),
     summary: summaryOf(`${input.orgName}: ${headline}`),
   };
 }
@@ -608,16 +784,33 @@ function renderOrgPause(
   input: Extract<MessageInput, { kind: "alerts_paused" | "alerts_resumed" }>
 ): RenderedMessage {
   const paused = input.kind === "alerts_paused";
-  const headline = paused
-    ? `Alerts for ${input.orgName} are paused until ${formatUtc(input.until)}`
-    : `Alerts for ${input.orgName} are back on`;
-  let detail: string;
+  const headlineParts = [
+    "Alerts for ",
+    user(input.orgName),
+    paused ? ` are paused until ${formatUtc(input.until)}` : " are back on",
+  ];
+  const headline = plain(headlineParts);
+  let detailParts: ChatPart[];
   if (paused) {
-    const who = input.by ? `${input.by} paused them` : "They were paused";
-    detail = `${who}${input.reason ? `: ${input.reason.replace(TRAILING_DOTS, "")}` : ""}. ${orgPauseEffect(input.pausingWorkflows)}`;
+    const who = input.by
+      ? [user(input.by), " paused them"]
+      : ["They were paused"];
+    detailParts = [
+      ...who,
+      ...(input.reason
+        ? [": ", user(input.reason.replace(TRAILING_DOTS, ""))]
+        : []),
+      `. ${orgPauseEffect(input.pausingWorkflows)}`,
+    ];
   } else {
-    detail = `${input.by ? `${input.by} turned them back on` : "The pause ended"}. Any workflow still failing is reported now.`;
+    detailParts = [
+      ...(input.by
+        ? [user(input.by), " turned them back on"]
+        : ["The pause ended"]),
+      ". Any workflow still failing is reported now.",
+    ];
   }
+  const detail = plain(detailParts);
   const link = settingsUrl(input.appUrl, input.organizationId);
   const foot = footer(input);
   return {
@@ -628,7 +821,15 @@ function renderOrgPause(
       `<p>${escapeHtml(detail)}</p><p>${emailButton(link, "Alerts settings")}</p>`,
       foot.html
     ),
-    chat: `[${input.orgName}] ${headline}. ${detail}\n${link}`,
+    ...chatOf([
+      [
+        ...orgTag(input.orgName),
+        ...headlineParts,
+        ". ",
+        ...detailParts,
+        `\n${link}`,
+      ],
+    ]),
     summary: summaryOf(`${input.orgName}: ${headline}`),
   };
 }
@@ -665,7 +866,7 @@ function renderLaunchNotice(
       `<p>${escapeHtml(rule)}</p>${failingHtml}<p>${emailButton(link, "Alerts settings")}</p>`,
       "You get this once, as an owner of the organization."
     ),
-    chat: `[${input.orgName}] ${headline}. ${rule}`,
+    ...chatOf([[...orgTag(input.orgName), `${headline}. ${rule}\n${link}`]]),
     summary: summaryOf(`${input.orgName}: ${headline}`),
   };
 }

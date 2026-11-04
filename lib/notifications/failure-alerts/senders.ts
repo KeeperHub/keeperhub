@@ -194,7 +194,7 @@ export async function sendChannelMessage(params: {
       destination: channel.destination,
       organizationId,
       plugin: PLUGIN,
-      message: rendered.chat,
+      message: rendered.chatVariants,
     });
     if (outcome.delivered) {
       return DELIVERED;

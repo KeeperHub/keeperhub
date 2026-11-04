@@ -44,6 +44,9 @@ export function useLazyFacet(dimension: FacetDimension): () => void {
   const inFlight = useRef<AbortController | null>(null);
 
   return useCallback((): void => {
+    if (!sources) {
+      return;
+    }
     // The status filter is carried, unlike the status facet's own request:
     // only the dimension being counted is lifted, and the server lifts network
     // and gas itself. Lifting status here too would label a chain with a count

@@ -155,7 +155,7 @@ Same as the summary endpoint, including `projectId`: it excludes direct executio
 GET /api/analytics/runs
 ```
 
-Returns a unified list of workflow executions and direct executions with pagination. Pass `source=notification` (alone or with the other sources) to list system notifications as well; they are never included otherwise. A system notification is one failure notification KeeperHub sent the organization (an alert, reminder, recovery notice or channel notice) on one channel to one recipient. System notifications are listed but never counted: the summary, time series, network breakdown, filter counts and the `total` below count runs alone.
+Returns a unified list of workflow executions and direct executions with pagination. Pass `source=notification` (alone or with the other sources) to list system notifications as well; they are never included otherwise. A system notification is one failure notification KeeperHub sent the organization (an alert, reminder or recovery notice, or a notice about a channel, a pause or the monthly email limit) on one channel to one recipient. System notifications are listed but never counted: the summary, time series, network breakdown, filter counts and the `total` below count runs alone.
 
 ### Query Parameters
 
@@ -260,6 +260,22 @@ rather than on the sentinel strings. The verification the direct execution
 recorded lives in that execution's own receipts, which this endpoint does not
 read.
 
+An empty array means the run produced no on-chain write, or finalized before the
+column was backfilled.
+
+`networks` is every chain the run's steps targeted, including read-only steps;
+`gasNetworks` is the subset its gas landed on. A multi-chain run can therefore
+have a longer `networks` than `gasNetworks`, which is why `network` and the gas
+figures are only meaningful together when that list holds one entry.
+
+`stepLogRetentionCutoff` is present on every response, `null` when nothing has
+aged out, and otherwise the instant a run must be older than to have no steps
+behind it: such a run is listed with its status and duration and no steps, rather
+than being blank for the same reason a run that recorded nothing is. It is marked
+optional in the response type, but the route serializes the object as it stands,
+so the key ships either way and a caller testing for its presence takes the
+retention path for every organization.
+
 `total` is the number of runs (workflow and direct executions) matching the
 filters; system notifications are not part of it. `listTotal` is the number of
 rows the listing pages through, system notifications included. Use `listTotal`
@@ -308,7 +324,7 @@ The `notification` object, present only on these rows, carries the rest:
 | Field | Description |
 |-------|-------------|
 | `title` | A readable name: the kind and the workflow (`Alert: Monitor ETH Balance`), the number of workflows for a message that covers several (`Alert: 3 workflows`), or the kind alone for a notice about no workflow |
-| `kind` | `alert`, `reminder`, `recovery`, `channel_paused` (a channel stopped working), `launch_notice` (failure notifications were turned on), `alerts_paused` or `alerts_resumed` |
+| `kind` | `alert`, `reminder`, `recovery`, `channel_paused` (a channel stopped working), `launch_notice` (failure notifications were turned on), `alerts_paused`, `alerts_resumed` or `cap_warning` (the monthly alert email limit is nearly or fully used) |
 | `state` | The delivery state behind `status`: `pending`, `sending`, `delivered`, `retrying`, `failed`, `capped` (monthly email limit) or `skipped` (withdrawn) |
 | `channel` | `email`, `slack`, `discord`, `telegram` or `pagerduty` |
 | `recipient` | The email address, or the channel's destination |
@@ -316,24 +332,8 @@ The `notification` object, present only on these rows, carries the rest:
 | `isBackup` | `true` when sent because another channel could not deliver |
 | `attempts` | How many times delivery was tried |
 | `lastError` | Why the last attempt failed, or why it was not sent |
-| `note` | Which channel a `channel_paused` notice is about, or why a backup was sent |
+| `note` | Which channel a `channel_paused` notice is about; otherwise whether the incident paused the workflow (`Paused the workflow`, or `Paused the workflow again after it was turned back on`) and why a backup was sent, joined with `. `; `null` when there is neither |
 | `workflows` | Every workflow the notification is about; empty for a notice about no workflow |
-
-An empty array means the run produced no on-chain write, or finalized before the
-column was backfilled.
-
-`networks` is every chain the run's steps targeted, including read-only steps;
-`gasNetworks` is the subset its gas landed on. A multi-chain run can therefore
-have a longer `networks` than `gasNetworks`, which is why `network` and the gas
-figures are only meaningful together when that list holds one entry.
-
-`stepLogRetentionCutoff` is present on every response, `null` when nothing has
-aged out, and otherwise the instant a run must be older than to have no steps
-behind it: such a run is listed with its status and duration and no steps, rather
-than being blank for the same reason a run that recorded nothing is. It is marked
-optional in the response type, but the route serializes the object as it stands,
-so the key ships either way and a caller testing for its presence takes the
-retention path for every organization.
 
 ## Get Run Step Logs
 

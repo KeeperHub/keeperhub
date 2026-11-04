@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export type NotificationType =
   | "billing_limit_reached"
@@ -26,16 +26,19 @@ const EMPTY_STATUS: NotificationStatus = {
  * same response instead of each asking the server.
  */
 const SHARE_FOR_MS = 15_000;
-let shared: {
-  organizationId: string;
-  at: number;
-  request: Promise<NotificationStatus>;
-} | null = null;
+const shared = new Map<
+  string,
+  { at: number; request: Promise<NotificationStatus> }
+>();
+const subscribers = new Set<(organizationId: string | undefined) => void>();
 
-async function fetchStatus(): Promise<NotificationStatus> {
+async function fetchStatus(
+  organizationId: string
+): Promise<NotificationStatus> {
   try {
     const response = await fetch("/api/notifications/status", {
       credentials: "include",
+      headers: { "X-Organization-Id": organizationId },
     });
     if (!response.ok) {
       return { ...EMPTY_STATUS, alertsEnabled: false };
@@ -55,15 +58,25 @@ function loadStatus(
   organizationId: string,
   force: boolean
 ): Promise<NotificationStatus> {
-  const fresh =
-    shared &&
-    shared.organizationId === organizationId &&
-    Date.now() - shared.at < SHARE_FOR_MS;
-  if (!force && fresh && shared) {
-    return shared.request;
+  const cached = shared.get(organizationId);
+  if (!force && cached && Date.now() - cached.at < SHARE_FOR_MS) {
+    return cached.request;
   }
-  shared = { organizationId, at: Date.now(), request: fetchStatus() };
-  return shared.request;
+  const request = fetchStatus(organizationId);
+  shared.set(organizationId, { at: Date.now(), request });
+  return request;
+}
+
+/** Drops the cached status and refetches it for every mounted caller (one org, or all). */
+export function invalidateNotificationStatus(organizationId?: string): void {
+  if (organizationId) {
+    shared.delete(organizationId);
+  } else {
+    shared.clear();
+  }
+  for (const notify of subscribers) {
+    notify(organizationId);
+  }
 }
 
 export function useNotificationStatus(organizationId?: string | null): {
@@ -71,21 +84,39 @@ export function useNotificationStatus(organizationId?: string | null): {
   refresh: () => Promise<void>;
 } {
   const [status, setStatus] = useState<NotificationStatus>(EMPTY_STATUS);
+  // Bumped per load and per org change, so a late answer never lands.
+  const latest = useRef(0);
 
   const load = useCallback(
     async (force: boolean): Promise<void> => {
+      const ticket = ++latest.current;
       if (!organizationId) {
         setStatus(EMPTY_STATUS);
         return;
       }
-      setStatus(await loadStatus(organizationId, force));
+      const next = await loadStatus(organizationId, force);
+      if (ticket === latest.current) {
+        setStatus(next);
+      }
     },
     [organizationId]
   );
 
   useEffect(() => {
+    // A new org starts from unknown rather than showing the last org's answer.
+    setStatus(EMPTY_STATUS);
     load(false).catch(() => undefined);
-  }, [load]);
+    const onInvalidate = (target: string | undefined): void => {
+      if (!target || target === organizationId) {
+        load(false).catch(() => undefined);
+      }
+    };
+    subscribers.add(onInvalidate);
+    return () => {
+      subscribers.delete(onInvalidate);
+      latest.current += 1;
+    };
+  }, [load, organizationId]);
 
   // An explicit refresh (opening the user menu) always asks again.
   const refresh = useCallback(() => load(true), [load]);

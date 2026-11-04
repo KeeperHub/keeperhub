@@ -5,7 +5,7 @@ vi.mock("@/lib/db", () => ({ db: {} }));
 
 const { DEFAULT_ORG_POLICY, isMuted, mergePolicy, resolveRecipientEmails } =
   await import("@/lib/notifications/failure-alerts/policy");
-const { isFailureAlertsEnabledForOrg } = await import(
+const { isFailureAlertsEnabledForOrg, splitByRollout } = await import(
   "@/lib/notifications/failure-alerts/rollout"
 );
 
@@ -193,5 +193,27 @@ describe("isFailureAlertsEnabledForOrg", () => {
     for (const id of at10) {
       expect(at50.has(id)).toBe(true);
     }
+  });
+});
+
+describe("splitByRollout", () => {
+  it("keeps rows of orgs in the rollout and drops the rest, and rows with no org", () => {
+    const rows = [{ org: "org-a" }, { org: "org-b" }, { org: undefined }];
+    const { kept, dropped } = splitByRollout(
+      rows,
+      (row) => row.org,
+      "orgs:org-a"
+    );
+    expect(kept).toEqual([{ org: "org-a" }]);
+    expect(dropped).toEqual([{ org: "org-b" }, { org: undefined }]);
+  });
+
+  it("drops everything while the rollout is off", () => {
+    const { kept } = splitByRollout(
+      [{ org: "org-a" }],
+      (row) => row.org,
+      "off"
+    );
+    expect(kept).toEqual([]);
   });
 });

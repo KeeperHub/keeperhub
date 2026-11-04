@@ -3,9 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/db", () => ({ db: {} }));
 
-const { renderMessage } = await import(
+const { pauseActorName, renderMessage, renderSample } = await import(
   "@/lib/notifications/failure-alerts/messages"
 );
+const { CHAT_LIMITS, fitChat } = await import("@/lib/notifications/chat-text");
 const { methodName, methodText, orgPauseEffect } = await import(
   "@/lib/notifications/failure-alerts/view-types"
 );
@@ -154,13 +155,13 @@ describe("org pause", () => {
       kind: "alerts_paused",
       until: new Date("2026-10-28T16:00:00Z"),
       reason: "Upgrade",
-      by: "ana@x.io",
+      by: "Ana",
       pausingWorkflows,
     });
 
   it("says workflows set to turn off still turn off", () => {
     expect(paused(2).text).toContain(
-      "ana@x.io paused them: Upgrade. Failures are not reported until then. Workflows keep running, but the 2 set to turn off at their limit still turn off; you are told about those when the pause ends."
+      "Ana paused them: Upgrade. Failures are not reported until then. Workflows keep running, but the 2 set to turn off at their limit still turn off; you are told about those when the pause ends."
     );
     expect(paused(1).text).toContain(
       "the 1 set to turn off at its limit still turns off; you are told about it"
@@ -188,5 +189,217 @@ describe("method names", () => {
     });
     expect(methodText("slack", "#ops", "Ops")).toBe("Ops (Slack #ops)");
     expect(methodText("pagerduty", "PABC123", null)).toBe("PagerDuty PABC123");
+  });
+});
+
+const CHANNELS = ["discord", "slack", "telegram"] as const;
+const HOSTILE =
+  "<!channel> <https://evil.example|Open the failing workflow> @everyone [x](https://evil.example) `tick` & co";
+const LONG_NAME = `${HOSTILE} ${"n".repeat(300)}`;
+const LONG_ERROR = `${HOSTILE} ${"e".repeat(3000)}`;
+
+function fitsEverywhere(message: {
+  chatVariants: Parameters<typeof fitChat>[0];
+}) {
+  for (const channel of CHANNELS) {
+    expect(fitChat(message.chatVariants, channel).length).toBeLessThanOrEqual(
+      CHAT_LIMITS[channel]
+    );
+  }
+}
+
+describe("chat length", () => {
+  const failing = (i: number) => ({
+    id: `wf-${i}-${"x".repeat(60)}`,
+    name: `${LONG_NAME} ${i}`,
+    triggerLabel: "Schedule",
+    failureCount: 5,
+    lastError: LONG_ERROR,
+  });
+
+  it("fits a grouped alert about many long workflows, ending in And N more", () => {
+    const message = renderMessage({
+      ...org,
+      orgName: LONG_NAME,
+      kind: "grouped",
+      workflows: Array.from({ length: 40 }, (_, i) => failing(i)),
+      backupReason: LONG_NAME,
+    });
+    fitsEverywhere(message);
+    const discord = fitChat(message.chatVariants, "discord");
+    expect(discord).toMatch(/And \d+ more\./);
+    expect(discord).toContain("See all failing workflows: ");
+  });
+
+  it("keeps error text when it fits, and drops it before dropping workflows", () => {
+    const small = renderMessage({
+      ...org,
+      kind: "grouped",
+      workflows: [1, 2].map((i) => ({
+        ...failing(i),
+        name: `W${i}`,
+        lastError: "RPC 429",
+      })),
+    });
+    expect(fitChat(small.chatVariants, "discord")).toContain("`RPC 429`");
+    const ten = renderMessage({
+      ...org,
+      kind: "grouped",
+      workflows: Array.from({ length: 10 }, (_, i) => ({
+        ...failing(i),
+        name: `W${i}`,
+      })),
+    });
+    const discord = fitChat(ten.chatVariants, "discord");
+    expect(discord).not.toContain("eeee");
+    expect(discord).toContain("W9:");
+    expect(discord).not.toContain("more.");
+  });
+
+  it("fits every other message kind with long outside text", () => {
+    const workflow = {
+      id: "wf-1",
+      name: LONG_NAME.repeat(20),
+      triggerLabel: "Schedule",
+    };
+    const incident = {
+      failureCount: 5,
+      firstFailedAt: new Date("2026-10-28T11:00:00Z"),
+      lastError: LONG_ERROR,
+      openedBy: "count" as const,
+    };
+    const longOrg = { ...org, orgName: LONG_NAME.repeat(20) };
+    const messages = [
+      renderMessage(
+        {
+          ...longOrg,
+          kind: "alert",
+          workflow,
+          incident,
+          backupReason: LONG_NAME,
+        },
+        now
+      ),
+      renderMessage(
+        {
+          ...longOrg,
+          kind: "reminder",
+          workflow,
+          incident,
+          reminderNumber: 7,
+          maxReminders: 7,
+        },
+        now
+      ),
+      renderMessage(
+        { ...longOrg, kind: "alert", workflow, incident, paused: "again" },
+        now
+      ),
+      renderMessage({ ...longOrg, kind: "recovery", workflow, incident }, now),
+      renderMessage({
+        ...longOrg,
+        kind: "channel_paused",
+        channelLabel: LONG_NAME,
+        reason: LONG_ERROR,
+      }),
+      renderMessage({
+        ...longOrg,
+        kind: "alerts_paused",
+        until: new Date("2026-10-29T12:00:00Z"),
+        reason: LONG_ERROR,
+        by: LONG_NAME,
+      }),
+      renderMessage({ ...longOrg, kind: "alerts_resumed", by: LONG_NAME }),
+      renderMessage({ ...longOrg, kind: "cap_warning", used: 100, limit: 100 }),
+      renderMessage({
+        ...longOrg,
+        kind: "launch_notice",
+        threshold: 3,
+        failingNow: [{ ...workflow, failureCount: 4 }],
+      }),
+      renderMessage({ ...longOrg, kind: "test", channelLabel: LONG_NAME }),
+      ...(["alert", "missed", "paused", "recovery"] as const).map((sample) =>
+        renderSample(longOrg, sample, LONG_NAME, now)
+      ),
+    ];
+    for (const message of messages) {
+      fitsEverywhere(message);
+    }
+  });
+});
+
+describe("chat escaping", () => {
+  const incident = {
+    failureCount: 3,
+    firstFailedAt: new Date("2026-10-28T11:00:00Z"),
+    lastError: HOSTILE,
+    openedBy: "count" as const,
+  };
+  const message = renderMessage(
+    {
+      ...org,
+      kind: "alert",
+      workflow: { ...workflow, name: HOSTILE },
+      incident,
+    },
+    now
+  );
+
+  it("escapes Slack mrkdwn and puts the error in a code span", () => {
+    const slack = fitChat(message.chatVariants, "slack");
+    expect(slack).not.toContain("<!channel>");
+    expect(slack).not.toContain("<https://");
+    expect(slack).toContain(
+      "Last error: `&lt;!channel&gt; &lt;https://evil.example|Open the failing workflow&gt; @everyone [x](https://evil.example) 'tick' &amp; co`"
+    );
+  });
+
+  it("escapes Discord markdown in names and keeps the error inside one code span", () => {
+    const discord = fitChat(message.chatVariants, "discord");
+    expect(discord).toContain("\\@everyone \\[x\\]\\(https://evil.example\\)");
+    expect(discord).toContain(
+      "Last error: `<!channel> <https://evil.example|Open the failing workflow> @everyone [x](https://evil.example) 'tick' & co`"
+    );
+  });
+
+  it("escapes Telegram HTML and wraps the error in <code>", () => {
+    const telegram = fitChat(message.chatVariants, "telegram");
+    expect(telegram).not.toContain("<!channel>");
+    expect(telegram).toContain("Last error: <code>&lt;!channel&gt;");
+    expect(telegram.match(/<code>/g)).toHaveLength(1);
+  });
+
+  it("shows the preview unescaped", () => {
+    expect(message.chat).toContain(
+      `Last error: ${HOSTILE.replace("`tick`", "'tick'")}`
+    );
+  });
+
+  it("escapes the org name, the pause reason and who paused", () => {
+    const paused = renderMessage({
+      ...org,
+      orgName: "<!here>",
+      kind: "alerts_paused",
+      until: new Date("2026-10-29T12:00:00Z"),
+      reason: "<!channel> upgrade",
+      by: "<@U123>",
+    });
+    const slack = fitChat(paused.chatVariants, "slack");
+    expect(slack).not.toMatch(/<[!@]/);
+    expect(slack).toContain(
+      "&lt;@U123&gt; paused them: &lt;!channel&gt; upgrade"
+    );
+  });
+});
+
+describe("pause notice actor", () => {
+  it("names the person, never an email, else their role", () => {
+    expect(pauseActorName({ name: "Ana Pop", role: "admin" })).toBe("Ana Pop");
+    expect(pauseActorName({ name: "ana@x.io", role: "owner" })).toBe(
+      "An owner"
+    );
+    expect(pauseActorName({ name: null, role: "admin" })).toBe("An admin");
+    expect(pauseActorName({ name: "  ", role: "owner" })).toBe("An owner");
+    expect(pauseActorName(undefined)).toBeNull();
   });
 });

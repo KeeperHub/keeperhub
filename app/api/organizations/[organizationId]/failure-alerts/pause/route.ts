@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { pauseActorName } from "@/lib/notifications/failure-alerts/messages";
 import {
   pauseOrgAlerts,
   resumeOrgAlerts,
@@ -18,7 +19,7 @@ const ENDPOINT = "/api/organizations/[organizationId]/failure-alerts/pause";
 
 type Params = { params: Promise<{ organizationId: string }> };
 
-/** Who to name in the pause notice: their reachable email, or their name. */
+/** Who to name in the pause notice, which reaches chat: name or role, never email. */
 async function actorLabel(
   organizationId: string,
   userId: string
@@ -26,7 +27,7 @@ async function actorLabel(
   const me = (await loadOrgMembers(organizationId)).find(
     (m) => m.userId === userId
   );
-  return me?.deliverable ?? me?.name ?? null;
+  return pauseActorName(me);
 }
 
 async function handle(
@@ -92,14 +93,15 @@ export function PUT(request: Request, context: Params): Promise<NextResponse> {
       string,
       unknown
     >;
-    await pauseOrgAlerts({
+    // Audit what was saved (parsed date, trimmed reason), not the raw body.
+    const saved = await pauseOrgAlerts({
       organizationId,
       until: body.until,
       reason: body.reason,
-      byEmail: await actorLabel(organizationId, access.userId),
+      by: await actorLabel(organizationId, access.userId),
       now: new Date(),
     });
-    return { until: body.until, reason: body.reason ?? null };
+    return { until: saved.until.toISOString(), reason: saved.reason };
   });
 }
 
@@ -111,7 +113,7 @@ export function DELETE(
   return handle(request, context, async (organizationId, access) => {
     await resumeOrgAlerts({
       organizationId,
-      byEmail: await actorLabel(organizationId, access.userId),
+      by: await actorLabel(organizationId, access.userId),
       now: new Date(),
     });
     return { paused: false };

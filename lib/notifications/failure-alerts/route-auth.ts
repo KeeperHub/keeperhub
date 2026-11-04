@@ -1,14 +1,17 @@
 import "server-only";
 
+import { and, eq, isNull } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import { db } from "@/lib/db";
 import { isUniqueViolation } from "@/lib/db/errors";
+import { member, organization } from "@/lib/db/schema";
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import {
   type DualAuthContext,
   getDualAuthContext,
 } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
-import { getOrgRole } from "@/lib/security/org-role";
+import { isFailureAlertsEnabledForOrg } from "./rollout";
 import { SettingsError } from "./settings";
 
 type Authenticated = Exclude<DualAuthContext, { error: string }> & {
@@ -41,6 +44,33 @@ export async function authenticate(
   return { ...auth, userId: auth.userId };
 }
 
+/** The caller's role in a live (not deactivated) org, or null. */
+async function activeOrgRole(
+  userId: string,
+  organizationId: string
+): Promise<string | null> {
+  const [row] = await db
+    .select({ role: member.role })
+    .from(member)
+    .innerJoin(organization, eq(organization.id, member.organizationId))
+    .where(
+      and(
+        eq(member.userId, userId),
+        eq(member.organizationId, organizationId),
+        isNull(organization.deactivatedAt)
+      )
+    )
+    .limit(1);
+  return row?.role ?? null;
+}
+
+/** 404 for orgs outside FAILURE_ALERTS_ROLLOUT, so every alert route stays hidden. */
+function rolloutNotFound(organizationId: string): NextResponse | null {
+  return isFailureAlertsEnabledForOrg(organizationId)
+    ? null
+    : NextResponse.json({ error: "Not found" }, { status: 404 });
+}
+
 /** Owners/admins manage, members read; API keys and OAuth tokens stay bound to their own org. */
 export async function orgAccess(
   auth: Authenticated,
@@ -49,9 +79,13 @@ export async function orgAccess(
   if (auth.authMethod !== "session" && auth.organizationId !== organizationId) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
-  const role = await getOrgRole(auth.userId, organizationId);
+  const role = await activeOrgRole(auth.userId, organizationId);
   if (!role) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  const hidden = rolloutNotFound(organizationId);
+  if (hidden) {
+    return hidden;
   }
   return {
     userId: auth.userId,

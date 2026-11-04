@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { AppBanner } from "@/components/app-banner";
 import { AuthProvider } from "@/components/auth/provider";
 import { KeeperHubExtensionLoader } from "@/components/extension-loader";
+import { LeaveGuardRouter } from "@/components/failure-alerts/unsaved-guard";
 import { FeatureSessionInvalidator } from "@/components/feature-session-invalidator";
 import { GlobalModals } from "@/components/global-modals";
 import { PendingTemplateRunner } from "@/components/hub/pending-template-runner";
@@ -147,22 +148,24 @@ const RootLayout = async ({ children }: RootLayoutProps) => {
           disableTransitionOnChange
           forcedTheme="dark"
         >
-          <Provider>
-            <AuthProvider>
-              <OrgDataSync />
-              <FeatureSessionInvalidator />
-              <PendingTemplateRunner />
-              <PendingScanRunner />
-              <WalletProvisioningTrigger />
-              <OverlayProvider>
-                <AppBanner />
-                <LayoutContent>{children}</LayoutContent>
-                <Toaster />
-                <GlobalModals />
-                <EditorWalkthrough />
-              </OverlayProvider>
-            </AuthProvider>
-          </Provider>
+          <LeaveGuardRouter>
+            <Provider>
+              <AuthProvider>
+                <OrgDataSync />
+                <FeatureSessionInvalidator />
+                <PendingTemplateRunner />
+                <PendingScanRunner />
+                <WalletProvisioningTrigger />
+                <OverlayProvider>
+                  <AppBanner />
+                  <LayoutContent>{children}</LayoutContent>
+                  <Toaster />
+                  <GlobalModals />
+                  <EditorWalkthrough />
+                </OverlayProvider>
+              </AuthProvider>
+            </Provider>
+          </LeaveGuardRouter>
         </ThemeProvider>
         {process.env.NODE_ENV === "development" && (
           <Script id="root-dev-bfcache-reload" strategy="beforeInteractive">

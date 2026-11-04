@@ -28,6 +28,25 @@ export function isFailureAlertsEnabledForOrg(
   return false;
 }
 
+/** Rows of orgs in the rollout, and the rest (no org counts as outside). */
+export function splitByRollout<T>(
+  rows: T[],
+  orgOf: (row: T) => string | undefined,
+  rollout: string | undefined = process.env.FAILURE_ALERTS_ROLLOUT
+): { kept: T[]; dropped: T[] } {
+  const kept: T[] = [];
+  const dropped: T[] = [];
+  for (const row of rows) {
+    const org = orgOf(row);
+    if (org !== undefined && isFailureAlertsEnabledForOrg(org, rollout)) {
+      kept.push(row);
+    } else {
+      dropped.push(row);
+    }
+  }
+  return { kept, dropped };
+}
+
 export function isFailureAlertsRolloutActive(
   rollout: string | undefined = process.env.FAILURE_ALERTS_ROLLOUT
 ): boolean {

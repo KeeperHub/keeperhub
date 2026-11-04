@@ -83,8 +83,7 @@ function notificationConditions(
   rangeStart: Date,
   rangeEnd: Date,
   filters: RunQueryFilters,
-  projectId: string | undefined,
-  skipStatuses = false
+  projectId: string | undefined
 ): SQL[] {
   const conditions: SQL[] = [
     eq(failureAlertDeliveries.organizationId, organizationId),
@@ -92,7 +91,7 @@ function notificationConditions(
     lt(failureAlertDeliveries.createdAt, rangeEnd),
   ];
   const statuses = filters.statuses ?? [];
-  if (!skipStatuses && statuses.length > 0) {
+  if (statuses.length > 0) {
     const states = notificationStatesFor(statuses);
     conditions.push(
       states.length > 0
@@ -112,34 +111,20 @@ function notificationConditions(
   return conditions;
 }
 
-/** Failure notifications as run rows, newest first, named like the notification history. */
-export async function fetchNotificationRuns(
-  organizationId: string,
-  rangeStart: Date,
-  rangeEnd: Date,
-  filters: RunQueryFilters,
-  cursor: RunCursor | undefined,
-  limit: number,
-  projectId?: string
-): Promise<KeyedRun[]> {
-  const conditions = notificationConditions(
-    organizationId,
-    rangeStart,
-    rangeEnd,
-    filters,
-    projectId
-  );
-  if (cursor) {
-    conditions.push(
-      runCursorCondition(
-        cursor,
-        "notification",
-        failureAlertDeliveries.createdAt,
-        failureAlertDeliveries.id
-      )
-    );
-  }
+type KeyedNotificationRow = NotificationRow & {
+  /** The exact created time the keyset compares; a Date loses microseconds. */
+  at: string;
+};
 
+/** Deliveries newest first (created, then id), with the workflows grouped ones name. */
+export async function loadNotificationRows(
+  organizationId: string,
+  conditions: SQL[],
+  limit: number
+): Promise<{
+  rows: KeyedNotificationRow[];
+  groupedNames: Map<string, { id: string; name: string }>;
+}> {
   const rows = await db
     .select({
       id: failureAlertDeliveries.id,
@@ -150,6 +135,7 @@ export async function fetchNotificationRuns(
       state: failureAlertDeliveries.state,
       attempts: failureAlertDeliveries.attempts,
       isBackup: failureAlertDeliveries.isBackup,
+      lastStatus: failureAlertDeliveries.lastStatus,
       lastError: failureAlertDeliveries.lastError,
       context: failureAlertDeliveries.context,
       createdAt: failureAlertDeliveries.createdAt,
@@ -173,7 +159,12 @@ export async function fetchNotificationRuns(
       eq(workflowFailureIncidents.id, failureAlertDeliveries.incidentId)
     )
     .leftJoin(workflows, eq(workflows.id, workflowFailureIncidents.workflowId))
-    .where(and(...conditions))
+    .where(
+      and(
+        eq(failureAlertDeliveries.organizationId, organizationId),
+        ...conditions
+      )
+    )
     .orderBy(
       desc(failureAlertDeliveries.createdAt),
       desc(failureAlertDeliveries.id)
@@ -209,9 +200,43 @@ export async function fetchNotificationRuns(
       groupedNames.set(row.incidentId, { id: row.id, name: row.name });
     }
   }
+  return { rows: rows satisfies KeyedNotificationRow[], groupedNames };
+}
 
+/** Failure notifications as run rows, newest first, named like the notification history. */
+export async function fetchNotificationRuns(
+  organizationId: string,
+  rangeStart: Date,
+  rangeEnd: Date,
+  filters: RunQueryFilters,
+  cursor: RunCursor | undefined,
+  limit: number,
+  projectId?: string
+): Promise<KeyedRun[]> {
+  const conditions = notificationConditions(
+    organizationId,
+    rangeStart,
+    rangeEnd,
+    filters,
+    projectId
+  );
+  if (cursor) {
+    conditions.push(
+      runCursorCondition(
+        cursor,
+        "notification",
+        failureAlertDeliveries.createdAt,
+        failureAlertDeliveries.id
+      )
+    );
+  }
+  const { rows, groupedNames } = await loadNotificationRows(
+    organizationId,
+    conditions,
+    limit
+  );
   return rows.map(({ at, ...row }) => ({
-    run: toNotificationRun(row satisfies NotificationRow, groupedNames),
+    run: toNotificationRun(row, groupedNames),
     at,
   }));
 }

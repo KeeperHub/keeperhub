@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { parseRunCursor } from "../../../lib/analytics/run-cursor";
 import {
   failureAlertChannels,
   failureAlertDeliveries,
@@ -1228,6 +1229,164 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     });
   });
 
+  // Steps run in order: an org with a schedule that never ran and no stored start.
+  describe("missed runs without a stored start", {
+    timeout: SUITE_TIMEOUT,
+  }, () => {
+    let nu: Org;
+    let wf: string;
+    let stored: Date | null | undefined;
+
+    const countingSince = async (): Promise<Date | null | undefined> => {
+      const [row] = await db
+        .select({ countingSince: orgFailureAlertSettings.countingSince })
+        .from(orgFailureAlertSettings)
+        .where(eq(orgFailureAlertSettings.organizationId, nu.orgId));
+      return row?.countingSince;
+    };
+
+    beforeAll(async () => {
+      nu = await makeOrg("nu");
+      wf = await makeWorkflow(nu, "Stopped Before Rollout");
+      await addSchedule(wf);
+    });
+
+    it("stores the start on its first cycle and alerts nothing yet", async () => {
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      stored = await countingSince();
+      expect(stored).toBeTruthy();
+      expect(stored?.getTime()).toBeLessThanOrEqual(Date.now());
+    });
+
+    it("measures later cycles from the stored start, so it alerts", async () => {
+      await cycle.runFailureAlertCycle(APP, at(6));
+      expect((await openIncident(wf))?.openedBy).toBe("missed");
+      expect((await countingSince())?.getTime()).toBe(stored?.getTime());
+    });
+  });
+
+  // Deactivation does not reach workflows.deactivated_at, and halting stops dispatch.
+  describe("deactivated and halted orgs", { timeout: SUITE_TIMEOUT }, () => {
+    const cases: { org: Org; wf: string; incidentId?: string }[] = [];
+
+    beforeAll(async () => {
+      for (const tag of ["deactivated_org", "halted_org"]) {
+        const org = await makeOrg(tag);
+        const wf = await makeWorkflow(org, `Keeper ${tag}`);
+        await addFailures(org, wf, 5);
+        cases.push({ org, wf });
+      }
+      await runCycle();
+      for (const item of cases) {
+        item.incidentId = (await openIncident(item.wf))?.id;
+      }
+    });
+
+    it("closes their incidents and sends no reminder", async () => {
+      expect(cases.every((item) => item.incidentId)).toBe(true);
+      const [halted, deactivated] = cases;
+      await db
+        .update(organization)
+        .set({ haltedAt: new Date() })
+        .where(eq(organization.id, halted.org.orgId));
+      await db
+        .update(organization)
+        .set({ deactivatedAt: new Date() })
+        .where(eq(organization.id, deactivated.org.orgId));
+      for (const item of cases) {
+        await db
+          .update(workflowFailureIncidents)
+          .set({ lastNotifiedAt: at(-25 * 60) })
+          .where(eq(workflowFailureIncidents.id, item.incidentId ?? ""));
+      }
+      await runCycle();
+      for (const item of cases) {
+        expect((await incidentById(item.incidentId))?.resolvedReason).toBe(
+          "disabled"
+        );
+        expect(await sentEmails(item.org, "reminder")).toHaveLength(0);
+      }
+    });
+  });
+
+  describe("orgs outside the rollout", { timeout: SUITE_TIMEOUT }, () => {
+    let sigma: Org;
+    let dead: Channel;
+    let rowId: string;
+    let queued: string;
+
+    beforeAll(async () => {
+      sigma = await makeOrg("sigma");
+      dead = await makeChannel(sigma, "discord", "always", "dead", {
+        checked: false,
+      });
+      queued = await makeWorkflow(sigma, "Outside Keeper");
+      rowId = nextId("delivery_");
+      await db.insert(failureAlertDeliveries).values({
+        id: rowId,
+        organizationId: sigma.orgId,
+        kind: "alerts_resumed",
+        sequence: 0,
+        channel: "email",
+        recipient: sigma.email,
+        dedupKey: `${rowId}-outside`,
+        state: "pending",
+        nextAttemptAt: at(-1),
+      });
+      await db
+        .insert(workflowFailureAlertQueue)
+        .values({ workflowId: queued, dueAt: at(-60) })
+        .onConflictDoUpdate({
+          target: workflowFailureAlertQueue.workflowId,
+          set: { dueAt: at(-60) },
+        });
+      leaveRollout(sigma);
+    });
+
+    it("sends nothing, health-checks nothing and drops its queued work", async () => {
+      await runCycle();
+      const [row] = await db
+        .select()
+        .from(failureAlertDeliveries)
+        .where(eq(failureAlertDeliveries.id, rowId));
+      expect(row?.state).toBe("skipped");
+      expect(mailsTo(sigma)).toHaveLength(0);
+      const channel = await channelById(dead.id);
+      expect(channel?.lastHealthCheckAt).toBeNull();
+      expect(channel?.pausedAt).toBeNull();
+      expect(callsTo(dead.token)).toHaveLength(0);
+      const left = await db
+        .select()
+        .from(workflowFailureAlertQueue)
+        .where(eq(workflowFailureAlertQueue.workflowId, queued));
+      expect(left).toHaveLength(0);
+    });
+
+    it("while the rollout is off, clears due queue rows so no backlog waits for it", async () => {
+      await db
+        .insert(workflowFailureAlertQueue)
+        .values({ workflowId: queued, dueAt: at(-60) })
+        .onConflictDoUpdate({
+          target: workflowFailureAlertQueue.workflowId,
+          set: { dueAt: at(-60) },
+        });
+      setEnv("FAILURE_ALERTS_ROLLOUT", "off");
+      try {
+        const report = await runCycle();
+        expect(report.disabled).toBe(true);
+        expect(report.errors).toEqual([]);
+      } finally {
+        setEnv("FAILURE_ALERTS_ROLLOUT", `orgs:${orgIds.join(",")}`);
+      }
+      const left = await db
+        .select()
+        .from(workflowFailureAlertQueue)
+        .where(eq(workflowFailureAlertQueue.workflowId, queued));
+      expect(left).toHaveLength(0);
+    });
+  });
+
   // Steps run in order and share one org; each story has its own workflow.
   describe("workflow auto-pause and resume", { timeout: SUITE_TIMEOUT }, () => {
     let eta: Org;
@@ -1363,7 +1522,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         organizationId: iota.orgId,
         until: at(60).toISOString(),
         reason: "Vault upgrade",
-        byEmail: iota.email,
+        by: "An owner",
         now: new Date(),
       });
       await runCycle();
@@ -1385,7 +1544,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     it("on resume says so and reports what kept failing", async () => {
       await orgPause.resumeOrgAlerts({
         organizationId: iota.orgId,
-        byEmail: iota.email,
+        by: "An owner",
         now: new Date(),
       });
       await runCycle();
@@ -1401,7 +1560,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
           organizationId: iota.orgId,
           until: at(8 * 24 * 60).toISOString(),
           reason: null,
-          byEmail: null,
+          by: null,
           now: new Date(),
         })
       );
@@ -1436,7 +1595,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         organizationId: lambda.orgId,
         until: until.toISOString(),
         reason: null,
-        byEmail: lambda.email,
+        by: "An owner",
         now: new Date(),
       });
     });
@@ -1472,7 +1631,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         organizationId: lambda.orgId,
         until: until.toISOString(),
         reason: null,
-        byEmail: lambda.email,
+        by: "An owner",
         now: new Date(),
       });
       await runCycle();
@@ -1497,7 +1656,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
             began + 7 * 24 * 60 * MINUTE + 30 * MINUTE
           ).toISOString(),
           reason: null,
-          byEmail: null,
+          by: null,
           now: at(90),
         })
       );
@@ -1513,7 +1672,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         .where(eq(failureAlertDeliveries.incidentId, incidentId ?? ""));
       await orgPause.resumeOrgAlerts({
         organizationId: lambda.orgId,
-        byEmail: lambda.email,
+        by: "An owner",
         now: new Date(),
       });
       emailStatus = 503;
@@ -1534,13 +1693,13 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         organizationId: org.orgId,
         until: until.toISOString(),
         reason: null,
-        byEmail: null,
+        by: null,
         now: new Date(),
       });
     };
 
     it("an alert re-queued after a crash waits for the pause to end", async () => {
-      const nu = await makeOrg("nu");
+      const nu = await makeOrg("nu_requeue");
       const until = at(60);
       await pause(nu, until);
       const lostWf = await makeWorkflow(nu, "Lost during pause");
@@ -1597,7 +1756,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
 
       await orgPause.resumeOrgAlerts({
         organizationId: xi.orgId,
-        byEmail: null,
+        by: null,
         now: new Date(),
       });
       await runCycle();
@@ -1678,7 +1837,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         },
         zeta.orgId
       );
-      expect(parsed.channels.map((c) => c.kind)).toContain("discord");
+      expect(parsed.channels?.map((c) => c.kind)).toContain("discord");
     });
 
     it("refuses an empty recipient list", async () => {
@@ -1789,6 +1948,95 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(row?.mutedUntil).toBeNull();
       expect(row?.version).toBe(4);
     });
+
+    it("a save without channels keeps them; only an explicit [] clears them", async () => {
+      const org = await makeOrg("keepchannels");
+      const kept = await makeChannel(org, "discord", "always", "live");
+      const body = { threshold: 3, recipientUserIds: [org.userId] };
+      await settings.saveOrgSettings(
+        org.orgId,
+        await settings.parseOrgSettings(body, org.orgId),
+        org.userId
+      );
+      expect(await channelById(kept.id)).toBeDefined();
+      await settings.saveOrgSettings(
+        org.orgId,
+        await settings.parseOrgSettings({ ...body, channels: [] }, org.orgId),
+        org.userId
+      );
+      expect(await channelById(kept.id)).toBeUndefined();
+    });
+
+    it("a workflow save with its own channels but no list keeps that list", async () => {
+      const org = await makeOrg("keepwfchannels");
+      const wf = await makeWorkflow(org, "Own channels");
+      const integrationId = await makeConnection(org, "discord", "live");
+      const save = (body: Record<string, unknown>) =>
+        workflowSettings.saveWorkflowOverride({
+          workflowId: wf,
+          organizationId: org.orgId,
+          userId: org.userId,
+          body,
+        });
+      await save({
+        customChannels: true,
+        channels: [{ integrationId, destination: "", role: "always" }],
+      });
+      await save({ customChannels: true, threshold: 2 });
+      const rows = await db
+        .select()
+        .from(failureAlertChannels)
+        .where(eq(failureAlertChannels.workflowId, wf));
+      expect(rows).toHaveLength(1);
+    });
+
+    it("refuses more than 20 channels before checking any of them", async () => {
+      const integrationId = await makeConnection(zeta, "telegram", "live");
+      const before = providers.calls.length;
+      const error = await settingsError(() =>
+        settings.parseOrgSettings(
+          {
+            ...base,
+            channels: Array.from({ length: 21 }, (_, i) => ({
+              integrationId,
+              destination: `-100${String(i).padStart(4, "0")}`,
+              role: "always",
+            })),
+          },
+          zeta.orgId
+        )
+      );
+      expect(error.status).toBe(400);
+      expect(providers.calls.length).toBe(before);
+    });
+
+    it("leaves deactivated accounts out of members and default recipients", async () => {
+      // The owner is the default recipient; deactivating that account must drop it.
+      const org = await makeOrg("deactivated");
+      const adminId = nextId("user_admin_");
+      await db.insert(users).values({
+        id: adminId,
+        name: "active admin",
+        email: `admin-${RUN}@failure-alerts.test`,
+        emailVerified: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await db.insert(member).values({
+        id: nextId("member_"),
+        organizationId: org.orgId,
+        userId: adminId,
+        role: "admin",
+        createdAt: new Date(),
+      });
+      await db
+        .update(users)
+        .set({ deactivatedAt: new Date() })
+        .where(eq(users.id, org.userId));
+      const view = await settings.loadOrgSettingsView(org.orgId, adminId);
+      expect(view.members.map((m) => m.userId)).toEqual([adminId]);
+      expect(view.recipientUserIds).not.toContain(org.userId);
+    });
   });
 
   describe("Undo pause", { timeout: SUITE_TIMEOUT }, () => {
@@ -1853,7 +2101,9 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     }, SUITE_TIMEOUT);
 
     it("lists alerts, reminders, recoveries, backups and notices with workflow names", async () => {
-      const history = await settings.loadHistory(org.orgId, { limit: 50 });
+      const { entries: history } = await settings.loadHistory(org.orgId, {
+        limit: 50,
+      });
       const kinds = new Set(history.map((h) => h.kind));
       for (const kind of [
         "alert",
@@ -1873,8 +2123,10 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     });
 
     it("filters by workflow", async () => {
-      const all = await settings.loadHistory(org.orgId, { limit: 50 });
-      const filtered = await settings.loadHistory(org.orgId, {
+      const { entries: all } = await settings.loadHistory(org.orgId, {
+        limit: 50,
+      });
+      const { entries: filtered } = await settings.loadHistory(org.orgId, {
         workflowId: wf,
       });
       expect(filtered.length).toBeGreaterThan(0);
@@ -1885,9 +2137,42 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     });
 
     it("exports CSV with a header and one row per entry", async () => {
-      const history = await settings.loadHistory(org.orgId, { limit: 50 });
+      const { entries: history } = await settings.loadHistory(org.orgId, {
+        limit: 50,
+      });
       const csv = settings.historyToCsv(history);
       expect(csv.trim().split("\n")).toHaveLength(history.length + 1);
+    });
+
+    it("pages through rows that share one created time without skipping any", async () => {
+      const paged = await makeOrg("historypage");
+      const sameTime = at(-5);
+      const ids = Array.from({ length: 8 }, () => nextId("delivery_"));
+      await db.insert(failureAlertDeliveries).values(
+        ids.map((id, i) => ({
+          id,
+          organizationId: paged.orgId,
+          kind: "alert" as const,
+          sequence: i,
+          channel: "email" as const,
+          recipient: `page-${i}-${RUN}@failure-alerts.test`,
+          dedupKey: `${id}-page`,
+          state: "delivered" as const,
+          createdAt: sameTime,
+        }))
+      );
+      const seen: string[] = [];
+      let cursor: string | null = null;
+      do {
+        const page = await settings.loadHistory(paged.orgId, {
+          limit: 3,
+          cursor: parseRunCursor(cursor),
+        });
+        seen.push(...page.entries.map((e) => e.id));
+        cursor = page.nextCursor;
+      } while (cursor);
+      expect(seen).toHaveLength(ids.length);
+      expect(new Set(seen)).toEqual(new Set(ids));
     });
   });
 

@@ -2,7 +2,7 @@
 
 import { Download, Loader2, Mail, RefreshCw } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { IntegrationIcon } from "@/components/ui/integration-icon";
@@ -125,13 +125,15 @@ export function NotificationHistory({
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   // The page that failed to load, so Retry asks for the same one again.
-  const [failed, setFailed] = useState<{ before?: string } | null>(null);
-  const [more, setMore] = useState(false);
+  const [failed, setFailed] = useState<{ cursor?: string } | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [channel, setChannel] = useState("all");
+  // The request in flight; a newer one aborts it so its page is never shown.
+  const inFlight = useRef<AbortController | null>(null);
   const base = `/api/organizations/${encodeURIComponent(organizationId)}/failure-alerts/history`;
 
   const query = useCallback(
-    (before?: string, format?: "csv"): string => {
+    (cursor?: string, format?: "csv"): string => {
       const params = new URLSearchParams();
       if (channel !== "all") {
         params.set("channel", channel);
@@ -139,8 +141,8 @@ export function NotificationHistory({
       if (workflowId) {
         params.set("workflowId", workflowId);
       }
-      if (before) {
-        params.set("before", before);
+      if (cursor) {
+        params.set("cursor", cursor);
       }
       if (format) {
         params.set("format", format);
@@ -152,22 +154,36 @@ export function NotificationHistory({
   );
 
   const load = useCallback(
-    async (before?: string) => {
+    async (cursor?: string) => {
+      inFlight.current?.abort();
+      const controller = new AbortController();
+      inFlight.current = controller;
       setLoading(true);
       setFailed(null);
       try {
-        const res = await fetch(query(before));
+        const res = await fetch(query(cursor), { signal: controller.signal });
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }
-        const body = (await res.json()) as { entries?: HistoryEntry[] };
+        const body = (await res.json()) as {
+          entries?: HistoryEntry[];
+          nextCursor?: string | null;
+        };
+        if (controller.signal.aborted) {
+          return;
+        }
         const page = body.entries ?? [];
-        setEntries((prev) => (before ? [...prev, ...page] : page));
-        setMore(page.length >= HISTORY_PAGE_SIZE);
+        setEntries((prev) => (cursor ? [...prev, ...page] : page));
+        setNextCursor(body.nextCursor ?? null);
       } catch {
-        setFailed({ before });
+        if (!controller.signal.aborted) {
+          setFailed({ cursor });
+        }
       } finally {
-        setLoading(false);
+        if (inFlight.current === controller) {
+          inFlight.current = null;
+          setLoading(false);
+        }
       }
     },
     [query]
@@ -175,9 +191,8 @@ export function NotificationHistory({
 
   useEffect(() => {
     load().catch(() => undefined);
+    return () => inFlight.current?.abort();
   }, [load]);
-
-  const last = entries.at(-1);
 
   return (
     <div className="space-y-3" data-testid="failure-alert-history">
@@ -223,7 +238,7 @@ export function NotificationHistory({
             Could not load sent alerts.
             <Button
               className="h-auto px-0 text-xs"
-              onClick={() => load(failed.before)}
+              onClick={() => load(failed.cursor)}
               type="button"
               variant="link"
             >
@@ -247,10 +262,10 @@ export function NotificationHistory({
         </ul>
       )}
 
-      {more && last && !failed && (
+      {nextCursor && !failed && (
         <Button
           disabled={loading}
-          onClick={() => load(last.createdAt)}
+          onClick={() => load(nextCursor)}
           size="sm"
           type="button"
           variant="ghost"

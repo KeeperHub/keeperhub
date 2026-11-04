@@ -2,10 +2,23 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/db", () => ({ db: {} }));
+vi.mock("@/lib/notifications/org-recipients", () => ({
+  loadOrgMembers: async () => [
+    {
+      userId: "u1",
+      role: "owner",
+      email: "a@x.dev",
+      name: null,
+      deliverable: "a@x.dev",
+    },
+  ],
+}));
 
 const {
   historyToCsv,
   isReachable,
+  parseChannels,
+  parseOrgSettings,
   parseThreshold,
   parseTimeLimit,
   SettingsError,
@@ -35,6 +48,28 @@ describe("parseTimeLimit", () => {
     expect(parseTimeLimit(60)).toBe(60);
     expect(parseTimeLimit("360")).toBe(360);
     expect(() => parseTimeLimit(45)).toThrow(SettingsError);
+  });
+});
+
+describe("parseChannels", () => {
+  it("refuses a body that is not a list", async () => {
+    await expect(parseChannels("x", "org")).rejects.toThrow(SettingsError);
+    await expect(parseChannels(null, "org")).rejects.toThrow(SettingsError);
+  });
+
+  it("refuses more than 20 channels before loading or checking any", async () => {
+    const many = Array.from({ length: 21 }, () => ({ integrationId: "i" }));
+    await expect(parseChannels(many, "org")).rejects.toThrow(/at most 20/);
+  });
+});
+
+describe("parseOrgSettings", () => {
+  it("leaves channels unchanged when the body has none", async () => {
+    const input = await parseOrgSettings(
+      { threshold: 3, recipientUserIds: ["u1"] },
+      "org"
+    );
+    expect(input.channels).toBeNull();
   });
 });
 

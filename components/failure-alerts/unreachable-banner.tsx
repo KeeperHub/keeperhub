@@ -2,6 +2,7 @@
 
 import { AlertTriangle } from "lucide-react";
 import Link from "next/link";
+import { AppBannerSlot } from "@/components/app-banner-slot";
 
 /** Top-of-app warning that nobody can be told of a failure; not dismissible, as fixing it is the only way out. */
 export function FailureAlertsUnreachableBanner({
@@ -10,9 +11,10 @@ export function FailureAlertsUnreachableBanner({
   organizationId: string;
 }): React.ReactElement {
   return (
-    <output
-      className="pointer-events-auto fixed top-0 right-0 left-0 z-[55] flex h-9 items-center justify-center border-destructive/50 border-b bg-destructive/25 px-4 text-foreground text-sm backdrop-blur-sm sm:px-12"
+    <AppBannerSlot
+      className="border-destructive/50 bg-destructive/25 px-4 text-foreground sm:px-12"
       data-testid="failure-alerts-unreachable-banner"
+      role="status"
     >
       <p className="flex min-w-0 items-center gap-2">
         <AlertTriangle
@@ -34,6 +36,6 @@ export function FailureAlertsUnreachableBanner({
           <span className="hidden sm:inline">Fix in Alerts</span>
         </Link>
       </p>
-    </output>
+    </AppBannerSlot>
   );
 }

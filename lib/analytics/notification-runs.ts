@@ -4,6 +4,7 @@ import type {
 } from "@/lib/db/schema-failure-alerts";
 import {
   FAILURE_ALERT_KIND_LABEL,
+  type HistoryEntry,
   historyNote,
 } from "@/lib/notifications/failure-alerts/view-types";
 import type {
@@ -13,7 +14,7 @@ import type {
   UnifiedRun,
 } from "./types";
 
-// Failure notifications as rows in the analytics runs table, one per delivery.
+// Failure notifications as analytics run rows and history entries, one per delivery.
 // Pure for testing; the SQL lives in notification-runs-query.ts.
 
 /** Delivery state as run status: capped (plan refused) is "skipped", skipped (withdrawn) is "cancelled". */
@@ -93,6 +94,7 @@ export type NotificationRow = {
   state: string;
   attempts: number;
   isBackup: boolean;
+  lastStatus: number | null;
   lastError: string | null;
   context: Record<string, unknown> | null;
   createdAt: Date;
@@ -112,17 +114,50 @@ function finishedAt(row: NotificationRow): Date | null {
   return FINISHED_UNDELIVERED.has(row.state) ? row.updatedAt : null;
 }
 
-/** One delivery as a run row; grouped ids whose incident is gone are dropped. */
+type GroupedNames = ReadonlyMap<string, { id: string; name: string }>;
+
+/** The workflows a delivery is about; grouped ids whose incident is gone are dropped. */
+function notificationWorkflows(
+  row: NotificationRow,
+  groupedNames: GroupedNames
+): { id: string; name: string }[] {
+  if (row.workflowId && row.workflowName) {
+    return [{ id: row.workflowId, name: row.workflowName }];
+  }
+  return groupedIncidentIds(row.context)
+    .map((id) => groupedNames.get(id))
+    .filter((w): w is { id: string; name: string } => Boolean(w));
+}
+
+/** One delivery as a notification history entry. */
+export function toHistoryEntry(
+  row: NotificationRow,
+  groupedNames: GroupedNames
+): HistoryEntry {
+  return {
+    id: row.id,
+    createdAt: row.createdAt.toISOString(),
+    deliveredAt: row.deliveredAt?.toISOString() ?? null,
+    kind: row.kind,
+    channel: row.channel,
+    recipient: row.recipient,
+    connectionName: row.connectionName,
+    isBackup: row.isBackup,
+    state: row.state,
+    attempts: row.attempts,
+    lastStatus: row.lastStatus,
+    lastError: row.lastError,
+    note: historyNote(row.context),
+    workflows: notificationWorkflows(row, groupedNames),
+  };
+}
+
+/** One delivery as a run row. */
 export function toNotificationRun(
   row: NotificationRow,
-  groupedNames: ReadonlyMap<string, { id: string; name: string }>
+  groupedNames: GroupedNames
 ): UnifiedRun {
-  const workflows =
-    row.workflowId && row.workflowName
-      ? [{ id: row.workflowId, name: row.workflowName }]
-      : groupedIncidentIds(row.context)
-          .map((id) => groupedNames.get(id))
-          .filter((w): w is { id: string; name: string } => Boolean(w));
+  const workflows = notificationWorkflows(row, groupedNames);
   const note = historyNote(row.context);
   const completed = finishedAt(row);
   const only = workflows.length === 1 ? workflows[0] : null;

@@ -133,9 +133,10 @@ export async function pauseOrgAlerts(params: {
   organizationId: string;
   until: unknown;
   reason: unknown;
-  byEmail: string | null;
+  /** Name or role for the notice; never an email, as it reaches chat. */
+  by: string | null;
   now: Date;
-}): Promise<void> {
+}): Promise<{ until: Date; reason: string | null }> {
   const { organizationId, now } = params;
   const until =
     typeof params.until === "string" ? new Date(params.until) : null;
@@ -166,7 +167,7 @@ export async function pauseOrgAlerts(params: {
         pausedUntil: until,
         pausedAt: startedAt,
         pauseReason: reason,
-        pausedBy: params.byEmail,
+        pausedBy: params.by,
         updatedAt: now,
       })
       .where(eq(orgFailureAlertSettings.organizationId, organizationId));
@@ -180,17 +181,19 @@ export async function pauseOrgAlerts(params: {
     {
       until: until.toISOString(),
       reason,
-      by: params.byEmail,
+      by: params.by,
       pausingWorkflows: await countPausingWorkflows(organizationId),
     },
     now
   );
+  return { until, reason };
 }
 
 /** End a pause now (Resume) or because it ran out; tells people once. */
 export async function resumeOrgAlerts(params: {
   organizationId: string;
-  byEmail: string | null;
+  /** Name or role for the notice; never an email, as it reaches chat. */
+  by: string | null;
   now: Date;
   /** Only end it if it has run out, so a pause extended meanwhile survives. */
   expiredOnly?: boolean;
@@ -222,7 +225,7 @@ export async function resumeOrgAlerts(params: {
   await queuePauseNotice(
     organizationId,
     "alerts_resumed",
-    { by: params.byEmail },
+    { by: params.by },
     now
   );
   // Anything still failing is re-checked.
@@ -241,7 +244,7 @@ export async function endExpiredOrgPauses(now: Date): Promise<number> {
     if (
       await resumeOrgAlerts({
         organizationId,
-        byEmail: null,
+        by: null,
         now,
         expiredOnly: true,
       })

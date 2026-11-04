@@ -10,7 +10,7 @@ import {
   type OrgSettingsView,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
-import { failedRuns, formatWhen } from "./format";
+import { failedRuns, formatWhen, joinList } from "./format";
 import { memberLabel } from "./member-label";
 import { channelWorks } from "./method-drafts";
 import { AlertsPausedNotice } from "./pause-alerts";
@@ -36,6 +36,33 @@ function namesLine(emails: string[], methods: string[]): string {
   const more =
     emails.length + methods.length - shownEmails.length - shownMethods.length;
   return more > 0 ? `${parts.join(", ")} and ${more} more` : parts.join(", ");
+}
+
+/** "a, b and 2 more". */
+function shortList(names: string[]): string {
+  const shown = names.slice(0, MAX_NAMED);
+  const more = names.length - shown.length;
+  return more > 0 ? `${shown.join(", ")} and ${more} more` : joinList(shown);
+}
+
+/** Why email reaches nobody: the cap, nobody chosen, or who lacks an email. */
+function noEmailLine(
+  data: OrgSettingsView,
+  capped: boolean,
+  reachable: number
+): string {
+  if (capped && reachable > 0) {
+    return "This month's alert emails are used up, and no other method works.";
+  }
+  const chosen = data.members.filter((m) =>
+    data.recipientUserIds.includes(m.userId)
+  );
+  const unreachable = chosen.filter((m) => !m.reachable).map(memberLabel);
+  if (unreachable.length === 0) {
+    return "Nobody is chosen for email, and no other method works.";
+  }
+  const verb = unreachable.length === 1 ? "has" : "have";
+  return `${shortList(unreachable)} ${verb} no email KeeperHub can reach, and no other method works.`;
 }
 
 /** " (own rule: 3)" for a workflow with its own limit. */
@@ -182,20 +209,10 @@ export function AlertsStatus({
           title="Nobody can be reached: nobody will be told when a workflow fails"
           tone="danger"
         >
-          {capped && people.length > 0
-            ? "This month's alert emails are used up, and no other method works."
-            : "No chosen person has an email KeeperHub can reach, and no other method works."}{" "}
-          {canManage ? (
-            <>
-              Add a method below, or add an email in{" "}
-              <Link className="underline" href="/settings/security">
-                Account security
-              </Link>
-              .
-            </>
-          ) : (
-            "Ask an owner or admin to fix it."
-          )}
+          {noEmailLine(data, capped, people.length)}{" "}
+          {canManage
+            ? "Add a method below, or choose other people under Email."
+            : "Ask an owner or admin to fix it."}
         </Headline>
       )}
       {state === "failing" && (

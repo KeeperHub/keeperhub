@@ -21,9 +21,9 @@ export type RunSource = "workflow" | "direct" | "notification";
 
 /** What a notification row carries beyond the run fields it shares. */
 export type NotificationRunDetail = {
-  /** "Alert: Nightly sync", "Alert: 3 workflows", "Notifications turned on". */
+  /** "Alert: Nightly sync", "Alert: 3 workflows", "Alerts turned on". */
   title: string;
-  /** alert | reminder | recovery | channel_paused | launch_notice */
+  /** alert | reminder | recovery | channel_paused | launch_notice | alerts_paused | alerts_resumed | cap_warning */
   kind: string;
   /** The delivery's own state, which `status` normalizes. */
   state: string;

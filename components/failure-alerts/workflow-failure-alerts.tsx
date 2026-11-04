@@ -19,7 +19,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useAlertsEnabled } from "@/lib/hooks/use-notifications";
+import {
+  invalidateNotificationStatus,
+  useAlertsEnabled,
+} from "@/lib/hooks/use-notifications";
 import { useOrganization } from "@/lib/hooks/use-organization";
 import {
   MAX_MUTE_DAYS,
@@ -247,12 +250,16 @@ export function WorkflowFailureAlerts({
   );
 
   useEffect(() => {
+    // No loads until alerts are known to be on for the org.
+    if (alertsEnabled !== true) {
+      return;
+    }
     let active = true;
     load(() => active).catch(() => undefined);
     return () => {
       active = false;
     };
-  }, [load]);
+  }, [load, alertsEnabled]);
 
   useEffect(() => {
     if (panel) {
@@ -394,6 +401,7 @@ export function WorkflowFailureAlerts({
         return false;
       }
       apply(data);
+      invalidateNotificationStatus(organization?.id);
       toast.success(done, { id: SAVE_TOAST });
       return true;
     } catch {

@@ -18,6 +18,7 @@ import {
   type BackupOutcome,
   sendBackupNotification,
 } from "@/lib/notifications/backup-channel";
+import type { ChatPart, ChatText } from "@/lib/notifications/chat-text";
 import {
   countConsecutiveRuns,
   resolveConsecutiveRuns,
@@ -221,18 +222,23 @@ function buildBackupMessage(params: {
   serviceId: string;
   reason: string;
   workflowUrl?: string;
-}): string {
-  const lines = [
-    "PagerDuty page FAILED - this is the backup notification.",
-    `Alert: ${params.summary}`,
-    `Severity: ${params.severity}`,
-    `PagerDuty service: ${params.serviceId}`,
-    `Why PagerDuty did not take it: ${params.reason}`,
+}): readonly ChatText[] {
+  const head: ChatPart[] = [
+    "PagerDuty page FAILED - this is the backup notification.\nAlert: ",
+    { user: params.summary },
+    "\nSeverity: ",
+    { user: params.severity },
+    "\nPagerDuty service: ",
+    { user: params.serviceId },
   ];
-  if (params.workflowUrl) {
-    lines.push(`Workflow: ${params.workflowUrl}`);
-  }
-  return lines.join("\n");
+  const link: ChatPart[] = params.workflowUrl
+    ? [`\nWorkflow: ${params.workflowUrl}`]
+    : [];
+  // Fullest first; the reason is dropped before the alert itself is cut.
+  return [
+    [...head, "\nWhy PagerDuty did not take it: ", { code: params.reason }, ...link],
+    [...head, ...link],
+  ];
 }
 
 /**

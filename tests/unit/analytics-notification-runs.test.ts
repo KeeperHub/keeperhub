@@ -6,6 +6,7 @@ import {
   notificationStatus,
   notificationsExcludedBy,
   notificationTitle,
+  toHistoryEntry,
   toNotificationRun,
 } from "@/lib/analytics/notification-runs";
 
@@ -22,6 +23,7 @@ function row(overrides: Partial<NotificationRow> = {}): NotificationRow {
     state: "delivered",
     attempts: 1,
     isBackup: false,
+    lastStatus: null,
     lastError: null,
     context: null,
     createdAt: CREATED,
@@ -243,6 +245,41 @@ describe("toNotificationRun", () => {
     expect(paused.notification?.title).toBe("Method paused: Slack #ops");
     expect(paused.notification?.workflows).toEqual([]);
     expect(paused.workflowId).toBeNull();
+  });
+});
+
+describe("toHistoryEntry", () => {
+  it("maps a delivery onto a history entry with its workflow", () => {
+    expect(toHistoryEntry(row({ lastStatus: 202 }), NO_GROUPS)).toEqual({
+      id: "delivery_1",
+      createdAt: CREATED.toISOString(),
+      deliveredAt: LATER.toISOString(),
+      kind: "alert",
+      channel: "email",
+      recipient: "ops@example.com",
+      connectionName: null,
+      isBackup: false,
+      state: "delivered",
+      attempts: 1,
+      lastStatus: 202,
+      lastError: null,
+      note: null,
+      workflows: [{ id: "wf_nightly", name: "Nightly sync" }],
+    });
+  });
+
+  it("names a grouped message's workflows the same way the runs list does", () => {
+    const groups = new Map([["inc_a", { id: "wf_a", name: "A" }]]);
+    const grouped = row({
+      workflowId: null,
+      workflowName: null,
+      deliveredAt: null,
+      context: { incidentIds: ["inc_a", "inc_gone"] },
+    });
+    expect(toHistoryEntry(grouped, groups).workflows).toEqual(
+      toNotificationRun(grouped, groups).notification?.workflows
+    );
+    expect(toHistoryEntry(grouped, groups).deliveredAt).toBeNull();
   });
 });
 

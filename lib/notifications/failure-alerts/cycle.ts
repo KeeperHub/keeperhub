@@ -5,6 +5,7 @@ import { getErrorMessage } from "@/lib/utils";
 import { DELIVERY_BUDGET_MS } from "./constants";
 import {
   checkMissedSchedules,
+  clearQueueWhileOff,
   closeInactiveIncidents,
   type EvaluationStats,
   emptyStats,
@@ -35,16 +36,6 @@ export async function runFailureAlertCycle(
   const evaluation = emptyStats();
   const drain = emptyDrainStats();
 
-  if (!isFailureAlertsRolloutActive()) {
-    return {
-      ...evaluation,
-      ...drain,
-      durationMs: 0,
-      disabled: true,
-      errors: [],
-    };
-  }
-
   const errors: string[] = [];
   const stage = async (name: string, run: () => Promise<void>) => {
     try {
@@ -58,6 +49,18 @@ export async function runFailureAlertCycle(
       );
     }
   };
+
+  if (!isFailureAlertsRolloutActive()) {
+    // No backlog dated back to the deploy waits for the day it turns on.
+    await stage("clear-queue", clearQueueWhileOff);
+    return {
+      ...evaluation,
+      ...drain,
+      durationMs: Date.now() - started,
+      disabled: true,
+      errors,
+    };
+  }
 
   await stage("end-pauses", async () => {
     await endExpiredOrgPauses(now);

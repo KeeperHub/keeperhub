@@ -506,6 +506,7 @@ function ConnectionField({
   connections,
   unsharedConnections,
   disabled,
+  busy = false,
   onPick,
   onConnectionsChanged,
 }: {
@@ -514,6 +515,8 @@ function ConnectionField({
   connections: ConnectionView[];
   unsharedConnections: ConnectionView[];
   disabled: boolean;
+  /** A test is running: shown as is, but not changeable. */
+  busy?: boolean;
   onPick: (integrationId: string) => void;
   onConnectionsChanged: () => Promise<void> | void;
 }): React.ReactElement {
@@ -541,7 +544,7 @@ function ConnectionField({
     <Field htmlFor={id} label="Connection">
       {ofKind.length > 0 || unsharedOfKind.length > 0 ? (
         <Select
-          disabled={disabled}
+          disabled={disabled || busy}
           onValueChange={onPick}
           value={draft.integrationId || undefined}
         >
@@ -569,6 +572,7 @@ function ConnectionField({
       {!disabled && (
         <Button
           className="h-auto max-w-full justify-start whitespace-normal px-0 text-left text-xs"
+          disabled={busy}
           onClick={newConnection}
           type="button"
           variant="link"
@@ -737,6 +741,8 @@ export function ChannelMethodCard({
     (!needsDestination(draft.kind) || draft.destination.trim() !== "") &&
     !problem;
   const disabled = !canManage;
+  const latestDraft = useRef(draft);
+  latestDraft.current = draft;
 
   const edit = (patch: Partial<DraftChannel>): void => {
     save.reset();
@@ -786,10 +792,14 @@ export function ChannelMethodCard({
     });
     setTesting(false);
     setChoosingPdMode(false);
-    setResult(outcome);
-    onChange({ ...draft, testedOk: outcome.delivered });
     if (storedTarget) {
       onTested?.();
+    }
+    // Applied to the card as it is now, and only if the target is unchanged.
+    const current = latestDraft.current;
+    if (sameTarget(current, draft)) {
+      setResult(outcome);
+      onChange({ ...current, testedOk: outcome.delivered });
     }
   };
 
@@ -878,7 +888,9 @@ export function ChannelMethodCard({
             />
           )}
           <div className="grid grid-cols-1 gap-4 @xl/settings:grid-cols-2">
+            {/* Fields hold still while a test runs against them. */}
             <ConnectionField
+              busy={testing}
               connections={connections}
               disabled={disabled}
               draft={draft}
@@ -888,7 +900,7 @@ export function ChannelMethodCard({
               unsharedConnections={unsharedConnections}
             />
             <DestinationField
-              disabled={disabled}
+              disabled={disabled || testing}
               draft={draft}
               id={`${idPrefix}-destination`}
               onChange={(destination) => edit({ destination })}
@@ -896,7 +908,7 @@ export function ChannelMethodCard({
             />
           </div>
           <WhenToUse
-            disabled={disabled}
+            disabled={disabled || testing}
             id={`${idPrefix}-role`}
             onChange={(role) => edit({ role })}
             value={draft.role}
