@@ -14,7 +14,7 @@ import type { MouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useRunSources } from "@/components/analytics/use-run-sources";
-import { formatWhen } from "@/components/failure-alerts/format";
+import { deliveryStatus, formatWhen } from "@/components/failure-alerts/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -58,12 +58,7 @@ import {
   useChainDisplay,
 } from "@/lib/hooks/use-chain-display";
 import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
-import {
-  channelLabel,
-  DELIVERY_STATE_LABEL,
-  STALE_DROP_TEXT,
-  wasDropped,
-} from "@/lib/notifications/failure-alerts/view-types";
+import { channelLabel } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import { ProjectDrawer } from "./project-drawer";
 
@@ -304,24 +299,28 @@ function StatusBadge({ status }: { status: NormalizedStatus }): ReactNode {
 const MONTHLY_LIMIT_TEXT = "Not sent: Free plan monthly email limit reached";
 
 /** A notification's own outcome; run badges would misread an undelivered message as a failed run. */
-export function notificationBadge(detail: NotificationRunDetail): {
+export function notificationBadge(
+  detail: NotificationRunDetail,
+  now: Date = new Date()
+): {
   label: string;
   className: string;
   tooltip: string | null;
 } {
-  // The words the Alerts history uses, so both screens name a state alike.
-  const state = wasDropped(detail.state, detail.lastError)
-    ? "failed"
-    : detail.state;
-  const label = DELIVERY_STATE_LABEL[state] ?? state;
-  switch (state) {
+  // The Alerts history's helper, so both screens name a state alike.
+  const { label, tone } = deliveryStatus(detail, now);
+  switch (tone) {
     case "delivered":
-      return {
-        label,
-        className: STATUS_DISPLAY.success.badge,
-        tooltip: null,
-      };
+      return { label, className: STATUS_DISPLAY.success.badge, tooltip: null };
     case "failed":
+      if (detail.state === "capped") {
+        return {
+          label,
+          className:
+            "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20",
+          tooltip: MONTHLY_LIMIT_TEXT,
+        };
+      }
       return {
         label,
         className: "border-destructive/20 bg-destructive/10 text-destructive",
@@ -329,14 +328,7 @@ export function notificationBadge(detail: NotificationRunDetail): {
           ? `Could not be delivered: ${detail.lastError}`
           : "Could not be delivered",
       };
-    case "capped":
-      return {
-        label,
-        className:
-          "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20",
-        tooltip: MONTHLY_LIMIT_TEXT,
-      };
-    case "skipped":
+    case "muted":
       return {
         label,
         className: STATUS_DISPLAY.skipped.badge,
@@ -637,13 +629,14 @@ function notificationOutcome(
     case "capped":
       return MONTHLY_LIMIT_TEXT;
     case "skipped":
-      return wasDropped(detail.state, detail.lastError)
-        ? STALE_DROP_TEXT
+      // A dropped row's stored reason says why; anything else was withdrawn.
+      return deliveryStatus(detail).tone === "failed"
+        ? (detail.lastError ?? "Not delivered")
         : "Withdrawn before it was sent";
     default:
       return detail.attempts > 0
         ? `Sending, ${plural(detail.attempts, "attempt")} so far`
-        : "Queued";
+        : deliveryStatus(detail).label;
   }
 }
 

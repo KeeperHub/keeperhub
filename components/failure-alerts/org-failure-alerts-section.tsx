@@ -37,7 +37,6 @@ import {
   draftFromView,
   isChannelDirty,
   METHODS_FULL,
-  type MethodTarget,
   newMethodDraft,
   restoreMethod,
   sameTarget,
@@ -64,6 +63,16 @@ const ALERTS_DESCRIPTION =
 type PutResult =
   | { ok: true; body: Loaded }
   | { ok: false; refusal: SaveRefusal };
+
+/** Returned by a save's payload builder to refuse without sending. */
+class RefusedSave {
+  readonly refusal: SaveRefusal;
+  constructor(refusal: SaveRefusal) {
+    this.refusal = refusal;
+  }
+}
+
+type Payload = Record<string, unknown> | RefusedSave;
 
 /** The tap targets below sm stay at least 44px tall. */
 const SUMMARY_CLASS =
@@ -216,7 +225,7 @@ export function OrgFailureAlertsSection({
     (
       method: "PUT" | "DELETE",
       path: string,
-      build: ((saved: Loaded) => Record<string, unknown>) | null
+      build: ((saved: Loaded) => Payload) | null
     ): Promise<PutResult> => {
       const run = async (): Promise<PutResult> => {
         const saved = savedRef.current;
@@ -226,11 +235,15 @@ export function OrgFailureAlertsSection({
             refusal: { message: "The settings are still loading." },
           };
         }
+        const payload = build?.(saved);
+        if (payload instanceof RefusedSave) {
+          return { ok: false, refusal: payload.refusal };
+        }
         try {
           const res = await fetch(`${url}${path}`, {
             method,
             headers: { "Content-Type": "application/json" },
-            body: build ? JSON.stringify(build(saved)) : undefined,
+            body: payload ? JSON.stringify(payload) : undefined,
           });
           const body = (await res.json().catch(() => ({}))) as Loaded & {
             error?: string;
@@ -265,7 +278,7 @@ export function OrgFailureAlertsSection({
   );
 
   const put = useCallback(
-    (build: (saved: Loaded) => Record<string, unknown>): Promise<PutResult> =>
+    (build: (saved: Loaded) => Payload): Promise<PutResult> =>
       send("PUT", "", build),
     [send]
   );
@@ -448,13 +461,7 @@ export function OrgFailureAlertsSection({
   };
 
   const restore = async (view: ChannelView, index: number): Promise<void> => {
-    // Unsaved cards count too, so the page never shows more than the cap.
-    if (restoreMethod<MethodTarget>(cardsRef.current, view, index) === "full") {
-      toast.error(METHODS_FULL);
-      return;
-    }
     const result = await put((saved) => {
-      const channels = savedChannelsPayload(saved.channels);
       // A paused channel comes back paused, not live.
       const item: ChannelPayload = {
         kind: view.kind,
@@ -465,12 +472,14 @@ export function OrgFailureAlertsSection({
           ? (view.pausedReason ?? "It stopped working.")
           : undefined,
       };
-      const next = restoreMethod(channels, item, index);
-      // Full only if saved elsewhere meanwhile: sent so the server says why.
-      return {
-        ...basePayload(saved),
-        channels: next === "full" ? [...channels, item] : (next ?? channels),
-      };
+      const channels = savedChannelsPayload(saved.channels);
+      // Unsaved cards count too, so the page never shows more than the cap.
+      const unsaved = cardsRef.current.filter((c) => !c.id).length;
+      const next = restoreMethod(channels, item, index, unsaved);
+      if (next === "full") {
+        return new RefusedSave({ message: METHODS_FULL });
+      }
+      return { ...basePayload(saved), channels: next ?? channels };
     });
     if (result.ok) {
       accept(result.body);
@@ -650,7 +659,10 @@ export function OrgFailureAlertsSection({
                 If email or chat cannot deliver for 15 minutes, or PagerDuty for
                 2, the alert goes to your backup methods and to email, saying
                 what failed. Retries continue for an hour; a message still not
-                sent an hour after it was queued is dropped.
+                sent an hour after it was due (when queued, when an alerts pause
+                ends, or 30 minutes after a recovery) is dropped. A PagerDuty
+                resolve keeps trying for 24 hours. Alerts due while the
+                organization's circuit breaker is engaged are withdrawn.
               </li>
               <li>
                 A method that stops working is paused and everyone is told once.

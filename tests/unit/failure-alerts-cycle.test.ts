@@ -1,6 +1,7 @@
 import type { SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SKIP_REASON } from "@/lib/notifications/failure-alerts/stored-reasons";
 
 // A query recorder standing in for drizzle: every chain resolves through `answer`.
 const fake = vi.hoisted(() => {
@@ -385,8 +386,7 @@ describe("drainOutbox", () => {
     await drainOutbox("http://app", emptyDrainStats(), Date.now() + 60_000);
     const dropped = opsOn("update", schema.failureAlertDeliveries).filter(
       (op) =>
-        (op.sets as { lastError?: string })?.lastError ===
-        "Dropped: queued more than an hour ago."
+        (op.sets as { lastError?: string })?.lastError === SKIP_REASON.stale
     );
     expect(dropped).toHaveLength(1);
     expect(

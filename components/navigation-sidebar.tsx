@@ -396,8 +396,9 @@ export function NavigationSidebar(): React.ReactNode {
 
   async function handleNewWorkflow(): Promise<void> {
     // Unsaved changes on the page are asked about before a workflow is made.
-    await confirmLeave("/workflows", () =>
+    await confirmLeave("/workflows", (asked) =>
       runNewWorkflow({
+        stayOnFailure: asked,
         isAnonymous,
         hasSession: Boolean(session),
         push: (href) => router.push(href),

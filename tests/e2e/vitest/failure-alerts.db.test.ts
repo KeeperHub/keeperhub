@@ -21,6 +21,7 @@ import {
   workflowSchedules,
   workflows,
 } from "../../../lib/db/schema";
+import { SKIP_REASON } from "../../../lib/notifications/failure-alerts/stored-reasons";
 
 // vitest runs in Node, not an SSR context.
 vi.mock("server-only", () => ({}));
@@ -1643,9 +1644,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       const rows = await deliveriesOf(org.orgId);
       const byId = (id: string) => rows.find((d) => d.id === id);
       expect(byId(old)?.state).toBe("skipped");
-      expect(byId(old)?.lastError).toBe(
-        "Dropped: queued more than an hour ago."
-      );
+      expect(byId(old)?.lastError).toBe(SKIP_REASON.stale);
       expect(byId(young)?.state).toBe("delivered");
       expect(byId(failedOld)?.backupSentAt).not.toBeNull();
       expect(rows.filter((d) => d.isBackup)).toHaveLength(0);
@@ -2778,7 +2777,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         (d) => d.kind === "alert" && d.channel === "email"
       );
       expect(alert?.state).toBe("skipped");
-      expect(alert?.lastError).toMatch(/halted/);
+      expect(alert?.lastError).toBe(SKIP_REASON.halted);
       const reset = await resetOrgCircuitBreaker({
         organizationId: org.orgId,
         requestedByUserId: org.userId,
@@ -2825,6 +2824,69 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await addRun(org, wf, "error", { at: at(-1), errorType: "system" });
       await runCycle();
       expect((await incidentById(incident?.id))?.resolvedReason).toBe("ran");
+      // Our error, not theirs: the recovery says it started again, not that it failed.
+      const recovery = (await deliveriesOf(org.orgId)).find(
+        (d) => d.kind === "recovery"
+      );
+      expect(recovery?.context).not.toHaveProperty("ranButFailed");
+    });
+
+    it("a run refused before it started does not end a not-running incident", async () => {
+      const org = await countingOrg("missedrefused");
+      const wf = await makeWorkflow(org, "Missed then refused");
+      await addSchedule(wf);
+      await runCycle();
+      const incident = await openIncident(wf);
+      expect(incident?.openedBy).toBe("missed");
+      await addRun(org, wf, "skipped", { at: at(-1) });
+      await runCycle();
+      expect((await incidentById(incident?.id))?.resolvedAt).toBeNull();
+    });
+
+    it("a schedule whose every run was refused still opens a not-running incident", async () => {
+      const org = await countingOrg("allrefused");
+      const wf = await makeWorkflow(org, "All refused");
+      await addSchedule(wf);
+      for (const minutes of [-60, -30, -11, -6, -1]) {
+        await addRun(org, wf, "skipped", { at: at(minutes) });
+      }
+      await runCycle();
+      expect((await openIncident(wf))?.openedBy).toBe("missed");
+    });
+
+    it("a reopened incident revives its withdrawn alerts but not their backups", async () => {
+      const org = await countingOrg("reopenbackup");
+      const wf = await makeWorkflow(org, "Reopen backup");
+      await addFailures(org, wf, 5, -20);
+      await ev.evaluateQueuedWorkflows(new Date(), ev.emptyStats());
+      const first = await openIncident(wf);
+      const backupId = nextId("dl_");
+      await db.insert(failureAlertDeliveries).values({
+        id: backupId,
+        dedupKey: `incident:${first?.id}|alert|0|email|backup@x.dev|backup`,
+        organizationId: org.orgId,
+        incidentId: first?.id,
+        kind: "alert",
+        channel: "email",
+        recipient: "backup@x.dev",
+        isBackup: true,
+      });
+      await addRun(org, wf, "success", { at: at(-10) });
+      await ev.evaluateQueuedWorkflows(new Date(), ev.emptyStats());
+      expect(
+        (await deliveriesOf(org.orgId)).find((d) => d.id === backupId)?.state
+      ).toBe("skipped");
+      await addRun(org, wf, "error", { at: at(-5) });
+      await ev.evaluateQueuedWorkflows(new Date(), ev.emptyStats());
+      expect((await openIncident(wf))?.id).toBe(first?.id);
+      const rows = await deliveriesOf(org.orgId);
+      const backup = rows.find((d) => d.id === backupId);
+      expect(backup?.state).toBe("skipped");
+      // Renamed, so a backup for the revived alert can be queued again.
+      expect(backup?.dedupKey).toContain("|withdrawn:");
+      const primary = rows.find((d) => d.kind === "alert" && !d.isBackup);
+      expect(primary?.state).toBe("pending");
+      expect(primary?.backupSentAt).toBeNull();
     });
   });
 });

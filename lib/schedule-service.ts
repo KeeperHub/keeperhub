@@ -1,5 +1,5 @@
 import { CronExpressionParser } from "cron-parser";
-import { and, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import {
   IntervalTooSmallError,
   parseIntervalSeconds,
@@ -424,13 +424,7 @@ export async function setScheduleEnabled(
       enabled,
       updatedAt: new Date(),
     })
-    // Only a real change moves updated_at (missed-run alerts count from it).
-    .where(
-      and(
-        eq(workflowSchedules.workflowId, workflowId),
-        ne(workflowSchedules.enabled, enabled)
-      )
-    );
+    .where(eq(workflowSchedules.workflowId, workflowId));
 
   console.log(
     `[Schedule] ${enabled ? "Enabled" : "Disabled"} schedule for workflow ${workflowId}`

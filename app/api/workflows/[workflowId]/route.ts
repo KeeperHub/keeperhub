@@ -883,11 +883,24 @@ export async function PATCH(
 
     let updatedWorkflow: typeof workflows.$inferSelect;
     try {
-      const [result] = await db
-        .update(workflows)
-        .set(updateData)
-        .where(eq(workflows.id, workflowId))
-        .returning();
+      const writeWorkflow = (exec: Pick<typeof db, "update">) =>
+        exec
+          .update(workflows)
+          .set(updateData)
+          .where(eq(workflows.id, workflowId))
+          .returning();
+      // Turned back on: missed runs count from now, even if the schedule sync below fails.
+      const [result] =
+        body.enabled === true && !existingWorkflow.enabled
+          ? await db.transaction(async (tx) => {
+              const rows = await writeWorkflow(tx);
+              await tx
+                .update(workflowSchedules)
+                .set({ updatedAt: new Date() })
+                .where(eq(workflowSchedules.workflowId, workflowId));
+              return rows;
+            })
+          : await writeWorkflow(db);
       if (!result) {
         return NextResponse.json({ error: "Workflow not found" }, { status: 404 });
       }

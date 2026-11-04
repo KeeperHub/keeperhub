@@ -131,7 +131,8 @@ const ACTION_MAP: Record<string, AuditActionDescription> = {
     kind: "change",
   },
   "workflow.paused_by_failure_alerts": {
-    phrase: "paused a workflow after repeated failures",
+    phrase:
+      "turned a workflow off after repeated failures or running out of funds",
     kind: "change",
   },
   "account.reactivated": { phrase: "reactivated the account", kind: "add" },

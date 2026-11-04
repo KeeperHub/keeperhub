@@ -329,6 +329,107 @@ describe("UnsavedChangesGuard", () => {
     ]);
   });
 
+  it("re-arms when the org switch after Leave fails", async () => {
+    installHistory(["/workflows", "/settings/org-1/alerts"]);
+    render(true);
+    const start = vi.fn(() => Promise.resolve(false));
+    act(() => {
+      runOrgSwitch({
+        orgId: "org-5",
+        name: "Broken",
+        start,
+        announce: false,
+      }).catch(() => undefined);
+    });
+    await choose("Leave");
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(start).toHaveBeenCalledTimes(1);
+    // Still here, with the guard entry back on top for Back to land on.
+    expect(paths()).toEqual([
+      "/workflows",
+      "/settings/org-1/alerts",
+      "/settings/org-1/alerts",
+    ]);
+    expect(index).toBe(2);
+    expect(entries[2].state?.__leaveGuard).toBe(true);
+    act(() => guarded.push("/analytics"));
+    expect(dialogOpen()).toBe(true);
+    expect(baseRouter.push).not.toHaveBeenCalled();
+  });
+
+  it("re-arms when the action after Leave throws, and a later Leave still works", async () => {
+    installHistory(["/workflows", "/settings/org-1/alerts"]);
+    render(true);
+    let failed: unknown;
+    act(() => {
+      confirmLeave("/workflows", () => {
+        throw new Error("create failed");
+      }).catch((error: unknown) => {
+        failed = error;
+      });
+    });
+    await choose("Leave");
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(failed).toBeInstanceOf(Error);
+    expect(index).toBe(2);
+    expect(entries).toHaveLength(3);
+
+    act(() => guarded.push("/analytics"));
+    await choose("Leave");
+    unmount();
+    expect(paths()).toEqual([
+      "/workflows",
+      "/settings/org-1/alerts",
+      "/analytics",
+    ]);
+  });
+
+  it("tells the action Leave was asked, so New Workflow can stay on failure", async () => {
+    installHistory(["/settings/org-1/alerts"]);
+    const proceed = vi.fn((asked: boolean) => !asked);
+    await expect(confirmLeave("/workflows", proceed)).resolves.toBe(true);
+    expect(proceed).toHaveBeenLastCalledWith(false);
+
+    render(true);
+    act(() => {
+      confirmLeave("/workflows", proceed).catch(() => undefined);
+    });
+    await choose("Leave");
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(proceed).toHaveBeenLastCalledWith(true);
+    // Resolved false: not left, so guarded again.
+    expect(paths()).toEqual([
+      "/settings/org-1/alerts",
+      "/settings/org-1/alerts",
+    ]);
+    expect(index).toBe(1);
+  });
+
+  it("reuses the guard entry after a reload on it", () => {
+    installHistory(["/workflows", "/settings/org-1/alerts"]);
+    // A reload keeps the entry's state: the shown entry is already the copy.
+    entries.push({
+      url: "/settings/org-1/alerts",
+      state: { __leaveGuard: true },
+    });
+    index = 2;
+    show();
+    render(true);
+    expect(entries).toHaveLength(3);
+    expect(index).toBe(2);
+    render(false);
+    // Saved: the one copy is dropped, nothing dead is left.
+    expect(index).toBe(1);
+    expect(entries[1].state?.__leaveGuard).toBeUndefined();
+  });
+
   it("an org switch asks first; Stay does not start it", async () => {
     installHistory(["/settings/org-1/alerts"]);
     render(true);

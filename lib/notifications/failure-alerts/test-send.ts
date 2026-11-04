@@ -22,33 +22,45 @@ import {
 } from "./settings";
 import { channelLabel, type TestRequest, type TestResult } from "./view-types";
 
-/** Per-pod windows for a deployment without Redis: looser, never open. */
-const localWindows = {
-  user: createSlidingWindowLimiter({
+/** Test limits by scope, for Redis and for the per-pod fallback alike. */
+const TEST_LIMITS = {
+  user: {
     limit: TESTS_PER_MINUTE_PER_USER,
     windowMs: 60 * 1000,
-  }),
-  org: createSlidingWindowLimiter({
+    keyPrefix: "failure-alert-test:user:",
+  },
+  org: {
     limit: TESTS_PER_DAY_PER_ORG,
     windowMs: 24 * 60 * 60 * 1000,
-  }),
+    keyPrefix: "failure-alert-test:org:",
+  },
+} as const;
+type TestScope = keyof typeof TEST_LIMITS;
+
+/** Per-pod windows for a deployment without Redis: looser, never open. */
+const localWindows: Record<
+  TestScope,
+  ReturnType<typeof createSlidingWindowLimiter>
+> = {
+  user: createSlidingWindowLimiter(TEST_LIMITS.user),
+  org: createSlidingWindowLimiter(TEST_LIMITS.org),
 };
 
 /** Takes `weight` slots, or none when they do not all fit; `left` is what remains. */
 async function takeSlots(
-  scope: keyof typeof localWindows,
-  key: string,
-  limit: number,
-  windowSeconds: number,
+  scope: TestScope,
+  id: string,
   weight = 1
 ): Promise<{ ok: boolean; left: number }> {
+  const { limit, windowMs, keyPrefix } = TEST_LIMITS[scope];
+  const key = `${keyPrefix}${id}`;
   const redis = getRedis();
   if (redis) {
     try {
       const count = await redis.incrby(key, weight);
       // Checked on every call, so a key whose expiry failed to set once heals itself.
       if ((await redis.ttl(key)) < 0) {
-        await redis.expire(key, windowSeconds);
+        await redis.expire(key, windowMs / 1000);
       }
       if (count > limit) {
         await redis.decrby(key, weight);
@@ -75,30 +87,20 @@ async function checkTestRateLimit(
       429
     );
   }
-  const perUser = await takeSlots(
-    "user",
-    `failure-alert-test:user:${userId}`,
-    TESTS_PER_MINUTE_PER_USER,
-    60
-  );
+  const perUser = await takeSlots("user", userId);
   if (!perUser.ok) {
     throw new SettingsError(
       `You can send ${TESTS_PER_MINUTE_PER_USER} tests a minute. Try again in a minute.`,
       429
     );
   }
-  const perOrg = await takeSlots(
-    "org",
-    `failure-alert-test:org:${organizationId}`,
-    TESTS_PER_DAY_PER_ORG,
-    24 * 60 * 60,
-    emails ?? 1
-  );
+  const perOrg = await takeSlots("org", organizationId, emails ?? 1);
   if (!perOrg.ok) {
     throw new SettingsError(
-      emails === undefined
-        ? `This organization has used today's ${TESTS_PER_DAY_PER_ORG} test messages (each test email counts as one). Try again tomorrow.`
-        : `This test would email ${emails} ${emails === 1 ? "person" : "people"}; ${perOrg.left} test ${perOrg.left === 1 ? "email is" : "emails are"} left today. Choose fewer people, or try again later.`,
+      // Some left but too few: only a test emailing several people (emails > 1).
+      perOrg.left === 0
+        ? "No test messages are left today. Try again tomorrow."
+        : `This test would email ${emails} people; ${perOrg.left} test ${perOrg.left === 1 ? "email is" : "emails are"} left today. Choose fewer people, or try again later.`,
       429
     );
   }

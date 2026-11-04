@@ -72,11 +72,11 @@ import {
   sendEmailMessage,
 } from "./senders";
 import { isReachable, loadChannelViews } from "./settings";
+import { SKIP_REASON } from "./stored-reasons";
 import {
   CHANNEL_LABEL,
   channelLabel,
   EMAILS_KEPT_FOR_NEW_FAILURES,
-  STALE_DROP_TEXT,
 } from "./view-types";
 import { workflowTriggerType } from "./workflow-trigger";
 
@@ -713,7 +713,7 @@ export async function drainOutbox(
       (row) => row.organizationId
     );
     await skipOutsideRollout(dropped);
-    const rows = await skipHalted(await dropStale(kept, now));
+    const rows = await skipHalted(await dropStale(kept, now), now);
     await ctx.loadChannels(
       rows.map((row) => row.channelId).filter((id): id is string => Boolean(id))
     );
@@ -791,7 +791,7 @@ async function dropStale(
   if (stale.length > 0) {
     await db
       .update(failureAlertDeliveries)
-      .set({ state: "skipped", lastError: STALE_DROP_TEXT, updatedAt: now })
+      .set({ state: "skipped", lastError: SKIP_REASON.stale, updatedAt: now })
       .where(
         inArray(
           failureAlertDeliveries.id,
@@ -811,7 +811,6 @@ async function releaseRows(rows: DeliveryRow[]): Promise<void> {
   }
 }
 
-const HALTED_TEXT = "The organization was halted before this was delivered.";
 /** Incident messages a halted org is not sent (its incidents stay open and quiet). */
 const QUIET_WHILE_HALTED: ReadonlySet<string> = new Set([
   "alert",
@@ -835,33 +834,29 @@ async function haltedOrgs(organizationIds: string[]): Promise<Set<string>> {
 }
 
 /** Halted: skip, not hold, so lifting the halt sends nothing old. A PagerDuty resolve still goes, or the page stays open. */
-async function skipHalted(rows: DeliveryRow[]): Promise<DeliveryRow[]> {
-  const halted = await haltedOrgs(
-    rows
-      .filter((row) => QUIET_WHILE_HALTED.has(row.kind))
-      .map((row) => row.organizationId)
+async function skipHalted(
+  rows: DeliveryRow[],
+  now: Date
+): Promise<DeliveryRow[]> {
+  const quietable = rows.filter(
+    (row) => QUIET_WHILE_HALTED.has(row.kind) && !isPagerDutyResolve(row)
   );
-  const quiet = rows.filter(
-    (row) =>
-      halted.has(row.organizationId) &&
-      QUIET_WHILE_HALTED.has(row.kind) &&
-      !isPagerDutyResolve(row)
+  const halted = await haltedOrgs(quietable.map((row) => row.organizationId));
+  const quiet = new Set(
+    quietable
+      .filter((row) => halted.has(row.organizationId))
+      .map((row) => row.id)
   );
-  if (quiet.length > 0) {
+  if (quiet.size > 0) {
     await db
       .update(failureAlertDeliveries)
-      .set({ state: "skipped", lastError: HALTED_TEXT, updatedAt: new Date() })
-      .where(
-        inArray(
-          failureAlertDeliveries.id,
-          quiet.map((row) => row.id)
-        )
-      );
+      .set({ state: "skipped", lastError: SKIP_REASON.halted, updatedAt: now })
+      .where(inArray(failureAlertDeliveries.id, [...quiet]));
   }
-  return rows.filter((row) => !quiet.includes(row));
+  return rows.filter((row) => !quiet.has(row.id));
 }
 
-/** When a row first became due: backupAt keeps its wait after any hold (org pause, recovery hold). */
+/** When a row first became due: backupAt keeps its wait after any hold (org pause; on a recovery it is set only for this). */
 function dueSince(row: DeliveryRow): Date {
   const wait = BACKUP_AFTER_MS[row.channel];
   if (row.isBackup || !row.backupAt || wait === undefined) {
@@ -882,7 +877,7 @@ async function processRow(
   const now = new Date();
   if (outcome === "gone") {
     await finishRow(row, "skipped", {
-      lastError: "What this message was about no longer exists.",
+      lastError: SKIP_REASON.gone,
     });
     return;
   }
@@ -1112,8 +1107,14 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
     : (await loadOrgPolicy(row.organizationId)).recipientUserIds;
 
   const targets: DeliveryInsert[] = [];
+  // A withdrawn (skipped) copy got nothing to anyone.
   const has = (channel: string, recipient: string): boolean =>
-    siblings.some((s) => s.channel === channel && s.recipient === recipient);
+    siblings.some(
+      (s) =>
+        s.channel === channel &&
+        s.recipient === recipient &&
+        s.state !== "skipped"
+    );
   const reason = describeFailure(row);
   const base = {
     scope,

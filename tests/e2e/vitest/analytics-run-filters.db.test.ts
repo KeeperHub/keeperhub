@@ -22,6 +22,7 @@ import {
 } from "../../../lib/db/schema";
 import { ExecutionErrorType } from "../../../lib/errors/execution-error-type";
 import type { WorkflowExecutionStatus } from "../../../lib/errors/execution-status";
+import { SKIP_REASON } from "../../../lib/notifications/failure-alerts/stored-reasons";
 
 // vitest runs in Node, not an SSR context.
 vi.mock("server-only", () => ({}));
@@ -960,6 +961,37 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
       [RUN, D_ALERT, D_LAUNCH].sort()
     );
     expect(await ids({ statuses: ["system_error"] })).toEqual([]);
+  });
+
+  it("files a row dropped as too late under error, not cancelled", async () => {
+    const dropped = `${N}d_dropped`;
+    await db.insert(failureAlertDeliveries).values({
+      id: dropped,
+      dedupKey: dropped,
+      organizationId: N_ORG,
+      kind: "alert",
+      channel: "email",
+      recipient: "ops@notifs.test",
+      state: "skipped",
+      lastError: SKIP_REASON.stale,
+      createdAt: new Date(Date.now() - 25 * 60_000),
+    });
+    try {
+      expect(await ids({ statuses: ["error"] })).toEqual(
+        [D_FAILED, dropped].sort()
+      );
+      expect(await ids({ statuses: ["cancelled"] })).toEqual([D_PAUSED]);
+      expect(await ids({ statuses: ["error", "cancelled"] })).toEqual(
+        [D_FAILED, D_PAUSED, dropped].sort()
+      );
+      const { runs } = await getUnifiedRuns(N_ORG, "7d", {
+        sources: PAGE_SOURCES,
+        limit: 50,
+      });
+      expect(runs.find((run) => run.id === dropped)?.status).toBe("error");
+    } finally {
+      await queryClient`DELETE FROM alert_deliveries WHERE id = ${dropped}`;
+    }
   });
 
   it("searches workflow names, grouped ones included, and recipients", async () => {

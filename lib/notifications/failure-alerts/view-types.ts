@@ -4,6 +4,7 @@ import type {
   FailureAlertChannelRole,
   FailureAlertMessageKind,
 } from "@/lib/db/schema-failure-alerts";
+import { SKIP_REASON } from "./stored-reasons";
 
 export type ChannelView = {
   id: string;
@@ -303,14 +304,12 @@ export type MessagePreview = {
   pagerDutySummary: string;
 };
 
-/** One word per delivery state, the same in history, analytics and emails. */
-/** Set on a row too old to send; it reads as not delivered, not withdrawn. */
-export const STALE_DROP_TEXT = "Dropped: queued more than an hour ago.";
-
+/** True for a row the outbox dropped as too old, rather than withdrew. */
 export function wasDropped(state: string, lastError: string | null): boolean {
-  return state === "skipped" && lastError === STALE_DROP_TEXT;
+  return state === "skipped" && lastError === SKIP_REASON.stale;
 }
 
+/** One word per delivery state, the same in history, analytics and emails. */
 export const DELIVERY_STATE_LABEL: Record<string, string> = {
   pending: "Queued",
   sending: "Sending",

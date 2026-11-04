@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   deliveryStatus,
   describeRule,
+  formatSoon,
+  formatWhen,
   type RuleChannel,
 } from "@/components/failure-alerts/format";
-import { STALE_DROP_TEXT } from "@/lib/notifications/failure-alerts/view-types";
+import { SKIP_REASON } from "@/lib/notifications/failure-alerts/stored-reasons";
 
 const slack: RuleChannel = {
   kind: "slack",
@@ -101,17 +103,35 @@ describe("deliveryStatus", () => {
     nextAttemptAt: "2026-11-04T14:25:00.000Z",
   };
 
-  it("says when a held recovery goes out", () => {
+  // The viewer's own zone, as the browser formats it.
+  const at = formatSoon(row.nextAttemptAt, now);
+
+  it("says when a held recovery goes out, in the viewer's time", () => {
     expect(deliveryStatus(row, now)).toEqual({
-      label: "Sends at 14:25 UTC if it keeps working",
+      label: `Sends at ${at} if it keeps working`,
       tone: "waiting",
     });
+    expect(at).toBe(
+      new Date(row.nextAttemptAt).toLocaleTimeString(undefined, {
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZoneName: "short",
+      })
+    );
   });
 
   it("names the time for any other row due later", () => {
     expect(deliveryStatus({ ...row, kind: "alert" }, now).label).toBe(
-      "Scheduled for 14:25 UTC"
+      `Scheduled for ${at}`
     );
+  });
+
+  it("adds the date when the time is not today", () => {
+    const later = "2026-11-06T14:25:00.000Z";
+    expect(formatSoon(later, now)).toBe(formatWhen(later));
+    expect(
+      deliveryStatus({ ...row, nextAttemptAt: later }, now).label
+    ).toContain(formatWhen(later));
   });
 
   it("calls a row due now queued", () => {
@@ -123,7 +143,7 @@ describe("deliveryStatus", () => {
   it("shows a dropped row as not delivered, a withdrawn one muted", () => {
     expect(
       deliveryStatus(
-        { ...row, state: "skipped", lastError: STALE_DROP_TEXT },
+        { ...row, state: "skipped", lastError: SKIP_REASON.stale },
         now
       )
     ).toEqual({ label: "Not delivered", tone: "failed" });

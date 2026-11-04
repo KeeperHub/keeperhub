@@ -25,6 +25,7 @@ import {
   workflows,
 } from "@/lib/db/schema";
 import type { FailureIncidentResolution } from "@/lib/db/schema-failure-alerts";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import { workflowExecutableConditions } from "@/lib/workflow/executable";
@@ -74,6 +75,7 @@ import {
 } from "./queue-rows";
 import { isFailureAlertsEnabledForOrg, splitByRollout } from "./rollout";
 import { lockOrgSettings } from "./settings";
+import { SKIP_REASON } from "./stored-reasons";
 import { decide, summarizeStreak } from "./streak";
 import { loadStreakRuns } from "./streak-runs";
 import {
@@ -88,6 +90,10 @@ const LEASE = sql`now() + interval '5 minutes'`;
 /** isAutomatedRun in SQL: a person's run never says a schedule is working. */
 const AUTOMATED_RUN_SQL = sql`(${workflowExecutions.triggerSource} IS DISTINCT FROM 'manual'
   OR ${workflowExecutions.triggeredByCredentialType} <> 'session')`;
+/** A run that counts as the workflow running: automated, not deleted, not refused before it started. */
+const COUNTED_RUN_SQL = sql`(${AUTOMATED_RUN_SQL}
+  AND ${workflowExecutions.deletedAt} IS NULL
+  AND ${workflowExecutions.status} <> 'skipped')`;
 
 type WorkflowRow = {
   id: string;
@@ -359,7 +365,7 @@ async function reopenRecovered(
       .update(failureAlertDeliveries)
       .set({
         state: "skipped",
-        lastError: "The workflow failed again before this was sent.",
+        lastError: SKIP_REASON.failedAgain,
         updatedAt: now,
       })
       .where(and(recovery, eq(failureAlertDeliveries.state, "pending")));
@@ -407,6 +413,7 @@ async function reviveWithdrawn(
       and(
         eq(failureAlertDeliveries.incidentId, incident.id),
         inArray(failureAlertDeliveries.kind, ["alert", "reminder"]),
+        eq(failureAlertDeliveries.isBackup, false),
         eq(failureAlertDeliveries.state, "skipped"),
         eq(failureAlertDeliveries.lastError, SKIPPED_BECAUSE.success)
       )
@@ -421,31 +428,53 @@ async function reviveWithdrawn(
         backupAt: row.backupAt
           ? new Date(due.getTime() + BACKUP_AFTER_MS[row.channel])
           : null,
+        // Its backups are queued again if it is still undelivered at backupAt.
+        backupSentAt: null,
         lastError: null,
         updatedAt: now,
       })
       .where(eq(failureAlertDeliveries.id, row.id));
   }
+  // Withdrawn backups stay withdrawn; renamed so they do not block the new ones.
+  await tx
+    .update(failureAlertDeliveries)
+    .set({
+      dedupKey: sql`${failureAlertDeliveries.dedupKey} || '|withdrawn:' || ${failureAlertDeliveries.id}`,
+    })
+    .where(
+      and(
+        eq(failureAlertDeliveries.incidentId, incident.id),
+        eq(failureAlertDeliveries.isBackup, true),
+        eq(failureAlertDeliveries.state, "skipped"),
+        eq(failureAlertDeliveries.lastError, SKIPPED_BECAUSE.success),
+        sql`${failureAlertDeliveries.dedupKey} NOT LIKE '%|withdrawn:%'`
+      )
+    );
 }
 
 const SKIPPED_BECAUSE: Record<FailureIncidentResolution, string> = {
-  success: "The workflow recovered before this was delivered.",
-  ran: "The workflow ran before this was delivered.",
-  disabled: "The workflow was paused before this was delivered.",
-  deleted: "The workflow was deleted before this was delivered.",
-  manual_trigger:
-    "The workflow was switched to a manual trigger before this was delivered.",
+  success: SKIP_REASON.success,
+  ran: SKIP_REASON.ran,
+  disabled: SKIP_REASON.disabled,
+  deleted: SKIP_REASON.deleted,
+  manual_trigger: SKIP_REASON.manual_trigger,
 };
 
 /** The newest automated run started after `since`, however it ended (or still running). */
 async function latestRunSince(
   workflowId: string,
   since: Date
-): Promise<{ id: string; status: string; startedAt: Date } | null> {
+): Promise<{
+  id: string;
+  status: string;
+  errorType: string | null;
+  startedAt: Date;
+} | null> {
   const [run] = await db
     .select({
       id: workflowExecutions.id,
       status: workflowExecutions.status,
+      errorType: workflowExecutions.errorType,
       startedAt: workflowExecutions.startedAt,
     })
     .from(workflowExecutions)
@@ -453,8 +482,7 @@ async function latestRunSince(
       and(
         eq(workflowExecutions.workflowId, workflowId),
         gt(workflowExecutions.startedAt, since),
-        isNull(workflowExecutions.deletedAt),
-        AUTOMATED_RUN_SQL
+        COUNTED_RUN_SQL
       )
     )
     .orderBy(desc(workflowExecutions.startedAt))
@@ -682,7 +710,11 @@ async function evaluateWorkflow(
         stats,
         recoveryContext: {
           ranAt: ranAgain.startedAt.toISOString(),
-          ...(ranAgain.status === "error" ? { ranButFailed: true } : {}),
+          // A KeeperHub-side error is ours: the customer hears it started again.
+          ...(ranAgain.status === "error" &&
+          ranAgain.errorType !== ExecutionErrorType.SYSTEM
+            ? { ranButFailed: true }
+            : {}),
         },
       });
       // Now closed: the run that ended it may itself start a failing streak.
@@ -1341,7 +1373,7 @@ export async function checkMissedSchedules(
       lastStartedAt: sql`(SELECT max(${workflowExecutions.startedAt})
         FROM ${workflowExecutions}
         WHERE ${workflowExecutions.workflowId} = ${workflows.id}
-          AND ${AUTOMATED_RUN_SQL})`.mapWith(workflowExecutions.startedAt),
+          AND ${COUNTED_RUN_SQL})`.mapWith(workflowExecutions.startedAt),
     })
     .from(workflowSchedules)
     .innerJoin(workflows, eq(workflows.id, workflowSchedules.workflowId))
@@ -1356,7 +1388,7 @@ export async function checkMissedSchedules(
         sql`NOT EXISTS (SELECT 1 FROM ${workflowExecutions}
           WHERE ${workflowExecutions.workflowId} = ${workflows.id}
             AND ${workflowExecutions.startedAt} >= ${ranRecentlyCutoff(now).toISOString()}
-            AND ${AUTOMATED_RUN_SQL})`,
+            AND ${COUNTED_RUN_SQL})`,
         sql`NOT EXISTS (SELECT 1 FROM ${workflowFailureIncidents}
           WHERE ${workflowFailureIncidents.workflowId} = ${workflows.id}
             AND ${workflowFailureIncidents.resolvedAt} IS NULL)`

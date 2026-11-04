@@ -27,9 +27,17 @@ export function formatWhen(iso: string): string {
   });
 }
 
-/** "14:05 UTC". */
-function utcTime(iso: string): string {
-  return `${new Date(iso).toISOString().slice(11, 16)} UTC`;
+/** A coming time in the viewer's zone: "14:05 GMT+2", with the date when not today. */
+export function formatSoon(iso: string, now: Date = new Date()): string {
+  const date = new Date(iso);
+  if (date.toDateString() !== now.toDateString()) {
+    return formatWhen(iso);
+  }
+  return date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
 }
 
 export type DeliveryTone = "delivered" | "failed" | "waiting" | "muted";
@@ -44,7 +52,7 @@ export function deliveryStatus(
     return { label: DELIVERY_STATE_LABEL.failed, tone: "failed" };
   }
   if (state === "pending" && new Date(entry.nextAttemptAt) > now) {
-    const at = utcTime(entry.nextAttemptAt);
+    const at = formatSoon(entry.nextAttemptAt, now);
     return {
       label:
         entry.kind === "recovery"

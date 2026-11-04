@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { notificationBadge } from "@/components/analytics/runs-table";
+import { deliveryStatus } from "@/components/failure-alerts/format";
 import {
   type NotificationRow,
   notificationStatesFor,
@@ -9,7 +10,7 @@ import {
   toHistoryEntry,
   toNotificationRun,
 } from "@/lib/analytics/notification-runs";
-import { STALE_DROP_TEXT } from "@/lib/notifications/failure-alerts/view-types";
+import { SKIP_REASON } from "@/lib/notifications/failure-alerts/stored-reasons";
 
 const CREATED = new Date("2026-10-01T10:00:00.000Z");
 const LATER = new Date("2026-10-01T10:00:04.000Z");
@@ -50,6 +51,11 @@ describe("notificationStatus", () => {
     expect(notificationStatus("retrying")).toBe("running");
     // Withdrawn before it went out: a cancellation, not the plan-refusal skip.
     expect(notificationStatus("skipped")).toBe("cancelled");
+    // Dropped as too late: not delivered, so an error.
+    expect(notificationStatus("skipped", SKIP_REASON.stale)).toBe("error");
+    expect(notificationStatus("skipped", SKIP_REASON.success)).toBe(
+      "cancelled"
+    );
   });
 
   it("selects the delivery states behind a status filter", () => {
@@ -154,6 +160,7 @@ describe("toNotificationRun", () => {
       isBackup: false,
       attempts: 1,
       lastError: null,
+      nextAttemptAt: CREATED.toISOString(),
       note: null,
       workflows: [{ id: "wf_nightly", name: "Nightly sync" }],
     });
@@ -322,7 +329,7 @@ describe("notificationBadge", () => {
       notificationBadge({
         ...detail,
         state: "skipped",
-        lastError: STALE_DROP_TEXT,
+        lastError: SKIP_REASON.stale,
       })
     ).toMatchObject({ label: "Not delivered" });
     // The Alerts history's words for a message still on its way.
@@ -335,5 +342,25 @@ describe("notificationBadge", () => {
     expect(
       notificationBadge({ ...detail, state: "retrying", lastError: "429" })
     ).toMatchObject({ label: "Retrying", tooltip: "Retrying: 429" });
+  });
+
+  it("says when a held recovery goes out, as the Alerts history does", () => {
+    const held = toNotificationRun(
+      row({
+        kind: "recovery",
+        state: "pending",
+        nextAttemptAt: new Date(LATER.getTime() + 25 * 60_000),
+      }),
+      NO_GROUPS
+    ).notification;
+    if (!held) {
+      throw new Error("a notification row carries its detail");
+    }
+    expect(held.nextAttemptAt).toBe(
+      new Date(LATER.getTime() + 25 * 60_000).toISOString()
+    );
+    const badge = notificationBadge(held, LATER);
+    expect(badge.label).toBe(deliveryStatus(held, LATER).label);
+    expect(badge.label).toMatch(/^Sends at .+ if it keeps working$/);
   });
 });

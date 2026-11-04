@@ -144,6 +144,18 @@ describe("grouped alert", () => {
     expect(message.text).toContain(`Add funds: ${WALLETS}`);
   });
 
+  it("offers Add funds only when a listed workflow is out of funds now", () => {
+    const message = renderMessage({
+      ...org,
+      kind: "grouped",
+      workflows: [row(1), { ...row(2), openedBy: "funding" }],
+    });
+    expect(message.text).toContain("ran out of funds earlier");
+    expect(message.text).not.toContain("Add funds");
+    expect(message.chat).not.toContain("Add funds");
+    expect(message.html).not.toContain("Add funds");
+  });
+
   it("lists turned-off workflows first, then out of funds, then most failures", () => {
     const message = renderMessage({
       ...org,
@@ -635,9 +647,20 @@ describe("wording", () => {
       expect(message.chat).not.toContain("/workflows/");
       expect(message.text).toContain(ALERTS);
     }
+    const paused = renderSample(org, "paused", "Test", now);
+    expect(paused.text).toContain(`Add funds: ${WALLETS}`);
+    expect(paused.html).toContain(`href="${WALLETS}"`);
+  });
+
+  it("makes the alert sample a plain count alert, not a funds one", () => {
     const alert = renderSample(org, "alert", "Test", now);
-    expect(alert.text).toContain(`Add funds: ${WALLETS}`);
-    expect(alert.html).toContain(`href="${WALLETS}"`);
+    expect(alert.subject).toContain("Example keeper");
+    expect(alert.text).toContain("failed 5 times in a row");
+    expect(alert.text).not.toContain("out of funds");
+    expect(alert.text).not.toContain("Add funds");
+    expect(renderSample(org, "recovery", "Test", now).text).not.toContain(
+      "Add funds"
+    );
   });
 
   it("gives samples one Alerts settings link, not two named for a workflow", () => {
@@ -730,7 +753,7 @@ describe("wording", () => {
       sentAt
     );
     expect(message.text).toContain(
-      "It succeeded after 3 failed runs (20 minutes). Working since 2026-10-28 11:20 UTC."
+      "It succeeded after 3 failed runs (failing for 20 minutes). Working since 2026-10-28 11:20 UTC."
     );
     const missed = renderMessage(
       {

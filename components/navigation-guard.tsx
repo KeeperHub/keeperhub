@@ -12,14 +12,17 @@ import { type ReactNode, useContext, useMemo } from "react";
  */
 type LeaveGuard = (href: string | undefined) => Promise<boolean> | null;
 
-const guards = new Set<LeaveGuard>();
+/** Arms a guard again after Leave when the action then did not leave. */
+type Rearm = () => void;
+
+const guards = new Map<LeaveGuard, Rearm | undefined>();
 
 /** History state key of the copy of a page a guard pushes for Back to land on. */
 export const GUARD_ENTRY_KEY = "__leaveGuard";
 
 /** Registers a guard; returns its removal. */
-export function addLeaveGuard(guard: LeaveGuard): () => void {
-  guards.add(guard);
+export function addLeaveGuard(guard: LeaveGuard, rearm?: Rearm): () => void {
+  guards.set(guard, rearm);
   return () => {
     guards.delete(guard);
   };
@@ -41,30 +44,49 @@ function dropGuardEntry(): Promise<void> {
   });
 }
 
+/** Re-arms the guards that let a leave through, if still registered. */
+function rearmGuards(asked: LeaveGuard[]): void {
+  for (const guard of asked) {
+    guards.get(guard)?.();
+  }
+}
+
 /**
  * Asks every guard, then runs `proceed`: at once when none asks, after Leave
- * otherwise. Stay resolves null and runs nothing.
+ * otherwise. Stay resolves null and runs nothing. After Leave, a `proceed`
+ * that throws or resolves false or null did not leave, so the guards re-arm.
  */
 export function confirmLeave<T>(
   href: string | undefined,
-  proceed: () => T | Promise<T>
+  proceed: (asked: boolean) => T | Promise<T>
 ): Promise<T | null> {
+  const asked: LeaveGuard[] = [];
   const answers: Promise<boolean>[] = [];
-  for (const guard of guards) {
+  for (const guard of guards.keys()) {
     const answer = guard(href);
     if (answer) {
+      asked.push(guard);
       answers.push(answer);
     }
   }
   if (answers.length === 0) {
-    return Promise.resolve(proceed());
+    return Promise.resolve(proceed(false));
   }
   return Promise.all(answers).then(async (leave) => {
     if (!leave.every(Boolean)) {
       return null;
     }
     await dropGuardEntry();
-    return proceed();
+    try {
+      const result = await proceed(true);
+      if (result === false || result === null) {
+        rearmGuards(asked);
+      }
+      return result;
+    } catch (error) {
+      rearmGuards(asked);
+      throw error;
+    }
   });
 }
 

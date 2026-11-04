@@ -293,13 +293,18 @@ run fields above, read as follows:
   delivered, or when KeeperHub stopped trying (failed, monthly email limit
   reached, or withdrawn); it is `null` while delivery is still in progress.
   `durationMs` is always `null`.
-- `status` is `success` once delivered, `error` when delivery failed,
-  `skipped` when the monthly email limit stopped it, `pending` while queued
-  (a recovery notice waits 30 minutes, in case the workflow fails again),
-  `running` while sending or retrying, and `cancelled` when it was withdrawn
-  before it went out (for example because the workflow recovered first, failed
-  again before its recovery notice went out, or it was still unsent an hour
-  after it was queued).
+- `status` is `success` once delivered; `error` when delivery failed, or when
+  the message was dropped because it was still not sent an hour after it was due;
+  `skipped` when the monthly email limit stopped it; `pending` while queued (a
+  recovery notice waits 30 minutes, in case the workflow fails again); `running`
+  while sending or retrying; and `cancelled` when it was withdrawn before it
+  went out (for example because the workflow recovered first, failed again
+  before its recovery notice went out, was turned off, or the organization's
+  circuit breaker was engaged).
+- A message is due when it is queued, when an alerts pause that held it ends,
+  or, for a recovery notice, 30 minutes after the workflow recovered. A
+  PagerDuty resolve keeps trying for 24 hours instead of one, so a page is not
+  left open.
 - `workflowId` and `workflowName` are set when the notification is about exactly
   one workflow, and `null` otherwise.
 - Network, gas, step and error fields are always empty.
@@ -318,6 +323,7 @@ The `notification` object, present only on these rows, carries the rest:
     "isBackup": false,
     "attempts": 1,
     "lastError": null,
+    "nextAttemptAt": "2024-01-01T00:00:00Z",
     "note": null,
     "workflows": [{ "id": "y3y0xneior3njl90uoyih", "name": "Monitor ETH Balance" }]
   }
@@ -328,14 +334,15 @@ The `notification` object, present only on these rows, carries the rest:
 |-------|-------------|
 | `title` | A readable name: the kind and the workflow (`Alert: Monitor ETH Balance`), the number of workflows for a message that covers several (`Alert: 3 workflows`), or the kind alone for a notice about no workflow |
 | `kind` | `alert`, `reminder`, `recovery`, `channel_paused` (a channel stopped working), `launch_notice` (failure notifications were turned on), `alerts_paused`, `alerts_resumed` or `cap_warning` (the monthly alert email limit is nearly or fully used) |
-| `state` | The delivery state behind `status`: `pending`, `sending`, `delivered`, `retrying`, `failed`, `capped` (monthly email limit) or `skipped` (withdrawn) |
+| `state` | The delivery state behind `status`: `pending`, `sending`, `delivered`, `retrying`, `failed`, `capped` (monthly email limit) or `skipped` (withdrawn, or dropped as too late: `status` is `error` for a dropped one) |
 | `channel` | `email`, `slack`, `discord`, `telegram` or `pagerduty` |
 | `recipient` | The email address, or the channel's destination |
 | `connectionName` | The connection a chat or PagerDuty channel sends through; `null` for email |
 | `isBackup` | `true` when sent because another channel could not deliver |
 | `attempts` | How many times delivery was tried |
 | `lastError` | Why the last attempt failed, or why it was not sent |
-| `note` | Which channel a `channel_paused` notice is about; otherwise whether the incident paused the workflow (`Paused the workflow`, or `Paused the workflow again after it was turned back on`) and why a backup was sent, joined with `. `; `null` when there is neither |
+| `nextAttemptAt` | When a queued message is next tried; later than now for a recovery notice still waiting out its 30 minutes |
+| `note` | Which channel a `channel_paused` notice is about; otherwise whether the incident turned the workflow off (`Turned the workflow off`, or `Turned the workflow off again after it was turned back on`) and why a backup was sent, joined with `. `; `null` when there is neither |
 | `workflows` | Every workflow the notification is about; empty for a notice about no workflow |
 
 ## Get Run Step Logs

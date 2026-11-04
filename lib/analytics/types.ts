@@ -38,6 +38,8 @@ export type NotificationRunDetail = {
   attempts: number;
   /** Why it failed, or why it was not sent. */
   lastError: string | null;
+  /** When a queued row is next tried: later than now for a held recovery. */
+  nextAttemptAt: string;
   /** Which channel a pause notice is about, or why a backup was sent. */
   note: string | null;
   workflows: { id: string; name: string }[];

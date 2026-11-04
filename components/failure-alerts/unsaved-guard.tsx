@@ -144,9 +144,20 @@ export function UnsavedChangesGuard({
         })
         .catch(() => undefined);
     };
-    pushGuardEntry();
-    const removeGuard = addLeaveGuard((href) =>
-      leavingRef.current || !leavesPage(href) ? null : ask()
+    // After a reload on the copy, it is reused rather than stacked.
+    if (!onGuardEntry()) {
+      pushGuardEntry();
+    }
+    // The action after Leave did not leave: guard again, Back included.
+    const rearm = (): void => {
+      leavingRef.current = false;
+      if (!onGuardEntry()) {
+        pushGuardEntry();
+      }
+    };
+    const removeGuard = addLeaveGuard(
+      (href) => (leavingRef.current || !leavesPage(href) ? null : ask()),
+      rearm
     );
     window.addEventListener("beforeunload", onBeforeUnload);
     window.addEventListener("popstate", onPopState);

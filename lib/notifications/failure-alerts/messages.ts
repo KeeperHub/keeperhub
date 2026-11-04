@@ -7,6 +7,7 @@ import {
 } from "@/lib/notifications/chat-text";
 import { redactErrorSecrets } from "@/lib/utils/redact";
 import { MAX_SUMMARY_CHARS } from "@/plugins/pagerduty/event-payload";
+import { DEFAULT_THRESHOLD, OUT_OF_FUNDS_THRESHOLD } from "./constants";
 import { isOutOfFunds } from "./streak";
 import { EMAILS_KEPT_FOR_NEW_FAILURES, orgPauseEffect } from "./view-types";
 
@@ -642,7 +643,8 @@ function renderGrouped(
   const shown = workflows.slice(0, GROUPED_LIST_MAX);
   const more = workflows.length - shown.length;
   const moreLine = more > 0 ? `And ${more} more.` : null;
-  const funds = workflows.some(outOfFunds)
+  // Only when a listed workflow is out of funds now, not just earlier.
+  const funds = shown.some(fundsNow)
     ? walletsUrl(appUrl, input.organizationId)
     : null;
   const lines = shown.map(
@@ -727,7 +729,7 @@ function renderRecovery(
     endedAt.getTime() - incident.firstFailedAt.getTime()
   );
   let tail = " is running again";
-  let detail = `It succeeded after ${plural(incident.failureCount, "failed run", "failed runs")} (${span}). Working since ${formatUtc(endedAt)}.`;
+  let detail = `It succeeded after ${plural(incident.failureCount, "failed run", "failed runs")} (failing for ${span}). Working since ${formatUtc(endedAt)}.`;
   if (incident.openedBy === "missed") {
     tail = input.ranButFailed
       ? " ran, but the run failed"
@@ -951,6 +953,13 @@ function renderLaunchNotice(
   };
 }
 
+const SAMPLE_OPENED_BY: Record<SampleKind, FailureIncidentTrigger> = {
+  alert: "count",
+  missed: "missed",
+  paused: "funding",
+  recovery: "count",
+};
+
 // No id: its links open the Alerts page.
 const SAMPLE_WORKFLOW: AlertWorkflow = {
   id: "",
@@ -965,13 +974,15 @@ export function renderSample(
   testNote?: string,
   now: Date = new Date()
 ): RenderedMessage {
-  // Two shortfalls in a row open a funds alert, so the sample is one, with its Add funds link.
+  // A plain count alert; the turned-off sample is the funds case, with its Add funds link.
+  const funds = sample === "paused";
   const incident: AlertIncident = {
-    failureCount: 2,
+    failureCount: funds ? OUT_OF_FUNDS_THRESHOLD : DEFAULT_THRESHOLD,
     firstFailedAt: new Date(now.getTime() - 47 * 60 * 1000),
-    lastError:
-      "insufficient funds for gas * price + value: have 120000000000000 want 340000000000000",
-    openedBy: sample === "missed" ? "missed" : "funding",
+    lastError: funds
+      ? "insufficient funds for gas * price + value: have 120000000000000 want 340000000000000"
+      : "execution reverted: price feed is stale",
+    openedBy: SAMPLE_OPENED_BY[sample],
     before: {
       successes: 214,
       lastSuccessAt: new Date(now.getTime() - 52 * 60 * 1000),

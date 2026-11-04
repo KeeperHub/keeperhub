@@ -53,6 +53,15 @@ describe("restoreMethod", () => {
     expect(restoreMethod(refilled, removed, 3)).toBe("full");
   });
 
+  it("counts unsaved cards toward the cap, so nothing over it is sent", () => {
+    const removed = full[3];
+    const rest = full.filter((c) => c !== removed);
+    expect(restoreMethod(rest, removed, 3, 1)).toBe("full");
+    expect(restoreMethod(rest.slice(1), removed, 3, 1)).toHaveLength(
+      MAX_CHANNELS - 1
+    );
+  });
+
   it("does nothing when the method is back already", () => {
     expect(restoreMethod(full, full[0], 0)).toBeNull();
   });

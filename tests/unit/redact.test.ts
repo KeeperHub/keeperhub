@@ -87,6 +87,21 @@ describe("redactErrorSecrets", () => {
     expect(out).toContain("Authorization: Bearer [REDACTED]");
   });
 
+  it("masks the token after any Authorization scheme, or a bare value", () => {
+    expect(redactErrorSecrets("Authorization: Token abc123")).toBe(
+      "Authorization: Token [REDACTED]"
+    );
+    expect(redactErrorSecrets("Authorization: Basic dXNlcjpwYXNz")).toBe(
+      "Authorization: Basic [REDACTED]"
+    );
+    expect(redactErrorSecrets('"authorization": "Bot s3cr3t"')).toBe(
+      '"authorization": "Bot [REDACTED]"'
+    );
+    expect(redactErrorSecrets("authorization=abc123; next")).toBe(
+      "authorization=[REDACTED]; next"
+    );
+  });
+
   it("keeps prose that only names a token or key readable", () => {
     const text =
       "execution reverted: Unsupported token: 0xA0b8, key: missing, auth: failed";

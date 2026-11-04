@@ -19,6 +19,7 @@ import {
   workflowFailureIncidents,
   workflows,
 } from "@/lib/db/schema";
+import { SKIP_REASON } from "@/lib/notifications/failure-alerts/stored-reasons";
 import { likePattern } from "./like-pattern";
 import {
   groupedIncidentIds,
@@ -32,7 +33,7 @@ import {
   type RunCursor,
   runCursorCondition,
 } from "./run-cursor";
-import type { RunQueryFilters } from "./types";
+import type { NormalizedStatus, RunQueryFilters } from "./types";
 
 // SQL for notification rows in the runs list. resolveSources (queries.ts) drops
 // them for network, gas and duration filters, so those are not handled here.
@@ -77,6 +78,23 @@ function searchCondition(term: string, organizationId: string): SQL {
   )`;
 }
 
+/** Rows whose status (see notificationStatus) is one of these; a dropped row is "error", not "cancelled". */
+function statusCondition(statuses: NormalizedStatus[]): SQL {
+  const states = notificationStatesFor(statuses);
+  const byState =
+    states.length > 0
+      ? inArray(failureAlertDeliveries.state, states)
+      : sql`false`;
+  const dropped = sql`(${failureAlertDeliveries.state} = 'skipped' AND ${failureAlertDeliveries.lastError} IS NOT DISTINCT FROM ${SKIP_REASON.stale})`;
+  const wantsError = statuses.includes("error");
+  if (wantsError === states.includes("skipped")) {
+    return byState;
+  }
+  return wantsError
+    ? sql`(${byState} OR ${dropped})`
+    : sql`(${byState} AND NOT ${dropped})`;
+}
+
 /** All notification predicates; with a project, a workflow-less notice matches none. */
 function notificationConditions(
   organizationId: string,
@@ -92,12 +110,7 @@ function notificationConditions(
   ];
   const statuses = filters.statuses ?? [];
   if (statuses.length > 0) {
-    const states = notificationStatesFor(statuses);
-    conditions.push(
-      states.length > 0
-        ? inArray(failureAlertDeliveries.state, states)
-        : sql`false`
-    );
+    conditions.push(statusCondition(statuses));
   }
   const search = filters.search?.trim();
   if (search) {

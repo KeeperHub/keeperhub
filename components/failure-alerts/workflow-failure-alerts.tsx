@@ -649,9 +649,9 @@ export function WorkflowFailureAlerts({
                   ? "Muted until it works again"
                   : `Muted until ${formatWhen(view.override.mutedUntil ?? "")}`}
                 {view.override.mutedBy ? ` by ${view.override.mutedBy}` : ""}.
-                Failures still show in Runs; nobody is told.
-                {view.override.pauseWorkflow &&
-                  " It is still turned off at the limit, and people are told."}
+                {view.override.pauseWorkflow
+                  ? " Failures still show in Runs; nobody is told unless KeeperHub turns it off at the limit."
+                  : " Failures still show in Runs; nobody is told."}
               </span>
             </p>
           ) : (

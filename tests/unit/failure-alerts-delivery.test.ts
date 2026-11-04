@@ -233,8 +233,10 @@ describe("renderMessage", () => {
       channelLabel: "Slack #ops",
     });
     expect(message.subject).toMatch(
-      /^\[Test\] \[Acme\] Action needed: Wallet out of funds: Example keeper cannot pay/
+      /^\[Test\] \[Acme\] Action needed: Example keeper failed 5 times in a row/
     );
+    // A plain failure alert: the funds case is the turned-off sample.
+    expect(message.text).not.toContain("Add funds");
     expect(message.chat).toContain(
       "Nothing is failing: this is how a real alert looks"
     );

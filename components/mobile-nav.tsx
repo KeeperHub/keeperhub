@@ -345,10 +345,11 @@ function MobileNavBody({
   async function newWorkflow(): Promise<void> {
     // Unsaved changes on the page are asked about before a workflow is made;
     // with none, it starts at once.
-    await confirmLeave("/workflows", async () => {
+    await confirmLeave("/workflows", (asked) => {
       setCreating(true);
       // onSettled runs whether or not the workflow was made.
-      await runNewWorkflow({
+      return runNewWorkflow({
+        stayOnFailure: asked,
         isAnonymous,
         hasSession: Boolean(session),
         push: (href) => router.push(href),

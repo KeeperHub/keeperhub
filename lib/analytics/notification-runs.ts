@@ -6,6 +6,7 @@ import {
   FAILURE_ALERT_KIND_LABEL,
   type HistoryEntry,
   historyNote,
+  wasDropped,
 } from "@/lib/notifications/failure-alerts/view-types";
 import type {
   NormalizedStatus,
@@ -17,7 +18,7 @@ import type {
 // Failure notifications as analytics run rows and history entries, one per delivery.
 // Pure for testing; the SQL lives in notification-runs-query.ts.
 
-/** Delivery state as run status: capped (plan refused) is "skipped", skipped (withdrawn) is "cancelled". */
+/** Delivery state as run status: capped (plan refused) is "skipped", skipped (withdrawn) is "cancelled" unless dropped. */
 const STATUS_BY_STATE: Record<FailureAlertDeliveryState, NormalizedStatus> = {
   delivered: "success",
   failed: "error",
@@ -28,7 +29,14 @@ const STATUS_BY_STATE: Record<FailureAlertDeliveryState, NormalizedStatus> = {
   skipped: "cancelled",
 };
 
-export function notificationStatus(state: string): NormalizedStatus {
+export function notificationStatus(
+  state: string,
+  lastError: string | null = null
+): NormalizedStatus {
+  // Dropped as too late: not delivered, so an error rather than a withdrawal.
+  if (wasDropped(state, lastError)) {
+    return "error";
+  }
   return STATUS_BY_STATE[state as FailureAlertDeliveryState] ?? "pending";
 }
 
@@ -173,13 +181,14 @@ export function toNotificationRun(
     isBackup: row.isBackup,
     attempts: row.attempts,
     lastError: row.lastError,
+    nextAttemptAt: row.nextAttemptAt.toISOString(),
     note,
     workflows,
   };
   return {
     id: row.id,
     source: "notification",
-    status: notificationStatus(row.state),
+    status: notificationStatus(row.state, row.lastError),
     startedAt: row.createdAt.toISOString(),
     completedAt: completed?.toISOString() ?? null,
     // Delivery time is not a run duration.

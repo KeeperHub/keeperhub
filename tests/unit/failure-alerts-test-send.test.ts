@@ -93,6 +93,9 @@ describe("email tests count each recipient against the daily limit", () => {
     expect(sendEmailMessage).toHaveBeenCalledTimes(30);
     await expect(
       emailTest("sender-last", "org-three", three)
-    ).rejects.toMatchObject({ status: 429 });
+    ).rejects.toMatchObject({
+      status: 429,
+      message: "No test messages are left today. Try again tomorrow.",
+    });
   });
 });

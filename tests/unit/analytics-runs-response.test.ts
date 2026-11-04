@@ -79,6 +79,7 @@ describe("normalizeRunsResponse", () => {
       isBackup: false,
       attempts: 1,
       lastError: null,
+      nextAttemptAt: "2026-10-01T10:00:00.000Z",
       note: null,
       workflows: [{ id: "wf", name: "Nightly sync" }],
     };

@@ -1275,6 +1275,7 @@ export const workflowSchedules = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    // Also the missed-run alert baseline: no miss counts before it.
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

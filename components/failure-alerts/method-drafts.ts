@@ -131,16 +131,20 @@ export function sameTarget(a: MethodTarget, b: MethodTarget): boolean {
   );
 }
 
-/** The list with a removed method back at its place; null if it is back already, "full" at the cap. */
+/**
+ * The list with a removed method back at its place; null if it is back already,
+ * "full" at the cap. `unsaved` cards on the page count toward the cap too.
+ */
 export function restoreMethod<T extends MethodTarget>(
   current: T[],
   restored: T,
-  index: number
+  index: number,
+  unsaved = 0
 ): T[] | "full" | null {
   if (current.some((c) => sameTarget(c, restored))) {
     return null;
   }
-  if (current.length >= MAX_CHANNELS) {
+  if (current.length + unsaved >= MAX_CHANNELS) {
     return "full";
   }
   const next = [...current];
