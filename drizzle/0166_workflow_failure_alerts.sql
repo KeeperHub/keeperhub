@@ -59,6 +59,7 @@ CREATE TABLE "alert_settings" (
 	"counting_since" timestamp,
 	"launch_notice_sent_at" timestamp,
 	"paused_until" timestamp,
+	"paused_at" timestamp,
 	"pause_reason" text,
 	"paused_by" text,
 	"version" integer DEFAULT 0 NOT NULL,
@@ -128,10 +129,13 @@ CREATE INDEX "idx_alert_deliveries_incident" ON "alert_deliveries" USING btree (
 CREATE INDEX "idx_alert_deliveries_backup_due" ON "alert_deliveries" USING btree ("backup_at") WHERE "alert_deliveries"."is_backup" = false AND "alert_deliveries"."backup_sent_at" IS NULL AND "alert_deliveries"."state" IN ('pending', 'retrying', 'sending', 'failed', 'capped');--> statement-breakpoint
 CREATE INDEX "idx_alert_deliveries_due" ON "alert_deliveries" USING btree ("next_attempt_at") WHERE "alert_deliveries"."state" IN ('pending', 'retrying', 'sending');--> statement-breakpoint
 CREATE INDEX "idx_alert_deliveries_org_created" ON "alert_deliveries" USING btree ("organization_id","created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "idx_alert_deliveries_created" ON "alert_deliveries" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "idx_alert_queue_due" ON "alert_queue" USING btree ("due_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_alert_incidents_open" ON "alert_incidents" USING btree ("workflow_id") WHERE "alert_incidents"."resolved_at" IS NULL;--> statement-breakpoint
 CREATE INDEX "idx_alert_incidents_org" ON "alert_incidents" USING btree ("organization_id");--> statement-breakpoint
 CREATE INDEX "idx_alert_incidents_workflow" ON "alert_incidents" USING btree ("workflow_id");--> statement-breakpoint
+CREATE INDEX "idx_alert_incidents_resolved" ON "alert_incidents" USING btree ("resolved_at") WHERE "alert_incidents"."resolved_at" IS NOT NULL;
+--> statement-breakpoint
 -- Queues the workflow for the failure-alert evaluator when a run ends in success
 -- or error (covers every code path). Must never block a run: errors are swallowed
 -- with a warning, and the next run's evaluation reads the full streak anyway.
@@ -155,8 +159,6 @@ BEGIN
   RETURN NEW;
 END;
 $$;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS queue_alert_check ON workflow_executions;
 --> statement-breakpoint
 CREATE TRIGGER queue_alert_check
   AFTER INSERT OR UPDATE OF status ON workflow_executions
@@ -184,8 +186,6 @@ BEGIN
   RETURN NEW;
 END;
 $$;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS mark_alert_incident_resumed ON workflows;
 --> statement-breakpoint
 CREATE TRIGGER mark_alert_incident_resumed
   AFTER UPDATE OF enabled ON workflows

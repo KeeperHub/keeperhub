@@ -11,6 +11,10 @@
  * No server-only imports — safe to call from tests and client-side code.
  */
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
+import {
+  findTemplateTokens,
+  parseStoredRef,
+} from "@/lib/workflow/template-ref";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,14 +28,6 @@ export interface ValidationResult {
 // ---------------------------------------------------------------------------
 // PREFILL-03: Template ref validation
 // ---------------------------------------------------------------------------
-
-/**
- * Matches {{@nodeId:Label.field}} template references.
- * The first capture group is the nodeId.
- *
- * Mirrors OUTPUT_MAPPING_TEMPLATE_RE from lib/mcp/validate-workflow.ts.
- */
-const TEMPLATE_REF_RE = /\{\{@([^:}]+):[^}]+\}\}/g;
 
 /**
  * The built-in pseudo-node ID that is always resolvable.
@@ -56,9 +52,13 @@ export function validateTemplateRefs(
 
   for (const node of nodes) {
     const configStr = JSON.stringify(node.data.config ?? {});
-    for (const match of configStr.matchAll(TEMPLATE_REF_RE)) {
-      const referencedId = match[1];
-      if (referencedId !== BUILTIN_NODE_ID && !nodeIds.has(referencedId)) {
+    for (const token of findTemplateTokens(configStr)) {
+      const referencedId = parseStoredRef(token.body)?.nodeId;
+      if (
+        referencedId !== undefined &&
+        referencedId !== BUILTIN_NODE_ID &&
+        !nodeIds.has(referencedId)
+      ) {
         errors.push(
           `Node ${node.id} references missing nodeId "${referencedId}"`
         );

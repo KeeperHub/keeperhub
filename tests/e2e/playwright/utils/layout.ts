@@ -2,16 +2,14 @@ import type { Locator, Page } from "@playwright/test";
 
 export type Box = { x: number; y: number; width: number; height: number };
 
-// Below 768px the app warns once that it is best on a larger screen, in a
-// dialog over everything, and an announcement banner can sit above the
-// header. Tests about what is under them start with both out of the way.
+// An announcement banner can sit above the header. Tests about what is
+// under it start with it out of the way.
 export async function dismissPhoneOverlays(page: Page): Promise<void> {
   await page.addInitScript(() => {
     try {
-      window.localStorage.setItem("keeperhub-mobile-warning-dismissed", "true");
       window.localStorage.setItem("kh-billing-announce-v1", "1");
     } catch {
-      // A sandboxed frame has no storage, and no dialog either.
+      // A sandboxed frame has no storage, and no banner either.
     }
   });
 }

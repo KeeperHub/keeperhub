@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { logAnonymousExecutionBlock } from "@/lib/auth-anonymous-guard";
 import { HttpStatus } from "@/lib/http-status";
 import {
   getWorkflowListingPublic,
@@ -191,6 +192,14 @@ export async function POST(
     );
   }
 
+  if (authContext.isAnonymous) {
+    logAnonymousExecutionBlock("workflow_listing", authContext.userId);
+    return NextResponse.json(
+      { error: "Sign up to list workflows" },
+      { status: HttpStatus.FORBIDDEN }
+    );
+  }
+
   const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE, {
     credentialType: authContext.authMethod,
   });
@@ -274,6 +283,14 @@ export async function PATCH(
     return NextResponse.json(
       { error: authContext.error },
       { status: authContext.status }
+    );
+  }
+
+  if (authContext.isAnonymous) {
+    logAnonymousExecutionBlock("workflow_listing", authContext.userId);
+    return NextResponse.json(
+      { error: "Sign up to list workflows" },
+      { status: HttpStatus.FORBIDDEN }
     );
   }
 

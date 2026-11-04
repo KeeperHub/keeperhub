@@ -12,7 +12,7 @@
  * unresolved reference.
  */
 
-const TEMPLATE_LITERAL_SCAN = /\{\{[^}]+\}\}/g;
+import { findTemplateTokens } from "@/lib/workflow/template-ref";
 
 export type UnresolvedReason =
   | "no-node"
@@ -87,9 +87,9 @@ export function scanForLeftoverLiterals(
     return;
   }
   if (typeof value === "string") {
-    for (const match of value.matchAll(TEMPLATE_LITERAL_SCAN)) {
+    for (const token of findTemplateTokens(value)) {
       out.push({
-        token: match[0],
+        token: value.slice(token.start, token.end),
         reason: "literal-leftover",
         detail: "Reference left in rendered config; resolver did not match.",
         path: path || undefined,

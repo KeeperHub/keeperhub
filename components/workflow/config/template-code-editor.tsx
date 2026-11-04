@@ -23,7 +23,11 @@ import {
   sanitizeNodeId,
 } from "@/lib/workflow/editor/template-helpers";
 import { useStableRef } from "@/lib/use-stable-ref";
-import { getAvailableFields, type NodeOutputs } from "@/lib/utils/template";
+import {
+  formatTemplateForDisplay,
+  getAvailableFields,
+  type NodeOutputs,
+} from "@/lib/utils/template";
 import {
   currentWorkflowIdAtom,
   currentWorkflowInputSchemaAtom,
@@ -34,6 +38,11 @@ import {
   selectedNodeAtom,
   type WorkflowNode,
 } from "@/lib/workflow/store";
+import {
+  findStoredRefTokens,
+  findTemplateTokens,
+  replaceTemplateTokens,
+} from "@/lib/workflow/template-ref";
 
 // ---------------------------------------------------------------------------
 // Component
@@ -114,15 +123,14 @@ export function TemplateCodeEditor({
   const [tallMaxHeight, setTallMaxHeight] = useState<number | null>(null);
 
   const displayValue = useMemo(
-    () => value.replace(/\{\{@[^:]+:([^}]+)\}\}/g, "{{$1}}"),
+    () => formatTemplateForDisplay(value),
     [value]
   );
 
   useEffect(() => {
     const map = new Map<string, string>();
-    const pattern = /\{\{@([^:]+):([^}]+)\}\}/g;
-    for (const match of value.matchAll(pattern)) {
-      map.set(match[2], match[1]);
+    for (const ref of findStoredRefTokens(value)) {
+      map.set(ref.rest, ref.nodeId);
     }
     templateMapRef.current = map;
   }, [value]);
@@ -151,9 +159,13 @@ export function TemplateCodeEditor({
 
   const handleEditorChange = useCallback(
     (newDisplay: string) => {
-      const stored = newDisplay.replace(
-        /\{\{([^@}][^}]*)\}\}/g,
-        (full: string, displayPart: string) => {
+      const stored = replaceTemplateTokens(
+        newDisplay,
+        ({ body: displayPart }) => {
+          const full = `{{${displayPart}}}`;
+          if (displayPart.startsWith("@")) {
+            return full;
+          }
           const mappedId = templateMapRef.current.get(displayPart);
           if (mappedId) {
             return `{{@${mappedId}:${displayPart}}}`;
@@ -388,13 +400,12 @@ export function TemplateCodeEditor({
     }
 
     const text = model.getValue();
-    const templatePattern = /\{\{([^}]+)\}\}/g;
     // biome-ignore lint/suspicious/noExplicitAny: Monaco decoration types vary across versions
     const newDecorations: any[] = [];
 
-    for (const match of text.matchAll(templatePattern)) {
-      const start = model.getPositionAt(match.index);
-      const end = model.getPositionAt(match.index + match[0].length);
+    for (const token of findTemplateTokens(text)) {
+      const start = model.getPositionAt(token.start);
+      const end = model.getPositionAt(token.end);
       newDecorations.push({
         range: {
           startLineNumber: start.lineNumber,
@@ -404,7 +415,7 @@ export function TemplateCodeEditor({
         },
         options: {
           inlineClassName: "template-badge",
-          hoverMessage: { value: `Template: ${match[1]}` },
+          hoverMessage: { value: `Template: ${token.body}` },
         },
       });
     }

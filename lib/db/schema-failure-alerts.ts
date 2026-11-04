@@ -213,6 +213,10 @@ export const workflowFailureIncidents = pgTable(
       .where(sql`${table.resolvedAt} IS NULL`),
     index("idx_alert_incidents_org").on(table.organizationId),
     index("idx_alert_incidents_workflow").on(table.workflowId),
+    // Retention prune reads resolved incidents by age.
+    index("idx_alert_incidents_resolved")
+      .on(table.resolvedAt)
+      .where(sql`${table.resolvedAt} IS NOT NULL`),
   ]
 );
 
@@ -300,6 +304,8 @@ export const failureAlertDeliveries = pgTable(
       table.organizationId,
       table.createdAt.desc()
     ),
+    // Retention prune reads deliveries by age across orgs.
+    index("idx_alert_deliveries_created").on(table.createdAt),
   ]
 );
 

@@ -1,6 +1,6 @@
 {
-  "id": "b335780f-9f65-4d34-8204-9af4a7923121",
-  "prevId": "4c6c7092-b7a9-45e7-af84-e4917abb3e91",
+  "id": "f85d31a9-9f31-4167-a47a-2b6c87609980",
+  "prevId": "8fb254e1-be0f-45ed-8459-b048be956294",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2345,6 +2345,21 @@
               "expression": "created_at",
               "isExpression": false,
               "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_alert_deliveries_created": {
+          "name": "idx_alert_deliveries_created",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
               "nulls": "last"
             }
           ],
@@ -9336,6 +9351,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_alert_incidents_resolved": {
+          "name": "idx_alert_incidents_resolved",
+          "columns": [
+            {
+              "expression": "resolved_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"alert_incidents\".\"resolved_at\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
