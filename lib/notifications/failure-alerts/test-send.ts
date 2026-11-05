@@ -3,10 +3,20 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { failureAlertChannels, organization } from "@/lib/db/schema";
-import { loadOrgMembers } from "@/lib/notifications/org-recipients";
+import {
+  failureAlertChannels,
+  failureAlertDeliveries,
+  organization,
+} from "@/lib/db/schema";
+import type { FailureAlertDeliveryChannel } from "@/lib/db/schema-failure-alerts";
+import { ErrorCategory, logSystemWarn } from "@/lib/logging";
+import {
+  loadOrgMembers,
+  type OrgMember,
+} from "@/lib/notifications/org-recipients";
+import { redactErrorSecrets } from "@/lib/utils/redact";
 import { TESTS_PER_DAY_PER_ORG, TESTS_PER_MINUTE_PER_USER } from "./constants";
-import { appBaseUrl, renderMessage } from "./messages";
+import { appBaseUrl, pauseActorName, renderMessage } from "./messages";
 import { resolveRecipientEmails } from "./policy";
 import {
   type DeliveryOutcome,
@@ -20,6 +30,52 @@ import {
 } from "./settings";
 import { takeSlots } from "./slots";
 import { channelLabel, type TestRequest, type TestResult } from "./view-types";
+
+/**
+ * Keeps a sent test in Sent alerts with who sent it. Written already finished,
+ * so the outbox never picks it up; a failure here never fails the test.
+ */
+async function recordTest(params: {
+  organizationId: string;
+  userId: string;
+  members: OrgMember[];
+  channel: FailureAlertDeliveryChannel;
+  channelId: string | null;
+  recipient: string;
+  outcome: DeliveryOutcome;
+}): Promise<void> {
+  const { outcome } = params;
+  const now = new Date();
+  try {
+    await db.insert(failureAlertDeliveries).values({
+      dedupKey: `test:${randomUUID()}`,
+      organizationId: params.organizationId,
+      incidentId: null,
+      kind: "test",
+      sequence: 0,
+      channel: params.channel,
+      channelId: params.channelId,
+      recipient: params.recipient,
+      state: outcome.ok ? "delivered" : "failed",
+      attempts: 1,
+      nextAttemptAt: now,
+      lastStatus: outcome.status ?? null,
+      lastError: outcome.ok ? null : redactErrorSecrets(outcome.message),
+      deliveredAt: outcome.ok ? now : null,
+      context: {
+        by: pauseActorName(
+          params.members.find((m) => m.userId === params.userId)
+        ),
+      },
+    });
+  } catch (error) {
+    logSystemWarn(
+      ErrorCategory.DATABASE,
+      "[FailureAlerts] Could not record a test in Sent alerts",
+      error
+    );
+  }
+}
 
 /** Each email a test sends counts toward the org's daily tests; `emails` is unset for chat tests. */
 async function checkTestRateLimit(
@@ -156,6 +212,15 @@ async function testEmail(
   let last: DeliveryOutcome = { ok: true, retryable: false, message: "" };
   for (const to of recipients) {
     last = await sendEmailMessage(to, rendered);
+    await recordTest({
+      organizationId,
+      userId,
+      members,
+      channel: "email",
+      channelId: null,
+      recipient: to,
+      outcome: last,
+    });
     if (!last.ok) {
       break;
     }
@@ -236,6 +301,16 @@ export async function sendTest(params: {
       details: { test: true },
     });
   }
+
+  await recordTest({
+    organizationId,
+    userId,
+    members: await loadOrgMembers(organizationId),
+    channel: target.kind,
+    channelId: target.channelId ?? null,
+    recipient: target.destination || target.kind,
+    outcome,
+  });
 
   if (target.channelId) {
     const now = new Date();

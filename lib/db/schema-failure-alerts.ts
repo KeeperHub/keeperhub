@@ -233,7 +233,9 @@ export type FailureAlertMessageKind =
   | "launch_notice"
   | "alerts_paused"
   | "alerts_resumed"
-  | "cap_warning";
+  | "cap_warning"
+  // A Test from the Alerts page, recorded once sent; never queued.
+  | "test";
 
 export type FailureAlertDeliveryChannel = "email" | FailureAlertChannelKind;
 

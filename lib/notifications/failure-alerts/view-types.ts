@@ -119,8 +119,10 @@ export type HistoryEntry = {
   lastError: string | null;
   /** When a queued row is next tried: later than now for a held recovery. */
   nextAttemptAt: string;
-  /** Which channel a pause notice is about, or why a backup was sent. */
+  /** Which channel a pause notice is about, a pause's reason, or why a backup was sent. */
   note: string | null;
+  /** Who caused it: a person for a pause, resume or test, else KeeperHub. */
+  by: string;
   workflows: { id: string; name: string }[];
 };
 
@@ -295,25 +297,38 @@ export const FAILURE_ALERT_KIND_LABEL: Record<FailureAlertMessageKind, string> =
     alerts_paused: "Alerts paused",
     alerts_resumed: "Alerts back on",
     cap_warning: "Email limit warning",
+    test: "Test",
   };
+
+/** Who caused a message: the person who paused, resumed or tested; KeeperHub for everything automatic. */
+export function historyBy(
+  context: Record<string, unknown> | null,
+  kind: string
+): string {
+  const person =
+    (kind === "alerts_paused" ||
+      kind === "alerts_resumed" ||
+      kind === "test") &&
+    typeof context?.by === "string" &&
+    context.by
+      ? context.by
+      : null;
+  return person ?? "KeeperHub";
+}
 
 /** Which channel a pause notice is about, why a backup was sent, or a workflow turned off. */
 export function historyNote(
   context: Record<string, unknown> | null,
   kind?: string
 ): string | null {
-  // A pause notice says who paused or resumed it, and why.
-  if (kind === "alerts_paused" || kind === "alerts_resumed") {
-    const by = typeof context?.by === "string" ? context.by : null;
-    const who = by && /^An (owner|admin)$/.test(by) ? by.toLowerCase() : by;
-    if (kind === "alerts_resumed") {
-      return who ? `Turned back on by ${who}` : "The pause ran out";
-    }
-    const reason =
-      typeof context?.reason === "string" && context.reason
-        ? `: ${context.reason}`
-        : "";
-    return `${who ? `Paused by ${who}` : "Paused"}${reason}`;
+  // Who is in historyBy; a pause notice adds its reason here.
+  if (kind === "alerts_paused") {
+    return typeof context?.reason === "string" && context.reason
+      ? `Reason: ${context.reason}`
+      : null;
+  }
+  if (kind === "alerts_resumed") {
+    return typeof context?.by === "string" ? null : "The pause ran out";
   }
   if (typeof context?.channelLabel === "string") {
     return context.channelLabel;

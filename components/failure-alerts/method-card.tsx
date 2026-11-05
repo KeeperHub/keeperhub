@@ -49,6 +49,7 @@ import { sendFailureAlertTest } from "./api";
 import { type ChoiceChip, ChoiceChips } from "./choice-chips";
 import { focusInPlace } from "./focus-in-place";
 import { memberLabel } from "./member-label";
+import { MessagePreviewDialog } from "./message-preview-dialog";
 import {
   BROKEN_STATUSES,
   CHANNEL_KINDS,
@@ -295,19 +296,22 @@ function useRowState(startOpen: boolean): {
   };
 }
 
-/** Test and Save on the left, Remove on the right, on every card. */
+/** Test, Preview and Save on the left, Remove on the right, on every card. */
 function ActionsRow({
   test,
+  preview,
   save,
   remove,
 }: {
   test: ReactNode;
+  preview?: ReactNode;
   save?: ReactNode;
   remove?: ReactNode;
 }): React.ReactElement {
   return (
     <div className="flex flex-wrap items-center gap-2">
       {test}
+      {preview}
       {save}
       {remove && <div className="ml-auto">{remove}</div>}
     </div>
@@ -343,6 +347,7 @@ function SaveButton({
 }
 
 type PagerDutyMode = "change" | "page";
+type PreviewKind = "slack" | "discord" | "telegram" | "pagerduty";
 
 const PD_MODES: readonly ChoiceChip<PagerDutyMode>[] = [
   {
@@ -423,13 +428,17 @@ function ChannelHealth({
   saved,
   status,
   savesHere,
+  savedWithText,
 }: {
   draft: DraftChannel;
   saved: ChannelView | undefined;
   status: MethodStatus;
   savesHere: boolean;
+  /** Where an unsaved change gets saved, when not on this card. */
+  savedWithText?: string;
 }): React.ReactElement {
-  const savedWith = "Saved with this workflow's settings below.";
+  const savedWith =
+    savedWithText ?? "Saved with this workflow's settings below.";
   if (status === "missing") {
     return (
       <span className="text-destructive">
@@ -687,6 +696,7 @@ export function ChannelMethodCard({
   onTested,
   onReload,
   onConnectionsChanged,
+  savedWithText,
 }: {
   organizationId: string;
   draft: DraftChannel;
@@ -698,6 +708,8 @@ export function ChannelMethodCard({
   /** Nobody else can be told if this one is broken. */
   lastResort?: boolean;
   onChange: (next: DraftChannel) => void;
+  /** Where an unsaved change gets saved, when the card has no Save of its own. */
+  savedWithText?: string;
   onSave?: SaveAction;
   onRemove?: (label: string) => void;
   /** A saved channel was tested: its stored health changed. */
@@ -855,6 +867,14 @@ export function ChannelMethodCard({
     <MethodRow
       actions={
         <ActionsRow
+          preview={
+            draft.kind ? (
+              <MessagePreviewDialog
+                channel={draft.kind as PreviewKind}
+                organizationId={organizationId}
+              />
+            ) : undefined
+          }
           remove={removeButton}
           save={
             onSave ? (
@@ -979,6 +999,7 @@ export function ChannelMethodCard({
         <ChannelHealth
           draft={draft}
           saved={saved}
+          savedWithText={savedWithText}
           savesHere={Boolean(onSave)}
           status={status}
         />
@@ -1025,7 +1046,8 @@ export function EmailMethodCard({
   canManage: boolean;
   emailUsage: { used: number; limit: number } | null;
   onChange: (recipients: string[]) => void;
-  onSave: SaveAction;
+  /** Without it the page's Save covers the recipients. */
+  onSave?: SaveAction;
   onReload?: () => void;
 }): React.ReactElement {
   const idPrefix = useId();
@@ -1057,7 +1079,7 @@ export function EmailMethodCard({
   };
 
   const runSave = async (): Promise<void> => {
-    if (await save.run(onSave)) {
+    if (onSave && (await save.run(onSave))) {
       row.closeAndFocus();
     }
   };
@@ -1096,14 +1118,22 @@ export function EmailMethodCard({
     <MethodRow
       actions={
         <ActionsRow
-          save={
-            <SaveButton
-              dirty={dirty}
-              label="Email"
-              onClick={runSave}
-              ready={recipients.length > 0}
-              saving={save.state === "saving"}
+          preview={
+            <MessagePreviewDialog
+              channel="email"
+              organizationId={organizationId}
             />
+          }
+          save={
+            onSave ? (
+              <SaveButton
+                dirty={dirty}
+                label="Email"
+                onClick={runSave}
+                ready={recipients.length > 0}
+                saving={save.state === "saving"}
+              />
+            ) : undefined
           }
           test={
             <Button
@@ -1215,11 +1245,13 @@ export function EmailMethodCard({
       dirty={dirty}
       expanded={expanded}
       feedback={
-        <SaveFeedback
-          dirty={dirty}
-          state={save.state}
-          testId="failure-alert-method-save"
-        />
+        onSave ? (
+          <SaveFeedback
+            dirty={dirty}
+            state={save.state}
+            testId="failure-alert-method-save"
+          />
+        ) : undefined
       }
       health={
         <span

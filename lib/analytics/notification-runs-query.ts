@@ -134,7 +134,8 @@ type KeyedNotificationRow = NotificationRow & {
 export async function loadNotificationRows(
   organizationId: string,
   conditions: SQL[],
-  limit: number
+  limit: number,
+  offset = 0
 ): Promise<{
   rows: KeyedNotificationRow[];
   groupedNames: Map<string, { id: string; name: string }>;
@@ -184,7 +185,8 @@ export async function loadNotificationRows(
       desc(failureAlertDeliveries.createdAt),
       desc(failureAlertDeliveries.id)
     )
-    .limit(limit);
+    .limit(limit)
+    .offset(offset);
 
   // Results are shared and cached, so a step-up inbox is masked for everyone.
   const mask = await stepUpMasker(

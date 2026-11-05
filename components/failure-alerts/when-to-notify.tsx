@@ -21,7 +21,7 @@ import {
   REFUSED_RUNS_THRESHOLD,
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
-import { FUNDS_RULE, timeLimitLabel } from "./format";
+import { timeLimitLabel } from "./format";
 import {
   type SaveAction,
   SaveError,
@@ -43,7 +43,7 @@ export function rulesDraftFrom(rules: SavedRules): RulesDraft {
   return { ...rules, threshold: String(rules.threshold) };
 }
 
-function isValidThreshold(value: string): boolean {
+export function isValidThreshold(value: string): boolean {
   const n = Number(value);
   return (
     value.trim() !== "" &&
@@ -62,7 +62,7 @@ export function rulesDirty(draft: RulesDraft, saved: SavedRules): boolean {
   );
 }
 
-/** The rules for every method, with their own Save. */
+/** The rules for every method; with onSave they have their own Save, else the page saves them. */
 export function WhenToNotify({
   draft,
   saved,
@@ -75,7 +75,7 @@ export function WhenToNotify({
   saved: SavedRules;
   canManage: boolean;
   onChange: (next: RulesDraft) => void;
-  onSave: SaveAction;
+  onSave?: SaveAction;
   onReload?: () => void;
 }): React.ReactElement {
   const save = useSaveState();
@@ -152,24 +152,37 @@ export function WhenToNotify({
           </SelectContent>
         </Select>
       </div>
-      <p className="text-muted-foreground text-xs">
-        For slow schedules: a workflow that runs every 4 hours takes {4 * runs}{" "}
-        hours to fail {runs} time{runs === 1 ? "" : "s"}. The time limit needs
-        at least {MIN_TIME_RULE_FAILURES} failed runs in a row and never turns a
-        workflow off.
-      </p>
-      <p className="text-muted-foreground text-xs">
-        {FUNDS_RULE} Errors on KeeperHub's side never count toward either limit.
-      </p>
-      <p className="text-muted-foreground text-xs">
-        Runs refused before they start (plan limit, paid features, billing, or a
-        workflow that cannot run because its owner has no account) are reported
-        per workflow after {REFUSED_RUNS_THRESHOLD} refusals, and you are told
-        when they are accepted again; scheduled workflows are reported when a
-        run is due. A workflow that is turned off, deactivated by KeeperHub or
-        in an organization whose circuit breaker is engaged is not reported
-        while it stays that way.
-      </p>
+      <ul
+        className="space-y-1 text-muted-foreground text-xs"
+        data-testid="failure-alerts-rule-help"
+      >
+        <li>
+          <span className="font-medium text-foreground">
+            Failed runs in a row:
+          </span>{" "}
+          the alert goes out after this many failures in a row. A workflow that
+          runs every 4 hours takes {4 * runs} hours to reach {runs}.
+        </li>
+        <li>
+          <span className="font-medium text-foreground">Time limit:</span> for
+          slow schedules, the alert goes out once it has been failing this long,
+          with at least {MIN_TIME_RULE_FAILURES} failures in a row.
+        </li>
+        <li>
+          <span className="font-medium text-foreground">Out of funds:</span> a
+          wallet that runs out of funds alerts after 2 failed runs, whatever the
+          limits.
+        </li>
+        <li>
+          <span className="font-medium text-foreground">Refused runs</span>{" "}
+          (plan limit, billing, paid features): reported after{" "}
+          {REFUSED_RUNS_THRESHOLD} refusals, and again when runs are accepted.
+        </li>
+        <li>
+          <span className="font-medium text-foreground">Never counted:</span>{" "}
+          errors on KeeperHub's side, and workflows that are turned off.
+        </li>
+      </ul>
       <label className="flex items-center gap-2" htmlFor="failure-remind">
         <Checkbox
           checked={draft.remindDaily}
@@ -203,7 +216,7 @@ export function WhenToNotify({
             : undefined
         }
       />
-      {canManage && (
+      {canManage && onSave && (
         <div className="flex flex-wrap items-center gap-2 border-t pt-3">
           <Button
             aria-label="Save rules"

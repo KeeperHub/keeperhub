@@ -13,9 +13,14 @@ import { Button } from "@/components/ui/button";
 import { Notice } from "@/components/ui/notice";
 import { useSession } from "@/lib/auth-client";
 import { invalidateNotificationStatus } from "@/lib/hooks/use-notifications";
-import type {
-  ChannelView,
-  OrgSettingsView,
+import {
+  MAX_THRESHOLD,
+  MIN_THRESHOLD,
+} from "@/lib/notifications/failure-alerts/constants";
+import {
+  CHANNEL_LABEL,
+  type ChannelView,
+  type OrgSettingsView,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { AlertsStatus, statusCardClass } from "./alerts-status";
 import { fetchView, ViewError } from "./api";
@@ -23,7 +28,6 @@ import { AddMethodButton } from "./channel-list-editor";
 import { CustomWorkflowsList } from "./custom-workflows";
 import { describeRule } from "./format";
 import { memberLabel } from "./member-label";
-import { MessagePreviewDialog } from "./message-preview-dialog";
 import {
   ChannelMethodCard,
   EmailMethodCard,
@@ -36,16 +40,15 @@ import {
   type DraftChannel,
   draftFromView,
   isChannelDirty,
-  METHODS_FULL,
   newMethodDraft,
-  restoreMethod,
-  sameTarget,
 } from "./method-drafts";
 import { NotificationHistory } from "./notification-history";
 import { PauseAlertsForm } from "./pause-alerts";
+import { SaveBar } from "./save-bar";
 import type { SaveRefusal } from "./save-state";
 import { UnsavedChangesGuard } from "./unsaved-guard";
 import {
+  isValidThreshold,
   type RulesDraft,
   rulesDirty,
   rulesDraftFrom,
@@ -98,7 +101,7 @@ function savedChannelsPayload(channels: ChannelView[]): ChannelPayload[] {
   return channels.map((c) => channelPayload(draftFromView(c)));
 }
 
-/** The settings exactly as last saved: the base every card's Save starts from. */
+/** The settings exactly as last saved: the base the page's Save writes over. */
 function basePayload(saved: Loaded): Record<string, unknown> {
   return {
     version: saved.version,
@@ -152,6 +155,9 @@ export function OrgFailureAlertsSection({
   const [recipients, setRecipients] = useState<string[]>([]);
   const [cards, setCards] = useState<DraftChannel[]>([]);
   const [pausing, setPausing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<SaveRefusal | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
   const savedRef = useRef<Loaded | null>(null);
   const cardsRef = useRef<DraftChannel[]>([]);
   cardsRef.current = cards;
@@ -341,9 +347,13 @@ export function OrgFailureAlertsSection({
   const recipientsDirty =
     recipients.length !== data.recipientUserIds.length ||
     recipients.some((id) => !data.recipientUserIds.includes(id));
+  const methodsRemoved = data.channels.some(
+    (v) => !cards.some((c) => c.id === v.id)
+  );
   const anyDirty =
     rulesDirty(rules, data) ||
     recipientsDirty ||
+    methodsRemoved ||
     cards.some((c) =>
       isChannelDirty(
         c,
@@ -379,145 +389,85 @@ export function OrgFailureAlertsSection({
     return null;
   };
 
-  const saveRules = async (): Promise<SaveRefusal | null> => {
-    const draft = rules;
-    const result = await put((saved) => ({
-      ...basePayload(saved),
-      threshold: Number(draft.threshold),
-      timeLimitMinutes: draft.timeLimitMinutes,
-      remindDaily: draft.remindDaily,
-      notifyRecovery: draft.notifyRecovery,
-    }));
-    if (!result.ok) {
-      return result.refusal;
-    }
-    accept(result.body);
-    setRules(rulesDraftFrom(result.body));
-    return null;
-  };
-
-  const saveRecipients = async (): Promise<SaveRefusal | null> => {
-    const chosen = recipients;
-    const result = await put((saved) => ({
-      ...basePayload(saved),
-      recipientUserIds: chosen,
-    }));
-    if (!result.ok) {
-      return result.refusal;
-    }
-    accept(result.body);
-    setRecipients([...result.body.recipientUserIds]);
-    return null;
-  };
-
-  const saveCard = async (key: string): Promise<SaveRefusal | null> => {
-    const card = cardsRef.current.find((c) => c.key === key);
-    if (!card) {
-      return { message: "This method is no longer on the page." };
-    }
-    const result = await put((saved) => {
-      const channels = savedChannelsPayload(saved.channels);
-      const index = card.id ? channels.findIndex((c) => c.id === card.id) : -1;
-      const mine = channelPayload({
-        ...card,
-        destination: card.destination.trim(),
+  /** Rules, email and every method in one save, as one consistent configuration. */
+  const saveAll = async (): Promise<void> => {
+    setSaveError(null);
+    if (!isValidThreshold(rules.threshold)) {
+      setSaveError({
+        message: `Failed runs in a row must be a whole number from ${MIN_THRESHOLD} to ${MAX_THRESHOLD}.`,
       });
-      if (index >= 0) {
-        channels[index] = mine;
-      } else {
-        channels.push({ ...mine, id: undefined });
-      }
-      return { ...basePayload(saved), channels };
-    });
+      return;
+    }
+    if (recipients.length === 0) {
+      setSaveError({ message: "Choose at least one person to email." });
+      return;
+    }
+    const unfinished = cards.find((c) => !c.integrationId);
+    if (unfinished) {
+      setSaveError({
+        message: `Pick a connection for the new ${CHANNEL_LABEL[unfinished.kind]} method, or remove it.`,
+      });
+      return;
+    }
+    const drafts = cards.map((c) => ({
+      ...c,
+      destination: c.destination.trim(),
+    }));
+    setSaving(true);
+    const result = await put((saved) => ({
+      ...basePayload(saved),
+      threshold: Number(rules.threshold),
+      timeLimitMinutes: rules.timeLimitMinutes,
+      remindDaily: rules.remindDaily,
+      notifyRecovery: rules.notifyRecovery,
+      recipientUserIds: recipients,
+      channels: drafts.map(channelPayload),
+    }));
+    setSaving(false);
     if (!result.ok) {
-      return result.refusal;
+      setSaveError(result.refusal);
+      return;
     }
-    // A new card takes the id of the row the server made for it.
-    const taken = new Set(
-      cardsRef.current.filter((c) => c.key !== key && c.id).map((c) => c.id)
-    );
-    const id = result.body.channels.some((v) => v.id === card.id)
-      ? card.id
-      : result.body.channels.find(
-          (v) =>
-            !taken.has(v.id) &&
-            sameTarget(v, { ...card, destination: card.destination.trim() })
-        )?.id;
-    setCards((current) =>
-      current.map((c) =>
-        c.key === key
-          ? {
-              ...c,
-              id,
-              destination: c.destination.trim(),
-              fresh: false,
-              pausedReason: undefined,
-            }
-          : c
-      )
-    );
     accept(result.body);
-    return null;
+    // Saved: every draft is now what the server holds.
+    setCards(result.body.channels.map(draftFromView));
+    setRules(rulesDraftFrom(result.body));
+    setRecipients([...result.body.recipientUserIds]);
+    setSavedAt(Date.now());
+    toast.success("Alert settings saved");
   };
 
-  const restore = async (view: ChannelView, index: number): Promise<void> => {
-    const result = await put((saved) => {
-      // A paused channel comes back paused, not live.
-      const item: ChannelPayload = {
-        kind: view.kind,
-        integrationId: view.integrationId,
-        destination: view.destination,
-        role: view.role,
-        pausedReason: view.pausedAt
-          ? (view.pausedReason ?? "It stopped working.")
-          : undefined,
-      };
-      const channels = savedChannelsPayload(saved.channels);
-      // Unsaved cards count too, so the page never shows more than the cap.
-      const unsaved = cardsRef.current.filter((c) => !c.id).length;
-      const next = restoreMethod(channels, item, index, unsaved);
-      if (next === "full") {
-        return new RefusedSave({ message: METHODS_FULL });
-      }
-      return { ...basePayload(saved), channels: next ?? channels };
-    });
-    if (result.ok) {
-      accept(result.body);
-    } else {
-      toast.error(result.refusal.message);
-    }
+  /** Back to what is saved, everywhere on the page. */
+  const discard = (): void => {
+    setSaveError(null);
+    setCards(data.channels.map(draftFromView));
+    setRules(rulesDraftFrom(data));
+    setRecipients([...data.recipientUserIds]);
   };
 
-  const removeCard = async (key: string, label: string): Promise<void> => {
+  /** Removing is a change like any other: it takes effect on Save, and Undo puts it back. */
+  const removeCard = (key: string, label: string): void => {
     const position = cardsRef.current.findIndex((c) => c.key === key);
     const card = cardsRef.current[position];
     if (!card) {
       return;
     }
-    const view = card.id
-      ? savedRef.current?.channels.find((c) => c.id === card.id)
-      : undefined;
-    if (!view) {
-      setCards((current) => current.filter((c) => c.key !== key));
-      focusMethodAt(methodsRef, Number.POSITIVE_INFINITY, addRef);
-      return;
-    }
-    const index = savedRef.current?.channels.indexOf(view) ?? 0;
-    const result = await put((saved) => ({
-      ...basePayload(saved),
-      channels: savedChannelsPayload(
-        saved.channels.filter((c) => c.id !== view.id)
-      ),
-    }));
-    if (!result.ok) {
-      toast.error(result.refusal.message);
-      return;
-    }
-    accept(result.body);
-    // Email is the first row, so the next method sits at position + 1.
+    setCards((current) => current.filter((c) => c.key !== key));
     focusMethodAt(methodsRef, position + 1, addRef);
-    toast(`${label} removed`, {
-      action: { label: "Undo", onClick: () => restore(view, index) },
+    toast(`${label} removed. Save changes to keep it removed.`, {
+      action: {
+        label: "Undo",
+        onClick: () =>
+          setCards((current) =>
+            current.some((c) => c.key === card.key)
+              ? current
+              : [
+                  ...current.slice(0, position),
+                  card,
+                  ...current.slice(position),
+                ]
+          ),
+      },
     });
   };
 
@@ -582,13 +532,11 @@ export function OrgFailureAlertsSection({
           draft={rules}
           onChange={setRules}
           onReload={reload}
-          onSave={saveRules}
           saved={data}
         />
       </SettingsCard>
 
       <SettingsCard
-        action={<MessagePreviewDialog organizationId={orgId} />}
         description="Who gets alerts, and how. Each method is checked before it is saved and again every day."
         title="Methods"
       >
@@ -600,7 +548,6 @@ export function OrgFailureAlertsSection({
               members={data.members}
               onChange={setRecipients}
               onReload={reload}
-              onSave={saveRecipients}
               organizationId={orgId}
               recipients={recipients}
               savedRecipients={data.recipientUserIds}
@@ -620,10 +567,10 @@ export function OrgFailureAlertsSection({
                 onConnectionsChanged={refresh}
                 onReload={reload}
                 onRemove={(label) => removeCard(card.key, label)}
-                onSave={() => saveCard(card.key)}
                 onTested={refresh}
                 organizationId={orgId}
                 saved={data.channels.find((c) => c.id === card.id)}
+                savedWithText="Saved with Save changes at the bottom."
                 unsharedConnections={data.unsharedConnections}
               />
             ))}
@@ -671,6 +618,21 @@ export function OrgFailureAlertsSection({
           </details>
         </div>
       </SettingsCard>
+
+      {canManage && (
+        <SaveBar
+          dirty={anyDirty}
+          error={saveError}
+          onDiscard={discard}
+          onReload={() => {
+            setSaveError(null);
+            reload();
+          }}
+          onSave={saveAll}
+          savedAt={savedAt}
+          saving={saving}
+        />
+      )}
 
       {data.customWorkflows.length > 0 && (
         <SettingsCard

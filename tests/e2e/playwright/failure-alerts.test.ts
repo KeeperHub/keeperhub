@@ -163,8 +163,11 @@ test.describe("Failure alerts", () => {
     await expect(picker).toBeVisible();
     // The only Discord connection holds no credentials, so the server's check fails without a network call.
     await picker.locator('input[value="discord"]').check({ force: true });
-    await fresh.getByTestId("failure-alert-method-save-button").click();
-    const refusal = fresh.getByTestId("failure-alert-save-error");
+    // One Save for the page: the refusal shows in the save bar, nothing is kept.
+    const bar = page.getByTestId("failure-alerts-save-bar");
+    await expect(bar).toHaveAttribute("data-dirty", "true");
+    await bar.getByTestId("failure-alerts-save").click();
+    const refusal = bar.getByTestId("failure-alert-save-error");
     await expect(refusal).toBeVisible(SAVE_TIMEOUT);
     await expect(refusal).toContainText("cannot receive notifications");
     await expect(fresh).toHaveAttribute("data-dirty", "true");
@@ -257,6 +260,15 @@ test.describe("Failure alerts", () => {
     );
     await section.getByTestId("failure-alerts-tab-custom").click();
     const custom = section.getByTestId("failure-alerts-custom");
+    // Switching back to Org rules closes the form and stays there.
+    await expect(custom).toBeVisible();
+    await section.getByTestId("failure-alerts-tab-org").click();
+    await expect(custom).toHaveCount(0);
+    await expect(section.getByTestId("failure-alerts-tab-org")).toHaveAttribute(
+      "data-state",
+      "active"
+    );
+    await section.getByTestId("failure-alerts-tab-custom").click();
     await expect(custom).toBeVisible();
     const threshold = custom.locator("#wf-failure-threshold");
     const pauseBox = custom.locator("#wf-pause-workflow");

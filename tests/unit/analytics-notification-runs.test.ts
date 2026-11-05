@@ -277,6 +277,7 @@ describe("toHistoryEntry", () => {
       lastError: null,
       nextAttemptAt: CREATED.toISOString(),
       note: null,
+      by: "KeeperHub",
       workflows: [{ id: "wf_nightly", name: "Nightly sync" }],
     });
   });
@@ -384,21 +385,23 @@ describe("notificationBadge", () => {
 });
 
 describe("pause notice notes", () => {
-  it("says who paused it and why, or who turned it back on", async () => {
-    const { historyNote } = await import(
+  it("names who paused, resumed or tested, and keeps the pause reason", async () => {
+    const { historyBy, historyNote } = await import(
       "@/lib/notifications/failure-alerts/view-types"
     );
     expect(
+      historyBy({ by: "Dana", reason: "Vault upgrade" }, "alerts_paused")
+    ).toBe("Dana");
+    expect(
       historyNote({ by: "Dana", reason: "Vault upgrade" }, "alerts_paused")
-    ).toBe("Paused by Dana: Vault upgrade");
-    expect(historyNote({ by: "An owner", reason: null }, "alerts_paused")).toBe(
-      "Paused by an owner"
-    );
-    expect(historyNote({ by: "Dana" }, "alerts_resumed")).toBe(
-      "Turned back on by Dana"
-    );
+    ).toBe("Reason: Vault upgrade");
+    expect(historyBy({ by: "Dana" }, "alerts_resumed")).toBe("Dana");
+    expect(historyNote({ by: "Dana" }, "alerts_resumed")).toBeNull();
+    expect(historyBy({ by: null }, "alerts_resumed")).toBe("KeeperHub");
     expect(historyNote({ by: null }, "alerts_resumed")).toBe(
       "The pause ran out"
     );
+    expect(historyBy({ by: "An owner" }, "test")).toBe("An owner");
+    expect(historyBy({ by: "Dana" }, "alert")).toBe("KeeperHub");
   });
 });

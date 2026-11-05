@@ -547,6 +547,9 @@ export function WorkflowFailureAlerts({
       return;
     }
     if (panel === "custom") {
+      // The user is on the tab they picked: focus must not jump back to the
+      // Custom rules tab, which would pick it again and reopen the form.
+      openerRef.current = null;
       cancelEdit();
     }
     setTab(next);
@@ -730,7 +733,8 @@ export function WorkflowFailureAlerts({
               </span>
             </p>
           )}
-          <Tabs onValueChange={chooseTab} value={tab}>
+          {/* Manual: a tab changes on click or Enter, never because focus landed on it. */}
+          <Tabs activationMode="manual" onValueChange={chooseTab} value={tab}>
             <TabsList
               aria-label="Which rules this workflow follows"
               className="grid h-9 w-full grid-cols-2"

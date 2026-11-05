@@ -11,6 +11,7 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
+import { likePattern } from "@/lib/analytics/like-pattern";
 import { toHistoryEntry } from "@/lib/analytics/notification-runs";
 import { loadNotificationRows } from "@/lib/analytics/notification-runs-query";
 import {
@@ -851,21 +852,98 @@ export async function lockOrgSettings(
   );
 }
 
+/** A Result filter as the states it covers. */
+export const HISTORY_RESULT_STATES = {
+  delivered: ["delivered"],
+  failed: ["failed", "capped"],
+  waiting: ["pending", "sending", "retrying"],
+  withdrawn: ["skipped"],
+} as const;
+export type HistoryResult = keyof typeof HISTORY_RESULT_STATES;
+
+/** A When filter as how far back it reaches. */
+export const HISTORY_SINCE_MS = {
+  "24h": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
+  "30d": 30 * 24 * 60 * 60 * 1000,
+} as const;
+export type HistorySince = keyof typeof HISTORY_SINCE_MS;
+
+/** Kinds a person causes; every other message is KeeperHub's own. */
+const PERSON_KINDS = ["alerts_paused", "alerts_resumed", "test"] as const;
+/** "Who caused it" as KeeperHub shows it: the person's name or role, else KeeperHub. */
+export const HISTORY_BY_KEEPERHUB = "KeeperHub";
+
 type HistoryFilter = {
   channel?: string;
   workflowId?: string;
   /** Resume after this row; (created, id) so rows sharing a time are not skipped. */
   cursor?: RunCursor;
+  /** 1-based page; takes over from the cursor and adds the totals. */
+  page?: number;
   limit?: number;
+  kind?: string;
+  result?: HistoryResult;
+  by?: string;
+  /** Part of the address or channel it went to. */
+  to?: string;
+  since?: HistorySince;
 };
 
-/** Everything sent, newest first, and the cursor for the next page if there may be one. */
+function personBy(): SQL {
+  return sql`(${failureAlertDeliveries.kind} IN (${sql.join(
+    PERSON_KINDS.map((k) => sql`${k}`),
+    sql`, `
+  )}) AND coalesce(${failureAlertDeliveries.context}->>'by', '') <> '')`;
+}
+
+/** Everything sent, newest first: a page of it with the totals, or the next cursor. */
 export async function loadHistory(
   organizationId: string,
   filter: HistoryFilter
-): Promise<{ entries: HistoryEntry[]; nextCursor: string | null }> {
+): Promise<{
+  entries: HistoryEntry[];
+  nextCursor: string | null;
+  page: number;
+  pages: number;
+  total: number;
+  /** Everyone who caused a message, for the By filter. */
+  byOptions: string[];
+}> {
   const limit = Math.min(Math.max(filter.limit ?? HISTORY_PAGE_SIZE, 1), 500);
   const conditions: SQL[] = [];
+  if (filter.kind) {
+    conditions.push(
+      eq(
+        failureAlertDeliveries.kind,
+        filter.kind as typeof failureAlertDeliveries.$inferSelect.kind
+      )
+    );
+  }
+  if (filter.result) {
+    conditions.push(
+      inArray(failureAlertDeliveries.state, [
+        ...HISTORY_RESULT_STATES[filter.result],
+      ])
+    );
+  }
+  if (filter.by === HISTORY_BY_KEEPERHUB) {
+    conditions.push(sql`NOT ${personBy()}`);
+  } else if (filter.by) {
+    conditions.push(
+      sql`${personBy()} AND ${failureAlertDeliveries.context}->>'by' = ${filter.by}`
+    );
+  }
+  if (filter.to) {
+    conditions.push(
+      sql`${failureAlertDeliveries.recipient} ILIKE ${likePattern(filter.to)} ESCAPE '\\'`
+    );
+  }
+  if (filter.since) {
+    conditions.push(
+      sql`${failureAlertDeliveries.createdAt} >= ${new Date(Date.now() - HISTORY_SINCE_MS[filter.since]).toISOString()}::timestamptz AT TIME ZONE 'UTC'`
+    );
+  }
   if (filter.channel) {
     conditions.push(
       eq(
@@ -895,11 +973,19 @@ export async function loadHistory(
     )`);
   }
 
-  const { rows, groupedNames } = await loadNotificationRows(
-    organizationId,
-    conditions,
-    limit
-  );
+  // A page asks for totals; the cursor (CSV, API callers) does not need them.
+  const paged = filter.page !== undefined && !filter.cursor;
+  const page = paged ? Math.max(1, Math.floor(filter.page ?? 1)) : 1;
+  const [{ rows, groupedNames }, total, byOptions] = await Promise.all([
+    loadNotificationRows(
+      organizationId,
+      conditions,
+      limit,
+      paged ? (page - 1) * limit : 0
+    ),
+    paged ? countHistory(organizationId, conditions) : Promise.resolve(0),
+    paged ? historyPeople(organizationId) : Promise.resolve([]),
+  ]);
   const last = rows.at(-1);
   return {
     entries: rows.map((row) => toHistoryEntry(row, groupedNames)),
@@ -907,12 +993,52 @@ export async function loadHistory(
       last && rows.length === limit
         ? encodeRunCursor({ at: last.at, source: "notification", id: last.id })
         : null,
+    page,
+    pages: Math.max(1, Math.ceil(total / limit)),
+    total,
+    byOptions,
   };
+}
+
+async function countHistory(
+  organizationId: string,
+  conditions: SQL[]
+): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(failureAlertDeliveries)
+    .where(
+      and(
+        eq(failureAlertDeliveries.organizationId, organizationId),
+        ...conditions
+      )
+    );
+  return row?.n ?? 0;
+}
+
+/** People who paused, resumed or tested, plus KeeperHub, for the By filter. */
+async function historyPeople(organizationId: string): Promise<string[]> {
+  const rows = await db
+    .selectDistinct({
+      by: sql<string>`${failureAlertDeliveries.context}->>'by'`,
+    })
+    .from(failureAlertDeliveries)
+    .where(
+      and(eq(failureAlertDeliveries.organizationId, organizationId), personBy())
+    );
+  return [
+    HISTORY_BY_KEEPERHUB,
+    ...rows
+      .map((r) => r.by)
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b)),
+  ];
 }
 
 const CSV_HEADER = [
   "time_utc",
   "type",
+  "by",
   "channel",
   "recipient",
   "backup",
@@ -944,6 +1070,7 @@ export function historyToCsv(entries: HistoryEntry[]): string {
       [
         e.createdAt,
         e.kind,
+        e.by,
         e.channel,
         e.recipient,
         e.isBackup,

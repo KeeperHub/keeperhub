@@ -2684,6 +2684,69 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       );
     });
 
+    it("pages with totals and filters by every column", async () => {
+      const all = await settings.loadHistory(org.orgId, { page: 1, limit: 2 });
+      expect(all.total).toBeGreaterThan(2);
+      expect(all.pages).toBe(Math.ceil(all.total / 2));
+      expect(all.byOptions[0]).toBe("KeeperHub");
+      const second = await settings.loadHistory(org.orgId, {
+        page: 2,
+        limit: 2,
+      });
+      const firstIds = new Set(all.entries.map((e) => e.id));
+      expect(second.entries.some((e) => firstIds.has(e.id))).toBe(false);
+
+      const every = async (
+        filter: Parameters<typeof settings.loadHistory>[1]
+      ) =>
+        (
+          await settings.loadHistory(org.orgId, {
+            page: 1,
+            limit: 500,
+            ...filter,
+          })
+        ).entries;
+      const emails = await every({ channel: "email" });
+      expect(emails.length).toBeGreaterThan(0);
+      expect(emails.every((e) => e.channel === "email")).toBe(true);
+      const alerts = await every({ kind: "alert" });
+      expect(alerts.every((e) => e.kind === "alert")).toBe(true);
+      const delivered = await every({ result: "delivered" });
+      expect(delivered.every((e) => e.state === "delivered")).toBe(true);
+      const automatic = await every({ by: "KeeperHub" });
+      expect(automatic.every((e) => e.by === "KeeperHub")).toBe(true);
+      const toOwner = await every({ to: org.email.slice(0, 8) });
+      expect(toOwner.length).toBeGreaterThan(0);
+      expect(
+        toOwner.every((e) => e.recipient.includes(org.email.slice(0, 8)))
+      ).toBe(true);
+      expect((await every({ to: "nobody-like-this%" })).length).toBe(0);
+      expect((await every({ since: "24h" })).length).toBe(
+        (await every({})).length
+      );
+    });
+
+    it("records a test with who sent it, and filters by that person", async () => {
+      const tester = await makeOrg("testrec");
+      const result = await testSend.sendTest({
+        organizationId: tester.orgId,
+        userId: tester.userId,
+        request: { channel: "email", to: "me" },
+      });
+      expect(result.delivered, result.message).toBe(true);
+      const page = await settings.loadHistory(tester.orgId, { page: 1 });
+      const test = page.entries.find((e) => e.kind === "test");
+      expect(test?.by).toBe("testrec owner");
+      expect(test?.recipient).toBe(tester.email);
+      expect(test?.state).toBe("delivered");
+      expect(page.byOptions).toContain("testrec owner");
+      const byTester = await settings.loadHistory(tester.orgId, {
+        page: 1,
+        by: "testrec owner",
+      });
+      expect(byTester.entries.map((e) => e.kind)).toEqual(["test"]);
+    });
+
     it("exports CSV with a header and one row per entry", async () => {
       const { entries: history } = await settings.loadHistory(org.orgId, {
         limit: 50,

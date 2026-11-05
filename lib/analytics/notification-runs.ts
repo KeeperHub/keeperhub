@@ -5,6 +5,7 @@ import type {
 import {
   FAILURE_ALERT_KIND_LABEL,
   type HistoryEntry,
+  historyBy,
   historyNote,
   wasDropped,
 } from "@/lib/notifications/failure-alerts/view-types";
@@ -158,6 +159,7 @@ export function toHistoryEntry(
     lastError: row.lastError,
     nextAttemptAt: row.nextAttemptAt.toISOString(),
     note: historyNote(row.context, row.kind),
+    by: historyBy(row.context, row.kind),
     workflows: notificationWorkflows(row, groupedNames),
   };
 }
