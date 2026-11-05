@@ -19,6 +19,7 @@ import {
   type RunCursor,
   runCursorCondition,
 } from "@/lib/analytics/run-cursor";
+import { isWalletEmail } from "@/lib/auth/wallet-constants";
 import { getOrgPlan } from "@/lib/billing/plans-server";
 import { db } from "@/lib/db";
 import {
@@ -27,6 +28,7 @@ import {
   failureAlertEmailUsage,
   integrations,
   orgFailureAlertSettings,
+  users,
   workflowFailureAlertOverrides,
   workflowFailureAlertQueue,
   workflowFailureIncidents,
@@ -986,9 +988,20 @@ export async function loadHistory(
     paged ? countHistory(organizationId, conditions) : Promise.resolve(0),
     paged ? historyPeople(organizationId) : Promise.resolve([]),
   ]);
+  const accounts = await signInAccounts(
+    rows.flatMap((row) =>
+      typeof row.context?.byUserId === "string" ? [row.context.byUserId] : []
+    )
+  );
   const last = rows.at(-1);
   return {
-    entries: rows.map((row) => toHistoryEntry(row, groupedNames)),
+    entries: rows.map((row) => {
+      const entry = toHistoryEntry(row, groupedNames);
+      const userId = row.context?.byUserId;
+      return typeof userId === "string" && entry.by !== HISTORY_BY_KEEPERHUB
+        ? { ...entry, byAccount: accounts.get(userId) ?? null }
+        : entry;
+    }),
     nextCursor:
       last && rows.length === limit
         ? encodeRunCursor({ at: last.at, source: "notification", id: last.id })
@@ -998,6 +1011,29 @@ export async function loadHistory(
     total,
     byOptions,
   };
+}
+
+/** The account each user signed in with: their email, or the wallet address for a wallet login. */
+async function signInAccounts(userIds: string[]): Promise<Map<string, string>> {
+  const ids = [...new Set(userIds)];
+  if (ids.length === 0) {
+    return new Map();
+  }
+  const rows = await db
+    .select({ id: users.id, email: users.email })
+    .from(users)
+    .where(inArray(users.id, ids));
+  return new Map(
+    rows.flatMap((row) => {
+      if (!row.email) {
+        return [];
+      }
+      const account = isWalletEmail(row.email)
+        ? (row.email.split("@")[0] ?? row.email)
+        : row.email;
+      return [[row.id, account] as const];
+    })
+  );
 }
 
 async function countHistory(
@@ -1039,6 +1075,7 @@ const CSV_HEADER = [
   "time_utc",
   "type",
   "by",
+  "by_account",
   "channel",
   "recipient",
   "backup",
@@ -1071,6 +1108,7 @@ export function historyToCsv(entries: HistoryEntry[]): string {
         e.createdAt,
         e.kind,
         e.by,
+        e.byAccount,
         e.channel,
         e.recipient,
         e.isBackup,

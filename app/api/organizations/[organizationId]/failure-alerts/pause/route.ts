@@ -99,6 +99,7 @@ export function PUT(request: Request, context: Params): Promise<NextResponse> {
       until: body.until,
       reason: body.reason,
       by: await actorLabel(organizationId, access.userId),
+      byUserId: access.userId,
       now: new Date(),
     });
     return { until: saved.until.toISOString(), reason: saved.reason };
@@ -114,6 +115,7 @@ export function DELETE(
     await resumeOrgAlerts({
       organizationId,
       by: await actorLabel(organizationId, access.userId),
+      byUserId: access.userId,
       now: new Date(),
     });
     return { paused: false };

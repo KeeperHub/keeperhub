@@ -178,6 +178,8 @@ export async function pauseOrgAlerts(params: {
   reason: unknown;
   /** Name or role for the notice; never an email, as it reaches chat. */
   by: string | null;
+  /** Who it was, so Sent alerts can show the account they signed in with. */
+  byUserId?: string | null;
   now: Date;
 }): Promise<{ until: Date; reason: string | null }> {
   const { organizationId, now } = params;
@@ -227,7 +229,13 @@ export async function pauseOrgAlerts(params: {
     await queuePauseNotice(
       organizationId,
       "alerts_paused",
-      { until: until.toISOString(), reason, by: params.by, pausingWorkflows },
+      {
+        until: until.toISOString(),
+        reason,
+        by: params.by,
+        byUserId: params.byUserId ?? null,
+        pausingWorkflows,
+      },
       now,
       tx
     );
@@ -240,6 +248,8 @@ export async function resumeOrgAlerts(params: {
   organizationId: string;
   /** Name or role for the notice; never an email, as it reaches chat. */
   by: string | null;
+  /** Who it was, so Sent alerts can show the account they signed in with. */
+  byUserId?: string | null;
   now: Date;
   /** Only end it if it has run out, so a pause extended meanwhile survives. */
   expiredOnly?: boolean;
@@ -271,7 +281,7 @@ export async function resumeOrgAlerts(params: {
   await queuePauseNotice(
     organizationId,
     "alerts_resumed",
-    { by: params.by },
+    { by: params.by, byUserId: params.byUserId ?? null },
     now
   );
   // Anything still failing is re-checked.

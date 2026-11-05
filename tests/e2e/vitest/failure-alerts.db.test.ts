@@ -1973,6 +1973,47 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(mailsAbout(iota, "Maintenance Keeper").length).toBeGreaterThan(0);
     });
 
+    it("shows the account a pause came from, a wallet as its address", async () => {
+      const org = await makeOrg("pauseacct");
+      const walletId = nextId("user_pauseacct_wallet_");
+      const address = `0x${"7".repeat(40)}`;
+      await db.insert(users).values({
+        id: walletId,
+        name: "Wallet admin",
+        email: `${address}@wallet.keeperhub.com`,
+        emailVerified: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await db.insert(member).values({
+        id: nextId("member_"),
+        organizationId: org.orgId,
+        userId: walletId,
+        role: "admin",
+        createdAt: new Date(),
+      });
+      await orgPause.pauseOrgAlerts({
+        organizationId: org.orgId,
+        until: at(60).toISOString(),
+        reason: null,
+        by: "Wallet admin",
+        byUserId: walletId,
+        now: new Date(),
+      });
+      await orgPause.resumeOrgAlerts({
+        organizationId: org.orgId,
+        by: "Owner",
+        byUserId: org.userId,
+        now: new Date(),
+      });
+      const { entries } = await settings.loadHistory(org.orgId, { page: 1 });
+      const paused = entries.find((e) => e.kind === "alerts_paused");
+      const resumed = entries.find((e) => e.kind === "alerts_resumed");
+      expect(paused?.by).toBe("Wallet admin");
+      expect(paused?.byAccount).toBe(address);
+      expect(resumed?.byAccount).toBe(org.email);
+    });
+
     it("stores the reason as one line without control or bidi characters", async () => {
       const org = await makeOrg("reasonclean");
       await orgPause.pauseOrgAlerts({
@@ -2737,6 +2778,8 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       const page = await settings.loadHistory(tester.orgId, { page: 1 });
       const test = page.entries.find((e) => e.kind === "test");
       expect(test?.by).toBe("testrec owner");
+      // The account they signed in with sits beside the name.
+      expect(test?.byAccount).toBe(tester.email);
       expect(test?.recipient).toBe(tester.email);
       expect(test?.state).toBe("delivered");
       expect(page.byOptions).toContain("testrec owner");

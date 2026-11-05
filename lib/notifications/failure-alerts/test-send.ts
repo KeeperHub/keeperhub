@@ -66,6 +66,7 @@ async function recordTest(params: {
         by: pauseActorName(
           params.members.find((m) => m.userId === params.userId)
         ),
+        byUserId: params.userId,
       },
     });
   } catch (error) {

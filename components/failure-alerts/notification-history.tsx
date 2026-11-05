@@ -24,6 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { truncateAddress } from "@/lib/address-utils";
 import type { FailureAlertMessageKind } from "@/lib/db/schema-failure-alerts";
 import { HISTORY_PAGE_SIZE } from "@/lib/notifications/failure-alerts/constants";
 import {
@@ -107,6 +108,13 @@ function methodAndTarget(entry: HistoryEntry): {
   return { method, to: target };
 }
 
+/** An email as is; a wallet address shortened, with the full one on hover. */
+function accountLabel(account: string): string {
+  return account.startsWith("0x") && !account.includes("@")
+    ? truncateAddress(account)
+    : account;
+}
+
 /** A label shown beside the value only when the row is stacked. */
 function Cell({
   label,
@@ -179,6 +187,15 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
         >
           {entry.by}
         </span>
+        {entry.byAccount && (
+          <span
+            className="block break-all text-muted-foreground text-xs"
+            data-testid="failure-alert-history-by-account"
+            title={entry.byAccount}
+          >
+            {accountLabel(entry.byAccount)}
+          </span>
+        )}
       </Cell>
       <Cell label="Method">
         <span className="flex items-center gap-1.5 text-xs">

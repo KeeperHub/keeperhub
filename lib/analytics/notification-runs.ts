@@ -160,6 +160,8 @@ export function toHistoryEntry(
     nextAttemptAt: row.nextAttemptAt.toISOString(),
     note: historyNote(row.context, row.kind),
     by: historyBy(row.context, row.kind),
+    // Filled in by loadHistory, which looks the account up.
+    byAccount: null,
     workflows: notificationWorkflows(row, groupedNames),
   };
 }

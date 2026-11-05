@@ -278,6 +278,7 @@ describe("toHistoryEntry", () => {
       nextAttemptAt: CREATED.toISOString(),
       note: null,
       by: "KeeperHub",
+      byAccount: null,
       workflows: [{ id: "wf_nightly", name: "Nightly sync" }],
     });
   });

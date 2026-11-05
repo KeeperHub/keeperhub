@@ -123,6 +123,8 @@ export type HistoryEntry = {
   note: string | null;
   /** Who caused it: a person for a pause, resume or test, else KeeperHub. */
   by: string;
+  /** The account that person signed in with: an email or a wallet address. */
+  byAccount: string | null;
   workflows: { id: string; name: string }[];
 };
 
