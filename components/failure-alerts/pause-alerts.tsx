@@ -95,6 +95,8 @@ export function PauseAlertsForm({
   const idPrefix = useId();
   const [choice, setChoice] = useState<Choice>("1");
   const [custom, setCustom] = useState("");
+  // The browser picker only blocks whole days past max, so later times are snapped back.
+  const [snapped, setSnapped] = useState(false);
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -115,6 +117,14 @@ export function PauseAlertsForm({
       invalid = `Alerts can be paused for at most ${MAX_PAUSE_DAYS} days.`;
     }
   }
+
+  const pickCustom = (value: string): void => {
+    const cap = Date.now() + MAX_PAUSE_DAYS * 24 * HOUR_MS;
+    const over = Boolean(value) && new Date(value).getTime() > cap;
+    // toLocalInput drops the seconds, so the snapped time stays inside the cap.
+    setCustom(over ? toLocalInput(new Date(cap)) : value);
+    setSnapped(over);
+  };
 
   const submit = async (): Promise<void> => {
     if (!until || invalid) {
@@ -159,10 +169,15 @@ export function PauseAlertsForm({
             className="h-9 w-full @xl/settings:w-64"
             max={toLocalInput(new Date(latest))}
             min={toLocalInput(new Date(now))}
-            onChange={(e) => setCustom(e.target.value)}
+            onChange={(e) => pickCustom(e.target.value)}
             type="datetime-local"
             value={custom}
           />
+        )}
+        {choice === "custom" && snapped && !invalid && (
+          <p className="text-muted-foreground text-xs">
+            Moved to the latest time allowed, {MAX_PAUSE_DAYS} days from now.
+          </p>
         )}
         {invalid && (
           <p className="text-destructive text-xs" id={`${idPrefix}-invalid`}>
