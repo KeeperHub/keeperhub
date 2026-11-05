@@ -324,12 +324,15 @@ function SaveButton({
   ready,
   saving,
   onClick,
+  text = "Save",
 }: {
   label: string;
   dirty: boolean;
   ready: boolean;
   saving: boolean;
   onClick: () => void;
+  /** The button's words; a method says it is checked first. */
+  text?: string;
 }): React.ReactElement {
   return (
     <Button
@@ -341,7 +344,7 @@ function SaveButton({
       type="button"
     >
       {saving ? <Loader2 className="size-3.5 animate-spin" /> : null}
-      Save
+      {text}
     </Button>
   );
 }
@@ -883,6 +886,7 @@ export function ChannelMethodCard({
                 onClick={runSave}
                 ready={ready}
                 saving={save.state === "saving"}
+                text="Check and save"
               />
             ) : undefined
           }

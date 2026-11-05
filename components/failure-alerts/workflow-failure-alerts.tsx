@@ -1306,7 +1306,7 @@ export function WorkflowFailureAlerts({
       <div className="ml-1 flex flex-wrap gap-x-4 text-xs">
         <Link
           className={FOOTER_LINK}
-          href={`/settings/${view.organizationId}/alerts`}
+          href={`/settings/${view.organizationId}/alerts?tab=setup`}
         >
           Org alert rules
         </Link>
@@ -1317,7 +1317,9 @@ export function WorkflowFailureAlerts({
           type="button"
           variant="link"
         >
-          {showHistory ? "Hide sent alerts" : "Sent alerts for this workflow"}
+          {showHistory
+            ? "Hide recent alerts"
+            : "Recent alerts for this workflow"}
         </Button>
       </div>
       {showHistory && (

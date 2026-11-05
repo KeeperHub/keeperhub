@@ -68,7 +68,7 @@ describe("alerts status when nobody can be reached", () => {
     );
     expect(html).toContain("ann@example.com and 0x1234");
     expect(html).toContain("have no email KeeperHub can reach");
-    expect(html).toContain("choose other people under Email");
+    expect(html).toContain("choose other people for email");
     expect(html).toContain("They can add one in");
     expect(html).toContain('href="/settings/security"');
   });

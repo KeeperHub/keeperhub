@@ -90,7 +90,7 @@ describe("findSettingsMatches", () => {
 
   it("deep links each Alerts card, old card names included", () => {
     expect(results("how to notify", MEMBER_WITH_ALERTS)).toEqual([
-      "Alerts > Methods",
+      "Alerts > Who gets alerts",
     ]);
     expect(results("recent notifications", MEMBER_WITH_ALERTS)).toEqual([
       "Alerts > Sent alerts",

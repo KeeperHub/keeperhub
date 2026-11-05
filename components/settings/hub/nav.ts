@@ -266,7 +266,7 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
             ],
           },
           {
-            title: "Health",
+            title: "Needs attention",
             tags: [
               "failing now",
               "failing workflows",
@@ -278,7 +278,7 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
             ],
           },
           {
-            title: "Rules",
+            title: "When to alert",
             tags: [
               "when to notify",
               "failure alerts",
@@ -293,7 +293,7 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
             ],
           },
           {
-            title: "Methods",
+            title: "Who gets alerts",
             tags: [
               "how to notify",
               "email recipients",

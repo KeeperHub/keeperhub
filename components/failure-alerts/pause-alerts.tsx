@@ -114,7 +114,7 @@ export function AlertsStateBody({
     return (
       <div className="space-y-1">
         <p className="text-sm">
-          Failing workflows are reported by the rules and methods below.
+          Failing workflows are reported using the rules and methods in Setup.
         </p>
         {!canManage && (
           <p className="text-muted-foreground text-xs">

@@ -3,6 +3,7 @@
 import { AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
 import Link from "next/link";
 import { timeAgo } from "@/components/settings/hub/relative-time";
+import { Button } from "@/components/ui/button";
 import { Notice, WARNING_TEXT } from "@/components/ui/notice";
 import {
   EMAILS_KEPT_FOR_NEW_FAILURES,
@@ -168,11 +169,29 @@ export function AlertsHealth({
   data,
   canManage,
   viewerUserId,
+  onGoToSetup,
+  onGoToSent,
 }: {
   data: OrgSettingsView;
   canManage: boolean;
   viewerUserId?: string | null;
+  /** Opens the Setup tab, where methods are fixed. */
+  onGoToSetup?: () => void;
+  /** Opens the Sent alerts tab. */
+  onGoToSent?: () => void;
 }): React.ReactElement {
+  const fixButton = (label: string): React.ReactNode =>
+    canManage && onGoToSetup ? (
+      <Button
+        className="mt-1 h-auto px-0 text-xs"
+        data-testid="failure-alerts-fix"
+        onClick={onGoToSetup}
+        type="button"
+        variant="link"
+      >
+        {label}
+      </Button>
+    ) : null;
   const pause =
     data.pause && new Date(data.pause.until).getTime() > Date.now()
       ? data.pause
@@ -276,8 +295,9 @@ export function AlertsHealth({
             </>
           )}
           {canManage
-            ? "Add a method below, or choose other people under Email."
-            : "Ask an owner or admin to fix it."}
+            ? "Add a method, or choose other people for email."
+            : "Ask an owner or admin to fix it."}{" "}
+          {fixButton("Fix in Setup")}
         </Headline>
       )}
       {!unreachable && broken.length > 0 && (
@@ -285,12 +305,14 @@ export function AlertsHealth({
           title={`${plural(broken.length, "method needs", "methods need")} attention`}
           tone="warning"
         >
-          {broken.map(label).join(", ")}. The others are still used.
+          {broken.map(label).join(", ")}. The others are still used.{" "}
+          {fixButton("Fix in Setup")}
         </Headline>
       )}
       {single && (
         <Headline title={`Only one method: ${onlyRoute}`} tone="warning">
-          If it stops working, nobody is told. Add a backup method, or an email.
+          If it stops working, nobody is told. Add a backup method, or an email.{" "}
+          {fixButton("Add a method")}
         </Headline>
       )}
       {usage && usage.used >= usage.limit * 0.8 && (
@@ -358,8 +380,22 @@ export function AlertsHealth({
 
       <p className="text-muted-foreground text-xs">
         {reachLine ? `${reachLine} ` : ""}
-        {data.lastAlertDeliveredAt
+        {data.lastAlertDeliveredAt && onGoToSent && (
+          <Button
+            className="h-auto px-0 text-muted-foreground text-xs underline"
+            data-testid="failure-alerts-last-alert"
+            onClick={onGoToSent}
+            type="button"
+            variant="link"
+          >
+            Last alert delivered {timeAgo(data.lastAlertDeliveredAt)}
+          </Button>
+        )}
+        {data.lastAlertDeliveredAt && !onGoToSent
           ? `Last alert delivered ${timeAgo(data.lastAlertDeliveredAt)}.`
+          : null}
+        {data.lastAlertDeliveredAt
+          ? null
           : "No alert sent yet. Use Test on a method to see one arrive."}
       </p>
     </div>

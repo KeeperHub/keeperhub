@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2 } from "lucide-react";
+import { ChevronRight, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -152,37 +152,40 @@ export function WhenToNotify({
           </SelectContent>
         </Select>
       </div>
-      <ul
-        className="space-y-1 text-muted-foreground text-xs"
-        data-testid="failure-alerts-rule-help"
-      >
-        <li>
-          <span className="font-medium text-foreground">
-            Failed runs in a row:
-          </span>{" "}
-          the alert goes out after this many failures in a row. A workflow that
-          runs every 4 hours takes {4 * runs} hours to reach {runs}.
-        </li>
-        <li>
-          <span className="font-medium text-foreground">Time limit:</span> for
-          slow schedules, the alert goes out once it has been failing this long,
-          with at least {MIN_TIME_RULE_FAILURES} failures in a row.
-        </li>
-        <li>
-          <span className="font-medium text-foreground">Out of funds:</span> a
-          wallet that runs out of funds alerts after 2 failed runs, whatever the
-          limits.
-        </li>
-        <li>
-          <span className="font-medium text-foreground">Refused runs</span>{" "}
-          (plan limit, billing, paid features): reported after{" "}
-          {REFUSED_RUNS_THRESHOLD} refusals, and again when runs are accepted.
-        </li>
-        <li>
-          <span className="font-medium text-foreground">Never counted:</span>{" "}
-          errors on KeeperHub's side, and workflows that are turned off.
-        </li>
-      </ul>
+      <details className="group text-xs" data-testid="failure-alerts-rule-help">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1 text-muted-foreground hover:text-foreground sm:min-h-0">
+          <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
+          How failures are counted
+        </summary>
+        <ul className="mt-2 space-y-1 text-muted-foreground text-xs">
+          <li>
+            <span className="font-medium text-foreground">
+              Failed runs in a row:
+            </span>{" "}
+            the alert goes out after this many failures in a row. A workflow
+            that runs every 4 hours takes {4 * runs} hours to reach {runs}.
+          </li>
+          <li>
+            <span className="font-medium text-foreground">Time limit:</span> for
+            slow schedules, the alert goes out once it has been failing this
+            long, with at least {MIN_TIME_RULE_FAILURES} failures in a row.
+          </li>
+          <li>
+            <span className="font-medium text-foreground">Out of funds:</span> a
+            wallet that runs out of funds alerts after 2 failed runs, whatever
+            the limits.
+          </li>
+          <li>
+            <span className="font-medium text-foreground">Refused runs</span>{" "}
+            (plan limit, billing, paid features): reported after{" "}
+            {REFUSED_RUNS_THRESHOLD} refusals, and again when runs are accepted.
+          </li>
+          <li>
+            <span className="font-medium text-foreground">Never counted:</span>{" "}
+            errors on KeeperHub's side, and workflows that are turned off.
+          </li>
+        </ul>
+      </details>
       <label className="flex items-center gap-2" htmlFor="failure-remind">
         <Checkbox
           checked={draft.remindDaily}
