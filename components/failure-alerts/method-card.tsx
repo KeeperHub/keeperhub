@@ -47,6 +47,7 @@ import { roleLabel } from "@/lib/organization/role-label";
 import { cn } from "@/lib/utils";
 import { sendFailureAlertTest } from "./api";
 import { type ChoiceChip, ChoiceChips } from "./choice-chips";
+import { focusInPlace } from "./focus-in-place";
 import { memberLabel } from "./member-label";
 import {
   BROKEN_STATUSES,
@@ -117,7 +118,7 @@ export function focusMethodAt(
       row?.querySelector<HTMLElement>("[data-method-toggle]") ??
       row?.querySelector<HTMLElement>(FOCUSABLE) ??
       fallback?.current;
-    target?.focus();
+    focusInPlace(target);
   });
 }
 
@@ -274,7 +275,7 @@ function useRowState(startOpen: boolean): {
   useEffect(() => {
     if (open && focusBody.current) {
       focusBody.current = false;
-      bodyRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+      focusInPlace(bodyRef.current?.querySelector<HTMLElement>(FOCUSABLE));
     }
   }, [open]);
 
@@ -289,7 +290,7 @@ function useRowState(startOpen: boolean): {
     },
     closeAndFocus: () => {
       setOpen(false);
-      requestAnimationFrame(() => toggleRef.current?.focus());
+      requestAnimationFrame(() => focusInPlace(toggleRef.current));
     },
   };
 }
@@ -726,7 +727,7 @@ export function ChannelMethodCard({
   const { bodyRef } = row;
   useEffect(() => {
     if (isNew) {
-      bodyRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+      focusInPlace(bodyRef.current?.querySelector<HTMLElement>(FOCUSABLE));
     }
   }, [isNew, bodyRef]);
   const connectionName = connection?.name ?? saved?.connectionName;

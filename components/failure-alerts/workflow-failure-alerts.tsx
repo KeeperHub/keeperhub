@@ -44,6 +44,7 @@ import {
 } from "@/lib/workflow/store";
 import { fetchView } from "./api";
 import { ChannelListEditor } from "./channel-list-editor";
+import { focusInPlace } from "./focus-in-place";
 import {
   describeRule,
   FUNDS_RULE,
@@ -270,15 +271,15 @@ export function WorkflowFailureAlerts({
 
   useEffect(() => {
     if (panel) {
-      panelRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+      focusInPlace(panelRef.current?.querySelector<HTMLElement>(FOCUSABLE));
       return;
     }
     const opener = openerRef.current;
     openerRef.current = null;
     if (opener === "mute") {
-      muteButtonRef.current?.focus();
+      focusInPlace(muteButtonRef.current);
     } else if (opener === "custom") {
-      customButtonRef.current?.focus();
+      focusInPlace(customButtonRef.current);
     }
   }, [panel]);
 
@@ -456,7 +457,7 @@ export function WorkflowFailureAlerts({
 
   const saveCustom = async (): Promise<void> => {
     if (thresholdInvalid) {
-      document.getElementById("wf-failure-threshold")?.focus();
+      focusInPlace(document.getElementById("wf-failure-threshold"));
       return;
     }
     const parsedThreshold = threshold.trim() ? Number(threshold) : null;
