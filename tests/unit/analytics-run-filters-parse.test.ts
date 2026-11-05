@@ -26,13 +26,6 @@ describe("parseRunFilters", () => {
     expect(parse("status=bogus&source=telepathy").sources).toBeUndefined();
   });
 
-  it("reads the notification source beside the run sources", () => {
-    expect(parse("source=notification").sources).toEqual(["notification"]);
-    expect(
-      parse("source=workflow&source=direct&source=notification").sources
-    ).toEqual(["workflow", "direct", "notification"]);
-  });
-
   it("de-duplicates repeated values", () => {
     expect(parse("network=8453&network=8453").networks).toEqual(["8453"]);
   });
@@ -82,25 +75,6 @@ describe("buildRunsQuery", () => {
     expect(parsed.search).toBe("nightly");
   });
 
-  it("lists runs only when the reader picked no source", () => {
-    // Alerts are listed only when the Alerts source is ticked.
-    expect(parse(buildRunsQuery({ range: "24h" })).sources).toEqual([
-      "workflow",
-      "direct",
-    ]);
-    expect(
-      parse(buildRunsQuery({ range: "24h", sources: [] })).sources
-    ).toEqual(["workflow", "direct"]);
-  });
-
-  it("carries the notification source through to the parser", () => {
-    const query = buildRunsQuery({
-      range: "24h",
-      sources: ["workflow", "notification"],
-    });
-    expect(parse(query).sources).toEqual(["workflow", "notification"]);
-  });
-
   it("omits the status dimension for the facet request", () => {
     const query = buildRunsQuery({
       range: "24h",
@@ -133,10 +107,7 @@ describe("buildRunsQuery", () => {
   });
 
   it("leaves page 1 off the query so the first page has a clean URL", () => {
-    const first = new URLSearchParams(
-      buildRunsQuery({ range: "24h", page: 1 })
-    );
-    expect(first.has("page")).toBe(false);
+    expect(buildRunsQuery({ range: "24h", page: 1 })).toBe("range=24h");
     expect(buildRunsQuery({ range: "24h", page: 3 })).toContain("page=3");
   });
 });

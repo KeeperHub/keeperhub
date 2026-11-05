@@ -2,7 +2,6 @@
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useEffect, useRef } from "react";
-import { useRunSources } from "@/components/analytics/use-run-sources";
 import { buildRunsQuery } from "@/lib/analytics/runs-query";
 import {
   normalizeRunsResponse,
@@ -124,7 +123,7 @@ export function useAnalytics(): UseAnalyticsReturn {
 
   const range = useAtomValue(analyticsRangeAtom);
   const statusFilters = useAtomValue(analyticsStatusFiltersAtom);
-  const sourceFilters = useRunSources(useAtomValue(analyticsSourceFiltersAtom));
+  const sourceFilters = useAtomValue(analyticsSourceFiltersAtom);
   const networkFilters = useAtomValue(analyticsNetworkFiltersAtom);
   const gasFilters = useAtomValue(analyticsGasFiltersAtom);
   const durationFilter = useAtomValue(analyticsDurationFilterAtom);
@@ -148,8 +147,7 @@ export function useAnalytics(): UseAnalyticsReturn {
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const fetchData = useCallback(async (): Promise<void> => {
-    // Sources are null until alerts are known: one fetch, not two.
-    if (!(activeOrgId && sourceFilters)) {
+    if (!activeOrgId) {
       return;
     }
 

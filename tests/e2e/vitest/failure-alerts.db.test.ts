@@ -4,7 +4,6 @@ import type { AddressInfo } from "node:net";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { parseRunCursor } from "../../../lib/analytics/run-cursor";
 import { EXECUTION_LIMIT_REFUSAL } from "../../../lib/billing/dispatch-refusal";
 import {
   failureAlertChannels,
@@ -22,6 +21,7 @@ import {
   workflowSchedules,
   workflows,
 } from "../../../lib/db/schema";
+import { parseHistoryCursor } from "../../../lib/notifications/failure-alerts/history-entry";
 import { SKIP_REASON } from "../../../lib/notifications/failure-alerts/stored-reasons";
 
 // vitest runs in Node, not an SSR context.
@@ -2767,6 +2767,76 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       );
     });
 
+    it("lists alerts only under scope alerts, and counts the undelivered", async () => {
+      const scoped = await settings.loadHistory(org.orgId, {
+        page: 1,
+        limit: 500,
+        scope: "alerts",
+      });
+      const alertKinds: string[] = [...settings.HISTORY_ALERT_KINDS];
+      expect(scoped.entries.length).toBeGreaterThan(0);
+      expect(scoped.entries.every((e) => alertKinds.includes(e.kind))).toBe(
+        true
+      );
+      const everything = await settings.loadHistory(org.orgId, {
+        page: 1,
+        limit: 500,
+      });
+      expect(everything.total).toBeGreaterThan(scoped.total);
+      // The dead PagerDuty service never took a message.
+      const undelivered = everything.entries.filter((e) =>
+        ["failed", "capped"].includes(e.state)
+      ).length;
+      expect(undelivered).toBeGreaterThan(0);
+      expect(everything.notDelivered).toBe(undelivered);
+    });
+
+    it("marks only the failed run that set off the alert", async () => {
+      const { attachAlertsSent } = await import("@/lib/analytics/alert-sent");
+      const [incident] = await db
+        .select({ openedAt: workflowFailureIncidents.openedAt })
+        .from(workflowFailureIncidents)
+        .where(eq(workflowFailureIncidents.workflowId, wf));
+      const executions = await db
+        .select({
+          id: workflowExecutions.id,
+          status: workflowExecutions.status,
+          startedAt: workflowExecutions.startedAt,
+          completedAt: workflowExecutions.completedAt,
+        })
+        .from(workflowExecutions)
+        .where(eq(workflowExecutions.workflowId, wf));
+      const runs = executions.map(
+        (e) =>
+          ({
+            id: e.id,
+            source: "workflow",
+            status: e.status === "error" ? "error" : "success",
+            workflowId: wf,
+            startedAt: e.startedAt.toISOString(),
+            completedAt: e.completedAt?.toISOString() ?? null,
+          }) as Parameters<typeof attachAlertsSent>[1][number]
+      );
+      const trigger = executions
+        .filter(
+          (e) =>
+            e.status === "error" &&
+            e.completedAt &&
+            e.completedAt <= incident.openedAt
+        )
+        .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())[0];
+      const marked = (await attachAlertsSent(org.orgId, runs)).filter(
+        (r) => r.alert
+      );
+      expect(marked.map((r) => r.id)).toEqual([trigger.id]);
+      expect(marked[0].alert?.channels).toContain("pagerduty");
+      // Another org sees nothing of this one's alerts.
+      const other = await makeOrg("historyother");
+      expect(
+        (await attachAlertsSent(other.orgId, runs)).some((r) => r.alert)
+      ).toBe(false);
+    });
+
     it("records a test with who sent it, and filters by that person", async () => {
       const tester = await makeOrg("testrec");
       const result = await testSend.sendTest({
@@ -2820,7 +2890,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       do {
         const page = await settings.loadHistory(paged.orgId, {
           limit: 3,
-          cursor: parseRunCursor(cursor),
+          cursor: parseHistoryCursor(cursor),
         });
         seen.push(...page.entries.map((e) => e.id));
         cursor = page.nextCursor;

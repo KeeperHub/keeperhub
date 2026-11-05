@@ -2,6 +2,7 @@
 
 import { useAtom, useAtomValue } from "jotai";
 import {
+  Bell,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -13,8 +14,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { MouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { useRunSources } from "@/components/analytics/use-run-sources";
-import { deliveryStatus, formatWhen } from "@/components/failure-alerts/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,8 +30,7 @@ import {
 import { STATUS_DISPLAY } from "@/lib/analytics/status-display";
 import type {
   NormalizedStatus,
-  NotificationRunDetail,
-  RunSource,
+  RunAlert,
   StepLog,
   UnifiedRun,
 } from "@/lib/analytics/types";
@@ -50,6 +48,7 @@ import {
   analyticsSourceFiltersAtom,
   analyticsStatusFiltersAtom,
 } from "@/lib/atoms/analytics";
+import { authClient } from "@/lib/auth-client";
 import { getCustomerRunErrorMessage } from "@/lib/errors/customer-message";
 import type { ChainDisplay } from "@/lib/hooks/use-chain-display";
 import {
@@ -58,10 +57,7 @@ import {
   useChainDisplay,
 } from "@/lib/hooks/use-chain-display";
 import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
-import {
-  channelLabel,
-  wasDropped,
-} from "@/lib/notifications/failure-alerts/view-types";
+import { CHANNEL_LABEL } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import { ProjectDrawer } from "./project-drawer";
 
@@ -254,7 +250,7 @@ function formatTimeAgo(dateString: string): string {
 // one answers "whose fault is it and what do I do about it".
 const STATUS_TOOLTIPS: Partial<Record<NormalizedStatus, string>> = {
   skipped:
-    "The trigger fired but the run did not start. Either the monthly execution limit was reached, the workflow uses an action your plan does not include, a pay-as-you-go charge could not be collected, or the workflow cannot run (for example it was turned off or its schedule was removed). Refusals of one workflow for the same reason share one skipped run per hour. Nothing ran, so a skipped run is not a failure and does not count towards your success rate or your usage.",
+    "The trigger fired but the run was refused before it started. Either the monthly execution limit was reached, or the workflow uses an action your plan does not include, or a pay-as-you-go charge could not be collected. Nothing ran, so a skipped run is not a failure and does not count towards your success rate or your usage.",
   error:
     "The run started and failed on something in the workflow itself: bad input, a missing or invalid credential, or a 4xx from an endpoint you configured. Fix the workflow and run it again.",
   external_error:
@@ -263,16 +259,21 @@ const STATUS_TOOLTIPS: Partial<Record<NormalizedStatus, string>> = {
     "The run failed inside KeeperHub: dispatch, the queue, or a run that was reaped after it timed out. There is nothing to fix in your workflow.",
 };
 
-function BadgeWithTooltip({
-  badge,
-  tooltip,
-}: {
-  badge: ReactNode;
-  tooltip: string | null | undefined;
-}): ReactNode {
+function StatusBadge({ status }: { status: NormalizedStatus }): ReactNode {
+  const badge = (
+    <Badge
+      className={cn("capitalize", STATUS_DISPLAY[status].badge)}
+      variant="outline"
+    >
+      {STATUS_DISPLAY[status].label}
+    </Badge>
+  );
+
+  const tooltip = STATUS_TOOLTIPS[status];
   if (!tooltip) {
     return badge;
   }
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -283,103 +284,54 @@ function BadgeWithTooltip({
   );
 }
 
-function StatusBadge({ status }: { status: NormalizedStatus }): ReactNode {
-  return (
-    <BadgeWithTooltip
-      badge={
-        <Badge
-          className={cn("capitalize", STATUS_DISPLAY[status].badge)}
-          variant="outline"
-        >
-          {STATUS_DISPLAY[status].label}
-        </Badge>
-      }
-      tooltip={STATUS_TOOLTIPS[status]}
-    />
-  );
-}
-
-const MONTHLY_LIMIT_TEXT = "Not sent: Free plan monthly email limit reached";
-
-/** A dropped row's stored reason already starts "Dropped:", so it stands alone. */
-function failedTooltip(detail: NotificationRunDetail): string {
-  if (detail.lastError && wasDropped(detail.state, detail.lastError)) {
-    return detail.lastError;
-  }
-  return detail.lastError
-    ? `Could not be delivered: ${detail.lastError}`
-    : "Could not be delivered";
-}
-
-/** What became of an alert, as "Sent" or "Not sent", never a run outcome. */
-const ALERT_RESULT: Record<string, string> = {
-  delivered: "Sent",
-  failed: "Not sent",
-  muted: "Withdrawn",
+const ALERT_WORD: Record<RunAlert["state"], string> = {
+  delivered: "Alert sent",
+  sending: "Alert sending",
+  failed: "Alert not delivered",
 };
 
-/**
- * An alert's badge: grey "Info" with what became of it. Alerts are listed for
- * information and counted in no number, so they never wear Success or Failed.
- */
-export function notificationBadge(
-  detail: NotificationRunDetail,
-  now: Date = new Date()
-): {
-  label: string;
-  className: string;
-  tooltip: string | null;
-} {
-  // The Alerts history's helper, so both screens name a state alike.
-  const { label, tone } = deliveryStatus(detail, now);
-  const result = ALERT_RESULT[tone] ?? label;
-  let tooltip: string | null = null;
-  if (tone === "failed") {
-    tooltip =
-      detail.state === "capped" ? MONTHLY_LIMIT_TEXT : failedTooltip(detail);
-  } else if (tone === "muted") {
-    tooltip = detail.lastError ? `Withdrawn: ${detail.lastError}` : null;
-  } else if (tone === "waiting") {
-    tooltip =
-      detail.attempts > 0 && detail.lastError
-        ? `Retrying: ${detail.lastError}`
-        : null;
-  }
-  return {
-    label: `Info · ${result}`,
-    className: "border-border bg-muted text-muted-foreground",
-    tooltip,
-  };
-}
-
-function NotificationStatusBadge({
-  detail,
+/** The alert this run set off; opens Sent alerts for its workflow. */
+function AlertSentChip({
+  alert,
+  workflowId,
 }: {
-  detail: NotificationRunDetail;
+  alert: RunAlert;
+  workflowId: string;
 }): ReactNode {
-  const { label, className, tooltip } = notificationBadge(detail);
+  const { data: activeOrg } = authClient.useActiveOrganization();
+  if (!activeOrg?.id) {
+    return null;
+  }
+  const time = new Date(alert.sentAt).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const methods = alert.channels
+    .map((c) => CHANNEL_LABEL[c as keyof typeof CHANNEL_LABEL] ?? c)
+    .join(", ");
+  const query = new URLSearchParams({ tab: "sent", workflow: workflowId });
   return (
-    <BadgeWithTooltip
-      badge={
-        <Badge className={className} variant="outline">
-          {label}
-        </Badge>
-      }
-      tooltip={tooltip}
-    />
+    <a
+      className={cn(
+        "inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-muted-foreground text-xs hover:bg-muted hover:text-foreground",
+        alert.state === "failed" && "border-destructive/50 text-destructive"
+      )}
+      data-state={alert.state}
+      data-testid="run-alert-sent"
+      href={`/settings/${encodeURIComponent(activeOrg.id)}/alerts?${query.toString()}`}
+      onClick={(e) => e.stopPropagation()}
+      title="Open Sent alerts for this workflow"
+    >
+      <Bell aria-hidden="true" className="size-3" />
+      {ALERT_WORD[alert.state]} {time} · {methods}
+    </a>
   );
 }
 
-const SOURCE_LABEL: Record<RunSource, string> = {
-  workflow: "Workflow",
-  direct: "Direct",
-  notification: "Alert",
-};
-
-function SourceBadge({ source }: { source: RunSource }): ReactNode {
+function SourceBadge({ source }: { source: string }): ReactNode {
   return (
-    <Badge className="whitespace-nowrap" variant="secondary">
-      {SOURCE_LABEL[source] ?? source}
+    <Badge className="capitalize" variant="secondary">
+      {source}
     </Badge>
   );
 }
@@ -599,140 +551,6 @@ function ExpandedStepRows({
   );
 }
 
-function NotificationDetailItem({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}): ReactNode {
-  return (
-    <div className="flex min-w-0 gap-2">
-      <dt className="shrink-0 text-muted-foreground/70">{label}</dt>
-      <dd className="min-w-0 wrap-anywhere">{children}</dd>
-    </div>
-  );
-}
-
-/**
- * Where a notification went and what happened to it. A notification has no
- * steps, so this replaces the step rows a run expands into.
- */
-function plural(count: number, word: string): string {
-  return `${count} ${word}${count === 1 ? "" : "s"}`;
-}
-
-/** What became of the message, in the words the notification history uses. */
-export function notificationOutcome(
-  detail: NotificationRunDetail,
-  completedAt: string | null
-): string {
-  switch (detail.state) {
-    case "delivered":
-      return completedAt ? `Delivered ${formatWhen(completedAt)}` : "Delivered";
-    case "failed":
-      return `Gave up after ${plural(detail.attempts, "attempt")}`;
-    case "capped":
-      return MONTHLY_LIMIT_TEXT;
-    case "skipped":
-      // A dropped row's stored reason says why; anything else was withdrawn.
-      return detail.lastError && wasDropped(detail.state, detail.lastError)
-        ? detail.lastError
-        : "Withdrawn before it was sent";
-    default:
-      return detail.attempts > 0
-        ? `Sending, ${plural(detail.attempts, "attempt")} so far`
-        : deliveryStatus(detail).label;
-  }
-}
-
-function NotificationDetailRows({
-  completedAt,
-  detail,
-}: {
-  completedAt: string | null;
-  detail: NotificationRunDetail;
-}): ReactNode {
-  // A pause notice's note is its channel, which the title already names.
-  const note = detail.kind === "channel_paused" ? null : detail.note;
-  return (
-    <tr>
-      <td className="py-2 pr-3 pl-10 text-muted-foreground text-xs" colSpan={8}>
-        <dl className="flex flex-col gap-1">
-          <NotificationDetailItem label="Sent to">
-            {channelLabel(
-              detail.channel,
-              detail.recipient,
-              detail.connectionName
-            )}
-          </NotificationDetailItem>
-          <NotificationDetailItem label="Outcome">
-            {notificationOutcome(detail, completedAt)}
-          </NotificationDetailItem>
-          <NotificationDetailItem label="Backup">
-            {detail.isBackup ? "Yes" : "No"}
-          </NotificationDetailItem>
-          {note ? (
-            <NotificationDetailItem label="Note">{note}</NotificationDetailItem>
-          ) : null}
-          {detail.lastError && detail.state !== "delivered" ? (
-            <NotificationDetailItem label="Reason">
-              {detail.lastError}
-            </NotificationDetailItem>
-          ) : null}
-          {detail.workflows.length > 1 ? (
-            <NotificationDetailItem label="Workflows">
-              <span className="flex flex-wrap gap-x-3 gap-y-0.5">
-                {detail.workflows.map((workflow) => (
-                  <a
-                    className="underline-offset-4 hover:underline"
-                    href={`/workflows/${workflow.id}`}
-                    key={workflow.id}
-                    onClick={(e) => e.stopPropagation()}
-                    rel="noopener"
-                    target="_blank"
-                  >
-                    {workflow.name}
-                  </a>
-                ))}
-              </span>
-            </NotificationDetailItem>
-          ) : null}
-        </dl>
-      </td>
-    </tr>
-  );
-}
-
-function ExpandedRunDetail({
-  loadingSteps,
-  retentionCutoff,
-  run,
-  steps,
-}: {
-  loadingSteps: boolean;
-  retentionCutoff?: string | null;
-  run: UnifiedRun;
-  steps: StepLog[];
-}): ReactNode {
-  if (run.notification) {
-    return (
-      <NotificationDetailRows
-        completedAt={run.completedAt}
-        detail={run.notification}
-      />
-    );
-  }
-  return (
-    <ExpandedStepRows
-      loadingSteps={loadingSteps}
-      retentionCutoff={retentionCutoff}
-      run={run}
-      steps={steps}
-    />
-  );
-}
-
 type ExpandableRunRowProps = {
   retentionCutoff?: string | null;
   run: UnifiedRun;
@@ -760,8 +578,7 @@ function ExpandableRunRow({
 
     setExpanded(true);
 
-    // Only workflow runs have steps to fetch.
-    if (run.source !== "workflow" || steps.length > 0) {
+    if (run.source === "direct" || steps.length > 0) {
       return;
     }
 
@@ -778,20 +595,10 @@ function ExpandableRunRow({
   }, [expanded, steps.length, run.id, run.source]);
 
   const isDeleted = run.workflowName === "(Deleted)";
-  const notification = run.notification;
-  let runName: string;
-  if (notification) {
-    runName = notification.title;
-  } else if (run.source === "workflow") {
-    runName = run.workflowName ?? "Unnamed Workflow";
-  } else {
-    runName = run.directType ?? "Direct Execution";
-  }
-  // A notification links to its workflow only when it is about exactly one.
-  const linksToWorkflow =
-    (run.source === "workflow" || run.source === "notification") &&
-    Boolean(run.workflowId) &&
-    !isDeleted;
+  const runName =
+    run.source === "workflow"
+      ? (run.workflowName ?? "Unnamed Workflow")
+      : (run.directType ?? "Direct Execution");
 
   const ChevronIcon = expanded ? ChevronDown : ChevronRight;
 
@@ -802,8 +609,6 @@ function ExpandableRunRow({
           "group cursor-pointer transition-colors hover:bg-muted/50",
           expanded && "bg-muted/30"
         )}
-        data-source={run.source}
-        data-testid="run-row"
         onClick={() => {
           handleToggleExpand().catch(() => {
             /* noop - errors handled with toast in handlePageChange */
@@ -817,16 +622,13 @@ function ExpandableRunRow({
           <div className="flex items-center gap-1.5">
             <span
               className={cn(
-                "min-w-0 max-w-xs truncate text-sm font-medium",
-                // A notification title is a sentence that already reads right.
-                !notification && "capitalize",
+                "text-sm font-medium capitalize",
                 isDeleted && "italic text-muted-foreground line-through"
               )}
-              title={runName}
             >
               {runName}
             </span>
-            {linksToWorkflow ? (
+            {run.source === "workflow" && run.workflowId && !isDeleted ? (
               <a
                 aria-label={`Open ${runName} in a new tab`}
                 className="opacity-0 transition-opacity group-hover:opacity-100"
@@ -841,11 +643,12 @@ function ExpandableRunRow({
           </div>
         </td>
         <td className="py-3 pr-3">
-          {notification ? (
-            <NotificationStatusBadge detail={notification} />
-          ) : (
+          <div className="flex flex-wrap items-center gap-1.5">
             <StatusBadge status={run.status} />
-          )}
+            {run.alert && run.workflowId ? (
+              <AlertSentChip alert={run.alert} workflowId={run.workflowId} />
+            ) : null}
+          </div>
         </td>
         <td className="py-3 pr-3">
           <SourceBadge source={run.source} />
@@ -880,7 +683,7 @@ function ExpandableRunRow({
         </td>
       </tr>
       {expanded ? (
-        <ExpandedRunDetail
+        <ExpandedStepRows
           loadingSteps={loadingSteps}
           retentionCutoff={retentionCutoff}
           run={run}
@@ -906,31 +709,23 @@ export function Pagination({
   page,
   pageSize,
   total,
-  listTotal = total,
   onPageChange,
   loading,
 }: {
   page: number;
   pageSize: number;
-  /** Runs matching the filters: the only figure the pager shows as a count. */
   total: number;
-  /** Rows the listing pages through, notifications included. */
-  listTotal?: number;
   onPageChange: (page: number) => void;
   loading: boolean;
 }): ReactNode {
   // Capped at the route's page ceiling, so Next stops where the server does.
-  const totalPages = runsPageCount(listTotal, pageSize);
-  if (listTotal <= pageSize) {
+  const totalPages = runsPageCount(total, pageSize);
+  if (total <= pageSize) {
     return null;
   }
 
-  // Notifications are listed but never counted, so with any on the list a
-  // row range "of N runs" would not add up: the pager names the page instead.
-  const label =
-    listTotal === total
-      ? `${((page - 1) * pageSize + 1).toLocaleString()}\u2013${Math.min(page * pageSize, total).toLocaleString()} of ${total.toLocaleString()}`
-      : `Page ${page.toLocaleString()} of ${totalPages.toLocaleString()}`;
+  const rangeStart = (page - 1) * pageSize + 1;
+  const rangeEnd = Math.min(page * pageSize, total);
 
   return (
     <nav
@@ -938,7 +733,8 @@ export function Pagination({
       className="flex flex-wrap items-center gap-x-2 gap-y-1"
     >
       <span className="whitespace-nowrap font-medium text-muted-foreground text-xs tabular-nums">
-        {label}
+        {rangeStart.toLocaleString()}&ndash;{rangeEnd.toLocaleString()} of{" "}
+        {total.toLocaleString()}
       </span>
       <div className="flex items-center gap-2">
         <Button
@@ -1025,7 +821,7 @@ export function RunsTable(): ReactNode {
   const loading = useAtomValue(analyticsLoadingAtom);
   const range = useAtomValue(analyticsRangeAtom);
   const statuses = useAtomValue(analyticsStatusFiltersAtom);
-  const sources = useRunSources(useAtomValue(analyticsSourceFiltersAtom));
+  const sources = useAtomValue(analyticsSourceFiltersAtom);
   const networks = useAtomValue(analyticsNetworkFiltersAtom);
   const gas = useAtomValue(analyticsGasFiltersAtom);
   const duration = useAtomValue(analyticsDurationFilterAtom);
@@ -1042,9 +838,6 @@ export function RunsTable(): ReactNode {
 
   const handlePageChange = useCallback(
     async (newPage: number): Promise<void> => {
-      if (!sources) {
-        return;
-      }
       setPageLoading(true);
 
       // Update URL without full navigation
@@ -1104,31 +897,24 @@ export function RunsTable(): ReactNode {
   // without a page - so a ?page= left in the URL outlives the result it
   // described, and the restore below would replay it against a filter set that
   // never produced it. Dropping it keeps the URL and the rendered page in step.
-  // Null until the sources are known; the first known set is not a change.
-  const filterKey = sources
-    ? JSON.stringify([
-        range,
-        statuses,
-        sources,
-        networks,
-        gas,
-        duration,
-        search,
-        projectId,
-        customStart,
-        customEnd,
-      ])
-    : null;
+  const filterKey = JSON.stringify([
+    range,
+    statuses,
+    sources,
+    networks,
+    gas,
+    duration,
+    search,
+    projectId,
+    customStart,
+    customEnd,
+  ]);
   const lastFilterKey = useRef(filterKey);
   useEffect(() => {
-    if (filterKey === null || lastFilterKey.current === filterKey) {
+    if (lastFilterKey.current === filterKey) {
       return;
     }
-    const first = lastFilterKey.current === null;
     lastFilterKey.current = filterKey;
-    if (first) {
-      return;
-    }
     const url = new URL(window.location.href);
     if (!url.searchParams.has("page")) {
       return;
@@ -1174,9 +960,8 @@ export function RunsTable(): ReactNode {
                 moves under the title rather than both squeezing, and the
                 arrows stay together. */}
             <CardTitle className="flex flex-wrap items-center justify-between gap-y-2">
-              <span>Runs</span>
+              <span>Workflow Runs</span>
               <Pagination
-                listTotal={runsData?.listTotal ?? runsData?.total ?? 0}
                 loading={pageLoading}
                 onPageChange={(p) => {
                   handlePageChange(p).catch(() => {

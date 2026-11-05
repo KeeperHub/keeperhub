@@ -16,11 +16,7 @@ const VALID_STATUSES = new Set<NormalizedStatus>([
   "cancelled",
 ]);
 
-const VALID_SOURCES = new Set<RunSource>([
-  "workflow",
-  "direct",
-  "notification",
-]);
+const VALID_SOURCES = new Set<RunSource>(["workflow", "direct"]);
 
 const VALID_GAS = new Set<GasSpend>(["sponsored", "wallet", "free"]);
 

@@ -29,8 +29,6 @@ import {
   analyticsRangeAtom,
   analyticsSummaryAtom,
 } from "@/lib/atoms/analytics";
-import { useAlertsEnabled } from "@/lib/hooks/use-notifications";
-import { useOrganization } from "@/lib/hooks/use-organization";
 import { cn } from "@/lib/utils";
 
 function formatDuration(ms: number | null): string {
@@ -291,9 +289,6 @@ function KpiCard({
 }
 
 export function KpiCards(): ReactNode {
-  const { organization } = useOrganization();
-  // Alert rows exist only where alerts are on, and so does the note about them.
-  const alertsEnabled = useAlertsEnabled(organization?.id) === true;
   const summary = useAtomValue(analyticsSummaryAtom);
   const loading = useAtomValue(analyticsLoadingAtom);
   const range = useAtomValue(analyticsRangeAtom);
@@ -434,38 +429,27 @@ export function KpiCards(): ReactNode {
   }
 
   return (
-    <div className="space-y-2">
-      <div
-        className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"
-        data-ready={String(isReady)}
-        data-testid="kpi-cards"
-      >
-        {cards.map((card) => (
-          <KpiCard
-            breakdown={"breakdown" in card ? card.breakdown : undefined}
-            cardKey={card.key}
-            delta={card.delta}
-            deltaTooltip={card.deltaTooltip}
-            exactValue={"exactValue" in card ? card.exactValue : undefined}
-            icon={card.icon}
-            iconClassName={card.iconClassName}
-            invertDeltaColor={card.invertDeltaColor}
-            key={card.key}
-            label={card.label}
-            tooltip={"tooltip" in card ? card.tooltip : undefined}
-            value={card.value}
-          />
-        ))}
-      </div>
-      {alertsEnabled && (
-        <p
-          className="text-muted-foreground text-xs"
-          data-testid="kpi-count-note"
-        >
-          Counts workflow runs and direct executions only. Alerts are not
-          counted.
-        </p>
-      )}
+    <div
+      className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"
+      data-ready={String(isReady)}
+      data-testid="kpi-cards"
+    >
+      {cards.map((card) => (
+        <KpiCard
+          breakdown={"breakdown" in card ? card.breakdown : undefined}
+          cardKey={card.key}
+          delta={card.delta}
+          deltaTooltip={card.deltaTooltip}
+          exactValue={"exactValue" in card ? card.exactValue : undefined}
+          icon={card.icon}
+          iconClassName={card.iconClassName}
+          invertDeltaColor={card.invertDeltaColor}
+          key={card.key}
+          label={card.label}
+          tooltip={"tooltip" in card ? card.tooltip : undefined}
+          value={card.value}
+        />
+      ))}
     </div>
   );
 }

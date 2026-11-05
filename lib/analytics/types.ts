@@ -6,44 +6,13 @@
  */
 
 import type { TransactionHashEntry } from "@/lib/db/schema";
-import type { FailureAlertMessageKind } from "@/lib/db/schema-failure-alerts";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 export type { TransactionHashEntry } from "@/lib/db/schema";
 
 export type TimeRange = "1h" | "24h" | "7d" | "30d" | "custom";
 
-/**
- * "notification" is a failure notification KeeperHub sent the organization (an
- * alert, reminder, recovery or notice), listed beside the runs it was about.
- * It is a list row only: the summary, chart and network breakdown count runs.
- */
-export type RunSource = "workflow" | "direct" | "notification";
-
-/** What a notification row carries beyond the run fields it shares. */
-export type NotificationRunDetail = {
-  /** "Alert: Nightly sync", "Alert: 3 workflows", "Alerts turned on". */
-  title: string;
-  kind: FailureAlertMessageKind;
-  /** The delivery's own state, which `status` normalizes. */
-  state: string;
-  /** email | slack | discord | telegram | pagerduty */
-  channel: string;
-  /** Email address, or the channel's destination. */
-  recipient: string;
-  /** The connection a chat or PagerDuty channel sends through. */
-  connectionName: string | null;
-  /** Sent because another channel failed. */
-  isBackup: boolean;
-  attempts: number;
-  /** Why it failed, or why it was not sent. */
-  lastError: string | null;
-  /** When a queued row is next tried: later than now for a held recovery. */
-  nextAttemptAt: string;
-  /** Which channel a pause notice is about, or why a backup was sent. */
-  note: string | null;
-  workflows: { id: string; name: string }[];
-};
+export type RunSource = "workflow" | "direct";
 
 export type DirectType =
   | "transfer"
@@ -120,8 +89,15 @@ export type UnifiedRun = {
   errorCode: string | null;
   errorType: ExecutionErrorType | null;
   errorCategory: string | null;
-  /** Set on notification rows only. */
-  notification?: NotificationRunDetail;
+  /** On a failed workflow run that set off a failure alert. */
+  alert?: RunAlert;
+};
+
+/** The failure alert a run set off: when, on which methods, and how it went. */
+export type RunAlert = {
+  sentAt: string;
+  channels: string[];
+  state: "delivered" | "sending" | "failed";
 };
 
 export type AnalyticsSummary = {
@@ -208,10 +184,7 @@ export type RunQueryFilters = {
   durationMinMs?: number;
   /** Exclusive upper bound on run duration, in milliseconds. */
   durationMaxMs?: number;
-  /**
-   * Matches a workflow name or a run id, case-insensitively; on notification
-   * rows also the recipient.
-   */
+  /** Matches a workflow name or a run id, case-insensitively. */
   search?: string;
 };
 
@@ -255,16 +228,7 @@ export type RunsFilters = RunQueryFilters & {
 export type RunsResponse = {
   runs: UnifiedRun[];
   nextCursor: string | null;
-  /**
-   * Runs (workflow and direct) matching the filters. System notifications are
-   * listed beside them but never counted in this or any other figure.
-   */
   total: number;
-  /**
-   * Every row the listing pages through, notifications included. For paging
-   * only: it is not a count of runs and is never shown as one.
-   */
-  listTotal: number;
   page: number;
   pageSize: number;
   /**

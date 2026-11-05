@@ -4,7 +4,6 @@ import {
   normalizeRunsResponse,
   type WireRunsResponse,
 } from "@/lib/analytics/runs-response";
-import type { NotificationRunDetail } from "@/lib/analytics/types";
 
 // A response shaped by a server older than this bundle: the run carries the
 // fields that server knew about and none of the ones added since.
@@ -66,45 +65,5 @@ describe("normalizeRunsResponse", () => {
     });
 
     expect(response.runs[0].gasNetworks).toEqual(["8453"]);
-  });
-
-  it("passes a notification row's detail through untouched", () => {
-    const notification: NotificationRunDetail = {
-      title: "Alert: Nightly sync",
-      kind: "alert",
-      state: "delivered",
-      channel: "email",
-      recipient: "ops@example.com",
-      connectionName: null,
-      isBackup: false,
-      attempts: 1,
-      lastError: null,
-      nextAttemptAt: "2026-10-01T10:00:00.000Z",
-      note: null,
-      workflows: [{ id: "wf", name: "Nightly sync" }],
-    };
-    const [run] = normalizeRunsResponse({
-      ...LEGACY_RESPONSE,
-      runs: [
-        {
-          ...LEGACY_RESPONSE.runs[0],
-          source: "notification",
-          network: null,
-          networks: undefined,
-          notification,
-        },
-      ],
-    }).runs;
-
-    expect(run.notification).toEqual(notification);
-    expect(run.networks).toEqual([]);
-    expect(runGasDisplay(run)).toBe("-");
-  });
-
-  it("pages over the run total when a stale server sends no listTotal", () => {
-    expect(normalizeRunsResponse(LEGACY_RESPONSE).listTotal).toBe(1);
-    expect(
-      normalizeRunsResponse({ ...LEGACY_RESPONSE, listTotal: 7 }).listTotal
-    ).toBe(7);
   });
 });

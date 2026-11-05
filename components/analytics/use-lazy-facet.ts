@@ -2,7 +2,6 @@
 
 import { useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useRef } from "react";
-import { useRunSources } from "@/components/analytics/use-run-sources";
 import { buildRunsQuery } from "@/lib/analytics/runs-query";
 import type { FacetDimension, RunFacets } from "@/lib/analytics/types";
 import {
@@ -32,7 +31,7 @@ export function useLazyFacet(dimension: FacetDimension): () => void {
   const setFacets = useSetAtom(analyticsFacetsAtom);
   const range = useAtomValue(analyticsRangeAtom);
   const statuses = useAtomValue(analyticsStatusFiltersAtom);
-  const sources = useRunSources(useAtomValue(analyticsSourceFiltersAtom));
+  const sources = useAtomValue(analyticsSourceFiltersAtom);
   const networks = useAtomValue(analyticsNetworkFiltersAtom);
   const gas = useAtomValue(analyticsGasFiltersAtom);
   const duration = useAtomValue(analyticsDurationFilterAtom);
@@ -44,9 +43,6 @@ export function useLazyFacet(dimension: FacetDimension): () => void {
   const inFlight = useRef<AbortController | null>(null);
 
   return useCallback((): void => {
-    if (!sources) {
-      return;
-    }
     // The status filter is carried, unlike the status facet's own request:
     // only the dimension being counted is lifted, and the server lifts network
     // and gas itself. Lifting status here too would label a chain with a count

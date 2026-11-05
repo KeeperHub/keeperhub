@@ -43,13 +43,6 @@ export function runsPageCount(total: number, pageSize: number): number {
   return Math.min(Math.max(1, Math.ceil(total / pageSize)), MAX_PAGE);
 }
 
-/**
- * What the analytics page lists when the reader picked no source: runs only.
- * Alerts are listed for information when the Alerts source is ticked, and are
- * never counted in any number.
- */
-export const PAGE_DEFAULT_SOURCES: RunSource[] = ["workflow", "direct"];
-
 export type RunsQueryInput = {
   range: TimeRange;
   statuses?: NormalizedStatus[];
@@ -83,11 +76,7 @@ export function buildRunsQuery(input: RunsQueryInput): string {
       params.append("status", status);
     }
   }
-  const sources =
-    input.sources && input.sources.length > 0
-      ? input.sources
-      : PAGE_DEFAULT_SOURCES;
-  for (const source of sources) {
+  for (const source of input.sources ?? []) {
     params.append("source", source);
   }
   for (const network of input.networks ?? []) {
