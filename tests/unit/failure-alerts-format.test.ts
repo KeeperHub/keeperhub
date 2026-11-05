@@ -31,7 +31,7 @@ describe("describeRule", () => {
     expect(
       describeRule({ ...base, viewerEmail: "ana@x.io", scope: "org" })
     ).toBe(
-      "If a workflow that runs on its own fails 5 times in a row, KeeperHub tells you by email. Scheduled runs that do not start are reported too. Runs you start by hand never count."
+      "If a workflow that runs on its own keeps failing, KeeperHub tells you by email. Scheduled runs that do not start are reported too. Runs you start by hand never count."
     );
   });
 

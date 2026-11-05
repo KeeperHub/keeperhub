@@ -924,6 +924,8 @@ type InAppAlertState = {
   failingWorkflows: number;
   /** Nobody can be emailed and no working chat or PagerDuty channel exists. */
   unreachable: boolean;
+  /** When the org-wide pause ends (ISO), or null when alerts are not paused. */
+  pausedUntil: string | null;
 };
 
 /** What the bell and the top banner show about failure notifications. */
@@ -931,7 +933,7 @@ export async function loadInAppAlertState(
   organizationId: string
 ): Promise<InAppAlertState> {
   if (!isFailureAlertsEnabledForOrg(organizationId)) {
-    return { failingWorkflows: 0, unreachable: false };
+    return { failingWorkflows: 0, unreachable: false, pausedUntil: null };
   }
   const [policy, members, rows, open, usable, usage] = await Promise.all([
     loadOrgPolicy(organizationId),
@@ -972,5 +974,9 @@ export async function loadInAppAlertState(
       channels,
       capReached(usage)
     ),
+    pausedUntil:
+      policy.pausedUntil && policy.pausedUntil > new Date()
+        ? policy.pausedUntil.toISOString()
+        : null,
   };
 }

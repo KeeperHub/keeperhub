@@ -8,11 +8,13 @@ import {
   useAppBannerOffset,
 } from "@/components/app-banner-slot";
 import { QuotaBanner } from "@/components/billing/quota-banner";
+import { FailureAlertsPausedBanner } from "@/components/failure-alerts/paused-banner";
 import { FailureAlertsUnreachableBanner } from "@/components/failure-alerts/unreachable-banner";
 import { useSession } from "@/lib/auth-client";
 import { isBillingEnabled } from "@/lib/billing/feature-flag";
 import {
   hasNotificationType,
+  invalidateNotificationStatus,
   useNotificationStatus,
 } from "@/lib/hooks/use-notifications";
 import { useActiveMember, useOrganization } from "@/lib/hooks/use-organization";
@@ -26,8 +28,8 @@ const STORAGE_KEY = "kh-billing-announce-v1";
 
 /**
  * The single fixed banner slot. "Nobody would be told about a failing
- * workflow" outranks every billing banner: it is the only one that means
- * something is broken right now and will stay broken until someone acts.
+ * workflow" outranks everything: it stays broken until someone acts. Paused
+ * alerts come next, as failures go unreported until the pause ends.
  */
 export function AppBanner(): React.ReactElement | null {
   const { organization } = useOrganization();
@@ -37,14 +39,37 @@ export function AppBanner(): React.ReactElement | null {
   const { status } = useNotificationStatus(
     signedIn && isAdmin ? organization?.id : null
   );
+  const organizationId = organization?.id;
   const unreachable =
-    Boolean(organization?.id) &&
+    Boolean(organizationId) &&
     hasNotificationType(status, "failure_alerts_unreachable");
+  const pausedUntil = organizationId ? status.alertsPausedUntil : null;
 
-  useAppBannerOffset(unreachable);
+  // Ask again once the pause runs out, so the banner leaves on time.
+  useEffect(() => {
+    if (!(organizationId && pausedUntil)) {
+      return;
+    }
+    const wait = Math.max(Date.parse(pausedUntil) - Date.now(), 0) + 1000;
+    const timer = window.setTimeout(
+      () => invalidateNotificationStatus(organizationId),
+      wait
+    );
+    return () => window.clearTimeout(timer);
+  }, [organizationId, pausedUntil]);
 
-  if (unreachable && organization?.id) {
-    return <FailureAlertsUnreachableBanner organizationId={organization.id} />;
+  useAppBannerOffset(unreachable || Boolean(pausedUntil));
+
+  if (unreachable && organizationId) {
+    return <FailureAlertsUnreachableBanner organizationId={organizationId} />;
+  }
+  if (pausedUntil && organizationId) {
+    return (
+      <FailureAlertsPausedBanner
+        organizationId={organizationId}
+        until={pausedUntil}
+      />
+    );
   }
   if (!isBillingEnabled()) {
     return null;

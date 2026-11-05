@@ -287,7 +287,7 @@ export function OrgFailureAlertsSection({
   if (loadFailed === "missing" || data?.enabled === false) {
     return (
       <div data-testid="failure-alerts-unavailable">
-        <SectionHeader description={ALERTS_DESCRIPTION} title="Alerts" />
+        <SectionHeader description={ALERTS_DESCRIPTION} title="Alerts" wide />
         <SettingsCard className="mt-4 md:mt-6">
           <EmptyState>
             Alerts are not available for this organization yet.
@@ -299,7 +299,7 @@ export function OrgFailureAlertsSection({
 
   if (!(data && rules)) {
     const header = (
-      <SectionHeader description={ALERTS_DESCRIPTION} title="Alerts" />
+      <SectionHeader description={ALERTS_DESCRIPTION} title="Alerts" wide />
     );
     if (loadFailed === "error") {
       return (
@@ -563,6 +563,7 @@ export function OrgFailureAlertsSection({
           </>
         }
         title="Alerts"
+        wide
       />
       {pausing && !pause && (
         <PauseAlertsForm
@@ -583,7 +584,10 @@ export function OrgFailureAlertsSection({
         />
       </SettingsCard>
 
-      <SettingsCard description="Apply to every method." title="Rules">
+      <SettingsCard
+        description="When to send an alert. Alerts go to the people and channels set up under Methods below."
+        title="Rules"
+      >
         <WhenToNotify
           canManage={canManage}
           draft={rules}

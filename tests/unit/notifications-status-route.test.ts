@@ -42,6 +42,7 @@ describe("GET /api/notifications/status", () => {
     mocks.loadInAppAlertState.mockResolvedValue({
       failingWorkflows: 0,
       unreachable: true,
+      pausedUntil: "2026-11-05T14:04:00.000Z",
     });
     mocks.isFailureAlertsEnabledForOrg.mockImplementation(
       (id: string) => id === "org-b"
@@ -65,6 +66,7 @@ describe("GET /api/notifications/status", () => {
       unreadCount: 1,
       types: ["failure_alerts_unreachable"],
       alertsEnabled: true,
+      alertsPausedUntil: "2026-11-05T14:04:00.000Z",
     });
   });
 
@@ -77,7 +79,12 @@ describe("GET /api/notifications/status", () => {
 
     const body = await (await GET(request("org-x"))).json();
 
-    expect(body).toEqual({ unreadCount: 0, types: [], alertsEnabled: false });
+    expect(body).toEqual({
+      unreadCount: 0,
+      types: [],
+      alertsEnabled: false,
+      alertsPausedUntil: null,
+    });
     expect(mocks.loadInAppAlertState).not.toHaveBeenCalled();
   });
 
@@ -94,5 +101,6 @@ describe("GET /api/notifications/status", () => {
 
     expect(body.types).toEqual([]);
     expect(body.alertsEnabled).toBe(true);
+    expect(body.alertsPausedUntil).toBeNull();
   });
 });

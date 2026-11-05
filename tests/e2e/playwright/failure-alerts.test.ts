@@ -174,7 +174,9 @@ test.describe("Failure alerts", () => {
     await expect(methodCards(page)).toHaveCount(2);
   });
 
-  test("pausing alerts shows the notice until Resume now", async ({ page }) => {
+  test("pausing alerts shows the notice and top banner until Resume now", async ({
+    page,
+  }) => {
     await openAlerts(page);
     await page.getByTestId("failure-alerts-pause").click();
     const form = page.getByTestId("failure-alerts-pause-form");
@@ -189,10 +191,15 @@ test.describe("Failure alerts", () => {
       .poll(() => readOrgPause(fixture.orgId), SAVE_TIMEOUT)
       .not.toBeNull();
 
+    const banner = page.getByTestId("failure-alerts-paused-banner");
+    await expect(banner).toBeVisible(SAVE_TIMEOUT);
+
     await openAlerts(page);
     await expect(paused).toBeVisible();
+    await expect(banner).toBeVisible(SAVE_TIMEOUT);
     await paused.getByTestId("failure-alerts-resume").click();
     await expect(paused).toHaveCount(0, SAVE_TIMEOUT);
+    await expect(banner).toHaveCount(0, SAVE_TIMEOUT);
     await expect
       .poll(() => readOrgPause(fixture.orgId), SAVE_TIMEOUT)
       .toBeNull();

@@ -168,15 +168,15 @@ export function describeRule(input: {
   pauseWorkflow?: boolean;
   scope: "org" | "workflow";
 }): string {
-  const subject =
+  // The org page shows its limits under Rules, so its sentence names no numbers.
+  const when =
     input.scope === "org"
-      ? "If a workflow that runs on its own fails"
-      : "If this workflow fails";
-  const count = `${input.threshold} time${input.threshold === 1 ? "" : "s"} in a row${
-    input.timeLimitMinutes
-      ? ` or keeps failing for ${timeLimitLabel(input.timeLimitMinutes)}`
-      : ""
-  }`;
+      ? "If a workflow that runs on its own keeps failing"
+      : `If this workflow fails ${input.threshold} time${input.threshold === 1 ? "" : "s"} in a row${
+          input.timeLimitMinutes
+            ? ` or keeps failing for ${timeLimitLabel(input.timeLimitMinutes)}`
+            : ""
+        }`;
 
   let emailPart: string | null = null;
   if (input.emails.length === 1) {
@@ -212,7 +212,7 @@ export function describeRule(input: {
     who = joinList(backups);
   }
 
-  let sentence = `${subject} ${count}, KeeperHub tells ${who}${backupPart}.`;
+  let sentence = `${when}, KeeperHub tells ${who}${backupPart}.`;
   if (input.pauseWorkflow) {
     const runs =
       input.threshold === 1

@@ -1159,7 +1159,11 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await addFailures(wallet, wf, 5);
       await runCycle();
       const state = await settings.loadInAppAlertState(wallet.orgId);
-      expect(state).toEqual({ unreachable: true, failingWorkflows: 1 });
+      expect(state).toEqual({
+        unreachable: true,
+        failingWorkflows: 1,
+        pausedUntil: null,
+      });
       const rows = await deliveriesOf(wallet.orgId);
       expect(
         rows.some(

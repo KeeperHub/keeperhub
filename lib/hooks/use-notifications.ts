@@ -12,12 +12,15 @@ type NotificationStatus = {
   types: NotificationType[];
   /** Alerts are switched on for the org; null until the answer is in. */
   alertsEnabled: boolean | null;
+  /** When the org-wide alert pause ends (ISO), or null. */
+  alertsPausedUntil: string | null;
 };
 
 const EMPTY_STATUS: NotificationStatus = {
   unreadCount: 0,
   types: [],
   alertsEnabled: null,
+  alertsPausedUntil: null,
 };
 
 /**
@@ -49,6 +52,7 @@ async function fetchStatus(
       unreadCount: data.unreadCount ?? 0,
       types: data.types ?? [],
       alertsEnabled: data.alertsEnabled === true,
+      alertsPausedUntil: data.alertsPausedUntil ?? null,
     };
   } catch {
     return EMPTY_STATUS;

@@ -17,12 +17,15 @@ type NotificationStatusResponse = {
   types: NotificationType[];
   /** Alerts are on for this org (FAILURE_ALERTS_ROLLOUT); the UI hides them otherwise. */
   alertsEnabled: boolean;
+  /** When the org-wide alert pause ends (ISO); owners and admins only. */
+  alertsPausedUntil: string | null;
 };
 
 const EMPTY_RESPONSE: NotificationStatusResponse = {
   unreadCount: 0,
   types: [],
   alertsEnabled: false,
+  alertsPausedUntil: null,
 };
 
 export async function GET(
@@ -45,6 +48,7 @@ export async function GET(
     }
 
     const types: NotificationType[] = [];
+    let alertsPausedUntil: string | null = null;
 
     if (
       isBillingEnabled() &&
@@ -65,6 +69,7 @@ export async function GET(
         if (alerts.unreachable) {
           types.push("failure_alerts_unreachable");
         }
+        alertsPausedUntil = alerts.pausedUntil;
       } catch (error) {
         logSystemWarn(
           ErrorCategory.DATABASE,
@@ -78,6 +83,7 @@ export async function GET(
       unreadCount: types.length,
       types,
       alertsEnabled: isFailureAlertsEnabledForOrg(organizationId),
+      alertsPausedUntil,
     });
   } catch (error) {
     logSystemWarn(
