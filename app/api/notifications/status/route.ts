@@ -17,7 +17,7 @@ type NotificationStatusResponse = {
   types: NotificationType[];
   /** Alerts are on for this org (FAILURE_ALERTS_ROLLOUT); the UI hides them otherwise. */
   alertsEnabled: boolean;
-  /** When the org-wide alert pause ends (ISO); owners and admins only. */
+  /** When the org-wide alert pause ends (ISO), for every member. */
   alertsPausedUntil: string | null;
 };
 
@@ -58,25 +58,27 @@ export async function GET(
       types.push("billing_limit_reached");
     }
 
-    // Only owners and admins can act on a failing workflow or fix settings.
-    if (role === "owner" || role === "admin") {
-      // Its own catch, so a failure here never hides the billing notice.
-      try {
-        const alerts = await loadInAppAlertState(organizationId);
-        if (alerts.failingWorkflows > 0) {
-          types.push("workflows_failing");
-        }
-        if (alerts.unreachable) {
-          types.push("failure_alerts_unreachable");
-        }
-        alertsPausedUntil = alerts.pausedUntil;
-      } catch (error) {
-        logSystemWarn(
-          ErrorCategory.DATABASE,
-          "[notifications-status] failure-alert state unavailable",
-          error
-        );
+    // Every member sees the paused and nobody-reachable banners (view only);
+    // the failing-workflows notice is for owners and admins, who can act on it.
+    // Its own catch, so a failure here never hides the billing notice.
+    try {
+      const alerts = await loadInAppAlertState(organizationId);
+      if (
+        alerts.failingWorkflows > 0 &&
+        (role === "owner" || role === "admin")
+      ) {
+        types.push("workflows_failing");
       }
+      if (alerts.unreachable) {
+        types.push("failure_alerts_unreachable");
+      }
+      alertsPausedUntil = alerts.pausedUntil;
+    } catch (error) {
+      logSystemWarn(
+        ErrorCategory.DATABASE,
+        "[notifications-status] failure-alert state unavailable",
+        error
+      );
     }
 
     return NextResponse.json({

@@ -88,7 +88,7 @@ describe("GET /api/notifications/status", () => {
     expect(mocks.loadInAppAlertState).not.toHaveBeenCalled();
   });
 
-  it("does not show admin notices to a plain member", async () => {
+  it("shows a plain member the paused and nobody-reachable banners, not the failing notice", async () => {
     mocks.getDualAuthContext.mockResolvedValue({
       userId: "u1",
       organizationId: "org-b",
@@ -96,11 +96,16 @@ describe("GET /api/notifications/status", () => {
       apiKeyId: null,
     });
     mocks.getOrgRole.mockResolvedValue("member");
+    mocks.loadInAppAlertState.mockResolvedValue({
+      failingWorkflows: 2,
+      unreachable: true,
+      pausedUntil: "2026-11-05T14:04:00.000Z",
+    });
 
     const body = await (await GET(request("org-b"))).json();
 
-    expect(body.types).toEqual([]);
+    expect(body.types).toEqual(["failure_alerts_unreachable"]);
     expect(body.alertsEnabled).toBe(true);
-    expect(body.alertsPausedUntil).toBeNull();
+    expect(body.alertsPausedUntil).toBe("2026-11-05T14:04:00.000Z");
   });
 });

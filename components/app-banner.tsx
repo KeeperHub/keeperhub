@@ -36,9 +36,8 @@ export function AppBanner(): React.ReactElement | null {
   const { isAdmin } = useActiveMember();
   const { data: session } = useSession();
   const signedIn = Boolean(session?.user) && !isAnonymousUser(session?.user);
-  const { status } = useNotificationStatus(
-    signedIn && isAdmin ? organization?.id : null
-  );
+  // Every member sees the alerts banners; only owners and admins can fix them.
+  const { status } = useNotificationStatus(signedIn ? organization?.id : null);
   const organizationId = organization?.id;
   const unreachable =
     Boolean(organizationId) &&
@@ -60,7 +59,12 @@ export function AppBanner(): React.ReactElement | null {
 
   let alert: React.ReactElement | null = null;
   if (unreachable && organizationId) {
-    alert = <FailureAlertsUnreachableBanner organizationId={organizationId} />;
+    alert = (
+      <FailureAlertsUnreachableBanner
+        canManage={isAdmin}
+        organizationId={organizationId}
+      />
+    );
   } else if (pausedUntil && organizationId) {
     alert = (
       <FailureAlertsPausedBanner

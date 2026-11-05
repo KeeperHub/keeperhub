@@ -4,11 +4,14 @@ import { AlertTriangle } from "lucide-react";
 import Link from "next/link";
 import { AppBannerSlot } from "@/components/app-banner-slot";
 
-/** Top-of-app warning that nobody can be told of a failure; not dismissible, as fixing it is the only way out. */
+/** Top-of-app warning that nobody can be told of a failure; not dismissible, as fixing it is the only way out. Every member sees it. */
 export function FailureAlertsUnreachableBanner({
   organizationId,
+  canManage,
 }: {
   organizationId: string;
+  /** Owners and admins fix it; members can only look. */
+  canManage: boolean;
 }): React.ReactElement {
   return (
     <AppBannerSlot
@@ -32,8 +35,10 @@ export function FailureAlertsUnreachableBanner({
           className="shrink-0 font-medium underline underline-offset-4"
           href={`/settings/${organizationId}/alerts?highlight=methods`}
         >
-          <span className="sm:hidden">Fix</span>
-          <span className="hidden sm:inline">Fix in Alerts</span>
+          <span className="sm:hidden">{canManage ? "Fix" : "View"}</span>
+          <span className="hidden sm:inline">
+            {canManage ? "Fix in Alerts" : "View in Alerts"}
+          </span>
         </Link>
       </p>
     </AppBannerSlot>
