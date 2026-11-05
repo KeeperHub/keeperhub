@@ -19,7 +19,7 @@ import {
   runCursorCondition,
 } from "@/lib/analytics/run-cursor";
 import { getOrgPlan } from "@/lib/billing/plans-server";
-import { db, type Tx } from "@/lib/db";
+import { db } from "@/lib/db";
 import {
   failureAlertChannels,
   failureAlertDeliveries,
@@ -35,6 +35,7 @@ import type {
   FailureAlertChannelKind,
   FailureAlertChannelRole,
 } from "@/lib/db/schema-failure-alerts";
+import type { Tx } from "@/lib/db/tx";
 import {
   loadOrgMembers,
   type OrgMember,

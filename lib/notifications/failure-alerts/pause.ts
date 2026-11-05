@@ -1,9 +1,10 @@
 import "server-only";
 
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { db, type Tx } from "@/lib/db";
+import { db } from "@/lib/db";
 import { workflowFailureIncidents, workflows } from "@/lib/db/schema";
 import type { FailureIncidentResolution } from "@/lib/db/schema-failure-alerts";
+import type { Tx } from "@/lib/db/tx";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import { recordAuditEvent } from "@/lib/security/audit-log";
 import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";

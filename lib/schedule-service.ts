@@ -5,12 +5,13 @@ import {
   parseIntervalSeconds,
   validateCronExpression,
 } from "@/lib/cron-utils";
-import { db, type Tx } from "@/lib/db";
+import { db } from "@/lib/db";
 import {
   workflowFailureIncidents,
   workflowSchedules,
   workflows,
 } from "@/lib/db/schema";
+import type { Tx } from "@/lib/db/tx";
 import {
   ErrorCategory,
   logSystemError,

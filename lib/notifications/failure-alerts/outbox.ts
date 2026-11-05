@@ -14,7 +14,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { getOrgPlan } from "@/lib/billing/plans-server";
-import { db, type Tx } from "@/lib/db";
+import { db } from "@/lib/db";
 import {
   failureAlertChannels,
   failureAlertDeliveries,
@@ -26,6 +26,7 @@ import {
   workflows,
 } from "@/lib/db/schema";
 import type { FailureAlertDeliveryState } from "@/lib/db/schema-failure-alerts";
+import type { Tx } from "@/lib/db/tx";
 import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import { redactErrorSecrets } from "@/lib/utils/redact";

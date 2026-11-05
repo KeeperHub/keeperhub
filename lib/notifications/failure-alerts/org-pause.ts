@@ -1,7 +1,7 @@
 import "server-only";
 
 import { and, count, eq, isNull, lte } from "drizzle-orm";
-import { db, type Tx } from "@/lib/db";
+import { db } from "@/lib/db";
 import {
   failureAlertDeliveries,
   orgFailureAlertSettings,
@@ -9,6 +9,7 @@ import {
   workflows,
 } from "@/lib/db/schema";
 import type { FailureAlertDeliveryChannel as DeliveryChannel } from "@/lib/db/schema-failure-alerts";
+import type { Tx } from "@/lib/db/tx";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import {
   BACKUP_AFTER_MS,

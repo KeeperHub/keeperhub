@@ -13,7 +13,7 @@ import {
   lte,
   sql,
 } from "drizzle-orm";
-import { db, type Tx } from "@/lib/db";
+import { db } from "@/lib/db";
 import {
   failureAlertDeliveries,
   organization,
@@ -26,6 +26,7 @@ import {
   workflows,
 } from "@/lib/db/schema";
 import type { FailureIncidentResolution } from "@/lib/db/schema-failure-alerts";
+import type { Tx } from "@/lib/db/tx";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";

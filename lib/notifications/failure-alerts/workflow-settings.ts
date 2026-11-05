@@ -1,7 +1,7 @@
 import "server-only";
 
 import { and, eq, isNull } from "drizzle-orm";
-import { db, type Tx } from "@/lib/db";
+import { db } from "@/lib/db";
 import {
   failureAlertChannels,
   failureAlertDeliveries,
@@ -10,6 +10,7 @@ import {
   workflowFailureIncidents,
   workflows,
 } from "@/lib/db/schema";
+import type { Tx } from "@/lib/db/tx";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
 import { MAX_MUTE_DAYS } from "./constants";

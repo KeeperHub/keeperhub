@@ -1,11 +1,12 @@
 import "server-only";
 
-import { db, type Tx } from "@/lib/db";
+import { db } from "@/lib/db";
 import { failureAlertDeliveries } from "@/lib/db/schema";
 import type {
   FailureAlertDeliveryChannel,
   FailureAlertMessageKind,
 } from "@/lib/db/schema-failure-alerts";
+import type { Tx } from "@/lib/db/tx";
 import type { OrgMember } from "@/lib/notifications/org-recipients";
 import { BACKUP_AFTER_MS } from "./constants";
 import {
