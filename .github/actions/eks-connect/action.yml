@@ -63,7 +63,9 @@ runs:
         # stays the real hostname.
         echo "127.0.0.1 ${HOST}" | sudo tee -a /etc/hosts >/dev/null
 
-        sudo -E env "PATH=$PATH" aws ssm start-session \
+        # The runner's sudo ignores -E, so name the AWS credentials the session needs.
+        sudo --preserve-env=AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_SESSION_TOKEN,AWS_REGION,AWS_DEFAULT_REGION \
+          env "PATH=$PATH" aws ssm start-session \
           --region "$REGION" \
           --target "$INSTANCE_ID" \
           --document-name AWS-StartPortForwardingSessionToRemoteHost \
