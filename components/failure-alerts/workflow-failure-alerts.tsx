@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { IntegrationIcon } from "@/components/ui/integration-icon";
 import { Label } from "@/components/ui/label";
 import { Notice, WARNING_TEXT } from "@/components/ui/notice";
 import {
@@ -33,6 +34,7 @@ import {
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
 import {
+  methodText,
   refusalFixHref,
   refusalFixLink,
   type WorkflowAlertView,
@@ -50,7 +52,6 @@ import { fetchView } from "./api";
 import { ChannelListEditor } from "./channel-list-editor";
 import { focusInPlace } from "./focus-in-place";
 import {
-  describeRule,
   FUNDS_RULE,
   failedRuns,
   formatWhen,
@@ -98,81 +99,115 @@ function describeTimeLimit(minutes: number | null): string {
   return minutes ? ` or ${timeLimitLabel(minutes)} of failing` : "";
 }
 
-function summary(view: Loaded): string {
-  return describeRule({
-    threshold: view.effective.threshold,
-    timeLimitMinutes: view.effective.timeLimitMinutes,
-    emails: view.effective.emails,
-    channels: view.effective.channels,
-    pauseWorkflow: view.override.pauseWorkflow,
-    scope: "workflow",
-  });
-}
-
 /** The org rules alone, as the Org rules tab shows them even while this workflow has its own. */
-function orgSummary(view: Loaded): string {
-  return describeRule({
-    threshold: view.org.threshold,
-    timeLimitMinutes: view.org.timeLimitMinutes,
-    emails: view.members
-      .filter(
-        (m) => m.reachable && view.org.recipientUserIds.includes(m.userId)
-      )
-      .map(memberLabel),
-    channels: view.org.channels,
-    scope: "workflow",
-  });
+/** The org's alert people, as the org rules show them. */
+function orgEmails(view: Loaded): string[] {
+  return view.members
+    .filter((m) => m.reachable && view.org.recipientUserIds.includes(m.userId))
+    .map(memberLabel);
 }
 
-/** The rule as the open form would save it, so the summary follows each edit. */
-function draftSummary(
-  view: Loaded,
-  draft: {
-    threshold: string;
-    timeLimit: string;
-    recipients: string[] | null;
-    channels: DraftChannel[] | null;
-    pauseWorkflow: boolean;
-  }
-): string {
-  const threshold = Number(draft.threshold);
-  let timeLimitMinutes = view.org.timeLimitMinutes;
-  if (draft.timeLimit === "off") {
-    timeLimitMinutes = null;
-  } else if (draft.timeLimit !== "org") {
-    timeLimitMinutes = Number(draft.timeLimit);
-  }
-  const emails =
-    draft.recipients === null
-      ? view.effective.emails
-      : view.members
-          .filter((m) => m.reachable && draft.recipients?.includes(m.userId))
-          .map(memberLabel);
-  const channels =
-    draft.channels === null
-      ? view.org.channels
-      : draft.channels
-          .filter((c) => c.integrationId)
-          .map((c) => ({
-            kind: c.kind,
-            destination: c.destination,
-            connectionName:
-              view.connections.find((x) => x.id === c.integrationId)?.name ??
-              null,
-            role: c.role,
-            pausedAt: c.pausedReason ? "paused" : null,
-          }));
-  return describeRule({
-    threshold:
-      Number.isInteger(threshold) && threshold > 0
-        ? threshold
-        : view.org.threshold,
-    timeLimitMinutes,
-    emails,
-    channels,
-    pauseWorkflow: draft.pauseWorkflow,
-    scope: "workflow",
-  });
+/** Rules, Email and Methods as Settings > Alerts lays them out, read-only. */
+function RulesView({
+  threshold,
+  timeLimitMinutes,
+  pauseWorkflow,
+  emails,
+  channels,
+}: {
+  threshold: number;
+  timeLimitMinutes: number | null;
+  pauseWorkflow: boolean;
+  emails: string[];
+  channels: Loaded["org"]["channels"];
+}): React.ReactElement {
+  return (
+    <div className="space-y-4" data-testid="failure-alerts-rules-view">
+      <section className="space-y-1.5">
+        <h3 className="font-semibold text-sm">Rules</h3>
+        <p>
+          Alert after <span className="font-semibold">{threshold}</span> failed
+          run{threshold === 1 ? "" : "s"} in a row
+        </p>
+        <p>
+          {timeLimitMinutes ? (
+            <>
+              or when it has been failing for{" "}
+              <span className="font-semibold">
+                {timeLimitLabel(timeLimitMinutes)}
+              </span>
+            </>
+          ) : (
+            <span className="text-muted-foreground">No time limit</span>
+          )}
+        </p>
+        {pauseWorkflow && (
+          <p className="text-xs">
+            Turns this workflow off when it reaches the limit.
+          </p>
+        )}
+      </section>
+      <section className="space-y-1.5 border-t pt-3">
+        <h3 className="font-semibold text-sm">Email</h3>
+        <p className="break-words text-xs">
+          {emails.length > 0 ? emails.join(", ") : "Nobody can be emailed."}
+        </p>
+      </section>
+      <section className="space-y-1.5 border-t pt-3">
+        <h3 className="font-semibold text-sm">Methods</h3>
+        {channels.length > 0 ? (
+          <ul className="space-y-1">
+            {channels.map((c) => (
+              <li
+                className="flex min-w-0 items-center gap-1.5 text-xs"
+                key={`${c.kind}:${c.destination}:${c.connectionName ?? ""}`}
+              >
+                <IntegrationIcon
+                  className="size-3.5 shrink-0"
+                  integration={c.kind}
+                />
+                <span className="min-w-0 break-words">
+                  {methodText(c.kind, c.destination, c.connectionName)}
+                  {c.role === "backup" ? " (backup)" : ""}
+                  {c.pausedAt ? " (paused)" : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-muted-foreground text-xs">Email only.</p>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/** The same last line on both tabs: in use, or a button that makes it so. */
+function TabFooter({
+  inUse,
+  children,
+}: {
+  inUse: boolean;
+  children?: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
+      {inUse ? (
+        <span
+          className="flex items-center gap-1.5 font-medium text-keeperhub-green-dark text-xs"
+          data-testid="failure-alerts-in-use"
+        >
+          <Check aria-hidden="true" className="size-3.5" />
+          Used by this workflow
+        </span>
+      ) : (
+        <span className="text-muted-foreground text-xs">
+          Not used by this workflow
+        </span>
+      )}
+      {children}
+    </div>
+  );
 }
 
 /** "1 more failed run" before the alert, for a workflow that turns itself off. */
@@ -635,9 +670,6 @@ export function WorkflowFailureAlerts({
       return;
     }
     setTab(next);
-    if (next === "custom" && !custom && canManage) {
-      switchToCustom().catch(() => undefined);
-    }
   };
   let autosaveLine = "All changes saved.";
   if (saving) {
@@ -843,62 +875,44 @@ export function WorkflowFailureAlerts({
               </TabsTrigger>
             </TabsList>
 
-            <TabsContent className="space-y-3 pt-1" value="org">
-              <p role={custom ? undefined : "status"}>{orgSummary(view)}</p>
-              <p className="text-muted-foreground text-xs">
-                {custom
-                  ? "This workflow has its own rules instead."
-                  : "This workflow follows the org rules."}{" "}
-                <Link
-                  className="text-foreground underline underline-offset-4"
-                  href={`/settings/${view.organizationId}/alerts`}
-                >
-                  Change the org rules
-                </Link>
-              </p>
-              {custom && canManage && (
-                <Button
-                  className={WRAP_BUTTON}
-                  data-testid="failure-alerts-reset"
-                  disabled={saving}
-                  onClick={followOrgSetting}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  Use the org rules for this workflow
-                </Button>
-              )}
+            <TabsContent className="space-y-4 pt-1" value="org">
+              <RulesView
+                channels={view.org.channels}
+                emails={orgEmails(view)}
+                pauseWorkflow={false}
+                threshold={view.org.threshold}
+                timeLimitMinutes={view.org.timeLimitMinutes}
+              />
+              <TabFooter inUse={!custom}>
+                {custom && canManage ? (
+                  <Button
+                    className={WRAP_BUTTON}
+                    data-testid="failure-alerts-reset"
+                    disabled={saving}
+                    onClick={followOrgSetting}
+                    size="sm"
+                    type="button"
+                  >
+                    Use org rules
+                  </Button>
+                ) : (
+                  <Link
+                    className="text-xs underline underline-offset-4"
+                    href={`/settings/${view.organizationId}/alerts`}
+                  >
+                    Change them in Settings
+                  </Link>
+                )}
+              </TabFooter>
             </TabsContent>
 
-            <TabsContent className="space-y-3 pt-1" value="custom">
+            <TabsContent className="space-y-4 pt-1" value="custom">
               {editing ? (
                 <div
                   className="space-y-4"
                   data-testid="failure-alerts-custom"
                   ref={panelRef}
                 >
-                  <p
-                    className={cn(
-                      "text-xs",
-                      rulesDirty && !rulesReady
-                        ? WARNING_TEXT
-                        : "text-muted-foreground"
-                    )}
-                    data-testid="failure-alerts-autosave"
-                    role="status"
-                  >
-                    {autosaveLine}
-                  </p>
-                  <p className="text-muted-foreground text-xs">
-                    {draftSummary(view, {
-                      threshold,
-                      timeLimit,
-                      recipients: customRecipients,
-                      channels: customChannels,
-                      pauseWorkflow,
-                    })}
-                  </p>
                   <section className="space-y-3">
                     <h3 className="font-semibold text-sm">Rules</h3>
                     <div className="flex flex-wrap items-center gap-2">
@@ -1108,18 +1122,65 @@ export function WorkflowFailureAlerts({
                   </section>
                   {saveErrorBox}
                 </div>
-              ) : null}
-              {!editing && custom && <p role="status">{summary(view)}</p>}
-              {!(editing || custom) && canManage && (
-                <p className="text-muted-foreground text-xs">
-                  Saving this workflow's own rules...
-                </p>
+              ) : (
+                // Not editable here: what it holds, or the org's rules it would start from.
+                <RulesView
+                  channels={
+                    custom ? view.effective.channels : view.org.channels
+                  }
+                  emails={custom ? view.effective.emails : orgEmails(view)}
+                  pauseWorkflow={custom && view.override.pauseWorkflow}
+                  threshold={
+                    custom ? view.effective.threshold : view.org.threshold
+                  }
+                  timeLimitMinutes={
+                    custom
+                      ? view.effective.timeLimitMinutes
+                      : view.org.timeLimitMinutes
+                  }
+                />
               )}
               {!(custom || canManage) && (
                 <p className="text-muted-foreground text-xs">
                   Only owners and admins can give this workflow its own rules.
                 </p>
               )}
+              {!custom && canManage && (
+                <p className="text-muted-foreground text-xs">
+                  Starts from the org's rules above; once used, change them here
+                  and they save themselves.
+                </p>
+              )}
+              <TabFooter inUse={custom}>
+                {editing && (
+                  <span
+                    className={cn(
+                      "text-xs",
+                      rulesDirty && !rulesReady
+                        ? WARNING_TEXT
+                        : "text-muted-foreground"
+                    )}
+                    data-testid="failure-alerts-autosave"
+                    role="status"
+                  >
+                    {autosaveLine}
+                  </span>
+                )}
+                {!custom && canManage && (
+                  <Button
+                    className={WRAP_BUTTON}
+                    data-testid="failure-alerts-use-custom"
+                    disabled={saving}
+                    onClick={() => {
+                      switchToCustom().catch(() => undefined);
+                    }}
+                    size="sm"
+                    type="button"
+                  >
+                    Use custom rules
+                  </Button>
+                )}
+              </TabFooter>
             </TabsContent>
           </Tabs>
 

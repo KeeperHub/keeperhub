@@ -253,12 +253,15 @@ test.describe("Failure alerts", () => {
       .toBeNull();
 
     await expect(section).toHaveAttribute("data-muted", "false");
-    // Org rules are in use until Custom rules is picked, which saves at once.
+    // Both tabs show Rules, Email and Methods; a tab only shows, its button switches.
     await expect(section.getByTestId("failure-alerts-tab-org")).toHaveAttribute(
       "data-state",
       "active"
     );
+    await expect(section.getByTestId("failure-alerts-in-use")).toBeVisible();
     await section.getByTestId("failure-alerts-tab-custom").click();
+    await expect(section).toHaveAttribute("data-source", "org");
+    await section.getByTestId("failure-alerts-use-custom").click();
     await expect(section).toHaveAttribute(
       "data-source",
       "custom",
@@ -279,7 +282,7 @@ test.describe("Failure alerts", () => {
     await expect
       .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
       .toMatchObject({ threshold: 2, pauseWorkflow: true });
-    await expect(custom.getByTestId("failure-alerts-autosave")).toHaveText(
+    await expect(section.getByTestId("failure-alerts-autosave")).toHaveText(
       "All changes saved.",
       SAVE_TIMEOUT
     );
@@ -308,7 +311,7 @@ test.describe("Failure alerts", () => {
       .and(page.locator('[data-source="notification"]'));
     await expect(alertRows).toHaveCount(0);
     await page.getByRole("button", { name: /^Source/ }).click();
-    await page.getByRole("checkbox", { name: "Alerts (info only)" }).click();
+    await page.getByRole("button", { name: "Alerts (info only)" }).click();
     await page.keyboard.press("Escape");
     // This workflow never ran, so its name only shows through its alert.
     const alertRow = alertRows.filter({ hasText: fixture.alertedName });

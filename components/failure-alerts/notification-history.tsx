@@ -126,7 +126,12 @@ function Cell({
   className?: string;
 }): React.ReactElement {
   return (
-    <div className={cn("flex min-w-0 gap-2 @3xl/history:block", className)}>
+    <div
+      className={cn(
+        "flex min-w-0 items-baseline gap-2 @3xl/history:block",
+        className
+      )}
+    >
       <span className="w-16 shrink-0 text-muted-foreground text-xs @3xl/history:hidden">
         {label}
       </span>
@@ -147,7 +152,10 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
   const { method, to } = methodAndTarget(entry);
   return (
     <li
-      className={cn("space-y-1 px-3 py-2.5 text-sm", ROW_GRID)}
+      className={cn(
+        "space-y-1 px-3 py-2.5 text-sm @3xl/history:space-y-0",
+        ROW_GRID
+      )}
       data-kind={entry.kind}
       data-state={entry.state}
       data-testid="failure-alert-history-row"
@@ -198,12 +206,12 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
         )}
       </Cell>
       <Cell label="Method">
-        <span className="flex items-center gap-1.5 text-xs">
+        <span className="inline-flex items-baseline gap-1.5 text-xs">
           {entry.channel === "email" ? (
-            <Mail aria-hidden="true" className="size-3 shrink-0" />
+            <Mail aria-hidden="true" className="size-3 shrink-0 self-center" />
           ) : (
             <IntegrationIcon
-              className="size-3 shrink-0"
+              className="size-3 shrink-0 self-center"
               integration={entry.channel}
             />
           )}
@@ -382,7 +390,7 @@ export function NotificationHistory({
       data-testid="failure-alert-history"
     >
       <div
-        className="grid grid-cols-2 gap-2 @3xl/history:grid-cols-[8rem_minmax(0,1.4fr)_minmax(0,0.9fr)_7rem_minmax(0,1.3fr)_8rem] @3xl/history:gap-x-3"
+        className="grid grid-cols-2 gap-2 @3xl/history:grid-cols-[8rem_minmax(0,1.4fr)_minmax(0,0.9fr)_7rem_minmax(0,1.3fr)_8rem] @3xl/history:gap-x-3 @3xl/history:px-3"
         data-testid="failure-alert-history-filters"
       >
         <FilterSelect
@@ -447,7 +455,7 @@ export function NotificationHistory({
         </span>
         {filtered && (
           <Button
-            className="h-7 px-2 text-xs"
+            className="px-2 text-xs"
             onClick={() => {
               setToDraft("");
               setFilters(NO_FILTERS);
@@ -465,7 +473,7 @@ export function NotificationHistory({
           className="ml-auto"
           disabled={loading}
           onClick={() => goTo(info.page)}
-          size="icon"
+          size="icon-sm"
           type="button"
           variant="ghost"
         >
@@ -535,16 +543,16 @@ export function NotificationHistory({
           className="flex flex-wrap items-center justify-between gap-2"
           data-testid="failure-alert-history-pager"
         >
-          <div className="flex gap-1">
+          <div className="flex items-center gap-1">
             <Button
               aria-label="First page"
               disabled={loading || info.page === 1}
               onClick={() => goTo(1)}
-              size="icon"
+              size="icon-sm"
               type="button"
               variant="ghost"
             >
-              <ChevronsLeft className="size-4" />
+              <ChevronsLeft className="size-3.5" />
             </Button>
             <Button
               aria-label="Previous page"
@@ -562,7 +570,7 @@ export function NotificationHistory({
             Page {info.page} of {info.pages}
             {entries.length > 0 ? ` · ${first}–${last} of ${info.total}` : ""}
           </span>
-          <div className="flex gap-1">
+          <div className="flex items-center gap-1">
             <Button
               aria-label="Next page"
               disabled={loading || info.page >= info.pages}
@@ -578,11 +586,11 @@ export function NotificationHistory({
               aria-label="Last page"
               disabled={loading || info.page >= info.pages}
               onClick={() => goTo(info.pages)}
-              size="icon"
+              size="icon-sm"
               type="button"
               variant="ghost"
             >
-              <ChevronsRight className="size-4" />
+              <ChevronsRight className="size-3.5" />
             </Button>
           </div>
         </nav>
