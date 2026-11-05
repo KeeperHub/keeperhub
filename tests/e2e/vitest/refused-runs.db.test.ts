@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, getTableName, isNull, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -119,6 +119,49 @@ async function queued(workflowId: string): Promise<boolean> {
     .from(workflowFailureAlertQueue)
     .where(eq(workflowFailureAlertQueue.workflowId, workflowId));
   return Boolean(row);
+}
+
+async function withRollout(run: () => Promise<void>): Promise<void> {
+  const previousRollout = process.env.FAILURE_ALERTS_ROLLOUT;
+  process.env.FAILURE_ALERTS_ROLLOUT = `orgs:${ORG_ID}`;
+  try {
+    await db
+      .insert(orgFailureAlertSettings)
+      .values({
+        organizationId: ORG_ID,
+        countingSince: new Date(Date.now() - 24 * 60 * 60 * 1000),
+      })
+      .onConflictDoNothing();
+    await run();
+  } finally {
+    if (previousRollout === undefined) {
+      delete process.env.FAILURE_ALERTS_ROLLOUT;
+    } else {
+      process.env.FAILURE_ALERTS_ROLLOUT = previousRollout;
+    }
+  }
+}
+
+async function evaluateAndFindIncident(workflowId: string) {
+  const ev = await import("@/lib/notifications/failure-alerts/evaluator");
+  await ev.evaluateQueuedWorkflows(new Date(), ev.emptyStats());
+  const [incident] = await db
+    .select()
+    .from(workflowFailureIncidents)
+    .where(
+      and(
+        eq(workflowFailureIncidents.workflowId, workflowId),
+        isNull(workflowFailureIncidents.resolvedAt)
+      )
+    );
+  return incident ?? null;
+}
+
+/** The start of the UTC hour `hoursAgo` hours back. */
+function hourStart(hoursAgo: number): Date {
+  const at = new Date(Date.now() - hoursAgo * 60 * 60 * 1000);
+  at.setUTCMinutes(0, 0, 0);
+  return at;
 }
 
 describe.skipIf(SKIP)("recordRefusedRun (real Postgres)", () => {
@@ -374,5 +417,91 @@ describe.skipIf(SKIP)("recordRefusedRun (real Postgres)", () => {
         process.env.FAILURE_ALERTS_ROLLOUT = previousRollout;
       }
     }
+  }, 60_000);
+  it("queues the evaluator itself only on an update: a fresh insert fires the trigger", async () => {
+    const workflowId = await makeWorkflow();
+    const insert = vi.spyOn(db, "insert");
+    const queueWrites = () =>
+      insert.mock.calls.filter(
+        ([table]) => getTableName(table as never) === "alert_queue"
+      ).length;
+    try {
+      await helpers.insertRefusedRun(
+        refusal(workflowId, new Date("2026-11-05T14:01:00Z")),
+        db
+      );
+      expect(queueWrites()).toBe(0);
+      expect(await queued(workflowId)).toBe(true);
+      await clearQueue(workflowId);
+      await helpers.insertRefusedRun(
+        refusal(workflowId, new Date("2026-11-05T14:02:00Z")),
+        db
+      );
+      expect(queueWrites()).toBe(1);
+      expect(await queued(workflowId)).toBe(true);
+    } finally {
+      insert.mockRestore();
+    }
+  });
+
+  it("restarts the hourly row after an accepted run, so later refusals open the alert", async () => {
+    await withRollout(async () => {
+      const workflowId = await makeWorkflow();
+      const base = hourStart(2);
+      const minute = (m: number) => new Date(base.getTime() + m * 60_000);
+      await helpers.recordRefusedRun(refusal(workflowId, minute(1)), db);
+      await db.insert(workflowExecutions).values({
+        workflowId,
+        organizationId: ORG_ID,
+        userId: USER_ID,
+        status: "success",
+        triggerSource: "webhook",
+        input: {},
+        startedAt: minute(10),
+        completedAt: minute(10),
+      });
+      for (const m of [20, 21, 22, 23]) {
+        await helpers.recordRefusedRun(refusal(workflowId, minute(m)), db);
+      }
+
+      const [row] = (await rowsOf(workflowId)).filter(
+        (r) => r.status === "skipped"
+      );
+      expect(row.startedAt.toISOString()).toBe(minute(20).toISOString());
+      expect(row.output).toEqual({ refusals: 4 });
+      const incident = await evaluateAndFindIncident(workflowId);
+      expect(incident?.openedBy).toBe("refused");
+      expect(incident?.firstFailedAt.toISOString()).toBe(
+        minute(20).toISOString()
+      );
+    });
+  }, 60_000);
+
+  it("refusals for a halt or a turned-off workflow open nothing once that is over", async () => {
+    await withRollout(async () => {
+      for (const code of ["halted", "disabled"]) {
+        const workflowId = await makeWorkflow();
+        const base = hourStart(1);
+        await db.insert(workflowExecutions).values(
+          [5, 10, 15].map((m) => ({
+            workflowId,
+            organizationId: ORG_ID,
+            userId: USER_ID,
+            status: "skipped" as const,
+            triggerSource: "webhook",
+            input: {},
+            error: `Execution skipped: workflow is not executable (${code}).`,
+            errorCategory: "configuration" as const,
+            errorType: "user" as const,
+            billable: false,
+            output: { refusals: 1 },
+            startedAt: new Date(base.getTime() + m * 60_000),
+            completedAt: new Date(base.getTime() + m * 60_000),
+          }))
+        );
+        expect(await queued(workflowId)).toBe(true);
+        expect(await evaluateAndFindIncident(workflowId)).toBeNull();
+      }
+    });
   }, 60_000);
 });

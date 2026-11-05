@@ -38,6 +38,10 @@ import {
 import { cn } from "@/lib/utils";
 import { startSerialPoll } from "@/lib/utils/serial-poll";
 import { getRelativeTime } from "@/lib/utils/time";
+import {
+  planRefusalOf,
+  shownRefusal,
+} from "@/lib/notifications/failure-alerts/view-types";
 import { refusalSummary } from "@/lib/workflow/refusal-summary";
 import {
   appendPage,
@@ -1410,7 +1414,11 @@ export function WorkflowRuns({
         const showRunError = Boolean(runErrorMessage) && !hasFailedStep;
         // Refused before it started: say why, and how often in its hourly row.
         const skippedReason =
-          execution.status === "skipped" ? execution.error : null;
+          execution.status === "skipped" && execution.error
+            ? shownRefusal(execution.error)
+            : null;
+        const skippedPayg =
+          skippedReason !== null && planRefusalOf(execution.error) === "payg";
         const refusedLine = refusalSummary(execution);
         const showSkipped = Boolean(skippedReason || refusedLine);
 
@@ -1535,6 +1543,17 @@ export function WorkflowRuns({
                           <span data-testid="run-refusal-count">
                             {refusedLine}.
                           </span>
+                        )}
+                        {skippedPayg && (
+                          <a
+                            className="inline-flex items-center gap-1 font-medium underline underline-offset-2 hover:opacity-80"
+                            href="/billing"
+                            rel="noopener noreferrer"
+                            target="_blank"
+                          >
+                            Adjust spending caps
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
                         )}
                       </AlertDescription>
                     </Alert>

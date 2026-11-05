@@ -5,7 +5,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { parseRunCursor } from "../../../lib/analytics/run-cursor";
-import { EXECUTION_LIMIT_REFUSAL } from "../../../lib/billing/dispatch-admission";
+import { EXECUTION_LIMIT_REFUSAL } from "../../../lib/billing/dispatch-refusal";
 import {
   failureAlertChannels,
   failureAlertDeliveries,

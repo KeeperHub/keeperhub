@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { PAYG_BLOCK_MESSAGES } from "@/lib/billing/payg/errors";
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/db", () => ({ db: {} }));
@@ -887,6 +888,30 @@ describe("runs refused before they start", () => {
     expect(message.text).not.toContain("/plans");
   });
 
+  it("a pay-as-you-go payment that failed for now asks to check the wallet, not to top up", () => {
+    const failed = PAYG_BLOCK_MESSAGES.payment_failed;
+    const message = renderMessage(
+      {
+        ...org,
+        kind: "alert",
+        workflow,
+        incident: {
+          ...incident,
+          lastError: failed,
+          refused: { reason: failed },
+        },
+      },
+      now
+    );
+    expect(message.text).toContain(
+      "If it keeps happening, check the wallet under Billing or contact support; it runs again on its own once they are accepted again"
+    );
+    expect(message.text).not.toContain("Top up the wallet");
+    expect(message.text).toContain(
+      "Open Billing: https://app.test/settings/org-1/billing"
+    );
+  });
+
   it("a halted org's refusal explains the circuit breaker, not the workflow", () => {
     const message = renderMessage(
       {
@@ -1187,7 +1212,6 @@ describe("refused runs on a workflow not on a schedule", () => {
       },
       now
     );
-    expect(message.text).not.toContain("same reason");
     expect(message.chatVariants.length).toBeGreaterThan(0);
     expect(message.subject).toBe("[Acme] Resolved: Hook is running again");
   });

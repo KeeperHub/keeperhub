@@ -1,40 +1,22 @@
 import "server-only";
 
 import { and, desc, eq, gte, isNotNull, isNull, sql } from "drizzle-orm";
-import { type AnyPgColumn, alias } from "drizzle-orm/pg-core";
+import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/lib/db";
 import { workflowExecutions } from "@/lib/db/schema";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
-import { ErrorCategory } from "@/lib/logging";
+import { automatedSql, refusedSql } from "@/lib/workflow/refused-runs";
 import { isRefusedRun, type StreakRun } from "./streak";
-
-/** workflow_executions or an alias of it. */
-type Runs = Record<
-  | "status"
-  | "errorCategory"
-  | "billable"
-  | "triggerSource"
-  | "triggeredByCredentialType",
-  AnyPgColumn
->;
-
-function refusedSql(runs: Runs) {
-  return sql`(${runs.status} = 'skipped'
-  OR (${runs.status} = 'error'
-    AND ${runs.errorCategory} IS NOT DISTINCT FROM ${ErrorCategory.BILLING}
-    AND ${runs.billable} = false))`;
-}
-
-function automatedSql(runs: Runs) {
-  return sql`(${runs.triggerSource} IS DISTINCT FROM 'manual'
-  OR ${runs.triggeredByCredentialType} <> 'session')`;
-}
 
 /** Refused before it started (plan limit, unpaid, not runnable): neither a run nor a failure. */
 export const REFUSED_RUN_SQL = refusedSql(workflowExecutions);
 
 /** isAutomatedRun in SQL: a person's run never says a schedule is working. */
 export const AUTOMATED_RUN_SQL = automatedSql(workflowExecutions);
+
+/** The executor's "not executable (<code>)" refusals for a workflow or org state (see inactiveResolution). */
+const STATE_REFUSAL_PATTERN =
+  "not executable \\((halted|disabled|deactivated|org_deactivated|deleted)\\)";
 
 /** A refused row spans at most its UTC hour (lib/workflow/refused-runs.ts). */
 const REFUSAL_BUCKET_SPAN_MS = 60 * 60 * 1000;
@@ -58,7 +40,7 @@ const acceptedRun = alias(workflowExecutions, "accepted_run");
 /** The outer row, named in full: select lists render bare column names, which the subquery would rebind. */
 const outer = (column: string) => sql.raw(`"workflow_executions"."${column}"`);
 
-/** An accepted run (latestRunSince's kind) between a refused row's first and newest refusal. */
+/** An accepted run between a refused row's first and newest refusal: the writer restarts such a row on its next refusal, so only a run written out of order leaves one. */
 const SPANS_ACCEPTED_SQL = sql`EXISTS (SELECT 1 FROM ${workflowExecutions} AS ${sql.identifier("accepted_run")}
   WHERE ${acceptedRun.workflowId} = ${outer("workflow_id")}
     AND ${acceptedRun.startedAt} > ${outer("started_at")}
@@ -83,6 +65,9 @@ function attemptConditions(workflowId: string, since: Date | null) {
       OR ${workflowExecutions.errorType} IS DISTINCT FROM ${ExecutionErrorType.SYSTEM})`,
     // A skip with no category (an expired Pyth signal) was never an attempt.
     sql`(${workflowExecutions.status} <> 'skipped' OR ${workflowExecutions.errorCategory} IS NOT NULL)`,
+    // Refused for a state the evaluator already holds or closes (halt, turned off): stale once it is over.
+    sql`(${workflowExecutions.status} <> 'skipped' OR ${workflowExecutions.error} IS NULL
+      OR ${workflowExecutions.error} !~ ${STATE_REFUSAL_PATTERN})`,
     since
       ? sql`${ATTEMPT_AT_SQL} >= ${sql.param(since, workflowExecutions.startedAt)}`
       : undefined,

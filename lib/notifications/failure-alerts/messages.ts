@@ -1,3 +1,4 @@
+import { PAYG_BLOCK_MESSAGES } from "@/lib/billing/payg/errors";
 import type { FailureIncidentTrigger } from "@/lib/db/schema-failure-alerts";
 import { emailButton, emailLayout, escapeHtml } from "@/lib/email";
 import {
@@ -7,7 +8,11 @@ import {
 } from "@/lib/notifications/chat-text";
 import { redactErrorSecrets } from "@/lib/utils/redact";
 import { MAX_SUMMARY_CHARS } from "@/plugins/pagerduty/event-payload";
-import { DEFAULT_THRESHOLD, OUT_OF_FUNDS_THRESHOLD } from "./constants";
+import {
+  DEFAULT_THRESHOLD,
+  MAX_REMINDERS,
+  OUT_OF_FUNDS_THRESHOLD,
+} from "./constants";
 import { isOutOfFunds } from "./streak";
 import {
   EMAILS_KEPT_FOR_NEW_FAILURES,
@@ -495,11 +500,21 @@ const PLANS_FIX: Record<PlanRefusal, string> = {
   payg: "Top up the wallet or raise the pay-as-you-go limits under Billing",
   billing: "Settle billing under Plans",
 };
+/** A pay-as-you-go payment that failed for now: topping up is not the fix. */
+const PAYG_RETRY_FIX =
+  "If it keeps happening, check the wallet under Billing or contact support";
+
+/** What fixes this refusal: its kind's fix, or the retry advice for a failed payment. */
+function refusalFix(reason: string | null): string {
+  return reason?.includes(PAYG_BLOCK_MESSAGES.payment_failed)
+    ? PAYG_RETRY_FIX
+    : PLANS_FIX[planRefusalOf(reason)];
+}
 /** Several kinds of refusal in one grouped message. */
 const ANY_PLANS_FIX =
   "upgrade the plan, raise its run limit or settle billing under Plans";
 const REFUSED_NEXT_TAIL =
-  "; it runs again on its own once its runs are allowed, and you will be told.";
+  "; it runs again on its own once they are accepted again, and you will be told.";
 const NOT_RUNNABLE_CAUSE = "Open the workflow to see why it cannot run";
 const NOT_RUNNABLE_NEXT_STEP = `${NOT_RUNNABLE_CAUSE}; you will be told when it runs on its own again.`;
 const STAYS_OFF_NEXT_STEP =
@@ -572,7 +587,7 @@ function renderAlert(
   if (input.paused) {
     nextStep = PAUSED_NEXT_STEP;
   } else if (refused) {
-    nextStep = `${PLANS_FIX[planRefusalOf(refused.reason)]}${REFUSED_NEXT_TAIL}`;
+    nextStep = `${refusalFix(refused.reason)}${REFUSED_NEXT_TAIL}`;
     if (!fix) {
       nextStep = notRunnableNextStep(refused.reason);
     }
@@ -584,7 +599,7 @@ function renderAlert(
   // Refused runs need someone to act (plan, billing): they keep "Action needed".
   const count =
     reminder && input.reminderNumber
-      ? ` (reminder ${input.reminderNumber} of ${input.maxReminders ?? 7})`
+      ? ` (reminder ${input.reminderNumber} of ${input.maxReminders ?? MAX_REMINDERS})`
       : "";
   let label = "Action needed";
   if (missed && !(refused || input.paused)) {
@@ -596,7 +611,7 @@ function renderAlert(
     reminder &&
     !input.paused &&
     input.reminderNumber !== undefined &&
-    input.reminderNumber >= (input.maxReminders ?? 7);
+    input.reminderNumber >= (input.maxReminders ?? MAX_REMINDERS);
   const amber = missed && !refused && !input.paused;
   const accent = amber ? "#b45309" : "#b91c1c";
   const tint = amber ? "#fffbeb" : "#fef2f2";
@@ -787,6 +802,7 @@ function lowerFirst(text: string): string {
 }
 
 /** One kind names its own fix; several name Plans, and Billing when one is pay-as-you-go. */
+// Refused incidents are never grouped: one gets here only when refreshMissedRefusals relabels a missed one after its grouped alert was queued.
 function groupedPlansFix(kinds: Set<PlanRefusal>): string {
   const [only] = kinds.size === 1 ? [...kinds] : [];
   if (only) {

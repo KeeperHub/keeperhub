@@ -49,8 +49,9 @@ function resolveTriggerSource(value: unknown): TriggerSource {
 
 /**
  * Record a refused dispatch in its hourly row so the author sees why the
- * trigger stopped firing. Best-effort: a failed response makes the dispatcher
- * fall through to the id-less enqueue.
+ * trigger stopped firing. Best-effort: a failed write must not fail the
+ * response, which the dispatcher would read as a transport error and fall
+ * through to the id-less enqueue.
  */
 async function recordRefusedDispatch(params: {
   request: Request;

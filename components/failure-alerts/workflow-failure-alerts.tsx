@@ -31,7 +31,10 @@ import {
   REFUSALS_STOPPED_MS,
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
-import type { WorkflowAlertView } from "@/lib/notifications/failure-alerts/view-types";
+import {
+  refusalFixPage,
+  type WorkflowAlertView,
+} from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import {
   isWorkflowEnabled,
@@ -359,6 +362,10 @@ export function WorkflowFailureAlerts({
     pausedAt !== null &&
     (resumedAt === null || resumedAt < pausedAt) &&
     !enabled;
+  // The fix link the alert carries; none when the workflow cannot run.
+  const fixPage = view.status.incident?.refused
+    ? refusalFixPage(view.status.incident.refusedReason)
+    : null;
   const thresholdInvalid =
     threshold.trim() !== "" &&
     !(
@@ -596,6 +603,21 @@ export function WorkflowFailureAlerts({
                   </Link>
                 </Button>
               )}
+              {fixPage && (
+                <Button
+                  asChild
+                  className={WRAP_BUTTON}
+                  size="sm"
+                  variant="outline"
+                >
+                  <Link
+                    data-testid="failure-alerts-refusal-fix"
+                    href={`/settings/${view.organizationId}/${fixPage}`}
+                  >
+                    {fixPage === "billing" ? "Open Billing" : "Open Plans"}
+                  </Link>
+                </Button>
+              )}
               <Button
                 className={WRAP_BUTTON}
                 onClick={() => setActiveTab("runs")}
@@ -603,7 +625,9 @@ export function WorkflowFailureAlerts({
                 type="button"
                 variant="outline"
               >
-                View failed runs
+                {view.status.incident.refused
+                  ? "View runs"
+                  : "View failed runs"}
               </Button>
               {enableToggle && enabled && (
                 <Button

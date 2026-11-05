@@ -388,6 +388,18 @@ export function planRefusalOf(reason: string | null): PlanRefusal {
   return payg ? "payg" : "billing";
 }
 
+const NOT_EXECUTABLE = /not executable \(/;
+
+/** Where the alert sends a refusal's fix (stored or shown reason): null for a workflow that cannot run. */
+export function refusalFixPage(
+  reason: string | null
+): "plans" | "billing" | null {
+  if (reason && NOT_EXECUTABLE.test(reason)) {
+    return null;
+  }
+  return planRefusalOf(reason) === "payg" ? "billing" : "plans";
+}
+
 /** The org's circuit breaker stopped it (lib/execute/org-circuit-breaker.ts). */
 export function refusalHalted(reason: string | null): boolean {
   return reason?.match(NOT_EXECUTABLE_CODE)?.[1] === "halted";

@@ -562,8 +562,8 @@ async function processExecutorMessage(
     const blockedUserId =
       "userId" in message ? message.userId : workflow.userId;
 
-    // Resolve a pre-created phantom/pending row in place; with none (legacy
-    // messages), record it in its hourly row. A failed write throws so SQS redelivers.
+    // Resolve a pre-created row in place, else (legacy) record its hourly row. A failed
+    // write throws; processMessage logs it and deletes the message (no redelivery).
     const blockedResolved = message.executionId
       ? await markRunRefused(
           {

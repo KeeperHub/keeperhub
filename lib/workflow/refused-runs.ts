@@ -1,10 +1,11 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { type AnyPgColumn, alias } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DispatchRefusalReason } from "@/lib/billing/dispatch-refusal";
 import { workflowExecutions } from "@/lib/db/schema";
 import { workflowFailureAlertQueue } from "@/lib/db/schema-failure-alerts";
 import type { WorkflowExecutionStatus } from "@/lib/errors/execution-status";
-import { type ErrorCategory, logWarn } from "@/lib/logging";
+import { ErrorCategory, logWarn } from "@/lib/logging";
 import { REFUSED_RUNS_THRESHOLD } from "@/lib/notifications/failure-alerts/constants";
 import { withBackstopCapture } from "@/lib/security/backstop-capture";
 import {
@@ -40,6 +41,32 @@ type RefusedRun = {
   >;
   input?: Record<string, unknown>;
 };
+
+/** workflow_executions or an alias of it. */
+type Runs = Record<
+  | "status"
+  | "errorCategory"
+  | "billable"
+  | "triggerSource"
+  | "triggeredByCredentialType",
+  AnyPgColumn
+>;
+
+/** Refused before it started (plan limit, unpaid, not runnable): neither a run nor a failure. */
+export function refusedSql(runs: Runs) {
+  return sql`(${runs.status} = 'skipped'
+  OR (${runs.status} = 'error'
+    AND ${runs.errorCategory} IS NOT DISTINCT FROM ${ErrorCategory.BILLING}
+    AND ${runs.billable} = false))`;
+}
+
+/** isAutomatedRun in SQL: a person's run never says a schedule is working. */
+export function automatedSql(runs: Runs) {
+  return sql`(${runs.triggerSource} IS DISTINCT FROM 'manual'
+  OR ${runs.triggeredByCredentialType} <> 'session')`;
+}
+
+const acceptedRun = alias(workflowExecutions, "accepted_run");
 
 /** Once the alert can open, a busy row is rewritten at most once a minute. */
 const REFUSED_ROW_REFRESH_SECONDS = 60;
@@ -80,11 +107,24 @@ function warn(message: string, workflowId: string, error: unknown): void {
   });
 }
 
+/** The existing row, named in full: the subquery below would rebind bare column names. */
+const row = (column: string) => sql.raw(`"workflow_executions"."${column}"`);
+
+// An accepted automated run since the row's first refusal: the row restarts at
+// this refusal, so a streak counts only refusals after that run.
+const RESTART_SQL = sql`EXISTS (SELECT 1 FROM ${workflowExecutions} AS ${sql.identifier("accepted_run")}
+  WHERE ${acceptedRun.workflowId} = ${row("workflow_id")}
+    AND ${acceptedRun.startedAt} > ${row("started_at")}
+    AND ${acceptedRun.startedAt} <= excluded.started_at
+    AND ${acceptedRun.deletedAt} IS NULL
+    AND ${automatedSql(acceptedRun)}
+    AND NOT ${refusedSql(acceptedRun)})`;
+
 /**
  * Record a refused attempt in its hourly row: insert, or move completed_at to
- * `at` and add one to output.refusals. Throws on a failed write. Returns
- * whether the row changed: a row that can already alert and was refreshed in
- * the last minute is left as is.
+ * `at` and add one to output.refusals (restarting the row after an accepted
+ * run). Throws on a failed write. Returns whether the row changed: a row that
+ * can already alert and was refreshed in the last minute is left as is.
  */
 export async function insertRefusedRun<TSchema extends Record<string, unknown>>(
   run: RefusedRun,
@@ -127,20 +167,26 @@ export async function insertRefusedRun<TSchema extends Record<string, unknown>>(
         .onConflictDoUpdate({
           target: workflowExecutions.dispatchKey,
           set: {
-            completedAt: sql`greatest(${workflowExecutions.completedAt}, excluded.completed_at)`,
+            startedAt: sql`CASE WHEN ${RESTART_SQL} THEN excluded.started_at ELSE ${workflowExecutions.startedAt} END`,
+            completedAt: sql`CASE WHEN ${RESTART_SQL} THEN excluded.completed_at
+              ELSE greatest(${workflowExecutions.completedAt}, excluded.completed_at) END`,
             error: sql`excluded.error`,
-            output: sql`jsonb_build_object('refusals', ${refusals} + 1)`,
+            output: sql`jsonb_build_object('refusals', CASE WHEN ${RESTART_SQL} THEN 1 ELSE ${refusals} + 1 END)`,
           },
           // Throttles a hot trigger: the alert only needs the threshold and a
           // newest refusal at most a minute stale.
-          setWhere: sql`${refusals} < ${REFUSED_RUNS_THRESHOLD} OR ${workflowExecutions.completedAt} <= excluded.completed_at - make_interval(secs => ${REFUSED_ROW_REFRESH_SECONDS})`,
+          setWhere: sql`${RESTART_SQL} OR ${refusals} < ${REFUSED_RUNS_THRESHOLD} OR ${workflowExecutions.completedAt} <= excluded.completed_at - make_interval(secs => ${REFUSED_ROW_REFRESH_SECONDS})`,
         })
-        .returning({ id: workflowExecutions.id })
+        // xmax = 0 on a fresh insert, whose status fires queue_alert_check.
+        .returning({ inserted: sql<boolean>`(xmax = 0)` })
   );
-  if (changed.length === 0) {
+  const [result] = changed;
+  if (!result) {
     return false;
   }
-  await queueAlertCheck(database, run.workflowId);
+  if (!result.inserted) {
+    await queueAlertCheck(database, run.workflowId);
+  }
   return true;
 }
 
