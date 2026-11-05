@@ -1,7 +1,7 @@
 "use client";
 
 import { useAtomValue, useSetAtom } from "jotai";
-import { BellOff, Loader2 } from "lucide-react";
+import { BellOff, Check, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -19,6 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   invalidateNotificationStatus,
   useAlertsEnabled,
@@ -98,6 +99,21 @@ function summary(view: Loaded): string {
     emails: view.effective.emails,
     channels: view.effective.channels,
     pauseWorkflow: view.override.pauseWorkflow,
+    scope: "workflow",
+  });
+}
+
+/** The org rules alone, as the Org rules tab shows them even while this workflow has its own. */
+function orgSummary(view: Loaded): string {
+  return describeRule({
+    threshold: view.org.threshold,
+    timeLimitMinutes: view.org.timeLimitMinutes,
+    emails: view.members
+      .filter(
+        (m) => m.reachable && view.org.recipientUserIds.includes(m.userId)
+      )
+      .map(memberLabel),
+    channels: view.org.channels,
     scope: "workflow",
   });
 }
@@ -211,6 +227,8 @@ export function WorkflowFailureAlerts({
   );
   const [muteDate, setMuteDate] = useState("");
   const [pauseWorkflow, setPauseWorkflow] = useState(false);
+  // The tab on screen; the rules in use are marked on their tab.
+  const [tab, setTab] = useState<"org" | "custom">("org");
   const panelRef = useRef<HTMLDivElement>(null);
   const muteButtonRef = useRef<HTMLButtonElement>(null);
   const customButtonRef = useRef<HTMLButtonElement>(null);
@@ -221,6 +239,7 @@ export function WorkflowFailureAlerts({
 
   const apply = useCallback((next: Loaded) => {
     setView(next);
+    setTab(next.effective.source === "custom" ? "custom" : "org");
     setThreshold(
       next.override.threshold ? String(next.override.threshold) : ""
     );
@@ -509,17 +528,33 @@ export function WorkflowFailureAlerts({
     />
   );
 
-  let tag: { label: string; className?: string } = { label: "Org rules" };
+  // The tabs say which rules are in use; the badge is for what overrides both.
+  let tag: { label: string; className?: string } | null = null;
   if (!applies) {
     tag = { label: "Not used" };
   } else if (muted) {
-    tag = {
-      label: "Muted",
-      className: WARNING_TEXT,
-    };
-  } else if (custom) {
-    tag = { label: "Own settings" };
+    tag = { label: "Muted", className: WARNING_TEXT };
   }
+  const editing = canManage && panel === "custom";
+  const saveLabel = custom ? "Save" : "Use custom rules";
+  const cancelEdit = (): void => {
+    apply(view);
+    setSaveError(null);
+    setPanel(null);
+  };
+  const chooseTab = (next: string): void => {
+    if (next !== "org" && next !== "custom") {
+      return;
+    }
+    if (panel === "custom") {
+      cancelEdit();
+    }
+    setTab(next);
+    // Picking Custom rules for a workflow on the org rules starts the form.
+    if (next === "custom" && !custom && canManage) {
+      openPanel("custom");
+    }
+  };
 
   return (
     <div
@@ -530,9 +565,11 @@ export function WorkflowFailureAlerts({
     >
       <div className="ml-1 flex items-center gap-2">
         <Label>Alerts</Label>
-        <Badge className={tag.className} variant="outline">
-          {tag.label}
-        </Badge>
+        {tag && (
+          <Badge className={tag.className} variant="outline">
+            {tag.label}
+          </Badge>
+        )}
       </div>
 
       {orgPause && (
@@ -676,7 +713,7 @@ export function WorkflowFailureAlerts({
 
       {applies && (
         <div className="space-y-3 break-words rounded-lg border bg-muted/20 p-3 text-sm">
-          {muted ? (
+          {muted && (
             <p className="flex items-start gap-2">
               <BellOff
                 aria-hidden="true"
@@ -692,19 +729,323 @@ export function WorkflowFailureAlerts({
                   : " Failures still show in Runs; nobody is told."}
               </span>
             </p>
-          ) : (
-            <p role="status">
-              {panel === "custom"
-                ? draftSummary(view, {
-                    threshold,
-                    timeLimit,
-                    recipients: customRecipients,
-                    channels: customChannels,
-                    pauseWorkflow,
-                  })
-                : summary(view)}
-            </p>
           )}
+          <Tabs onValueChange={chooseTab} value={tab}>
+            <TabsList
+              aria-label="Which rules this workflow follows"
+              className="grid h-9 w-full grid-cols-2"
+            >
+              <TabsTrigger data-testid="failure-alerts-tab-org" value="org">
+                Org rules
+                {!custom && <Check aria-label="in use" className="size-3.5" />}
+              </TabsTrigger>
+              <TabsTrigger
+                data-testid="failure-alerts-tab-custom"
+                ref={customButtonRef}
+                value="custom"
+              >
+                Custom rules
+                {custom && <Check aria-label="in use" className="size-3.5" />}
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent className="space-y-3 pt-1" value="org">
+              <p role={custom ? undefined : "status"}>{orgSummary(view)}</p>
+              <p className="text-muted-foreground text-xs">
+                {custom
+                  ? "This workflow has its own rules instead."
+                  : "This workflow follows the org rules."}{" "}
+                <Link
+                  className="text-foreground underline underline-offset-4"
+                  href={`/settings/${view.organizationId}/alerts`}
+                >
+                  Change the org rules
+                </Link>
+              </p>
+              {custom && canManage && (
+                <Button
+                  className={WRAP_BUTTON}
+                  data-testid="failure-alerts-reset"
+                  disabled={saving}
+                  onClick={followOrgSetting}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Use the org rules for this workflow
+                </Button>
+              )}
+            </TabsContent>
+
+            <TabsContent className="space-y-3 pt-1" value="custom">
+              {editing ? (
+                <div
+                  className="space-y-4"
+                  data-testid="failure-alerts-custom"
+                  ref={panelRef}
+                >
+                  <p className="text-muted-foreground text-xs" role="status">
+                    {draftSummary(view, {
+                      threshold,
+                      timeLimit,
+                      recipients: customRecipients,
+                      channels: customChannels,
+                      pauseWorkflow,
+                    })}
+                  </p>
+                  <section className="space-y-3">
+                    <h3 className="font-semibold text-sm">Rules</h3>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Label
+                        className="font-normal"
+                        htmlFor="wf-failure-threshold"
+                      >
+                        Alert after
+                      </Label>
+                      <Input
+                        aria-describedby={
+                          thresholdInvalid
+                            ? "wf-failure-threshold-error"
+                            : undefined
+                        }
+                        aria-invalid={thresholdInvalid}
+                        className="h-9 w-20"
+                        id="wf-failure-threshold"
+                        inputMode="numeric"
+                        max={MAX_THRESHOLD}
+                        min={MIN_THRESHOLD}
+                        onChange={(e) => setThreshold(e.target.value)}
+                        placeholder={String(view.org.threshold)}
+                        type="number"
+                        value={threshold}
+                      />
+                      <span>failed runs in a row</span>
+                    </div>
+                    {thresholdInvalid && (
+                      <p
+                        className="text-destructive text-xs"
+                        id="wf-failure-threshold-error"
+                      >
+                        Use a whole number from {MIN_THRESHOLD} to{" "}
+                        {MAX_THRESHOLD}, or leave it empty for the org's{" "}
+                        {view.org.threshold}.
+                      </p>
+                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Label className="font-normal" htmlFor="wf-time-limit">
+                        or when it has been failing for
+                      </Label>
+                      <Select onValueChange={setTimeLimit} value={timeLimit}>
+                        <SelectTrigger
+                          className="h-9 w-36"
+                          id="wf-time-limit"
+                          size="sm"
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="org">
+                            {view.org.timeLimitMinutes
+                              ? timeLimitLabel(view.org.timeLimitMinutes)
+                              : "Off"}{" "}
+                            (org)
+                          </SelectItem>
+                          <SelectItem value="off">Off</SelectItem>
+                          {TIME_LIMIT_OPTIONS_MINUTES.map((m) => (
+                            <SelectItem key={m} value={String(m)}>
+                              {timeLimitLabel(m)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          aria-describedby="wf-pause-workflow-help"
+                          checked={pauseWorkflow}
+                          id="wf-pause-workflow"
+                          onCheckedChange={(checked) =>
+                            setPauseWorkflow(checked === true)
+                          }
+                        />
+                        <Label className="text-xs" htmlFor="wf-pause-workflow">
+                          Turn this workflow off when it reaches the limit
+                        </Label>
+                      </div>
+                      <p
+                        className="pl-6 text-muted-foreground text-xs"
+                        id="wf-pause-workflow-help"
+                      >
+                        Turns it off when it fails that many runs in a row or
+                        the wallet runs out of funds; the time limit never turns
+                        a workflow off. Errors on KeeperHub's side do not count.
+                        To start it again, fix the cause, then press Turn back
+                        on.
+                      </p>
+                    </div>
+                    <p className="text-muted-foreground text-xs">
+                      An empty number follows the org's {view.org.threshold}.
+                    </p>
+                  </section>
+                  <section className="space-y-2 border-t pt-3">
+                    <h3 className="font-semibold text-sm">Email</h3>
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          checked={customRecipients !== null}
+                          id="wf-own-recipients"
+                          onCheckedChange={(checked) =>
+                            setCustomRecipients(
+                              checked === true
+                                ? [...view.org.recipientUserIds]
+                                : null
+                            )
+                          }
+                        />
+                        <Label className="text-xs" htmlFor="wf-own-recipients">
+                          Email different people
+                        </Label>
+                      </div>
+                      {customRecipients === null ? (
+                        <p className="text-muted-foreground text-xs">
+                          {view.effective.emails.join(", ") ||
+                            "Nobody reachable"}{" "}
+                          (org)
+                        </p>
+                      ) : (
+                        <ul className="space-y-1.5">
+                          {view.members.map((m) => (
+                            <li
+                              className="flex items-center gap-2 text-sm"
+                              key={m.userId}
+                            >
+                              <Checkbox
+                                checked={customRecipients.includes(m.userId)}
+                                disabled={!m.reachable}
+                                id={`wf-recipient-${m.userId}`}
+                                onCheckedChange={(checked) =>
+                                  setCustomRecipients(
+                                    checked === true
+                                      ? [
+                                          ...new Set([
+                                            ...customRecipients,
+                                            m.userId,
+                                          ]),
+                                        ]
+                                      : customRecipients.filter(
+                                          (id) => id !== m.userId
+                                        )
+                                  )
+                                }
+                              />
+                              <Label
+                                className={cn(
+                                  "min-w-0 break-all font-normal",
+                                  // Disabled only because mail cannot reach them:
+                                  // the name still has to be readable.
+                                  !m.reachable &&
+                                    "text-muted-foreground peer-disabled:opacity-100"
+                                )}
+                                htmlFor={`wf-recipient-${m.userId}`}
+                              >
+                                {memberLabel(m)}
+                              </Label>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </section>
+                  <section className="space-y-2 border-t pt-3">
+                    <h3 className="font-semibold text-sm">Methods</h3>
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          checked={customChannels !== null}
+                          id="wf-own-channels"
+                          onCheckedChange={(checked) =>
+                            setCustomChannels(
+                              checked === true
+                                ? view.org.channels.map((c) => ({
+                                    key: nextKey(),
+                                    kind: c.kind,
+                                    integrationId: c.integrationId,
+                                    destination: c.destination,
+                                    role: c.role,
+                                    // A paused org method is copied paused.
+                                    pausedReason: c.pausedAt
+                                      ? (c.pausedReason ??
+                                        "It stopped working.")
+                                      : undefined,
+                                  }))
+                                : null
+                            )
+                          }
+                        />
+                        <Label className="text-xs" htmlFor="wf-own-channels">
+                          Use different methods
+                        </Label>
+                      </div>
+                      {customChannels !== null && (
+                        <ChannelListEditor
+                          channels={customChannels}
+                          connections={view.connections}
+                          onChange={setCustomChannels}
+                          onConnectionsChanged={refreshConnections}
+                          organizationId={view.organizationId}
+                          savedChannels={view.override.channels}
+                        />
+                      )}
+                    </div>
+                  </section>
+                  {saveErrorBox}
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      onClick={cancelEdit}
+                      size="sm"
+                      type="button"
+                      variant="ghost"
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      data-testid="failure-alerts-custom-save"
+                      disabled={saving}
+                      onClick={saveCustom}
+                      size="sm"
+                      type="button"
+                    >
+                      {saving ? "Saving..." : saveLabel}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+              {!editing && custom && (
+                <>
+                  <p role="status">{summary(view)}</p>
+                  {canManage && (
+                    <Button
+                      className={WRAP_BUTTON}
+                      data-testid="failure-alerts-change-open"
+                      onClick={() => openPanel("custom")}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      Edit custom rules
+                    </Button>
+                  )}
+                </>
+              )}
+              {!(editing || custom) && (
+                <p className="text-muted-foreground text-xs">
+                  Only owners and admins can give this workflow its own rules.
+                </p>
+              )}
+            </TabsContent>
+          </Tabs>
+
           <p className="text-muted-foreground text-xs">{FUNDS_RULE}</p>
           {view.org.unreachable && !custom && (
             <Notice tone="danger">
@@ -724,9 +1065,9 @@ export function WorkflowFailureAlerts({
             </p>
           )}
 
-          {panel !== "custom" && saveErrorBox}
+          {!editing && saveErrorBox}
           {canManage && panel === null && (
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2 border-t pt-3">
               {muted ? (
                 <Button
                   className={WRAP_BUTTON}
@@ -750,30 +1091,8 @@ export function WorkflowFailureAlerts({
                   type="button"
                   variant="outline"
                 >
+                  <BellOff className="size-3.5" />
                   Mute
-                </Button>
-              )}
-              <Button
-                className={WRAP_BUTTON}
-                data-testid="failure-alerts-change-open"
-                onClick={() => openPanel("custom")}
-                ref={customButtonRef}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                {custom ? "Edit" : "Change for this workflow"}
-              </Button>
-              {custom && (
-                <Button
-                  className="h-auto min-h-11 px-0 text-xs sm:min-h-0"
-                  data-testid="failure-alerts-reset"
-                  disabled={saving}
-                  onClick={followOrgSetting}
-                  type="button"
-                  variant="link"
-                >
-                  Reset to org rules
                 </Button>
               )}
             </div>
@@ -841,219 +1160,6 @@ export function WorkflowFailureAlerts({
               >
                 Cancel
               </Button>
-            </div>
-          )}
-
-          {panel === "custom" && (
-            <div
-              className="space-y-4"
-              data-testid="failure-alerts-custom"
-              ref={panelRef}
-            >
-              <p className="text-muted-foreground text-xs">
-                Empty fields follow the org rules.
-              </p>
-              <div className="space-y-1.5">
-                <Label className="text-xs" htmlFor="wf-failure-threshold">
-                  Failed runs in a row
-                </Label>
-                <Input
-                  aria-describedby={
-                    thresholdInvalid ? "wf-failure-threshold-error" : undefined
-                  }
-                  aria-invalid={thresholdInvalid}
-                  className="h-8"
-                  id="wf-failure-threshold"
-                  inputMode="numeric"
-                  max={MAX_THRESHOLD}
-                  min={MIN_THRESHOLD}
-                  onChange={(e) => setThreshold(e.target.value)}
-                  placeholder={`${view.org.threshold} (org)`}
-                  type="number"
-                  value={threshold}
-                />
-                {thresholdInvalid && (
-                  <p
-                    className="text-destructive text-xs"
-                    id="wf-failure-threshold-error"
-                  >
-                    Use a whole number from {MIN_THRESHOLD} to {MAX_THRESHOLD},
-                    or leave it empty for the org rules.
-                  </p>
-                )}
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs" htmlFor="wf-time-limit">
-                  Or after failing for
-                </Label>
-                <Select onValueChange={setTimeLimit} value={timeLimit}>
-                  <SelectTrigger
-                    className="h-8 w-full"
-                    id="wf-time-limit"
-                    size="sm"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="org">
-                      {view.org.timeLimitMinutes
-                        ? timeLimitLabel(view.org.timeLimitMinutes)
-                        : "Off"}{" "}
-                      (org)
-                    </SelectItem>
-                    <SelectItem value="off">Off</SelectItem>
-                    {TIME_LIMIT_OPTIONS_MINUTES.map((m) => (
-                      <SelectItem key={m} value={String(m)}>
-                        {timeLimitLabel(m)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    aria-describedby="wf-pause-workflow-help"
-                    checked={pauseWorkflow}
-                    id="wf-pause-workflow"
-                    onCheckedChange={(checked) =>
-                      setPauseWorkflow(checked === true)
-                    }
-                  />
-                  <Label className="text-xs" htmlFor="wf-pause-workflow">
-                    Turn this workflow off when it reaches the limit
-                  </Label>
-                </div>
-                <p
-                  className="pl-6 text-muted-foreground text-xs"
-                  id="wf-pause-workflow-help"
-                >
-                  Turns it off when it fails that many runs in a row or the
-                  wallet runs out of funds; the time limit never turns a
-                  workflow off. Errors on KeeperHub's side do not count. To
-                  start it again, fix the cause, then press Turn back on.
-                </p>
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    checked={customRecipients !== null}
-                    id="wf-own-recipients"
-                    onCheckedChange={(checked) =>
-                      setCustomRecipients(
-                        checked === true ? [...view.org.recipientUserIds] : null
-                      )
-                    }
-                  />
-                  <Label className="text-xs" htmlFor="wf-own-recipients">
-                    Email different people
-                  </Label>
-                </div>
-                {customRecipients === null ? (
-                  <p className="text-muted-foreground text-xs">
-                    {view.effective.emails.join(", ") || "Nobody reachable"}{" "}
-                    (org)
-                  </p>
-                ) : (
-                  <ul className="space-y-1.5">
-                    {view.members.map((m) => (
-                      <li
-                        className="flex items-center gap-2 text-sm"
-                        key={m.userId}
-                      >
-                        <Checkbox
-                          checked={customRecipients.includes(m.userId)}
-                          disabled={!m.reachable}
-                          id={`wf-recipient-${m.userId}`}
-                          onCheckedChange={(checked) =>
-                            setCustomRecipients(
-                              checked === true
-                                ? [...new Set([...customRecipients, m.userId])]
-                                : customRecipients.filter(
-                                    (id) => id !== m.userId
-                                  )
-                            )
-                          }
-                        />
-                        <Label
-                          className={cn(
-                            "min-w-0 break-all font-normal",
-                            // Disabled only because mail cannot reach them:
-                            // the name still has to be readable.
-                            !m.reachable &&
-                              "text-muted-foreground peer-disabled:opacity-100"
-                          )}
-                          htmlFor={`wf-recipient-${m.userId}`}
-                        >
-                          {memberLabel(m)}
-                        </Label>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    checked={customChannels !== null}
-                    id="wf-own-channels"
-                    onCheckedChange={(checked) =>
-                      setCustomChannels(
-                        checked === true
-                          ? view.org.channels.map((c) => ({
-                              key: nextKey(),
-                              kind: c.kind,
-                              integrationId: c.integrationId,
-                              destination: c.destination,
-                              role: c.role,
-                              // A paused org method is copied paused.
-                              pausedReason: c.pausedAt
-                                ? (c.pausedReason ?? "It stopped working.")
-                                : undefined,
-                            }))
-                          : null
-                      )
-                    }
-                  />
-                  <Label className="text-xs" htmlFor="wf-own-channels">
-                    Use different methods
-                  </Label>
-                </div>
-                {customChannels !== null && (
-                  <ChannelListEditor
-                    channels={customChannels}
-                    connections={view.connections}
-                    onChange={setCustomChannels}
-                    onConnectionsChanged={refreshConnections}
-                    organizationId={view.organizationId}
-                    savedChannels={view.override.channels}
-                  />
-                )}
-              </div>
-              {saveErrorBox}
-              <div className="flex justify-end gap-2">
-                <Button
-                  onClick={() => {
-                    apply(view);
-                    setSaveError(null);
-                    setPanel(null);
-                  }}
-                  size="sm"
-                  type="button"
-                  variant="ghost"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  data-testid="failure-alerts-custom-save"
-                  disabled={saving}
-                  onClick={saveCustom}
-                  size="sm"
-                  type="button"
-                >
-                  {saving ? "Saving..." : "Save"}
-                </Button>
-              </div>
             </div>
           )}
         </div>

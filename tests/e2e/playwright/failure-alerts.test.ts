@@ -220,7 +220,7 @@ test.describe("Failure alerts", () => {
     );
   });
 
-  test("workflow Properties: mute, unmute, change for this workflow with pause, reset", async ({
+  test("workflow Properties: mute, unmute, custom rules tab with pause, back to org rules", async ({
     page,
   }) => {
     const section = await openProperties(page, fixture.failingId);
@@ -250,7 +250,12 @@ test.describe("Failure alerts", () => {
       .toBeNull();
 
     await expect(section).toHaveAttribute("data-muted", "false");
-    await section.getByTestId("failure-alerts-change-open").click();
+    // Picking the Custom rules tab opens the form; the Org rules tab is marked in use.
+    await expect(section.getByTestId("failure-alerts-tab-org")).toHaveAttribute(
+      "data-state",
+      "active"
+    );
+    await section.getByTestId("failure-alerts-tab-custom").click();
     const custom = section.getByTestId("failure-alerts-custom");
     await expect(custom).toBeVisible();
     const threshold = custom.locator("#wf-failure-threshold");
@@ -267,6 +272,13 @@ test.describe("Failure alerts", () => {
       .toMatchObject({ threshold: 2, pauseWorkflow: true });
 
     await expect(section).toHaveAttribute("data-source", "custom");
+    await expect(
+      section.getByTestId("failure-alerts-tab-custom")
+    ).toHaveAttribute("data-state", "active");
+    await expect(
+      section.getByTestId("failure-alerts-change-open")
+    ).toBeVisible();
+    await section.getByTestId("failure-alerts-tab-org").click();
     await section.getByTestId("failure-alerts-reset").click();
     await expect
       .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
