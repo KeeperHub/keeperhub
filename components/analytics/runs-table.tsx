@@ -311,7 +311,17 @@ function failedTooltip(detail: NotificationRunDetail): string {
     : "Could not be delivered";
 }
 
-/** A notification's own outcome; run badges would misread an undelivered message as a failed run. */
+/** What became of an alert, as "Sent" or "Not sent", never a run outcome. */
+const ALERT_RESULT: Record<string, string> = {
+  delivered: "Sent",
+  failed: "Not sent",
+  muted: "Withdrawn",
+};
+
+/**
+ * An alert's badge: grey "Info" with what became of it. Alerts are listed for
+ * information and counted in no number, so they never wear Success or Failed.
+ */
 export function notificationBadge(
   detail: NotificationRunDetail,
   now: Date = new Date()
@@ -322,39 +332,24 @@ export function notificationBadge(
 } {
   // The Alerts history's helper, so both screens name a state alike.
   const { label, tone } = deliveryStatus(detail, now);
-  switch (tone) {
-    case "delivered":
-      return { label, className: STATUS_DISPLAY.success.badge, tooltip: null };
-    case "failed":
-      if (detail.state === "capped") {
-        return {
-          label,
-          className:
-            "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20",
-          tooltip: MONTHLY_LIMIT_TEXT,
-        };
-      }
-      return {
-        label,
-        className: "border-destructive/20 bg-destructive/10 text-destructive",
-        tooltip: failedTooltip(detail),
-      };
-    case "muted":
-      return {
-        label,
-        className: STATUS_DISPLAY.skipped.badge,
-        tooltip: detail.lastError ? `Withdrawn: ${detail.lastError}` : null,
-      };
-    default:
-      return {
-        label,
-        className: STATUS_DISPLAY.running.badge,
-        tooltip:
-          detail.attempts > 0 && detail.lastError
-            ? `Retrying: ${detail.lastError}`
-            : null,
-      };
+  const result = ALERT_RESULT[tone] ?? label;
+  let tooltip: string | null = null;
+  if (tone === "failed") {
+    tooltip =
+      detail.state === "capped" ? MONTHLY_LIMIT_TEXT : failedTooltip(detail);
+  } else if (tone === "muted") {
+    tooltip = detail.lastError ? `Withdrawn: ${detail.lastError}` : null;
+  } else if (tone === "waiting") {
+    tooltip =
+      detail.attempts > 0 && detail.lastError
+        ? `Retrying: ${detail.lastError}`
+        : null;
   }
+  return {
+    label: `Info · ${result}`,
+    className: "border-border bg-muted text-muted-foreground",
+    tooltip,
+  };
 }
 
 function NotificationStatusBadge({

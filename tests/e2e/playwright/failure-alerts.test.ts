@@ -301,12 +301,19 @@ test.describe("Failure alerts", () => {
     await page.goto("/analytics", { waitUntil: "domcontentloaded" });
     const table = page.getByTestId("runs-table");
     await expect(table).toHaveAttribute("data-ready", "true", FIRST_VISIT);
-    // This workflow never ran, so its name only shows through its alert.
-    const alertRow = table
+    // Numbers count runs only; alerts are listed only when the Alerts source is ticked.
+    await expect(page.getByTestId("kpi-count-note")).toBeVisible(FIRST_VISIT);
+    const alertRows = table
       .getByTestId("run-row")
-      .and(page.locator('[data-source="notification"]'))
-      .filter({ hasText: fixture.alertedName });
+      .and(page.locator('[data-source="notification"]'));
+    await expect(alertRows).toHaveCount(0);
+    await page.getByRole("button", { name: /^Source/ }).click();
+    await page.getByRole("checkbox", { name: "Alerts (info only)" }).click();
+    await page.keyboard.press("Escape");
+    // This workflow never ran, so its name only shows through its alert.
+    const alertRow = alertRows.filter({ hasText: fixture.alertedName });
     await expect(alertRow).toBeVisible(SAVE_TIMEOUT);
+    await expect(alertRow).toContainText("Info");
   });
 
   for (const width of WIDTHS) {

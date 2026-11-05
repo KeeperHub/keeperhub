@@ -44,15 +44,11 @@ export function runsPageCount(total: number, pageSize: number): number {
 }
 
 /**
- * What the analytics page lists when the reader picked no source: runs and
- * the failure notifications sent about them. Named explicitly because the
- * API's own default leaves notifications out.
+ * What the analytics page lists when the reader picked no source: runs only.
+ * Alerts are listed for information when the Alerts source is ticked, and are
+ * never counted in any number.
  */
-const PAGE_DEFAULT_SOURCES: RunSource[] = [
-  "workflow",
-  "direct",
-  "notification",
-];
+export const PAGE_DEFAULT_SOURCES: RunSource[] = ["workflow", "direct"];
 
 export type RunsQueryInput = {
   range: TimeRange;

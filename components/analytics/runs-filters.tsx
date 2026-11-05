@@ -10,6 +10,7 @@ import {
   DURATION_PRESETS,
   type DurationPresetId,
 } from "@/lib/analytics/duration-presets";
+import { PAGE_DEFAULT_SOURCES } from "@/lib/analytics/runs-query";
 import { STATUS_DISPLAY } from "@/lib/analytics/status-display";
 import type {
   GasSpend,
@@ -82,7 +83,7 @@ const STATUS_GROUPS: StatusGroup[] = [
 const SOURCE_OPTIONS: Array<{ value: RunSource; label: string }> = [
   { value: "workflow", label: "Workflow" },
   { value: "direct", label: "Direct" },
-  { value: "notification", label: "Alerts" },
+  { value: "notification", label: "Alerts (info only)" },
 ];
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -189,6 +190,11 @@ function SourceFilter(): ReactNode {
       ),
     [alertsEnabled]
   );
+  // Nothing picked means the default: workflow runs and direct executions.
+  const shown = sources.length > 0 ? sources : PAGE_DEFAULT_SOURCES;
+  const isDefault = (next: RunSource[]): boolean =>
+    next.length === PAGE_DEFAULT_SOURCES.length &&
+    PAGE_DEFAULT_SOURCES.every((source) => next.includes(source));
   const clear = useCallback((): void => setSources([]), [setSources]);
   const selectAll = useCallback(
     (): void => setSources(options.map((option) => option.value)),
@@ -204,12 +210,13 @@ function SourceFilter(): ReactNode {
     >
       {options.map((option) => (
         <FilterCheckbox
-          checked={sources.includes(option.value)}
+          checked={shown.includes(option.value)}
           key={option.value}
           label={option.label}
-          onToggle={() =>
-            setSources((current) => toggle(current, option.value))
-          }
+          onToggle={() => {
+            const next = toggle(shown, option.value);
+            setSources(isDefault(next) ? [] : next);
+          }}
         />
       ))}
     </FilterPopover>

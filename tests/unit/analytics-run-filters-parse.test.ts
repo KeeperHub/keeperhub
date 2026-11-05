@@ -82,16 +82,15 @@ describe("buildRunsQuery", () => {
     expect(parsed.search).toBe("nightly");
   });
 
-  it("names all three sources when the reader picked none", () => {
-    // The API leaves notifications out unless asked; the page lists them.
+  it("lists runs only when the reader picked no source", () => {
+    // Alerts are listed only when the Alerts source is ticked.
     expect(parse(buildRunsQuery({ range: "24h" })).sources).toEqual([
       "workflow",
       "direct",
-      "notification",
     ]);
     expect(
       parse(buildRunsQuery({ range: "24h", sources: [] })).sources
-    ).toEqual(["workflow", "direct", "notification"]);
+    ).toEqual(["workflow", "direct"]);
   });
 
   it("carries the notification source through to the parser", () => {

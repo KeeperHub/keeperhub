@@ -77,11 +77,12 @@ describe("notificationStatus", () => {
 });
 
 describe("notificationsExcludedBy", () => {
-  it("drops notifications under any network, gas or duration filter", () => {
+  it("drops notifications under any status, network, gas or duration filter", () => {
     expect(notificationsExcludedBy({})).toBe(false);
-    expect(notificationsExcludedBy({ statuses: ["error"], search: "x" })).toBe(
-      false
-    );
+    expect(notificationsExcludedBy({ search: "x" })).toBe(false);
+    // An alert has no run outcome: Success or Failed never lists one.
+    expect(notificationsExcludedBy({ statuses: ["error"] })).toBe(true);
+    expect(notificationsExcludedBy({ statuses: ["success"] })).toBe(true);
     expect(notificationsExcludedBy({ networks: ["8453"] })).toBe(true);
     expect(notificationsExcludedBy({ gas: ["free"] })).toBe(true);
     expect(notificationsExcludedBy({ durationMinMs: 0 })).toBe(true);
@@ -304,19 +305,22 @@ describe("notificationBadge", () => {
     throw new Error("a notification row carries its detail");
   }
 
-  it("labels each outcome in notification words, not run words", () => {
-    expect(notificationBadge(detail)).toMatchObject({
-      label: "Delivered",
+  it("wears a grey Info badge with what became of it, never a run outcome", () => {
+    const grey = "border-border bg-muted text-muted-foreground";
+    expect(notificationBadge(detail)).toEqual({
+      label: "Info \u00b7 Sent",
+      className: grey,
       tooltip: null,
     });
     expect(
       notificationBadge({ ...detail, state: "failed", lastError: "403" })
-    ).toMatchObject({
-      label: "Not delivered",
+    ).toEqual({
+      label: "Info \u00b7 Not sent",
+      className: grey,
       tooltip: "Could not be delivered: 403",
     });
     expect(notificationBadge({ ...detail, state: "capped" })).toMatchObject({
-      label: "Over the monthly email limit",
+      label: "Info \u00b7 Not sent",
       tooltip: "Not sent: Free plan monthly email limit reached",
     });
     expect(
@@ -326,27 +330,30 @@ describe("notificationBadge", () => {
         lastError: "The workflow is running again.",
       })
     ).toMatchObject({
-      label: "Withdrawn",
+      label: "Info \u00b7 Withdrawn",
       tooltip: "Withdrawn: The workflow is running again.",
     });
-    // Too old to send: not delivered, not a withdrawal.
+    // Too old to send: not sent, not a withdrawal.
     expect(
       notificationBadge({
         ...detail,
         state: "skipped",
         lastError: SKIP_REASON.stale,
       })
-    ).toMatchObject({ label: "Not delivered", tooltip: SKIP_REASON.stale });
-    // The Alerts history's words for a message still on its way.
+    ).toMatchObject({
+      label: "Info \u00b7 Not sent",
+      tooltip: SKIP_REASON.stale,
+    });
+    // A message still on its way keeps the Alerts history's words.
     expect(notificationBadge({ ...detail, state: "pending" }).label).toBe(
-      "Queued"
-    );
-    expect(notificationBadge({ ...detail, state: "sending" }).label).toBe(
-      "Sending"
+      "Info \u00b7 Queued"
     );
     expect(
       notificationBadge({ ...detail, state: "retrying", lastError: "429" })
-    ).toMatchObject({ label: "Retrying", tooltip: "Retrying: 429" });
+    ).toMatchObject({
+      label: "Info \u00b7 Retrying",
+      tooltip: "Retrying: 429",
+    });
   });
 
   it("shows a dropped row's reason once, and calls other skips withdrawn", () => {
@@ -380,8 +387,10 @@ describe("notificationBadge", () => {
       new Date(LATER.getTime() + 25 * 60_000).toISOString()
     );
     const badge = notificationBadge(held, LATER);
-    expect(badge.label).toBe(deliveryStatus(held, LATER).label);
-    expect(badge.label).toMatch(/^Sends at .+ if it keeps working$/);
+    expect(badge.label).toBe(
+      `Info \u00b7 ${deliveryStatus(held, LATER).label}`
+    );
+    expect(badge.label).toMatch(/^Info · Sends at .+ if it keeps working$/);
   });
 });
 

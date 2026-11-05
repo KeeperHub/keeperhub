@@ -59,6 +59,8 @@ export function notificationStatesFor(
 /** Network, gas and duration filters exclude notifications rather than match all. */
 export function notificationsExcludedBy(filters: RunQueryFilters): boolean {
   return (
+    // An alert has no run outcome, so a Success or Failed filter never picks one.
+    (filters.statuses?.length ?? 0) > 0 ||
     (filters.networks?.length ?? 0) > 0 ||
     (filters.gas?.length ?? 0) > 0 ||
     filters.durationMinMs !== undefined ||
