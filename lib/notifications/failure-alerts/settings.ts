@@ -12,13 +12,6 @@ import {
   sql,
 } from "drizzle-orm";
 import { likePattern } from "@/lib/analytics/like-pattern";
-import { toHistoryEntry } from "@/lib/analytics/notification-runs";
-import { loadNotificationRows } from "@/lib/analytics/notification-runs-query";
-import {
-  encodeRunCursor,
-  type RunCursor,
-  runCursorCondition,
-} from "@/lib/analytics/run-cursor";
 import { isWalletEmail } from "@/lib/auth/wallet-constants";
 import { getOrgPlan } from "@/lib/billing/plans-server";
 import { db } from "@/lib/db";
@@ -54,6 +47,12 @@ import {
   MIN_THRESHOLD,
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "./constants";
+import {
+  encodeHistoryCursor,
+  type HistoryCursor,
+  toHistoryEntry,
+} from "./history-entry";
+import { historyCursorCondition, loadHistoryRows } from "./history-rows";
 import { loadOrgPolicy, resolveRecipientEmails } from "./policy";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
 import { checkChannelSilently, type DeliveryOutcome } from "./senders";
@@ -871,6 +870,15 @@ export const HISTORY_SINCE_MS = {
 } as const;
 export type HistorySince = keyof typeof HISTORY_SINCE_MS;
 
+/** The default view of the log: real alerts and problems, not pause notices or tests. */
+export const HISTORY_ALERT_KINDS = [
+  "alert",
+  "reminder",
+  "recovery",
+  "channel_paused",
+  "cap_warning",
+] as const;
+
 /** Kinds a person causes; every other message is KeeperHub's own. */
 const PERSON_KINDS = ["alerts_paused", "alerts_resumed", "test"] as const;
 /** "Who caused it" as KeeperHub shows it: the person's name or role, else KeeperHub. */
@@ -880,7 +888,7 @@ type HistoryFilter = {
   channel?: string;
   workflowId?: string;
   /** Resume after this row; (created, id) so rows sharing a time are not skipped. */
-  cursor?: RunCursor;
+  cursor?: HistoryCursor;
   /** 1-based page; takes over from the cursor and adds the totals. */
   page?: number;
   limit?: number;
@@ -890,6 +898,8 @@ type HistoryFilter = {
   /** Part of the address or channel it went to. */
   to?: string;
   since?: HistorySince;
+  /** "alerts": only HISTORY_ALERT_KINDS, unless a kind is picked. */
+  scope?: "alerts";
 };
 
 function personBy(): SQL {
@@ -911,6 +921,8 @@ export async function loadHistory(
   total: number;
   /** Everyone who caused a message, for the By filter. */
   byOptions: string[];
+  /** Of the matching messages, how many were not delivered. */
+  notDelivered: number;
 }> {
   const limit = Math.min(Math.max(filter.limit ?? HISTORY_PAGE_SIZE, 1), 500);
   const conditions: SQL[] = [];
@@ -920,6 +932,10 @@ export async function loadHistory(
         failureAlertDeliveries.kind,
         filter.kind as typeof failureAlertDeliveries.$inferSelect.kind
       )
+    );
+  } else if (filter.scope === "alerts") {
+    conditions.push(
+      inArray(failureAlertDeliveries.kind, [...HISTORY_ALERT_KINDS])
     );
   }
   if (filter.result) {
@@ -955,14 +971,7 @@ export async function loadHistory(
     );
   }
   if (filter.cursor) {
-    conditions.push(
-      runCursorCondition(
-        filter.cursor,
-        "notification",
-        failureAlertDeliveries.createdAt,
-        failureAlertDeliveries.id
-      )
-    );
+    conditions.push(historyCursorCondition(filter.cursor));
   }
   if (filter.workflowId) {
     // Its own messages, and grouped alerts that listed it.
@@ -978,16 +987,25 @@ export async function loadHistory(
   // A page asks for totals; the cursor (CSV, API callers) does not need them.
   const paged = filter.page !== undefined && !filter.cursor;
   const page = paged ? Math.max(1, Math.floor(filter.page ?? 1)) : 1;
-  const [{ rows, groupedNames }, total, byOptions] = await Promise.all([
-    loadNotificationRows(
-      organizationId,
-      conditions,
-      limit,
-      paged ? (page - 1) * limit : 0
-    ),
-    paged ? countHistory(organizationId, conditions) : Promise.resolve(0),
-    paged ? historyPeople(organizationId) : Promise.resolve([]),
-  ]);
+  const [{ rows, groupedNames }, total, byOptions, notDelivered] =
+    await Promise.all([
+      loadHistoryRows(
+        organizationId,
+        conditions,
+        limit,
+        paged ? (page - 1) * limit : 0
+      ),
+      paged ? countHistory(organizationId, conditions) : Promise.resolve(0),
+      paged ? historyPeople(organizationId) : Promise.resolve([]),
+      paged
+        ? countHistory(organizationId, [
+            ...conditions,
+            inArray(failureAlertDeliveries.state, [
+              ...HISTORY_RESULT_STATES.failed,
+            ]),
+          ])
+        : Promise.resolve(0),
+    ]);
   const accounts = await signInAccounts(
     rows.flatMap((row) =>
       typeof row.context?.byUserId === "string" ? [row.context.byUserId] : []
@@ -1004,12 +1022,13 @@ export async function loadHistory(
     }),
     nextCursor:
       last && rows.length === limit
-        ? encodeRunCursor({ at: last.at, source: "notification", id: last.id })
+        ? encodeHistoryCursor({ at: last.at, id: last.id })
         : null,
     page,
     pages: Math.max(1, Math.ceil(total / limit)),
     total,
     byOptions,
+    notDelivered,
   };
 }
 

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { parseRunCursor } from "@/lib/analytics/run-cursor";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { parseHistoryCursor } from "@/lib/notifications/failure-alerts/history-entry";
 import { resolveOrgAccess } from "@/lib/notifications/failure-alerts/route-auth";
 import {
   HISTORY_RESULT_STATES,
@@ -24,7 +24,7 @@ const CSV_LIMIT = 500;
 /**
  * Sent notifications, newest first; any member. `?page=` gives a numbered page
  * with totals, `?cursor=` the next one; `?format=csv` up to 500 rows. Filters:
- * channel, kind, result, by, to, since.
+ * channel, kind, result, by, to, since, and scope=alerts (real alerts only).
  */
 const KINDS = new Set(Object.keys(FAILURE_ALERT_KIND_LABEL));
 const MAX_TEXT_FILTER = 200;
@@ -37,6 +37,7 @@ function parseFilters(params: URLSearchParams):
       by?: string;
       to?: string;
       since?: HistorySince;
+      scope?: "alerts";
     }
   | { error: string } {
   const kind = params.get("kind") || undefined;
@@ -59,7 +60,12 @@ function parseFilters(params: URLSearchParams):
   ) {
     return { error: "Filter text is too long." };
   }
+  const scope = params.get("scope") || undefined;
+  if (scope && scope !== "alerts") {
+    return { error: "Unknown scope." };
+  }
   return {
+    scope: scope as "alerts" | undefined,
     kind,
     result: result as HistoryResult | undefined,
     by,
@@ -89,7 +95,7 @@ export async function GET(
     }
     const workflowId = url.searchParams.get("workflowId") ?? undefined;
     const cursorRaw = url.searchParams.get("cursor");
-    const cursor = parseRunCursor(cursorRaw);
+    const cursor = parseHistoryCursor(cursorRaw);
     if (cursorRaw && !cursor) {
       return NextResponse.json({ error: "Invalid cursor." }, { status: 400 });
     }

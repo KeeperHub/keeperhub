@@ -8,6 +8,7 @@ import {
   Download,
   Mail,
   RefreshCw,
+  SlidersHorizontal,
   X,
 } from "lucide-react";
 import Link from "next/link";
@@ -115,7 +116,11 @@ function accountLabel(account: string): string {
     : account;
 }
 
-/** A label shown beside the value only when the row is stacked. */
+/** Between values on a phone's second line; gone in the table. */
+const SEP =
+  "after:ml-2 after:text-muted-foreground after:content-['·'] @3xl/history:after:content-none";
+
+/** One value: a table cell from 48rem, an inline item on a phone. */
 function Cell({
   label,
   children,
@@ -126,16 +131,9 @@ function Cell({
   className?: string;
 }): React.ReactElement {
   return (
-    <div
-      className={cn(
-        "flex min-w-0 items-baseline gap-2 @3xl/history:block",
-        className
-      )}
-    >
-      <span className="w-16 shrink-0 text-muted-foreground text-xs @3xl/history:hidden">
-        {label}
-      </span>
-      <div className="min-w-0 break-words">{children}</div>
+    <div className={cn("min-w-0 break-words @3xl/history:block", className)}>
+      <span className="sr-only">{label}: </span>
+      {children}
     </div>
   );
 }
@@ -153,19 +151,22 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
   return (
     <li
       className={cn(
-        "space-y-1 px-3 py-2.5 text-sm @3xl/history:space-y-0",
+        "flex flex-wrap items-baseline gap-x-2 gap-y-1 px-3 py-2.5 text-sm",
         ROW_GRID
       )}
       data-kind={entry.kind}
       data-state={entry.state}
       data-testid="failure-alert-history-row"
     >
-      <Cell label="When">
+      <Cell className={SEP} label="When">
         <span className="text-muted-foreground text-xs tabular-nums">
           {formatWhen(entry.createdAt)}
         </span>
       </Cell>
-      <Cell label="What">
+      <Cell
+        className="order-first w-full @3xl/history:order-none @3xl/history:w-auto"
+        label="What"
+      >
         <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
           <span className="font-medium">{what}</span>
           {entry.isBackup && <Badge variant="outline">Backup</Badge>}
@@ -185,7 +186,10 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
           </span>
         )}
       </Cell>
-      <Cell label="By">
+      <Cell
+        className={entry.by === "KeeperHub" ? "hidden @3xl/history:block" : SEP}
+        label="By"
+      >
         <span
           className={cn(
             "text-xs",
@@ -197,7 +201,7 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
         </span>
         {entry.byAccount && (
           <span
-            className="block break-all text-muted-foreground text-xs"
+            className="break-all text-muted-foreground text-xs @3xl/history:block"
             data-testid="failure-alert-history-by-account"
             title={entry.byAccount}
           >
@@ -205,7 +209,7 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
           </span>
         )}
       </Cell>
-      <Cell label="Method">
+      <Cell className={SEP} label="Method">
         <span className="inline-flex items-baseline gap-1.5 text-xs">
           {entry.channel === "email" ? (
             <Mail aria-hidden="true" className="size-3 shrink-0 self-center" />
@@ -218,7 +222,7 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
           {method}
         </span>
       </Cell>
-      <Cell label="Sent to">
+      <Cell className={SEP} label="Sent to">
         <span className="text-xs" data-testid="failure-alert-history-to">
           {to}
         </span>
@@ -268,15 +272,28 @@ function FilterSelect({
   );
 }
 
-/** Everything the org sent, newest first, filterable by every column; or one workflow's. */
+/** How many a workflow's panel shows before "View all". */
+const COMPACT_LIMIT = 5;
+
+/**
+ * Everything the org sent, newest first: real alerts by default, filterable by
+ * every column. Compact (a workflow's panel) shows its last few with a link to
+ * the full log.
+ */
 export function NotificationHistory({
   organizationId,
   workflowId,
   compact = false,
+  onTotal,
+  onClearWorkflow,
 }: {
   organizationId: string;
   workflowId?: string;
   compact?: boolean;
+  /** The unfiltered alert count, for a tab label. */
+  onTotal?: (total: number) => void;
+  /** Shown as a removable "One workflow" filter when given with workflowId. */
+  onClearWorkflow?: () => void;
 }): React.ReactElement {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -287,6 +304,10 @@ export function NotificationHistory({
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   // The typed address, applied once typing pauses.
   const [toDraft, setToDraft] = useState("");
+  // Pause notices and tests are left out until asked for.
+  const [allKinds, setAllKinds] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [notDelivered, setNotDelivered] = useState(0);
   // The request in flight; a newer one aborts it so its page is never shown.
   const inFlight = useRef<AbortController | null>(null);
   const base = `/api/organizations/${encodeURIComponent(organizationId)}/failure-alerts/history`;
@@ -314,6 +335,12 @@ export function NotificationHistory({
       if (workflowId) {
         params.set("workflowId", workflowId);
       }
+      if (!allKinds && filters.kind === ANY) {
+        params.set("scope", "alerts");
+      }
+      if (compact) {
+        params.set("limit", String(COMPACT_LIMIT));
+      }
       if (page) {
         params.set("page", String(page));
       }
@@ -322,7 +349,7 @@ export function NotificationHistory({
       }
       return `${base}?${params.toString()}`;
     },
-    [base, filters, workflowId]
+    [base, filters, workflowId, allKinds, compact]
   );
 
   const load = useCallback(
@@ -343,6 +370,7 @@ export function NotificationHistory({
           pages?: number;
           total?: number;
           byOptions?: string[];
+          notDelivered?: number;
         };
         if (controller.signal.aborted) {
           return;
@@ -354,6 +382,7 @@ export function NotificationHistory({
           total: body.total ?? 0,
         });
         setByOptions(body.byOptions ?? []);
+        setNotDelivered(body.notDelivered ?? 0);
       } catch {
         if (!controller.signal.aborted) {
           setFailedPage(page);
@@ -381,6 +410,23 @@ export function NotificationHistory({
     setFilters((f) => ({ ...f, [key]: value }));
   const filtered =
     JSON.stringify(filters) !== JSON.stringify(NO_FILTERS) || toDraft !== "";
+  const activeCount = (Object.keys(NO_FILTERS) as (keyof Filters)[]).filter(
+    (key) => filters[key] !== NO_FILTERS[key]
+  ).length;
+  const isDefaultView = !(filtered || allKinds || workflowId);
+  let emptyText = "No alerts sent yet. Pause notices and tests are left out.";
+  if (filtered) {
+    emptyText = "Nothing matches these filters.";
+  } else if (allKinds) {
+    emptyText = "Nothing sent yet.";
+  }
+
+  // The tab label counts alerts in the default view.
+  useEffect(() => {
+    if (isDefaultView && !loading && failedPage === null) {
+      onTotal?.(info.total);
+    }
+  }, [isDefaultView, loading, failedPage, info.total, onTotal]);
   const first = (info.page - 1) * HISTORY_PAGE_SIZE + 1;
   const last = first + entries.length - 1;
 
@@ -389,70 +435,139 @@ export function NotificationHistory({
       className="@container/history space-y-3"
       data-testid="failure-alert-history"
     >
-      <div
-        className="grid grid-cols-2 gap-2 @3xl/history:grid-cols-[8rem_minmax(0,1.4fr)_minmax(0,0.9fr)_7rem_minmax(0,1.3fr)_8rem] @3xl/history:gap-x-3 @3xl/history:px-3"
-        data-testid="failure-alert-history-filters"
-      >
-        <FilterSelect
-          label="When"
-          onChange={set("since")}
-          options={SINCE_OPTIONS}
-          value={filters.since}
-        />
-        <FilterSelect
-          label="What"
-          onChange={set("kind")}
-          options={[
-            { value: ANY, label: "All types" },
-            ...Object.entries(FAILURE_ALERT_KIND_LABEL).map(
-              ([value, label]) => ({
-                value,
-                label,
-              })
-            ),
-          ]}
-          value={filters.kind}
-        />
-        <FilterSelect
-          label="By"
-          onChange={set("by")}
-          options={[
-            { value: ANY, label: "Anyone" },
-            ...byOptions.map((b) => ({ value: b, label: b })),
-          ]}
-          value={filters.by}
-        />
-        <FilterSelect
-          label="Method"
-          onChange={set("channel")}
-          options={[
-            { value: ANY, label: "All methods" },
-            ...CHANNELS.map((c) => ({ value: c, label: CHANNEL_LABEL[c] })),
-          ]}
-          value={filters.channel}
-        />
-        <Input
-          aria-label="Sent to"
-          className="h-8 text-xs"
-          maxLength={200}
-          onChange={(e) => setToDraft(e.target.value)}
-          placeholder="Sent to..."
-          value={toDraft}
-        />
-        <FilterSelect
-          label="Result"
-          onChange={set("result")}
-          options={RESULT_OPTIONS}
-          value={filters.result}
-        />
-      </div>
+      {!compact && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            aria-expanded={filtersOpen}
+            data-testid="failure-alert-history-filters-toggle"
+            onClick={() => setFiltersOpen((open) => !open)}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            <SlidersHorizontal className="size-3.5" />
+            Filters{activeCount > 0 ? ` (${activeCount})` : ""}
+          </Button>
+          {allKinds ? (
+            <button
+              className="inline-flex h-7 items-center gap-1 rounded-full bg-muted px-3 text-xs"
+              data-testid="failure-alert-history-all-kinds"
+              onClick={() => setAllKinds(false)}
+              type="button"
+            >
+              Including pause notices and tests
+              <X aria-label="Show alerts only" className="size-3" />
+            </button>
+          ) : (
+            <button
+              className="inline-flex h-7 items-center rounded-full border border-dashed px-3 text-muted-foreground text-xs hover:text-foreground"
+              data-testid="failure-alert-history-all-kinds"
+              onClick={() => setAllKinds(true)}
+              type="button"
+            >
+              + Include pause notices and tests
+            </button>
+          )}
+          {workflowId && onClearWorkflow && (
+            <button
+              className="inline-flex h-7 items-center gap-1 rounded-full bg-muted px-3 text-xs"
+              data-testid="failure-alert-history-workflow-chip"
+              onClick={onClearWorkflow}
+              type="button"
+            >
+              One workflow
+              <X aria-label="Show every workflow" className="size-3" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {!compact && filtersOpen && (
+        <div
+          className="grid grid-cols-2 gap-2 @3xl/history:grid-cols-[8rem_minmax(0,1.4fr)_minmax(0,0.9fr)_7rem_minmax(0,1.3fr)_8rem] @3xl/history:gap-x-3 @3xl/history:px-3"
+          data-testid="failure-alert-history-filters"
+        >
+          <FilterSelect
+            label="When"
+            onChange={set("since")}
+            options={SINCE_OPTIONS}
+            value={filters.since}
+          />
+          <FilterSelect
+            label="What"
+            onChange={set("kind")}
+            options={[
+              { value: ANY, label: "All types" },
+              ...Object.entries(FAILURE_ALERT_KIND_LABEL).map(
+                ([value, label]) => ({
+                  value,
+                  label,
+                })
+              ),
+            ]}
+            value={filters.kind}
+          />
+          <FilterSelect
+            label="By"
+            onChange={set("by")}
+            options={[
+              { value: ANY, label: "Anyone" },
+              ...byOptions.map((b) => ({ value: b, label: b })),
+            ]}
+            value={filters.by}
+          />
+          <FilterSelect
+            label="Method"
+            onChange={set("channel")}
+            options={[
+              { value: ANY, label: "All methods" },
+              ...CHANNELS.map((c) => ({ value: c, label: CHANNEL_LABEL[c] })),
+            ]}
+            value={filters.channel}
+          />
+          <Input
+            aria-label="Sent to"
+            className="h-8 text-xs"
+            maxLength={200}
+            onChange={(e) => setToDraft(e.target.value)}
+            placeholder="Sent to..."
+            value={toDraft}
+          />
+          <FilterSelect
+            label="Result"
+            onChange={set("result")}
+            options={RESULT_OPTIONS}
+            value={filters.result}
+          />
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-muted-foreground text-xs" role="status">
-          {info.total === 0
-            ? "No messages"
-            : `${info.total} ${info.total === 1 ? "message" : "messages"}${filtered ? " match" : ""}`}
-        </span>
+        {!compact && (
+          <span
+            className="text-xs"
+            data-testid="failure-alert-history-summary"
+            role="status"
+          >
+            <span className="font-medium">
+              {info.total} {allKinds ? "message" : "alert"}
+              {info.total === 1 ? "" : "s"}
+              {filtered ? " match" : ""}
+            </span>
+            {info.total > 0 && (
+              <span
+                className={
+                  notDelivered > 0
+                    ? "text-destructive"
+                    : "text-keeperhub-green-dark"
+                }
+              >
+                {" "}
+                · {notDelivered} not delivered
+              </span>
+            )}
+          </span>
+        )}
         {filtered && (
           <Button
             className="px-2 text-xs"
@@ -506,11 +621,7 @@ export function NotificationHistory({
       )}
 
       {entries.length === 0 && !(loading || failedPage !== null) && (
-        <p className="text-muted-foreground text-sm">
-          {filtered
-            ? "Nothing matches these filters."
-            : "Nothing sent yet. Alerts, tests and method warnings show up here."}
-        </p>
+        <p className="text-muted-foreground text-sm">{emptyText}</p>
       )}
 
       {entries.length > 0 && (
@@ -537,7 +648,19 @@ export function NotificationHistory({
         </div>
       )}
 
-      {info.pages > 1 && (
+      {compact && (
+        <Link
+          className="inline-flex min-h-11 items-center text-xs underline underline-offset-4 sm:min-h-0"
+          data-testid="failure-alert-history-view-all"
+          href={`/settings/${encodeURIComponent(organizationId)}/alerts?${new URLSearchParams(
+            { tab: "sent", ...(workflowId ? { workflow: workflowId } : {}) }
+          ).toString()}`}
+        >
+          View all in Sent alerts
+        </Link>
+      )}
+
+      {!compact && info.pages > 1 && (
         <nav
           aria-label="Sent alerts pages"
           className="flex flex-wrap items-center justify-between gap-2"
