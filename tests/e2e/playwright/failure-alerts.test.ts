@@ -6,6 +6,7 @@ import {
   cleanupFailureAlerts,
   countMethods,
   readOrgPause,
+  readOrgThreshold,
   readOverride,
   seedFailureAlerts,
 } from "./utils/failure-alerts";
@@ -50,14 +51,22 @@ function methodCard(page: Page, kind: string): Locator {
   return methodCards(page).and(page.locator(`[data-kind="${kind}"]`));
 }
 
-async function openAlerts(page: Page): Promise<void> {
-  await page.goto(`/settings/${fixture.orgId}/alerts`, {
+type AlertsTab = "overview" | "setup" | "sent";
+
+async function openAlerts(page: Page, tab: AlertsTab = "setup"): Promise<void> {
+  await page.goto(`/settings/${fixture.orgId}/alerts?tab=${tab}`, {
     waitUntil: "domcontentloaded",
   });
   await expect(page.getByTestId("failure-alerts-settings")).toBeVisible(
     FIRST_VISIT
   );
-  await expect(methodCard(page, "email")).toBeVisible(FIRST_VISIT);
+  await expect(page.getByTestId(`failure-alerts-tab-${tab}`)).toHaveAttribute(
+    "data-state",
+    "active"
+  );
+  if (tab === "setup") {
+    await expect(methodCard(page, "email")).toBeVisible(FIRST_VISIT);
+  }
 }
 
 // The Properties panel sits beside the canvas from md up, in the Configuration sheet below it.
@@ -108,27 +117,42 @@ async function pastTheEdge(page: Page, items: Locator): Promise<number> {
 }
 
 test.describe("Failure alerts", () => {
-  test("Alerts page shows the rules, then a card per method", async ({
+  test("Overview opens first, with Status and Needs attention", async ({
     page,
   }) => {
+    await page.goto(`/settings/${fixture.orgId}/alerts`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expect(
+      page.getByTestId("failure-alerts-tab-overview")
+    ).toHaveAttribute("data-state", "active", FIRST_VISIT);
+    await expect(page.getByTestId("failure-alerts-switch")).toBeVisible();
+    await expect(page.getByTestId("failure-alerts-methods")).toHaveCount(0);
+    await page.getByTestId("failure-alerts-tab-sent").click();
+    await expect(page).toHaveURL(/[?&]tab=sent/);
+    await expect(page.getByTestId("failure-alert-history")).toBeVisible();
+  });
+
+  test("Setup shows who gets alerts, then the rules", async ({ page }) => {
     await openAlerts(page);
     const rules = page.getByTestId("failure-alerts-rules");
     await expect(rules).toBeVisible();
     expect(
       await page.evaluate(() => {
-        const a = document.querySelector(
-          '[data-testid="failure-alerts-rules"]'
-        );
-        const b = document.querySelector(
+        const methods = document.querySelector(
           '[data-testid="failure-alerts-methods"]'
         );
+        const after = document.querySelector(
+          '[data-testid="failure-alerts-rules"]'
+        );
         return Boolean(
-          a &&
-            b &&
-            a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING
+          methods &&
+            after &&
+            methods.compareDocumentPosition(after) &
+              Node.DOCUMENT_POSITION_FOLLOWING
         );
       }),
-      "rules come before the methods"
+      "methods come before the rules"
     ).toBe(true);
     await expect(page.locator("#failure-threshold")).toHaveValue("5");
 
@@ -163,11 +187,9 @@ test.describe("Failure alerts", () => {
     await expect(picker).toBeVisible();
     // The only Discord connection holds no credentials, so the server's check fails without a network call.
     await picker.locator('input[value="discord"]').check({ force: true });
-    // One Save for the page: the refusal shows in the save bar, nothing is kept.
-    const bar = page.getByTestId("failure-alerts-save-bar");
-    await expect(bar).toHaveAttribute("data-dirty", "true");
-    await bar.getByTestId("failure-alerts-save").click();
-    const refusal = bar.getByTestId("failure-alert-save-error");
+    // Each method is checked when saved; a refusal shows on its card.
+    await fresh.getByTestId("failure-alert-method-save-button").click();
+    const refusal = fresh.getByTestId("failure-alert-save-error");
     await expect(refusal).toBeVisible(SAVE_TIMEOUT);
     await expect(refusal).toContainText("cannot receive notifications");
     await expect(fresh).toHaveAttribute("data-dirty", "true");
@@ -177,10 +199,29 @@ test.describe("Failure alerts", () => {
     await expect(methodCards(page)).toHaveCount(2);
   });
 
+  test("the rules save themselves, with Undo", async ({ page }) => {
+    await openAlerts(page);
+    const threshold = page.locator("#failure-threshold");
+    await threshold.fill("4");
+    const status = page.getByTestId("failure-alerts-rules-autosave");
+    await expect(status).toHaveText("Saved", SAVE_TIMEOUT);
+    await expect
+      .poll(() => readOrgThreshold(fixture.orgId), SAVE_TIMEOUT)
+      .toBe(4);
+    await page
+      .locator("[data-sonner-toast]")
+      .getByRole("button", { name: "Undo" })
+      .click();
+    await expect
+      .poll(() => readOrgThreshold(fixture.orgId), SAVE_TIMEOUT)
+      .toBe(5);
+    await expect(threshold).toHaveValue("5");
+  });
+
   test("the Status switch pauses through the form and resumes at once", async ({
     page,
   }) => {
-    await openAlerts(page);
+    await openAlerts(page, "overview");
     // Turning the switch off opens the pause form; it stays on until confirmed.
     const toggle = page.getByTestId("failure-alerts-switch");
     await expect(toggle).toHaveAttribute("data-state", "checked");
@@ -201,7 +242,7 @@ test.describe("Failure alerts", () => {
     const banner = page.getByTestId("failure-alerts-paused-banner");
     await expect(banner).toBeVisible(SAVE_TIMEOUT);
 
-    await openAlerts(page);
+    await openAlerts(page, "overview");
     await expect(paused).toBeVisible();
     await expect(banner).toBeVisible(SAVE_TIMEOUT);
     await expect(toggle).toHaveAttribute("data-state", "unchecked");
@@ -212,12 +253,12 @@ test.describe("Failure alerts", () => {
     await expect
       .poll(() => readOrgPause(fixture.orgId), SAVE_TIMEOUT)
       .toBeNull();
-    await openAlerts(page);
+    await openAlerts(page, "overview");
     await expect(paused).toHaveCount(0);
   });
 
   test("history lists the alerts that went out", async ({ page }) => {
-    await openAlerts(page);
+    await openAlerts(page, "sent");
     const rows = page.getByTestId("failure-alert-history-row");
     await expect(rows.first()).toBeVisible(FIRST_VISIT);
     const alerts = rows.and(page.locator('[data-kind="alert"]'));
@@ -306,23 +347,27 @@ test.describe("Failure alerts", () => {
     await expect(section).toHaveAttribute("data-source", "org");
   });
 
-  test("analytics lists the alert beside the runs", async ({ page }) => {
+  test("analytics marks the run that set off an alert", async ({ page }) => {
     await page.goto("/analytics", { waitUntil: "domcontentloaded" });
     const table = page.getByTestId("runs-table");
     await expect(table).toHaveAttribute("data-ready", "true", FIRST_VISIT);
-    // Numbers count runs only; alerts are listed only when the Alerts source is ticked.
-    await expect(page.getByTestId("kpi-count-note")).toBeVisible(FIRST_VISIT);
-    const alertRows = table
-      .getByTestId("run-row")
-      .and(page.locator('[data-source="notification"]'));
-    await expect(alertRows).toHaveCount(0);
+    // Analytics lists runs only: no alert rows, no Alerts source.
     await page.getByRole("button", { name: /^Source/ }).click();
-    await page.getByRole("button", { name: "Alerts (info only)" }).click();
+    await expect(page.getByRole("button", { name: /Alerts/ })).toHaveCount(0);
     await page.keyboard.press("Escape");
-    // This workflow never ran, so its name only shows through its alert.
-    const alertRow = alertRows.filter({ hasText: fixture.alertedName });
-    await expect(alertRow).toBeVisible(SAVE_TIMEOUT);
-    await expect(alertRow).toContainText("Info");
+    // Only the newest failed run before the alert carries it.
+    const chips = table.getByTestId("run-alert-sent");
+    await expect(chips).toHaveCount(1, SAVE_TIMEOUT);
+    await expect(chips).toContainText("Alert sent");
+    await expect(chips).toContainText("Email");
+    await chips.click();
+    await expect(page).toHaveURL(
+      new RegExp(`/alerts\\?tab=sent&workflow=${fixture.failingId}`),
+      FIRST_VISIT
+    );
+    await expect(
+      page.getByTestId("failure-alert-history-workflow-chip")
+    ).toBeVisible(FIRST_VISIT);
   });
 
   for (const width of WIDTHS) {
@@ -331,15 +376,17 @@ test.describe("Failure alerts", () => {
     }) => {
       await page.setViewportSize({ width, height: 1200 });
       await openAlerts(page);
-      await expect(page.getByTestId("failure-alert-history")).toBeVisible();
-      expect(
-        await pageOverflow(page),
-        "Alerts page overflow"
-      ).toBeLessThanOrEqual(0);
+      expect(await pageOverflow(page), "Setup overflow").toBeLessThanOrEqual(0);
       expect(
         await pastTheEdge(page, methodCards(page)),
         "method cards past the edge"
       ).toBe(0);
+      for (const tab of ["overview", "sent"] as const) {
+        await openAlerts(page, tab);
+        expect(await pageOverflow(page), `${tab} overflow`).toBeLessThanOrEqual(
+          0
+        );
+      }
 
       const section = await openProperties(page, fixture.failingId);
       await section.scrollIntoViewIfNeeded();

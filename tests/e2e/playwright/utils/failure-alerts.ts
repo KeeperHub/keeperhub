@@ -263,6 +263,19 @@ export async function readOrgPause(orgId: string): Promise<Date | null> {
   }
 }
 
+// The org's failure threshold as saved.
+export async function readOrgThreshold(orgId: string): Promise<number | null> {
+  const sql = getDbConnection();
+  try {
+    const [row] = await sql`
+      SELECT threshold FROM alert_settings WHERE organization_id = ${orgId}
+    `;
+    return (row?.threshold as number | null) ?? null;
+  } finally {
+    await sql.end();
+  }
+}
+
 // How many org-wide methods of a kind are saved.
 export async function countMethods(
   orgId: string,
