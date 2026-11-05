@@ -14,9 +14,6 @@ import { cn } from "@/lib/utils";
 import { failedRuns, formatWhen, joinList, notRunningText } from "./format";
 import { memberLabel } from "./member-label";
 import { channelWorks } from "./method-drafts";
-import { AlertsStatusBar } from "./pause-alerts";
-
-type StatusState = "unreachable" | "failing" | "single" | "quiet";
 
 const ICON_CLASS = "mt-0.5 size-4 shrink-0";
 
@@ -148,41 +145,33 @@ function Headline({
   );
 }
 
-/** How the Status card is drawn: its edge and tint follow the state. */
+/** The Status card is neutral when on and yellow when paused; health never colours it. */
 export function statusCardClass(data: OrgSettingsView): string {
   const paused =
     data.pause && new Date(data.pause.until).getTime() > Date.now();
-  if (!data.enabled) {
-    return "border-2";
-  }
-  if (paused) {
-    return "border-2 border-yellow-500/50 bg-yellow-500/5";
-  }
-  if (data.unreachable || data.failingNow.length > 0) {
-    return "border-2 border-destructive/50 bg-destructive/5";
-  }
-  return "border-2 border-keeperhub-green/40 bg-keeperhub-green/5";
+  return paused ? "border-yellow-500/50 bg-yellow-500/5" : "";
 }
 
-/** "Is it working?": state, who is reached, the email cap, and what is failing now. */
-export function AlertsStatus({
+type AttentionRow = {
+  id: string;
+  name: string;
+  href: string;
+  detail: string;
+  tone: "danger" | "warning";
+};
+
+/**
+ * "Does anything need attention?": who cannot be reached, broken methods, the
+ * email limit, and every workflow that is failing or has a broken own method.
+ */
+export function AlertsHealth({
   data,
   canManage,
-  onResume,
   viewerUserId,
-  pausing = false,
-  onPauseOpen = () => undefined,
-  pauseForm,
 }: {
   data: OrgSettingsView;
   canManage: boolean;
-  onResume: () => Promise<string | null>;
   viewerUserId?: string | null;
-  /** The pause form is open. */
-  pausing?: boolean;
-  onPauseOpen?: () => void;
-  /** Shown under the state while pausing. */
-  pauseForm?: React.ReactNode;
 }): React.ReactElement {
   const pause =
     data.pause && new Date(data.pause.until).getTime() > Date.now()
@@ -199,21 +188,11 @@ export function AlertsStatus({
   const routes = (emailWorks ? 1 : 0) + working.length;
   const label = (c: (typeof data.channels)[number]): string =>
     methodText(c.kind, c.destination, c.connectionName);
-  const brokenWorkflows = data.customWorkflows.filter(
-    (w) => w.brokenMethods > 0
-  );
   const ownThreshold = new Map(
     data.customWorkflows.map((w) => [w.id, w.threshold])
   );
-
-  let state: StatusState = "quiet";
-  if (data.unreachable || routes === 0) {
-    state = "unreachable";
-  } else if (data.failingNow.length > 0) {
-    state = "failing";
-  } else if (routes === 1) {
-    state = "single";
-  }
+  const unreachable = data.unreachable || routes === 0;
+  const single = !unreachable && routes === 1;
 
   const emailNames = emailWorks ? people.map(memberLabel) : [];
   const always = working.filter((c) => c.role === "always").map(label);
@@ -223,7 +202,7 @@ export function AlertsStatus({
     emailNames.length + always.length > 0 ? always : [...always, ...backups];
   const reachParts = [
     emailNames.length + primary.length > 0
-      ? `Reached: ${namesLine(emailNames, primary)}.`
+      ? `Alerts reach ${namesLine(emailNames, primary)}.`
       : "",
     primary === always && backups.length > 0
       ? `Backup: ${namesLine([], backups)}.`
@@ -235,26 +214,53 @@ export function AlertsStatus({
     ? "Email"
     : (working[0] && label(working[0])) || "";
 
+  // Failing first, then workflows whose own methods stopped working.
+  const rows: AttentionRow[] = [
+    ...data.failingNow.map((w) => ({
+      id: w.workflowId,
+      name: w.name,
+      href: `/workflows/${w.workflowId}?tab=runs`,
+      tone: "danger" as const,
+      detail: `${
+        isNotRunning(w.openedBy)
+          ? notRunningText(w.dueAt, w.refused, w.openedBy)
+          : `${w.openedBy === "funding" ? "Wallet out of funds, " : ""}${failedRuns(w.failureCount)} in a row${ownRule(ownThreshold.get(w.workflowId))}, alert sent ${timeAgo(w.openedAt)}`
+      }${pause ? `. Not reported until ${formatWhen(pause.until)}` : ""}`,
+    })),
+    ...data.customWorkflows
+      .filter((w) => w.brokenMethods > 0)
+      .map((w) => ({
+        id: w.id,
+        name: w.name,
+        href: `/workflows/${w.id}`,
+        tone: "warning" as const,
+        detail:
+          w.brokenMethods === 1
+            ? "1 of its own methods stopped working"
+            : `${w.brokenMethods} of its own methods stopped working`,
+      })),
+  ];
+  const problems =
+    unreachable ||
+    single ||
+    broken.length > 0 ||
+    rows.length > 0 ||
+    Boolean(usage && usage.used >= usage.limit * 0.8);
+
+  let healthState = "healthy";
+  if (unreachable) {
+    healthState = "unreachable";
+  } else if (rows.length > 0) {
+    healthState = "attention";
+  }
+
   return (
     <div
       className="space-y-4"
-      data-state={state}
-      data-testid="failure-alerts-status"
+      data-state={healthState}
+      data-testid="failure-alerts-health"
     >
-      <AlertsStatusBar
-        canManage={canManage}
-        enabled={data.enabled}
-        onPauseOpen={onPauseOpen}
-        onResume={onResume}
-        pause={pause}
-        pausing={pausing}
-        pausingWorkflows={
-          data.customWorkflows.filter((w) => w.pauseWorkflow).length
-        }
-      />
-      {pauseForm}
-      <div className="border-t" />
-      {state === "unreachable" && (
+      {unreachable && (
         <Headline
           title="Nobody can be reached: nobody will be told when a workflow fails"
           tone="danger"
@@ -274,59 +280,19 @@ export function AlertsStatus({
             : "Ask an owner or admin to fix it."}
         </Headline>
       )}
-      {state === "failing" && (
+      {!unreachable && broken.length > 0 && (
         <Headline
-          title={`${plural(data.failingNow.length, "workflow", "workflows")} failing`}
-          tone="danger"
+          title={`${plural(broken.length, "method needs", "methods need")} attention`}
+          tone="warning"
         >
-          {reachLine}
+          {broken.map(label).join(", ")}. The others are still used.
         </Headline>
       )}
-      {state === "single" && (
+      {single && (
         <Headline title={`Only one method: ${onlyRoute}`} tone="warning">
-          Only {onlyRoute} can reach anyone. If it stops working, nobody is
-          told. Add a backup method, or an email.
+          If it stops working, nobody is told. Add a backup method, or an email.
         </Headline>
       )}
-      {state === "quiet" && (
-        <Headline title="All quiet" tone="ok">
-          Nothing is failing. {reachLine}
-        </Headline>
-      )}
-
-      {state !== "unreachable" && broken.length > 0 && (
-        <p className="text-xs">
-          <span className={cn("font-medium", WARNING_TEXT)}>
-            {plural(broken.length, "method needs", "methods need")} attention:
-          </span>{" "}
-          {broken.map(label).join(", ")}.
-        </p>
-      )}
-
-      {brokenWorkflows.length > 0 && (
-        <p
-          className="text-xs"
-          data-testid="failure-alerts-status-broken-workflows"
-        >
-          <span className={cn("font-medium", WARNING_TEXT)}>
-            {plural(
-              brokenWorkflows.length,
-              "workflow has its own method",
-              "workflows have their own methods"
-            )}{" "}
-            that stopped working:
-          </span>{" "}
-          {brokenWorkflows.map((w) => w.name).join(", ")}. See Workflows with
-          their own settings below.
-        </p>
-      )}
-
-      <p className="text-muted-foreground text-xs">
-        {data.lastAlertDeliveredAt
-          ? `Last alert delivered ${timeAgo(data.lastAlertDeliveredAt)}.`
-          : "No alert sent yet: nothing has failed. Use Test on a method to see one arrive."}
-      </p>
-
       {usage && usage.used >= usage.limit * 0.8 && (
         <div data-testid="failure-alerts-email-cap">
           <Notice tone={capped && working.length === 0 ? "danger" : "warning"}>
@@ -335,39 +301,67 @@ export function AlertsStatus({
         </div>
       )}
 
-      {data.failingNow.length > 0 && (
+      {rows.length > 0 && (
         <div className="space-y-2">
           <h3 className="font-medium text-xs">
-            Failing now ({data.failingNow.length})
+            Workflows that need attention ({rows.length})
           </h3>
           <ul
             className="divide-y rounded-md border"
             data-testid="failure-alerts-failing"
           >
-            {data.failingNow.map((w) => (
-              <li
-                className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 px-3 py-2 text-sm"
-                key={w.workflowId}
-              >
-                <Link
-                  className="min-w-0 break-words font-medium underline underline-offset-4"
-                  href={`/workflows/${w.workflowId}?tab=runs`}
+            {rows.map((row) => {
+              const Icon = row.tone === "danger" ? XCircle : AlertTriangle;
+              return (
+                <li
+                  className="flex items-start gap-2 px-3 py-2 text-sm"
+                  data-tone={row.tone}
+                  key={`${row.tone}:${row.id}`}
                 >
-                  {w.name}
-                </Link>
-                <span className="text-destructive text-xs">
-                  {isNotRunning(w.openedBy)
-                    ? notRunningText(w.dueAt, w.refused, w.openedBy)
-                    : `${w.openedBy === "funding" ? "Wallet out of funds, " : ""}${failedRuns(w.failureCount)} in a row${ownRule(ownThreshold.get(w.workflowId))}, alert sent ${timeAgo(w.openedAt)}`}
-                  {pause
-                    ? `. Alerts held until ${formatWhen(pause.until)}`
-                    : ""}
-                </span>
-              </li>
-            ))}
+                  <Icon
+                    aria-hidden="true"
+                    className={cn(
+                      ICON_CLASS,
+                      row.tone === "danger" ? "text-destructive" : WARNING_TEXT
+                    )}
+                  />
+                  <div className="flex min-w-0 flex-1 flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+                    <Link
+                      className="min-w-0 break-words font-medium underline underline-offset-4"
+                      href={row.href}
+                    >
+                      {row.name}
+                    </Link>
+                    <span
+                      className={cn(
+                        "text-xs",
+                        row.tone === "danger"
+                          ? "text-destructive"
+                          : WARNING_TEXT
+                      )}
+                    >
+                      {row.detail}
+                    </span>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
+
+      {!problems && (
+        <Headline title="All healthy" tone="ok">
+          No workflow is failing and every method works.
+        </Headline>
+      )}
+
+      <p className="text-muted-foreground text-xs">
+        {reachLine ? `${reachLine} ` : ""}
+        {data.lastAlertDeliveredAt
+          ? `Last alert delivered ${timeAgo(data.lastAlertDeliveredAt)}.`
+          : "No alert sent yet. Use Test on a method to see one arrive."}
+      </p>
     </div>
   );
 }

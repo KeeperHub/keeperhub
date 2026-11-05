@@ -22,7 +22,7 @@ import {
   type ChannelView,
   type OrgSettingsView,
 } from "@/lib/notifications/failure-alerts/view-types";
-import { AlertsStatus, statusCardClass } from "./alerts-status";
+import { AlertsHealth, statusCardClass } from "./alerts-status";
 import { fetchView, ViewError } from "./api";
 import { AddMethodButton } from "./channel-list-editor";
 import { CustomWorkflowsList } from "./custom-workflows";
@@ -43,7 +43,7 @@ import {
   newMethodDraft,
 } from "./method-drafts";
 import { NotificationHistory } from "./notification-history";
-import { PauseAlertsForm } from "./pause-alerts";
+import { AlertsStateBody, AlertsSwitch, PauseAlertsForm } from "./pause-alerts";
 import { SaveBar } from "./save-bar";
 import type { SaveRefusal } from "./save-state";
 import { UnsavedChangesGuard } from "./unsaved-guard";
@@ -155,6 +155,8 @@ export function OrgFailureAlertsSection({
   const [recipients, setRecipients] = useState<string[]>([]);
   const [cards, setCards] = useState<DraftChannel[]>([]);
   const [pausing, setPausing] = useState(false);
+  const [resuming, setResuming] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<SaveRefusal | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -380,6 +382,15 @@ export function OrgFailureAlertsSection({
     return null;
   };
 
+  /** The switch turned on: resume now, saying so if it could not. */
+  const runResume = (): void => {
+    setResuming(true);
+    setResumeError(null);
+    resumeAlerts()
+      .then((error) => setResumeError(error))
+      .finally(() => setResuming(false));
+  };
+
   const resumeAlerts = async (): Promise<string | null> => {
     const result = await send("DELETE", "/pause", null);
     if (!result.ok) {
@@ -501,24 +512,48 @@ export function OrgFailureAlertsSection({
         title="Alerts"
         wide
       />
-      <SettingsCard className={statusCardClass(data)} title="Status">
-        <AlertsStatus
+      <SettingsCard
+        action={
+          <AlertsSwitch
+            busy={resuming || pausing}
+            canManage={canManage}
+            onPause={() => setPausing(true)}
+            onResume={runResume}
+            paused={Boolean(pause)}
+          />
+        }
+        className={statusCardClass(data)}
+        title="Status"
+      >
+        <div className="space-y-4">
+          <AlertsStateBody
+            canManage={canManage}
+            error={resumeError}
+            onExtend={() => setPausing(true)}
+            pause={pause}
+            pausingWorkflows={
+              data.customWorkflows.filter((w) => w.pauseWorkflow).length
+            }
+          />
+          {pausing && (
+            <PauseAlertsForm
+              onCancel={() => setPausing(false)}
+              onPause={pauseAlerts}
+              pausingWorkflows={
+                data.customWorkflows.filter((w) => w.pauseWorkflow).length
+              }
+            />
+          )}
+        </div>
+      </SettingsCard>
+
+      <SettingsCard
+        description="Workflows that are failing or need attention, and anything stopping alerts from reaching people."
+        title="Health"
+      >
+        <AlertsHealth
           canManage={canManage}
           data={data}
-          onPauseOpen={() => setPausing(true)}
-          onResume={resumeAlerts}
-          pauseForm={
-            pausing && !pause ? (
-              <PauseAlertsForm
-                onCancel={() => setPausing(false)}
-                onPause={pauseAlerts}
-                pausingWorkflows={
-                  data.customWorkflows.filter((w) => w.pauseWorkflow).length
-                }
-              />
-            ) : null
-          }
-          pausing={pausing}
           viewerUserId={session?.user?.id}
         />
       </SettingsCard>

@@ -258,14 +258,22 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
           {
             title: "Status",
             tags: [
+              "alerts on",
+              "is it working",
+              "pause alerts",
+              "resume alerts",
+              "maintenance",
+            ],
+          },
+          {
+            title: "Health",
+            tags: [
               "failing now",
               "failing workflows",
-              "is it working",
-              "last check",
+              "needs attention",
               "last alert",
               "nobody reachable",
-              "pause alerts",
-              "maintenance",
+              "broken method",
               "email limit",
             ],
           },

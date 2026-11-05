@@ -1,11 +1,12 @@
 "use client";
 
-import { Loader2, Pause as PauseIcon, Play } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Notice, WARNING_TEXT } from "@/components/ui/notice";
+import { Notice } from "@/components/ui/notice";
+import { Switch } from "@/components/ui/switch";
 import {
   type OrgSettingsView,
   orgPauseEffect,
@@ -29,125 +30,139 @@ const CHOICES = [
 
 type Choice = (typeof CHOICES)[number]["value"];
 
-/** The state at the top of Status: On, Paused or Off, with the pause control beside it. */
-export function AlertsStatusBar({
-  enabled,
-  pause,
-  pausingWorkflows,
+const PAUSED_TEXT = "text-yellow-600 dark:text-yellow-400";
+const MINUTE_MS = 60 * 1000;
+
+/** "in 42 minutes", "in 5 hours", "in 2 days". */
+function timeLeft(ms: number): string {
+  if (ms < HOUR_MS) {
+    const minutes = Math.max(1, Math.ceil(ms / MINUTE_MS));
+    return `in ${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  if (ms < 48 * HOUR_MS) {
+    const hours = Math.round(ms / HOUR_MS);
+    return `in ${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  return `in ${Math.round(ms / (24 * HOUR_MS))} days`;
+}
+
+/**
+ * On or Paused, and the switch: turning it off opens the pause form (it stays
+ * on until the pause is confirmed); turning it on resumes at once.
+ */
+export function AlertsSwitch({
+  paused,
   canManage,
-  pausing,
-  onPauseOpen,
+  busy,
+  onPause,
   onResume,
 }: {
-  /** Alerts are switched on for the org (the rollout). */
-  enabled: boolean;
-  pause: AlertsPause | null;
-  /** Workflows set to turn off at their limit. */
-  pausingWorkflows: number;
+  paused: boolean;
   canManage: boolean;
-  /** The pause form is open, so its button steps aside. */
-  pausing: boolean;
-  onPauseOpen: () => void;
-  onResume: () => Promise<string | null>;
+  /** A pause or resume is saving, or the pause form is open. */
+  busy: boolean;
+  onPause: () => void;
+  onResume: () => void;
 }): React.ReactElement {
-  const [resuming, setResuming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const resume = async (): Promise<void> => {
-    setResuming(true);
-    setError(null);
-    setError(await onResume());
-    setResuming(false);
-  };
-
-  let mode: "on" | "paused" | "off" = "on";
-  if (!enabled) {
-    mode = "off";
-  } else if (pause) {
-    mode = "paused";
-  }
-
   return (
-    <div
-      className="space-y-2"
-      data-mode={mode}
-      data-testid={mode === "paused" ? "failure-alerts-paused" : undefined}
-    >
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-        <span
-          className={cn(
-            "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 font-semibold text-sm",
-            STATUS_PILL[mode]
-          )}
-          data-testid="failure-alerts-state"
-        >
-          <span
-            aria-hidden="true"
-            className={cn("size-2 rounded-full", STATUS_DOT[mode])}
-          />
-          {STATUS_LABEL[mode]}
-        </span>
-        <p className="min-w-0 flex-1 basis-64 text-sm">
-          {mode === "on" &&
-            "Failing workflows are reported by the rules and methods below."}
-          {mode === "off" &&
-            "Alerts are not switched on for this organization yet."}
-          {mode === "paused" && pause && (
-            <>
-              Until {formatWhen(pause.until)}
-              {pause.by ? ` by ${pause.by}` : ""}
-              {pause.reason ? `: ${pause.reason}` : ""}.{" "}
-              <span className="text-muted-foreground">
-                {orgPauseEffect(pausingWorkflows)}
-              </span>
-            </>
-          )}
-        </p>
-        {canManage && mode === "on" && !pausing && (
-          <Button
-            data-testid="failure-alerts-pause"
-            onClick={onPauseOpen}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            <PauseIcon className="size-3.5" />
-            Pause alerts
-          </Button>
+    <div className="flex items-center gap-3">
+      <span
+        className={cn(
+          "font-semibold text-sm",
+          paused ? PAUSED_TEXT : "text-keeperhub-green-dark"
         )}
-        {canManage && mode === "paused" && (
-          <Button
-            data-testid="failure-alerts-resume"
-            disabled={resuming}
-            onClick={resume}
-            size="sm"
-            type="button"
-          >
-            {resuming ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Play className="size-3.5" />
-            )}
-            Resume now
-          </Button>
-        )}
-      </div>
-      {error && <p className="text-destructive text-xs">{error}</p>}
+        data-testid="failure-alerts-state"
+      >
+        {paused ? "Paused" : "On"}
+      </span>
+      <Switch
+        aria-label={
+          paused ? "Alerts paused. Turn on to resume now" : "Alerts on"
+        }
+        checked={!paused}
+        data-testid="failure-alerts-switch"
+        disabled={!canManage || busy}
+        onCheckedChange={(on) => (on ? onResume() : onPause())}
+      />
     </div>
   );
 }
 
-const STATUS_LABEL = { on: "On", paused: "Paused", off: "Off" } as const;
-const STATUS_PILL = {
-  on: "border-keeperhub-green/40 bg-keeperhub-green/10 text-keeperhub-green-dark",
-  paused: WARNING_TEXT.concat(" bg-yellow-500/10"),
-  off: "border-border bg-muted text-muted-foreground",
-} as const;
-const STATUS_DOT = {
-  on: "bg-keeperhub-green-dark",
-  paused: "bg-yellow-500",
-  off: "bg-muted-foreground",
-} as const;
+/** Under the switch: what On means, or the pause's end, who and why. */
+export function AlertsStateBody({
+  pause,
+  pausingWorkflows,
+  canManage,
+  onExtend,
+  error,
+  now = Date.now(),
+}: {
+  pause: AlertsPause | null;
+  /** Workflows set to turn off at their limit. */
+  pausingWorkflows: number;
+  canManage: boolean;
+  onExtend: () => void;
+  error: string | null;
+  now?: number;
+}): React.ReactElement {
+  const errorLine = error && (
+    <p className="text-destructive text-xs" role="alert">
+      {error}
+    </p>
+  );
+  if (!pause) {
+    return (
+      <div className="space-y-1">
+        <p className="text-sm">
+          Failing workflows are reported by the rules and methods below.
+        </p>
+        {!canManage && (
+          <p className="text-muted-foreground text-xs">
+            Only owners and admins can pause alerts.
+          </p>
+        )}
+        {errorLine}
+      </div>
+    );
+  }
+  const left = new Date(pause.until).getTime() - now;
+  const at = new Date(pause.until).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return (
+    <div className="space-y-1.5" data-testid="failure-alerts-paused">
+      <p className={cn("font-semibold text-sm", PAUSED_TEXT)}>
+        {left < HOUR_MS
+          ? `Resumes ${timeLeft(left)} (${at})`
+          : `Resumes ${formatWhen(pause.until)} (${timeLeft(left)})`}
+      </p>
+      <p className="text-sm">
+        {pause.by ? `Paused by ${pause.by}` : "Paused"}
+        {pause.reason ? `: ${pause.reason}` : ""}.{" "}
+        <span className="text-muted-foreground">
+          {orgPauseEffect(pausingWorkflows)}
+        </span>
+      </p>
+      {canManage ? (
+        <Button
+          className="h-auto px-0 text-xs"
+          data-testid="failure-alerts-extend"
+          onClick={onExtend}
+          type="button"
+          variant="link"
+        >
+          Extend or change the pause
+        </Button>
+      ) : (
+        <p className="text-muted-foreground text-xs">
+          Only owners and admins can resume alerts.
+        </p>
+      )}
+      {errorLine}
+    </div>
+  );
+}
 
 /** How long and why, then Pause or Cancel. */
 export function PauseAlertsForm({

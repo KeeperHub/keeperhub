@@ -177,12 +177,16 @@ test.describe("Failure alerts", () => {
     await expect(methodCards(page)).toHaveCount(2);
   });
 
-  test("pausing alerts shows the notice and top banner until Resume now", async ({
+  test("the Status switch pauses through the form and resumes at once", async ({
     page,
   }) => {
     await openAlerts(page);
-    await page.getByTestId("failure-alerts-pause").click();
+    // Turning the switch off opens the pause form; it stays on until confirmed.
+    const toggle = page.getByTestId("failure-alerts-switch");
+    await expect(toggle).toHaveAttribute("data-state", "checked");
+    await toggle.click();
     const form = page.getByTestId("failure-alerts-pause-form");
+    await expect(toggle).toHaveAttribute("data-state", "checked");
     await expect(form).toBeVisible();
     await form.getByLabel("Reason (optional)").fill("E2E maintenance");
     await form.getByTestId("failure-alerts-pause-submit").click();
@@ -200,7 +204,9 @@ test.describe("Failure alerts", () => {
     await openAlerts(page);
     await expect(paused).toBeVisible();
     await expect(banner).toBeVisible(SAVE_TIMEOUT);
-    await paused.getByTestId("failure-alerts-resume").click();
+    await expect(toggle).toHaveAttribute("data-state", "unchecked");
+    // Turning it back on resumes at once.
+    await toggle.click();
     await expect(paused).toHaveCount(0, SAVE_TIMEOUT);
     await expect(banner).toHaveCount(0, SAVE_TIMEOUT);
     await expect
