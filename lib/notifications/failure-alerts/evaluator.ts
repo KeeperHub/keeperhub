@@ -30,6 +30,7 @@ import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import { workflowExecutableConditions } from "@/lib/workflow/executable";
+import { WorkflowTriggerEnum } from "@/lib/workflow/store";
 import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
 import {
   ALERT_REQUEUE_AFTER_MS,
@@ -44,6 +45,7 @@ import {
   OUT_OF_FUNDS_THRESHOLD,
   PAGERDUTY_IN_FLIGHT_MS,
   RECOVERY_HOLD_MS,
+  REFUSED_RUNS_THRESHOLD,
   REMINDER_INTERVAL_MS,
 } from "./constants";
 import { missedDueAt, ranRecentlyCutoff } from "./missed-runs";
@@ -77,7 +79,13 @@ import { isFailureAlertsEnabledForOrg, splitByRollout } from "./rollout";
 import { lockOrgSettings } from "./settings";
 import { SKIP_REASON } from "./stored-reasons";
 import { decide, summarizeStreak } from "./streak";
-import { loadStreakRuns, REFUSED_RUN_SQL } from "./streak-runs";
+import {
+  AUTOMATED_RUN_SQL,
+  loadRefusalStreak,
+  loadStreakRuns,
+  REFUSED_RUN_SQL,
+  type RefusedRun,
+} from "./streak-runs";
 import {
   AUTOMATIC_TRIGGERS,
   runsOnItsOwn,
@@ -87,9 +95,6 @@ import {
 const MIN_STREAK_WINDOW = 10;
 const STREAK_WINDOW_MULTIPLIER = 4;
 const LEASE = sql`now() + interval '5 minutes'`;
-/** isAutomatedRun in SQL: a person's run never says a schedule is working. */
-const AUTOMATED_RUN_SQL = sql`(${workflowExecutions.triggerSource} IS DISTINCT FROM 'manual'
-  OR ${workflowExecutions.triggeredByCredentialType} <> 'session')`;
 /** A run that counts as the workflow running: automated, not deleted, not refused before it started. */
 const COUNTED_RUN_SQL = sql`(${AUTOMATED_RUN_SQL}
   AND ${workflowExecutions.deletedAt} IS NULL
@@ -315,12 +320,14 @@ export function inactiveResolution(
   return null;
 }
 
-/** Reopen the incident a recent success closed, unless its recovery already went out. */
+/** Reopen the incident a recent success (or, for refused runs, accepted run) closed, unless its recovery went out. */
 async function reopenRecovered(
   workflowId: string,
   failedAt: Date,
-  now: Date
+  now: Date,
+  refused = false
 ): Promise<IncidentRow | null> {
+  const closedBy: FailureIncidentResolution = refused ? "ran" : "success";
   const [last] = await db
     .select()
     .from(workflowFailureIncidents)
@@ -334,7 +341,8 @@ async function reopenRecovered(
     .limit(1);
   if (
     !last?.resolvedAt ||
-    last.resolvedReason !== "success" ||
+    last.resolvedReason !== closedBy ||
+    (last.openedBy === "refused") !== refused ||
     failedAt.getTime() >= last.resolvedAt.getTime() + RECOVERY_HOLD_MS
   ) {
     return null;
@@ -384,7 +392,7 @@ async function reopenRecovered(
       )
       .returning();
     if (row) {
-      await reviveWithdrawn(tx, row, now);
+      await reviveWithdrawn(tx, row, now, closedBy);
     }
     return row ?? null;
   });
@@ -394,7 +402,8 @@ async function reopenRecovered(
 async function reviveWithdrawn(
   tx: Tx,
   incident: IncidentRow,
-  now: Date
+  now: Date,
+  closedBy: "success" | "ran"
 ): Promise<void> {
   const [settings] = await tx
     .select({ pausedUntil: orgFailureAlertSettings.pausedUntil })
@@ -415,7 +424,7 @@ async function reviveWithdrawn(
         inArray(failureAlertDeliveries.kind, ["alert", "reminder"]),
         eq(failureAlertDeliveries.isBackup, false),
         eq(failureAlertDeliveries.state, "skipped"),
-        eq(failureAlertDeliveries.lastError, SKIPPED_BECAUSE.success)
+        eq(failureAlertDeliveries.lastError, SKIP_REASON[closedBy])
       )
     );
   for (const row of withdrawn) {
@@ -446,7 +455,7 @@ async function reviveWithdrawn(
         eq(failureAlertDeliveries.incidentId, incident.id),
         eq(failureAlertDeliveries.isBackup, true),
         eq(failureAlertDeliveries.state, "skipped"),
-        eq(failureAlertDeliveries.lastError, SKIPPED_BECAUSE.success),
+        eq(failureAlertDeliveries.lastError, SKIP_REASON[closedBy]),
         sql`${failureAlertDeliveries.dedupKey} NOT LIKE '%|withdrawn:%'`
       )
     )
@@ -479,8 +488,6 @@ async function reviveWithdrawn(
       );
   }
 }
-
-const SKIPPED_BECAUSE: Record<FailureIncidentResolution, string> = SKIP_REASON;
 
 /** The newest automated run started after `since`, however it ended (or still running). */
 async function latestRunSince(
@@ -566,7 +573,7 @@ async function closeIncident(params: {
       .update(failureAlertDeliveries)
       .set({
         state: "skipped",
-        lastError: SKIPPED_BECAUSE[reason],
+        lastError: SKIP_REASON[reason],
         updatedAt: now,
       })
       .where(
@@ -592,9 +599,11 @@ async function closeIncident(params: {
           eq(failureAlertDeliveries.kind, "recovery")
         )
       );
-    // A success is announced (and the page resolved) only after the hold; a failure in it reopens.
-    const sendAt =
-      reason === "success" ? new Date(now.getTime() + RECOVERY_HOLD_MS) : now;
+    // A success (or a refused incident's accepted run) is announced only after the hold; a failure (refusal) in it reopens.
+    const held =
+      reason === "success" ||
+      (reason === "ran" && incident.openedBy === "refused");
+    const sendAt = held ? new Date(now.getTime() + RECOVERY_HOLD_MS) : now;
     for (const row of prior) {
       const pagerDuty = row.channel === "pagerduty";
       // Delay the resolve so it lands after a page still in flight.
@@ -654,6 +663,132 @@ function cycleState(stats: EvaluationStats): {
     cycles.set(stats, state);
   }
   return state;
+}
+
+/** What a recovery says about the run that ended a not-running incident. */
+function ranContext(run: {
+  startedAt: Date;
+  status: string;
+  errorType: string | null;
+}): Record<string, unknown> {
+  return {
+    ranAt: run.startedAt.toISOString(),
+    // A KeeperHub-side error is ours: the customer hears it started again.
+    ...(run.status === "error" && run.errorType !== ExecutionErrorType.SYSTEM
+      ? { ranButFailed: true }
+      : {}),
+  };
+}
+
+/** An open refused incident ends with an accepted run (true: evaluate again); else it takes the newest refusal. */
+async function followRefused(
+  incident: IncidentRow,
+  notifyRecovery: boolean,
+  now: Date,
+  stats: EvaluationStats
+): Promise<boolean> {
+  const accepted = await latestRunSince(
+    incident.workflowId,
+    incident.lastFailedAt
+  );
+  if (accepted) {
+    await closeIncident({
+      incident,
+      reason: "ran",
+      resolvingExecutionId: accepted.id,
+      notifyRecovery,
+      now,
+      stats,
+      recoveryContext: ranContext(accepted),
+    });
+    return true;
+  }
+  const [newest] =
+    (await loadRefusalStreak(incident.workflowId, 1, null)) ?? [];
+  if (newest && newest.startedAt > incident.lastFailedAt) {
+    await db
+      .update(workflowFailureIncidents)
+      .set(refusalFields(newest))
+      .where(eq(workflowFailureIncidents.id, incident.id));
+  }
+  return false;
+}
+
+/** The newest refusal, as a refused incident stores it (isRefusedIncident). */
+function refusalFields(newest: RefusedRun): {
+  lastFailedAt: Date;
+  lastFailedExecutionId: string;
+  lastError: string;
+} {
+  return {
+    lastFailedAt: newest.startedAt,
+    lastFailedExecutionId: newest.id,
+    lastError: newest.error ?? "",
+  };
+}
+
+/** Its newest attempts were all refused: a "refused" incident, held by pause and mute; it never turns the workflow off. */
+async function openIfRefused(
+  workflow: WorkflowRow,
+  policy: EffectivePolicy,
+  now: Date,
+  opened: OpenedIncident[],
+  stats: EvaluationStats
+): Promise<Date | null> {
+  const refusals = await loadRefusalStreak(
+    workflow.id,
+    REFUSED_RUNS_THRESHOLD,
+    policy.countingSince
+  );
+  const newest = refusals?.[0];
+  const first = refusals?.at(-1);
+  if (!(newest && first)) {
+    return null;
+  }
+  const orgPause = activePause(policy.orgPausedUntil, now);
+  if (orgPause) {
+    return orgPause;
+  }
+  if (isMuted(policy, now)) {
+    return policy.mutedUntil;
+  }
+  // Refused again inside the recovery hold: the incident it closed continues.
+  const reopened = await reopenRecovered(
+    workflow.id,
+    first.startedAt,
+    now,
+    true
+  );
+  if (reopened) {
+    await db
+      .update(workflowFailureIncidents)
+      .set(refusalFields(newest))
+      .where(eq(workflowFailureIncidents.id, reopened.id));
+    return null;
+  }
+  const [row] = await db
+    .insert(workflowFailureIncidents)
+    .values({
+      organizationId: workflow.organizationId,
+      workflowId: workflow.id,
+      openedBy: "refused",
+      threshold: policy.threshold,
+      failureCount: 0,
+      firstFailedAt: first.startedAt,
+      ...refusalFields(newest),
+      lastNotifiedAt: now,
+    })
+    .onConflictDoNothing()
+    .returning({ id: workflowFailureIncidents.id });
+  if (row) {
+    stats.incidentsOpened += 1;
+    opened.push({
+      id: row.id,
+      organizationId: workflow.organizationId,
+      workflowId: workflow.id,
+    });
+  }
+  return null;
 }
 
 /** Evaluate one workflow; returns when to recheck without a new run, or null. */
@@ -730,16 +865,18 @@ async function evaluateWorkflow(
         notifyRecovery: policy.notifyRecovery,
         now,
         stats,
-        recoveryContext: {
-          ranAt: ranAgain.startedAt.toISOString(),
-          // A KeeperHub-side error is ours: the customer hears it started again.
-          ...(ranAgain.status === "error" &&
-          ranAgain.errorType !== ExecutionErrorType.SYSTEM
-            ? { ranButFailed: true }
-            : {}),
-        },
+        recoveryContext: ranContext(ranAgain),
       });
       // Now closed: the run that ended it may itself start a failing streak.
+      return await evaluateWorkflow(workflowId, now, opened, stats);
+    }
+    return null;
+  }
+
+  if (open?.openedBy === "refused") {
+    if (
+      await followRefused(open, policy.notifyRecovery && !orgPause, now, stats)
+    ) {
       return await evaluateWorkflow(workflowId, now, opened, stats);
     }
     return null;
@@ -804,8 +941,17 @@ async function evaluateWorkflow(
     now,
   });
 
+  // Refused runs, where the missed-run scan does not look: not on a schedule.
+  const refusedRecheck =
+    open ||
+    decision.kind === "open" ||
+    workflowTriggerType(workflow.nodes) === WorkflowTriggerEnum.SCHEDULE
+      ? null
+      : await openIfRefused(workflow, policy, now, opened, stats);
   if (decision.kind === "recheck") {
-    return decision.at;
+    return refusedRecheck && refusedRecheck < decision.at
+      ? refusedRecheck
+      : decision.at;
   }
   if (decision.kind === "resolve" && open) {
     await closeIncident({
@@ -819,7 +965,7 @@ async function evaluateWorkflow(
     return null;
   }
   if (decision.kind !== "open") {
-    return null;
+    return refusedRecheck;
   }
   // Only the count and out-of-funds rules turn a workflow off; the time rule only tells.
   const pauses = policy.pauseWorkflow && decision.by !== "time";
@@ -1408,21 +1554,69 @@ async function latestRefusals(
   return new Map(rows.map((row) => [row.workflowId, row]));
 }
 
-/** Refused at or after the run it missed (and after its last real run): not running, but not our scheduler. */
+/** Refused recently, at or after the run it missed and after its last real run: not our scheduler. */
 function refusalFor(
   refusals: Map<string, Refusal>,
   row: { workflowId: string; lastStartedAt: Date | null },
-  dueAt: Date
+  dueAt: Date,
+  now: Date
 ): Refusal | null {
   const refusal = refusals.get(row.workflowId);
   if (
     !refusal ||
     refusal.startedAt.getTime() < dueAt.getTime() - REFUSAL_BUCKET_MS ||
+    refusal.startedAt.getTime() < now.getTime() - REFUSAL_BUCKET_MS ||
     (row.lastStartedAt && refusal.startedAt <= row.lastStartedAt)
   ) {
     return null;
   }
   return refusal;
+}
+
+/** Open "not running" incidents take the newest refusal as their reason (a plain one becomes refused). */
+async function refreshMissedRefusals(now: Date): Promise<void> {
+  const open = await db
+    .select({
+      id: workflowFailureIncidents.id,
+      workflowId: workflowFailureIncidents.workflowId,
+      firstFailedAt: workflowFailureIncidents.firstFailedAt,
+      lastFailedExecutionId: workflowFailureIncidents.lastFailedExecutionId,
+    })
+    .from(workflowFailureIncidents)
+    .where(
+      and(
+        isNull(workflowFailureIncidents.resolvedAt),
+        eq(workflowFailureIncidents.openedBy, "missed")
+      )
+    )
+    .limit(MISSED_SCAN_LIMIT);
+  const refusals = await latestRefusals(
+    open.map((row) => row.workflowId),
+    new Date(now.getTime() - REFUSAL_BUCKET_MS)
+  );
+  for (const incident of open) {
+    const refusal = refusalFor(
+      refusals,
+      { workflowId: incident.workflowId, lastStartedAt: null },
+      incident.firstFailedAt,
+      now
+    );
+    if (!refusal || refusal.id === incident.lastFailedExecutionId) {
+      continue;
+    }
+    await db
+      .update(workflowFailureIncidents)
+      .set({
+        lastFailedExecutionId: refusal.id,
+        lastError: refusal.error ?? "",
+      })
+      .where(
+        and(
+          eq(workflowFailureIncidents.id, incident.id),
+          isNull(workflowFailureIncidents.resolvedAt)
+        )
+      );
+  }
 }
 
 /** Schedules past due plus grace with no run since; many at once pages our team. */
@@ -1498,7 +1692,7 @@ export async function checkMissedSchedules(
   );
   // Refused runs (a plan limit, unpaid) are not a scheduler outage.
   const lateAnywhere = dueAnywhere.filter(
-    (row) => !refusalFor(refusals, row, row.dueAt)
+    (row) => !refusalFor(refusals, row, row.dueAt, now)
   );
   stats.schedulesLate += lateAnywhere.length;
   const platformWide =
@@ -1541,7 +1735,11 @@ export async function checkMissedSchedules(
       now,
     });
     if (dueAt) {
-      late.push({ ...row, dueAt, refusal: refusalFor(refusals, row, dueAt) });
+      late.push({
+        ...row,
+        dueAt,
+        refusal: refusalFor(refusals, row, dueAt, now),
+      });
     }
   }
 
@@ -1608,6 +1806,7 @@ export async function checkMissedSchedules(
     }
   }
   await queueAlerts(opened, now, stats);
+  await refreshMissedRefusals(now);
 }
 
 /** Drain the queue in batches until it is empty or the budget runs out, then queue the alerts. */

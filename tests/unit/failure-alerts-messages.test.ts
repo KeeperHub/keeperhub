@@ -810,7 +810,7 @@ describe("runs refused before they start", () => {
     refused: { reason },
   };
   const SENTENCE =
-    "Keeper is not running: its scheduled runs are being refused before they start: Execution skipped: your plan's monthly execution limit has been reached.";
+    "Keeper is not running: its scheduled runs are being refused before they start: your plan's monthly execution limit has been reached.";
   const NOT_OURS = /scheduling problem|reported to our team|by hand/i;
 
   it.each(["alert", "reminder"] as const)(
@@ -828,9 +828,7 @@ describe("runs refused before they start", () => {
         now
       );
       for (const text of [message.text, message.chat, message.html]) {
-        expect(text).toContain(
-          "being refused before they start: Execution skipped: your plan"
-        );
+        expect(text).toContain("being refused before they start: your plan");
         expect(text).not.toMatch(NOT_OURS);
       }
       expect(message.text).toContain("https://app.test/settings/org-1/plans");
@@ -856,10 +854,72 @@ describe("runs refused before they start", () => {
       now
     );
     expect(message.text).toContain(
-      "Open the workflow to see why it cannot run"
+      "before they start: workflow is not executable (the workflow is deactivated)."
     );
+    expect(message.text).toContain(
+      "Open the workflow to see why it cannot run."
+    );
+    // Deactivated by our team: it will not come back on its own.
+    expect(message.text).not.toContain("runs on its own again");
     expect(message.text).not.toContain("/plans");
     expect(message.text).not.toMatch(NOT_OURS);
+  });
+
+  it("names the executor's not-runnable codes in plain words", () => {
+    const owner = renderMessage(
+      {
+        ...org,
+        kind: "alert",
+        workflow,
+        incident: {
+          ...incident,
+          refused: {
+            reason:
+              "Execution skipped: workflow is not executable (anonymous_owner).",
+            notRunnable: true,
+          },
+        },
+      },
+      now
+    );
+    expect(owner.summary).toContain("(the owner has no account)");
+    expect(owner.summary).not.toContain("Execution skipped");
+    expect(owner.text).toContain("you will be told when it runs on its own");
+  });
+
+  it("asks to upgrade, raise the limit or settle billing, and a refused reminder still needs action", () => {
+    const message = renderMessage(
+      { ...org, kind: "reminder", workflow, incident, reminderNumber: 2 },
+      now
+    );
+    expect(message.text).toContain(
+      "Upgrade the plan, raise its run limit or settle billing under Plans"
+    );
+    expect(message.subject).toContain("Action needed");
+    expect(message.subject).not.toContain("Still failing");
+  });
+
+  it("a grouped alert of only workflows that cannot run says to open them, not Plans", () => {
+    const message = renderMessage({
+      ...org,
+      kind: "grouped",
+      workflows: [1, 2].map((i) => ({
+        ...workflow,
+        id: `wf-${i}`,
+        name: `Keeper ${i}`,
+        failureCount: 0,
+        lastError: null,
+        openedBy: "missed" as const,
+        refused: {
+          reason: "Execution skipped: workflow is not executable (disabled).",
+          notRunnable: true,
+        },
+      })),
+    });
+    expect(message.text).toContain(
+      "Open the workflow to see why it cannot run."
+    );
+    expect(message.text).not.toMatch(/plan or billing|\/plans/);
   });
 
   it("a grouped alert lists refused workflows as not running, with the reason and Plans", () => {
@@ -881,13 +941,128 @@ describe("runs refused before they start", () => {
     );
     for (const text of [message.text, message.chat]) {
       expect(text).toContain(
-        "Keeper 1 is not running: its scheduled runs are being refused before they start: Execution skipped"
+        "Keeper 1 is not running: its scheduled runs are being refused before they start: your plan's"
       );
       expect(text).not.toContain("failed runs in a row");
       expect(text).not.toMatch(NOT_OURS);
     }
     expect(message.text).toContain(
       "Open Plans: https://app.test/settings/org-1/plans"
+    );
+    expect(message.text).toContain(
+      "point to the plan or billing: Upgrade the plan, raise its run limit or settle billing under Plans."
+    );
+  });
+});
+
+describe("refused runs on a workflow not on a schedule", () => {
+  const reason = "Insufficient credit balance to pay for this execution.";
+  const hook = { id: "wf-9", name: "Hook", triggerLabel: "Webhook" };
+  const incident = {
+    failureCount: 0,
+    firstFailedAt: new Date(now.getTime() - 40 * 60 * 1000),
+    lastError: reason,
+    openedBy: "refused" as const,
+    refused: { reason },
+  };
+
+  it.each(["alert", "reminder"] as const)(
+    "a %s says its runs are refused, links Plans and never says scheduled or out of funds",
+    (kind) => {
+      const message = renderMessage(
+        { ...org, kind, workflow: hook, incident, reminderNumber: 2 },
+        now
+      );
+      for (const text of [message.text, message.chat, message.html]) {
+        expect(text).toContain(
+          "Its runs are being refused before they start: Insufficient credit balance"
+        );
+        expect(text).not.toMatch(/scheduled|Due at|wallet out of funds/i);
+      }
+      expect(message.text).toContain("Refused since");
+      expect(message.text).toContain("https://app.test/settings/org-1/plans");
+      expect(message.summary).toBe(
+        "[KeeperHub] Acme: Hook is not running: its runs are being refused before they start: Insufficient credit balance to pay for this execution."
+      );
+      expect(message.subject).toContain("Action needed");
+    }
+  );
+
+  it("falls back to the stored error when no refusal was looked up", () => {
+    const message = renderMessage(
+      {
+        ...org,
+        kind: "alert",
+        workflow: hook,
+        incident: { ...incident, refused: undefined },
+      },
+      now
+    );
+    expect(message.text).toContain(
+      "Its runs are being refused before they start: Insufficient credit balance"
+    );
+  });
+
+  it("a grouped alert lists it as not running with the refused note, not as out of funds", () => {
+    const message = renderMessage({
+      ...org,
+      kind: "grouped",
+      workflows: [1, 2, 3].map((i) => ({
+        ...hook,
+        id: `wf-${i}`,
+        name: `Hook ${i}`,
+        failureCount: 0,
+        lastError: reason,
+        openedBy: "refused" as const,
+        refused: { reason },
+      })),
+    });
+    expect(message.subject).toBe(
+      "[Acme] Action needed: 3 workflows are not running"
+    );
+    for (const text of [message.text, message.chat]) {
+      expect(text).toContain(
+        "Hook 1 is not running: its runs are being refused before they start: Insufficient credit balance"
+      );
+      expect(text).not.toMatch(/scheduled|wallet out of funds|Add funds/i);
+    }
+    expect(message.text).toContain(
+      "Open Plans: https://app.test/settings/org-1/plans"
+    );
+  });
+
+  it("the recovery says its runs are being accepted again", () => {
+    const resolvedAt = new Date(now.getTime() - 30 * 60 * 1000);
+    const ranAt = new Date(now.getTime() - 31 * 60 * 1000);
+    const ok = renderMessage(
+      {
+        ...org,
+        kind: "recovery",
+        workflow: hook,
+        incident,
+        resolvedAt,
+        ranAt,
+      },
+      now
+    );
+    expect(ok.subject).toBe("[Acme] Resolved: Hook is running again");
+    expect(ok.text).toContain(
+      "Its runs are being accepted again after 9 minutes of refusals."
+    );
+    const failed = renderMessage(
+      {
+        ...org,
+        kind: "recovery",
+        workflow: hook,
+        incident,
+        resolvedAt,
+        ranAt,
+        ranButFailed: true,
+      },
+      now
+    );
+    expect(failed.text).toContain(
+      "Its runs are being accepted again after 9 minutes of refusals, but the first one failed."
     );
   });
 });

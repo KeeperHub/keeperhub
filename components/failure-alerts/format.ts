@@ -1,7 +1,9 @@
 import {
   DELIVERY_STATE_LABEL,
   type HistoryEntry,
+  isNotRunning,
   methodText,
+  refusedLead,
   type WorkflowAlertView,
   wasDropped,
 } from "@/lib/notifications/failure-alerts/view-types";
@@ -14,23 +16,24 @@ export function failedRuns(count: number): string {
 /** A not-running incident: refused runs (a plan limit, unpaid) say so; else when it was due. */
 export function notRunningText(
   dueAt: string,
-  refusedReason: string | null
+  refused: boolean,
+  openedBy?: string
 ): string {
-  return refusedReason === null
-    ? `Did not run at ${formatWhen(dueAt)}`
-    : "Not running: its scheduled runs are being refused before they start";
+  return refused
+    ? `Not running: ${refusedLead(openedBy)}`
+    : `Did not run at ${formatWhen(dueAt)}`;
 }
 
 /** The workflow panel's incident heading. */
 export function incidentTitle(
   incident: Pick<
     NonNullable<WorkflowAlertView["status"]["incident"]>,
-    "openedBy" | "since" | "failureCount" | "refusedReason"
+    "openedBy" | "since" | "failureCount" | "refused"
   >,
   pausedByAlert: boolean
 ): string {
-  if (incident.openedBy === "missed") {
-    return notRunningText(incident.since, incident.refusedReason);
+  if (isNotRunning(incident.openedBy)) {
+    return notRunningText(incident.since, incident.refused, incident.openedBy);
   }
   const runs = `${failedRuns(incident.failureCount)} in a row`;
   if (incident.openedBy === "funding") {

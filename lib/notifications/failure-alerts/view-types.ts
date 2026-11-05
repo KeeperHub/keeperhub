@@ -3,6 +3,7 @@ import type {
   FailureAlertChannelKind,
   FailureAlertChannelRole,
   FailureAlertMessageKind,
+  FailureIncidentTrigger,
 } from "@/lib/db/schema-failure-alerts";
 import { SKIP_REASON } from "./stored-reasons";
 
@@ -78,10 +79,12 @@ export type OrgSettingsView = {
     name: string;
     failureCount: number;
     openedAt: string;
-    /** "missed": a scheduled run did not start; dueAt is when it was due. */
-    openedBy: "count" | "time" | "missed" | "funding";
+    /** "missed": a scheduled run did not start, dueAt is when it was due; "refused": runs refused before they start. */
+    openedBy: FailureIncidentTrigger;
     dueAt: string;
-    /** Not running because its runs are refused before they start: the stored reason; else null. */
+    /** Not running because its runs are refused before they start. */
+    refused: boolean;
+    /** The refusal's reason as shown; null when not refused or none was recorded. */
     refusedReason: string | null;
   }[];
   /** The viewer's unshared connections, greyed out to explain why they are missing. */
@@ -160,14 +163,16 @@ export type WorkflowAlertView = {
       threshold: number;
       lastNotifiedAt: string;
       deliveredTo: string[];
-      openedBy: "count" | "time" | "missed" | "funding";
+      openedBy: FailureIncidentTrigger;
       /** First failure, or when the missed run was due. */
       since: string;
       /** When this incident last turned the workflow off, if it did. */
       workflowPausedAt: string | null;
       /** When someone last turned it back on after that. */
       workflowResumedAt: string | null;
-      /** Not running because its runs are refused before they start: the stored reason; else null. */
+      /** Not running because its runs are refused before they start. */
+      refused: boolean;
+      /** The refusal's reason as shown; null when not refused or none was recorded. */
       refusedReason: string | null;
     } | null;
   };
@@ -314,8 +319,59 @@ export function isRefusedIncident(incident: {
   lastFailedExecutionId: string | null;
 }): boolean {
   return (
-    incident.openedBy === "missed" && incident.lastFailedExecutionId !== null
+    incident.openedBy === "refused" ||
+    (incident.openedBy === "missed" && incident.lastFailedExecutionId !== null)
   );
+}
+
+/** Not running, rather than failing: a schedule that did not start, or runs refused before they start. */
+export function isNotRunning(openedBy: string | undefined): boolean {
+  return openedBy === "missed" || openedBy === "refused";
+}
+
+/** "its scheduled runs are being refused before they start"; an event workflow has no schedule. */
+export function refusedLead(openedBy: string | undefined): string {
+  return `its ${openedBy === "refused" ? "" : "scheduled "}runs are being refused before they start`;
+}
+
+const SKIPPED_PREFIX = /^Execution skipped:\s*/i;
+/** The executor's "workflow is not executable (<code>)" codes, in plain words. */
+const NOT_EXECUTABLE_WORDS: Record<string, string> = {
+  deleted: "the workflow is deleted",
+  deactivated: "the workflow is deactivated",
+  org_deactivated: "the organization is deactivated",
+  halted: "the organization's circuit breaker is engaged",
+  disabled: "the workflow is turned off",
+  anonymous_owner: "the owner has no account",
+};
+const NOT_EXECUTABLE_CODE = /not executable \((\w+)\)/;
+
+/** A stored refusal as shown: no "Execution skipped:" prefix, executor codes in plain words. */
+export function shownRefusal(reason: string): string {
+  return reason
+    .replace(SKIPPED_PREFIX, "")
+    .replace(
+      NOT_EXECUTABLE_CODE,
+      (_match, code: string) =>
+        `not executable (${NOT_EXECUTABLE_WORDS[code] ?? code})`
+    );
+}
+
+/** Deactivated by our team: it does not come back on its own. */
+export function refusalStaysOff(reason: string | null): boolean {
+  const code = reason?.match(NOT_EXECUTABLE_CODE)?.[1];
+  return code === "deactivated" || code === "org_deactivated";
+}
+
+/** A refused incident's reason as shown, or null (not refused, or none recorded). */
+export function refusedReasonOf(incident: {
+  openedBy: string;
+  lastFailedExecutionId: string | null;
+  lastError: string | null;
+}): string | null {
+  return isRefusedIncident(incident) && incident.lastError
+    ? shownRefusal(incident.lastError)
+    : null;
 }
 
 /** True for a row the outbox dropped as too old, rather than withdrew. */

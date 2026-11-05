@@ -1,6 +1,7 @@
 import { INSUFFICIENT_BALANCE_PATTERN } from "@/lib/errors/classify";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { isFundingShortfall } from "@/lib/errors/funding-shortfall";
+import { ErrorCategory } from "@/lib/logging";
 import { MIN_TIME_RULE_FAILURES, OUT_OF_FUNDS_THRESHOLD } from "./constants";
 
 // Streaks: error counts, success ends it; other statuses, unfinished runs,
@@ -15,8 +16,8 @@ export type StreakRun = {
   completedAt: Date | null;
   error: string | null;
   errorType: string | null;
-  errorCategory?: string | null;
-  billable?: boolean | null;
+  errorCategory: string | null;
+  billable: boolean | null;
 };
 
 /** Our own platform failed the run: not the workflow's fault, so it is as if it never ran. */
@@ -33,7 +34,7 @@ export function isRefusedRun(
   return (
     run.status === "skipped" ||
     (run.status === "error" &&
-      run.errorCategory === "billing" &&
+      run.errorCategory === ErrorCategory.BILLING &&
       run.billable === false)
   );
 }

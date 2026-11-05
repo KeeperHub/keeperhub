@@ -61,6 +61,8 @@ export const DEFAULT_TIME_LIMIT_MINUTES = 360;
 export const MIN_TIME_RULE_FAILURES = 2;
 /** Two shortfalls in a row alert at once (and turn it off if set): waiting only burns runs. */
 export const OUT_OF_FUNDS_THRESHOLD = 2;
+/** A workflow that is not on a schedule is reported as not running after this many refused runs in a row. */
+export const REFUSED_RUNS_THRESHOLD = 2;
 
 /** A success holds its incident this long before it is announced; a failure inside it continues the incident. */
 export const RECOVERY_HOLD_MS = 30 * 60 * 1000;

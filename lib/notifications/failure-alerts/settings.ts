@@ -60,6 +60,7 @@ import {
   isRefusedIncident,
   type MemberView,
   type OrgSettingsView,
+  refusedReasonOf,
 } from "./view-types";
 
 export const CHANNEL_KINDS: readonly FailureAlertChannelKind[] = [
@@ -184,17 +185,20 @@ async function loadFailingNow(
     )
     .orderBy(desc(workflowFailureIncidents.openedAt))
     .limit(50);
-  return rows.map(({ lastError, lastFailedExecutionId, ...row }) => ({
-    ...row,
-    openedAt: row.openedAt.toISOString(),
-    dueAt: row.dueAt.toISOString(),
-    refusedReason: isRefusedIncident({
+  return rows.map(({ lastError, lastFailedExecutionId, ...row }) => {
+    const incident = {
       openedBy: row.openedBy,
       lastFailedExecutionId,
-    })
-      ? (lastError ?? "")
-      : null,
-  }));
+      lastError,
+    };
+    return {
+      ...row,
+      openedAt: row.openedAt.toISOString(),
+      dueAt: row.dueAt.toISOString(),
+      refused: isRefusedIncident(incident),
+      refusedReason: refusedReasonOf(incident),
+    };
+  });
 }
 
 async function lastAlertDelivered(

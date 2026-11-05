@@ -9,7 +9,14 @@ import { redactErrorSecrets } from "@/lib/utils/redact";
 import { MAX_SUMMARY_CHARS } from "@/plugins/pagerduty/event-payload";
 import { DEFAULT_THRESHOLD, OUT_OF_FUNDS_THRESHOLD } from "./constants";
 import { isOutOfFunds } from "./streak";
-import { EMAILS_KEPT_FOR_NEW_FAILURES, orgPauseEffect } from "./view-types";
+import {
+  EMAILS_KEPT_FOR_NEW_FAILURES,
+  isNotRunning,
+  orgPauseEffect,
+  refusalStaysOff,
+  refusedLead,
+  shownRefusal,
+} from "./view-types";
 
 // Message wording for every channel, apart from delivery so it is tested in one place.
 
@@ -19,7 +26,7 @@ export type AlertWorkflow = {
   triggerLabel: string;
 };
 
-/** A not-running incident whose scheduled runs are refused before they start. */
+/** A not-running incident whose runs are refused before they start. */
 export type Refused = {
   /** The newest refusal's stored error. */
   reason: string | null;
@@ -233,18 +240,41 @@ function plansUrl(appUrl: string, organizationId: string): string {
   return `${appUrl}/settings/${encodeURIComponent(organizationId)}/plans`;
 }
 
-const REFUSED_LEAD = "its scheduled runs are being refused before they start";
+/** "Its scheduled runs are being refused before they start" ("Its runs" when not on a schedule). */
+function refusedLeadCapital(
+  openedBy: FailureIncidentTrigger | undefined
+): string {
+  const lead = refusedLead(openedBy);
+  return `${lead.charAt(0).toUpperCase()}${lead.slice(1)}`;
+}
+
+/** A refused incident carries its refusal; an older caller may only have lastError. */
+function withRefused<
+  T extends {
+    openedBy?: FailureIncidentTrigger;
+    lastError?: string | null;
+    refused?: Refused;
+  },
+>(incident: T): T {
+  return incident.openedBy === "refused" && !incident.refused
+    ? { ...incident, refused: { reason: incident.lastError ?? null } }
+    : incident;
+}
 
 /** The refusal reason as sent: one line, secrets masked, no trailing dot. */
 function refusedReason(refused: Refused, max = MAX_ERROR_CHARS): string {
   return refused.reason
-    ? errorExcerpt(refused.reason, max).replace(TRAILING_DOTS, "")
+    ? errorExcerpt(shownRefusal(refused.reason), max).replace(TRAILING_DOTS, "")
     : "no reason was recorded";
 }
 
 /** "<name> is not running: its scheduled runs are being refused before they start: <reason>." */
-function refusedSentence(name: string, refused: Refused): string {
-  return `${name} is not running: ${REFUSED_LEAD}: ${refusedReason(refused)}.`;
+function refusedSentence(
+  name: string,
+  refused: Refused,
+  openedBy: FailureIncidentTrigger
+): string {
+  return `${name} is not running: ${refusedLead(openedBy)}: ${refusedReason(refused)}.`;
 }
 
 /** Where an alert's links go; the samples have no workflow, so they open the Alerts page. */
@@ -439,8 +469,10 @@ const FAILING_NEXT_STEP =
   "It keeps running and failing until someone fixes, mutes or turns it off.";
 const MISSED_NEXT_STEP =
   "You can run it by hand from the editor; you will be told when it runs on its own again.";
-const REFUSED_NEXT_STEP =
-  "Raise the plan's run limit or settle billing under Plans; it runs again on its own once its runs are allowed, and you will be told.";
+const PLANS_FIX =
+  "Upgrade the plan, raise its run limit or settle billing under Plans";
+const REFUSED_NEXT_STEP = `${PLANS_FIX}; it runs again on its own once its runs are allowed, and you will be told.`;
+const NOT_RUNNABLE_CAUSE = "Open the workflow to see why it cannot run.";
 const NOT_RUNNABLE_NEXT_STEP =
   "Open the workflow to see why it cannot run; you will be told when it runs on its own again.";
 
@@ -463,8 +495,9 @@ function renderAlert(
   input: Extract<MessageInput, { kind: "alert" | "reminder" }>,
   now: Date
 ): RenderedMessage {
-  const { workflow, incident, orgName, appUrl } = input;
-  const missed = incident.openedBy === "missed";
+  const { workflow, orgName, appUrl } = input;
+  const incident = withRefused(input.incident);
+  const missed = isNotRunning(incident.openedBy);
   const refused = missed ? incident.refused : undefined;
   const plans =
     refused && !refused.notRunnable
@@ -499,19 +532,22 @@ function renderAlert(
   if (input.paused) {
     nextStep = PAUSED_NEXT_STEP;
   } else if (refused) {
-    nextStep = plans ? REFUSED_NEXT_STEP : NOT_RUNNABLE_NEXT_STEP;
+    nextStep = REFUSED_NEXT_STEP;
+    if (!plans) {
+      nextStep = refusalStaysOff(refused.reason)
+        ? NOT_RUNNABLE_CAUSE
+        : NOT_RUNNABLE_NEXT_STEP;
+    }
   } else if (missed) {
     nextStep = MISSED_NEXT_STEP;
   } else if (incident.openedBy === "funding") {
     nextStep = FUNDING_NEXT_STEP;
   }
+  // Refused runs need someone to act (plan, billing): they keep "Action needed".
   let label = "Action needed";
-  if (refused && !input.paused) {
-    // Someone has to act (plan, billing), so not just "Check".
-    label = "Action needed";
-  } else if (missed && !input.paused) {
+  if (missed && !(refused || input.paused)) {
     label = "Check";
-  } else if (reminder && !input.paused) {
+  } else if (reminder && !(refused || input.paused)) {
     label = input.reminderNumber
       ? `Still failing (reminder ${input.reminderNumber} of ${input.maxReminders ?? 7})`
       : "Still failing";
@@ -524,12 +560,16 @@ function renderAlert(
   const amber = missed && !refused && !input.paused;
   const accent = amber ? "#b45309" : "#b91c1c";
   const tint = amber ? "#fffbeb" : "#fef2f2";
-  const since = missed
-    ? `Due at ${formatUtc(incident.firstFailedAt)}, ${formatDuration(now.getTime() - incident.firstFailedAt.getTime())} ago.`
-    : `Failing since ${formatUtc(incident.firstFailedAt)}.`;
+  const ago = formatDuration(now.getTime() - incident.firstFailedAt.getTime());
+  let since = `Failing since ${formatUtc(incident.firstFailedAt)}.`;
+  if (incident.openedBy === "refused") {
+    since = `Refused since ${formatUtc(incident.firstFailedAt)}, ${ago} ago.`;
+  } else if (missed) {
+    since = `Due at ${formatUtc(incident.firstFailedAt)}, ${ago} ago.`;
+  }
   const history = missed ? null : historyLine(incident);
   const refusedDetail = refused
-    ? `Its scheduled runs are being refused before they start: ${refusedReason(refused)}.`
+    ? `${refusedLeadCapital(incident.openedBy)}: ${refusedReason(refused)}.`
     : null;
   const missedDetail = refusedDetail ?? MISSED_DETAIL;
   const detail = missed
@@ -539,7 +579,7 @@ function renderAlert(
   let chatDetail: ChatText | null = missed ? [MISSED_DETAIL] : null;
   if (refused) {
     chatDetail = [
-      "Its scheduled runs are being refused before they start: ",
+      `${refusedLeadCapital(incident.openedBy)}: `,
       { code: refusedReason(refused) },
       ".",
     ];
@@ -626,7 +666,7 @@ ${foot.text}`;
       })
     ),
     summary: summaryOf(
-      `${orgName}: ${refused && !input.paused ? refusedSentence(workflow.name, refused) : headline}`
+      `${orgName}: ${refused && !input.paused ? refusedSentence(workflow.name, refused, incident.openedBy) : headline}`
     ),
   };
 }
@@ -664,8 +704,12 @@ type GroupedWorkflow = Extract<
 const GROUPED_LIST_MAX = 10;
 const GROUPED_ERROR_CHARS = 120;
 
+/** A not-running workflow's lastError is a refusal (e.g. no credit), not its wallet. */
 function outOfFunds(w: GroupedWorkflow): boolean {
-  return w.openedBy === "funding" || isOutOfFunds(w.lastError ?? null);
+  return (
+    w.openedBy === "funding" ||
+    (!isNotRunning(w.openedBy) && isOutOfFunds(w.lastError ?? null))
+  );
 }
 
 function groupedRank(w: GroupedWorkflow): number {
@@ -702,13 +746,18 @@ function renderGrouped(
   input: Extract<MessageInput, { kind: "grouped" }>
 ): RenderedMessage {
   const { orgName, appUrl } = input;
-  const workflows = sortGrouped(input.workflows);
+  const workflows = sortGrouped(input.workflows.map(withRefused));
   const turnedOff = workflows.filter((w) => w.workflowPaused).length;
-  const notRunning = workflows.filter((w) => w.openedBy === "missed").length;
+  const notRunning = workflows.filter((w) => isNotRunning(w.openedBy)).length;
   const failing = workflows.length - notRunning;
   const refusedAny = workflows.some(
-    (w) => w.openedBy === "missed" && w.refused
+    (w) => isNotRunning(w.openedBy) && w.refused
   );
+  const plans = workflows.some(
+    (w) => isNotRunning(w.openedBy) && w.refused && !w.refused.notRunnable
+  )
+    ? plansUrl(appUrl, input.organizationId)
+    : null;
   const headline = groupedHeadline(failing, notRunning, turnedOff);
   const errorText = (w: { lastError?: string | null }): string | null =>
     w.lastError ? errorExcerpt(w.lastError, GROUPED_ERROR_CHARS) : null;
@@ -716,9 +765,10 @@ function renderGrouped(
     failing > 0
       ? "This often means a shared cause, such as an RPC provider or a wallet out of gas."
       : null,
-    refusedAny
-      ? "Runs refused before they start point to the plan's run limit or billing: check Plans."
+    plans
+      ? `Runs refused before they start point to the plan or billing: ${PLANS_FIX}.`
       : null,
+    refusedAny && !plans ? NOT_RUNNABLE_CAUSE : null,
     turnedOff > 0
       ? "Workflows KeeperHub turned off stay off until someone turns them back on."
       : null,
@@ -731,7 +781,7 @@ function renderGrouped(
     `${outOfFunds(w) && !fundsNow(w) ? ", ran out of funds earlier" : ""}${w.workflowPaused ? ", turned off" : ""}`;
   // The prefix only when funds are the latest error; else a note that they ran out earlier.
   const fundsNow = (w: GroupedWorkflow): boolean =>
-    isOutOfFunds(w.lastError ?? null);
+    !isNotRunning(w.openedBy) && isOutOfFunds(w.lastError ?? null);
   const fundsPrefix = (w: GroupedWorkflow): string =>
     fundsNow(w) ? "Wallet out of funds: " : "";
   const shown = workflows.slice(0, GROUPED_LIST_MAX);
@@ -741,22 +791,17 @@ function renderGrouped(
   const funds = shown.some(fundsNow)
     ? walletsUrl(appUrl, input.organizationId)
     : null;
-  const plans = workflows.some(
-    (w) => w.openedBy === "missed" && w.refused && !w.refused.notRunnable
-  )
-    ? plansUrl(appUrl, input.organizationId)
-    : null;
   // What a not-running workflow says in place of its failure count.
   const state = (w: GroupedWorkflow): string => {
-    if (w.openedBy !== "missed") {
+    if (!isNotRunning(w.openedBy)) {
       return `: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}`;
     }
     return w.refused
-      ? ` is not running: ${REFUSED_LEAD}`
+      ? ` is not running: ${refusedLead(w.openedBy)}`
       : " did not run when it was due";
   };
   const reasonOf = (w: GroupedWorkflow): string | null => {
-    if (w.openedBy === "missed") {
+    if (isNotRunning(w.openedBy)) {
       return w.refused ? refusedReason(w.refused, GROUPED_ERROR_CHARS) : null;
     }
     return errorText(w);
@@ -812,10 +857,10 @@ ${foot.text}`;
     `${backup.html}
     <p>${escapeHtml(cause)}</p>
     <ul style="padding-left: 20px;">${shown
-      .map(
-        (w) =>
-          `<li>${fundsNow(w) ? "<strong>Wallet out of funds:</strong> " : ""}<a href="${escapeHtml(runsUrl(appUrl, w.id))}">${escapeHtml(w.name)}</a>${escapeHtml(state(w))}${reasonOf(w) ? `<br><code style="font-size:12px;">${escapeHtml(reasonOf(w) ?? "")}</code>` : ""}</li>`
-      )
+      .map((w) => {
+        const reason = reasonOf(w);
+        return `<li>${fundsNow(w) ? "<strong>Wallet out of funds:</strong> " : ""}<a href="${escapeHtml(runsUrl(appUrl, w.id))}">${escapeHtml(w.name)}</a>${escapeHtml(state(w))}${reason ? `<br><code style="font-size:12px;">${escapeHtml(reason)}</code>` : ""}</li>`;
+      })
       .join("")}</ul>
     ${moreLine ? `<p>${moreLine}</p>` : ""}
     <p>${emailButton(settingsUrl(appUrl, input.organizationId), "See all failing workflows", "danger")}${funds ? emailButton(funds, "Add funds") : ""}${plans ? emailButton(plans, "Open Plans") : ""}</p>`,
@@ -837,7 +882,7 @@ function renderRecovery(
   const { workflow, incident, orgName } = input;
   // Measured to the close, not the send: recoveries wait 30 minutes to go out.
   const endedAt =
-    (incident.openedBy === "missed" ? input.ranAt : null) ??
+    (isNotRunning(incident.openedBy) ? input.ranAt : null) ??
     input.resolvedAt ??
     now;
   const span = formatDuration(
@@ -845,7 +890,14 @@ function renderRecovery(
   );
   let tail = " is running again";
   let detail = `It succeeded after ${plural(incident.failureCount, "failed run", "failed runs")} (failing for ${span}). Working since ${formatUtc(endedAt)}.`;
-  if (incident.openedBy === "missed") {
+  if (incident.openedBy === "refused") {
+    tail = input.ranButFailed
+      ? " ran, but the run failed"
+      : " is running again";
+    detail = input.ranButFailed
+      ? `Its runs are being accepted again after ${span} of refusals, but the first one failed. You will be told if it keeps failing.`
+      : `Its runs are being accepted again after ${span} of refusals. Running since ${formatUtc(endedAt)}.`;
+  } else if (incident.openedBy === "missed") {
     tail = input.ranButFailed
       ? " ran, but the run failed"
       : " is running again";

@@ -118,6 +118,16 @@ describe("redactErrorSecrets", () => {
     );
   });
 
+  it("masks a key=value Authorization list (AWS SigV4) to the end of the line", () => {
+    const sigv4 = redactErrorSecrets(
+      "Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20261105/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=fe5f80f77d5fa3beca038a248ff027d0445342fe2855ddc963176630326f1024\nnext line"
+    );
+    expect(sigv4).toBe("Authorization: AWS4-HMAC-SHA256 [REDACTED]\nnext line");
+    expect(
+      redactErrorSecrets("Authorization: Credential=AKIA, Signature=abc")
+    ).toBe("Authorization: [REDACTED]");
+  });
+
   it("keeps prose that only names a token or key readable", () => {
     const text =
       "execution reverted: Unsupported token: 0xA0b8, key: missing, auth: failed";

@@ -138,9 +138,8 @@ CREATE INDEX "idx_alert_incidents_org" ON "alert_incidents" USING btree ("organi
 CREATE INDEX "idx_alert_incidents_workflow" ON "alert_incidents" USING btree ("workflow_id");--> statement-breakpoint
 CREATE INDEX "idx_alert_incidents_resolved" ON "alert_incidents" USING btree ("resolved_at") WHERE "alert_incidents"."resolved_at" IS NOT NULL;
 --> statement-breakpoint
--- Queues the workflow for the failure-alert evaluator when a run ends in success
--- or error (covers every code path). Must never block a run: errors are swallowed
--- with a warning, and the next run's evaluation reads the full streak anyway.
+-- Queues the workflow for the alert evaluator when a run ends in success, error or
+-- skipped (refused). Never blocks a run: errors are only logged as a warning.
 CREATE OR REPLACE FUNCTION public.queue_alert_check()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -165,7 +164,7 @@ $$;
 CREATE TRIGGER queue_alert_check
   AFTER INSERT OR UPDATE OF status ON workflow_executions
   FOR EACH ROW
-  WHEN (NEW.status IN ('success', 'error'))
+  WHEN (NEW.status IN ('success', 'error', 'skipped'))
   EXECUTE FUNCTION public.queue_alert_check();
 --> statement-breakpoint
 -- Sets workflow_resumed_at on open incidents when a workflow is re-enabled by any

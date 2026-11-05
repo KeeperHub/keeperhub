@@ -37,6 +37,7 @@ import { loadStreakRuns } from "./streak-runs";
 import {
   isRefusedIncident,
   methodText,
+  refusedReasonOf,
   type WorkflowAlertView,
 } from "./view-types";
 import { runsOnItsOwn, workflowTriggerType } from "./workflow-trigger";
@@ -189,9 +190,8 @@ export async function loadWorkflowAlertView(
             workflowPausedAt: incident.workflowPausedAt?.toISOString() ?? null,
             workflowResumedAt:
               incident.workflowResumedAt?.toISOString() ?? null,
-            refusedReason: isRefusedIncident(incident)
-              ? (incident.lastError ?? "")
-              : null,
+            refused: isRefusedIncident(incident),
+            refusedReason: refusedReasonOf(incident),
           }
         : null,
     },

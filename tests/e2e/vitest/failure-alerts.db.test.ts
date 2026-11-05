@@ -2937,6 +2937,45 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(fresh?.state).toBe("pending");
     });
 
+    it("a backup re-queued for a reopened incident waits for an org pause to end", async () => {
+      const org = await countingOrg("reopenpaused");
+      const backupChannel = await makeChannel(org, "discord", "backup", "live");
+      const wf = await makeWorkflow(org, "Reopen paused");
+      await addFailures(org, wf, 5, -20);
+      await ev.evaluateQueuedWorkflows(new Date(), ev.emptyStats());
+      const until = at(120);
+      await orgPause.pauseOrgAlerts({
+        organizationId: org.orgId,
+        until: until.toISOString(),
+        reason: null,
+        by: "An owner",
+        now: new Date(),
+      });
+      const primary = (await deliveriesOf(org.orgId)).find(
+        (d) => d.kind === "alert" && !d.isBackup && d.channel === "email"
+      );
+      await db
+        .update(failureAlertDeliveries)
+        .set({ state: "failed", attempts: 1 })
+        .where(eq(failureAlertDeliveries.id, primary?.id ?? ""));
+      await addRun(org, wf, "success", { at: at(-10) });
+      await ev.evaluateQueuedWorkflows(new Date(), ev.emptyStats());
+      await addRun(org, wf, "error", { at: at(-5) });
+      await ev.evaluateQueuedWorkflows(new Date(), ev.emptyStats());
+      expect(await openIncident(wf)).toBeDefined();
+      const { fireBackups, emptyDrainStats } = await import(
+        "@/lib/notifications/failure-alerts/outbox"
+      );
+      await fireBackups(new Date(), emptyDrainStats());
+      const backups = (await deliveriesOf(org.orgId)).filter(
+        (d) => d.isBackup && d.state !== "skipped"
+      );
+      expect(backups.map((d) => d.channelId)).toContain(backupChannel.id);
+      for (const backup of backups) {
+        expect(backup.nextAttemptAt.getTime()).toBe(until.getTime());
+      }
+    });
+
     const refusedRun = async (
       org: Org,
       wf: string,
@@ -2973,7 +3012,9 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(incident?.lastFailedExecutionId).toBeTruthy();
       const [mail] = mailsAbout(org, "Run limit keeper");
       expect(mail?.text).toContain("refused before they start");
-      expect(mail?.text).toContain(EXECUTION_LIMIT_REFUSAL.replace(/\.$/, ""));
+      const shown = "your plan's monthly execution limit has been reached";
+      expect(mail?.text).toContain(`before they start: ${shown}.`);
+      expect(mail?.text).not.toContain("Execution skipped");
       expect(mail?.text).toContain("/plans");
       expect(mail?.text).not.toMatch(/scheduling problem|our team|by hand/i);
       const loaded = await workflowSettings.loadWorkflowForAlerts(wf);
@@ -2984,7 +3025,42 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         loaded,
         org.userId
       );
-      expect(view.status.incident?.refusedReason).toBe(EXECUTION_LIMIT_REFUSAL);
+      expect(view.status.incident?.refused).toBe(true);
+      expect(view.status.incident?.refusedReason).toBe(`${shown}.`);
+    });
+
+    it("a refusal over an hour old does not label a later miss as refused", async () => {
+      const org = await countingOrg("stalerefusal");
+      const wf = await makeWorkflow(org, "Stale refusal");
+      await addSchedule(wf);
+      await refusedRun(org, wf, -90);
+      await runCycle();
+      const incident = await openIncident(wf);
+      expect(incident?.openedBy).toBe("missed");
+      expect(incident?.lastFailedExecutionId).toBeNull();
+      expect(incident?.lastError).toBeNull();
+    });
+
+    it("an open not-running incident takes the newest refusal, and a plain one becomes refused", async () => {
+      const org = await countingOrg("newrefusal");
+      const wf = await makeWorkflow(org, "Newer refusal");
+      await addSchedule(wf);
+      await runCycle();
+      const plain = await openIncident(wf);
+      expect(plain?.lastFailedExecutionId).toBeNull();
+      await refusedRun(org, wf, -2);
+      await runCycle();
+      const refused = await openIncident(wf);
+      expect(refused?.id).toBe(plain?.id);
+      expect(refused?.lastError).toBe(EXECUTION_LIMIT_REFUSAL);
+      const unpaid = "Insufficient credit balance to pay for this execution.";
+      await refusedRun(org, wf, -1, { error: unpaid });
+      await runCycle();
+      const latest = await openIncident(wf);
+      expect(latest?.lastError).toBe(unpaid);
+      expect(latest?.lastFailedExecutionId).not.toBe(
+        refused?.lastFailedExecutionId
+      );
     });
 
     it("refused schedules across orgs do not look like a scheduler outage, so a real miss still alerts", async () => {
@@ -3017,7 +3093,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       }
     });
 
-    it("five unpaid webhook refusals open no incident and do not turn the workflow off", async () => {
+    it("five unpaid webhook refusals open a refused incident and do not turn the workflow off", async () => {
       const org = await countingOrg("unpaid");
       const wf = await makeWorkflow(org, "Unpaid webhook", "Webhook");
       await db.insert(workflowFailureAlertOverrides).values({
@@ -3034,8 +3110,145 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         });
       }
       await runCycle();
-      expect(await openIncident(wf)).toBeUndefined();
+      const incident = await openIncident(wf);
+      expect(incident?.openedBy).toBe("refused");
+      expect(incident?.failureCount).toBe(0);
+      expect(incident?.workflowPausedAt).toBeNull();
       expect(await isEnabled(wf)).toBe(true);
+    });
+
+    const unpaid = (
+      org: Org,
+      wf: string,
+      minutes: number
+    ): ReturnType<typeof refusedRun> =>
+      refusedRun(org, wf, minutes, {
+        error: "Insufficient credit balance to pay for this execution.",
+        triggerSource: "webhook",
+      });
+
+    it("two refused webhook runs in a row open a refused incident with the newest reason", async () => {
+      const org = await countingOrg("refusedtwo");
+      const wf = await makeWorkflow(org, "Refused twice", "Webhook");
+      await unpaid(org, wf, -3);
+      await unpaid(org, wf, -2);
+      await runCycle();
+      const incident = await openIncident(wf);
+      expect(incident?.openedBy).toBe("refused");
+      expect(incident?.lastError).toBe(
+        "Insufficient credit balance to pay for this execution."
+      );
+      const runs = await db
+        .select({
+          id: workflowExecutions.id,
+          startedAt: workflowExecutions.startedAt,
+        })
+        .from(workflowExecutions)
+        .where(eq(workflowExecutions.workflowId, wf))
+        .orderBy(workflowExecutions.startedAt);
+      expect(incident?.firstFailedAt).toEqual(runs[0]?.startedAt);
+      expect(incident?.lastFailedExecutionId).toBe(runs.at(-1)?.id);
+      const [mail] = mailsAbout(org, "Refused twice");
+      expect(mail?.text).toContain(
+        "Its runs are being refused before they start: Insufficient credit balance"
+      );
+      expect(mail?.text).toContain("/plans");
+      expect(mail?.text).not.toMatch(/scheduled|wallet out of funds/i);
+      const loaded = await workflowSettings.loadWorkflowForAlerts(wf);
+      if (!loaded) {
+        throw new Error("workflow not found");
+      }
+      const view = await workflowSettings.loadWorkflowAlertView(
+        loaded,
+        org.userId
+      );
+      expect(view.status.incident?.refused).toBe(true);
+    });
+
+    it("one refused run opens nothing, and an accepted run in between breaks the pair", async () => {
+      const org = await countingOrg("refusedone");
+      const wf = await makeWorkflow(org, "Refused once", "Webhook");
+      await unpaid(org, wf, -4);
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      await addRun(org, wf, "success", { at: at(-3), source: "webhook" });
+      await unpaid(org, wf, -2);
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+    });
+
+    it("an accepted run closes it; the recovery waits out the hold and says runs are accepted again", async () => {
+      const org = await countingOrg("refusedok");
+      const wf = await makeWorkflow(org, "Refused then ok", "Webhook");
+      await unpaid(org, wf, -10);
+      await unpaid(org, wf, -9);
+      await runCycle();
+      const incident = await openIncident(wf);
+      expect(incident?.openedBy).toBe("refused");
+      await addRun(org, wf, "success", { at: at(-1), source: "webhook" });
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      expect((await incidentById(incident?.id))?.resolvedReason).toBe("ran");
+      const held = (await deliveriesOf(org.orgId)).filter(
+        (d) => d.kind === "recovery" && d.channel === "email"
+      );
+      expect(held).toHaveLength(1);
+      expect(held[0]?.nextAttemptAt.getTime()).toBeGreaterThan(
+        at(25).getTime()
+      );
+      expect(await sentEmails(org, "recovery")).toHaveLength(0);
+      await endRecoveryHold(org.orgId);
+      await runCycle();
+      expect(await sentEmails(org, "recovery")).toHaveLength(1);
+      const recovery = mailsAbout(org, "Refused then ok").at(-1);
+      expect(recovery?.text).toContain("Its runs are being accepted again");
+    });
+
+    it("refused again inside the hold continues the same incident and withdraws its recovery", async () => {
+      const org = await countingOrg("refusedflap");
+      const wf = await makeWorkflow(org, "Refused flap", "Webhook");
+      await unpaid(org, wf, -10);
+      await unpaid(org, wf, -9);
+      await runCycle();
+      const first = await openIncident(wf);
+      await addRun(org, wf, "success", { at: at(-5), source: "webhook" });
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      await unpaid(org, wf, -0.5);
+      await unpaid(org, wf, -0.2);
+      await runCycle();
+      const again = await openIncident(wf);
+      expect(again?.id).toBe(first?.id);
+      expect(again?.openedBy).toBe("refused");
+      const recoveries = (await deliveriesOf(org.orgId)).filter(
+        (d) => d.kind === "recovery"
+      );
+      expect(recoveries.every((d) => d.state === "skipped")).toBe(true);
+      expect(await sentEmails(org, "alert")).toHaveLength(1);
+    });
+
+    it("refusals during an org pause open nothing until the pause ends", async () => {
+      const org = await countingOrg("refusedpause", { pausedUntil: at(60) });
+      const wf = await makeWorkflow(org, "Refused paused", "Webhook");
+      await unpaid(org, wf, -3);
+      await unpaid(org, wf, -2);
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+    });
+
+    it("a refused schedule gets one not-running incident, never a refused one too", async () => {
+      const org = await countingOrg("refusedsched");
+      const wf = await makeWorkflow(org, "Refused schedule");
+      await addSchedule(wf);
+      await refusedRun(org, wf, -3);
+      await refusedRun(org, wf, -2);
+      await runCycle();
+      await runCycle();
+      const all = await db
+        .select({ openedBy: workflowFailureIncidents.openedBy })
+        .from(workflowFailureIncidents)
+        .where(eq(workflowFailureIncidents.workflowId, wf));
+      expect(all.map((row) => row.openedBy)).toEqual(["missed"]);
     });
   });
 });

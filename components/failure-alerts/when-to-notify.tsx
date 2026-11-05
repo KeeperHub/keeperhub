@@ -18,6 +18,7 @@ import {
   MAX_THRESHOLD,
   MIN_THRESHOLD,
   MIN_TIME_RULE_FAILURES,
+  REFUSED_RUNS_THRESHOLD,
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
 import { FUNDS_RULE, timeLimitLabel } from "./format";
@@ -159,6 +160,11 @@ export function WhenToNotify({
       </p>
       <p className="text-muted-foreground text-xs">
         {FUNDS_RULE} Errors on KeeperHub's side never count toward either limit.
+      </p>
+      <p className="text-muted-foreground text-xs">
+        Runs refused before they start (plan limit, billing) on workflows that
+        are not on a schedule are reported after {REFUSED_RUNS_THRESHOLD} in a
+        row.
       </p>
       <label className="flex items-center gap-2" htmlFor="failure-remind">
         <Checkbox

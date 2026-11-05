@@ -167,7 +167,7 @@ describe("incidentTitle", () => {
     openedBy: "missed" as const,
     since: "2026-10-01T11:13:00.000Z",
     failureCount: 0,
-    refusedReason: null,
+    refused: false,
   };
 
   it("says when a missed run was due", () => {
@@ -177,12 +177,11 @@ describe("incidentTitle", () => {
   });
 
   it("says refused runs are refused, not that the run was missed", () => {
-    const refused = { ...missed, refusedReason: "Monthly run limit reached" };
+    const refused = { ...missed, refused: true };
     expect(incidentTitle(refused, false)).toBe(
       "Not running: its scheduled runs are being refused before they start"
     );
-    // A refusal with no stored error is still a refusal.
-    expect(notRunningText(missed.since, "")).toBe(
+    expect(notRunningText(missed.since, true)).toBe(
       incidentTitle(refused, false)
     );
   });
@@ -191,5 +190,22 @@ describe("incidentTitle", () => {
     expect(
       incidentTitle({ ...missed, openedBy: "count", failureCount: 5 }, true)
     ).toBe("Turned off after 5 failed runs in a row");
+  });
+});
+
+describe("incidentTitle for refused runs on a workflow not on a schedule", () => {
+  it("says its runs are refused, without calling them scheduled", () => {
+    const refused = {
+      openedBy: "refused" as const,
+      since: "2026-10-01T11:13:00.000Z",
+      failureCount: 0,
+      refused: true,
+    };
+    expect(incidentTitle(refused, false)).toBe(
+      "Not running: its runs are being refused before they start"
+    );
+    expect(notRunningText(refused.since, true, "refused")).toBe(
+      incidentTitle(refused, false)
+    );
   });
 });

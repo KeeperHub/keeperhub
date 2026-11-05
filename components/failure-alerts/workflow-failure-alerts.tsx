@@ -548,17 +548,17 @@ export function WorkflowFailureAlerts({
                 ? `Alert sent ${timeAgo(view.status.incident.openedAt)} to ${view.status.incident.deliveredTo.join(", ")}.`
                 : `Alert queued ${timeAgo(view.status.incident.openedAt)}, not delivered yet.`}
             </p>
-            {view.status.incident.refusedReason === null ? (
+            {view.status.incident.refused ? (
+              <p className="break-words font-mono text-xs">
+                {view.status.incident.refusedReason ??
+                  "No reason was recorded."}
+              </p>
+            ) : (
               view.status.lastError && (
                 <p className="break-words font-mono text-xs">
                   {view.status.lastError}
                 </p>
               )
-            ) : (
-              <p className="break-words font-mono text-xs">
-                {view.status.incident.refusedReason ||
-                  "No reason was recorded."}
-              </p>
             )}
             <div className="flex flex-wrap gap-2">
               {view.status.incident.openedBy === "funding" && (
@@ -641,10 +641,9 @@ export function WorkflowFailureAlerts({
                   ? "Muted until it works again"
                   : `Muted until ${formatWhen(view.override.mutedUntil ?? "")}`}
                 {view.override.mutedBy ? ` by ${view.override.mutedBy}` : ""}.
-                {" Failures still show in Runs; nobody is told"}
                 {view.override.pauseWorkflow
-                  ? " unless KeeperHub turns it off at the limit."
-                  : "."}
+                  ? " Failures still show in Runs; nobody is told unless KeeperHub turns it off at the limit."
+                  : " Failures still show in Runs; nobody is told."}
               </span>
             </p>
           ) : (

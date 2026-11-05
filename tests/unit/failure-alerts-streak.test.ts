@@ -24,6 +24,8 @@ function runs(spec: string[], source = "schedule"): StreakRun[] {
       completedAt: new Date(startedAt.getTime() + 1000),
       error: plainStatus === "error" ? `boom ${index}` : null,
       errorType: override === "system" ? "system" : null,
+      errorCategory: null,
+      billable: null,
     };
   });
 }
@@ -244,6 +246,8 @@ describe("wallet out of funds", () => {
     completedAt: at(minutesAgo),
     error,
     errorType: null,
+    errorCategory: null,
+    billable: null,
   });
   const shortfall = "insufficient funds for gas * price + value: have 4 want 6";
 

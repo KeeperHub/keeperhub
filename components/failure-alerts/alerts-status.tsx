@@ -6,6 +6,7 @@ import { timeAgo } from "@/components/settings/hub/relative-time";
 import { Notice, WARNING_TEXT } from "@/components/ui/notice";
 import {
   EMAILS_KEPT_FOR_NEW_FAILURES,
+  isNotRunning,
   methodText,
   type OrgSettingsView,
 } from "@/lib/notifications/failure-alerts/view-types";
@@ -309,8 +310,8 @@ export function AlertsStatus({
                   {w.name}
                 </Link>
                 <span className="text-destructive text-xs">
-                  {w.openedBy === "missed"
-                    ? notRunningText(w.dueAt, w.refusedReason)
+                  {isNotRunning(w.openedBy)
+                    ? notRunningText(w.dueAt, w.refused, w.openedBy)
                     : `${w.openedBy === "funding" ? "Wallet out of funds, " : ""}${failedRuns(w.failureCount)} in a row${ownRule(ownThreshold.get(w.workflowId))}, alert sent ${timeAgo(w.openedAt)}`}
                   {pause
                     ? `. Alerts held until ${formatWhen(pause.until)}`

@@ -1546,9 +1546,8 @@ export async function getUnifiedRuns(
     getOrgLogRetentionCutoff(organizationId, getRetentionConfig()),
   ]);
 
-  // Merge the sources in the keyset order, then apply offset for the
-  // requested page. The cursor names the last row exactly, time to the
-  // microsecond plus source and id, so rows sharing its time are not skipped.
+  // Merge in keyset order, then page. The cursor names the last row exactly
+  // (microsecond time, source, id), so rows sharing its time are not skipped.
   const allRuns = mergeKeyedRuns([workflowRuns, directRuns, notificationRuns]);
 
   const sliceStart = keyset ? 0 : offset;

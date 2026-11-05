@@ -49,6 +49,7 @@ import {
   renderMessage,
   runsUrl,
 } from "./messages";
+import { activePause } from "./org-pause";
 import {
   type ChannelConfig,
   loadChannels,
@@ -251,7 +252,7 @@ class Context {
       .limit(1);
     const value: Refused = {
       reason: incident.lastError,
-      notRunnable: run?.errorCategory === "configuration",
+      notRunnable: run?.errorCategory === ErrorCategory.CONFIGURATION,
     };
     this.refusals.set(incident.id, value);
     return value;
@@ -1125,11 +1126,14 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
   const policy = incident
     ? await loadEffectivePolicy(row.organizationId, incident.workflowId)
     : null;
+  const org = policy ? null : await loadOrgPolicy(row.organizationId);
   const channels =
     policy?.channels ?? (await loadChannels(row.organizationId, null));
-  const recipientUserIds = policy
-    ? policy.recipientUserIds
-    : (await loadOrgPolicy(row.organizationId)).recipientUserIds;
+  const recipientUserIds =
+    policy?.recipientUserIds ?? org?.recipientUserIds ?? null;
+  // Nothing goes out during an org pause, whatever queued the backup.
+  const sendAt =
+    activePause(policy?.orgPausedUntil ?? org?.pausedUntil ?? null, now) ?? now;
 
   const targets: DeliveryInsert[] = [];
   // Any skipped copy (withdrawn, dropped, halted) reached nobody, so it does not count.
@@ -1148,7 +1152,7 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
     kind: row.kind,
     sequence: row.sequence,
     isBackup: true,
-    nextAttemptAt: now,
+    nextAttemptAt: sendAt,
     context: { ...(row.context ?? {}), backupReason: reason },
   };
 
