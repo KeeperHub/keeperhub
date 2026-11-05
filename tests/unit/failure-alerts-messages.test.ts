@@ -798,3 +798,96 @@ describe("pause notice actor", () => {
     expect(pauseActorName(undefined)).toBeNull();
   });
 });
+
+describe("runs refused before they start", () => {
+  const reason =
+    "Execution skipped: your plan's monthly execution limit has been reached.";
+  const incident = {
+    failureCount: 0,
+    firstFailedAt: new Date(now.getTime() - 40 * 60 * 1000),
+    lastError: reason,
+    openedBy: "missed" as const,
+    refused: { reason },
+  };
+  const SENTENCE =
+    "Keeper is not running: its scheduled runs are being refused before they start: Execution skipped: your plan's monthly execution limit has been reached.";
+  const NOT_OURS = /scheduling problem|reported to our team|by hand/i;
+
+  it.each(["alert", "reminder"] as const)(
+    "a %s says the runs are refused, links Plans and never blames the scheduler",
+    (kind) => {
+      const message = renderMessage(
+        {
+          ...org,
+          kind,
+          workflow,
+          incident,
+          reminderNumber: 2,
+          maxReminders: 7,
+        },
+        now
+      );
+      for (const text of [message.text, message.chat, message.html]) {
+        expect(text).toContain(
+          "being refused before they start: Execution skipped: your plan"
+        );
+        expect(text).not.toMatch(NOT_OURS);
+      }
+      expect(message.text).toContain("https://app.test/settings/org-1/plans");
+      expect(message.summary).toBe(`[KeeperHub] Acme: ${SENTENCE}`);
+    }
+  );
+
+  it("a workflow that cannot run points to the workflow, not Plans", () => {
+    const message = renderMessage(
+      {
+        ...org,
+        kind: "alert",
+        workflow,
+        incident: {
+          ...incident,
+          refused: {
+            reason:
+              "Execution skipped: workflow is not executable (deactivated).",
+            notRunnable: true,
+          },
+        },
+      },
+      now
+    );
+    expect(message.text).toContain(
+      "Open the workflow to see why it cannot run"
+    );
+    expect(message.text).not.toContain("/plans");
+    expect(message.text).not.toMatch(NOT_OURS);
+  });
+
+  it("a grouped alert lists refused workflows as not running, with the reason and Plans", () => {
+    const message = renderMessage({
+      ...org,
+      kind: "grouped",
+      workflows: [1, 2, 3].map((i) => ({
+        ...workflow,
+        id: `wf-${i}`,
+        name: `Keeper ${i}`,
+        failureCount: 0,
+        lastError: reason,
+        openedBy: "missed" as const,
+        refused: { reason },
+      })),
+    });
+    expect(message.subject).toBe(
+      "[Acme] Action needed: 3 workflows are not running"
+    );
+    for (const text of [message.text, message.chat]) {
+      expect(text).toContain(
+        "Keeper 1 is not running: its scheduled runs are being refused before they start: Execution skipped"
+      );
+      expect(text).not.toContain("failed runs in a row");
+      expect(text).not.toMatch(NOT_OURS);
+    }
+    expect(message.text).toContain(
+      "Open Plans: https://app.test/settings/org-1/plans"
+    );
+  });
+});

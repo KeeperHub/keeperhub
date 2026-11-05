@@ -19,11 +19,20 @@ export type AlertWorkflow = {
   triggerLabel: string;
 };
 
+/** A not-running incident whose scheduled runs are refused before they start. */
+export type Refused = {
+  /** The newest refusal's stored error. */
+  reason: string | null;
+  /** The workflow or schedule cannot run (not a plan or billing refusal). */
+  notRunnable?: boolean;
+};
+
 type AlertIncident = {
   failureCount: number;
   firstFailedAt: Date;
   lastError: string | null;
   openedBy: FailureIncidentTrigger;
+  refused?: Refused;
   /** Successful runs in the 30 days before it started failing. */
   before?: { successes: number; lastSuccessAt: Date | null };
 };
@@ -64,6 +73,7 @@ export type MessageInput =
         workflowPaused?: boolean;
         lastError?: string | null;
         openedBy?: FailureIncidentTrigger;
+        refused?: Refused;
       })[];
       backupReason?: string;
     })
@@ -219,6 +229,24 @@ function walletsUrl(appUrl: string, organizationId: string): string {
   return `${appUrl}/settings/${encodeURIComponent(organizationId)}/wallets`;
 }
 
+function plansUrl(appUrl: string, organizationId: string): string {
+  return `${appUrl}/settings/${encodeURIComponent(organizationId)}/plans`;
+}
+
+const REFUSED_LEAD = "its scheduled runs are being refused before they start";
+
+/** The refusal reason as sent: one line, secrets masked, no trailing dot. */
+function refusedReason(refused: Refused, max = MAX_ERROR_CHARS): string {
+  return refused.reason
+    ? errorExcerpt(refused.reason, max).replace(TRAILING_DOTS, "")
+    : "no reason was recorded";
+}
+
+/** "<name> is not running: its scheduled runs are being refused before they start: <reason>." */
+function refusedSentence(name: string, refused: Refused): string {
+  return `${name} is not running: ${REFUSED_LEAD}: ${refusedReason(refused)}.`;
+}
+
 /** Where an alert's links go; the samples have no workflow, so they open the Alerts page. */
 function workflowLinks(
   input: OrgFields,
@@ -282,6 +310,9 @@ function failingHeadline(
   now: Date
 ): ChatPart[] {
   const name = user(workflow.name);
+  if (incident.refused) {
+    return [name, still ? " is still not running" : " is not running"];
+  }
   if (incident.openedBy === "missed") {
     return [
       name,
@@ -408,6 +439,10 @@ const FAILING_NEXT_STEP =
   "It keeps running and failing until someone fixes, mutes or turns it off.";
 const MISSED_NEXT_STEP =
   "You can run it by hand from the editor; you will be told when it runs on its own again.";
+const REFUSED_NEXT_STEP =
+  "Raise the plan's run limit or settle billing under Plans; it runs again on its own once its runs are allowed, and you will be told.";
+const NOT_RUNNABLE_NEXT_STEP =
+  "Open the workflow to see why it cannot run; you will be told when it runs on its own again.";
 
 /** "Before this: 214 successful runs in 30 days, the last at 12:15 UTC." */
 function historyLine(incident: AlertIncident): string | null {
@@ -430,6 +465,11 @@ function renderAlert(
 ): RenderedMessage {
   const { workflow, incident, orgName, appUrl } = input;
   const missed = incident.openedBy === "missed";
+  const refused = missed ? incident.refused : undefined;
+  const plans =
+    refused && !refused.notRunnable
+      ? plansUrl(appUrl, input.organizationId)
+      : null;
   const reminder = input.kind === "reminder";
   const headlineParts = input.paused
     ? pausedHeadline(
@@ -458,13 +498,18 @@ function renderAlert(
   let nextStep = FAILING_NEXT_STEP;
   if (input.paused) {
     nextStep = PAUSED_NEXT_STEP;
+  } else if (refused) {
+    nextStep = plans ? REFUSED_NEXT_STEP : NOT_RUNNABLE_NEXT_STEP;
   } else if (missed) {
     nextStep = MISSED_NEXT_STEP;
   } else if (incident.openedBy === "funding") {
     nextStep = FUNDING_NEXT_STEP;
   }
   let label = "Action needed";
-  if (missed && !input.paused) {
+  if (refused && !input.paused) {
+    // Someone has to act (plan, billing), so not just "Check".
+    label = "Action needed";
+  } else if (missed && !input.paused) {
     label = "Check";
   } else if (reminder && !input.paused) {
     label = input.reminderNumber
@@ -476,16 +521,29 @@ function renderAlert(
     !input.paused &&
     input.reminderNumber !== undefined &&
     input.reminderNumber >= (input.maxReminders ?? 7);
-  const accent = missed && !input.paused ? "#b45309" : "#b91c1c";
-  const tint = missed && !input.paused ? "#fffbeb" : "#fef2f2";
+  const amber = missed && !refused && !input.paused;
+  const accent = amber ? "#b45309" : "#b91c1c";
+  const tint = amber ? "#fffbeb" : "#fef2f2";
   const since = missed
     ? `Due at ${formatUtc(incident.firstFailedAt)}, ${formatDuration(now.getTime() - incident.firstFailedAt.getTime())} ago.`
     : `Failing since ${formatUtc(incident.firstFailedAt)}.`;
   const history = missed ? null : historyLine(incident);
+  const refusedDetail = refused
+    ? `Its scheduled runs are being refused before they start: ${refusedReason(refused)}.`
+    : null;
+  const missedDetail = refusedDetail ?? MISSED_DETAIL;
   const detail = missed
-    ? MISSED_DETAIL
+    ? missedDetail
     : `Last error: ${shortError(incident.lastError)}`;
 
+  let chatDetail: ChatText | null = missed ? [MISSED_DETAIL] : null;
+  if (refused) {
+    chatDetail = [
+      "Its scheduled runs are being refused before they start: ",
+      { code: refusedReason(refused) },
+      ".",
+    ];
+  }
   // The same lines, in the same order, for email text, chat and the HTML.
   const lastLine = last
     ? "This is the last reminder. It stays under Failing now on the Alerts page until it works or someone turns it off."
@@ -499,12 +557,17 @@ function renderAlert(
   } else if (missed) {
     links = [`Open the workflow: ${open}`];
   }
+  if (plans) {
+    links = [`Open Plans: ${plans}`, ...links];
+  }
   if (funds) {
     links = [`Add funds: ${funds}`, ...links];
   }
   let buttons = `${emailButton(open, "Open the failing workflow", "danger")}${emailButton(runs, "View failed runs")}`;
   if (sample) {
     buttons = emailButton(open, SAMPLE_LINK);
+  } else if (plans) {
+    buttons = `${emailButton(plans, "Open Plans", "danger")}${emailButton(open, "Open the workflow")}`;
   } else if (missed) {
     buttons = emailButton(open, "Open the workflow", "primary");
   } else if (funds) {
@@ -531,7 +594,7 @@ ${foot.text}`;
       ${history ? `<div>${escapeHtml(history)}</div>` : ""}
       ${
         missed
-          ? `<div style="margin-top: 8px;">${escapeHtml(MISSED_DETAIL)}</div>`
+          ? `<div style="margin-top: 8px;">${escapeHtml(missedDetail)}</div>`
           : `<div style="margin-top: 8px;">Last error: <code>${escapeHtml(shortError(incident.lastError))}</code></div>`
       }
       ${hint ? `<div style="margin-top: 8px;">${escapeHtml(hint)}</div>` : ""}
@@ -558,11 +621,13 @@ ${foot.text}`;
         ],
         lastError: missed ? null : incident.lastError,
         middle: [since, history, hint, nextStep, lastLine],
-        detail: missed ? MISSED_DETAIL : null,
+        detail: chatDetail,
         links,
       })
     ),
-    summary: summaryOf(`${orgName}: ${headline}`),
+    summary: summaryOf(
+      `${orgName}: ${refused && !input.paused ? refusedSentence(workflow.name, refused) : headline}`
+    ),
   };
 }
 
@@ -571,7 +636,7 @@ function alertChatVariants(parts: {
   top: ChatPart[];
   lastError: string | null;
   middle: (string | null)[];
-  detail: string | null;
+  detail: ChatText | string | null;
   links: string[];
 }): ChatText[] {
   const [since, history, ...rest] = parts.middle;
@@ -617,20 +682,49 @@ function sortGrouped(workflows: GroupedWorkflow[]): GroupedWorkflow[] {
   );
 }
 
+/** "3 workflows started failing, 1 turned off", "25 workflows are not running", or both counts. */
+function groupedHeadline(
+  failing: number,
+  notRunning: number,
+  turnedOff: number
+): string {
+  const off = turnedOff > 0 ? `, ${turnedOff} turned off` : "";
+  if (notRunning === 0) {
+    return `${plural(failing, "workflow", "workflows")} started failing${off}`;
+  }
+  if (failing === 0) {
+    return `${plural(notRunning, "workflow is", "workflows are")} not running`;
+  }
+  return `${plural(failing, "workflow", "workflows")} started failing${off}, ${notRunning} not running`;
+}
+
 function renderGrouped(
   input: Extract<MessageInput, { kind: "grouped" }>
 ): RenderedMessage {
   const { orgName, appUrl } = input;
   const workflows = sortGrouped(input.workflows);
   const turnedOff = workflows.filter((w) => w.workflowPaused).length;
-  const headline = `${plural(workflows.length, "workflow", "workflows")} started failing${turnedOff > 0 ? `, ${turnedOff} turned off` : ""}`;
+  const notRunning = workflows.filter((w) => w.openedBy === "missed").length;
+  const failing = workflows.length - notRunning;
+  const refusedAny = workflows.some(
+    (w) => w.openedBy === "missed" && w.refused
+  );
+  const headline = groupedHeadline(failing, notRunning, turnedOff);
   const errorText = (w: { lastError?: string | null }): string | null =>
     w.lastError ? errorExcerpt(w.lastError, GROUPED_ERROR_CHARS) : null;
-  const errorOf = (w: { lastError?: string | null }): string => {
-    const error = errorText(w);
-    return error ? `: ${error}` : "";
-  };
-  const cause = `This often means a shared cause, such as an RPC provider or a wallet out of gas.${turnedOff > 0 ? " Workflows KeeperHub turned off stay off until someone turns them back on." : ""}`;
+  const cause = [
+    failing > 0
+      ? "This often means a shared cause, such as an RPC provider or a wallet out of gas."
+      : null,
+    refusedAny
+      ? "Runs refused before they start point to the plan's run limit or billing: check Plans."
+      : null,
+    turnedOff > 0
+      ? "Workflows KeeperHub turned off stay off until someone turns them back on."
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
   const backup = backupBanner(input.backupReason);
   const foot = footer(input);
   const pausedNote = (w: GroupedWorkflow): string =>
@@ -647,21 +741,41 @@ function renderGrouped(
   const funds = shown.some(fundsNow)
     ? walletsUrl(appUrl, input.organizationId)
     : null;
-  const lines = shown.map(
-    (w) =>
-      `- ${fundsPrefix(w)}${w.name}: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}${errorOf(w)} (${runsUrl(appUrl, w.id)})`
-  );
+  const plans = workflows.some(
+    (w) => w.openedBy === "missed" && w.refused && !w.refused.notRunnable
+  )
+    ? plansUrl(appUrl, input.organizationId)
+    : null;
+  // What a not-running workflow says in place of its failure count.
+  const state = (w: GroupedWorkflow): string => {
+    if (w.openedBy !== "missed") {
+      return `: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}`;
+    }
+    return w.refused
+      ? ` is not running: ${REFUSED_LEAD}`
+      : " did not run when it was due";
+  };
+  const reasonOf = (w: GroupedWorkflow): string | null => {
+    if (w.openedBy === "missed") {
+      return w.refused ? refusedReason(w.refused, GROUPED_ERROR_CHARS) : null;
+    }
+    return errorText(w);
+  };
+  const lines = shown.map((w) => {
+    const reason = reasonOf(w);
+    return `- ${fundsPrefix(w)}${w.name}${state(w)}${reason ? `: ${reason}` : ""} (${runsUrl(appUrl, w.id)})`;
+  });
   if (moreLine) {
     lines.push(moreLine);
   }
-  const fundsLine = funds ? `Add funds: ${funds}\n` : "";
+  const fundsLine = `${funds ? `Add funds: ${funds}\n` : ""}${plans ? `Open Plans: ${plans}\n` : ""}`;
   const seeAll = `See all failing workflows: ${settingsUrl(appUrl, input.organizationId)}`;
   const chatLine = (w: GroupedWorkflow, withError: boolean): ChatPart[] => {
-    const error = withError ? errorText(w) : null;
+    const error = withError ? reasonOf(w) : null;
     return [
       `- ${fundsPrefix(w)}`,
       user(w.name),
-      `: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}`,
+      state(w),
       ...(error ? [": ", { code: error }] : []),
       ` (${runsUrl(appUrl, w.id)})`,
     ];
@@ -677,6 +791,7 @@ function renderGrouped(
       ...workflows.slice(0, count).map((w) => chatLine(w, withError)),
       rest > 0 ? `And ${rest} more.` : null,
       funds ? `Add funds: ${funds}` : null,
+      plans ? `Open Plans: ${plans}` : null,
       seeAll,
     ]);
   };
@@ -699,11 +814,11 @@ ${foot.text}`;
     <ul style="padding-left: 20px;">${shown
       .map(
         (w) =>
-          `<li>${fundsNow(w) ? "<strong>Wallet out of funds:</strong> " : ""}<a href="${escapeHtml(runsUrl(appUrl, w.id))}">${escapeHtml(w.name)}</a>: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}${w.lastError ? `<br><code style="font-size:12px;">${escapeHtml(errorText(w) ?? "")}</code>` : ""}</li>`
+          `<li>${fundsNow(w) ? "<strong>Wallet out of funds:</strong> " : ""}<a href="${escapeHtml(runsUrl(appUrl, w.id))}">${escapeHtml(w.name)}</a>${escapeHtml(state(w))}${reasonOf(w) ? `<br><code style="font-size:12px;">${escapeHtml(reasonOf(w) ?? "")}</code>` : ""}</li>`
       )
       .join("")}</ul>
     ${moreLine ? `<p>${moreLine}</p>` : ""}
-    <p>${emailButton(settingsUrl(appUrl, input.organizationId), "See all failing workflows", "danger")}${funds ? emailButton(funds, "Add funds") : ""}</p>`,
+    <p>${emailButton(settingsUrl(appUrl, input.organizationId), "See all failing workflows", "danger")}${funds ? emailButton(funds, "Add funds") : ""}${plans ? emailButton(plans, "Open Plans") : ""}</p>`,
     foot.html
   );
   return {

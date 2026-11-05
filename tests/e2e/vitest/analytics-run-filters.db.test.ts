@@ -868,7 +868,7 @@ describe.skipIf(SKIP)("analytics runs list: system notifications", () => {
         kind: "channel_paused",
         context: { channelLabel: "Slack #oncall" },
         state: "skipped",
-        lastError: "What this message was about no longer exists.",
+        lastError: SKIP_REASON.gone,
       }),
       delivery(D_LAUNCH, 50, {
         kind: "launch_notice",

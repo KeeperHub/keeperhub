@@ -44,6 +44,7 @@ import {
   FUNDS_RULE,
   failedRuns,
   formatWhen,
+  incidentTitle,
   timeLimitLabel,
   toLocalInput,
 } from "./format";
@@ -144,22 +145,6 @@ function draftSummary(
     pauseWorkflow: draft.pauseWorkflow,
     scope: "workflow",
   });
-}
-
-function incidentTitle(
-  incident: NonNullable<Loaded["status"]["incident"]>,
-  pausedByAlert: boolean
-): string {
-  if (incident.openedBy === "missed") {
-    return `Did not run at ${formatWhen(incident.since)}`;
-  }
-  const runs = `${failedRuns(incident.failureCount)} in a row`;
-  if (incident.openedBy === "funding") {
-    return pausedByAlert
-      ? `Turned off: wallet out of funds, ${runs}`
-      : `Wallet out of funds: ${runs}`;
-  }
-  return pausedByAlert ? `Turned off after ${runs}` : `Failing: ${runs}`;
 }
 
 /** "1 more failed run" before the alert, for a workflow that turns itself off. */
@@ -563,9 +548,16 @@ export function WorkflowFailureAlerts({
                 ? `Alert sent ${timeAgo(view.status.incident.openedAt)} to ${view.status.incident.deliveredTo.join(", ")}.`
                 : `Alert queued ${timeAgo(view.status.incident.openedAt)}, not delivered yet.`}
             </p>
-            {view.status.lastError && (
+            {view.status.incident.refusedReason === null ? (
+              view.status.lastError && (
+                <p className="break-words font-mono text-xs">
+                  {view.status.lastError}
+                </p>
+              )
+            ) : (
               <p className="break-words font-mono text-xs">
-                {view.status.lastError}
+                {view.status.incident.refusedReason ||
+                  "No reason was recorded."}
               </p>
             )}
             <div className="flex flex-wrap gap-2">
@@ -649,9 +641,10 @@ export function WorkflowFailureAlerts({
                   ? "Muted until it works again"
                   : `Muted until ${formatWhen(view.override.mutedUntil ?? "")}`}
                 {view.override.mutedBy ? ` by ${view.override.mutedBy}` : ""}.
+                {" Failures still show in Runs; nobody is told"}
                 {view.override.pauseWorkflow
-                  ? " Failures still show in Runs; nobody is told unless KeeperHub turns it off at the limit."
-                  : " Failures still show in Runs; nobody is told."}
+                  ? " unless KeeperHub turns it off at the limit."
+                  : "."}
               </span>
             </p>
           ) : (

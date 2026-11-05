@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { notificationBadge } from "@/components/analytics/runs-table";
+import {
+  notificationBadge,
+  notificationOutcome,
+} from "@/components/analytics/runs-table";
 import { deliveryStatus } from "@/components/failure-alerts/format";
 import {
   type NotificationRow,
@@ -331,7 +334,7 @@ describe("notificationBadge", () => {
         state: "skipped",
         lastError: SKIP_REASON.stale,
       })
-    ).toMatchObject({ label: "Not delivered" });
+    ).toMatchObject({ label: "Not delivered", tooltip: SKIP_REASON.stale });
     // The Alerts history's words for a message still on its way.
     expect(notificationBadge({ ...detail, state: "pending" }).label).toBe(
       "Queued"
@@ -342,6 +345,21 @@ describe("notificationBadge", () => {
     expect(
       notificationBadge({ ...detail, state: "retrying", lastError: "429" })
     ).toMatchObject({ label: "Retrying", tooltip: "Retrying: 429" });
+  });
+
+  it("shows a dropped row's reason once, and calls other skips withdrawn", () => {
+    const dropped = {
+      ...detail,
+      state: "skipped",
+      lastError: SKIP_REASON.stale,
+    };
+    expect(notificationOutcome(dropped, null)).toBe(SKIP_REASON.stale);
+    expect(
+      notificationOutcome({ ...dropped, lastError: SKIP_REASON.success }, null)
+    ).toBe("Withdrawn before it was sent");
+    expect(notificationOutcome({ ...dropped, lastError: null }, null)).toBe(
+      "Withdrawn before it was sent"
+    );
   });
 
   it("says when a held recovery goes out, as the Alerts history does", () => {

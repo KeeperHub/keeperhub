@@ -15,6 +15,8 @@ export type StreakRun = {
   completedAt: Date | null;
   error: string | null;
   errorType: string | null;
+  errorCategory?: string | null;
+  billable?: boolean | null;
 };
 
 /** Our own platform failed the run: not the workflow's fault, so it is as if it never ran. */
@@ -22,6 +24,18 @@ function isPlatformError(
   run: Pick<StreakRun, "status" | "errorType">
 ): boolean {
   return run.status === "error" && run.errorType === ExecutionErrorType.SYSTEM;
+}
+
+/** Refused before it started (REFUSED_RUN_SQL): not a run, so not a failure either. */
+export function isRefusedRun(
+  run: Pick<StreakRun, "status" | "errorCategory" | "billable">
+): boolean {
+  return (
+    run.status === "skipped" ||
+    (run.status === "error" &&
+      run.errorCategory === "billing" &&
+      run.billable === false)
+  );
 }
 
 /** "manual" also covers API calls; only a browser session is a person. */
@@ -83,7 +97,7 @@ export function summarizeStreak(
       ended = true;
       break;
     }
-    if (!isAutomatedRun(run) || isPlatformError(run)) {
+    if (!isAutomatedRun(run) || isPlatformError(run) || isRefusedRun(run)) {
       continue;
     }
     if (run.status === "success") {

@@ -81,6 +81,8 @@ export type OrgSettingsView = {
     /** "missed": a scheduled run did not start; dueAt is when it was due. */
     openedBy: "count" | "time" | "missed" | "funding";
     dueAt: string;
+    /** Not running because its runs are refused before they start: the stored reason; else null. */
+    refusedReason: string | null;
   }[];
   /** The viewer's unshared connections, greyed out to explain why they are missing. */
   unsharedConnections: ConnectionView[];
@@ -165,6 +167,8 @@ export type WorkflowAlertView = {
       workflowPausedAt: string | null;
       /** When someone last turned it back on after that. */
       workflowResumedAt: string | null;
+      /** Not running because its runs are refused before they start: the stored reason; else null. */
+      refusedReason: string | null;
     } | null;
   };
   members: MemberView[];
@@ -303,6 +307,16 @@ export type MessagePreview = {
   chat: string;
   pagerDutySummary: string;
 };
+
+/** A not-running incident opened while its runs were refused before they start; lastError holds the reason. */
+export function isRefusedIncident(incident: {
+  openedBy: string;
+  lastFailedExecutionId: string | null;
+}): boolean {
+  return (
+    incident.openedBy === "missed" && incident.lastFailedExecutionId !== null
+  );
+}
 
 /** True for a row the outbox dropped as too old, rather than withdrew. */
 export function wasDropped(state: string, lastError: string | null): boolean {

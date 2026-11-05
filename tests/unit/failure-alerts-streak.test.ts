@@ -3,6 +3,7 @@ import {
   decide,
   isAutomatedRun,
   isOutOfFunds,
+  isRefusedRun,
   type StreakRun,
   summarizeStreak,
 } from "@/lib/notifications/failure-alerts/streak";
@@ -298,5 +299,30 @@ describe("wallet out of funds", () => {
         now: new Date(BASE),
       }).kind
     ).toBe("none");
+  });
+});
+
+describe("refused runs", () => {
+  it("steps over an unpaid refusal and a skipped run: neither counts nor ends the streak", () => {
+    const list = runs(["error", "error", "error", "success"]);
+    const unpaid = { errorCategory: "billing", billable: false };
+    const withRefusals: StreakRun[] = [
+      { ...list[0], ...unpaid, status: "error" },
+      { ...list[1], status: "skipped" },
+      { ...list[2], ...unpaid, status: "error" },
+      list[3],
+    ];
+    const summary = summarizeStreak(withRefusals, null, 10);
+    expect(summary.failures).toBe(0);
+    expect(
+      isRefusedRun({
+        status: "error",
+        errorCategory: "billing",
+        billable: true,
+      })
+    ).toBe(false);
+    expect(
+      isRefusedRun({ status: "error", errorCategory: null, billable: false })
+    ).toBe(false);
   });
 });

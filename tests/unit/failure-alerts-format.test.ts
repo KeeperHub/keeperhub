@@ -4,6 +4,8 @@ import {
   describeRule,
   formatSoon,
   formatWhen,
+  incidentTitle,
+  notRunningText,
   type RuleChannel,
 } from "@/components/failure-alerts/format";
 import { SKIP_REASON } from "@/lib/notifications/failure-alerts/stored-reasons";
@@ -157,5 +159,37 @@ describe("deliveryStatus", () => {
         now
       )
     ).toEqual({ label: "Withdrawn", tone: "muted" });
+  });
+});
+
+describe("incidentTitle", () => {
+  const missed = {
+    openedBy: "missed" as const,
+    since: "2026-10-01T11:13:00.000Z",
+    failureCount: 0,
+    refusedReason: null,
+  };
+
+  it("says when a missed run was due", () => {
+    expect(incidentTitle(missed, false)).toBe(
+      `Did not run at ${formatWhen(missed.since)}`
+    );
+  });
+
+  it("says refused runs are refused, not that the run was missed", () => {
+    const refused = { ...missed, refusedReason: "Monthly run limit reached" };
+    expect(incidentTitle(refused, false)).toBe(
+      "Not running: its scheduled runs are being refused before they start"
+    );
+    // A refusal with no stored error is still a refusal.
+    expect(notRunningText(missed.since, "")).toBe(
+      incidentTitle(refused, false)
+    );
+  });
+
+  it("counts failed runs for a failing streak", () => {
+    expect(
+      incidentTitle({ ...missed, openedBy: "count", failureCount: 5 }, true)
+    ).toBe("Turned off after 5 failed runs in a row");
   });
 });

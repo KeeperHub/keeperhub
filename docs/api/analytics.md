@@ -341,7 +341,7 @@ The `notification` object, present only on these rows, carries the rest:
 | `isBackup` | `true` when sent because another channel could not deliver |
 | `attempts` | How many times delivery was tried |
 | `lastError` | Why the last attempt failed, or why it was not sent |
-| `nextAttemptAt` | When a queued message is next tried; later than now for a recovery notice still waiting out its 30 minutes |
+| `nextAttemptAt` | When the message is next tried; meaningful only while `state` is `pending` or `retrying`. Later than now while it is held: during an alerts pause, or for a recovery notice still waiting out its 30 minutes |
 | `note` | Which channel a `channel_paused` notice is about; otherwise whether the incident turned the workflow off (`Turned the workflow off`, or `Turned the workflow off again after it was turned back on`) and why a backup was sent, joined with `. `; `null` when there is neither |
 | `workflows` | Every workflow the notification is about; empty for a notice about no workflow |
 

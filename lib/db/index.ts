@@ -132,6 +132,8 @@ const queryClient =
     connection: { statement_timeout: APP_STATEMENT_TIMEOUT_MS },
   });
 export const db = globalForDb.db ?? drizzle(queryClient, { schema });
+/** The handle a db.transaction callback receives. */
+export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 // Dedicated pool for the /api/metrics/db scrape aggregations. The collector
 // issues its queries concurrently (Promise.all in refreshDbMetricsNow); this

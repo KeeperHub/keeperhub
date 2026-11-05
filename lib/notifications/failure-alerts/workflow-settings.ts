@@ -1,7 +1,7 @@
 import "server-only";
 
 import { and, eq, isNull } from "drizzle-orm";
-import { db } from "@/lib/db";
+import { db, type Tx } from "@/lib/db";
 import {
   failureAlertChannels,
   failureAlertDeliveries,
@@ -18,7 +18,6 @@ import {
   loadOverride,
   resolveRecipientEmails,
 } from "./policy";
-import type { Tx } from "./queue-rows";
 import {
   checkVersion,
   loadChannelViews,
@@ -35,7 +34,11 @@ import {
 } from "./settings";
 import { summarizeStreak } from "./streak";
 import { loadStreakRuns } from "./streak-runs";
-import { methodText, type WorkflowAlertView } from "./view-types";
+import {
+  isRefusedIncident,
+  methodText,
+  type WorkflowAlertView,
+} from "./view-types";
 import { runsOnItsOwn, workflowTriggerType } from "./workflow-trigger";
 
 export async function loadWorkflowForAlerts(workflowId: string): Promise<{
@@ -186,6 +189,9 @@ export async function loadWorkflowAlertView(
             workflowPausedAt: incident.workflowPausedAt?.toISOString() ?? null,
             workflowResumedAt:
               incident.workflowResumedAt?.toISOString() ?? null,
+            refusedReason: isRefusedIncident(incident)
+              ? (incident.lastError ?? "")
+              : null,
           }
         : null,
     },

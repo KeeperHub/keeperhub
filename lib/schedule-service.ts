@@ -5,7 +5,7 @@ import {
   parseIntervalSeconds,
   validateCronExpression,
 } from "@/lib/cron-utils";
-import { db } from "@/lib/db";
+import { db, type Tx } from "@/lib/db";
 import {
   workflowFailureIncidents,
   workflowSchedules,
@@ -430,8 +430,6 @@ export async function setScheduleEnabled(
     `[Schedule] ${enabled ? "Enabled" : "Disabled"} schedule for workflow ${workflowId}`
   );
 }
-
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
  * An org that can run again (un-halt, reactivation): missed runs and failure

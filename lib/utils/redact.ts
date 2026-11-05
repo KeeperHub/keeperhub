@@ -242,9 +242,9 @@ export function stripCredentials(obj: any): any {
 const CHAT_WEBHOOK_URL =
   /\bhttps?:\/\/(?:hooks\.slack\.com|(?:[\w-]+\.)?discord(?:app)?\.com\/api\/webhooks|api\.telegram\.org)[^\s)'"<>]*/gi;
 const AUTH_SCHEME_TOKEN = /\b(Bearer|Basic)\s+[\w.~+/=-]+/gi;
-// "Authorization: <scheme> <token>" with any scheme (Token, Bot, ...), or a bare value.
+// "Authorization: <known scheme> <token>"; Digest's parameter list or any other value is masked whole.
 const AUTHORIZATION_VALUE =
-  /\b(authorization["']?\s*[=:]\s*["']?)(?:([A-Za-z]+)\s+)?[^\s"'&,;]+/gi;
+  /\b(authorization["']?\s*[=:]\s*["']?)(?:(digest)\s+[^\r\n]*|(bearer|basic|token|bot|negotiate|apikey)\s+[^\s"'&,;]+|[^\r\n"'&,;]+)/gi;
 const TELEGRAM_BOT_TOKEN = /\b\d{6,}:[\w-]{30,}/g;
 // Its own list of secret names as they appear in text, as "name=value" or "name: value".
 const SECRET_PAIR =
@@ -257,8 +257,10 @@ export function redactErrorSecrets(text: string): string {
   return redactSecretUrls(text.replace(CHAT_WEBHOOK_URL, "[REDACTED-URL]"))
     .replace(
       AUTHORIZATION_VALUE,
-      (_match, name: string, scheme?: string) =>
-        `${name}${scheme ? `${scheme} ` : ""}[REDACTED]`
+      (_match, name: string, digest?: string, scheme?: string) => {
+        const kept = digest ?? scheme;
+        return `${name}${kept ? `${kept} ` : ""}[REDACTED]`;
+      }
     )
     .replace(AUTH_SCHEME_TOKEN, "$1 [REDACTED]")
     .replace(TELEGRAM_BOT_TOKEN, "[REDACTED]")

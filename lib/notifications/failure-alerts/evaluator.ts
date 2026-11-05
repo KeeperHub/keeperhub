@@ -5,6 +5,7 @@ import {
   desc,
   eq,
   gt,
+  gte,
   inArray,
   isNotNull,
   isNull,
@@ -12,7 +13,7 @@ import {
   lte,
   sql,
 } from "drizzle-orm";
-import { db } from "@/lib/db";
+import { db, type Tx } from "@/lib/db";
 import {
   failureAlertDeliveries,
   organization,
@@ -71,13 +72,12 @@ import {
   incidentScope,
   insertDeliveries,
   rowsForPolicy,
-  type Tx,
 } from "./queue-rows";
 import { isFailureAlertsEnabledForOrg, splitByRollout } from "./rollout";
 import { lockOrgSettings } from "./settings";
 import { SKIP_REASON } from "./stored-reasons";
 import { decide, summarizeStreak } from "./streak";
-import { loadStreakRuns } from "./streak-runs";
+import { loadStreakRuns, REFUSED_RUN_SQL } from "./streak-runs";
 import {
   AUTOMATIC_TRIGGERS,
   runsOnItsOwn,
@@ -93,7 +93,7 @@ const AUTOMATED_RUN_SQL = sql`(${workflowExecutions.triggerSource} IS DISTINCT F
 /** A run that counts as the workflow running: automated, not deleted, not refused before it started. */
 const COUNTED_RUN_SQL = sql`(${AUTOMATED_RUN_SQL}
   AND ${workflowExecutions.deletedAt} IS NULL
-  AND ${workflowExecutions.status} <> 'skipped')`;
+  AND NOT ${REFUSED_RUN_SQL})`;
 
 type WorkflowRow = {
   id: string;
@@ -436,7 +436,7 @@ async function reviveWithdrawn(
       .where(eq(failureAlertDeliveries.id, row.id));
   }
   // Withdrawn backups stay withdrawn; renamed so they do not block the new ones.
-  await tx
+  const renamed = await tx
     .update(failureAlertDeliveries)
     .set({
       dedupKey: sql`${failureAlertDeliveries.dedupKey} || '|withdrawn:' || ${failureAlertDeliveries.id}`,
@@ -449,16 +449,38 @@ async function reviveWithdrawn(
         eq(failureAlertDeliveries.lastError, SKIPPED_BECAUSE.success),
         sql`${failureAlertDeliveries.dedupKey} NOT LIKE '%|withdrawn:%'`
       )
-    );
+    )
+    .returning({
+      kind: failureAlertDeliveries.kind,
+      sequence: failureAlertDeliveries.sequence,
+    });
+  // A failed or capped primary whose backup was withdrawn reached nobody: owe it a fresh backup.
+  for (const backup of new Map(
+    renamed.map((row) => [`${row.kind}|${row.sequence}`, row])
+  ).values()) {
+    await tx
+      .update(failureAlertDeliveries)
+      // nextAttemptAt holds a never-sent one until an org pause ends, as fireBackups reads it.
+      .set({
+        backupSentAt: null,
+        backupAt: due,
+        nextAttemptAt: due,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(failureAlertDeliveries.incidentId, incident.id),
+          eq(failureAlertDeliveries.isBackup, false),
+          eq(failureAlertDeliveries.kind, backup.kind),
+          eq(failureAlertDeliveries.sequence, backup.sequence),
+          inArray(failureAlertDeliveries.kind, ["alert", "reminder"]),
+          inArray(failureAlertDeliveries.state, ["failed", "capped"])
+        )
+      );
+  }
 }
 
-const SKIPPED_BECAUSE: Record<FailureIncidentResolution, string> = {
-  success: SKIP_REASON.success,
-  ran: SKIP_REASON.ran,
-  disabled: SKIP_REASON.disabled,
-  deleted: SKIP_REASON.deleted,
-  manual_trigger: SKIP_REASON.manual_trigger,
-};
+const SKIPPED_BECAUSE: Record<FailureIncidentResolution, string> = SKIP_REASON;
 
 /** The newest automated run started after `since`, however it ended (or still running). */
 async function latestRunSince(
@@ -1349,6 +1371,59 @@ async function findFailingWorkflows(organizationId: string): Promise<
 let missedScanCursor: string | null = null;
 /** A scheduler outage is ours: customers hear only once it lasts this long. */
 const PLATFORM_HOLD_MS = 30 * 60 * 1000;
+/** A refusal row stands for its hour: the dispatch route writes one per workflow, reason and hour. */
+const REFUSAL_BUCKET_MS = 60 * 60 * 1000;
+
+type Refusal = {
+  id: string;
+  error: string | null;
+  startedAt: Date;
+};
+
+/** Each workflow's newest refused run since `since`. */
+async function latestRefusals(
+  workflowIds: string[],
+  since: Date
+): Promise<Map<string, Refusal>> {
+  if (workflowIds.length === 0) {
+    return new Map();
+  }
+  const rows = await db
+    .selectDistinctOn([workflowExecutions.workflowId], {
+      workflowId: workflowExecutions.workflowId,
+      id: workflowExecutions.id,
+      error: workflowExecutions.error,
+      startedAt: workflowExecutions.startedAt,
+    })
+    .from(workflowExecutions)
+    .where(
+      and(
+        inArray(workflowExecutions.workflowId, workflowIds),
+        gte(workflowExecutions.startedAt, since),
+        isNull(workflowExecutions.deletedAt),
+        REFUSED_RUN_SQL
+      )
+    )
+    .orderBy(workflowExecutions.workflowId, desc(workflowExecutions.startedAt));
+  return new Map(rows.map((row) => [row.workflowId, row]));
+}
+
+/** Refused at or after the run it missed (and after its last real run): not running, but not our scheduler. */
+function refusalFor(
+  refusals: Map<string, Refusal>,
+  row: { workflowId: string; lastStartedAt: Date | null },
+  dueAt: Date
+): Refusal | null {
+  const refusal = refusals.get(row.workflowId);
+  if (
+    !refusal ||
+    refusal.startedAt.getTime() < dueAt.getTime() - REFUSAL_BUCKET_MS ||
+    (row.lastStartedAt && refusal.startedAt <= row.lastStartedAt)
+  ) {
+    return null;
+  }
+  return refusal;
+}
 
 /** Schedules past due plus grace with no run since; many at once pages our team. */
 export async function checkMissedSchedules(
@@ -1402,15 +1477,28 @@ export async function checkMissedSchedules(
       : (candidates.at(-1)?.scheduleId ?? null);
 
   // Every org counts toward an outage; only rolled-out orgs hear about it.
-  const lateAnywhere = candidates.filter(
-    (row) =>
-      workflowTriggerType(row.nodes) === "Schedule" &&
-      missedDueAt({
-        schedule: row,
-        lastStartedAt: row.lastStartedAt,
-        notBefore: row.scheduleSince,
-        now,
-      }) !== null
+  const dueAnywhere = candidates.flatMap((row) => {
+    const dueAt =
+      workflowTriggerType(row.nodes) === "Schedule"
+        ? missedDueAt({
+            schedule: row,
+            lastStartedAt: row.lastStartedAt,
+            notBefore: row.scheduleSince,
+            now,
+          })
+        : null;
+    return dueAt ? [{ ...row, dueAt }] : [];
+  });
+  const earliestDue = Math.min(
+    ...dueAnywhere.map((row) => row.dueAt.getTime())
+  );
+  const refusals = await latestRefusals(
+    dueAnywhere.map((row) => row.workflowId),
+    new Date(earliestDue - REFUSAL_BUCKET_MS)
+  );
+  // Refused runs (a plan limit, unpaid) are not a scheduler outage.
+  const lateAnywhere = dueAnywhere.filter(
+    (row) => !refusalFor(refusals, row, row.dueAt)
   );
   stats.schedulesLate += lateAnywhere.length;
   const platformWide =
@@ -1426,8 +1514,11 @@ export async function checkMissedSchedules(
   }
 
   const counting = new Map<string, Date | null>();
-  const late: ((typeof candidates)[number] & { dueAt: Date })[] = [];
-  for (const row of lateAnywhere) {
+  const late: ((typeof candidates)[number] & {
+    dueAt: Date;
+    refusal: Refusal | null;
+  })[] = [];
+  for (const row of dueAnywhere) {
     if (!isFailureAlertsEnabledForOrg(row.organizationId)) {
       continue;
     }
@@ -1450,7 +1541,7 @@ export async function checkMissedSchedules(
       now,
     });
     if (dueAt) {
-      late.push({ ...row, dueAt });
+      late.push({ ...row, dueAt, refusal: refusalFor(refusals, row, dueAt) });
     }
   }
 
@@ -1458,6 +1549,7 @@ export async function checkMissedSchedules(
   for (const row of late) {
     if (
       platformWide &&
+      !row.refusal &&
       now.getTime() - row.dueAt.getTime() < PLATFORM_HOLD_MS
     ) {
       continue;
@@ -1481,6 +1573,9 @@ export async function checkMissedSchedules(
           failureCount: 0,
           firstFailedAt: row.dueAt,
           lastFailedAt: row.dueAt,
+          // Marks it refused (isRefusedIncident): the refusal and its stored reason.
+          lastFailedExecutionId: row.refusal?.id ?? null,
+          lastError: row.refusal ? (row.refusal.error ?? "") : null,
           lastNotifiedAt: now,
         })
         .onConflictDoNothing()
@@ -1492,6 +1587,9 @@ export async function checkMissedSchedules(
           organizationId: row.organizationId,
           workflowId: row.workflowId,
         });
+        if (row.refusal) {
+          continue;
+        }
         // The message tells customers our team is alerted: make it true.
         logSystemWarn(
           ErrorCategory.WORKFLOW_ENGINE,

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { db } from "@/lib/db";
+import { db, type Tx } from "@/lib/db";
 import { failureAlertDeliveries } from "@/lib/db/schema";
 import type {
   FailureAlertDeliveryChannel,
@@ -39,8 +39,6 @@ export function channelRecipient(channel: {
 }): string {
   return channel.destination || channel.kind;
 }
-
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export function dedupKeyFor(row: DeliveryInsert): string {
   return [
@@ -163,5 +161,3 @@ export function rowsForPolicy(
     now,
   });
 }
-
-export type { Tx };

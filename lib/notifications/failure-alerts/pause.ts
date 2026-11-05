@@ -1,14 +1,14 @@
 import "server-only";
 
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { db } from "@/lib/db";
+import { db, type Tx } from "@/lib/db";
 import { workflowFailureIncidents, workflows } from "@/lib/db/schema";
 import type { FailureIncidentResolution } from "@/lib/db/schema-failure-alerts";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import { recordAuditEvent } from "@/lib/security/audit-log";
 import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
 import type { EffectivePolicy } from "./policy";
-import { insertDeliveries, rowsForPolicy, type Tx } from "./queue-rows";
+import { insertDeliveries, rowsForPolicy } from "./queue-rows";
 import { runsOnItsOwn, workflowTriggerType } from "./workflow-trigger";
 
 // "Pause at the limit". Re-enabling is caught by a DB trigger on

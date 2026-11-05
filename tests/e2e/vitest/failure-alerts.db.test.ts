@@ -5,6 +5,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { parseRunCursor } from "../../../lib/analytics/run-cursor";
+import { EXECUTION_LIMIT_REFUSAL } from "../../../lib/billing/dispatch-admission";
 import {
   failureAlertChannels,
   failureAlertDeliveries,
@@ -2887,6 +2888,154 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       const primary = rows.find((d) => d.kind === "alert" && !d.isBackup);
       expect(primary?.state).toBe("pending");
       expect(primary?.backupSentAt).toBeNull();
+    });
+
+    it("a reopened incident owes a failed alert a fresh backup when its backup was withdrawn", async () => {
+      const org = await countingOrg("reopenfailed");
+      const backupChannel = await makeChannel(org, "discord", "backup", "live");
+      const wf = await makeWorkflow(org, "Reopen failed");
+      await addFailures(org, wf, 5, -20);
+      await ev.evaluateQueuedWorkflows(new Date(), ev.emptyStats());
+      const first = await openIncident(wf);
+      const primary = (await deliveriesOf(org.orgId)).find(
+        (d) => d.kind === "alert" && !d.isBackup && d.channel === "email"
+      );
+      // The email failed for good and its backup was queued.
+      await db
+        .update(failureAlertDeliveries)
+        .set({ state: "failed", attempts: 1, backupSentAt: at(-5) })
+        .where(eq(failureAlertDeliveries.id, primary?.id ?? ""));
+      const backupKey = `i:${first?.id}|alert|0|discord|${backupChannel.id}|discord|backup`;
+      await db.insert(failureAlertDeliveries).values({
+        id: nextId("dl_"),
+        dedupKey: backupKey,
+        organizationId: org.orgId,
+        incidentId: first?.id,
+        kind: "alert",
+        channel: "discord",
+        channelId: backupChannel.id,
+        recipient: "discord",
+        isBackup: true,
+      });
+      await addRun(org, wf, "success", { at: at(-10) });
+      await ev.evaluateQueuedWorkflows(new Date(), ev.emptyStats());
+      await addRun(org, wf, "error", { at: at(-5) });
+      await ev.evaluateQueuedWorkflows(new Date(), ev.emptyStats());
+      expect((await openIncident(wf))?.id).toBe(first?.id);
+      const rearmed = (await deliveriesOf(org.orgId)).find(
+        (d) => d.id === primary?.id
+      );
+      expect(rearmed?.backupSentAt).toBeNull();
+      expect(rearmed?.backupAt?.getTime()).toBeGreaterThan(Date.now() - MINUTE);
+      const { fireBackups, emptyDrainStats } = await import(
+        "@/lib/notifications/failure-alerts/outbox"
+      );
+      await fireBackups(new Date(), emptyDrainStats());
+      const fresh = (await deliveriesOf(org.orgId)).find(
+        (d) => d.dedupKey === backupKey
+      );
+      expect(fresh?.state).toBe("pending");
+    });
+
+    const refusedRun = async (
+      org: Org,
+      wf: string,
+      minutes: number,
+      fields: Partial<typeof workflowExecutions.$inferInsert> = {}
+    ) => {
+      const startedAt = at(minutes);
+      await db.insert(workflowExecutions).values({
+        id: nextId("run_"),
+        workflowId: wf,
+        userId: org.userId,
+        organizationId: org.orgId,
+        status: "skipped",
+        billable: false,
+        error: EXECUTION_LIMIT_REFUSAL,
+        errorCategory: "billing",
+        errorType: "user",
+        triggerSource: "schedule",
+        startedAt,
+        completedAt: startedAt,
+        ...fields,
+      });
+    };
+
+    it("an org at its run limit hears its runs are refused, not a scheduling problem", async () => {
+      const org = await countingOrg("runlimit");
+      const wf = await makeWorkflow(org, "Run limit keeper");
+      await addSchedule(wf);
+      await refusedRun(org, wf, -1);
+      await runCycle();
+      const incident = await openIncident(wf);
+      expect(incident?.openedBy).toBe("missed");
+      expect(incident?.lastError).toBe(EXECUTION_LIMIT_REFUSAL);
+      expect(incident?.lastFailedExecutionId).toBeTruthy();
+      const [mail] = mailsAbout(org, "Run limit keeper");
+      expect(mail?.text).toContain("refused before they start");
+      expect(mail?.text).toContain(EXECUTION_LIMIT_REFUSAL.replace(/\.$/, ""));
+      expect(mail?.text).toContain("/plans");
+      expect(mail?.text).not.toMatch(/scheduling problem|our team|by hand/i);
+      const loaded = await workflowSettings.loadWorkflowForAlerts(wf);
+      if (!loaded) {
+        throw new Error("workflow not found");
+      }
+      const view = await workflowSettings.loadWorkflowAlertView(
+        loaded,
+        org.userId
+      );
+      expect(view.status.incident?.refusedReason).toBe(EXECUTION_LIMIT_REFUSAL);
+    });
+
+    it("refused schedules across orgs do not look like a scheduler outage, so a real miss still alerts", async () => {
+      const refusedWorkflows: string[] = [];
+      for (const tag of ["limA", "limB", "limC", "limD"]) {
+        const org = await makeOrg(tag);
+        leaveRollout(org);
+        for (let i = 0; i < 7 && refusedWorkflows.length < 25; i++) {
+          const id = await makeWorkflow(org, `Refused ${tag} ${i}`);
+          await addSchedule(id);
+          await refusedRun(org, id, -1);
+          refusedWorkflows.push(id);
+        }
+      }
+      const org = await countingOrg("realmiss");
+      const wf = await makeWorkflow(org, "Real miss");
+      await addSchedule(wf);
+      // A fresh miss: a platform-wide outage would hold it for 30 minutes.
+      await addRun(org, wf, "success", { at: at(-20) });
+      try {
+        await runCycle();
+        expect(refusedWorkflows).toHaveLength(25);
+        const incident = await openIncident(wf);
+        expect(incident?.openedBy).toBe("missed");
+        expect(incident?.lastFailedExecutionId).toBeNull();
+      } finally {
+        for (const id of refusedWorkflows) {
+          await setEnabled(id, false);
+        }
+      }
+    });
+
+    it("five unpaid webhook refusals open no incident and do not turn the workflow off", async () => {
+      const org = await countingOrg("unpaid");
+      const wf = await makeWorkflow(org, "Unpaid webhook", "Webhook");
+      await db.insert(workflowFailureAlertOverrides).values({
+        workflowId: wf,
+        organizationId: org.orgId,
+        threshold: 2,
+        pauseWorkflow: true,
+      });
+      for (const minutes of [-5, -4, -3, -2, -1]) {
+        await refusedRun(org, wf, minutes, {
+          status: "error",
+          error: "Insufficient credit balance to pay for this execution.",
+          triggerSource: "webhook",
+        });
+      }
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      expect(await isEnabled(wf)).toBe(true);
     });
   });
 });

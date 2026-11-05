@@ -10,7 +10,7 @@ import {
   type OrgSettingsView,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
-import { failedRuns, formatWhen, joinList } from "./format";
+import { failedRuns, formatWhen, joinList, notRunningText } from "./format";
 import { memberLabel } from "./member-label";
 import { channelWorks } from "./method-drafts";
 import { AlertsPausedNotice } from "./pause-alerts";
@@ -310,7 +310,7 @@ export function AlertsStatus({
                 </Link>
                 <span className="text-destructive text-xs">
                   {w.openedBy === "missed"
-                    ? `Did not run at ${formatWhen(w.dueAt)}`
+                    ? notRunningText(w.dueAt, w.refusedReason)
                     : `${w.openedBy === "funding" ? "Wallet out of funds, " : ""}${failedRuns(w.failureCount)} in a row${ownRule(ownThreshold.get(w.workflowId))}, alert sent ${timeAgo(w.openedAt)}`}
                   {pause
                     ? `. Alerts held until ${formatWhen(pause.until)}`

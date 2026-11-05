@@ -2,12 +2,43 @@ import {
   DELIVERY_STATE_LABEL,
   type HistoryEntry,
   methodText,
+  type WorkflowAlertView,
   wasDropped,
 } from "@/lib/notifications/failure-alerts/view-types";
 
 /** "1 failed run" / "5 failed runs", worded the same everywhere in the feature. */
 export function failedRuns(count: number): string {
   return `${count} failed run${count === 1 ? "" : "s"}`;
+}
+
+/** A not-running incident: refused runs (a plan limit, unpaid) say so; else when it was due. */
+export function notRunningText(
+  dueAt: string,
+  refusedReason: string | null
+): string {
+  return refusedReason === null
+    ? `Did not run at ${formatWhen(dueAt)}`
+    : "Not running: its scheduled runs are being refused before they start";
+}
+
+/** The workflow panel's incident heading. */
+export function incidentTitle(
+  incident: Pick<
+    NonNullable<WorkflowAlertView["status"]["incident"]>,
+    "openedBy" | "since" | "failureCount" | "refusedReason"
+  >,
+  pausedByAlert: boolean
+): string {
+  if (incident.openedBy === "missed") {
+    return notRunningText(incident.since, incident.refusedReason);
+  }
+  const runs = `${failedRuns(incident.failureCount)} in a row`;
+  if (incident.openedBy === "funding") {
+    return pausedByAlert
+      ? `Turned off: wallet out of funds, ${runs}`
+      : `Wallet out of funds: ${runs}`;
+  }
+  return pausedByAlert ? `Turned off after ${runs}` : `Failing: ${runs}`;
 }
 
 /**

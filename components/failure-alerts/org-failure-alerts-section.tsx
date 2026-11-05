@@ -661,8 +661,9 @@ export function OrgFailureAlertsSection({
                 what failed. Retries continue for an hour; a message still not
                 sent an hour after it was due (when queued, when an alerts pause
                 ends, or 30 minutes after a recovery) is dropped. A PagerDuty
-                resolve keeps trying for 24 hours. Alerts due while the
-                organization's circuit breaker is engaged are withdrawn.
+                resolve keeps trying for 24 hours. Alerts, reminders and
+                recovery notices due while the organization's circuit breaker is
+                engaged are withdrawn; PagerDuty resolves still go out.
               </li>
               <li>
                 A method that stops working is paused and everyone is told once.

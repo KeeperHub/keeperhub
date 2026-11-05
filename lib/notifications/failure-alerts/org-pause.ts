@@ -1,7 +1,7 @@
 import "server-only";
 
 import { and, count, eq, isNull, lte } from "drizzle-orm";
-import { db } from "@/lib/db";
+import { db, type Tx } from "@/lib/db";
 import {
   failureAlertDeliveries,
   orgFailureAlertSettings,
@@ -21,7 +21,7 @@ import {
   loadOrgPolicy,
   resolveRecipientEmails,
 } from "./policy";
-import { buildMessageRows, insertDeliveries, type Tx } from "./queue-rows";
+import { buildMessageRows, insertDeliveries } from "./queue-rows";
 import {
   lockOrgSettings,
   requeueForEvaluation,

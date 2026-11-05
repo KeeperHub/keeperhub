@@ -58,7 +58,10 @@ import {
   useChainDisplay,
 } from "@/lib/hooks/use-chain-display";
 import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
-import { channelLabel } from "@/lib/notifications/failure-alerts/view-types";
+import {
+  channelLabel,
+  wasDropped,
+} from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import { ProjectDrawer } from "./project-drawer";
 
@@ -298,6 +301,16 @@ function StatusBadge({ status }: { status: NormalizedStatus }): ReactNode {
 
 const MONTHLY_LIMIT_TEXT = "Not sent: Free plan monthly email limit reached";
 
+/** A dropped row's stored reason already starts "Dropped:", so it stands alone. */
+function failedTooltip(detail: NotificationRunDetail): string {
+  if (detail.lastError && wasDropped(detail.state, detail.lastError)) {
+    return detail.lastError;
+  }
+  return detail.lastError
+    ? `Could not be delivered: ${detail.lastError}`
+    : "Could not be delivered";
+}
+
 /** A notification's own outcome; run badges would misread an undelivered message as a failed run. */
 export function notificationBadge(
   detail: NotificationRunDetail,
@@ -324,9 +337,7 @@ export function notificationBadge(
       return {
         label,
         className: "border-destructive/20 bg-destructive/10 text-destructive",
-        tooltip: detail.lastError
-          ? `Could not be delivered: ${detail.lastError}`
-          : "Could not be delivered",
+        tooltip: failedTooltip(detail),
       };
     case "muted":
       return {
@@ -617,7 +628,7 @@ function plural(count: number, word: string): string {
 }
 
 /** What became of the message, in the words the notification history uses. */
-function notificationOutcome(
+export function notificationOutcome(
   detail: NotificationRunDetail,
   completedAt: string | null
 ): string {
@@ -630,8 +641,8 @@ function notificationOutcome(
       return MONTHLY_LIMIT_TEXT;
     case "skipped":
       // A dropped row's stored reason says why; anything else was withdrawn.
-      return deliveryStatus(detail).tone === "failed"
-        ? (detail.lastError ?? "Not delivered")
+      return detail.lastError && wasDropped(detail.state, detail.lastError)
+        ? detail.lastError
         : "Withdrawn before it was sent";
     default:
       return detail.attempts > 0

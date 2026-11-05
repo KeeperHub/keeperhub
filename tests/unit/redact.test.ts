@@ -102,6 +102,22 @@ describe("redactErrorSecrets", () => {
     );
   });
 
+  it("masks a whole value with no known scheme, and Digest's parameters", () => {
+    expect(redactErrorSecrets("Authorization: abcdefghXYZ is invalid")).toBe(
+      "Authorization: [REDACTED]"
+    );
+    expect(redactErrorSecrets("Authorization: required for this call")).toBe(
+      "Authorization: [REDACTED]"
+    );
+    const digest = redactErrorSecrets(
+      'Authorization: Digest username="bob", realm="api", nonce="n0nce", response="6629fae49393a053"\nnext line'
+    );
+    expect(digest).toBe("Authorization: Digest [REDACTED]\nnext line");
+    expect(redactErrorSecrets("authorization: apikey s3cr3t")).toBe(
+      "authorization: apikey [REDACTED]"
+    );
+  });
+
   it("keeps prose that only names a token or key readable", () => {
     const text =
       "execution reverted: Unsupported token: 0xA0b8, key: missing, auth: failed";

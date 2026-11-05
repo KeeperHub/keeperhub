@@ -19,7 +19,7 @@ import {
   runCursorCondition,
 } from "@/lib/analytics/run-cursor";
 import { getOrgPlan } from "@/lib/billing/plans-server";
-import { db } from "@/lib/db";
+import { db, type Tx } from "@/lib/db";
 import {
   failureAlertChannels,
   failureAlertDeliveries,
@@ -50,7 +50,6 @@ import {
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "./constants";
 import { loadOrgPolicy, resolveRecipientEmails } from "./policy";
-import type { Tx } from "./queue-rows";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
 import { checkChannelSilently, type DeliveryOutcome } from "./senders";
 import {
@@ -58,6 +57,7 @@ import {
   type ConnectionView,
   channelLabel,
   type HistoryEntry,
+  isRefusedIncident,
   type MemberView,
   type OrgSettingsView,
 } from "./view-types";
@@ -171,6 +171,8 @@ async function loadFailingNow(
       openedAt: workflowFailureIncidents.openedAt,
       openedBy: workflowFailureIncidents.openedBy,
       dueAt: workflowFailureIncidents.firstFailedAt,
+      lastError: workflowFailureIncidents.lastError,
+      lastFailedExecutionId: workflowFailureIncidents.lastFailedExecutionId,
     })
     .from(workflowFailureIncidents)
     .innerJoin(workflows, eq(workflows.id, workflowFailureIncidents.workflowId))
@@ -182,10 +184,16 @@ async function loadFailingNow(
     )
     .orderBy(desc(workflowFailureIncidents.openedAt))
     .limit(50);
-  return rows.map((row) => ({
+  return rows.map(({ lastError, lastFailedExecutionId, ...row }) => ({
     ...row,
     openedAt: row.openedAt.toISOString(),
     dueAt: row.dueAt.toISOString(),
+    refusedReason: isRefusedIncident({
+      openedBy: row.openedBy,
+      lastFailedExecutionId,
+    })
+      ? (lastError ?? "")
+      : null,
   }));
 }
 

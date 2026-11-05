@@ -14,7 +14,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { getOrgPlan } from "@/lib/billing/plans-server";
-import { db } from "@/lib/db";
+import { db, type Tx } from "@/lib/db";
 import {
   failureAlertChannels,
   failureAlertDeliveries,
@@ -44,6 +44,7 @@ import {
 import {
   type AlertWorkflow,
   type MessageInput,
+  type Refused,
   type RenderedMessage,
   renderMessage,
   runsUrl,
@@ -62,7 +63,6 @@ import {
   groupScope,
   incidentScope,
   insertDeliveries,
-  type Tx,
 } from "./queue-rows";
 import { splitByRollout } from "./rollout";
 import {
@@ -77,6 +77,7 @@ import {
   CHANNEL_LABEL,
   channelLabel,
   EMAILS_KEPT_FOR_NEW_FAILURES,
+  isRefusedIncident,
 } from "./view-types";
 import { workflowTriggerType } from "./workflow-trigger";
 
@@ -158,6 +159,7 @@ class Context {
   private readonly workflowsById = new Map<string, AlertWorkflow | null>();
   private readonly plans = new Map<string, string>();
   private readonly history = new Map<string, Promise<RunsBefore>>();
+  private readonly refusals = new Map<string, Refused | undefined>();
   readonly channels = new Map<string, ChannelConfig>();
   readonly appUrl: string;
 
@@ -231,6 +233,27 @@ class Context {
         }
       : null;
     this.workflowsById.set(id, value);
+    return value;
+  }
+
+  /** A refused incident's reason, and whether the workflow itself cannot run (not plan or billing). */
+  async refused(incident: IncidentRow): Promise<Refused | undefined> {
+    if (!(isRefusedIncident(incident) && incident.lastFailedExecutionId)) {
+      return undefined;
+    }
+    if (this.refusals.has(incident.id)) {
+      return this.refusals.get(incident.id);
+    }
+    const [run] = await db
+      .select({ errorCategory: workflowExecutions.errorCategory })
+      .from(workflowExecutions)
+      .where(eq(workflowExecutions.id, incident.lastFailedExecutionId))
+      .limit(1);
+    const value: Refused = {
+      reason: incident.lastError,
+      notRunnable: run?.errorCategory === "configuration",
+    };
+    this.refusals.set(incident.id, value);
     return value;
   }
 
@@ -387,6 +410,7 @@ async function renderRow(
           workflowPaused: incident.workflowPausedAt !== null,
           lastError: incident.lastError,
           openedBy: incident.openedBy,
+          refused: await ctx.refused(incident),
         });
       }
     }
@@ -414,6 +438,7 @@ async function renderRow(
       // A wallet that ran dry turned it off: say so, whatever opened it.
       openedBy:
         context.outOfFunds === true ? ("funding" as const) : incident.openedBy,
+      refused: await ctx.refused(incident),
       before:
         row.kind === "recovery" ? undefined : await ctx.runsBefore(incident),
     };
@@ -1107,7 +1132,7 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
     : (await loadOrgPolicy(row.organizationId)).recipientUserIds;
 
   const targets: DeliveryInsert[] = [];
-  // A withdrawn (skipped) copy got nothing to anyone.
+  // Any skipped copy (withdrawn, dropped, halted) reached nobody, so it does not count.
   const has = (channel: string, recipient: string): boolean =>
     siblings.some(
       (s) =>
