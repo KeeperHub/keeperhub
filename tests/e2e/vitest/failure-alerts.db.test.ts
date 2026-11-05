@@ -1900,6 +1900,50 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(mailsAbout(iota, "Maintenance Keeper").length).toBeGreaterThan(0);
     });
 
+    it("stores the reason as one line without control or bidi characters", async () => {
+      const org = await makeOrg("reasonclean");
+      await orgPause.pauseOrgAlerts({
+        organizationId: org.orgId,
+        until: at(60).toISOString(),
+        reason: "Vault\u202e upgrade\n\tnow",
+        by: null,
+        now: new Date(),
+      });
+      const [row] = await db
+        .select({ reason: orgFailureAlertSettings.pauseReason })
+        .from(orgFailureAlertSettings)
+        .where(eq(orgFailureAlertSettings.organizationId, org.orgId));
+      expect(row?.reason).toBe("Vault upgrade now");
+    });
+
+    it("allows 5 pauses an hour, then refuses more but still resumes", async () => {
+      const org = await makeOrg("pauselimit");
+      const pause = () =>
+        orgPause.pauseOrgAlerts({
+          organizationId: org.orgId,
+          until: at(60).toISOString(),
+          reason: null,
+          by: null,
+          now: new Date(),
+        });
+      for (let i = 0; i < 5; i++) {
+        await pause();
+      }
+      const error = await settingsError(pause);
+      expect(error.status).toBe(429);
+      expect(error.message).toContain("5 times in the last hour");
+      await orgPause.resumeOrgAlerts({
+        organizationId: org.orgId,
+        by: null,
+        now: new Date(),
+      });
+      const [row] = await db
+        .select({ until: orgFailureAlertSettings.pausedUntil })
+        .from(orgFailureAlertSettings)
+        .where(eq(orgFailureAlertSettings.organizationId, org.orgId));
+      expect(row?.until).toBeNull();
+    });
+
     it("refuses a pause longer than 7 days", async () => {
       const error = await settingsError(() =>
         orgPause.pauseOrgAlerts({
@@ -2419,7 +2463,27 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
           )
         );
       expect(restored?.pausedAt).toBeTruthy();
-      expect(restored?.pausedReason).toBe(reason);
+      // The browser's text is not stored: it could say anything.
+      expect(restored?.pausedReason).toBe("It was paused when it was removed");
+    });
+
+    it("refuses a Slack channel with spaces or over 80 characters", async () => {
+      const org = await makeOrg("slackname");
+      const integrationId = await makeConnection(org, "slack", "live");
+      for (const destination of ["#ops alerts", `#${"a".repeat(81)}`]) {
+        const error = await settingsError(() =>
+          settings.parseOrgSettings(
+            {
+              threshold: 5,
+              recipientUserIds: [org.userId],
+              channels: [{ integrationId, destination, role: "always" }],
+            },
+            org.orgId
+          )
+        );
+        expect(error.status).toBe(400);
+        expect(error.message).toContain("not a Slack channel");
+      }
     });
   });
 

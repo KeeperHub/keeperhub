@@ -74,6 +74,8 @@ export const RECOVERY_HOLD_MS = 30 * 60 * 1000;
 /** Longest org-wide pause, extensions included, so a forgotten one cannot silence alerts for long. */
 export const MAX_ORG_PAUSE_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_PAUSE_REASON = 200;
+/** Pauses (or changes to one) an org may make per hour: each one tells every recipient. */
+export const MAX_PAUSES_PER_HOUR = 5;
 
 /** A scheduled workflow this late with no run counts as not running. */
 export const MISSED_RUN_GRACE_MS = 10 * 60 * 1000;

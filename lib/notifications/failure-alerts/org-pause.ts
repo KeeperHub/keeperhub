@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, count, eq, isNull, lte } from "drizzle-orm";
+import { and, count, eq, gt, isNull, lte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   failureAlertDeliveries,
@@ -11,10 +11,12 @@ import {
 import type { FailureAlertDeliveryChannel as DeliveryChannel } from "@/lib/db/schema-failure-alerts";
 import type { Tx } from "@/lib/db/tx";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
+import { stripControlChars } from "@/lib/utils/control-chars";
 import {
   BACKUP_AFTER_MS,
   MAX_ORG_PAUSE_MS,
   MAX_PAUSE_REASON,
+  MAX_PAUSES_PER_HOUR,
 } from "./constants";
 import {
   ensureOrgSettings,
@@ -130,6 +132,41 @@ async function countPausingWorkflows(organizationId: string): Promise<number> {
   return row?.count ?? 0;
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+const WHITESPACE = /\s+/g;
+
+/** One line of plain text: control and bidi characters could make it read as something else. */
+function cleanReason(raw: unknown): string | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const text = stripControlChars(raw, { replacement: " " })
+    .replace(WHITESPACE, " ")
+    .trim();
+  return text ? text.slice(0, MAX_PAUSE_REASON) : null;
+}
+
+/** Pause notices sent in the last hour; the rows of one notice share their insert time. */
+async function pauseNoticesSince(
+  tx: Tx,
+  organizationId: string,
+  now: Date
+): Promise<number> {
+  const [row] = await tx
+    .select({
+      notices: sql<number>`count(distinct ${failureAlertDeliveries.createdAt})::int`,
+    })
+    .from(failureAlertDeliveries)
+    .where(
+      and(
+        eq(failureAlertDeliveries.organizationId, organizationId),
+        eq(failureAlertDeliveries.kind, "alerts_paused"),
+        gt(failureAlertDeliveries.createdAt, new Date(now.getTime() - HOUR_MS))
+      )
+    );
+  return row?.notices ?? 0;
+}
+
 export async function pauseOrgAlerts(params: {
   organizationId: string;
   until: unknown;
@@ -144,13 +181,18 @@ export async function pauseOrgAlerts(params: {
   if (!until || Number.isNaN(until.getTime()) || until <= now) {
     throw new SettingsError("Pick when alerts should start again.");
   }
-  const reason =
-    typeof params.reason === "string" && params.reason.trim()
-      ? params.reason.trim().slice(0, MAX_PAUSE_REASON)
-      : null;
+  const reason = cleanReason(params.reason);
   await ensureOrgSettings(organizationId, now);
   await db.transaction(async (tx: Tx) => {
     const current = await lockedPause(tx, organizationId);
+    if (
+      (await pauseNoticesSince(tx, organizationId, now)) >= MAX_PAUSES_PER_HOUR
+    ) {
+      throw new SettingsError(
+        `Alerts were paused or changed ${MAX_PAUSES_PER_HOUR} times in the last hour, and each one tells everyone. Try again later; Resume still works.`,
+        429
+      );
+    }
     const ongoing = activePause(current?.pausedUntil ?? null, now);
     // Changing an ongoing pause keeps its start, so extending cannot pass 7 days in all.
     const startedAt = (ongoing && current?.pausedAt) || now;

@@ -376,8 +376,11 @@ type ChannelInput = {
   pausedReason?: string;
 };
 
-const MAX_PAUSED_REASON = 500;
 const TELEGRAM_CHAT_ID = /^(-?\d{5,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$/;
+// A Slack channel name (up to 80 characters, no spaces) or ID, with an optional #.
+const SLACK_CHANNEL = /^#?[^\s#<>@&|,]{1,80}$/u;
+// Undo brings a paused method back paused; the browser's reason text is not kept.
+const RESTORED_PAUSED_REASON = "It was paused when it was removed";
 const TRAILING_PERIOD = /\.+$/;
 
 export function parseThreshold(raw: unknown): number {
@@ -478,6 +481,11 @@ export async function parseChannels(
         "A Slack channel needs a channel, for example #alerts."
       );
     }
+    if (connection.kind === "slack" && !SLACK_CHANNEL.test(destination)) {
+      throw new SettingsError(
+        "That is not a Slack channel: use its name, like #alerts (no spaces, up to 80 characters), or its ID."
+      );
+    }
     if (connection.kind === "telegram" && !TELEGRAM_CHAT_ID.test(destination)) {
       throw new SettingsError(
         "That is not a Telegram chat ID: use a number like -1001234567890, or @name for a public channel."
@@ -505,7 +513,7 @@ export async function parseChannels(
       role: item?.role === "backup" ? "backup" : "always",
       pausedReason:
         typeof item?.pausedReason === "string" && item.pausedReason.trim()
-          ? item.pausedReason.trim().slice(0, MAX_PAUSED_REASON)
+          ? RESTORED_PAUSED_REASON
           : undefined,
     });
   }
