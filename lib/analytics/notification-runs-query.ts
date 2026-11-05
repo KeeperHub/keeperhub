@@ -20,6 +20,7 @@ import {
   workflows,
 } from "@/lib/db/schema";
 import { SKIP_REASON } from "@/lib/notifications/failure-alerts/stored-reasons";
+import { stepUpMasker } from "@/lib/notifications/org-recipients";
 import { likePattern } from "./like-pattern";
 import {
   groupedIncidentIds,
@@ -184,6 +185,16 @@ export async function loadNotificationRows(
       desc(failureAlertDeliveries.id)
     )
     .limit(limit);
+
+  // Results are shared and cached, so a step-up inbox is masked for everyone.
+  const mask = await stepUpMasker(
+    rows.filter((r) => r.channel === "email").map((r) => r.recipient)
+  );
+  for (const row of rows) {
+    if (row.channel === "email") {
+      row.recipient = mask(row.recipient);
+    }
+  }
 
   const groupedIds = new Set<string>();
   for (const row of rows) {

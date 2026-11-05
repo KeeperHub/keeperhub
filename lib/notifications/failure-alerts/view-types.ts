@@ -70,9 +70,13 @@ export type OrgSettingsView = {
     mutedUntil: string | null;
     muteUntilSuccess: boolean;
     threshold: number | null;
+    /** Null follows the org; 0 means off for this workflow. */
+    timeLimitMinutes: number | null;
     customRecipients: boolean;
     customChannels: boolean;
     pauseWorkflow: boolean;
+    /** Its own methods that are paused or lost their connection. */
+    brokenMethods: number;
   }[];
   /** Last alert of any kind delivered to anyone, for "it works" proof. */
   lastAlertDeliveredAt: string | null;

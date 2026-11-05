@@ -1134,6 +1134,79 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(await sentEmails(org, "channel_paused")).toHaveLength(1);
     });
 
+    it("a workflow's own method that dies tells the owner, the alert people and the workflow's people, and is flagged", async () => {
+      const own = await makeOrg("wfdead");
+      const addUser = async (tag: string, role: string): Promise<string> => {
+        const id = nextId(`user_${tag}_`);
+        await db.insert(users).values({
+          id,
+          name: tag,
+          email: `${tag}-${RUN}@failure-alerts.test`,
+          emailVerified: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+        await db.insert(member).values({
+          id: nextId("member_"),
+          organizationId: own.orgId,
+          userId: id,
+          role,
+          createdAt: new Date(),
+        });
+        return id;
+      };
+      const oncall = await addUser("wfdead-oncall", "admin");
+      const dev = await addUser("wfdead-dev", "member");
+      // The org's alerts go to on-call only, so the owner is not among them.
+      await db.insert(orgFailureAlertSettings).values({
+        organizationId: own.orgId,
+        threshold: 5,
+        recipientUserIds: [oncall],
+        countingSince: at(-60),
+      });
+      const wf = await makeWorkflow(own, "Vault keeper");
+      await db.insert(workflowFailureAlertOverrides).values({
+        workflowId: wf,
+        organizationId: own.orgId,
+        customChannels: true,
+        recipientUserIds: [dev],
+      });
+      const telegram = await makeChannel(own, "telegram", "always", "dead", {
+        checked: false,
+      });
+      await db
+        .update(failureAlertChannels)
+        .set({ workflowId: wf })
+        .where(eq(failureAlertChannels.id, telegram.id));
+
+      await runCycle();
+      await runCycle();
+
+      const notices = (await deliveriesOf(own.orgId)).filter(
+        (d) => d.kind === "channel_paused" && d.channel === "email"
+      );
+      expect(new Set(notices.map((d) => d.recipient))).toEqual(
+        new Set([
+          own.email,
+          `wfdead-oncall-${RUN}@failure-alerts.test`,
+          `wfdead-dev-${RUN}@failure-alerts.test`,
+        ])
+      );
+      expect(notices[0]?.context?.workflowId).toBe(wf);
+      expect(String(notices[0]?.context?.workflowName)).toContain(
+        "Vault keeper"
+      );
+      const mail = mailsTo(own).find((m) =>
+        m.subject.includes("stopped working for the workflow Vault keeper")
+      );
+      expect(mail?.text).toContain(`/workflows/${wf}`);
+
+      const view = await settings.loadOrgSettingsView(own.orgId, own.userId);
+      expect(view.customWorkflows.find((w) => w.id === wf)?.brokenMethods).toBe(
+        1
+      );
+    });
+
     it("a Telegram test with a revoked token reports the provider error and records it", async () => {
       const telegram = await makeChannel(org, "telegram", "always", "dead");
       const result = await testSend.sendTest({
@@ -1944,6 +2017,22 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(row?.until).toBeNull();
     });
 
+    it("pauses sent at once still stop at 5 an hour", async () => {
+      const org = await makeOrg("pauserace");
+      const results = await Promise.allSettled(
+        Array.from({ length: 8 }, () =>
+          orgPause.pauseOrgAlerts({
+            organizationId: org.orgId,
+            until: at(60).toISOString(),
+            reason: null,
+            by: null,
+            now: new Date(),
+          })
+        )
+      );
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(5);
+    });
+
     it("refuses a pause longer than 7 days", async () => {
       const error = await settingsError(() =>
         orgPause.pauseOrgAlerts({
@@ -2465,6 +2554,38 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(restored?.pausedAt).toBeTruthy();
       // The browser's text is not stored: it could say anything.
       expect(restored?.pausedReason).toBe("It was paused when it was removed");
+    });
+
+    it("shows a wallet member's step-up inbox only to that member", async () => {
+      const org = await makeOrg("stepup");
+      const walletId = nextId("user_stepup_wallet_");
+      const walletLogin = `0x${"5".repeat(40)}@wallet.keeperhub.com`;
+      const inbox = `stepup-private-${RUN}@failure-alerts.test`;
+      await db.insert(users).values({
+        id: walletId,
+        name: "wallet member",
+        email: walletLogin,
+        emailVerified: false,
+        stepUpEmail: inbox,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await db.insert(member).values({
+        id: nextId("member_"),
+        organizationId: org.orgId,
+        userId: walletId,
+        role: "member",
+        createdAt: new Date(),
+      });
+      const asOwner = await settings.loadOrgSettingsView(org.orgId, org.userId);
+      const seen = asOwner.members.find((m) => m.userId === walletId);
+      expect(seen?.email).toBe(walletLogin);
+      expect(seen?.reachable).toBe(true);
+      expect(JSON.stringify(asOwner)).not.toContain(inbox);
+      const asSelf = await settings.loadOrgSettingsView(org.orgId, walletId);
+      expect(asSelf.members.find((m) => m.userId === walletId)?.email).toBe(
+        inbox
+      );
     });
 
     it("lists only the user's orgs that have alerts on, for the settings menu", async () => {

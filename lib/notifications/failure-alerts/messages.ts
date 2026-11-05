@@ -112,6 +112,8 @@ export type MessageInput =
       /** slack, discord, telegram or pagerduty; unknown on older notices. */
       channelKind?: string;
       reason: string;
+      /** Set when the method belongs to one workflow, not the org. */
+      workflow?: { id: string; name: string };
     })
   | (OrgFields & {
       kind: "alerts_paused";
@@ -1021,7 +1023,7 @@ function renderRecovery(
 /** How a paused method comes back: the daily check proves all but Slack (token only). */
 function channelResumeText(kind: string | undefined): string {
   if (kind === "slack") {
-    return "It is paused until a test from the Alerts page succeeds.";
+    return "It is paused until a test on it succeeds.";
   }
   if (kind) {
     return "It is paused; it is checked every day and turns back on by itself when it works, or when a test succeeds.";
@@ -1032,15 +1034,24 @@ function channelResumeText(kind: string | undefined): string {
 function renderChannelPaused(
   input: Extract<MessageInput, { kind: "channel_paused" }>
 ): RenderedMessage {
-  const link = settingsUrl(input.appUrl, input.organizationId);
-  // The label and the provider's reason are outside text.
-  const headlineParts = [
-    user(input.channelLabel),
-    " stopped working for failure notifications",
-  ];
+  const { workflow } = input;
+  const link = workflow
+    ? workflowUrl(input.appUrl, workflow.id)
+    : settingsUrl(input.appUrl, input.organizationId);
+  // The label, workflow name and the provider's reason are outside text.
+  const headlineParts = workflow
+    ? [
+        user(input.channelLabel),
+        " stopped working for the workflow ",
+        user(workflow.name),
+      ]
+    : [user(input.channelLabel), " stopped working for failure notifications"];
   const detailParts = [
     user(redactErrorSecrets(input.reason).replace(TRAILING_DOTS, "")),
-    `. ${channelResumeText(input.channelKind)} Your other notification methods are still used.`,
+    `. ${channelResumeText(input.channelKind)} `,
+    workflow
+      ? "It is one of this workflow's own methods; change it in the workflow's Properties, under Alerts."
+      : "Your other notification methods are still used.",
   ];
   const headline = plain(headlineParts);
   const detail = plain(detailParts);
@@ -1050,7 +1061,7 @@ function renderChannelPaused(
     text: `${headline}.\n\n${detail}\n\nFix it: ${link}\n\n${foot.text}`,
     html: emailLayout(
       escapeHtml(headline),
-      `<p>${escapeHtml(detail)}</p><p>${emailButton(link, "Fix the channel")}</p>`,
+      `<p>${escapeHtml(detail)}</p><p>${emailButton(link, workflow ? "Open the workflow" : "Fix the channel")}</p>`,
       foot.html
     ),
     ...chatOf([

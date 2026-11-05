@@ -1,6 +1,12 @@
 "use client";
 
-import { Download, Loader2, Mail, RefreshCw } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  Mail,
+  RefreshCw,
+} from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
@@ -121,6 +127,8 @@ export function NotificationHistory({
   // The page that failed to load, so Try again asks for the same one again.
   const [failed, setFailed] = useState<{ cursor?: string } | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
+  // The cursor of each page opened so far; the last one is on screen.
+  const [pages, setPages] = useState<(string | undefined)[]>([undefined]);
   const [channel, setChannel] = useState("all");
   // The request in flight; a newer one aborts it so its page is never shown.
   const inFlight = useRef<AbortController | null>(null);
@@ -166,8 +174,7 @@ export function NotificationHistory({
         if (controller.signal.aborted) {
           return;
         }
-        const page = body.entries ?? [];
-        setEntries((prev) => (cursor ? [...prev, ...page] : page));
+        setEntries(body.entries ?? []);
         setNextCursor(body.nextCursor ?? null);
       } catch {
         if (!controller.signal.aborted) {
@@ -183,10 +190,32 @@ export function NotificationHistory({
     [query]
   );
 
-  useEffect(() => {
+  // A new filter (or a refresh) starts again from the newest page.
+  const reload = useCallback(() => {
+    setPages([undefined]);
     load().catch(() => undefined);
-    return () => inFlight.current?.abort();
   }, [load]);
+
+  useEffect(() => {
+    reload();
+    return () => inFlight.current?.abort();
+  }, [reload]);
+
+  const older = (): void => {
+    if (!nextCursor) {
+      return;
+    }
+    setPages((p) => [...p, nextCursor]);
+    load(nextCursor).catch(() => undefined);
+  };
+
+  const newer = (): void => {
+    const previous = pages.at(-2);
+    setPages((p) => (p.length > 1 ? p.slice(0, -1) : p));
+    load(previous).catch(() => undefined);
+  };
+
+  const page = pages.length;
 
   return (
     <div className="space-y-3" data-testid="failure-alert-history">
@@ -209,7 +238,7 @@ export function NotificationHistory({
         <Button
           aria-label="Refresh"
           disabled={loading}
-          onClick={() => load()}
+          onClick={reload}
           size="icon"
           type="button"
           variant="ghost"
@@ -256,17 +285,36 @@ export function NotificationHistory({
         </ul>
       )}
 
-      {nextCursor && !failed && (
-        <Button
-          disabled={loading}
-          onClick={() => load(nextCursor)}
-          size="sm"
-          type="button"
-          variant="ghost"
+      {(page > 1 || nextCursor) && (
+        <nav
+          aria-label="Sent alerts pages"
+          className="flex items-center justify-between gap-2"
+          data-testid="failure-alert-history-pager"
         >
-          {loading ? <Loader2 className="size-3.5 animate-spin" /> : null}
-          Load {HISTORY_PAGE_SIZE} more
-        </Button>
+          <Button
+            disabled={loading || page === 1}
+            onClick={newer}
+            size="sm"
+            type="button"
+            variant="ghost"
+          >
+            <ChevronLeft className="size-3.5" />
+            Newer
+          </Button>
+          <span className="text-muted-foreground text-xs">
+            Page {page}, {HISTORY_PAGE_SIZE} per page
+          </span>
+          <Button
+            disabled={loading || !nextCursor || Boolean(failed)}
+            onClick={older}
+            size="sm"
+            type="button"
+            variant="ghost"
+          >
+            Older
+            <ChevronRight className="size-3.5" />
+          </Button>
+        </nav>
       )}
     </div>
   );

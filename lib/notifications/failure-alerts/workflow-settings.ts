@@ -11,7 +11,10 @@ import {
   workflows,
 } from "@/lib/db/schema";
 import type { Tx } from "@/lib/db/tx";
-import { loadOrgMembers } from "@/lib/notifications/org-recipients";
+import {
+  loadOrgMembers,
+  stepUpMasker,
+} from "@/lib/notifications/org-recipients";
 import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
 import { MAX_MUTE_DAYS } from "./constants";
 import {
@@ -120,6 +123,15 @@ export async function loadWorkflowAlertView(
         )
     : [];
 
+  const mask = await stepUpMasker(
+    [
+      ...members.map((m) => m.deliverable),
+      ...deliveredTo
+        .filter((d) => d.channel === "email")
+        .map((d) => d.recipient),
+    ],
+    viewerUserId
+  );
   const trigger = workflowTriggerType(workflow.nodes);
   const channelViews = override?.customChannels
     ? workflowChannels
@@ -154,15 +166,19 @@ export async function loadWorkflowAlertView(
           : null,
       muteUntilSuccess: override?.muteUntilSuccess ?? false,
       muteReason: override?.muteReason ?? null,
-      mutedBy:
-        members.find((m) => m.userId === override?.mutedBy)?.deliverable ??
-        null,
+      mutedBy: (() => {
+        const by = members.find((m) => m.userId === override?.mutedBy);
+        const address = by?.deliverable ?? null;
+        return address ? mask(address) : null;
+      })(),
       pauseWorkflow: override?.pauseWorkflow ?? false,
     },
     effective: {
       threshold: policy.threshold,
       timeLimitMinutes: policy.timeLimitMinutes,
-      emails: resolveRecipientEmails(policy.recipientUserIds, members),
+      emails: resolveRecipientEmails(policy.recipientUserIds, members).map(
+        mask
+      ),
       channels: channelViews,
       source: policy.source,
     },
@@ -178,7 +194,7 @@ export async function loadWorkflowAlertView(
             lastNotifiedAt: incident.lastNotifiedAt.toISOString(),
             deliveredTo: deliveredTo.map((d) =>
               d.channel === "email"
-                ? d.recipient
+                ? mask(d.recipient)
                 : methodText(
                     d.channel,
                     // A chat row records its kind when it has no destination.
@@ -200,7 +216,7 @@ export async function loadWorkflowAlertView(
           }
         : null,
     },
-    members: members.map(toMemberView),
+    members: members.map((m) => toMemberView(m, mask)),
     connections,
   };
 }

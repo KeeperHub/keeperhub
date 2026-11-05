@@ -104,8 +104,11 @@ export const HEALTH_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** Silent checks run at once on save, so a long list cannot burst a bot token. */
 export const CHANNEL_CHECK_CONCURRENCY = 4;
 
+/** Provider checks settings saves may run per org per minute (each new method is one). */
+export const VERIFY_CHECKS_PER_MINUTE_PER_ORG = 40;
+
 /** Chat and PagerDuty methods per org, and per workflow with its own list. */
 export const MAX_CHANNELS = 20;
 
 /** History rows per page, on the Alerts page and the workflow panel. */
-export const HISTORY_PAGE_SIZE = 50;
+export const HISTORY_PAGE_SIZE = 10;

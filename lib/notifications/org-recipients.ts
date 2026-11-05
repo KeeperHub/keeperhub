@@ -1,6 +1,7 @@
 import "server-only";
 
 import { and, eq, inArray, isNull } from "drizzle-orm";
+import { isWalletEmail } from "@/lib/auth/wallet-constants";
 import { db } from "@/lib/db";
 import { member, users } from "@/lib/db/schema";
 import { deliverableAddress } from "@/lib/notifications/deliverable-address";
@@ -57,4 +58,41 @@ export function reachableEmails(members: OrgMember[]): string[] {
         .filter((email): email is string => Boolean(email))
     ),
   ];
+}
+
+/**
+ * A wallet user's step-up inbox is private to them: everyone else sees their
+ * wallet login in its place. Without a viewer (shared, cached results) it is
+ * masked for everyone.
+ */
+export async function stepUpMasker(
+  addresses: Iterable<string | null>,
+  viewerUserId: string | null = null
+): Promise<(address: string) => string> {
+  const wanted = [
+    ...new Set([...addresses].filter((a): a is string => Boolean(a))),
+  ];
+  if (wanted.length === 0) {
+    return (address) => address;
+  }
+  const rows = await db
+    .select({
+      id: users.id,
+      email: users.email,
+      stepUpEmail: users.stepUpEmail,
+    })
+    .from(users)
+    .where(inArray(users.stepUpEmail, wanted));
+  const masked = new Map<string, string>();
+  for (const row of rows) {
+    if (
+      row.stepUpEmail &&
+      row.email &&
+      isWalletEmail(row.email) &&
+      row.id !== viewerUserId
+    ) {
+      masked.set(row.stepUpEmail, row.email);
+    }
+  }
+  return (address) => masked.get(address) ?? address;
 }

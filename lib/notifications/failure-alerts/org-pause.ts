@@ -1,5 +1,6 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import { and, count, eq, gt, isNull, lte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
@@ -41,8 +42,10 @@ async function queuePauseNotice(
   organizationId: string,
   kind: "alerts_paused" | "alerts_resumed",
   context: Record<string, unknown>,
-  now: Date
+  now: Date,
+  tx: Tx | typeof db = db
 ): Promise<void> {
+  const noticeId = randomUUID();
   const [org, members, channels] = await Promise.all([
     loadOrgPolicy(organizationId),
     loadOrgMembers(organizationId),
@@ -50,7 +53,8 @@ async function queuePauseNotice(
   ]);
   await insertDeliveries(
     buildMessageRows({
-      scope: `${kind}:${organizationId}:${now.toISOString()}`,
+      // One per call: two pauses in the same millisecond are two notices.
+      scope: `${kind}:${organizationId}:${noticeId}`,
       organizationId,
       incidentId: null,
       kind,
@@ -58,9 +62,10 @@ async function queuePauseNotice(
       emails: resolveRecipientEmails(org.recipientUserIds, members),
       channels,
       includePagerDuty: false,
-      context,
+      context: { ...context, noticeId },
       now,
-    })
+    }),
+    tx
   );
 }
 
@@ -146,7 +151,7 @@ function cleanReason(raw: unknown): string | null {
   return text ? text.slice(0, MAX_PAUSE_REASON) : null;
 }
 
-/** Pause notices sent in the last hour; the rows of one notice share their insert time. */
+/** Pause notices sent in the last hour; the rows of one notice share its noticeId. */
 async function pauseNoticesSince(
   tx: Tx,
   organizationId: string,
@@ -154,7 +159,7 @@ async function pauseNoticesSince(
 ): Promise<number> {
   const [row] = await tx
     .select({
-      notices: sql<number>`count(distinct ${failureAlertDeliveries.createdAt})::int`,
+      notices: sql<number>`count(distinct ${failureAlertDeliveries.context}->>'noticeId')::int`,
     })
     .from(failureAlertDeliveries)
     .where(
@@ -183,6 +188,7 @@ export async function pauseOrgAlerts(params: {
   }
   const reason = cleanReason(params.reason);
   await ensureOrgSettings(organizationId, now);
+  const pausingWorkflows = await countPausingWorkflows(organizationId);
   await db.transaction(async (tx: Tx) => {
     const current = await lockedPause(tx, organizationId);
     if (
@@ -217,18 +223,15 @@ export async function pauseOrgAlerts(params: {
     if (ongoing) {
       await moveHeldRows(tx, organizationId, ongoing, until);
     }
+    // Under the lock, so pauses racing each other all see this notice when counting.
+    await queuePauseNotice(
+      organizationId,
+      "alerts_paused",
+      { until: until.toISOString(), reason, by: params.by, pausingWorkflows },
+      now,
+      tx
+    );
   });
-  await queuePauseNotice(
-    organizationId,
-    "alerts_paused",
-    {
-      until: until.toISOString(),
-      reason,
-      by: params.by,
-      pausingWorkflows: await countPausingWorkflows(organizationId),
-    },
-    now
-  );
   return { until, reason };
 }
 

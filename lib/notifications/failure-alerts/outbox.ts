@@ -22,13 +22,17 @@ import {
   integrations,
   organization,
   workflowExecutions,
+  workflowFailureAlertOverrides,
   workflowFailureIncidents,
   workflows,
 } from "@/lib/db/schema";
 import type { FailureAlertDeliveryState } from "@/lib/db/schema-failure-alerts";
 import type { Tx } from "@/lib/db/tx";
 import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
-import { loadOrgMembers } from "@/lib/notifications/org-recipients";
+import {
+  loadOrgMembers,
+  reachableEmails,
+} from "@/lib/notifications/org-recipients";
 import { redactErrorSecrets } from "@/lib/utils/redact";
 import {
   BACKUP_AFTER_MS,
@@ -367,6 +371,11 @@ async function renderRow(
           ? context.channelKind
           : undefined,
       reason: String(context.reason ?? ""),
+      workflow:
+        typeof context.workflowId === "string" &&
+        typeof context.workflowName === "string"
+          ? { id: context.workflowId, name: context.workflowName }
+          : undefined,
     };
   } else if (row.kind === "cap_warning") {
     input = {
@@ -632,7 +641,11 @@ async function finishRow(
     .where(eq(failureAlertDeliveries.id, row.id));
 }
 
-/** Pause a broken channel and tell the email recipients once. */
+/**
+ * Pause a broken channel and tell people once: the alert recipients, the
+ * owners (who may not be among them) and, for a workflow's own method, the
+ * people that workflow emails.
+ */
 async function pauseChannel(
   channelId: string,
   reason: string,
@@ -640,10 +653,11 @@ async function pauseChannel(
   now: Date
 ): Promise<boolean> {
   const org = await loadOrgPolicy(organizationId);
-  const emails = resolveRecipientEmails(
-    org.recipientUserIds,
-    await loadOrgMembers(organizationId)
-  );
+  const members = await loadOrgMembers(organizationId);
+  const orgEmails = [
+    ...resolveRecipientEmails(org.recipientUserIds, members),
+    ...reachableEmails(members.filter((m) => m.role === "owner")),
+  ];
   // Pause and notice together, so a failed insert never pauses a channel silently.
   return await db.transaction(async (tx: Tx) => {
     const paused = await tx
@@ -659,11 +673,30 @@ async function pauseChannel(
         kind: failureAlertChannels.kind,
         destination: failureAlertChannels.destination,
         integrationId: failureAlertChannels.integrationId,
+        workflowId: failureAlertChannels.workflowId,
       });
     const channel = paused[0];
     if (!channel) {
       return false;
     }
+    const [workflow] = channel.workflowId
+      ? await tx
+          .select({
+            name: workflows.name,
+            recipientUserIds: workflowFailureAlertOverrides.recipientUserIds,
+          })
+          .from(workflows)
+          .leftJoin(
+            workflowFailureAlertOverrides,
+            eq(workflowFailureAlertOverrides.workflowId, workflows.id)
+          )
+          .where(eq(workflows.id, channel.workflowId))
+          .limit(1)
+      : [];
+    const workflowEmails = workflow?.recipientUserIds
+      ? resolveRecipientEmails(workflow.recipientUserIds, members)
+      : [];
+    const emails = [...new Set([...orgEmails, ...workflowEmails])];
     const [connection] = await tx
       .select({ name: integrations.name })
       .from(integrations)
@@ -687,6 +720,9 @@ async function pauseChannel(
           ),
           channelKind: channel.kind,
           reason,
+          ...(channel.workflowId && workflow
+            ? { workflowId: channel.workflowId, workflowName: workflow.name }
+            : {}),
         },
       })),
       tx

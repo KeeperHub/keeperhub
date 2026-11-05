@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { OrgSettingsView } from "@/lib/notifications/failure-alerts/view-types";
-import { failedRuns, formatWhen } from "./format";
+import { failedRuns, formatWhen, timeLimitLabel } from "./format";
 
 type CustomWorkflow = OrgSettingsView["customWorkflows"][number];
 
@@ -16,6 +16,11 @@ function differences(w: CustomWorkflow): string {
   }
   if (w.threshold) {
     parts.push(`alerts after ${failedRuns(w.threshold)}`);
+  }
+  if (w.timeLimitMinutes === 0) {
+    parts.push("no time limit");
+  } else if (w.timeLimitMinutes) {
+    parts.push(`time limit ${timeLimitLabel(w.timeLimitMinutes)}`);
   }
   if (w.customRecipients) {
     parts.push("emails its own people");
@@ -52,8 +57,18 @@ export function CustomWorkflowsList({
           >
             {w.name}
           </Link>
-          <span className="text-muted-foreground text-xs">
-            {differences(w)}
+          <span className="flex flex-col gap-0.5 text-xs @xl/settings:items-end">
+            <span className="text-muted-foreground">{differences(w)}</span>
+            {w.brokenMethods > 0 && (
+              <span
+                className="font-medium text-destructive"
+                data-testid="failure-alerts-custom-broken"
+              >
+                {w.brokenMethods === 1
+                  ? "1 of its methods stopped working"
+                  : `${w.brokenMethods} of its methods stopped working`}
+              </span>
+            )}
           </span>
         </li>
       ))}

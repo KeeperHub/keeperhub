@@ -39,6 +39,7 @@ import type { Tx } from "@/lib/db/tx";
 import {
   loadOrgMembers,
   type OrgMember,
+  stepUpMasker,
 } from "@/lib/notifications/org-recipients";
 import { isPagerDutyId } from "@/plugins/pagerduty/steps/pagerduty-core";
 import {
@@ -53,6 +54,7 @@ import {
 import { loadOrgPolicy, resolveRecipientEmails } from "./policy";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
 import { checkChannelSilently, type DeliveryOutcome } from "./senders";
+import { takeSlots } from "./slots";
 import {
   type ChannelView,
   type ConnectionView,
@@ -75,11 +77,15 @@ function iso(date: Date | null): string | null {
   return date ? date.toISOString() : null;
 }
 
-export function toMemberView(m: OrgMember): MemberView {
+export function toMemberView(
+  m: OrgMember,
+  mask: (address: string) => string = (a) => a
+): MemberView {
+  const address = m.deliverable ?? m.email;
   return {
     userId: m.userId,
     role: m.role,
-    email: m.deliverable ?? m.email,
+    email: address ? mask(address) : address,
     name: m.name,
     reachable: Boolean(m.deliverable),
   };
@@ -265,6 +271,7 @@ export async function loadOrgSettingsView(
     emailUsage,
     failingNow,
     custom,
+    workflowMethods,
   ] = await Promise.all([
     loadOrgPolicy(organizationId),
     loadOrgMembers(organizationId),
@@ -280,6 +287,7 @@ export async function loadOrgSettingsView(
         mutedUntil: workflowFailureAlertOverrides.mutedUntil,
         muteUntilSuccess: workflowFailureAlertOverrides.muteUntilSuccess,
         threshold: workflowFailureAlertOverrides.threshold,
+        timeLimitMinutes: workflowFailureAlertOverrides.timeLimitMinutes,
         recipientUserIds: workflowFailureAlertOverrides.recipientUserIds,
         customChannels: workflowFailureAlertOverrides.customChannels,
         pauseWorkflow: workflowFailureAlertOverrides.pauseWorkflow,
@@ -305,7 +313,35 @@ export async function loadOrgSettingsView(
         )
       )
       .orderBy(workflows.name),
+    // Workflows' own methods, to flag the ones that stopped working.
+    db
+      .select({
+        workflowId: failureAlertChannels.workflowId,
+        pausedAt: failureAlertChannels.pausedAt,
+        integrationId: failureAlertChannels.integrationId,
+      })
+      .from(failureAlertChannels)
+      .where(
+        and(
+          eq(failureAlertChannels.organizationId, organizationId),
+          isNotNull(failureAlertChannels.workflowId)
+        )
+      ),
   ]);
+  const mask = await stepUpMasker(
+    members.map((m) => m.deliverable),
+    viewerUserId
+  );
+  const usableIds = new Set(connections.map((c) => c.id));
+  const brokenByWorkflow = new Map<string, number>();
+  for (const m of workflowMethods) {
+    if (m.workflowId && (m.pausedAt || !usableIds.has(m.integrationId))) {
+      brokenByWorkflow.set(
+        m.workflowId,
+        (brokenByWorkflow.get(m.workflowId) ?? 0) + 1
+      );
+    }
+  }
 
   const recipientsAreDefault = policy.recipientUserIds === null;
   const recipientUserIds =
@@ -321,7 +357,7 @@ export async function loadOrgSettingsView(
     notifyRecovery: policy.notifyRecovery,
     recipientUserIds,
     recipientsAreDefault,
-    members: members.map(toMemberView),
+    members: members.map((m) => toMemberView(m, mask)),
     channels,
     connections,
     unsharedConnections,
@@ -335,9 +371,14 @@ export async function loadOrgSettingsView(
           : null,
       muteUntilSuccess: row.muteUntilSuccess,
       threshold: row.threshold,
+      timeLimitMinutes: row.timeLimitMinutes,
       customRecipients: row.recipientUserIds !== null,
       customChannels: row.customChannels,
       pauseWorkflow: row.pauseWorkflow,
+      // Only methods it uses: ones left from before "own methods" was turned off do not count.
+      brokenMethods: row.customChannels
+        ? (brokenByWorkflow.get(row.id) ?? 0)
+        : 0,
     })),
     lastAlertDeliveredAt: await lastAlertDelivered(organizationId),
     version: policy.version,
@@ -543,6 +584,15 @@ async function verifyNewTargets(
         )
       )
   );
+  if (fresh.length > 0) {
+    const slots = await takeSlots("verify", organizationId, fresh.length);
+    if (!slots.ok) {
+      throw new SettingsError(
+        "Too many methods were checked in the last minute. Wait a minute, then save again.",
+        429
+      );
+    }
+  }
   let failed: { channel: ChannelInput; outcome: DeliveryOutcome } | undefined;
   // A few at a time, stopping at the first failure.
   for (

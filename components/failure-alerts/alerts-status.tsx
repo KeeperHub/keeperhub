@@ -175,6 +175,9 @@ export function AlertsStatus({
   const routes = (emailWorks ? 1 : 0) + working.length;
   const label = (c: (typeof data.channels)[number]): string =>
     methodText(c.kind, c.destination, c.connectionName);
+  const brokenWorkflows = data.customWorkflows.filter(
+    (w) => w.brokenMethods > 0
+  );
   const ownThreshold = new Map(
     data.customWorkflows.map((w) => [w.id, w.threshold])
   );
@@ -272,6 +275,24 @@ export function AlertsStatus({
             {plural(broken.length, "method needs", "methods need")} attention:
           </span>{" "}
           {broken.map(label).join(", ")}.
+        </p>
+      )}
+
+      {brokenWorkflows.length > 0 && (
+        <p
+          className="text-xs"
+          data-testid="failure-alerts-status-broken-workflows"
+        >
+          <span className={cn("font-medium", WARNING_TEXT)}>
+            {plural(
+              brokenWorkflows.length,
+              "workflow has its own method",
+              "workflows have their own methods"
+            )}{" "}
+            that stopped working:
+          </span>{" "}
+          {brokenWorkflows.map((w) => w.name).join(", ")}. See Workflows with
+          their own settings below.
         </p>
       )}
 

@@ -632,13 +632,30 @@ describe("wording", () => {
         reason: "channel_not_found.",
       }).text;
     expect(paused("slack")).toContain(
-      "It is paused until a test from the Alerts page succeeds."
+      "It is paused until a test on it succeeds."
     );
     expect(paused("slack")).not.toContain("by itself");
     expect(paused("discord")).toContain(
       "it is checked every day and turns back on by itself when it works, or when a test succeeds."
     );
     expect(paused()).toContain("apart from Slack");
+  });
+
+  it("names the workflow and links to it when the method is that workflow's own", () => {
+    const message = renderMessage({
+      ...org,
+      kind: "channel_paused",
+      channelLabel: "Telegram -1001",
+      channelKind: "telegram",
+      reason: "chat not found.",
+      workflow: { id: "wf-9", name: "Vault <keeper>" },
+    });
+    expect(message.subject).toContain(
+      "Telegram -1001 stopped working for the workflow Vault <keeper>"
+    );
+    expect(message.text).toContain("Fix it: https://app.test/workflows/wf-9");
+    expect(message.html).toContain("Vault &lt;keeper&gt;");
+    expect(message.html).toContain("Open the workflow");
   });
 
   it("links samples to the Alerts page, and the funds sample to Add funds", () => {
