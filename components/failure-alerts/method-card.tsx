@@ -437,8 +437,7 @@ function ChannelHealth({
   /** Where an unsaved change gets saved, when not on this card. */
   savedWithText?: string;
 }): React.ReactElement {
-  const savedWith =
-    savedWithText ?? "Saved with this workflow's settings below.";
+  const savedWith = savedWithText ?? "Saved automatically once it is complete.";
   if (status === "missing") {
     return (
       <span className="text-destructive">

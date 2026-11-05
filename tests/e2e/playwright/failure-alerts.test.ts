@@ -253,50 +253,48 @@ test.describe("Failure alerts", () => {
       .toBeNull();
 
     await expect(section).toHaveAttribute("data-muted", "false");
-    // Picking the Custom rules tab opens the form; the Org rules tab is marked in use.
+    // Org rules are in use until Custom rules is picked, which saves at once.
     await expect(section.getByTestId("failure-alerts-tab-org")).toHaveAttribute(
       "data-state",
       "active"
     );
     await section.getByTestId("failure-alerts-tab-custom").click();
+    await expect(section).toHaveAttribute(
+      "data-source",
+      "custom",
+      SAVE_TIMEOUT
+    );
+    await expect
+      .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
+      .toMatchObject({ threshold: 5 });
     const custom = section.getByTestId("failure-alerts-custom");
-    // Switching back to Org rules closes the form and stays there.
     await expect(custom).toBeVisible();
-    await section.getByTestId("failure-alerts-tab-org").click();
-    await expect(custom).toHaveCount(0);
-    await expect(section.getByTestId("failure-alerts-tab-org")).toHaveAttribute(
-      "data-state",
-      "active"
-    );
-    await section.getByTestId("failure-alerts-tab-custom").click();
-    await expect(custom).toBeVisible();
+    // No Save or Cancel of its own: edits save themselves.
+    await expect(custom.getByRole("button", { name: "Save" })).toHaveCount(0);
     const threshold = custom.locator("#wf-failure-threshold");
-    // The form starts from the org's rules, so saving it as is makes them its own.
     await expect(threshold).toHaveValue("5");
     const pauseBox = custom.locator("#wf-pause-workflow");
     await pauseBox.click();
     await threshold.fill("2");
-    // Both edits are still in the draft when Save is pressed.
-    await expect(threshold).toHaveValue("2");
-    await expect(pauseBox).toHaveAttribute("data-state", "checked");
-    await custom.getByTestId("failure-alerts-custom-save").click();
-    await expect(custom).toHaveCount(0, SAVE_TIMEOUT);
     await expect
       .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
       .toMatchObject({ threshold: 2, pauseWorkflow: true });
-
-    await expect(section).toHaveAttribute("data-source", "custom");
+    await expect(custom.getByTestId("failure-alerts-autosave")).toHaveText(
+      "All changes saved.",
+      SAVE_TIMEOUT
+    );
     await expect(
       section.getByTestId("failure-alerts-tab-custom")
     ).toHaveAttribute("data-state", "active");
-    await expect(
-      section.getByTestId("failure-alerts-change-open")
-    ).toBeVisible();
+
+    // Back to the org rules is an explicit choice: it drops the custom rules.
     await section.getByTestId("failure-alerts-tab-org").click();
+    await expect(custom).toHaveCount(0);
     await section.getByTestId("failure-alerts-reset").click();
     await expect
       .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
       .toBeNull();
+    await expect(section).toHaveAttribute("data-source", "org");
   });
 
   test("analytics lists the alert beside the runs", async ({ page }) => {

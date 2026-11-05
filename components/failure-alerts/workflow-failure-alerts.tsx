@@ -38,7 +38,10 @@ import {
   type WorkflowAlertView,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
+import { registerExtraSave } from "@/lib/workflow/extra-saves";
 import {
+  hasUnsavedChangesAtom,
+  isSavingAtom,
   isWorkflowEnabled,
   propertiesPanelActiveTabAtom,
   workflowEnableToggleAtom,
@@ -60,13 +63,16 @@ import {
   channelsPayload,
   type DraftChannel,
   draftsFromViews,
+  needsDestination,
   nextKey,
 } from "./method-drafts";
 import { NotificationHistory } from "./notification-history";
 import { SaveError, type SaveRefusal } from "./save-state";
 
 type Loaded = WorkflowAlertView & { canManage: boolean };
-type Panel = null | "mute" | "custom";
+type Panel = null | "mute";
+/** Custom rules save this long after the last edit. */
+const AUTOSAVE_MS = 1500;
 
 const HOUR_MS = 60 * 60 * 1000;
 // One id for every save toast, so "muted" then "back on" replace each other
@@ -231,9 +237,17 @@ export function WorkflowFailureAlerts({
   const [tab, setTab] = useState<"org" | "custom">("org");
   const panelRef = useRef<HTMLDivElement>(null);
   const muteButtonRef = useRef<HTMLButtonElement>(null);
-  const customButtonRef = useRef<HTMLButtonElement>(null);
   // Which button opened the panel, to give focus back to when it closes.
   const openerRef = useRef<Panel>(null);
+  // The custom rules as edited, kept current each render for the autosave.
+  const autosaveRef = useRef<{
+    key: string;
+    dirty: boolean;
+    ready: boolean;
+    save: () => Promise<boolean>;
+  } | null>(null);
+  const setWorkflowUnsaved = useSetAtom(hasUnsavedChangesAtom);
+  const setWorkflowSaving = useSetAtom(isSavingAtom);
 
   const url = `/api/workflows/${encodeURIComponent(workflowId)}/failure-alerts`;
 
@@ -297,12 +311,10 @@ export function WorkflowFailureAlerts({
     openerRef.current = null;
     if (opener === "mute") {
       focusInPlace(muteButtonRef.current);
-    } else if (opener === "custom") {
-      focusInPlace(customButtonRef.current);
     }
   }, [panel]);
 
-  // Escape closes a panel like Cancel; a native listener, so a portalled
+  // Escape closes the mute panel like Cancel; a native listener, so a portalled
   // select's Escape closes only that list.
   useEffect(() => {
     const element = panelRef.current;
@@ -314,15 +326,42 @@ export function WorkflowFailureAlerts({
         return;
       }
       event.preventDefault();
-      if (panel === "custom") {
-        apply(view);
-      }
       setSaveError(null);
       setPanel(null);
     };
     element.addEventListener("keydown", onKeyDown);
     return () => element.removeEventListener("keydown", onKeyDown);
-  }, [panel, view, apply]);
+  }, [panel, view]);
+
+  // Custom rules save themselves a moment after the last edit, like the rest
+  // of the workflow; the toolbar's Save sends them at once.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the drafts are the trigger; the ref holds what to save
+  useEffect(() => {
+    const pending = autosaveRef.current;
+    if (!pending?.dirty) {
+      return;
+    }
+    setWorkflowUnsaved(true);
+    if (!pending.ready) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      autosaveRef.current?.save().catch(() => undefined);
+    }, AUTOSAVE_MS);
+    return () => window.clearTimeout(timer);
+  }, [threshold, timeLimit, customRecipients, customChannels, pauseWorkflow]);
+
+  useEffect(
+    () =>
+      registerExtraSave(async () => {
+        const pending = autosaveRef.current;
+        if (!pending?.dirty) {
+          return true;
+        }
+        return pending.ready ? await pending.save() : false;
+      }),
+    []
+  );
 
   const openPanel = (next: Exclude<Panel, null>): void => {
     openerRef.current = next;
@@ -411,9 +450,12 @@ export function WorkflowFailureAlerts({
 
   const put = async (
     body: Record<string, unknown>,
-    done: string
+    done: string | null,
+    /** Apply the answer only if the drafts are still what was sent. */
+    sentKey?: string
   ): Promise<boolean> => {
     setSaving(true);
+    setWorkflowSaving(true);
     setSaveError(null);
     try {
       const res = await fetch(url, {
@@ -431,9 +473,16 @@ export function WorkflowFailureAlerts({
         });
         return false;
       }
-      apply(data);
+      // An edit made while this was saving stays on screen and saves next.
+      if (sentKey === undefined || sentKey === autosaveRef.current?.key) {
+        apply(data);
+      } else {
+        setView(data);
+      }
       invalidateNotificationStatus(organization?.id);
-      toast.success(done, { id: SAVE_TOAST });
+      if (done) {
+        toast.success(done, { id: SAVE_TOAST });
+      }
       return true;
     } catch {
       setSaveError({
@@ -443,6 +492,7 @@ export function WorkflowFailureAlerts({
       return false;
     } finally {
       setSaving(false);
+      setWorkflowSaving(false);
     }
   };
 
@@ -474,34 +524,78 @@ export function WorkflowFailureAlerts({
     await put(storedOverride(), "Alerts back on for this workflow");
   };
 
-  const saveCustom = async (): Promise<void> => {
-    if (thresholdInvalid) {
-      focusInPlace(document.getElementById("wf-failure-threshold"));
-      return;
-    }
-    const parsedThreshold = threshold.trim() ? Number(threshold) : null;
-    let timeLimitMinutes: number | null = null;
+  const timeLimitValue = (): number | null => {
     if (timeLimit === "off") {
-      timeLimitMinutes = 0;
-    } else if (timeLimit !== "org") {
-      timeLimitMinutes = Number(timeLimit);
+      return 0;
     }
+    return timeLimit === "org" ? null : Number(timeLimit);
+  };
+  /** The custom rules as edited, in the shape the save takes. */
+  const draftRules = {
+    threshold: threshold.trim() ? Number(threshold) : null,
+    timeLimitMinutes: timeLimitValue(),
+    recipientUserIds: customRecipients,
+    customChannels: customChannels !== null,
+    channels: customChannels ? channelsPayload(customChannels) : [],
+    pauseWorkflow,
+  };
+  const savedRules = {
+    threshold: view.override.threshold,
+    timeLimitMinutes: view.override.timeLimitMinutes,
+    recipientUserIds: view.override.recipientUserIds,
+    customChannels: view.override.customChannels,
+    channels: view.override.customChannels
+      ? channelsPayload(draftsFromViews(view.override.channels))
+      : [],
+    pauseWorkflow: view.override.pauseWorkflow,
+  };
+  const draftKey = JSON.stringify(draftRules);
+  const rulesDirty =
+    custom && canManage && draftKey !== JSON.stringify(savedRules);
+  // A new method waits until it has a connection (and a chat, channel or service).
+  const methodsReady = (customChannels ?? []).every(
+    (c) =>
+      c.integrationId && (!needsDestination(c.kind) || c.destination.trim())
+  );
+  const rulesReady = !thresholdInvalid && methodsReady;
+
+  const saveDraft = async (): Promise<boolean> => {
     const ok = await put(
       {
-        threshold: parsedThreshold,
-        timeLimitMinutes,
-        recipientUserIds: customRecipients,
-        customChannels: customChannels !== null,
-        channels: customChannels ? channelsPayload(customChannels) : [],
+        ...draftRules,
         mutedUntil: view.override.mutedUntil,
         muteUntilSuccess: view.override.muteUntilSuccess,
-        pauseWorkflow,
       },
-      "Saved for this workflow"
+      null,
+      draftKey
     );
-    if (ok) {
-      setPanel(null);
+    if (ok && draftKey === autosaveRef.current?.key) {
+      setWorkflowUnsaved(false);
     }
+    return ok;
+  };
+  autosaveRef.current = {
+    key: draftKey,
+    dirty: rulesDirty,
+    ready: rulesReady,
+    save: saveDraft,
+  };
+
+  /** Picking Custom rules saves the org's values as this workflow's own. */
+  const switchToCustom = async (): Promise<void> => {
+    await put(
+      {
+        threshold: view.org.threshold,
+        timeLimitMinutes: view.org.timeLimitMinutes ?? 0,
+        recipientUserIds: null,
+        customChannels: false,
+        channels: [],
+        pauseWorkflow: false,
+        mutedUntil: view.override.mutedUntil,
+        muteUntilSuccess: view.override.muteUntilSuccess,
+      },
+      "This workflow now has its own rules"
+    );
   };
 
   const followOrgSetting = async (): Promise<void> => {
@@ -535,34 +629,26 @@ export function WorkflowFailureAlerts({
   } else if (muted) {
     tag = { label: "Muted", className: WARNING_TEXT };
   }
-  const editing = canManage && panel === "custom";
-  const saveLabel = custom ? "Save" : "Use custom rules";
-  const cancelEdit = (): void => {
-    apply(view);
-    setSaveError(null);
-    setPanel(null);
-  };
+  const editing = canManage && custom;
   const chooseTab = (next: string): void => {
     if (next !== "org" && next !== "custom") {
       return;
     }
-    if (panel === "custom") {
-      // The user is on the tab they picked: focus must not jump back to the
-      // Custom rules tab, which would pick it again and reopen the form.
-      openerRef.current = null;
-      cancelEdit();
-    }
     setTab(next);
-    // Picking Custom rules for a workflow on the org rules starts the form,
-    // filled with the org's values: saving it as is still makes them its own.
     if (next === "custom" && !custom && canManage) {
-      setThreshold(String(view.org.threshold));
-      setTimeLimit(
-        view.org.timeLimitMinutes ? String(view.org.timeLimitMinutes) : "off"
-      );
-      openPanel("custom");
+      switchToCustom().catch(() => undefined);
     }
   };
+  let autosaveLine = "All changes saved.";
+  if (saving) {
+    autosaveLine = "Saving...";
+  } else if (rulesDirty && !rulesReady) {
+    autosaveLine = thresholdInvalid
+      ? "Not saved: fix the number of failed runs."
+      : "Not saved yet: finish the new method (connection and where to send).";
+  } else if (rulesDirty) {
+    autosaveLine = "Saving shortly...";
+  }
 
   return (
     <div
@@ -750,7 +836,6 @@ export function WorkflowFailureAlerts({
               </TabsTrigger>
               <TabsTrigger
                 data-testid="failure-alerts-tab-custom"
-                ref={customButtonRef}
                 value="custom"
               >
                 Custom rules
@@ -793,7 +878,19 @@ export function WorkflowFailureAlerts({
                   data-testid="failure-alerts-custom"
                   ref={panelRef}
                 >
-                  <p className="text-muted-foreground text-xs" role="status">
+                  <p
+                    className={cn(
+                      "text-xs",
+                      rulesDirty && !rulesReady
+                        ? WARNING_TEXT
+                        : "text-muted-foreground"
+                    )}
+                    data-testid="failure-alerts-autosave"
+                    role="status"
+                  >
+                    {autosaveLine}
+                  </p>
+                  <p className="text-muted-foreground text-xs">
                     {draftSummary(view, {
                       threshold,
                       timeLimit,
@@ -1010,45 +1107,15 @@ export function WorkflowFailureAlerts({
                     </div>
                   </section>
                   {saveErrorBox}
-                  <div className="flex justify-end gap-2">
-                    <Button
-                      onClick={cancelEdit}
-                      size="sm"
-                      type="button"
-                      variant="ghost"
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      data-testid="failure-alerts-custom-save"
-                      disabled={saving}
-                      onClick={saveCustom}
-                      size="sm"
-                      type="button"
-                    >
-                      {saving ? "Saving..." : saveLabel}
-                    </Button>
-                  </div>
                 </div>
               ) : null}
-              {!editing && custom && (
-                <>
-                  <p role="status">{summary(view)}</p>
-                  {canManage && (
-                    <Button
-                      className={WRAP_BUTTON}
-                      data-testid="failure-alerts-change-open"
-                      onClick={() => openPanel("custom")}
-                      size="sm"
-                      type="button"
-                      variant="outline"
-                    >
-                      Edit custom rules
-                    </Button>
-                  )}
-                </>
+              {!editing && custom && <p role="status">{summary(view)}</p>}
+              {!(editing || custom) && canManage && (
+                <p className="text-muted-foreground text-xs">
+                  Saving this workflow's own rules...
+                </p>
               )}
-              {!(editing || custom) && (
+              {!(custom || canManage) && (
                 <p className="text-muted-foreground text-xs">
                   Only owners and admins can give this workflow its own rules.
                 </p>

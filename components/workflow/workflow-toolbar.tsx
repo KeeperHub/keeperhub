@@ -100,6 +100,7 @@ import {
   WorkflowTriggerEnum,
   type WorkflowVisibility,
 } from "@/lib/workflow/store";
+import { flushExtraSaves } from "@/lib/workflow/extra-saves";
 import { findStoredRefTokens } from "@/lib/workflow/template-ref";
 import {
   findActionById,
@@ -682,9 +683,11 @@ function useWorkflowHandlers({
     // this save supersedes should be dropped.
     cancelPendingAutosave();
     try {
+      // Settings saved beside the canvas (alerts) go now too.
+      const extrasSaved = await flushExtraSaves();
       await api.workflow.update(currentWorkflowId, { nodes, edges });
-      setHasUnsavedChanges(false);
-      return true;
+      setHasUnsavedChanges(!extrasSaved);
+      return extrasSaved;
     } catch (error) {
       console.error("Failed to save workflow:", error);
       toast.error("Failed to save workflow. Please try again.");
