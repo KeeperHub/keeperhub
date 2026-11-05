@@ -553,8 +553,13 @@ export function WorkflowFailureAlerts({
       cancelEdit();
     }
     setTab(next);
-    // Picking Custom rules for a workflow on the org rules starts the form.
+    // Picking Custom rules for a workflow on the org rules starts the form,
+    // filled with the org's values: saving it as is still makes them its own.
     if (next === "custom" && !custom && canManage) {
+      setThreshold(String(view.org.threshold));
+      setTimeLimit(
+        view.org.timeLimitMinutes ? String(view.org.timeLimitMinutes) : "off"
+      );
       openPanel("custom");
     }
   };
@@ -889,7 +894,8 @@ export function WorkflowFailureAlerts({
                       </p>
                     </div>
                     <p className="text-muted-foreground text-xs">
-                      An empty number follows the org's {view.org.threshold}.
+                      Starts from the org's rules. Saved here, they stay as they
+                      are even if the org rules change.
                     </p>
                   </section>
                   <section className="space-y-2 border-t pt-3">

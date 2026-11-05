@@ -271,6 +271,8 @@ test.describe("Failure alerts", () => {
     await section.getByTestId("failure-alerts-tab-custom").click();
     await expect(custom).toBeVisible();
     const threshold = custom.locator("#wf-failure-threshold");
+    // The form starts from the org's rules, so saving it as is makes them its own.
+    await expect(threshold).toHaveValue("5");
     const pauseBox = custom.locator("#wf-pause-workflow");
     await pauseBox.click();
     await threshold.fill("2");
