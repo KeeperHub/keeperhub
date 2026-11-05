@@ -307,8 +307,10 @@ run fields above, read as follows:
   left open.
 - `workflowId` and `workflowName` are set when the notification is about exactly
   one workflow, and `null` otherwise. A notification about runs refused before
-  they start (plan limit, billing, or a workflow that cannot run) always names
-  one workflow.
+  they start (plan limit, paid features, billing, or a workflow that cannot run
+  because its owner has no account) always names one workflow. A workflow that
+  is turned off, deactivated by KeeperHub or in an organization whose circuit
+  breaker is engaged is not reported while it stays that way.
 - Network, gas, step and error fields are always empty.
 
 The `notification` object, present only on these rows, carries the rest:

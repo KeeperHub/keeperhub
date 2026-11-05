@@ -57,6 +57,11 @@ import {
 } from "../lib/workflow/refused-runs";
 import { SHUTDOWN_TIMEOUT_MS } from "../lib/workflow/executor/runner-constants";
 import { loadWorkflowForExecution } from "../lib/workflow/load-for-execution";
+import {
+  notExecutableRefusal,
+  SCHEDULE_INVALID_REFUSAL,
+  WORKFLOW_NOT_FOUND_REFUSAL,
+} from "../lib/workflow/not-executable";
 import type { WorkflowNode } from "../lib/workflow/store";
 import {
   EXECUTION_LIMIT_REFUSAL,
@@ -482,7 +487,7 @@ async function processExecutorMessage(
     console.error(`[Executor] Workflow not found: ${workflowId}`);
     await discardPhantomRow(db, message.executionId, {
       reason: "not_found",
-      error: "Execution skipped: workflow not found.",
+      error: WORKFLOW_NOT_FOUND_REFUSAL,
     });
     return;
   }
@@ -492,7 +497,7 @@ async function processExecutorMessage(
     );
     await discardPhantomRow(db, message.executionId, {
       reason: loaded.reason,
-      error: `Execution skipped: workflow is not executable (${loaded.reason}).`,
+      error: notExecutableRefusal(loaded.reason),
     });
     return;
   }
@@ -515,7 +520,7 @@ async function processExecutorMessage(
     if (!valid) {
       await discardPhantomRow(db, message.executionId, {
         reason: "schedule_invalid",
-        error: "Execution skipped: schedule is disabled or no longer exists.",
+        error: SCHEDULE_INVALID_REFUSAL,
       });
       return;
     }

@@ -162,12 +162,13 @@ export function WhenToNotify({
         {FUNDS_RULE} Errors on KeeperHub's side never count toward either limit.
       </p>
       <p className="text-muted-foreground text-xs">
-        Runs refused before they start (plan limit, paid features or billing)
-        are reported per workflow after {REFUSED_RUNS_THRESHOLD} refusals, and
-        you are told when they are accepted again; scheduled workflows are
-        reported when a run is due. A workflow that is turned off, deactivated
-        by KeeperHub or in an organization whose circuit breaker is engaged
-        never alerts.
+        Runs refused before they start (plan limit, paid features, billing, or a
+        workflow that cannot run because its owner has no account) are reported
+        per workflow after {REFUSED_RUNS_THRESHOLD} refusals, and you are told
+        when they are accepted again; scheduled workflows are reported when a
+        run is due. A workflow that is turned off, deactivated by KeeperHub or
+        in an organization whose circuit breaker is engaged is not reported
+        while it stays that way.
       </p>
       <label className="flex items-center gap-2" htmlFor="failure-remind">
         <Checkbox

@@ -14,6 +14,11 @@ import {
   orgFailureAlertSettings,
   workflowFailureIncidents,
 } from "../../../lib/db/schema-failure-alerts";
+import {
+  NOT_EXECUTABLE_REASONS,
+  notExecutableRefusal,
+  SCHEDULE_INVALID_REFUSAL,
+} from "../../../lib/workflow/not-executable";
 
 vi.mock("server-only", () => ({}));
 // tests/setup.ts stubs @/lib/db; these tests must write Postgres.
@@ -418,6 +423,7 @@ describe.skipIf(SKIP)("recordRefusedRun (real Postgres)", () => {
       }
     }
   }, 60_000);
+
   it("queues the evaluator itself only on an update: a fresh insert fires the trigger", async () => {
     const workflowId = await makeWorkflow();
     const insert = vi.spyOn(db, "insert");
@@ -477,9 +483,68 @@ describe.skipIf(SKIP)("recordRefusedRun (real Postgres)", () => {
     });
   }, 60_000);
 
-  it("refusals for a halt or a turned-off workflow open nothing once that is over", async () => {
+  it("a pending or platform-failed run does not restart the row", async () => {
     await withRollout(async () => {
-      for (const code of ["halted", "disabled"]) {
+      const workflowId = await makeWorkflow();
+      const base = hourStart(2);
+      const minute = (m: number) => new Date(base.getTime() + m * 60_000);
+      await helpers.recordRefusedRun(refusal(workflowId, minute(1)), db);
+      const run = {
+        workflowId,
+        organizationId: ORG_ID,
+        userId: USER_ID,
+        triggerSource: "webhook",
+        input: {},
+      };
+      await db.insert(workflowExecutions).values([
+        { ...run, status: "pending", startedAt: minute(5) },
+        { ...run, status: "phantom", startedAt: minute(6) },
+        { ...run, status: "system_error", startedAt: minute(7) },
+        { ...run, status: "error", errorType: "system", startedAt: minute(8) },
+      ]);
+      await helpers.recordRefusedRun(refusal(workflowId, minute(20)), db);
+
+      const [row] = (await rowsOf(workflowId)).filter(
+        (r) => r.status === "skipped"
+      );
+      expect(row.startedAt.toISOString()).toBe(minute(1).toISOString());
+      expect(row.output).toEqual({ refusals: 2 });
+    });
+  }, 60_000);
+
+  it("a late refusal that restarts the row never moves completed_at back", async () => {
+    const workflowId = await makeWorkflow();
+    const base = hourStart(2);
+    const minute = (m: number) => new Date(base.getTime() + m * 60_000);
+    await helpers.recordRefusedRun(refusal(workflowId, minute(1)), db);
+    await helpers.recordRefusedRun(refusal(workflowId, minute(30)), db);
+    // Written out of order, before a refusal that arrives late.
+    await db.insert(workflowExecutions).values({
+      workflowId,
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      status: "success",
+      triggerSource: "webhook",
+      input: {},
+      startedAt: minute(10),
+      completedAt: minute(10),
+    });
+    await helpers.recordRefusedRun(refusal(workflowId, minute(20)), db);
+
+    const [row] = (await rowsOf(workflowId)).filter(
+      (r) => r.status === "skipped"
+    );
+    expect(row.startedAt.toISOString()).toBe(minute(20).toISOString());
+    expect(row.completedAt?.toISOString()).toBe(minute(30).toISOString());
+    expect(row.output).toEqual({ refusals: 1 });
+  });
+
+  it("refusals for a state that is over open nothing", async () => {
+    await withRollout(async () => {
+      const ended = NOT_EXECUTABLE_REASONS.filter(
+        (code) => code !== "anonymous_owner"
+      ).map(notExecutableRefusal);
+      for (const error of [...ended, SCHEDULE_INVALID_REFUSAL]) {
         const workflowId = await makeWorkflow();
         const base = hourStart(1);
         await db.insert(workflowExecutions).values(
@@ -490,7 +555,7 @@ describe.skipIf(SKIP)("recordRefusedRun (real Postgres)", () => {
             status: "skipped" as const,
             triggerSource: "webhook",
             input: {},
-            error: `Execution skipped: workflow is not executable (${code}).`,
+            error,
             errorCategory: "configuration" as const,
             errorType: "user" as const,
             billable: false,

@@ -1,9 +1,10 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, type SQL, sql } from "drizzle-orm";
 import { type AnyPgColumn, alias } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DispatchRefusalReason } from "@/lib/billing/dispatch-refusal";
 import { workflowExecutions } from "@/lib/db/schema";
 import { workflowFailureAlertQueue } from "@/lib/db/schema-failure-alerts";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import type { WorkflowExecutionStatus } from "@/lib/errors/execution-status";
 import { ErrorCategory, logWarn } from "@/lib/logging";
 import { REFUSED_RUNS_THRESHOLD } from "@/lib/notifications/failure-alerts/constants";
@@ -66,8 +67,6 @@ export function automatedSql(runs: Runs) {
   OR ${runs.triggeredByCredentialType} <> 'session')`;
 }
 
-const acceptedRun = alias(workflowExecutions, "accepted_run");
-
 /** Once the alert can open, a busy row is rewritten at most once a minute. */
 const REFUSED_ROW_REFRESH_SECONDS = 60;
 
@@ -107,18 +106,41 @@ function warn(message: string, workflowId: string, error: unknown): void {
   });
 }
 
-/** The existing row, named in full: the subquery below would rebind bare column names. */
-const row = (column: string) => sql.raw(`"workflow_executions"."${column}"`);
+/** The outer workflow_executions row, named in full: a subquery would rebind bare column names. */
+export const outerRun = (column: string) =>
+  sql.raw(`"workflow_executions"."${column}"`);
 
-// An accepted automated run since the row's first refusal: the row restarts at
-// this refusal, so a streak counts only refusals after that run.
-const RESTART_SQL = sql`EXISTS (SELECT 1 FROM ${workflowExecutions} AS ${sql.identifier("accepted_run")}
-  WHERE ${acceptedRun.workflowId} = ${row("workflow_id")}
-    AND ${acceptedRun.startedAt} > ${row("started_at")}
-    AND ${acceptedRun.startedAt} <= excluded.started_at
+const acceptedRun = alias(workflowExecutions, "accepted_run");
+
+/**
+ * An accepted automated run of the outer row's workflow starting after `after`
+ * and before `before` (or at it when inclusive); platform failures and runs not
+ * yet claimed are not accepted, as in the evaluator's attempts.
+ */
+export function acceptedRunBetween(
+  after: SQL,
+  before: SQL,
+  inclusive: boolean
+): SQL {
+  return sql`EXISTS (SELECT 1 FROM ${workflowExecutions} AS ${sql.identifier("accepted_run")}
+  WHERE ${acceptedRun.workflowId} = ${outerRun("workflow_id")}
+    AND ${acceptedRun.startedAt} > ${after}
+    AND ${acceptedRun.startedAt} ${sql.raw(inclusive ? "<=" : "<")} ${before}
     AND ${acceptedRun.deletedAt} IS NULL
+    AND ${acceptedRun.status} NOT IN ('phantom', 'pending', 'system_error')
+    AND (${acceptedRun.status} <> 'error'
+      OR ${acceptedRun.errorType} IS DISTINCT FROM ${ExecutionErrorType.SYSTEM})
     AND ${automatedSql(acceptedRun)}
     AND NOT ${refusedSql(acceptedRun)})`;
+}
+
+// An accepted run since the row's first refusal: the row restarts at this refusal.
+// Repeated per SET column below, which cannot share one subquery.
+const RESTART_SQL = acceptedRunBetween(
+  outerRun("started_at"),
+  sql`excluded.started_at`,
+  true
+);
 
 /**
  * Record a refused attempt in its hourly row: insert, or move completed_at to
@@ -168,8 +190,8 @@ export async function insertRefusedRun<TSchema extends Record<string, unknown>>(
           target: workflowExecutions.dispatchKey,
           set: {
             startedAt: sql`CASE WHEN ${RESTART_SQL} THEN excluded.started_at ELSE ${workflowExecutions.startedAt} END`,
-            completedAt: sql`CASE WHEN ${RESTART_SQL} THEN excluded.completed_at
-              ELSE greatest(${workflowExecutions.completedAt}, excluded.completed_at) END`,
+            // Never backwards, restarted or not: a late write may be older.
+            completedAt: sql`greatest(${workflowExecutions.completedAt}, excluded.completed_at)`,
             error: sql`excluded.error`,
             output: sql`jsonb_build_object('refusals', CASE WHEN ${RESTART_SQL} THEN 1 ELSE ${refusals} + 1 END)`,
           },

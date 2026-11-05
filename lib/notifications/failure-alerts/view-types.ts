@@ -7,6 +7,11 @@ import type {
   FailureAlertMessageKind,
   FailureIncidentTrigger,
 } from "@/lib/db/schema-failure-alerts";
+import {
+  NOT_EXECUTABLE_CODE,
+  type NotExecutableReason,
+  refusalCannotRun,
+} from "@/lib/workflow/not-executable";
 import { SKIP_REASON } from "./stored-reasons";
 
 export type ChannelView = {
@@ -344,7 +349,7 @@ export function refusedLead(
 
 const SKIPPED_PREFIX = /^Execution skipped:\s*/i;
 /** The executor's "workflow is not executable (<code>)" codes, in plain words. */
-const NOT_EXECUTABLE_WORDS: Record<string, string> = {
+const NOT_EXECUTABLE_WORDS: Record<NotExecutableReason, string> = {
   deleted: "the workflow is deleted",
   deactivated: "the workflow is deactivated",
   org_deactivated: "the organization is deactivated",
@@ -352,7 +357,6 @@ const NOT_EXECUTABLE_WORDS: Record<string, string> = {
   disabled: "the workflow is turned off",
   anonymous_owner: "the owner has no account",
 };
-const NOT_EXECUTABLE_CODE = /not executable \((\w+)\)/;
 
 /** A stored refusal as shown: no "Execution skipped:" prefix, executor codes in plain words. */
 export function shownRefusal(reason: string): string {
@@ -361,7 +365,7 @@ export function shownRefusal(reason: string): string {
     .replace(
       NOT_EXECUTABLE_CODE,
       (_match, code: string) =>
-        `not executable (${NOT_EXECUTABLE_WORDS[code] ?? code})`
+        `not executable (${NOT_EXECUTABLE_WORDS[code as NotExecutableReason]})`
     );
 }
 
@@ -388,16 +392,26 @@ export function planRefusalOf(reason: string | null): PlanRefusal {
   return payg ? "payg" : "billing";
 }
 
-const NOT_EXECUTABLE = /not executable \(/;
+export type RefusalFixLink = { page: "plans" | "billing"; label: string };
 
-/** Where the alert sends a refusal's fix (stored or shown reason): null for a workflow that cannot run. */
-export function refusalFixPage(
-  reason: string | null
-): "plans" | "billing" | null {
-  if (reason && NOT_EXECUTABLE.test(reason)) {
-    return null;
-  }
-  return planRefusalOf(reason) === "payg" ? "billing" : "plans";
+/** The settings page that fixes a refusal kind: Billing for pay-as-you-go, else Plans. */
+export function planFixLink(kind: PlanRefusal | undefined): RefusalFixLink {
+  return kind === "payg"
+    ? { page: "billing", label: "Open Billing" }
+    : { page: "plans", label: "Open Plans" };
+}
+
+/** Where alerts, the panel and the runs list send a refusal's fix: null when the workflow cannot run. */
+export function refusalFixLink(reason: string | null): RefusalFixLink | null {
+  return refusalCannotRun(reason) ? null : planFixLink(planRefusalOf(reason));
+}
+
+/** The fix page's path for an organization. */
+export function refusalFixHref(
+  organizationId: string,
+  link: RefusalFixLink
+): string {
+  return `/settings/${encodeURIComponent(organizationId)}/${link.page}`;
 }
 
 /** The org's circuit breaker stopped it (lib/execute/org-circuit-breaker.ts). */

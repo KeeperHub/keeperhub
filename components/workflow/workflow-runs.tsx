@@ -21,16 +21,16 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toChecksumAddress } from "@/lib/address-utils";
+import { api, type ExecutionSummary } from "@/lib/api-client";
+import { authClient } from "@/lib/auth-client";
 import { getCustomerRunErrorMessage } from "@/lib/errors/customer-message";
 import type { NodeExecutionStatus } from "@/lib/errors/execution-status";
 import {
-  FOR_EACH_GROUP_TYPE,
-  buildChildLogsLookup,
-  groupLogsByIteration,
-  type ChildLogsLookup,
-  type IterationGroup,
-} from "@/lib/workflow/nodes/for-each/iteration-grouping";
-import { api, type ExecutionSummary } from "@/lib/api-client";
+  type RefusalFixLink,
+  refusalFixHref,
+  refusalFixLink,
+  shownRefusal,
+} from "@/lib/notifications/failure-alerts/view-types";
 import {
   OUTPUT_DISPLAY_CONFIGS,
   type OutputDisplayConfig,
@@ -39,23 +39,26 @@ import { cn } from "@/lib/utils";
 import { startSerialPoll } from "@/lib/utils/serial-poll";
 import { getRelativeTime } from "@/lib/utils/time";
 import {
-  planRefusalOf,
-  shownRefusal,
-} from "@/lib/notifications/failure-alerts/view-types";
-import { refusalSummary } from "@/lib/workflow/refusal-summary";
-import {
   appendPage,
-  emptyExecutionPage,
   type ExecutionPage,
+  emptyExecutionPage,
   mergeFirstPage,
   nextPageSize,
   replacePage,
 } from "@/lib/workflow/execution-page-merge";
 import {
+  buildChildLogsLookup,
+  type ChildLogsLookup,
+  FOR_EACH_GROUP_TYPE,
+  groupLogsByIteration,
+  type IterationGroup,
+} from "@/lib/workflow/nodes/for-each/iteration-grouping";
+import {
   formatStoredBytes,
   isTruncatedOutput,
   MAX_STORED_OUTPUT_BYTES,
 } from "@/lib/workflow/output-limits";
+import { refusalSummary } from "@/lib/workflow/refusal-summary";
 import {
   currentWorkflowIdAtom,
   executionLogsAtom,
@@ -957,12 +960,34 @@ function ExecutionLogEntry({
   );
 }
 
+/** The settings page that fixes a refused run (refusalFixLink). */
+function RefusalFixAnchor({
+  link,
+  organizationId,
+}: {
+  link: RefusalFixLink;
+  organizationId: string;
+}): JSX.Element {
+  return (
+    <a
+      className="inline-flex items-center gap-1 font-medium underline underline-offset-2 hover:opacity-80"
+      href={refusalFixHref(organizationId, link)}
+      rel="noopener noreferrer"
+      target="_blank"
+    >
+      {link.label}
+      <ExternalLink className="h-3 w-3" />
+    </a>
+  );
+}
+
 export function WorkflowRuns({
   isActive = false,
   onRefreshRef,
   onStartRun,
 }: WorkflowRunsProps) {
   const [currentWorkflowId] = useAtom(currentWorkflowIdAtom);
+  const organizationId = authClient.useActiveOrganization().data?.id ?? null;
   const [selectedExecutionId, setSelectedExecutionId] = useAtom(
     selectedExecutionIdAtom
   );
@@ -1413,12 +1438,19 @@ export function WorkflowRuns({
         );
         const showRunError = Boolean(runErrorMessage) && !hasFailedStep;
         // Refused before it started: say why, and how often in its hourly row.
-        const skippedReason =
+        const shownReason =
           execution.status === "skipped" && execution.error
             ? shownRefusal(execution.error)
             : null;
-        const skippedPayg =
-          skippedReason !== null && planRefusalOf(execution.error) === "payg";
+        const skippedReason = shownReason
+          ? `${shownReason.charAt(0).toUpperCase()}${shownReason.slice(1)}`
+          : null;
+        // A refusal's fix page, as in the alerts; none when the workflow cannot run.
+        const refused =
+          execution.errorCategory === "billing" ||
+          (execution.status === "skipped" && execution.errorCategory !== null);
+        const fix =
+          refused && organizationId ? refusalFixLink(execution.error) : null;
         const refusedLine = refusalSummary(execution);
         const showSkipped = Boolean(skippedReason || refusedLine);
 
@@ -1518,16 +1550,11 @@ export function WorkflowRuns({
                       <TriangleAlert />
                       <AlertDescription className="flex flex-col items-start gap-1.5">
                         <span>{runErrorMessage}</span>
-                        {execution.errorCategory === "billing" && (
-                          <a
-                            className="inline-flex items-center gap-1 font-medium underline underline-offset-2 hover:opacity-80"
-                            href="/billing"
-                            rel="noopener noreferrer"
-                            target="_blank"
-                          >
-                            Adjust spending caps
-                            <ExternalLink className="h-3 w-3" />
-                          </a>
+                        {fix && organizationId && (
+                          <RefusalFixAnchor
+                            link={fix}
+                            organizationId={organizationId}
+                          />
                         )}
                       </AlertDescription>
                     </Alert>
@@ -1544,16 +1571,11 @@ export function WorkflowRuns({
                             {refusedLine}.
                           </span>
                         )}
-                        {skippedPayg && (
-                          <a
-                            className="inline-flex items-center gap-1 font-medium underline underline-offset-2 hover:opacity-80"
-                            href="/billing"
-                            rel="noopener noreferrer"
-                            target="_blank"
-                          >
-                            Adjust spending caps
-                            <ExternalLink className="h-3 w-3" />
-                          </a>
+                        {fix && organizationId && (
+                          <RefusalFixAnchor
+                            link={fix}
+                            organizationId={organizationId}
+                          />
                         )}
                       </AlertDescription>
                     </Alert>

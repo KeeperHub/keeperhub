@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { PAYG_BLOCK_MESSAGES } from "@/lib/billing/payg/errors";
+import { SCHEDULE_INVALID_REFUSAL } from "@/lib/workflow/not-executable";
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/db", () => ({ db: {} }));
@@ -848,7 +849,6 @@ describe("runs refused before they start", () => {
           refused: {
             reason:
               "Execution skipped: workflow is not executable (deactivated).",
-            notRunnable: true,
           },
         },
       },
@@ -864,6 +864,25 @@ describe("runs refused before they start", () => {
     expect(message.text).not.toContain("runs on its own again");
     expect(message.text).not.toContain("/plans");
     expect(message.text).not.toMatch(NOT_OURS);
+  });
+
+  it("a schedule that cannot run has no Plans link", () => {
+    const message = renderMessage(
+      {
+        ...org,
+        kind: "alert",
+        workflow,
+        incident: {
+          ...incident,
+          refused: { reason: SCHEDULE_INVALID_REFUSAL },
+        },
+      },
+      now
+    );
+    expect(message.text).toContain(
+      "Open the workflow to see why it cannot run"
+    );
+    expect(message.text).not.toMatch(/Open Plans|\/plans/);
   });
 
   it("an unpaid pay-as-you-go refusal points to Billing, not Plans", () => {
@@ -904,7 +923,7 @@ describe("runs refused before they start", () => {
       now
     );
     expect(message.text).toContain(
-      "If it keeps happening, check the wallet under Billing or contact support; it runs again on its own once they are accepted again"
+      "If it keeps happening, check the wallet under Billing or contact support; it runs again on its own once its runs are accepted, and you will be told."
     );
     expect(message.text).not.toContain("Top up the wallet");
     expect(message.text).toContain(
@@ -922,7 +941,6 @@ describe("runs refused before they start", () => {
           ...incident,
           refused: {
             reason: "Execution skipped: workflow is not executable (halted).",
-            notRunnable: true,
           },
         },
       },
@@ -965,7 +983,6 @@ describe("runs refused before they start", () => {
           refused: {
             reason:
               "Execution skipped: workflow is not executable (anonymous_owner).",
-            notRunnable: true,
           },
         },
       },
@@ -1017,7 +1034,6 @@ describe("runs refused before they start", () => {
         openedBy: "missed" as const,
         refused: {
           reason: "Execution skipped: workflow is not executable (disabled).",
-          notRunnable: true,
         },
       })),
     });

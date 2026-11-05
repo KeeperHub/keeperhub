@@ -16,6 +16,7 @@ import {
   statusForErrorType,
 } from "../../lib/errors/execution-status";
 import { calculateTotalSteps } from "../../lib/workflow/executor/progress";
+import type { NotExecutableReason } from "../../lib/workflow/not-executable";
 import {
   markRunRefused,
   type RefusalCategory,
@@ -450,13 +451,8 @@ export async function claimPendingForExecution(
  * schedule value covers a schedule row that is disabled or gone.
  */
 export type DiscardReason =
+  | NotExecutableReason
   | "not_found"
-  | "deleted"
-  | "deactivated"
-  | "org_deactivated"
-  | "halted"
-  | "disabled"
-  | "anonymous_owner"
   | "schedule_invalid"
   | "upstream_invalid";
 

@@ -32,7 +32,8 @@ import {
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
 import {
-  refusalFixPage,
+  refusalFixHref,
+  refusalFixLink,
   type WorkflowAlertView,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
@@ -363,8 +364,8 @@ export function WorkflowFailureAlerts({
     (resumedAt === null || resumedAt < pausedAt) &&
     !enabled;
   // The fix link the alert carries; none when the workflow cannot run.
-  const fixPage = view.status.incident?.refused
-    ? refusalFixPage(view.status.incident.refusedReason)
+  const fix = view.status.incident?.refused
+    ? refusalFixLink(view.status.incident.refusedReason)
     : null;
   const thresholdInvalid =
     threshold.trim() !== "" &&
@@ -603,7 +604,7 @@ export function WorkflowFailureAlerts({
                   </Link>
                 </Button>
               )}
-              {fixPage && (
+              {fix && (
                 <Button
                   asChild
                   className={WRAP_BUTTON}
@@ -612,9 +613,9 @@ export function WorkflowFailureAlerts({
                 >
                   <Link
                     data-testid="failure-alerts-refusal-fix"
-                    href={`/settings/${view.organizationId}/${fixPage}`}
+                    href={refusalFixHref(view.organizationId, fix)}
                   >
-                    {fixPage === "billing" ? "Open Billing" : "Open Plans"}
+                    {fix.label}
                   </Link>
                 </Button>
               )}

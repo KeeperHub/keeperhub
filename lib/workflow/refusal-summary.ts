@@ -10,9 +10,8 @@ type RefusedRunFields = {
 };
 
 /**
- * "Refused at least 12 times between 10:05 and 10:40", in the viewer's time zone;
- * null for a single refusal. From the threshold on, the row is rewritten at most
- * once a minute, so the count is a lower bound.
+ * "Refused at least 12 times between 10:05 and 10:40" in the viewer's zone; null for one refusal.
+ * From the threshold on, the row is rewritten at most once a minute, so the count is a lower bound.
  */
 export function refusalSummary(
   run: RefusedRunFields,

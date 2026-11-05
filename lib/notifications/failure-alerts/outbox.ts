@@ -160,7 +160,6 @@ class Context {
   private readonly workflowsById = new Map<string, AlertWorkflow | null>();
   private readonly plans = new Map<string, string>();
   private readonly history = new Map<string, Promise<RunsBefore>>();
-  private readonly refusals = new Map<string, Refused | undefined>();
   readonly channels = new Map<string, ChannelConfig>();
   readonly appUrl: string;
 
@@ -237,25 +236,11 @@ class Context {
     return value;
   }
 
-  /** A refused incident's reason, and whether the workflow itself cannot run (not plan or billing). */
-  async refused(incident: IncidentRow): Promise<Refused | undefined> {
-    if (!(isRefusedIncident(incident) && incident.lastFailedExecutionId)) {
-      return undefined;
-    }
-    if (this.refusals.has(incident.id)) {
-      return this.refusals.get(incident.id);
-    }
-    const [run] = await db
-      .select({ errorCategory: workflowExecutions.errorCategory })
-      .from(workflowExecutions)
-      .where(eq(workflowExecutions.id, incident.lastFailedExecutionId))
-      .limit(1);
-    const value: Refused = {
-      reason: incident.lastError,
-      notRunnable: run?.errorCategory === ErrorCategory.CONFIGURATION,
-    };
-    this.refusals.set(incident.id, value);
-    return value;
+  /** A refused incident's newest refusal (its stored reason). */
+  refused(incident: IncidentRow): Refused | undefined {
+    return isRefusedIncident(incident) && incident.lastFailedExecutionId
+      ? { reason: incident.lastError }
+      : undefined;
   }
 
   /** One history query per incident, however many rows announce it. */
@@ -350,7 +335,7 @@ async function groupedList(
         workflowPaused: incident.workflowPausedAt !== null,
         lastError: incident.lastError,
         openedBy: incident.openedBy,
-        refused: await ctx.refused(incident),
+        refused: ctx.refused(incident),
       });
     }
   }
@@ -446,7 +431,7 @@ async function renderRow(
       // A wallet that ran dry turned it off: say so, whatever opened it.
       openedBy:
         context.outOfFunds === true ? ("funding" as const) : incident.openedBy,
-      refused: await ctx.refused(incident),
+      refused: ctx.refused(incident),
       before:
         row.kind === "recovery" ? undefined : await ctx.runsBefore(incident),
     };

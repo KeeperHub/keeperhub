@@ -19,7 +19,11 @@ import {
   isNotRunning,
   orgPauseEffect,
   type PlanRefusal,
+  planFixLink,
   planRefusalOf,
+  type RefusalFixLink,
+  refusalFixHref,
+  refusalFixLink,
   refusalHalted,
   refusalStaysOff,
   refusedLead,
@@ -38,8 +42,6 @@ export type AlertWorkflow = {
 export type Refused = {
   /** The newest refusal's stored error. */
   reason: string | null;
-  /** The workflow or schedule cannot run (not a plan or billing refusal). */
-  notRunnable?: boolean;
 };
 
 type AlertIncident = {
@@ -246,16 +248,18 @@ function walletsUrl(appUrl: string, organizationId: string): string {
 
 type FixLink = { url: string; label: string };
 
-/** Where a refusal is fixed: Billing for pay-as-you-go, else Plans. */
+/** A refusal's fix link (refusalFixLink) as a full URL. */
 function fixLink(
   appUrl: string,
   organizationId: string,
-  kind: PlanRefusal | undefined
-): FixLink {
-  const org = `${appUrl}/settings/${encodeURIComponent(organizationId)}`;
-  return kind === "payg"
-    ? { url: `${org}/billing`, label: "Open Billing" }
-    : { url: `${org}/plans`, label: "Open Plans" };
+  link: RefusalFixLink | null
+): FixLink | null {
+  return link
+    ? {
+        url: `${appUrl}${refusalFixHref(organizationId, link)}`,
+        label: link.label,
+      }
+    : null;
 }
 
 /** "Its scheduled runs are being refused before they start" ("Its runs" when not on a schedule). */
@@ -514,7 +518,7 @@ function refusalFix(reason: string | null): string {
 const ANY_PLANS_FIX =
   "upgrade the plan, raise its run limit or settle billing under Plans";
 const REFUSED_NEXT_TAIL =
-  "; it runs again on its own once they are accepted again, and you will be told.";
+  "; it runs again on its own once its runs are accepted, and you will be told.";
 const NOT_RUNNABLE_CAUSE = "Open the workflow to see why it cannot run";
 const NOT_RUNNABLE_NEXT_STEP = `${NOT_RUNNABLE_CAUSE}; you will be told when it runs on its own again.`;
 const STAYS_OFF_NEXT_STEP =
@@ -554,10 +558,9 @@ function renderAlert(
   const incident = withRefused(input.incident);
   const missed = isNotRunning(incident.openedBy);
   const refused = missed ? incident.refused : undefined;
-  const fix =
-    refused && !refused.notRunnable
-      ? fixLink(appUrl, input.organizationId, planRefusalOf(refused.reason))
-      : null;
+  const fix = refused
+    ? fixLink(appUrl, input.organizationId, refusalFixLink(refused.reason))
+    : null;
   const reminder = input.kind === "reminder";
   const headlineParts = input.paused
     ? pausedHeadline(
@@ -801,8 +804,10 @@ function lowerFirst(text: string): string {
   return `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
 }
 
-/** One kind names its own fix; several name Plans, and Billing when one is pay-as-you-go. */
-// Refused incidents are never grouped: one gets here only when refreshMissedRefusals relabels a missed one after its grouped alert was queued.
+/**
+ * One kind names its own fix; several name Plans, and Billing when one is pay-as-you-go.
+ * Only a missed incident relabelled refused after its grouped alert was queued gets here.
+ */
 function groupedPlansFix(kinds: Set<PlanRefusal>): string {
   const [only] = kinds.size === 1 ? [...kinds] : [];
   if (only) {
@@ -827,14 +832,19 @@ function renderGrouped(
   const planKinds = new Set(
     workflows
       .filter(
-        (w) => isNotRunning(w.openedBy) && w.refused && !w.refused.notRunnable
+        (w) =>
+          isNotRunning(w.openedBy) &&
+          w.refused &&
+          refusalFixLink(w.refused.reason) !== null
       )
       .map((w) => planRefusalOf(w.refused?.reason ?? null))
   );
   const [onlyKind] = planKinds.size === 1 ? [...planKinds] : [];
   const plansFix = groupedPlansFix(planKinds);
   const fix =
-    planKinds.size > 0 ? fixLink(appUrl, input.organizationId, onlyKind) : null;
+    planKinds.size > 0
+      ? fixLink(appUrl, input.organizationId, planFixLink(onlyKind))
+      : null;
   const headline = groupedHeadline(failing, notRunning, turnedOff);
   const errorText = (w: { lastError?: string | null }): string | null =>
     w.lastError ? errorExcerpt(w.lastError, GROUPED_ERROR_CHARS) : null;

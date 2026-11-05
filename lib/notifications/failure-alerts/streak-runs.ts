@@ -1,11 +1,16 @@
 import "server-only";
 
 import { and, desc, eq, gte, isNotNull, isNull, sql } from "drizzle-orm";
-import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/lib/db";
 import { workflowExecutions } from "@/lib/db/schema";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
-import { automatedSql, refusedSql } from "@/lib/workflow/refused-runs";
+import { STATE_REFUSAL_PATTERN } from "@/lib/workflow/not-executable";
+import {
+  acceptedRunBetween,
+  automatedSql,
+  outerRun,
+  refusedSql,
+} from "@/lib/workflow/refused-runs";
 import { isRefusedRun, type StreakRun } from "./streak";
 
 /** Refused before it started (plan limit, unpaid, not runnable): neither a run nor a failure. */
@@ -13,10 +18,6 @@ export const REFUSED_RUN_SQL = refusedSql(workflowExecutions);
 
 /** isAutomatedRun in SQL: a person's run never says a schedule is working. */
 export const AUTOMATED_RUN_SQL = automatedSql(workflowExecutions);
-
-/** The executor's "not executable (<code>)" refusals for a workflow or org state (see inactiveResolution). */
-const STATE_REFUSAL_PATTERN =
-  "not executable \\((halted|disabled|deactivated|org_deactivated|deleted)\\)";
 
 /** A refused row spans at most its UTC hour (lib/workflow/refused-runs.ts). */
 const REFUSAL_BUCKET_SPAN_MS = 60 * 60 * 1000;
@@ -36,18 +37,12 @@ const ATTEMPT_AT_SQL = sql<Date>`CASE WHEN ${REFUSED_RUN_SQL}
   THEN coalesce(${workflowExecutions.completedAt}, ${workflowExecutions.startedAt})
   ELSE ${workflowExecutions.startedAt} END`;
 
-const acceptedRun = alias(workflowExecutions, "accepted_run");
-/** The outer row, named in full: select lists render bare column names, which the subquery would rebind. */
-const outer = (column: string) => sql.raw(`"workflow_executions"."${column}"`);
-
-/** An accepted run between a refused row's first and newest refusal: the writer restarts such a row on its next refusal, so only a run written out of order leaves one. */
-const SPANS_ACCEPTED_SQL = sql`EXISTS (SELECT 1 FROM ${workflowExecutions} AS ${sql.identifier("accepted_run")}
-  WHERE ${acceptedRun.workflowId} = ${outer("workflow_id")}
-    AND ${acceptedRun.startedAt} > ${outer("started_at")}
-    AND ${acceptedRun.startedAt} < coalesce(${outer("completed_at")}, ${outer("started_at")})
-    AND ${acceptedRun.deletedAt} IS NULL
-    AND ${automatedSql(acceptedRun)}
-    AND NOT ${refusedSql(acceptedRun)})`;
+/** An accepted run inside a refused row: only a run written out of order leaves one. */
+const SPANS_ACCEPTED_SQL = acceptedRunBetween(
+  outerRun("started_at"),
+  sql`coalesce(${outerRun("completed_at")}, ${outerRun("started_at")})`,
+  false
+);
 
 /** Refusals a row stands for: one if an accepted run split it (only the later one counts); old rows hold one. */
 const REFUSALS_SQL = sql<number>`CASE WHEN ${SPANS_ACCEPTED_SQL} THEN 1
