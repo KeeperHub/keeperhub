@@ -3369,7 +3369,24 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(recoveries.every((d) => d.state === "skipped")).toBe(true);
     });
 
-    it("40 webhook workflows at the run limit send one alert and one page, then one recovery", async () => {
+    it("an hourly row split by an accepted run counts only the refusal after it", async () => {
+      const org = await countingOrg("bucketsplit");
+      const wf = await makeWorkflow(org, "Bucket split", "Webhook");
+      const run = await refusalBucket(org, wf, {
+        firstAt: -40,
+        lastAt: -40,
+        refusals: 1,
+      });
+      await addRun(org, wf, "success", { at: at(-25), source: "webhook" });
+      await refuseAgain(run, -5);
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      await endRecoveryHold(org.orgId);
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+    });
+
+    it("40 webhook workflows at the run limit each get one alert and one page, then their own recovery", async () => {
       const org = await countingOrg("runlimit40");
       const channel = await makeChannel(org, "pagerduty", "always", "live");
       const ids: string[] = [];
@@ -3389,29 +3406,40 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
           )
         );
       expect(open).toHaveLength(40);
-      const alerts = (await deliveriesOf(org.orgId)).filter(
-        (d) => d.kind === "alert"
+      const alertsOf = async () =>
+        (await deliveriesOf(org.orgId)).filter((d) => d.kind === "alert");
+      const alerts = await alertsOf();
+      // Never in a grouped message: every alert row belongs to one incident.
+      expect(alerts.every((d) => d.incidentId !== null)).toBe(true);
+      for (const incident of open) {
+        const own = alerts.filter((d) => d.incidentId === incident.id);
+        expect(own.filter((d) => d.channel === "email")).toHaveLength(1);
+        const pages = own.filter((d) => d.channelId === channel.id);
+        expect(pages).toHaveLength(1);
+        expect(pages[0]?.state, pages[0]?.lastError ?? "").toBe("delivered");
+      }
+      expect(alerts).toHaveLength(80);
+      const mails = mailsTo(org).filter((m) =>
+        m.subject.includes("is not running")
       );
-      expect(alerts.filter((d) => d.channel === "email")).toHaveLength(1);
-      const pages = alerts.filter((d) => d.channelId === channel.id);
-      expect(pages).toHaveLength(1);
-      expect(pages[0]?.state, pages[0]?.lastError ?? "").toBe("delivered");
-      const [mail] = mailsTo(org).filter((m) =>
-        m.subject.includes("40 workflows are not running")
+      expect(mails).toHaveLength(40);
+      expect(mails[0]?.text).toContain(
+        "Raise the plan's run limit under Plans"
       );
-      expect(mail?.text).toContain("And 30 more.");
-      expect(mail?.text).toContain("raise the plan's run limit under Plans");
-      // The other 39 tell nobody on their own, and are never re-queued as lost.
+      expect(
+        mailsTo(org).some((m) =>
+          m.subject.includes("workflows are not running")
+        )
+      ).toBe(false);
+      // All queued: nothing is re-queued as lost.
       await db
         .update(workflowFailureIncidents)
         .set({ openedAt: at(-10) })
         .where(eq(workflowFailureIncidents.organizationId, org.orgId));
       await runCycle();
-      expect(
-        (await deliveriesOf(org.orgId)).filter((d) => d.kind === "alert")
-      ).toHaveLength(2);
+      expect(await alertsOf()).toHaveLength(80);
 
-      // Accepted again: one recovery for the group, and the one page resolved.
+      // Accepted again: each recovers and resolves its own page.
       for (const wf of ids) {
         await addRun(org, wf, "success", { at: at(-1), source: "webhook" });
       }
@@ -3421,17 +3449,17 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       const recoveries = (await deliveriesOf(org.orgId)).filter(
         (d) => d.kind === "recovery" && d.state !== "skipped"
       );
-      expect(recoveries.filter((d) => d.channel === "email")).toHaveLength(1);
-      const resolves = recoveries.filter((d) => d.channelId === channel.id);
-      expect(resolves).toHaveLength(1);
-      expect(resolves[0]?.incidentId).toBe(pages[0]?.incidentId);
-      expect(resolves[0]?.state, resolves[0]?.lastError ?? "").toBe(
-        "delivered"
-      );
-      const recovery = mailsTo(org).find((m) =>
-        m.text.includes("Refused for the same reason and running again too")
-      );
-      expect(recovery?.text).toContain("and 29 more");
+      for (const incident of open) {
+        const own = recoveries.filter((d) => d.incidentId === incident.id);
+        expect(own.filter((d) => d.channel === "email")).toHaveLength(1);
+        const resolves = own.filter((d) => d.channelId === channel.id);
+        expect(resolves).toHaveLength(1);
+        expect(resolves[0]?.state, resolves[0]?.lastError ?? "").toBe(
+          "delivered"
+        );
+      }
+      expect(recoveries).toHaveLength(80);
+      expect((await incidentById(open[0]?.id))?.resolvedReason).toBe("ran");
     });
 
     it("stops reminding a refused incident once nothing was refused for a day, without a recovery", async () => {

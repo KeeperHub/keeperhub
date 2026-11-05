@@ -307,6 +307,9 @@ run fields above, read as follows:
   left open.
 - `workflowId` and `workflowName` are set when the notification is about exactly
   one workflow, and `null` otherwise.
+- Runs refused before they start (plan limit, billing, or a workflow that cannot
+  run) are reported per workflow, each with its own notifications, after 2
+  refusals; the alert may take a few minutes.
 - Network, gas, step and error fields are always empty.
 
 The `notification` object, present only on these rows, carries the rest:

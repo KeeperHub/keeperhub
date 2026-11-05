@@ -15,6 +15,7 @@ import {
   orgPauseEffect,
   type PlanRefusal,
   planRefusalOf,
+  refusalHalted,
   refusalStaysOff,
   refusedLead,
   shownRefusal,
@@ -97,8 +98,6 @@ export type MessageInput =
       resolvedAt?: Date | null;
       /** A late schedule's first run since: when it started. */
       ranAt?: Date | null;
-      /** Workflows refused for the same reason that run again too (one recovery for the group). */
-      others?: AlertWorkflow[];
     })
   | (OrgFields & {
       kind: "channel_paused";
@@ -240,8 +239,18 @@ function walletsUrl(appUrl: string, organizationId: string): string {
   return `${appUrl}/settings/${encodeURIComponent(organizationId)}/wallets`;
 }
 
-function plansUrl(appUrl: string, organizationId: string): string {
-  return `${appUrl}/settings/${encodeURIComponent(organizationId)}/plans`;
+type FixLink = { url: string; label: string };
+
+/** Where a refusal is fixed: Billing for pay-as-you-go, else Plans. */
+function fixLink(
+  appUrl: string,
+  organizationId: string,
+  kind: PlanRefusal | undefined
+): FixLink {
+  const org = `${appUrl}/settings/${encodeURIComponent(organizationId)}`;
+  return kind === "payg"
+    ? { url: `${org}/billing`, label: "Open Billing" }
+    : { url: `${org}/plans`, label: "Open Plans" };
 }
 
 /** "Its scheduled runs are being refused before they start" ("Its runs" when not on a schedule). */
@@ -483,6 +492,7 @@ const PLANS_FIX: Record<PlanRefusal, string> = {
   feature:
     "Upgrade the plan under Plans, or remove those features from the workflow",
   limit: "Raise the plan's run limit under Plans",
+  payg: "Top up the wallet or raise the pay-as-you-go limits under Billing",
   billing: "Settle billing under Plans",
 };
 /** Several kinds of refusal in one grouped message. */
@@ -494,6 +504,17 @@ const NOT_RUNNABLE_CAUSE = "Open the workflow to see why it cannot run";
 const NOT_RUNNABLE_NEXT_STEP = `${NOT_RUNNABLE_CAUSE}; you will be told when it runs on its own again.`;
 const STAYS_OFF_NEXT_STEP =
   "KeeperHub deactivated it; contact support to turn it back on.";
+const HALTED_CAUSE =
+  "The organization's circuit breaker is engaged, so no runs start; an admin or owner can reset it to resume";
+const HALTED_NEXT_STEP = `${HALTED_CAUSE}, and you will be told when it runs again.`;
+
+/** A workflow that cannot run: deactivated by us, halted by the org, or see the workflow. */
+function notRunnableNextStep(reason: string | null): string {
+  if (refusalStaysOff(reason)) {
+    return STAYS_OFF_NEXT_STEP;
+  }
+  return refusalHalted(reason) ? HALTED_NEXT_STEP : NOT_RUNNABLE_NEXT_STEP;
+}
 
 /** "Before this: 214 successful runs in 30 days, the last at 12:15 UTC." */
 function historyLine(incident: AlertIncident): string | null {
@@ -518,9 +539,9 @@ function renderAlert(
   const incident = withRefused(input.incident);
   const missed = isNotRunning(incident.openedBy);
   const refused = missed ? incident.refused : undefined;
-  const plans =
+  const fix =
     refused && !refused.notRunnable
-      ? plansUrl(appUrl, input.organizationId)
+      ? fixLink(appUrl, input.organizationId, planRefusalOf(refused.reason))
       : null;
   const reminder = input.kind === "reminder";
   const headlineParts = input.paused
@@ -552,10 +573,8 @@ function renderAlert(
     nextStep = PAUSED_NEXT_STEP;
   } else if (refused) {
     nextStep = `${PLANS_FIX[planRefusalOf(refused.reason)]}${REFUSED_NEXT_TAIL}`;
-    if (!plans) {
-      nextStep = refusalStaysOff(refused.reason)
-        ? STAYS_OFF_NEXT_STEP
-        : NOT_RUNNABLE_NEXT_STEP;
+    if (!fix) {
+      nextStep = notRunnableNextStep(refused.reason);
     }
   } else if (missed) {
     nextStep = MISSED_NEXT_STEP;
@@ -563,13 +582,15 @@ function renderAlert(
     nextStep = FUNDING_NEXT_STEP;
   }
   // Refused runs need someone to act (plan, billing): they keep "Action needed".
+  const count =
+    reminder && input.reminderNumber
+      ? ` (reminder ${input.reminderNumber} of ${input.maxReminders ?? 7})`
+      : "";
   let label = "Action needed";
   if (missed && !(refused || input.paused)) {
     label = "Check";
-  } else if (reminder && !(refused || input.paused)) {
-    label = input.reminderNumber
-      ? `Still failing (reminder ${input.reminderNumber} of ${input.maxReminders ?? 7})`
-      : "Still failing";
+  } else if (reminder && !input.paused) {
+    label = refused ? `Action needed${count}` : `Still failing${count}`;
   }
   const last =
     reminder &&
@@ -605,7 +626,7 @@ function renderAlert(
   }
   // The same lines, in the same order, for email text, chat and the HTML.
   const lastLine = last
-    ? "This is the last reminder. It stays under Failing now on the Alerts page until it works or someone turns it off."
+    ? `This is the last reminder. It stays under Failing now on the Alerts page until ${refused ? "its runs are accepted again" : "it works"} or someone turns it off.`
     : null;
   const lines = [since, history, detail, hint, nextStep, lastLine].filter(
     (line): line is string => Boolean(line)
@@ -616,8 +637,8 @@ function renderAlert(
   } else if (missed) {
     links = [`Open the workflow: ${open}`];
   }
-  if (plans) {
-    links = [`Open Plans: ${plans}`, ...links];
+  if (fix) {
+    links = [`${fix.label}: ${fix.url}`, ...links];
   }
   if (funds) {
     links = [`Add funds: ${funds}`, ...links];
@@ -625,8 +646,8 @@ function renderAlert(
   let buttons = `${emailButton(open, "Open the failing workflow", "danger")}${emailButton(runs, "View failed runs")}`;
   if (sample) {
     buttons = emailButton(open, SAMPLE_LINK);
-  } else if (plans) {
-    buttons = `${emailButton(plans, "Open Plans", "danger")}${emailButton(open, "Open the workflow")}`;
+  } else if (fix) {
+    buttons = `${emailButton(fix.url, fix.label, "danger")}${emailButton(open, "Open the workflow")}`;
   } else if (missed) {
     buttons = emailButton(open, "Open the workflow", "primary");
   } else if (funds) {
@@ -765,6 +786,17 @@ function lowerFirst(text: string): string {
   return `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
 }
 
+/** One kind names its own fix; several name Plans, and Billing when one is pay-as-you-go. */
+function groupedPlansFix(kinds: Set<PlanRefusal>): string {
+  const [only] = kinds.size === 1 ? [...kinds] : [];
+  if (only) {
+    return lowerFirst(PLANS_FIX[only]);
+  }
+  return kinds.has("payg")
+    ? `${ANY_PLANS_FIX}, or ${lowerFirst(PLANS_FIX.payg)}`
+    : ANY_PLANS_FIX;
+}
+
 function renderGrouped(
   input: Extract<MessageInput, { kind: "grouped" }>
 ): RenderedMessage {
@@ -784,9 +816,9 @@ function renderGrouped(
       .map((w) => planRefusalOf(w.refused?.reason ?? null))
   );
   const [onlyKind] = planKinds.size === 1 ? [...planKinds] : [];
-  const plansFix = onlyKind ? lowerFirst(PLANS_FIX[onlyKind]) : ANY_PLANS_FIX;
-  const plans =
-    planKinds.size > 0 ? plansUrl(appUrl, input.organizationId) : null;
+  const plansFix = groupedPlansFix(planKinds);
+  const fix =
+    planKinds.size > 0 ? fixLink(appUrl, input.organizationId, onlyKind) : null;
   const headline = groupedHeadline(failing, notRunning, turnedOff);
   const errorText = (w: { lastError?: string | null }): string | null =>
     w.lastError ? errorExcerpt(w.lastError, GROUPED_ERROR_CHARS) : null;
@@ -794,10 +826,12 @@ function renderGrouped(
     failing > 0
       ? "This often means a shared cause, such as an RPC provider or a wallet out of gas."
       : null,
-    plans
+    fix
       ? `Runs refused before they start point to the plan or billing: ${plansFix}.`
       : null,
-    refusedAny && !plans ? `${NOT_RUNNABLE_CAUSE}.` : null,
+    refusedAny && !fix
+      ? `${workflows.some((w) => refusalHalted(w.refused?.reason ?? null)) ? HALTED_CAUSE : NOT_RUNNABLE_CAUSE}.`
+      : null,
     turnedOff > 0
       ? "Workflows KeeperHub turned off stay off until someone turns them back on."
       : null,
@@ -842,7 +876,7 @@ function renderGrouped(
   if (moreLine) {
     lines.push(moreLine);
   }
-  const fundsLine = `${funds ? `Add funds: ${funds}\n` : ""}${plans ? `Open Plans: ${plans}\n` : ""}`;
+  const fundsLine = `${funds ? `Add funds: ${funds}\n` : ""}${fix ? `${fix.label}: ${fix.url}\n` : ""}`;
   const seeAll = `See all failing workflows: ${settingsUrl(appUrl, input.organizationId)}`;
   const chatLine = (w: GroupedWorkflow, withError: boolean): ChatPart[] => {
     const error = withError ? reasonOf(w) : null;
@@ -865,7 +899,7 @@ function renderGrouped(
       ...workflows.slice(0, count).map((w) => chatLine(w, withError)),
       rest > 0 ? `And ${rest} more.` : null,
       funds ? `Add funds: ${funds}` : null,
-      plans ? `Open Plans: ${plans}` : null,
+      fix ? `${fix.label}: ${fix.url}` : null,
       seeAll,
     ]);
   };
@@ -892,7 +926,7 @@ ${foot.text}`;
       })
       .join("")}</ul>
     ${moreLine ? `<p>${moreLine}</p>` : ""}
-    <p>${emailButton(settingsUrl(appUrl, input.organizationId), "See all failing workflows", "danger")}${funds ? emailButton(funds, "Add funds") : ""}${plans ? emailButton(plans, "Open Plans") : ""}</p>`,
+    <p>${emailButton(settingsUrl(appUrl, input.organizationId), "See all failing workflows", "danger")}${funds ? emailButton(funds, "Add funds") : ""}${fix ? emailButton(fix.url, fix.label) : ""}</p>`,
     foot.html
   );
   return {
@@ -902,20 +936,6 @@ ${foot.text}`;
     ...chatOf(chatVariants),
     summary: summaryOf(`${orgName}: ${headline}`),
   };
-}
-
-/** "Refused for the same reason and running again too: A, B and 3 more." */
-function othersLine(others: AlertWorkflow[]): ChatPart[] | null {
-  if (others.length === 0) {
-    return null;
-  }
-  const shown = others.slice(0, GROUPED_LIST_MAX);
-  const more = others.length - shown.length;
-  return [
-    "Refused for the same reason and running again too: ",
-    ...shown.flatMap((w, i) => [...(i > 0 ? [", "] : []), user(w.name)]),
-    more > 0 ? ` and ${more} more.` : ".",
-  ];
 }
 
 function renderRecovery(
@@ -948,18 +968,16 @@ function renderRecovery(
   const headlineParts = [user(workflow.name), tail];
   const headline = plain(headlineParts);
   const prefix = input.ranButFailed ? "Started again" : "Resolved";
-  const othersParts = othersLine(input.others ?? []);
-  const others = othersParts ? ` ${plain(othersParts)}` : "";
   const { runs: link, sample } = workflowLinks(input, workflow.id);
   const linkLabel = sample ? SAMPLE_LINK : "View runs";
   const foot = footer(input);
   const test = testBanner(input.testNote);
   return {
     subject: `${input.testNote ? "[Test] " : ""}[${orgName}] ${prefix}: ${headline}`,
-    text: `${test.text}${headline}. ${detail}${others}\n\n${linkLabel}: ${link}\n\n${foot.text}`,
+    text: `${test.text}${headline}. ${detail}\n\n${linkLabel}: ${link}\n\n${foot.text}`,
     html: emailLayout(
       escapeHtml(headline),
-      `${test.html}<p>${escapeHtml(detail)}${escapeHtml(others)}</p><p>${emailButton(link, linkLabel)}</p>`,
+      `${test.html}<p>${escapeHtml(detail)}</p><p>${emailButton(link, linkLabel)}</p>`,
       foot.html
     ),
     ...chatOf([
@@ -967,9 +985,7 @@ function renderRecovery(
         ...orgTag(orgName),
         ...test.chat,
         ...headlineParts,
-        `. ${detail}`,
-        ...(othersParts ? [" ", ...othersParts] : []),
-        `\n${linkLabel}: ${link}`,
+        `. ${detail}\n${linkLabel}: ${link}`,
       ],
     ]),
     summary: summaryOf(`${orgName}: ${headline}`),

@@ -149,7 +149,8 @@ vi.mock("drizzle-orm/pg-core", async (importOriginal) => {
 });
 
 // Row shape and hourly folding are covered against Postgres in refused-runs.db.test.ts.
-const recordRefusedRun = vi.hoisted(() => vi.fn(async () => ({ id: "r1" })));
+const recordRefusedRun = vi.hoisted(() => vi.fn(async () => true));
+const recordWorkflowExecutionSkipped = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/workflow/refused-runs", () => ({ recordRefusedRun }));
 
 vi.mock("@/lib/errors/finalize-error", () => ({
@@ -157,6 +158,7 @@ vi.mock("@/lib/errors/finalize-error", () => ({
 }));
 vi.mock("@/lib/metrics/collectors/prometheus", () => ({
   recordWorkflowExecutionFinished: vi.fn(),
+  recordWorkflowExecutionSkipped,
 }));
 vi.mock("@/lib/metrics/org-slug.server", () => ({
   resolveOrgSlugForCounter: vi.fn(async () => "acme"),
@@ -287,8 +289,33 @@ describe("POST /api/internal/executions", () => {
         reasonCode: "plan_feature",
         category: "billing",
         triggerSource: "internal",
-      })
+      }),
+      expect.anything()
     );
+  });
+
+  it("counts a refusal only after its row was written", async () => {
+    checkDispatchAdmission.mockResolvedValue({
+      reason: "execution_limit",
+      message: "limit reached",
+    });
+    recordWorkflowExecutionSkipped.mockClear();
+
+    recordRefusedRun.mockResolvedValueOnce(false);
+    const failed = await POST(
+      postRequest({ workflowId: "wf_1", userId: "user_1", status: "phantom" })
+    );
+    // Still a 200: a failed response would make the dispatcher enqueue it.
+    expect(failed.status).toBe(200);
+    expect(recordWorkflowExecutionSkipped).not.toHaveBeenCalled();
+
+    await POST(
+      postRequest({ workflowId: "wf_1", userId: "user_1", status: "phantom" })
+    );
+    expect(recordWorkflowExecutionSkipped).toHaveBeenCalledWith({
+      orgSlug: "acme",
+      reason: "execution_limit",
+    });
   });
 
   it("attributes the row to the supplied trigger source", async () => {

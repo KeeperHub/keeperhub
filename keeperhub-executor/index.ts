@@ -52,12 +52,16 @@ import { ErrorCategory, logSystemError } from "../lib/logging";
 import { checkConcurrencyLimit } from "../lib/workflow/concurrency";
 import { hashWorkflowDefinition } from "../lib/workflow/content-hash";
 import {
+  insertRefusedRun,
   markRunRefused,
-  recordRefusedRun,
 } from "../lib/workflow/refused-runs";
 import { SHUTDOWN_TIMEOUT_MS } from "../lib/workflow/executor/runner-constants";
 import { loadWorkflowForExecution } from "../lib/workflow/load-for-execution";
 import type { WorkflowNode } from "../lib/workflow/store";
+import {
+  EXECUTION_LIMIT_REFUSAL,
+  planFeatureRefusalMessage,
+} from "../lib/billing/dispatch-refusal";
 import { chargePaygExecution } from "../lib/billing/payg/charge";
 import { PAYG_OVERFLOW_REASON } from "../lib/billing/payg/constants";
 import { type ApiExecuteTriggerType, executeViaApi } from "./api-execute";
@@ -529,8 +533,7 @@ async function processExecutorMessage(
     // it surfaces correctly instead of being aged to a system P-code.
     // No phantom -> keep the prior silent-skip behaviour.
     await resolveToSkipped(db, message.executionId, {
-      error:
-        "Execution skipped: your plan's monthly execution limit has been reached.",
+      error: EXECUTION_LIMIT_REFUSAL,
       errorCategory: "billing",
       reason: "execution_limit",
     });
@@ -546,9 +549,9 @@ async function processExecutorMessage(
     const gatedFeatureIds = featureResult.violations
       .map((v) => v.featureId)
       .join(",");
-    const errorMessage = `Workflow uses features that require a paid plan: ${featureResult.violations
-      .map((v) => v.feature.name)
-      .join(", ")}`;
+    const errorMessage = planFeatureRefusalMessage(
+      featureResult.violations.map((v) => v.feature.name)
+    );
     console.warn(
       `[Executor] Feature guard blocked ${triggerType} trigger for workflow ${workflowId}: org=${workflow.organizationId} gated=${gatedFeatureIds}`
     );
@@ -560,7 +563,7 @@ async function processExecutorMessage(
       "userId" in message ? message.userId : workflow.userId;
 
     // Resolve a pre-created phantom/pending row in place; with none (legacy
-    // messages), record the refusal in its hourly row instead.
+    // messages), record it in its hourly row. A failed write throws so SQS redelivers.
     const blockedResolved = message.executionId
       ? await markRunRefused(
           {
@@ -575,7 +578,7 @@ async function processExecutorMessage(
         )
       : null;
     if (!blockedResolved) {
-      await recordRefusedRun(
+      await insertRefusedRun(
         {
           workflowId,
           organizationId: workflow.organizationId,
@@ -591,8 +594,8 @@ async function processExecutorMessage(
       );
     }
 
-    // Exactly one row was written above, by whichever branch ran, and it is no
-    // longer an error row, so this is the only thing that counts the refusal.
+    // Counted per refusal: the hourly row may have been left as is, and a
+    // refused row is never counted by any finalize path.
     await recordSkippedSample(db, { workflowId, reason: "plan_feature" });
     return;
   }

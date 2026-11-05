@@ -38,6 +38,7 @@ import {
 import { cn } from "@/lib/utils";
 import { startSerialPoll } from "@/lib/utils/serial-poll";
 import { getRelativeTime } from "@/lib/utils/time";
+import { refusalSummary } from "@/lib/workflow/refusal-summary";
 import {
   appendPage,
   emptyExecutionPage,
@@ -1407,6 +1408,11 @@ export function WorkflowRuns({
           (log) => log.status === "error"
         );
         const showRunError = Boolean(runErrorMessage) && !hasFailedStep;
+        // Refused before it started: say why, and how often in its hourly row.
+        const skippedReason =
+          execution.status === "skipped" ? execution.error : null;
+        const refusedLine = refusalSummary(execution);
+        const showSkipped = Boolean(skippedReason || refusedLine);
 
         return (
           <div
@@ -1519,8 +1525,23 @@ export function WorkflowRuns({
                     </Alert>
                   </div>
                 )}
+                {showSkipped && (
+                  <div className={cn("p-4", executionLogs.length > 0 && "pb-0")}>
+                    <Alert>
+                      <SkipForward />
+                      <AlertDescription className="flex flex-col items-start gap-1.5">
+                        {skippedReason && <span>{skippedReason}</span>}
+                        {refusedLine && (
+                          <span data-testid="run-refusal-count">
+                            {refusedLine}.
+                          </span>
+                        )}
+                      </AlertDescription>
+                    </Alert>
+                  </div>
+                )}
                 {executionLogs.length === 0 ? (
-                  showRunError ? null : (
+                  showRunError || showSkipped ? null : (
                     <div className="py-8 text-center text-muted-foreground text-xs">
                       No steps recorded
                     </div>

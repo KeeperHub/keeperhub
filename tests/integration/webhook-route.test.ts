@@ -520,7 +520,12 @@ describe("POST /api/workflows/:workflowId/webhook", () => {
           reasonCode: "execution_limit",
           category: "billing",
           triggerSource: "webhook",
-        })
+          credential: expect.objectContaining({
+            userApiKeyId: "key-1",
+            credentialType: "webhook_key",
+          }),
+        }),
+        expect.anything()
       );
       expect(mockInsertReturning).not.toHaveBeenCalled();
     });
@@ -543,6 +548,7 @@ describe("POST /api/workflows/:workflowId/webhook", () => {
           }),
           { status: 402 }
         ),
+        violations: [{ feature: { name: "Safe Wallet" } }],
       });
 
       const response = await POST(
@@ -559,7 +565,12 @@ describe("POST /api/workflows/:workflowId/webhook", () => {
           reasonCode: "plan_feature",
           category: "billing",
           triggerSource: "webhook",
-        })
+          credential: expect.objectContaining({
+            userApiKeyId: "key-1",
+            credentialType: "webhook_key",
+          }),
+        }),
+        expect.anything()
       );
     });
 
@@ -646,7 +657,8 @@ describe("POST /api/workflows/:workflowId/webhook", () => {
           fromStatuses: ["pending"],
           reason: message,
           category: "billing",
-        })
+        }),
+        expect.anything()
       );
     });
   });

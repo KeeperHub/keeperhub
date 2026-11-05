@@ -156,13 +156,10 @@ function runsLeft(view: Loaded): string {
 
 type PanelIncident = NonNullable<Loaded["status"]["incident"]>;
 
-/** Who heard about it; a refusal told in another workflow's alert says so. */
+/** Who heard about it. */
 function alertLine(incident: PanelIncident): string {
-  if (incident.deliveredTo.length > 0) {
-    return `Alert sent ${timeAgo(incident.openedAt)} to ${incident.deliveredTo.join(", ")}.`;
-  }
-  return incident.reportedWithOthers
-    ? `Reported ${timeAgo(incident.openedAt)} in one alert with other workflows refused for the same reason.`
+  return incident.deliveredTo.length > 0
+    ? `Alert sent ${timeAgo(incident.openedAt)} to ${incident.deliveredTo.join(", ")}.`
     : `Alert queued ${timeAgo(incident.openedAt)}, not delivered yet.`;
 }
 

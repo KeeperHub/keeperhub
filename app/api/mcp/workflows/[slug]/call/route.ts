@@ -281,13 +281,16 @@ async function prepareExecution(
     });
     if (paygCharge.applicable && !paygCharge.ok) {
       // Unpaid: refused before it started, so it consumes no quota.
-      await markRunRefused({
-        executionId: execution.id,
-        fromStatuses: ["running"],
-        reason: paygCharge.message,
-        category: ErrorCategory.BILLING,
-        at: new Date(),
-      });
+      await markRunRefused(
+        {
+          executionId: execution.id,
+          fromStatuses: ["running"],
+          reason: paygCharge.message,
+          category: ErrorCategory.BILLING,
+          at: new Date(),
+        },
+        db
+      );
       return {
         error: NextResponse.json(
           {

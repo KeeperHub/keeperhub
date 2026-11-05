@@ -470,7 +470,8 @@ describe("execute route - input binding", {
           reason: "Payment required",
           category: "billing",
           fromStatuses: ["phantom", "pending", "running"],
-        })
+        }),
+        expect.anything()
       );
     });
 

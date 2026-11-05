@@ -19,11 +19,6 @@ import {
   resolveRecipientEmails,
 } from "./policy";
 import {
-  isQuietMember,
-  openRefusedGroup,
-  refusalCategoryOf,
-} from "./refused-groups";
-import {
   checkVersion,
   loadChannelViews,
   loadOrgSettingsView,
@@ -100,16 +95,6 @@ export async function loadWorkflowAlertView(
       )
     )
     .limit(1);
-  // Opened while another workflow of the org was refused for the same reason: told in that one's alert.
-  const reportedWithOthers =
-    incident?.openedBy === "refused" &&
-    isQuietMember(
-      incident,
-      await openRefusedGroup(
-        incident.organizationId,
-        await refusalCategoryOf(incident.lastFailedExecutionId)
-      )
-    );
   const deliveredTo = incident
     ? await db
         .selectDistinct({
@@ -211,7 +196,6 @@ export async function loadWorkflowAlertView(
               incident.openedBy === "refused"
                 ? incident.lastFailedAt.toISOString()
                 : null,
-            reportedWithOthers,
           }
         : null,
     },

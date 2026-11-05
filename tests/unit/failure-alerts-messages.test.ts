@@ -865,6 +865,70 @@ describe("runs refused before they start", () => {
     expect(message.text).not.toMatch(NOT_OURS);
   });
 
+  it("an unpaid pay-as-you-go refusal points to Billing, not Plans", () => {
+    const payg =
+      "Not enough USDC in your wallet to cover this execution. Top up USDC on Base to keep running.";
+    const message = renderMessage(
+      {
+        ...org,
+        kind: "alert",
+        workflow,
+        incident: { ...incident, lastError: payg, refused: { reason: payg } },
+      },
+      now
+    );
+    expect(message.text).toContain(
+      "Top up the wallet or raise the pay-as-you-go limits under Billing; it runs again"
+    );
+    expect(message.text).toContain(
+      "Open Billing: https://app.test/settings/org-1/billing"
+    );
+    expect(message.html).toContain("https://app.test/settings/org-1/billing");
+    expect(message.text).not.toContain("/plans");
+  });
+
+  it("a halted org's refusal explains the circuit breaker, not the workflow", () => {
+    const message = renderMessage(
+      {
+        ...org,
+        kind: "alert",
+        workflow,
+        incident: {
+          ...incident,
+          refused: {
+            reason: "Execution skipped: workflow is not executable (halted).",
+            notRunnable: true,
+          },
+        },
+      },
+      now
+    );
+    expect(message.text).toContain(
+      "The organization's circuit breaker is engaged, so no runs start; an admin or owner can reset it to resume"
+    );
+    expect(message.text).not.toContain("to see why it cannot run");
+    expect(message.text).not.toContain("/plans");
+  });
+
+  it("a refused reminder says still not running, its number and since when", () => {
+    const message = renderMessage(
+      {
+        ...org,
+        kind: "reminder",
+        workflow,
+        incident: { ...incident, openedBy: "refused" as const },
+        reminderNumber: 3,
+        maxReminders: 7,
+      },
+      now
+    );
+    expect(message.subject).toBe(
+      "[Acme] Action needed (reminder 3 of 7): Keeper is still not running"
+    );
+    expect(message.text).toContain("Refused since ");
+    expect(message.chat).toContain("reminder 3 of 7");
+  });
+
   it("names the executor's not-runnable codes in plain words", () => {
     const owner = renderMessage(
       {
@@ -1024,6 +1088,16 @@ describe("refused runs on a workflow not on a schedule", () => {
     }
   );
 
+  it("the last refused reminder waits for its runs to be accepted, not for it to work", () => {
+    const message = renderMessage(
+      { ...org, kind: "reminder", workflow: hook, incident, reminderNumber: 7 },
+      now
+    );
+    expect(message.text).toContain(
+      "until its runs are accepted again or someone turns it off"
+    );
+  });
+
   it("falls back to the stored error when no refusal was looked up", () => {
     const message = renderMessage(
       {
@@ -1101,7 +1175,7 @@ describe("refused runs on a workflow not on a schedule", () => {
       "Its runs are being accepted again after 9 minutes of refusals, but the first one failed."
     );
   });
-  it("a group recovery names the other workflows that run again, once", () => {
+  it("a refused recovery is about its own workflow only", () => {
     const message = renderMessage(
       {
         ...org,
@@ -1110,16 +1184,10 @@ describe("refused runs on a workflow not on a schedule", () => {
         incident,
         resolvedAt: now,
         ranAt: now,
-        others: [
-          { id: "wf-2", name: "Hook *2*", triggerLabel: "Webhook" },
-          { id: "wf-3", name: "Hook 3", triggerLabel: "Webhook" },
-        ],
       },
       now
     );
-    expect(message.text).toContain(
-      "Refused for the same reason and running again too: Hook *2*, Hook 3."
-    );
+    expect(message.text).not.toContain("same reason");
     expect(message.chatVariants.length).toBeGreaterThan(0);
     expect(message.subject).toBe("[Acme] Resolved: Hook is running again");
   });

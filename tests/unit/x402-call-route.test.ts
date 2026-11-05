@@ -551,7 +551,8 @@ describe("POST /api/mcp/workflows/[slug]/call", () => {
         executionId: "exec-payg-blocked",
         fromStatuses: ["running"],
         category: "billing",
-      })
+      }),
+      expect.anything()
     );
   });
 

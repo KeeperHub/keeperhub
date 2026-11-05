@@ -1,10 +1,8 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
-import {
-  checkDispatchAdmission,
-  type DispatchRefusal,
-} from "@/lib/billing/dispatch-admission";
+import { checkDispatchAdmission } from "@/lib/billing/dispatch-admission";
+import type { DispatchRefusal } from "@/lib/billing/dispatch-refusal";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
@@ -51,7 +49,8 @@ function resolveTriggerSource(value: unknown): TriggerSource {
 
 /**
  * Record a refused dispatch in its hourly row so the author sees why the
- * trigger stopped firing. Best-effort: a failed write must not fail the response.
+ * trigger stopped firing. Best-effort: a failed response makes the dispatcher
+ * fall through to the id-less enqueue.
  */
 async function recordRefusedDispatch(params: {
   request: Request;
@@ -61,17 +60,23 @@ async function recordRefusedDispatch(params: {
   source: TriggerSource;
   refusal: DispatchRefusal;
 }): Promise<void> {
-  await recordRefusedRun({
-    workflowId: params.workflowId,
-    organizationId: params.organizationId,
-    userId: params.userId,
-    reason: params.refusal.message,
-    reasonCode: params.refusal.reason,
-    category: ErrorCategory.BILLING,
-    triggerSource: params.source,
-    at: new Date(),
-    request: params.request,
-  });
+  const recorded = await recordRefusedRun(
+    {
+      workflowId: params.workflowId,
+      organizationId: params.organizationId,
+      userId: params.userId,
+      reason: params.refusal.message,
+      reasonCode: params.refusal.reason,
+      category: ErrorCategory.BILLING,
+      triggerSource: params.source,
+      at: new Date(),
+      request: params.request,
+    },
+    db
+  );
+  if (!recorded) {
+    return;
+  }
 
   // Counted per refusal, not per row, so the hour bucket does not hide volume.
   try {

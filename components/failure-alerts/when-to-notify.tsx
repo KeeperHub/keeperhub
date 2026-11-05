@@ -163,8 +163,9 @@ export function WhenToNotify({
       </p>
       <p className="text-muted-foreground text-xs">
         Runs refused before they start (plan limit, billing, or a workflow that
-        cannot run) are reported after {REFUSED_RUNS_THRESHOLD} refusals;
-        scheduled workflows are reported when a run is due.
+        cannot run) are reported per workflow after {REFUSED_RUNS_THRESHOLD}{" "}
+        refusals, which may take a few minutes; scheduled workflows are reported
+        when a run is due.
       </p>
       <label className="flex items-center gap-2" htmlFor="failure-remind">
         <Checkbox

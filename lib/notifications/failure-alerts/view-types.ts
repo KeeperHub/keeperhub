@@ -1,4 +1,6 @@
 // API response shapes, kept here so the browser can import them (builders are server-only).
+
+import { PAYG_BLOCK_MESSAGES } from "@/lib/billing/payg/errors";
 import type {
   FailureAlertChannelKind,
   FailureAlertChannelRole,
@@ -176,8 +178,6 @@ export type WorkflowAlertView = {
       refusedReason: string | null;
       /** A "refused" incident's newest refusal. */
       lastRefusedAt: string | null;
-      /** Told in the alert of another workflow refused for the same reason. */
-      reportedWithOthers: boolean;
     } | null;
   };
   members: MemberView[];
@@ -365,17 +365,32 @@ export function shownRefusal(reason: string): string {
     );
 }
 
-/** What a plan or billing refusal asks for: a paid feature, a run limit, or billing. */
-export type PlanRefusal = "feature" | "limit" | "billing";
+/** What a plan or billing refusal asks for: a paid feature, a run limit, pay-as-you-go funds or limits, or billing. */
+export type PlanRefusal = "feature" | "limit" | "payg" | "billing";
 
 const PAID_FEATURE = /require a paid plan/i;
 const RUN_LIMIT = /execution limit|run limit/i;
+const PAYG = /pay-as-you-go/i;
+const PAYG_MESSAGES = Object.values(PAYG_BLOCK_MESSAGES);
 
 export function planRefusalOf(reason: string | null): PlanRefusal {
-  if (reason && PAID_FEATURE.test(reason)) {
+  if (!reason) {
+    return "billing";
+  }
+  if (PAID_FEATURE.test(reason)) {
     return "feature";
   }
-  return reason && RUN_LIMIT.test(reason) ? "limit" : "billing";
+  if (RUN_LIMIT.test(reason)) {
+    return "limit";
+  }
+  const payg =
+    PAYG.test(reason) || PAYG_MESSAGES.some((text) => reason.includes(text));
+  return payg ? "payg" : "billing";
+}
+
+/** The org's circuit breaker stopped it (lib/execute/org-circuit-breaker.ts). */
+export function refusalHalted(reason: string | null): boolean {
+  return reason?.match(NOT_EXECUTABLE_CODE)?.[1] === "halted";
 }
 
 /** Deactivated by our team: it does not come back on its own. */

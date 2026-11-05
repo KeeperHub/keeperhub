@@ -1,8 +1,6 @@
 import { and, eq } from "drizzle-orm";
-import {
-  checkDispatchAdmission,
-  type DispatchRefusal,
-} from "@/lib/billing/dispatch-admission";
+import { checkDispatchAdmission } from "@/lib/billing/dispatch-admission";
+import type { DispatchRefusal } from "@/lib/billing/dispatch-refusal";
 import { db } from "@/lib/db";
 import {
   organization,

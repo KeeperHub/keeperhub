@@ -601,13 +601,16 @@ export async function POST(
     });
     if (paygCharge.applicable && !paygCharge.ok) {
       // Unpaid: refused before it started, so it consumes no quota.
-      await markRunRefused({
-        executionId: executionId,
-        fromStatuses: ["phantom", "pending", "running"],
-        reason: paygCharge.message,
-        category: ErrorCategory.BILLING,
-        at: new Date(),
-      });
+      await markRunRefused(
+        {
+          executionId,
+          fromStatuses: ["phantom", "pending", "running"],
+          reason: paygCharge.message,
+          category: ErrorCategory.BILLING,
+          at: new Date(),
+        },
+        db
+      );
       return recordIdempotentResponse(
         idem,
         withDeprecation(

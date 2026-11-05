@@ -65,8 +65,6 @@ export const OUT_OF_FUNDS_THRESHOLD = 2;
 export const REFUSED_RUNS_THRESHOLD = 2;
 /** A refusal this recent labels a "not running" schedule as refused. */
 export const REFUSAL_RECENT_MS = 60 * 60 * 1000;
-/** A refused incident opened this soon after another in its org, for the same category, joins its alert. */
-export const REFUSAL_GROUP_MS = 24 * 60 * 60 * 1000;
 /** No refusal for this long: reminders stop (nothing is trying to run, so nothing recovers). */
 export const REFUSALS_STOPPED_MS = 24 * 60 * 60 * 1000;
 
