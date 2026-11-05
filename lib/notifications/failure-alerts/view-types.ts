@@ -299,8 +299,22 @@ export const FAILURE_ALERT_KIND_LABEL: Record<FailureAlertMessageKind, string> =
 
 /** Which channel a pause notice is about, why a backup was sent, or a workflow turned off. */
 export function historyNote(
-  context: Record<string, unknown> | null
+  context: Record<string, unknown> | null,
+  kind?: string
 ): string | null {
+  // A pause notice says who paused or resumed it, and why.
+  if (kind === "alerts_paused" || kind === "alerts_resumed") {
+    const by = typeof context?.by === "string" ? context.by : null;
+    const who = by && /^An (owner|admin)$/.test(by) ? by.toLowerCase() : by;
+    if (kind === "alerts_resumed") {
+      return who ? `Turned back on by ${who}` : "The pause ran out";
+    }
+    const reason =
+      typeof context?.reason === "string" && context.reason
+        ? `: ${context.reason}`
+        : "";
+    return `${who ? `Paused by ${who}` : "Paused"}${reason}`;
+  }
   if (typeof context?.channelLabel === "string") {
     return context.channelLabel;
   }

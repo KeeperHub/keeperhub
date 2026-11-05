@@ -157,7 +157,7 @@ export function toHistoryEntry(
     lastStatus: row.lastStatus,
     lastError: row.lastError,
     nextAttemptAt: row.nextAttemptAt.toISOString(),
-    note: historyNote(row.context),
+    note: historyNote(row.context, row.kind),
     workflows: notificationWorkflows(row, groupedNames),
   };
 }
@@ -168,7 +168,7 @@ export function toNotificationRun(
   groupedNames: GroupedNames
 ): UnifiedRun {
   const workflows = notificationWorkflows(row, groupedNames);
-  const note = historyNote(row.context);
+  const note = historyNote(row.context, row.kind);
   const completed = finishedAt(row);
   const only = workflows.length === 1 ? workflows[0] : null;
   const notification: NotificationRunDetail = {

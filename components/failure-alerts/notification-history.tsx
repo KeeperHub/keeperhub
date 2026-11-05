@@ -38,10 +38,11 @@ const TONE_CLASS: Record<DeliveryTone, string> = {
   muted: "text-muted-foreground",
 };
 
+/** Where it went: the recipient, never who caused it. */
 function channelLine(entry: HistoryEntry): string {
   return entry.channel === "email"
-    ? `Email ${entry.recipient}`
-    : methodText(entry.channel, entry.recipient, entry.connectionName);
+    ? `To ${entry.recipient}`
+    : `To ${methodText(entry.channel, entry.recipient, entry.connectionName)}`;
 }
 
 /** One delivery; the date sits under the title in a narrow column, in its own column from @xl. */
@@ -88,21 +89,17 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
         {formatWhen(entry.createdAt)}
       </span>
       <span className="col-span-2 col-start-1 row-start-3 flex min-w-0 flex-col gap-0.5 text-muted-foreground text-xs @xl/settings:col-span-1 @xl/settings:col-start-2 @xl/settings:row-start-2">
-        {paused && entry.channel === "email" ? (
-          <span className="break-words">Told {entry.recipient} by email</span>
-        ) : (
-          <span className="flex min-w-0 items-center gap-1.5">
-            {entry.channel === "email" ? (
-              <Mail aria-hidden="true" className="size-3 shrink-0" />
-            ) : (
-              <IntegrationIcon
-                className="size-3 shrink-0"
-                integration={entry.channel}
-              />
-            )}
-            <span className="min-w-0 break-words">{channelLine(entry)}</span>
-          </span>
-        )}
+        <span className="flex min-w-0 items-center gap-1.5">
+          {entry.channel === "email" ? (
+            <Mail aria-hidden="true" className="size-3 shrink-0" />
+          ) : (
+            <IntegrationIcon
+              className="size-3 shrink-0"
+              integration={entry.channel}
+            />
+          )}
+          <span className="min-w-0 break-words">{channelLine(entry)}</span>
+        </span>
         {entry.note && !paused && <span>{entry.note}</span>}
         {entry.lastError && entry.state !== "delivered" && (
           <span className="break-words">{entry.lastError}</span>

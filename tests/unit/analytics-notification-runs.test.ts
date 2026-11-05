@@ -382,3 +382,23 @@ describe("notificationBadge", () => {
     expect(badge.label).toMatch(/^Sends at .+ if it keeps working$/);
   });
 });
+
+describe("pause notice notes", () => {
+  it("says who paused it and why, or who turned it back on", async () => {
+    const { historyNote } = await import(
+      "@/lib/notifications/failure-alerts/view-types"
+    );
+    expect(
+      historyNote({ by: "Dana", reason: "Vault upgrade" }, "alerts_paused")
+    ).toBe("Paused by Dana: Vault upgrade");
+    expect(historyNote({ by: "An owner", reason: null }, "alerts_paused")).toBe(
+      "Paused by an owner"
+    );
+    expect(historyNote({ by: "Dana" }, "alerts_resumed")).toBe(
+      "Turned back on by Dana"
+    );
+    expect(historyNote({ by: null }, "alerts_resumed")).toBe(
+      "The pause ran out"
+    );
+  });
+});
