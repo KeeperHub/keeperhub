@@ -282,6 +282,7 @@ describe("discardPhantomRow", () => {
       error: discard.error,
       errorCategory: "configuration",
       errorType: "user",
+      output: { refusals: 1 },
     });
     expect(captured.setData?.completedAt).toBeInstanceOf(Date);
     expect(recordSkippedSampleMock).toHaveBeenCalledWith(db, {
@@ -297,6 +298,24 @@ describe("discardPhantomRow", () => {
 
     expect(captured.setData?.status).toBe("skipped");
     expect(recordSkippedSampleMock).not.toHaveBeenCalled();
+  });
+
+  // A stale Pyth signal is skipped but is not a refusal, so it has no category.
+  it("skips an invalid upstream signal without a refusal category", async () => {
+    const { db, captured } = makeDb([{ workflowId: "wf1" }]);
+
+    await discardPhantomRow(db, "e1", {
+      reason: "upstream_invalid",
+      error: "Pyth signal expired before execution started.",
+    });
+
+    expect(captured.setData).toMatchObject({ status: "skipped", billable: false });
+    expect(captured.setData?.errorCategory).toBeUndefined();
+    expect(captured.setData?.output).toBeUndefined();
+    expect(recordSkippedSampleMock).toHaveBeenCalledWith(db, {
+      workflowId: "wf1",
+      reason: "upstream_invalid",
+    });
   });
 
   it("is a no-op for an id-less message", async () => {

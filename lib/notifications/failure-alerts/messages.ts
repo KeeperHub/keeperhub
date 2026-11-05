@@ -13,6 +13,8 @@ import {
   EMAILS_KEPT_FOR_NEW_FAILURES,
   isNotRunning,
   orgPauseEffect,
+  type PlanRefusal,
+  planRefusalOf,
   refusalStaysOff,
   refusedLead,
   shownRefusal,
@@ -95,6 +97,8 @@ export type MessageInput =
       resolvedAt?: Date | null;
       /** A late schedule's first run since: when it started. */
       ranAt?: Date | null;
+      /** Workflows refused for the same reason that run again too (one recovery for the group). */
+      others?: AlertWorkflow[];
     })
   | (OrgFields & {
       kind: "channel_paused";
@@ -248,7 +252,7 @@ function refusedLeadCapital(
   return `${lead.charAt(0).toUpperCase()}${lead.slice(1)}`;
 }
 
-/** A refused incident carries its refusal; an older caller may only have lastError. */
+/** A refused incident with no stored refusal run (or a caller that passes none): lastError is the reason. */
 function withRefused<
   T extends {
     openedBy?: FailureIncidentTrigger;
@@ -261,10 +265,15 @@ function withRefused<
     : incident;
 }
 
-/** The refusal reason as sent: one line, secrets masked, no trailing dot. */
+/** A capitalised first word, not a name like PagerDuty. */
+const LEADING_WORD = /^[A-Z][a-z]*(?=[^A-Za-z]|$)/;
+
+/** The refusal reason as sent after a colon: one line, secrets masked, lower-case start, no trailing dot. */
 function refusedReason(refused: Refused, max = MAX_ERROR_CHARS): string {
   return refused.reason
-    ? errorExcerpt(shownRefusal(refused.reason), max).replace(TRAILING_DOTS, "")
+    ? errorExcerpt(shownRefusal(refused.reason), max)
+        .replace(TRAILING_DOTS, "")
+        .replace(LEADING_WORD, (word) => word.toLowerCase())
     : "no reason was recorded";
 }
 
@@ -469,12 +478,22 @@ const FAILING_NEXT_STEP =
   "It keeps running and failing until someone fixes, mutes or turns it off.";
 const MISSED_NEXT_STEP =
   "You can run it by hand from the editor; you will be told when it runs on its own again.";
-const PLANS_FIX =
-  "Upgrade the plan, raise its run limit or settle billing under Plans";
-const REFUSED_NEXT_STEP = `${PLANS_FIX}; it runs again on its own once its runs are allowed, and you will be told.`;
-const NOT_RUNNABLE_CAUSE = "Open the workflow to see why it cannot run.";
-const NOT_RUNNABLE_NEXT_STEP =
-  "Open the workflow to see why it cannot run; you will be told when it runs on its own again.";
+/** What fixes a plan or billing refusal. */
+const PLANS_FIX: Record<PlanRefusal, string> = {
+  feature:
+    "Upgrade the plan under Plans, or remove those features from the workflow",
+  limit: "Raise the plan's run limit under Plans",
+  billing: "Settle billing under Plans",
+};
+/** Several kinds of refusal in one grouped message. */
+const ANY_PLANS_FIX =
+  "upgrade the plan, raise its run limit or settle billing under Plans";
+const REFUSED_NEXT_TAIL =
+  "; it runs again on its own once its runs are allowed, and you will be told.";
+const NOT_RUNNABLE_CAUSE = "Open the workflow to see why it cannot run";
+const NOT_RUNNABLE_NEXT_STEP = `${NOT_RUNNABLE_CAUSE}; you will be told when it runs on its own again.`;
+const STAYS_OFF_NEXT_STEP =
+  "KeeperHub deactivated it; contact support to turn it back on.";
 
 /** "Before this: 214 successful runs in 30 days, the last at 12:15 UTC." */
 function historyLine(incident: AlertIncident): string | null {
@@ -532,10 +551,10 @@ function renderAlert(
   if (input.paused) {
     nextStep = PAUSED_NEXT_STEP;
   } else if (refused) {
-    nextStep = REFUSED_NEXT_STEP;
+    nextStep = `${PLANS_FIX[planRefusalOf(refused.reason)]}${REFUSED_NEXT_TAIL}`;
     if (!plans) {
       nextStep = refusalStaysOff(refused.reason)
-        ? NOT_RUNNABLE_CAUSE
+        ? STAYS_OFF_NEXT_STEP
         : NOT_RUNNABLE_NEXT_STEP;
     }
   } else if (missed) {
@@ -742,6 +761,10 @@ function groupedHeadline(
   return `${plural(failing, "workflow", "workflows")} started failing${off}, ${notRunning} not running`;
 }
 
+function lowerFirst(text: string): string {
+  return `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
+}
+
 function renderGrouped(
   input: Extract<MessageInput, { kind: "grouped" }>
 ): RenderedMessage {
@@ -753,11 +776,17 @@ function renderGrouped(
   const refusedAny = workflows.some(
     (w) => isNotRunning(w.openedBy) && w.refused
   );
-  const plans = workflows.some(
-    (w) => isNotRunning(w.openedBy) && w.refused && !w.refused.notRunnable
-  )
-    ? plansUrl(appUrl, input.organizationId)
-    : null;
+  const planKinds = new Set(
+    workflows
+      .filter(
+        (w) => isNotRunning(w.openedBy) && w.refused && !w.refused.notRunnable
+      )
+      .map((w) => planRefusalOf(w.refused?.reason ?? null))
+  );
+  const [onlyKind] = planKinds.size === 1 ? [...planKinds] : [];
+  const plansFix = onlyKind ? lowerFirst(PLANS_FIX[onlyKind]) : ANY_PLANS_FIX;
+  const plans =
+    planKinds.size > 0 ? plansUrl(appUrl, input.organizationId) : null;
   const headline = groupedHeadline(failing, notRunning, turnedOff);
   const errorText = (w: { lastError?: string | null }): string | null =>
     w.lastError ? errorExcerpt(w.lastError, GROUPED_ERROR_CHARS) : null;
@@ -766,9 +795,9 @@ function renderGrouped(
       ? "This often means a shared cause, such as an RPC provider or a wallet out of gas."
       : null,
     plans
-      ? `Runs refused before they start point to the plan or billing: ${PLANS_FIX}.`
+      ? `Runs refused before they start point to the plan or billing: ${plansFix}.`
       : null,
-    refusedAny && !plans ? NOT_RUNNABLE_CAUSE : null,
+    refusedAny && !plans ? `${NOT_RUNNABLE_CAUSE}.` : null,
     turnedOff > 0
       ? "Workflows KeeperHub turned off stay off until someone turns them back on."
       : null,
@@ -875,6 +904,20 @@ ${foot.text}`;
   };
 }
 
+/** "Refused for the same reason and running again too: A, B and 3 more." */
+function othersLine(others: AlertWorkflow[]): ChatPart[] | null {
+  if (others.length === 0) {
+    return null;
+  }
+  const shown = others.slice(0, GROUPED_LIST_MAX);
+  const more = others.length - shown.length;
+  return [
+    "Refused for the same reason and running again too: ",
+    ...shown.flatMap((w, i) => [...(i > 0 ? [", "] : []), user(w.name)]),
+    more > 0 ? ` and ${more} more.` : ".",
+  ];
+}
+
 function renderRecovery(
   input: Extract<MessageInput, { kind: "recovery" }>,
   now: Date
@@ -888,19 +931,16 @@ function renderRecovery(
   const span = formatDuration(
     endedAt.getTime() - incident.firstFailedAt.getTime()
   );
-  let tail = " is running again";
-  let detail = `It succeeded after ${plural(incident.failureCount, "failed run", "failed runs")} (failing for ${span}). Working since ${formatUtc(endedAt)}.`;
-  if (incident.openedBy === "refused") {
-    tail = input.ranButFailed
+  const tail =
+    isNotRunning(incident.openedBy) && input.ranButFailed
       ? " ran, but the run failed"
       : " is running again";
+  let detail = `It succeeded after ${plural(incident.failureCount, "failed run", "failed runs")} (failing for ${span}). Working since ${formatUtc(endedAt)}.`;
+  if (incident.openedBy === "refused") {
     detail = input.ranButFailed
       ? `Its runs are being accepted again after ${span} of refusals, but the first one failed. You will be told if it keeps failing.`
       : `Its runs are being accepted again after ${span} of refusals. Running since ${formatUtc(endedAt)}.`;
   } else if (incident.openedBy === "missed") {
-    tail = input.ranButFailed
-      ? " ran, but the run failed"
-      : " is running again";
     detail = input.ranButFailed
       ? `It started ${span} after it was due. You will be told if it keeps failing.`
       : `It started again ${span} after it was due.`;
@@ -908,16 +948,18 @@ function renderRecovery(
   const headlineParts = [user(workflow.name), tail];
   const headline = plain(headlineParts);
   const prefix = input.ranButFailed ? "Started again" : "Resolved";
+  const othersParts = othersLine(input.others ?? []);
+  const others = othersParts ? ` ${plain(othersParts)}` : "";
   const { runs: link, sample } = workflowLinks(input, workflow.id);
   const linkLabel = sample ? SAMPLE_LINK : "View runs";
   const foot = footer(input);
   const test = testBanner(input.testNote);
   return {
     subject: `${input.testNote ? "[Test] " : ""}[${orgName}] ${prefix}: ${headline}`,
-    text: `${test.text}${headline}. ${detail}\n\n${linkLabel}: ${link}\n\n${foot.text}`,
+    text: `${test.text}${headline}. ${detail}${others}\n\n${linkLabel}: ${link}\n\n${foot.text}`,
     html: emailLayout(
       escapeHtml(headline),
-      `${test.html}<p>${escapeHtml(detail)}</p><p>${emailButton(link, linkLabel)}</p>`,
+      `${test.html}<p>${escapeHtml(detail)}${escapeHtml(others)}</p><p>${emailButton(link, linkLabel)}</p>`,
       foot.html
     ),
     ...chatOf([
@@ -925,7 +967,9 @@ function renderRecovery(
         ...orgTag(orgName),
         ...test.chat,
         ...headlineParts,
-        `. ${detail}\n${linkLabel}: ${link}`,
+        `. ${detail}`,
+        ...(othersParts ? [" ", ...othersParts] : []),
+        `\n${linkLabel}: ${link}`,
       ],
     ]),
     summary: summaryOf(`${orgName}: ${headline}`),

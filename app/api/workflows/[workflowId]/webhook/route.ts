@@ -11,6 +11,10 @@ import {
   EXECUTION_LIMIT_ERROR,
   enforceExecutionLimit,
 } from "@/lib/billing/execution-guard";
+import {
+  EXECUTION_LIMIT_REFUSAL,
+  planFeatureRefusalMessage,
+} from "@/lib/billing/dispatch-admission";
 import { chargePaygIfBillable } from "@/lib/billing/payg/charge";
 import { checkConcurrencyLimit } from "@/app/api/execute/_lib/concurrency-limit";
 import {
@@ -45,6 +49,7 @@ import {
 import { hashWorkflowDefinition } from "@/lib/workflow/content-hash";
 import { executeWorkflowInBackground } from "@/lib/workflow/execute-in-background";
 import { loadWorkflowForExecution } from "@/lib/workflow/load-for-execution";
+import { markRunRefused, recordRefusedRun } from "@/lib/workflow/refused-runs";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 type ValidateApiKeyResult = {
   valid: boolean;
@@ -286,7 +291,22 @@ export async function POST(
         error: FEATURE_UPGRADE_REQUIRED_ERROR,
         organizationId: workflow.organizationId,
       });
-      const body = await featureGuard.response.json();
+      const body = (await featureGuard.response.json()) as {
+        violations?: { featureName?: string }[];
+      };
+      await recordRefusedRun({
+        workflowId,
+        organizationId: workflow.organizationId,
+        userId: workflow.userId,
+        reason: planFeatureRefusalMessage(
+          (body.violations ?? []).map((v) => v.featureName ?? "")
+        ),
+        reasonCode: "plan_feature",
+        category: ErrorCategory.BILLING,
+        triggerSource: "webhook",
+        at: new Date(),
+        request,
+      });
       return NextResponse.json(body, {
         status: HttpStatus.PAYMENT_REQUIRED,
         headers: corsHeaders,
@@ -305,6 +325,17 @@ export async function POST(
       const body = (await executionGuard.response.json()) as {
         limit?: number;
       };
+      await recordRefusedRun({
+        workflowId,
+        organizationId: workflow.organizationId,
+        userId: workflow.userId,
+        reason: EXECUTION_LIMIT_REFUSAL,
+        reasonCode: "execution_limit",
+        category: ErrorCategory.BILLING,
+        triggerSource: "webhook",
+        at: new Date(),
+        request,
+      });
       // Monthly billing quota with no clean sliding-window reset, so advertise a
       // fixed Retry-After matching the concurrency block plus the guard's limit.
       const retryAfter = 30;
@@ -440,18 +471,14 @@ export async function POST(
       paygOverflow: executionGuard.limitResult?.paygOverflow === true,
     });
     if (paygCharge.applicable && !paygCharge.ok) {
-      await db
-        .update(workflowExecutions)
-        .set({
-          status: "error",
-          error: paygCharge.message,
-          errorCategory: "billing",
-          errorType: "user",
-          // Unpaid means the run never started, so it consumes no quota.
-          billable: false,
-          completedAt: new Date(),
-        })
-        .where(eq(workflowExecutions.id, execution.id));
+      // Unpaid: refused before it started, so it consumes no quota.
+      await markRunRefused({
+        executionId: execution.id,
+        fromStatuses: ["pending"],
+        reason: paygCharge.message,
+        category: ErrorCategory.BILLING,
+        at: new Date(),
+      });
       await recordWebhookMetrics({
         workflowId,
         executionId: execution.id,

@@ -45,6 +45,9 @@ import {
   OUT_OF_FUNDS_THRESHOLD,
   PAGERDUTY_IN_FLIGHT_MS,
   RECOVERY_HOLD_MS,
+  REFUSAL_GROUP_MS,
+  REFUSAL_RECENT_MS,
+  REFUSALS_STOPPED_MS,
   REFUSED_RUNS_THRESHOLD,
   REMINDER_INTERVAL_MS,
 } from "./constants";
@@ -75,12 +78,18 @@ import {
   insertDeliveries,
   rowsForPolicy,
 } from "./queue-rows";
+import {
+  listedWith,
+  openRefusedGroup,
+  refusalCategoryOf,
+} from "./refused-groups";
 import { isFailureAlertsEnabledForOrg, splitByRollout } from "./rollout";
 import { lockOrgSettings } from "./settings";
 import { SKIP_REASON } from "./stored-reasons";
 import { decide, summarizeStreak } from "./streak";
 import {
   AUTOMATED_RUN_SQL,
+  loadNewestRefusal,
   loadRefusalStreak,
   loadStreakRuns,
   REFUSED_RUN_SQL,
@@ -320,14 +329,14 @@ export function inactiveResolution(
   return null;
 }
 
-/** Reopen the incident a recent success (or, for refused runs, accepted run) closed, unless its recovery went out. */
+/** Reopen the incident a recent success (or, for a refused one, an accepted run) closed, unless its recovery went out. */
 async function reopenRecovered(
   workflowId: string,
   failedAt: Date,
   now: Date,
-  refused = false
+  closedBy: "success" | "ran" = "success"
 ): Promise<IncidentRow | null> {
-  const closedBy: FailureIncidentResolution = refused ? "ran" : "success";
+  const refused = closedBy === "ran";
   const [last] = await db
     .select()
     .from(workflowFailureIncidents)
@@ -347,9 +356,22 @@ async function reopenRecovered(
   ) {
     return null;
   }
+  // Only a refusal after the run that closed it reopens it.
+  if (refused && last.resolvingExecutionId) {
+    const [ran] = await db
+      .select({ startedAt: workflowExecutions.startedAt })
+      .from(workflowExecutions)
+      .where(eq(workflowExecutions.id, last.resolvingExecutionId))
+      .limit(1);
+    if (ran && failedAt <= ran.startedAt) {
+      return null;
+    }
+  }
   return await db.transaction(async (tx: Tx) => {
+    // A refused group's recovery names every member: one of them refused again withdraws it.
     const recovery = and(
-      eq(failureAlertDeliveries.incidentId, last.id),
+      sql`(${failureAlertDeliveries.incidentId} = ${last.id}
+        OR ${failureAlertDeliveries.context} @> ${JSON.stringify({ groupIds: [last.id] })}::jsonb)`,
       eq(failureAlertDeliveries.kind, "recovery")
     );
     const held = await tx
@@ -519,6 +541,65 @@ async function latestRunSince(
   return run ?? null;
 }
 
+/**
+ * A refused incident closing while others of its group stay refused hands its
+ * unsent messages to the oldest and stays quiet; the last one to close sends
+ * the group's recovery for the members closed quietly before it.
+ */
+async function refusedGroupClose(
+  tx: Tx,
+  incident: IncidentRow,
+  reason: FailureIncidentResolution,
+  now: Date
+): Promise<{ stillRefused: boolean; closedEarlier: string[] }> {
+  if (incident.openedBy !== "refused" || reason !== "ran") {
+    return { stillRefused: false, closedEarlier: [] };
+  }
+  const category = await refusalCategoryOf(incident.lastFailedExecutionId, tx);
+  const others = (
+    await openRefusedGroup(incident.organizationId, category, tx)
+  ).filter((member) => member.id !== incident.id);
+  const [next] = others;
+  if (next) {
+    await tx
+      .update(failureAlertDeliveries)
+      .set({ incidentId: next.id, updatedAt: now })
+      .where(
+        and(
+          eq(failureAlertDeliveries.incidentId, incident.id),
+          inArray(failureAlertDeliveries.kind, ["alert", "reminder"]),
+          inArray(failureAlertDeliveries.state, ["pending", "retrying"])
+        )
+      );
+    return { stillRefused: true, closedEarlier: [] };
+  }
+  const earlier = await tx
+    .select({ id: workflowFailureIncidents.id })
+    .from(workflowFailureIncidents)
+    .innerJoin(
+      workflowExecutions,
+      eq(workflowExecutions.id, workflowFailureIncidents.lastFailedExecutionId)
+    )
+    .where(
+      and(
+        eq(workflowFailureIncidents.organizationId, incident.organizationId),
+        eq(workflowFailureIncidents.openedBy, "refused"),
+        eq(workflowFailureIncidents.resolvedReason, "ran"),
+        gte(
+          workflowFailureIncidents.resolvedAt,
+          new Date(now.getTime() - REFUSAL_GROUP_MS)
+        ),
+        sql`${workflowFailureIncidents.id} <> ${incident.id}`,
+        sql`${workflowExecutions.errorCategory} IS NOT DISTINCT FROM ${category}`,
+        sql`NOT EXISTS (SELECT 1 FROM ${failureAlertDeliveries}
+          WHERE ${failureAlertDeliveries.kind} = 'recovery'
+            AND (${failureAlertDeliveries.incidentId} = ${workflowFailureIncidents.id}
+              OR ${failureAlertDeliveries.context} -> 'groupIds' ? ${workflowFailureIncidents.id}))`
+      )
+    );
+  return { stillRefused: false, closedEarlier: earlier.map((row) => row.id) };
+}
+
 /** Close an incident: a page is always resolved; email and chat hear only a wanted recovery. */
 async function closeIncident(params: {
   incident: IncidentRow;
@@ -552,8 +633,14 @@ async function closeIncident(params: {
     }
     stats.incidentsResolved += 1;
 
+    const group = await refusedGroupClose(tx, incident, reason, now);
+    if (group.stillRefused) {
+      return;
+    }
+    const owners = [incident.id, ...group.closedEarlier];
     const prior = await tx
       .select({
+        incidentId: failureAlertDeliveries.incidentId,
         channel: failureAlertDeliveries.channel,
         channelId: failureAlertDeliveries.channelId,
         recipient: failureAlertDeliveries.recipient,
@@ -564,7 +651,7 @@ async function closeIncident(params: {
       .where(
         and(
           eq(failureAlertDeliveries.organizationId, incident.organizationId),
-          sql`(${failureAlertDeliveries.incidentId} = ${incident.id} OR ${failureAlertDeliveries.context} @> ${JSON.stringify({ incidentIds: [incident.id] })}::jsonb)`,
+          sql`(${inArray(failureAlertDeliveries.incidentId, owners)} OR ${failureAlertDeliveries.context} @> ${JSON.stringify({ incidentIds: [incident.id] })}::jsonb)`,
           inArray(failureAlertDeliveries.kind, ["alert", "reminder"])
         )
       );
@@ -588,17 +675,27 @@ async function closeIncident(params: {
     const wantRecovery =
       (reason === "success" || reason === "ran") && params.notifyRecovery;
     // A reopened incident recovers again: a new sequence, so its rows are not deduped away.
-    const [prev] = await tx
-      .select({
-        next: sql<number>`coalesce(max(${failureAlertDeliveries.sequence}) + 1, 0)::int`,
-      })
-      .from(failureAlertDeliveries)
-      .where(
-        and(
-          eq(failureAlertDeliveries.incidentId, incident.id),
-          eq(failureAlertDeliveries.kind, "recovery")
-        )
-      );
+    const sequences = new Map<string, number>();
+    const nextSequence = async (owner: string): Promise<number> => {
+      const known = sequences.get(owner);
+      if (known !== undefined) {
+        return known;
+      }
+      const [prev] = await tx
+        .select({
+          next: sql<number>`coalesce(max(${failureAlertDeliveries.sequence}) + 1, 0)::int`,
+        })
+        .from(failureAlertDeliveries)
+        .where(
+          and(
+            eq(failureAlertDeliveries.incidentId, owner),
+            eq(failureAlertDeliveries.kind, "recovery")
+          )
+        );
+      sequences.set(owner, prev?.next ?? 0);
+      return prev?.next ?? 0;
+    };
+    const groupIds = group.closedEarlier.length > 0 ? owners : undefined;
     // A success (or a refused incident's accepted run) is announced only after the hold; a failure (refusal) in it reopens.
     const held =
       reason === "success" ||
@@ -618,7 +715,12 @@ async function closeIncident(params: {
       ) {
         continue;
       }
-      const key = `${row.channel}:${row.channelId ?? ""}:${row.recipient}`;
+      // A refused group's recovery goes out once, from the incident that told them; each page resolves its own key.
+      const owner =
+        row.incidentId && owners.includes(row.incidentId)
+          ? row.incidentId
+          : incident.id;
+      const key = `${row.channel}:${row.channelId ?? ""}:${row.recipient}${pagerDuty ? `:${owner}` : ""}`;
       if (seen.has(key)) {
         continue;
       }
@@ -628,15 +730,17 @@ async function closeIncident(params: {
         inFlight ? now.getTime() + PAGERDUTY_IN_FLIGHT_MS : 0
       );
       rows.push({
-        scope: incidentScope(incident.id),
+        scope: incidentScope(owner),
         organizationId: incident.organizationId,
-        incidentId: incident.id,
+        incidentId: owner,
         kind: "recovery",
-        sequence: prev?.next ?? 0,
+        sequence: await nextSequence(owner),
         channel: row.channel,
         channelId: row.channelId,
         recipient: row.recipient,
-        context: params.recoveryContext,
+        context: groupIds
+          ? { ...params.recoveryContext, groupIds }
+          : params.recoveryContext,
         nextAttemptAt: new Date(due),
         // Not a backup trigger (recoveries have none): dueSince reads the hold from it.
         backupAt: new Date(due + BACKUP_AFTER_MS[row.channel]),
@@ -680,48 +784,55 @@ function ranContext(run: {
   };
 }
 
-/** An open refused incident ends with an accepted run (true: evaluate again); else it takes the newest refusal. */
+/** An open refused incident takes the newest refusal, then ends with a run accepted after it (true: evaluate again). */
 async function followRefused(
   incident: IncidentRow,
   notifyRecovery: boolean,
   now: Date,
   stats: EvaluationStats
 ): Promise<boolean> {
-  const accepted = await latestRunSince(
-    incident.workflowId,
-    incident.lastFailedAt
-  );
-  if (accepted) {
-    await closeIncident({
-      incident,
-      reason: "ran",
-      resolvingExecutionId: accepted.id,
-      notifyRecovery,
-      now,
-      stats,
-      recoveryContext: ranContext(accepted),
-    });
-    return true;
-  }
-  const [newest] =
-    (await loadRefusalStreak(incident.workflowId, 1, null)) ?? [];
-  if (newest && newest.startedAt > incident.lastFailedAt) {
+  // An hourly row moves its refusal time forward: read it before trusting a later run.
+  const newest = await loadNewestRefusal(incident.workflowId);
+  let current = incident;
+  if (newest && newest.refusedAt > incident.lastFailedAt) {
+    current = { ...incident, ...refusalFields(newest) };
     await db
       .update(workflowFailureIncidents)
       .set(refusalFields(newest))
-      .where(eq(workflowFailureIncidents.id, incident.id));
+      .where(
+        and(
+          eq(workflowFailureIncidents.id, incident.id),
+          isNull(workflowFailureIncidents.resolvedAt)
+        )
+      );
   }
-  return false;
+  const accepted = await latestRunSince(
+    incident.workflowId,
+    current.lastFailedAt
+  );
+  if (!accepted) {
+    return false;
+  }
+  await closeIncident({
+    incident: current,
+    reason: "ran",
+    resolvingExecutionId: accepted.id,
+    notifyRecovery,
+    now,
+    stats,
+    recoveryContext: ranContext(accepted),
+  });
+  return true;
 }
 
-/** The newest refusal, as a refused incident stores it (isRefusedIncident). */
+/** The newest refusal, as a refused incident stores it (isRefusedIncident); refused at = its newest refusal. */
 function refusalFields(newest: RefusedRun): {
   lastFailedAt: Date;
   lastFailedExecutionId: string;
   lastError: string;
 } {
   return {
-    lastFailedAt: newest.startedAt,
+    lastFailedAt: newest.refusedAt,
     lastFailedExecutionId: newest.id,
     lastError: newest.error ?? "",
   };
@@ -735,14 +846,9 @@ async function openIfRefused(
   opened: OpenedIncident[],
   stats: EvaluationStats
 ): Promise<Date | null> {
-  const refusals = await loadRefusalStreak(
-    workflow.id,
-    REFUSED_RUNS_THRESHOLD,
-    policy.countingSince
-  );
-  const newest = refusals?.[0];
-  const first = refusals?.at(-1);
-  if (!(newest && first)) {
+  const [newest] =
+    (await loadRefusalStreak(workflow.id, 1, policy.countingSince)) ?? [];
+  if (!newest) {
     return null;
   }
   const orgPause = activePause(policy.orgPausedUntil, now);
@@ -752,12 +858,12 @@ async function openIfRefused(
   if (isMuted(policy, now)) {
     return policy.mutedUntil;
   }
-  // Refused again inside the recovery hold: the incident it closed continues.
+  // One refusal after the accepted run, inside the recovery hold: the incident it closed continues.
   const reopened = await reopenRecovered(
     workflow.id,
-    first.startedAt,
+    newest.refusedAt,
     now,
-    true
+    "ran"
   );
   if (reopened) {
     await db
@@ -766,6 +872,24 @@ async function openIfRefused(
       .where(eq(workflowFailureIncidents.id, reopened.id));
     return null;
   }
+  const first = (
+    await loadRefusalStreak(
+      workflow.id,
+      REFUSED_RUNS_THRESHOLD,
+      policy.countingSince
+    )
+  )?.at(-1);
+  if (!first) {
+    return null;
+  }
+  // Another workflow of the org refused for the same category spoke already: this one joins its messages.
+  const group = await openRefusedGroup(
+    workflow.organizationId,
+    newest.errorCategory
+  );
+  const quiet = group.some(
+    (member) => now.getTime() - member.openedAt.getTime() < REFUSAL_GROUP_MS
+  );
   const [row] = await db
     .insert(workflowFailureIncidents)
     .values({
@@ -777,16 +901,20 @@ async function openIfRefused(
       firstFailedAt: first.startedAt,
       ...refusalFields(newest),
       lastNotifiedAt: now,
+      // Never queued on its own, so requeueLostAlerts leaves it be.
+      alertQueuedAt: quiet ? now : null,
     })
     .onConflictDoNothing()
     .returning({ id: workflowFailureIncidents.id });
   if (row) {
     stats.incidentsOpened += 1;
-    opened.push({
-      id: row.id,
-      organizationId: workflow.organizationId,
-      workflowId: workflow.id,
-    });
+    if (!quiet) {
+      opened.push({
+        id: row.id,
+        organizationId: workflow.organizationId,
+        workflowId: workflow.id,
+      });
+    }
   }
   return null;
 }
@@ -1286,6 +1414,26 @@ export async function closeInactiveIncidents(
   }
 }
 
+/** A refused group reminds once, from the incident that told it, and only while refusals keep coming. */
+async function refusedReminderOwed(
+  incident: IncidentRow,
+  now: Date
+): Promise<boolean> {
+  if (incident.openedBy !== "refused") {
+    return true;
+  }
+  const group = await openRefusedGroup(
+    incident.organizationId,
+    await refusalCategoryOf(incident.lastFailedExecutionId)
+  );
+  const listed = listedWith({ ...incident }, group);
+  const newest = Math.max(
+    incident.lastFailedAt.getTime(),
+    ...listed.map((member) => member.lastFailedAt.getTime())
+  );
+  return listed.length > 0 && now.getTime() - newest < REFUSALS_STOPPED_MS;
+}
+
 /** Daily reminders; compare-and-set on the count so only one evaluator sends. */
 export async function queueReminders(
   now: Date,
@@ -1332,7 +1480,8 @@ export async function queueReminders(
         isHeld(incident) ||
         workflow.orgHaltedAt ||
         inactiveResolution(workflow, workflowTriggerType(workflow.nodes)) ||
-        activePause(policy.orgPausedUntil, now)
+        activePause(policy.orgPausedUntil, now) ||
+        !(await refusedReminderOwed(incident, now))
       ) {
         // Not owed today: move its clock so it stops crowding the due list.
         await db
@@ -1517,13 +1666,11 @@ async function findFailingWorkflows(organizationId: string): Promise<
 let missedScanCursor: string | null = null;
 /** A scheduler outage is ours: customers hear only once it lasts this long. */
 const PLATFORM_HOLD_MS = 30 * 60 * 1000;
-/** A refusal row stands for its hour: the dispatch route writes one per workflow, reason and hour. */
-const REFUSAL_BUCKET_MS = 60 * 60 * 1000;
-
 type Refusal = {
   id: string;
   error: string | null;
-  startedAt: Date;
+  /** Its newest refusal (an hourly row's completedAt). */
+  refusedAt: Date;
 };
 
 /** Each workflow's newest refused run since `since`. */
@@ -1534,23 +1681,24 @@ async function latestRefusals(
   if (workflowIds.length === 0) {
     return new Map();
   }
+  const refusedAt = sql`coalesce(${workflowExecutions.completedAt}, ${workflowExecutions.startedAt})`;
   const rows = await db
     .selectDistinctOn([workflowExecutions.workflowId], {
       workflowId: workflowExecutions.workflowId,
       id: workflowExecutions.id,
       error: workflowExecutions.error,
-      startedAt: workflowExecutions.startedAt,
+      refusedAt: refusedAt.mapWith(workflowExecutions.startedAt),
     })
     .from(workflowExecutions)
     .where(
       and(
         inArray(workflowExecutions.workflowId, workflowIds),
-        gte(workflowExecutions.startedAt, since),
+        sql`${refusedAt} >= ${sql.param(since, workflowExecutions.startedAt)}`,
         isNull(workflowExecutions.deletedAt),
         REFUSED_RUN_SQL
       )
     )
-    .orderBy(workflowExecutions.workflowId, desc(workflowExecutions.startedAt));
+    .orderBy(workflowExecutions.workflowId, desc(refusedAt));
   return new Map(rows.map((row) => [row.workflowId, row]));
 }
 
@@ -1564,9 +1712,9 @@ function refusalFor(
   const refusal = refusals.get(row.workflowId);
   if (
     !refusal ||
-    refusal.startedAt.getTime() < dueAt.getTime() - REFUSAL_BUCKET_MS ||
-    refusal.startedAt.getTime() < now.getTime() - REFUSAL_BUCKET_MS ||
-    (row.lastStartedAt && refusal.startedAt <= row.lastStartedAt)
+    refusal.refusedAt.getTime() < dueAt.getTime() - REFUSAL_RECENT_MS ||
+    refusal.refusedAt.getTime() < now.getTime() - REFUSAL_RECENT_MS ||
+    (row.lastStartedAt && refusal.refusedAt <= row.lastStartedAt)
   ) {
     return null;
   }
@@ -1592,7 +1740,7 @@ async function refreshMissedRefusals(now: Date): Promise<void> {
     .limit(MISSED_SCAN_LIMIT);
   const refusals = await latestRefusals(
     open.map((row) => row.workflowId),
-    new Date(now.getTime() - REFUSAL_BUCKET_MS)
+    new Date(now.getTime() - REFUSAL_RECENT_MS)
   );
   for (const incident of open) {
     const refusal = refusalFor(
@@ -1688,7 +1836,7 @@ export async function checkMissedSchedules(
   );
   const refusals = await latestRefusals(
     dueAnywhere.map((row) => row.workflowId),
-    new Date(earliestDue - REFUSAL_BUCKET_MS)
+    new Date(earliestDue - REFUSAL_RECENT_MS)
   );
   // Refused runs (a plan limit, unpaid) are not a scheduler outage.
   const lateAnywhere = dueAnywhere.filter(

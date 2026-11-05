@@ -65,6 +65,11 @@ import {
   incidentScope,
   insertDeliveries,
 } from "./queue-rows";
+import {
+  listedWith,
+  openRefusedGroup,
+  refusalCategoryOf,
+} from "./refused-groups";
 import { splitByRollout } from "./rollout";
 import {
   checkChannelSilently,
@@ -161,6 +166,7 @@ class Context {
   private readonly plans = new Map<string, string>();
   private readonly history = new Map<string, Promise<RunsBefore>>();
   private readonly refusals = new Map<string, Refused | undefined>();
+  private readonly listings = new Map<string, string[]>();
   readonly channels = new Map<string, ChannelConfig>();
   readonly appUrl: string;
 
@@ -258,6 +264,26 @@ class Context {
     return value;
   }
 
+  /** A refused incident and the quiet ones its messages list (refused-groups.ts); one id when alone. */
+  async refusedListing(incidentId: string): Promise<string[]> {
+    const cached = this.listings.get(incidentId);
+    if (cached) {
+      return cached;
+    }
+    const incident = await this.incident(incidentId);
+    let ids = [incidentId];
+    if (incident?.openedBy === "refused" && !incident.resolvedAt) {
+      const group = await openRefusedGroup(
+        incident.organizationId,
+        await refusalCategoryOf(incident.lastFailedExecutionId)
+      );
+      const listed = listedWith(incident, group).map((member) => member.id);
+      ids = listed.length > 0 ? listed : ids;
+    }
+    this.listings.set(incidentId, ids);
+    return ids;
+  }
+
   /** One history query per incident, however many rows announce it. */
   runsBefore(incident: IncidentRow): Promise<RunsBefore> {
     let cached = this.history.get(incident.id);
@@ -334,6 +360,45 @@ function pausedVariant(
     : undefined;
 }
 
+/** Open incidents as a grouped message lists them. */
+async function groupedList(
+  ids: string[],
+  ctx: Context
+): Promise<Extract<MessageInput, { kind: "grouped" }>["workflows"]> {
+  const list: Extract<MessageInput, { kind: "grouped" }>["workflows"] = [];
+  for (const id of ids) {
+    const incident = await ctx.incident(id);
+    const workflow = incident ? await ctx.workflow(incident.workflowId) : null;
+    if (incident && workflow && !incident.resolvedAt) {
+      list.push({
+        ...workflow,
+        failureCount: incident.failureCount,
+        workflowPaused: incident.workflowPausedAt !== null,
+        lastError: incident.lastError,
+        openedBy: incident.openedBy,
+        refused: await ctx.refused(incident),
+      });
+    }
+  }
+  return list;
+}
+
+/** The workflows of incidents a group recovery names besides its own. */
+async function groupedWorkflows(
+  ids: string[],
+  ctx: Context
+): Promise<AlertWorkflow[]> {
+  const list: AlertWorkflow[] = [];
+  for (const id of ids) {
+    const incident = await ctx.incident(id);
+    const workflow = incident ? await ctx.workflow(incident.workflowId) : null;
+    if (workflow) {
+      list.push(workflow);
+    }
+  }
+  return list;
+}
+
 async function renderRow(
   row: DeliveryRow,
   ctx: Context
@@ -398,23 +463,21 @@ async function renderRow(
       })[],
     };
   } else if (Array.isArray(context.incidentIds)) {
-    const list: Extract<MessageInput, { kind: "grouped" }>["workflows"] = [];
-    for (const id of context.incidentIds as string[]) {
-      const incident = await ctx.incident(id);
-      const workflow = incident
-        ? await ctx.workflow(incident.workflowId)
-        : null;
-      if (incident && workflow && !incident.resolvedAt) {
-        list.push({
-          ...workflow,
-          failureCount: incident.failureCount,
-          workflowPaused: incident.workflowPausedAt !== null,
-          lastError: incident.lastError,
-          openedBy: incident.openedBy,
-          refused: await ctx.refused(incident),
-        });
-      }
+    const list = await groupedList(context.incidentIds as string[], ctx);
+    if (list.length === 0) {
+      return null;
     }
+    input = { ...org, kind: "grouped", workflows: list, backupReason };
+  } else if (
+    row.kind !== "recovery" &&
+    row.incidentId &&
+    (await ctx.refusedListing(row.incidentId)).length > 1
+  ) {
+    // A refused group: one message lists every workflow refused for the same reason.
+    const list = await groupedList(
+      await ctx.refusedListing(row.incidentId),
+      ctx
+    );
     if (list.length === 0) {
       return null;
     }
@@ -456,6 +519,14 @@ async function renderRow(
               typeof context.ranAt === "string"
                 ? new Date(context.ranAt)
                 : null,
+            others: Array.isArray(context.groupIds)
+              ? await groupedWorkflows(
+                  (context.groupIds as string[]).filter(
+                    (id) => id !== incident.id
+                  ),
+                  ctx
+                )
+              : undefined,
           }
         : {
             ...org,

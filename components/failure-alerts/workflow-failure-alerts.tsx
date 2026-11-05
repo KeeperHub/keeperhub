@@ -28,6 +28,7 @@ import {
   MAX_MUTE_DAYS,
   MAX_THRESHOLD,
   MIN_THRESHOLD,
+  REFUSALS_STOPPED_MS,
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
 import type { WorkflowAlertView } from "@/lib/notifications/failure-alerts/view-types";
@@ -151,6 +152,26 @@ function draftSummary(
 function runsLeft(view: Loaded): string {
   const left = Math.max(view.effective.threshold - view.status.failures, 1);
   return `${left} more failed run${left === 1 ? "" : "s"}`;
+}
+
+type PanelIncident = NonNullable<Loaded["status"]["incident"]>;
+
+/** Who heard about it; a refusal told in another workflow's alert says so. */
+function alertLine(incident: PanelIncident): string {
+  if (incident.deliveredTo.length > 0) {
+    return `Alert sent ${timeAgo(incident.openedAt)} to ${incident.deliveredTo.join(", ")}.`;
+  }
+  return incident.reportedWithOthers
+    ? `Reported ${timeAgo(incident.openedAt)} in one alert with other workflows refused for the same reason.`
+    : `Alert queued ${timeAgo(incident.openedAt)}, not delivered yet.`;
+}
+
+/** Nothing has tried to run for a day: reminders stopped, and nothing will recover it on its own. */
+function refusalsStopped(lastRefusedAt: string | null): boolean {
+  return (
+    lastRefusedAt !== null &&
+    Date.now() - new Date(lastRefusedAt).getTime() >= REFUSALS_STOPPED_MS
+  );
 }
 
 function isMutedView(view: Loaded): boolean {
@@ -543,11 +564,13 @@ export function WorkflowFailureAlerts({
                 cause, then press Turn back on.
               </p>
             )}
-            <p className="text-xs">
-              {view.status.incident.deliveredTo.length > 0
-                ? `Alert sent ${timeAgo(view.status.incident.openedAt)} to ${view.status.incident.deliveredTo.join(", ")}.`
-                : `Alert queued ${timeAgo(view.status.incident.openedAt)}, not delivered yet.`}
-            </p>
+            <p className="text-xs">{alertLine(view.status.incident)}</p>
+            {refusalsStopped(view.status.incident.lastRefusedAt) && (
+              <p className="text-xs">
+                No refused runs since{" "}
+                {formatWhen(view.status.incident.lastRefusedAt ?? "")}.
+              </p>
+            )}
             {view.status.incident.refused ? (
               <p className="break-words font-mono text-xs">
                 {view.status.incident.refusedReason ??

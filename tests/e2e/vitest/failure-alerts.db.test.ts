@@ -3150,7 +3150,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(incident?.lastFailedExecutionId).toBe(runs.at(-1)?.id);
       const [mail] = mailsAbout(org, "Refused twice");
       expect(mail?.text).toContain(
-        "Its runs are being refused before they start: Insufficient credit balance"
+        "Its runs are being refused before they start: insufficient credit balance"
       );
       expect(mail?.text).toContain("/plans");
       expect(mail?.text).not.toMatch(/scheduled|wallet out of funds/i);
@@ -3234,6 +3234,234 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await unpaid(org, wf, -2);
       await runCycle();
       expect(await openIncident(wf)).toBeUndefined();
+    });
+
+    /** at() moves with the clock: times a few seconds apart are the same minute mark. */
+    const expectNear = (actual: Date | undefined, expected: Date): void => {
+      expect(
+        Math.abs((actual?.getTime() ?? 0) - expected.getTime())
+      ).toBeLessThan(5000);
+    };
+
+    /** One hourly refused row as recordRefusedRun writes it (lib/workflow/refused-runs.ts). */
+    const refusalBucket = async (
+      org: Org,
+      wf: string,
+      fields: {
+        firstAt: number;
+        lastAt: number;
+        refusals: number;
+        error?: string;
+      }
+    ): Promise<string> => {
+      const id = nextId("run_");
+      await db.insert(workflowExecutions).values({
+        id,
+        workflowId: wf,
+        userId: org.userId,
+        organizationId: org.orgId,
+        status: "skipped",
+        billable: false,
+        error: fields.error ?? EXECUTION_LIMIT_REFUSAL,
+        errorCategory: "billing",
+        errorType: "user",
+        triggerSource: "webhook",
+        output: { refusals: fields.refusals },
+        dispatchKey: `refused:${wf}:execution_limit:${id}`,
+        startedAt: at(fields.firstAt),
+        completedAt: at(fields.lastAt),
+      });
+      return id;
+    };
+
+    /** Another refusal in the same hour: what recordRefusedRun's conflict update does. */
+    const refuseAgain = async (runId: string, minutes: number) => {
+      await db
+        .update(workflowExecutions)
+        .set({
+          completedAt: at(minutes),
+          output: sql`jsonb_build_object('refusals', coalesce((${workflowExecutions.output}->>'refusals')::int, 1) + 1)`,
+        })
+        .where(eq(workflowExecutions.id, runId));
+      await db
+        .insert(workflowFailureAlertQueue)
+        .values({
+          workflowId: (await workflowOfRun(runId)) ?? "",
+          dueAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: workflowFailureAlertQueue.workflowId,
+          set: { dueAt: new Date() },
+        });
+    };
+
+    const workflowOfRun = async (
+      runId: string
+    ): Promise<string | undefined> => {
+      const [row] = await db
+        .select({ workflowId: workflowExecutions.workflowId })
+        .from(workflowExecutions)
+        .where(eq(workflowExecutions.id, runId));
+      return row?.workflowId;
+    };
+
+    it("one hourly row holding two refusals opens a refused incident; one holding one does not", async () => {
+      const org = await countingOrg("bucketpair");
+      const wf = await makeWorkflow(org, "Bucket pair", "Webhook");
+      const run = await refusalBucket(org, wf, {
+        firstAt: -20,
+        lastAt: -20,
+        refusals: 1,
+      });
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      await refuseAgain(run, -5);
+      await runCycle();
+      const incident = await openIncident(wf);
+      expect(incident?.openedBy).toBe("refused");
+      expectNear(incident?.firstFailedAt, at(-20));
+      // Refused at = the row's newest refusal.
+      expectNear(incident?.lastFailedAt, at(-5));
+    });
+
+    it("an accepted run older than the newest refusal in the hour does not close it", async () => {
+      const org = await countingOrg("bucketlate");
+      const wf = await makeWorkflow(org, "Bucket late", "Webhook");
+      const run = await refusalBucket(org, wf, {
+        firstAt: -40,
+        lastAt: -30,
+        refusals: 2,
+      });
+      await runCycle();
+      const incident = await openIncident(wf);
+      expect(incident?.openedBy).toBe("refused");
+      await addRun(org, wf, "success", { at: at(-10), source: "webhook" });
+      // Refused again after that run, in the same hourly row.
+      await refuseAgain(run, -2);
+      await runCycle();
+      expect((await openIncident(wf))?.id).toBe(incident?.id);
+      expectNear((await openIncident(wf))?.lastFailedAt, at(-2));
+      await addRun(org, wf, "success", { at: at(-1), source: "webhook" });
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      expect((await incidentById(incident?.id))?.resolvedReason).toBe("ran");
+    });
+
+    it("one refusal after the close, inside the hold, reopens it and withdraws the recovery", async () => {
+      const org = await countingOrg("bucketflap");
+      const wf = await makeWorkflow(org, "Bucket flap", "Webhook");
+      const run = await refusalBucket(org, wf, {
+        firstAt: -40,
+        lastAt: -30,
+        refusals: 2,
+      });
+      await runCycle();
+      const first = await openIncident(wf);
+      await addRun(org, wf, "success", { at: at(-10), source: "webhook" });
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      await refuseAgain(run, -1);
+      await runCycle();
+      expect((await openIncident(wf))?.id).toBe(first?.id);
+      const recoveries = (await deliveriesOf(org.orgId)).filter(
+        (d) => d.kind === "recovery"
+      );
+      expect(recoveries.every((d) => d.state === "skipped")).toBe(true);
+    });
+
+    it("40 webhook workflows at the run limit send one alert and one page, then one recovery", async () => {
+      const org = await countingOrg("runlimit40");
+      const channel = await makeChannel(org, "pagerduty", "always", "live");
+      const ids: string[] = [];
+      for (let i = 0; i < 40; i++) {
+        const wf = await makeWorkflow(org, `Limited ${i}`, "Webhook");
+        await refusalBucket(org, wf, { firstAt: -20, lastAt: -5, refusals: 3 });
+        ids.push(wf);
+      }
+      await runCycle();
+      const open = await db
+        .select()
+        .from(workflowFailureIncidents)
+        .where(
+          and(
+            eq(workflowFailureIncidents.organizationId, org.orgId),
+            isNull(workflowFailureIncidents.resolvedAt)
+          )
+        );
+      expect(open).toHaveLength(40);
+      const alerts = (await deliveriesOf(org.orgId)).filter(
+        (d) => d.kind === "alert"
+      );
+      expect(alerts.filter((d) => d.channel === "email")).toHaveLength(1);
+      const pages = alerts.filter((d) => d.channelId === channel.id);
+      expect(pages).toHaveLength(1);
+      expect(pages[0]?.state, pages[0]?.lastError ?? "").toBe("delivered");
+      const [mail] = mailsTo(org).filter((m) =>
+        m.subject.includes("40 workflows are not running")
+      );
+      expect(mail?.text).toContain("And 30 more.");
+      expect(mail?.text).toContain("raise the plan's run limit under Plans");
+      // The other 39 tell nobody on their own, and are never re-queued as lost.
+      await db
+        .update(workflowFailureIncidents)
+        .set({ openedAt: at(-10) })
+        .where(eq(workflowFailureIncidents.organizationId, org.orgId));
+      await runCycle();
+      expect(
+        (await deliveriesOf(org.orgId)).filter((d) => d.kind === "alert")
+      ).toHaveLength(2);
+
+      // Accepted again: one recovery for the group, and the one page resolved.
+      for (const wf of ids) {
+        await addRun(org, wf, "success", { at: at(-1), source: "webhook" });
+      }
+      await runCycle();
+      await endRecoveryHold(org.orgId);
+      await runCycle();
+      const recoveries = (await deliveriesOf(org.orgId)).filter(
+        (d) => d.kind === "recovery" && d.state !== "skipped"
+      );
+      expect(recoveries.filter((d) => d.channel === "email")).toHaveLength(1);
+      const resolves = recoveries.filter((d) => d.channelId === channel.id);
+      expect(resolves).toHaveLength(1);
+      expect(resolves[0]?.incidentId).toBe(pages[0]?.incidentId);
+      expect(resolves[0]?.state, resolves[0]?.lastError ?? "").toBe(
+        "delivered"
+      );
+      const recovery = mailsTo(org).find((m) =>
+        m.text.includes("Refused for the same reason and running again too")
+      );
+      expect(recovery?.text).toContain("and 29 more");
+    });
+
+    it("stops reminding a refused incident once nothing was refused for a day, without a recovery", async () => {
+      const org = await countingOrg("refusedquiet");
+      const wf = await makeWorkflow(org, "Refused quiet", "Webhook");
+      await refusalBucket(org, wf, { firstAt: -40, lastAt: -30, refusals: 2 });
+      await runCycle();
+      const incident = await openIncident(wf);
+      expect(incident?.openedBy).toBe("refused");
+      const { queueReminders, emptyStats } = await import(
+        "@/lib/notifications/failure-alerts/evaluator"
+      );
+      await db
+        .update(workflowFailureIncidents)
+        .set({ lastNotifiedAt: at(-25 * 60), lastFailedAt: at(-23 * 60) })
+        .where(eq(workflowFailureIncidents.id, incident?.id ?? ""));
+      const stats = emptyStats();
+      await queueReminders(new Date(), stats);
+      expect(stats.remindersQueued).toBe(1);
+      await db
+        .update(workflowFailureIncidents)
+        .set({ lastNotifiedAt: at(-25 * 60), lastFailedAt: at(-25 * 60) })
+        .where(eq(workflowFailureIncidents.id, incident?.id ?? ""));
+      const later = emptyStats();
+      await queueReminders(new Date(), later);
+      expect(later.remindersQueued).toBe(0);
+      expect((await openIncident(wf))?.id).toBe(incident?.id);
+      expect(
+        (await deliveriesOf(org.orgId)).filter((d) => d.kind === "recovery")
+      ).toHaveLength(0);
     });
 
     it("a refused schedule gets one not-running incident, never a refused one too", async () => {

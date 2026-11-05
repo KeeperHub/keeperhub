@@ -339,6 +339,10 @@ describe.skipIf(!process.env.PYTH_TEST_DATABASE_URL)(
         status: "skipped",
         billable: false,
         error: "Execution skipped: limit reached.",
+        // A refusal carries the billing category, like every other path.
+        errorCategory: "billing",
+        errorType: "user",
+        output: { refusals: 1 },
       });
       const [checkpoint] = await db
         .select()
@@ -380,6 +384,8 @@ describe.skipIf(!process.env.PYTH_TEST_DATABASE_URL)(
         .from(workflowExecutions)
         .where(eq(workflowExecutions.id, stored.executionId));
       expect(execution).toMatchObject({ status: "skipped", billable: false });
+      // Expiry is not a refusal: no category.
+      expect(execution.errorCategory).toBeNull();
       expect((await observe("101", 2)).outcome).toBe("baseline");
     });
 

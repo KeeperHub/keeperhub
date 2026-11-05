@@ -857,7 +857,7 @@ describe("runs refused before they start", () => {
       "before they start: workflow is not executable (the workflow is deactivated)."
     );
     expect(message.text).toContain(
-      "Open the workflow to see why it cannot run."
+      "KeeperHub deactivated it; contact support to turn it back on."
     );
     // Deactivated by our team: it will not come back on its own.
     expect(message.text).not.toContain("runs on its own again");
@@ -887,13 +887,29 @@ describe("runs refused before they start", () => {
     expect(owner.text).toContain("you will be told when it runs on its own");
   });
 
-  it("asks to upgrade, raise the limit or settle billing, and a refused reminder still needs action", () => {
+  it("asks for what the refusal needs, and a refused reminder still needs action", () => {
     const message = renderMessage(
       { ...org, kind: "reminder", workflow, incident, reminderNumber: 2 },
       now
     );
-    expect(message.text).toContain(
-      "Upgrade the plan, raise its run limit or settle billing under Plans"
+    expect(message.text).toContain("Raise the plan's run limit under Plans;");
+    const next = (refusal: string): string =>
+      renderMessage(
+        {
+          ...org,
+          kind: "alert",
+          workflow,
+          incident: { ...incident, refused: { reason: refusal } },
+        },
+        now
+      ).text;
+    expect(
+      next("Workflow uses features that require a paid plan: PagerDuty")
+    ).toContain(
+      "before they start: workflow uses features that require a paid plan: PagerDuty.\nUpgrade the plan under Plans, or remove those features from the workflow;"
+    );
+    expect(next("Insufficient credit balance.")).toContain(
+      "Settle billing under Plans;"
     );
     expect(message.subject).toContain("Action needed");
     expect(message.subject).not.toContain("Still failing");
@@ -950,7 +966,27 @@ describe("runs refused before they start", () => {
       "Open Plans: https://app.test/settings/org-1/plans"
     );
     expect(message.text).toContain(
-      "point to the plan or billing: Upgrade the plan, raise its run limit or settle billing under Plans."
+      "point to the plan or billing: raise the plan's run limit under Plans."
+    );
+    expect(message.text).not.toContain("RPC provider");
+  });
+
+  it("a grouped alert with several kinds of refusal names every fix", () => {
+    const message = renderMessage({
+      ...org,
+      kind: "grouped",
+      workflows: [reason, "Insufficient credit balance."].map((refusal, i) => ({
+        ...workflow,
+        id: `wf-${i}`,
+        name: `Keeper ${i}`,
+        failureCount: 0,
+        lastError: refusal,
+        openedBy: "refused" as const,
+        refused: { reason: refusal },
+      })),
+    });
+    expect(message.text).toContain(
+      "point to the plan or billing: upgrade the plan, raise its run limit or settle billing under Plans."
     );
   });
 });
@@ -975,14 +1011,14 @@ describe("refused runs on a workflow not on a schedule", () => {
       );
       for (const text of [message.text, message.chat, message.html]) {
         expect(text).toContain(
-          "Its runs are being refused before they start: Insufficient credit balance"
+          "Its runs are being refused before they start: insufficient credit balance"
         );
         expect(text).not.toMatch(/scheduled|Due at|wallet out of funds/i);
       }
       expect(message.text).toContain("Refused since");
       expect(message.text).toContain("https://app.test/settings/org-1/plans");
       expect(message.summary).toBe(
-        "[KeeperHub] Acme: Hook is not running: its runs are being refused before they start: Insufficient credit balance to pay for this execution."
+        "[KeeperHub] Acme: Hook is not running: its runs are being refused before they start: insufficient credit balance to pay for this execution."
       );
       expect(message.subject).toContain("Action needed");
     }
@@ -999,7 +1035,7 @@ describe("refused runs on a workflow not on a schedule", () => {
       now
     );
     expect(message.text).toContain(
-      "Its runs are being refused before they start: Insufficient credit balance"
+      "Its runs are being refused before they start: insufficient credit balance"
     );
   });
 
@@ -1022,7 +1058,7 @@ describe("refused runs on a workflow not on a schedule", () => {
     );
     for (const text of [message.text, message.chat]) {
       expect(text).toContain(
-        "Hook 1 is not running: its runs are being refused before they start: Insufficient credit balance"
+        "Hook 1 is not running: its runs are being refused before they start: insufficient credit balance"
       );
       expect(text).not.toMatch(/scheduled|wallet out of funds|Add funds/i);
     }
@@ -1063,6 +1099,46 @@ describe("refused runs on a workflow not on a schedule", () => {
     );
     expect(failed.text).toContain(
       "Its runs are being accepted again after 9 minutes of refusals, but the first one failed."
+    );
+  });
+  it("a group recovery names the other workflows that run again, once", () => {
+    const message = renderMessage(
+      {
+        ...org,
+        kind: "recovery",
+        workflow: hook,
+        incident,
+        resolvedAt: now,
+        ranAt: now,
+        others: [
+          { id: "wf-2", name: "Hook *2*", triggerLabel: "Webhook" },
+          { id: "wf-3", name: "Hook 3", triggerLabel: "Webhook" },
+        ],
+      },
+      now
+    );
+    expect(message.text).toContain(
+      "Refused for the same reason and running again too: Hook *2*, Hook 3."
+    );
+    expect(message.chatVariants.length).toBeGreaterThan(0);
+    expect(message.subject).toBe("[Acme] Resolved: Hook is running again");
+  });
+
+  it("keeps a name's capitals after the colon, lower-cases a plain first word", () => {
+    const message = renderMessage(
+      {
+        ...org,
+        kind: "alert",
+        workflow: hook,
+        incident: {
+          ...incident,
+          refused: { reason: "PagerDuty needs a paid plan" },
+        },
+      },
+      now
+    );
+    expect(message.text).toContain(
+      "before they start: PagerDuty needs a paid plan."
     );
   });
 });

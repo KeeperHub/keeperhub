@@ -181,7 +181,7 @@ describe("incidentTitle", () => {
     expect(incidentTitle(refused, false)).toBe(
       "Not running: its scheduled runs are being refused before they start"
     );
-    expect(notRunningText(missed.since, true)).toBe(
+    expect(notRunningText(missed.since, true, "missed")).toBe(
       incidentTitle(refused, false)
     );
   });

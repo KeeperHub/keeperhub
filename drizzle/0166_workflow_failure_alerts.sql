@@ -139,7 +139,7 @@ CREATE INDEX "idx_alert_incidents_workflow" ON "alert_incidents" USING btree ("w
 CREATE INDEX "idx_alert_incidents_resolved" ON "alert_incidents" USING btree ("resolved_at") WHERE "alert_incidents"."resolved_at" IS NOT NULL;
 --> statement-breakpoint
 -- Queues the workflow for the alert evaluator when a run ends in success, error or
--- skipped (refused). Never blocks a run: errors are only logged as a warning.
+-- skipped (refused or expired). Never blocks a run: errors are only logged as a warning.
 CREATE OR REPLACE FUNCTION public.queue_alert_check()
 RETURNS trigger
 LANGUAGE plpgsql

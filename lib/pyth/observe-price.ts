@@ -10,6 +10,7 @@ import {
   workflowExecutions,
   workflows,
 } from "@/lib/db/schema";
+import { ErrorCategory } from "@/lib/logging";
 import { buildAttribution } from "@/lib/security/request-attribution";
 import { hashWorkflowDefinition } from "@/lib/workflow/content-hash";
 import { getWorkflowExecutability } from "@/lib/workflow/executable";
@@ -255,8 +256,17 @@ async function observeInTransaction(
           billable: false,
           input: { ...evaluated.signal, configHash: command.configHash },
           dispatchKey,
-          error: refusal?.message ?? null,
-          completedAt: refusal ? now : null,
+          // Same refused shape as recordRefusedRun; one row per signal here.
+          ...(refusal
+            ? {
+                error: refusal.message,
+                errorCategory: ErrorCategory.BILLING,
+                errorType: "user" as const,
+                output: { refusals: 1 },
+                startedAt: now,
+                completedAt: now,
+              }
+            : {}),
           executedWorkflowHash: hashWorkflowDefinition(
             workflow.nodes,
             workflow.edges

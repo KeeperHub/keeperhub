@@ -341,7 +341,6 @@ describe.skipIf(SKIP)("consume-path claim helpers", () => {
     await resolveToSkipped(execDb, id, {
       error: "over quota",
       errorCategory: "billing",
-      errorType: "user",
       reason: "execution_limit",
     });
 
@@ -353,6 +352,7 @@ describe.skipIf(SKIP)("consume-path claim helpers", () => {
     expect(row.error).toBe("over quota");
     expect(row.errorCategory).toBe("billing");
     expect(row.errorType).toBe("user");
+    expect(row.output).toEqual({ refusals: 1 });
     // User-actionable errors carry no system code.
     expect(row.errorCode).toBeNull();
   });
@@ -364,7 +364,6 @@ describe.skipIf(SKIP)("consume-path claim helpers", () => {
     await resolveToSkipped(execDb, id, {
       error: "x",
       errorCategory: "billing",
-      errorType: "user",
       reason: "execution_limit",
     });
 

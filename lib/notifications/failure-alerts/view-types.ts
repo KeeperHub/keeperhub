@@ -174,6 +174,10 @@ export type WorkflowAlertView = {
       refused: boolean;
       /** The refusal's reason as shown; null when not refused or none was recorded. */
       refusedReason: string | null;
+      /** A "refused" incident's newest refusal. */
+      lastRefusedAt: string | null;
+      /** Told in the alert of another workflow refused for the same reason. */
+      reportedWithOthers: boolean;
     } | null;
   };
   members: MemberView[];
@@ -325,12 +329,16 @@ export function isRefusedIncident(incident: {
 }
 
 /** Not running, rather than failing: a schedule that did not start, or runs refused before they start. */
-export function isNotRunning(openedBy: string | undefined): boolean {
+export function isNotRunning(
+  openedBy: FailureIncidentTrigger | undefined
+): boolean {
   return openedBy === "missed" || openedBy === "refused";
 }
 
 /** "its scheduled runs are being refused before they start"; an event workflow has no schedule. */
-export function refusedLead(openedBy: string | undefined): string {
+export function refusedLead(
+  openedBy: FailureIncidentTrigger | undefined
+): string {
   return `its ${openedBy === "refused" ? "" : "scheduled "}runs are being refused before they start`;
 }
 
@@ -355,6 +363,19 @@ export function shownRefusal(reason: string): string {
       (_match, code: string) =>
         `not executable (${NOT_EXECUTABLE_WORDS[code] ?? code})`
     );
+}
+
+/** What a plan or billing refusal asks for: a paid feature, a run limit, or billing. */
+export type PlanRefusal = "feature" | "limit" | "billing";
+
+const PAID_FEATURE = /require a paid plan/i;
+const RUN_LIMIT = /execution limit|run limit/i;
+
+export function planRefusalOf(reason: string | null): PlanRefusal {
+  if (reason && PAID_FEATURE.test(reason)) {
+    return "feature";
+  }
+  return reason && RUN_LIMIT.test(reason) ? "limit" : "billing";
 }
 
 /** Deactivated by our team: it does not come back on its own. */

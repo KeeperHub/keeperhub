@@ -16,6 +16,10 @@ import {
   statusForErrorType,
 } from "../../lib/errors/execution-status";
 import { calculateTotalSteps } from "../../lib/workflow/executor/progress";
+import {
+  markRunRefused,
+  type RefusalCategory,
+} from "../../lib/workflow/refused-runs";
 import type { WorkflowEdge, WorkflowNode } from "../../lib/workflow/store";
 import type { executeWorkflow } from "../../lib/workflow/executor/executor.workflow";
 import { toJsonSafe } from "./serialize";
@@ -478,12 +482,42 @@ export async function discardPhantomRow(
   executionId: string | undefined,
   discard: { reason: DiscardReason; error: string }
 ): Promise<void> {
+  if (discard.reason === "upstream_invalid") {
+    await skipStaleSignal(db, executionId, discard.error);
+    return;
+  }
   await resolveToSkipped(db, executionId, {
     error: discard.error,
     errorCategory: "configuration",
-    errorType: "user",
     reason: discard.reason,
   });
+}
+
+// An expired or mismatched Pyth signal is not a refusal: skipped, no category.
+async function skipStaleSignal(
+  db: PostgresJsDatabase<DbSchema>,
+  executionId: string | undefined,
+  error: string
+): Promise<void> {
+  if (!executionId) {
+    return;
+  }
+  const resolved = await db
+    .update(workflowExecutions)
+    .set({ status: "skipped", error, billable: false, completedAt: new Date() })
+    .where(
+      and(
+        eq(workflowExecutions.id, executionId),
+        inArray(workflowExecutions.status, ["phantom", "pending"])
+      )
+    )
+    .returning({ workflowId: workflowExecutions.workflowId });
+  if (resolved.length > 0) {
+    await recordSkippedSample(db, {
+      workflowId: resolved[0].workflowId,
+      reason: "upstream_invalid",
+    });
+  }
 }
 
 /**
@@ -507,41 +541,30 @@ export async function resolveToSkipped(
   executionId: string | undefined,
   fields: {
     error: string;
-    errorCategory: "billing" | "configuration";
-    errorType: "user";
+    errorCategory: RefusalCategory;
     reason: string;
   }
 ): Promise<void> {
   if (!executionId) {
     return;
   }
-  const resolved = await db
-    .update(workflowExecutions)
-    .set({
-      status: "skipped",
-      error: fields.error,
-      errorCategory: fields.errorCategory,
-      errorType: fields.errorType,
-      // The run was blocked before it started, so it consumes no quota. The
-      // claim flips billable to true up front; undo that here or a blocked
-      // org's retries keep inflating its plan-usage ratio past 100%.
-      billable: false,
-      completedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(workflowExecutions.id, executionId),
-        inArray(workflowExecutions.status, ["phantom", "pending"])
-      )
-    )
-    .returning({ workflowId: workflowExecutions.workflowId });
+  const resolved = await markRunRefused(
+    {
+      executionId,
+      fromStatuses: ["phantom", "pending"],
+      reason: fields.error,
+      category: fields.errorCategory,
+      at: new Date(),
+    },
+    db
+  );
 
   // Same reasoning as failExecutionAsSystemError: the phantom/pending CAS makes
   // a match the first terminal transition, and refused rows never reach any
   // other counted finalize path.
-  if (resolved.length > 0) {
+  if (resolved) {
     await recordSkippedSample(db, {
-      workflowId: resolved[0].workflowId,
+      workflowId: resolved.workflowId,
       reason: fields.reason,
     });
   }

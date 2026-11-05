@@ -1,3 +1,4 @@
+import type { FailureIncidentTrigger } from "@/lib/db/schema-failure-alerts";
 import {
   DELIVERY_STATE_LABEL,
   type HistoryEntry,
@@ -17,7 +18,7 @@ export function failedRuns(count: number): string {
 export function notRunningText(
   dueAt: string,
   refused: boolean,
-  openedBy?: string
+  openedBy: FailureIncidentTrigger
 ): string {
   return refused
     ? `Not running: ${refusedLead(openedBy)}`
