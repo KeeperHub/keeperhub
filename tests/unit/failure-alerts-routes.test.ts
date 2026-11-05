@@ -233,6 +233,15 @@ describe("failure-alerts routes: who may call", () => {
     }
   );
 
+  it.each(Object.entries(writes))(
+    "%s lets an admin change it, like an owner",
+    async (_name, call) => {
+      mocks.roleRows = [{ role: "admin" }];
+      const res = await call()();
+      expect(res.status).toBe(200);
+    }
+  );
+
   it.each(Object.entries(reads))(
     "%s lets a plain member read",
     async (_name, call) => {
