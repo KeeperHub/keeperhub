@@ -15,9 +15,12 @@ import type { QuotaStatus } from "@/lib/hooks/use-quota-status";
 export function QuotaBanner({
   status,
   onDismiss,
+  row = 0,
 }: {
   status: QuotaStatus;
   onDismiss: () => void;
+  /** Banners above it in the stack. */
+  row?: number;
 }): React.ReactElement {
   const atLimit = (status.threshold ?? 0) >= 100;
 
@@ -48,6 +51,7 @@ export function QuotaBanner({
       data-testid="quota-banner"
       data-threshold={status.threshold}
       role="status"
+      row={row}
     >
       <p className="flex items-center gap-2 truncate">
         <AlertTriangle aria-hidden="true" className="size-4 shrink-0" />

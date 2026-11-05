@@ -27,9 +27,9 @@ import { isAnonymousUser } from "@/lib/is-anonymous";
 const STORAGE_KEY = "kh-billing-announce-v1";
 
 /**
- * The single fixed banner slot. "Nobody would be told about a failing
- * workflow" outranks everything: it stays broken until someone acts. Paused
- * alerts come next, as failures go unreported until the pause ends.
+ * The fixed banners at the top of the app: one alerts strip ("nobody would be
+ * told" outranks "paused") and, under it, one billing strip, so a pause never
+ * hides the plans news or a quota warning.
  */
 export function AppBanner(): React.ReactElement | null {
   const { organization } = useOrganization();
@@ -58,23 +58,28 @@ export function AppBanner(): React.ReactElement | null {
     return () => window.clearTimeout(timer);
   }, [organizationId, pausedUntil]);
 
-  useAppBannerOffset(unreachable || Boolean(pausedUntil));
-
+  let alert: React.ReactElement | null = null;
   if (unreachable && organizationId) {
-    return <FailureAlertsUnreachableBanner organizationId={organizationId} />;
-  }
-  if (pausedUntil && organizationId) {
-    return (
+    alert = <FailureAlertsUnreachableBanner organizationId={organizationId} />;
+  } else if (pausedUntil && organizationId) {
+    alert = (
       <FailureAlertsPausedBanner
         organizationId={organizationId}
         until={pausedUntil}
       />
     );
   }
-  if (!isBillingEnabled()) {
-    return null;
-  }
-  return <BillingBanner />;
+  const alertRows = alert ? 1 : 0;
+  const billing = isBillingEnabled();
+  // With billing on, BillingBanner owns the offset for both strips.
+  useAppBannerOffset(billing ? 0 : alertRows);
+
+  return (
+    <>
+      {alert}
+      {billing && <BillingBanner row={alertRows} />}
+    </>
+  );
 }
 
 /**
@@ -82,7 +87,12 @@ export function AppBanner(): React.ReactElement | null {
  * outranks the plan announcement, so at most one banner renders and
  * `--app-banner-height` is set once for whichever won.
  */
-function BillingBanner(): React.ReactElement | null {
+function BillingBanner({
+  row,
+}: {
+  /** Strips above it (the alerts banner). */
+  row: number;
+}): React.ReactElement | null {
   const [mounted, setMounted] = useState(false);
   const [announceDismissed, setAnnounceDismissed] = useState(true);
   const [quotaDismissedKey, setQuotaDismissedKey] = useState<string | null>(
@@ -127,7 +137,7 @@ function BillingBanner(): React.ReactElement | null {
     }
   }, [quotaKey]);
 
-  useAppBannerOffset(visible);
+  useAppBannerOffset(row + (visible ? 1 : 0));
 
   const handleDismissQuota = useCallback((): void => {
     if (!quotaKey) {
@@ -151,7 +161,9 @@ function BillingBanner(): React.ReactElement | null {
   }
 
   if (quotaVisible && status) {
-    return <QuotaBanner onDismiss={handleDismissQuota} status={status} />;
+    return (
+      <QuotaBanner onDismiss={handleDismissQuota} row={row} status={status} />
+    );
   }
 
   if (!announceVisible) {
@@ -162,6 +174,7 @@ function BillingBanner(): React.ReactElement | null {
     <AppBannerSlot
       className="border-keeperhub-green/30 bg-keeperhub-green/10 px-12"
       data-testid="app-banner"
+      row={row}
     >
       <p className="flex items-center gap-2 truncate text-foreground">
         <Info

@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronRight, Pause as PauseIcon } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -17,7 +17,7 @@ import type {
   ChannelView,
   OrgSettingsView,
 } from "@/lib/notifications/failure-alerts/view-types";
-import { AlertsStatus } from "./alerts-status";
+import { AlertsStatus, statusCardClass } from "./alerts-status";
 import { fetchView, ViewError } from "./api";
 import { AddMethodButton } from "./channel-list-editor";
 import { CustomWorkflowsList } from "./custom-workflows";
@@ -536,20 +536,6 @@ export function OrgFailureAlertsSection({
         dirty={anyDirty}
       />
       <SectionHeader
-        action={
-          canManage && !pause && !pausing ? (
-            <Button
-              data-testid="failure-alerts-pause"
-              onClick={() => setPausing(true)}
-              size="sm"
-              type="button"
-              variant="outline"
-            >
-              <PauseIcon className="size-3.5" />
-              Pause alerts
-            </Button>
-          ) : undefined
-        }
         description={
           <>
             <span data-testid="failure-alerts-rule-sentence">
@@ -565,21 +551,24 @@ export function OrgFailureAlertsSection({
         title="Alerts"
         wide
       />
-      {pausing && !pause && (
-        <PauseAlertsForm
-          onCancel={() => setPausing(false)}
-          onPause={pauseAlerts}
-          pausingWorkflows={
-            data.customWorkflows.filter((w) => w.pauseWorkflow).length
-          }
-        />
-      )}
-
-      <SettingsCard title="Status">
+      <SettingsCard className={statusCardClass(data)} title="Status">
         <AlertsStatus
           canManage={canManage}
           data={data}
+          onPauseOpen={() => setPausing(true)}
           onResume={resumeAlerts}
+          pauseForm={
+            pausing && !pause ? (
+              <PauseAlertsForm
+                onCancel={() => setPausing(false)}
+                onPause={pauseAlerts}
+                pausingWorkflows={
+                  data.customWorkflows.filter((w) => w.pauseWorkflow).length
+                }
+              />
+            ) : null
+          }
+          pausing={pausing}
           viewerUserId={session?.user?.id}
         />
       </SettingsCard>

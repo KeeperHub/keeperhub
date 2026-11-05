@@ -14,9 +14,9 @@ import { cn } from "@/lib/utils";
 import { failedRuns, formatWhen, joinList, notRunningText } from "./format";
 import { memberLabel } from "./member-label";
 import { channelWorks } from "./method-drafts";
-import { AlertsPausedNotice } from "./pause-alerts";
+import { AlertsStatusBar } from "./pause-alerts";
 
-type StatusState = "paused" | "unreachable" | "failing" | "single" | "quiet";
+type StatusState = "unreachable" | "failing" | "single" | "quiet";
 
 const ICON_CLASS = "mt-0.5 size-4 shrink-0";
 
@@ -148,17 +148,41 @@ function Headline({
   );
 }
 
+/** How the Status card is drawn: its edge and tint follow the state. */
+export function statusCardClass(data: OrgSettingsView): string {
+  const paused =
+    data.pause && new Date(data.pause.until).getTime() > Date.now();
+  if (!data.enabled) {
+    return "border-2";
+  }
+  if (paused) {
+    return "border-2 border-yellow-500/50 bg-yellow-500/5";
+  }
+  if (data.unreachable || data.failingNow.length > 0) {
+    return "border-2 border-destructive/50 bg-destructive/5";
+  }
+  return "border-2 border-keeperhub-green/40 bg-keeperhub-green/5";
+}
+
 /** "Is it working?": state, who is reached, the email cap, and what is failing now. */
 export function AlertsStatus({
   data,
   canManage,
   onResume,
   viewerUserId,
+  pausing = false,
+  onPauseOpen = () => undefined,
+  pauseForm,
 }: {
   data: OrgSettingsView;
   canManage: boolean;
   onResume: () => Promise<string | null>;
   viewerUserId?: string | null;
+  /** The pause form is open. */
+  pausing?: boolean;
+  onPauseOpen?: () => void;
+  /** Shown under the state while pausing. */
+  pauseForm?: React.ReactNode;
 }): React.ReactElement {
   const pause =
     data.pause && new Date(data.pause.until).getTime() > Date.now()
@@ -183,9 +207,7 @@ export function AlertsStatus({
   );
 
   let state: StatusState = "quiet";
-  if (pause) {
-    state = "paused";
-  } else if (data.unreachable || routes === 0) {
+  if (data.unreachable || routes === 0) {
     state = "unreachable";
   } else if (data.failingNow.length > 0) {
     state = "failing";
@@ -219,16 +241,19 @@ export function AlertsStatus({
       data-state={state}
       data-testid="failure-alerts-status"
     >
-      {state === "paused" && pause && (
-        <AlertsPausedNotice
-          canManage={canManage}
-          onResume={onResume}
-          pause={pause}
-          pausingWorkflows={
-            data.customWorkflows.filter((w) => w.pauseWorkflow).length
-          }
-        />
-      )}
+      <AlertsStatusBar
+        canManage={canManage}
+        enabled={data.enabled}
+        onPauseOpen={onPauseOpen}
+        onResume={onResume}
+        pause={pause}
+        pausing={pausing}
+        pausingWorkflows={
+          data.customWorkflows.filter((w) => w.pauseWorkflow).length
+        }
+      />
+      {pauseForm}
+      <div className="border-t" />
       {state === "unreachable" && (
         <Headline
           title="Nobody can be reached: nobody will be told when a workflow fails"

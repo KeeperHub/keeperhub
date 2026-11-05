@@ -6,28 +6,35 @@ import { cn } from "@/lib/utils";
 /** The banner slot's height token; pages offset by it via --app-banner-height. */
 const APP_BANNER_HEIGHT = "var(--app-banner-slot-height)";
 
-/** Sets --app-banner-height while a banner shows, so fixed chrome moves down. */
-export function useAppBannerOffset(visible: boolean): void {
+/**
+ * Sets --app-banner-height to `rows` stacked banners while any show, so fixed
+ * chrome moves down. One caller owns it at a time; 0 leaves it alone.
+ */
+export function useAppBannerOffset(rows: number): void {
   useEffect(() => {
-    if (!visible) {
+    if (rows <= 0) {
       return;
     }
     document.documentElement.style.setProperty(
       "--app-banner-height",
-      APP_BANNER_HEIGHT
+      rows === 1 ? APP_BANNER_HEIGHT : `calc(${rows} * ${APP_BANNER_HEIGHT})`
     );
     return (): void => {
       document.documentElement.style.removeProperty("--app-banner-height");
     };
-  }, [visible]);
+  }, [rows]);
 }
 
 /** The fixed strip at the top of the app that every top banner renders in. */
 export function AppBannerSlot({
   className,
   style,
+  row = 0,
   ...props
-}: ComponentProps<"div">): React.ReactElement {
+}: ComponentProps<"div"> & {
+  /** Banners stack: 0 is the top strip, 1 the one under it. */
+  row?: number;
+}): React.ReactElement {
   return (
     <div
       className={cn(
@@ -36,6 +43,7 @@ export function AppBannerSlot({
       )}
       style={{
         height: APP_BANNER_HEIGHT,
+        top: row > 0 ? `calc(${row} * ${APP_BANNER_HEIGHT})` : 0,
         zIndex: "var(--z-banner)",
         ...style,
       }}
