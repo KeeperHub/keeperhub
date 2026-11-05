@@ -48,8 +48,11 @@ const SettingsContext = createContext<SettingsContextValue | null>(null);
 
 export function SettingsProvider({
   children,
+  alertsOrgIds,
 }: {
   children: ReactNode;
+  /** The user's orgs with alerts on, from the server; undefined if it could not tell. */
+  alertsOrgIds?: string[];
 }): React.ReactElement {
   const params = useParams();
   const {
@@ -158,7 +161,12 @@ export function SettingsProvider({
   // disappears once the answer arrives.
   const isOwner = role === "owner";
   const isAdmin = role === "owner" || role === "admin";
-  const alertsEnabled = useAlertsEnabled(organizationId);
+  const fetchedAlertsEnabled = useAlertsEnabled(organizationId);
+  // The server's list answers at once; the request covers an org joined since.
+  const alertsEnabled =
+    organizationId && alertsOrgIds?.includes(organizationId)
+      ? true
+      : fetchedAlertsEnabled;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: organizationId is a reload trigger, not a value this reads
   useEffect(() => {

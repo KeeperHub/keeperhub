@@ -2467,6 +2467,23 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(restored?.pausedReason).toBe("It was paused when it was removed");
     });
 
+    it("lists only the user's orgs that have alerts on, for the settings menu", async () => {
+      const { alertsOrgIdsForUser } = await import(
+        "@/lib/notifications/failure-alerts/user-orgs"
+      );
+      const on = await makeOrg("menuon");
+      const off = await makeOrg("menuoff");
+      await db.insert(member).values({
+        id: nextId("member_"),
+        organizationId: off.orgId,
+        userId: on.userId,
+        role: "admin",
+        createdAt: new Date(),
+      });
+      leaveRollout(off);
+      expect(await alertsOrgIdsForUser(on.userId)).toEqual([on.orgId]);
+    });
+
     it("refuses a Slack channel with spaces or over 80 characters", async () => {
       const org = await makeOrg("slackname");
       const integrationId = await makeConnection(org, "slack", "live");
