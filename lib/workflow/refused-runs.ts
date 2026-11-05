@@ -135,12 +135,9 @@ export function acceptedRunBetween(
 }
 
 // An accepted run since the row's first refusal: the row restarts at this refusal.
-// Repeated per SET column below, which cannot share one subquery.
-const RESTART_SQL = acceptedRunBetween(
-  outerRun("started_at"),
-  sql`excluded.started_at`,
-  true
-);
+// Built per call (not at import) and repeated per SET column, which cannot share one subquery.
+const restartSql = (): SQL =>
+  acceptedRunBetween(outerRun("started_at"), sql`excluded.started_at`, true);
 
 /**
  * Record a refused attempt in its hourly row: insert, or move completed_at to
@@ -153,6 +150,7 @@ export async function insertRefusedRun<TSchema extends Record<string, unknown>>(
   database: PostgresJsDatabase<TSchema>
 ): Promise<boolean> {
   const refusals = sql`coalesce((${workflowExecutions.output}->>'refusals')::int, 1)`;
+  const restart = restartSql();
   const changed = await withBackstopCapture(
     {
       workflowId: run.workflowId,
@@ -189,15 +187,15 @@ export async function insertRefusedRun<TSchema extends Record<string, unknown>>(
         .onConflictDoUpdate({
           target: workflowExecutions.dispatchKey,
           set: {
-            startedAt: sql`CASE WHEN ${RESTART_SQL} THEN excluded.started_at ELSE ${workflowExecutions.startedAt} END`,
+            startedAt: sql`CASE WHEN ${restart} THEN excluded.started_at ELSE ${workflowExecutions.startedAt} END`,
             // Never backwards, restarted or not: a late write may be older.
             completedAt: sql`greatest(${workflowExecutions.completedAt}, excluded.completed_at)`,
             error: sql`excluded.error`,
-            output: sql`jsonb_build_object('refusals', CASE WHEN ${RESTART_SQL} THEN 1 ELSE ${refusals} + 1 END)`,
+            output: sql`jsonb_build_object('refusals', CASE WHEN ${restart} THEN 1 ELSE ${refusals} + 1 END)`,
           },
           // Throttles a hot trigger: the alert only needs the threshold and a
           // newest refusal at most a minute stale.
-          setWhere: sql`${RESTART_SQL} OR ${refusals} < ${REFUSED_RUNS_THRESHOLD} OR ${workflowExecutions.completedAt} <= excluded.completed_at - make_interval(secs => ${REFUSED_ROW_REFRESH_SECONDS})`,
+          setWhere: sql`${restart} OR ${refusals} < ${REFUSED_RUNS_THRESHOLD} OR ${workflowExecutions.completedAt} <= excluded.completed_at - make_interval(secs => ${REFUSED_ROW_REFRESH_SECONDS})`,
         })
         // xmax = 0 on a fresh insert, whose status fires queue_alert_check.
         .returning({ inserted: sql<boolean>`(xmax = 0)` })
