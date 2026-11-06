@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuthPrompt } from "@/components/auth/provider";
+import { confirmLeave } from "@/components/navigation-guard";
 import { GettingStartedLauncher } from "@/components/onboarding/getting-started-launcher";
 import { AddressBookOverlay } from "@/components/overlays/address-book-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
@@ -394,20 +395,24 @@ export function NavigationSidebar(): React.ReactNode {
   const offsets = computePanelOffsets(currentWidth, navState.state.panels);
 
   async function handleNewWorkflow(): Promise<void> {
-    await runNewWorkflow({
-      isAnonymous,
-      hasSession: Boolean(session),
-      push: (href) => router.push(href),
-      onCreated: async (workflowId) => {
-        // Same as refetchSidebar({ workflowCreated: true }), awaited so the
-        // list holds the new workflow before the panel opens on it.
-        showAllRootWorkflows();
-        await refetch();
-        navState.setPanelState("projects", "open");
-        sessionStorage.setItem("animate-sidebar", "true");
-        router.push(`/workflows/${workflowId}`);
-      },
-    });
+    // Unsaved changes on the page are asked about before a workflow is made.
+    await confirmLeave("/workflows", (asked) =>
+      runNewWorkflow({
+        stayOnFailure: asked,
+        isAnonymous,
+        hasSession: Boolean(session),
+        push: (href) => router.push(href),
+        onCreated: async (workflowId) => {
+          // Same as refetchSidebar({ workflowCreated: true }), awaited so the
+          // list holds the new workflow before the panel opens on it.
+          showAllRootWorkflows();
+          await refetch();
+          navState.setPanelState("projects", "open");
+          sessionStorage.setItem("animate-sidebar", "true");
+          router.push(`/workflows/${workflowId}`);
+        },
+      })
+    );
   }
 
   function handleNavClick(item: NavItemDef): void {

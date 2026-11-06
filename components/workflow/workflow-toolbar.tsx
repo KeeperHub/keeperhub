@@ -100,6 +100,7 @@ import {
   WorkflowTriggerEnum,
   type WorkflowVisibility,
 } from "@/lib/workflow/store";
+import { extraUnsavedAtom, flushExtraSaves } from "@/lib/workflow/extra-saves";
 import { findStoredRefTokens } from "@/lib/workflow/template-ref";
 import {
   findActionById,
@@ -682,6 +683,8 @@ function useWorkflowHandlers({
     // this save supersedes should be dropped.
     cancelPendingAutosave();
     try {
+      // Settings saved beside the canvas (alerts) go too; they keep their own flag.
+      await flushExtraSaves();
       await api.workflow.update(currentWorkflowId, { nodes, edges });
       setHasUnsavedChanges(false);
       return true;
@@ -1776,6 +1779,7 @@ function SaveButton({
   handleSave: () => Promise<void>;
 }) {
   const isAnonymous = isAnonymousUser(state.session?.user);
+  const extraUnsaved = useAtomValue(extraUnsavedAtom);
   const disabled =
     isAnonymous ||
     !state.currentWorkflowId ||
@@ -1798,9 +1802,14 @@ function SaveButton({
       variant="secondary"
     >
       <Save className="size-4" />
-      {state.hasUnsavedChanges && !state.isSaving && !isAnonymous && (
-        <div className="absolute top-1.5 right-1.5 size-2 rounded-full bg-primary" />
-      )}
+      {(state.hasUnsavedChanges || extraUnsaved) &&
+        !state.isSaving &&
+        !isAnonymous && (
+          <div
+            className="absolute top-1.5 right-1.5 size-2 rounded-full bg-primary"
+            data-testid="workflow-unsaved-dot"
+          />
+        )}
     </Button>
   );
 

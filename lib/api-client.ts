@@ -135,6 +135,8 @@ export type ExecutionSummary = {
   // The workflow_history version this run executed, resolved from the
   // run's content hash. Null when no matching version exists yet.
   ranVersion: number | null;
+  /** Refusals folded into a skipped run's hourly row; null otherwise. */
+  refusals: number | null;
 };
 
 export type ExecutionSummaryPage = {

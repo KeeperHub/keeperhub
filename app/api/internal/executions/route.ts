@@ -1,17 +1,15 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
-import {
-  checkDispatchAdmission,
-  type DispatchRefusal,
-} from "@/lib/billing/dispatch-admission";
+import { checkDispatchAdmission } from "@/lib/billing/dispatch-admission";
+import type { DispatchRefusal } from "@/lib/billing/dispatch-refusal";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
 import { extractActionTypeNodes } from "@/lib/features";
 import { enforceWorkflowFeatures } from "@/lib/features/route-guard";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
-import { logWarn } from "@/lib/logging";
+import { ErrorCategory, logWarn } from "@/lib/logging";
 import { recordWorkflowExecutionSkipped } from "@/lib/metrics/collectors/prometheus";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
 import { withBackstopCapture } from "@/lib/security/backstop-capture";
@@ -20,6 +18,7 @@ import {
   type TriggerSource,
 } from "@/lib/security/request-attribution";
 import { hashWorkflowDefinition } from "@/lib/workflow/content-hash";
+import { recordRefusedRun } from "@/lib/workflow/refused-runs";
 
 const VALID_TRIGGER_SOURCES: readonly TriggerSource[] = [
   "manual",
@@ -49,15 +48,10 @@ function resolveTriggerSource(value: unknown): TriggerSource {
 }
 
 /**
- * Record a refused dispatch so its author still sees why the trigger stopped
- * firing, without writing one row per occurrence. The synthetic dispatch key
- * buckets by hour, so the unique index collapses every further refusal of the
- * same workflow for the same reason within that hour into a no-op insert. A
- * block trigger on a fast chain would otherwise write a row per block.
- *
- * Best-effort: the refusal itself is already decided, so a failed insert must
- * not turn into a failed response, which the dispatcher would read as a
- * transport error and fall through to the id-less enqueue.
+ * Record a refused dispatch in its hourly row so the author sees why the
+ * trigger stopped firing. Best-effort: a failed write must not fail the
+ * response, which the dispatcher would read as a transport error and fall
+ * through to the id-less enqueue.
  */
 async function recordRefusedDispatch(params: {
   request: Request;
@@ -67,40 +61,32 @@ async function recordRefusedDispatch(params: {
   source: TriggerSource;
   refusal: DispatchRefusal;
 }): Promise<void> {
-  const now = new Date();
-  const hourBucket = now.toISOString().slice(0, 13);
-  const dispatchKey = `refused:${params.workflowId}:${params.refusal.reason}:${hourBucket}`;
+  const recorded = await recordRefusedRun(
+    {
+      workflowId: params.workflowId,
+      organizationId: params.organizationId,
+      userId: params.userId,
+      reason: params.refusal.message,
+      reasonCode: params.refusal.reason,
+      category: ErrorCategory.BILLING,
+      triggerSource: params.source,
+      at: new Date(),
+      request: params.request,
+    },
+    db
+  );
+  if (!recorded) {
+    return;
+  }
 
+  // Counted per refusal, not per row, so the hour bucket does not hide volume.
   try {
-    await db
-      .insert(workflowExecutions)
-      .values({
-        workflowId: params.workflowId,
-        organizationId: params.organizationId,
-        userId: params.userId,
-        // Refused before it started, so it is neither a failure nor billable.
-        // Matches what the executor writes when it refuses the same run.
-        status: "skipped",
-        billable: false,
-        input: {},
-        dispatchKey,
-        error: params.refusal.message,
-        errorCategory: "billing",
-        errorType: "user",
-        startedAt: now,
-        completedAt: now,
-        ...buildAttribution({ request: params.request, source: params.source }),
-      })
-      .onConflictDoNothing({ target: workflowExecutions.dispatchKey });
-
-    // Counted per refusal, not per row, so the hour bucketing above does not
-    // hide the real volume from the metric.
     recordWorkflowExecutionSkipped({
       orgSlug: await resolveOrgSlugForCounter(params.workflowId),
       reason: params.refusal.reason,
     });
   } catch (error) {
-    logWarn("[Admission] Failed to record refused dispatch", {
+    logWarn("[Admission] Failed to count refused dispatch", {
       workflowId: params.workflowId,
       reason: params.refusal.reason,
       error: error instanceof Error ? error.message : String(error),

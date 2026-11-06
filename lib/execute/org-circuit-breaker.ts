@@ -3,6 +3,7 @@ import "server-only";
 import { and, eq, isNotNull } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { member, organization } from "@/lib/db/schema";
+import { restartOrgScheduleCounting } from "@/lib/schedule-service";
 
 /**
  * Org-level incident circuit breaker (self-serve kill switch).
@@ -143,16 +144,22 @@ export async function resetOrgCircuitBreaker(params: {
     return { reset: false, reason: "not_authorized" };
   }
 
-  const [cleared] = await db
-    .update(organization)
-    .set({ haltedAt: null, haltedReason: null, haltedBy: null })
-    .where(
-      and(
-        eq(organization.id, params.organizationId),
-        isNotNull(organization.haltedAt)
+  const cleared = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(organization)
+      .set({ haltedAt: null, haltedReason: null, haltedBy: null })
+      .where(
+        and(
+          eq(organization.id, params.organizationId),
+          isNotNull(organization.haltedAt)
+        )
       )
-    )
-    .returning({ id: organization.id });
+      .returning({ id: organization.id });
+    if (row) {
+      await restartOrgScheduleCounting(tx, params.organizationId);
+    }
+    return row;
+  });
 
   return { reset: true, wasHalted: Boolean(cleared) };
 }

@@ -110,6 +110,39 @@ const ACTION_MAP: Record<string, AuditActionDescription> = {
     phrase: "changed execution-digest settings",
     kind: "change",
   },
+  "org.failure_alerts_changed": {
+    phrase: "changed workflow failure notifications",
+    kind: "change",
+  },
+  "org.failure_alerts_paused": {
+    phrase: "paused failure alerts for the organization",
+    kind: "change",
+  },
+  "org.failure_alerts_resumed": {
+    phrase: "turned failure alerts back on",
+    kind: "change",
+  },
+  "org.failure_alert_tested": {
+    phrase: "tested a failure notification channel",
+    kind: "change",
+  },
+  "workflow.failure_alerts_changed": {
+    phrase: "changed a workflow's failure notifications",
+    kind: "change",
+  },
+  "workflow.alerts_muted": {
+    phrase: "muted a workflow's failure alerts",
+    kind: "change",
+  },
+  "workflow.alerts_unmuted": {
+    phrase: "turned a workflow's failure alerts back on",
+    kind: "change",
+  },
+  "workflow.paused_by_failure_alerts": {
+    phrase:
+      "turned a workflow off after repeated failures or running out of funds",
+    kind: "change",
+  },
   "account.reactivated": { phrase: "reactivated the account", kind: "add" },
   "member.invited": { phrase: "invited a member", kind: "add" },
   "member.joined": { phrase: "joined the organization", kind: "add" },

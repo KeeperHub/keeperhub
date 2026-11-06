@@ -18,8 +18,10 @@ export function SettingsNavMatches({
   variant?: "rail" | "menu";
 }): React.ReactElement {
   const menu = variant === "menu";
-  const { isAdmin, isOwner, isLoading, organizationId } = useSettingsContext();
+  const { alertsEnabled, isAdmin, isOwner, isLoading, organizationId } =
+    useSettingsContext();
   const matches = findSettingsMatches(query, {
+    alertsEnabled,
     isAdmin,
     isOwner,
     noOrganization: !(organizationId || isLoading),

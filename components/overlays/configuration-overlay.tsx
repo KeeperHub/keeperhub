@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { WorkflowFailureAlerts } from "@/components/failure-alerts/workflow-failure-alerts";
 import { ConfirmOverlay } from "@/components/overlays/confirm-overlay";
 import { SmartOverlayHeader } from "@/components/overlays/overlay-header";
 import { useOverlay } from "@/components/overlays/overlay-provider";
@@ -32,6 +33,7 @@ import {
   currentWorkflowIdAtom,
   currentWorkflowNameAtom,
   deleteEdgeAtom,
+  getTriggerTypeFromConfig,
   deleteNodeAtom,
   edgesAtom,
   isGeneratingAtom,
@@ -505,6 +507,15 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
                   value={currentWorkflowDescription}
                 />
               </div>
+              {isOwner && currentWorkflowId && (
+                <WorkflowFailureAlerts
+                  triggerType={getTriggerTypeFromConfig(
+                    nodes.find((node) => node.data.type === "trigger")?.data
+                      .config
+                  )}
+                  workflowId={currentWorkflowId}
+                />
+              )}
               {!isOwner && (
                 <div className="rounded-lg border border-muted bg-muted/30 p-3">
                   <p className="text-muted-foreground text-sm">

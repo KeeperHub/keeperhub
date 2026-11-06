@@ -16,28 +16,15 @@ import {
   extractActionTypeNodes,
   validateWorkflowFeatures,
 } from "@/lib/features";
+import {
+  type DispatchRefusal,
+  EXECUTION_LIMIT_REFUSAL,
+  planFeatureRefusalMessage,
+} from "./dispatch-refusal";
 import { isBillingEnabled } from "./feature-flag";
 import type { PlanName } from "./plans";
 import { checkExecutionLimit } from "./plans-server";
 import { resolveOrgPlan } from "./subscription-read";
-
-export type DispatchRefusalReason = "plan_feature" | "execution_limit";
-
-export type DispatchRefusal = {
-  reason: DispatchRefusalReason;
-  message: string;
-};
-
-// Both strings match what the executor writes when it refuses the same run, so
-// a refusal reads identically whether it was caught here or one hop later.
-export const EXECUTION_LIMIT_REFUSAL =
-  "Execution skipped: your plan's monthly execution limit has been reached.";
-
-export function planFeatureRefusalMessage(
-  featureNames: readonly string[]
-): string {
-  return `Workflow uses features that require a paid plan: ${featureNames.join(", ")}`;
-}
 
 /**
  * Org-level standing: the part of the decision that costs database reads and is

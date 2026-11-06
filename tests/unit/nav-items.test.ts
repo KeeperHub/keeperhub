@@ -168,6 +168,26 @@ describe("runNewWorkflow", () => {
     }
   });
 
+  it("stays on the page after an unsaved-changes Leave, resolving false", async () => {
+    startNewWorkflow.mockRejectedValueOnce(new Error("offline"));
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const push = vi.fn();
+      const made = await runNewWorkflow({
+        isAnonymous: false,
+        hasSession: true,
+        push,
+        onCreated: vi.fn(),
+        stayOnFailure: true,
+      });
+      expect(made).toBe(false);
+      expect(toastError).toHaveBeenCalledWith("Failed to create workflow");
+      expect(push).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("does not report a workflow it made when what follows throws", async () => {
     startNewWorkflow.mockResolvedValueOnce({ id: "wf-1", created: true });
     const { done } = run({

@@ -134,7 +134,10 @@ describe("POST /api/admin/test/enable-workflow", () => {
     const res = await POST(makeRequest({ workflowId: "wf_1" }));
     expect(res.status).toBe(200);
     expect(mockUpdate).toHaveBeenCalledTimes(1);
-    expect(mockSyncSchedule).toHaveBeenCalledWith("wf_1", [{ id: "t" }]);
+    // Turning it on restarts missed-run counting from now.
+    expect(mockSyncSchedule).toHaveBeenCalledWith("wf_1", [{ id: "t" }], {
+      restart: true,
+    });
     const json = (await res.json()) as { enabled: boolean };
     expect(json.enabled).toBe(true);
   });

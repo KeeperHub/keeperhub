@@ -682,13 +682,13 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     setActiveTab,
   ]);
 
-  // Deep-link from the activity feed: `?tab=history` opens the workflow-level
-  // History tab once the workflow is loaded (no specific version preview).
-  // Fires once per distinct tab param.
+  // Deep-links: `?tab=history` from the activity feed opens the workflow-level
+  // History tab (no specific version preview), and `?tab=runs` from a failure
+  // alert opens Runs. Fires once per distinct tab param.
   const appliedTabParamRef = useRef<string | null>(null);
   useEffect(() => {
     const tab = searchParams?.get("tab");
-    if (tab !== "history") {
+    if (tab !== "history" && tab !== "runs") {
       appliedTabParamRef.current = null;
       return;
     }

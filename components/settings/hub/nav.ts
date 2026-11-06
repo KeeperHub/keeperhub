@@ -1,5 +1,5 @@
 import {
-  Bell,
+  BellRing,
   Bot,
   Building2,
   CreditCard,
@@ -8,6 +8,7 @@ import {
   Key,
   Layers,
   type LucideIcon,
+  Mail,
   Plug,
   Shield,
   ShieldCheck,
@@ -47,6 +48,8 @@ export type SettingsNavItem = {
   tags?: readonly string[];
   ownerOnly?: boolean;
   adminOnly?: boolean;
+  /** Shown only where alerts are switched on for the org. */
+  requiresAlerts?: boolean;
 };
 
 export type SettingsNavGroup = {
@@ -246,11 +249,81 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
         adminOnly: true,
       },
       {
+        segment: "alerts",
+        scope: "org",
+        label: "Alerts",
+        icon: BellRing,
+        description: "When and how your team hears about failing workflows.",
+        panels: [
+          {
+            title: "Status",
+            tags: [
+              "alerts on",
+              "is it working",
+              "pause alerts",
+              "resume alerts",
+              "maintenance",
+            ],
+          },
+          {
+            title: "Needs attention",
+            tags: [
+              "failing now",
+              "failing workflows",
+              "needs attention",
+              "last alert",
+              "nobody reachable",
+              "broken method",
+              "email limit",
+            ],
+          },
+          {
+            title: "When to alert",
+            tags: [
+              "when to notify",
+              "failure alerts",
+              "failed runs",
+              "consecutive failures",
+              "threshold",
+              "time limit",
+              "daily reminder",
+              "recovery message",
+              "missed run",
+              "scheduled run did not start",
+            ],
+          },
+          {
+            title: "Who gets alerts",
+            tags: [
+              "how to notify",
+              "email recipients",
+              "pagerduty",
+              "telegram",
+              "discord",
+              "slack",
+              "backup method",
+              "test alert",
+            ],
+          },
+          {
+            title: "Sent alerts",
+            tags: [
+              "recent notifications",
+              "notification history",
+              "delivery log",
+              "alert history",
+            ],
+          },
+        ],
+        tags: ["alerts", "failure", "failing", "pause", "incidents", "on call"],
+        requiresAlerts: true,
+      },
+      {
         segment: "notifications",
         scope: "org",
         label: "Notifications",
-        icon: Bell,
-        description: "Execution digest emails and who receives them.",
+        icon: Mail,
+        description: "Scheduled summary emails about your workflows.",
         panels: [
           {
             title: "Execution digest",
@@ -261,11 +334,10 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
               "weekly summary",
               "subscribers",
               "recipients",
-              "email alerts",
             ],
           },
         ],
-        tags: ["email", "alerts"],
+        tags: ["email", "digest"],
         adminOnly: true,
       },
       {
@@ -575,6 +647,8 @@ export type SettingsAccess = {
   isOwner: boolean;
   isAdmin: boolean;
   noOrganization?: boolean;
+  /** Alerts are switched on for the org; anything else hides Alerts. */
+  alertsEnabled?: boolean | null;
 };
 
 export function isSettingsItemVisible(
@@ -588,6 +662,9 @@ export function isSettingsItemVisible(
     return false;
   }
   if (item.adminOnly && !access.isAdmin) {
+    return false;
+  }
+  if (item.requiresAlerts && access.alertsEnabled !== true) {
     return false;
   }
   return true;

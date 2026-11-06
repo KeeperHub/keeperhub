@@ -94,6 +94,8 @@ export const MAX_SUMMARY_CHARS = 1024;
 export const MAX_DEDUP_KEY_CHARS = 255;
 /** Documented Events API v2 size limit for one event. */
 export const MAX_EVENT_BYTES = 512_000;
+/** Change events go to their own Events API path; they never page anyone. */
+export const CHANGE_EVENT_PATH = "/v2/change/enqueue";
 
 const SEVERITIES: ReadonlySet<string> = new Set([
   "critical",
