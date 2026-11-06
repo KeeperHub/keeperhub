@@ -674,7 +674,7 @@ describe("wording", () => {
   it("makes the alert sample a plain count alert, not a funds one", () => {
     const alert = renderSample(org, "alert", "Test", now);
     expect(alert.subject).toContain("Example keeper");
-    expect(alert.text).toContain("failed 5 times in a row");
+    expect(alert.text).toContain("failed 3 times in a row");
     expect(alert.text).not.toContain("out of funds");
     expect(alert.text).not.toContain("Add funds");
     expect(renderSample(org, "recovery", "Test", now).text).not.toContain(
@@ -750,7 +750,7 @@ describe("wording", () => {
     expect(again.subject).toContain(
       "Keeper was turned off again: 2 more failed runs after it was turned back on"
     );
-    expect(failing.text).toContain("fixes, mutes or turns it off.");
+    expect(failing.text).toContain("fixes, mutes or disables it.");
     expect(last.text).toContain("until it works or someone turns it off.");
     for (const message of [first, again, failing, last]) {
       expect(`${message.text}${message.chat}`).not.toMatch(/\bpause/i);

@@ -219,6 +219,7 @@ export async function pauseOrgAlerts(params: {
         pausedAt: startedAt,
         pauseReason: reason,
         pausedBy: params.by,
+        pausedByUserId: params.byUserId ?? null,
         updatedAt: now,
       })
       .where(eq(orgFailureAlertSettings.organizationId, organizationId));
@@ -267,6 +268,7 @@ export async function resumeOrgAlerts(params: {
         pausedAt: null,
         pauseReason: null,
         pausedBy: null,
+        pausedByUserId: null,
       })
       .where(eq(orgFailureAlertSettings.organizationId, organizationId));
     // Messages held for an early-ended pause go out now.

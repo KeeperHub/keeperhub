@@ -36,6 +36,7 @@ function parseFilters(params: URLSearchParams):
       result?: HistoryResult;
       by?: string;
       to?: string;
+      workflow?: string;
       since?: HistorySince;
       scope?: "alerts";
     }
@@ -54,9 +55,12 @@ function parseFilters(params: URLSearchParams):
   }
   const by = params.get("by")?.trim() || undefined;
   const to = params.get("to")?.trim() || undefined;
+  // A workflow's id, or part of its current name: alerts survive renames.
+  const workflow = params.get("workflow")?.trim() || undefined;
   if (
     (by?.length ?? 0) > MAX_TEXT_FILTER ||
-    (to?.length ?? 0) > MAX_TEXT_FILTER
+    (to?.length ?? 0) > MAX_TEXT_FILTER ||
+    (workflow?.length ?? 0) > MAX_TEXT_FILTER
   ) {
     return { error: "Filter text is too long." };
   }
@@ -70,6 +74,7 @@ function parseFilters(params: URLSearchParams):
     result: result as HistoryResult | undefined,
     by,
     to,
+    workflow,
     since: since as HistorySince | undefined,
   };
 }

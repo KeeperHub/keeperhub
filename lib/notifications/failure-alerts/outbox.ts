@@ -347,6 +347,70 @@ async function groupedList(
   return list;
 }
 
+const text = (value: unknown): string | null =>
+  typeof value === "string" && value ? value : null;
+
+/** A mute or removal notice from what was stored when it was queued. */
+function muteNoticeInput(
+  kind:
+    | "workflow_muted"
+    | "workflow_unmuted"
+    | "mute_ended"
+    | "recipients_removed",
+  context: Record<string, unknown>,
+  org: { orgName: string; organizationId: string; appUrl: string }
+): MessageInput {
+  const workflow = text(context.workflowId)
+    ? {
+        id: String(context.workflowId),
+        name: text(context.workflowName) ?? "A workflow",
+      }
+    : null;
+  const by = text(context.by);
+  const byAccount = text(context.byAccount);
+  if (kind === "recipients_removed") {
+    return {
+      ...org,
+      kind,
+      workflow: workflow ?? undefined,
+      by,
+      byAccount,
+      removed: Array.isArray(context.removed)
+        ? (context.removed as unknown[]).map(String)
+        : [],
+    };
+  }
+  const named = workflow ?? { id: "", name: "A workflow" };
+  if (kind === "workflow_unmuted") {
+    return { ...org, kind, workflow: named, by, byAccount };
+  }
+  if (kind === "mute_ended") {
+    return {
+      ...org,
+      kind,
+      workflow: named,
+      by: text(context.mutedBy),
+      reason: text(context.reason),
+      until: text(context.until) ? new Date(String(context.until)) : null,
+      untilItWorks: context.untilItWorks === true,
+      ended: context.ended === "worked" ? "worked" : "expired",
+      failedRuns: Number(context.failedRuns ?? 0),
+      failingNow: context.failingNow === true,
+    };
+  }
+  return {
+    ...org,
+    kind,
+    workflow: named,
+    by,
+    byAccount,
+    reason: text(context.reason),
+    until: text(context.until) ? new Date(String(context.until)) : null,
+    untilItWorks: context.untilItWorks === true,
+    changed: context.changed === true,
+  };
+}
+
 async function renderRow(
   row: DeliveryRow,
   ctx: Context
@@ -406,6 +470,13 @@ async function renderRow(
       kind: "alerts_resumed",
       by: typeof context.by === "string" ? context.by : null,
     };
+  } else if (
+    row.kind === "workflow_muted" ||
+    row.kind === "workflow_unmuted" ||
+    row.kind === "mute_ended" ||
+    row.kind === "recipients_removed"
+  ) {
+    input = muteNoticeInput(row.kind, context, org);
   } else if (row.kind === "launch_notice") {
     input = {
       ...org,

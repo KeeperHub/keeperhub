@@ -88,6 +88,14 @@ function rowWorkflows(
   if (row.workflowId && row.workflowName) {
     return [{ id: row.workflowId, name: row.workflowName }];
   }
+  // Mute and removal notices name their workflow in their context.
+  const context = row.context ?? {};
+  if (
+    typeof context.workflowId === "string" &&
+    typeof context.workflowName === "string"
+  ) {
+    return [{ id: context.workflowId, name: context.workflowName }];
+  }
   return groupedIncidentIds(row.context)
     .map((id) => groupedNames.get(id))
     .filter((w): w is { id: string; name: string } => Boolean(w));

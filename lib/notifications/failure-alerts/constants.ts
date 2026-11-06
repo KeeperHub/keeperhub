@@ -1,7 +1,22 @@
 // Shared numbers, so the API, evaluator, UI and tests cannot drift apart.
 
+/** Owners and admins can fix alerts, so one who can get email always receives them. */
+export function isManagerRole(role: string): boolean {
+  return role === "owner" || role === "admin";
+}
+
+/** The owners and admins a list must keep one of: those who can get email, or all if none can. */
+export function requiredManagers<T extends { role: string }>(
+  members: T[],
+  canGetEmail: (member: T) => boolean
+): T[] {
+  const managers = members.filter((m) => isManagerRole(m.role));
+  const reachable = managers.filter(canGetEmail);
+  return reachable.length > 0 ? reachable : managers;
+}
+
 /** Every organization gets this until an owner or admin changes it. */
-export const DEFAULT_THRESHOLD = 5;
+export const DEFAULT_THRESHOLD = 3;
 export const MIN_THRESHOLD = 1;
 export const MAX_THRESHOLD = 20;
 
@@ -9,7 +24,12 @@ export const MAX_THRESHOLD = 20;
 export const TIME_LIMIT_OPTIONS_MINUTES = [60, 360, 1440] as const;
 
 /** A mute can never be permanent: a broken workflow must not be forgotten. */
-export const MAX_MUTE_DAYS = 30;
+export const MAX_MUTE_DAYS = 7;
+/** Every mute says why; everyone it silences sees the reason. */
+export const MIN_MUTE_REASON = 3;
+export const MAX_MUTE_REASON = 200;
+/** Mute, change and unmute notices per workflow per hour; more is refused, not sent. */
+export const MUTE_CHANGES_PER_HOUR = 6;
 
 /** Reminders while a workflow keeps failing. */
 export const REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000;

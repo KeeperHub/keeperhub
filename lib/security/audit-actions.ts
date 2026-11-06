@@ -130,6 +130,14 @@ const ACTION_MAP: Record<string, AuditActionDescription> = {
     phrase: "changed a workflow's failure notifications",
     kind: "change",
   },
+  "workflow.alerts_muted": {
+    phrase: "muted a workflow's failure alerts",
+    kind: "change",
+  },
+  "workflow.alerts_unmuted": {
+    phrase: "turned a workflow's failure alerts back on",
+    kind: "change",
+  },
   "workflow.paused_by_failure_alerts": {
     phrase:
       "turned a workflow off after repeated failures or running out of funds",

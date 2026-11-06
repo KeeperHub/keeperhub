@@ -25,6 +25,7 @@ function override(
     muteUntilSuccess: false,
     muteReason: null,
     mutedBy: null,
+    mutedAt: null,
     pauseWorkflow: false,
     version: 0,
     updatedBy: null,
@@ -46,7 +47,7 @@ const wfChannel = { ...orgChannel, id: "c-wf", kind: "discord" as const };
 describe("mergePolicy", () => {
   it("is the default for an org nobody configured", () => {
     const policy = mergePolicy(DEFAULT_ORG_POLICY, [], null, []);
-    expect(policy.threshold).toBe(5);
+    expect(policy.threshold).toBe(3);
     expect(policy.timeLimitMinutes).toBe(360);
     expect(policy.recipientUserIds).toBeNull();
     expect(policy.source).toBe("default");
@@ -149,6 +150,26 @@ describe("resolveRecipientEmails", () => {
     expect(
       resolveRecipientEmails(["admin", "dup", "owner"], members).sort()
     ).toEqual(["a@x.dev", "o@x.dev"]);
+  });
+
+  it("keeps a chosen admin without the owner", () => {
+    expect(resolveRecipientEmails(["admin"], members)).toEqual(["a@x.dev"]);
+  });
+
+  it("adds the owners when no owner or admin is left on the list", () => {
+    const extra = {
+      userId: "plain",
+      role: "member",
+      email: "p@x.dev",
+      name: null,
+      deliverable: "p@x.dev",
+    };
+    expect(
+      resolveRecipientEmails(
+        ["plain", "gone-admin"],
+        [...members, extra]
+      ).sort()
+    ).toEqual(["o@x.dev", "p@x.dev"]);
   });
 
   it("falls back to the owners when nobody chosen can be reached", () => {

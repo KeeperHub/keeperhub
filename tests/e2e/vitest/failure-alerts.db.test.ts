@@ -128,6 +128,8 @@ type WorkflowSettings =
 type TestSend = typeof import("@/lib/notifications/failure-alerts/test-send");
 type OrgPause = typeof import("@/lib/notifications/failure-alerts/org-pause");
 type Watchdog = typeof import("@/lib/notifications/failure-alerts/watchdog");
+type Policy = typeof import("@/lib/notifications/failure-alerts/policy");
+type OrgRecipients = typeof import("@/lib/notifications/org-recipients");
 type CreateIntegration =
   typeof import("@/lib/db/integrations")["createIntegration"];
 
@@ -155,6 +157,8 @@ let workflowSettings: WorkflowSettings;
 let testSend: TestSend;
 let orgPause: OrgPause;
 let watchdog: Watchdog;
+let policy: Policy;
+let orgRecipients: OrgRecipients;
 let createIntegration: CreateIntegration;
 let syncWorkflowSchedule: typeof import("@/lib/schedule-service")["syncWorkflowSchedule"];
 let resetOrgCircuitBreaker: typeof import("@/lib/execute/org-circuit-breaker")["resetOrgCircuitBreaker"];
@@ -568,6 +572,8 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     testSend = await import("@/lib/notifications/failure-alerts/test-send");
     orgPause = await import("@/lib/notifications/failure-alerts/org-pause");
     watchdog = await import("@/lib/notifications/failure-alerts/watchdog");
+    policy = await import("@/lib/notifications/failure-alerts/policy");
+    orgRecipients = await import("@/lib/notifications/org-recipients");
     ({ syncWorkflowSchedule } = await import("@/lib/schedule-service"));
     ({ resetOrgCircuitBreaker } = await import(
       "@/lib/execute/org-circuit-breaker"
@@ -615,8 +621,8 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(row?.countingSince).toBeTruthy();
     });
 
-    it("does not open an incident at 4 automated failures (manual, skipped and system errors do not count)", async () => {
-      for (let i = 0; i < 4; i++) {
+    it("does not open an incident at 2 automated failures (manual, skipped and system errors do not count)", async () => {
+      for (let i = 0; i < 2; i++) {
         await addRun(acme, wf, "error", { at: at(-5 + i * 0.5) });
       }
       await addRun(acme, wf, "error", {
@@ -630,12 +636,12 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(await openIncident(wf)).toBeUndefined();
     });
 
-    it("opens an incident and emails the owner at the 5th automated failure, linking to the Runs tab", async () => {
+    it("opens an incident and emails the owner at the 3rd automated failure (the default), linking to the Runs tab", async () => {
       await addRun(acme, wf, "error", { at: at(-1) });
       await runCycle();
       const incident = await openIncident(wf);
       incidentId = incident?.id;
-      expect(incident?.failureCount).toBe(5);
+      expect(incident?.failureCount).toBe(3);
       expect(await sentEmails(acme, "alert")).toHaveLength(1);
       const alert = mailsAbout(acme, "OETH Vault TVL Watchdog").at(-1);
       expect(alert?.text).toContain(`/workflows/${wf}?tab=runs`);
@@ -647,7 +653,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await addRun(acme, wf, "error");
       await runCycle();
       expect(mailsTo(acme)).toHaveLength(before);
-      expect((await openIncident(wf))?.failureCount).toBe(7);
+      expect((await openIncident(wf))?.failureCount).toBe(5);
     });
 
     it("sends a daily reminder while it keeps failing", async () => {
@@ -2722,6 +2728,246 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(JSON.stringify(result)).not.toContain(inbox);
     });
 
+    async function addPerson(
+      org: Org,
+      role: "admin" | "member",
+      label: string
+    ): Promise<string> {
+      const id = nextId(`user_${label}_`);
+      await db.insert(users).values({
+        id,
+        name: label,
+        email: `${label}-${RUN}@failure-alerts.test`,
+        emailVerified: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await db.insert(member).values({
+        id: nextId("member_"),
+        organizationId: org.orgId,
+        userId: id,
+        role,
+        createdAt: new Date(),
+      });
+      return id;
+    }
+
+    it("starts a new org at 3 failed runs, emailing the owner", async () => {
+      const org = await makeOrg("defaults");
+      const view = await settings.loadOrgSettingsView(org.orgId, org.userId);
+      expect(view.threshold).toBe(3);
+      expect(view.recipientUserIds).toEqual([org.userId]);
+      expect(view.recipientsAreDefault).toBe(true);
+      // A settings row created later gets the same default.
+      await orgPause.pauseOrgAlerts({
+        organizationId: org.orgId,
+        until: new Date(Date.now() + 3_600_000).toISOString(),
+        reason: null,
+        by: "defaults owner",
+        byUserId: org.userId,
+        now: new Date(),
+      });
+      const [row] = await db
+        .select({ threshold: orgFailureAlertSettings.threshold })
+        .from(orgFailureAlertSettings)
+        .where(eq(orgFailureAlertSettings.organizationId, org.orgId));
+      expect(row?.threshold).toBe(3);
+    });
+
+    it("keeps an owner or admin on the email list, for the org and a workflow", async () => {
+      const org = await makeOrg("managers");
+      const adminId = await addPerson(org, "admin", "mgradmin");
+      const memberId = await addPerson(org, "member", "mgrmember");
+      const parse = (ids: string[]) =>
+        settings.parseOrgSettings(
+          { threshold: 3, recipientUserIds: ids, version: 0 },
+          org.orgId
+        );
+      const onlyMember = await settingsError(() => parse([memberId]));
+      expect(onlyMember.status).toBe(400);
+      expect(onlyMember.message).toContain("owner or admin");
+      // The owner can be taken off as long as an admin stays.
+      expect((await parse([adminId, memberId])).recipientUserIds).toEqual([
+        adminId,
+        memberId,
+      ]);
+      const wf = await makeWorkflow(org, "Manager keeper");
+      const ownList = await settingsError(() =>
+        workflowSettings.saveWorkflowOverride({
+          workflowId: wf,
+          organizationId: org.orgId,
+          userId: org.userId,
+          body: { recipientUserIds: [memberId], version: 0 },
+        })
+      );
+      expect(ownList.message).toContain("owner or admin");
+    });
+
+    it("gives alerts back to the owners when the chosen people leave", async () => {
+      const org = await makeOrg("leavers");
+      const adminId = await addPerson(org, "admin", "leaveadmin");
+      const memberId = await addPerson(org, "member", "leavemember");
+      const save = async (ids: string[]) => {
+        const [row] = await db
+          .select({ version: orgFailureAlertSettings.version })
+          .from(orgFailureAlertSettings)
+          .where(eq(orgFailureAlertSettings.organizationId, org.orgId));
+        await settings.saveOrgSettings(
+          org.orgId,
+          await settings.parseOrgSettings(
+            { threshold: 3, recipientUserIds: ids, version: row?.version ?? 0 },
+            org.orgId
+          ),
+          org.userId
+        );
+      };
+      const leave = (userId: string) =>
+        db
+          .delete(member)
+          .where(
+            and(eq(member.organizationId, org.orgId), eq(member.userId, userId))
+          );
+      // The only recipient leaves: the owner gets them again.
+      await save([adminId]);
+      await leave(adminId);
+      let view = await settings.loadOrgSettingsView(org.orgId, org.userId);
+      expect(view.recipientUserIds).toEqual([org.userId]);
+      expect(view.recipientsAreDefault).toBe(true);
+      expect(
+        policy.resolveRecipientEmails(
+          [adminId],
+          await orgRecipients.loadOrgMembers(org.orgId)
+        )
+      ).toEqual([org.email]);
+
+      // The admin leaves a mixed list: the member stays and the owner joins.
+      const adminTwo = await addPerson(org, "admin", "leaveadmintwo");
+      await save([adminTwo, memberId]);
+      await leave(adminTwo);
+      view = await settings.loadOrgSettingsView(org.orgId, org.userId);
+      expect([...view.recipientUserIds].sort()).toEqual(
+        [memberId, org.userId].sort()
+      );
+      expect(
+        policy
+          .resolveRecipientEmails(
+            [adminTwo, memberId],
+            await orgRecipients.loadOrgMembers(org.orgId)
+          )
+          .sort()
+      ).toEqual([`leavemember-${RUN}@failure-alerts.test`, org.email].sort());
+    });
+
+    it("gives a workflow's own list back to the owners when everyone on it leaves", async () => {
+      const org = await makeOrg("wfleavers");
+      const orgAdmin = await addPerson(org, "admin", "wforgadmin");
+      const ownAdmin = await addPerson(org, "admin", "wfownadmin");
+      const [row] = await db
+        .select({ version: orgFailureAlertSettings.version })
+        .from(orgFailureAlertSettings)
+        .where(eq(orgFailureAlertSettings.organizationId, org.orgId));
+      await settings.saveOrgSettings(
+        org.orgId,
+        await settings.parseOrgSettings(
+          {
+            threshold: 3,
+            recipientUserIds: [orgAdmin],
+            version: row?.version ?? 0,
+          },
+          org.orgId
+        ),
+        org.userId
+      );
+      const wf = await makeWorkflow(org, "Own list keeper");
+      await workflowSettings.saveWorkflowOverride({
+        workflowId: wf,
+        organizationId: org.orgId,
+        userId: org.userId,
+        body: { recipientUserIds: [ownAdmin], version: 0 },
+      });
+      await db
+        .delete(member)
+        .where(
+          and(eq(member.organizationId, org.orgId), eq(member.userId, ownAdmin))
+        );
+      // The panel and delivery agree: the owners, not the org's admin.
+      const loaded = await workflowSettings.loadWorkflowForAlerts(wf);
+      if (!loaded) {
+        throw new Error("workflow not found");
+      }
+      const view = await workflowSettings.loadWorkflowAlertView(
+        loaded,
+        org.userId
+      );
+      expect(view.override.recipientUserIds).toEqual([org.userId]);
+      const effective = await policy.loadEffectivePolicy(org.orgId, wf);
+      expect(
+        policy.resolveRecipientEmails(
+          effective.recipientUserIds,
+          await orgRecipients.loadOrgMembers(org.orgId)
+        )
+      ).toEqual([org.email]);
+    });
+
+    it("refuses a list whose only owner or admin cannot get email", async () => {
+      const org = await makeOrg("unreachablemgr");
+      const memberId = await addPerson(org, "member", "reachmember");
+      const walletAdmin = nextId("user_walletadmin_");
+      await db.insert(users).values({
+        id: walletAdmin,
+        name: "wallet admin",
+        // A fresh wallet each run: users.email is unique.
+        email: `0x${Array.from({ length: 40 }, () => Math.floor(Math.random() * 16).toString(16)).join("")}@wallet.keeperhub.com`,
+        emailVerified: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await db.insert(member).values({
+        id: nextId("member_"),
+        organizationId: org.orgId,
+        userId: walletAdmin,
+        role: "admin",
+        createdAt: new Date(),
+      });
+      const error = await settingsError(async () =>
+        settings.parseOrgSettings(
+          { threshold: 3, recipientUserIds: [walletAdmin, memberId] },
+          org.orgId
+        )
+      );
+      expect(error.message).toBe(settings.MANAGER_REQUIRED);
+    });
+
+    it("shows the account of whoever paused, and forgets it on resume", async () => {
+      const org = await makeOrg("pauser");
+      await orgPause.pauseOrgAlerts({
+        organizationId: org.orgId,
+        until: new Date(Date.now() + 3_600_000).toISOString(),
+        reason: "Maintenance",
+        by: "pauser owner",
+        byUserId: org.userId,
+        now: new Date(),
+      });
+      let view = await settings.loadOrgSettingsView(org.orgId, org.userId);
+      expect(view.pause).toMatchObject({
+        by: "pauser owner",
+        byAccount: org.email,
+      });
+      await orgPause.resumeOrgAlerts({
+        organizationId: org.orgId,
+        by: "pauser owner",
+        byUserId: org.userId,
+        now: new Date(),
+      });
+      view = await settings.loadOrgSettingsView(org.orgId, org.userId);
+      expect(view.pause).toBeNull();
+      const [row] = await db
+        .select({ by: orgFailureAlertSettings.pausedByUserId })
+        .from(orgFailureAlertSettings)
+        .where(eq(orgFailureAlertSettings.organizationId, org.orgId));
+      expect(row?.by).toBeNull();
+    });
+
     it("re-queues the org's workflows only when a rule changes", async () => {
       const org = await makeOrg("requeue");
       const body = {
@@ -4107,6 +4353,461 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         .from(workflowFailureIncidents)
         .where(eq(workflowFailureIncidents.workflowId, wf));
       expect(all.map((row) => row.openedBy)).toEqual(["missed"]);
+    });
+  });
+  describe("mute safeguards", { timeout: SUITE_TIMEOUT }, () => {
+    async function person(
+      org: Org,
+      role: "admin" | "member",
+      label: string
+    ): Promise<{ id: string; email: string }> {
+      const id = nextId(`user_${label}_`);
+      const email = `${label}-${RUN}@failure-alerts.test`;
+      await db.insert(users).values({
+        id,
+        name: label,
+        email,
+        emailVerified: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await db.insert(member).values({
+        id: nextId("member_"),
+        organizationId: org.orgId,
+        userId: id,
+        role,
+        createdAt: new Date(),
+      });
+      return { id, email };
+    }
+    async function version(wf: string): Promise<number> {
+      const [row] = await db
+        .select({ version: workflowFailureAlertOverrides.version })
+        .from(workflowFailureAlertOverrides)
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      return row?.version ?? 0;
+    }
+    async function save(
+      org: Org,
+      wf: string,
+      body: Record<string, unknown>,
+      userId = org.userId
+    ) {
+      return await workflowSettings.saveWorkflowOverride({
+        workflowId: wf,
+        organizationId: org.orgId,
+        userId,
+        body: { ...body, version: await version(wf) },
+      });
+    }
+    async function notices(orgId: string, kind: string) {
+      return (await deliveriesOf(orgId)).filter((d) => d.kind === kind);
+    }
+    const inHours = (hours: number): string =>
+      new Date(Date.now() + hours * 3_600_000).toISOString();
+
+    it("caps a mute at 7 days and asks why", async () => {
+      const org = await makeOrg("mutecap");
+      const wf = await makeWorkflow(org, "Mute cap");
+      const tooLong = await settingsError(() =>
+        save(org, wf, { mutedUntil: inHours(8 * 24), muteReason: "Upgrade" })
+      );
+      expect(tooLong.message).toBe("A mute can last at most 7 days.");
+      const noReason = await settingsError(() =>
+        save(org, wf, { mutedUntil: inHours(24) })
+      );
+      expect(noReason.message).toBe(workflowSettings.MUTE_REASON_REQUIRED);
+      const shortReason = await settingsError(() =>
+        save(org, wf, { mutedUntil: inHours(24), muteReason: "ab" })
+      );
+      expect(shortReason.status).toBe(400);
+      // "Until it works" ends after 7 days at most.
+      await save(org, wf, { muteUntilSuccess: true, muteReason: "Upgrade" });
+      const [row] = await db
+        .select()
+        .from(workflowFailureAlertOverrides)
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      expect(row?.mutedUntil?.getTime()).toBeLessThanOrEqual(
+        Date.now() + 7 * 24 * 3_600_000 + 1000
+      );
+    });
+
+    it("announces a mute to the people it silences and every owner, keeps who and why on other edits, and re-announces a change", async () => {
+      const org = await makeOrg("muteannounce");
+      const admin = await person(org, "admin", "muteadmin");
+      // The org's alerts go to the admin only; the owner hears as an owner.
+      await settings.saveOrgSettings(
+        org.orgId,
+        await settings.parseOrgSettings(
+          { threshold: 3, recipientUserIds: [admin.id], version: 0 },
+          org.orgId
+        ),
+        org.userId
+      );
+      const wf = await makeWorkflow(org, "Announced mute");
+      const until = inHours(24);
+      const first = await save(
+        org,
+        wf,
+        { mutedUntil: until, muteReason: "RPC migration" },
+        admin.id
+      );
+      expect(first.muteChange).toBe("muted");
+      const muted = await notices(org.orgId, "workflow_muted");
+      expect(muted.map((d) => d.recipient).sort()).toEqual(
+        [admin.email, org.email].sort()
+      );
+      expect(muted[0]?.context).toMatchObject({
+        reason: "RPC migration",
+        byUserId: admin.id,
+        byAccount: admin.email,
+        workflowId: wf,
+      });
+
+      // A threshold edit by the owner sends the mute back unchanged: nothing new is told.
+      const edit = await save(org, wf, { threshold: 4, mutedUntil: until });
+      expect(edit.muteChange).toBeNull();
+      const [kept] = await db
+        .select()
+        .from(workflowFailureAlertOverrides)
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      expect(kept?.mutedBy).toBe(admin.id);
+      expect(kept?.muteReason).toBe("RPC migration");
+      expect(await notices(org.orgId, "workflow_muted")).toHaveLength(2);
+
+      // Extending is a change: told again.
+      const extended = await save(org, wf, {
+        threshold: 4,
+        mutedUntil: inHours(48),
+        muteReason: "Still migrating",
+      });
+      expect(extended.muteChange).toBe("changed");
+      const after = await notices(org.orgId, "workflow_muted");
+      expect(after).toHaveLength(4);
+      expect(after.some((d) => d.context?.changed === true)).toBe(true);
+
+      const view = await settings.loadOrgSettingsView(org.orgId, org.userId);
+      expect(view.mutedWorkflows).toEqual([
+        expect.objectContaining({
+          id: wf,
+          by: "muteannounce owner",
+          byAccount: org.email,
+          reason: "Still migrating",
+          failing: false,
+          failedRuns: 0,
+        }),
+      ]);
+
+      // Unmute: told, and the workflow leaves the muted list.
+      const unmuted = await save(org, wf, { threshold: 4 });
+      expect(unmuted.muteChange).toBe("unmuted");
+      expect(await notices(org.orgId, "workflow_unmuted")).toHaveLength(2);
+      const cleared = await settings.loadOrgSettingsView(org.orgId, org.userId);
+      expect(cleared.mutedWorkflows).toEqual([]);
+    });
+
+    it("ends an expired mute exactly once, counts what it hid, and alerts at once when still failing", async () => {
+      const org = await makeOrg("muteexpire");
+      const wf = await makeWorkflow(org, "Expiring mute");
+      await save(org, wf, {
+        mutedUntil: inHours(1),
+        muteReason: "Maintenance",
+      });
+      await db
+        .update(workflowFailureAlertOverrides)
+        .set({ mutedAt: at(-8) })
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      // Inside the org's counting window, so they would have alerted.
+      await addFailures(org, wf, 4, -6);
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      const muted = await settings.loadOrgSettingsView(org.orgId, org.userId);
+      expect(muted.mutedWorkflows[0]).toMatchObject({
+        failing: true,
+        failedRuns: 4,
+      });
+
+      await db
+        .update(workflowFailureAlertOverrides)
+        .set({ mutedUntil: at(-1) })
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      await runCycle();
+      await runCycle();
+      const ended = await notices(org.orgId, "mute_ended");
+      expect(ended).toHaveLength(1);
+      expect(ended[0]?.context).toMatchObject({
+        ended: "expired",
+        failedRuns: 4,
+        failingNow: true,
+        mutedBy: "muteexpire owner",
+        reason: "Maintenance",
+      });
+      expect(typeof ended[0]?.context?.until).toBe("string");
+      expect(await openIncident(wf)).toBeDefined();
+      expect((await notices(org.orgId, "alert")).length).toBeGreaterThan(0);
+    });
+
+    it("ends an until-it-works mute once when it works", async () => {
+      const org = await makeOrg("muteworks");
+      const wf = await makeWorkflow(org, "Works again");
+      await save(org, wf, { muteUntilSuccess: true, muteReason: "Flaky RPC" });
+      await addRun(org, wf, "success");
+      await runCycle();
+      await addRun(org, wf, "success");
+      await runCycle();
+      const ended = await notices(org.orgId, "mute_ended");
+      expect(ended).toHaveLength(1);
+      expect(ended[0]?.context).toMatchObject({
+        ended: "worked",
+        failingNow: false,
+      });
+      const view = await settings.loadOrgSettingsView(org.orgId, org.userId);
+      expect(view.mutedWorkflows).toEqual([]);
+    });
+
+    it("tells people taken off a list, and owners; adding people removes nobody", async () => {
+      const org = await makeOrg("removed");
+      const admin = await person(org, "admin", "removedadmin");
+      const helper = await person(org, "member", "removedhelper");
+      const wf = await makeWorkflow(org, "Own list");
+      // From the org's list (the owner) to a longer one: nobody was removed.
+      await save(org, wf, {
+        recipientUserIds: [org.userId, admin.id, helper.id],
+      });
+      expect(await notices(org.orgId, "recipients_removed")).toHaveLength(0);
+      await save(org, wf, { recipientUserIds: [org.userId, admin.id] });
+      const removed = await notices(org.orgId, "recipients_removed");
+      expect(removed.map((d) => d.recipient).sort()).toEqual(
+        [helper.email, org.email].sort()
+      );
+      expect(removed[0]?.context).toMatchObject({
+        removed: ["removedhelper"],
+        workflowId: wf,
+      });
+
+      // The org's own list: same rule.
+      await settings.saveOrgSettings(
+        org.orgId,
+        await settings.parseOrgSettings(
+          {
+            threshold: 3,
+            recipientUserIds: [org.userId, admin.id],
+            version: 0,
+          },
+          org.orgId
+        ),
+        org.userId
+      );
+      const [row] = await db
+        .select({ version: orgFailureAlertSettings.version })
+        .from(orgFailureAlertSettings)
+        .where(eq(orgFailureAlertSettings.organizationId, org.orgId));
+      await settings.saveOrgSettings(
+        org.orgId,
+        await settings.parseOrgSettings(
+          {
+            threshold: 3,
+            recipientUserIds: [org.userId],
+            version: row?.version ?? 0,
+          },
+          org.orgId
+        ),
+        org.userId
+      );
+      const orgRemoved = (
+        await notices(org.orgId, "recipients_removed")
+      ).filter((d) => d.context?.workflowId === undefined);
+      expect(orgRemoved.map((d) => d.recipient).sort()).toEqual(
+        [admin.email, org.email].sort()
+      );
+    });
+
+    it("tells the owners when an admin narrows the default list to themselves, org-wide or on a workflow", async () => {
+      const org = await makeOrg("narrowed");
+      const admin = await person(org, "admin", "narrowadmin");
+      await settings.saveOrgSettings(
+        org.orgId,
+        await settings.parseOrgSettings(
+          { threshold: 3, recipientUserIds: [admin.id], version: 0 },
+          org.orgId
+        ),
+        admin.id
+      );
+      const orgRemoved = await notices(org.orgId, "recipients_removed");
+      expect(orgRemoved.map((d) => d.recipient)).toContain(org.email);
+      expect(orgRemoved[0]?.context).toMatchObject({
+        removed: ["narrowed owner"],
+      });
+
+      // A workflow following the org's list (owner + admin) gets its own list of one.
+      const [row] = await db
+        .select({ version: orgFailureAlertSettings.version })
+        .from(orgFailureAlertSettings)
+        .where(eq(orgFailureAlertSettings.organizationId, org.orgId));
+      await settings.saveOrgSettings(
+        org.orgId,
+        await settings.parseOrgSettings(
+          {
+            threshold: 3,
+            recipientUserIds: [org.userId, admin.id],
+            version: row?.version ?? 0,
+          },
+          org.orgId
+        ),
+        org.userId
+      );
+      const wf = await makeWorkflow(org, "Narrowed workflow");
+      await save(org, wf, { recipientUserIds: [admin.id] }, admin.id);
+      const wfRemoved = (await notices(org.orgId, "recipients_removed")).filter(
+        (d) => d.context?.workflowId === wf
+      );
+      expect(wfRemoved.map((d) => d.recipient)).toContain(org.email);
+    });
+
+    it("keeps an expired mute for the cycle to end and announce, whatever is saved meanwhile", async () => {
+      const org = await makeOrg("muteexpiredsave");
+      const wf = await makeWorkflow(org, "Expired then saved");
+      await save(org, wf, { mutedUntil: inHours(1), muteReason: "Upgrade" });
+      await db
+        .update(workflowFailureAlertOverrides)
+        .set({ mutedUntil: at(-1) })
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      const loaded = await workflowSettings.loadWorkflowForAlerts(wf);
+      if (!loaded) {
+        throw new Error("workflow not found");
+      }
+      const view = await workflowSettings.loadWorkflowAlertView(
+        loaded,
+        org.userId
+      );
+      // Shown as not muted, so saving the view back cannot re-mute.
+      expect(view.override.mutedUntil).toBeNull();
+      expect(view.override.muteUntilSuccess).toBe(false);
+      const edit = await save(org, wf, { threshold: 4 });
+      expect(edit.muteChange).toBeNull();
+      await runCycle();
+      expect(await notices(org.orgId, "mute_ended")).toHaveLength(1);
+    });
+
+    it("sends a reminder at once when a mute ends on an incident still open from before it", async () => {
+      const org = await makeOrg("mutereminder");
+      const wf = await makeWorkflow(org, "Muted after its alert");
+      await addRun(org, wf, "success", { at: at(-120) });
+      await addFailures(org, wf, 3);
+      await runCycle();
+      expect(await openIncident(wf)).toBeDefined();
+      await save(org, wf, { mutedUntil: inHours(1), muteReason: "Looking" });
+      await addFailures(org, wf, 2, -2);
+      await runCycle();
+      const before = (await notices(org.orgId, "reminder")).length;
+      await db
+        .update(workflowFailureAlertOverrides)
+        .set({ mutedUntil: at(-1) })
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      await runCycle();
+      await runCycle();
+      expect((await notices(org.orgId, "reminder")).length).toBeGreaterThan(
+        before
+      );
+    });
+
+    it("ends an until-it-works mute only on a success after it began", async () => {
+      const org = await makeOrg("muteearly");
+      const wf = await makeWorkflow(org, "Old success");
+      await addRun(org, wf, "success", { at: at(-30) });
+      await save(org, wf, { muteUntilSuccess: true, muteReason: "Watching" });
+      await runCycle();
+      expect(await notices(org.orgId, "mute_ended")).toHaveLength(0);
+      await addRun(org, wf, "success");
+      await runCycle();
+      expect(await notices(org.orgId, "mute_ended")).toHaveLength(1);
+    });
+
+    it("refuses a seventh mute change in an hour, and announces a reason-only change", async () => {
+      const org = await makeOrg("mutelimit");
+      const wf = await makeWorkflow(org, "Toggled");
+      const until = inHours(3);
+      await save(org, wf, { mutedUntil: until, muteReason: "First reason" });
+      const reworded = await save(org, wf, {
+        mutedUntil: until,
+        muteReason: "Second reason",
+      });
+      expect(reworded.muteChange).toBe("changed");
+      for (const i of [1, 2]) {
+        await save(org, wf, {});
+        await save(org, wf, { mutedUntil: until, muteReason: `Again ${i}` });
+      }
+      const tooMany = await settingsError(() => save(org, wf, {}));
+      expect(tooMany.status).toBe(429);
+    });
+
+    it("tells reachable admins when no owner can get email", async () => {
+      const org = await makeOrg("walletowner");
+      const adminA = await person(org, "admin", "walletadmina");
+      const adminB = await person(org, "admin", "walletadminb");
+      await db
+        .update(users)
+        .set({
+          email: `0x${Array.from({ length: 40 }, () => Math.floor(Math.random() * 16).toString(16)).join("")}@wallet.keeperhub.com`,
+        })
+        .where(eq(users.id, org.userId));
+      await settings.saveOrgSettings(
+        org.orgId,
+        await settings.parseOrgSettings(
+          { threshold: 3, recipientUserIds: [adminA.id], version: 0 },
+          org.orgId
+        ),
+        adminA.id
+      );
+      const wf = await makeWorkflow(org, "Quiet admin");
+      await save(
+        org,
+        wf,
+        { mutedUntil: inHours(2), muteReason: "Mine" },
+        adminA.id
+      );
+      const told = (await notices(org.orgId, "workflow_muted")).map(
+        (d) => d.recipient
+      );
+      expect(told).toContain(adminB.email);
+    });
+
+    it("lists mute notices in Sent alerts and finds a workflow by id or its current name", async () => {
+      const org = await makeOrg("wfilter");
+      const wf = await makeWorkflow(org, "Old name");
+      await addRun(org, wf, "success", { at: at(-120) });
+      await addFailures(org, wf, 3);
+      await runCycle();
+      await save(org, wf, { mutedUntil: inHours(2), muteReason: "Checking" });
+      await db
+        .update(workflows)
+        .set({ name: wfName("Brand new name") })
+        .where(eq(workflows.id, wf));
+      const kinds = async (filter: Record<string, string>) =>
+        (
+          await settings.loadHistory(org.orgId, {
+            page: 1,
+            limit: 100,
+            ...filter,
+          })
+        ).entries.map((e) => e.kind);
+      const byName = await kinds({ workflow: "brand new" });
+      expect(byName).toContain("alert");
+      expect(byName).toContain("workflow_muted");
+      expect(await kinds({ workflow: wf })).toEqual(byName);
+      expect(await kinds({ workflow: "Old name" })).toEqual([]);
+      const muted = (
+        await settings.loadHistory(org.orgId, {
+          page: 1,
+          kind: "workflow_muted",
+        })
+      ).entries[0];
+      expect(muted?.by).toBe("wfilter owner");
+      expect(muted?.byAccount).toBe(org.email);
+      expect(muted?.note).toMatch(/^Until .+ UTC · Reason: Checking$/);
+      expect(muted?.workflows[0]?.id).toBe(wf);
+      // Shown by default with the alerts.
+      expect(await kinds({ scope: "alerts" })).toContain("workflow_muted");
     });
   });
 });

@@ -83,7 +83,29 @@ export type OrgSettingsView = {
   /** Send back on save; a stale one is refused with 409. */
   version: number;
   /** Org-wide pause: no alerts until `until`. */
-  pause: { until: string; reason: string | null; by: string | null } | null;
+  pause: {
+    until: string;
+    reason: string | null;
+    by: string | null;
+    /** The pauser's sign-in email or wallet address; never a step-up inbox. */
+    byAccount: string | null;
+  } | null;
+  /** Every workflow whose alerts are muted right now, failing ones first. */
+  mutedWorkflows: {
+    id: string;
+    name: string;
+    mutedUntil: string | null;
+    untilItWorks: boolean;
+    by: string | null;
+    /** Sign-in email or wallet address of whoever muted; never a step-up inbox. */
+    byAccount: string | null;
+    reason: string | null;
+    failing: boolean;
+    /** Failed runs since the mute began. */
+    failedRuns: number;
+    /** When the mute began. */
+    since: string | null;
+  }[];
   /** Workflows with an open failure incident right now. */
   failingNow: {
     workflowId: string;
@@ -139,6 +161,8 @@ export type WorkflowAlertView = {
     OrgSettingsView,
     | "threshold"
     | "timeLimitMinutes"
+    | "remindDaily"
+    | "notifyRecovery"
     | "recipientUserIds"
     | "channels"
     | "unreachable"
@@ -156,7 +180,10 @@ export type WorkflowAlertView = {
     mutedUntil: string | null;
     muteUntilSuccess: boolean;
     muteReason: string | null;
+    /** Who muted: their name, or "An owner" / "An admin". */
     mutedBy: string | null;
+    /** Their sign-in email or wallet address; never a step-up inbox. */
+    mutedByAccount: string | null;
     /** Turn the workflow off when its alert goes out. Workflow-only. */
     pauseWorkflow: boolean;
   };
@@ -300,7 +327,21 @@ export const FAILURE_ALERT_KIND_LABEL: Record<FailureAlertMessageKind, string> =
     alerts_resumed: "Alerts back on",
     cap_warning: "Email limit warning",
     test: "Test",
+    workflow_muted: "Alerts muted",
+    workflow_unmuted: "Alerts unmuted",
+    mute_ended: "Mute ended",
+    recipients_removed: "Removed from alerts",
   };
+
+/** Kinds a person causes, so the By column names them. */
+export const PERSON_KINDS: readonly string[] = [
+  "alerts_paused",
+  "alerts_resumed",
+  "test",
+  "workflow_muted",
+  "workflow_unmuted",
+  "recipients_removed",
+];
 
 /** Who caused a message: the person who paused, resumed or tested; KeeperHub for everything automatic. */
 export function historyBy(
@@ -308,14 +349,72 @@ export function historyBy(
   kind: string
 ): string {
   const person =
-    (kind === "alerts_paused" ||
-      kind === "alerts_resumed" ||
-      kind === "test") &&
-    typeof context?.by === "string" &&
-    context.by
+    PERSON_KINDS.includes(kind) && typeof context?.by === "string" && context.by
       ? context.by
       : null;
   return person ?? "KeeperHub";
+}
+
+/** "Until Nov 7, 03:38 PM UTC", or "Until it works again (at most Nov 13)". */
+function muteUntilNote(context: Record<string, unknown> | null): string | null {
+  const at =
+    typeof context?.until === "string" && context.until
+      ? new Date(context.until)
+      : null;
+  if (context?.untilItWorks === true) {
+    const day = at?.toLocaleDateString("en-US", {
+      timeZone: "UTC",
+      month: "short",
+      day: "numeric",
+    });
+    return day
+      ? `Until it works again (at most ${day})`
+      : "Until it works again";
+  }
+  const when = at?.toLocaleString("en-US", {
+    timeZone: "UTC",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return when ? `Until ${when} UTC` : null;
+}
+
+/** The note for a mute notice or a removal; undefined for every other kind. */
+function muteHistoryNote(
+  context: Record<string, unknown> | null,
+  kind?: string
+): string | null | undefined {
+  const reason =
+    typeof context?.reason === "string" && context.reason
+      ? `Reason: ${context.reason}`
+      : null;
+  if (kind === "workflow_muted") {
+    return [muteUntilNote(context), reason].filter(Boolean).join(" · ") || null;
+  }
+  if (kind === "workflow_unmuted") {
+    return null;
+  }
+  if (kind === "mute_ended") {
+    const failed =
+      typeof context?.failedRuns === "number" ? context.failedRuns : 0;
+    const ending =
+      context?.ended === "worked" ? "It works again" : "The mute ran out";
+    return [
+      ending,
+      `${failed} failed run${failed === 1 ? "" : "s"} while muted`,
+      reason,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+  if (kind === "recipients_removed") {
+    return Array.isArray(context?.removed)
+      ? `Removed: ${(context.removed as unknown[]).map(String).join(", ")}`
+      : null;
+  }
+  return undefined;
 }
 
 /** Which channel a pause notice is about, why a backup was sent, or a workflow turned off. */
@@ -331,6 +430,10 @@ export function historyNote(
   }
   if (kind === "alerts_resumed") {
     return typeof context?.by === "string" ? null : "The pause ran out";
+  }
+  const muteNote = muteHistoryNote(context, kind);
+  if (muteNote !== undefined) {
+    return muteNote;
   }
   if (typeof context?.channelLabel === "string") {
     return context.channelLabel;

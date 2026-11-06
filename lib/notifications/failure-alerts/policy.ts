@@ -15,7 +15,12 @@ import {
   type OrgMember,
   reachableEmails,
 } from "@/lib/notifications/org-recipients";
-import { DEFAULT_THRESHOLD, DEFAULT_TIME_LIMIT_MINUTES } from "./constants";
+import {
+  DEFAULT_THRESHOLD,
+  DEFAULT_TIME_LIMIT_MINUTES,
+  isManagerRole,
+  requiredManagers,
+} from "./constants";
 
 /** The org-wide rule, as stored or as the default when no row exists. */
 type OrgPolicy = {
@@ -30,6 +35,7 @@ type OrgPolicy = {
   pausedUntil: Date | null;
   pauseReason: string | null;
   pausedBy: string | null;
+  pausedByUserId: string | null;
   version: number;
   isDefault: boolean;
 };
@@ -44,6 +50,7 @@ export const DEFAULT_ORG_POLICY: OrgPolicy = {
   pausedUntil: null,
   pauseReason: null,
   pausedBy: null,
+  pausedByUserId: null,
   version: 0,
   isDefault: true,
 };
@@ -100,6 +107,7 @@ export async function loadOrgPolicy(
     pausedUntil: row.pausedUntil,
     pauseReason: row.pauseReason,
     pausedBy: row.pausedBy,
+    pausedByUserId: row.pausedByUserId,
     version: row.version,
     isDefault: false,
   };
@@ -235,31 +243,79 @@ export async function loadEffectivePolicy(
   return mergePolicy(org, orgChannels, override, workflowChannels);
 }
 
+/** Every mute has an end (at most MAX_MUTE_DAYS); "until it works" ends sooner if it works. */
 export function isMuted(policy: EffectivePolicy, now: Date): boolean {
-  // Rows from before the 30-day backstop have no end: still muted.
-  if (policy.muteUntilSuccess && policy.mutedUntil === null) {
-    return true;
-  }
   return policy.mutedUntil !== null && policy.mutedUntil > now;
 }
 
-/** Reachable chosen members, else owners, else admins; empty means chat only. */
+/** Who alerts fall back to: owners who can get email, else admins who can, else the owners. */
+export function fallbackManagers(members: OrgMember[]): OrgMember[] {
+  for (const role of ["owner", "admin"]) {
+    const reachable = members.filter((m) => m.role === role && m.deliverable);
+    if (reachable.length > 0) {
+      return reachable;
+    }
+  }
+  const owners = members.filter((m) => m.role === "owner");
+  return owners.length > 0 ? owners : members.filter((m) => m.role === "admin");
+}
+
+/** Whether the chosen people include an owner or admin who can get email (or any, if none can). */
+export function hasReachableManager(
+  recipientUserIds: string[],
+  members: OrgMember[]
+): boolean {
+  const chosen = new Set(recipientUserIds);
+  const needed = requiredManagers(members, (m) => Boolean(m.deliverable));
+  return needed.length === 0 || needed.some((m) => chosen.has(m.userId));
+}
+
+/**
+ * The chosen people still in the org, plus the owners (else admins) when no
+ * chosen owner or admin can get email; a list everyone left becomes the owners.
+ */
+export function effectiveRecipientIds(
+  recipientUserIds: string[] | null,
+  members: OrgMember[]
+): string[] | null {
+  if (recipientUserIds === null) {
+    return null;
+  }
+  const chosen = new Set(recipientUserIds);
+  const kept = members.filter((m) => chosen.has(m.userId));
+  const ids = kept.map((m) => m.userId);
+  if (
+    hasReachableManager(ids, members) &&
+    kept.some((m) => isManagerRole(m.role))
+  ) {
+    return ids;
+  }
+  return [
+    ...new Set([...ids, ...fallbackManagers(members).map((m) => m.userId)]),
+  ];
+}
+
+/** The people a list (or the default, null) emails, by id: what delivery uses. */
+export function recipientIdsFor(
+  recipientUserIds: string[] | null,
+  members: OrgMember[]
+): string[] {
+  return (
+    effectiveRecipientIds(recipientUserIds, members) ??
+    fallbackManagers(members).map((m) => m.userId)
+  );
+}
+
+/** Reachable effective recipients, else the fallback owners or admins; empty means chat only. */
 export function resolveRecipientEmails(
   recipientUserIds: string[] | null,
   members: OrgMember[]
 ): string[] {
-  if (recipientUserIds !== null) {
-    const chosen = new Set(recipientUserIds);
-    const emails = reachableEmails(members.filter((m) => chosen.has(m.userId)));
-    if (emails.length > 0) {
-      return emails;
-    }
-  }
-  const owners = reachableEmails(members.filter((m) => m.role === "owner"));
-  if (owners.length > 0) {
-    return owners;
-  }
-  return reachableEmails(members.filter((m) => m.role === "admin"));
+  const chosen = new Set(recipientIdsFor(recipientUserIds, members));
+  const emails = reachableEmails(members.filter((m) => chosen.has(m.userId)));
+  return emails.length > 0
+    ? emails
+    : reachableEmails(fallbackManagers(members));
 }
 
 export async function loadChannelsByIds(

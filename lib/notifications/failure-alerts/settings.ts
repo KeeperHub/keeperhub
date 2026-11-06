@@ -11,7 +11,7 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
-import { isWalletEmail } from "@/lib/auth/wallet-constants";
+import { likePattern } from "@/lib/analytics/like-pattern";
 import { getOrgPlan } from "@/lib/billing/plans-server";
 import { db } from "@/lib/db";
 import {
@@ -20,7 +20,6 @@ import {
   failureAlertEmailUsage,
   integrations,
   orgFailureAlertSettings,
-  users,
   workflowFailureAlertOverrides,
   workflowFailureAlertQueue,
   workflowFailureIncidents,
@@ -37,6 +36,7 @@ import {
   stepUpMasker,
 } from "@/lib/notifications/org-recipients";
 import { isPagerDutyId } from "@/plugins/pagerduty/steps/pagerduty-core";
+import { signInAccounts } from "./accounts";
 import {
   CHANNEL_CHECK_CONCURRENCY,
   FREE_PLAN_MONTHLY_EMAILS,
@@ -56,7 +56,17 @@ import {
   loadHistoryRows,
   recipientMatches,
 } from "./history-rows";
-import { loadOrgPolicy, resolveRecipientEmails } from "./policy";
+import {
+  actorOf,
+  loadMutedWorkflows,
+  queueRemovedNotice,
+} from "./mute-notices";
+import {
+  hasReachableManager,
+  loadOrgPolicy,
+  recipientIdsFor,
+  resolveRecipientEmails,
+} from "./policy";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
 import { checkChannelSilently, type DeliveryOutcome } from "./senders";
 import { takeSlots } from "./slots";
@@ -68,6 +78,7 @@ import {
   isRefusedIncident,
   type MemberView,
   type OrgSettingsView,
+  PERSON_KINDS,
   refusedReasonOf,
 } from "./view-types";
 
@@ -348,10 +359,12 @@ export async function loadOrgSettingsView(
     }
   }
 
-  const recipientsAreDefault = policy.recipientUserIds === null;
-  const recipientUserIds =
-    policy.recipientUserIds ??
-    members.filter((m) => m.role === "owner").map((m) => m.userId);
+  // Who delivery emails: people who left dropped, the owners back when needed.
+  const recipientUserIds = recipientIdsFor(policy.recipientUserIds, members);
+  const defaults = recipientIdsFor(null, members);
+  const recipientsAreDefault =
+    recipientUserIds.length === defaults.length &&
+    defaults.every((id) => recipientUserIds.includes(id));
 
   return {
     enabled: isFailureAlertsEnabledForOrg(organizationId),
@@ -393,8 +406,14 @@ export async function loadOrgSettingsView(
             until: policy.pausedUntil.toISOString(),
             reason: policy.pauseReason,
             by: policy.pausedBy,
+            byAccount: policy.pausedByUserId
+              ? ((await signInAccounts([policy.pausedByUserId])).get(
+                  policy.pausedByUserId
+                ) ?? null)
+              : null,
           }
         : null,
+    mutedWorkflows: await loadMutedWorkflows(organizationId, members),
     failingNow,
     unreachable: !isReachable(
       resolveRecipientEmails(policy.recipientUserIds, members),
@@ -762,6 +781,10 @@ export function parseVersion(raw: unknown): number | null {
   return typeof raw === "number" && Number.isInteger(raw) ? raw : null;
 }
 
+/** Someone who can fix alerts must always hear about them. */
+export const MANAGER_REQUIRED =
+  "Keep at least one owner or admin who can receive email on the list: someone who can fix alerts must always get them.";
+
 export async function parseOrgSettings(
   body: Record<string, unknown>,
   organizationId: string
@@ -775,6 +798,9 @@ export async function parseOrgSettings(
     : [];
   if (requested.length === 0) {
     throw new SettingsError("Choose at least one person to email.");
+  }
+  if (!hasReachableManager(requested, members)) {
+    throw new SettingsError(MANAGER_REQUIRED);
   }
   const anyoneReachable = members.some((m) => m.deliverable);
   const chosenReachable = members.some(
@@ -804,7 +830,9 @@ export async function saveOrgSettings(
   input: OrgSettingsInput,
   userId: string
 ): Promise<{ rulesChanged: boolean }> {
-  const owners = (await loadOrgMembers(organizationId))
+  const members = await loadOrgMembers(organizationId);
+  const actor = await actorOf(userId, members);
+  const owners = members
     .filter((m) => m.role === "owner")
     .map((m) => m.userId)
     .sort();
@@ -832,6 +860,7 @@ export async function saveOrgSettings(
         version: orgFailureAlertSettings.version,
         threshold: orgFailureAlertSettings.threshold,
         timeLimitMinutes: orgFailureAlertSettings.timeLimitMinutes,
+        recipientUserIds: orgFailureAlertSettings.recipientUserIds,
       })
       .from(orgFailureAlertSettings)
       .where(eq(orgFailureAlertSettings.organizationId, organizationId));
@@ -846,6 +875,24 @@ export async function saveOrgSettings(
       });
     if (input.channels) {
       await replaceChannels(tx, organizationId, null, input.channels, userId);
+    }
+    // Who was emailed before and after, the default (owners) included.
+    {
+      const before = new Set(
+        recipientIdsFor(current?.recipientUserIds ?? null, members)
+      );
+      const after = new Set(recipientIdsFor(recipientUserIds, members));
+      await queueRemovedNotice({
+        organizationId,
+        workflow: null,
+        removed: members.filter(
+          (m) => before.has(m.userId) && !after.has(m.userId)
+        ),
+        actor,
+        members,
+        now,
+        tx,
+      });
     }
     // Only the rules change a streak decision; methods and recipients do not.
     return {
@@ -891,16 +938,20 @@ export const HISTORY_ALERT_KINDS = [
   "recovery",
   "channel_paused",
   "cap_warning",
+  "workflow_muted",
+  "workflow_unmuted",
+  "mute_ended",
+  "recipients_removed",
 ] as const;
 
-/** Kinds a person causes; every other message is KeeperHub's own. */
-const PERSON_KINDS = ["alerts_paused", "alerts_resumed", "test"] as const;
 /** "Who caused it" as KeeperHub shows it: the person's name or role, else KeeperHub. */
 export const HISTORY_BY_KEEPERHUB = "KeeperHub";
 
 type HistoryFilter = {
   channel?: string;
   workflowId?: string;
+  /** A workflow's exact id, or part of its current name. */
+  workflow?: string;
   /** Resume after this row; (created, id) so rows sharing a time are not skipped. */
   cursor?: HistoryCursor;
   /** 1-based page; takes over from the cursor and adds the totals. */
@@ -921,6 +972,25 @@ function personBy(): SQL {
     PERSON_KINDS.map((k) => sql`${k}`),
     sql`, `
   )}) AND coalesce(${failureAlertDeliveries.context}->>'by', '') <> '')`;
+}
+
+/** Messages about a workflow `match` picks (alias w): its own, grouped ones that listed it, and its mute notices. */
+function aboutWorkflow(organizationId: string, match: SQL): SQL {
+  return sql`EXISTS (
+    SELECT 1 FROM ${workflows} w
+    WHERE w.organization_id = ${organizationId}
+      AND ${match}
+      AND (
+        ${failureAlertDeliveries.context}->>'workflowId' = w.id
+        OR EXISTS (
+          SELECT 1 FROM ${workflowFailureIncidents} i
+          WHERE i.workflow_id = w.id
+            AND i.organization_id = ${organizationId}
+            AND (${failureAlertDeliveries.incidentId} = i.id
+              OR ${failureAlertDeliveries.context} @> jsonb_build_object('incidentIds', jsonb_build_array(i.id)))
+        )
+      )
+  )`;
 }
 
 /** Everything sent, newest first: a page of it with the totals, or the next cursor. */
@@ -987,14 +1057,17 @@ export async function loadHistory(
     conditions.push(historyCursorCondition(filter.cursor));
   }
   if (filter.workflowId) {
-    // Its own messages, and grouped alerts that listed it.
-    conditions.push(sql`EXISTS (
-      SELECT 1 FROM ${workflowFailureIncidents} i
-      WHERE i.workflow_id = ${filter.workflowId}
-        AND i.organization_id = ${organizationId}
-        AND (${failureAlertDeliveries.incidentId} = i.id
-          OR ${failureAlertDeliveries.context} @> jsonb_build_object('incidentIds', jsonb_build_array(i.id)))
-    )`);
+    conditions.push(
+      aboutWorkflow(organizationId, sql`w.id = ${filter.workflowId}`)
+    );
+  }
+  if (filter.workflow) {
+    conditions.push(
+      aboutWorkflow(
+        organizationId,
+        sql`(w.id = ${filter.workflow} OR w.name ILIKE ${likePattern(filter.workflow)} ESCAPE '\\')`
+      )
+    );
   }
 
   // A page asks for totals; the cursor (CSV, API callers) does not need them.
@@ -1043,29 +1116,6 @@ export async function loadHistory(
     byOptions,
     notDelivered,
   };
-}
-
-/** The account each user signed in with: their email, or the wallet address for a wallet login. */
-async function signInAccounts(userIds: string[]): Promise<Map<string, string>> {
-  const ids = [...new Set(userIds)];
-  if (ids.length === 0) {
-    return new Map();
-  }
-  const rows = await db
-    .select({ id: users.id, email: users.email })
-    .from(users)
-    .where(inArray(users.id, ids));
-  return new Map(
-    rows.flatMap((row) => {
-      if (!row.email) {
-        return [];
-      }
-      const account = isWalletEmail(row.email)
-        ? (row.email.split("@")[0] ?? row.email)
-        : row.email;
-      return [[row.id, account] as const];
-    })
-  );
 }
 
 async function countHistory(

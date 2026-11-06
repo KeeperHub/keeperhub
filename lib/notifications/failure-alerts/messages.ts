@@ -8,6 +8,7 @@ import {
 } from "@/lib/notifications/chat-text";
 import { redactErrorSecrets } from "@/lib/utils/redact";
 import { MAX_SUMMARY_CHARS } from "@/plugins/pagerduty/event-payload";
+import { actorLabel } from "./actor-label";
 import {
   DEFAULT_THRESHOLD,
   MAX_REMINDERS,
@@ -125,6 +126,43 @@ export type MessageInput =
     })
   | (OrgFields & { kind: "alerts_resumed"; by: string | null })
   | (OrgFields & {
+      kind: "workflow_muted";
+      workflow: { id: string; name: string };
+      by: string | null;
+      byAccount: string | null;
+      reason: string | null;
+      until: Date | null;
+      untilItWorks: boolean;
+      /** A mute that was already on was changed. */
+      changed?: boolean;
+    })
+  | (OrgFields & {
+      kind: "workflow_unmuted";
+      workflow: { id: string; name: string };
+      by: string | null;
+      byAccount: string | null;
+    })
+  | (OrgFields & {
+      kind: "mute_ended";
+      workflow: { id: string; name: string };
+      /** Who muted it, for the record. */
+      by: string | null;
+      reason: string | null;
+      until: Date | null;
+      untilItWorks: boolean;
+      ended: "expired" | "worked";
+      failedRuns: number;
+      failingNow: boolean;
+    })
+  | (OrgFields & {
+      kind: "recipients_removed";
+      /** Unset when the org's own list changed. */
+      workflow?: { id: string; name: string };
+      by: string | null;
+      byAccount: string | null;
+      removed: string[];
+    })
+  | (OrgFields & {
       kind: "cap_warning";
       used: number;
       limit: number;
@@ -158,7 +196,10 @@ export function pauseActorName(
   if (!member) {
     return null;
   }
-  return member.role === "owner" ? "An owner" : "An admin";
+  if (member.role === "owner") {
+    return "An owner";
+  }
+  return member.role === "admin" ? "An admin" : "A member";
 }
 
 export function appBaseUrl(): string {
@@ -418,7 +459,7 @@ function pausedHeadline(
 }
 
 const PAUSED_NEXT_STEP =
-  "KeeperHub turned it off because this workflow is set to turn off when it fails too often or runs out of funds. It will not run until someone turns it back on: fix the cause, then press Turn back on in the workflow's Alerts panel.";
+  "KeeperHub turned it off because this workflow is set to turn off when it fails too often or runs out of funds. It will not run until someone turns it back on: fix the cause, then press Enable workflow in the workflow's Alerts panel.";
 
 type Banner = { html: string; text: string; chat: ChatPart[] };
 
@@ -483,6 +524,12 @@ export function renderMessage(
     case "alerts_paused":
     case "alerts_resumed":
       return renderOrgPause(input);
+    case "workflow_muted":
+    case "workflow_unmuted":
+    case "mute_ended":
+      return renderMuteNotice(input, now);
+    case "recipients_removed":
+      return renderRecipientsRemoved(input);
     case "cap_warning":
       return renderCapWarning(input);
     default:
@@ -495,7 +542,7 @@ const MISSED_DETAIL =
 const FUNDING_NEXT_STEP =
   "Add funds to the wallet that pays for it; the next run picks them up. The error above shows what it had and what it needed.";
 const FAILING_NEXT_STEP =
-  "It keeps running and failing until someone fixes, mutes or turns it off.";
+  "It keeps running and failing until someone fixes, mutes or disables it.";
 const MISSED_NEXT_STEP =
   "You can run it by hand from the editor; you will be told when it runs on its own again.";
 /** What fixes a plan or billing refusal. */
@@ -1178,6 +1225,141 @@ function renderOrgPause(
     ]),
     summary: summaryOf(`${input.orgName}: ${headline}`),
   };
+}
+
+/** Email names the account too; chat, which may reach guests, names the person only. */
+function actorNames(
+  by: string | null,
+  account: string | null
+): { email: string; chat: string } {
+  return { email: actorLabel(by, account) ?? "Someone", chat: by ?? "Someone" };
+}
+
+/** " until it works again, at most until X", " until X", or nothing. */
+function muteUntilText(until: Date | null, untilItWorks: boolean): string {
+  if (untilItWorks) {
+    return until
+      ? ` until it works again, at most until ${formatUtc(until)}`
+      : " until it works again";
+  }
+  return until ? ` until ${formatUtc(until)}` : "";
+}
+
+/** A notice with a headline, a detail sentence, and one link. */
+function noticeMessage(params: {
+  input: OrgFields;
+  headline: string;
+  /** The detail as built for a reader: email (with accounts) or chat (names only). */
+  detail: (reader: "email" | "chat") => ChatPart[];
+  link: string;
+  linkLabel: string;
+  /** Why this reader got it, when the usual "you receive alerts" is not true. */
+  foot?: { text: string; html: string };
+}): RenderedMessage {
+  const { input, headline, link, linkLabel } = params;
+  const detail = plain(params.detail("email"));
+  const foot = params.foot ?? footer(input);
+  return {
+    subject: `[${input.orgName}] ${headline}`,
+    text: `${headline}.\n\n${detail}\n\n${linkLabel}: ${link}\n\n${foot.text}`,
+    html: emailLayout(
+      escapeHtml(headline),
+      `<p>${escapeHtml(detail)}</p><p>${emailButton(link, linkLabel)}</p>`,
+      foot.html
+    ),
+    ...chatOf([
+      [
+        ...orgTag(input.orgName),
+        user(headline),
+        ". ",
+        ...params.detail("chat"),
+        `\n${link}`,
+      ],
+    ]),
+    summary: summaryOf(`${input.orgName}: ${headline}`),
+  };
+}
+
+function renderMuteNotice(
+  input: Extract<
+    MessageInput,
+    { kind: "workflow_muted" | "workflow_unmuted" | "mute_ended" }
+  >,
+  now: Date
+): RenderedMessage {
+  const name = input.workflow.name;
+  const reasonParts = (reason: string | null): ChatPart[] =>
+    reason ? [" Reason: ", user(reason.replace(TRAILING_DOTS, "")), "."] : [];
+  let headline: string;
+  let detail: (reader: "email" | "chat") => ChatPart[];
+  if (input.kind === "workflow_muted") {
+    const who = actorNames(input.by, input.byAccount);
+    headline = `${input.changed ? "Mute changed" : "Alerts muted"}: ${name}`;
+    detail = (reader) => [
+      user(who[reader]),
+      ` ${input.changed ? "changed the mute on" : "muted"} failure alerts for `,
+      user(name),
+      `${muteUntilText(input.until, input.untilItWorks)}.`,
+      ...reasonParts(input.reason),
+      " While muted, nobody is told if it fails. Not expected? Unmute it in the workflow's Alerts panel.",
+    ];
+  } else if (input.kind === "workflow_unmuted") {
+    const who = actorNames(input.by, input.byAccount);
+    headline = `Alerts unmuted: ${name}`;
+    detail = (reader) => [
+      user(who[reader]),
+      " unmuted failure alerts for ",
+      user(name),
+      ". Failures are reported again.",
+    ];
+  } else {
+    headline = `Mute ended: ${name}`;
+    const failed = `${input.failedRuns} run${input.failedRuns === 1 ? "" : "s"} failed while it was muted.`;
+    const state = input.failingNow
+      ? " It is still failing, so an alert follows."
+      : " It is working now.";
+    detail = () => [
+      input.ended === "worked" ? "It works again, so the mute" : "The mute",
+      ...(input.by ? [" set by ", user(input.by)] : []),
+      `${muteUntilText(input.until, input.untilItWorks)} ended at ${formatUtc(now)}.`,
+      ...reasonParts(input.reason),
+      ` ${failed}${state}`,
+    ];
+  }
+  return noticeMessage({
+    input,
+    headline,
+    detail,
+    link: workflowUrl(input.appUrl, input.workflow.id),
+    linkLabel: "Open the workflow",
+  });
+}
+
+function renderRecipientsRemoved(
+  input: Extract<MessageInput, { kind: "recipients_removed" }>
+): RenderedMessage {
+  const scope = input.workflow
+    ? `the workflow ${input.workflow.name}`
+    : "this organization";
+  const why = `You get this once because you were removed, or because you own ${input.orgName}.`;
+  const who = actorNames(input.by, input.byAccount);
+  return noticeMessage({
+    input,
+    headline: input.workflow
+      ? `Removed from alerts: ${input.workflow.name}`
+      : "Removed from alerts",
+    detail: (reader) => [
+      user(who[reader]),
+      " removed ",
+      user(input.removed.join(", ")),
+      ` from failure alerts for ${scope}. They will no longer get these alerts.`,
+    ],
+    foot: { text: why, html: escapeHtml(why) },
+    link: input.workflow
+      ? workflowUrl(input.appUrl, input.workflow.id)
+      : settingsUrl(input.appUrl, input.organizationId),
+    linkLabel: "See who gets alerts",
+  });
 }
 
 function renderLaunchNotice(

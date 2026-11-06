@@ -31,7 +31,7 @@ export const orgFailureAlertSettings = pgTable(
   "alert_settings",
   {
     organizationId: text("organization_id").primaryKey(),
-    threshold: integer("threshold").notNull().default(5),
+    threshold: integer("threshold").notNull().default(3),
     // Null: no time limit. Otherwise alert once a streak has lasted this long.
     timeLimitMinutes: integer("time_limit_minutes").default(360),
     remindDaily: boolean("remind_daily").notNull().default(true),
@@ -46,6 +46,8 @@ export const orgFailureAlertSettings = pgTable(
     pausedAt: timestamp("paused_at"),
     pauseReason: text("pause_reason"),
     pausedBy: text("paused_by"),
+    // Who paused, so the page can show their account beside the name.
+    pausedByUserId: text("paused_by_user_id"),
     // Bumped on every save; a save sent with an older one is refused.
     version: integer("version").notNull().default(0),
     updatedBy: text("updated_by"),
@@ -126,7 +128,10 @@ export const workflowFailureAlertOverrides = pgTable(
     mutedUntil: timestamp("muted_until"),
     muteUntilSuccess: boolean("mute_until_success").notNull().default(false),
     muteReason: text("mute_reason"),
+    // The user id of whoever muted; kept until the mute itself changes.
     mutedBy: text("muted_by"),
+    // When the current mute began: failures since then are reported when it ends.
+    mutedAt: timestamp("muted_at"),
     // Per workflow only: an org-wide switch could stop every automation at once.
     pauseWorkflow: boolean("pause_workflow").notNull().default(false),
     // Bumped on every save; a save sent with an older one is refused.
@@ -241,7 +246,13 @@ export type FailureAlertMessageKind =
   | "alerts_resumed"
   | "cap_warning"
   // A Test from the Alerts page, recorded once sent; never queued.
-  | "test";
+  | "test"
+  // A workflow's alerts muted (or the mute changed), unmuted, or the mute ended.
+  | "workflow_muted"
+  | "workflow_unmuted"
+  | "mute_ended"
+  // People taken off a recipient list are told once.
+  | "recipients_removed";
 
 export type FailureAlertDeliveryChannel = "email" | FailureAlertChannelKind;
 

@@ -14,6 +14,7 @@ import {
   loadOrgMembers,
   maskAddressesIn,
   type OrgMember,
+  reachableEmails,
   stepUpMasker,
 } from "@/lib/notifications/org-recipients";
 import { redactErrorSecrets } from "@/lib/utils/redact";
@@ -195,10 +196,13 @@ async function testEmail(
     }
     recipients = [me.deliverable];
   } else {
-    recipients = resolveRecipientEmails(
-      Array.isArray(request.recipientUserIds) ? request.recipientUserIds : null,
-      members
-    );
+    // A Test goes to exactly the people picked; only no pick falls back to the owners.
+    const picked = Array.isArray(request.recipientUserIds)
+      ? new Set(request.recipientUserIds)
+      : null;
+    recipients = picked
+      ? reachableEmails(members.filter((m) => picked.has(m.userId)))
+      : resolveRecipientEmails(null, members);
     if (recipients.length === 0) {
       throw new SettingsError("Nobody you chose can receive email yet.");
     }

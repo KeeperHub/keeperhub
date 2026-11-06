@@ -15,6 +15,9 @@ vi.mock("@/lib/notifications/failure-alerts/messages", () => ({
 vi.mock("@/lib/notifications/failure-alerts/rollout", () => ({
   isFailureAlertsRolloutActive: () => true,
 }));
+vi.mock("@/lib/notifications/failure-alerts/mute-notices", () => ({
+  endExpiredMutes: vi.fn(async () => 0),
+}));
 vi.mock("@/lib/notifications/failure-alerts/org-pause", () => ({
   endExpiredOrgPauses: vi.fn(async () => 0),
 }));

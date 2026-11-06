@@ -16,6 +16,15 @@ import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
 
 const ENDPOINT = "/api/workflows/[workflowId]/failure-alerts";
 
+function muteAction(
+  change: "muted" | "changed" | "unmuted" | null
+): string {
+  if (change === "unmuted") {
+    return "workflow.alerts_unmuted";
+  }
+  return change ? "workflow.alerts_muted" : "workflow.failure_alerts_changed";
+}
+
 /** The workflow's failure notifications: org default, its override, its state. */
 export async function GET(
   request: Request,
@@ -76,7 +85,8 @@ export async function PUT(
       string,
       unknown
     >;
-    const { rulesChanged, ...saved } = await saveWorkflowOverride({
+    const { rulesChanged, muteChange, muteBefore, muteAfter, ...saved } =
+      await saveWorkflowOverride({
       workflowId,
       organizationId: workflow.organizationId,
       userId: access.userId,
@@ -93,10 +103,13 @@ export async function PUT(
         authMethod: access.authMethod,
         apiKeyId: access.apiKeyId,
       },
-      action: "workflow.failure_alerts_changed",
+      // A mute gets its own action, with what it was and what it became.
+      action: muteAction(muteChange),
       resourceType: "workflow",
       resourceId: workflowId,
-      after: saved,
+      ...(muteChange
+        ? { before: { mute: muteBefore }, after: { ...saved, mute: muteAfter } }
+        : { after: saved }),
       metadata: buildAuditMetadata(request),
     });
 

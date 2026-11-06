@@ -185,6 +185,13 @@
     },
     {
       "method": "GET",
+      "path": "/api/organizations/{organizationId}/failure-alerts/history",
+      "route_file": "app/api/organizations/[organizationId]/failure-alerts/history/route.ts",
+      "source": "docs/api/failure-alerts.md",
+      "line": 51
+    },
+    {
+      "method": "GET",
       "path": "/api/projects",
       "route_file": "app/api/projects/route.ts",
       "source": "docs/api/projects.md",
@@ -308,6 +315,13 @@
       "route_file": "app/api/workflows/[workflowId]/executions/route.ts",
       "source": "docs/api/executions.md",
       "line": 13
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflows/{workflowId}/failure-alerts",
+      "route_file": "app/api/workflows/[workflowId]/failure-alerts/route.ts",
+      "source": "docs/api/failure-alerts.md",
+      "line": 17
     },
     {
       "method": "GET",
@@ -574,6 +588,13 @@
       "route_file": "app/api/user/rpc-preferences/[chainId]/route.ts",
       "source": "docs/api/user.md",
       "line": 135
+    },
+    {
+      "method": "PUT",
+      "path": "/api/workflows/{workflowId}/failure-alerts",
+      "route_file": "app/api/workflows/[workflowId]/failure-alerts/route.ts",
+      "source": "docs/api/failure-alerts.md",
+      "line": 27
     },
     {
       "method": "PUT",

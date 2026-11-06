@@ -19,7 +19,6 @@ import {
   organization,
   orgFailureAlertSettings,
   workflowExecutions,
-  workflowFailureAlertOverrides,
   workflowFailureAlertQueue,
   workflowFailureIncidents,
   workflowSchedules,
@@ -53,6 +52,7 @@ import {
   REMINDER_INTERVAL_MS,
 } from "./constants";
 import { missedDueAt, ranRecentlyCutoff } from "./missed-runs";
+import { endMuteBecauseItWorks } from "./mute-notices";
 import { activePause } from "./org-pause";
 import {
   HELD_SQL,
@@ -935,17 +935,9 @@ async function evaluateWorkflow(
     open = await reopenRecovered(workflowId, summary.firstFailedAt, now);
   }
 
+  // It works again: the mute ends, and everyone hears what it hid.
   if (policy.muteUntilSuccess && summary.latestSuccessRunId) {
-    await db
-      .update(workflowFailureAlertOverrides)
-      .set({
-        muteUntilSuccess: false,
-        mutedUntil: null,
-        muteReason: null,
-        mutedBy: null,
-        version: sql`${workflowFailureAlertOverrides.version} + 1`,
-      })
-      .where(eq(workflowFailureAlertOverrides.workflowId, workflowId));
+    await endMuteBecauseItWorks(workflowId, summary.latestSuccessRunId, now);
   }
 
   if (open && summary.failures > 0 && summary.lastFailedAt) {
