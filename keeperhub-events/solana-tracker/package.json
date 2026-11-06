@@ -20,7 +20,7 @@
     "e2e:devnet": "tsx tests/e2e/devnet.ts"
   },
   "dependencies": {
-    "@aws-sdk/client-sqs": "^3.1156.0",
+    "@aws-sdk/client-sqs": "^3.1160.0",
     "@coral-xyz/anchor": "^0.32.1",
     "@solana/web3.js": "^1.99.0",
     "ioredis": "^5.11.1",
