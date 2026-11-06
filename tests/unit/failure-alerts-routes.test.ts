@@ -379,3 +379,25 @@ describe("re-queue only when the rules change", () => {
     }
   );
 });
+
+describe("GET history page", () => {
+  it.each(["0", "1.5", "1e300", "100001"])(
+    "refuses page=%s without querying",
+    async (page) => {
+      const res = await historyRoute.GET(
+        new Request(`http://localhost/api/x?page=${page}`),
+        orgCtx()
+      );
+      expect(res.status).toBe(400);
+      expect(mocks.loadHistory).not.toHaveBeenCalled();
+    }
+  );
+
+  it("accepts the last allowed page", async () => {
+    const res = await historyRoute.GET(
+      new Request("http://localhost/api/x?page=100000"),
+      orgCtx()
+    );
+    expect(res.status).toBe(200);
+  });
+});

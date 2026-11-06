@@ -14,6 +14,9 @@ import {
 } from "@/lib/notifications/failure-alerts/settings";
 import { FAILURE_ALERT_KIND_LABEL } from "@/lib/notifications/failure-alerts/view-types";
 
+// Past this the offset overflows Postgres; nobody pages this far.
+const MAX_PAGE = 100_000;
+
 const CHANNELS = new Set([
   "email",
   "slack",
@@ -114,7 +117,10 @@ export async function GET(
     }
     const pageRaw = url.searchParams.get("page");
     const page = pageRaw === null ? undefined : Number(pageRaw);
-    if (page !== undefined && !(Number.isInteger(page) && page >= 1)) {
+    if (
+      page !== undefined &&
+      !(Number.isInteger(page) && page >= 1 && page <= MAX_PAGE)
+    ) {
       return NextResponse.json({ error: "Invalid page." }, { status: 400 });
     }
 

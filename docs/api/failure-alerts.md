@@ -57,7 +57,7 @@ Every alert, reminder, recovery and notice sent to the organization, newest firs
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `page` | number | A numbered page, with `total` and `pages` in the response |
+| `page` | number | A numbered page from 1 to 100000, with `total` and `pages` in the response |
 | `cursor` | string | The `nextCursor` of the previous response, in place of `page` |
 | `limit` | number | Rows per page, at most 500 |
 | `workflow` | string | A workflow's exact id, or part of its current name, so alerts sent before a rename still match. At most 200 characters |

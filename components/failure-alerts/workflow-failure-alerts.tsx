@@ -561,23 +561,27 @@ export function WorkflowFailureAlerts({
     setPanel(next);
   };
 
-  // Connections and stored methods' health only; drafts and the version stay.
+  // Connections, and stored methods' health; drafts and the version stay.
   const refreshConnections = useCallback(async () => {
     const res = await fetch(url);
     if (res.ok) {
       const body = (await res.json()) as Loaded;
       const prev = viewRef.current;
       if (prev) {
+        // Methods' health only from the same version: an older reply must not undo a save.
+        const sameVersion = body.version === prev.version;
         showView({
           ...prev,
           connections: body.connections,
           unsharedConnections: body.unsharedConnections,
-          override: {
-            ...prev.override,
-            channels: prev.override.channels.map(
-              (c) => body.override.channels.find((n) => n.id === c.id) ?? c
-            ),
-          },
+          override: sameVersion
+            ? {
+                ...prev.override,
+                channels: prev.override.channels.map(
+                  (c) => body.override.channels.find((n) => n.id === c.id) ?? c
+                ),
+              }
+            : prev.override,
         });
       }
     }
