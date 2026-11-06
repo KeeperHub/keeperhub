@@ -224,14 +224,16 @@ describe("org pause", () => {
 
   it("says workflows set to turn off still turn off", () => {
     expect(paused(2).text).toContain(
-      "Ana paused them: Upgrade. Failures are not reported until then. Workflows keep running, but the 2 set to turn off at their limit still turn off; you are told about those when the pause ends."
+      "Ana paused them: Upgrade. Workflows keep running, but if one fails, no alert goes out until then. The 2 set to turn off at their limit still turn off; you are told about those when the pause ends."
     );
     expect(paused(1).text).toContain(
-      "the 1 set to turn off at its limit still turns off; you are told about it"
+      "The 1 set to turn off at its limit still turns off; you are told about it"
     );
-    expect(paused().text).toContain("but any set to turn off");
+    expect(paused().text).toContain(
+      "no alert goes out until then. Any set to turn off"
+    );
     expect(paused(0).text).toContain(
-      "Workflows keep running; failures are not reported until then."
+      "Workflows keep running, but if one fails, no alert goes out until then."
     );
   });
 

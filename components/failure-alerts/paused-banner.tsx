@@ -28,8 +28,8 @@ export function FailureAlertsPausedBanner({
             Alerts paused until {formatWhen(until)}.
           </span>
           <span className="hidden sm:inline">
-            Alerts are paused until {formatWhen(until)}. Failures are not
-            reported until then.
+            Alerts are paused until {formatWhen(until)}. Workflows keep running,
+            but if one fails, no alert goes out.
           </span>
         </span>
         {/* Outside the truncated text, so the way to resume never gets cut. */}

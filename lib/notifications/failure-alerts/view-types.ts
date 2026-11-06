@@ -306,7 +306,7 @@ export const EMAILS_KEPT_FOR_NEW_FAILURES = 10;
 /** What still happens during an org pause, for the pause email and the Alerts page. */
 export function orgPauseEffect(pausingWorkflows: number | undefined): string {
   if (pausingWorkflows === 0) {
-    return "Workflows keep running; failures are not reported until then.";
+    return "Workflows keep running, but if one fails, no alert goes out until then.";
   }
   let which =
     "any set to turn off at their limit still turn off; you are told about those";
@@ -316,7 +316,7 @@ export function orgPauseEffect(pausingWorkflows: number | undefined): string {
   } else if (pausingWorkflows !== undefined) {
     which = `the ${pausingWorkflows} set to turn off at their limit still turn off; you are told about those`;
   }
-  return `Failures are not reported until then. Workflows keep running, but ${which} when the pause ends.`;
+  return `Workflows keep running, but if one fails, no alert goes out until then. ${which.charAt(0).toUpperCase()}${which.slice(1)} when the pause ends.`;
 }
 
 /** What each kind of message is called in the history and analytics lists. */
