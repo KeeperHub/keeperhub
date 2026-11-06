@@ -2495,8 +2495,11 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         workflowId: wf,
         organizationId: zeta.orgId,
         muteUntilSuccess: true,
-        mutedUntil: at(30 * 24 * 60),
+        mutedUntil: at(6 * 24 * 60),
         mutedBy: zeta.userId,
+        // Muted an hour ago, so the success below clearly comes after it.
+        mutedAt: at(-60),
+        updatedAt: at(-60),
         version: 3,
       });
       await addRun(zeta, wf, "success");
@@ -4551,6 +4554,11 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       const org = await makeOrg("muteworks");
       const wf = await makeWorkflow(org, "Works again");
       await save(org, wf, { muteUntilSuccess: true, muteReason: "Flaky RPC" });
+      // Started a little earlier, so the success below clearly comes after it.
+      await db
+        .update(workflowFailureAlertOverrides)
+        .set({ mutedAt: at(-5) })
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       await addRun(org, wf, "success");
       await runCycle();
       await addRun(org, wf, "success");
@@ -4716,6 +4724,11 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       const wf = await makeWorkflow(org, "Old success");
       await addRun(org, wf, "success", { at: at(-30) });
       await save(org, wf, { muteUntilSuccess: true, muteReason: "Watching" });
+      // Started a little earlier, so the success below clearly comes after it.
+      await db
+        .update(workflowFailureAlertOverrides)
+        .set({ mutedAt: at(-5) })
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       await runCycle();
       expect(await notices(org.orgId, "mute_ended")).toHaveLength(0);
       await addRun(org, wf, "success");
