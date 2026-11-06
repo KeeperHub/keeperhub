@@ -16,7 +16,7 @@ import {
   loadOrgMembers,
   stepUpMasker,
 } from "@/lib/notifications/org-recipients";
-import { HOUR_MS } from "@/lib/utils/duration";
+import { DAY_MS, HOUR_MS } from "@/lib/utils/duration";
 import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
 import { signInAccounts } from "./accounts";
 import {
@@ -250,8 +250,6 @@ export async function loadWorkflowAlertView(
   };
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
 /** Required for every mute or change to one. */
 export const MUTE_REASON_REQUIRED = `Say why you are muting (${MIN_MUTE_REASON} to ${MAX_MUTE_REASON} characters).`;
 
@@ -385,10 +383,7 @@ async function refuseTooManyMuteChanges(
           "workflow_unmuted",
         ]),
         sql`${failureAlertDeliveries.context}->>'workflowId' = ${workflowId}`,
-        gt(
-          failureAlertDeliveries.createdAt,
-          new Date(now.getTime() - 60 * 60 * 1000)
-        )
+        gt(failureAlertDeliveries.createdAt, new Date(now.getTime() - HOUR_MS))
       )
     );
   if (Number(row?.notices ?? 0) >= MUTE_CHANGES_PER_HOUR) {

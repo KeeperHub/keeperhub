@@ -397,6 +397,8 @@ export function WorkflowFailureAlerts({
     dirty: boolean;
     ready: boolean;
     save: () => Promise<boolean>;
+    /** Its last save failed: not sent again until it changes. */
+    failed: boolean;
     /** Sends the draft at once, outside the queue, for a page that is going away. */
     sendNow: () => void;
   } | null>(null);
@@ -406,9 +408,14 @@ export function WorkflowFailureAlerts({
   const queueRef = useRef<Promise<unknown>>(Promise.resolve());
   const inFlightRef = useRef(0);
   const timerRef = useRef<number | null>(null);
-  const draftSaveRef = useRef<{ key: string; done: Promise<boolean> } | null>(
-    null
-  );
+  // The draft key last saved, so a page going away does not send it twice.
+  const savedKeyRef = useRef<string | null>(null);
+  const draftSaveRef = useRef<{
+    key: string;
+    done: Promise<boolean>;
+    /** Its request has gone out (it may still wait behind another save). */
+    started: boolean;
+  } | null>(null);
   // The draft "Use org rules" is dropping; nothing may send it after that.
   const droppedKeyRef = useRef<string | null>(null);
   const sourceRef = useRef<string | null>(null);
@@ -579,8 +586,8 @@ export function WorkflowFailureAlerts({
       if (!pending?.dirty) {
         return;
       }
-      // Start the save while the page is alive; leaving or staying, it lands.
-      if (pending.ready) {
+      // Start the save while the page is alive, so it can land whether they leave or stay.
+      if (pending.ready && !pending.failed) {
         pending.save().catch(() => undefined);
       }
       event.preventDefault();
@@ -753,6 +760,8 @@ export function WorkflowFailureAlerts({
       sentKey?: string;
       /** Reset the drafts to the answer (switching which rules are in use). */
       reset?: boolean;
+      /** Called when its request goes out, after any save queued ahead of it. */
+      onStart?: () => void;
     } = {}
   ): Promise<boolean> => {
     inFlightRef.current += 1;
@@ -760,6 +769,7 @@ export function WorkflowFailureAlerts({
     setSaveError(null);
     const run = async (): Promise<boolean> => {
       const latest = viewRef.current ?? view;
+      options.onStart?.();
       try {
         const res = await fetch(url, {
           method: "PUT",
@@ -901,9 +911,19 @@ export function WorkflowFailureAlerts({
     if (draftSaveRef.current?.key === key) {
       return draftSaveRef.current.done;
     }
-    const done = put(draftBody, null, { sentKey: key }).then((ok) => {
+    const done = put(draftBody, null, {
+      sentKey: key,
+      onStart: () => {
+        if (draftSaveRef.current?.key === key) {
+          draftSaveRef.current.started = true;
+        }
+      },
+    }).then((ok) => {
       if (draftSaveRef.current?.key === key) {
         draftSaveRef.current = null;
+      }
+      if (ok) {
+        savedKeyRef.current = key;
       }
       setFailedKey(ok ? null : key);
       setFailedReset(false);
@@ -912,7 +932,7 @@ export function WorkflowFailureAlerts({
       }
       return ok;
     });
-    draftSaveRef.current = { key, done };
+    draftSaveRef.current = { key, done, started: false };
     return done;
   };
   autosaveRef.current = {
@@ -920,10 +940,14 @@ export function WorkflowFailureAlerts({
     dirty: rulesDirty,
     ready: rulesReady,
     save: saveDraft,
-    // Best effort: a save in flight, or one that just failed, is left alone; a stale version gets 409.
+    failed: failedKey === draftKey,
+    // Best effort: skips a draft whose request is out, saved, failed or dropped; one still queued
+    // behind another save goes now (a stale version gets 409).
     sendNow: () => {
       if (
-        draftSaveRef.current?.key === draftKey ||
+        (draftSaveRef.current?.key === draftKey &&
+          draftSaveRef.current.started) ||
+        savedKeyRef.current === draftKey ||
         failedKey === draftKey ||
         droppedKeyRef.current === draftKey
       ) {
@@ -1212,7 +1236,7 @@ export function WorkflowFailureAlerts({
               <span className="min-w-0">
                 <TextWithEmails text={`${muteSummary}.`} />
                 {view.override.pauseWorkflow
-                  ? " Alerts are off for this workflow whichever rules it uses: failures still show in Runs, and nobody is told unless KeeperHub disables it at the limit."
+                  ? " Alerts are off for this workflow whichever rules it uses: failures still show in Runs, and nobody is told unless KeeperHub turns it off at the limit."
                   : " Alerts are off for this workflow whichever rules it uses: failures still show in Runs, and nobody is told until the mute ends."}
               </span>
             </p>
@@ -1339,9 +1363,9 @@ export function WorkflowFailureAlerts({
               </p>
               <p className="text-muted-foreground text-xs">
                 Everyone who gets this workflow's alerts, and every owner, sees
-                the reason and is told now and when the mute ends. A mute lasts{" "}
-                {MAX_MUTE_DAYS} days at most; then alerts start again by
-                themselves.
+                the reason and is told now and when the mute ends. A mute lasts
+                at most {MAX_MUTE_DAYS} days. When it ends, alerts start again
+                by themselves.
               </p>
               <div className="flex flex-wrap gap-2">
                 <Button

@@ -70,8 +70,8 @@ Needs an owner or admin.
 | `version` | number | Optional. The `version` from the last read; a stale one is refused with `409` |
 | `threshold` | number | Failed runs in a row before an alert, 1 to 20 |
 | `timeLimitMinutes` | number \| null | Also alert after this long failing: `60`, `360` or `1440`; `null` or `0` for no time limit |
-| `remindDaily` | boolean | Remind once a day while a workflow keeps failing. Leave it out to keep it as it is |
-| `notifyRecovery` | boolean | Tell people when a workflow works again. Leave it out to keep it as it is |
+| `remindDaily` | boolean | Remind once a day while a workflow keeps failing. Leave it out to keep it as it is (on by default) |
+| `notifyRecovery` | boolean | Tell people when a workflow works again. Leave it out to keep it as it is (on by default) |
 | `recipientUserIds` | string[] | Members to email. Must include at least one owner or admin who can receive email |
 | `channels` | object[] | Optional. The full list of chat and PagerDuty methods, up to 20; leave it out to keep them as they are |
 

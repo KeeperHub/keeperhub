@@ -13,6 +13,7 @@ import type { FailureAlertDeliveryChannel as DeliveryChannel } from "@/lib/db/sc
 import type { Tx } from "@/lib/db/tx";
 import { oneLine } from "@/lib/notifications/chat-text";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
+import { HOUR_MS } from "@/lib/utils/duration";
 import {
   BACKUP_AFTER_MS,
   CLOCK_SKEW_MS,
@@ -138,8 +139,6 @@ async function countPausingWorkflows(organizationId: string): Promise<number> {
     );
   return row?.count ?? 0;
 }
-
-const HOUR_MS = 60 * 60 * 1000;
 
 /** One line of plain text: control and bidi characters could make it read as something else. */
 function cleanReason(raw: unknown): string | null {

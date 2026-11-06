@@ -906,7 +906,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         names.every((n) => m.text.includes(wfName(n)))
       );
       expect(mail?.subject).toContain(
-        "Daily reminder: 3 workflows still failing"
+        "Daily reminder: 3 workflows are still failing"
       );
       const counts = await db
         .select({ n: workflowFailureIncidents.reminderCount })
@@ -3189,6 +3189,12 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect((await save({})).rulesChanged).toBe(true);
       expect((await save({ remindDaily: false })).rulesChanged).toBe(false);
       expect((await save({ threshold: 4 })).rulesChanged).toBe(true);
+      // Left out of a save, the reminder setting stays as it was.
+      const [kept] = await db
+        .select({ remindDaily: orgFailureAlertSettings.remindDaily })
+        .from(orgFailureAlertSettings)
+        .where(eq(orgFailureAlertSettings.organizationId, org.orgId));
+      expect(kept?.remindDaily).toBe(false);
       expect(
         (await save({ threshold: 4, timeLimitMinutes: 60 })).rulesChanged
       ).toBe(true);

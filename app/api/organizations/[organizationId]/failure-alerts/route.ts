@@ -88,8 +88,9 @@ export async function PUT(
       after: {
         threshold: input.threshold,
         timeLimitMinutes: input.timeLimitMinutes,
-        remindDaily: input.remindDaily,
-        notifyRecovery: input.notifyRecovery,
+        // Left out means kept, so it is left out of the audit too.
+        remindDaily: input.remindDaily ?? undefined,
+        notifyRecovery: input.notifyRecovery ?? undefined,
         recipientUserIds: input.recipientUserIds,
         channels: input.channels?.map((c) => ({
           kind: c.kind,

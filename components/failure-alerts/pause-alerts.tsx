@@ -9,20 +9,23 @@ import { Notice, WARNING_TEXT } from "@/components/ui/notice";
 import { Switch } from "@/components/ui/switch";
 import { actorLabel } from "@/lib/notifications/failure-alerts/actor-label";
 import {
+  MAX_ORG_PAUSE_MS,
+  MAX_PAUSE_REASON,
+} from "@/lib/notifications/failure-alerts/constants";
+import {
   type OrgSettingsView,
   orgPauseEffect,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
+import { DAY_MS, HOUR_MS, MINUTE_MS } from "@/lib/utils/duration";
 import { ChoiceChips } from "./choice-chips";
 import { TextWithEmails } from "./email-text";
 import { formatWhen, toLocalInput } from "./format";
 
 type AlertsPause = NonNullable<OrgSettingsView["pause"]>;
 
-const HOUR_MS = 60 * 60 * 1000;
-
-const MAX_PAUSE_DAYS = 7;
-const MAX_REASON = 200;
+// The server's limits, so the form never promises what it refuses.
+const MAX_PAUSE_DAYS = MAX_ORG_PAUSE_MS / DAY_MS;
 
 /** "Paused by Dana (dana@x.com)", or by the account when the name is only a role. */
 function pauseAuthor(pause: AlertsPause): string {
@@ -39,8 +42,6 @@ const CHOICES = [
 
 type Choice = (typeof CHOICES)[number]["value"];
 
-const MINUTE_MS = 60 * 1000;
-
 /** "in 42 minutes", "in 5 hours", "in 2 days". */
 function timeLeft(ms: number): string {
   if (ms < HOUR_MS) {
@@ -51,7 +52,7 @@ function timeLeft(ms: number): string {
     const hours = Math.round(ms / HOUR_MS);
     return `in ${hours} hour${hours === 1 ? "" : "s"}`;
   }
-  return `in ${Math.round(ms / (24 * HOUR_MS))} days`;
+  return `in ${Math.round(ms / DAY_MS)} days`;
 }
 
 /**
@@ -194,7 +195,7 @@ export function PauseAlertsForm({
   const [error, setError] = useState<string | null>(null);
 
   const now = Date.now();
-  const latest = now + MAX_PAUSE_DAYS * 24 * HOUR_MS;
+  const latest = now + MAX_ORG_PAUSE_MS;
   let until: Date | null = null;
   if (choice !== "custom") {
     until = new Date(now + Number(choice) * HOUR_MS);
@@ -211,7 +212,7 @@ export function PauseAlertsForm({
   }
 
   const pickCustom = (value: string): void => {
-    const cap = Date.now() + MAX_PAUSE_DAYS * 24 * HOUR_MS;
+    const cap = Date.now() + MAX_ORG_PAUSE_MS;
     const over = Boolean(value) && new Date(value).getTime() > cap;
     // toLocalInput drops the seconds, so the snapped time stays inside the cap.
     setCustom(over ? toLocalInput(new Date(cap)) : value);
@@ -284,7 +285,7 @@ export function PauseAlertsForm({
         <Input
           className="h-9"
           id={`${idPrefix}-reason`}
-          maxLength={MAX_REASON}
+          maxLength={MAX_PAUSE_REASON}
           onChange={(e) => setReason(e.target.value)}
           placeholder="Contract upgrade"
           value={reason}

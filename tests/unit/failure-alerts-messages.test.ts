@@ -1316,3 +1316,57 @@ describe("typed names and reasons in notices", () => {
     expect(message.text).not.toContain("so an alert follows");
   });
 });
+
+describe("daily reminder digest", () => {
+  const listed = (
+    id: string,
+    name: string,
+    extra: Record<string, unknown> = {}
+  ) => ({
+    id,
+    name,
+    triggerLabel: "Schedule",
+    failureCount: 4,
+    lastError: "execution reverted",
+    openedBy: "count" as const,
+    ...extra,
+  });
+
+  it("reads as one sentence with a verb and says how to stop it", () => {
+    const message = renderMessage({
+      ...org,
+      kind: "grouped",
+      reminder: true,
+      workflows: [
+        listed("w1", "Keeper A"),
+        listed("w2", "Keeper B", { workflowPaused: true }),
+      ],
+    });
+    expect(message.subject).toBe(
+      "[Acme] Daily reminder: 2 workflows are still failing (1 turned off)"
+    );
+    expect(message.text).toContain(
+      "In Acme, 2 workflows are still failing (1 turned off)."
+    );
+    expect(message.text).toContain(
+      'turn off "Remind once a day" in Settings > Alerts'
+    );
+    expect(message.text).not.toContain("shared cause");
+  });
+
+  it("adds up when some are not running", () => {
+    const message = renderMessage({
+      ...org,
+      kind: "grouped",
+      reminder: true,
+      workflows: [
+        listed("w1", "Keeper A"),
+        listed("w2", "Keeper B"),
+        listed("w3", "Keeper C", { openedBy: "missed" }),
+      ],
+    });
+    expect(message.subject).toContain(
+      "3 workflows need attention: 2 still failing, 1 not running"
+    );
+  });
+});

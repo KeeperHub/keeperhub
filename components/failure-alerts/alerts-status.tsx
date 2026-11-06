@@ -349,9 +349,8 @@ export function AlertsHealth({
       action: "Open its Alerts",
     };
   };
-  // Failing while muted first, then failing, then other mutes and broken own methods.
+  // Failing first (nobody has acted), then failing while muted, then other mutes and broken own methods.
   const rows: AttentionRow[] = [
-    ...muted.filter((w) => w.failing).map(muteRow),
     ...data.failingNow
       .filter((w) => !mutedIds.has(w.workflowId))
       .map((w) => ({
@@ -365,6 +364,7 @@ export function AlertsHealth({
             : `${w.openedBy === "funding" ? "Wallet out of funds, " : ""}${failedRuns(w.failureCount)} in a row${ownRule(ownThreshold.get(w.workflowId))}, alert sent ${timeAgo(w.openedAt)}`
         }${pause ? `. Not reported until ${formatWhen(pause.until)}` : ""}`,
       })),
+    ...muted.filter((w) => w.failing).map(muteRow),
     ...muted.filter((w) => !w.failing).map(muteRow),
     ...data.customWorkflows
       .filter((w) => w.brokenMethods > 0)

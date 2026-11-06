@@ -859,7 +859,7 @@ type GroupedWorkflow = Extract<
   { kind: "grouped" }
 >["workflows"][number];
 
-const DIGEST_NOTE = `You get this once a day, for up to ${MAX_REMINDERS} days, while they keep failing or not running. To stop it for one workflow, mute it in its Properties, or turn off the daily reminder on the Alerts page.`;
+const DIGEST_NOTE = `You get this about once a day, for up to ${MAX_REMINDERS} days, while they keep failing or not running. To stop it for one workflow, mute it in its Properties; to stop it for all, turn off "Remind once a day" in Settings > Alerts.`;
 
 /** A grouped alert lists this many workflows, then "And N more". */
 const GROUPED_LIST_MAX = 10;
@@ -901,7 +901,9 @@ function groupedHeadline(
   const off = turnedOff > 0 ? ` (${turnedOff} turned off)` : "";
   const verb = reminder ? "still failing" : "started failing";
   if (notRunning === 0) {
-    return `${plural(failing, "workflow", "workflows")} ${verb}${off}`;
+    return reminder
+      ? `${plural(failing, "workflow is", "workflows are")} still failing${off}`
+      : `${plural(failing, "workflow", "workflows")} started failing${off}`;
   }
   if (failing === 0) {
     return `${plural(notRunning, "workflow is", "workflows are")} ${reminder ? "still " : ""}not running`;

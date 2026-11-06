@@ -1359,16 +1359,13 @@ export async function queueReminders(
   const groupingOrgs = [...owed]
     .filter(([, list]) => list.some(canGroup))
     .map(([organizationId]) => organizationId);
+  // Only rows not yet due, so the due ones do not use up the limit.
   const early = await openIncidentsNotifiedBy(
     new Date(now.getTime() - REMINDER_INTERVAL_MS + DIGEST_PULL_IN_MS),
-    groupingOrgs
+    groupingOrgs,
+    new Date(now.getTime() - REMINDER_INTERVAL_MS)
   );
-  const dueIds = new Set(due.map((d) => d.incident.id));
-  const earlyOwed = await owedByOrg(
-    early.filter((d) => !dueIds.has(d.incident.id)),
-    now,
-    false
-  );
+  const earlyOwed = await owedByOrg(early, now, false);
 
   for (const [organizationId, list] of owed) {
     let members: OrgMember[];
@@ -1412,8 +1409,9 @@ export async function queueReminders(
         );
       }
     }
+    const groupedIds = new Set(grouped.map((g) => g.incident.id));
     for (const { incident, policy } of list) {
-      if (grouped.some((g) => g.incident.id === incident.id)) {
+      if (groupedIds.has(incident.id)) {
         continue;
       }
       try {
@@ -1440,8 +1438,12 @@ type OwedReminder = {
   policy: EffectivePolicy;
 };
 
-/** Open incidents last notified at or before `before` (in these orgs, when given), oldest first. */
-async function openIncidentsNotifiedBy(before: Date, orgIds?: string[]) {
+/** Open incidents last notified at or before `before` (and after `after`, when given), oldest first. */
+async function openIncidentsNotifiedBy(
+  before: Date,
+  orgIds?: string[],
+  after?: Date
+) {
   if (orgIds?.length === 0) {
     return [];
   }
@@ -1463,6 +1465,7 @@ async function openIncidentsNotifiedBy(before: Date, orgIds?: string[]) {
         isNull(workflowFailureIncidents.resolvedAt),
         isNotNull(workflowFailureIncidents.alertQueuedAt),
         lte(workflowFailureIncidents.lastNotifiedAt, before),
+        after ? gt(workflowFailureIncidents.lastNotifiedAt, after) : undefined,
         lt(workflowFailureIncidents.reminderCount, MAX_REMINDERS),
         orgIds
           ? inArray(workflowFailureIncidents.organizationId, orgIds)
