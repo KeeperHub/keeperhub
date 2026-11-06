@@ -58,9 +58,9 @@ export function SettingsShell({
     >
       <div className="flex min-h-0 flex-1">
         <SettingsRail />
-        {/* The gutter is kept, so a page that scrolls is not narrower than one that does not. */}
+        {/* From md the gutter is kept, so a page that scrolls is not narrower; phones overlay it. */}
         <main
-          className="min-w-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
+          className="min-w-0 flex-1 overflow-y-auto md:[scrollbar-gutter:stable]"
           data-testid="settings-main"
         >
           {!menu && <SettingsBackBar />}
