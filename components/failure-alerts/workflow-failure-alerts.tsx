@@ -40,10 +40,11 @@ import {
   type WorkflowAlertView,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
-import { registerExtraSave } from "@/lib/workflow/extra-saves";
 import {
-  hasUnsavedChangesAtom,
-  isSavingAtom,
+  extraUnsavedAtom,
+  registerExtraSave,
+} from "@/lib/workflow/extra-saves";
+import {
   isWorkflowEnabled,
   propertiesPanelActiveTabAtom,
   workflowEnableToggleAtom,
@@ -68,7 +69,12 @@ import {
   nextKey,
 } from "./method-drafts";
 import { NotificationHistory } from "./notification-history";
-import { SaveError, type SaveRefusal } from "./save-state";
+import {
+  NETWORK_REFUSAL,
+  refusalFrom,
+  SaveError,
+  type SaveRefusal,
+} from "./save-state";
 
 type Loaded = WorkflowAlertView & { canManage: boolean };
 type Panel = null | "mute";
@@ -237,6 +243,14 @@ function isMutedView(view: Loaded): boolean {
   return Boolean(view.override.mutedUntil || view.override.muteUntilSuccess);
 }
 
+const ALERTS_NOT_SAVED =
+  "The alert rule change was not saved. Open Alerts for this workflow to try again.";
+// After the panel closes nothing is kept, so these say what the workflow still uses.
+const ALERTS_DROPPED =
+  "Your unfinished alert rule change was dropped. This workflow keeps its saved rules.";
+const ALERTS_LOST =
+  "Your alert rule change could not be saved. This workflow keeps its saved rules.";
+
 /** "Alerts" in a workflow's Properties: the rule, what is failing, mute and change. */
 export function WorkflowFailureAlerts({
   workflowId,
@@ -281,32 +295,59 @@ export function WorkflowFailureAlerts({
     ready: boolean;
     save: () => Promise<boolean>;
   } | null>(null);
-  const setWorkflowUnsaved = useSetAtom(hasUnsavedChangesAtom);
-  const setWorkflowSaving = useSetAtom(isSavingAtom);
+  const setWorkflowUnsaved = useSetAtom(extraUnsavedAtom);
+  // Saves go out one after another, each on the version the last one returned.
+  const viewRef = useRef<Loaded | null>(null);
+  const queueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const inFlightRef = useRef(0);
+  const timerRef = useRef<number | null>(null);
+  const draftSaveRef = useRef<{ key: string; done: Promise<boolean> } | null>(
+    null
+  );
+  // The draft "Use org rules" is dropping; nothing may send it after that.
+  const droppedKeyRef = useRef<string | null>(null);
+  const sourceRef = useRef<string | null>(null);
+  // The custom rules as last refused, so the panel offers a retry, not a wait.
+  const [failedKey, setFailedKey] = useState<string | null>(null);
+  // A failed switch to the org rules is retried by pressing it again, not here.
+  const [failedReset, setFailedReset] = useState(false);
 
   const url = `/api/workflows/${encodeURIComponent(workflowId)}/failure-alerts`;
 
-  const apply = useCallback((next: Loaded) => {
+  const showView = useCallback((next: Loaded) => {
+    viewRef.current = next;
     setView(next);
-    setTab(next.effective.source === "custom" ? "custom" : "org");
-    setThreshold(
-      next.override.threshold ? String(next.override.threshold) : ""
-    );
-    let limit = "org";
-    if (next.override.timeLimitMinutes === 0) {
-      limit = "off";
-    } else if (next.override.timeLimitMinutes) {
-      limit = String(next.override.timeLimitMinutes);
-    }
-    setTimeLimit(limit);
-    setCustomRecipients(next.override.recipientUserIds);
-    setPauseWorkflow(next.override.pauseWorkflow);
-    setCustomChannels(
-      next.override.customChannels
-        ? draftsFromViews(next.override.channels)
-        : null
-    );
   }, []);
+
+  const apply = useCallback(
+    (next: Loaded) => {
+      showView(next);
+      setFailedKey(null);
+      // The tab follows the rules in use only when they change, not on every save.
+      if (sourceRef.current !== next.effective.source) {
+        sourceRef.current = next.effective.source;
+        setTab(next.effective.source === "custom" ? "custom" : "org");
+      }
+      setThreshold(
+        next.override.threshold ? String(next.override.threshold) : ""
+      );
+      let limit = "org";
+      if (next.override.timeLimitMinutes === 0) {
+        limit = "off";
+      } else if (next.override.timeLimitMinutes) {
+        limit = String(next.override.timeLimitMinutes);
+      }
+      setTimeLimit(limit);
+      setCustomRecipients(next.override.recipientUserIds);
+      setPauseWorkflow(next.override.pauseWorkflow);
+      setCustomChannels(
+        next.override.customChannels
+          ? draftsFromViews(next.override.channels)
+          : null
+      );
+    },
+    [showView]
+  );
 
   const load = useCallback(
     async (isActive: () => boolean = () => true): Promise<void> => {
@@ -373,19 +414,39 @@ export function WorkflowFailureAlerts({
   // biome-ignore lint/correctness/useExhaustiveDependencies: the drafts are the trigger; the ref holds what to save
   useEffect(() => {
     const pending = autosaveRef.current;
+    setWorkflowUnsaved(pending?.dirty === true);
     if (!pending?.dirty) {
       return;
     }
-    setWorkflowUnsaved(true);
     if (!pending.ready) {
       return;
     }
     const timer = window.setTimeout(() => {
-      autosaveRef.current?.save().catch(() => undefined);
+      timerRef.current = null;
+      autosaveRef.current
+        ?.save()
+        .then((ok) => {
+          // The status line can sit below the fold; a failure must be seen.
+          if (!ok) {
+            toast.error("Alert rules not saved", {
+              id: SAVE_TOAST,
+              description: "The Alerts section says why, with Try again.",
+            });
+          }
+        })
+        .catch(() => undefined);
     }, AUTOSAVE_MS);
-    return () => window.clearTimeout(timer);
+    timerRef.current = timer;
+    return () => {
+      window.clearTimeout(timer);
+      if (timerRef.current === timer) {
+        timerRef.current = null;
+      }
+    };
   }, [threshold, timeLimit, customRecipients, customChannels, pauseWorkflow]);
 
+  // Resolves true once the custom rules are saved; an unfinished draft stays
+  // unsaved here, and a failed save says so wherever the user is.
   useEffect(
     () =>
       registerExtraSave(async () => {
@@ -393,9 +454,43 @@ export function WorkflowFailureAlerts({
         if (!pending?.dirty) {
           return true;
         }
-        return pending.ready ? await pending.save() : false;
+        if (!pending.ready) {
+          return false;
+        }
+        const ok = await pending.save();
+        if (!ok) {
+          toast.error(ALERTS_NOT_SAVED, { id: SAVE_TOAST });
+        }
+        return ok;
       }),
     []
+  );
+
+  // Leaving the panel (another node picked) sends a pending edit at once.
+  useEffect(
+    () => () => {
+      const pending = autosaveRef.current;
+      if (!pending?.dirty) {
+        return;
+      }
+      if (!pending.ready) {
+        // The panel is gone, so an unfinished edit cannot be kept; say so.
+        setWorkflowUnsaved(false);
+        toast.error(ALERTS_DROPPED, { id: SAVE_TOAST });
+        return;
+      }
+      pending
+        .save()
+        .then((ok) => {
+          if (!ok) {
+            toast.error(ALERTS_LOST, { id: SAVE_TOAST });
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => setWorkflowUnsaved(false));
+    },
+    // A Jotai setter never changes, so this still runs only on unmount.
+    [setWorkflowUnsaved]
   );
 
   const openPanel = (next: Exclude<Panel, null>): void => {
@@ -407,11 +502,12 @@ export function WorkflowFailureAlerts({
     const res = await fetch(url);
     if (res.ok) {
       const body = (await res.json()) as Loaded;
-      setView((prev) =>
-        prev ? { ...prev, connections: body.connections } : prev
-      );
+      const prev = viewRef.current;
+      if (prev) {
+        showView({ ...prev, connections: body.connections });
+      }
     }
-  }, [url]);
+  }, [showView, url]);
 
   // Hidden where alerts are not switched on, and until that is known.
   if (alertsEnabled !== true) {
@@ -470,65 +566,84 @@ export function WorkflowFailureAlerts({
     );
 
   /** The override as stored, so a mute change keeps the custom fields. */
-  const storedOverride = (): Record<string, unknown> => ({
-    threshold: view.override.threshold,
-    timeLimitMinutes: view.override.timeLimitMinutes,
-    recipientUserIds: view.override.recipientUserIds,
-    customChannels: view.override.customChannels,
-    channels: channelsPayload(draftsFromViews(view.override.channels)),
-    pauseWorkflow: view.override.pauseWorkflow,
+  const storedOverride = (latest: Loaded): Record<string, unknown> => ({
+    threshold: latest.override.threshold,
+    timeLimitMinutes: latest.override.timeLimitMinutes,
+    recipientUserIds: latest.override.recipientUserIds,
+    customChannels: latest.override.customChannels,
+    channels: channelsPayload(draftsFromViews(latest.override.channels)),
+    pauseWorkflow: latest.override.pauseWorkflow,
   });
   const orgPause =
     view.org.pause && new Date(view.org.pause.until).getTime() > Date.now()
       ? view.org.pause
       : null;
 
-  const put = async (
-    body: Record<string, unknown>,
-    done: string | null,
-    /** Apply the answer only if the drafts are still what was sent. */
-    sentKey?: string
-  ): Promise<boolean> => {
-    setSaving(true);
-    setWorkflowSaving(true);
-    setSaveError(null);
-    try {
-      const res = await fetch(url, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...body, version: view.version }),
-      });
-      const data = (await res.json().catch(() => ({}))) as Loaded & {
-        error?: string;
-      };
-      if (!res.ok) {
-        setSaveError({
-          message: data.error ?? `Could not save (HTTP ${res.status}).`,
-          stale: res.status === 409,
-        });
-        return false;
-      }
-      // An edit made while this was saving stays on screen and saves next.
-      if (sentKey === undefined || sentKey === autosaveRef.current?.key) {
-        apply(data);
-      } else {
-        setView(data);
-      }
-      invalidateNotificationStatus(organization?.id);
-      if (done) {
-        toast.success(done, { id: SAVE_TOAST });
-      }
-      return true;
-    } catch {
-      setSaveError({
-        message:
-          "Could not reach KeeperHub. Check your connection and try again.",
-      });
-      return false;
-    } finally {
-      setSaving(false);
-      setWorkflowSaving(false);
+  const cancelAutosave = (): void => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
     }
+  };
+
+  /** Queues a save; the body is built from the view as the last save left it. */
+  const put = (
+    body: (latest: Loaded) => Record<string, unknown>,
+    done: string | null,
+    options: {
+      /** The draft sent; its answer resets the drafts only if still current. */
+      sentKey?: string;
+      /** Reset the drafts to the answer (switching which rules are in use). */
+      reset?: boolean;
+    } = {}
+  ): Promise<boolean> => {
+    inFlightRef.current += 1;
+    setSaving(true);
+    setSaveError(null);
+    const run = async (): Promise<boolean> => {
+      const latest = viewRef.current ?? view;
+      try {
+        const res = await fetch(url, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...body(latest), version: latest.version }),
+        });
+        const data = (await res.json().catch(() => ({}))) as Loaded & {
+          error?: string;
+        };
+        if (!res.ok) {
+          setSaveError(refusalFrom(res.status, data.error));
+          return false;
+        }
+        // An edit made while this was saving stays on screen and saves next.
+        const current = autosaveRef.current;
+        const keepDrafts =
+          options.sentKey === undefined
+            ? !options.reset && current?.dirty === true
+            : options.sentKey !== current?.key;
+        if (keepDrafts) {
+          showView(data);
+        } else {
+          apply(data);
+        }
+        invalidateNotificationStatus(organization?.id);
+        if (done) {
+          toast.success(done, { id: SAVE_TOAST });
+        }
+        return true;
+      } catch {
+        setSaveError(NETWORK_REFUSAL);
+        return false;
+      } finally {
+        inFlightRef.current -= 1;
+        if (inFlightRef.current === 0) {
+          setSaving(false);
+        }
+      }
+    };
+    const next = queueRef.current.then(run);
+    queueRef.current = next;
+    return next;
   };
 
   const mute = async (choice: number | "success" | "date"): Promise<void> => {
@@ -542,12 +657,13 @@ export function WorkflowFailureAlerts({
     } else if (choice !== "success") {
       mutedUntil = new Date(Date.now() + choice).toISOString();
     }
+    sendPendingDraft();
     const ok = await put(
-      {
-        ...storedOverride(),
+      (latest) => ({
+        ...storedOverride(latest),
         mutedUntil,
         muteUntilSuccess: choice === "success",
-      },
+      }),
       "Alerts muted for this workflow"
     );
     if (ok) {
@@ -556,7 +672,8 @@ export function WorkflowFailureAlerts({
   };
 
   const unmute = async (): Promise<void> => {
-    await put(storedOverride(), "Alerts back on for this workflow");
+    sendPendingDraft();
+    await put(storedOverride, "Alerts back on for this workflow");
   };
 
   const timeLimitValue = (): number | null => {
@@ -594,20 +711,38 @@ export function WorkflowFailureAlerts({
   );
   const rulesReady = !thresholdInvalid && methodsReady;
 
-  const saveDraft = async (): Promise<boolean> => {
-    const ok = await put(
-      {
-        ...draftRules,
-        mutedUntil: view.override.mutedUntil,
-        muteUntilSuccess: view.override.muteUntilSuccess,
-      },
-      null,
-      draftKey
-    );
-    if (ok && draftKey === autosaveRef.current?.key) {
-      setWorkflowUnsaved(false);
+  const saveDraft = (): Promise<boolean> => {
+    cancelAutosave();
+    const key = draftKey;
+    if (droppedKeyRef.current === key) {
+      return Promise.resolve(true);
     }
-    return ok;
+    // The timer and the toolbar Save can ask for the same draft; send it once.
+    if (draftSaveRef.current?.key === key) {
+      return draftSaveRef.current.done;
+    }
+    const rules = draftRules;
+    const done = put(
+      (latest) => ({
+        ...rules,
+        mutedUntil: latest.override.mutedUntil,
+        muteUntilSuccess: latest.override.muteUntilSuccess,
+      }),
+      null,
+      { sentKey: key }
+    ).then((ok) => {
+      if (draftSaveRef.current?.key === key) {
+        draftSaveRef.current = null;
+      }
+      setFailedKey(ok ? null : key);
+      setFailedReset(false);
+      if (ok && key === autosaveRef.current?.key) {
+        setWorkflowUnsaved(false);
+      }
+      return ok;
+    });
+    draftSaveRef.current = { key, done };
+    return done;
   };
   autosaveRef.current = {
     key: draftKey,
@@ -616,33 +751,60 @@ export function WorkflowFailureAlerts({
     save: saveDraft,
   };
 
+  /** Before a mute change, a finished edit goes out first so neither undoes the other. */
+  const sendPendingDraft = (): void => {
+    if (rulesDirty && rulesReady) {
+      saveDraft().catch(() => undefined);
+    } else {
+      cancelAutosave();
+    }
+  };
+
   /** Picking Custom rules saves the org's values as this workflow's own. */
   const switchToCustom = async (): Promise<void> => {
+    cancelAutosave();
     await put(
-      {
-        threshold: view.org.threshold,
-        timeLimitMinutes: view.org.timeLimitMinutes ?? 0,
+      (latest) => ({
+        threshold: latest.org.threshold,
+        timeLimitMinutes: latest.org.timeLimitMinutes ?? 0,
         recipientUserIds: null,
         customChannels: false,
         channels: [],
         pauseWorkflow: false,
-        mutedUntil: view.override.mutedUntil,
-        muteUntilSuccess: view.override.muteUntilSuccess,
-      },
-      "This workflow now has its own rules"
+        mutedUntil: latest.override.mutedUntil,
+        muteUntilSuccess: latest.override.muteUntilSuccess,
+      }),
+      "This workflow now has its own rules",
+      { reset: true }
     );
   };
 
   const followOrgSetting = async (): Promise<void> => {
+    // Going back to the org rules drops the custom ones, edits included.
+    cancelAutosave();
+    const dropped = draftKey;
+    droppedKeyRef.current = dropped;
     const ok = await put(
-      {
-        mutedUntil: view.override.mutedUntil,
-        muteUntilSuccess: view.override.muteUntilSuccess,
-      },
-      "Back on the org rules"
+      (latest) => ({
+        mutedUntil: latest.override.mutedUntil,
+        muteUntilSuccess: latest.override.muteUntilSuccess,
+      }),
+      "Back on the org rules",
+      { reset: true }
     );
+    droppedKeyRef.current = null;
     if (ok) {
       setPanel(null);
+    } else {
+      // Say so on the tab it was pressed on; retrying is pressing it again.
+      setFailedKey(dropped);
+      setFailedReset(true);
+      toast.error(
+        "Still on the custom rules: the switch to the org rules was not saved.",
+        {
+          id: SAVE_TOAST,
+        }
+      );
     }
   };
 
@@ -671,16 +833,21 @@ export function WorkflowFailureAlerts({
     }
     setTab(next);
   };
-  let autosaveLine = "All changes saved.";
+  let autosaveLine = "All changes saved";
   if (saving) {
-    autosaveLine = "Saving...";
+    autosaveLine = "Saving…";
   } else if (rulesDirty && !rulesReady) {
     autosaveLine = thresholdInvalid
-      ? "Not saved: fix the number of failed runs."
-      : "Not saved yet: finish the new method (connection and where to send).";
+      ? "Not saved: fix the number of failed runs"
+      : "Not saved: finish the new method (connection and where to send)";
+  } else if (rulesDirty && failedKey === draftKey) {
+    autosaveLine = "Not saved";
   } else if (rulesDirty) {
-    autosaveLine = "Saving shortly...";
+    autosaveLine = "Saving shortly…";
   }
+  const saveFailed = rulesDirty && rulesReady && failedKey === draftKey;
+  // Only a network or server failure is worth sending again as is.
+  const canRetry = saveFailed && !failedReset && saveError?.retryable === true;
 
   return (
     <div
@@ -1158,13 +1325,27 @@ export function WorkflowFailureAlerts({
                       "text-xs",
                       rulesDirty && !rulesReady
                         ? WARNING_TEXT
-                        : "text-muted-foreground"
+                        : "text-muted-foreground",
+                      saveFailed && "text-destructive"
                     )}
                     data-testid="failure-alerts-autosave"
                     role="status"
                   >
                     {autosaveLine}
                   </span>
+                )}
+                {editing && canRetry && !saving && (
+                  <Button
+                    className="h-auto px-0 text-xs"
+                    data-testid="failure-alerts-autosave-retry"
+                    onClick={() => {
+                      saveDraft().catch(() => undefined);
+                    }}
+                    type="button"
+                    variant="link"
+                  >
+                    Try again
+                  </Button>
                 )}
                 {!custom && canManage && (
                   <Button

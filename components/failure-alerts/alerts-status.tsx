@@ -4,7 +4,7 @@ import { AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
 import Link from "next/link";
 import { timeAgo } from "@/components/settings/hub/relative-time";
 import { Button } from "@/components/ui/button";
-import { Notice, WARNING_TEXT } from "@/components/ui/notice";
+import { Notice, WARNING_SURFACE, WARNING_TEXT } from "@/components/ui/notice";
 import {
   EMAILS_KEPT_FOR_NEW_FAILURES,
   isNotRunning,
@@ -150,7 +150,7 @@ function Headline({
 export function statusCardClass(data: OrgSettingsView): string {
   const paused =
     data.pause && new Date(data.pause.until).getTime() > Date.now();
-  return paused ? "border-yellow-500/50 bg-yellow-500/5" : "";
+  return paused ? WARNING_SURFACE : "";
 }
 
 type AttentionRow = {

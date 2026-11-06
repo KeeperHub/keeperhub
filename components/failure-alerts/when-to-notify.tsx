@@ -1,7 +1,6 @@
 "use client";
 
-import { ChevronRight, Loader2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { ChevronRight } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,12 +21,6 @@ import {
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
 import { timeLimitLabel } from "./format";
-import {
-  type SaveAction,
-  SaveError,
-  SaveFeedback,
-  useSaveState,
-} from "./save-state";
 
 /** The rules every method follows. The threshold is held as typed. */
 export type RulesDraft = {
@@ -62,30 +55,56 @@ export function rulesDirty(draft: RulesDraft, saved: SavedRules): boolean {
   );
 }
 
-/** The rules for every method; with onSave they have their own Save, else the page saves them. */
+/** Moves each field still at its old saved value to the new one; edited fields stay. */
+export function rebaseRules(
+  draft: RulesDraft,
+  before: SavedRules,
+  after: SavedRules
+): RulesDraft {
+  const old = rulesDraftFrom(before);
+  const next = rulesDraftFrom(after);
+  const rebased: RulesDraft = {
+    threshold:
+      draft.threshold.trim() === old.threshold
+        ? next.threshold
+        : draft.threshold,
+    timeLimitMinutes:
+      draft.timeLimitMinutes === old.timeLimitMinutes
+        ? next.timeLimitMinutes
+        : draft.timeLimitMinutes,
+    remindDaily:
+      draft.remindDaily === old.remindDaily
+        ? next.remindDaily
+        : draft.remindDaily,
+    notifyRecovery:
+      draft.notifyRecovery === old.notifyRecovery
+        ? next.notifyRecovery
+        : draft.notifyRecovery,
+  };
+  // The same object when nothing moved, so an unrelated save re-arms no autosave.
+  const same = (Object.keys(rebased) as (keyof RulesDraft)[]).every(
+    (key) => rebased[key] === draft[key]
+  );
+  return same ? draft : rebased;
+}
+
+/** The rules every method follows; the page saves them. */
 export function WhenToNotify({
   draft,
   saved,
   canManage,
   onChange,
-  onSave,
-  onReload,
 }: {
   draft: RulesDraft;
   saved: SavedRules;
   canManage: boolean;
   onChange: (next: RulesDraft) => void;
-  onSave?: SaveAction;
-  onReload?: () => void;
 }): React.ReactElement {
-  const save = useSaveState();
   const disabled = !canManage;
   const invalid = !isValidThreshold(draft.threshold);
-  const dirty = rulesDirty(draft, saved);
   const runs = invalid ? saved.threshold : Number(draft.threshold);
 
   const change = (patch: Partial<RulesDraft>): void => {
-    save.reset();
     onChange({ ...draft, ...patch });
   };
 
@@ -208,38 +227,6 @@ export function WhenToNotify({
         />
         Tell people when it works again
       </label>
-      <SaveError
-        error={save.error}
-        onReload={
-          onReload
-            ? () => {
-                save.reset();
-                onReload();
-              }
-            : undefined
-        }
-      />
-      {canManage && onSave && (
-        <div className="flex flex-wrap items-center gap-2 border-t pt-3">
-          <Button
-            aria-label="Save rules"
-            disabled={!dirty || invalid || save.state === "saving"}
-            onClick={() => save.run(onSave)}
-            size="sm"
-            type="button"
-          >
-            {save.state === "saving" ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : null}
-            Save
-          </Button>
-          <SaveFeedback
-            dirty={dirty}
-            state={save.state}
-            testId="failure-alerts-rules-save"
-          />
-        </div>
-      )}
     </div>
   );
 }

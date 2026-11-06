@@ -11,7 +11,7 @@ import {
 } from "@/components/settings/hub/section";
 import { FormSkeleton } from "@/components/settings/hub/skeletons";
 import { Button } from "@/components/ui/button";
-import { Notice } from "@/components/ui/notice";
+import { Notice, WARNING_TEXT } from "@/components/ui/notice";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSession } from "@/lib/auth-client";
 import { invalidateNotificationStatus } from "@/lib/hooks/use-notifications";
@@ -19,6 +19,7 @@ import type {
   ChannelView,
   OrgSettingsView,
 } from "@/lib/notifications/failure-alerts/view-types";
+import { cn } from "@/lib/utils";
 import { AlertsHealth, statusCardClass } from "./alerts-status";
 import { fetchView, ViewError } from "./api";
 import { AddMethodButton } from "./channel-list-editor";
@@ -44,11 +45,17 @@ import {
 } from "./method-drafts";
 import { NotificationHistory } from "./notification-history";
 import { AlertsStateBody, AlertsSwitch, PauseAlertsForm } from "./pause-alerts";
-import { SaveError, type SaveRefusal } from "./save-state";
+import {
+  NETWORK_REFUSAL,
+  refusalFrom,
+  SaveError,
+  type SaveRefusal,
+} from "./save-state";
 import { UnsavedChangesGuard } from "./unsaved-guard";
 import {
   isValidThreshold,
   type RulesDraft,
+  rebaseRules,
   rulesDirty,
   rulesDraftFrom,
   WhenToNotify,
@@ -145,14 +152,35 @@ type AutoSave =
   | { state: "idle" | "saving" | "saved" }
   | { state: "error"; refusal: SaveRefusal };
 
-/** "Saving…", "Saved" or what went wrong, where a card's Save button would be. */
+function sameIds(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((id) => b.includes(id));
+}
+
+/** "Saving…", "Saved", or "Not saved" with a retry, where a card's Save button would be. */
 function AutoSaveStatus({
   status,
   testId,
+  onRetry,
+  blocked,
 }: {
   status: AutoSave;
   testId: string;
+  onRetry: () => void;
+  /** Why the current edit cannot save; outranks an earlier "Saved". */
+  blocked?: string | null;
 }): React.ReactElement | null {
+  if (blocked) {
+    return (
+      <span
+        className={cn("text-xs", WARNING_TEXT)}
+        data-state="blocked"
+        data-testid={testId}
+        role="status"
+      >
+        Not saved: {blocked}
+      </span>
+    );
+  }
   if (status.state === "idle") {
     return null;
   }
@@ -173,6 +201,17 @@ function AutoSaveStatus({
       role="status"
     >
       {text}
+      {status.state === "error" && status.refusal.retryable && (
+        <Button
+          className="ml-2 h-auto px-0 text-xs"
+          data-testid={`${testId}-retry`}
+          onClick={onRetry}
+          type="button"
+          variant="link"
+        >
+          Try again
+        </Button>
+      )}
     </span>
   );
 }
@@ -239,13 +278,42 @@ export function OrgFailureAlertsSection({
   const addRef = useRef<HTMLButtonElement>(null);
   // Saves run one after another, each on top of the one before.
   const queueRef = useRef<Promise<unknown>>(Promise.resolve());
+  // The drafts already queued, so a re-armed timer does not send them twice.
+  const queuedRef = useRef<{ rules: unknown; recipients: unknown }>({
+    rules: null,
+    recipients: null,
+  });
   const url = `/api/organizations/${encodeURIComponent(organizationId ?? "")}/failure-alerts`;
 
-  const accept = useCallback((body: Loaded): void => {
-    savedRef.current = body;
-    setData(body);
-    setCards((current) => reconcile(current, body));
-  }, []);
+  /** A newer saved body: unedited drafts follow it; the part just sent waits for its own save. */
+  const accept = useCallback(
+    (body: Loaded, sent: "rules" | "recipients" | null = null): void => {
+      const before = savedRef.current;
+      // A read that left before a newer save must not roll the page back.
+      if (before && body.version < before.version) {
+        return;
+      }
+      savedRef.current = body;
+      setData(body);
+      setCards((current) => reconcile(current, body));
+      if (!before) {
+        return;
+      }
+      if (sent !== "rules") {
+        setRules((current) =>
+          current ? rebaseRules(current, before, body) : current
+        );
+      }
+      if (sent !== "recipients") {
+        setRecipients((current) =>
+          sameIds(current, before.recipientUserIds)
+            ? [...body.recipientUserIds]
+            : current
+        );
+      }
+    },
+    []
+  );
 
   /** Load, or reload after someone else saved: every draft starts over. */
   const load = useCallback(
@@ -310,16 +378,20 @@ export function OrgFailureAlertsSection({
     return () => window.clearTimeout(timer);
   }, [rules, data]);
 
+  // An invalid edit is not saved, so an earlier "saved" toast must not linger.
+  const rulesInvalid = Boolean(rules && !isValidThreshold(rules.threshold));
+  useEffect(() => {
+    if (rulesInvalid) {
+      toast.dismiss("failure-alerts-rules-saved");
+    }
+  }, [rulesInvalid]);
+
   // So do the people email goes to; at least one must stay chosen.
   useEffect(() => {
     if (!data?.canManage || recipients.length === 0) {
       return;
     }
-    const saved = data.recipientUserIds;
-    if (
-      recipients.length === saved.length &&
-      recipients.every((id) => saved.includes(id))
-    ) {
+    if (sameIds(recipients, data.recipientUserIds)) {
       return;
     }
     const timer = window.setTimeout(() => {
@@ -392,25 +464,13 @@ export function OrgFailureAlertsSection({
             error?: string;
           };
           if (!res.ok) {
-            return {
-              ok: false,
-              refusal: {
-                message: body.error ?? `Could not save (HTTP ${res.status}).`,
-                stale: res.status === 409,
-              },
-            };
+            return { ok: false, refusal: refusalFrom(res.status, body.error) };
           }
           // The banner and nav read health and unreachable state from status.
           invalidateNotificationStatus(organizationId ?? undefined);
           return { ok: true, body };
         } catch {
-          return {
-            ok: false,
-            refusal: {
-              message:
-                "Could not reach KeeperHub. Check your connection and try again.",
-            },
-          };
+          return { ok: false, refusal: NETWORK_REFUSAL };
         }
       };
       const next = queueRef.current.then(run);
@@ -474,6 +534,13 @@ export function OrgFailureAlertsSection({
 
   const orgId = organizationId ?? "";
   const canManage = data.canManage;
+  const rulesBlocked =
+    canManage &&
+    rules &&
+    rulesDirty(rules, data) &&
+    !isValidThreshold(rules.threshold)
+      ? "fix the number of failed runs"
+      : null;
   const pause =
     data.pause && new Date(data.pause.until).getTime() > Date.now()
       ? data.pause
@@ -481,9 +548,7 @@ export function OrgFailureAlertsSection({
   const emailReaches = data.members.some(
     (m) => m.reachable && data.recipientUserIds.includes(m.userId)
   );
-  const recipientsDirty =
-    recipients.length !== data.recipientUserIds.length ||
-    recipients.some((id) => !data.recipientUserIds.includes(id));
+  const recipientsDirty = !sameIds(recipients, data.recipientUserIds);
   // Leaving warns only about what would be lost: unsaved methods, or an
   // autosave not sent yet.
   const anyDirty =
@@ -535,6 +600,10 @@ export function OrgFailureAlertsSection({
 
   const saveRules = async (): Promise<void> => {
     const draft = rules;
+    if (queuedRef.current.rules === draft) {
+      return;
+    }
+    queuedRef.current.rules = draft;
     const before = rulesDraftFrom(data);
     setRulesSave({ state: "saving" });
     const result = await put((saved) => ({
@@ -544,11 +613,14 @@ export function OrgFailureAlertsSection({
       remindDaily: draft.remindDaily,
       notifyRecovery: draft.notifyRecovery,
     }));
+    if (queuedRef.current.rules === draft) {
+      queuedRef.current.rules = null;
+    }
     if (!result.ok) {
       setRulesSave({ state: "error", refusal: result.refusal });
       return;
     }
-    accept(result.body);
+    accept(result.body, "rules");
     // An edit made while saving stays on screen and saves next.
     if (rulesRef.current === draft) {
       setRules(rulesDraftFrom(result.body));
@@ -562,17 +634,24 @@ export function OrgFailureAlertsSection({
 
   const saveRecipients = async (): Promise<void> => {
     const chosen = recipients;
+    if (queuedRef.current.recipients === chosen) {
+      return;
+    }
+    queuedRef.current.recipients = chosen;
     const before = [...data.recipientUserIds];
     setEmailSave({ state: "saving" });
     const result = await put((saved) => ({
       ...basePayload(saved),
       recipientUserIds: chosen,
     }));
+    if (queuedRef.current.recipients === chosen) {
+      queuedRef.current.recipients = null;
+    }
     if (!result.ok) {
       setEmailSave({ state: "error", refusal: result.refusal });
       return;
     }
-    accept(result.body);
+    accept(result.body, "recipients");
     if (recipientsRef.current === chosen) {
       setRecipients([...result.body.recipientUserIds]);
     }
@@ -814,6 +893,14 @@ export function OrgFailureAlertsSection({
           <SettingsCard
             action={
               <AutoSaveStatus
+                blocked={
+                  canManage && recipients.length === 0
+                    ? "choose at least one person"
+                    : null
+                }
+                onRetry={() => {
+                  saveRecipients().catch(() => undefined);
+                }}
                 status={emailSave}
                 testId="failure-alerts-email-autosave"
               />
@@ -909,6 +996,10 @@ export function OrgFailureAlertsSection({
           <SettingsCard
             action={
               <AutoSaveStatus
+                blocked={rulesBlocked}
+                onRetry={() => {
+                  saveRules().catch(() => undefined);
+                }}
                 status={rulesSave}
                 testId="failure-alerts-rules-autosave"
               />
@@ -924,7 +1015,6 @@ export function OrgFailureAlertsSection({
                 canManage={canManage}
                 draft={rules}
                 onChange={setRules}
-                onReload={reload}
                 saved={data}
               />
               {data.customWorkflows.length > 0 && (

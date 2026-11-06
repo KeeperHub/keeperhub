@@ -70,8 +70,7 @@ export function ChannelListEditor({
   onChange: (channels: DraftChannel[]) => void;
   onConnectionsChanged: () => Promise<void> | void;
 }): React.ReactElement {
-  // An Undo can come long after the removal, so it works on the list as it
-  // is by then rather than the one it was removed from.
+  // An Undo or a Test result can come later; both use the list as it is then.
   const latest = useRef({ channels, onChange });
   latest.current = { channels, onChange };
   const listRef = useRef<HTMLUListElement>(null);
@@ -122,9 +121,14 @@ export function ChannelListEditor({
               connections={connections}
               draft={channel}
               key={channel.key}
-              onChange={(next) =>
-                onChange(channels.map((c) => (c.key === next.key ? next : c)))
-              }
+              // A Test result lands later: apply it to the list as it is by then.
+              onChange={(next) => {
+                const list = latest.current.channels.map((c) =>
+                  c.key === next.key ? next : c
+                );
+                latest.current.channels = list;
+                latest.current.onChange(list);
+              }}
               onConnectionsChanged={onConnectionsChanged}
               onRemove={(label) => remove(channel, label)}
               organizationId={organizationId}

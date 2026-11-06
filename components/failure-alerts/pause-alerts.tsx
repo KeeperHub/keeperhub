@@ -5,7 +5,7 @@ import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Notice } from "@/components/ui/notice";
+import { Notice, WARNING_TEXT } from "@/components/ui/notice";
 import { Switch } from "@/components/ui/switch";
 import {
   type OrgSettingsView,
@@ -30,7 +30,6 @@ const CHOICES = [
 
 type Choice = (typeof CHOICES)[number]["value"];
 
-const PAUSED_TEXT = "text-yellow-600 dark:text-yellow-400";
 const MINUTE_MS = 60 * 1000;
 
 /** "in 42 minutes", "in 5 hours", "in 2 days". */
@@ -69,7 +68,7 @@ export function AlertsSwitch({
       <span
         className={cn(
           "font-semibold text-sm",
-          paused ? PAUSED_TEXT : "text-keeperhub-green-dark"
+          paused ? WARNING_TEXT : "text-keeperhub-green-dark"
         )}
         data-testid="failure-alerts-state"
       >
@@ -132,7 +131,7 @@ export function AlertsStateBody({
   });
   return (
     <div className="space-y-1.5" data-testid="failure-alerts-paused">
-      <p className={cn("font-semibold text-sm", PAUSED_TEXT)}>
+      <p className={cn("font-semibold text-sm", WARNING_TEXT)}>
         {left < HOUR_MS
           ? `Resumes ${timeLeft(left)} (${at})`
           : `Resumes ${formatWhen(pause.until)} (${timeLeft(left)})`}

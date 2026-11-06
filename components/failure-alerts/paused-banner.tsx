@@ -3,6 +3,8 @@
 import { AlertTriangle } from "lucide-react";
 import Link from "next/link";
 import { AppBannerSlot } from "@/components/app-banner-slot";
+import { NOTICE_TONE_CLASS } from "@/components/ui/notice";
+import { cn } from "@/lib/utils";
 import { formatWhen } from "./format";
 
 /** Top-of-app note that alerts are paused; it goes when the pause ends or someone resumes. */
@@ -15,7 +17,7 @@ export function FailureAlertsPausedBanner({
 }): React.ReactElement {
   return (
     <AppBannerSlot
-      className="border-yellow-500/40 bg-yellow-500/10 px-4 text-yellow-700 sm:px-12 dark:text-yellow-300"
+      className={cn(NOTICE_TONE_CLASS.warning, "px-4 sm:px-12")}
       data-testid="failure-alerts-paused-banner"
       role="status"
     >

@@ -4,11 +4,13 @@ import { signIn } from "./utils/auth";
 import {
   type AlertsFixture,
   cleanupFailureAlerts,
+  clearOrgPause,
   countMethods,
   readOrgPause,
   readOrgThreshold,
   readOverride,
   seedFailureAlerts,
+  setOrgThreshold,
 } from "./utils/failure-alerts";
 import { dismissPhoneOverlays } from "./utils/layout";
 
@@ -330,7 +332,7 @@ test.describe("Failure alerts", () => {
       .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
       .toMatchObject({ threshold: 2, pauseWorkflow: true });
     await expect(section.getByTestId("failure-alerts-autosave")).toHaveText(
-      "All changes saved.",
+      "All changes saved",
       SAVE_TIMEOUT
     );
     await expect(
@@ -345,6 +347,145 @@ test.describe("Failure alerts", () => {
       .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
       .toBeNull();
     await expect(section).toHaveAttribute("data-source", "org");
+  });
+
+  test("workflow Properties: unfinished rules never block Save, the tab holds, and leaving saves", async ({
+    page,
+  }) => {
+    const section = await openProperties(page, fixture.failingId);
+    await section.getByTestId("failure-alerts-tab-custom").click();
+    await section.getByTestId("failure-alerts-use-custom").click();
+    await expect(section).toHaveAttribute(
+      "data-source",
+      "custom",
+      SAVE_TIMEOUT
+    );
+    const threshold = section.locator("#wf-failure-threshold");
+    const status = section.getByTestId("failure-alerts-autosave");
+
+    // An unfinished draft never blocks the workflow's Save, and stays marked unsaved.
+    await threshold.fill("0");
+    await expect(status).toContainText("Not saved");
+    const save = page.getByRole("button", { name: "Save workflow" });
+    const unsavedDot = save.getByTestId("workflow-unsaved-dot");
+    await expect(unsavedDot).toHaveCount(1);
+    await save.click();
+    // Named "Saving..." while it runs; back to "Save workflow" once done.
+    await expect(save).toBeEnabled(SAVE_TIMEOUT);
+    await expect(page.getByText("Failed to save workflow")).toHaveCount(0);
+    await expect(unsavedDot).toHaveCount(1);
+    await expect(status).toContainText("fix the number of failed runs");
+
+    // Looking at the org rules while an edit saves keeps the org rules on screen.
+    await threshold.fill("3");
+    await section.getByTestId("failure-alerts-tab-org").click();
+    await expect
+      .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
+      .toMatchObject({ threshold: 3 });
+    await page.waitForTimeout(500);
+    await expect(section.getByTestId("failure-alerts-tab-org")).toHaveAttribute(
+      "data-state",
+      "active"
+    );
+
+    // Picking a node right after an edit unmounts the panel; the edit still saves.
+    await section.getByTestId("failure-alerts-tab-custom").click();
+    await threshold.fill("4");
+    await page.locator(".react-flow__node").first().click();
+    await expect(page.getByTestId("workflow-failure-alerts")).toHaveCount(0);
+    await expect
+      .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
+      .toMatchObject({ threshold: 4 });
+
+    const again = await openProperties(page, fixture.failingId);
+    await again.getByTestId("failure-alerts-tab-org").click();
+    await again.getByTestId("failure-alerts-reset").click();
+    await expect
+      .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
+      .toBeNull();
+  });
+
+  test("workflow Properties: Use org rules is not undone by an immediate Save", async ({
+    page,
+  }) => {
+    const section = await openProperties(page, fixture.failingId);
+    await section.getByTestId("failure-alerts-tab-custom").click();
+    await section.getByTestId("failure-alerts-use-custom").click();
+    await expect(section).toHaveAttribute(
+      "data-source",
+      "custom",
+      SAVE_TIMEOUT
+    );
+    await section.locator("#wf-failure-threshold").fill("6");
+    // Hold the reset in flight so Save lands while it is still pending.
+    await page.route("**/api/workflows/*/failure-alerts", async (route) => {
+      const body = route.request().postData() ?? "";
+      if (route.request().method() === "PUT" && !body.includes("threshold")) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+      await route.continue();
+    });
+    await section.getByTestId("failure-alerts-tab-org").click();
+    await section.getByTestId("failure-alerts-reset").click();
+    await page.getByRole("button", { name: "Save workflow" }).click();
+    await expect(section).toHaveAttribute("data-source", "org", SAVE_TIMEOUT);
+    await page.unroute("**/api/workflows/*/failure-alerts");
+    await expect
+      .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
+      .toBeNull();
+  });
+
+  test("an invalid rule says it is not saved, and the saved toast goes", async ({
+    page,
+  }) => {
+    await openAlerts(page);
+    const threshold = page.locator("#failure-threshold");
+    const status = page.getByTestId("failure-alerts-rules-autosave");
+    try {
+      await threshold.fill("4");
+      await expect(status).toHaveText("Saved", SAVE_TIMEOUT);
+      await threshold.fill("0");
+      await expect(status).toHaveText(
+        "Not saved: fix the number of failed runs"
+      );
+      await expect(
+        page
+          .locator("[data-sonner-toast]")
+          .filter({ hasText: "Alert rules saved" })
+      ).toHaveCount(0);
+      expect(await readOrgThreshold(fixture.orgId)).toBe(4);
+    } finally {
+      await setOrgThreshold(fixture.orgId, 5);
+    }
+  });
+
+  test("a saved change from elsewhere is kept, not overwritten by a clean draft", async ({
+    page,
+  }) => {
+    await openAlerts(page, "overview");
+    const toggle = page.getByTestId("failure-alerts-switch");
+    await toggle.click();
+    const form = page.getByTestId("failure-alerts-pause-form");
+    await form.getByTestId("failure-alerts-pause-submit").click();
+    await expect(page.getByTestId("failure-alerts-paused")).toBeVisible(
+      SAVE_TIMEOUT
+    );
+    try {
+      // Another admin changes the threshold; resuming brings the new settings in.
+      await setOrgThreshold(fixture.orgId, 7);
+      await toggle.click();
+      await expect(page.getByTestId("failure-alerts-paused")).toHaveCount(
+        0,
+        SAVE_TIMEOUT
+      );
+      await page.waitForTimeout(2500);
+      expect(await readOrgThreshold(fixture.orgId)).toBe(7);
+      await page.getByTestId("failure-alerts-tab-setup").click();
+      await expect(page.locator("#failure-threshold")).toHaveValue("7");
+    } finally {
+      await setOrgThreshold(fixture.orgId, 5);
+      await clearOrgPause(fixture.orgId);
+    }
   });
 
   test("analytics marks the run that set off an alert", async ({ page }) => {

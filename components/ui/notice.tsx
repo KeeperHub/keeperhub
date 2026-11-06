@@ -10,10 +10,13 @@ type NoticeTone = "info" | "warning" | "danger";
 export const WARNING_TEXT =
   "border-yellow-500/40 text-yellow-600 dark:text-yellow-400";
 
-const TONE_CLASS: Record<NoticeTone, string> = {
+/** The warning border and fill alone, for a card whose text keeps its colours. */
+export const WARNING_SURFACE = "border-yellow-500/40 bg-yellow-500/10";
+
+/** A Notice tone's colours, for surfaces that are not a Notice (the top banner). */
+export const NOTICE_TONE_CLASS: Record<NoticeTone, string> = {
   info: "border-border bg-muted/30 text-muted-foreground",
-  warning:
-    "border-yellow-500/40 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300",
+  warning: `${WARNING_SURFACE} text-yellow-700 dark:text-yellow-300`,
   danger: "border-destructive/50 bg-destructive/15 text-foreground",
 };
 
@@ -34,7 +37,7 @@ export function Notice({
     <div
       className={cn(
         "flex items-start gap-2 rounded-md border p-2 text-xs",
-        TONE_CLASS[tone],
+        NOTICE_TONE_CLASS[tone],
         className
       )}
       role={role}

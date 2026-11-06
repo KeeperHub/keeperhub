@@ -102,11 +102,13 @@ export async function seedFailureAlerts(): Promise<AlertsFixture> {
           VALUES (${id}, ${name}, ${userId}, ${orgId}, false, ${nodes}::jsonb, '[]'::jsonb, 'private', true, ${ago(120)}, ${now})
         `;
       }
+      let openingRunId = "";
       for (let i = 0; i < FAILED_RUNS; i++) {
         const at = ago(FAILED_RUNS + 1 - i);
+        openingRunId = generateId();
         await tx`
           INSERT INTO workflow_executions (id, workflow_id, user_id, organization_id, status, trigger_source, started_at, completed_at, error)
-          VALUES (${generateId()}, ${failingId}, ${userId}, ${orgId}, 'error', 'schedule', ${at},
+          VALUES (${openingRunId}, ${failingId}, ${userId}, ${orgId}, 'error', 'schedule', ${at},
             ${new Date(at.getTime() + 1000)}, 'execution reverted (RPC 429)')
         `;
       }
@@ -119,9 +121,9 @@ export async function seedFailureAlerts(): Promise<AlertsFixture> {
         const incidentId = generateId();
         await tx`
           INSERT INTO alert_incidents (id, organization_id, workflow_id, opened_at, opened_by, threshold, failure_count,
-            first_failed_at, last_failed_at, last_notified_at, alert_queued_at, resolved_at, resolved_reason)
+            first_failed_at, last_failed_at, last_notified_at, alert_queued_at, resolved_at, resolved_reason, opening_execution_id)
           VALUES (${incidentId}, ${orgId}, ${workflowId}, ${ago(1)}, 'count', 5, 5, ${ago(6)}, ${ago(1)}, ${ago(1)}, ${ago(1)},
-            ${open ? null : now}, ${open ? null : "success"})
+            ${open ? null : now}, ${open ? null : "success"}, ${open ? openingRunId : null})
         `;
         await tx`
           INSERT INTO alert_deliveries (id, dedup_key, organization_id, incident_id, kind, channel, recipient, state,
@@ -263,6 +265,18 @@ export async function readOrgPause(orgId: string): Promise<Date | null> {
   }
 }
 
+// Ends an org pause directly, for cleanup after a test that paused.
+export async function clearOrgPause(orgId: string): Promise<void> {
+  const sql = getDbConnection();
+  try {
+    await sql`
+      UPDATE alert_settings SET paused_until = NULL WHERE organization_id = ${orgId}
+    `;
+  } finally {
+    await sql.end();
+  }
+}
+
 // The org's failure threshold as saved.
 export async function readOrgThreshold(orgId: string): Promise<number | null> {
   const sql = getDbConnection();
@@ -271,6 +285,22 @@ export async function readOrgThreshold(orgId: string): Promise<number | null> {
       SELECT threshold FROM alert_settings WHERE organization_id = ${orgId}
     `;
     return (row?.threshold as number | null) ?? null;
+  } finally {
+    await sql.end();
+  }
+}
+
+// Another admin's change: a new threshold and version, behind the page's back.
+export async function setOrgThreshold(
+  orgId: string,
+  threshold: number
+): Promise<void> {
+  const sql = getDbConnection();
+  try {
+    await sql`
+      UPDATE alert_settings SET threshold = ${threshold}, version = version + 1
+      WHERE organization_id = ${orgId}
+    `;
   } finally {
     await sql.end();
   }

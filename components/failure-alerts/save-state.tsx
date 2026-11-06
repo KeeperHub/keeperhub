@@ -8,7 +8,30 @@ import { Notice } from "@/components/ui/notice";
 type SaveState = "idle" | "saving" | "saved" | "error";
 
 /** Why the server refused a save; stale means someone else saved first (409). */
-export type SaveRefusal = { message: string; stale?: boolean };
+export type SaveRefusal = {
+  message: string;
+  stale?: boolean;
+  /** Worth sending again as is: a network or server failure, not a refusal. */
+  retryable?: boolean;
+};
+
+/** A refused save: a 409 needs a reload; only server, rate-limit or network failures retry. */
+export function refusalFrom(status: number, error?: string): SaveRefusal {
+  return {
+    message:
+      error ??
+      (status >= 500
+        ? "KeeperHub had a problem saving."
+        : "These settings could not be saved."),
+    stale: status === 409,
+    retryable: status >= 500 || status === 429,
+  };
+}
+
+export const NETWORK_REFUSAL: SaveRefusal = {
+  message: "Could not reach KeeperHub. Check your connection and try again.",
+  retryable: true,
+};
 
 /** A save resolves to null when the server accepted it. */
 export type SaveAction = () => Promise<SaveRefusal | null>;

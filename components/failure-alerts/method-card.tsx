@@ -431,16 +431,13 @@ function ChannelHealth({
   saved,
   status,
   savesHere,
-  savedWithText,
 }: {
   draft: DraftChannel;
   saved: ChannelView | undefined;
   status: MethodStatus;
   savesHere: boolean;
-  /** Where an unsaved change gets saved, when not on this card. */
-  savedWithText?: string;
 }): React.ReactElement {
-  const savedWith = savedWithText ?? "Saved automatically once it is complete.";
+  const savedWith = "Saved automatically once it is complete.";
   if (status === "missing") {
     return (
       <span className="text-destructive">
@@ -698,7 +695,6 @@ export function ChannelMethodCard({
   onTested,
   onReload,
   onConnectionsChanged,
-  savedWithText,
 }: {
   organizationId: string;
   draft: DraftChannel;
@@ -710,8 +706,6 @@ export function ChannelMethodCard({
   /** Nobody else can be told if this one is broken. */
   lastResort?: boolean;
   onChange: (next: DraftChannel) => void;
-  /** Where an unsaved change gets saved, when the card has no Save of its own. */
-  savedWithText?: string;
   onSave?: SaveAction;
   onRemove?: (label: string) => void;
   /** A saved channel was tested: its stored health changed. */
@@ -1002,7 +996,6 @@ export function ChannelMethodCard({
         <ChannelHealth
           draft={draft}
           saved={saved}
-          savedWithText={savedWithText}
           savesHere={Boolean(onSave)}
           status={status}
         />
