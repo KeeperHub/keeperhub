@@ -14,12 +14,20 @@ import {
 import { cn } from "@/lib/utils";
 import { ChoiceChips } from "./choice-chips";
 import { formatWhen, toLocalInput } from "./format";
+import { actorLabel } from "./member-label";
 
 type AlertsPause = NonNullable<OrgSettingsView["pause"]>;
 
 const HOUR_MS = 60 * 60 * 1000;
+
 const MAX_PAUSE_DAYS = 7;
 const MAX_REASON = 200;
+
+/** "Paused by Dana (dana@x.com)", or by the account when the name is only a role. */
+function pauseAuthor(pause: AlertsPause): string {
+  const who = actorLabel(pause.by, pause.byAccount);
+  return who ? `Paused by ${who}` : "Paused";
+}
 
 const CHOICES = [
   { value: "1", label: "1 hour" },
@@ -113,7 +121,8 @@ export function AlertsStateBody({
     return (
       <div className="space-y-1">
         <p className="text-sm">
-          Failing workflows are reported using the rules and methods in Setup.
+          On: failing workflows are reported using the rules and methods in
+          Setup.
         </p>
         {!canManage && (
           <p className="text-muted-foreground text-xs">
@@ -137,7 +146,7 @@ export function AlertsStateBody({
           : `Resumes ${formatWhen(pause.until)} (${timeLeft(left)})`}
       </p>
       <p className="text-sm">
-        {pause.by ? `Paused by ${pause.by}` : "Paused"}
+        {pauseAuthor(pause)}
         {pause.reason ? `: ${pause.reason}` : ""}.{" "}
         <span className="text-muted-foreground">
           {orgPauseEffect(pausingWorkflows)}
@@ -145,7 +154,7 @@ export function AlertsStateBody({
       </p>
       {canManage ? (
         <Button
-          className="h-auto px-0 text-xs"
+          className="h-auto px-0 text-xs underline underline-offset-4"
           data-testid="failure-alerts-extend"
           onClick={onExtend}
           type="button"

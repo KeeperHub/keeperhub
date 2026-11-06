@@ -25,7 +25,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { truncateAddress } from "@/lib/address-utils";
 import type { FailureAlertMessageKind } from "@/lib/db/schema-failure-alerts";
 import { HISTORY_PAGE_SIZE } from "@/lib/notifications/failure-alerts/constants";
 import {
@@ -36,6 +35,7 @@ import {
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import { type DeliveryTone, deliveryStatus, formatWhen } from "./format";
+import { accountLabel } from "./member-label";
 
 const TONE_CLASS: Record<DeliveryTone, string> = {
   delivered: "text-keeperhub-green-dark",
@@ -69,7 +69,7 @@ const TO_DEBOUNCE_MS = 300;
 
 /** Columns from 48rem of history width; below, each row stacks with labels. */
 const ROW_GRID =
-  "@3xl/history:grid @3xl/history:grid-cols-[8rem_minmax(0,1.4fr)_minmax(0,0.9fr)_7rem_minmax(0,1.3fr)_8rem] @3xl/history:gap-x-3";
+  "@3xl/history:grid @3xl/history:grid-cols-[8rem_minmax(0,1.4fr)_minmax(0,0.9fr)_8.5rem_minmax(0,1.3fr)_8rem] @3xl/history:gap-x-3";
 
 type Filters = {
   since: string;
@@ -77,6 +77,7 @@ type Filters = {
   by: string;
   channel: string;
   to: string;
+  workflow: string;
   result: string;
 };
 const NO_FILTERS: Filters = {
@@ -85,6 +86,7 @@ const NO_FILTERS: Filters = {
   by: ANY,
   channel: ANY,
   to: "",
+  workflow: "",
   result: ANY,
 };
 
@@ -108,17 +110,6 @@ function methodAndTarget(entry: HistoryEntry): {
   );
   return { method, to: target };
 }
-
-/** An email as is; a wallet address shortened, with the full one on hover. */
-function accountLabel(account: string): string {
-  return account.startsWith("0x") && !account.includes("@")
-    ? truncateAddress(account)
-    : account;
-}
-
-/** Between values on a phone's second line; gone in the table. */
-const SEP =
-  "after:ml-2 after:text-muted-foreground after:content-['·'] @3xl/history:after:content-none";
 
 /** One value: a table cell from 48rem, an inline item on a phone. */
 function Cell({
@@ -151,14 +142,15 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
   return (
     <li
       className={cn(
-        "flex flex-wrap items-baseline gap-x-2 gap-y-1 px-3 py-2.5 text-sm",
+        // No dot separators: on a phone they were left dangling at line ends.
+        "flex flex-wrap items-baseline gap-x-4 gap-y-1 px-3 py-2.5 text-sm",
         ROW_GRID
       )}
       data-kind={entry.kind}
       data-state={entry.state}
       data-testid="failure-alert-history-row"
     >
-      <Cell className={SEP} label="When">
+      <Cell label="When">
         <span className="text-muted-foreground text-xs tabular-nums">
           {formatWhen(entry.createdAt)}
         </span>
@@ -187,7 +179,9 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
         )}
       </Cell>
       <Cell
-        className={entry.by === "KeeperHub" ? "hidden @3xl/history:block" : SEP}
+        className={
+          entry.by === "KeeperHub" ? "hidden @3xl/history:block" : undefined
+        }
         label="By"
       >
         <span
@@ -205,11 +199,14 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
             data-testid="failure-alert-history-by-account"
             title={entry.byAccount}
           >
+            {/* Inline on a phone it reads "Dana (dana@x.com)"; a line of its own in the table. */}
+            <span className="@3xl/history:hidden"> (</span>
             {accountLabel(entry.byAccount)}
+            <span className="@3xl/history:hidden">)</span>
           </span>
         )}
       </Cell>
-      <Cell className={SEP} label="Method">
+      <Cell label="Method">
         <span className="inline-flex items-baseline gap-1.5 text-xs">
           {entry.channel === "email" ? (
             <Mail aria-hidden="true" className="size-3 shrink-0 self-center" />
@@ -222,7 +219,7 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
           {method}
         </span>
       </Cell>
-      <Cell className={SEP} label="Sent to">
+      <Cell label="Sent to">
         <span className="text-xs" data-testid="failure-alert-history-to">
           {to}
         </span>
@@ -304,6 +301,8 @@ export function NotificationHistory({
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   // The typed address, applied once typing pauses.
   const [toDraft, setToDraft] = useState("");
+  // A workflow's name or ID, applied the same way: renames keep old alerts findable by ID.
+  const [workflowDraft, setWorkflowDraft] = useState("");
   // Pause notices and tests are left out until asked for.
   const [allKinds, setAllKinds] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -321,6 +320,17 @@ export function NotificationHistory({
     return () => window.clearTimeout(timer);
   }, [toDraft]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setFilters((f) =>
+        f.workflow === workflowDraft.trim()
+          ? f
+          : { ...f, workflow: workflowDraft.trim() }
+      );
+    }, TO_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [workflowDraft]);
+
   const query = useCallback(
     (page?: number, format?: "csv"): string => {
       const params = new URLSearchParams();
@@ -331,6 +341,9 @@ export function NotificationHistory({
       }
       if (filters.to) {
         params.set("to", filters.to);
+      }
+      if (filters.workflow) {
+        params.set("workflow", filters.workflow);
       }
       if (workflowId) {
         params.set("workflowId", workflowId);
@@ -409,7 +422,9 @@ export function NotificationHistory({
   const set = (key: keyof Filters) => (value: string) =>
     setFilters((f) => ({ ...f, [key]: value }));
   const filtered =
-    JSON.stringify(filters) !== JSON.stringify(NO_FILTERS) || toDraft !== "";
+    JSON.stringify(filters) !== JSON.stringify(NO_FILTERS) ||
+    toDraft !== "" ||
+    workflowDraft !== "";
   const activeCount = (Object.keys(NO_FILTERS) as (keyof Filters)[]).filter(
     (key) => filters[key] !== NO_FILTERS[key]
   ).length;
@@ -484,7 +499,7 @@ export function NotificationHistory({
 
       {!compact && filtersOpen && (
         <div
-          className="grid grid-cols-2 gap-2 @3xl/history:grid-cols-[8rem_minmax(0,1.4fr)_minmax(0,0.9fr)_7rem_minmax(0,1.3fr)_8rem] @3xl/history:gap-x-3 @3xl/history:px-3"
+          className="grid grid-cols-2 gap-2 @3xl/history:grid-cols-[8rem_minmax(0,1.4fr)_minmax(0,0.9fr)_8.5rem_minmax(0,1.3fr)_8rem] @3xl/history:gap-x-3 @3xl/history:px-3"
           data-testid="failure-alert-history-filters"
         >
           <FilterSelect
@@ -539,6 +554,16 @@ export function NotificationHistory({
             options={RESULT_OPTIONS}
             value={filters.result}
           />
+          <Input
+            aria-label="Workflow"
+            // A row of its own, so a long name or ID is never clipped.
+            className="col-span-2 h-8 text-xs @3xl/history:col-span-6"
+            data-testid="failure-alert-history-workflow-filter"
+            maxLength={200}
+            onChange={(e) => setWorkflowDraft(e.target.value)}
+            placeholder="Workflow name or ID"
+            value={workflowDraft}
+          />
         </div>
       )}
 
@@ -573,6 +598,7 @@ export function NotificationHistory({
             className="px-2 text-xs"
             onClick={() => {
               setToDraft("");
+              setWorkflowDraft("");
               setFilters(NO_FILTERS);
             }}
             size="sm"

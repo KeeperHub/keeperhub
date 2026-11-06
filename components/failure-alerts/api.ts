@@ -2,7 +2,9 @@ import { invalidateNotificationStatus } from "@/lib/hooks/use-notifications";
 import type {
   TestRequest,
   TestResult,
+  WorkflowAlertView,
 } from "@/lib/notifications/failure-alerts/view-types";
+import { channelsPayload, draftsFromViews } from "./method-drafts";
 
 /**
  * Send a test. Never throws: a refused request (rate limit, bad input) comes
@@ -63,4 +65,41 @@ export async function fetchView<T>(url: string): Promise<T> {
     throw new ViewError(response.status);
   }
   return (await response.json()) as T;
+}
+
+/** Unmutes a workflow from Overview, sending its saved setup back unchanged; null when done, else why not. */
+export async function unmuteWorkflow(
+  workflowId: string
+): Promise<string | null> {
+  const url = `/api/workflows/${encodeURIComponent(workflowId)}/failure-alerts`;
+  try {
+    const current = await fetch(url);
+    if (!current.ok) {
+      return "Could not read this workflow's alerts. Open them and unmute there.";
+    }
+    const view = (await current.json()) as WorkflowAlertView;
+    const o = view.override;
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        threshold: o.threshold,
+        timeLimitMinutes: o.timeLimitMinutes,
+        recipientUserIds: o.recipientUserIds,
+        customChannels: o.customChannels,
+        channels: channelsPayload(draftsFromViews(o.channels)),
+        pauseWorkflow: o.pauseWorkflow,
+        mutedUntil: null,
+        muteUntilSuccess: false,
+        version: view.version,
+      }),
+    });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      return body.error ?? "Could not unmute. Open its Alerts and try there.";
+    }
+    return null;
+  } catch {
+    return "Could not reach KeeperHub. Check your connection and try again.";
+  }
 }

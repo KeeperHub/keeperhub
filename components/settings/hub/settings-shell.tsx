@@ -58,7 +58,11 @@ export function SettingsShell({
     >
       <div className="flex min-h-0 flex-1">
         <SettingsRail />
-        <main className="min-w-0 flex-1 overflow-y-auto">
+        {/* The gutter is kept, so a page that scrolls is not narrower than one that does not. */}
+        <main
+          className="min-w-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
+          data-testid="settings-main"
+        >
           {!menu && <SettingsBackBar />}
           {/* A container, so a section lays itself out by the room it has
               beside the rail rather than by the width of the screen. */}

@@ -130,6 +130,17 @@ test.describe("Failure alerts", () => {
     ).toHaveAttribute("data-state", "active", FIRST_VISIT);
     await expect(page.getByTestId("failure-alerts-switch")).toBeVisible();
     await expect(page.getByTestId("failure-alerts-methods")).toHaveCount(0);
+    // Setup problems and workflow problems are two lists of the same shape.
+    const setupIssues = page.getByTestId("failure-alerts-setup-issues");
+    await expect(setupIssues).toBeVisible();
+    // The seeded Telegram method was paused by a failed delivery.
+    await expect(setupIssues).toContainText("1 method needs attention");
+    const workflows = page.getByTestId("failure-alerts-failing");
+    await expect(workflows).toContainText(fixture.failingName);
+    // "Alert sent ... ago" lives in the workflow row only.
+    await expect(workflows).toContainText("alert sent");
+    await expect(page.getByText("Last alert delivered")).toHaveCount(0);
+    await expect(page.getByText(/Alerts reach/)).toHaveCount(0);
     await page.getByTestId("failure-alerts-tab-sent").click();
     await expect(page).toHaveURL(/[?&]tab=sent/);
     await expect(page.getByTestId("failure-alert-history")).toBeVisible();
@@ -137,6 +148,16 @@ test.describe("Failure alerts", () => {
 
   test("Setup shows who gets alerts, then the rules", async ({ page }) => {
     await openAlerts(page);
+    // The only recipient, the owner, cannot be unticked.
+    const email = methodCard(page, "email");
+    await email.getByRole("button", { name: "Edit" }).click();
+    const only = email.getByRole("checkbox").first();
+    await expect(only).toBeChecked();
+    await expect(only).toBeDisabled();
+    await expect(
+      email.getByTestId("failure-alerts-last-recipient")
+    ).toBeVisible();
+    await email.getByRole("button", { name: "Close" }).click();
     const rules = page.getByTestId("failure-alerts-rules");
     await expect(rules).toBeVisible();
     expect(
@@ -272,20 +293,65 @@ test.describe("Failure alerts", () => {
     );
   });
 
+  test("Sent alerts filters by workflow name or ID", async ({ page }) => {
+    await openAlerts(page, "sent");
+    const rows = page.getByTestId("failure-alert-history-row");
+    await expect(rows.first()).toBeVisible(FIRST_VISIT);
+    await page.getByTestId("failure-alert-history-filters-toggle").click();
+    const filter = page.getByTestId("failure-alert-history-workflow-filter");
+    await filter.fill(fixture.alertedName);
+    await expect(rows.filter({ hasText: fixture.failingName })).toHaveCount(
+      0,
+      SAVE_TIMEOUT
+    );
+    await expect(rows.filter({ hasText: fixture.alertedName })).not.toHaveCount(
+      0
+    );
+    // By ID too, so a renamed workflow's old alerts stay findable.
+    await filter.fill(fixture.failingId);
+    await expect(rows.filter({ hasText: fixture.alertedName })).toHaveCount(
+      0,
+      SAVE_TIMEOUT
+    );
+    await expect(rows.filter({ hasText: fixture.failingName })).not.toHaveCount(
+      0
+    );
+  });
+
   test("workflow Properties: mute, unmute, custom rules tab with pause, back to org rules", async ({
     page,
   }) => {
-    const section = await openProperties(page, fixture.failingId);
+    let section = await openProperties(page, fixture.failingId);
 
     const muteOpen = section.getByTestId("failure-alerts-mute-open");
     await expect(section).toHaveAttribute("data-source", "org");
+    // One mute for the whole workflow, outside the rules tabs, on either tab.
+    const rulesCard = section.getByTestId("failure-alerts-rules-card");
+    for (const tab of ["org", "custom"] as const) {
+      await section.getByTestId(`failure-alerts-tab-${tab}`).click();
+      await expect(muteOpen).toHaveCount(1);
+      await expect(
+        rulesCard.getByTestId("failure-alerts-mute-open")
+      ).toHaveCount(0);
+      await expect(
+        section
+          .getByTestId("failure-alerts-mute-area")
+          .getByTestId("failure-alerts-mute-open")
+      ).toHaveCount(1);
+    }
+    await section.getByTestId("failure-alerts-tab-org").click();
     await muteOpen.click();
     const mute = section.getByTestId("failure-alerts-mute");
     await expect(mute).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(mute).toHaveCount(0);
     await muteOpen.click();
+    // A mute needs a length and a reason; nothing saves until both are given.
     await mute.locator('[data-mute="24h"]').click();
+    const submit = mute.getByTestId("failure-alerts-mute-submit");
+    await expect(submit).toBeDisabled();
+    await mute.getByTestId("failure-alerts-mute-reason").fill("E2E RPC move");
+    await submit.click();
     await expect
       .poll(
         async () => (await readOverride(fixture.failingId))?.mutedUntil,
@@ -293,6 +359,23 @@ test.describe("Failure alerts", () => {
       )
       .toBeTruthy();
     await expect(section).toHaveAttribute("data-muted", "true");
+    await expect(section).toContainText("E2E RPC move");
+
+    // The mute is never quiet: Needs attention lists it, Sent alerts logs it.
+    await openAlerts(page, "overview");
+    const mutedRow = page.getByTestId("failure-alerts-muted-workflow");
+    await expect(mutedRow).toContainText(fixture.failingName, FIRST_VISIT);
+    await expect(mutedRow).toContainText("E2E RPC move");
+    await expect(page.getByText("All healthy")).toHaveCount(0);
+    await openAlerts(page, "sent");
+    await expect(
+      page
+        .getByTestId("failure-alert-history-row")
+        .and(page.locator('[data-kind="workflow_muted"]'))
+        .filter({ hasText: fixture.failingName })
+    ).toHaveCount(1, SAVE_TIMEOUT);
+
+    section = await openProperties(page, fixture.failingId);
     await section.getByTestId("failure-alerts-unmute").click();
     await expect
       .poll(
@@ -308,6 +391,16 @@ test.describe("Failure alerts", () => {
       "active"
     );
     await expect(section.getByTestId("failure-alerts-in-use")).toBeVisible();
+    // Org rules read like Settings > Alerts, reminders and recovery included.
+    const orgView = section.getByTestId("failure-alerts-rules-view");
+    await expect(orgView.locator("h3")).toHaveText([
+      "Who gets alerts",
+      "When to alert",
+    ]);
+    await expect(orgView).toContainText(
+      "Remind once a day while it keeps failing"
+    );
+    await expect(orgView).toContainText("Tell people when it works again");
     await section.getByTestId("failure-alerts-tab-custom").click();
     await expect(section).toHaveAttribute("data-source", "org");
     await section.getByTestId("failure-alerts-use-custom").click();
@@ -321,6 +414,11 @@ test.describe("Failure alerts", () => {
       .toMatchObject({ threshold: 5 });
     const custom = section.getByTestId("failure-alerts-custom");
     await expect(custom).toBeVisible();
+    // Laid out like Settings > Alerts: who gets alerts, then when.
+    await expect(custom.locator("h3")).toHaveText([
+      "Who gets alerts",
+      "When to alert",
+    ]);
     // No Save or Cancel of its own: edits save themselves.
     await expect(custom.getByRole("button", { name: "Save" })).toHaveCount(0);
     const threshold = custom.locator("#wf-failure-threshold");
@@ -347,6 +445,42 @@ test.describe("Failure alerts", () => {
       .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
       .toBeNull();
     await expect(section).toHaveAttribute("data-source", "org");
+  });
+
+  test("Overview unmutes a muted workflow in one click", async ({ page }) => {
+    const section = await openProperties(page, fixture.failingId);
+    await section.getByTestId("failure-alerts-mute-open").click();
+    const mute = section.getByTestId("failure-alerts-mute");
+    await mute.locator('[data-mute="1h"]').click();
+    await mute.getByTestId("failure-alerts-mute-reason").fill("E2E quick fix");
+    await mute.getByTestId("failure-alerts-mute-submit").click();
+    await expect
+      .poll(
+        async () => (await readOverride(fixture.failingId))?.mutedUntil,
+        SAVE_TIMEOUT
+      )
+      .toBeTruthy();
+    try {
+      await openAlerts(page, "overview");
+      const mutedRow = page.getByTestId("failure-alerts-muted-workflow");
+      await expect(mutedRow).toContainText("E2E quick fix", FIRST_VISIT);
+      await mutedRow.getByTestId("failure-alerts-overview-unmute").click();
+      await expect
+        .poll(
+          async () =>
+            (await readOverride(fixture.failingId))?.mutedUntil ?? null,
+          SAVE_TIMEOUT
+        )
+        .toBeNull();
+      await expect(mutedRow).toHaveCount(0, SAVE_TIMEOUT);
+    } finally {
+      // Leave the shared fixture unmuted even if a step above failed.
+      const left = await openProperties(page, fixture.failingId);
+      const unmute = left.getByTestId("failure-alerts-unmute");
+      if ((await unmute.count()) > 0) {
+        await unmute.click();
+      }
+    }
   });
 
   test("workflow Properties: unfinished rules never block Save, the tab holds, and leaving saves", async ({

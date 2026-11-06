@@ -219,7 +219,10 @@ function AutoSaveStatus({
 function LoadingCards(): React.ReactElement {
   return (
     <>
-      <SettingsCard title="Status">
+      <SettingsCard
+        description="Pause alerts for maintenance, or see who paused them."
+        title="Status"
+      >
         <FormSkeleton rows={2} />
       </SettingsCard>
       <SettingsCard title="Needs attention">
@@ -800,6 +803,15 @@ export function OrgFailureAlertsSection({
             <span data-testid="failure-alerts-rule-sentence">
               {ruleSentence(data)}
             </span>
+            <span
+              className="mt-1 block"
+              data-testid="failure-alerts-scope-note"
+            >
+              Alerts are about problems with the workflows themselves. Messages
+              your workflows send as steps keep going out whenever they run. Any
+              workflow can use its own setup instead, in its Properties &gt;
+              Alerts.
+            </span>
             {!canManage && (
               <span className="mt-1 block">
                 Only owners and admins can change alert settings.
@@ -856,6 +868,7 @@ export function OrgFailureAlertsSection({
               />
             }
             className={statusCardClass(data)}
+            description="Pause alerts for maintenance, or see who paused them."
             title="Status"
           >
             <div className="space-y-4">
@@ -882,7 +895,9 @@ export function OrgFailureAlertsSection({
             <AlertsHealth
               canManage={canManage}
               data={data}
-              onGoToSent={() => goTo("sent")}
+              onChanged={() => {
+                refresh().catch(() => undefined);
+              }}
               onGoToSetup={() => goTo("setup")}
               viewerUserId={session?.user?.id}
             />
@@ -1030,7 +1045,10 @@ export function OrgFailureAlertsSection({
                     These do not follow the rules above. Change them in each
                     workflow's Properties.
                   </p>
-                  <CustomWorkflowsList workflows={data.customWorkflows} />
+                  <CustomWorkflowsList
+                    muted={data.mutedWorkflows}
+                    workflows={data.customWorkflows}
+                  />
                 </div>
               )}
             </div>

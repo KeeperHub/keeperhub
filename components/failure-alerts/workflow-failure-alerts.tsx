@@ -28,7 +28,10 @@ import {
 import { useOrganization } from "@/lib/hooks/use-organization";
 import {
   MAX_MUTE_DAYS,
+  MAX_MUTE_REASON,
+  MAX_REMINDERS,
   MAX_THRESHOLD,
+  MIN_MUTE_REASON,
   MIN_THRESHOLD,
   REFUSALS_STOPPED_MS,
   TIME_LIMIT_OPTIONS_MINUTES,
@@ -60,7 +63,13 @@ import {
   timeLimitLabel,
   toLocalInput,
 } from "./format";
-import { memberLabel } from "./member-label";
+import {
+  isLastRecipient,
+  lastRecipientNote,
+  memberLabel,
+  muteSentence,
+  recipientsLocked,
+} from "./member-label";
 import {
   channelsPayload,
   type DraftChannel,
@@ -98,7 +107,11 @@ const MUTE_CHOICES: { id: string; label: string; ms: number | "success" }[] = [
   { id: "1h", label: "1 hour", ms: HOUR_MS },
   { id: "24h", label: "24 hours", ms: 24 * HOUR_MS },
   { id: "7d", label: "7 days", ms: 7 * 24 * HOUR_MS },
-  { id: "success", label: "Until it works again", ms: "success" },
+  {
+    id: "success",
+    label: `Until it works again (up to ${MAX_MUTE_DAYS} days)`,
+    ms: "success",
+  },
 ];
 
 function describeTimeLimit(minutes: number | null): string {
@@ -113,24 +126,107 @@ function orgEmails(view: Loaded): string[] {
     .map(memberLabel);
 }
 
-/** Rules, Email and Methods as Settings > Alerts lays them out, read-only. */
+/** The org's reminder and recovery settings, shown with the labels Settings > Alerts uses. */
+function OrgToggles({
+  remindDaily,
+  notifyRecovery,
+  note,
+}: {
+  remindDaily: boolean;
+  notifyRecovery: boolean;
+  note?: string;
+}): React.ReactElement {
+  const rows = [
+    {
+      id: "remind",
+      on: remindDaily,
+      label: `Remind once a day while it keeps failing (up to ${MAX_REMINDERS} days)`,
+    },
+    {
+      id: "recovery",
+      on: notifyRecovery,
+      label: "Tell people when it works again",
+    },
+  ];
+  return (
+    <div className="space-y-1.5">
+      {rows.map((row) => (
+        <div className="flex items-center gap-2" key={row.id}>
+          <Checkbox
+            aria-readonly="true"
+            checked={row.on}
+            disabled
+            id={`wf-org-${row.id}`}
+          />
+          <Label
+            className="font-normal text-xs peer-disabled:opacity-100"
+            htmlFor={`wf-org-${row.id}`}
+          >
+            {row.label}
+          </Label>
+        </div>
+      ))}
+      {note && <p className="text-muted-foreground text-xs">{note}</p>}
+    </div>
+  );
+}
+
+/** Who gets alerts and When to alert, read-only, as Settings > Alerts lays them out. */
 function RulesView({
   threshold,
   timeLimitMinutes,
   pauseWorkflow,
+  remindDaily,
+  notifyRecovery,
   emails,
   channels,
 }: {
   threshold: number;
   timeLimitMinutes: number | null;
   pauseWorkflow: boolean;
+  remindDaily: boolean;
+  notifyRecovery: boolean;
   emails: string[];
   channels: Loaded["org"]["channels"];
 }): React.ReactElement {
   return (
     <div className="space-y-4" data-testid="failure-alerts-rules-view">
-      <section className="space-y-1.5">
-        <h3 className="font-semibold text-sm">Rules</h3>
+      <section className="space-y-2.5">
+        <h3 className="font-semibold text-sm">Who gets alerts</h3>
+        <div className="space-y-1">
+          <h4 className="font-medium text-xs">Email</h4>
+          <p className="break-words text-xs">
+            {emails.length > 0 ? emails.join(", ") : "Nobody can be emailed."}
+          </p>
+        </div>
+        <div className="space-y-1">
+          <h4 className="font-medium text-xs">Methods</h4>
+          {channels.length > 0 ? (
+            <ul className="space-y-1">
+              {channels.map((c) => (
+                <li
+                  className="flex min-w-0 items-center gap-1.5 text-xs"
+                  key={`${c.kind}:${c.destination}:${c.connectionName ?? ""}`}
+                >
+                  <IntegrationIcon
+                    className="size-3.5 shrink-0"
+                    integration={c.kind}
+                  />
+                  <span className="min-w-0 break-words">
+                    {methodText(c.kind, c.destination, c.connectionName)}
+                    {c.role === "backup" ? " (backup)" : ""}
+                    {c.pausedAt ? " (paused)" : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-muted-foreground text-xs">Email only.</p>
+          )}
+        </div>
+      </section>
+      <section className="space-y-1.5 border-t pt-3">
+        <h3 className="font-semibold text-sm">When to alert</h3>
         <p>
           Alert after <span className="font-semibold">{threshold}</span> failed
           run{threshold === 1 ? "" : "s"} in a row
@@ -149,40 +245,10 @@ function RulesView({
         </p>
         {pauseWorkflow && (
           <p className="text-xs">
-            Turns this workflow off when it reaches the limit.
+            Disables this workflow when it reaches the limit.
           </p>
         )}
-      </section>
-      <section className="space-y-1.5 border-t pt-3">
-        <h3 className="font-semibold text-sm">Email</h3>
-        <p className="break-words text-xs">
-          {emails.length > 0 ? emails.join(", ") : "Nobody can be emailed."}
-        </p>
-      </section>
-      <section className="space-y-1.5 border-t pt-3">
-        <h3 className="font-semibold text-sm">Methods</h3>
-        {channels.length > 0 ? (
-          <ul className="space-y-1">
-            {channels.map((c) => (
-              <li
-                className="flex min-w-0 items-center gap-1.5 text-xs"
-                key={`${c.kind}:${c.destination}:${c.connectionName ?? ""}`}
-              >
-                <IntegrationIcon
-                  className="size-3.5 shrink-0"
-                  integration={c.kind}
-                />
-                <span className="min-w-0 break-words">
-                  {methodText(c.kind, c.destination, c.connectionName)}
-                  {c.role === "backup" ? " (backup)" : ""}
-                  {c.pausedAt ? " (paused)" : ""}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-muted-foreground text-xs">Email only.</p>
-        )}
+        <OrgToggles notifyRecovery={notifyRecovery} remindDaily={remindDaily} />
       </section>
     </div>
   );
@@ -281,6 +347,8 @@ export function WorkflowFailureAlerts({
     null
   );
   const [muteDate, setMuteDate] = useState("");
+  const [muteChoice, setMuteChoice] = useState<string | null>(null);
+  const [muteReason, setMuteReason] = useState("");
   const [pauseWorkflow, setPauseWorkflow] = useState(false);
   // The tab on screen; the rules in use are marked on their tab.
   const [tab, setTab] = useState<"org" | "custom">("org");
@@ -566,6 +634,12 @@ export function WorkflowFailureAlerts({
     );
 
   /** The override as stored, so a mute change keeps the custom fields. */
+  /** The mute exactly as stored: the server sees it unchanged, so it is never re-announced. */
+  const keptMute = (latest: Loaded): Record<string, unknown> => ({
+    mutedUntil: latest.override.mutedUntil,
+    muteUntilSuccess: latest.override.muteUntilSuccess,
+    muteReason: latest.override.muteReason,
+  });
   const storedOverride = (latest: Loaded): Record<string, unknown> => ({
     threshold: latest.override.threshold,
     timeLimitMinutes: latest.override.timeLimitMinutes,
@@ -646,34 +720,48 @@ export function WorkflowFailureAlerts({
     return next;
   };
 
-  const mute = async (choice: number | "success" | "date"): Promise<void> => {
+  const reasonOk =
+    muteReason.trim().length >= MIN_MUTE_REASON &&
+    muteReason.trim().length <= MAX_MUTE_REASON;
+  const choiceOk =
+    muteChoice !== null && (muteChoice !== "date" || muteDate !== "");
+
+  /** Mutes (or extends) with a reason; the server tells everyone before it takes effect. */
+  const mute = async (): Promise<void> => {
+    const choice = MUTE_CHOICES.find((c) => c.id === muteChoice);
+    if (!(reasonOk && choiceOk)) {
+      return;
+    }
     let mutedUntil: string | null = null;
-    if (choice === "date") {
-      if (!muteDate) {
-        toast.error("Pick when the mute ends.");
-        return;
-      }
+    if (muteChoice === "date") {
       mutedUntil = new Date(muteDate).toISOString();
-    } else if (choice !== "success") {
-      mutedUntil = new Date(Date.now() + choice).toISOString();
+    } else if (choice && choice.ms !== "success") {
+      mutedUntil = new Date(Date.now() + choice.ms).toISOString();
     }
     sendPendingDraft();
     const ok = await put(
       (latest) => ({
         ...storedOverride(latest),
         mutedUntil,
-        muteUntilSuccess: choice === "success",
+        muteUntilSuccess: choice?.ms === "success",
+        muteReason: muteReason.trim(),
       }),
-      "Alerts muted for this workflow"
+      "Alerts muted. Everyone who gets this workflow's alerts was told."
     );
     if (ok) {
       setPanel(null);
+      setMuteChoice(null);
+      setMuteReason("");
+      setMuteDate("");
     }
   };
 
   const unmute = async (): Promise<void> => {
     sendPendingDraft();
-    await put(storedOverride, "Alerts back on for this workflow");
+    await put(
+      storedOverride,
+      "Alerts back on. Everyone who gets this workflow's alerts was told."
+    );
   };
 
   const timeLimitValue = (): number | null => {
@@ -725,8 +813,7 @@ export function WorkflowFailureAlerts({
     const done = put(
       (latest) => ({
         ...rules,
-        mutedUntil: latest.override.mutedUntil,
-        muteUntilSuccess: latest.override.muteUntilSuccess,
+        ...keptMute(latest),
       }),
       null,
       { sentKey: key }
@@ -771,8 +858,7 @@ export function WorkflowFailureAlerts({
         customChannels: false,
         channels: [],
         pauseWorkflow: false,
-        mutedUntil: latest.override.mutedUntil,
-        muteUntilSuccess: latest.override.muteUntilSuccess,
+        ...keptMute(latest),
       }),
       "This workflow now has its own rules",
       { reset: true }
@@ -786,8 +872,7 @@ export function WorkflowFailureAlerts({
     droppedKeyRef.current = dropped;
     const ok = await put(
       (latest) => ({
-        mutedUntil: latest.override.mutedUntil,
-        muteUntilSuccess: latest.override.muteUntilSuccess,
+        ...keptMute(latest),
       }),
       "Back on the org rules",
       { reset: true }
@@ -820,6 +905,14 @@ export function WorkflowFailureAlerts({
   );
 
   // The tabs say which rules are in use; the badge is for what overrides both.
+  const muteSummary = muteSentence({
+    by: view.override.mutedBy,
+    account: view.override.mutedByAccount,
+    untilItWorks: view.override.muteUntilSuccess,
+    mutedUntil: view.override.mutedUntil,
+    reason: view.override.muteReason,
+  });
+
   let tag: { label: string; className?: string } | null = null;
   if (!applies) {
     tag = { label: "Not used" };
@@ -897,7 +990,7 @@ export function WorkflowFailureAlerts({
             {pausedByAlert && (
               <p className="text-xs">
                 KeeperHub turned it off, as set for this workflow. Fix the
-                cause, then press Turn back on.
+                cause, then press Enable workflow.
               </p>
             )}
             <p className="text-xs">{alertLine(view.status.incident)}</p>
@@ -969,7 +1062,7 @@ export function WorkflowFailureAlerts({
                   type="button"
                   variant="outline"
                 >
-                  Turn workflow off
+                  Disable workflow
                 </Button>
               )}
               {enableToggle && pausedByAlert && (
@@ -980,7 +1073,7 @@ export function WorkflowFailureAlerts({
                   type="button"
                   variant="outline"
                 >
-                  Turn back on
+                  Enable workflow
                 </Button>
               )}
             </div>
@@ -1005,24 +1098,187 @@ export function WorkflowFailureAlerts({
       )}
 
       {applies && (
-        <div className="space-y-3 break-words rounded-lg border bg-muted/20 p-3 text-sm">
-          {muted && (
+        // One mute for the workflow, outside the rules tabs: it silences either setup.
+        <div
+          className="space-y-3 break-words rounded-lg border p-3 text-sm"
+          data-testid="failure-alerts-mute-area"
+        >
+          <h3 className="font-semibold text-sm">Mute alerts</h3>
+          {muted ? (
             <p className="flex items-start gap-2">
               <BellOff
                 aria-hidden="true"
                 className={cn("mt-0.5 size-4 shrink-0", WARNING_TEXT)}
               />
               <span className="min-w-0">
-                {view.override.muteUntilSuccess
-                  ? "Muted until it works again"
-                  : `Muted until ${formatWhen(view.override.mutedUntil ?? "")}`}
-                {view.override.mutedBy ? ` by ${view.override.mutedBy}` : ""}.
+                {muteSummary}.
                 {view.override.pauseWorkflow
-                  ? " Failures still show in Runs; nobody is told unless KeeperHub turns it off at the limit."
-                  : " Failures still show in Runs; nobody is told."}
+                  ? " Alerts are off for this workflow whichever rules it uses: failures still show in Runs, and nobody is told unless KeeperHub disables it at the limit."
+                  : " Alerts are off for this workflow whichever rules it uses: failures still show in Runs, and nobody is told until the mute ends."}
               </span>
             </p>
+          ) : (
+            <p className="text-muted-foreground text-xs">
+              Alerts are on for this workflow. A mute stops its alerts whichever
+              rules it uses, and everyone who gets them is told.
+            </p>
           )}
+          {canManage && panel === null && (
+            <div className="flex flex-wrap gap-2">
+              {muted ? (
+                <Button
+                  className={WRAP_BUTTON}
+                  data-testid="failure-alerts-unmute"
+                  disabled={saving}
+                  onClick={unmute}
+                  ref={muteButtonRef}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Unmute
+                </Button>
+              ) : null}
+              {muted ? (
+                <Button
+                  className={WRAP_BUTTON}
+                  data-testid="failure-alerts-mute-extend"
+                  onClick={() => openPanel("mute")}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Change or extend the mute
+                </Button>
+              ) : (
+                <Button
+                  className={WRAP_BUTTON}
+                  data-testid="failure-alerts-mute-open"
+                  onClick={() => openPanel("mute")}
+                  ref={muteButtonRef}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <BellOff className="size-3.5" />
+                  Mute
+                </Button>
+              )}
+            </div>
+          )}
+
+          {panel === "mute" && (
+            <div
+              className="space-y-2"
+              data-testid="failure-alerts-mute"
+              ref={panelRef}
+            >
+              <p className="text-xs">
+                {muted ? "Mute until" : "Mute alerts for"}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {MUTE_CHOICES.map((choice) => (
+                  <Button
+                    aria-pressed={muteChoice === choice.id}
+                    className={WRAP_BUTTON}
+                    data-mute={choice.id}
+                    disabled={saving}
+                    key={choice.id}
+                    onClick={() => {
+                      setMuteChoice(choice.id);
+                      setMuteDate("");
+                    }}
+                    size="sm"
+                    type="button"
+                    variant={muteChoice === choice.id ? "default" : "outline"}
+                  >
+                    {choice.label}
+                  </Button>
+                ))}
+              </div>
+              <Label className="text-xs" htmlFor="wf-mute-until">
+                Or until
+              </Label>
+              <Input
+                className="h-8 w-auto"
+                id="wf-mute-until"
+                max={toLocalInput(
+                  new Date(Date.now() + MAX_MUTE_DAYS * 24 * HOUR_MS)
+                )}
+                min={toLocalInput(new Date())}
+                onChange={(e) => {
+                  setMuteDate(e.target.value);
+                  setMuteChoice(e.target.value ? "date" : null);
+                }}
+                type="datetime-local"
+                value={muteDate}
+              />
+              <Label className="text-xs" htmlFor="wf-mute-reason">
+                Why? Everyone who gets this workflow's alerts will see this.
+              </Label>
+              <Input
+                aria-describedby="wf-mute-reason-help"
+                aria-invalid={muteReason !== "" && !reasonOk}
+                className="h-8"
+                data-testid="failure-alerts-mute-reason"
+                id="wf-mute-reason"
+                maxLength={MAX_MUTE_REASON}
+                onChange={(e) => setMuteReason(e.target.value)}
+                placeholder="e.g. Migrating the RPC, back Friday"
+                value={muteReason}
+              />
+              <p
+                className={cn(
+                  "text-xs",
+                  muteReason !== "" && !reasonOk
+                    ? "text-destructive"
+                    : "text-muted-foreground"
+                )}
+                id="wf-mute-reason-help"
+              >
+                {MIN_MUTE_REASON} to {MAX_MUTE_REASON} characters.
+              </p>
+              <p className="text-muted-foreground text-xs">
+                Everyone who gets this workflow's alerts and every owner will be
+                told (email and chat), now and when the mute ends. Up to{" "}
+                {MAX_MUTE_DAYS} days; alerts start again by themselves if it is
+                still failing.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  className={WRAP_BUTTON}
+                  data-testid="failure-alerts-mute-submit"
+                  disabled={saving || !(reasonOk && choiceOk)}
+                  onClick={() => {
+                    mute().catch(() => undefined);
+                  }}
+                  size="sm"
+                  type="button"
+                >
+                  Mute and notify
+                </Button>
+                <Button
+                  onClick={() => {
+                    setSaveError(null);
+                    setPanel(null);
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {applies && (
+        <div
+          className="space-y-3 break-words rounded-lg border bg-muted/20 p-3 text-sm"
+          data-testid="failure-alerts-rules-card"
+        >
           {/* Manual: a tab changes on click or Enter, never because focus landed on it. */}
           <Tabs activationMode="manual" onValueChange={chooseTab} value={tab}>
             <TabsList
@@ -1046,7 +1302,9 @@ export function WorkflowFailureAlerts({
               <RulesView
                 channels={view.org.channels}
                 emails={orgEmails(view)}
+                notifyRecovery={view.org.notifyRecovery}
                 pauseWorkflow={false}
+                remindDaily={view.org.remindDaily}
                 threshold={view.org.threshold}
                 timeLimitMinutes={view.org.timeLimitMinutes}
               />
@@ -1081,7 +1339,140 @@ export function WorkflowFailureAlerts({
                   ref={panelRef}
                 >
                   <section className="space-y-3">
-                    <h3 className="font-semibold text-sm">Rules</h3>
+                    <h3 className="font-semibold text-sm">Who gets alerts</h3>
+                    <div className="space-y-2">
+                      <h4 className="font-medium text-xs">Email</h4>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Checkbox
+                            checked={customRecipients !== null}
+                            id="wf-own-recipients"
+                            onCheckedChange={(checked) =>
+                              setCustomRecipients(
+                                checked === true
+                                  ? [...view.org.recipientUserIds]
+                                  : null
+                              )
+                            }
+                          />
+                          <Label
+                            className="text-xs"
+                            htmlFor="wf-own-recipients"
+                          >
+                            Email different people
+                          </Label>
+                        </div>
+                        {customRecipients === null ? (
+                          <p className="text-muted-foreground text-xs">
+                            {view.effective.emails.join(", ") ||
+                              "Nobody reachable"}{" "}
+                            (org)
+                          </p>
+                        ) : (
+                          <ul className="space-y-1.5">
+                            {view.members.map((m) => (
+                              <li
+                                className="flex items-center gap-2 text-sm"
+                                key={m.userId}
+                              >
+                                <Checkbox
+                                  checked={customRecipients.includes(m.userId)}
+                                  disabled={
+                                    !m.reachable ||
+                                    isLastRecipient(
+                                      m,
+                                      customRecipients,
+                                      view.members
+                                    )
+                                  }
+                                  id={`wf-recipient-${m.userId}`}
+                                  onCheckedChange={(checked) =>
+                                    setCustomRecipients(
+                                      checked === true
+                                        ? [
+                                            ...new Set([
+                                              ...customRecipients,
+                                              m.userId,
+                                            ]),
+                                          ]
+                                        : customRecipients.filter(
+                                            (id) => id !== m.userId
+                                          )
+                                    )
+                                  }
+                                />
+                                <Label
+                                  className={cn(
+                                    "min-w-0 break-all font-normal",
+                                    // Disabled only because mail cannot reach them:
+                                    // the name still has to be readable.
+                                    !m.reachable &&
+                                      "text-muted-foreground peer-disabled:opacity-100"
+                                  )}
+                                  htmlFor={`wf-recipient-${m.userId}`}
+                                >
+                                  {memberLabel(m)}
+                                </Label>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {customRecipients !== null &&
+                          recipientsLocked(customRecipients, view.members) && (
+                            <p
+                              className="text-muted-foreground text-xs"
+                              data-testid="failure-alerts-last-recipient"
+                            >
+                              {lastRecipientNote(customRecipients.length === 1)}
+                            </p>
+                          )}
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <h4 className="font-medium text-xs">Methods</h4>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Checkbox
+                            checked={customChannels !== null}
+                            id="wf-own-channels"
+                            onCheckedChange={(checked) =>
+                              setCustomChannels(
+                                checked === true
+                                  ? view.org.channels.map((c) => ({
+                                      key: nextKey(),
+                                      kind: c.kind,
+                                      integrationId: c.integrationId,
+                                      destination: c.destination,
+                                      role: c.role,
+                                      // A paused org method is copied paused.
+                                      pausedReason: c.pausedAt
+                                        ? (c.pausedReason ??
+                                          "It stopped working.")
+                                        : undefined,
+                                    }))
+                                  : null
+                              )
+                            }
+                          />
+                          <Label className="text-xs" htmlFor="wf-own-channels">
+                            Use different methods
+                          </Label>
+                        </div>
+                        {customChannels !== null && (
+                          <ChannelListEditor
+                            channels={customChannels}
+                            connections={view.connections}
+                            onChange={setCustomChannels}
+                            onConnectionsChanged={refreshConnections}
+                            organizationId={view.organizationId}
+                            savedChannels={view.override.channels}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  </section>
+                  <section className="space-y-3 border-t pt-3">
+                    <h3 className="font-semibold text-sm">When to alert</h3>
                     <div className="flex flex-wrap items-center gap-2">
                       <Label
                         className="font-normal"
@@ -1157,135 +1548,29 @@ export function WorkflowFailureAlerts({
                           }
                         />
                         <Label className="text-xs" htmlFor="wf-pause-workflow">
-                          Turn this workflow off when it reaches the limit
+                          Disable this workflow when it reaches the limit
                         </Label>
                       </div>
                       <p
                         className="pl-6 text-muted-foreground text-xs"
                         id="wf-pause-workflow-help"
                       >
-                        Turns it off when it fails that many runs in a row or
-                        the wallet runs out of funds; the time limit never turns
-                        a workflow off. Errors on KeeperHub's side do not count.
-                        To start it again, fix the cause, then press Turn back
-                        on.
+                        Disables it when it fails that many runs in a row or the
+                        wallet runs out of funds; the time limit never disables
+                        a workflow. Errors on KeeperHub's side do not count. To
+                        start it again, fix the cause, then press Enable
+                        workflow.
                       </p>
                     </div>
                     <p className="text-muted-foreground text-xs">
                       Starts from the org's rules. Saved here, they stay as they
                       are even if the org rules change.
                     </p>
-                  </section>
-                  <section className="space-y-2 border-t pt-3">
-                    <h3 className="font-semibold text-sm">Email</h3>
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <Checkbox
-                          checked={customRecipients !== null}
-                          id="wf-own-recipients"
-                          onCheckedChange={(checked) =>
-                            setCustomRecipients(
-                              checked === true
-                                ? [...view.org.recipientUserIds]
-                                : null
-                            )
-                          }
-                        />
-                        <Label className="text-xs" htmlFor="wf-own-recipients">
-                          Email different people
-                        </Label>
-                      </div>
-                      {customRecipients === null ? (
-                        <p className="text-muted-foreground text-xs">
-                          {view.effective.emails.join(", ") ||
-                            "Nobody reachable"}{" "}
-                          (org)
-                        </p>
-                      ) : (
-                        <ul className="space-y-1.5">
-                          {view.members.map((m) => (
-                            <li
-                              className="flex items-center gap-2 text-sm"
-                              key={m.userId}
-                            >
-                              <Checkbox
-                                checked={customRecipients.includes(m.userId)}
-                                disabled={!m.reachable}
-                                id={`wf-recipient-${m.userId}`}
-                                onCheckedChange={(checked) =>
-                                  setCustomRecipients(
-                                    checked === true
-                                      ? [
-                                          ...new Set([
-                                            ...customRecipients,
-                                            m.userId,
-                                          ]),
-                                        ]
-                                      : customRecipients.filter(
-                                          (id) => id !== m.userId
-                                        )
-                                  )
-                                }
-                              />
-                              <Label
-                                className={cn(
-                                  "min-w-0 break-all font-normal",
-                                  // Disabled only because mail cannot reach them:
-                                  // the name still has to be readable.
-                                  !m.reachable &&
-                                    "text-muted-foreground peer-disabled:opacity-100"
-                                )}
-                                htmlFor={`wf-recipient-${m.userId}`}
-                              >
-                                {memberLabel(m)}
-                              </Label>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  </section>
-                  <section className="space-y-2 border-t pt-3">
-                    <h3 className="font-semibold text-sm">Methods</h3>
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <Checkbox
-                          checked={customChannels !== null}
-                          id="wf-own-channels"
-                          onCheckedChange={(checked) =>
-                            setCustomChannels(
-                              checked === true
-                                ? view.org.channels.map((c) => ({
-                                    key: nextKey(),
-                                    kind: c.kind,
-                                    integrationId: c.integrationId,
-                                    destination: c.destination,
-                                    role: c.role,
-                                    // A paused org method is copied paused.
-                                    pausedReason: c.pausedAt
-                                      ? (c.pausedReason ??
-                                        "It stopped working.")
-                                      : undefined,
-                                  }))
-                                : null
-                            )
-                          }
-                        />
-                        <Label className="text-xs" htmlFor="wf-own-channels">
-                          Use different methods
-                        </Label>
-                      </div>
-                      {customChannels !== null && (
-                        <ChannelListEditor
-                          channels={customChannels}
-                          connections={view.connections}
-                          onChange={setCustomChannels}
-                          onConnectionsChanged={refreshConnections}
-                          organizationId={view.organizationId}
-                          savedChannels={view.override.channels}
-                        />
-                      )}
-                    </div>
+                    <OrgToggles
+                      note="Same as the org rules."
+                      notifyRecovery={view.org.notifyRecovery}
+                      remindDaily={view.org.remindDaily}
+                    />
                   </section>
                   {saveErrorBox}
                 </div>
@@ -1296,7 +1581,9 @@ export function WorkflowFailureAlerts({
                     custom ? view.effective.channels : view.org.channels
                   }
                   emails={custom ? view.effective.emails : orgEmails(view)}
+                  notifyRecovery={view.org.notifyRecovery}
                   pauseWorkflow={custom && view.override.pauseWorkflow}
+                  remindDaily={view.org.remindDaily}
                   threshold={
                     custom ? view.effective.threshold : view.org.threshold
                   }
@@ -1385,102 +1672,6 @@ export function WorkflowFailureAlerts({
           )}
 
           {!editing && saveErrorBox}
-          {canManage && panel === null && (
-            <div className="flex flex-wrap gap-2 border-t pt-3">
-              {muted ? (
-                <Button
-                  className={WRAP_BUTTON}
-                  data-testid="failure-alerts-unmute"
-                  disabled={saving}
-                  onClick={unmute}
-                  ref={muteButtonRef}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  Unmute
-                </Button>
-              ) : (
-                <Button
-                  className={WRAP_BUTTON}
-                  data-testid="failure-alerts-mute-open"
-                  onClick={() => openPanel("mute")}
-                  ref={muteButtonRef}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  <BellOff className="size-3.5" />
-                  Mute
-                </Button>
-              )}
-            </div>
-          )}
-
-          {panel === "mute" && (
-            <div
-              className="space-y-2"
-              data-testid="failure-alerts-mute"
-              ref={panelRef}
-            >
-              <p className="text-xs">Mute alerts for</p>
-              <div className="flex flex-wrap gap-2">
-                {MUTE_CHOICES.map((choice) => (
-                  <Button
-                    data-mute={choice.id}
-                    disabled={saving}
-                    key={choice.id}
-                    onClick={() => mute(choice.ms)}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                  >
-                    {choice.label}
-                  </Button>
-                ))}
-              </div>
-              <Label className="text-xs" htmlFor="wf-mute-until">
-                Or until
-              </Label>
-              <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  className="h-8 w-auto"
-                  id="wf-mute-until"
-                  max={toLocalInput(
-                    new Date(Date.now() + MAX_MUTE_DAYS * 24 * HOUR_MS)
-                  )}
-                  min={toLocalInput(new Date())}
-                  onChange={(e) => setMuteDate(e.target.value)}
-                  type="datetime-local"
-                  value={muteDate}
-                />
-                <Button
-                  disabled={saving || !muteDate}
-                  onClick={() => mute("date")}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  Mute until then
-                </Button>
-              </div>
-              <p className="text-muted-foreground text-xs">
-                Up to {MAX_MUTE_DAYS} days. Alerts start again by themselves if
-                it is still failing.
-              </p>
-              <Button
-                onClick={() => {
-                  setSaveError(null);
-                  setPanel(null);
-                }}
-                size="sm"
-                type="button"
-                variant="ghost"
-              >
-                Cancel
-              </Button>
-            </div>
-          )}
         </div>
       )}
 

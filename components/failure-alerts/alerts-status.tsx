@@ -2,9 +2,11 @@
 
 import { AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
 import Link from "next/link";
+import { useState } from "react";
+import { toast } from "sonner";
 import { timeAgo } from "@/components/settings/hub/relative-time";
 import { Button } from "@/components/ui/button";
-import { Notice, WARNING_SURFACE, WARNING_TEXT } from "@/components/ui/notice";
+import { WARNING_SURFACE, WARNING_TEXT } from "@/components/ui/notice";
 import {
   EMAILS_KEPT_FOR_NEW_FAILURES,
   isNotRunning,
@@ -12,8 +14,9 @@ import {
   type OrgSettingsView,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
+import { unmuteWorkflow } from "./api";
 import { failedRuns, formatWhen, joinList, notRunningText } from "./format";
-import { memberLabel } from "./member-label";
+import { memberLabel, muteSentence } from "./member-label";
 import { channelWorks } from "./method-drafts";
 
 const ICON_CLASS = "mt-0.5 size-4 shrink-0";
@@ -27,20 +30,6 @@ const MAX_NAMED = 3;
 /** "a, b and c", or "a, b and 2 more" when some are left out. */
 function withMore(parts: string[], more: number): string {
   return more > 0 ? `${parts.join(", ")} and ${more} more` : joinList(parts);
-}
-
-/** "a@x, b@y (email), Origin alerts (Discord) and 2 more". */
-function namesLine(emails: string[], methods: string[]): string {
-  const shownEmails = emails.slice(0, MAX_NAMED);
-  const shownMethods = methods.slice(0, MAX_NAMED - shownEmails.length);
-  const parts = [
-    ...(shownEmails.length > 0 ? [`${shownEmails.join(", ")} (email)`] : []),
-    ...shownMethods,
-  ];
-  return withMore(
-    parts,
-    emails.length + methods.length - shownEmails.length - shownMethods.length
-  );
 }
 
 /**
@@ -106,41 +95,23 @@ function capText(
     : `${head} Once all ${usage.limit} are used, nobody is told until the 1st. ${ADD_CHAT}`;
 }
 
-function Headline({
-  tone,
-  title,
+/** The healthy line: problems are listed in the issue sections instead. */
+function HealthyLine({
   children,
 }: {
-  tone: "ok" | "warning" | "danger";
-  title: string;
-  children?: React.ReactNode;
+  children: React.ReactNode;
 }): React.ReactElement {
-  let Icon = CheckCircle2;
-  let iconClass = "text-keeperhub-green-dark";
-  if (tone === "warning") {
-    Icon = AlertTriangle;
-    iconClass = WARNING_TEXT;
-  } else if (tone === "danger") {
-    Icon = XCircle;
-    iconClass = "text-destructive";
-  }
   return (
     <div className="flex items-start gap-2">
-      <Icon aria-hidden="true" className={cn(ICON_CLASS, iconClass)} />
+      <CheckCircle2
+        aria-hidden="true"
+        className={cn(ICON_CLASS, "text-keeperhub-green-dark")}
+      />
       <div className="min-w-0 space-y-0.5">
-        <p
-          className={cn(
-            "font-medium text-sm",
-            tone === "danger" && "text-destructive"
-          )}
-        >
-          {title}
-        </p>
-        {children && (
-          <div className="break-words text-muted-foreground text-xs">
-            {children}
-          </div>
-        )}
+        <p className="font-medium text-sm">All healthy</p>
+        <div className="break-words text-muted-foreground text-xs">
+          {children}
+        </div>
       </div>
     </div>
   );
@@ -157,9 +128,103 @@ type AttentionRow = {
   id: string;
   name: string;
   href: string;
-  detail: string;
+  detail: React.ReactNode;
   tone: "danger" | "warning";
+  /** A link under the detail, e.g. where to unmute. */
+  action?: string;
 };
+
+type Issue = {
+  id: string;
+  tone: "danger" | "warning";
+  title: React.ReactNode;
+  detail: React.ReactNode;
+  action?: React.ReactNode;
+  testId?: string;
+};
+
+/** One subsection of Needs attention: title with count, a line on what it covers, then its issues. */
+function IssueSection({
+  title,
+  description,
+  issues,
+  testId,
+}: {
+  title: string;
+  description: string;
+  issues: Issue[];
+  testId: string;
+}): React.ReactElement {
+  return (
+    <section className="space-y-2" data-testid={`${testId}-section`}>
+      <div className="space-y-0.5">
+        <h3 className="font-medium text-sm">
+          {title} ({issues.length})
+        </h3>
+        <p className="text-muted-foreground text-xs">{description}</p>
+      </div>
+      <ul className="divide-y rounded-md border" data-testid={testId}>
+        {issues.map((issue) => {
+          const Icon = issue.tone === "danger" ? XCircle : AlertTriangle;
+          const toneClass =
+            issue.tone === "danger" ? "text-destructive" : WARNING_TEXT;
+          return (
+            <li
+              className="flex items-start gap-2 px-3 py-2"
+              data-testid={issue.testId}
+              data-tone={issue.tone}
+              key={issue.id}
+            >
+              <Icon aria-hidden="true" className={cn(ICON_CLASS, toneClass)} />
+              <div className="min-w-0 flex-1 space-y-0.5">
+                <p className="break-words font-medium text-sm">{issue.title}</p>
+                <div className={cn("break-words text-xs", toneClass)}>
+                  {issue.detail}
+                </div>
+                {issue.action}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+/** Unmute straight from Overview; everyone who was told of the mute is told it ended. */
+function UnmuteButton({
+  workflowId,
+  onDone,
+}: {
+  workflowId: string;
+  onDone?: () => void;
+}): React.ReactElement {
+  const [busy, setBusy] = useState(false);
+  return (
+    <Button
+      className="h-auto px-0 text-xs underline underline-offset-4"
+      data-testid="failure-alerts-overview-unmute"
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        const error = await unmuteWorkflow(workflowId);
+        setBusy(false);
+        if (error) {
+          toast.error(error);
+          return;
+        }
+        toast.success(
+          "Alerts back on. Everyone who was told of the mute is told it ended."
+        );
+        onDone?.();
+      }}
+      type="button"
+      variant="link"
+    >
+      {busy ? "Unmuting..." : "Unmute"}
+    </Button>
+  );
+}
 
 /**
  * "Does anything need attention?": who cannot be reached, broken methods, the
@@ -170,20 +235,20 @@ export function AlertsHealth({
   canManage,
   viewerUserId,
   onGoToSetup,
-  onGoToSent,
+  onChanged,
 }: {
   data: OrgSettingsView;
   canManage: boolean;
   viewerUserId?: string | null;
   /** Opens the Setup tab, where methods are fixed. */
   onGoToSetup?: () => void;
-  /** Opens the Sent alerts tab. */
-  onGoToSent?: () => void;
+  /** Reloads the page's data after an action here (Unmute). */
+  onChanged?: () => void;
 }): React.ReactElement {
   const fixButton = (label: string): React.ReactNode =>
     canManage && onGoToSetup ? (
       <Button
-        className="mt-1 h-auto px-0 text-xs"
+        className="mt-1 h-auto px-0 text-xs underline underline-offset-4"
         data-testid="failure-alerts-fix"
         onClick={onGoToSetup}
         type="button"
@@ -213,39 +278,61 @@ export function AlertsHealth({
   const unreachable = data.unreachable || routes === 0;
   const single = !unreachable && routes === 1;
 
-  const emailNames = emailWorks ? people.map(memberLabel) : [];
-  const always = working.filter((c) => c.role === "always").map(label);
-  const backups = working.filter((c) => c.role === "backup").map(label);
-  // Backups take the alert first when nothing else is set.
-  const primary =
-    emailNames.length + always.length > 0 ? always : [...always, ...backups];
-  const reachParts = [
-    emailNames.length + primary.length > 0
-      ? `Alerts reach ${namesLine(emailNames, primary)}.`
-      : "",
-    primary === always && backups.length > 0
-      ? `Backup: ${namesLine([], backups)}.`
-      : "",
-  ].filter(Boolean);
-  const reachLine = reachParts.join(" ");
   const noEmail = noEmailLine(data, capped, people.length, viewerUserId);
   const onlyRoute = emailWorks
     ? "Email"
     : (working[0] && label(working[0])) || "";
 
-  // Failing first, then workflows whose own methods stopped working.
-  const rows: AttentionRow[] = [
-    ...data.failingNow.map((w) => ({
-      id: w.workflowId,
+  // Every active mute shows, so silencing a workflow is never quiet.
+  const muted = data.mutedWorkflows ?? [];
+  const mutedIds = new Set(muted.map((w) => w.id));
+  const muteRow = (w: (typeof muted)[number]): AttentionRow => {
+    const muteLine = muteSentence({
+      by: w.by,
+      account: w.byAccount,
+      untilItWorks: w.untilItWorks,
+      mutedUntil: w.mutedUntil,
+      reason: w.reason,
+    });
+    let state = "Muted.";
+    if (w.failing) {
+      state =
+        w.failedRuns > 0
+          ? `Failing while muted: ${failedRuns(w.failedRuns)} since ${formatWhen(w.since ?? "")}. Nobody is told until the mute ends.`
+          : "Failing while muted (it was already failing when muted). Nobody is told until the mute ends.";
+    }
+    return {
+      id: w.id,
       name: w.name,
-      href: `/workflows/${w.workflowId}?tab=runs`,
-      tone: "danger" as const,
-      detail: `${
-        isNotRunning(w.openedBy)
-          ? notRunningText(w.dueAt, w.refused, w.openedBy)
-          : `${w.openedBy === "funding" ? "Wallet out of funds, " : ""}${failedRuns(w.failureCount)} in a row${ownRule(ownThreshold.get(w.workflowId))}, alert sent ${timeAgo(w.openedAt)}`
-      }${pause ? `. Not reported until ${formatWhen(pause.until)}` : ""}`,
-    })),
+      href: `/workflows/${w.id}`,
+      tone: w.failing ? "danger" : "warning",
+      // Only the state is coloured, so the rows stay easy to scan.
+      detail: (
+        <>
+          <span>{state}</span>{" "}
+          <span className="text-muted-foreground">{muteLine}.</span>
+        </>
+      ),
+      action: "Open its Alerts",
+    };
+  };
+  // Failing while muted first, then failing, then other mutes and broken own methods.
+  const rows: AttentionRow[] = [
+    ...muted.filter((w) => w.failing).map(muteRow),
+    ...data.failingNow
+      .filter((w) => !mutedIds.has(w.workflowId))
+      .map((w) => ({
+        id: w.workflowId,
+        name: w.name,
+        href: `/workflows/${w.workflowId}?tab=runs`,
+        tone: "danger" as const,
+        detail: `${
+          isNotRunning(w.openedBy)
+            ? notRunningText(w.dueAt, w.refused, w.openedBy)
+            : `${w.openedBy === "funding" ? "Wallet out of funds, " : ""}${failedRuns(w.failureCount)} in a row${ownRule(ownThreshold.get(w.workflowId))}, alert sent ${timeAgo(w.openedAt)}`
+        }${pause ? `. Not reported until ${formatWhen(pause.until)}` : ""}`,
+      })),
+    ...muted.filter((w) => !w.failing).map(muteRow),
     ...data.customWorkflows
       .filter((w) => w.brokenMethods > 0)
       .map((w) => ({
@@ -259,32 +346,15 @@ export function AlertsHealth({
             : `${w.brokenMethods} of its own methods stopped working`,
       })),
   ];
-  const problems =
-    unreachable ||
-    single ||
-    broken.length > 0 ||
-    rows.length > 0 ||
-    Boolean(usage && usage.used >= usage.limit * 0.8);
-
-  let healthState = "healthy";
+  const setupIssues: Issue[] = [];
   if (unreachable) {
-    healthState = "unreachable";
-  } else if (rows.length > 0) {
-    healthState = "attention";
-  }
-
-  return (
-    <div
-      className="space-y-4"
-      data-state={healthState}
-      data-testid="failure-alerts-health"
-    >
-      {unreachable && (
-        <Headline
-          title="Nobody can be reached: nobody will be told when a workflow fails"
-          tone="danger"
-        >
-          {noEmail.text}{" "}
+    setupIssues.push({
+      id: "unreachable",
+      tone: "danger",
+      title: "Nobody can be reached",
+      detail: (
+        <>
+          Nobody will be told when a workflow fails. {noEmail.text}{" "}
           {noEmail.fixer && (
             <>
               {noEmail.fixer} add one in{" "}
@@ -296,108 +366,107 @@ export function AlertsHealth({
           )}
           {canManage
             ? "Add a method, or choose other people for email."
-            : "Ask an owner or admin to fix it."}{" "}
-          {fixButton("Fix in Setup")}
-        </Headline>
-      )}
-      {!unreachable && broken.length > 0 && (
-        <Headline
-          title={`${plural(broken.length, "method needs", "methods need")} attention`}
-          tone="warning"
-        >
-          {broken.map(label).join(", ")}. The others are still used.{" "}
-          {fixButton("Fix in Setup")}
-        </Headline>
-      )}
-      {single && (
-        <Headline title={`Only one method: ${onlyRoute}`} tone="warning">
-          If it stops working, nobody is told. Add a backup method, or an email.{" "}
-          {fixButton("Add a method")}
-        </Headline>
-      )}
-      {usage && usage.used >= usage.limit * 0.8 && (
-        <div data-testid="failure-alerts-email-cap">
-          <Notice tone={capped && working.length === 0 ? "danger" : "warning"}>
-            {capText(usage, working.length > 0)}
-          </Notice>
-        </div>
-      )}
+            : "Ask an owner or admin to fix it."}
+        </>
+      ),
+      action: fixButton("Fix in Setup"),
+    });
+  }
+  if (!unreachable && broken.length > 0) {
+    setupIssues.push({
+      id: "broken",
+      tone: "warning",
+      title: `${plural(broken.length, "method needs", "methods need")} attention`,
+      detail: `${broken.map(label).join(", ")}. The others are still used.`,
+      action: fixButton("Fix in Setup"),
+    });
+  }
+  if (single) {
+    setupIssues.push({
+      id: "single",
+      tone: "warning",
+      title: `Only one method: ${onlyRoute}`,
+      detail: `If ${onlyRoute} stops working, nobody is told. Add a backup method, or an additional email recipient in Setup.`,
+      action: fixButton("Go to Setup"),
+    });
+  }
+  if (usage && usage.used >= usage.limit * 0.8) {
+    setupIssues.push({
+      id: "email-cap",
+      tone: capped && working.length === 0 ? "danger" : "warning",
+      title: capped ? "Alert emails used up" : "Alert emails running low",
+      detail: capText(usage, working.length > 0),
+      testId: "failure-alerts-email-cap",
+    });
+  }
 
-      {rows.length > 0 && (
-        <div className="space-y-2">
-          <h3 className="font-medium text-xs">
-            Workflows that need attention ({rows.length})
-          </h3>
-          <ul
-            className="divide-y rounded-md border"
-            data-testid="failure-alerts-failing"
-          >
-            {rows.map((row) => {
-              const Icon = row.tone === "danger" ? XCircle : AlertTriangle;
-              return (
-                <li
-                  className="flex items-start gap-2 px-3 py-2 text-sm"
-                  data-tone={row.tone}
-                  key={`${row.tone}:${row.id}`}
-                >
-                  <Icon
-                    aria-hidden="true"
-                    className={cn(
-                      ICON_CLASS,
-                      row.tone === "danger" ? "text-destructive" : WARNING_TEXT
-                    )}
-                  />
-                  <div className="flex min-w-0 flex-1 flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-                    <Link
-                      className="min-w-0 break-words font-medium underline underline-offset-4"
-                      href={row.href}
-                    >
-                      {row.name}
-                    </Link>
-                    <span
-                      className={cn(
-                        "text-xs",
-                        row.tone === "danger"
-                          ? "text-destructive"
-                          : WARNING_TEXT
-                      )}
-                    >
-                      {row.detail}
-                    </span>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
-
-      {!problems && (
-        <Headline title="All healthy" tone="ok">
-          No workflow is failing and every method works.
-        </Headline>
-      )}
-
-      <p className="text-muted-foreground text-xs">
-        {reachLine ? `${reachLine} ` : ""}
-        {data.lastAlertDeliveredAt && onGoToSent && (
-          <Button
-            className="h-auto px-0 text-muted-foreground text-xs underline"
-            data-testid="failure-alerts-last-alert"
-            onClick={onGoToSent}
-            type="button"
-            variant="link"
-          >
-            Last alert delivered {timeAgo(data.lastAlertDeliveredAt)}
-          </Button>
+  const workflowIssues: Issue[] = rows.map((row) => ({
+    id: `${row.tone}:${row.id}`,
+    tone: row.tone,
+    title: (
+      <Link
+        className="break-words underline underline-offset-4"
+        href={row.href}
+      >
+        {row.name}
+      </Link>
+    ),
+    detail: row.detail,
+    action: row.action ? (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        {mutedIds.has(row.id) && canManage && (
+          <UnmuteButton onDone={onChanged} workflowId={row.id} />
         )}
-        {data.lastAlertDeliveredAt && !onGoToSent
-          ? `Last alert delivered ${timeAgo(data.lastAlertDeliveredAt)}.`
-          : null}
-        {data.lastAlertDeliveredAt
-          ? null
-          : "No alert sent yet. Use Test on a method to see one arrive."}
-      </p>
+        <Link className="text-xs underline underline-offset-4" href={row.href}>
+          {row.action}
+        </Link>
+      </div>
+    ) : undefined,
+    testId: mutedIds.has(row.id) ? "failure-alerts-muted-workflow" : undefined,
+  }));
+
+  const workflowSection = workflowIssues.length > 0 && (
+    <IssueSection
+      description="Workflows that are failing or not running, muted, or whose own methods stopped working."
+      issues={workflowIssues}
+      testId="failure-alerts-failing"
+      title="Workflows that need attention"
+    />
+  );
+  const workflowsFirst = workflowIssues.some((i) => i.tone === "danger");
+
+  let healthState = "healthy";
+  if (unreachable) {
+    healthState = "unreachable";
+  } else if (setupIssues.length + workflowIssues.length > 0) {
+    healthState = "attention";
+  }
+
+  return (
+    <div
+      className="space-y-5"
+      data-state={healthState}
+      data-testid="failure-alerts-health"
+    >
+      {/* A failing workflow is the most urgent thing on the page, so it goes first. */}
+      {workflowsFirst && workflowSection}
+      {setupIssues.length > 0 && (
+        <IssueSection
+          description="Problems with who gets alerts and how they are sent."
+          issues={setupIssues}
+          testId="failure-alerts-setup-issues"
+          title="Setup that needs attention"
+        />
+      )}
+      {!workflowsFirst && workflowSection}
+      {setupIssues.length === 0 && workflowIssues.length === 0 && (
+        <HealthyLine>
+          No workflow is failing and every method works.
+          {data.lastAlertDeliveredAt
+            ? null
+            : " No alert sent yet: use Test on a method in Setup to see one arrive."}
+        </HealthyLine>
+      )}
     </div>
   );
 }

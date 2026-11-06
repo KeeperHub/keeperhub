@@ -2,17 +2,32 @@
 
 import Link from "next/link";
 import type { OrgSettingsView } from "@/lib/notifications/failure-alerts/view-types";
-import { failedRuns, formatWhen, timeLimitLabel } from "./format";
+import { failedRuns, timeLimitLabel } from "./format";
+import { muteSentence } from "./member-label";
 
 type CustomWorkflow = OrgSettingsView["customWorkflows"][number];
+type MutedWorkflow = OrgSettingsView["mutedWorkflows"][number];
+
+/** The Setup line's mute, worded as on Overview and in the workflow panel. */
+function muteText(w: CustomWorkflow, mute: MutedWorkflow | undefined): string {
+  const text = muteSentence({
+    by: mute?.by ?? null,
+    account: mute?.byAccount ?? null,
+    untilItWorks: w.muteUntilSuccess,
+    mutedUntil: w.mutedUntil,
+    reason: mute?.reason ?? null,
+  });
+  return `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
+}
 
 /** What this workflow does differently, in a few words. */
-function differences(w: CustomWorkflow): string {
+function differences(
+  w: CustomWorkflow,
+  mute: MutedWorkflow | undefined
+): string {
   const parts: string[] = [];
-  if (w.muteUntilSuccess) {
-    parts.push("muted until it works again");
-  } else if (w.mutedUntil) {
-    parts.push(`muted until ${formatWhen(w.mutedUntil)}`);
+  if (w.muteUntilSuccess || w.mutedUntil) {
+    parts.push(muteText(w, mute));
   }
   if (w.threshold) {
     parts.push(`alerts after ${failedRuns(w.threshold)}`);
@@ -29,7 +44,7 @@ function differences(w: CustomWorkflow): string {
     parts.push("uses its own methods");
   }
   if (w.pauseWorkflow) {
-    parts.push("turns itself off at its limit");
+    parts.push("disables itself at its limit");
   }
   const text = parts.join(", ") || "own settings";
   return `${text.charAt(0).toUpperCase()}${text.slice(1)}.`;
@@ -38,9 +53,13 @@ function differences(w: CustomWorkflow): string {
 /** Workflows that do not follow the org rules, so mutes are never forgotten. */
 export function CustomWorkflowsList({
   workflows,
+  muted = [],
 }: {
   workflows: CustomWorkflow[];
+  /** Who muted each one and why. */
+  muted?: MutedWorkflow[];
 }): React.ReactElement {
+  const muteById = new Map(muted.map((m) => [m.id, m]));
   return (
     <ul
       className="divide-y rounded-md border"
@@ -58,7 +77,9 @@ export function CustomWorkflowsList({
             {w.name}
           </Link>
           <span className="flex flex-col gap-0.5 text-xs @xl/settings:items-end">
-            <span className="text-muted-foreground">{differences(w)}</span>
+            <span className="text-muted-foreground">
+              {differences(w, muteById.get(w.id))}
+            </span>
             {w.brokenMethods > 0 && (
               <span
                 className="font-medium text-destructive"

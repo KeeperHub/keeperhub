@@ -48,7 +48,12 @@ import { cn } from "@/lib/utils";
 import { sendFailureAlertTest } from "./api";
 import { type ChoiceChip, ChoiceChips } from "./choice-chips";
 import { focusInPlace } from "./focus-in-place";
-import { memberLabel } from "./member-label";
+import {
+  isLastRecipient,
+  lastRecipientNote,
+  memberLabel,
+  recipientsLocked,
+} from "./member-label";
 import { MessagePreviewDialog } from "./message-preview-dialog";
 import {
   BROKEN_STATUSES,
@@ -1064,6 +1069,7 @@ export function EmailMethodCard({
   const row = useRowState(status === "unreachable");
   const expanded = canManage && (row.open || dirty || Boolean(save.error));
   const onlyOne = recipients.length === 1;
+  const locked = recipientsLocked(recipients, members);
 
   const toggleRecipient = (userId: string, checked: boolean): void => {
     save.reset();
@@ -1155,7 +1161,7 @@ export function EmailMethodCard({
             <ul className="space-y-2">
               {members.map((m) => {
                 const checked = recipients.includes(m.userId);
-                const isLast = checked && onlyOne;
+                const isLast = isLastRecipient(m, recipients, members);
                 const id = `${idPrefix}-recipient-${m.userId}`;
                 if (!(m.reachable || checked)) {
                   return (
@@ -1183,11 +1189,7 @@ export function EmailMethodCard({
                       onCheckedChange={(next) =>
                         toggleRecipient(m.userId, next === true)
                       }
-                      title={
-                        isLast
-                          ? "Someone has to get the email. Tick another person first."
-                          : undefined
-                      }
+                      title={isLast ? lastRecipientNote(onlyOne) : undefined}
                     />
                     <Label
                       className="min-w-0 cursor-pointer break-all font-normal"
@@ -1207,9 +1209,12 @@ export function EmailMethodCard({
                 );
               })}
             </ul>
-            {onlyOne && (
-              <p className="text-muted-foreground text-xs">
-                Someone has to get the email. Tick another person first.
+            {locked && (
+              <p
+                className="text-muted-foreground text-xs"
+                data-testid="failure-alerts-last-recipient"
+              >
+                {lastRecipientNote(onlyOne)}
               </p>
             )}
           </fieldset>
