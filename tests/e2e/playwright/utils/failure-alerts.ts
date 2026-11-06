@@ -31,6 +31,8 @@ export type AlertsFixture = {
   alertedName: string;
   /** A Discord connection the server cannot use, for the refused method. */
   discordName: string;
+  /** The owner's own Telegram connection, not shared with the org. */
+  privateTelegramName: string;
 };
 
 // Own user, org and alert rows; the email pattern lets the global cleanup sweep leftovers.
@@ -45,6 +47,7 @@ export async function seedFailureAlerts(): Promise<AlertsFixture> {
   const failingName = `Failing Keeper ${suffix}`;
   const alertedName = `Alerted Keeper ${suffix}`;
   const discordName = `E2E Discord ${suffix}`;
+  const privateTelegramName = `E2E Private Telegram ${suffix}`;
   const now = new Date();
   const ago = (minutes: number): Date =>
     new Date(now.getTime() - minutes * MINUTE);
@@ -78,13 +81,14 @@ export async function seedFailureAlerts(): Promise<AlertsFixture> {
 
       // Connections with no usable credentials: the server refuses them without any network call.
       const telegramId = generateId();
-      for (const [id, name, type] of [
-        [telegramId, `E2E Telegram ${suffix}`, "telegram"],
-        [generateId(), discordName, "discord"],
+      for (const [id, name, type, visibility] of [
+        [telegramId, `E2E Telegram ${suffix}`, "telegram", "organization"],
+        [generateId(), discordName, "discord", "organization"],
+        [generateId(), privateTelegramName, "telegram", "private"],
       ] as const) {
         await tx`
           INSERT INTO integrations (id, created_by, organization_id, name, type, config, visibility, created_at, updated_at)
-          VALUES (${id}, ${userId}, ${orgId}, ${name}, ${type}, ${sql.json({})}, 'organization', ${now}, ${now})
+          VALUES (${id}, ${userId}, ${orgId}, ${name}, ${type}, ${sql.json({})}, ${visibility}, ${now}, ${now})
         `;
       }
       await tx`
@@ -147,6 +151,7 @@ export async function seedFailureAlerts(): Promise<AlertsFixture> {
     alertedId,
     alertedName,
     discordName,
+    privateTelegramName,
   };
 }
 
@@ -225,6 +230,7 @@ export type OverrideRow = {
   threshold: number | null;
   pauseWorkflow: boolean;
   mutedUntil: Date | null;
+  customChannels: boolean;
 };
 
 // The workflow's saved override, or null when it follows the org (a reset keeps an empty row).
@@ -234,7 +240,7 @@ export async function readOverride(
   const sql = getDbConnection();
   try {
     const [row] = await sql`
-      SELECT threshold, pause_workflow, muted_until FROM alert_overrides
+      SELECT threshold, pause_workflow, muted_until, custom_channels FROM alert_overrides
       WHERE workflow_id = ${workflowId}
         AND (threshold IS NOT NULL OR time_limit_minutes IS NOT NULL
           OR recipient_user_ids IS NOT NULL OR custom_channels
@@ -245,6 +251,7 @@ export async function readOverride(
           threshold: row.threshold as number | null,
           pauseWorkflow: row.pause_workflow as boolean,
           mutedUntil: row.muted_until as Date | null,
+          customChannels: row.custom_channels as boolean,
         }
       : null;
   } finally {

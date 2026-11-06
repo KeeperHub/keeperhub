@@ -402,6 +402,12 @@ test.describe("Failure alerts", () => {
       "Remind once a day while it keeps failing"
     );
     await expect(orgView).toContainText("Tell people when it works again");
+    // One link to the org rules, under the card, straight to Setup.
+    const orgLinks = section.getByRole("link", {
+      name: /Settings|Org alert rules/,
+    });
+    await expect(orgLinks).toHaveCount(1);
+    await expect(orgLinks).toHaveAttribute("href", /\/alerts\?tab=setup$/);
     await section.getByTestId("failure-alerts-tab-custom").click();
     await expect(section).toHaveAttribute("data-source", "org");
     await section.getByTestId("failure-alerts-use-custom").click();
@@ -517,6 +523,67 @@ test.describe("Failure alerts", () => {
         expect(wrapped, `${tab} at ${width}px`).toBe(0);
       }
     }
+  });
+
+  test("workflow Properties: own email and methods use the Settings cards", async ({
+    page,
+  }) => {
+    const section = await openProperties(page, fixture.alertedId);
+    await section.getByTestId("failure-alerts-tab-custom").click();
+    await section.getByTestId("failure-alerts-use-custom").click();
+    const custom = section.getByTestId("failure-alerts-custom");
+    await expect(custom).toBeVisible(SAVE_TIMEOUT);
+
+    // Email: the Settings card, open, with the owner locked in as the last recipient.
+    await custom.locator("#wf-own-recipients").click();
+    const email = custom
+      .getByTestId("wf-email-card")
+      .getByTestId("failure-alert-method");
+    await expect(email).toHaveAttribute("data-kind", "email");
+    await expect(
+      email.getByRole("button", { name: "Test Email" })
+    ).toBeVisible();
+    const only = email.getByRole("checkbox").first();
+    await expect(only).toBeChecked();
+    await expect(only).toBeDisabled();
+    await expect(
+      email.getByTestId("failure-alerts-last-recipient")
+    ).toBeVisible();
+
+    // Methods: the owner's unshared connection is listed greyed out, as in Settings.
+    await custom.locator("#wf-own-channels").click();
+    await expect
+      .poll(
+        async () => (await readOverride(fixture.alertedId))?.customChannels,
+        SAVE_TIMEOUT
+      )
+      .toBe(true);
+    const telegram = custom
+      .getByTestId("failure-alert-method")
+      .and(page.locator('[data-kind="telegram"]'));
+    // Copied paused, so the card opens by itself.
+    await telegram.getByLabel("Connection").click();
+    await expect(
+      page.getByRole("option", {
+        name: `${fixture.privateTelegramName} (not shared with the organization)`,
+      })
+    ).toBeDisabled();
+    await page.keyboard.press("Escape");
+
+    // A Test of a stored method reloads its health from the server.
+    const reload = page.waitForRequest(
+      (req) =>
+        req.method() === "GET" &&
+        req.url().endsWith(`/api/workflows/${fixture.alertedId}/failure-alerts`)
+    );
+    await telegram.getByRole("button", { name: /^Test / }).click();
+    await reload;
+
+    await section.getByTestId("failure-alerts-tab-org").click();
+    await section.getByTestId("failure-alerts-reset").click();
+    await expect
+      .poll(() => readOverride(fixture.alertedId), SAVE_TIMEOUT)
+      .toBeNull();
   });
 
   test("Overview unmutes a muted workflow in one click", async ({ page }) => {

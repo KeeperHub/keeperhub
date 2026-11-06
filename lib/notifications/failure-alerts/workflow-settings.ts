@@ -245,6 +245,7 @@ export async function loadWorkflowAlertView(
     },
     members: members.map((m) => toMemberView(m, mask)),
     connections,
+    unsharedConnections: org.unsharedConnections,
   };
 }
 

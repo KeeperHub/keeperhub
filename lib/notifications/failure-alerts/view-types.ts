@@ -224,6 +224,8 @@ export type WorkflowAlertView = {
   };
   members: MemberView[];
   connections: ConnectionView[];
+  /** The viewer's unshared connections, greyed out to explain why they are missing. */
+  unsharedConnections: ConnectionView[];
 };
 
 /** What a Test button asks for. */

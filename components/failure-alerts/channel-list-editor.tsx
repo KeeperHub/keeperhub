@@ -59,16 +59,21 @@ export function ChannelListEditor({
   channels,
   savedChannels,
   connections,
+  unsharedConnections,
   onChange,
   onConnectionsChanged,
+  onTested,
 }: {
   organizationId: string;
   channels: DraftChannel[];
   /** The workflow's stored channels, for each card's health. */
   savedChannels: ChannelView[];
   connections: ConnectionView[];
+  unsharedConnections: ConnectionView[];
   onChange: (channels: DraftChannel[]) => void;
   onConnectionsChanged: () => Promise<void> | void;
+  /** A stored method was tested: its health changed on the server. */
+  onTested: () => void;
 }): React.ReactElement {
   // An Undo or a Test result can come later; both use the list as it is then.
   const latest = useRef({ channels, onChange });
@@ -131,8 +136,10 @@ export function ChannelListEditor({
               }}
               onConnectionsChanged={onConnectionsChanged}
               onRemove={(label) => remove(channel, label)}
+              onTested={onTested}
               organizationId={organizationId}
               saved={savedChannels.find((c) => c.id === channel.id)}
+              unsharedConnections={unsharedConnections}
             />
           ))}
         </ul>

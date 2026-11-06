@@ -1054,6 +1054,7 @@ export function EmailMethodCard({
   onChange,
   onSave,
   onReload,
+  startOpen = false,
 }: {
   organizationId: string;
   members: MemberView[];
@@ -1065,6 +1066,8 @@ export function EmailMethodCard({
   /** Without it the page's Save covers the recipients. */
   onSave?: SaveAction;
   onReload?: () => void;
+  /** Open on mount, as when someone just chose their own recipients. */
+  startOpen?: boolean;
 }): React.ReactElement {
   const idPrefix = useId();
   const save = useSaveState();
@@ -1081,7 +1084,7 @@ export function EmailMethodCard({
   if (status === "working" && result && !result.delivered) {
     status = "failed";
   }
-  const row = useRowState(status === "unreachable");
+  const row = useRowState(startOpen || status === "unreachable");
   const expanded = canManage && (row.open || dirty || Boolean(save.error));
   const onlyOne = recipients.length === 1;
   const locked = recipientsLocked(recipients, members);

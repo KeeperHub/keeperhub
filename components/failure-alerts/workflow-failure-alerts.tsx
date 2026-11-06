@@ -63,14 +63,8 @@ import {
   timeLimitLabel,
   toLocalInput,
 } from "./format";
-import {
-  isLastRecipient,
-  lastRecipientNote,
-  memberLabel,
-  muteSentence,
-  recipientsLocked,
-} from "./member-label";
-import { MemberName } from "./member-name";
+import { memberLabel, muteSentence } from "./member-label";
+import { EmailMethodCard } from "./method-card";
 import {
   channelsPayload,
   type DraftChannel,
@@ -567,13 +561,24 @@ export function WorkflowFailureAlerts({
     setPanel(next);
   };
 
+  // Connections and stored methods' health only; drafts and the version stay.
   const refreshConnections = useCallback(async () => {
     const res = await fetch(url);
     if (res.ok) {
       const body = (await res.json()) as Loaded;
       const prev = viewRef.current;
       if (prev) {
-        showView({ ...prev, connections: body.connections });
+        showView({
+          ...prev,
+          connections: body.connections,
+          unsharedConnections: body.unsharedConnections,
+          override: {
+            ...prev.override,
+            channels: prev.override.channels.map(
+              (c) => body.override.channels.find((n) => n.id === c.id) ?? c
+            ),
+          },
+        });
       }
     }
   }, [showView, url]);
@@ -1310,7 +1315,7 @@ export function WorkflowFailureAlerts({
                 timeLimitMinutes={view.org.timeLimitMinutes}
               />
               <TabFooter inUse={!custom}>
-                {custom && canManage ? (
+                {custom && canManage && (
                   <Button
                     className={WRAP_BUTTON}
                     data-testid="failure-alerts-reset"
@@ -1321,13 +1326,6 @@ export function WorkflowFailureAlerts({
                   >
                     Use org rules
                   </Button>
-                ) : (
-                  <Link
-                    className="text-xs underline underline-offset-4"
-                    href={`/settings/${view.organizationId}/alerts`}
-                  >
-                    Change them in Settings
-                  </Link>
                 )}
               </TabFooter>
             </TabsContent>
@@ -1370,63 +1368,24 @@ export function WorkflowFailureAlerts({
                             (org)
                           </p>
                         ) : (
-                          <ul className="space-y-1.5">
-                            {view.members.map((m) => (
-                              <li
-                                className="flex items-start gap-2 text-sm"
-                                key={m.userId}
-                              >
-                                <Checkbox
-                                  checked={customRecipients.includes(m.userId)}
-                                  disabled={
-                                    !m.reachable ||
-                                    isLastRecipient(
-                                      m,
-                                      customRecipients,
-                                      view.members
-                                    )
-                                  }
-                                  id={`wf-recipient-${m.userId}`}
-                                  onCheckedChange={(checked) =>
-                                    setCustomRecipients(
-                                      checked === true
-                                        ? [
-                                            ...new Set([
-                                              ...customRecipients,
-                                              m.userId,
-                                            ]),
-                                          ]
-                                        : customRecipients.filter(
-                                            (id) => id !== m.userId
-                                          )
-                                    )
-                                  }
-                                />
-                                <Label
-                                  className={cn(
-                                    "min-w-0 flex-1 font-normal",
-                                    // Disabled only because mail cannot reach them:
-                                    // the name still has to be readable.
-                                    !m.reachable &&
-                                      "text-muted-foreground peer-disabled:opacity-100"
-                                  )}
-                                  htmlFor={`wf-recipient-${m.userId}`}
-                                >
-                                  <MemberName member={m} />
-                                </Label>
-                              </li>
-                            ))}
+                          <ul aria-label="Email" data-testid="wf-email-card">
+                            <EmailMethodCard
+                              canManage
+                              emailUsage={view.org.emailUsage}
+                              members={view.members}
+                              onChange={setCustomRecipients}
+                              organizationId={view.organizationId}
+                              recipients={customRecipients}
+                              savedRecipients={
+                                view.override.recipientUserIds ??
+                                view.org.recipientUserIds
+                              }
+                              startOpen={
+                                view.override.recipientUserIds === null
+                              }
+                            />
                           </ul>
                         )}
-                        {customRecipients !== null &&
-                          recipientsLocked(customRecipients, view.members) && (
-                            <p
-                              className="text-muted-foreground text-xs"
-                              data-testid="failure-alerts-last-recipient"
-                            >
-                              {lastRecipientNote(customRecipients.length === 1)}
-                            </p>
-                          )}
                       </div>
                     </div>
                     <div className="space-y-2">
@@ -1465,8 +1424,12 @@ export function WorkflowFailureAlerts({
                             connections={view.connections}
                             onChange={setCustomChannels}
                             onConnectionsChanged={refreshConnections}
+                            onTested={() => {
+                              refreshConnections().catch(() => undefined);
+                            }}
                             organizationId={view.organizationId}
                             savedChannels={view.override.channels}
+                            unsharedConnections={view.unsharedConnections}
                           />
                         )}
                       </div>
@@ -1659,7 +1622,7 @@ export function WorkflowFailureAlerts({
               Nobody can be reached right now. Fix it in{" "}
               <Link
                 className="underline underline-offset-4"
-                href={`/settings/${view.organizationId}/alerts`}
+                href={`/settings/${view.organizationId}/alerts?tab=setup`}
               >
                 Alerts
               </Link>
