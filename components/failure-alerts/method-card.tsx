@@ -47,6 +47,7 @@ import { roleLabel } from "@/lib/organization/role-label";
 import { cn } from "@/lib/utils";
 import { sendFailureAlertTest } from "./api";
 import { type ChoiceChip, ChoiceChips } from "./choice-chips";
+import { EmailText } from "./email-text";
 import { focusInPlace } from "./focus-in-place";
 import {
   isLastRecipient,
@@ -54,6 +55,7 @@ import {
   memberLabel,
   recipientsLocked,
 } from "./member-label";
+import { MemberName } from "./member-name";
 import { MessagePreviewDialog } from "./message-preview-dialog";
 import {
   BROKEN_STATUSES,
@@ -1018,14 +1020,27 @@ export function ChannelMethodCard({
   );
 }
 
-function recipientsLine(reachable: MemberView[]): string {
+function recipientsLine(reachable: MemberView[]): React.ReactNode {
   if (reachable.length === 0) {
     return "Nobody chosen has an email KeeperHub can reach.";
   }
   const names = reachable.map(memberLabel);
-  const who =
-    names.length <= 2 ? names.join(" and ") : `${names.length} people`;
-  return `Goes to ${who}. Test sends one email to you.`;
+  if (names.length > 2) {
+    return `Goes to ${names.length} people. Test sends one email to you.`;
+  }
+  // Addresses wrap only before "@", never at a hyphen.
+  return (
+    <>
+      Goes to{" "}
+      {names.map((name, i) => (
+        <span key={name}>
+          {i > 0 && " and "}
+          <EmailText email={name} />
+        </span>
+      ))}
+      . Test sends one email to you.
+    </>
+  );
 }
 
 /** Email: the people who get it. Always used; cannot be removed. */
@@ -1179,7 +1194,7 @@ export function EmailMethodCard({
                 }
                 return (
                   <li
-                    className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm"
+                    className="flex flex-wrap items-start gap-x-2 gap-y-0.5 text-sm"
                     key={m.userId}
                   >
                     <Checkbox
@@ -1192,12 +1207,12 @@ export function EmailMethodCard({
                       title={isLast ? lastRecipientNote(onlyOne) : undefined}
                     />
                     <Label
-                      className="min-w-0 cursor-pointer break-all font-normal"
+                      className="min-w-0 flex-1 cursor-pointer font-normal"
                       htmlFor={id}
                     >
-                      {memberLabel(m)}
+                      <MemberName member={m} />
                     </Label>
-                    <span className="text-muted-foreground text-xs">
+                    <span className="shrink-0 text-muted-foreground text-xs">
                       ({roleLabel(m.role)})
                     </span>
                     {!m.reachable && (

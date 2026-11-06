@@ -58,9 +58,10 @@ async function measure(
   return { scrolls, box: `${rect?.x}:${rect?.width}` };
 }
 
+// From md up the settings column reserves the scrollbar gutter; phones use overlay scrollbars.
 for (const viewport of [
   { width: 1280, height: 900 },
-  { width: 390, height: 844 },
+  { width: 1024, height: 900 },
 ]) {
   test(`the Alerts tabs sit at the same width at ${viewport.width}px, whether or not the page scrolls`, async ({
     page,

@@ -3,6 +3,7 @@ import {
   type HistoryEntry,
   historyBy,
   historyNote,
+  muteUntilOf,
 } from "@/lib/notifications/failure-alerts/view-types";
 
 // Sent alerts rows, one per delivery. Pure for testing; the SQL is in history-rows.ts.
@@ -125,5 +126,6 @@ export function toHistoryEntry(
     // Filled in by loadHistory, which looks the account up.
     byAccount: null,
     workflows: rowWorkflows(row, groupedNames),
+    muteUntil: muteUntilOf(row.context, row.kind),
   };
 }

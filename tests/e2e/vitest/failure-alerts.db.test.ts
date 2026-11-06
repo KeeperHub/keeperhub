@@ -4817,10 +4817,15 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       ).entries[0];
       expect(muted?.by).toBe("wfilter owner");
       expect(muted?.byAccount).toBe(org.email);
-      expect(muted?.note).toMatch(/^Until .+ UTC · Reason: Checking$/);
+      expect(muted?.note).toBe("Reason: Checking");
+      // The end time goes to the page as a timestamp, shown in the viewer's time.
+      expect(muted?.muteUntil?.at).toBeTruthy();
       expect(muted?.workflows[0]?.id).toBe(wf);
-      // Shown by default with the alerts.
+      // Shown by default with the alerts, and under People's actions.
       expect(await kinds({ scope: "alerts" })).toContain("workflow_muted");
+      const people = await kinds({ scope: "people" });
+      expect(people).toContain("workflow_muted");
+      expect(people).not.toContain("alert");
     });
   });
 });

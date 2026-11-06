@@ -148,6 +148,8 @@ export type HistoryEntry = {
   /** The account that person signed in with: an email or a wallet address. */
   byAccount: string | null;
   workflows: { id: string; name: string }[];
+  /** A mute's end, shown in the viewer's time; itWorks for "until it works again". */
+  muteUntil: { at: string | null; itWorks: boolean } | null;
 };
 
 export type WorkflowAlertView = {
@@ -318,7 +320,7 @@ export function orgPauseEffect(pausingWorkflows: number | undefined): string {
 /** What each kind of message is called in the history and analytics lists. */
 export const FAILURE_ALERT_KIND_LABEL: Record<FailureAlertMessageKind, string> =
   {
-    alert: "Alert",
+    alert: "New failure",
     reminder: "Still failing",
     recovery: "Recovered",
     channel_paused: "Method paused",
@@ -355,30 +357,25 @@ export function historyBy(
   return person ?? "KeeperHub";
 }
 
-/** "Until Nov 7, 03:38 PM UTC", or "Until it works again (at most Nov 13)". */
-function muteUntilNote(context: Record<string, unknown> | null): string | null {
-  const at =
-    typeof context?.until === "string" && context.until
-      ? new Date(context.until)
-      : null;
-  if (context?.untilItWorks === true) {
-    const day = at?.toLocaleDateString("en-US", {
-      timeZone: "UTC",
-      month: "short",
-      day: "numeric",
-    });
-    return day
-      ? `Until it works again (at most ${day})`
-      : "Until it works again";
+/** A mute notice's end, for the page to show in the viewer's own time. */
+export function muteUntilOf(
+  context: Record<string, unknown> | null,
+  kind?: string
+): HistoryEntry["muteUntil"] {
+  if (kind !== "workflow_muted") {
+    return null;
   }
-  const when = at?.toLocaleString("en-US", {
-    timeZone: "UTC",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  return when ? `Until ${when} UTC` : null;
+  const at =
+    typeof context?.until === "string" && context.until ? context.until : null;
+  const itWorks = context?.untilItWorks === true;
+  return at || itWorks ? { at, itWorks } : null;
+}
+
+/** "Reason: …", or "No reason given" where a person was expected to say why. */
+function reasonNote(context: Record<string, unknown> | null): string {
+  return typeof context?.reason === "string" && context.reason.trim()
+    ? `Reason: ${context.reason.trim()}`
+    : "No reason given";
 }
 
 /** The note for a mute notice or a removal; undefined for every other kind. */
@@ -386,12 +383,8 @@ function muteHistoryNote(
   context: Record<string, unknown> | null,
   kind?: string
 ): string | null | undefined {
-  const reason =
-    typeof context?.reason === "string" && context.reason
-      ? `Reason: ${context.reason}`
-      : null;
   if (kind === "workflow_muted") {
-    return [muteUntilNote(context), reason].filter(Boolean).join(" · ") || null;
+    return reasonNote(context);
   }
   if (kind === "workflow_unmuted") {
     return null;
@@ -400,14 +393,18 @@ function muteHistoryNote(
     const failed =
       typeof context?.failedRuns === "number" ? context.failedRuns : 0;
     const ending =
-      context?.ended === "worked" ? "It works again" : "The mute ran out";
-    return [
-      ending,
-      `${failed} failed run${failed === 1 ? "" : "s"} while muted`,
-      reason,
-    ]
-      .filter(Boolean)
-      .join(" · ");
+      context?.ended === "worked"
+        ? "Ended because it works again"
+        : "Mute ran out";
+    const failures =
+      failed === 0
+        ? "no failures while muted"
+        : `${failed} failure${failed === 1 ? "" : "s"} while muted`;
+    const reason =
+      typeof context?.reason === "string" && context.reason
+        ? `Reason: ${context.reason}`
+        : null;
+    return [ending, failures, reason].filter(Boolean).join(" · ");
   }
   if (kind === "recipients_removed") {
     return Array.isArray(context?.removed)
@@ -424,9 +421,7 @@ export function historyNote(
 ): string | null {
   // Who is in historyBy; a pause notice adds its reason here.
   if (kind === "alerts_paused") {
-    return typeof context?.reason === "string" && context.reason
-      ? `Reason: ${context.reason}`
-      : null;
+    return reasonNote(context);
   }
   if (kind === "alerts_resumed") {
     return typeof context?.by === "string" ? null : "The pause ran out";

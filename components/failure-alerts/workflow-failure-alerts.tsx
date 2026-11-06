@@ -70,6 +70,7 @@ import {
   muteSentence,
   recipientsLocked,
 } from "./member-label";
+import { MemberName } from "./member-name";
 import {
   channelsPayload,
   type DraftChannel,
@@ -1372,7 +1373,7 @@ export function WorkflowFailureAlerts({
                           <ul className="space-y-1.5">
                             {view.members.map((m) => (
                               <li
-                                className="flex items-center gap-2 text-sm"
+                                className="flex items-start gap-2 text-sm"
                                 key={m.userId}
                               >
                                 <Checkbox
@@ -1403,7 +1404,7 @@ export function WorkflowFailureAlerts({
                                 />
                                 <Label
                                   className={cn(
-                                    "min-w-0 break-all font-normal",
+                                    "min-w-0 flex-1 font-normal",
                                     // Disabled only because mail cannot reach them:
                                     // the name still has to be readable.
                                     !m.reachable &&
@@ -1411,7 +1412,7 @@ export function WorkflowFailureAlerts({
                                   )}
                                   htmlFor={`wf-recipient-${m.userId}`}
                                 >
-                                  {memberLabel(m)}
+                                  <MemberName member={m} />
                                 </Label>
                               </li>
                             ))}

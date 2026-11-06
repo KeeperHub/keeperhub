@@ -3,6 +3,7 @@ import { expect, test } from "./fixtures";
 import { signIn } from "./utils/auth";
 import {
   type AlertsFixture,
+  addFailedDelivery,
   cleanupFailureAlerts,
   clearOrgPause,
   countMethods,
@@ -445,6 +446,77 @@ test.describe("Failure alerts", () => {
       .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
       .toBeNull();
     await expect(section).toHaveAttribute("data-source", "org");
+  });
+
+  test("Sent alerts: switch, not-delivered button, empty state, whole emails", async ({
+    page,
+  }) => {
+    await addFailedDelivery(fixture.orgId, fixture.email);
+    await openAlerts(page, "sent");
+    const rows = page.getByTestId("failure-alert-history-row");
+    await expect(rows.first()).toBeVisible(FIRST_VISIT);
+
+    // People's actions shows the earlier mute and none of the alerts.
+    await page.getByTestId("failure-alert-history-scope-people").click();
+    await expect(
+      rows.and(page.locator('[data-kind="workflow_muted"]')).first()
+    ).toBeVisible(SAVE_TIMEOUT);
+    await expect(rows.and(page.locator('[data-kind="alert"]'))).toHaveCount(0);
+    await expect(rows.filter({ hasText: "Reason:" }).first()).toBeVisible();
+    await page.getByTestId("failure-alert-history-scope-alerts").click();
+
+    // The not-delivered count filters to those rows, and back.
+    const notDelivered = page.getByTestId(
+      "failure-alert-history-not-delivered"
+    );
+    await expect(notDelivered).toContainText("1 not delivered", SAVE_TIMEOUT);
+    await notDelivered.click();
+    await expect(notDelivered).toHaveAttribute("aria-pressed", "true");
+    await expect(rows).toHaveCount(1, SAVE_TIMEOUT);
+    await expect(rows.first()).toHaveAttribute("data-state", "failed");
+    await notDelivered.click();
+    await expect(rows.first()).toBeVisible();
+
+    // A filter that matches nothing says so inside the table, with a way out.
+    await page.getByTestId("failure-alert-history-filters-toggle").click();
+    await page
+      .getByTestId("failure-alert-history-workflow-filter")
+      .fill("no-such-workflow-anywhere");
+    const empty = page.getByTestId("failure-alert-history-empty");
+    await expect(empty).toContainText(
+      "No messages match these filters.",
+      SAVE_TIMEOUT
+    );
+    await expect(empty).toContainText("Pause notices and tests are hidden.");
+    await empty.getByRole("button", { name: "Clear filters" }).click();
+    await expect(rows.first()).toBeVisible(SAVE_TIMEOUT);
+
+    // An email is never split inside a word: each half stays on one line.
+    for (const width of [390, 1280]) {
+      await page.setViewportSize({ width, height: 1000 });
+      for (const tab of ["sent", "setup"] as const) {
+        await openAlerts(page, tab);
+        if (tab === "setup") {
+          // The recipient picker lives inside the Email card.
+          await methodCard(page, "email")
+            .getByRole("button", { name: "Edit" })
+            .click();
+        }
+        await expect(
+          page.locator("[data-email-part]:visible").first()
+        ).toBeVisible(FIRST_VISIT);
+        // An inline-block is one box even when it wraps, so measure its height.
+        const wrapped = await page.locator("[data-email-part]").evaluateAll(
+          (parts) =>
+            parts.filter((p) => {
+              const box = p.getBoundingClientRect();
+              const line = Number.parseFloat(getComputedStyle(p).lineHeight);
+              return box.width > 0 && box.height > line * 1.5;
+            }).length
+        );
+        expect(wrapped, `${tab} at ${width}px`).toBe(0);
+      }
+    }
   });
 
   test("Overview unmutes a muted workflow in one click", async ({ page }) => {

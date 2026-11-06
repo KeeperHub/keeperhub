@@ -63,7 +63,7 @@ Every alert, reminder, recovery and notice sent to the organization, newest firs
 | `workflow` | string | A workflow's exact id, or part of its current name, so alerts sent before a rename still match. At most 200 characters |
 | `workflowId` | string | One workflow's exact id |
 | `kind` | string | One message kind, such as `alert`, `reminder`, `recovery`, `workflow_muted`, `workflow_unmuted`, `mute_ended` or `recipients_removed` |
-| `scope` | string | `alerts`: alerts, reminders, recoveries and notices about silencing, without pause notices or tests |
+| `scope` | string | `alerts`: alerts, reminders, recoveries and notices about silencing, without pause notices or tests. `people`: what people did: mutes, unmutes, pauses, resumes, removals from alerts and tests |
 | `result` | string | `delivered`, `failed`, `waiting` or `withdrawn` |
 | `channel` | string | `email`, `slack`, `discord`, `telegram` or `pagerduty` |
 | `by` | string | Who caused it: a person's name, or `KeeperHub` |

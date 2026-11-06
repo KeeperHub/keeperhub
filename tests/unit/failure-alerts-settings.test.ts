@@ -104,6 +104,7 @@ describe("historyToCsv", () => {
         note: "Sent because Email could not be reached",
         by: "KeeperHub",
         byAccount: null,
+        muteUntil: null,
         workflows: [{ id: "w", name: '=HYPERLINK("x")' }],
       },
     ]);

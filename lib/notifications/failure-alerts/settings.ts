@@ -931,6 +931,19 @@ export const HISTORY_SINCE_MS = {
 } as const;
 export type HistorySince = keyof typeof HISTORY_SINCE_MS;
 
+/** What people did: mutes, pauses, removals and tests. */
+export const HISTORY_PEOPLE_KINDS = [
+  "workflow_muted",
+  "workflow_unmuted",
+  "alerts_paused",
+  "alerts_resumed",
+  "recipients_removed",
+  "test",
+] as const;
+
+export const HISTORY_SCOPES = ["alerts", "people"] as const;
+export type HistoryScope = (typeof HISTORY_SCOPES)[number];
+
 /** The default view of the log: real alerts and problems, not pause notices or tests. */
 export const HISTORY_ALERT_KINDS = [
   "alert",
@@ -963,8 +976,8 @@ type HistoryFilter = {
   /** Part of the address or channel it went to. */
   to?: string;
   since?: HistorySince;
-  /** "alerts": only HISTORY_ALERT_KINDS, unless a kind is picked. */
-  scope?: "alerts";
+  /** "alerts": HISTORY_ALERT_KINDS; "people": HISTORY_PEOPLE_KINDS; unless a kind is picked. */
+  scope?: HistoryScope;
 };
 
 function personBy(): SQL {
@@ -1017,10 +1030,10 @@ export async function loadHistory(
         filter.kind as typeof failureAlertDeliveries.$inferSelect.kind
       )
     );
-  } else if (filter.scope === "alerts") {
-    conditions.push(
-      inArray(failureAlertDeliveries.kind, [...HISTORY_ALERT_KINDS])
-    );
+  } else if (filter.scope) {
+    const kinds =
+      filter.scope === "people" ? HISTORY_PEOPLE_KINDS : HISTORY_ALERT_KINDS;
+    conditions.push(inArray(failureAlertDeliveries.kind, [...kinds]));
   }
   if (filter.result) {
     conditions.push(

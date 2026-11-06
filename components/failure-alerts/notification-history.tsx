@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { timeAgo } from "@/components/settings/hub/relative-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,8 +35,8 @@ import {
   methodText,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
+import { EmailText } from "./email-text";
 import { type DeliveryTone, deliveryStatus, formatWhen } from "./format";
-import { accountLabel } from "./member-label";
 
 const TONE_CLASS: Record<DeliveryTone, string> = {
   delivered: "text-keeperhub-green-dark",
@@ -67,9 +68,46 @@ const CHANNELS = [
 ] as const;
 const TO_DEBOUNCE_MS = 300;
 
-/** Columns from 48rem of history width; below, each row stacks with labels. */
-const ROW_GRID =
-  "@3xl/history:grid @3xl/history:grid-cols-[8rem_minmax(0,1.4fr)_minmax(0,0.9fr)_8.5rem_minmax(0,1.3fr)_8rem] @3xl/history:gap-x-3";
+/** When, What, Sent to, Result from 48rem of history width; below, a compact stack. */
+const COLUMNS =
+  "@3xl/history:grid-cols-[9rem_minmax(0,1.6fr)_minmax(0,1.4fr)_8rem]";
+const ROW_GRID = `@3xl/history:grid ${COLUMNS} @3xl/history:gap-x-3`;
+
+/** Which messages the log shows: real alerts, what people did, or everything. */
+const SCOPES = [
+  { value: "alerts", label: "Alerts only" },
+  { value: "people", label: "People's actions" },
+  { value: "all", label: "Everything" },
+] as const;
+type Scope = (typeof SCOPES)[number]["value"];
+
+/** The viewer's time zone abbreviation, e.g. "CET", for the When header. */
+function zoneName(): string {
+  return (
+    new Intl.DateTimeFormat(undefined, { timeZoneName: "short" })
+      .formatToParts(new Date())
+      .find((part) => part.type === "timeZoneName")?.value ?? ""
+  );
+}
+
+/** "Until 7 Nov, 15:38 CET" in the viewer's time, or "Until it works again (at most 13 Nov)". */
+function muteUntilText(until: HistoryEntry["muteUntil"]): string | null {
+  if (!until) {
+    return null;
+  }
+  if (until.itWorks) {
+    const day = until.at
+      ? new Date(until.at).toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+        })
+      : null;
+    return day
+      ? `Until it works again (at most ${day})`
+      : "Until it works again";
+  }
+  return until.at ? `Until ${formatWhen(until.at)}` : null;
+}
 
 type Filters = {
   since: string;
@@ -139,24 +177,37 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
   }
   const status = deliveryStatus(entry);
   const { method, to } = methodAndTarget(entry);
+  const note = [
+    muteUntilText(entry.muteUntil),
+    methodPaused ? null : entry.note,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const person = entry.by === "KeeperHub" ? null : entry.by;
   return (
     <li
       className={cn(
-        // No dot separators: on a phone they were left dangling at line ends.
-        "flex flex-wrap items-baseline gap-x-4 gap-y-1 px-3 py-2.5 text-sm",
+        // Phone: kind and result, then the details, then when and where; table from 48rem.
+        "grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-3 gap-y-1 px-3 py-2.5 text-sm",
         ROW_GRID
       )}
       data-kind={entry.kind}
       data-state={entry.state}
       data-testid="failure-alert-history-row"
     >
-      <Cell label="When">
-        <span className="text-muted-foreground text-xs tabular-nums">
-          {formatWhen(entry.createdAt)}
+      <Cell
+        className="col-start-1 row-start-2 @3xl/history:col-start-1 @3xl/history:row-start-1"
+        label="When"
+      >
+        <span
+          className="text-foreground/80 text-xs tabular-nums"
+          title={formatWhen(entry.createdAt)}
+        >
+          {timeAgo(entry.createdAt)}
         </span>
       </Cell>
       <Cell
-        className="order-first w-full @3xl/history:order-none @3xl/history:w-auto"
+        className="col-start-1 row-start-1 @3xl/history:col-start-2 @3xl/history:row-start-1"
         label="What"
       >
         <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -172,59 +223,55 @@ function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
             </Link>
           ))}
         </span>
-        {entry.note && !methodPaused && (
-          <span className="block text-muted-foreground text-xs">
-            {entry.note}
+        {person && (
+          <span
+            className="block text-muted-foreground text-xs"
+            data-testid="failure-alert-history-by"
+          >
+            by{" "}
+            {entry.byAccount ? (
+              <span title={entry.byAccount}>{person}</span>
+            ) : (
+              person
+            )}
+          </span>
+        )}
+        {note && (
+          <span
+            className="line-clamp-2 block text-muted-foreground text-xs"
+            title={note}
+          >
+            {note}
           </span>
         )}
       </Cell>
       <Cell
-        className={
-          entry.by === "KeeperHub" ? "hidden @3xl/history:block" : undefined
-        }
-        label="By"
+        className="col-span-2 col-start-1 row-start-3 @3xl/history:col-span-1 @3xl/history:col-start-3 @3xl/history:row-start-1"
+        label="Sent to"
       >
         <span
-          className={cn(
-            "text-xs",
-            entry.by === "KeeperHub" && "text-muted-foreground"
-          )}
-          data-testid="failure-alert-history-by"
+          className="flex min-w-0 items-baseline gap-1.5 text-xs"
+          data-testid="failure-alert-history-to"
         >
-          {entry.by}
-        </span>
-        {entry.byAccount && (
           <span
-            className="break-all text-muted-foreground text-xs @3xl/history:block"
-            data-testid="failure-alert-history-by-account"
-            title={entry.byAccount}
+            aria-label={method}
+            className="shrink-0 self-center"
+            role="img"
+            title={method}
           >
-            {/* Inline on a phone it reads "Dana (dana@x.com)"; a line of its own in the table. */}
-            <span className="@3xl/history:hidden"> (</span>
-            {accountLabel(entry.byAccount)}
-            <span className="@3xl/history:hidden">)</span>
+            {entry.channel === "email" ? (
+              <Mail aria-hidden="true" className="size-3" />
+            ) : (
+              <IntegrationIcon className="size-3" integration={entry.channel} />
+            )}
           </span>
-        )}
-      </Cell>
-      <Cell label="Method">
-        <span className="inline-flex items-baseline gap-1.5 text-xs">
-          {entry.channel === "email" ? (
-            <Mail aria-hidden="true" className="size-3 shrink-0 self-center" />
-          ) : (
-            <IntegrationIcon
-              className="size-3 shrink-0 self-center"
-              integration={entry.channel}
-            />
-          )}
-          {method}
+          {entry.channel === "email" ? <EmailText email={to} /> : to}
         </span>
       </Cell>
-      <Cell label="Sent to">
-        <span className="text-xs" data-testid="failure-alert-history-to">
-          {to}
-        </span>
-      </Cell>
-      <Cell label="Result">
+      <Cell
+        className="col-start-2 row-start-1 text-right @3xl/history:col-start-4 @3xl/history:row-start-1 @3xl/history:text-left"
+        label="Result"
+      >
         <span
           className={cn("text-xs", TONE_CLASS[status.tone])}
           title={entry.attempts > 1 ? `${entry.attempts} attempts` : undefined}
@@ -303,8 +350,11 @@ export function NotificationHistory({
   const [toDraft, setToDraft] = useState("");
   // A workflow's name or ID, applied the same way: renames keep old alerts findable by ID.
   const [workflowDraft, setWorkflowDraft] = useState("");
-  // Pause notices and tests are left out until asked for.
-  const [allKinds, setAllKinds] = useState(false);
+  // Real alerts by default; pause notices and tests are one switch away.
+  const [scope, setScope] = useState<Scope>("alerts");
+  // Read in the browser: the server's zone is not the viewer's.
+  const [zone, setZone] = useState("");
+  useEffect(() => setZone(zoneName()), []);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [notDelivered, setNotDelivered] = useState(0);
   // The request in flight; a newer one aborts it so its page is never shown.
@@ -348,8 +398,8 @@ export function NotificationHistory({
       if (workflowId) {
         params.set("workflowId", workflowId);
       }
-      if (!allKinds && filters.kind === ANY) {
-        params.set("scope", "alerts");
+      if (scope !== "all" && filters.kind === ANY) {
+        params.set("scope", scope);
       }
       if (compact) {
         params.set("limit", String(COMPACT_LIMIT));
@@ -362,7 +412,7 @@ export function NotificationHistory({
       }
       return `${base}?${params.toString()}`;
     },
-    [base, filters, workflowId, allKinds, compact]
+    [base, filters, workflowId, scope, compact]
   );
 
   const load = useCallback(
@@ -428,13 +478,21 @@ export function NotificationHistory({
   const activeCount = (Object.keys(NO_FILTERS) as (keyof Filters)[]).filter(
     (key) => filters[key] !== NO_FILTERS[key]
   ).length;
-  const isDefaultView = !(filtered || allKinds || workflowId);
-  let emptyText = "No alerts sent yet. Pause notices and tests are left out.";
+  const isDefaultView = !(filtered || scope !== "alerts" || workflowId);
+  let emptyText = "No alerts sent yet.";
   if (filtered) {
-    emptyText = "Nothing matches these filters.";
-  } else if (allKinds) {
+    emptyText = "No messages match these filters.";
+  } else if (scope === "people") {
+    emptyText = "Nobody has muted, paused or tested anything yet.";
+  } else if (scope === "all") {
     emptyText = "Nothing sent yet.";
   }
+  const clearFilters = (): void => {
+    setToDraft("");
+    setWorkflowDraft("");
+    setFilters(NO_FILTERS);
+  };
+  const onlyFailed = filters.result === "failed";
 
   // The tab label counts alerts in the default view.
   useEffect(() => {
@@ -450,56 +508,133 @@ export function NotificationHistory({
       className="@container/history space-y-3"
       data-testid="failure-alert-history"
     >
-      {!compact && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            aria-expanded={filtersOpen}
-            data-testid="failure-alert-history-filters-toggle"
-            onClick={() => setFiltersOpen((open) => !open)}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            <SlidersHorizontal className="size-3.5" />
-            Filters{activeCount > 0 ? ` (${activeCount})` : ""}
-          </Button>
-          {allKinds ? (
-            <button
-              className="inline-flex h-7 items-center gap-1 rounded-full bg-muted px-3 text-xs"
-              data-testid="failure-alert-history-all-kinds"
-              onClick={() => setAllKinds(false)}
+      <div className="flex flex-wrap items-center gap-2">
+        {!compact && (
+          <>
+            <Button
+              aria-expanded={filtersOpen}
+              data-testid="failure-alert-history-filters-toggle"
+              onClick={() => setFiltersOpen((open) => !open)}
+              size="sm"
               type="button"
+              variant="outline"
             >
-              Including pause notices and tests
-              <X aria-label="Show alerts only" className="size-3" />
-            </button>
-          ) : (
-            <button
-              className="inline-flex h-7 items-center rounded-full border border-dashed px-3 text-muted-foreground text-xs hover:text-foreground"
-              data-testid="failure-alert-history-all-kinds"
-              onClick={() => setAllKinds(true)}
-              type="button"
+              <SlidersHorizontal className="size-3.5" />
+              Filters{activeCount > 0 ? ` (${activeCount})` : ""}
+            </Button>
+            <fieldset
+              aria-label="Show"
+              className="inline-flex rounded-md border p-0.5"
+              data-testid="failure-alert-history-scope"
             >
-              + Include pause notices and tests
-            </button>
+              {SCOPES.map((option) => (
+                <button
+                  aria-pressed={scope === option.value}
+                  className={cn(
+                    "h-7 rounded px-2.5 text-xs",
+                    scope === option.value
+                      ? "bg-muted font-medium text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                  data-testid={`failure-alert-history-scope-${option.value}`}
+                  key={option.value}
+                  onClick={() => setScope(option.value)}
+                  type="button"
+                >
+                  {option.label}
+                </button>
+              ))}
+            </fieldset>
+            {workflowId && onClearWorkflow && (
+              <button
+                className="inline-flex h-7 items-center gap-1 rounded-full bg-muted px-3 text-xs"
+                data-testid="failure-alert-history-workflow-chip"
+                onClick={onClearWorkflow}
+                type="button"
+              >
+                One workflow
+                <X aria-label="Show every workflow" className="size-3" />
+              </button>
+            )}
+            {filtered && (
+              <Button
+                className="px-2 text-xs"
+                onClick={clearFilters}
+                size="sm"
+                type="button"
+                variant="ghost"
+              >
+                <X className="size-3" />
+                Clear filters
+              </Button>
+            )}
+          </>
+        )}
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {!compact && (
+            <span
+              className="text-xs"
+              data-testid="failure-alert-history-summary"
+              role="status"
+            >
+              <span className="font-medium">
+                {info.total} {scope === "alerts" ? "alert" : "message"}
+                {info.total === 1 ? "" : "s"}
+                {filtered ? " match" : ""}
+              </span>
+              {info.total > 0 && notDelivered === 0 && !onlyFailed && (
+                <span className="text-muted-foreground"> · All delivered</span>
+              )}
+            </span>
           )}
-          {workflowId && onClearWorkflow && (
-            <button
-              className="inline-flex h-7 items-center gap-1 rounded-full bg-muted px-3 text-xs"
-              data-testid="failure-alert-history-workflow-chip"
-              onClick={onClearWorkflow}
+          {!compact && (notDelivered > 0 || onlyFailed) && (
+            <Button
+              aria-pressed={onlyFailed}
+              className={cn(
+                "h-7 px-2 text-destructive text-xs hover:text-destructive",
+                onlyFailed && "bg-destructive/10"
+              )}
+              data-testid="failure-alert-history-not-delivered"
+              onClick={() =>
+                setFilters((f) => ({
+                  ...f,
+                  result: onlyFailed ? ANY : "failed",
+                }))
+              }
+              size="sm"
               type="button"
+              variant="ghost"
             >
-              One workflow
-              <X aria-label="Show every workflow" className="size-3" />
-            </button>
+              {notDelivered} not delivered
+            </Button>
+          )}
+          <Button
+            aria-label="Refresh"
+            disabled={loading}
+            onClick={() => goTo(info.page)}
+            size="icon-sm"
+            type="button"
+            variant="ghost"
+          >
+            <RefreshCw className={cn("size-4", loading && "animate-spin")} />
+          </Button>
+          {!compact && (
+            <Button asChild size="sm" variant="outline">
+              <a download href={query(undefined, "csv")}>
+                <Download className="size-3.5" />
+                Export CSV
+              </a>
+            </Button>
           )}
         </div>
-      )}
+      </div>
 
       {!compact && filtersOpen && (
         <div
-          className="grid grid-cols-2 gap-2 @3xl/history:grid-cols-[8rem_minmax(0,1.4fr)_minmax(0,0.9fr)_8.5rem_minmax(0,1.3fr)_8rem] @3xl/history:gap-x-3 @3xl/history:px-3"
+          className={cn(
+            "grid grid-cols-2 gap-2 @3xl/history:gap-x-3 @3xl/history:px-3",
+            COLUMNS
+          )}
           data-testid="failure-alert-history-filters"
         >
           <FilterSelect
@@ -522,6 +657,20 @@ export function NotificationHistory({
             ]}
             value={filters.kind}
           />
+          <Input
+            aria-label="Sent to"
+            className="h-8 text-xs"
+            maxLength={200}
+            onChange={(e) => setToDraft(e.target.value)}
+            placeholder="Sent to..."
+            value={toDraft}
+          />
+          <FilterSelect
+            label="Result"
+            onChange={set("result")}
+            options={RESULT_OPTIONS}
+            value={filters.result}
+          />
           <FilterSelect
             label="By"
             onChange={set("by")}
@@ -541,23 +690,9 @@ export function NotificationHistory({
             value={filters.channel}
           />
           <Input
-            aria-label="Sent to"
-            className="h-8 text-xs"
-            maxLength={200}
-            onChange={(e) => setToDraft(e.target.value)}
-            placeholder="Sent to..."
-            value={toDraft}
-          />
-          <FilterSelect
-            label="Result"
-            onChange={set("result")}
-            options={RESULT_OPTIONS}
-            value={filters.result}
-          />
-          <Input
             aria-label="Workflow"
-            // A row of its own, so a long name or ID is never clipped.
-            className="col-span-2 h-8 text-xs @3xl/history:col-span-6"
+            // Two columns of its own, so a long name or ID is never clipped.
+            className="col-span-2 h-8 text-xs"
             data-testid="failure-alert-history-workflow-filter"
             maxLength={200}
             onChange={(e) => setWorkflowDraft(e.target.value)}
@@ -566,69 +701,6 @@ export function NotificationHistory({
           />
         </div>
       )}
-
-      <div className="flex flex-wrap items-center gap-2">
-        {!compact && (
-          <span
-            className="text-xs"
-            data-testid="failure-alert-history-summary"
-            role="status"
-          >
-            <span className="font-medium">
-              {info.total} {allKinds ? "message" : "alert"}
-              {info.total === 1 ? "" : "s"}
-              {filtered ? " match" : ""}
-            </span>
-            {info.total > 0 && (
-              <span
-                className={
-                  notDelivered > 0
-                    ? "text-destructive"
-                    : "text-keeperhub-green-dark"
-                }
-              >
-                {" "}
-                · {notDelivered} not delivered
-              </span>
-            )}
-          </span>
-        )}
-        {filtered && (
-          <Button
-            className="px-2 text-xs"
-            onClick={() => {
-              setToDraft("");
-              setWorkflowDraft("");
-              setFilters(NO_FILTERS);
-            }}
-            size="sm"
-            type="button"
-            variant="ghost"
-          >
-            <X className="size-3" />
-            Clear filters
-          </Button>
-        )}
-        <Button
-          aria-label="Refresh"
-          className="ml-auto"
-          disabled={loading}
-          onClick={() => goTo(info.page)}
-          size="icon-sm"
-          type="button"
-          variant="ghost"
-        >
-          <RefreshCw className={cn("size-4", loading && "animate-spin")} />
-        </Button>
-        {!compact && (
-          <Button asChild size="sm" variant="outline">
-            <a download href={query(undefined, "csv")}>
-              <Download className="size-3.5" />
-              Export CSV
-            </a>
-          </Button>
-        )}
-      </div>
 
       {failedPage !== null && (
         <Notice role="alert" tone="danger">
@@ -646,31 +718,60 @@ export function NotificationHistory({
         </Notice>
       )}
 
-      {entries.length === 0 && !(loading || failedPage !== null) && (
-        <p className="text-muted-foreground text-sm">{emptyText}</p>
-      )}
-
-      {entries.length > 0 && (
+      {failedPage === null && (entries.length > 0 || !loading) && (
         <div className="rounded-md border">
           <div
             aria-hidden="true"
             className={cn(
-              "hidden border-b bg-muted/30 px-3 py-2 font-medium text-muted-foreground text-xs",
+              "sticky top-0 z-10 hidden rounded-t-md border-b bg-card px-3 py-2 font-medium text-muted-foreground text-xs",
               ROW_GRID
             )}
           >
-            <span>When</span>
+            <span>When{zone ? ` (${zone})` : ""}</span>
             <span>What</span>
-            <span>By</span>
-            <span>Method</span>
             <span>Sent to</span>
             <span>Result</span>
           </div>
-          <ul className="divide-y">
-            {entries.map((entry) => (
-              <HistoryRow entry={entry} key={entry.id} />
-            ))}
-          </ul>
+          {entries.length > 0 ? (
+            <ul className="divide-y">
+              {entries.map((entry) => (
+                <HistoryRow entry={entry} key={entry.id} />
+              ))}
+            </ul>
+          ) : (
+            <div
+              className="space-y-2 px-3 py-10 text-center text-muted-foreground text-sm"
+              data-testid="failure-alert-history-empty"
+            >
+              <p>{emptyText}</p>
+              <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs">
+                {filtered && (
+                  <Button
+                    className="h-auto px-0 text-xs"
+                    onClick={clearFilters}
+                    type="button"
+                    variant="link"
+                  >
+                    Clear filters
+                  </Button>
+                )}
+                {scope === "alerts" && !compact && (
+                  <span>
+                    Pause notices and tests are hidden.{" "}
+                    <Button
+                      className="h-auto px-0 text-xs"
+                      data-testid="failure-alert-history-show-everything"
+                      onClick={() => setScope("all")}
+                      type="button"
+                      variant="link"
+                    >
+                      Show everything
+                    </Button>
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

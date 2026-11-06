@@ -4,8 +4,10 @@ import { parseHistoryCursor } from "@/lib/notifications/failure-alerts/history-e
 import { resolveOrgAccess } from "@/lib/notifications/failure-alerts/route-auth";
 import {
   HISTORY_RESULT_STATES,
+  HISTORY_SCOPES,
   HISTORY_SINCE_MS,
   type HistoryResult,
+  type HistoryScope,
   type HistorySince,
   historyToCsv,
   loadHistory,
@@ -24,7 +26,7 @@ const CSV_LIMIT = 500;
 /**
  * Sent notifications, newest first; any member. `?page=` gives a numbered page
  * with totals, `?cursor=` the next one; `?format=csv` up to 500 rows. Filters:
- * channel, kind, result, by, to, since, and scope=alerts (real alerts only).
+ * channel, kind, result, by, to, since, workflow, and scope=alerts|people.
  */
 const KINDS = new Set(Object.keys(FAILURE_ALERT_KIND_LABEL));
 const MAX_TEXT_FILTER = 200;
@@ -38,7 +40,7 @@ function parseFilters(params: URLSearchParams):
       to?: string;
       workflow?: string;
       since?: HistorySince;
-      scope?: "alerts";
+      scope?: HistoryScope;
     }
   | { error: string } {
   const kind = params.get("kind") || undefined;
@@ -65,11 +67,11 @@ function parseFilters(params: URLSearchParams):
     return { error: "Filter text is too long." };
   }
   const scope = params.get("scope") || undefined;
-  if (scope && scope !== "alerts") {
+  if (scope && !(HISTORY_SCOPES as readonly string[]).includes(scope)) {
     return { error: "Unknown scope." };
   }
   return {
-    scope: scope as "alerts" | undefined,
+    scope: scope as HistoryScope | undefined,
     kind,
     result: result as HistoryResult | undefined,
     by,

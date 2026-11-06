@@ -277,6 +277,25 @@ export async function clearOrgPause(orgId: string): Promise<void> {
   }
 }
 
+// A failed alert delivery, so the log has something not delivered.
+export async function addFailedDelivery(
+  orgId: string,
+  recipient: string
+): Promise<void> {
+  const sql = getDbConnection();
+  const id = `e2e-failed-${Date.now().toString(36)}`;
+  try {
+    await sql`
+      INSERT INTO alert_deliveries (id, dedup_key, organization_id, kind, channel, recipient, state,
+        attempts, last_error, next_attempt_at, created_at, updated_at)
+      VALUES (${id}, ${id}, ${orgId}, 'alert', 'email', ${recipient}, 'failed',
+        3, 'Mailbox unavailable', now(), now(), now())
+    `;
+  } finally {
+    await sql.end();
+  }
+}
+
 // The org's failure threshold as saved.
 export async function readOrgThreshold(orgId: string): Promise<number | null> {
   const sql = getDbConnection();
