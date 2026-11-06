@@ -51,41 +51,52 @@ export const workflowWaitStatus = pgEnum("wait_status", [
 ]);
 
 // Better Auth tables
-export const users = pgTable("users", {
-  id: text("id").primaryKey(),
-  name: text("name"),
-  email: text("email").unique(),
-  emailVerified: boolean("email_verified").notNull().default(false),
-  image: text("image"),
-  createdAt: timestamp("created_at").notNull(),
-  updatedAt: timestamp("updated_at").notNull(),
-  // Anonymous user tracking
-  isAnonymous: boolean("is_anonymous").default(false),
-  deactivatedAt: timestamp("deactivated_at"),
-  twoFactorEnabled: boolean("two_factor_enabled").default(false),
-  // Wallet (SIWE) accounts start with a generated handle and must confirm or
-  // edit it in the rename modal on first login. Flipped true once chosen so
-  // returning wallet users are not re-prompted.
-  displayNameConfirmed: boolean("display_name_confirmed")
-    .notNull()
-    .default(false),
-  // True once the user finishes (or skips through) the /welcome onboarding
-  // wizard. Server-side so the flow is not re-shown on another device/browser.
-  onboardingCompleted: boolean("onboarding_completed").notNull().default(false),
-  // Wallet-only per-action step-up policy: maps a sensitive action to the
-  // extra factors the wallet user opted into (e.g. {"wallet_withdraw":["totp"]}).
-  // Email/TOTP users always use dual-factor regardless and ignore this column.
-  stepUpPolicy: jsonb("step_up_policy"),
-  // Verified, deliverable email a wallet user added for email-OTP step-up.
-  // Only written after the user confirms it with a code; presence = verified.
-  // Distinct from `email` (the synthetic SIWE login identity).
-  stepUpEmail: text("step_up_email"),
-  // Set the first time the signup channels (Discord webhook, MailerLite) were
-  // told about this account. Claimed with a conditional update so the send
-  // happens once per account no matter how many times a verification hook
-  // re-fires for the same row.
-  signupNotifiedAt: timestamp("signup_notified_at"),
-});
+export const users = pgTable(
+  "users",
+  {
+    id: text("id").primaryKey(),
+    name: text("name"),
+    email: text("email").unique(),
+    emailVerified: boolean("email_verified").notNull().default(false),
+    image: text("image"),
+    createdAt: timestamp("created_at").notNull(),
+    updatedAt: timestamp("updated_at").notNull(),
+    // Anonymous user tracking
+    isAnonymous: boolean("is_anonymous").default(false),
+    deactivatedAt: timestamp("deactivated_at"),
+    twoFactorEnabled: boolean("two_factor_enabled").default(false),
+    // Wallet (SIWE) accounts start with a generated handle and must confirm or
+    // edit it in the rename modal on first login. Flipped true once chosen so
+    // returning wallet users are not re-prompted.
+    displayNameConfirmed: boolean("display_name_confirmed")
+      .notNull()
+      .default(false),
+    // True once the user finishes (or skips through) the /welcome onboarding
+    // wizard. Server-side so the flow is not re-shown on another device/browser.
+    onboardingCompleted: boolean("onboarding_completed")
+      .notNull()
+      .default(false),
+    // Wallet-only per-action step-up policy: maps a sensitive action to the
+    // extra factors the wallet user opted into (e.g. {"wallet_withdraw":["totp"]}).
+    // Email/TOTP users always use dual-factor regardless and ignore this column.
+    stepUpPolicy: jsonb("step_up_policy"),
+    // Verified, deliverable email a wallet user added for email-OTP step-up.
+    // Only written after the user confirms it with a code; presence = verified.
+    // Distinct from `email` (the synthetic SIWE login identity).
+    stepUpEmail: text("step_up_email"),
+    // Set the first time the signup channels (Discord webhook, MailerLite) were
+    // told about this account. Claimed with a conditional update so the send
+    // happens once per account no matter how many times a verification hook
+    // re-fires for the same row.
+    signupNotifiedAt: timestamp("signup_notified_at"),
+  },
+  (table) => [
+    // Masking looks wallet users up by their step-up inbox; few rows have one.
+    index("idx_users_step_up_email")
+      .on(table.stepUpEmail)
+      .where(sql`${table.stepUpEmail} IS NOT NULL`),
+  ]
+);
 
 export const sessions = pgTable(
   "sessions",

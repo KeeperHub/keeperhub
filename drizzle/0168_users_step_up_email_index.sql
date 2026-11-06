@@ -1,0 +1,12 @@
+-- @requires-db-prep
+-- Failure alerts mask a wallet member's step-up inbox by looking users up by
+-- step_up_email (stepUpMasker), on every Sent alerts page and To filter. The
+-- column had no index, so each lookup scanned users. Partial on
+-- `step_up_email IS NOT NULL`: only wallet members with a step-up inbox have
+-- one, so the index stays small.
+--
+-- DB-PREP: users is a hot table. On staging and prod an operator applies
+-- `CREATE INDEX CONCURRENTLY IF NOT EXISTS ...` (same definition) out-of-band
+-- before merge, so the plain statement below is a no-op there. On dev and
+-- PR-environment databases it runs as written.
+CREATE INDEX IF NOT EXISTS "idx_users_step_up_email" ON "users" USING btree ("step_up_email") WHERE "users"."step_up_email" IS NOT NULL;
