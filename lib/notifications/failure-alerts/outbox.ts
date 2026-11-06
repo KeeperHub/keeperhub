@@ -70,7 +70,7 @@ import {
   incidentScope,
   insertDeliveries,
 } from "./queue-rows";
-import { splitByRollout } from "./rollout";
+import { isFailureAlertsRolloutActive, splitByRollout } from "./rollout";
 import {
   checkChannelSilently,
   type DeliveryOutcome,
@@ -396,6 +396,9 @@ function muteNoticeInput(
       ended: context.ended === "worked" ? "worked" : "expired",
       failedRuns: Number(context.failedRuns ?? 0),
       failingNow: context.failingNow === true,
+      alertsPausedUntil: text(context.alertsPausedUntil)
+        ? new Date(String(context.alertsPausedUntil))
+        : null,
     };
   }
   return {
@@ -491,7 +494,13 @@ async function renderRow(
     if (list.length === 0) {
       return null;
     }
-    input = { ...org, kind: "grouped", workflows: list, backupReason };
+    input = {
+      ...org,
+      kind: "grouped",
+      workflows: list,
+      backupReason,
+      reminder: row.kind === "reminder",
+    };
   } else {
     const incident = row.incidentId ? await ctx.incident(row.incidentId) : null;
     const workflow = incident ? await ctx.workflow(incident.workflowId) : null;
@@ -838,7 +847,7 @@ export async function drainOutbox(
       claimed,
       (row) => row.organizationId
     );
-    await skipOutsideRollout(dropped);
+    await setAsideOutsideRollout(dropped, now);
     const rows = await skipHalted(await dropStale(kept, now), now);
     await ctx.loadChannels(
       rows.map((row) => row.channelId).filter((id): id is string => Boolean(id))
@@ -875,9 +884,26 @@ export async function drainOutbox(
 const OUTSIDE_ROLLOUT =
   "Failure notifications are not on for this organization.";
 
-/** Rows of orgs outside the rollout are never sent, and never claimed again. */
-async function skipOutsideRollout(rows: DeliveryRow[]): Promise<void> {
+/** Retry delay for a row this process's rollout leaves out while alerts are on. */
+const ROLLOUT_RECHECK_MS = 60_000;
+
+/**
+ * Rows of orgs outside this process's rollout. With alerts off they are skipped; otherwise
+ * another process may be on a wider rollout mid-deploy, so they wait a minute (and go stale after an hour).
+ */
+async function setAsideOutsideRollout(
+  rows: DeliveryRow[],
+  now: Date
+): Promise<void> {
   if (rows.length === 0) {
+    return;
+  }
+  if (isFailureAlertsRolloutActive()) {
+    for (const row of await dropStale(rows, now)) {
+      await finishRow(row, row.attempts === 0 ? "pending" : "retrying", {
+        nextAttemptAt: new Date(now.getTime() + ROLLOUT_RECHECK_MS),
+      });
+    }
     return;
   }
   await db
@@ -1406,7 +1432,10 @@ export async function pruneOldRecords(now: Date): Promise<void> {
       WHERE d.created_at < ${cutoff.toISOString()}::timestamptz AT TIME ZONE 'UTC'
         AND NOT EXISTS (
           SELECT 1 FROM ${workflowFailureIncidents} i
-          WHERE i.id = d.incident_id AND i.resolved_at IS NULL
+          WHERE i.resolved_at IS NULL
+            AND (i.id = d.incident_id
+              -- A grouped alert names its incidents: kept while any is open, so its recovery reaches the same people.
+              OR (d.incident_id IS NULL AND d.context->'incidentIds' ? i.id))
         )
       LIMIT 5000
     )

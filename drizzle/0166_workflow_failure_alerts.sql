@@ -53,7 +53,7 @@ CREATE TABLE "alert_email_usage" (
 --> statement-breakpoint
 CREATE TABLE "alert_settings" (
 	"organization_id" text PRIMARY KEY NOT NULL,
-	"threshold" integer DEFAULT 5 NOT NULL,
+	"threshold" integer DEFAULT 3 NOT NULL,
 	"time_limit_minutes" integer DEFAULT 360,
 	"remind_daily" boolean DEFAULT true NOT NULL,
 	"notify_recovery" boolean DEFAULT true NOT NULL,
@@ -64,6 +64,7 @@ CREATE TABLE "alert_settings" (
 	"paused_at" timestamp,
 	"pause_reason" text,
 	"paused_by" text,
+	"paused_by_user_id" text,
 	"version" integer DEFAULT 0 NOT NULL,
 	"updated_by" text,
 	"created_at" timestamp DEFAULT now() NOT NULL,
@@ -78,6 +79,7 @@ CREATE TABLE "alert_overrides" (
 	"recipient_user_ids" jsonb,
 	"custom_channels" boolean DEFAULT false NOT NULL,
 	"muted_until" timestamp,
+	"muted_at" timestamp,
 	"mute_until_success" boolean DEFAULT false NOT NULL,
 	"mute_reason" text,
 	"muted_by" text,
@@ -111,7 +113,8 @@ CREATE TABLE "alert_incidents" (
 	"workflow_resumed_at" timestamp,
 	"resolved_at" timestamp,
 	"resolved_reason" text,
-	"resolving_execution_id" text
+	"resolving_execution_id" text,
+	"opening_execution_id" text
 );
 --> statement-breakpoint
 ALTER TABLE "alert_methods" ADD CONSTRAINT "alert_methods_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -136,7 +139,8 @@ CREATE INDEX "idx_alert_queue_due" ON "alert_queue" USING btree ("due_at");--> s
 CREATE UNIQUE INDEX "uq_alert_incidents_open" ON "alert_incidents" USING btree ("workflow_id") WHERE "alert_incidents"."resolved_at" IS NULL;--> statement-breakpoint
 CREATE INDEX "idx_alert_incidents_org" ON "alert_incidents" USING btree ("organization_id");--> statement-breakpoint
 CREATE INDEX "idx_alert_incidents_workflow" ON "alert_incidents" USING btree ("workflow_id");--> statement-breakpoint
-CREATE INDEX "idx_alert_incidents_resolved" ON "alert_incidents" USING btree ("resolved_at") WHERE "alert_incidents"."resolved_at" IS NOT NULL;
+CREATE INDEX "idx_alert_incidents_resolved" ON "alert_incidents" USING btree ("resolved_at") WHERE "alert_incidents"."resolved_at" IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "idx_alert_incidents_opening_run" ON "alert_incidents" USING btree ("organization_id","opening_execution_id") WHERE "alert_incidents"."opening_execution_id" IS NOT NULL;
 --> statement-breakpoint
 -- Queues the workflow for the alert evaluator when a run ends in success, error or
 -- skipped (refused or expired). Never blocks a run: errors are only logged as a warning.

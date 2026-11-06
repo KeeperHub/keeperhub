@@ -24,21 +24,21 @@ export function FailureAlertsPausedBanner({
       <p className="flex min-w-0 items-center gap-2">
         <AlertTriangle aria-hidden="true" className="size-4 shrink-0" />
         <span className="min-w-0 truncate">
-          <span className="sm:hidden">
+          {/* Short on phones and on short (landscape) screens, where height is scarce. */}
+          <span className="sm:hidden [@media(max-height:500px)]:inline">
             Alerts paused until {formatWhen(until)}.
           </span>
-          <span className="hidden sm:inline">
+          <span className="hidden sm:inline [@media(max-height:500px)]:hidden">
             Alerts are paused until {formatWhen(until)}. Workflows keep running,
             but if one fails, no alert goes out.
           </span>
         </span>
         {/* Outside the truncated text, so the way to resume never gets cut. */}
         <Link
-          className="shrink-0 font-medium underline underline-offset-4"
+          className="shrink-0 font-medium underline underline-offset-4 pointer-coarse:-my-3 pointer-coarse:py-3"
           href={`/settings/${organizationId}/alerts`}
         >
-          <span className="sm:hidden">Open</span>
-          <span className="hidden sm:inline">Open Alerts</span>
+          Open Alerts
         </Link>
       </p>
     </AppBannerSlot>

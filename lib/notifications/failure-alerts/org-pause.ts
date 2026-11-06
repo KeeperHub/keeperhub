@@ -11,13 +11,15 @@ import {
 } from "@/lib/db/schema";
 import type { FailureAlertDeliveryChannel as DeliveryChannel } from "@/lib/db/schema-failure-alerts";
 import type { Tx } from "@/lib/db/tx";
+import { oneLine } from "@/lib/notifications/chat-text";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
-import { stripControlChars } from "@/lib/utils/control-chars";
 import {
   BACKUP_AFTER_MS,
+  CLOCK_SKEW_MS,
   MAX_ORG_PAUSE_MS,
   MAX_PAUSE_REASON,
   MAX_PAUSES_PER_HOUR,
+  parseEndTime,
 } from "./constants";
 import {
   ensureOrgSettings,
@@ -138,16 +140,13 @@ async function countPausingWorkflows(organizationId: string): Promise<number> {
 }
 
 const HOUR_MS = 60 * 60 * 1000;
-const WHITESPACE = /\s+/g;
 
 /** One line of plain text: control and bidi characters could make it read as something else. */
 function cleanReason(raw: unknown): string | null {
   if (typeof raw !== "string") {
     return null;
   }
-  const text = stripControlChars(raw, { replacement: " " })
-    .replace(WHITESPACE, " ")
-    .trim();
+  const text = oneLine(raw);
   return text ? text.slice(0, MAX_PAUSE_REASON) : null;
 }
 
@@ -183,11 +182,12 @@ export async function pauseOrgAlerts(params: {
   now: Date;
 }): Promise<{ until: Date; reason: string | null }> {
   const { organizationId, now } = params;
-  const until =
-    typeof params.until === "string" ? new Date(params.until) : null;
-  if (!until || Number.isNaN(until.getTime()) || until <= now) {
+  const requested =
+    typeof params.until === "string" ? parseEndTime(params.until) : null;
+  if (!requested || requested <= now) {
     throw new SettingsError("Pick when alerts should start again.");
   }
+  let until: Date = requested;
   const reason = cleanReason(params.reason);
   await ensureOrgSettings(organizationId, now);
   const pausingWorkflows = await countPausingWorkflows(organizationId);
@@ -205,12 +205,15 @@ export async function pauseOrgAlerts(params: {
     // Changing an ongoing pause keeps its start, so extending cannot pass 7 days in all.
     const startedAt = (ongoing && current?.pausedAt) || now;
     const latest = new Date(startedAt.getTime() + MAX_ORG_PAUSE_MS);
-    if (until > latest) {
+    if (until.getTime() > latest.getTime() + CLOCK_SKEW_MS) {
       throw new SettingsError(
         ongoing
           ? `A pause can last up to 7 days in all, so this one can run until ${latest.toUTCString()} at most.`
           : "Alerts can be paused for up to 7 days."
       );
+    }
+    if (until > latest) {
+      until = latest;
     }
     await tx
       .update(orgFailureAlertSettings)

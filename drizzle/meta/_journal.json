@@ -1174,22 +1174,8 @@
     {
       "idx": 167,
       "version": "7",
-      "when": 1793961173866,
-      "tag": "0167_failure_alert_opening_run",
-      "breakpoints": true
-    },
-    {
-      "idx": 168,
-      "version": "7",
       "when": 1793964849506,
-      "tag": "0168_users_step_up_email_index",
-      "breakpoints": true
-    },
-    {
-      "idx": 169,
-      "version": "7",
-      "when": 1793973929915,
-      "tag": "0169_failure_alerts_defaults",
+      "tag": "0167_users_step_up_email_index",
       "breakpoints": true
     }
   ]

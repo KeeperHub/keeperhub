@@ -1,19 +1,10 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import {
-  and,
-  count,
-  desc,
-  eq,
-  gt,
-  gte,
-  isNull,
-  type SQL,
-  sql,
-} from "drizzle-orm";
+import { and, count, desc, eq, gt, isNull, type SQL, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
+  organization,
   workflowExecutions,
   workflowFailureAlertOverrides,
   workflowFailureAlertQueue,
@@ -21,7 +12,6 @@ import {
   workflows,
 } from "@/lib/db/schema";
 import type { Tx } from "@/lib/db/tx";
-import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import {
   loadOrgMembers,
   type OrgMember,
@@ -38,7 +28,7 @@ import {
 } from "./policy";
 import { buildMessageRows, insertDeliveries } from "./queue-rows";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
-import { AUTOMATED_RUN_SQL, REFUSED_RUN_SQL } from "./streak-runs";
+import { attemptConditions } from "./streak-runs";
 import type { OrgSettingsView } from "./view-types";
 
 type Actor = {
@@ -46,6 +36,16 @@ type Actor = {
   byUserId: string | null;
   byAccount: string | null;
 };
+
+/** A member's name as notices show it, or null for nobody. */
+export function nameOf(
+  userId: string | null | undefined,
+  members: OrgMember[]
+): string | null {
+  return userId
+    ? pauseActorName(members.find((m) => m.userId === userId))
+    : null;
+}
 
 /** Who acted, as notices and the By column name them. */
 export async function actorOf(
@@ -55,10 +55,9 @@ export async function actorOf(
   if (!userId) {
     return { by: null, byUserId: null, byAccount: null };
   }
-  const member = members.find((m) => m.userId === userId);
   const accounts = await signInAccounts([userId]);
   return {
-    by: pauseActorName(member),
+    by: nameOf(userId, members),
     byUserId: userId,
     byAccount: accounts.get(userId) ?? null,
   };
@@ -159,7 +158,7 @@ export async function queueRemovedNotice(params: {
   );
 }
 
-/** Automated runs that failed since `since`, as the streak counts them (KeeperHub's own errors excluded). */
+/** Runs that failed since `since`, counted as the streak counts them. */
 async function failedRunsSince(
   workflowId: string,
   since: Date
@@ -169,38 +168,22 @@ async function failedRunsSince(
     .from(workflowExecutions)
     .where(
       and(
-        eq(workflowExecutions.workflowId, workflowId),
-        gte(workflowExecutions.startedAt, since),
-        AUTOMATED_RUN_SQL,
-        sql`${workflowExecutions.deletedAt} IS NULL`,
-        sql`NOT ${REFUSED_RUN_SQL}`,
-        eq(workflowExecutions.status, "error"),
-        sql`${workflowExecutions.errorType} IS DISTINCT FROM ${ExecutionErrorType.SYSTEM}`
+        attemptConditions(workflowId, since),
+        eq(workflowExecutions.status, "error")
       )
     );
   return Number(row?.n ?? 0);
 }
 
-/** Whether the newest counted automated run failed. */
+/** Whether the newest attempt the streak counts failed (a refusal is not a failure here). */
 async function latestRunFailed(workflowId: string): Promise<boolean> {
   const [run] = await db
-    .select({
-      status: workflowExecutions.status,
-      errorType: workflowExecutions.errorType,
-    })
+    .select({ status: workflowExecutions.status })
     .from(workflowExecutions)
-    .where(
-      and(
-        eq(workflowExecutions.workflowId, workflowId),
-        AUTOMATED_RUN_SQL,
-        sql`${workflowExecutions.deletedAt} IS NULL`,
-        sql`NOT ${REFUSED_RUN_SQL}`,
-        sql`${workflowExecutions.status} NOT IN ('phantom', 'pending', 'running')`
-      )
-    )
+    .where(attemptConditions(workflowId, null))
     .orderBy(desc(workflowExecutions.startedAt))
     .limit(1);
-  return run?.status === "error" && run.errorType !== ExecutionErrorType.SYSTEM;
+  return run?.status === "error";
 }
 
 /** Every workflow muted right now, failing ones first, for Needs attention. */
@@ -250,9 +233,7 @@ export async function loadMutedWorkflows(
         name: r.name,
         mutedUntil: r.mutedUntil?.toISOString() ?? null,
         untilItWorks: r.muteUntilSuccess,
-        by: r.mutedBy
-          ? pauseActorName(members.find((m) => m.userId === r.mutedBy))
-          : null,
+        by: nameOf(r.mutedBy, members),
         byAccount: r.mutedBy ? (accounts.get(r.mutedBy) ?? null) : null,
         reason: r.muteReason,
         failing,
@@ -278,6 +259,8 @@ type EndedMute = {
   reason: string | null;
   until: Date | null;
   untilItWorks: boolean;
+  /** Deleted workflow or deactivated org: the mute is cleared without a notice. */
+  gone: boolean;
 };
 
 /**
@@ -301,15 +284,18 @@ async function endMutes(
       mute_reason: string | null;
       muted_until: string | null;
       mute_until_success: boolean;
+      gone: boolean;
     }>(sql`
       UPDATE ${workflowFailureAlertOverrides} AS o
          SET muted_until = NULL, mute_until_success = false, mute_reason = NULL,
              muted_by = NULL, muted_at = NULL, version = o.version + 1
         FROM (
           SELECT ov.workflow_id, ov.muted_by, ov.muted_at, ov.updated_at,
-                 ov.mute_reason, ov.muted_until, ov.mute_until_success, w.name
+                 ov.mute_reason, ov.muted_until, ov.mute_until_success, w.name,
+                 (w.deleted_at IS NOT NULL OR org.deactivated_at IS NOT NULL) AS gone
             FROM ${workflowFailureAlertOverrides} AS ov
             JOIN ${workflows} AS w ON w.id = ov.workflow_id
+            JOIN ${organization} AS org ON org.id = ov.organization_id
            WHERE ${where}
            LIMIT 200
            FOR UPDATE OF ov SKIP LOCKED
@@ -318,7 +304,7 @@ async function endMutes(
       RETURNING o.workflow_id, o.organization_id, old.name, old.muted_by,
                 old.muted_at::text AS muted_at, old.updated_at::text AS updated_at,
                 old.mute_reason, old.muted_until::text AS muted_until,
-                old.mute_until_success
+                old.mute_until_success, old.gone
     `);
     const utc = (text: string): Date => new Date(`${text.replace(" ", "T")}Z`);
     const list: EndedMute[] = [...rows].map((r) => ({
@@ -331,8 +317,9 @@ async function endMutes(
       reason: r.mute_reason,
       until: r.muted_until ? utc(r.muted_until) : null,
       untilItWorks: r.mute_until_success,
+      gone: r.gone,
     }));
-    for (const mute of list) {
+    for (const mute of list.filter((m) => !m.gone)) {
       await tellMuteEnded(mute, ended, now, tx);
     }
     return list.length;
@@ -362,15 +349,17 @@ async function tellMuteEnded(
       policy,
       members,
       context: {
-        mutedBy: mute.mutedBy
-          ? pauseActorName(members.find((m) => m.userId === mute.mutedBy))
-          : null,
+        mutedBy: nameOf(mute.mutedBy, members),
         reason: mute.reason,
         until: mute.until?.toISOString() ?? null,
         untilItWorks: mute.untilItWorks,
         ended,
         failedRuns,
         failingNow,
+        alertsPausedUntil:
+          policy.orgPausedUntil && policy.orgPausedUntil > now
+            ? policy.orgPausedUntil.toISOString()
+            : null,
       },
       now,
       tx,

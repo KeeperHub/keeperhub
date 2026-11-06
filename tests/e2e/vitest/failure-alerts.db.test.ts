@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { EXECUTION_LIMIT_REFUSAL } from "../../../lib/billing/dispatch-refusal";
@@ -866,6 +866,58 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(grouped?.text).not.toContain(
         `${wfName("Plain Keeper A")}: 5 failed runs in a row, ran out of funds earlier`
       );
+    });
+
+    it("sends one daily reminder listing every org-rule workflow still failing", async () => {
+      const org = await makeOrg("digest");
+      const names = ["Digest A", "Digest B", "Digest C"];
+      const ids: string[] = [];
+      for (const name of names) {
+        const id = await makeWorkflow(org, name);
+        const [incident] = await db
+          .insert(workflowFailureIncidents)
+          .values({
+            organizationId: org.orgId,
+            workflowId: id,
+            openedBy: "count",
+            threshold: 5,
+            failureCount: 5,
+            firstFailedAt: at(-30 * 60),
+            lastFailedAt: at(-6),
+            lastError: "execution reverted",
+            openedAt: at(-26 * 60),
+            alertQueuedAt: at(-26 * 60),
+            lastNotifiedAt: at(-25 * 60),
+          })
+          .returning();
+        ids.push(incident?.id ?? "");
+      }
+      await runCycle();
+      const reminders = (await deliveriesOf(org.orgId)).filter(
+        (d) => d.kind === "reminder"
+      );
+      // One row per recipient and method, not one per workflow.
+      expect(reminders).toHaveLength(1);
+      expect(reminders[0]?.incidentId).toBeNull();
+      expect(reminders[0]?.context).toMatchObject({
+        incidentIds: expect.arrayContaining(ids),
+      });
+      const mail = mailsTo(org).find((m) =>
+        names.every((n) => m.text.includes(wfName(n)))
+      );
+      expect(mail?.subject).toContain(
+        "Still failing: 3 workflows still failing"
+      );
+      const counts = await db
+        .select({ n: workflowFailureIncidents.reminderCount })
+        .from(workflowFailureIncidents)
+        .where(inArray(workflowFailureIncidents.id, ids));
+      expect(counts.map((c) => c.n)).toEqual([1, 1, 1]);
+      // Claimed for today: the next cycle sends nothing more.
+      await runCycle();
+      expect(
+        (await deliveriesOf(org.orgId)).filter((d) => d.kind === "reminder")
+      ).toHaveLength(1);
     });
 
     it("the low-email warning says nobody is told once used up when no chat method works", async () => {
@@ -1741,6 +1793,51 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     });
   });
 
+  describe("old records", { timeout: SUITE_TIMEOUT }, () => {
+    it("keeps a grouped alert while one of its incidents is open, and prunes the rest", async () => {
+      const { pruneOldRecords } = await import(
+        "@/lib/notifications/failure-alerts/outbox"
+      );
+      const org = await makeOrg("prune");
+      const wf = await makeWorkflow(org, "Long open");
+      const [open] = await db
+        .insert(workflowFailureIncidents)
+        .values({
+          organizationId: org.orgId,
+          workflowId: wf,
+          openedBy: "count",
+          threshold: 5,
+          failureCount: 5,
+          firstFailedAt: at(-200 * 24 * 60),
+          lastFailedAt: at(-6),
+          openedAt: at(-100 * 24 * 60),
+        })
+        .returning();
+      const grouped = async (tag: string, incidentIds: string[]) => {
+        const id = nextId("delivery_");
+        await db.insert(failureAlertDeliveries).values({
+          id,
+          organizationId: org.orgId,
+          kind: "alert",
+          sequence: 0,
+          channel: "email",
+          recipient: org.email,
+          dedupKey: `${id}-${tag}`,
+          state: "delivered",
+          context: { incidentIds },
+          createdAt: at(-100 * 24 * 60),
+        });
+        return id;
+      };
+      const kept = await grouped("open", [open?.id ?? "", "inc_closed"]);
+      const pruned = await grouped("closed", ["inc_closed"]);
+      await pruneOldRecords(new Date());
+      const ids = (await deliveriesOf(org.orgId)).map((d) => d.id);
+      expect(ids).toContain(kept);
+      expect(ids).not.toContain(pruned);
+    });
+  });
+
   describe("orgs outside the rollout", { timeout: SUITE_TIMEOUT }, () => {
     let sigma: Org;
     let dead: Channel;
@@ -1776,12 +1873,34 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     });
 
     it("sends nothing, health-checks nothing and drops its queued work", async () => {
+      const staleId = nextId("delivery_");
+      await db.insert(failureAlertDeliveries).values({
+        id: staleId,
+        organizationId: sigma.orgId,
+        kind: "alerts_resumed",
+        sequence: 0,
+        channel: "email",
+        recipient: sigma.email,
+        dedupKey: `${staleId}-outside-stale`,
+        state: "pending",
+        createdAt: at(-61),
+        nextAttemptAt: at(-1),
+      });
+      const before = Date.now();
       await runCycle();
       const [row] = await db
         .select()
         .from(failureAlertDeliveries)
         .where(eq(failureAlertDeliveries.id, rowId));
-      expect(row?.state).toBe("skipped");
+      // Another process may be on a wider rollout mid-deploy: the row waits, it is not dropped.
+      expect(row?.state).toBe("pending");
+      expect(row?.nextAttemptAt.getTime()).toBeGreaterThan(before + 30_000);
+      const [stale] = await db
+        .select()
+        .from(failureAlertDeliveries)
+        .where(eq(failureAlertDeliveries.id, staleId));
+      expect(stale?.state).toBe("skipped");
+      expect(stale?.lastError).toBe(SKIP_REASON.stale);
       expect(mailsTo(sigma)).toHaveLength(0);
       const channel = await channelById(dead.id);
       expect(channel?.lastHealthCheckAt).toBeNull();
@@ -4416,6 +4535,18 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         save(org, wf, { mutedUntil: inHours(8 * 24), muteReason: "Upgrade" })
       );
       expect(tooLong.message).toBe("A mute can last at most 7 days.");
+      // A browser clock a little ahead: "7 days" is trimmed to the cap, not refused.
+      const skewed = new Date(Date.now() + 7 * 24 * 3_600_000 + 60_000);
+      await save(org, wf, {
+        mutedUntil: skewed.toISOString(),
+        muteReason: "Clock ahead",
+      });
+      const [trimmed] = await db
+        .select()
+        .from(workflowFailureAlertOverrides)
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      expect(trimmed?.mutedUntil?.getTime()).toBeLessThan(skewed.getTime());
+      await save(org, wf, {});
       const noReason = await settingsError(() =>
         save(org, wf, { mutedUntil: inHours(24) })
       );
@@ -4548,6 +4679,50 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(typeof ended[0]?.context?.until).toBe("string");
       expect(await openIncident(wf)).toBeDefined();
       expect((await notices(org.orgId, "alert")).length).toBeGreaterThan(0);
+    });
+
+    it("counts runs as the streak does when a mute ends, and ends a deleted workflow's mute without a notice", async () => {
+      const org = await makeOrg("mutecount");
+      const wf = await makeWorkflow(org, "Platform error last");
+      await save(org, wf, { mutedUntil: inHours(1), muteReason: "Upgrade" });
+      await db
+        .update(workflowFailureAlertOverrides)
+        .set({ mutedAt: at(-8) })
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      await addFailures(org, wf, 3, -6);
+      // KeeperHub's own error is not an attempt: the workflow is still failing.
+      await addRun(org, wf, "system_error", { at: at(-2) });
+      await addRun(org, wf, "error", { at: at(-1), errorType: "system" });
+      await db
+        .update(workflowFailureAlertOverrides)
+        .set({ mutedUntil: at(-1) })
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      await runCycle();
+      const ended = await notices(org.orgId, "mute_ended");
+      expect(ended).toHaveLength(1);
+      expect(ended[0]?.context).toMatchObject({
+        failedRuns: 3,
+        failingNow: true,
+      });
+
+      const gone = await makeOrg("mutegone");
+      const deleted = await makeWorkflow(gone, "Deleted while muted");
+      await save(gone, deleted, { mutedUntil: inHours(1), muteReason: "Old" });
+      await db
+        .update(workflows)
+        .set({ deletedAt: new Date() })
+        .where(eq(workflows.id, deleted));
+      await db
+        .update(workflowFailureAlertOverrides)
+        .set({ mutedUntil: at(-1) })
+        .where(eq(workflowFailureAlertOverrides.workflowId, deleted));
+      await runCycle();
+      expect(await notices(gone.orgId, "mute_ended")).toHaveLength(0);
+      const [cleared] = await db
+        .select()
+        .from(workflowFailureAlertOverrides)
+        .where(eq(workflowFailureAlertOverrides.workflowId, deleted));
+      expect(cleared?.mutedUntil).toBeNull();
     });
 
     it("ends an until-it-works mute once when it works", async () => {

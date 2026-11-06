@@ -14,7 +14,7 @@ export function MemberName({
   }
   return (
     <span className="block min-w-0">
-      <span className="block truncate">{name}</span>
+      <span className="line-clamp-2 block break-words">{name}</span>
       <EmailText
         className="block text-muted-foreground text-xs"
         email={account}

@@ -1,5 +1,5 @@
 import { truncateAddress } from "@/lib/address-utils";
-import { isWalletEmail } from "@/lib/auth/wallet-constants";
+import { walletAddressFromEmail } from "@/lib/auth/wallet-constants";
 import { actorLabel } from "@/lib/notifications/failure-alerts/actor-label";
 import { requiredManagers } from "@/lib/notifications/failure-alerts/constants";
 import { formatWhen } from "./format";
@@ -10,8 +10,9 @@ export function memberLabel(m: {
   name: string | null;
   userId: string;
 }): string {
-  if (m.email && isWalletEmail(m.email)) {
-    return truncateAddress(m.email.split("@")[0] ?? "");
+  const wallet = walletAddressFromEmail(m.email);
+  if (wallet) {
+    return truncateAddress(wallet);
   }
   return m.email ?? m.name ?? m.userId;
 }
@@ -50,12 +51,6 @@ export function lastRecipientNote(onlyOne: boolean): string {
     ? "Someone has to get the email. Tick another person first."
     : "An owner or admin who can get email must always get alerts. Tick another one first.";
 }
-
-// One "Name (account)" formatter for the page and the notices.
-export {
-  accountLabel,
-  actorLabel,
-} from "@/lib/notifications/failure-alerts/actor-label";
 
 /** "Muted by Dana (dana@x.com) until Nov 13: reason", worded the same on every surface. */
 export function muteSentence(m: {

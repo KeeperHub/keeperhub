@@ -4009,7 +4009,7 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "default": 5
+          "default": 3
         },
         "time_limit_minutes": {
           "name": "time_limit_minutes",
@@ -4070,6 +4070,12 @@
         },
         "paused_by": {
           "name": "paused_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "paused_by_user_id": {
+          "name": "paused_by_user_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -9081,6 +9087,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "muted_at": {
+          "name": "muted_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
         "pause_workflow": {
           "name": "pause_workflow",
           "type": "boolean",
@@ -9251,6 +9263,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "opening_execution_id": {
+          "name": "opening_execution_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "last_error": {
           "name": "last_error",
           "type": "text",
@@ -9336,6 +9354,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_alert_incidents_opening_run": {
+          "name": "idx_alert_incidents_opening_run",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "opening_execution_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"alert_incidents\".\"opening_execution_id\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}

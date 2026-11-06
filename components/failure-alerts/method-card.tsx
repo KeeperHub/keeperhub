@@ -457,7 +457,7 @@ function ChannelHealth({
     return (
       <span className="text-muted-foreground">
         {savesHere
-          ? "Not saved yet. Save checks that it can receive alerts."
+          ? "Check and save makes sure it can receive alerts."
           : savedWith}
       </span>
     );
@@ -993,7 +993,8 @@ export function ChannelMethodCard({
       feedback={
         onSave ? (
           <SaveFeedback
-            dirty={dirty}
+            // A new method already says it is not saved, in its badge.
+            dirty={dirty && Boolean(saved)}
             state={save.state}
             testId="failure-alert-method-save"
           />

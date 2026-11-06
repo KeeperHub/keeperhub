@@ -137,3 +137,17 @@ export function settingsErrorResponse(error: unknown): NextResponse | null {
   }
   return null;
 }
+
+/** The request's JSON object, or a 400 for anything else (null, an array, bad JSON). */
+export async function readJsonObject(
+  request: Request
+): Promise<Record<string, unknown> | NextResponse> {
+  const body: unknown = await request.json().catch(() => null);
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return NextResponse.json(
+      { error: "Send the settings as a JSON object." },
+      { status: 400 }
+    );
+  }
+  return body as Record<string, unknown>;
+}

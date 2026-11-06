@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  accountLabel,
-  actorLabel,
   isLastRecipient,
   lastRecipientNote,
   muteSentence,
 } from "@/components/failure-alerts/member-label";
+import {
+  accountLabel,
+  actorLabel,
+} from "@/lib/notifications/failure-alerts/actor-label";
 
 const owner = { userId: "o", role: "owner", reachable: true };
 const admin = { userId: "a", role: "admin", reachable: true };

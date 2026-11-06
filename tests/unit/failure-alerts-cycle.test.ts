@@ -394,7 +394,7 @@ describe("drainOutbox", () => {
     ).not.toContain("a@x.dev");
   });
 
-  it("skips rows of orgs outside the rollout and reads the run history once per incident", async () => {
+  it("holds rows of orgs outside this rollout and reads the run history once per incident", async () => {
     let claims = 0;
     fake.state.answer = (op) => {
       if (op.kind === "execute") {
@@ -442,10 +442,19 @@ describe("drainOutbox", () => {
       vi.mocked(senders.sendEmailMessage).mock.calls.map((call) => call[0])
     ).toEqual(["a@x.dev", "b@x.dev"]);
     expect(opsOn("select", schema.workflowExecutions)).toHaveLength(1);
-    const skipped = opsOn("update", schema.failureAlertDeliveries).filter(
-      (op) => (op.sets as { state?: string })?.state === "skipped"
+    // Another process may be on a wider rollout mid-deploy: the row waits a minute, it is not skipped.
+    const updates = opsOn("update", schema.failureAlertDeliveries);
+    expect(
+      updates.filter(
+        (op) => (op.sets as { state?: string })?.state === "skipped"
+      )
+    ).toHaveLength(0);
+    const held = updates.filter(
+      (op) => (op.sets as { state?: string })?.state === "pending"
     );
-    expect(skipped).toHaveLength(1);
+    expect(held).toHaveLength(1);
+    const sets = held[0]?.sets as { nextAttemptAt: Date } | undefined;
+    expect(sets?.nextAttemptAt.getTime()).toBeGreaterThan(Date.now() + 30_000);
   });
 });
 

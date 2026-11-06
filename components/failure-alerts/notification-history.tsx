@@ -12,7 +12,14 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type Dispatch,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { timeAgo } from "@/components/settings/hub/relative-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -118,6 +125,22 @@ type Filters = {
   workflow: string;
   result: string;
 };
+
+/** Applies a typed filter once typing pauses. */
+function useDebouncedFilter(
+  key: "to" | "workflow",
+  draft: string,
+  setFilters: Dispatch<SetStateAction<Filters>>
+): void {
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const value = draft.trim();
+      setFilters((f) => (f[key] === value ? f : { ...f, [key]: value }));
+    }, TO_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [key, draft, setFilters]);
+}
+
 const NO_FILTERS: Filters = {
   since: ANY,
   kind: ANY,
@@ -361,25 +384,8 @@ export function NotificationHistory({
   const inFlight = useRef<AbortController | null>(null);
   const base = `/api/organizations/${encodeURIComponent(organizationId)}/failure-alerts/history`;
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setFilters((f) =>
-        f.to === toDraft.trim() ? f : { ...f, to: toDraft.trim() }
-      );
-    }, TO_DEBOUNCE_MS);
-    return () => window.clearTimeout(timer);
-  }, [toDraft]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setFilters((f) =>
-        f.workflow === workflowDraft.trim()
-          ? f
-          : { ...f, workflow: workflowDraft.trim() }
-      );
-    }, TO_DEBOUNCE_MS);
-    return () => window.clearTimeout(timer);
-  }, [workflowDraft]);
+  useDebouncedFilter("to", toDraft, setFilters);
+  useDebouncedFilter("workflow", workflowDraft, setFilters);
 
   const query = useCallback(
     (page?: number, format?: "csv"): string => {

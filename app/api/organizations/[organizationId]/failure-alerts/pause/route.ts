@@ -7,6 +7,7 @@ import {
 } from "@/lib/notifications/failure-alerts/org-pause";
 import {
   type OrgAccess,
+  readJsonObject,
   requireManager,
   resolveOrgAccess,
   settingsErrorResponse,
@@ -89,10 +90,10 @@ async function handle(
 /** Pause all org alerts until a time (maintenance). Owners and admins. */
 export function PUT(request: Request, context: Params): Promise<NextResponse> {
   return handle(request, context, async (organizationId, access) => {
-    const body = (await request.json().catch(() => ({}))) as Record<
-      string,
-      unknown
-    >;
+    const body = await readJsonObject(request);
+    if (body instanceof NextResponse) {
+      return body;
+    }
     // Audit what was saved (parsed date, trimmed reason), not the raw body.
     const saved = await pauseOrgAlerts({
       organizationId,

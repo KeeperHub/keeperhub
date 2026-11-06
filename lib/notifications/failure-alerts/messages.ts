@@ -5,6 +5,7 @@ import {
   type ChatPart,
   type ChatText,
   formatChat,
+  oneLine,
 } from "@/lib/notifications/chat-text";
 import { redactErrorSecrets } from "@/lib/utils/redact";
 import { MAX_SUMMARY_CHARS } from "@/plugins/pagerduty/event-payload";
@@ -94,6 +95,8 @@ export type MessageInput =
         refused?: Refused;
       })[];
       backupReason?: string;
+      /** The daily reminder for workflows still failing, one message for all. */
+      reminder?: boolean;
     })
   | (OrgFields & {
       kind: "recovery";
@@ -153,6 +156,8 @@ export type MessageInput =
       ended: "expired" | "worked";
       failedRuns: number;
       failingNow: boolean;
+      /** The org's alerts are paused until then, so the alert waits for it. */
+      alertsPausedUntil?: Date | null;
     })
   | (OrgFields & {
       kind: "recipients_removed";
@@ -505,10 +510,47 @@ function footer(input: OrgFields): { text: string; html: string } {
   };
 }
 
+/** Names and reasons people typed, as one line with no control or bidi characters. */
+function cleanInput(input: MessageInput): MessageInput {
+  const out: Record<string, unknown> = {
+    ...input,
+    orgName: oneLine(input.orgName),
+  };
+  const named = <T extends { name: string }>(w: T): T => ({
+    ...w,
+    name: oneLine(w.name),
+  });
+  if ("workflow" in input && input.workflow) {
+    out.workflow = named(input.workflow);
+  }
+  if ("workflows" in input && Array.isArray(input.workflows)) {
+    out.workflows = input.workflows.map(named);
+  }
+  if ("failingNow" in input && Array.isArray(input.failingNow)) {
+    out.failingNow = input.failingNow.map(named);
+  }
+  for (const key of ["reason", "by", "byAccount"] as const) {
+    const value = (input as Record<string, unknown>)[key];
+    if (typeof value === "string") {
+      out[key] = oneLine(value);
+    }
+  }
+  if ("removed" in input && Array.isArray(input.removed)) {
+    out.removed = input.removed.map(oneLine);
+  }
+  return out as MessageInput;
+}
+
 export function renderMessage(
   input: MessageInput,
   now: Date = new Date()
 ): RenderedMessage {
+  const message = renderCleaned(cleanInput(input), now);
+  // A subject is one header line, whatever went into it.
+  return { ...message, subject: oneLine(message.subject) };
+}
+
+function renderCleaned(input: MessageInput, now: Date): RenderedMessage {
   switch (input.kind) {
     case "alert":
     case "reminder":
@@ -837,16 +879,18 @@ function sortGrouped(workflows: GroupedWorkflow[]): GroupedWorkflow[] {
 function groupedHeadline(
   failing: number,
   notRunning: number,
-  turnedOff: number
+  turnedOff: number,
+  reminder = false
 ): string {
   const off = turnedOff > 0 ? `, ${turnedOff} turned off` : "";
+  const verb = reminder ? "still failing" : "started failing";
   if (notRunning === 0) {
-    return `${plural(failing, "workflow", "workflows")} started failing${off}`;
+    return `${plural(failing, "workflow", "workflows")} ${verb}${off}`;
   }
   if (failing === 0) {
-    return `${plural(notRunning, "workflow is", "workflows are")} not running`;
+    return `${plural(notRunning, "workflow is", "workflows are")} ${reminder ? "still " : ""}not running`;
   }
-  return `${plural(failing, "workflow", "workflows")} started failing${off}, ${notRunning} not running`;
+  return `${plural(failing, "workflow", "workflows")} ${verb}${off}, ${notRunning} not running`;
 }
 
 function lowerFirst(text: string): string {
@@ -894,7 +938,13 @@ function renderGrouped(
     planKinds.size > 0
       ? fixLink(appUrl, input.organizationId, planFixLink(onlyKind))
       : null;
-  const headline = groupedHeadline(failing, notRunning, turnedOff);
+  const headline = groupedHeadline(
+    failing,
+    notRunning,
+    turnedOff,
+    input.reminder
+  );
+  const label = input.reminder ? "Still failing" : "Action needed";
   const errorText = (w: { lastError?: string | null }): string | null =>
     w.lastError ? errorExcerpt(w.lastError, GROUPED_ERROR_CHARS) : null;
   const cause = [
@@ -966,11 +1016,7 @@ function renderGrouped(
   const chatList = (count: number, withError: boolean): ChatText => {
     const rest = workflows.length - count;
     return joinLines([
-      [
-        ...orgTag(orgName),
-        ...backup.chat,
-        `Action needed: ${headline}. ${cause}`,
-      ],
+      [...orgTag(orgName), ...backup.chat, `${label}: ${headline}. ${cause}`],
       ...workflows.slice(0, count).map((w) => chatLine(w, withError)),
       rest > 0 ? `And ${rest} more.` : null,
       funds ? `Add funds: ${funds}` : null,
@@ -991,7 +1037,7 @@ ${fundsLine}${seeAll}
 
 ${foot.text}`;
   const html = emailLayout(
-    `<span style="display:inline-block; background:#b91c1c; color:#fff; font-size:12px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; padding:3px 8px; border-radius:4px; margin-bottom:8px;">Action needed</span><br>${escapeHtml(headline)}`,
+    `<span style="display:inline-block; background:#b91c1c; color:#fff; font-size:12px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; padding:3px 8px; border-radius:4px; margin-bottom:8px;">${label}</span><br>${escapeHtml(headline)}`,
     `${backup.html}
     <p>${escapeHtml(cause)}</p>
     <ul style="padding-left: 20px;">${shown
@@ -1005,7 +1051,7 @@ ${foot.text}`;
     foot.html
   );
   return {
-    subject: `${input.backupReason ? "[Backup] " : ""}[${orgName}] Action needed: ${headline}`,
+    subject: `${input.backupReason ? "[Backup] " : ""}[${orgName}] ${label}: ${headline}`,
     text,
     html,
     ...chatOf(chatVariants),
@@ -1315,9 +1361,12 @@ function renderMuteNotice(
   } else {
     headline = `Mute ended: ${name}`;
     const failed = `${input.failedRuns} run${input.failedRuns === 1 ? "" : "s"} failed while it was muted.`;
-    const state = input.failingNow
+    let state = input.failingNow
       ? " It is still failing, so an alert follows."
       : " It is working now.";
+    if (input.failingNow && input.alertsPausedUntil) {
+      state = ` It is still failing; the alert goes out when the organization's alerts resume at ${formatUtc(input.alertsPausedUntil)}.`;
+    }
     detail = () => [
       input.ended === "worked" ? "It works again, so the mute" : "The mute",
       ...(input.by ? [" set by ", user(input.by)] : []),

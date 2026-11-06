@@ -42,7 +42,9 @@ export function incidentTitle(
       ? `Turned off: wallet out of funds, ${runs}`
       : `Wallet out of funds: ${runs}`;
   }
-  return pausedByAlert ? `Turned off after ${runs}` : `Failing: ${runs}`;
+  return pausedByAlert
+    ? `Turned off after ${runs}`
+    : `${runs.charAt(0).toUpperCase()}${runs.slice(1)}`;
 }
 
 /**

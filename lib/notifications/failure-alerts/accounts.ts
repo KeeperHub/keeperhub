@@ -1,7 +1,7 @@
 import "server-only";
 
 import { inArray } from "drizzle-orm";
-import { isWalletEmail } from "@/lib/auth/wallet-constants";
+import { walletAddressFromEmail } from "@/lib/auth/wallet-constants";
 import { db } from "@/lib/db";
 import { users } from "@/lib/db/schema";
 
@@ -22,9 +22,7 @@ export async function signInAccounts(
       if (!row.email) {
         return [];
       }
-      const account = isWalletEmail(row.email)
-        ? (row.email.split("@")[0] ?? row.email)
-        : row.email;
+      const account = walletAddressFromEmail(row.email) ?? row.email;
       return [[row.id, account] as const];
     })
   );

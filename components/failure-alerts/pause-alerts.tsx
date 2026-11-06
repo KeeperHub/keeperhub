@@ -7,14 +7,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Notice, WARNING_TEXT } from "@/components/ui/notice";
 import { Switch } from "@/components/ui/switch";
+import { actorLabel } from "@/lib/notifications/failure-alerts/actor-label";
 import {
   type OrgSettingsView,
   orgPauseEffect,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import { ChoiceChips } from "./choice-chips";
+import { TextWithEmails } from "./email-text";
 import { formatWhen, toLocalInput } from "./format";
-import { actorLabel } from "./member-label";
 
 type AlertsPause = NonNullable<OrgSettingsView["pause"]>;
 
@@ -146,7 +147,7 @@ export function AlertsStateBody({
           : `Resumes ${formatWhen(pause.until)} (${timeLeft(left)})`}
       </p>
       <p className="text-sm">
-        {pauseAuthor(pause)}
+        <TextWithEmails text={pauseAuthor(pause)} />
         {pause.reason ? `: ${pause.reason}` : ""}.{" "}
         <span className="text-muted-foreground">
           {orgPauseEffect(pausingWorkflows)}

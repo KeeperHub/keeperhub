@@ -35,6 +35,7 @@ import {
   type OrgMember,
   stepUpMasker,
 } from "@/lib/notifications/org-recipients";
+import { toCsvCell } from "@/lib/security/csv";
 import { isPagerDutyId } from "@/plugins/pagerduty/steps/pagerduty-core";
 import { signInAccounts } from "./accounts";
 import {
@@ -1182,19 +1183,6 @@ const CSV_HEADER = [
   "workflows",
 ];
 
-const FORMULA_START = /^[=+\-@\t\r]/;
-const NEEDS_QUOTES = /[",\n\r]/;
-
-function csvCell(value: string | number | boolean | null): string {
-  let text = value === null ? "" : String(value);
-  // Workflow names and errors are user-controlled; a leading = or + would run
-  // as a formula when the export is opened in a spreadsheet.
-  if (typeof value === "string" && FORMULA_START.test(text)) {
-    text = `'${text}`;
-  }
-  return NEEDS_QUOTES.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-}
-
 export function historyToCsv(entries: HistoryEntry[]): string {
   const lines = [CSV_HEADER.join(",")];
   for (const e of entries) {
@@ -1214,7 +1202,7 @@ export function historyToCsv(entries: HistoryEntry[]): string {
         e.note,
         e.workflows.map((w) => w.name).join("; "),
       ]
-        .map(csvCell)
+        .map(toCsvCell)
         .join(",")
     );
   }

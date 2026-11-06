@@ -28,7 +28,10 @@ import type { FailureIncidentResolution } from "@/lib/db/schema-failure-alerts";
 import type { Tx } from "@/lib/db/tx";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
-import { loadOrgMembers } from "@/lib/notifications/org-recipients";
+import {
+  loadOrgMembers,
+  type OrgMember,
+} from "@/lib/notifications/org-recipients";
 import { workflowExecutableConditions } from "@/lib/workflow/executable";
 import { acceptedRunSql } from "@/lib/workflow/refused-runs";
 import { WorkflowTriggerEnum } from "@/lib/workflow/store";
@@ -1371,6 +1374,14 @@ export async function queueReminders(
     .orderBy(workflowFailureIncidents.lastNotifiedAt)
     .limit(100);
 
+  // Owed today, by org: a workflow its incident paused, or one that cannot run, is not "still failing".
+  const owed = new Map<
+    string,
+    {
+      incident: typeof workflowFailureIncidents.$inferSelect;
+      policy: EffectivePolicy;
+    }[]
+  >();
   for (const { incident, ...workflow } of due) {
     try {
       const policy = isFailureAlertsEnabledForOrg(incident.organizationId)
@@ -1379,7 +1390,6 @@ export async function queueReminders(
             incident.workflowId
           )
         : null;
-      // A workflow its incident paused, or one that cannot run, is not "still failing".
       if (
         !policy?.remindDaily ||
         isMuted(policy, now) ||
@@ -1396,41 +1406,9 @@ export async function queueReminders(
           .where(eq(workflowFailureIncidents.id, incident.id));
         continue;
       }
-      const sequence = incident.reminderCount + 1;
-      const members = await loadOrgMembers(incident.organizationId);
-      // Claim and rows together, so a failed insert never uses up a reminder.
-      const queued = await db.transaction(async (tx: Tx) => {
-        const claimed = await tx
-          .update(workflowFailureIncidents)
-          .set({ reminderCount: sequence, lastNotifiedAt: now })
-          .where(
-            and(
-              eq(workflowFailureIncidents.id, incident.id),
-              eq(workflowFailureIncidents.reminderCount, incident.reminderCount)
-            )
-          )
-          .returning({ id: workflowFailureIncidents.id });
-        if (claimed.length === 0) {
-          return null;
-        }
-        return await insertDeliveries(
-          rowsForPolicy(
-            policy,
-            members,
-            incident.organizationId,
-            incident.id,
-            "reminder",
-            sequence,
-            now
-          ),
-          tx
-        );
-      });
-      if (queued === null) {
-        continue;
-      }
-      stats.messagesQueued += queued;
-      stats.remindersQueued += 1;
+      const list = owed.get(incident.organizationId) ?? [];
+      list.push({ incident, policy });
+      owed.set(incident.organizationId, list);
     } catch (error) {
       logSystemError(
         ErrorCategory.WORKFLOW_ENGINE,
@@ -1440,6 +1418,133 @@ export async function queueReminders(
       );
     }
   }
+
+  for (const [organizationId, list] of owed) {
+    try {
+      const members = await loadOrgMembers(organizationId);
+      // Like first alerts: org-rule workflows still failing share one daily message.
+      const groupable = list.filter(
+        ({ incident, policy }) =>
+          !(policy.customRouting || isRefusedIncident(incident))
+      );
+      const grouped = groupable.length >= GROUP_ALERTS_FROM ? groupable : [];
+      if (grouped.length > 0) {
+        await queueGroupedReminder(
+          organizationId,
+          grouped,
+          members,
+          now,
+          stats
+        );
+      }
+      for (const { incident, policy } of list) {
+        if (grouped.some((g) => g.incident.id === incident.id)) {
+          continue;
+        }
+        await queueOneReminder(incident, policy, members, now, stats);
+      }
+    } catch (error) {
+      logSystemError(
+        ErrorCategory.WORKFLOW_ENGINE,
+        "[FailureAlerts] Could not queue reminders",
+        error,
+        { organization_id: organizationId }
+      );
+    }
+  }
+}
+
+/** Claims one reminder (compare-and-set on its count) inside `tx`; false if another worker took it. */
+async function claimReminder(
+  tx: Tx,
+  incident: typeof workflowFailureIncidents.$inferSelect,
+  now: Date
+): Promise<boolean> {
+  const claimed = await tx
+    .update(workflowFailureIncidents)
+    .set({ reminderCount: incident.reminderCount + 1, lastNotifiedAt: now })
+    .where(
+      and(
+        eq(workflowFailureIncidents.id, incident.id),
+        eq(workflowFailureIncidents.reminderCount, incident.reminderCount)
+      )
+    )
+    .returning({ id: workflowFailureIncidents.id });
+  return claimed.length > 0;
+}
+
+async function queueOneReminder(
+  incident: typeof workflowFailureIncidents.$inferSelect,
+  policy: EffectivePolicy,
+  members: OrgMember[],
+  now: Date,
+  stats: EvaluationStats
+): Promise<void> {
+  const sequence = incident.reminderCount + 1;
+  // Claim and rows together, so a failed insert never uses up a reminder.
+  const queued = await db.transaction(async (tx: Tx) => {
+    if (!(await claimReminder(tx, incident, now))) {
+      return null;
+    }
+    return await insertDeliveries(
+      rowsForPolicy(
+        policy,
+        members,
+        incident.organizationId,
+        incident.id,
+        "reminder",
+        sequence,
+        now
+      ),
+      tx
+    );
+  });
+  if (queued !== null) {
+    stats.messagesQueued += queued;
+    stats.remindersQueued += 1;
+  }
+}
+
+/** One daily reminder listing every org-rule workflow still failing; PagerDuty gets none, as before. */
+async function queueGroupedReminder(
+  organizationId: string,
+  owed: { incident: typeof workflowFailureIncidents.$inferSelect }[],
+  members: OrgMember[],
+  now: Date,
+  stats: EvaluationStats
+): Promise<void> {
+  const org = await loadOrgPolicy(organizationId);
+  const channels = await loadChannels(organizationId, null);
+  await db.transaction(async (tx: Tx) => {
+    const claimed: (typeof workflowFailureIncidents.$inferSelect)[] = [];
+    for (const { incident } of owed) {
+      if (await claimReminder(tx, incident, now)) {
+        claimed.push(incident);
+      }
+    }
+    const [first] = claimed;
+    if (!first) {
+      return;
+    }
+    const queued = await insertDeliveries(
+      buildMessageRows({
+        scope: groupScope(first.id),
+        organizationId,
+        incidentId: null,
+        kind: "reminder",
+        // Unique per day: the first incident's new count.
+        sequence: first.reminderCount + 1,
+        emails: resolveRecipientEmails(org.recipientUserIds, members),
+        channels,
+        includePagerDuty: false,
+        context: { incidentIds: claimed.map((i) => i.id) },
+        now,
+      }),
+      tx
+    );
+    stats.messagesQueued += queued;
+    stats.remindersQueued += claimed.length;
+  });
 }
 
 /** One-time launch notice of already-failing workflows; claim and rows commit together. */

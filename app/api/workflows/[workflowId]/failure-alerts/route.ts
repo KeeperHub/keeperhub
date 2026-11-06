@@ -3,6 +3,7 @@ import { ErrorCategory, logSystemError } from "@/lib/logging";
 import {
   authenticate,
   orgAccess,
+  readJsonObject,
   requireManager,
   settingsErrorResponse,
 } from "@/lib/notifications/failure-alerts/route-auth";
@@ -81,10 +82,10 @@ export async function PUT(
       return denied;
     }
 
-    const body = (await request.json().catch(() => ({}))) as Record<
-      string,
-      unknown
-    >;
+    const body = await readJsonObject(request);
+    if (body instanceof NextResponse) {
+      return body;
+    }
     const { rulesChanged, muteChange, muteBefore, muteAfter, ...saved } =
       await saveWorkflowOverride({
       workflowId,

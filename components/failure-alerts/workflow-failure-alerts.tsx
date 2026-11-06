@@ -54,6 +54,7 @@ import {
 } from "@/lib/workflow/store";
 import { fetchView } from "./api";
 import { ChannelListEditor } from "./channel-list-editor";
+import { EmailText, TextWithEmails } from "./email-text";
 import { focusInPlace } from "./focus-in-place";
 import {
   FUNDS_RULE,
@@ -97,6 +98,9 @@ const FOCUSABLE = "button:not([disabled]), input:not([disabled])";
 const FOOTER_LINK =
   "inline-flex min-h-11 items-center text-foreground underline underline-offset-4 sm:min-h-0";
 /** Panel buttons wrap their label instead of overflowing a narrow panel. */
+const STATUS_NOT_REFRESHED =
+  "The test ran, but the methods' status could not be refreshed. Reload to see it.";
+
 const WRAP_BUTTON = "h-auto min-h-8 min-w-0 max-w-full whitespace-normal";
 const MUTE_CHOICES: { id: string; label: string; ms: number | "success" }[] = [
   { id: "1h", label: "1 hour", ms: HOUR_MS },
@@ -190,9 +194,18 @@ function RulesView({
         <h3 className="font-semibold text-sm">Who gets alerts</h3>
         <div className="space-y-1">
           <h4 className="font-medium text-xs">Email</h4>
-          <p className="break-words text-xs">
-            {emails.length > 0 ? emails.join(", ") : "Nobody can be emailed."}
-          </p>
+          {emails.length > 0 ? (
+            // One per line, as in Setup, so no address is split mid-way.
+            <ul className="space-y-0.5 text-xs">
+              {emails.map((email) => (
+                <li key={email}>
+                  <EmailText email={email} />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-xs">Nobody can be emailed.</p>
+          )}
         </div>
         <div className="space-y-1">
           <h4 className="font-medium text-xs">Methods</h4>
@@ -204,7 +217,7 @@ function RulesView({
                   key={`${c.kind}:${c.destination}:${c.connectionName ?? ""}`}
                 >
                   <IntegrationIcon
-                    className="size-3.5 shrink-0"
+                    className="size-4 shrink-0"
                     integration={c.kind}
                   />
                   <span className="min-w-0 break-words">
@@ -286,10 +299,23 @@ function runsLeft(view: Loaded): string {
 type PanelIncident = NonNullable<Loaded["status"]["incident"]>;
 
 /** Who heard about it. */
-function alertLine(incident: PanelIncident): string {
-  return incident.deliveredTo.length > 0
-    ? `Alert sent ${timeAgo(incident.openedAt)} to ${incident.deliveredTo.join(", ")}.`
-    : `Alert queued ${timeAgo(incident.openedAt)}, not delivered yet.`;
+function alertLine(incident: PanelIncident): React.ReactNode {
+  if (incident.deliveredTo.length === 0) {
+    return `Alert queued ${timeAgo(incident.openedAt)}, not delivered yet.`;
+  }
+  // Each address breaks only before its "@", never mid-word.
+  return (
+    <>
+      Alert sent {timeAgo(incident.openedAt)} to{" "}
+      {incident.deliveredTo.map((to, i) => (
+        <span key={to}>
+          {i > 0 && ", "}
+          <EmailText email={to} />
+        </span>
+      ))}
+      .
+    </>
+  );
 }
 
 /** Nothing has tried to run for a day: reminders stopped, and nothing will recover it on its own. */
@@ -357,6 +383,8 @@ export function WorkflowFailureAlerts({
     dirty: boolean;
     ready: boolean;
     save: () => Promise<boolean>;
+    /** Sends the draft at once, outside the queue, for a page that is going away. */
+    sendNow: () => void;
   } | null>(null);
   const setWorkflowUnsaved = useSetAtom(extraUnsavedAtom);
   // Saves go out one after another, each on the version the last one returned.
@@ -529,6 +557,18 @@ export function WorkflowFailureAlerts({
     []
   );
 
+  // A reload or closed tab inside the autosave delay sends the edit right away.
+  useEffect(() => {
+    const onPageHide = (): void => {
+      const pending = autosaveRef.current;
+      if (pending?.dirty && pending.ready) {
+        pending.sendNow();
+      }
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, []);
+
   // Leaving the panel (another node picked) sends a pending edit at once.
   useEffect(
     () => () => {
@@ -562,7 +602,7 @@ export function WorkflowFailureAlerts({
   };
 
   // Connections, and stored methods' health; drafts and the version stay.
-  const refreshConnections = useCallback(async () => {
+  const refreshConnections = useCallback(async (): Promise<boolean> => {
     const res = await fetch(url);
     if (res.ok) {
       const body = (await res.json()) as Loaded;
@@ -584,7 +624,9 @@ export function WorkflowFailureAlerts({
             : prev.override,
         });
       }
+      return true;
     }
+    return false;
   }, [showView, url]);
 
   // Hidden where alerts are not switched on, and until that is known.
@@ -846,6 +888,19 @@ export function WorkflowFailureAlerts({
     dirty: rulesDirty,
     ready: rulesReady,
     save: saveDraft,
+    sendNow: () => {
+      const latest = viewRef.current ?? view;
+      fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...draftRules,
+          ...keptMute(latest),
+          version: latest.version,
+        }),
+        keepalive: true,
+      }).catch(() => undefined);
+    },
   };
 
   /** Before a mute change, a finished edit goes out first so neither undoes the other. */
@@ -969,14 +1024,11 @@ export function WorkflowFailureAlerts({
       </div>
 
       {orgPause && (
-        <p
-          className="rounded-lg border bg-muted/30 p-3 text-muted-foreground text-xs"
-          data-testid="workflow-failure-alerts-org-paused"
-        >
+        <Notice data-testid="workflow-failure-alerts-org-paused" tone="warning">
           Alerts are paused for the whole organization until{" "}
           {formatWhen(orgPause.until)}
           {orgPause.reason ? `: ${orgPause.reason}` : ""}.
-        </p>
+        </Notice>
       )}
 
       {!applies && (
@@ -1121,7 +1173,7 @@ export function WorkflowFailureAlerts({
                 className={cn("mt-0.5 size-4 shrink-0", WARNING_TEXT)}
               />
               <span className="min-w-0">
-                {muteSummary}.
+                <TextWithEmails text={`${muteSummary}.`} />
                 {view.override.pauseWorkflow
                   ? " Alerts are off for this workflow whichever rules it uses: failures still show in Runs, and nobody is told unless KeeperHub disables it at the limit."
                   : " Alerts are off for this workflow whichever rules it uses: failures still show in Runs, and nobody is told until the mute ends."}
@@ -1130,7 +1182,7 @@ export function WorkflowFailureAlerts({
           ) : (
             <p className="text-muted-foreground text-xs">
               Alerts are on for this workflow. A mute stops its alerts whichever
-              rules it uses, and everyone who gets them is told.
+              rules it uses.
             </p>
           )}
           {canManage && panel === null && (
@@ -1210,7 +1262,7 @@ export function WorkflowFailureAlerts({
                 Or until
               </Label>
               <Input
-                className="h-8 w-auto"
+                className="h-8 w-full min-w-0 max-w-xs"
                 id="wf-mute-until"
                 max={toLocalInput(
                   new Date(Date.now() + MAX_MUTE_DAYS * 24 * HOUR_MS)
@@ -1224,7 +1276,7 @@ export function WorkflowFailureAlerts({
                 value={muteDate}
               />
               <Label className="text-xs" htmlFor="wf-mute-reason">
-                Why? Everyone who gets this workflow's alerts will see this.
+                Reason
               </Label>
               <Input
                 aria-describedby="wf-mute-reason-help"
@@ -1234,7 +1286,7 @@ export function WorkflowFailureAlerts({
                 id="wf-mute-reason"
                 maxLength={MAX_MUTE_REASON}
                 onChange={(e) => setMuteReason(e.target.value)}
-                placeholder="e.g. Migrating the RPC, back Friday"
+                placeholder="e.g. RPC migration"
                 value={muteReason}
               />
               <p
@@ -1249,10 +1301,9 @@ export function WorkflowFailureAlerts({
                 {MIN_MUTE_REASON} to {MAX_MUTE_REASON} characters.
               </p>
               <p className="text-muted-foreground text-xs">
-                Everyone who gets this workflow's alerts and every owner will be
-                told (email and chat), now and when the mute ends. Up to{" "}
-                {MAX_MUTE_DAYS} days; alerts start again by themselves if it is
-                still failing.
+                Everyone who gets this workflow's alerts, and every owner, sees
+                the reason and is told now and when the mute ends. Up to{" "}
+                {MAX_MUTE_DAYS} days; then alerts start again by themselves.
               </p>
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -1279,6 +1330,15 @@ export function WorkflowFailureAlerts({
                   Cancel
                 </Button>
               </div>
+              {!(saving || (reasonOk && choiceOk)) && (
+                <p className="text-muted-foreground text-xs">
+                  {choiceOk
+                    ? "Give a reason to mute."
+                    : "Pick how long, and give a reason."}
+                </p>
+              )}
+              {/* Here, next to the button pressed, not far below it. */}
+              {saveErrorBox}
             </div>
           )}
         </div>
@@ -1367,9 +1427,9 @@ export function WorkflowFailureAlerts({
                         </div>
                         {customRecipients === null ? (
                           <p className="text-muted-foreground text-xs">
-                            {view.effective.emails.join(", ") ||
-                              "Nobody reachable"}{" "}
-                            (org)
+                            <TextWithEmails
+                              text={`${view.effective.emails.join(", ") || "Nobody reachable"} (same as org)`}
+                            />
                           </p>
                         ) : (
                           <ul aria-label="Email" data-testid="wf-email-card">
@@ -1427,9 +1487,17 @@ export function WorkflowFailureAlerts({
                             channels={customChannels}
                             connections={view.connections}
                             onChange={setCustomChannels}
-                            onConnectionsChanged={refreshConnections}
+                            onConnectionsChanged={async () => {
+                              await refreshConnections();
+                            }}
                             onTested={() => {
-                              refreshConnections().catch(() => undefined);
+                              refreshConnections()
+                                .catch(() => false)
+                                .then((ok) => {
+                                  if (!ok) {
+                                    toast.error(STATUS_NOT_REFRESHED);
+                                  }
+                                });
                             }}
                             organizationId={view.organizationId}
                             savedChannels={view.override.channels}
@@ -1494,7 +1562,7 @@ export function WorkflowFailureAlerts({
                             {view.org.timeLimitMinutes
                               ? timeLimitLabel(view.org.timeLimitMinutes)
                               : "Off"}{" "}
-                            (org)
+                            (same as org)
                           </SelectItem>
                           <SelectItem value="off">Off</SelectItem>
                           {TIME_LIMIT_OPTIONS_MINUTES.map((m) => (
@@ -1540,7 +1608,7 @@ export function WorkflowFailureAlerts({
                       remindDaily={view.org.remindDaily}
                     />
                   </section>
-                  {saveErrorBox}
+                  {panel !== "mute" && saveErrorBox}
                 </div>
               ) : (
                 // Not editable here: what it holds, or the org's rules it would start from.
@@ -1569,8 +1637,7 @@ export function WorkflowFailureAlerts({
               )}
               {!custom && canManage && (
                 <p className="text-muted-foreground text-xs">
-                  Starts from the org's rules above; once used, change them here
-                  and they save themselves.
+                  Copies the org rules. Changes here save automatically.
                 </p>
               )}
               <TabFooter inUse={custom}>
@@ -1639,7 +1706,7 @@ export function WorkflowFailureAlerts({
             </p>
           )}
 
-          {!editing && saveErrorBox}
+          {!editing && panel !== "mute" && saveErrorBox}
         </div>
       )}
 

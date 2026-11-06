@@ -34,7 +34,7 @@ const WORD_JOINER = "\u2060";
 const ELLIPSIS = "…";
 
 /** One line, no control or bidi characters. */
-function clean(text: string): string {
+export function oneLine(text: string): string {
   return stripControlChars(text, { replacement: " " })
     .replace(WHITESPACE, " ")
     .trim();
@@ -53,7 +53,7 @@ function formatOwn(text: string, format: Format): string {
 }
 
 function formatUser(text: string, format: Format): string {
-  const value = clean(text);
+  const value = oneLine(text);
   if (format === "discord") {
     return value.replace(DISCORD_MARKDOWN, "\\$&");
   }
@@ -64,7 +64,7 @@ function formatUser(text: string, format: Format): string {
 }
 
 function formatCode(text: string, format: Format): string {
-  const value = clean(text).replace(BACKTICKS, "'");
+  const value = oneLine(text).replace(BACKTICKS, "'");
   if (!value || format === "plain") {
     return value;
   }

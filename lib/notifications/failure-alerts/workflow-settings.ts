@@ -11,6 +11,7 @@ import {
   workflows,
 } from "@/lib/db/schema";
 import type { Tx } from "@/lib/db/tx";
+import { oneLine } from "@/lib/notifications/chat-text";
 import {
   loadOrgMembers,
   stepUpMasker,
@@ -18,14 +19,16 @@ import {
 import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
 import { signInAccounts } from "./accounts";
 import {
+  CLOCK_SKEW_MS,
   MAX_MUTE_DAYS,
   MAX_MUTE_REASON,
   MIN_MUTE_REASON,
   MUTE_CHANGES_PER_HOUR,
+  parseEndTime,
 } from "./constants";
-import { pauseActorName } from "./messages";
 import {
   actorOf,
+  nameOf,
   queueRemovedNotice,
   queueWorkflowNotice,
 } from "./mute-notices";
@@ -193,10 +196,7 @@ export async function loadWorkflowAlertView(
         : null,
       muteUntilSuccess: muteActive && (override?.muteUntilSuccess ?? false),
       muteReason: muteActive ? (override?.muteReason ?? null) : null,
-      mutedBy:
-        muteActive && override?.mutedBy
-          ? pauseActorName(members.find((m) => m.userId === override.mutedBy))
-          : null,
+      mutedBy: muteActive ? nameOf(override?.mutedBy, members) : null,
       mutedByAccount: muteActive ? (mutedByAccount ?? null) : null,
       pauseWorkflow: override?.pauseWorkflow ?? false,
     },
@@ -266,8 +266,8 @@ function parseMute(
   const untilSuccess = body.muteUntilSuccess === true;
   let mutedUntil: Date | null = null;
   if (typeof body.mutedUntil === "string" && body.mutedUntil) {
-    mutedUntil = new Date(body.mutedUntil);
-    if (Number.isNaN(mutedUntil.getTime()) || mutedUntil <= now) {
+    mutedUntil = parseEndTime(body.mutedUntil);
+    if (!mutedUntil || mutedUntil <= now) {
       throw new SettingsError("Pick a mute end in the future.");
     }
   }
@@ -278,8 +278,9 @@ function parseMute(
   return {
     mutedUntil,
     muteUntilSuccess: untilSuccess,
+    // One line, no control or bidi characters, like an org pause reason.
     muteReason:
-      typeof body.muteReason === "string" ? body.muteReason.trim() : "",
+      typeof body.muteReason === "string" ? oneLine(body.muteReason) : "",
   };
 }
 
@@ -333,10 +334,8 @@ function nextMute(
     // An unrelated edit sends the mute back as it was: who muted and why stay.
     return { change: null, fields: stored };
   }
-  if (
-    sent.mutedUntil &&
-    sent.mutedUntil.getTime() > now.getTime() + MAX_MUTE_DAYS * DAY_MS
-  ) {
+  const cap = now.getTime() + MAX_MUTE_DAYS * DAY_MS;
+  if (sent.mutedUntil && sent.mutedUntil.getTime() > cap + CLOCK_SKEW_MS) {
     throw new SettingsError(`A mute can last at most ${MAX_MUTE_DAYS} days.`);
   }
   const reason = sent.muteReason;
@@ -346,7 +345,10 @@ function nextMute(
   return {
     change: wasMuted ? "changed" : "muted",
     fields: {
-      mutedUntil: sent.mutedUntil,
+      mutedUntil:
+        sent.mutedUntil && sent.mutedUntil.getTime() > cap
+          ? new Date(cap)
+          : sent.mutedUntil,
       muteUntilSuccess: sent.muteUntilSuccess,
       muteReason: reason,
       mutedBy: userId,

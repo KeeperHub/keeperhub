@@ -1269,3 +1269,50 @@ describe("refused runs on a workflow not on a schedule", () => {
     );
   });
 });
+
+describe("typed names and reasons in notices", () => {
+  const hostile = "Edge\nBcc: x@evil.test ‮gnp.exe";
+
+  it("keeps the subject to one line and drops bidi characters everywhere", () => {
+    for (const kind of ["workflow_muted", "workflow_unmuted"] as const) {
+      const message = renderMessage({
+        ...org,
+        kind,
+        workflow: { id: "wf-1", name: hostile },
+        by: "Dana‮",
+        byAccount: null,
+        reason: "Line one\nline two ‮evil",
+        until: new Date("2026-11-08T00:00:00Z"),
+        untilItWorks: false,
+        changed: false,
+      } as Parameters<typeof renderMessage>[0]);
+      expect(message.subject).not.toMatch(/[\r\n‮]/);
+      expect(message.subject).toContain("Edge Bcc: x@evil.test gnp.exe");
+      expect(message.text).not.toContain("‮");
+      expect(message.html).not.toContain("‮");
+    }
+  });
+
+  it("says the alert waits for the org's pause when a mute ends while paused", () => {
+    const message = renderMessage(
+      {
+        ...org,
+        kind: "mute_ended",
+        workflow,
+        by: null,
+        reason: null,
+        until: new Date("2026-11-08T00:00:00Z"),
+        untilItWorks: false,
+        ended: "expired",
+        failedRuns: 2,
+        failingNow: true,
+        alertsPausedUntil: new Date("2026-11-09T00:00:00Z"),
+      },
+      new Date("2026-11-08T00:00:00Z")
+    );
+    expect(message.text).toContain(
+      "the alert goes out when the organization's alerts resume"
+    );
+    expect(message.text).not.toContain("so an alert follows");
+  });
+});

@@ -1,5 +1,5 @@
 {
-  "id": "fba70d75-e16e-48f8-b6de-69b00487fdd8",
+  "id": "c8375298-0a92-4b59-a2b5-62fddad0f564",
   "prevId": "f85d31a9-9f31-4167-a47a-2b6c87609980",
   "version": "7",
   "dialect": "postgresql",
@@ -4009,7 +4009,7 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "default": 5
+          "default": 3
         },
         "time_limit_minutes": {
           "name": "time_limit_minutes",
@@ -4070,6 +4070,12 @@
         },
         "paused_by": {
           "name": "paused_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "paused_by_user_id": {
+          "name": "paused_by_user_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -7960,7 +7966,24 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "idx_users_step_up_email": {
+          "name": "idx_users_step_up_email",
+          "columns": [
+            {
+              "expression": "step_up_email",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"users\".\"step_up_email\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
@@ -9078,6 +9101,12 @@
         "muted_by": {
           "name": "muted_by",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "muted_at": {
+          "name": "muted_at",
+          "type": "timestamp",
           "primaryKey": false,
           "notNull": false
         },

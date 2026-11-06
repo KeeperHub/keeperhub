@@ -49,7 +49,7 @@ const REFUSALS_SQL = sql<number>`CASE WHEN ${SPANS_ACCEPTED_SQL} THEN 1
   ELSE greatest(coalesce((${workflowExecutions.output}->>'refusals')::int, 1), 1) END`;
 
 /** Finished automated attempts, platform errors and expired signals left out. */
-function attemptConditions(workflowId: string, since: Date | null) {
+export function attemptConditions(workflowId: string, since: Date | null) {
   return and(
     eq(workflowExecutions.workflowId, workflowId),
     isNotNull(workflowExecutions.completedAt),

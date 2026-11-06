@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import type { OrgSettingsView } from "@/lib/notifications/failure-alerts/view-types";
+import { TextWithEmails } from "./email-text";
 import { failedRuns, timeLimitLabel } from "./format";
 import { muteSentence } from "./member-label";
 
@@ -10,25 +11,21 @@ type MutedWorkflow = OrgSettingsView["mutedWorkflows"][number];
 
 /** The Setup line's mute, worded as on Overview and in the workflow panel. */
 function muteText(w: CustomWorkflow, mute: MutedWorkflow | undefined): string {
-  const text = muteSentence({
+  return muteSentence({
     by: mute?.by ?? null,
     account: mute?.byAccount ?? null,
     untilItWorks: w.muteUntilSuccess,
     mutedUntil: w.mutedUntil,
     reason: mute?.reason ?? null,
   });
-  return `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
 }
 
-/** What this workflow does differently, in a few words. */
+/** What this workflow does differently: its mute as one sentence, its own rules as another. */
 function differences(
   w: CustomWorkflow,
   mute: MutedWorkflow | undefined
 ): string {
   const parts: string[] = [];
-  if (w.muteUntilSuccess || w.mutedUntil) {
-    parts.push(muteText(w, mute));
-  }
   if (w.threshold) {
     parts.push(`alerts after ${failedRuns(w.threshold)}`);
   }
@@ -46,8 +43,15 @@ function differences(
   if (w.pauseWorkflow) {
     parts.push("disables itself at its limit");
   }
-  const text = parts.join(", ") || "own settings";
-  return `${text.charAt(0).toUpperCase()}${text.slice(1)}.`;
+  const sentences: string[] = [];
+  if (w.muteUntilSuccess || w.mutedUntil) {
+    const muted = muteText(w, mute);
+    sentences.push(muted.endsWith(".") ? muted : `${muted}.`);
+  }
+  if (parts.length > 0) {
+    sentences.push(`Own rules: ${parts.join(", ")}.`);
+  }
+  return sentences.join(" ") || "Own settings.";
 }
 
 /** Workflows that do not follow the org rules, so mutes are never forgotten. */
@@ -78,7 +82,7 @@ export function CustomWorkflowsList({
           </Link>
           <span className="flex flex-col gap-0.5 text-xs @xl/settings:items-end">
             <span className="text-muted-foreground">
-              {differences(w, muteById.get(w.id))}
+              <TextWithEmails text={differences(w, muteById.get(w.id))} />
             </span>
             {w.brokenMethods > 0 && (
               <span

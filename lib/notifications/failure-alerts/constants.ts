@@ -25,6 +25,8 @@ export const TIME_LIMIT_OPTIONS_MINUTES = [60, 360, 1440] as const;
 
 /** A mute can never be permanent: a broken workflow must not be forgotten. */
 export const MAX_MUTE_DAYS = 7;
+/** How far a browser clock may run ahead: a 7-day choice past the cap by this much is trimmed, not refused. */
+export const CLOCK_SKEW_MS = 5 * 60 * 1000;
 /** Every mute says why; everyone it silences sees the reason. */
 export const MIN_MUTE_REASON = 3;
 export const MAX_MUTE_REASON = 200;
@@ -132,3 +134,17 @@ export const MAX_CHANNELS = 20;
 
 /** History rows per page, on the Alerts page and the workflow panel. */
 export const HISTORY_PAGE_SIZE = 10;
+
+// An ISO date-time; with no zone it is read as UTC, not the server's local time.
+const ISO_TIME =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/i;
+const HAS_ZONE = /(Z|[+-]\d{2}:?\d{2})$/i;
+
+/** An end time from a request, or null when it is not an ISO date-time. */
+export function parseEndTime(raw: string): Date | null {
+  if (!ISO_TIME.test(raw)) {
+    return null;
+  }
+  const at = new Date(HAS_ZONE.test(raw) ? raw : `${raw}Z`);
+  return Number.isNaN(at.getTime()) ? null : at;
+}

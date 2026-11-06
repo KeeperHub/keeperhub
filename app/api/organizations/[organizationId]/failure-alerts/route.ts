@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import {
+  readJsonObject,
   requireManager,
   resolveOrgAccess,
   settingsErrorResponse,
@@ -60,10 +61,10 @@ export async function PUT(
       return denied;
     }
 
-    const body = (await request.json().catch(() => ({}))) as Record<
-      string,
-      unknown
-    >;
+    const body = await readJsonObject(request);
+    if (body instanceof NextResponse) {
+      return body;
+    }
     const input = await parseOrgSettings(body, organizationId);
     const { rulesChanged } = await saveOrgSettings(
       organizationId,

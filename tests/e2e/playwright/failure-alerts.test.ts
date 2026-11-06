@@ -586,6 +586,30 @@ test.describe("Failure alerts", () => {
       .toBeNull();
   });
 
+  test("workflow Properties: an edit made just before a reload is still saved", async ({
+    page,
+  }) => {
+    const section = await openProperties(page, fixture.alertedId);
+    await section.getByTestId("failure-alerts-tab-custom").click();
+    await section.getByTestId("failure-alerts-use-custom").click();
+    await expect
+      .poll(() => readOverride(fixture.alertedId), SAVE_TIMEOUT)
+      .toMatchObject({ threshold: 5 });
+    await section.locator("#wf-failure-threshold").fill("7");
+    // Inside the autosave delay: the page goes away before the timer fires.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect
+      .poll(() => readOverride(fixture.alertedId), SAVE_TIMEOUT)
+      .toMatchObject({ threshold: 7 });
+
+    const after = await openProperties(page, fixture.alertedId);
+    await after.getByTestId("failure-alerts-tab-org").click();
+    await after.getByTestId("failure-alerts-reset").click();
+    await expect
+      .poll(() => readOverride(fixture.alertedId), SAVE_TIMEOUT)
+      .toBeNull();
+  });
+
   test("Overview unmutes a muted workflow in one click", async ({ page }) => {
     const section = await openProperties(page, fixture.failingId);
     await section.getByTestId("failure-alerts-mute-open").click();

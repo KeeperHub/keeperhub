@@ -807,10 +807,8 @@ export function OrgFailureAlertsSection({
               className="mt-1 block"
               data-testid="failure-alerts-scope-note"
             >
-              Alerts are about problems with the workflows themselves. Messages
-              your workflows send as steps keep going out whenever they run. Any
-              workflow can use its own setup instead, in its Properties &gt;
-              Alerts.
+              Messages your workflows send as steps are not affected. A workflow
+              can have its own alert rules in its Properties.
             </span>
             {!canManage && (
               <span className="mt-1 block">
@@ -920,7 +918,7 @@ export function OrgFailureAlertsSection({
                 testId="failure-alerts-email-autosave"
               />
             }
-            description="Email and chat channels. Each one is checked when you save it, and every day."
+            description="Email, chat and PagerDuty. Each is checked when you save it, and every day."
             title="Who gets alerts"
           >
             <div className="space-y-4" data-testid="failure-alerts-methods">

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import {
+  readJsonObject,
   requireManager,
   resolveOrgAccess,
   settingsErrorResponse,
@@ -50,10 +51,10 @@ export async function POST(
     if (denied) {
       return denied;
     }
-    const body = (await request.json().catch(() => ({}))) as Record<
-      string,
-      unknown
-    >;
+    const body = await readJsonObject(request);
+    if (body instanceof NextResponse) {
+      return body;
+    }
     const testRequest = parseRequest(body);
     if (!testRequest) {
       return NextResponse.json(
