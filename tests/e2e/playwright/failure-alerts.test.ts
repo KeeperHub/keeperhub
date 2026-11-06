@@ -586,7 +586,7 @@ test.describe("Failure alerts", () => {
       .toBeNull();
   });
 
-  test("workflow Properties: an edit made just before a reload is still saved", async ({
+  test("workflow Properties: a reload inside the autosave delay asks first, and the edit is saved", async ({
     page,
   }) => {
     const section = await openProperties(page, fixture.alertedId);
@@ -596,8 +596,16 @@ test.describe("Failure alerts", () => {
       .poll(() => readOverride(fixture.alertedId), SAVE_TIMEOUT)
       .toMatchObject({ threshold: 5 });
     await section.locator("#wf-failure-threshold").fill("7");
-    // Inside the autosave delay: the page goes away before the timer fires.
-    await page.reload({ waitUntil: "domcontentloaded" });
+    // Inside the autosave delay a reload asks first; staying lets the save land.
+    let asked = false;
+    page.once("dialog", (dialog) => {
+      asked = dialog.type() === "beforeunload";
+      dialog.dismiss().catch(() => undefined);
+    });
+    await page
+      .reload({ waitUntil: "domcontentloaded", timeout: 3000 })
+      .catch(() => undefined);
+    expect(asked).toBe(true);
     await expect
       .poll(() => readOverride(fixture.alertedId), SAVE_TIMEOUT)
       .toMatchObject({ threshold: 7 });

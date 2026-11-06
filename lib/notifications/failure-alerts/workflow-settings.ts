@@ -24,8 +24,8 @@ import {
   MAX_MUTE_REASON,
   MIN_MUTE_REASON,
   MUTE_CHANGES_PER_HOUR,
-  parseEndTime,
 } from "./constants";
+import { parseEndTime } from "./end-time";
 import {
   actorOf,
   nameOf,
@@ -250,6 +250,7 @@ export async function loadWorkflowAlertView(
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
 
 /** Required for every mute or change to one. */
 export const MUTE_REASON_REQUIRED = `Say why you are muting (${MIN_MUTE_REASON} to ${MAX_MUTE_REASON} characters).`;
@@ -336,7 +337,13 @@ function nextMute(
   }
   const cap = now.getTime() + MAX_MUTE_DAYS * DAY_MS;
   if (sent.mutedUntil && sent.mutedUntil.getTime() > cap + CLOCK_SKEW_MS) {
-    throw new SettingsError(`A mute can last at most ${MAX_MUTE_DAYS} days.`);
+    // Just past the cap is most likely a device clock running ahead of ours.
+    const clockAhead = sent.mutedUntil.getTime() <= cap + HOUR_MS;
+    throw new SettingsError(
+      clockAhead
+        ? `A mute can last at most ${MAX_MUTE_DAYS} days, and your device's clock looks ahead of ours. Pick a shorter time.`
+        : `A mute can last at most ${MAX_MUTE_DAYS} days.`
+    );
   }
   const reason = sent.muteReason;
   if (reason.length < MIN_MUTE_REASON || reason.length > MAX_MUTE_REASON) {

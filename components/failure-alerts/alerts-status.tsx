@@ -16,7 +16,13 @@ import {
 import { cn } from "@/lib/utils";
 import { unmuteWorkflow } from "./api";
 import { TextWithEmails } from "./email-text";
-import { failedRuns, formatWhen, joinList, notRunningText } from "./format";
+import {
+  failedRuns,
+  formatWhen,
+  joinList,
+  notRunningText,
+  TOUCH_TARGET,
+} from "./format";
 import { memberLabel, muteSentence } from "./member-label";
 import { channelWorks } from "./method-drafts";
 
@@ -118,21 +124,20 @@ function HealthyLine({
   );
 }
 
-/** The Status card is neutral when on and yellow when paused; health never colours it. */
-
 const TRAILING_DOT = /\.$/;
 
-/** "Telegram X is paused: <why>. Email still gets alerts." */
+/** "Telegram X is paused: <why>." or "Slack #ops stopped working: <why>.", then what still works. */
 function brokenDetail(
-  broken: { label: string; why: string | null }[],
+  broken: { label: string; paused: boolean; why: string | null }[],
   stillWorking: string[]
 ): string {
   const each = broken
-    .map((b) =>
-      b.why
-        ? `${b.label} is paused: ${b.why.replace(TRAILING_DOT, "")}`
-        : `${b.label} stopped working`
-    )
+    .map((b) => {
+      const state = b.paused ? "is paused" : "stopped working";
+      return b.why
+        ? `${b.label} ${state}: ${b.why.replace(TRAILING_DOT, "")}`
+        : `${b.label} ${state}`;
+    })
     .join(". ");
   if (stillWorking.length === 0) {
     return `${each}.`;
@@ -141,6 +146,7 @@ function brokenDetail(
   return `${each}. ${stillWorking.join(" and ")} ${verb} alerts.`;
 }
 
+/** The Status card is neutral when on and yellow when paused; health never colours it. */
 export function statusCardClass(data: OrgSettingsView): string {
   const paused =
     data.pause && new Date(data.pause.until).getTime() > Date.now();
@@ -225,7 +231,7 @@ function UnmuteButton({
   const [busy, setBusy] = useState(false);
   return (
     <Button
-      className="h-auto px-0 text-xs underline underline-offset-4 pointer-coarse:-my-3 pointer-coarse:py-3"
+      className={`h-auto px-0 text-xs underline underline-offset-4 ${TOUCH_TARGET}`}
       data-testid="failure-alerts-overview-unmute"
       disabled={busy}
       onClick={async () => {
@@ -271,7 +277,7 @@ export function AlertsHealth({
   const fixButton = (label: string): React.ReactNode =>
     canManage && onGoToSetup ? (
       <Button
-        className="mt-1 h-auto px-0 text-xs underline underline-offset-4 pointer-coarse:-my-3 pointer-coarse:py-3"
+        className={`mt-1 h-auto px-0 text-xs underline underline-offset-4 ${TOUCH_TARGET}`}
         data-testid="failure-alerts-fix"
         onClick={onGoToSetup}
         type="button"
@@ -317,11 +323,12 @@ export function AlertsHealth({
       mutedUntil: w.mutedUntil,
       reason: w.reason,
     });
-    let state = "Muted.";
+    // The mute line already says "Muted ..."; only failing adds a state.
+    let state = "";
     if (w.failing) {
       state =
         w.failedRuns > 0
-          ? `Still failing: ${failedRuns(w.failedRuns)} since ${formatWhen(w.since ?? "")}.`
+          ? `Still failing: ${failedRuns(w.failedRuns)} since it was muted.`
           : "Still failing.";
     }
     return {
@@ -332,7 +339,7 @@ export function AlertsHealth({
       // Only the state is coloured, so the rows stay easy to scan.
       detail: (
         <>
-          <span>{state}</span>{" "}
+          {state && <span>{state} </span>}
           <span className="text-muted-foreground">
             <TextWithEmails text={`${muteLine}.`} />
           </span>
@@ -405,6 +412,7 @@ export function AlertsHealth({
       detail: brokenDetail(
         broken.map((c) => ({
           label: label(c),
+          paused: Boolean(c.pausedAt),
           why: c.pausedAt ? (c.pausedReason ?? c.lastError) : c.lastError,
         })),
         [...(emailWorks ? ["Email"] : []), ...working.map(label)]
@@ -436,7 +444,7 @@ export function AlertsHealth({
     tone: row.tone,
     title: (
       <Link
-        className="break-words underline underline-offset-4 pointer-coarse:-my-3 pointer-coarse:py-3"
+        className={`break-words underline underline-offset-4 ${TOUCH_TARGET}`}
         href={row.href}
       >
         {row.name}
@@ -449,7 +457,7 @@ export function AlertsHealth({
           <UnmuteButton onDone={onChanged} workflowId={row.id} />
         )}
         <Link
-          className="text-xs underline underline-offset-4 pointer-coarse:-my-3 pointer-coarse:py-3"
+          className={`text-xs underline underline-offset-4 ${TOUCH_TARGET}`}
           href={row.href}
         >
           {row.action}

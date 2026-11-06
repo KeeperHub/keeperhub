@@ -53,7 +53,7 @@ Every mute, change to a mute and unmute is announced: the people the workflow's 
 GET /api/organizations/{organizationId}/failure-alerts
 ```
 
-Returns the organization's rules, who gets email, its methods (with each one's health), the connections methods can use, any pause, every workflow with its own rules or a mute, and `version`, which a change must send back.
+Returns the organization's rules, who gets email, its methods (with each one's health), the connections methods can use, any pause, every workflow with its own rules or a mute, and `version`, which a change can send back so it is refused if someone else saved first.
 
 ## Update Organization Alert Settings
 
@@ -67,11 +67,11 @@ Needs an owner or admin.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `version` | number | The `version` from the last read. A stale one is refused with `409` |
+| `version` | number | Optional. The `version` from the last read; a stale one is refused with `409` |
 | `threshold` | number | Failed runs in a row before an alert, 1 to 20 |
 | `timeLimitMinutes` | number \| null | Also alert after this long failing: `60`, `360` or `1440`; `null` or `0` for no time limit |
-| `remindDaily` | boolean | Remind once a day while a workflow keeps failing. Default `true` |
-| `notifyRecovery` | boolean | Tell people when a workflow works again. Default `true` |
+| `remindDaily` | boolean | Remind once a day while a workflow keeps failing. Leaving it out turns it on |
+| `notifyRecovery` | boolean | Tell people when a workflow works again. Leaving it out turns it on |
 | `recipientUserIds` | string[] | Members to email. Must include at least one owner or admin who can receive email |
 | `channels` | object[] | Optional. The full list of chat and PagerDuty methods, up to 20; leave it out to keep them as they are |
 

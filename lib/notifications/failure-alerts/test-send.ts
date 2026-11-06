@@ -19,7 +19,8 @@ import {
 } from "@/lib/notifications/org-recipients";
 import { redactErrorSecrets } from "@/lib/utils/redact";
 import { TESTS_PER_DAY_PER_ORG, TESTS_PER_MINUTE_PER_USER } from "./constants";
-import { appBaseUrl, pauseActorName, renderMessage } from "./messages";
+import { appBaseUrl, renderMessage } from "./messages";
+import { nameOf } from "./mute-notices";
 import { resolveRecipientEmails } from "./policy";
 import {
   type DeliveryOutcome,
@@ -66,9 +67,7 @@ async function recordTest(params: {
       lastError: outcome.ok ? null : redactErrorSecrets(outcome.message),
       deliveredAt: outcome.ok ? now : null,
       context: {
-        by: pauseActorName(
-          params.members.find((m) => m.userId === params.userId)
-        ),
+        by: nameOf(params.userId, params.members),
         byUserId: params.userId,
       },
     });

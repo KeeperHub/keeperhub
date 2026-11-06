@@ -228,3 +228,6 @@ export function describeRule(input: {
   }
   return sentence;
 }
+
+/** A larger hit area on touch screens for a small inline link, without moving the layout. */
+export const TOUCH_TARGET = "pointer-coarse:-my-3 pointer-coarse:py-3";

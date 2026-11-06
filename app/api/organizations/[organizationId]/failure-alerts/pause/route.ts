@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
-import { pauseActorName } from "@/lib/notifications/failure-alerts/messages";
+import { nameOf } from "@/lib/notifications/failure-alerts/mute-notices";
 import {
   pauseOrgAlerts,
   resumeOrgAlerts,
@@ -25,10 +25,7 @@ async function actorLabel(
   organizationId: string,
   userId: string
 ): Promise<string | null> {
-  const me = (await loadOrgMembers(organizationId)).find(
-    (m) => m.userId === userId
-  );
-  return pauseActorName(me);
+  return nameOf(userId, await loadOrgMembers(organizationId));
 }
 
 async function handle(

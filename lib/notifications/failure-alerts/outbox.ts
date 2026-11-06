@@ -70,7 +70,7 @@ import {
   incidentScope,
   insertDeliveries,
 } from "./queue-rows";
-import { isFailureAlertsRolloutActive, splitByRollout } from "./rollout";
+import { splitByRollout } from "./rollout";
 import {
   checkChannelSilently,
   type DeliveryOutcome,
@@ -884,12 +884,12 @@ export async function drainOutbox(
 const OUTSIDE_ROLLOUT =
   "Failure notifications are not on for this organization.";
 
-/** Retry delay for a row this process's rollout leaves out while alerts are on. */
+/** Retry delay for a row this process's rollout leaves out. */
 const ROLLOUT_RECHECK_MS = 60_000;
 
 /**
- * Rows of orgs outside this process's rollout. With alerts off they are skipped; otherwise
- * another process may be on a wider rollout mid-deploy, so they wait a minute (and go stale after an hour).
+ * Rows of orgs outside this process's rollout: another process may be on a wider one mid-deploy,
+ * so they wait a minute; once stale (an hour) they are skipped as outside the rollout.
  */
 async function setAsideOutsideRollout(
   rows: DeliveryRow[],
@@ -898,27 +898,24 @@ async function setAsideOutsideRollout(
   if (rows.length === 0) {
     return;
   }
-  if (isFailureAlertsRolloutActive()) {
-    for (const row of await dropStale(rows, now)) {
-      await finishRow(row, row.attempts === 0 ? "pending" : "retrying", {
-        nextAttemptAt: new Date(now.getTime() + ROLLOUT_RECHECK_MS),
-      });
-    }
-    return;
+  const stale = rows.filter((row) => isStale(row, now)).map((row) => row.id);
+  const waiting = rows.filter((row) => !isStale(row, now)).map((row) => row.id);
+  if (stale.length > 0) {
+    await db
+      .update(failureAlertDeliveries)
+      .set({ state: "skipped", lastError: OUTSIDE_ROLLOUT, updatedAt: now })
+      .where(inArray(failureAlertDeliveries.id, stale));
   }
-  await db
-    .update(failureAlertDeliveries)
-    .set({
-      state: "skipped",
-      lastError: OUTSIDE_ROLLOUT,
-      updatedAt: new Date(),
-    })
-    .where(
-      inArray(
-        failureAlertDeliveries.id,
-        rows.map((row) => row.id)
-      )
-    );
+  if (waiting.length > 0) {
+    await db
+      .update(failureAlertDeliveries)
+      .set({
+        state: sql`CASE WHEN ${failureAlertDeliveries.attempts} = 0 THEN 'pending' ELSE 'retrying' END`,
+        nextAttemptAt: new Date(now.getTime() + ROLLOUT_RECHECK_MS),
+        updatedAt: now,
+      })
+      .where(inArray(failureAlertDeliveries.id, waiting));
+  }
 }
 
 /** A PagerDuty resolve only cleans up, so it keeps trying for a day. */
@@ -1432,11 +1429,14 @@ export async function pruneOldRecords(now: Date): Promise<void> {
       WHERE d.created_at < ${cutoff.toISOString()}::timestamptz AT TIME ZONE 'UTC'
         AND NOT EXISTS (
           SELECT 1 FROM ${workflowFailureIncidents} i
-          WHERE i.resolved_at IS NULL
-            AND (i.id = d.incident_id
-              -- A grouped alert names its incidents: kept while any is open, so its recovery reaches the same people.
-              OR (d.incident_id IS NULL AND d.context->'incidentIds' ? i.id))
+          WHERE i.id = d.incident_id AND i.resolved_at IS NULL
         )
+        -- A grouped alert names its incidents: kept while any is open, so its recovery reaches the same people.
+        AND NOT (d.incident_id IS NULL AND EXISTS (
+          SELECT 1 FROM ${workflowFailureIncidents} i
+          WHERE i.resolved_at IS NULL
+            AND i.id IN (SELECT jsonb_array_elements_text(coalesce(d.context->'incidentIds', '[]'::jsonb)))
+        ))
       LIMIT 5000
     )
   `);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseEndTime } from "@/lib/notifications/failure-alerts/constants";
+import { parseEndTime } from "@/lib/notifications/failure-alerts/end-time";
 
 describe("parseEndTime", () => {
   it("reads a time with no zone as UTC", () => {

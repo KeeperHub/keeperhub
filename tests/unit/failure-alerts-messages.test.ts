@@ -170,7 +170,7 @@ describe("grouped alert", () => {
       ],
     });
     expect(message.subject).toContain(
-      "4 workflows started failing, 1 turned off"
+      "4 workflows started failing (1 turned off)"
     );
     const order = (text: string) =>
       [2, 3, 4, 1].map((i) => text.indexOf(`Workflow ${i}`));
@@ -196,7 +196,7 @@ describe("grouped alert", () => {
     const discord = fitChat(message.chatVariants, "discord");
     expect(discord.length).toBeLessThanOrEqual(CHAT_LIMITS.discord);
     expect(discord).toContain(" 39: 11 failed runs in a row, turned off");
-    expect(discord).toContain("40 workflows started failing, 1 turned off");
+    expect(discord).toContain("40 workflows started failing (1 turned off)");
   });
 
   it("lists 10 workflows, then how many more", () => {

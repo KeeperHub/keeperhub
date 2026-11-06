@@ -906,7 +906,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         names.every((n) => m.text.includes(wfName(n)))
       );
       expect(mail?.subject).toContain(
-        "Still failing: 3 workflows still failing"
+        "Daily reminder: 3 workflows still failing"
       );
       const counts = await db
         .select({ n: workflowFailureIncidents.reminderCount })
@@ -918,6 +918,42 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(
         (await deliveriesOf(org.orgId)).filter((d) => d.kind === "reminder")
       ).toHaveLength(1);
+    });
+
+    it("takes reminders due later the same day into the daily message", async () => {
+      const org = await makeOrg("digestlate");
+      const ids: string[] = [];
+      for (const [name, notified] of [
+        ["Late A", -25 * 60],
+        ["Late B", -25 * 60],
+        ["Late C", -15 * 60],
+      ] as const) {
+        const id = await makeWorkflow(org, name);
+        const [incident] = await db
+          .insert(workflowFailureIncidents)
+          .values({
+            organizationId: org.orgId,
+            workflowId: id,
+            openedBy: "count",
+            threshold: 5,
+            failureCount: 5,
+            firstFailedAt: at(-30 * 60),
+            lastFailedAt: at(-6),
+            openedAt: at(-26 * 60),
+            alertQueuedAt: at(-26 * 60),
+            lastNotifiedAt: at(notified),
+          })
+          .returning();
+        ids.push(incident?.id ?? "");
+      }
+      await runCycle();
+      const reminders = (await deliveriesOf(org.orgId)).filter(
+        (d) => d.kind === "reminder"
+      );
+      expect(reminders).toHaveLength(1);
+      expect(reminders[0]?.context).toMatchObject({
+        incidentIds: expect.arrayContaining(ids),
+      });
     });
 
     it("the low-email warning says nobody is told once used up when no chat method works", async () => {
@@ -1900,7 +1936,9 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         .from(failureAlertDeliveries)
         .where(eq(failureAlertDeliveries.id, staleId));
       expect(stale?.state).toBe("skipped");
-      expect(stale?.lastError).toBe(SKIP_REASON.stale);
+      expect(stale?.lastError).toBe(
+        "Failure notifications are not on for this organization."
+      );
       expect(mailsTo(sigma)).toHaveLength(0);
       const channel = await channelById(dead.id);
       expect(channel?.lastHealthCheckAt).toBeNull();
@@ -4723,6 +4761,40 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         .from(workflowFailureAlertOverrides)
         .where(eq(workflowFailureAlertOverrides.workflowId, deleted));
       expect(cleared?.mutedUntil).toBeNull();
+    });
+
+    it("a mute ending on a workflow whose runs are refused does not say it works", async () => {
+      const org = await makeOrg("muterefused");
+      const wf = await makeWorkflow(org, "Refused while muted");
+      await save(org, wf, { mutedUntil: inHours(1), muteReason: "Billing" });
+      await db
+        .update(workflowFailureAlertOverrides)
+        .set({ mutedAt: at(-8) })
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      await addFailures(org, wf, 2, -6);
+      const startedAt = at(-1);
+      await db.insert(workflowExecutions).values({
+        id: nextId("run_"),
+        workflowId: wf,
+        userId: org.userId,
+        organizationId: org.orgId,
+        status: "skipped",
+        billable: false,
+        error: EXECUTION_LIMIT_REFUSAL,
+        errorCategory: "billing",
+        errorType: "user",
+        triggerSource: "schedule",
+        startedAt,
+        completedAt: startedAt,
+      });
+      await db
+        .update(workflowFailureAlertOverrides)
+        .set({ mutedUntil: at(-1) })
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      await runCycle();
+      const ended = await notices(org.orgId, "mute_ended");
+      expect(ended).toHaveLength(1);
+      expect(ended[0]?.context).toMatchObject({ failingNow: true });
     });
 
     it("ends an until-it-works mute once when it works", async () => {

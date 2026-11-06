@@ -19,8 +19,8 @@ import {
   MAX_ORG_PAUSE_MS,
   MAX_PAUSE_REASON,
   MAX_PAUSES_PER_HOUR,
-  parseEndTime,
 } from "./constants";
+import { parseEndTime } from "./end-time";
 import {
   ensureOrgSettings,
   loadChannels,

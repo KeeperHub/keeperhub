@@ -849,6 +849,9 @@ type GroupedWorkflow = Extract<
   { kind: "grouped" }
 >["workflows"][number];
 
+const DIGEST_NOTE =
+  "You get this once a day while they keep failing, for up to 7 days. To stop it for one workflow, mute it in its Properties.";
+
 /** A grouped alert lists this many workflows, then "And N more". */
 const GROUPED_LIST_MAX = 10;
 const GROUPED_ERROR_CHARS = 120;
@@ -865,24 +868,28 @@ function groupedRank(w: GroupedWorkflow): number {
   if (w.workflowPaused) {
     return 0;
   }
-  return outOfFunds(w) ? 1 : 2;
+  if (outOfFunds(w)) {
+    return 1;
+  }
+  // Not running before plain failures, so the headline's count is in the shown list.
+  return isNotRunning(w.openedBy) ? 2 : 3;
 }
 
-/** Turned off first, then out of funds, then most failures, so a short list keeps them. */
+/** Turned off first, then out of funds, not running, then most failures, so a short list keeps them. */
 function sortGrouped(workflows: GroupedWorkflow[]): GroupedWorkflow[] {
   return [...workflows].sort(
     (a, b) => groupedRank(a) - groupedRank(b) || b.failureCount - a.failureCount
   );
 }
 
-/** "3 workflows started failing, 1 turned off", "25 workflows are not running", or both counts. */
+/** "3 workflows started failing (1 turned off)", "25 workflows are not running", or both, adding up. */
 function groupedHeadline(
   failing: number,
   notRunning: number,
   turnedOff: number,
   reminder = false
 ): string {
-  const off = turnedOff > 0 ? `, ${turnedOff} turned off` : "";
+  const off = turnedOff > 0 ? ` (${turnedOff} turned off)` : "";
   const verb = reminder ? "still failing" : "started failing";
   if (notRunning === 0) {
     return `${plural(failing, "workflow", "workflows")} ${verb}${off}`;
@@ -890,7 +897,7 @@ function groupedHeadline(
   if (failing === 0) {
     return `${plural(notRunning, "workflow is", "workflows are")} ${reminder ? "still " : ""}not running`;
   }
-  return `${plural(failing, "workflow", "workflows")} ${verb}${off}, ${notRunning} not running`;
+  return `${plural(failing + notRunning, "workflow needs", "workflows need")} attention: ${failing} ${verb}${off}, ${notRunning} not running`;
 }
 
 function lowerFirst(text: string): string {
@@ -944,13 +951,14 @@ function renderGrouped(
     turnedOff,
     input.reminder
   );
-  const label = input.reminder ? "Still failing" : "Action needed";
+  const label = input.reminder ? "Daily reminder" : "Action needed";
   const errorText = (w: { lastError?: string | null }): string | null =>
     w.lastError ? errorExcerpt(w.lastError, GROUPED_ERROR_CHARS) : null;
   const cause = [
-    failing > 0
+    failing > 0 && !input.reminder
       ? "This often means a shared cause, such as an RPC provider or a wallet out of gas."
       : null,
+    input.reminder ? DIGEST_NOTE : null,
     fix
       ? `Runs refused before they start point to the plan or billing: ${plansFix}.`
       : null,

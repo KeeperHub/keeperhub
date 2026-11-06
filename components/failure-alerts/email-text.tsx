@@ -8,37 +8,60 @@ const HALF = "inline-block max-w-full align-bottom [overflow-wrap:anywhere]";
 export function EmailText({
   email,
   className,
+  before = "",
+  after = "",
 }: {
   email: string;
   className?: string;
+  /** Punctuation kept on the email's first line, e.g. "(". */
+  before?: string;
+  /** Punctuation kept on its last line, e.g. ").". */
+  after?: string;
 }): React.ReactElement {
   const at = email.lastIndexOf("@");
   if (at <= 0) {
-    return <span className={cn("break-words", className)}>{email}</span>;
+    return (
+      <span className={cn("break-words", className)}>
+        {before}
+        {email}
+        {after}
+      </span>
+    );
   }
   return (
     <span className={cn("min-w-0 break-normal", className)}>
       <span className={HALF} data-email-part="local">
+        {before}
         {email.slice(0, at)}
       </span>
       <wbr />
       <span className={HALF} data-email-part="domain">
         {email.slice(at)}
+        {after}
       </span>
     </span>
   );
 }
 
-const EMAIL = /[^\s(),;<>"']+@[^\s(),;<>"']+\.[^\s(),;<>"'.]+/g;
+// An email, with an opening bracket just before it and closing punctuation just after it.
+const EMAIL =
+  /(\(?)([^\s(),;<>"']+@[^\s(),;<>"']+\.[^\s(),;<>"'.]+)(\)?[.,:;]?)/g;
 
-/** Running text with every email in it shown as an EmailText. */
+/** Running text with every email in it shown as an EmailText, its brackets kept beside it. */
 export function TextWithEmails({ text }: { text: string }): React.ReactElement {
   const parts: React.ReactNode[] = [];
   let last = 0;
   for (const match of text.matchAll(EMAIL)) {
     const at = match.index ?? 0;
     parts.push(<Fragment key={`t${last}`}>{text.slice(last, at)}</Fragment>);
-    parts.push(<EmailText email={match[0]} key={`e${at}`} />);
+    parts.push(
+      <EmailText
+        after={match[3]}
+        before={match[1]}
+        email={match[2]}
+        key={`e${at}`}
+      />
+    );
     last = at + match[0].length;
   }
   parts.push(<Fragment key={`t${last}`}>{text.slice(last)}</Fragment>);

@@ -450,7 +450,7 @@ describe("drainOutbox", () => {
       )
     ).toHaveLength(0);
     const held = updates.filter(
-      (op) => (op.sets as { state?: string })?.state === "pending"
+      (op) => (op.sets as { nextAttemptAt?: Date })?.nextAttemptAt !== undefined
     );
     expect(held).toHaveLength(1);
     const sets = held[0]?.sets as { nextAttemptAt: Date } | undefined;

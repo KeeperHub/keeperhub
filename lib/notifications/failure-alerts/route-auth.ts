@@ -144,10 +144,7 @@ export async function readJsonObject(
 ): Promise<Record<string, unknown> | NextResponse> {
   const body: unknown = await request.json().catch(() => null);
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    return NextResponse.json(
-      { error: "Send the settings as a JSON object." },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Send a JSON object." }, { status: 400 });
   }
   return body as Record<string, unknown>;
 }

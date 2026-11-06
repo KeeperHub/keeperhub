@@ -97,11 +97,12 @@ const FOCUSABLE = "button:not([disabled]), input:not([disabled])";
 /** Footer links stay at least 44px tall below sm, for a thumb. */
 const FOOTER_LINK =
   "inline-flex min-h-11 items-center text-foreground underline underline-offset-4 sm:min-h-0";
-/** Panel buttons wrap their label instead of overflowing a narrow panel. */
 const STATUS_NOT_REFRESHED =
-  "The test ran, but the methods' status could not be refreshed. Reload to see it.";
+  "The methods' status could not be refreshed. Reload to see it.";
 
-const WRAP_BUTTON = "h-auto min-h-8 min-w-0 max-w-full whitespace-normal";
+/** Panel buttons wrap their label instead of overflowing a narrow panel; 44px tall on touch. */
+const WRAP_BUTTON =
+  "h-auto min-h-8 min-w-0 max-w-full whitespace-normal pointer-coarse:min-h-11";
 const MUTE_CHOICES: { id: string; label: string; ms: number | "success" }[] = [
   { id: "1h", label: "1 hour", ms: HOUR_MS },
   { id: "24h", label: "24 hours", ms: 24 * HOUR_MS },
@@ -222,8 +223,8 @@ function RulesView({
                   />
                   <span className="min-w-0 break-words">
                     {methodText(c.kind, c.destination, c.connectionName)}
-                    {c.role === "backup" ? " (backup)" : ""}
-                    {c.pausedAt ? " (paused)" : ""}
+                    {c.role === "backup" ? ", backup" : ""}
+                    {c.pausedAt ? ", paused" : ""}
                   </span>
                 </li>
               ))}
@@ -299,6 +300,16 @@ function runsLeft(view: Loaded): string {
 type PanelIncident = NonNullable<Loaded["status"]["incident"]>;
 
 /** Who heard about it. */
+/** What happens next for a workflow failing below its limit. */
+function failingNext(view: Loaded, muted: boolean): string {
+  if (muted) {
+    return "No alert while it is muted. Failures since the mute are reported when it ends.";
+  }
+  return view.override.pauseWorkflow
+    ? `${runsLeft(view)} and KeeperHub alerts your team and turns this workflow off.`
+    : `The alert goes out at ${failedRuns(view.effective.threshold)}${describeTimeLimit(view.effective.timeLimitMinutes)}.`;
+}
+
 function alertLine(incident: PanelIncident): React.ReactNode {
   if (incident.deliveredTo.length === 0) {
     return `Alert queued ${timeAgo(incident.openedAt)}, not delivered yet.`;
@@ -557,16 +568,27 @@ export function WorkflowFailureAlerts({
     []
   );
 
-  // A reload or closed tab inside the autosave delay sends the edit right away.
+  // A reload or closed tab inside the autosave delay asks first, as Settings does, and tries
+  // to send the edit; a request from a page going away is not guaranteed to leave.
   useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent): void => {
+      const pending = autosaveRef.current;
+      if (pending?.dirty) {
+        event.preventDefault();
+      }
+    };
     const onPageHide = (): void => {
       const pending = autosaveRef.current;
       if (pending?.dirty && pending.ready) {
         pending.sendNow();
       }
     };
+    window.addEventListener("beforeunload", onBeforeUnload);
     window.addEventListener("pagehide", onPageHide);
-    return () => window.removeEventListener("pagehide", onPageHide);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      window.removeEventListener("pagehide", onPageHide);
+    };
   }, []);
 
   // Leaving the panel (another node picked) sends a pending edit at once.
@@ -602,10 +624,16 @@ export function WorkflowFailureAlerts({
   };
 
   // Connections, and stored methods' health; drafts and the version stay.
-  const refreshConnections = useCallback(async (): Promise<boolean> => {
-    const res = await fetch(url);
-    if (res.ok) {
-      const body = (await res.json()) as Loaded;
+  // A failed refresh says so once, for a Test and a new connection alike.
+  const refreshConnections = useCallback(async (): Promise<void> => {
+    let body: Loaded;
+    try {
+      body = await fetchView<Loaded>(url);
+    } catch {
+      toast.error(STATUS_NOT_REFRESHED, { id: SAVE_TOAST });
+      return;
+    }
+    {
       const prev = viewRef.current;
       if (prev) {
         // Methods' health only from the same version: an older reply must not undo a save.
@@ -624,9 +652,7 @@ export function WorkflowFailureAlerts({
             : prev.override,
         });
       }
-      return true;
     }
-    return false;
   }, [showView, url]);
 
   // Hidden where alerts are not switched on, and until that is known.
@@ -685,13 +711,13 @@ export function WorkflowFailureAlerts({
       Number(threshold) <= MAX_THRESHOLD
     );
 
-  /** The override as stored, so a mute change keeps the custom fields. */
   /** The mute exactly as stored: the server sees it unchanged, so it is never re-announced. */
   const keptMute = (latest: Loaded): Record<string, unknown> => ({
     mutedUntil: latest.override.mutedUntil,
     muteUntilSuccess: latest.override.muteUntilSuccess,
     muteReason: latest.override.muteReason,
   });
+  /** The override as stored, so a mute change keeps the custom fields. */
   const storedOverride = (latest: Loaded): Record<string, unknown> => ({
     threshold: latest.override.threshold,
     timeLimitMinutes: latest.override.timeLimitMinutes,
@@ -851,6 +877,12 @@ export function WorkflowFailureAlerts({
   );
   const rulesReady = !thresholdInvalid && methodsReady;
 
+  /** The custom rules as edited, with the mute as stored, for any save of the draft. */
+  const draftBody = (latest: Loaded): Record<string, unknown> => ({
+    ...draftRules,
+    ...keptMute(latest),
+  });
+
   const saveDraft = (): Promise<boolean> => {
     cancelAutosave();
     const key = draftKey;
@@ -861,15 +893,7 @@ export function WorkflowFailureAlerts({
     if (draftSaveRef.current?.key === key) {
       return draftSaveRef.current.done;
     }
-    const rules = draftRules;
-    const done = put(
-      (latest) => ({
-        ...rules,
-        ...keptMute(latest),
-      }),
-      null,
-      { sentKey: key }
-    ).then((ok) => {
+    const done = put(draftBody, null, { sentKey: key }).then((ok) => {
       if (draftSaveRef.current?.key === key) {
         draftSaveRef.current = null;
       }
@@ -888,14 +912,21 @@ export function WorkflowFailureAlerts({
     dirty: rulesDirty,
     ready: rulesReady,
     save: saveDraft,
+    // Best effort: a save still in flight (or one just refused) is left alone; a stale version gets 409.
     sendNow: () => {
+      if (
+        draftSaveRef.current?.key === draftKey ||
+        failedKey === draftKey ||
+        droppedKeyRef.current === draftKey
+      ) {
+        return;
+      }
       const latest = viewRef.current ?? view;
       fetch(url, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...draftRules,
-          ...keptMute(latest),
+          ...draftBody(latest),
           version: latest.version,
         }),
         keepalive: true,
@@ -1152,9 +1183,7 @@ export function WorkflowFailureAlerts({
             {view.status.firstFailedAt
               ? `Started failing ${timeAgo(view.status.firstFailedAt)}. `
               : null}
-            {view.override.pauseWorkflow
-              ? `${runsLeft(view)} and KeeperHub alerts your team and turns this workflow off.`
-              : `The alert goes out at ${failedRuns(view.effective.threshold)}${describeTimeLimit(view.effective.timeLimitMinutes)}.`}
+            {failingNext(view, muted)}
           </p>
         </Notice>
       )}
@@ -1302,8 +1331,9 @@ export function WorkflowFailureAlerts({
               </p>
               <p className="text-muted-foreground text-xs">
                 Everyone who gets this workflow's alerts, and every owner, sees
-                the reason and is told now and when the mute ends. Up to{" "}
-                {MAX_MUTE_DAYS} days; then alerts start again by themselves.
+                the reason and is told now and when the mute ends. When the mute
+                ends ({MAX_MUTE_DAYS} days at most), alerts start again by
+                themselves.
               </p>
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -1319,6 +1349,7 @@ export function WorkflowFailureAlerts({
                   Mute and notify
                 </Button>
                 <Button
+                  className={WRAP_BUTTON}
                   onClick={() => {
                     setSaveError(null);
                     setPanel(null);
@@ -1487,17 +1518,9 @@ export function WorkflowFailureAlerts({
                             channels={customChannels}
                             connections={view.connections}
                             onChange={setCustomChannels}
-                            onConnectionsChanged={async () => {
-                              await refreshConnections();
-                            }}
+                            onConnectionsChanged={refreshConnections}
                             onTested={() => {
-                              refreshConnections()
-                                .catch(() => false)
-                                .then((ok) => {
-                                  if (!ok) {
-                                    toast.error(STATUS_NOT_REFRESHED);
-                                  }
-                                });
+                              refreshConnections().catch(() => undefined);
                             }}
                             organizationId={view.organizationId}
                             savedChannels={view.override.channels}

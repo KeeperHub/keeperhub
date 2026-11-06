@@ -28,7 +28,7 @@ import {
 } from "./policy";
 import { buildMessageRows, insertDeliveries } from "./queue-rows";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
-import { attemptConditions } from "./streak-runs";
+import { attemptConditions, REFUSED_RUN_SQL } from "./streak-runs";
 import type { OrgSettingsView } from "./view-types";
 
 type Actor = {
@@ -175,15 +175,18 @@ async function failedRunsSince(
   return Number(row?.n ?? 0);
 }
 
-/** Whether the newest attempt the streak counts failed (a refusal is not a failure here). */
+/** Whether the newest attempt the streak counts failed or was refused (not running is not working). */
 async function latestRunFailed(workflowId: string): Promise<boolean> {
   const [run] = await db
-    .select({ status: workflowExecutions.status })
+    .select({
+      status: workflowExecutions.status,
+      refused: sql<boolean>`${REFUSED_RUN_SQL}`,
+    })
     .from(workflowExecutions)
     .where(attemptConditions(workflowId, null))
     .orderBy(desc(workflowExecutions.startedAt))
     .limit(1);
-  return run?.status === "error";
+  return run?.status === "error" || run?.refused === true;
 }
 
 /** Every workflow muted right now, failing ones first, for Needs attention. */
