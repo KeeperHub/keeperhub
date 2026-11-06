@@ -96,3 +96,20 @@ export async function stepUpMasker(
   }
   return (address) => masked.get(address) ?? address;
 }
+
+/** Replaces each address found in free text (any case) with what the mask shows. */
+export function maskAddressesIn(
+  text: string,
+  addresses: Iterable<string>,
+  mask: (address: string) => string
+): string {
+  let out = text;
+  for (const address of new Set(addresses)) {
+    const shown = mask(address);
+    if (shown !== address) {
+      const escaped = address.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      out = out.replace(new RegExp(escaped, "gi"), shown);
+    }
+  }
+  return out;
+}

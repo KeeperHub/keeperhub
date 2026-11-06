@@ -312,7 +312,13 @@ async function makeWorkflow(
 async function addRun(
   org: Org,
   workflowId: string,
-  status: "success" | "error" | "skipped" | "system_error",
+  status:
+    | "success"
+    | "error"
+    | "skipped"
+    | "system_error"
+    | "phantom"
+    | "pending",
   options: {
     at?: Date;
     source?: string;
@@ -2423,6 +2429,35 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(row?.threshold).toBe(3);
     });
 
+    it("says a workflow save changed its rules only when the evaluator reads the change", async () => {
+      const wf = await makeWorkflow(zeta, "Requeue keeper");
+      let version = 0;
+      const save = async (body: Record<string, unknown>) => {
+        const result = await workflowSettings.saveWorkflowOverride({
+          workflowId: wf,
+          organizationId: zeta.orgId,
+          userId: zeta.userId,
+          body: { ...body, version },
+        });
+        version += 1;
+        return result.rulesChanged;
+      };
+      expect(await save({ threshold: 3 })).toBe(true);
+      expect(
+        await save({ threshold: 3, recipientUserIds: [zeta.userId] })
+      ).toBe(false);
+      expect(
+        await save({ threshold: 4, recipientUserIds: [zeta.userId] })
+      ).toBe(true);
+      expect(
+        await save({
+          threshold: 4,
+          recipientUserIds: [zeta.userId],
+          pauseWorkflow: true,
+        })
+      ).toBe(true);
+    });
+
     it("refuses a save from a tab older than a reset with 409", async () => {
       const wf = await makeWorkflow(zeta, "Reset keeper");
       const save = (body: Record<string, unknown>) =>
@@ -2629,6 +2664,93 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       );
     });
 
+    it("never lets the Sent alerts To filter or a Test reveal a step-up inbox", async () => {
+      const org = await makeOrg("stepupfilter");
+      const walletId = nextId("user_stepupf_wallet_");
+      const walletLogin = `0x${"6".repeat(40)}@wallet.keeperhub.com`;
+      const inbox = `stepupf-private-${RUN}@failure-alerts.test`;
+      await db.insert(users).values({
+        id: walletId,
+        name: "wallet member",
+        email: walletLogin,
+        emailVerified: false,
+        stepUpEmail: inbox,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await db.insert(member).values({
+        id: nextId("member_"),
+        organizationId: org.orgId,
+        userId: walletId,
+        role: "member",
+        createdAt: new Date(),
+      });
+      const deliveryId = nextId("delivery_");
+      await db.insert(failureAlertDeliveries).values({
+        id: deliveryId,
+        organizationId: org.orgId,
+        kind: "alert",
+        channel: "email",
+        recipient: inbox,
+        dedupKey: `${deliveryId}-stepup`,
+        state: "failed",
+        // Provider text that echoes the address, in another case.
+        lastError: `Mailbox ${inbox.toUpperCase()} is full`,
+      });
+      const [logged] = (
+        await settings.loadHistory(org.orgId, { page: 1, limit: 50 })
+      ).entries.filter((e) => e.id === deliveryId);
+      expect(logged?.lastError).toBe(`Mailbox ${walletLogin} is full`);
+      const to = async (term: string) =>
+        (await settings.loadHistory(org.orgId, { page: 1, to: term })).entries;
+      expect(await to("stepupf-private")).toHaveLength(0);
+      expect(await to(inbox)).toHaveLength(0);
+      const byLogin = await to(walletLogin.slice(0, 12));
+      expect(byLogin.map((e) => e.id)).toEqual([deliveryId]);
+      expect(byLogin[0]?.recipient).toBe(walletLogin);
+
+      const result = await testSend.sendTest({
+        organizationId: org.orgId,
+        userId: org.userId,
+        request: {
+          channel: "email",
+          to: "recipients",
+          recipientUserIds: [walletId],
+        },
+      });
+      expect(result.recipients).toEqual([walletLogin]);
+      expect(JSON.stringify(result)).not.toContain(inbox);
+    });
+
+    it("re-queues the org's workflows only when a rule changes", async () => {
+      const org = await makeOrg("requeue");
+      const body = {
+        threshold: 5,
+        timeLimitMinutes: 360,
+        recipientUserIds: [org.userId],
+      };
+      const save = async (patch: Record<string, unknown>) => {
+        const [row] = await db
+          .select({ version: orgFailureAlertSettings.version })
+          .from(orgFailureAlertSettings)
+          .where(eq(orgFailureAlertSettings.organizationId, org.orgId));
+        return await settings.saveOrgSettings(
+          org.orgId,
+          await settings.parseOrgSettings(
+            { ...body, ...patch, version: row?.version ?? 0 },
+            org.orgId
+          ),
+          org.userId
+        );
+      };
+      expect((await save({})).rulesChanged).toBe(true);
+      expect((await save({ remindDaily: false })).rulesChanged).toBe(false);
+      expect((await save({ threshold: 4 })).rulesChanged).toBe(true);
+      expect(
+        (await save({ threshold: 4, timeLimitMinutes: 60 })).rulesChanged
+      ).toBe(true);
+    });
+
     it("lists only the user's orgs that have alerts on, for the settings menu", async () => {
       const { alertsOrgIdsForUser } = await import(
         "@/lib/notifications/failure-alerts/user-orgs"
@@ -2794,7 +2916,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     it("marks only the failed run that set off the alert", async () => {
       const { attachAlertsSent } = await import("@/lib/analytics/alert-sent");
       const [incident] = await db
-        .select({ openedAt: workflowFailureIncidents.openedAt })
+        .select({ opening: workflowFailureIncidents.openingExecutionId })
         .from(workflowFailureIncidents)
         .where(eq(workflowFailureIncidents.workflowId, wf));
       const executions = await db
@@ -2817,24 +2939,71 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
             completedAt: e.completedAt?.toISOString() ?? null,
           }) as Parameters<typeof attachAlertsSent>[1][number]
       );
-      const trigger = executions
-        .filter(
-          (e) =>
-            e.status === "error" &&
-            e.completedAt &&
-            e.completedAt <= incident.openedAt
-        )
+      const newestFailure = executions
+        .filter((e) => e.status === "error")
         .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())[0];
+      expect(incident.opening).toBe(newestFailure.id);
       const marked = (await attachAlertsSent(org.orgId, runs)).filter(
         (r) => r.alert
       );
-      expect(marked.map((r) => r.id)).toEqual([trigger.id]);
+      expect(marked.map((r) => r.id)).toEqual([incident.opening]);
       expect(marked[0].alert?.channels).toContain("pagerduty");
       // Another org sees nothing of this one's alerts.
       const other = await makeOrg("historyother");
       expect(
         (await attachAlertsSent(other.orgId, runs)).some((r) => r.alert)
       ).toBe(false);
+    });
+
+    it("puts the chip on the scheduled failure that opened the alert, not a manual run after it", async () => {
+      const { attachAlertsSent } = await import("@/lib/analytics/alert-sent");
+      const chip = await makeOrg("chipmanual");
+      const chipWf = await makeWorkflow(chip, "Chip keeper");
+      await addRun(chip, chipWf, "success", { at: at(-120) });
+      await runCycle();
+      await addFailures(chip, chipWf, 5, -10);
+      await addRun(chip, chipWf, "error", {
+        at: at(-1),
+        source: "manual",
+        credential: "session",
+      });
+      await runCycle();
+      const incident = await openIncident(chipWf);
+      expect(incident?.openingExecutionId).toBeTruthy();
+      const executions = await db
+        .select({
+          id: workflowExecutions.id,
+          startedAt: workflowExecutions.startedAt,
+          triggerSource: workflowExecutions.triggerSource,
+        })
+        .from(workflowExecutions)
+        .where(
+          and(
+            eq(workflowExecutions.workflowId, chipWf),
+            eq(workflowExecutions.status, "error")
+          )
+        );
+      const manual = executions.find((e) => e.triggerSource === "manual");
+      const newestScheduled = executions
+        .filter((e) => e.triggerSource === "schedule")
+        .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())[0];
+      expect(incident?.openingExecutionId).toBe(newestScheduled?.id);
+      const runs = executions.map(
+        (e) =>
+          ({
+            id: e.id,
+            source: "workflow",
+            status: "error",
+            workflowId: chipWf,
+            startedAt: e.startedAt.toISOString(),
+            completedAt: e.startedAt.toISOString(),
+          }) as Parameters<typeof attachAlertsSent>[1][number]
+      );
+      const marked = (await attachAlertsSent(chip.orgId, runs)).filter(
+        (r) => r.alert
+      );
+      expect(marked.map((r) => r.id)).toEqual([newestScheduled?.id]);
+      expect(marked.some((r) => r.id === manual?.id)).toBe(false);
     });
 
     it("records a test with who sent it, and filters by that person", async () => {
@@ -3584,6 +3753,30 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(await sentEmails(org, "recovery")).toHaveLength(1);
       const recovery = mailsAbout(org, "Refused then ok").at(-1);
       expect(recovery?.text).toContain("Its runs are being accepted again");
+    });
+
+    it("a phantom, pending or platform-failed row does not close it; an accepted run does", async () => {
+      const org = await countingOrg("refusedphantom");
+      const wf = await makeWorkflow(org, "Refused phantom", "Webhook");
+      await unpaid(org, wf, -10);
+      await unpaid(org, wf, -9);
+      await runCycle();
+      const incident = await openIncident(wf);
+      expect(incident?.openedBy).toBe("refused");
+      await addRun(org, wf, "phantom", { at: at(-3), source: "webhook" });
+      await addRun(org, wf, "pending", { at: at(-2.5), source: "webhook" });
+      await addRun(org, wf, "system_error", { at: at(-2), source: "webhook" });
+      await addRun(org, wf, "error", {
+        at: at(-1.5),
+        source: "webhook",
+        errorType: "system",
+      });
+      await runCycle();
+      expect((await openIncident(wf))?.id).toBe(incident?.id);
+      await addRun(org, wf, "success", { at: at(-1), source: "webhook" });
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      expect((await incidentById(incident?.id))?.resolvedReason).toBe("ran");
     });
 
     it("refused again inside the hold continues the same incident and withdraws its recovery", async () => {

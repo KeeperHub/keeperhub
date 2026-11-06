@@ -12,7 +12,9 @@ import type { FailureAlertDeliveryChannel } from "@/lib/db/schema-failure-alerts
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
 import {
   loadOrgMembers,
+  maskAddressesIn,
   type OrgMember,
+  stepUpMasker,
 } from "@/lib/notifications/org-recipients";
 import { redactErrorSecrets } from "@/lib/utils/redact";
 import { TESTS_PER_DAY_PER_ORG, TESTS_PER_MINUTE_PER_USER } from "./constants";
@@ -226,15 +228,18 @@ async function testEmail(
       break;
     }
   }
+  // Another member's step-up inbox stays hidden, as in the member picker.
+  const mask = await stepUpMasker(recipients, userId);
+  const shown = recipients.map(mask);
+  // Provider text could echo an address; never pass a hidden one back.
+  const failure = maskAddressesIn(last.message, recipients, mask);
   return {
     delivered: last.ok,
     classification: classify(last),
     status: last.status,
-    message: last.ok
-      ? `Test email accepted for ${recipients.join(", ")}.`
-      : last.message,
+    message: last.ok ? `Test email accepted for ${shown.join(", ")}.` : failure,
     durationMs: Date.now() - started,
-    recipients,
+    recipients: shown,
   };
 }
 

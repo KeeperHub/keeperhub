@@ -189,6 +189,8 @@ export const workflowFailureIncidents = pgTable(
     firstFailedAt: timestamp("first_failed_at").notNull(),
     lastFailedAt: timestamp("last_failed_at").notNull(),
     lastFailedExecutionId: text("last_failed_execution_id"),
+    // The failed run that opened it; unlike lastFailedExecutionId, never moved later.
+    openingExecutionId: text("opening_execution_id"),
     lastError: text("last_error"),
     reminderCount: integer("reminder_count").notNull().default(0),
     lastNotifiedAt: timestamp("last_notified_at").notNull().defaultNow(),
@@ -217,6 +219,10 @@ export const workflowFailureIncidents = pgTable(
       .on(table.workflowId)
       .where(sql`${table.resolvedAt} IS NULL`),
     index("idx_alert_incidents_org").on(table.organizationId),
+    // The Analytics chip looks runs up by the execution that opened the alert.
+    index("idx_alert_incidents_opening_run")
+      .on(table.organizationId, table.openingExecutionId)
+      .where(sql`${table.openingExecutionId} IS NOT NULL`),
     index("idx_alert_incidents_workflow").on(table.workflowId),
     // Retention prune reads resolved incidents by age.
     index("idx_alert_incidents_resolved")

@@ -12,6 +12,8 @@ const members = Array.from({ length: 31 }, (_, i) => ({
 }));
 vi.mock("@/lib/notifications/org-recipients", () => ({
   loadOrgMembers: async () => members,
+  stepUpMasker: async () => (address: string) => address,
+  maskAddressesIn: (text: string) => text,
   reachableEmails: (list: { deliverable: string | null }[]) => [
     ...new Set(list.flatMap((m) => (m.deliverable ? [m.deliverable] : []))),
   ],

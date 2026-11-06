@@ -11,7 +11,6 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
-import { likePattern } from "@/lib/analytics/like-pattern";
 import { isWalletEmail } from "@/lib/auth/wallet-constants";
 import { getOrgPlan } from "@/lib/billing/plans-server";
 import { db } from "@/lib/db";
@@ -52,7 +51,11 @@ import {
   type HistoryCursor,
   toHistoryEntry,
 } from "./history-entry";
-import { historyCursorCondition, loadHistoryRows } from "./history-rows";
+import {
+  historyCursorCondition,
+  loadHistoryRows,
+  recipientMatches,
+} from "./history-rows";
 import { loadOrgPolicy, resolveRecipientEmails } from "./policy";
 import { isFailureAlertsEnabledForOrg } from "./rollout";
 import { checkChannelSilently, type DeliveryOutcome } from "./senders";
@@ -800,7 +803,7 @@ export async function saveOrgSettings(
   organizationId: string,
   input: OrgSettingsInput,
   userId: string
-): Promise<void> {
+): Promise<{ rulesChanged: boolean }> {
   const owners = (await loadOrgMembers(organizationId))
     .filter((m) => m.role === "owner")
     .map((m) => m.userId)
@@ -822,10 +825,14 @@ export async function saveOrgSettings(
     updatedBy: userId,
     updatedAt: now,
   };
-  await db.transaction(async (tx: Tx) => {
+  return await db.transaction(async (tx: Tx) => {
     await lockOrgSettings(tx, organizationId);
     const [current] = await tx
-      .select({ version: orgFailureAlertSettings.version })
+      .select({
+        version: orgFailureAlertSettings.version,
+        threshold: orgFailureAlertSettings.threshold,
+        timeLimitMinutes: orgFailureAlertSettings.timeLimitMinutes,
+      })
       .from(orgFailureAlertSettings)
       .where(eq(orgFailureAlertSettings.organizationId, organizationId));
     checkVersion(input.version, current?.version ?? 0);
@@ -840,6 +847,13 @@ export async function saveOrgSettings(
     if (input.channels) {
       await replaceChannels(tx, organizationId, null, input.channels, userId);
     }
+    // Only the rules change a streak decision; methods and recipients do not.
+    return {
+      rulesChanged:
+        !current ||
+        current.threshold !== input.threshold ||
+        current.timeLimitMinutes !== input.timeLimitMinutes,
+    };
   });
 }
 
@@ -953,9 +967,8 @@ export async function loadHistory(
     );
   }
   if (filter.to) {
-    conditions.push(
-      sql`${failureAlertDeliveries.recipient} ILIKE ${likePattern(filter.to)} ESCAPE '\\'`
-    );
+    // Match what the log shows, so a hidden step-up inbox cannot be probed.
+    conditions.push(await recipientMatches(organizationId, filter.to));
   }
   if (filter.since) {
     conditions.push(

@@ -1170,6 +1170,13 @@
       "when": 1793824571591,
       "tag": "0166_workflow_failure_alerts",
       "breakpoints": true
+    },
+    {
+      "idx": 167,
+      "version": "7",
+      "when": 1793961173866,
+      "tag": "0167_failure_alert_opening_run",
+      "breakpoints": true
     }
   ]
 }

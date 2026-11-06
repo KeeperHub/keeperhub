@@ -65,8 +65,14 @@ export async function PUT(
       unknown
     >;
     const input = await parseOrgSettings(body, organizationId);
-    await saveOrgSettings(organizationId, input, access.userId);
-    await requeueForEvaluation(organizationId);
+    const { rulesChanged } = await saveOrgSettings(
+      organizationId,
+      input,
+      access.userId
+    );
+    if (rulesChanged) {
+      await requeueForEvaluation(organizationId);
+    }
 
     await recordAuditEvent({
       actor: {

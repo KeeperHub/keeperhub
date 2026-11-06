@@ -5,11 +5,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 const mocks = vi.hoisted(() => ({
+  requeueForEvaluation: vi.fn(),
   auth: vi.fn(),
   roleRows: [] as { role: string }[],
   joins: [] as unknown[],
   wheres: [] as unknown[],
-  saveOrgSettings: vi.fn(),
+  saveOrgSettings: vi.fn(async () => ({ rulesChanged: true })),
   pauseOrgAlerts: vi.fn(),
   resumeOrgAlerts: vi.fn(),
   sendTest: vi.fn(),
@@ -51,7 +52,7 @@ vi.mock("@/lib/notifications/failure-alerts/settings", () => ({
   loadOrgSettingsView: vi.fn(async () => ({ enabled: true })),
   parseOrgSettings: vi.fn(async () => ({ channels: [] })),
   saveOrgSettings: mocks.saveOrgSettings,
-  requeueForEvaluation: vi.fn(),
+  requeueForEvaluation: mocks.requeueForEvaluation,
   loadHistory: mocks.loadHistory,
   historyToCsv: vi.fn(() => ""),
 }));
@@ -183,7 +184,7 @@ beforeEach(() => {
   });
   mocks.loadHistory.mockResolvedValue({ entries: [], nextCursor: null });
   mocks.sendTest.mockResolvedValue({ delivered: true });
-  mocks.saveWorkflowOverride.mockResolvedValue({});
+  mocks.saveWorkflowOverride.mockResolvedValue({ rulesChanged: true });
   mocks.pauseOrgAlerts.mockResolvedValue({
     until: new Date("2099-01-01T00:00:00Z"),
     reason: null,
@@ -348,4 +349,33 @@ describe("PUT pause audit", () => {
       })
     );
   });
+});
+
+describe("re-queue only when the rules change", () => {
+  it.each([true, false])(
+    "org save with rulesChanged %s",
+    async (rulesChanged) => {
+      mocks.saveOrgSettings.mockResolvedValueOnce({ rulesChanged });
+      const res = await orgRoute.PUT(req("PUT", { threshold: 3 }), orgCtx());
+      expect(res.status).toBe(200);
+      expect(mocks.requeueForEvaluation).toHaveBeenCalledTimes(
+        rulesChanged ? 1 : 0
+      );
+    }
+  );
+
+  it.each([true, false])(
+    "workflow save with rulesChanged %s",
+    async (rulesChanged) => {
+      mocks.saveWorkflowOverride.mockResolvedValueOnce({ rulesChanged });
+      const res = await workflowRoute.PUT(
+        req("PUT", { mode: "custom" }),
+        wfCtx
+      );
+      expect(res.status).toBe(200);
+      expect(mocks.requeueForEvaluation).toHaveBeenCalledTimes(
+        rulesChanged ? 1 : 0
+      );
+    }
+  );
 });

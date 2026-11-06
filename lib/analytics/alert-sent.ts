@@ -1,17 +1,13 @@
 import "server-only";
 
-import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   failureAlertDeliveries,
-  workflowExecutions,
   workflowFailureIncidents,
 } from "@/lib/db/schema";
-import { ERROR_STATUSES } from "@/lib/errors/execution-status";
 import type { RunAlert, UnifiedRun } from "./types";
 
-// Incidents a failed run opens; refused and missed runs never ran.
-const RUN_TRIGGERS = ["count", "time", "funding"] as const;
 const FAILED = new Set(["error", "system_error", "external_error"]);
 const IN_FLIGHT = new Set(["pending", "sending", "retrying"]);
 
@@ -25,42 +21,21 @@ function alertOf(states: string[], sentAt: Date, channels: string[]): RunAlert {
   return { sentAt: sentAt.toISOString(), channels: channels.sort(), state };
 }
 
-/** Marks each failed run that set off an alert: the newest failure before its incident opened. */
+/** Marks each failed run that opened an alert's incident, as the evaluator recorded it. */
 export async function attachAlertsSent(
   organizationId: string,
   runs: UnifiedRun[]
 ): Promise<UnifiedRun[]> {
-  const failed = runs.filter(
-    (run) =>
-      run.source === "workflow" &&
-      FAILED.has(run.status) &&
-      run.workflowId &&
-      run.completedAt
-  );
-  if (failed.length === 0) {
+  const failedIds = runs
+    .filter((run) => run.source === "workflow" && FAILED.has(run.status))
+    .map((run) => run.id);
+  if (failedIds.length === 0) {
     return runs;
   }
-  const earliest = new Date(
-    Math.min(...failed.map((run) => Date.parse(run.completedAt as string)))
-  );
-  const workflowIds = [
-    ...new Set(failed.map((run) => run.workflowId as string)),
-  ];
 
-  const triggerRun = sql<string | null>`(
-    SELECT e.id FROM ${workflowExecutions} e
-     WHERE e.workflow_id = ${workflowFailureIncidents.workflowId}
-       AND e.status IN (${sql.join(
-         ERROR_STATUSES.map((s) => sql`${s}`),
-         sql`, `
-       )})
-       AND e.completed_at <= ${workflowFailureIncidents.openedAt}
-     ORDER BY e.started_at DESC
-     LIMIT 1
-  )`;
   const rows = await db
     .select({
-      runId: triggerRun,
+      runId: workflowFailureIncidents.openingExecutionId,
       sentAt: sql<Date>`min(${failureAlertDeliveries.createdAt})`.mapWith(
         failureAlertDeliveries.createdAt
       ),
@@ -85,9 +60,7 @@ export async function attachAlertsSent(
     .where(
       and(
         eq(workflowFailureIncidents.organizationId, organizationId),
-        inArray(workflowFailureIncidents.workflowId, workflowIds),
-        inArray(workflowFailureIncidents.openedBy, [...RUN_TRIGGERS]),
-        gte(workflowFailureIncidents.openedAt, earliest)
+        inArray(workflowFailureIncidents.openingExecutionId, failedIds)
       )
     )
     .groupBy(workflowFailureIncidents.id);

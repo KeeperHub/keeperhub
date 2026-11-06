@@ -275,6 +275,11 @@ optional in the response type, but the route serializes the object as it stands,
 so the key ships either way and a caller testing for its presence takes the
 retention path for every organization.
 
+`alert` appears only on a failed workflow run that set off a failure alert. It
+holds `sentAt` (ISO time the alert was queued), `channels` (the methods it went
+to, such as `email` or `slack`) and `state` (`delivered`, `sending` or
+`failed`). On every other run the field is left out rather than sent as `null`.
+
 ## Get Run Step Logs
 
 ```http

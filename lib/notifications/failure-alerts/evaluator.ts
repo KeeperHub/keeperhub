@@ -31,6 +31,7 @@ import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
 import { loadOrgMembers } from "@/lib/notifications/org-recipients";
 import { workflowExecutableConditions } from "@/lib/workflow/executable";
+import { acceptedRunSql } from "@/lib/workflow/refused-runs";
 import { WorkflowTriggerEnum } from "@/lib/workflow/store";
 import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
 import {
@@ -508,10 +509,11 @@ async function reviveWithdrawn(
   }
 }
 
-/** The newest automated run started after `since`, however it ended (or still running). */
+/** The newest run since `since`; `accepted` also skips unclaimed and platform-failed rows. */
 async function latestRunSince(
   workflowId: string,
-  since: Date
+  since: Date,
+  accepted = false
 ): Promise<{
   id: string;
   status: string;
@@ -530,7 +532,7 @@ async function latestRunSince(
       and(
         eq(workflowExecutions.workflowId, workflowId),
         gt(workflowExecutions.startedAt, since),
-        COUNTED_RUN_SQL
+        accepted ? acceptedRunSql(workflowExecutions) : COUNTED_RUN_SQL
       )
     )
     .orderBy(desc(workflowExecutions.startedAt))
@@ -724,9 +726,11 @@ async function followRefused(
         )
       );
   }
+  // Refused runs end only with a run that was really accepted.
   const accepted = await latestRunSince(
     incident.workflowId,
-    current.lastFailedAt
+    current.lastFailedAt,
+    true
   );
   if (!accepted) {
     return false;
@@ -1031,6 +1035,7 @@ async function evaluateWorkflow(
         firstFailedAt,
         lastFailedAt,
         lastFailedExecutionId: summary.lastFailedRunId,
+        openingExecutionId: summary.lastFailedRunId,
         lastError: summary.lastError,
         lastNotifiedAt: now,
       })
@@ -1436,7 +1441,7 @@ export async function queueReminders(
   }
 }
 
-/** One-time launch notice listing workflows already failing; launchNoticeSentAt claims it. */
+/** One-time launch notice of already-failing workflows; claim and rows commit together. */
 async function queueLaunchNotice(
   organizationId: string,
   now: Date,
@@ -1447,36 +1452,35 @@ async function queueLaunchNotice(
   if (cycle.launchScans >= LAUNCH_SCANS_PER_CYCLE) {
     return;
   }
-  const claimed = await db
-    .update(orgFailureAlertSettings)
-    .set({ launchNoticeSentAt: now })
-    .where(
-      and(
-        eq(orgFailureAlertSettings.organizationId, organizationId),
-        isNull(orgFailureAlertSettings.launchNoticeSentAt)
-      )
-    )
-    .returning({ organizationId: orgFailureAlertSettings.organizationId });
-  if (claimed.length === 0) {
+  const [settings] = await db
+    .select({ sentAt: orgFailureAlertSettings.launchNoticeSentAt })
+    .from(orgFailureAlertSettings)
+    .where(eq(orgFailureAlertSettings.organizationId, organizationId));
+  if (!settings || settings.sentAt) {
     return;
   }
   cycle.launchScans += 1;
-  try {
-    stats.messagesQueued += await buildLaunchNotice(organizationId, now);
-  } catch (error) {
-    // Hand the claim back, or the notice would be lost for good.
-    await db
+  // Read outside the transaction, so the settings row is not locked during the scan.
+  const rows = await launchNoticeRows(organizationId, now);
+  stats.messagesQueued += await db.transaction(async (tx: Tx) => {
+    const claimed = await tx
       .update(orgFailureAlertSettings)
-      .set({ launchNoticeSentAt: null })
-      .where(eq(orgFailureAlertSettings.organizationId, organizationId));
-    throw error;
-  }
+      .set({ launchNoticeSentAt: now })
+      .where(
+        and(
+          eq(orgFailureAlertSettings.organizationId, organizationId),
+          isNull(orgFailureAlertSettings.launchNoticeSentAt)
+        )
+      )
+      .returning({ organizationId: orgFailureAlertSettings.organizationId });
+    return claimed.length === 0 ? 0 : await insertDeliveries(rows, tx);
+  });
 }
 
-async function buildLaunchNotice(
+async function launchNoticeRows(
   organizationId: string,
   now: Date
-): Promise<number> {
+): Promise<DeliveryInsert[]> {
   const [earlier] = await db
     .select({ id: workflowExecutions.id })
     .from(workflowExecutions)
@@ -1488,7 +1492,7 @@ async function buildLaunchNotice(
     )
     .limit(1);
   if (!earlier) {
-    return 0;
+    return [];
   }
 
   const failingNow = await findFailingWorkflows(organizationId);
@@ -1496,19 +1500,17 @@ async function buildLaunchNotice(
     null,
     await loadOrgMembers(organizationId)
   );
-  return await insertDeliveries(
-    owners.map((email) => ({
-      scope: `launch:${organizationId}`,
-      organizationId,
-      incidentId: null,
-      kind: "launch_notice" as const,
-      sequence: 0,
-      channel: "email" as const,
-      recipient: email,
-      nextAttemptAt: now,
-      context: { failingNow },
-    }))
-  );
+  return owners.map((email) => ({
+    scope: `launch:${organizationId}`,
+    organizationId,
+    incidentId: null,
+    kind: "launch_notice" as const,
+    sequence: 0,
+    channel: "email" as const,
+    recipient: email,
+    nextAttemptAt: now,
+    context: { failingNow },
+  }));
 }
 
 const LAUNCH_SCAN_LIMIT = 200;

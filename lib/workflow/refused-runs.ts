@@ -112,10 +112,21 @@ export const outerRun = (column: string) =>
 
 const acceptedRun = alias(workflowExecutions, "accepted_run");
 
+/** A run that really started: automated, live, claimed, not platform-failed or refused. */
+export function acceptedRunSql(
+  runs: Runs & Record<"deletedAt" | "errorType", AnyPgColumn>
+): SQL {
+  return sql`(${runs.deletedAt} IS NULL
+    AND ${runs.status} NOT IN ('phantom', 'pending', 'system_error')
+    AND (${runs.status} <> 'error'
+      OR ${runs.errorType} IS DISTINCT FROM ${ExecutionErrorType.SYSTEM})
+    AND ${automatedSql(runs)}
+    AND NOT ${refusedSql(runs)})`;
+}
+
 /**
- * An accepted automated run of the outer row's workflow starting after `after`
- * and before `before` (or at it when inclusive); platform failures and runs not
- * yet claimed are not accepted, as in the evaluator's attempts.
+ * An accepted run (acceptedRunSql) of the outer row's workflow starting after
+ * `after` and before `before` (or at it when inclusive).
  */
 export function acceptedRunBetween(
   after: SQL,
@@ -126,12 +137,7 @@ export function acceptedRunBetween(
   WHERE ${acceptedRun.workflowId} = ${outerRun("workflow_id")}
     AND ${acceptedRun.startedAt} > ${after}
     AND ${acceptedRun.startedAt} ${sql.raw(inclusive ? "<=" : "<")} ${before}
-    AND ${acceptedRun.deletedAt} IS NULL
-    AND ${acceptedRun.status} NOT IN ('phantom', 'pending', 'system_error')
-    AND (${acceptedRun.status} <> 'error'
-      OR ${acceptedRun.errorType} IS DISTINCT FROM ${ExecutionErrorType.SYSTEM})
-    AND ${automatedSql(acceptedRun)}
-    AND NOT ${refusedSql(acceptedRun)})`;
+    AND ${acceptedRunSql(acceptedRun)})`;
 }
 
 // An accepted run since the row's first refusal: the row restarts at this refusal.

@@ -262,7 +262,7 @@ export async function saveWorkflowOverride(params: {
   organizationId: string;
   userId: string;
   body: Record<string, unknown>;
-}): Promise<Record<string, unknown>> {
+}): Promise<Record<string, unknown> & { rulesChanged: boolean }> {
   const { workflowId, organizationId, userId, body } = params;
   const now = new Date();
 
@@ -362,7 +362,7 @@ export async function saveWorkflowOverride(params: {
         .delete(failureAlertChannels)
         .where(eq(failureAlertChannels.workflowId, workflowId));
     });
-    return { reset: true };
+    return { reset: true, rulesChanged: true };
   }
 
   const muted = Boolean(mute.mutedUntil || mute.muteUntilSuccess);
@@ -379,10 +379,29 @@ export async function saveWorkflowOverride(params: {
     updatedBy: userId,
     updatedAt: now,
   };
+  // Only what the evaluator reads needs a fresh evaluation; who is told does not.
+  let rulesChanged = true;
   await db.transaction(async (tx: Tx) => {
     await lockOrgSettings(tx, organizationId);
     const current = await currentVersion(tx);
     checkVersion(expectedVersion, current);
+    const [stored] = await tx
+      .select({
+        threshold: workflowFailureAlertOverrides.threshold,
+        timeLimitMinutes: workflowFailureAlertOverrides.timeLimitMinutes,
+        mutedUntil: workflowFailureAlertOverrides.mutedUntil,
+        muteUntilSuccess: workflowFailureAlertOverrides.muteUntilSuccess,
+        pauseWorkflow: workflowFailureAlertOverrides.pauseWorkflow,
+      })
+      .from(workflowFailureAlertOverrides)
+      .where(eq(workflowFailureAlertOverrides.workflowId, workflowId));
+    rulesChanged =
+      !stored ||
+      stored.threshold !== values.threshold ||
+      stored.timeLimitMinutes !== values.timeLimitMinutes ||
+      stored.mutedUntil?.getTime() !== values.mutedUntil?.getTime() ||
+      stored.muteUntilSuccess !== values.muteUntilSuccess ||
+      stored.pauseWorkflow !== values.pauseWorkflow;
     const next = { ...values, version: current + 1 };
     await tx
       .insert(workflowFailureAlertOverrides)
@@ -410,5 +429,6 @@ export async function saveWorkflowOverride(params: {
     mutedUntil: mute.mutedUntil?.toISOString() ?? null,
     muteUntilSuccess: mute.muteUntilSuccess,
     pauseWorkflow,
+    rulesChanged,
   };
 }

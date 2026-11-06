@@ -76,13 +76,15 @@ export async function PUT(
       string,
       unknown
     >;
-    const saved = await saveWorkflowOverride({
+    const { rulesChanged, ...saved } = await saveWorkflowOverride({
       workflowId,
       organizationId: workflow.organizationId,
       userId: access.userId,
       body,
     });
-    await requeueForEvaluation(workflow.organizationId, workflowId);
+    if (rulesChanged) {
+      await requeueForEvaluation(workflow.organizationId, workflowId);
+    }
 
     await recordAuditEvent({
       actor: {

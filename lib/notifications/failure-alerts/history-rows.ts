@@ -1,6 +1,7 @@
 import "server-only";
 
 import { and, desc, eq, inArray, type SQL, sql } from "drizzle-orm";
+import { likePattern } from "@/lib/analytics/like-pattern";
 import { db } from "@/lib/db";
 import {
   failureAlertChannels,
@@ -9,7 +10,10 @@ import {
   workflowFailureIncidents,
   workflows,
 } from "@/lib/db/schema";
-import { stepUpMasker } from "@/lib/notifications/org-recipients";
+import {
+  maskAddressesIn,
+  stepUpMasker,
+} from "@/lib/notifications/org-recipients";
 import {
   groupedIncidentIds,
   type HistoryCursor,
@@ -19,6 +23,44 @@ import {
 /** Rows after the cursor, newest first by (created, id). */
 export function historyCursorCondition(cursor: HistoryCursor): SQL {
   return sql`(${failureAlertDeliveries.createdAt}, ${failureAlertDeliveries.id}) < (${cursor.at}::timestamp, ${cursor.id}::text)`;
+}
+
+/** The `to` filter, matched against what the log shows (a hidden inbox by its wallet login). */
+export async function recipientMatches(
+  organizationId: string,
+  term: string
+): Promise<SQL> {
+  const plain = sql`${failureAlertDeliveries.recipient} ILIKE ${likePattern(term)} ESCAPE '\\'`;
+  const inboxes = await db
+    .selectDistinct({ recipient: failureAlertDeliveries.recipient })
+    .from(failureAlertDeliveries)
+    .where(
+      and(
+        eq(failureAlertDeliveries.organizationId, organizationId),
+        eq(failureAlertDeliveries.channel, "email")
+      )
+    );
+  const mask = await stepUpMasker(inboxes.map((r) => r.recipient));
+  const needle = term.toLowerCase();
+  const hidden: string[] = [];
+  const shownMatch: string[] = [];
+  for (const { recipient } of inboxes) {
+    const shown = mask(recipient);
+    if (shown !== recipient) {
+      hidden.push(recipient);
+      if (shown.toLowerCase().includes(needle)) {
+        shownMatch.push(recipient);
+      }
+    }
+  }
+  if (hidden.length === 0) {
+    return plain;
+  }
+  const email = eq(failureAlertDeliveries.channel, "email");
+  const visible = sql`(${plain} AND NOT (${and(email, inArray(failureAlertDeliveries.recipient, hidden))}))`;
+  return shownMatch.length > 0
+    ? sql`(${visible} OR ${and(email, inArray(failureAlertDeliveries.recipient, shownMatch))})`
+    : visible;
 }
 
 type KeyedHistoryRow = HistoryRow & {
@@ -90,6 +132,10 @@ export async function loadHistoryRows(
   );
   for (const row of rows) {
     if (row.channel === "email") {
+      // Provider text can echo the address, so it is masked the same way.
+      if (row.lastError) {
+        row.lastError = maskAddressesIn(row.lastError, [row.recipient], mask);
+      }
       row.recipient = mask(row.recipient);
     }
   }
