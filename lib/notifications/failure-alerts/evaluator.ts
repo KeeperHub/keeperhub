@@ -106,6 +106,9 @@ const LEASE = sql`now() + interval '5 minutes'`;
 const COUNTED_RUN_SQL = sql`(${AUTOMATED_RUN_SQL}
   AND ${workflowExecutions.deletedAt} IS NULL
   AND NOT ${REFUSED_RUN_SQL})`;
+/** A counted run a worker actually picked up; a placeholder or queued row has not started. */
+const STARTED_RUN_SQL = sql`(${COUNTED_RUN_SQL}
+  AND ${workflowExecutions.status} NOT IN ('phantom', 'pending'))`;
 
 type WorkflowRow = {
   id: string;
@@ -509,11 +512,11 @@ async function reviveWithdrawn(
   }
 }
 
-/** The newest run since `since`; `accepted` also skips unclaimed and platform-failed rows. */
+/** The newest run since `since`: "started" skips unclaimed rows, "accepted" also platform failures. */
 async function latestRunSince(
   workflowId: string,
   since: Date,
-  accepted = false
+  kind: "started" | "accepted"
 ): Promise<{
   id: string;
   status: string;
@@ -532,7 +535,9 @@ async function latestRunSince(
       and(
         eq(workflowExecutions.workflowId, workflowId),
         gt(workflowExecutions.startedAt, since),
-        accepted ? acceptedRunSql(workflowExecutions) : COUNTED_RUN_SQL
+        kind === "accepted"
+          ? acceptedRunSql(workflowExecutions)
+          : STARTED_RUN_SQL
       )
     )
     .orderBy(desc(workflowExecutions.startedAt))
@@ -730,7 +735,7 @@ async function followRefused(
   const accepted = await latestRunSince(
     incident.workflowId,
     current.lastFailedAt,
-    true
+    "accepted"
   );
   if (!accepted) {
     return false;
@@ -893,9 +898,13 @@ async function evaluateWorkflow(
   const runs = await loadStreakRuns(workflowId, window);
   const summary = summarizeStreak(runs, policy.countingSince, window);
 
-  // A late schedule's incident ends with any run; failures then count as usual.
+  // A late schedule's incident ends with any run that started; failures then count as usual.
   if (open?.openedBy === "missed") {
-    const ranAgain = await latestRunSince(workflowId, open.firstFailedAt);
+    const ranAgain = await latestRunSince(
+      workflowId,
+      open.firstFailedAt,
+      "started"
+    );
     if (ranAgain) {
       await closeIncident({
         incident: open,
@@ -1694,7 +1703,7 @@ export async function checkMissedSchedules(
       lastStartedAt: sql`(SELECT max(${workflowExecutions.startedAt})
         FROM ${workflowExecutions}
         WHERE ${workflowExecutions.workflowId} = ${workflows.id}
-          AND ${COUNTED_RUN_SQL})`.mapWith(workflowExecutions.startedAt),
+          AND ${STARTED_RUN_SQL})`.mapWith(workflowExecutions.startedAt),
     })
     .from(workflowSchedules)
     .innerJoin(workflows, eq(workflows.id, workflowSchedules.workflowId))
@@ -1709,7 +1718,7 @@ export async function checkMissedSchedules(
         sql`NOT EXISTS (SELECT 1 FROM ${workflowExecutions}
           WHERE ${workflowExecutions.workflowId} = ${workflows.id}
             AND ${workflowExecutions.startedAt} >= ${ranRecentlyCutoff(now).toISOString()}
-            AND ${COUNTED_RUN_SQL})`,
+            AND ${STARTED_RUN_SQL})`,
         sql`NOT EXISTS (SELECT 1 FROM ${workflowFailureIncidents}
           WHERE ${workflowFailureIncidents.workflowId} = ${workflows.id}
             AND ${workflowFailureIncidents.resolvedAt} IS NULL)`

@@ -3383,6 +3383,33 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(recovery?.context).not.toHaveProperty("ranButFailed");
     });
 
+    it("a queued or placeholder row does not end a not-running incident; a run that starts does", async () => {
+      const org = await countingOrg("missedqueued");
+      const wf = await makeWorkflow(org, "Missed then queued");
+      await addSchedule(wf);
+      await runCycle();
+      const incident = await openIncident(wf);
+      expect(incident?.openedBy).toBe("missed");
+      await addRun(org, wf, "pending", { at: at(-2) });
+      await addRun(org, wf, "phantom", { at: at(-1) });
+      await runCycle();
+      expect((await incidentById(incident?.id))?.resolvedAt).toBeNull();
+      await addRun(org, wf, "success");
+      await runCycle();
+      expect((await incidentById(incident?.id))?.resolvedReason).toBe("ran");
+    });
+
+    it("a stuck queued row does not hide a schedule that stopped starting runs", async () => {
+      const org = await countingOrg("stuckqueued");
+      const wf = await makeWorkflow(org, "Stuck in the queue");
+      await addSchedule(wf);
+      for (const minutes of [-60, -30, -11, -6, -1]) {
+        await addRun(org, wf, "pending", { at: at(minutes) });
+      }
+      await runCycle();
+      expect((await openIncident(wf))?.openedBy).toBe("missed");
+    });
+
     it("a run refused before it started does not end a not-running incident", async () => {
       const org = await countingOrg("missedrefused");
       const wf = await makeWorkflow(org, "Missed then refused");
