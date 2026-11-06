@@ -19,7 +19,7 @@ import {
 } from "@/lib/notifications/org-recipients";
 import { signInAccounts } from "./accounts";
 import { REMINDER_INTERVAL_MS } from "./constants";
-import { pauseActorName } from "./messages";
+import { nameOf, pauseActorName } from "./messages";
 import {
   type EffectivePolicy,
   fallbackManagers,
@@ -36,16 +36,6 @@ type Actor = {
   byUserId: string | null;
   byAccount: string | null;
 };
-
-/** A member's name as notices show it, or null for nobody. */
-export function nameOf(
-  userId: string | null | undefined,
-  members: OrgMember[]
-): string | null {
-  return userId
-    ? pauseActorName(members.find((m) => m.userId === userId))
-    : null;
-}
 
 /** Who acted, as notices and the By column name them. */
 export async function actorOf(
@@ -241,7 +231,6 @@ export async function loadMutedWorkflows(
         reason: r.muteReason,
         failing,
         failedRuns,
-        since: since.toISOString(),
       };
     })
   );

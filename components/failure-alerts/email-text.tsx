@@ -43,9 +43,10 @@ export function EmailText({
   );
 }
 
-// An email, with an opening bracket just before it and closing punctuation just after it.
-const EMAIL =
-  /(\(?)([^\s(),;<>"']+@[^\s(),;<>"']+\.[^\s(),;<>"'.]+)(\)?[.,:;]?)/g;
+// An email (no nested repeats, so no backtracking), with an opening bracket just before it.
+const EMAIL = /(\(?)([^\s(),;<>"'@]+@[^\s(),;<>"'@]+)(\)?)/g;
+const TRAILING_PUNCTUATION = /[.,:;]+$/;
+const WHITESPACE = /\s/;
 
 /** Running text with every email in it shown as an EmailText, its brackets kept beside it. */
 export function TextWithEmails({ text }: { text: string }): React.ReactElement {
@@ -54,15 +55,22 @@ export function TextWithEmails({ text }: { text: string }): React.ReactElement {
   for (const match of text.matchAll(EMAIL)) {
     const at = match.index ?? 0;
     parts.push(<Fragment key={`t${last}`}>{text.slice(last, at)}</Fragment>);
-    parts.push(
-      <EmailText
-        after={match[3]}
-        before={match[1]}
-        email={match[2]}
-        key={`e${at}`}
-      />
+    // A sentence's full stop after the address stays with it, outside the address.
+    const tail = TRAILING_PUNCTUATION.exec(match[2])?.[0] ?? "";
+    const email = match[2].slice(0, match[2].length - tail.length);
+    let after = `${tail}${match[3]}`;
+    let end = at + match[0].length;
+    const next = TRAILING_PUNCTUATION.exec(
+      text.slice(end).split(WHITESPACE)[0] ?? ""
     );
-    last = at + match[0].length;
+    if (match[3] && next && next.index === 0) {
+      after += next[0];
+      end += next[0].length;
+    }
+    parts.push(
+      <EmailText after={after} before={match[1]} email={email} key={`e${at}`} />
+    );
+    last = end;
   }
   parts.push(<Fragment key={`t${last}`}>{text.slice(last)}</Fragment>);
   return <>{parts}</>;

@@ -76,6 +76,7 @@ vi.mock("@/lib/notifications/failure-alerts/messages", () => ({
   appBaseUrl: () => "http://localhost:3000",
   renderSample: () => ({ subject: "", html: "", chat: "", summary: "" }),
   pauseActorName: () => null,
+  nameOf: () => null,
 }));
 
 vi.mock("@/lib/notifications/org-recipients", () => ({

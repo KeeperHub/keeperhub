@@ -610,7 +610,19 @@ test.describe("Failure alerts", () => {
       .poll(() => readOverride(fixture.alertedId), SAVE_TIMEOUT)
       .toMatchObject({ threshold: 7 });
 
-    const after = await openProperties(page, fixture.alertedId);
+    // Closing the tab anyway still sends the edit on its way out.
+    await section.locator("#wf-failure-threshold").fill("8");
+    page.once("dialog", (dialog) => {
+      dialog.accept().catch(() => undefined);
+    });
+    const context = page.context();
+    await page.close({ runBeforeUnload: true });
+    await expect
+      .poll(() => readOverride(fixture.alertedId), SAVE_TIMEOUT)
+      .toMatchObject({ threshold: 8 });
+
+    const next = await context.newPage();
+    const after = await openProperties(next, fixture.alertedId);
     await after.getByTestId("failure-alerts-tab-org").click();
     await after.getByTestId("failure-alerts-reset").click();
     await expect

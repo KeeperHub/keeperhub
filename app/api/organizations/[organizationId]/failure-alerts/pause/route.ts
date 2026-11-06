@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
-import { nameOf } from "@/lib/notifications/failure-alerts/mute-notices";
+import { nameOf } from "@/lib/notifications/failure-alerts/messages";
 import {
   pauseOrgAlerts,
   resumeOrgAlerts,

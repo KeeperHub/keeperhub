@@ -97,6 +97,7 @@ const FOCUSABLE = "button:not([disabled]), input:not([disabled])";
 /** Footer links stay at least 44px tall below sm, for a thumb. */
 const FOOTER_LINK =
   "inline-flex min-h-11 items-center text-foreground underline underline-offset-4 sm:min-h-0";
+const REFRESH_TOAST = "failure-alerts-refresh";
 const STATUS_NOT_REFRESHED =
   "The methods' status could not be refreshed. Reload to see it.";
 
@@ -299,17 +300,19 @@ function runsLeft(view: Loaded): string {
 
 type PanelIncident = NonNullable<Loaded["status"]["incident"]>;
 
-/** Who heard about it. */
 /** What happens next for a workflow failing below its limit. */
 function failingNext(view: Loaded, muted: boolean): string {
+  // A mute never hides the turn-off, so that comes first.
+  if (view.override.pauseWorkflow) {
+    return `${runsLeft(view)} and KeeperHub alerts your team and turns this workflow off${muted ? ", even while it is muted" : ""}.`;
+  }
   if (muted) {
     return "No alert while it is muted. Failures since the mute are reported when it ends.";
   }
-  return view.override.pauseWorkflow
-    ? `${runsLeft(view)} and KeeperHub alerts your team and turns this workflow off.`
-    : `The alert goes out at ${failedRuns(view.effective.threshold)}${describeTimeLimit(view.effective.timeLimitMinutes)}.`;
+  return `The alert goes out at ${failedRuns(view.effective.threshold)}${describeTimeLimit(view.effective.timeLimitMinutes)}.`;
 }
 
+/** Who heard about it. */
 function alertLine(incident: PanelIncident): React.ReactNode {
   if (incident.deliveredTo.length === 0) {
     return `Alert queued ${timeAgo(incident.openedAt)}, not delivered yet.`;
@@ -573,9 +576,14 @@ export function WorkflowFailureAlerts({
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent): void => {
       const pending = autosaveRef.current;
-      if (pending?.dirty) {
-        event.preventDefault();
+      if (!pending?.dirty) {
+        return;
       }
+      // Start the save while the page is alive; leaving or staying, it lands.
+      if (pending.ready) {
+        pending.save().catch(() => undefined);
+      }
+      event.preventDefault();
     };
     const onPageHide = (): void => {
       const pending = autosaveRef.current;
@@ -630,28 +638,26 @@ export function WorkflowFailureAlerts({
     try {
       body = await fetchView<Loaded>(url);
     } catch {
-      toast.error(STATUS_NOT_REFRESHED, { id: SAVE_TOAST });
+      toast.error(STATUS_NOT_REFRESHED, { id: REFRESH_TOAST });
       return;
     }
-    {
-      const prev = viewRef.current;
-      if (prev) {
-        // Methods' health only from the same version: an older reply must not undo a save.
-        const sameVersion = body.version === prev.version;
-        showView({
-          ...prev,
-          connections: body.connections,
-          unsharedConnections: body.unsharedConnections,
-          override: sameVersion
-            ? {
-                ...prev.override,
-                channels: prev.override.channels.map(
-                  (c) => body.override.channels.find((n) => n.id === c.id) ?? c
-                ),
-              }
-            : prev.override,
-        });
-      }
+    const prev = viewRef.current;
+    if (prev) {
+      // Methods' health only from the same version: an older reply must not undo a save.
+      const sameVersion = body.version === prev.version;
+      showView({
+        ...prev,
+        connections: body.connections,
+        unsharedConnections: body.unsharedConnections,
+        override: sameVersion
+          ? {
+              ...prev.override,
+              channels: prev.override.channels.map(
+                (c) => body.override.channels.find((n) => n.id === c.id) ?? c
+              ),
+            }
+          : prev.override,
+      });
     }
   }, [showView, url]);
 
@@ -759,6 +765,8 @@ export function WorkflowFailureAlerts({
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ...body(latest), version: latest.version }),
+          // Outlives the page, for a save started as it is being left.
+          keepalive: true,
         });
         const data = (await res.json().catch(() => ({}))) as Loaded & {
           error?: string;
@@ -912,7 +920,7 @@ export function WorkflowFailureAlerts({
     dirty: rulesDirty,
     ready: rulesReady,
     save: saveDraft,
-    // Best effort: a save still in flight (or one just refused) is left alone; a stale version gets 409.
+    // Best effort: a save in flight, or one that just failed, is left alone; a stale version gets 409.
     sendNow: () => {
       if (
         draftSaveRef.current?.key === draftKey ||
@@ -1331,8 +1339,8 @@ export function WorkflowFailureAlerts({
               </p>
               <p className="text-muted-foreground text-xs">
                 Everyone who gets this workflow's alerts, and every owner, sees
-                the reason and is told now and when the mute ends. When the mute
-                ends ({MAX_MUTE_DAYS} days at most), alerts start again by
+                the reason and is told now and when the mute ends. A mute lasts{" "}
+                {MAX_MUTE_DAYS} days at most; then alerts start again by
                 themselves.
               </p>
               <div className="flex flex-wrap gap-2">
@@ -1519,9 +1527,7 @@ export function WorkflowFailureAlerts({
                             connections={view.connections}
                             onChange={setCustomChannels}
                             onConnectionsChanged={refreshConnections}
-                            onTested={() => {
-                              refreshConnections().catch(() => undefined);
-                            }}
+                            onTested={refreshConnections}
                             organizationId={view.organizationId}
                             savedChannels={view.override.channels}
                             unsharedConnections={view.unsharedConnections}

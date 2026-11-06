@@ -207,6 +207,16 @@ export function pauseActorName(
   return member.role === "admin" ? "An admin" : "A member";
 }
 
+/** A member's name as notices show it, or null for nobody. */
+export function nameOf(
+  userId: string | null | undefined,
+  members: { userId: string; name: string | null; role: string }[]
+): string | null {
+  return userId
+    ? pauseActorName(members.find((m) => m.userId === userId))
+    : null;
+}
+
 export function appBaseUrl(): string {
   return process.env.NEXT_PUBLIC_APP_URL ?? "https://app.keeperhub.com";
 }
@@ -849,8 +859,7 @@ type GroupedWorkflow = Extract<
   { kind: "grouped" }
 >["workflows"][number];
 
-const DIGEST_NOTE =
-  "You get this once a day while they keep failing, for up to 7 days. To stop it for one workflow, mute it in its Properties.";
+const DIGEST_NOTE = `You get this once a day, for up to ${MAX_REMINDERS} days, while they keep failing or not running. To stop it for one workflow, mute it in its Properties, or turn off the daily reminder on the Alerts page.`;
 
 /** A grouped alert lists this many workflows, then "And N more". */
 const GROUPED_LIST_MAX = 10;
@@ -1037,7 +1046,7 @@ function renderGrouped(
   for (let count = shown.length; count >= 1; count -= 1) {
     chatVariants.push(chatList(count, false));
   }
-  const text = `${backup.text}${headline} in ${orgName}. ${cause}
+  const text = `${backup.text}In ${orgName}, ${lowerFirst(headline)}. ${cause}
 
 ${lines.join("\n")}
 

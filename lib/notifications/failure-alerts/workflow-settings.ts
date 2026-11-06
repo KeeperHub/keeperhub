@@ -16,6 +16,7 @@ import {
   loadOrgMembers,
   stepUpMasker,
 } from "@/lib/notifications/org-recipients";
+import { HOUR_MS } from "@/lib/utils/duration";
 import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
 import { signInAccounts } from "./accounts";
 import {
@@ -26,9 +27,9 @@ import {
   MUTE_CHANGES_PER_HOUR,
 } from "./constants";
 import { parseEndTime } from "./end-time";
+import { nameOf } from "./messages";
 import {
   actorOf,
-  nameOf,
   queueRemovedNotice,
   queueWorkflowNotice,
 } from "./mute-notices";
@@ -250,7 +251,6 @@ export async function loadWorkflowAlertView(
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const HOUR_MS = 60 * 60 * 1000;
 
 /** Required for every mute or change to one. */
 export const MUTE_REASON_REQUIRED = `Say why you are muting (${MIN_MUTE_REASON} to ${MAX_MUTE_REASON} characters).`;

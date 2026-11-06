@@ -759,8 +759,9 @@ export async function replaceChannels(
 type OrgSettingsInput = {
   threshold: number;
   timeLimitMinutes: number | null;
-  remindDaily: boolean;
-  notifyRecovery: boolean;
+  /** Null when the body left it out: it stays as it is, like channels. */
+  remindDaily: boolean | null;
+  notifyRecovery: boolean | null;
   recipientUserIds: string[];
   /** Null when the body left channels out: they stay as they are. */
   channels: ChannelInput[] | null;
@@ -815,8 +816,10 @@ export async function parseOrgSettings(
   return {
     threshold: parseThreshold(body.threshold),
     timeLimitMinutes: parseTimeLimit(body.timeLimitMinutes),
-    remindDaily: body.remindDaily !== false,
-    notifyRecovery: body.notifyRecovery !== false,
+    remindDaily:
+      typeof body.remindDaily === "boolean" ? body.remindDaily : null,
+    notifyRecovery:
+      typeof body.notifyRecovery === "boolean" ? body.notifyRecovery : null,
     recipientUserIds: [...new Set(requested)],
     channels:
       body.channels === undefined
@@ -848,8 +851,10 @@ export async function saveOrgSettings(
   const values = {
     threshold: input.threshold,
     timeLimitMinutes: input.timeLimitMinutes,
-    remindDaily: input.remindDaily,
-    notifyRecovery: input.notifyRecovery,
+    ...(input.remindDaily === null ? {} : { remindDaily: input.remindDaily }),
+    ...(input.notifyRecovery === null
+      ? {}
+      : { notifyRecovery: input.notifyRecovery }),
     recipientUserIds,
     updatedBy: userId,
     updatedAt: now,

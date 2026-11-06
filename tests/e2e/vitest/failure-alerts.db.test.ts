@@ -956,6 +956,43 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       });
     });
 
+    it("never sends a reminder early when no shared message forms", async () => {
+      const org = await makeOrg("digestnone");
+      const ids: string[] = [];
+      for (const [name, notified] of [
+        ["Alone due", -25 * 60],
+        ["Alone early", -15 * 60],
+      ] as const) {
+        const id = await makeWorkflow(org, name);
+        const [incident] = await db
+          .insert(workflowFailureIncidents)
+          .values({
+            organizationId: org.orgId,
+            workflowId: id,
+            openedBy: "count",
+            threshold: 5,
+            failureCount: 5,
+            firstFailedAt: at(-30 * 60),
+            lastFailedAt: at(-6),
+            openedAt: at(-26 * 60),
+            alertQueuedAt: at(-26 * 60),
+            lastNotifiedAt: at(notified),
+          })
+          .returning();
+        ids.push(incident?.id ?? "");
+      }
+      await runCycle();
+      const reminders = (await deliveriesOf(org.orgId)).filter(
+        (d) => d.kind === "reminder"
+      );
+      expect(reminders.map((d) => d.incidentId)).toEqual([ids[0]]);
+      const [early] = await db
+        .select({ n: workflowFailureIncidents.reminderCount })
+        .from(workflowFailureIncidents)
+        .where(eq(workflowFailureIncidents.id, ids[1] ?? ""));
+      expect(early?.n).toBe(0);
+    });
+
     it("the low-email warning says nobody is told once used up when no chat method works", async () => {
       const org = await makeOrg("pi");
       await db.execute(sql`

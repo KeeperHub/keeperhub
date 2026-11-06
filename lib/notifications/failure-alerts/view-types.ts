@@ -103,8 +103,6 @@ export type OrgSettingsView = {
     failing: boolean;
     /** Failed runs since the mute began. */
     failedRuns: number;
-    /** When the mute began. */
-    since: string | null;
   }[];
   /** Workflows with an open failure incident right now. */
   failingNow: {

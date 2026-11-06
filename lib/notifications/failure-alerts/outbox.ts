@@ -1435,7 +1435,8 @@ export async function pruneOldRecords(now: Date): Promise<void> {
         AND NOT (d.incident_id IS NULL AND EXISTS (
           SELECT 1 FROM ${workflowFailureIncidents} i
           WHERE i.resolved_at IS NULL
-            AND i.id IN (SELECT jsonb_array_elements_text(coalesce(d.context->'incidentIds', '[]'::jsonb)))
+            AND jsonb_typeof(d.context->'incidentIds') = 'array'
+            AND i.id IN (SELECT jsonb_array_elements_text(d.context->'incidentIds'))
         ))
       LIMIT 5000
     )

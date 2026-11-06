@@ -335,7 +335,8 @@ export function AlertsHealth({
       id: w.id,
       name: w.name,
       href: `/workflows/${w.id}`,
-      tone: w.failing ? "danger" : "warning",
+      // Muted means someone already knows: yellow, as in the workflow panel.
+      tone: "warning",
       // Only the state is coloured, so the rows stay easy to scan.
       detail: (
         <>

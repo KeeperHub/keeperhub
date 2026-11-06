@@ -35,6 +35,8 @@ export const MUTE_CHANGES_PER_HOUR = 6;
 
 /** Reminders while a workflow keeps failing. */
 export const REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** How early a reminder may join its org's daily message, when that makes one. */
+export const DIGEST_PULL_IN_MS = 12 * 60 * 60 * 1000;
 /** Reminders stop after a week; the in-app notice and Runs still show it. */
 export const MAX_REMINDERS = 7;
 
