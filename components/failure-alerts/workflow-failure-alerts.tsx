@@ -43,6 +43,7 @@ import {
   type WorkflowAlertView,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
+import { HOUR_MS } from "@/lib/utils/duration";
 import {
   extraUnsavedAtom,
   registerExtraSave,
@@ -86,7 +87,6 @@ type Panel = null | "mute";
 /** Custom rules save this long after the last edit. */
 const AUTOSAVE_MS = 1500;
 
-const HOUR_MS = 60 * 60 * 1000;
 // One id for every save toast, so "muted" then "back on" replace each other
 // instead of stacking over the panel's buttons.
 const SAVE_TOAST = "workflow-failure-alerts-save";
@@ -434,6 +434,8 @@ export function WorkflowFailureAlerts({
   const apply = useCallback(
     (next: Loaded) => {
       showView(next);
+      // The stored rules were replaced: no earlier save stands for the drafts any more.
+      savedKeyRef.current = null;
       setFailedKey(null);
       // The tab follows the rules in use only when they change, not on every save.
       if (sourceRef.current !== next.effective.source) {
@@ -586,9 +588,14 @@ export function WorkflowFailureAlerts({
       if (!pending?.dirty) {
         return;
       }
-      // Start the save while the page is alive, so it can land whether they leave or stay.
+      // Send it while the page is alive: a request started as the page goes is not sure to leave.
+      // Behind a save still running it goes at once (a stale version is refused, never overwrites).
       if (pending.ready && !pending.failed) {
-        pending.save().catch(() => undefined);
+        if (inFlightRef.current > 0) {
+          pending.sendNow();
+        } else {
+          pending.save().catch(() => undefined);
+        }
       }
       event.preventDefault();
     };
