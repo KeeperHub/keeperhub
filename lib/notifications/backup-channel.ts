@@ -22,28 +22,39 @@
  */
 import { fetchCredentials } from "@/lib/credential-fetcher";
 import {
+  type ChatChannel,
+  type ChatText,
+  fitChat,
+} from "@/lib/notifications/chat-text";
+import {
   isValidDiscordWebhookUrl,
   SLACK_POST_MESSAGE_URL,
   telegramSendMessageUrl,
 } from "@/lib/notifications/messaging-endpoints";
-import { safeFetch } from "@/lib/safe-fetch";
+import { SsrfBlockedError, safeFetch } from "@/lib/safe-fetch";
 import { getErrorMessage } from "@/lib/utils";
+import { isRetryableHttpStatus } from "@/lib/workflow/retry-policy";
 
 const REQUEST_TIMEOUT_MS = 10_000;
 
-export type BackupChannel = "discord" | "slack" | "telegram";
+/** Marked-up variants, fullest first, so outside text is escaped and each provider's limit is met. */
+type BackupMessage = readonly ChatText[];
 
 export type BackupOutcome = {
   /** False when the node did not ask for a backup, or had nothing to send through. */
   attempted: boolean;
   delivered: boolean;
-  channel?: BackupChannel;
+  channel?: ChatChannel;
   error?: string;
+  /** HTTP status of the provider's answer, when there was one. */
+  status?: number;
+  /** A retry could help (timeout, rate limit, 5xx); false for broken connections. */
+  retryable?: boolean;
 };
 
 type Credentials = Record<string, string | undefined>;
 
-function detectChannel(credentials: Credentials): BackupChannel | null {
+function detectChannel(credentials: Credentials): ChatChannel | null {
   if (credentials.webhookUrl) {
     return "discord";
   }
@@ -59,7 +70,7 @@ function detectChannel(credentials: Credentials): BackupChannel | null {
 async function postDiscord(
   credentials: Credentials,
   plugin: string,
-  message: string
+  message: BackupMessage
 ): Promise<BackupOutcome> {
   const webhookUrl = credentials.webhookUrl ?? "";
   if (!isValidDiscordWebhookUrl(webhookUrl)) {
@@ -75,7 +86,11 @@ async function postDiscord(
     plugin,
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content: message }),
+    // No pings from outside text: @everyone, roles and users stay plain.
+    body: JSON.stringify({
+      content: fitChat(message, "discord"),
+      allowed_mentions: { parse: [] },
+    }),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   return response.ok
@@ -85,6 +100,8 @@ async function postDiscord(
         delivered: false,
         channel: "discord",
         error: `Discord returned HTTP ${response.status}.`,
+        status: response.status,
+        retryable: isRetryableHttpStatus(response.status),
       };
 }
 
@@ -92,7 +109,7 @@ async function postSlack(
   credentials: Credentials,
   plugin: string,
   destination: string,
-  message: string
+  message: BackupMessage
 ): Promise<BackupOutcome> {
   if (!destination) {
     return {
@@ -109,7 +126,10 @@ async function postSlack(
       "Content-Type": "application/json",
       Authorization: `Bearer ${credentials.SLACK_API_KEY}`,
     },
-    body: JSON.stringify({ channel: destination, text: message }),
+    body: JSON.stringify({
+      channel: destination,
+      text: fitChat(message, "slack"),
+    }),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const body = (await response.json().catch(() => ({}))) as {
@@ -123,6 +143,12 @@ async function postSlack(
         delivered: false,
         channel: "slack",
         error: body.error ?? `Slack returned HTTP ${response.status}.`,
+        status: response.status,
+        retryable: slackFailureIsRetryable(
+          response.ok,
+          response.status,
+          body.error
+        ),
       };
 }
 
@@ -130,7 +156,7 @@ async function postTelegram(
   credentials: Credentials,
   plugin: string,
   destination: string,
-  message: string
+  message: BackupMessage
 ): Promise<BackupOutcome> {
   if (!destination) {
     return {
@@ -146,7 +172,12 @@ async function postTelegram(
       plugin,
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: destination, text: message }),
+      // HTML, so the text is escaped and error text sits in <code>.
+      body: JSON.stringify({
+        chat_id: destination,
+        text: fitChat(message, "telegram"),
+        parse_mode: "HTML",
+      }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     }
   );
@@ -157,7 +188,18 @@ async function postTelegram(
         delivered: false,
         channel: "telegram",
         error: `Telegram returned HTTP ${response.status}.`,
+        status: response.status,
+        retryable: isRetryableHttpStatus(response.status),
       };
+}
+
+/** Slack fails with HTTP 200 plus an error code, so read the code, not the status. */
+export function slackFailureIsRetryable(
+  httpOk: boolean,
+  status: number,
+  error: string | undefined
+): boolean {
+  return httpOk ? error === "ratelimited" : isRetryableHttpStatus(status);
 }
 
 /**
@@ -172,7 +214,7 @@ export async function sendBackupNotification(params: {
   organizationId?: string | null;
   /** The plugin asking for the backup, so its egress is attributed to it. */
   plugin: string;
-  message: string;
+  message: BackupMessage;
 }): Promise<BackupOutcome> {
   if (!params.integrationId) {
     return { attempted: false, delivered: false };
@@ -216,6 +258,8 @@ export async function sendBackupNotification(params: {
       attempted: true,
       delivered: false,
       error: `Backup notification failed: ${getErrorMessage(error)}`,
+      // Network faults may clear; an SSRF-guard refusal never will.
+      retryable: !(error instanceof SsrfBlockedError),
     };
   }
 }

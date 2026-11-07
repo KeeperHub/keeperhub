@@ -1,0 +1,121 @@
+import { NextResponse } from "next/server";
+import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { nameOf } from "@/lib/notifications/failure-alerts/messages";
+import {
+  pauseOrgAlerts,
+  resumeOrgAlerts,
+} from "@/lib/notifications/failure-alerts/org-pause";
+import {
+  type OrgAccess,
+  readJsonObject,
+  requireManager,
+  resolveOrgAccess,
+  settingsErrorResponse,
+} from "@/lib/notifications/failure-alerts/route-auth";
+import { loadOrgSettingsView } from "@/lib/notifications/failure-alerts/settings";
+import { loadOrgMembers } from "@/lib/notifications/org-recipients";
+import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
+
+const ENDPOINT = "/api/organizations/[organizationId]/failure-alerts/pause";
+
+type Params = { params: Promise<{ organizationId: string }> };
+
+/** Who to name in the pause notice, which reaches chat: name or role, never email. */
+async function actorLabel(
+  organizationId: string,
+  userId: string
+): Promise<string | null> {
+  return nameOf(userId, await loadOrgMembers(organizationId));
+}
+
+async function handle(
+  request: Request,
+  context: Params,
+  action: (organizationId: string, access: OrgAccess) => Promise<unknown>
+): Promise<NextResponse> {
+  try {
+    const { organizationId } = await context.params;
+    const access = await resolveOrgAccess(request, organizationId);
+    if (access instanceof NextResponse) {
+      return access;
+    }
+    const denied = requireManager(access);
+    if (denied) {
+      return denied;
+    }
+    const after = await action(organizationId, access);
+    await recordAuditEvent({
+      actor: {
+        userId: access.userId,
+        organizationId,
+        authMethod: access.authMethod,
+        apiKeyId: access.apiKeyId,
+      },
+      action:
+        request.method === "DELETE"
+          ? "org.failure_alerts_resumed"
+          : "org.failure_alerts_paused",
+      resourceType: "organization",
+      resourceId: organizationId,
+      after,
+      metadata: buildAuditMetadata(request),
+    });
+    const view = await loadOrgSettingsView(organizationId, access.userId);
+    return NextResponse.json({
+      ...view,
+      canManage: true,
+      viewerUserId: access.userId,
+    });
+  } catch (error) {
+    const handled = settingsErrorResponse(error);
+    if (handled) {
+      return handled;
+    }
+    logSystemError(
+      ErrorCategory.DATABASE,
+      "[FailureAlerts] Failed to change the org pause",
+      error,
+      { endpoint: ENDPOINT }
+    );
+    return NextResponse.json(
+      { error: "Failed to change the pause" },
+      { status: 500 }
+    );
+  }
+}
+
+/** Pause all org alerts until a time (maintenance). Owners and admins. */
+export function PUT(request: Request, context: Params): Promise<NextResponse> {
+  return handle(request, context, async (organizationId, access) => {
+    const body = await readJsonObject(request);
+    if (body instanceof NextResponse) {
+      return body;
+    }
+    // Audit what was saved (parsed date, trimmed reason), not the raw body.
+    const saved = await pauseOrgAlerts({
+      organizationId,
+      until: body.until,
+      reason: body.reason,
+      by: await actorLabel(organizationId, access.userId),
+      byUserId: access.userId,
+      now: new Date(),
+    });
+    return { until: saved.until.toISOString(), reason: saved.reason };
+  });
+}
+
+/** Turn alerts back on now. */
+export function DELETE(
+  request: Request,
+  context: Params
+): Promise<NextResponse> {
+  return handle(request, context, async (organizationId, access) => {
+    await resumeOrgAlerts({
+      organizationId,
+      by: await actorLabel(organizationId, access.userId),
+      byUserId: access.userId,
+      now: new Date(),
+    });
+    return { paused: false };
+  });
+}

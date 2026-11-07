@@ -165,6 +165,7 @@ Never reference directly in components. These are raw values.
 | `--ds-z-flyout` | 30 | Flyout panels |
 | `--ds-z-sidebar` | 40 | Navigation sidebar overlay |
 | `--ds-z-modal` | 50 | Modals, dialogs |
+| `--ds-z-banner` | 55 | The fixed top app banner |
 | `--ds-z-toast` | 60 | Toast notifications |
 
 ### Motion
@@ -184,6 +185,7 @@ Never reference directly in components. These are raw values.
 | Variable | Value | When to use |
 |---|---|---|
 | `--ds-header-height` | 60px | Header offset calculations |
+| `--ds-app-banner-slot-height` | 36px | Top app banner height (pages offset by the runtime `--app-banner-height`) |
 | `--ds-sidebar-strip-width` | 32px | Collapsed sidebar strip |
 | `--ds-flyout-width` | 280px | Flyout panel width |
 | `--ds-drawer-width` | 220px | Analytics drawer width |

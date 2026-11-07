@@ -292,6 +292,17 @@ describe("GET /api/workflows/[workflowId]/executions", () => {
       );
     });
 
+    it("reads the refusal count of skipped rows only, so no step output is loaded", async () => {
+      await call("?view=summary");
+      const [args] = mockFindMany.mock.calls[0] as [
+        { extras: { refusals: { sql: SQL } } },
+      ];
+      const { sql } = new PgDialect().sqlToQuery(args.extras.refusals.sql);
+      expect(sql).toBe(
+        'CASE WHEN "workflow_executions"."status" = \'skipped\' THEN ("workflow_executions"."output"->>\'refusals\')::int END'
+      );
+    });
+
     it("counts over a bounded subquery and reports the total as exact up to the bound", async () => {
       await call("?view=summary");
       expect(countLimit).toBe(MAX_COUNTED_RUNS + 1);

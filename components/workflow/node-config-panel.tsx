@@ -21,6 +21,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ProjectSelect } from "@/components/projects/project-select";
 import { TagSelect } from "@/components/tags/tag-select";
+import { WorkflowFailureAlerts } from "@/components/failure-alerts/workflow-failure-alerts";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { api } from "@/lib/api-client";
 import { actionConnectionMode } from "@/lib/integration-helpers";
@@ -40,6 +41,7 @@ import {
   deleteNodeAtom,
   deleteSelectedItemsAtom,
   edgesAtom,
+  getTriggerTypeFromConfig,
   isGeneratingAtom,
   isWorkflowOwnerAtom,
   newlyCreatedNodeIdAtom,
@@ -905,6 +907,15 @@ export const PanelInner = () => {
                 value={currentWorkflowTagId}
               />
             </div>
+            {isOwner && currentWorkflowId && !workflowNotFound && (
+              <WorkflowFailureAlerts
+                triggerType={getTriggerTypeFromConfig(
+                  nodes.find((node) => node.data.type === "trigger")?.data
+                    .config
+                )}
+                workflowId={currentWorkflowId}
+              />
+            )}
             <div className="space-y-2">
               <Label className="ml-1" htmlFor="workflow-id">
                 Workflow ID

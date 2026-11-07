@@ -562,6 +562,35 @@ describe("trigger incident", () => {
     expect(String(backupInit.body)).toContain("PagerDuty page FAILED");
   });
 
+  it("escapes a hostile summary in the Discord backup and keeps it within 2000", async () => {
+    safeFetch
+      .mockResolvedValueOnce(response(404, {}))
+      .mockResolvedValueOnce(response(204, {}));
+    mockFetchCredentials
+      .mockResolvedValueOnce({ PAGERDUTY_API_TOKEN: "t" })
+      .mockResolvedValueOnce({
+        webhookUrl: "https://discord.com/api/webhooks/1/abc",
+      });
+
+    await run({
+      failOnError: false,
+      backupIntegrationId: "int-discord",
+      summary: `@everyone [Open](https://evil.example) ${"x".repeat(3000)}`,
+    });
+
+    const [, backupInit] = safeFetch.mock.calls[1] as [
+      string,
+      { body: string },
+    ];
+    const body = JSON.parse(backupInit.body) as {
+      content: string;
+      allowed_mentions: unknown;
+    };
+    expect(body.allowed_mentions).toEqual({ parse: [] });
+    expect(body.content.length).toBeLessThanOrEqual(2000);
+    expect(body.content).toContain("\\@everyone \\[Open\\]\\(");
+  });
+
   it("reports a backup that itself failed, rather than swallowing it", async () => {
     safeFetch
       .mockResolvedValueOnce(response(404, {}))

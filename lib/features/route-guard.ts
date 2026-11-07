@@ -11,7 +11,11 @@ import type { WorkflowFeatureViolation, WorkflowNodeRef } from "./types";
 import { validateWorkflowFeatures } from "./workflow-validator";
 
 type GuardAllowed = { blocked: false };
-type GuardBlocked = { blocked: true; response: NextResponse };
+type GuardBlocked = {
+  blocked: true;
+  response: NextResponse;
+  violations: readonly WorkflowFeatureViolation[];
+};
 export type FeatureGuardResult = GuardAllowed | GuardBlocked;
 
 export const FEATURE_UPGRADE_REQUIRED_ERROR =
@@ -68,5 +72,6 @@ export async function enforceWorkflowFeatures(
   return {
     blocked: true,
     response: buildBlockedResponse(violations, errorMessage),
+    violations,
   };
 }

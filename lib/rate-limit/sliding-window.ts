@@ -29,7 +29,8 @@ export type SlidingWindowRateLimitResult =
     };
 
 export type SlidingWindowLimiter = {
-  check: (key: string) => SlidingWindowRateLimitResult;
+  /** `weight` slots at once (default 1): all of them, or none. */
+  check: (key: string, weight?: number) => SlidingWindowRateLimitResult;
   /** Clear one key's window, e.g. after a success that should not count. */
   reset: (key: string) => void;
   /** Test-only hook to reset all counters between unit tests. */
@@ -44,7 +45,7 @@ export function createSlidingWindowLimiter(options: {
   const requestLog = new Map<string, number[]>();
 
   return {
-    check(key: string): SlidingWindowRateLimitResult {
+    check(key: string, weight = 1): SlidingWindowRateLimitResult {
       const now = Date.now();
       const windowStart = now - windowMs;
 
@@ -53,20 +54,22 @@ export function createSlidingWindowLimiter(options: {
         ? timestamps.filter((t) => t > windowStart)
         : [];
 
-      if (recent.length >= limit) {
+      if (recent.length + weight > limit) {
         // Oldest timestamp in window determines when the first slot opens
-        const oldestInWindow = recent[0];
+        const oldestInWindow = recent[0] ?? now;
         const retryAfter = Math.ceil((oldestInWindow + windowMs - now) / 1000);
         return {
           allowed: false,
           retryAfter: Math.max(retryAfter, 1),
           limit,
-          remaining: 0,
+          remaining: Math.max(0, limit - recent.length),
           reset: Math.ceil((oldestInWindow + windowMs) / 1000),
         };
       }
 
-      recent.push(now);
+      for (let i = 0; i < weight; i++) {
+        recent.push(now);
+      }
       requestLog.set(key, recent);
 
       // Window frees a slot when its oldest in-window request expires.

@@ -45,6 +45,46 @@ const EMAIL_LOGO_URL =
   "https://raw.githubusercontent.com/KeeperHub/keeperhub/staging/public/keeperhub_logo_email.png";
 // end keeperhub code //
 
+/** Branded email shell. `title` and `footerHtml` are raw HTML: escape user text first. */
+export function emailLayout(
+  title: string,
+  bodyHtml: string,
+  footerHtml: string
+): string {
+  const logo = EMAIL_LOGO_URL
+    ? `<img src="${EMAIL_LOGO_URL}" alt="KeeperHub" style="max-width: 200px; height: auto;" />`
+    : "";
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 30px; border-radius: 12px 12px 0 0; text-align: center;">
+    ${logo}
+  </div>
+  <div style="background: #ffffff; padding: 30px; border: 1px solid #e5e5e5; border-top: none; border-radius: 0 0 12px 12px;">
+    <h2 style="color: #1a1a2e; margin-top: 0;">${title}</h2>
+    ${bodyHtml}
+    <hr style="border: none; border-top: 1px solid #e5e5e5; margin: 30px 0;">
+    <p style="color: #999; font-size: 12px; margin-bottom: 0;">${footerHtml}</p>
+  </div>
+</body>
+</html>`.trim();
+}
+
+/** Button for emailLayout bodies; "danger" for an urgent email's one action. */
+export function emailButton(
+  href: string,
+  label: string,
+  tone: "primary" | "danger" = "primary"
+): string {
+  const background = tone === "danger" ? "#b91c1c" : "#1a1a2e";
+  return `<a href="${escapeHtml(href)}" style="display:inline-block; background:${background}; color:#fff; padding:12px 20px; border-radius:8px; text-decoration:none; margin: 0 8px 8px 0;">${escapeHtml(label)}</a>`;
+}
+
 // Cap the outbound SendGrid call so a stalled connection surfaces as a
 // failed send (returns false) instead of hanging the request that's
 // awaiting it -- otherwise a caller like the verify-IP OTP step spins
@@ -81,7 +121,7 @@ function normalizeEmail(email: string): string {
 }
 
 /** Escape user-controlled strings before interpolating into email HTML. */
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -90,10 +130,48 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
+/** One send's outcome in enough detail for alerts to retry, page us, or give up. */
+type EmailSendResult = {
+  ok: boolean;
+  /** HTTP status from the provider; absent when the request never completed. */
+  status?: number;
+  /** True for timeouts, network faults, 408, 425, 429 and 5xx. */
+  retryable: boolean;
+  /** Retry-after the provider asked for, in milliseconds. */
+  retryAfterMs?: number;
+  /** True when the key or sender is ours to fix (401, 403, no key configured). */
+  platformFault: boolean;
+  error?: string;
+};
+
+const RETRYABLE_EMAIL_STATUSES: ReadonlySet<number> = new Set([
+  408, 425, 429, 500, 502, 503, 504,
+]);
+
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) {
+    return;
+  }
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
+}
+
 /**
  * Send an email using SendGrid
  */
 export async function sendEmail(options: SendEmailOptions): Promise<boolean> {
+  const result = await sendEmailDetailed(options);
+  return result.ok;
+}
+
+/** Send via SendGrid and report the provider's answer. */
+export async function sendEmailDetailed(
+  options: SendEmailOptions
+): Promise<EmailSendResult> {
   const apiKey = process.env.SENDGRID_API_KEY;
   const fromAddress = process.env.FROM_ADDRESS || "noreply@keeperhub.com";
   const toAddress = normalizeEmail(options.to);
@@ -112,7 +190,12 @@ export async function sendEmail(options: SendEmailOptions): Promise<boolean> {
         }
       );
     }
-    return false;
+    return {
+      ok: false,
+      retryable: false,
+      platformFault: true,
+      error: "Email is not configured on this deployment.",
+    };
   }
 
   const emailData = {
@@ -163,10 +246,22 @@ export async function sendEmail(options: SendEmailOptions): Promise<boolean> {
           service: "sendgrid",
         }
       );
-      return false;
+      return {
+        ok: false,
+        status: response.status,
+        retryable: RETRYABLE_EMAIL_STATUSES.has(response.status),
+        retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")),
+        platformFault: response.status === 401 || response.status === 403,
+        error: `The email service returned HTTP ${response.status}.`,
+      };
     }
 
-    return true;
+    return {
+      ok: true,
+      status: response.status,
+      retryable: false,
+      platformFault: false,
+    };
   } catch (error) {
     logUserError(
       ErrorCategory.EXTERNAL_SERVICE,
@@ -176,7 +271,12 @@ export async function sendEmail(options: SendEmailOptions): Promise<boolean> {
         service: "sendgrid",
       }
     );
-    return false;
+    return {
+      ok: false,
+      retryable: true,
+      platformFault: false,
+      error: "The email service did not answer in time.",
+    };
   }
 }
 

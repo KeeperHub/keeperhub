@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { organization, workflows } from "@/lib/db/schema";
 import { authenticateKhAdmin } from "@/lib/kh-admin-auth";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { restartOrgScheduleCounting } from "@/lib/schedule-service";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
 
 export async function POST(
@@ -41,6 +42,7 @@ export async function POST(
         .update(organization)
         .set({ deactivatedAt: null })
         .where(eq(organization.id, orgId));
+      await restartOrgScheduleCounting(tx, orgId);
 
       const [{ value: workflowsStillDeactivated }] = await tx
         .select({ value: count() })

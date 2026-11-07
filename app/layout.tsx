@@ -11,6 +11,7 @@ import { FeatureSessionInvalidator } from "@/components/feature-session-invalida
 import { GlobalModals } from "@/components/global-modals";
 import { PendingTemplateRunner } from "@/components/hub/pending-template-runner";
 import { LayoutContent } from "@/components/layout-content";
+import { LeaveGuardRouter } from "@/components/navigation-guard";
 import { EditorWalkthrough } from "@/components/onboarding/editor-walkthrough";
 import { OrgDataSync } from "@/components/org-data-sync";
 import { OverlayProvider } from "@/components/overlays/overlay-provider";
@@ -147,22 +148,24 @@ const RootLayout = async ({ children }: RootLayoutProps) => {
           disableTransitionOnChange
           forcedTheme="dark"
         >
-          <Provider>
-            <AuthProvider>
-              <OrgDataSync />
-              <FeatureSessionInvalidator />
-              <PendingTemplateRunner />
-              <PendingScanRunner />
-              <WalletProvisioningTrigger />
-              <OverlayProvider>
-                <AppBanner />
-                <LayoutContent>{children}</LayoutContent>
-                <Toaster />
-                <GlobalModals />
-                <EditorWalkthrough />
-              </OverlayProvider>
-            </AuthProvider>
-          </Provider>
+          <LeaveGuardRouter>
+            <Provider>
+              <AuthProvider>
+                <OrgDataSync />
+                <FeatureSessionInvalidator />
+                <PendingTemplateRunner />
+                <PendingScanRunner />
+                <WalletProvisioningTrigger />
+                <OverlayProvider>
+                  <AppBanner />
+                  <LayoutContent>{children}</LayoutContent>
+                  <Toaster />
+                  <GlobalModals />
+                  <EditorWalkthrough />
+                </OverlayProvider>
+              </AuthProvider>
+            </Provider>
+          </LeaveGuardRouter>
         </ThemeProvider>
         {process.env.NODE_ENV === "development" && (
           <Script id="root-dev-bfcache-reload" strategy="beforeInteractive">

@@ -40,6 +40,7 @@ import { getRetentionConfig } from "@/lib/retention/config";
 import { getOrgLogRetentionCutoff } from "@/lib/retention/progress";
 import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
+import { attachAlertsSent } from "./alert-sent";
 import { analyticsCacheKey, cachedAnalytics } from "./cache";
 import { likePattern } from "./like-pattern";
 import { MAX_RUN_LIMIT } from "./runs-query";
@@ -1504,7 +1505,7 @@ export async function getUnifiedRuns(
   const nextCursor = hasMore ? (pagedRuns.at(-1)?.startedAt ?? null) : null;
 
   return {
-    runs: pagedRuns,
+    runs: await attachAlertsSent(organizationId, pagedRuns),
     nextCursor,
     total,
     page,

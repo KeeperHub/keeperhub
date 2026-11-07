@@ -58,6 +58,7 @@ import { workflowReachableConditions } from "@/lib/workflow/executable";
 import { buildExecutorInput } from "@/lib/workflow/executor/build-executor-input";
 import { executeWorkflow } from "@/lib/workflow/executor/executor.workflow";
 import { calculateTotalSteps } from "@/lib/workflow/executor/progress";
+import { markRunRefused } from "@/lib/workflow/refused-runs";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 
 const corsHeaders = {
@@ -279,18 +280,17 @@ async function prepareExecution(
       paygOverflow: executionGuard.limitResult?.paygOverflow === true,
     });
     if (paygCharge.applicable && !paygCharge.ok) {
-      await db
-        .update(workflowExecutions)
-        .set({
-          status: "error",
-          error: paygCharge.message,
-          errorCategory: "billing",
-          errorType: "user",
-          // Unpaid means the run never started, so it consumes no quota.
-          billable: false,
-          completedAt: new Date(),
-        })
-        .where(eq(workflowExecutions.id, execution.id));
+      // Unpaid: refused before it started, so it consumes no quota.
+      await markRunRefused(
+        {
+          executionId: execution.id,
+          fromStatuses: ["running"],
+          reason: paygCharge.message,
+          category: ErrorCategory.BILLING,
+          at: new Date(),
+        },
+        db
+      );
       return {
         error: NextResponse.json(
           {

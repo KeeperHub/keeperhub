@@ -1163,6 +1163,20 @@
       "when": 1793627038019,
       "tag": "0165_keep_1042_drop_dead_exec_log_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 166,
+      "version": "7",
+      "when": 1793824571591,
+      "tag": "0166_workflow_failure_alerts",
+      "breakpoints": true
+    },
+    {
+      "idx": 167,
+      "version": "7",
+      "when": 1793964849506,
+      "tag": "0167_users_step_up_email_index",
+      "breakpoints": true
     }
   ]
 }

@@ -76,6 +76,9 @@ const CHAIN_REJECTION_PATTERNS: readonly RegExp[] = [
   /intrinsic gas too low/i,
 ];
 
+/** The wallet holds less than the run needs; anchored so a quoted RPC body never matches. */
+export const INSUFFICIENT_BALANCE_PATTERN = /^Insufficient \S+ balance\b/i;
+
 /**
  * Ordered list of rules. First match wins. Order matters when patterns
  * overlap; more specific patterns should come before broader ones.
@@ -179,7 +182,7 @@ const RULES: readonly Rule[] = [
   // variant. Anchored so an RPC-exhaustion message that quotes a provider
   // body containing this phrase still falls through to the system RPC rules.
   {
-    pattern: /^Insufficient \S+ balance\b/i,
+    pattern: INSUFFICIENT_BALANCE_PATTERN,
     errorCategory: ErrorCategory.TRANSACTION,
     errorType: ExecutionErrorType.USER,
     code: null,

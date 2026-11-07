@@ -116,7 +116,7 @@ function DeltaDisplay({
 // trigger fired but the platform refused the run before it started, so it is
 // neither a success nor a failure and belongs in no rate.
 const SKIPPED_TOOLTIP =
-  "Runs that finished, successfully or not, over this period. Runs still in flight, runs you cancelled, and skipped runs are excluded. A run is skipped when the trigger fired but the run was refused before it started, because the plan's monthly execution limit was reached, the workflow uses an action your plan does not include, or a pay-as-you-go charge could not be collected. Nothing ran, so skipped runs do not count towards your success rate or your usage.";
+  "Runs that finished, successfully or not, over this period. Runs still in flight, runs you cancelled, and skipped runs are excluded. A run is skipped when the trigger fired but the run did not start: the plan's monthly execution limit was reached, the workflow uses an action your plan does not include, a pay-as-you-go charge could not be collected, or the workflow cannot run (for example it was turned off or its schedule was removed). Refusals of one workflow for the same reason share one skipped run per hour, so the skipped count can be lower than the number of refusals. Nothing ran, so skipped runs do not count towards your success rate or your usage.";
 
 const COMPARISON_LABELS: Record<TimeRange, string> = {
   "1h": "the previous hour",
