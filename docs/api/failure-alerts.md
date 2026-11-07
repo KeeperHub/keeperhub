@@ -1,6 +1,6 @@
 ---
 title: "Failure Alerts API"
-description: "KeeperHub Failure Alerts API - read and change a workflow's alert rules and mute, and list the alerts sent to your organization."
+description: "KeeperHub Failure Alerts API - read and change a workflow's alert rules, pause its alerts, and list the alerts sent to your organization."
 ---
 
 # Failure Alerts API
@@ -19,7 +19,7 @@ GET /api/workflows/{workflowId}/failure-alerts
 
 Returns the organization's rules, the workflow's own settings (`override`), the settings in effect, its current failing state, and `version`, which a change must send back.
 
-While the workflow is muted, `override` carries `mutedUntil`, `muteUntilSuccess`, `muteReason`, `mutedBy` and `mutedByAccount`; otherwise they are `null` (`muteUntilSuccess` is `false`).
+While the workflow is paused, `override` carries `pausedUntil`, `pauseUntilSuccess`, `pauseReason`, `pausedBy` and `pausedByAccount`; otherwise they are `null` (`pauseUntilSuccess` is `false`).
 
 `connections` lists the connections shared with the organization that a method can use. `unsharedConnections` lists your own connections that are not shared, which a method cannot use until they are.
 
@@ -38,14 +38,14 @@ PUT /api/workflows/{workflowId}/failure-alerts
 | `timeLimitMinutes` | number \| `"off"` \| null | Also alert after this long failing. `null` follows the organization |
 | `recipientUserIds` | string[] \| null | Members to email. `null` follows the organization. The list must keep at least one owner or admin who can receive email |
 | `customChannels` | boolean | Use the workflow's own `channels` instead of the organization's |
-| `pauseWorkflow` | boolean | Disable the workflow when it reaches the limit |
-| `mutedUntil` | string \| null | Mute alerts until this ISO time, at most 7 days ahead |
-| `muteUntilSuccess` | boolean | Mute until the workflow works again, at most 7 days |
-| `muteReason` | string | Required to mute, extend or change a mute: 3 to 200 characters |
+| `disableWorkflow` | boolean | Disable the workflow when it reaches the limit |
+| `pausedUntil` | string \| null | Pause alerts until this ISO time, at most 7 days ahead |
+| `pauseUntilSuccess` | boolean | Pause until the workflow works again, at most 7 days |
+| `pauseReason` | string | Required to pause, extend or change a pause: 3 to 200 characters |
 
-Sending the mute fields unchanged keeps the mute as it is. Sending neither `mutedUntil` nor `muteUntilSuccess` unmutes.
+Sending the pause fields unchanged keeps the pause as it is. Sending neither `pausedUntil` nor `pauseUntilSuccess` resumes.
 
-Every mute, change to a mute and unmute is announced: the people the workflow's alerts reached before the change, and every owner, get a notice by email and on the workflow's chat methods, and it is listed in the organization's sent alerts. People taken off a recipient list are told the same way. A workflow's mute can change at most 6 times an hour; more is refused with `429`.
+Every pause, change to a pause and resume is announced: the people the workflow's alerts reached before the change, and every owner, get a notice by email and on the workflow's chat methods, and it is listed in the organization's sent alerts. People taken off a recipient list are told the same way. A workflow's pause can change at most 6 times an hour; more is refused with `429`.
 
 ## Get Organization Alert Settings
 
@@ -53,7 +53,7 @@ Every mute, change to a mute and unmute is announced: the people the workflow's 
 GET /api/organizations/{organizationId}/failure-alerts
 ```
 
-Returns the organization's rules, who gets email, its methods (with each one's health), the connections methods can use, any pause, every workflow with its own rules or a mute, and `version`, which a change can send back so it is refused if someone else saved first.
+Returns the organization's rules, who gets email, its methods (with each one's health), the connections methods can use, any pause, every workflow with its own rules or paused alerts, and `version`, which a change can send back so it is refused if someone else saved first.
 
 ## Update Organization Alert Settings
 
@@ -101,7 +101,7 @@ Needs an owner or admin. Sends one test message and reports whether it was deliv
 | `recipientUserIds` | string[] | Email only, with `to: "recipients"`: who to email |
 | `integrationId` | string | Chat and PagerDuty: the connection to test |
 | `destination` | string | Chat and PagerDuty: where to send it |
-| `channelId` | string | Optional: a saved method; a passing test turns a paused method back on |
+| `channelId` | string | Optional: a saved method; a passing test turns a method that stopped working back on |
 | `pagerDutyMode` | string | PagerDuty only: `"change"` (default, no page) or `"page"` |
 
 Tests are rate limited; too many are refused with `429`.
@@ -112,7 +112,7 @@ Tests are rate limited; too many are refused with `429`.
 GET /api/organizations/{organizationId}/failure-alerts/preview?sample=alert
 ```
 
-Returns a sample message as each method would show it. `sample` is `alert` (default), `missed`, `paused` or `recovery`.
+Returns a sample message as each method would show it. `sample` is `alert` (default), `missed`, `disabled` or `recovery`.
 
 All `PUT` and `POST` bodies must be a JSON object; anything else is refused with `400`.
 
@@ -133,8 +133,8 @@ Every alert, reminder, recovery and notice sent to the organization, newest firs
 | `limit` | number | Rows per page, at most 500 |
 | `workflow` | string | A workflow's exact id, or part of its current name, so alerts sent before a rename still match. At most 200 characters |
 | `workflowId` | string | One workflow's exact id |
-| `kind` | string | One message kind, such as `alert`, `reminder`, `recovery`, `workflow_muted`, `workflow_unmuted`, `mute_ended` or `recipients_removed` |
-| `scope` | string | `alerts`: alerts, reminders, recoveries and notices about silencing, without pause notices or tests. `people`: what people did: mutes, unmutes, pauses, resumes, removals from alerts and tests |
+| `kind` | string | One message kind, such as `alert`, `reminder`, `recovery`, `workflow_paused`, `workflow_resumed`, `workflow_pause_ended` or `recipients_removed` |
+| `scope` | string | `alerts`: alerts, reminders, recoveries and notices about silencing, without pause notices or tests. `people`: what people did: pauses and resumes (of one workflow or the whole organization), removals from alerts and tests |
 | `result` | string | `delivered`, `failed`, `waiting` or `withdrawn` |
 | `channel` | string | `email`, `slack`, `discord`, `telegram` or `pagerduty` |
 | `by` | string | Who caused it: a person's name, or `KeeperHub` |

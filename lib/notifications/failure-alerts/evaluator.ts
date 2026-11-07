@@ -55,21 +55,20 @@ import {
   REFUSED_RUNS_THRESHOLD,
   REMINDER_INTERVAL_MS,
 } from "./constants";
-import { missedDueAt, ranRecentlyCutoff } from "./missed-runs";
-import { endMuteBecauseItWorks } from "./mute-notices";
-import { activePause } from "./org-pause";
 import {
+  disableForOpenIncident,
   HELD_SQL,
-  heldByPause,
+  heldWhileDisabled,
   isHeld,
-  pauseOpenIncident,
-  recordPause,
+  recordDisable,
   turnOffForIncident,
-} from "./pause";
+} from "./disable-at-limit";
+import { missedDueAt, ranRecentlyCutoff } from "./missed-runs";
+import { activePause } from "./org-pause";
 import {
   type EffectivePolicy,
   ensureOrgSettings,
-  isMuted,
+  isWorkflowPaused,
   loadChannels,
   loadEffectivePolicy,
   loadOrgPolicy,
@@ -97,6 +96,7 @@ import {
   type RefusedRun,
 } from "./streak-runs";
 import { isRefusedIncident } from "./view-types";
+import { endPauseBecauseItWorks } from "./workflow-pause-notices";
 import {
   AUTOMATIC_TRIGGERS,
   runsOnItsOwn,
@@ -134,7 +134,7 @@ type OpenedIncident = {
   organizationId: string;
   workflowId: string;
   /** Its workflow was turned off as the incident opened. */
-  workflowPaused?: boolean;
+  workflowDisabled?: boolean;
   /** Org-wide pause: the alert waits until the pause ends. */
   holdUntil?: Date;
   /** Refused: always its own alert, never in a grouped one. */
@@ -769,7 +769,7 @@ function refusalFields(newest: RefusedRun): {
   };
 }
 
-/** Its newest attempts were all refused: a "refused" incident, held by pause and mute; it never turns the workflow off. */
+/** Its newest attempts were all refused: a "refused" incident, held by an org or workflow pause; it never turns the workflow off. */
 async function openIfRefused(
   workflow: WorkflowRow,
   policy: EffectivePolicy,
@@ -786,8 +786,8 @@ async function openIfRefused(
   if (orgPause) {
     return orgPause;
   }
-  if (isMuted(policy, now)) {
-    return policy.mutedUntil;
+  if (isWorkflowPaused(policy, now)) {
+    return policy.workflowPausedUntil;
   }
   // One refusal after the accepted run, inside the recovery hold: the incident it closed continues.
   const reopened = await reopenRecovered(
@@ -859,7 +859,7 @@ async function evaluateWorkflow(
   );
   const org = await loadOrgPolicy(workflow.organizationId);
   if (inactiveReason) {
-    if (open && !heldByPause(open, workflow, inactiveReason)) {
+    if (open && !heldWhileDisabled(open, workflow, inactiveReason)) {
       await closeIncident({
         incident: open,
         reason: inactiveReason,
@@ -939,9 +939,9 @@ async function evaluateWorkflow(
     open = await reopenRecovered(workflowId, summary.firstFailedAt, now);
   }
 
-  // It works again: the mute ends, and everyone hears what it hid.
-  if (policy.muteUntilSuccess && summary.latestSuccessRunId) {
-    await endMuteBecauseItWorks(workflowId, summary.latestSuccessRunId, now);
+  // It works again: the pause ends, and everyone hears what it hid.
+  if (policy.workflowPauseUntilSuccess && summary.latestSuccessRunId) {
+    await endPauseBecauseItWorks(workflowId, summary.latestSuccessRunId, now);
   }
 
   if (open && summary.failures > 0 && summary.lastFailedAt) {
@@ -956,14 +956,14 @@ async function evaluateWorkflow(
       .where(eq(workflowFailureIncidents.id, open.id));
   }
 
-  // Pause box ticked after the alert, re-enabled and still failing, or out of
-  // funds after a time-rule alert (runs since the last pause count).
-  if (open && policy.pauseWorkflow) {
-    const since = open.workflowPausedAt;
+  // Disable box ticked after the alert, re-enabled and still failing, or out of
+  // funds after a time-rule alert (runs since it was last turned off count).
+  if (open && policy.disableWorkflow) {
+    const since = open.workflowDisabledAt;
     const streak = since ? summarizeStreak(runs, since, window) : summary;
     const outOfFunds = streak.outOfFunds >= OUT_OF_FUNDS_THRESHOLD;
     if (streak.failures >= policy.threshold || outOfFunds) {
-      stats.messagesQueued += await pauseOpenIncident({
+      stats.messagesQueued += await disableForOpenIncident({
         workflow,
         incident: open,
         policy,
@@ -1012,22 +1012,22 @@ async function evaluateWorkflow(
     return refusedRecheck;
   }
   // Only the count and out-of-funds rules turn a workflow off; the time rule only tells.
-  const pauses = policy.pauseWorkflow && decision.by !== "time";
+  const disables = policy.disableWorkflow && decision.by !== "time";
   // An org pause holds alerts but still turns the workflow off (it may spend gas).
-  if (orgPause && !pauses) {
+  if (orgPause && !disables) {
     return orgPause;
   }
-  // A mute never hides a pause: turning a workflow off silently is worse.
-  if (isMuted(policy, now) && !pauses) {
-    // Alerts start again if it is still failing when the mute ends.
-    return policy.mutedUntil;
+  // A workflow pause never hides turning it off: doing that silently is worse.
+  if (isWorkflowPaused(policy, now) && !disables) {
+    // Alerts start again if it is still failing when the pause ends.
+    return policy.workflowPausedUntil;
   }
   if (!(summary.firstFailedAt && summary.lastFailedAt)) {
     return null;
   }
 
   const { firstFailedAt, lastFailedAt } = summary;
-  // One transaction, so the incident never exists without its pause.
+  // One transaction, so the incident never exists without turning it off.
   const result = await db.transaction(async (tx: Tx) => {
     const [row] = await tx
       .insert(workflowFailureIncidents)
@@ -1049,20 +1049,20 @@ async function evaluateWorkflow(
     if (!row) {
       return null;
     }
-    const paused =
-      pauses && (await turnOffForIncident(tx, workflowId, row.id, now));
-    return { id: row.id, paused };
+    const disabled =
+      disables && (await turnOffForIncident(tx, workflowId, row.id, now));
+    return { id: row.id, disabled };
   });
   if (result) {
     stats.incidentsOpened += 1;
-    if (result.paused) {
-      await recordPause(workflow, result.id, summary.failures);
+    if (result.disabled) {
+      await recordDisable(workflow, result.id, summary.failures);
     }
     opened.push({
       id: result.id,
       organizationId: workflow.organizationId,
       workflowId,
-      workflowPaused: result.paused,
+      workflowDisabled: result.disabled,
       holdUntil: orgPause ?? undefined,
     });
   }
@@ -1185,7 +1185,7 @@ async function queueAlerts(
             "alert",
             0,
             incident.holdUntil ?? now,
-            incident.workflowPaused ? { workflowPaused: true } : undefined
+            incident.workflowDisabled ? { workflowDisabled: true } : undefined
           )
         );
       }
@@ -1257,7 +1257,7 @@ export async function requeueLostAlerts(
   }
 }
 
-/** Close incidents of paused, deleted or manual workflows: no run ever queues them. */
+/** Close incidents of disabled, deleted or manual workflows: no run ever queues them. */
 export async function closeInactiveIncidents(
   now: Date,
   stats: EvaluationStats
@@ -1279,7 +1279,7 @@ export async function closeInactiveIncidents(
     .where(
       and(
         isNull(workflowFailureIncidents.resolvedAt),
-        // Filter in SQL so a wide outage cannot crowd them out; heldByPause stays open.
+        // Filter in SQL so a wide outage cannot crowd them out; heldWhileDisabled stays open.
         sql`((${workflows.enabled} = false AND NOT ${HELD_SQL})
           OR ${workflows.deletedAt} IS NOT NULL
           OR ${workflows.deactivatedAt} IS NOT NULL
@@ -1313,7 +1313,7 @@ export async function closeInactiveIncidents(
       orgHaltedAt: row.orgHaltedAt,
     };
     const reason = inactiveResolution(workflow, workflowTriggerType(row.nodes));
-    if (!reason || heldByPause(row.incident, workflow, reason)) {
+    if (!reason || heldWhileDisabled(row.incident, workflow, reason)) {
       continue;
     }
     try {
@@ -1477,7 +1477,7 @@ async function openIncidentsNotifiedBy(
 }
 
 /**
- * The reminders owed now, by org: a workflow its incident paused, or one that cannot run, is not
+ * The reminders owed now, by org: a workflow its incident turned off, or one that cannot run, is not
  * "still failing". With `settle`, one not owed has its clock moved so it stops crowding the due list.
  */
 async function owedByOrg(
@@ -1496,7 +1496,7 @@ async function owedByOrg(
         : null;
       if (
         !policy?.remindDaily ||
-        isMuted(policy, now) ||
+        isWorkflowPaused(policy, now) ||
         isHeld(incident) ||
         workflow.orgHaltedAt ||
         inactiveResolution(workflow, workflowTriggerType(workflow.nodes)) ||
@@ -2007,7 +2007,10 @@ export async function checkMissedSchedules(
         row.organizationId,
         row.workflowId
       );
-      if (isMuted(policy, now) || activePause(policy.orgPausedUntil, now)) {
+      if (
+        isWorkflowPaused(policy, now) ||
+        activePause(policy.orgPausedUntil, now)
+      ) {
         continue;
       }
       const [inserted] = await db

@@ -319,73 +319,76 @@ test.describe("Failure alerts", () => {
     );
   });
 
-  test("workflow Properties: mute, unmute, custom rules tab with pause, back to org rules", async ({
+  test("workflow Properties: pause, resume, custom rules tab with pause, back to org rules", async ({
     page,
   }) => {
     let section = await openProperties(page, fixture.failingId);
 
-    const muteOpen = section.getByTestId("failure-alerts-mute-open");
+    const pauseOpen = section.getByTestId("failure-alerts-workflow-pause-open");
     await expect(section).toHaveAttribute("data-source", "org");
-    // One mute for the whole workflow, outside the rules tabs, on either tab.
+    // One pause for the whole workflow, outside the rules tabs, on either tab.
     const rulesCard = section.getByTestId("failure-alerts-rules-card");
     for (const tab of ["org", "custom"] as const) {
       await section.getByTestId(`failure-alerts-tab-${tab}`).click();
-      await expect(muteOpen).toHaveCount(1);
+      await expect(pauseOpen).toHaveCount(1);
       await expect(
-        rulesCard.getByTestId("failure-alerts-mute-open")
+        rulesCard.getByTestId("failure-alerts-workflow-pause-open")
       ).toHaveCount(0);
       await expect(
         section
-          .getByTestId("failure-alerts-mute-area")
-          .getByTestId("failure-alerts-mute-open")
+          .getByTestId("failure-alerts-workflow-pause-area")
+          .getByTestId("failure-alerts-workflow-pause-open")
       ).toHaveCount(1);
     }
     await section.getByTestId("failure-alerts-tab-org").click();
-    await muteOpen.click();
-    const mute = section.getByTestId("failure-alerts-mute");
-    await expect(mute).toBeVisible();
+    await pauseOpen.click();
+    const pause = section.getByTestId("failure-alerts-workflow-pause");
+    await expect(pause).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect(mute).toHaveCount(0);
-    await muteOpen.click();
-    // A mute needs a length and a reason; nothing saves until both are given.
-    await mute.locator('[data-mute="24h"]').click();
-    const submit = mute.getByTestId("failure-alerts-mute-submit");
+    await expect(pause).toHaveCount(0);
+    await pauseOpen.click();
+    // A pause needs a length and a reason; nothing saves until both are given.
+    await pause.locator('[data-pause="24h"]').click();
+    const submit = pause.getByTestId("failure-alerts-workflow-pause-submit");
     await expect(submit).toBeDisabled();
-    await mute.getByTestId("failure-alerts-mute-reason").fill("E2E RPC move");
+    await pause
+      .getByTestId("failure-alerts-workflow-pause-reason")
+      .fill("E2E RPC move");
     await submit.click();
     await expect
       .poll(
-        async () => (await readOverride(fixture.failingId))?.mutedUntil,
+        async () => (await readOverride(fixture.failingId))?.pausedUntil,
         SAVE_TIMEOUT
       )
       .toBeTruthy();
-    await expect(section).toHaveAttribute("data-muted", "true");
+    await expect(section).toHaveAttribute("data-paused", "true");
     await expect(section).toContainText("E2E RPC move");
 
-    // The mute is never quiet: Needs attention lists it, Sent alerts logs it.
+    // The pause is never quiet: Needs attention lists it, Sent alerts logs it.
     await openAlerts(page, "overview");
-    const mutedRow = page.getByTestId("failure-alerts-muted-workflow");
-    await expect(mutedRow).toContainText(fixture.failingName, FIRST_VISIT);
-    await expect(mutedRow).toContainText("E2E RPC move");
+    const pausedRow = page.getByTestId("failure-alerts-paused-workflow");
+    await expect(pausedRow).toContainText(fixture.failingName, FIRST_VISIT);
+    await expect(pausedRow).toContainText("E2E RPC move");
     await expect(page.getByText("All healthy")).toHaveCount(0);
     await openAlerts(page, "sent");
     await expect(
       page
         .getByTestId("failure-alert-history-row")
-        .and(page.locator('[data-kind="workflow_muted"]'))
+        .and(page.locator('[data-kind="workflow_paused"]'))
         .filter({ hasText: fixture.failingName })
     ).toHaveCount(1, SAVE_TIMEOUT);
 
     section = await openProperties(page, fixture.failingId);
-    await section.getByTestId("failure-alerts-unmute").click();
+    await section.getByTestId("failure-alerts-workflow-resume").click();
     await expect
       .poll(
-        async () => (await readOverride(fixture.failingId))?.mutedUntil ?? null,
+        async () =>
+          (await readOverride(fixture.failingId))?.pausedUntil ?? null,
         SAVE_TIMEOUT
       )
       .toBeNull();
 
-    await expect(section).toHaveAttribute("data-muted", "false");
+    await expect(section).toHaveAttribute("data-paused", "false");
     // Both tabs show Rules, Email and Methods; a tab only shows, its button switches.
     await expect(section.getByTestId("failure-alerts-tab-org")).toHaveAttribute(
       "data-state",
@@ -430,12 +433,12 @@ test.describe("Failure alerts", () => {
     await expect(custom.getByRole("button", { name: "Save" })).toHaveCount(0);
     const threshold = custom.locator("#wf-failure-threshold");
     await expect(threshold).toHaveValue("5");
-    const pauseBox = custom.locator("#wf-pause-workflow");
-    await pauseBox.click();
+    const disableBox = custom.locator("#wf-disable-workflow");
+    await disableBox.click();
     await threshold.fill("2");
     await expect
       .poll(() => readOverride(fixture.failingId), SAVE_TIMEOUT)
-      .toMatchObject({ threshold: 2, pauseWorkflow: true });
+      .toMatchObject({ threshold: 2, disableWorkflow: true });
     await expect(section.getByTestId("failure-alerts-autosave")).toHaveText(
       "All changes saved",
       SAVE_TIMEOUT
@@ -462,10 +465,10 @@ test.describe("Failure alerts", () => {
     const rows = page.getByTestId("failure-alert-history-row");
     await expect(rows.first()).toBeVisible(FIRST_VISIT);
 
-    // People's actions shows the earlier mute and none of the alerts.
+    // People's actions shows the earlier pause and none of the alerts.
     await page.getByTestId("failure-alert-history-scope-people").click();
     await expect(
-      rows.and(page.locator('[data-kind="workflow_muted"]')).first()
+      rows.and(page.locator('[data-kind="workflow_paused"]')).first()
     ).toBeVisible(SAVE_TIMEOUT);
     await expect(rows.and(page.locator('[data-kind="alert"]'))).toHaveCount(0);
     await expect(rows.filter({ hasText: "Reason:" }).first()).toBeVisible();
@@ -630,38 +633,40 @@ test.describe("Failure alerts", () => {
       .toBeNull();
   });
 
-  test("Overview unmutes a muted workflow in one click", async ({ page }) => {
+  test("Overview resumes a paused workflow in one click", async ({ page }) => {
     const section = await openProperties(page, fixture.failingId);
-    await section.getByTestId("failure-alerts-mute-open").click();
-    const mute = section.getByTestId("failure-alerts-mute");
-    await mute.locator('[data-mute="1h"]').click();
-    await mute.getByTestId("failure-alerts-mute-reason").fill("E2E quick fix");
-    await mute.getByTestId("failure-alerts-mute-submit").click();
+    await section.getByTestId("failure-alerts-workflow-pause-open").click();
+    const pause = section.getByTestId("failure-alerts-workflow-pause");
+    await pause.locator('[data-pause="1h"]').click();
+    await pause
+      .getByTestId("failure-alerts-workflow-pause-reason")
+      .fill("E2E quick fix");
+    await pause.getByTestId("failure-alerts-workflow-pause-submit").click();
     await expect
       .poll(
-        async () => (await readOverride(fixture.failingId))?.mutedUntil,
+        async () => (await readOverride(fixture.failingId))?.pausedUntil,
         SAVE_TIMEOUT
       )
       .toBeTruthy();
     try {
       await openAlerts(page, "overview");
-      const mutedRow = page.getByTestId("failure-alerts-muted-workflow");
-      await expect(mutedRow).toContainText("E2E quick fix", FIRST_VISIT);
-      await mutedRow.getByTestId("failure-alerts-overview-unmute").click();
+      const pausedRow = page.getByTestId("failure-alerts-paused-workflow");
+      await expect(pausedRow).toContainText("E2E quick fix", FIRST_VISIT);
+      await pausedRow.getByTestId("failure-alerts-overview-resume").click();
       await expect
         .poll(
           async () =>
-            (await readOverride(fixture.failingId))?.mutedUntil ?? null,
+            (await readOverride(fixture.failingId))?.pausedUntil ?? null,
           SAVE_TIMEOUT
         )
         .toBeNull();
-      await expect(mutedRow).toHaveCount(0, SAVE_TIMEOUT);
+      await expect(pausedRow).toHaveCount(0, SAVE_TIMEOUT);
     } finally {
-      // Leave the shared fixture unmuted even if a step above failed.
+      // Leave the shared fixture resumed even if a step above failed.
       const left = await openProperties(page, fixture.failingId);
-      const unmute = left.getByTestId("failure-alerts-unmute");
-      if ((await unmute.count()) > 0) {
-        await unmute.click();
+      const resume = left.getByTestId("failure-alerts-workflow-resume");
+      if ((await resume.count()) > 0) {
+        await resume.click();
       }
     }
   });

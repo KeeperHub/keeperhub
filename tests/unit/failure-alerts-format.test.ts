@@ -15,7 +15,7 @@ const slack: RuleChannel = {
   destination: "#ops",
   connectionName: "Ops",
   role: "always",
-  pausedAt: null,
+  stoppedAt: null,
 };
 
 const base = {
@@ -55,7 +55,7 @@ describe("describeRule", () => {
       ...base,
       channels: [
         slack,
-        { ...slack, destination: "#old", pausedAt: "2026-10-01T00:00:00Z" },
+        { ...slack, destination: "#old", stoppedAt: "2026-10-01T00:00:00Z" },
         { ...slack, kind: "pagerduty", destination: "PABC123", role: "backup" },
       ],
     });
@@ -75,7 +75,7 @@ describe("describeRule", () => {
     const text = describeRule({
       ...base,
       timeLimitMinutes: 360,
-      pauseWorkflow: true,
+      disableWorkflow: true,
     });
     expect(text).toMatch(
       /KeeperHub turns this workflow off only after 5 failed runs in a row or when its wallet runs out of funds\.$/
@@ -142,7 +142,7 @@ describe("deliveryStatus", () => {
     ).toBe("Queued");
   });
 
-  it("shows a dropped row as not delivered, a withdrawn one muted", () => {
+  it("shows a dropped row as not delivered, a withdrawn one paused", () => {
     expect(
       deliveryStatus(
         { ...row, state: "skipped", lastError: SKIP_REASON.stale },

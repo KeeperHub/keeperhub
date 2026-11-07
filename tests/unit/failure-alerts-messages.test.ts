@@ -90,7 +90,7 @@ describe("wallet out of funds", () => {
 
   it("names the cause when it turns the workflow off", () => {
     const message = renderMessage(
-      { ...org, kind: "alert", workflow, incident, paused: "first" },
+      { ...org, kind: "alert", workflow, incident, disabled: "first" },
       now
     );
     expect(message.subject).toContain(
@@ -164,7 +164,7 @@ describe("grouped alert", () => {
       kind: "grouped",
       workflows: [
         { ...row(1), failureCount: 9 },
-        { ...row(2), failureCount: 3, workflowPaused: true },
+        { ...row(2), failureCount: 3, workflowDisabled: true },
         { ...row(3, "Insufficient ETH balance. Have: 0.1, Need: 0.2") },
         { ...row(4), failureCount: 12 },
       ],
@@ -190,7 +190,7 @@ describe("grouped alert", () => {
       name: `${"Long workflow name ".repeat(4)}${i}`,
       failureCount: 50 - i,
       lastError: "e".repeat(400),
-      workflowPaused: i === 39,
+      workflowDisabled: i === 39,
     }));
     const message = renderMessage({ ...org, kind: "grouped", workflows });
     const discord = fitChat(message.chatVariants, "discord");
@@ -212,14 +212,14 @@ describe("grouped alert", () => {
 });
 
 describe("org pause", () => {
-  const paused = (pausingWorkflows?: number) =>
+  const paused = (disablingWorkflows?: number) =>
     renderMessage({
       ...org,
       kind: "alerts_paused",
       until: new Date("2026-10-28T16:00:00Z"),
       reason: "Upgrade",
       by: "Ana",
-      pausingWorkflows,
+      disablingWorkflows,
     });
 
   it("says workflows set to turn off still turn off", () => {
@@ -357,13 +357,13 @@ describe("chat length", () => {
         now
       ),
       renderMessage(
-        { ...longOrg, kind: "alert", workflow, incident, paused: "again" },
+        { ...longOrg, kind: "alert", workflow, incident, disabled: "again" },
         now
       ),
       renderMessage({ ...longOrg, kind: "recovery", workflow, incident }, now),
       renderMessage({
         ...longOrg,
-        kind: "channel_paused",
+        kind: "channel_stopped",
         channelLabel: LONG_NAME,
         reason: LONG_ERROR,
       }),
@@ -383,7 +383,7 @@ describe("chat length", () => {
         failingNow: [{ ...workflow, failureCount: 4 }],
       }),
       renderMessage({ ...longOrg, kind: "test", channelLabel: LONG_NAME }),
-      ...(["alert", "missed", "paused", "recovery"] as const).map((sample) =>
+      ...(["alert", "missed", "disabled", "recovery"] as const).map((sample) =>
         renderSample(longOrg, sample, LONG_NAME, now)
       ),
     ];
@@ -512,7 +512,7 @@ describe("error text", () => {
     });
     const paused = renderMessage({
       ...org,
-      kind: "channel_paused",
+      kind: "channel_stopped",
       channelLabel: "Telegram -100",
       reason: SECRET_ERROR,
     });
@@ -617,36 +617,36 @@ describe("wording", () => {
       expect(message.chat.split("\n")[0]?.match(/Acme/g)).toHaveLength(1);
     }
     expect(messages[0]?.subject).toBe(
-      "[Acme] Alerts are paused until 2026-10-28 16:00 UTC"
+      "[Acme] Alerts are paused for the whole organization until 2026-10-28 16:00 UTC"
     );
     expect(messages[3]?.subject).toBe(
       "[Acme] 80 of the 100 alert emails for this month are used"
     );
   });
 
-  it("says how a paused method comes back, by kind", () => {
-    const paused = (channelKind?: string) =>
+  it("says how a stopped method comes back, by kind", () => {
+    const stopped = (channelKind?: string) =>
       renderMessage({
         ...org,
-        kind: "channel_paused",
+        kind: "channel_stopped",
         channelLabel: "Slack #ops",
         channelKind,
         reason: "channel_not_found.",
       }).text;
-    expect(paused("slack")).toContain(
-      "It is paused until a test on it succeeds."
+    expect(stopped("slack")).toContain(
+      "Nothing is sent to it until a test on it succeeds."
     );
-    expect(paused("slack")).not.toContain("by itself");
-    expect(paused("discord")).toContain(
+    expect(stopped("slack")).not.toContain("by itself");
+    expect(stopped("discord")).toContain(
       "it is checked every day and turns back on by itself when it works, or when a test succeeds."
     );
-    expect(paused()).toContain("apart from Slack");
+    expect(stopped()).toContain("apart from Slack");
   });
 
   it("names the workflow and links to it when the method is that workflow's own", () => {
     const message = renderMessage({
       ...org,
-      kind: "channel_paused",
+      kind: "channel_stopped",
       channelLabel: "Telegram -1001",
       channelKind: "telegram",
       reason: "chat not found.",
@@ -662,15 +662,15 @@ describe("wording", () => {
 
   it("links samples to the Alerts page, and the funds sample to Add funds", () => {
     const ALERTS = "https://app.test/settings/org-1/alerts";
-    for (const sample of ["alert", "missed", "paused", "recovery"] as const) {
+    for (const sample of ["alert", "missed", "disabled", "recovery"] as const) {
       const message = renderSample(org, sample, "Test", now);
       expect(message.text).not.toContain("/workflows/");
       expect(message.chat).not.toContain("/workflows/");
       expect(message.text).toContain(ALERTS);
     }
-    const paused = renderSample(org, "paused", "Test", now);
-    expect(paused.text).toContain(`Add funds: ${WALLETS}`);
-    expect(paused.html).toContain(`href="${WALLETS}"`);
+    const disabled = renderSample(org, "disabled", "Test", now);
+    expect(disabled.text).toContain(`Add funds: ${WALLETS}`);
+    expect(disabled.html).toContain(`href="${WALLETS}"`);
   });
 
   it("makes the alert sample a plain count alert, not a funds one", () => {
@@ -686,7 +686,7 @@ describe("wording", () => {
 
   it("gives samples one Alerts settings link, not two named for a workflow", () => {
     const ALERTS = "https://app.test/settings/org-1/alerts";
-    for (const sample of ["alert", "missed", "paused", "recovery"] as const) {
+    for (const sample of ["alert", "missed", "disabled", "recovery"] as const) {
       const message = renderSample(org, sample, "Test", now);
       for (const text of [message.text, message.chat]) {
         expect(text).toContain(`Open Alerts settings: ${ALERTS}`);
@@ -703,8 +703,8 @@ describe("wording", () => {
   });
 
   it("uses 2 failed runs in the funds samples, like a real funds alert", () => {
-    const paused = renderSample(org, "paused", undefined, now);
-    expect(paused.subject).toContain(
+    const disabled = renderSample(org, "disabled", undefined, now);
+    expect(disabled.subject).toContain(
       "Wallet out of funds: Example keeper was turned off after 2 failed runs in a row"
     );
   });
@@ -717,7 +717,7 @@ describe("wording", () => {
       openedBy: "count" as const,
     };
     const first = renderMessage(
-      { ...org, kind: "alert", workflow, incident, paused: "first" },
+      { ...org, kind: "alert", workflow, incident, disabled: "first" },
       now
     );
     const again = renderMessage(
@@ -726,8 +726,8 @@ describe("wording", () => {
         kind: "alert",
         workflow,
         incident,
-        paused: "again",
-        pausedFailures: 2,
+        disabled: "again",
+        disabledFailures: 2,
       },
       now
     );
@@ -752,10 +752,17 @@ describe("wording", () => {
     expect(again.subject).toContain(
       "Keeper was turned off again: 2 more failed runs after it was turned back on"
     );
-    expect(failing.text).toContain("fixes, mutes or disables it.");
+    expect(failing.text).toContain(
+      "fixes it, pauses its alerts or disables it."
+    );
     expect(last.text).toContain("until it works or someone turns it off.");
     for (const message of [first, again, failing, last]) {
-      expect(`${message.text}${message.chat}`).not.toMatch(/\bpause/i);
+      // Pausing alerts is a different action; only that may say "pause".
+      const text = `${message.text}${message.chat}`.replaceAll(
+        "pauses its alerts",
+        ""
+      );
+      expect(text).not.toMatch(/\bpause/i);
     }
   });
 
@@ -1274,7 +1281,7 @@ describe("typed names and reasons in notices", () => {
   const hostile = "Edge\nBcc: x@evil.test ‮gnp.exe";
 
   it("keeps the subject to one line and drops bidi characters everywhere", () => {
-    for (const kind of ["workflow_muted", "workflow_unmuted"] as const) {
+    for (const kind of ["workflow_paused", "workflow_resumed"] as const) {
       const message = renderMessage({
         ...org,
         kind,
@@ -1293,11 +1300,11 @@ describe("typed names and reasons in notices", () => {
     }
   });
 
-  it("says the alert waits for the org's pause when a mute ends while paused", () => {
+  it("says the alert waits for the org's pause when a pause ends while paused", () => {
     const message = renderMessage(
       {
         ...org,
-        kind: "mute_ended",
+        kind: "workflow_pause_ended",
         workflow,
         by: null,
         reason: null,
@@ -1339,7 +1346,7 @@ describe("daily reminder digest", () => {
       reminder: true,
       workflows: [
         listed("w1", "Keeper A"),
-        listed("w2", "Keeper B", { workflowPaused: true }),
+        listed("w2", "Keeper B", { workflowDisabled: true }),
       ],
     });
     expect(message.subject).toBe(

@@ -17,13 +17,13 @@ import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
 
 const ENDPOINT = "/api/workflows/[workflowId]/failure-alerts";
 
-function muteAction(
-  change: "muted" | "changed" | "unmuted" | null
+function pauseAction(
+  change: "paused" | "changed" | "resumed" | null
 ): string {
-  if (change === "unmuted") {
-    return "workflow.alerts_unmuted";
+  if (change === "resumed") {
+    return "workflow.failure_alerts_resumed";
   }
-  return change ? "workflow.alerts_muted" : "workflow.failure_alerts_changed";
+  return change ? "workflow.failure_alerts_paused" : "workflow.failure_alerts_changed";
 }
 
 /** The workflow's failure notifications: org default, its override, its state. */
@@ -86,7 +86,7 @@ export async function PUT(
     if (body instanceof NextResponse) {
       return body;
     }
-    const { rulesChanged, muteChange, muteBefore, muteAfter, ...saved } =
+    const { rulesChanged, pauseChange, pauseBefore, pauseAfter, ...saved } =
       await saveWorkflowOverride({
       workflowId,
       organizationId: workflow.organizationId,
@@ -104,12 +104,12 @@ export async function PUT(
         authMethod: access.authMethod,
         apiKeyId: access.apiKeyId,
       },
-      // A mute gets its own action, with what it was and what it became.
-      action: muteAction(muteChange),
+      // A pause gets its own action, with what it was and what it became.
+      action: pauseAction(pauseChange),
       resourceType: "workflow",
       resourceId: workflowId,
-      ...(muteChange
-        ? { before: { mute: muteBefore }, after: { ...saved, mute: muteAfter } }
+      ...(pauseChange
+        ? { before: { pause: pauseBefore }, after: { ...saved, pause: pauseAfter } }
         : { after: saved }),
       metadata: buildAuditMetadata(request),
     });

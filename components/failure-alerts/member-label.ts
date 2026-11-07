@@ -2,6 +2,7 @@ import { truncateAddress } from "@/lib/address-utils";
 import { walletAddressFromEmail } from "@/lib/auth/wallet-constants";
 import { actorLabel } from "@/lib/notifications/failure-alerts/actor-label";
 import { requiredManagers } from "@/lib/notifications/failure-alerts/constants";
+import { pausedBy } from "@/lib/notifications/failure-alerts/pause-copy";
 import { formatWhen } from "./format";
 
 /** A wallet account's login is a synthetic address; show the wallet instead. */
@@ -52,17 +53,17 @@ export function lastRecipientNote(onlyOne: boolean): string {
     : "An owner or admin who can get email must always get alerts. Tick another one first.";
 }
 
-/** "Muted by Dana (dana@x.com) until Nov 13: reason", worded the same on every surface. */
-export function muteSentence(m: {
+/** "Paused by Dana (dana@x.com) until Nov 13: reason", worded the same on every surface. */
+export function pauseSentence(m: {
   by: string | null;
   account: string | null;
   untilItWorks: boolean;
-  mutedUntil: string | null;
+  pausedUntil: string | null;
   reason: string | null;
 }): string {
   const who = actorLabel(m.by, m.account);
   const until = m.untilItWorks
-    ? `until it works again${m.mutedUntil ? ` (at most until ${formatWhen(m.mutedUntil)})` : ""}`
-    : `until ${formatWhen(m.mutedUntil ?? "")}`;
-  return `Muted${who ? ` by ${who}` : ""} ${until}${m.reason ? `: ${m.reason}` : ""}`;
+    ? `until it works again${m.pausedUntil ? ` (at most until ${formatWhen(m.pausedUntil)})` : ""}`
+    : `until ${formatWhen(m.pausedUntil ?? "")}`;
+  return `${pausedBy(who)} ${until}${m.reason ? `: ${m.reason}` : ""}`;
 }

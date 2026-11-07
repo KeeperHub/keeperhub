@@ -20,9 +20,9 @@ beforeEach(() => {
   act(() =>
     root.render(
       <PauseAlertsForm
+        disablingWorkflows={0}
         onCancel={() => undefined}
         onPause={async () => null}
-        pausingWorkflows={0}
       />
     )
   );
@@ -66,7 +66,7 @@ describe("pause form custom time", () => {
     expect(container.textContent).toContain(
       "Moved to the latest time allowed, 7 days from now."
     );
-    expect(container.textContent).not.toContain("at most 7 days");
+    expect(container.querySelector('[id$="-invalid"]')).toBeNull();
   });
 
   it("keeps a time inside the limit as picked", () => {

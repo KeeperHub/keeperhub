@@ -36,7 +36,7 @@ export type DeliveryOutcome = {
   retryAfterMs?: number;
   /** Ours to fix (our email key), so our on-call hears about it. */
   platformFault?: boolean;
-  /** Not delivered but the channel is fine (maintenance window): back up, do not pause. */
+  /** Not delivered but the channel is fine (maintenance window): back up, do not stop it. */
   channelHealthy?: boolean;
   message: string;
 };

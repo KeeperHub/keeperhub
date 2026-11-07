@@ -61,7 +61,7 @@ export type ChannelConfig = {
   integrationId: string;
   destination: string;
   role: FailureAlertChannelRole;
-  pausedAt: Date | null;
+  stoppedAt: Date | null;
 };
 
 type WorkflowOverride = typeof workflowFailureAlertOverrides.$inferSelect;
@@ -74,10 +74,10 @@ export type EffectivePolicy = {
   notifyRecovery: boolean;
   recipientUserIds: string[] | null;
   channels: ChannelConfig[];
-  mutedUntil: Date | null;
-  muteUntilSuccess: boolean;
+  workflowPausedUntil: Date | null;
+  workflowPauseUntilSuccess: boolean;
   /** Turn the workflow off when its alert goes out. Never set org-wide. */
-  pauseWorkflow: boolean;
+  disableWorkflow: boolean;
   /** Its own people or methods: it cannot share a grouped org message. */
   customRouting: boolean;
   /** The org-wide pause, if one is set (it may have run out). */
@@ -153,7 +153,7 @@ export async function loadChannels(
       integrationId: failureAlertChannels.integrationId,
       destination: failureAlertChannels.destination,
       role: failureAlertChannels.role,
-      pausedAt: failureAlertChannels.pausedAt,
+      stoppedAt: failureAlertChannels.stoppedAt,
     })
     .from(failureAlertChannels)
     .where(
@@ -191,7 +191,7 @@ export function mergePolicy(
       override.timeLimitMinutes !== null ||
       override.recipientUserIds !== null ||
       override.customChannels ||
-      override.pauseWorkflow);
+      override.disableWorkflow);
 
   let timeLimitMinutes = org.timeLimitMinutes;
   if (
@@ -214,9 +214,9 @@ export function mergePolicy(
     notifyRecovery: org.notifyRecovery,
     recipientUserIds: override?.recipientUserIds ?? org.recipientUserIds,
     channels: override?.customChannels ? workflowChannels : orgChannels,
-    mutedUntil: override?.mutedUntil ?? null,
-    muteUntilSuccess: override?.muteUntilSuccess ?? false,
-    pauseWorkflow: override?.pauseWorkflow ?? false,
+    workflowPausedUntil: override?.pausedUntil ?? null,
+    workflowPauseUntilSuccess: override?.pauseUntilSuccess ?? false,
+    disableWorkflow: override?.disableWorkflow ?? false,
     customRouting:
       override !== null &&
       (override.recipientUserIds !== null || override.customChannels),
@@ -243,9 +243,11 @@ export async function loadEffectivePolicy(
   return mergePolicy(org, orgChannels, override, workflowChannels);
 }
 
-/** Every mute has an end (at most MAX_MUTE_DAYS); "until it works" ends sooner if it works. */
-export function isMuted(policy: EffectivePolicy, now: Date): boolean {
-  return policy.mutedUntil !== null && policy.mutedUntil > now;
+/** Every pause has an end (at most MAX_PAUSE_DAYS); "until it works" ends sooner if it works. */
+export function isWorkflowPaused(policy: EffectivePolicy, now: Date): boolean {
+  return (
+    policy.workflowPausedUntil !== null && policy.workflowPausedUntil > now
+  );
 }
 
 /** Who alerts fall back to: owners who can get email, else admins who can, else the owners. */
@@ -331,7 +333,7 @@ export async function loadChannelsByIds(
       integrationId: failureAlertChannels.integrationId,
       destination: failureAlertChannels.destination,
       role: failureAlertChannels.role,
-      pausedAt: failureAlertChannels.pausedAt,
+      stoppedAt: failureAlertChannels.stoppedAt,
     })
     .from(failureAlertChannels)
     .where(inArray(failureAlertChannels.id, ids));

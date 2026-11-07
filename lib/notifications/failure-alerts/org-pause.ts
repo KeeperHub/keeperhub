@@ -121,7 +121,9 @@ async function lockedPause(
 }
 
 /** Live workflows set to turn off at their limit: they still do during a pause. */
-async function countPausingWorkflows(organizationId: string): Promise<number> {
+async function countDisablingWorkflows(
+  organizationId: string
+): Promise<number> {
   const [row] = await db
     .select({ count: count() })
     .from(workflowFailureAlertOverrides)
@@ -132,7 +134,7 @@ async function countPausingWorkflows(organizationId: string): Promise<number> {
     .where(
       and(
         eq(workflowFailureAlertOverrides.organizationId, organizationId),
-        eq(workflowFailureAlertOverrides.pauseWorkflow, true),
+        eq(workflowFailureAlertOverrides.disableWorkflow, true),
         eq(workflows.enabled, true),
         isNull(workflows.deletedAt)
       )
@@ -189,7 +191,7 @@ export async function pauseOrgAlerts(params: {
   let until: Date = requested;
   const reason = cleanReason(params.reason);
   await ensureOrgSettings(organizationId, now);
-  const pausingWorkflows = await countPausingWorkflows(organizationId);
+  const disablingWorkflows = await countDisablingWorkflows(organizationId);
   await db.transaction(async (tx: Tx) => {
     const current = await lockedPause(tx, organizationId);
     if (
@@ -237,7 +239,7 @@ export async function pauseOrgAlerts(params: {
         reason,
         by: params.by,
         byUserId: params.byUserId ?? null,
-        pausingWorkflows,
+        disablingWorkflows,
       },
       now,
       tx

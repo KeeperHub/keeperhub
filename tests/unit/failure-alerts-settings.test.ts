@@ -78,8 +78,10 @@ describe("parseOrgSettings", () => {
 describe("isReachable", () => {
   it("is reachable with an email or a live channel, not with paused ones", () => {
     expect(isReachable(["a@x.dev"], [])).toBe(true);
-    expect(isReachable([], [{ pausedAt: null }])).toBe(true);
-    expect(isReachable([], [{ pausedAt: "2026-10-01T00:00:00Z" }])).toBe(false);
+    expect(isReachable([], [{ stoppedAt: null }])).toBe(true);
+    expect(isReachable([], [{ stoppedAt: "2026-10-01T00:00:00Z" }])).toBe(
+      false
+    );
     expect(isReachable([], [])).toBe(false);
   });
 });
@@ -104,7 +106,7 @@ describe("historyToCsv", () => {
         note: "Sent because Email could not be reached",
         by: "KeeperHub",
         byAccount: null,
-        muteUntil: null,
+        pauseUntil: null,
         workflows: [{ id: "w", name: '=HYPERLINK("x")' }],
       },
     ]);

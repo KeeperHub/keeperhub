@@ -98,7 +98,7 @@ function zoneName(): string {
 }
 
 /** "Until 7 Nov, 15:38 CET" in the viewer's time, or "Until it works again (at most 13 Nov)". */
-function muteUntilText(until: HistoryEntry["muteUntil"]): string | null {
+function pauseUntilText(until: HistoryEntry["pauseUntil"]): string | null {
   if (!until) {
     return null;
   }
@@ -191,18 +191,18 @@ function Cell({
 }
 
 function HistoryRow({ entry }: { entry: HistoryEntry }): React.ReactElement {
-  const methodPaused = entry.kind === "channel_paused";
+  const methodStopped = entry.kind === "channel_stopped";
   let what =
     FAILURE_ALERT_KIND_LABEL[entry.kind as FailureAlertMessageKind] ??
     entry.kind;
-  if (methodPaused && entry.note) {
+  if (methodStopped && entry.note) {
     what = `${what}: ${entry.note}`;
   }
   const status = deliveryStatus(entry);
   const { method, to } = methodAndTarget(entry);
   const note = [
-    muteUntilText(entry.muteUntil),
-    methodPaused ? null : entry.note,
+    pauseUntilText(entry.pauseUntil),
+    methodStopped ? null : entry.note,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -489,7 +489,7 @@ export function NotificationHistory({
   if (filtered) {
     emptyText = "No messages match these filters.";
   } else if (scope === "people") {
-    emptyText = "Nobody has muted, paused or tested anything yet.";
+    emptyText = "Nobody has paused alerts or tested anything yet.";
   } else if (scope === "all") {
     emptyText = "Nothing sent yet.";
   }

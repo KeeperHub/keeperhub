@@ -58,11 +58,11 @@ function ownerEmails(members: OrgMember[]): string[] {
   return reachableEmails(fallbackManagers(members));
 }
 
-/** A mute notice: everyone the workflow's alerts reach under `policy` (before the change) plus every owner. */
+/** A pause notice: everyone the workflow's alerts reach under `policy` (before the change) plus every owner. */
 export async function queueWorkflowNotice(params: {
   organizationId: string;
   workflow: { id: string; name: string };
-  kind: "workflow_muted" | "workflow_unmuted" | "mute_ended";
+  kind: "workflow_paused" | "workflow_resumed" | "workflow_pause_ended";
   policy: EffectivePolicy;
   members: OrgMember[];
   context: Record<string, unknown>;
@@ -78,7 +78,7 @@ export async function queueWorkflowNotice(params: {
   ];
   await insertDeliveries(
     buildMessageRows({
-      // One per notice: two mutes in the same millisecond are two notices.
+      // One per notice: two pauses in the same millisecond are two notices.
       scope: `${kind}:${workflow.id}:${randomUUID()}`,
       organizationId: params.organizationId,
       incidentId: null,
@@ -179,21 +179,21 @@ async function latestRunFailed(workflowId: string): Promise<boolean> {
   return run?.status === "error" || run?.refused === true;
 }
 
-/** Every workflow muted right now, failing ones first, for Needs attention. */
-export async function loadMutedWorkflows(
+/** Every workflow paused right now, failing ones first, for Needs attention. */
+export async function loadPausedWorkflows(
   organizationId: string,
   members: OrgMember[],
   now: Date = new Date()
-): Promise<OrgSettingsView["mutedWorkflows"]> {
+): Promise<OrgSettingsView["pausedWorkflows"]> {
   const rows = await db
     .select({
       id: workflows.id,
       name: workflows.name,
-      mutedUntil: workflowFailureAlertOverrides.mutedUntil,
-      muteUntilSuccess: workflowFailureAlertOverrides.muteUntilSuccess,
-      muteReason: workflowFailureAlertOverrides.muteReason,
-      mutedBy: workflowFailureAlertOverrides.mutedBy,
-      mutedAt: workflowFailureAlertOverrides.mutedAt,
+      pausedUntil: workflowFailureAlertOverrides.pausedUntil,
+      pauseUntilSuccess: workflowFailureAlertOverrides.pauseUntilSuccess,
+      pauseReason: workflowFailureAlertOverrides.pauseReason,
+      pausedByUserId: workflowFailureAlertOverrides.pausedByUserId,
+      pausedAt: workflowFailureAlertOverrides.pausedAt,
       updatedAt: workflowFailureAlertOverrides.updatedAt,
     })
     .from(workflowFailureAlertOverrides)
@@ -205,18 +205,18 @@ export async function loadMutedWorkflows(
       and(
         eq(workflowFailureAlertOverrides.organizationId, organizationId),
         isNull(workflows.deletedAt),
-        gt(workflowFailureAlertOverrides.mutedUntil, now)
+        gt(workflowFailureAlertOverrides.pausedUntil, now)
       )
     );
   if (rows.length === 0) {
     return [];
   }
   const accounts = await signInAccounts(
-    rows.flatMap((r) => (r.mutedBy ? [r.mutedBy] : []))
+    rows.flatMap((r) => (r.pausedByUserId ? [r.pausedByUserId] : []))
   );
-  const muted = await Promise.all(
+  const paused = await Promise.all(
     rows.map(async (r) => {
-      const since = r.mutedAt ?? r.updatedAt;
+      const since = r.pausedAt ?? r.updatedAt;
       const [failedRuns, failing] = await Promise.all([
         failedRunsSince(r.id, since),
         latestRunFailed(r.id),
@@ -224,42 +224,44 @@ export async function loadMutedWorkflows(
       return {
         id: r.id,
         name: r.name,
-        mutedUntil: r.mutedUntil?.toISOString() ?? null,
-        untilItWorks: r.muteUntilSuccess,
-        by: nameOf(r.mutedBy, members),
-        byAccount: r.mutedBy ? (accounts.get(r.mutedBy) ?? null) : null,
-        reason: r.muteReason,
+        pausedUntil: r.pausedUntil?.toISOString() ?? null,
+        untilItWorks: r.pauseUntilSuccess,
+        by: nameOf(r.pausedByUserId, members),
+        byAccount: r.pausedByUserId
+          ? (accounts.get(r.pausedByUserId) ?? null)
+          : null,
+        reason: r.pauseReason,
         failing,
         failedRuns,
       };
     })
   );
-  return muted.sort(
+  return paused.sort(
     (a, b) =>
       Number(b.failing) - Number(a.failing) ||
-      (a.mutedUntil ?? "").localeCompare(b.mutedUntil ?? "")
+      (a.pausedUntil ?? "").localeCompare(b.pausedUntil ?? "")
   );
 }
 
-type EndedMute = {
+type EndedPause = {
   workflowId: string;
   organizationId: string;
   name: string;
-  mutedBy: string | null;
-  mutedAt: Date | null;
+  pausedByUserId: string | null;
+  pausedAt: Date | null;
   updatedAt: Date;
   reason: string | null;
   until: Date | null;
   untilItWorks: boolean;
-  /** Deleted workflow or deactivated org: the mute is cleared without a notice. */
+  /** Deleted workflow or deactivated org: the pause is cleared without a notice. */
   gone: boolean;
 };
 
 /**
- * Ends the mutes `where` selects, exactly once each: clears them, tells everyone
+ * Ends the pauses `where` selects, exactly once each: clears them, tells everyone
  * (with the failures they hid) and queues the workflow so a failure alerts now.
  */
-async function endMutes(
+async function endPauses(
   where: SQL,
   ended: "expired" | "worked",
   now: Date
@@ -270,20 +272,20 @@ async function endMutes(
       workflow_id: string;
       organization_id: string;
       name: string;
-      muted_by: string | null;
-      muted_at: string | null;
+      paused_by_user_id: string | null;
+      paused_at: string | null;
       updated_at: string;
-      mute_reason: string | null;
-      muted_until: string | null;
-      mute_until_success: boolean;
+      pause_reason: string | null;
+      paused_until: string | null;
+      pause_until_success: boolean;
       gone: boolean;
     }>(sql`
       UPDATE ${workflowFailureAlertOverrides} AS o
-         SET muted_until = NULL, mute_until_success = false, mute_reason = NULL,
-             muted_by = NULL, muted_at = NULL, version = o.version + 1
+         SET paused_until = NULL, pause_until_success = false, pause_reason = NULL,
+             paused_by_user_id = NULL, paused_at = NULL, version = o.version + 1
         FROM (
-          SELECT ov.workflow_id, ov.muted_by, ov.muted_at, ov.updated_at,
-                 ov.mute_reason, ov.muted_until, ov.mute_until_success, w.name,
+          SELECT ov.workflow_id, ov.paused_by_user_id, ov.paused_at, ov.updated_at,
+                 ov.pause_reason, ov.paused_until, ov.pause_until_success, w.name,
                  (w.deleted_at IS NOT NULL OR org.deactivated_at IS NOT NULL) AS gone
             FROM ${workflowFailureAlertOverrides} AS ov
             JOIN ${workflows} AS w ON w.id = ov.workflow_id
@@ -293,58 +295,58 @@ async function endMutes(
            FOR UPDATE OF ov SKIP LOCKED
         ) AS old
        WHERE o.workflow_id = old.workflow_id
-      RETURNING o.workflow_id, o.organization_id, old.name, old.muted_by,
-                old.muted_at::text AS muted_at, old.updated_at::text AS updated_at,
-                old.mute_reason, old.muted_until::text AS muted_until,
-                old.mute_until_success, old.gone
+      RETURNING o.workflow_id, o.organization_id, old.name, old.paused_by_user_id,
+                old.paused_at::text AS paused_at, old.updated_at::text AS updated_at,
+                old.pause_reason, old.paused_until::text AS paused_until,
+                old.pause_until_success, old.gone
     `);
     const utc = (text: string): Date => new Date(`${text.replace(" ", "T")}Z`);
-    const list: EndedMute[] = [...rows].map((r) => ({
+    const list: EndedPause[] = [...rows].map((r) => ({
       workflowId: r.workflow_id,
       organizationId: r.organization_id,
       name: r.name,
-      mutedBy: r.muted_by,
-      mutedAt: r.muted_at ? utc(r.muted_at) : null,
+      pausedByUserId: r.paused_by_user_id,
+      pausedAt: r.paused_at ? utc(r.paused_at) : null,
       updatedAt: utc(r.updated_at),
-      reason: r.mute_reason,
-      until: r.muted_until ? utc(r.muted_until) : null,
-      untilItWorks: r.mute_until_success,
+      reason: r.pause_reason,
+      until: r.paused_until ? utc(r.paused_until) : null,
+      untilItWorks: r.pause_until_success,
       gone: r.gone,
     }));
-    for (const mute of list.filter((m) => !m.gone)) {
-      await tellMuteEnded(mute, ended, now, tx);
+    for (const pause of list.filter((m) => !m.gone)) {
+      await tellPauseEnded(pause, ended, now, tx);
     }
     return list.length;
   });
 }
 
-async function tellMuteEnded(
-  mute: EndedMute,
+async function tellPauseEnded(
+  pause: EndedPause,
   ended: "expired" | "worked",
   now: Date,
   tx: Tx
 ): Promise<void> {
   const [members, policy] = await Promise.all([
-    loadOrgMembers(mute.organizationId),
-    loadEffectivePolicy(mute.organizationId, mute.workflowId),
+    loadOrgMembers(pause.organizationId),
+    loadEffectivePolicy(pause.organizationId, pause.workflowId),
   ]);
-  const since = mute.mutedAt ?? mute.updatedAt;
+  const since = pause.pausedAt ?? pause.updatedAt;
   const [failedRuns, failingNow] = await Promise.all([
-    failedRunsSince(mute.workflowId, since),
-    ended === "worked" ? false : latestRunFailed(mute.workflowId),
+    failedRunsSince(pause.workflowId, since),
+    ended === "worked" ? false : latestRunFailed(pause.workflowId),
   ]);
-  if (isFailureAlertsEnabledForOrg(mute.organizationId)) {
+  if (isFailureAlertsEnabledForOrg(pause.organizationId)) {
     await queueWorkflowNotice({
-      organizationId: mute.organizationId,
-      workflow: { id: mute.workflowId, name: mute.name },
-      kind: "mute_ended",
+      organizationId: pause.organizationId,
+      workflow: { id: pause.workflowId, name: pause.name },
+      kind: "workflow_pause_ended",
       policy,
       members,
       context: {
-        mutedBy: nameOf(mute.mutedBy, members),
-        reason: mute.reason,
-        until: mute.until?.toISOString() ?? null,
-        untilItWorks: mute.untilItWorks,
+        pausedBy: nameOf(pause.pausedByUserId, members),
+        reason: pause.reason,
+        until: pause.until?.toISOString() ?? null,
+        untilItWorks: pause.untilItWorks,
         ended,
         failedRuns,
         failingNow,
@@ -357,47 +359,47 @@ async function tellMuteEnded(
       tx,
     });
   }
-  // An incident left open under the mute is owed a reminder now, not a day later.
+  // An incident left open under the pause is owed a reminder now, not a day later.
   if (failingNow) {
     await tx
       .update(workflowFailureIncidents)
       .set({ lastNotifiedAt: new Date(now.getTime() - REMINDER_INTERVAL_MS) })
       .where(
         and(
-          eq(workflowFailureIncidents.workflowId, mute.workflowId),
+          eq(workflowFailureIncidents.workflowId, pause.workflowId),
           isNull(workflowFailureIncidents.resolvedAt)
         )
       );
   }
-  // Still failing with no incident: the evaluator alerts now, as if the mute had never been.
+  // Still failing with no incident: the evaluator alerts now, as if the pause had never been.
   await tx.execute(sql`
     INSERT INTO ${workflowFailureAlertQueue} (workflow_id, due_at)
     SELECT id, now() FROM ${workflows}
-    WHERE id = ${mute.workflowId} AND enabled = true AND deleted_at IS NULL
+    WHERE id = ${pause.workflowId} AND enabled = true AND deleted_at IS NULL
     ON CONFLICT (workflow_id) DO UPDATE SET due_at = now()
   `);
 }
 
-/** Mutes whose time ran out. */
-export async function endExpiredMutes(now: Date): Promise<number> {
-  return await endMutes(
-    sql`ov.muted_until IS NOT NULL AND ov.muted_until <= ${now.toISOString()}::timestamptz AT TIME ZONE 'UTC'`,
+/** Pauses whose time ran out. */
+export async function endExpiredWorkflowPauses(now: Date): Promise<number> {
+  return await endPauses(
+    sql`ov.paused_until IS NOT NULL AND ov.paused_until <= ${now.toISOString()}::timestamptz AT TIME ZONE 'UTC'`,
     "expired",
     now
   );
 }
 
-/** An "until it works" mute on a workflow whose run `successRunId` worked after it was muted. */
-export async function endMuteBecauseItWorks(
+/** An "until it works" pause on a workflow whose run `successRunId` worked after it was paused. */
+export async function endPauseBecauseItWorks(
   workflowId: string,
   successRunId: string,
   now: Date
 ): Promise<boolean> {
-  const ended = await endMutes(
-    sql`ov.workflow_id = ${workflowId} AND ov.mute_until_success
+  const ended = await endPauses(
+    sql`ov.workflow_id = ${workflowId} AND ov.pause_until_success
       AND EXISTS (SELECT 1 FROM ${workflowExecutions} AS ok
         WHERE ok.id = ${successRunId}
-          AND ok.started_at > coalesce(ov.muted_at, ov.updated_at))`,
+          AND ok.started_at > coalesce(ov.paused_at, ov.updated_at))`,
     "worked",
     now
   );

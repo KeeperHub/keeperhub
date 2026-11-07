@@ -708,7 +708,7 @@ export function OrgFailureAlertsSection({
               id,
               destination: c.destination.trim(),
               fresh: false,
-              pausedReason: undefined,
+              stoppedReason: undefined,
             }
           : c
       )
@@ -719,14 +719,14 @@ export function OrgFailureAlertsSection({
 
   const restore = async (view: ChannelView, index: number): Promise<void> => {
     const result = await put((saved) => {
-      // A paused channel comes back paused, not live.
+      // A stopped channel comes back stopped, not live.
       const item: ChannelPayload = {
         kind: view.kind,
         integrationId: view.integrationId,
         destination: view.destination,
         role: view.role,
-        pausedReason: view.pausedAt
-          ? (view.pausedReason ?? "It stopped working.")
+        stoppedReason: view.stoppedAt
+          ? (view.stoppedReason ?? "It stopped working.")
           : undefined,
       };
       const channels = savedChannelsPayload(saved.channels);
@@ -784,8 +784,8 @@ export function OrgFailureAlertsSection({
     focusMethodAt(methodsRef, cards.length + 1, null);
   };
 
-  const pausingWorkflows = data.customWorkflows.filter(
-    (w) => w.pauseWorkflow
+  const disablingWorkflows = data.customWorkflows.filter(
+    (w) => w.disableWorkflow
   ).length;
 
   return (
@@ -872,16 +872,16 @@ export function OrgFailureAlertsSection({
             <div className="space-y-4">
               <AlertsStateBody
                 canManage={canManage}
+                disablingWorkflows={disablingWorkflows}
                 error={resumeError}
                 onExtend={() => setPausing(true)}
                 pause={pause}
-                pausingWorkflows={pausingWorkflows}
               />
               {pausing && (
                 <PauseAlertsForm
+                  disablingWorkflows={disablingWorkflows}
                   onCancel={() => setPausing(false)}
                   onPause={pauseAlerts}
-                  pausingWorkflows={pausingWorkflows}
                 />
               )}
             </div>
@@ -992,10 +992,10 @@ export function OrgFailureAlertsSection({
                     PagerDuty resolve keeps trying for 24 hours.
                   </li>
                   <li>
-                    A method that stops working is paused and everyone is told
-                    once. It is checked again every day and turns back on by
-                    itself when it works, except Slack, which turns back on only
-                    when a test passes.
+                    A method that stops working gets nothing until it works, and
+                    everyone is told once. It is checked again every day and
+                    turns back on by itself when it works, except Slack, which
+                    turns back on only when a test passes.
                   </li>
                   <li>
                     Only connections shared with the whole organization can be
@@ -1044,7 +1044,7 @@ export function OrgFailureAlertsSection({
                     workflow's Properties.
                   </p>
                   <CustomWorkflowsList
-                    muted={data.mutedWorkflows}
+                    paused={data.pausedWorkflows}
                     workflows={data.customWorkflows}
                   />
                 </div>

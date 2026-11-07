@@ -31,7 +31,7 @@ type Sample = MessagePreview["sample"];
 const SAMPLE_LABEL: Record<Sample, string> = {
   alert: "A workflow keeps failing",
   missed: "A scheduled workflow did not run",
-  paused: "A wallet ran out of funds and the workflow was turned off",
+  disabled: "A wallet ran out of funds and the workflow was turned off",
   recovery: "It is running again",
 };
 

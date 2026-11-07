@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isLastRecipient,
   lastRecipientNote,
-  muteSentence,
+  pauseSentence,
 } from "@/components/failure-alerts/member-label";
 import {
   accountLabel,
@@ -75,28 +75,28 @@ describe("actorLabel", () => {
   });
 });
 
-describe("muteSentence", () => {
+describe("pauseSentence", () => {
   it("says who, until when and why, the same on every surface", () => {
     const until = "2026-11-13T12:00:00.000Z";
-    const timed = muteSentence({
+    const timed = pauseSentence({
       by: "Dana",
       account: "dana@example.com",
       untilItWorks: false,
-      mutedUntil: until,
+      pausedUntil: until,
       reason: "RPC move",
     });
     expect(timed).toMatch(
-      /^Muted by Dana \(dana@example\.com\) until .+: RPC move$/
+      /^Paused by Dana \(dana@example\.com\) until .+: RPC move$/
     );
-    const works = muteSentence({
+    const works = pauseSentence({
       by: "An admin",
       account: null,
       untilItWorks: true,
-      mutedUntil: until,
+      pausedUntil: until,
       reason: null,
     });
     expect(works).toMatch(
-      /^Muted by An admin until it works again \(at most until .+\)$/
+      /^Paused by An admin until it works again \(at most until .+\)$/
     );
   });
 });

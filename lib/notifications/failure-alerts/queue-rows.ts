@@ -19,7 +19,7 @@ export type DeliveryInsert = Omit<
   typeof failureAlertDeliveries.$inferInsert,
   "dedupKey"
 > & {
-  /** Dedup-key subject: `i:<incident>`, `g:<first incident>`, `launch:<org>`, `paused:<channel>:<when>`. */
+  /** Dedup-key subject: `i:<incident>`, `g:<first incident>`, `launch:<org>`, `stopped:<channel>:<when>`. */
   scope: string;
 };
 
@@ -107,7 +107,7 @@ export function buildMessageRows(params: {
   }));
 
   for (const channel of params.channels) {
-    if (channel.pausedAt || channel.role !== "always") {
+    if (channel.stoppedAt || channel.role !== "always") {
       continue;
     }
     if (channel.kind === "pagerduty" && !params.includePagerDuty) {

@@ -12,6 +12,7 @@ import {
   type NotExecutableReason,
   refusalCannotRun,
 } from "@/lib/workflow/not-executable";
+import { PAUSE_HEADLINE, pauseEffect } from "./pause-copy";
 import { SKIP_REASON } from "./stored-reasons";
 
 export type ChannelView = {
@@ -21,8 +22,8 @@ export type ChannelView = {
   connectionName: string | null;
   destination: string;
   role: FailureAlertChannelRole;
-  pausedAt: string | null;
-  pausedReason: string | null;
+  stoppedAt: string | null;
+  stoppedReason: string | null;
   lastDeliveredAt: string | null;
   lastFailedAt: string | null;
   lastError: string | null;
@@ -63,18 +64,18 @@ export type OrgSettingsView = {
   channels: ChannelView[];
   connections: ConnectionView[];
   emailUsage: { used: number; limit: number } | null;
-  /** Workflows with their own settings, so mutes and overrides are visible to the team. */
+  /** Workflows with their own settings, so pauses and overrides are visible to the team. */
   customWorkflows: {
     id: string;
     name: string;
-    mutedUntil: string | null;
-    muteUntilSuccess: boolean;
+    pausedUntil: string | null;
+    pauseUntilSuccess: boolean;
     threshold: number | null;
     /** Null follows the org; 0 means off for this workflow. */
     timeLimitMinutes: number | null;
     customRecipients: boolean;
     customChannels: boolean;
-    pauseWorkflow: boolean;
+    disableWorkflow: boolean;
     /** Its own methods that are paused or lost their connection. */
     brokenMethods: number;
   }[];
@@ -90,18 +91,18 @@ export type OrgSettingsView = {
     /** The pauser's sign-in email or wallet address; never a step-up inbox. */
     byAccount: string | null;
   } | null;
-  /** Every workflow whose alerts are muted right now, failing ones first. */
-  mutedWorkflows: {
+  /** Every workflow whose alerts are paused right now, failing ones first. */
+  pausedWorkflows: {
     id: string;
     name: string;
-    mutedUntil: string | null;
+    pausedUntil: string | null;
     untilItWorks: boolean;
     by: string | null;
-    /** Sign-in email or wallet address of whoever muted; never a step-up inbox. */
+    /** Sign-in email or wallet address of whoever paused; never a step-up inbox. */
     byAccount: string | null;
     reason: string | null;
     failing: boolean;
-    /** Failed runs since the mute began. */
+    /** Failed runs since the pause began. */
     failedRuns: number;
   }[];
   /** Workflows with an open failure incident right now. */
@@ -146,8 +147,8 @@ export type HistoryEntry = {
   /** The account that person signed in with: an email or a wallet address. */
   byAccount: string | null;
   workflows: { id: string; name: string }[];
-  /** A mute's end, shown in the viewer's time; itWorks for "until it works again". */
-  muteUntil: { at: string | null; itWorks: boolean } | null;
+  /** A pause's end, shown in the viewer's time; itWorks for "until it works again". */
+  pauseUntil: { at: string | null; itWorks: boolean } | null;
 };
 
 export type WorkflowAlertView = {
@@ -177,15 +178,15 @@ export type WorkflowAlertView = {
     recipientUserIds: string[] | null;
     customChannels: boolean;
     channels: ChannelView[];
-    mutedUntil: string | null;
-    muteUntilSuccess: boolean;
-    muteReason: string | null;
-    /** Who muted: their name, or "An owner" / "An admin". */
-    mutedBy: string | null;
+    pausedUntil: string | null;
+    pauseUntilSuccess: boolean;
+    pauseReason: string | null;
+    /** Who paused: their name, or "An owner" / "An admin". */
+    pausedBy: string | null;
     /** Their sign-in email or wallet address; never a step-up inbox. */
-    mutedByAccount: string | null;
+    pausedByAccount: string | null;
     /** Turn the workflow off when its alert goes out. Workflow-only. */
-    pauseWorkflow: boolean;
+    disableWorkflow: boolean;
   };
   effective: {
     threshold: number;
@@ -209,9 +210,9 @@ export type WorkflowAlertView = {
       /** First failure, or when the missed run was due. */
       since: string;
       /** When this incident last turned the workflow off, if it did. */
-      workflowPausedAt: string | null;
+      workflowDisabledAt: string | null;
       /** When someone last turned it back on after that. */
-      workflowResumedAt: string | null;
+      workflowReenabledAt: string | null;
       /** Not running because its runs are refused before they start. */
       refused: boolean;
       /** The refusal's reason as shown; null when not refused or none was recorded. */
@@ -302,19 +303,20 @@ export function methodText(
 export const EMAILS_KEPT_FOR_NEW_FAILURES = 10;
 
 /** What still happens during an org pause, for the pause email and the Alerts page. */
-export function orgPauseEffect(pausingWorkflows: number | undefined): string {
-  if (pausingWorkflows === 0) {
-    return "Workflows keep running, but if one fails, no alert goes out until then.";
+export function orgPauseEffect(disablingWorkflows: number | undefined): string {
+  const effect = `${pauseEffect("org")} until then.`;
+  if (disablingWorkflows === 0) {
+    return effect;
   }
   let which =
     "any set to turn off at their limit still turn off; you are told about those";
-  if (pausingWorkflows === 1) {
+  if (disablingWorkflows === 1) {
     which =
       "the 1 set to turn off at its limit still turns off; you are told about it";
-  } else if (pausingWorkflows !== undefined) {
-    which = `the ${pausingWorkflows} set to turn off at their limit still turn off; you are told about those`;
+  } else if (disablingWorkflows !== undefined) {
+    which = `the ${disablingWorkflows} set to turn off at their limit still turn off; you are told about those`;
   }
-  return `Workflows keep running, but if one fails, no alert goes out until then. ${which.charAt(0).toUpperCase()}${which.slice(1)} when the pause ends.`;
+  return `${effect} ${which.charAt(0).toUpperCase()}${which.slice(1)} when the pause ends.`;
 }
 
 /** What each kind of message is called in the history and analytics lists. */
@@ -323,15 +325,15 @@ export const FAILURE_ALERT_KIND_LABEL: Record<FailureAlertMessageKind, string> =
     alert: "New failure",
     reminder: "Still failing",
     recovery: "Recovered",
-    channel_paused: "Method paused",
+    channel_stopped: "Method stopped working",
     launch_notice: "Alerts turned on",
-    alerts_paused: "Alerts paused",
-    alerts_resumed: "Alerts back on",
+    alerts_paused: PAUSE_HEADLINE.paused,
+    alerts_resumed: PAUSE_HEADLINE.resumed,
     cap_warning: "Email limit warning",
     test: "Test",
-    workflow_muted: "Alerts muted",
-    workflow_unmuted: "Alerts unmuted",
-    mute_ended: "Mute ended",
+    workflow_paused: PAUSE_HEADLINE.paused,
+    workflow_resumed: PAUSE_HEADLINE.resumed,
+    workflow_pause_ended: PAUSE_HEADLINE.ended,
     recipients_removed: "Removed from alerts",
   };
 
@@ -340,8 +342,8 @@ export const PERSON_KINDS: readonly string[] = [
   "alerts_paused",
   "alerts_resumed",
   "test",
-  "workflow_muted",
-  "workflow_unmuted",
+  "workflow_paused",
+  "workflow_resumed",
   "recipients_removed",
 ];
 
@@ -357,12 +359,12 @@ export function historyBy(
   return person ?? "KeeperHub";
 }
 
-/** A mute notice's end, for the page to show in the viewer's own time. */
-export function muteUntilOf(
+/** A pause notice's end, for the page to show in the viewer's own time. */
+export function pauseUntilOf(
   context: Record<string, unknown> | null,
   kind?: string
-): HistoryEntry["muteUntil"] {
-  if (kind !== "workflow_muted") {
+): HistoryEntry["pauseUntil"] {
+  if (kind !== "workflow_paused") {
     return null;
   }
   const at =
@@ -378,28 +380,28 @@ function reasonNote(context: Record<string, unknown> | null): string {
     : "No reason given";
 }
 
-/** The note for a mute notice or a removal; undefined for every other kind. */
-function muteHistoryNote(
+/** The note for a pause notice or a removal; undefined for every other kind. */
+function pauseHistoryNote(
   context: Record<string, unknown> | null,
   kind?: string
 ): string | null | undefined {
-  if (kind === "workflow_muted") {
+  if (kind === "workflow_paused") {
     return reasonNote(context);
   }
-  if (kind === "workflow_unmuted") {
+  if (kind === "workflow_resumed") {
     return null;
   }
-  if (kind === "mute_ended") {
+  if (kind === "workflow_pause_ended") {
     const failed =
       typeof context?.failedRuns === "number" ? context.failedRuns : 0;
     const ending =
       context?.ended === "worked"
         ? "Ended because it works again"
-        : "Mute ran out";
+        : "Pause ran out";
     const failures =
       failed === 0
-        ? "no failures while muted"
-        : `${failed} failure${failed === 1 ? "" : "s"} while muted`;
+        ? "no failures while paused"
+        : `${failed} failure${failed === 1 ? "" : "s"} while paused`;
     const reason =
       typeof context?.reason === "string" && context.reason
         ? `Reason: ${context.reason}`
@@ -426,17 +428,17 @@ export function historyNote(
   if (kind === "alerts_resumed") {
     return typeof context?.by === "string" ? null : "The pause ran out";
   }
-  const muteNote = muteHistoryNote(context, kind);
-  if (muteNote !== undefined) {
-    return muteNote;
+  const pauseNote = pauseHistoryNote(context, kind);
+  if (pauseNote !== undefined) {
+    return pauseNote;
   }
   if (typeof context?.channelLabel === "string") {
     return context.channelLabel;
   }
   const notes: string[] = [];
-  if (context?.pausedAgain === true) {
+  if (context?.disabledAgain === true) {
     notes.push("Turned the workflow off again after it was turned back on");
-  } else if (context?.workflowPaused === true) {
+  } else if (context?.workflowDisabled === true) {
     notes.push("Turned the workflow off");
   }
   if (typeof context?.backupReason === "string") {
@@ -447,7 +449,7 @@ export function historyNote(
 
 /** One example message as each channel shows it. */
 export type MessagePreview = {
-  sample: "alert" | "missed" | "paused" | "recovery";
+  sample: "alert" | "missed" | "disabled" | "recovery";
   subject: string;
   html: string;
   /** Slack, Discord and Telegram. */

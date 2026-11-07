@@ -18,8 +18,8 @@ export type DraftChannel = {
   role: FailureAlertChannelRole;
   /** The outcome of a test of the current target in this session. */
   testedOk?: boolean;
-  /** A paused channel put back by Undo: it is saved paused, not live. */
-  pausedReason?: string;
+  /** A stopped channel put back by Undo: it is saved stopped, not live. */
+  stoppedReason?: string;
   /** Opened by "Add a method": its method can still be picked. */
   fresh?: boolean;
 };
@@ -30,7 +30,7 @@ export type ChannelPayload = {
   integrationId: string;
   destination: string;
   role: FailureAlertChannelRole;
-  pausedReason?: string;
+  stoppedReason?: string;
 };
 
 /** A method's state as its badge shows it. */
@@ -39,7 +39,7 @@ export type MethodStatus =
   | "untested"
   | "failed"
   | "delivery"
-  | "paused"
+  | "stopped"
   | "missing"
   | "unsaved"
   | "refused"
@@ -49,7 +49,7 @@ export type MethodStatus =
 export const BROKEN_STATUSES: readonly MethodStatus[] = [
   "failed",
   "delivery",
-  "paused",
+  "stopped",
   "missing",
   "refused",
   "unreachable",
@@ -103,8 +103,8 @@ export function draftsFromViews(views: ChannelView[]): DraftChannel[] {
 }
 
 export function channelPayload(channel: DraftChannel): ChannelPayload {
-  const { id, kind, integrationId, destination, role, pausedReason } = channel;
-  return { id, kind, integrationId, destination, role, pausedReason };
+  const { id, kind, integrationId, destination, role, stoppedReason } = channel;
+  return { id, kind, integrationId, destination, role, stoppedReason };
 }
 
 export function channelsPayload(channels: DraftChannel[]): ChannelPayload[] {
@@ -182,7 +182,11 @@ function lastDeliveryFailed(view: ChannelView): boolean {
 
 /** Could reach people right now, as far as KeeperHub knows. */
 export function channelWorks(view: ChannelView): boolean {
-  return !(view.pausedAt || view.connectionMissing || lastDeliveryFailed(view));
+  return !(
+    view.stoppedAt ||
+    view.connectionMissing ||
+    lastDeliveryFailed(view)
+  );
 }
 
 /** Health of the saved target, else this session's test; `connectionKnown` false = connection not listed. */
@@ -204,8 +208,8 @@ export function channelStatus(
   if (draft.testedOk === true) {
     return "working";
   }
-  if (saved.pausedAt) {
-    return "paused";
+  if (saved.stoppedAt) {
+    return "stopped";
   }
   if (draft.testedOk === false) {
     return "failed";

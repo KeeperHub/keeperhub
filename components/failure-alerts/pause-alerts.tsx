@@ -10,8 +10,19 @@ import { Switch } from "@/components/ui/switch";
 import { actorLabel } from "@/lib/notifications/failure-alerts/actor-label";
 import {
   MAX_ORG_PAUSE_MS,
+  MAX_PAUSE_DAYS,
   MAX_PAUSE_REASON,
 } from "@/lib/notifications/failure-alerts/constants";
+import {
+  CHANGE_PAUSE,
+  PAUSE_ALERTS,
+  PAUSE_FOR,
+  PAUSE_MAX,
+  PAUSE_SUBMIT,
+  PAUSE_UNTIL,
+  PAUSED,
+  pausedBy,
+} from "@/lib/notifications/failure-alerts/pause-copy";
 import {
   type OrgSettingsView,
   orgPauseEffect,
@@ -24,13 +35,9 @@ import { formatWhen, toLocalInput } from "./format";
 
 type AlertsPause = NonNullable<OrgSettingsView["pause"]>;
 
-// The server's limits, so the form never promises what it refuses.
-const MAX_PAUSE_DAYS = MAX_ORG_PAUSE_MS / DAY_MS;
-
 /** "Paused by Dana (dana@x.com)", or by the account when the name is only a role. */
 function pauseAuthor(pause: AlertsPause): string {
-  const who = actorLabel(pause.by, pause.byAccount);
-  return who ? `Paused by ${who}` : "Paused";
+  return pausedBy(actorLabel(pause.by, pause.byAccount));
 }
 
 const CHOICES = [
@@ -82,7 +89,7 @@ export function AlertsSwitch({
         )}
         data-testid="failure-alerts-state"
       >
-        {paused ? "Paused" : "On"}
+        {paused ? PAUSED : "On"}
       </span>
       <Switch
         aria-label={
@@ -100,7 +107,7 @@ export function AlertsSwitch({
 /** Under the switch: what On means, or the pause's end, who and why. */
 export function AlertsStateBody({
   pause,
-  pausingWorkflows,
+  disablingWorkflows,
   canManage,
   onExtend,
   error,
@@ -108,7 +115,7 @@ export function AlertsStateBody({
 }: {
   pause: AlertsPause | null;
   /** Workflows set to turn off at their limit. */
-  pausingWorkflows: number;
+  disablingWorkflows: number;
   canManage: boolean;
   onExtend: () => void;
   error: string | null;
@@ -151,7 +158,7 @@ export function AlertsStateBody({
         <TextWithEmails text={pauseAuthor(pause)} />
         {pause.reason ? `: ${pause.reason}` : ""}.{" "}
         <span className="text-muted-foreground">
-          {orgPauseEffect(pausingWorkflows)}
+          {orgPauseEffect(disablingWorkflows)}
         </span>
       </p>
       {canManage ? (
@@ -162,7 +169,7 @@ export function AlertsStateBody({
           type="button"
           variant="link"
         >
-          Extend or change the pause
+          {CHANGE_PAUSE}
         </Button>
       ) : (
         <p className="text-muted-foreground text-xs">
@@ -176,12 +183,12 @@ export function AlertsStateBody({
 
 /** How long and why, then Pause or Cancel. */
 export function PauseAlertsForm({
-  pausingWorkflows,
+  disablingWorkflows,
   onPause,
   onCancel,
 }: {
   /** Workflows set to turn off at their limit. */
-  pausingWorkflows: number;
+  disablingWorkflows: number;
   onPause: (body: { until: string; reason?: string }) => Promise<string | null>;
   onCancel: () => void;
 }): React.ReactElement {
@@ -207,7 +214,7 @@ export function PauseAlertsForm({
     if (until.getTime() <= now) {
       invalid = "Pick a time in the future.";
     } else if (until.getTime() > latest) {
-      invalid = `Alerts can be paused for at most ${MAX_PAUSE_DAYS} days.`;
+      invalid = PAUSE_MAX;
     }
   }
 
@@ -240,16 +247,15 @@ export function PauseAlertsForm({
       data-testid="failure-alerts-pause-form"
     >
       <div className="space-y-1">
-        <h2 className="font-semibold text-sm">Pause alerts</h2>
+        <h2 className="font-semibold text-sm">{PAUSE_ALERTS}</h2>
         <p className="text-muted-foreground text-xs">
-          For maintenance, up to {MAX_PAUSE_DAYS} days.{" "}
-          {orgPauseEffect(pausingWorkflows)}
+          For maintenance. {PAUSE_MAX} {orgPauseEffect(disablingWorkflows)}
         </p>
       </div>
       <div className="space-y-2">
         <ChoiceChips
           className="@xl/settings:grid-cols-4"
-          legend="Pause for"
+          legend={PAUSE_FOR}
           onChange={setChoice}
           options={CHOICES}
           value={choice}
@@ -258,7 +264,7 @@ export function PauseAlertsForm({
           <Input
             aria-describedby={invalid ? `${idPrefix}-invalid` : undefined}
             aria-invalid={Boolean(invalid)}
-            aria-label="Pause until"
+            aria-label={PAUSE_UNTIL}
             className="h-9 w-full @xl/settings:w-64"
             max={toLocalInput(new Date(latest))}
             min={toLocalInput(new Date(now))}
@@ -308,7 +314,7 @@ export function PauseAlertsForm({
           type="button"
         >
           {saving ? <Loader2 className="size-3.5 animate-spin" /> : null}
-          Pause
+          {PAUSE_SUBMIT}
         </Button>
         <Button onClick={onCancel} size="sm" type="button" variant="ghost">
           Cancel

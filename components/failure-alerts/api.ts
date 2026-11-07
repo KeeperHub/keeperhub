@@ -35,7 +35,7 @@ export async function sendFailureAlertTest(
         durationMs: Date.now() - started,
       };
     }
-    // A test can mark a method working or paused, which the banner reflects.
+    // A test can mark a method working or stopped, which the banner reflects.
     invalidateNotificationStatus(organizationId);
     return data as TestResult;
   } catch {
@@ -67,15 +67,15 @@ export async function fetchView<T>(url: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-/** Unmutes a workflow from Overview, sending its saved setup back unchanged; null when done, else why not. */
-export async function unmuteWorkflow(
+/** Resumes a workflow from Overview, sending its saved setup back unchanged; null when done, else why not. */
+export async function resumeWorkflow(
   workflowId: string
 ): Promise<string | null> {
   const url = `/api/workflows/${encodeURIComponent(workflowId)}/failure-alerts`;
   try {
     const current = await fetch(url);
     if (!current.ok) {
-      return "Could not read this workflow's alerts. Open them and unmute there.";
+      return "Could not read this workflow's alerts. Open them and resume there.";
     }
     const view = (await current.json()) as WorkflowAlertView;
     const o = view.override;
@@ -88,15 +88,15 @@ export async function unmuteWorkflow(
         recipientUserIds: o.recipientUserIds,
         customChannels: o.customChannels,
         channels: channelsPayload(draftsFromViews(o.channels)),
-        pauseWorkflow: o.pauseWorkflow,
-        mutedUntil: null,
-        muteUntilSuccess: false,
+        disableWorkflow: o.disableWorkflow,
+        pausedUntil: null,
+        pauseUntilSuccess: false,
         version: view.version,
       }),
     });
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
-      return body.error ?? "Could not unmute. Open its Alerts and try there.";
+      return body.error ?? "Could not resume. Open its Alerts and try there.";
     }
     return null;
   } catch {

@@ -3,8 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/db", () => ({ db: {} }));
 
-const { DEFAULT_ORG_POLICY, isMuted, mergePolicy, resolveRecipientEmails } =
-  await import("@/lib/notifications/failure-alerts/policy");
+const {
+  DEFAULT_ORG_POLICY,
+  isWorkflowPaused,
+  mergePolicy,
+  resolveRecipientEmails,
+} = await import("@/lib/notifications/failure-alerts/policy");
 const { isFailureAlertsEnabledForOrg, splitByRollout } = await import(
   "@/lib/notifications/failure-alerts/rollout"
 );
@@ -21,12 +25,12 @@ function override(
     timeLimitMinutes: null,
     recipientUserIds: null,
     customChannels: false,
-    mutedUntil: null,
-    muteUntilSuccess: false,
-    muteReason: null,
-    mutedBy: null,
-    mutedAt: null,
-    pauseWorkflow: false,
+    pausedUntil: null,
+    pauseUntilSuccess: false,
+    pauseReason: null,
+    pausedByUserId: null,
+    pausedAt: null,
+    disableWorkflow: false,
     version: 0,
     updatedBy: null,
     updatedAt: new Date(),
@@ -40,7 +44,7 @@ const orgChannel = {
   integrationId: "i1",
   destination: "#ops",
   role: "always" as const,
-  pausedAt: null,
+  stoppedAt: null,
 };
 const wfChannel = { ...orgChannel, id: "c-wf", kind: "discord" as const };
 
@@ -68,16 +72,16 @@ describe("mergePolicy", () => {
   });
 
   it("pauses the workflow only when its own override asks", () => {
-    expect(mergePolicy(DEFAULT_ORG_POLICY, [], null, []).pauseWorkflow).toBe(
+    expect(mergePolicy(DEFAULT_ORG_POLICY, [], null, []).disableWorkflow).toBe(
       false
     );
     const policy = mergePolicy(
       DEFAULT_ORG_POLICY,
       [],
-      override({ pauseWorkflow: true }),
+      override({ disableWorkflow: true }),
       []
     );
-    expect(policy.pauseWorkflow).toBe(true);
+    expect(policy.disableWorkflow).toBe(true);
     expect(policy.source).toBe("custom");
   });
 
@@ -97,16 +101,16 @@ describe("mergePolicy", () => {
     expect(policy.channels).toEqual([wfChannel]);
   });
 
-  it("treats a mute-only override as following the org", () => {
+  it("treats a pause-only override as following the org", () => {
     const policy = mergePolicy(
       DEFAULT_ORG_POLICY,
       [],
-      override({ mutedUntil: new Date("2030-01-01") }),
+      override({ pausedUntil: new Date("2030-01-01") }),
       []
     );
     expect(policy.source).toBe("default");
-    expect(isMuted(policy, new Date("2029-01-01"))).toBe(true);
-    expect(isMuted(policy, new Date("2031-01-01"))).toBe(false);
+    expect(isWorkflowPaused(policy, new Date("2029-01-01"))).toBe(true);
+    expect(isWorkflowPaused(policy, new Date("2031-01-01"))).toBe(false);
   });
 });
 

@@ -93,16 +93,16 @@ export function ChannelListEditor({
       action: {
         label: "Undo",
         onClick: () => {
-          // It comes back as a new row, and a paused one comes back paused.
+          // It comes back as a new row, and a stopped one comes back stopped.
           const next = restoreMethod(
             latest.current.channels,
             {
               ...channel,
               id: undefined,
               key: nextKey(),
-              pausedReason: view?.pausedAt
-                ? (view.pausedReason ?? "It stopped working.")
-                : channel.pausedReason,
+              stoppedReason: view?.stoppedAt
+                ? (view.stoppedReason ?? "It stopped working.")
+                : channel.stoppedReason,
             },
             index
           );

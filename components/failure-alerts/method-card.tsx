@@ -86,7 +86,7 @@ const STATUS_LABEL: Record<MethodStatus, string> = {
   untested: "Not tested",
   failed: "Test failed",
   delivery: "Not delivering",
-  paused: "Paused",
+  stopped: "Stopped working",
   missing: "Connection missing",
   unsaved: "Not saved",
   refused: "Not saved",
@@ -100,7 +100,7 @@ function statusClass(status: MethodStatus, lastResort: boolean): string {
   if (status === "unsaved") {
     return "text-muted-foreground";
   }
-  if (status === "untested" || (status === "paused" && !lastResort)) {
+  if (status === "untested" || (status === "stopped" && !lastResort)) {
     return WARNING_TEXT;
   }
   return RED;
@@ -471,16 +471,16 @@ function ChannelHealth({
       </span>
     );
   }
-  if (status === "working" && saved.pausedAt) {
+  if (status === "working" && saved.stoppedAt) {
     return (
       <span className="text-muted-foreground">Test passed. It is back on.</span>
     );
   }
-  if (status === "paused") {
+  if (status === "stopped") {
     return (
       <span>
-        Paused {timeAgo(saved.pausedAt ?? "")}:{" "}
-        {(saved.pausedReason ?? "it stopped working").replace(
+        Stopped working {timeAgo(saved.stoppedAt ?? "")}:{" "}
+        {(saved.stoppedReason ?? "it stopped working").replace(
           TRAILING_DOTS,
           ""
         )}

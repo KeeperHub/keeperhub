@@ -31,24 +31,24 @@ export function incidentTitle(
     NonNullable<WorkflowAlertView["status"]["incident"]>,
     "openedBy" | "since" | "failureCount" | "refused"
   >,
-  pausedByAlert: boolean
+  disabledByAlert: boolean
 ): string {
   if (isNotRunning(incident.openedBy)) {
     return notRunningText(incident.since, incident.refused, incident.openedBy);
   }
   const runs = `${failedRuns(incident.failureCount)} in a row`;
   if (incident.openedBy === "funding") {
-    return pausedByAlert
+    return disabledByAlert
       ? `Turned off: wallet out of funds, ${runs}`
       : `Wallet out of funds: ${runs}`;
   }
-  return pausedByAlert
+  return disabledByAlert
     ? `Turned off after ${runs}`
     : `${runs.charAt(0).toUpperCase()}${runs.slice(1)}`;
 }
 
 /**
- * One absolute date for the history and the mute line: with the viewer's time
+ * One absolute date for the history and the pause line: with the viewer's time
  * zone, and the year only when it is not this year.
  */
 export function formatWhen(iso: string): string {
@@ -155,7 +155,7 @@ export type RuleChannel = {
   destination: string;
   connectionName: string | null;
   role: "always" | "backup";
-  pausedAt: string | null;
+  stoppedAt: string | null;
   connectionMissing?: boolean;
 };
 
@@ -167,7 +167,7 @@ export function describeRule(input: {
   emails: string[];
   viewerEmail?: string | null;
   channels: RuleChannel[];
-  pauseWorkflow?: boolean;
+  disableWorkflow?: boolean;
   scope: "org" | "workflow";
 }): string {
   // The org page shows its limits under Rules, so its sentence names no numbers.
@@ -191,7 +191,7 @@ export function describeRule(input: {
   }
 
   const live = input.channels.filter(
-    (c) => !(c.pausedAt || c.connectionMissing)
+    (c) => !(c.stoppedAt || c.connectionMissing)
   );
   const name = (c: RuleChannel): string =>
     methodText(
@@ -215,7 +215,7 @@ export function describeRule(input: {
   }
 
   let sentence = `${when}, KeeperHub tells ${who}${backupPart}.`;
-  if (input.pauseWorkflow) {
+  if (input.disableWorkflow) {
     const runs =
       input.threshold === 1
         ? failedRuns(1)

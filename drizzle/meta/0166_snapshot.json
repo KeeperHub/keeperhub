@@ -1985,14 +1985,14 @@
           "notNull": true,
           "default": "'always'"
         },
-        "paused_at": {
-          "name": "paused_at",
+        "stopped_at": {
+          "name": "stopped_at",
           "type": "timestamp",
           "primaryKey": false,
           "notNull": false
         },
-        "paused_reason": {
-          "name": "paused_reason",
+        "stopped_reason": {
+          "name": "stopped_reason",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -9062,39 +9062,39 @@
           "notNull": true,
           "default": false
         },
-        "muted_until": {
-          "name": "muted_until",
+        "paused_until": {
+          "name": "paused_until",
           "type": "timestamp",
           "primaryKey": false,
           "notNull": false
         },
-        "mute_until_success": {
-          "name": "mute_until_success",
+        "pause_until_success": {
+          "name": "pause_until_success",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
           "default": false
         },
-        "mute_reason": {
-          "name": "mute_reason",
+        "pause_reason": {
+          "name": "pause_reason",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "muted_by": {
-          "name": "muted_by",
+        "paused_by_user_id": {
+          "name": "paused_by_user_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "muted_at": {
-          "name": "muted_at",
+        "paused_at": {
+          "name": "paused_at",
           "type": "timestamp",
           "primaryKey": false,
           "notNull": false
         },
-        "pause_workflow": {
-          "name": "pause_workflow",
+        "disable_workflow": {
+          "name": "disable_workflow",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
@@ -9295,14 +9295,14 @@
           "primaryKey": false,
           "notNull": false
         },
-        "workflow_paused_at": {
-          "name": "workflow_paused_at",
+        "workflow_disabled_at": {
+          "name": "workflow_disabled_at",
           "type": "timestamp",
           "primaryKey": false,
           "notNull": false
         },
-        "workflow_resumed_at": {
-          "name": "workflow_resumed_at",
+        "workflow_reenabled_at": {
+          "name": "workflow_reenabled_at",
           "type": "timestamp",
           "primaryKey": false,
           "notNull": false

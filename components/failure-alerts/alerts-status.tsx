@@ -8,13 +8,18 @@ import { timeAgo } from "@/components/settings/hub/relative-time";
 import { Button } from "@/components/ui/button";
 import { WARNING_SURFACE, WARNING_TEXT } from "@/components/ui/notice";
 import {
+  RESUME_ALERTS,
+  RESUMED_TOAST,
+  RESUMING_ALERTS,
+} from "@/lib/notifications/failure-alerts/pause-copy";
+import {
   EMAILS_KEPT_FOR_NEW_FAILURES,
   isNotRunning,
   methodText,
   type OrgSettingsView,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
-import { unmuteWorkflow } from "./api";
+import { resumeWorkflow } from "./api";
 import { TextWithEmails } from "./email-text";
 import {
   failedRuns,
@@ -23,7 +28,7 @@ import {
   notRunningText,
   TOUCH_TARGET,
 } from "./format";
-import { memberLabel, muteSentence } from "./member-label";
+import { memberLabel, pauseSentence } from "./member-label";
 import { channelWorks } from "./method-drafts";
 
 const ICON_CLASS = "mt-0.5 size-4 shrink-0";
@@ -126,17 +131,16 @@ function HealthyLine({
 
 const TRAILING_DOT = /\.$/;
 
-/** "Telegram X is paused: <why>." or "Slack #ops stopped working: <why>.", then what still works. */
+/** "Slack #ops stopped working: <why>.", then what still works. */
 function brokenDetail(
-  broken: { label: string; paused: boolean; why: string | null }[],
+  broken: { label: string; why: string | null }[],
   stillWorking: string[]
 ): string {
   const each = broken
     .map((b) => {
-      const state = b.paused ? "is paused" : "stopped working";
       return b.why
-        ? `${b.label} ${state}: ${b.why.replace(TRAILING_DOT, "")}`
-        : `${b.label} ${state}`;
+        ? `${b.label} stopped working: ${b.why.replace(TRAILING_DOT, "")}`
+        : `${b.label} stopped working`;
     })
     .join(". ");
   if (stillWorking.length === 0) {
@@ -159,7 +163,7 @@ type AttentionRow = {
   href: string;
   detail: React.ReactNode;
   tone: "danger" | "warning";
-  /** A link under the detail, e.g. where to unmute. */
+  /** A link under the detail, e.g. where to resume. */
   action?: string;
 };
 
@@ -220,8 +224,8 @@ function IssueSection({
   );
 }
 
-/** Unmute straight from Overview; everyone who was told of the mute is told it ended. */
-function UnmuteButton({
+/** Resume straight from Overview; everyone who was told of the pause is told it ended. */
+function ResumeButton({
   workflowId,
   onDone,
 }: {
@@ -232,25 +236,23 @@ function UnmuteButton({
   return (
     <Button
       className={`h-auto px-0 text-xs underline underline-offset-4 ${TOUCH_TARGET}`}
-      data-testid="failure-alerts-overview-unmute"
+      data-testid="failure-alerts-overview-resume"
       disabled={busy}
       onClick={async () => {
         setBusy(true);
-        const error = await unmuteWorkflow(workflowId);
+        const error = await resumeWorkflow(workflowId);
         setBusy(false);
         if (error) {
           toast.error(error);
           return;
         }
-        toast.success(
-          "Alerts back on. Everyone who was told of the mute is told it ended."
-        );
+        toast.success(RESUMED_TOAST);
         onDone?.();
       }}
       type="button"
       variant="link"
     >
-      {busy ? "Unmuting..." : "Unmute"}
+      {busy ? RESUMING_ALERTS : RESUME_ALERTS}
     </Button>
   );
 }
@@ -271,7 +273,7 @@ export function AlertsHealth({
   viewerUserId?: string | null;
   /** Opens the Setup tab, where methods are fixed. */
   onGoToSetup?: () => void;
-  /** Reloads the page's data after an action here (Unmute). */
+  /** Reloads the page's data after an action here (Resume). */
   onChanged?: () => void;
 }): React.ReactElement {
   const fixButton = (label: string): React.ReactNode =>
@@ -312,47 +314,47 @@ export function AlertsHealth({
     ? "Email"
     : (working[0] && label(working[0])) || "";
 
-  // Every active mute shows, so silencing a workflow is never quiet.
-  const muted = data.mutedWorkflows ?? [];
-  const mutedIds = new Set(muted.map((w) => w.id));
-  const muteRow = (w: (typeof muted)[number]): AttentionRow => {
-    const muteLine = muteSentence({
+  // Every active pause shows, so silencing a workflow is never quiet.
+  const paused = data.pausedWorkflows ?? [];
+  const pausedIds = new Set(paused.map((w) => w.id));
+  const pauseRow = (w: (typeof paused)[number]): AttentionRow => {
+    const pauseLine = pauseSentence({
       by: w.by,
       account: w.byAccount,
       untilItWorks: w.untilItWorks,
-      mutedUntil: w.mutedUntil,
+      pausedUntil: w.pausedUntil,
       reason: w.reason,
     });
-    // The mute line already says "Muted ..."; only failing adds a state.
+    // The pause line already says "Paused ..."; only failing adds a state.
     let state = "";
     if (w.failing) {
       state =
         w.failedRuns > 0
-          ? `Still failing: ${failedRuns(w.failedRuns)} since it was muted.`
+          ? `Still failing: ${failedRuns(w.failedRuns)} since it was paused.`
           : "Still failing.";
     }
     return {
       id: w.id,
       name: w.name,
       href: `/workflows/${w.id}`,
-      // Muted means someone already knows: yellow, as in the workflow panel.
+      // Paused means someone already knows: yellow, as in the workflow panel.
       tone: "warning",
       // Only the state is coloured, so the rows stay easy to scan.
       detail: (
         <>
           {state && <span>{state} </span>}
           <span className="text-muted-foreground">
-            <TextWithEmails text={`${muteLine}.`} />
+            <TextWithEmails text={`${pauseLine}.`} />
           </span>
         </>
       ),
       action: "Open its Alerts",
     };
   };
-  // Failing first (nobody has acted), then failing while muted, then other mutes and broken own methods.
+  // Failing first (nobody has acted), then failing while paused, then other pauses and broken own methods.
   const rows: AttentionRow[] = [
     ...data.failingNow
-      .filter((w) => !mutedIds.has(w.workflowId))
+      .filter((w) => !pausedIds.has(w.workflowId))
       .map((w) => ({
         id: w.workflowId,
         name: w.name,
@@ -364,8 +366,8 @@ export function AlertsHealth({
             : `${w.openedBy === "funding" ? "Wallet out of funds, " : ""}${failedRuns(w.failureCount)} in a row${ownRule(ownThreshold.get(w.workflowId))}, alert sent ${timeAgo(w.openedAt)}`
         }${pause ? `. Not reported until ${formatWhen(pause.until)}` : ""}`,
       })),
-    ...muted.filter((w) => w.failing).map(muteRow),
-    ...muted.filter((w) => !w.failing).map(muteRow),
+    ...paused.filter((w) => w.failing).map(pauseRow),
+    ...paused.filter((w) => !w.failing).map(pauseRow),
     ...data.customWorkflows
       .filter((w) => w.brokenMethods > 0)
       .map((w) => ({
@@ -413,8 +415,7 @@ export function AlertsHealth({
       detail: brokenDetail(
         broken.map((c) => ({
           label: label(c),
-          paused: Boolean(c.pausedAt),
-          why: c.pausedAt ? (c.pausedReason ?? c.lastError) : c.lastError,
+          why: c.stoppedAt ? (c.stoppedReason ?? c.lastError) : c.lastError,
         })),
         [...(emailWorks ? ["Email"] : []), ...working.map(label)]
       ),
@@ -454,8 +455,8 @@ export function AlertsHealth({
     detail: row.detail,
     action: row.action ? (
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        {mutedIds.has(row.id) && canManage && (
-          <UnmuteButton onDone={onChanged} workflowId={row.id} />
+        {pausedIds.has(row.id) && canManage && (
+          <ResumeButton onDone={onChanged} workflowId={row.id} />
         )}
         <Link
           className={`text-xs underline underline-offset-4 ${TOUCH_TARGET}`}
@@ -465,12 +466,14 @@ export function AlertsHealth({
         </Link>
       </div>
     ) : undefined,
-    testId: mutedIds.has(row.id) ? "failure-alerts-muted-workflow" : undefined,
+    testId: pausedIds.has(row.id)
+      ? "failure-alerts-paused-workflow"
+      : undefined,
   }));
 
   const workflowSection = workflowIssues.length > 0 && (
     <IssueSection
-      description="Workflows that are failing or not running, muted, or whose own methods stopped working."
+      description="Workflows that are failing or not running, paused, or whose own methods stopped working."
       issues={workflowIssues}
       testId="failure-alerts-failing"
       title="Workflows that need attention"

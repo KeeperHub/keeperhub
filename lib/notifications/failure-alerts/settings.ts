@@ -58,11 +58,6 @@ import {
   recipientMatches,
 } from "./history-rows";
 import {
-  actorOf,
-  loadMutedWorkflows,
-  queueRemovedNotice,
-} from "./mute-notices";
-import {
   hasReachableManager,
   loadOrgPolicy,
   recipientIdsFor,
@@ -82,6 +77,11 @@ import {
   PERSON_KINDS,
   refusedReasonOf,
 } from "./view-types";
+import {
+  actorOf,
+  loadPausedWorkflows,
+  queueRemovedNotice,
+} from "./workflow-pause-notices";
 
 export const CHANNEL_KINDS: readonly FailureAlertChannelKind[] = [
   "slack",
@@ -141,8 +141,8 @@ export async function loadChannelViews(
     connectionName,
     destination: channel.destination,
     role: channel.role,
-    pausedAt: iso(channel.pausedAt),
-    pausedReason: channel.pausedReason,
+    stoppedAt: iso(channel.stoppedAt),
+    stoppedReason: channel.stoppedReason,
     lastDeliveredAt: iso(channel.lastDeliveredAt),
     lastFailedAt: iso(channel.lastFailedAt),
     lastError: channel.lastError,
@@ -262,12 +262,12 @@ async function loadEmailUsage(
 /** Someone can be told: an email that is not capped, or a method that works. */
 export function isReachable(
   emails: string[],
-  channels: { pausedAt: string | Date | null; connectionMissing?: boolean }[],
+  channels: { stoppedAt: string | Date | null; connectionMissing?: boolean }[],
   emailCapped = false
 ): boolean {
   return (
     (emails.length > 0 && !emailCapped) ||
-    channels.some((c) => !(c.pausedAt || c.connectionMissing))
+    channels.some((c) => !(c.stoppedAt || c.connectionMissing))
   );
 }
 
@@ -301,13 +301,13 @@ export async function loadOrgSettingsView(
       .select({
         id: workflows.id,
         name: workflows.name,
-        mutedUntil: workflowFailureAlertOverrides.mutedUntil,
-        muteUntilSuccess: workflowFailureAlertOverrides.muteUntilSuccess,
+        pausedUntil: workflowFailureAlertOverrides.pausedUntil,
+        pauseUntilSuccess: workflowFailureAlertOverrides.pauseUntilSuccess,
         threshold: workflowFailureAlertOverrides.threshold,
         timeLimitMinutes: workflowFailureAlertOverrides.timeLimitMinutes,
         recipientUserIds: workflowFailureAlertOverrides.recipientUserIds,
         customChannels: workflowFailureAlertOverrides.customChannels,
-        pauseWorkflow: workflowFailureAlertOverrides.pauseWorkflow,
+        disableWorkflow: workflowFailureAlertOverrides.disableWorkflow,
       })
       .from(workflowFailureAlertOverrides)
       .innerJoin(
@@ -323,9 +323,9 @@ export async function loadOrgSettingsView(
             isNotNull(workflowFailureAlertOverrides.timeLimitMinutes),
             isNotNull(workflowFailureAlertOverrides.recipientUserIds),
             eq(workflowFailureAlertOverrides.customChannels, true),
-            isNotNull(workflowFailureAlertOverrides.mutedUntil),
-            eq(workflowFailureAlertOverrides.muteUntilSuccess, true),
-            eq(workflowFailureAlertOverrides.pauseWorkflow, true)
+            isNotNull(workflowFailureAlertOverrides.pausedUntil),
+            eq(workflowFailureAlertOverrides.pauseUntilSuccess, true),
+            eq(workflowFailureAlertOverrides.disableWorkflow, true)
           )
         )
       )
@@ -334,7 +334,7 @@ export async function loadOrgSettingsView(
     db
       .select({
         workflowId: failureAlertChannels.workflowId,
-        pausedAt: failureAlertChannels.pausedAt,
+        stoppedAt: failureAlertChannels.stoppedAt,
         integrationId: failureAlertChannels.integrationId,
       })
       .from(failureAlertChannels)
@@ -352,7 +352,7 @@ export async function loadOrgSettingsView(
   const usableIds = new Set(connections.map((c) => c.id));
   const brokenByWorkflow = new Map<string, number>();
   for (const m of workflowMethods) {
-    if (m.workflowId && (m.pausedAt || !usableIds.has(m.integrationId))) {
+    if (m.workflowId && (m.stoppedAt || !usableIds.has(m.integrationId))) {
       brokenByWorkflow.set(
         m.workflowId,
         (brokenByWorkflow.get(m.workflowId) ?? 0) + 1
@@ -384,16 +384,16 @@ export async function loadOrgSettingsView(
     customWorkflows: custom.map((row) => ({
       id: row.id,
       name: row.name,
-      mutedUntil:
-        row.mutedUntil && row.mutedUntil > new Date()
-          ? row.mutedUntil.toISOString()
+      pausedUntil:
+        row.pausedUntil && row.pausedUntil > new Date()
+          ? row.pausedUntil.toISOString()
           : null,
-      muteUntilSuccess: row.muteUntilSuccess,
+      pauseUntilSuccess: row.pauseUntilSuccess,
       threshold: row.threshold,
       timeLimitMinutes: row.timeLimitMinutes,
       customRecipients: row.recipientUserIds !== null,
       customChannels: row.customChannels,
-      pauseWorkflow: row.pauseWorkflow,
+      disableWorkflow: row.disableWorkflow,
       // Only methods it uses: ones left from before "own methods" was turned off do not count.
       brokenMethods: row.customChannels
         ? (brokenByWorkflow.get(row.id) ?? 0)
@@ -414,7 +414,7 @@ export async function loadOrgSettingsView(
               : null,
           }
         : null,
-    mutedWorkflows: await loadMutedWorkflows(organizationId, members),
+    pausedWorkflows: await loadPausedWorkflows(organizationId, members),
     failingNow,
     unreachable: !isReachable(
       resolveRecipientEmails(policy.recipientUserIds, members),
@@ -438,15 +438,15 @@ type ChannelInput = {
   integrationId: string;
   destination: string;
   role: FailureAlertChannelRole;
-  /** Undo of a deleted channel restores it paused; can pause, never unpause. */
-  pausedReason?: string;
+  /** Undo of a deleted channel restores it stopped; can stop, never restart. */
+  stoppedReason?: string;
 };
 
 const TELEGRAM_CHAT_ID = /^(-?\d{5,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$/;
 // A Slack channel name (up to 80 characters, no spaces) or ID, with an optional #.
 const SLACK_CHANNEL = /^#?[^\s#<>@&|,]{1,80}$/u;
-// Undo brings a paused method back paused; the browser's reason text is not kept.
-const RESTORED_PAUSED_REASON = "It was paused when it was removed";
+// Undo brings a stopped method back stopped; the browser's reason text is not kept.
+const RESTORED_STOPPED_REASON = "It had stopped working when it was removed";
 const TRAILING_PERIOD = /\.+$/;
 
 export function parseThreshold(raw: unknown): number {
@@ -517,7 +517,7 @@ export async function parseChannels(
     const integrationId = String(item?.integrationId ?? "");
     const connection = connections.get(integrationId);
     // Keep a channel whose connection vanished, so it does not block other
-    // changes; the sender pauses it.
+    // changes; the sender stops it.
     const unchanged = connection
       ? undefined
       : saved.find(
@@ -577,9 +577,9 @@ export async function parseChannels(
       integrationId,
       destination: target,
       role: item?.role === "backup" ? "backup" : "always",
-      pausedReason:
-        typeof item?.pausedReason === "string" && item.pausedReason.trim()
-          ? RESTORED_PAUSED_REASON
+      stoppedReason:
+        typeof item?.stoppedReason === "string" && item.stoppedReason.trim()
+          ? RESTORED_STOPPED_REASON
           : undefined,
     });
   }
@@ -596,11 +596,11 @@ async function verifyNewTargets(
   connections: Map<string, ConnectionView>,
   organizationId: string
 ): Promise<void> {
-  // A paused channel put back by Undo is restored as it was, paused.
+  // A stopped channel put back by Undo is restored as it was, stopped.
   const fresh = parsed.filter(
     (p) =>
       !(
-        (p.pausedReason && !p.id) ||
+        (p.stoppedReason && !p.id) ||
         saved.some(
           (row) =>
             row.id === p.id &&
@@ -631,7 +631,7 @@ async function verifyNewTargets(
         .map(async (channel) => ({
           channel,
           outcome: await checkChannelSilently(
-            { ...channel, id: channel.id ?? "new", pausedAt: null },
+            { ...channel, id: channel.id ?? "new", stoppedAt: null },
             organizationId
           ),
         }))
@@ -728,8 +728,8 @@ export async function replaceChannels(
           // A new destination starts with a clean bill of health.
           ...(retargeted
             ? {
-                pausedAt: null,
-                pausedReason: null,
+                stoppedAt: null,
+                stoppedReason: null,
                 lastError: null,
                 lastFailedAt: null,
                 lastTestOk: null,
@@ -749,8 +749,8 @@ export async function replaceChannels(
       role: channel.role,
       createdBy: userId,
       // Saving ran the silent check, so a new method starts checked.
-      ...(channel.pausedReason
-        ? { pausedAt: new Date(), pausedReason: channel.pausedReason }
+      ...(channel.stoppedReason
+        ? { stoppedAt: new Date(), stoppedReason: channel.stoppedReason }
         : { lastHealthCheckAt: new Date() }),
     });
   }
@@ -937,10 +937,10 @@ export const HISTORY_SINCE_MS = {
 } as const;
 export type HistorySince = keyof typeof HISTORY_SINCE_MS;
 
-/** What people did: mutes, pauses, removals and tests. */
+/** What people did: pauses (workflow and org), removals and tests. */
 export const HISTORY_PEOPLE_KINDS = [
-  "workflow_muted",
-  "workflow_unmuted",
+  "workflow_paused",
+  "workflow_resumed",
   "alerts_paused",
   "alerts_resumed",
   "recipients_removed",
@@ -955,11 +955,11 @@ export const HISTORY_ALERT_KINDS = [
   "alert",
   "reminder",
   "recovery",
-  "channel_paused",
+  "channel_stopped",
   "cap_warning",
-  "workflow_muted",
-  "workflow_unmuted",
-  "mute_ended",
+  "workflow_paused",
+  "workflow_resumed",
+  "workflow_pause_ended",
   "recipients_removed",
 ] as const;
 
@@ -993,7 +993,7 @@ function personBy(): SQL {
   )}) AND coalesce(${failureAlertDeliveries.context}->>'by', '') <> '')`;
 }
 
-/** Messages about a workflow `match` picks (alias w): its own, grouped ones that listed it, and its mute notices. */
+/** Messages about a workflow `match` picks (alias w): its own, grouped ones that listed it, and its pause notices. */
 function aboutWorkflow(organizationId: string, match: SQL): SQL {
   return sql`EXISTS (
     SELECT 1 FROM ${workflows} w
@@ -1251,7 +1251,7 @@ export async function loadInAppAlertState(
     loadOrgMembers(organizationId),
     db
       .select({
-        pausedAt: failureAlertChannels.pausedAt,
+        stoppedAt: failureAlertChannels.stoppedAt,
         integrationId: failureAlertChannels.integrationId,
       })
       .from(failureAlertChannels)
@@ -1275,7 +1275,7 @@ export async function loadInAppAlertState(
   ]);
   const usableIds = new Set(usable.map((c) => c.id));
   const channels = rows.map((row) => ({
-    pausedAt: row.pausedAt,
+    stoppedAt: row.stoppedAt,
     connectionMissing: !usableIds.has(row.integrationId),
   }));
   return {

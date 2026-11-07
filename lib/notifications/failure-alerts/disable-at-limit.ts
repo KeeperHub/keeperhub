@@ -12,13 +12,16 @@ import type { EffectivePolicy } from "./policy";
 import { insertDeliveries, rowsForPolicy } from "./queue-rows";
 import { runsOnItsOwn, workflowTriggerType } from "./workflow-trigger";
 
-// "Pause at the limit". Re-enabling is caught by a DB trigger on
+// "Disable at the limit". Re-enabling is caught by a DB trigger on
 // workflows.enabled, so editor, API, MCP and admin all count.
 
 type IncidentRow = typeof workflowFailureIncidents.$inferSelect;
-type PauseState = Pick<IncidentRow, "workflowPausedAt" | "workflowResumedAt">;
+type DisableState = Pick<
+  IncidentRow,
+  "workflowDisabledAt" | "workflowReenabledAt"
+>;
 
-type PausableWorkflow = {
+type DisableTarget = {
   id: string;
   organizationId: string;
   deactivatedAt: Date | null;
@@ -26,23 +29,23 @@ type PausableWorkflow = {
 };
 
 /** Turned off by its incident, and nobody has turned it back on since. */
-export function isHeld(incident: PauseState): boolean {
+export function isHeld(incident: DisableState): boolean {
   return (
-    incident.workflowPausedAt !== null &&
-    (incident.workflowResumedAt === null ||
-      incident.workflowResumedAt < incident.workflowPausedAt)
+    incident.workflowDisabledAt !== null &&
+    (incident.workflowReenabledAt === null ||
+      incident.workflowReenabledAt < incident.workflowDisabledAt)
   );
 }
 
 /** isHeld for queries that pick incidents to close. */
-export const HELD_SQL = sql`(${workflowFailureIncidents.workflowPausedAt} IS NOT NULL
-  AND (${workflowFailureIncidents.workflowResumedAt} IS NULL
-    OR ${workflowFailureIncidents.workflowResumedAt} < ${workflowFailureIncidents.workflowPausedAt}))`;
+export const HELD_SQL = sql`(${workflowFailureIncidents.workflowDisabledAt} IS NOT NULL
+  AND (${workflowFailureIncidents.workflowReenabledAt} IS NULL
+    OR ${workflowFailureIncidents.workflowReenabledAt} < ${workflowFailureIncidents.workflowDisabledAt}))`;
 
-/** The incident's own pause holds it open: stopped is not fixed. */
-export function heldByPause(
-  incident: PauseState,
-  workflow: PausableWorkflow,
+/** Turned off by its own incident, which stays open: stopped is not fixed. */
+export function heldWhileDisabled(
+  incident: DisableState,
+  workflow: DisableTarget,
   reason: FailureIncidentResolution
 ): boolean {
   return (
@@ -76,14 +79,14 @@ export async function turnOffForIncident(
   }
   await tx
     .update(workflowFailureIncidents)
-    .set({ workflowPausedAt: now })
+    .set({ workflowDisabledAt: now })
     .where(eq(workflowFailureIncidents.id, incidentId));
   return true;
 }
 
-/** The audit row for a pause, written once its transaction committed. */
-export async function recordPause(
-  workflow: PausableWorkflow,
+/** The audit row for turning it off, written once its transaction committed. */
+export async function recordDisable(
+  workflow: DisableTarget,
   incidentId: string,
   failureCount: number
 ): Promise<void> {
@@ -94,7 +97,7 @@ export async function recordPause(
       authMethod: "internal",
       actorLabel: "Failure notifications",
     },
-    action: "workflow.paused_by_failure_alerts",
+    action: "workflow.disabled_by_failure_alerts",
     resourceType: "workflow",
     resourceId: workflow.id,
     before: { enabled: true },
@@ -105,9 +108,9 @@ export async function recordPause(
 
 class ClaimLost extends Error {}
 
-/** Pause an already-open incident's workflow in one transaction, so it is never off silently. */
-export async function pauseOpenIncident(params: {
-  workflow: PausableWorkflow;
+/** Turn off an already-open incident's workflow in one transaction, so it is never off silently. */
+export async function disableForOpenIncident(params: {
+  workflow: DisableTarget;
   incident: IncidentRow;
   policy: EffectivePolicy;
   failures: number;
@@ -151,7 +154,7 @@ export async function pauseOpenIncident(params: {
           sequence,
           params.holdUntil ?? now,
           {
-            ...(again ? { pausedAgain: true } : { workflowPaused: true }),
+            ...(again ? { disabledAgain: true } : { workflowDisabled: true }),
             failures,
             ...(params.outOfFunds ? { outOfFunds: true } : {}),
           }
@@ -168,6 +171,6 @@ export async function pauseOpenIncident(params: {
   if (queued === null) {
     return 0;
   }
-  await recordPause(workflow, incident.id, failures);
+  await recordDisable(workflow, incident.id, failures);
   return queued;
 }

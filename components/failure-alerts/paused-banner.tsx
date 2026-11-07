@@ -4,6 +4,11 @@ import { AlertTriangle } from "lucide-react";
 import Link from "next/link";
 import { AppBannerSlot } from "@/components/app-banner-slot";
 import { NOTICE_TONE_CLASS } from "@/components/ui/notice";
+import {
+  PAUSE_HEADLINE,
+  pausedFor,
+  pauseEffect,
+} from "@/lib/notifications/failure-alerts/pause-copy";
 import { cn } from "@/lib/utils";
 import { formatWhen, TOUCH_TARGET } from "./format";
 
@@ -26,11 +31,10 @@ export function FailureAlertsPausedBanner({
         <span className="min-w-0 truncate">
           {/* Short below laptop width and on short (landscape) screens. */}
           <span className="lg:hidden [@media(max-height:500px)]:inline">
-            Alerts paused until {formatWhen(until)}.
+            {PAUSE_HEADLINE.paused} until {formatWhen(until)}.
           </span>
           <span className="hidden lg:inline [@media(max-height:500px)]:hidden">
-            Alerts are paused until {formatWhen(until)}. Workflows keep running,
-            but if one fails, no alert goes out.
+            {pausedFor("org")} until {formatWhen(until)}. {pauseEffect("org")}.
           </span>
         </span>
         {/* Outside the truncated text, so the way to resume never gets cut. */}

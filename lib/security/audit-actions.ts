@@ -119,7 +119,7 @@ const ACTION_MAP: Record<string, AuditActionDescription> = {
     kind: "change",
   },
   "org.failure_alerts_resumed": {
-    phrase: "turned failure alerts back on",
+    phrase: "resumed failure alerts for the organization",
     kind: "change",
   },
   "org.failure_alert_tested": {
@@ -130,15 +130,15 @@ const ACTION_MAP: Record<string, AuditActionDescription> = {
     phrase: "changed a workflow's failure notifications",
     kind: "change",
   },
-  "workflow.alerts_muted": {
-    phrase: "muted a workflow's failure alerts",
+  "workflow.failure_alerts_paused": {
+    phrase: "paused a workflow's failure alerts",
     kind: "change",
   },
-  "workflow.alerts_unmuted": {
-    phrase: "turned a workflow's failure alerts back on",
+  "workflow.failure_alerts_resumed": {
+    phrase: "resumed a workflow's failure alerts",
     kind: "change",
   },
-  "workflow.paused_by_failure_alerts": {
+  "workflow.disabled_by_failure_alerts": {
     phrase:
       "turned a workflow off after repeated failures or running out of funds",
     kind: "change",

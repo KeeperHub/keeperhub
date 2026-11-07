@@ -96,7 +96,7 @@ export type DrainStats = {
   failed: number;
   capped: number;
   backupsQueued: number;
-  channelsPaused: number;
+  channelsStopped: number;
   healthChecks: number;
 };
 
@@ -107,7 +107,7 @@ export function emptyDrainStats(): DrainStats {
     failed: 0,
     capped: 0,
     backupsQueued: 0,
-    channelsPaused: 0,
+    channelsStopped: 0,
     healthChecks: 0,
   };
 }
@@ -306,20 +306,20 @@ async function runsBefore(
   };
 }
 
-/** Whether this alert or reminder announces a pause, from what it was queued with. */
-function pausedVariant(
+/** Whether this alert or reminder says the workflow was turned off, from what it was queued with. */
+function disabledVariant(
   kind: string,
   context: Record<string, unknown>,
-  incident: { workflowPausedAt: Date | null }
+  incident: { workflowDisabledAt: Date | null }
 ): "first" | "again" | undefined {
-  if (context.pausedAgain === true) {
+  if (context.disabledAgain === true) {
     return "again";
   }
-  if (context.workflowPaused === true) {
+  if (context.workflowDisabled === true) {
     return "first";
   }
   // A re-queued alert lost its context; the incident still knows.
-  return kind === "alert" && incident.workflowPausedAt !== null
+  return kind === "alert" && incident.workflowDisabledAt !== null
     ? "first"
     : undefined;
 }
@@ -337,7 +337,7 @@ async function groupedList(
       list.push({
         ...workflow,
         failureCount: incident.failureCount,
-        workflowPaused: incident.workflowPausedAt !== null,
+        workflowDisabled: incident.workflowDisabledAt !== null,
         lastError: incident.lastError,
         openedBy: incident.openedBy,
         refused: ctx.refused(incident),
@@ -350,12 +350,12 @@ async function groupedList(
 const text = (value: unknown): string | null =>
   typeof value === "string" && value ? value : null;
 
-/** A mute or removal notice from what was stored when it was queued. */
-function muteNoticeInput(
+/** A pause or removal notice from what was stored when it was queued. */
+function pauseNoticeInput(
   kind:
-    | "workflow_muted"
-    | "workflow_unmuted"
-    | "mute_ended"
+    | "workflow_paused"
+    | "workflow_resumed"
+    | "workflow_pause_ended"
     | "recipients_removed",
   context: Record<string, unknown>,
   org: { orgName: string; organizationId: string; appUrl: string }
@@ -381,15 +381,15 @@ function muteNoticeInput(
     };
   }
   const named = workflow ?? { id: "", name: "A workflow" };
-  if (kind === "workflow_unmuted") {
+  if (kind === "workflow_resumed") {
     return { ...org, kind, workflow: named, by, byAccount };
   }
-  if (kind === "mute_ended") {
+  if (kind === "workflow_pause_ended") {
     return {
       ...org,
       kind,
       workflow: named,
-      by: text(context.mutedBy),
+      by: text(context.pausedBy),
       reason: text(context.reason),
       until: text(context.until) ? new Date(String(context.until)) : null,
       untilItWorks: context.untilItWorks === true,
@@ -428,10 +428,10 @@ async function renderRow(
     typeof context.backupReason === "string" ? context.backupReason : undefined;
   let input: MessageInput;
 
-  if (row.kind === "channel_paused") {
+  if (row.kind === "channel_stopped") {
     input = {
       ...org,
-      kind: "channel_paused",
+      kind: "channel_stopped",
       channelLabel: String(context.channelLabel ?? "A channel"),
       channelKind:
         typeof context.channelKind === "string"
@@ -462,9 +462,9 @@ async function renderRow(
       until: new Date(String(context.until)),
       reason: typeof context.reason === "string" ? context.reason : null,
       by: typeof context.by === "string" ? context.by : null,
-      pausingWorkflows:
-        typeof context.pausingWorkflows === "number"
-          ? context.pausingWorkflows
+      disablingWorkflows:
+        typeof context.disablingWorkflows === "number"
+          ? context.disablingWorkflows
           : undefined,
     };
   } else if (row.kind === "alerts_resumed") {
@@ -474,12 +474,12 @@ async function renderRow(
       by: typeof context.by === "string" ? context.by : null,
     };
   } else if (
-    row.kind === "workflow_muted" ||
-    row.kind === "workflow_unmuted" ||
-    row.kind === "mute_ended" ||
+    row.kind === "workflow_paused" ||
+    row.kind === "workflow_resumed" ||
+    row.kind === "workflow_pause_ended" ||
     row.kind === "recipients_removed"
   ) {
-    input = muteNoticeInput(row.kind, context, org);
+    input = pauseNoticeInput(row.kind, context, org);
   } else if (row.kind === "launch_notice") {
     input = {
       ...org,
@@ -545,10 +545,10 @@ async function renderRow(
             workflow,
             incident: alertIncident,
             backupReason,
-            paused: pausedVariant(row.kind, context, incident),
+            disabled: disabledVariant(row.kind, context, incident),
             reminderNumber: row.kind === "reminder" ? row.sequence : undefined,
             maxReminders: MAX_REMINDERS,
-            pausedFailures:
+            disabledFailures:
               typeof context.failures === "number"
                 ? context.failures
                 : undefined,
@@ -722,11 +722,11 @@ async function finishRow(
 }
 
 /**
- * Pause a broken channel and tell people once: the alert recipients, the
+ * Stop sending to a broken channel and tell people once: the alert recipients, the
  * owners (who may not be among them) and, for a workflow's own method, the
  * people that workflow emails.
  */
-async function pauseChannel(
+async function stopChannel(
   channelId: string,
   reason: string,
   organizationId: string,
@@ -738,15 +738,15 @@ async function pauseChannel(
     ...resolveRecipientEmails(org.recipientUserIds, members),
     ...reachableEmails(members.filter((m) => m.role === "owner")),
   ];
-  // Pause and notice together, so a failed insert never pauses a channel silently.
+  // Stop and notice together, so a failed insert never stops a channel silently.
   return await db.transaction(async (tx: Tx) => {
-    const paused = await tx
+    const stopped = await tx
       .update(failureAlertChannels)
-      .set({ pausedAt: now, pausedReason: reason })
+      .set({ stoppedAt: now, stoppedReason: reason })
       .where(
         and(
           eq(failureAlertChannels.id, channelId),
-          isNull(failureAlertChannels.pausedAt)
+          isNull(failureAlertChannels.stoppedAt)
         )
       )
       .returning({
@@ -755,7 +755,7 @@ async function pauseChannel(
         integrationId: failureAlertChannels.integrationId,
         workflowId: failureAlertChannels.workflowId,
       });
-    const channel = paused[0];
+    const channel = stopped[0];
     if (!channel) {
       return false;
     }
@@ -784,10 +784,10 @@ async function pauseChannel(
       .limit(1);
     await insertDeliveries(
       emails.map((email) => ({
-        scope: `paused:${channelId}:${now.toISOString()}`,
+        scope: `stopped:${channelId}:${now.toISOString()}`,
         organizationId,
         incidentId: null,
-        kind: "channel_paused" as const,
+        kind: "channel_stopped" as const,
         sequence: 0,
         channel: "email" as const,
         recipient: email,
@@ -1088,14 +1088,9 @@ async function processRow(
     row.channelId &&
     !outcome.channelHealthy &&
     !(expired && outcome.retryable) &&
-    (await pauseChannel(
-      row.channelId,
-      outcome.message,
-      row.organizationId,
-      now
-    ))
+    (await stopChannel(row.channelId, outcome.message, row.organizationId, now))
   ) {
-    stats.channelsPaused += 1;
+    stats.channelsStopped += 1;
   }
 }
 
@@ -1280,7 +1275,7 @@ async function queueBackupFor(row: DeliveryRow, now: Date): Promise<number> {
   };
 
   for (const channel of channels) {
-    if (channel.pausedAt || channel.role !== "backup") {
+    if (channel.stoppedAt || channel.role !== "backup") {
       continue;
     }
     if (
@@ -1335,7 +1330,7 @@ const HEALTH_SCAN_PAGE = 500;
 /** Per pod: a restart or another pod starts from the top, which only repeats checks. */
 let healthScanCursor: string | null = null;
 
-/** Daily silent check: pause dead channels, restore paused ones that work again. */
+/** Daily silent check: stop dead channels, restore stopped ones that work again. */
 export async function runHealthChecks(
   now: Date,
   stats: DrainStats
@@ -1348,7 +1343,7 @@ export async function runHealthChecks(
       integrationId: failureAlertChannels.integrationId,
       destination: failureAlertChannels.destination,
       role: failureAlertChannels.role,
-      pausedAt: failureAlertChannels.pausedAt,
+      stoppedAt: failureAlertChannels.stoppedAt,
     })
     .from(failureAlertChannels)
     .where(
@@ -1388,24 +1383,24 @@ export async function runHealthChecks(
         .update(failureAlertChannels)
         .set({
           lastHealthCheckAt: now,
-          // Slack's check only proves the token, not the channel, so a paused
+          // Slack's check only proves the token, not the channel, so a stopped
           // Slack channel comes back only through a Test.
-          ...(channel.pausedAt && outcome.ok && channel.kind !== "slack"
-            ? { pausedAt: null, pausedReason: null }
+          ...(channel.stoppedAt && outcome.ok && channel.kind !== "slack"
+            ? { stoppedAt: null, stoppedReason: null }
             : {}),
         })
         .where(eq(failureAlertChannels.id, channel.id));
-      if (!(outcome.ok || outcome.retryable || channel.pausedAt)) {
+      if (!(outcome.ok || outcome.retryable || channel.stoppedAt)) {
         await recordChannelHealth(channel.id, outcome, now);
         if (
-          await pauseChannel(
+          await stopChannel(
             channel.id,
             `The daily check found it no longer works: ${outcome.message}`,
             channel.organizationId,
             now
           )
         ) {
-          stats.channelsPaused += 1;
+          stats.channelsStopped += 1;
         }
       }
     } catch (error) {

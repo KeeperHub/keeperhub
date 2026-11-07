@@ -23,15 +23,15 @@ export const MAX_THRESHOLD = 20;
 /** The optional "or failing for" limit. Off unless someone turns it on. */
 export const TIME_LIMIT_OPTIONS_MINUTES = [60, 360, 1440] as const;
 
-/** A mute can never be permanent: a broken workflow must not be forgotten. */
-export const MAX_MUTE_DAYS = 7;
+/** A pause (workflow or org) can never be permanent: a broken workflow must not be forgotten. */
+export const MAX_PAUSE_DAYS = 7;
 /** How far a browser clock may run ahead: a 7-day choice past the cap by this much is trimmed, not refused. */
 export const CLOCK_SKEW_MS = 5 * 60 * 1000;
-/** Every mute says why; everyone it silences sees the reason. */
-export const MIN_MUTE_REASON = 3;
-export const MAX_MUTE_REASON = 200;
-/** Mute, change and unmute notices per workflow per hour; more is refused, not sent. */
-export const MUTE_CHANGES_PER_HOUR = 6;
+/** A workflow pause says why; everyone it silences sees the reason. The org's reason is optional. */
+export const MIN_PAUSE_REASON = 3;
+export const MAX_PAUSE_REASON = 200;
+/** Pause, change and resume notices per workflow per hour; more is refused, not sent. */
+export const WORKFLOW_PAUSE_CHANGES_PER_HOUR = 6;
 
 /** Reminders while a workflow keeps failing. */
 export const REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -96,8 +96,7 @@ export const REFUSALS_STOPPED_MS = 24 * 60 * 60 * 1000;
 export const RECOVERY_HOLD_MS = 30 * 60 * 1000;
 
 /** Longest org-wide pause, extensions included, so a forgotten one cannot silence alerts for long. */
-export const MAX_ORG_PAUSE_MS = 7 * 24 * 60 * 60 * 1000;
-export const MAX_PAUSE_REASON = 200;
+export const MAX_ORG_PAUSE_MS = MAX_PAUSE_DAYS * 24 * 60 * 60 * 1000;
 /** Pauses (or changes to one) an org may make per hour: each one tells every recipient. */
 export const MAX_PAUSES_PER_HOUR = 5;
 

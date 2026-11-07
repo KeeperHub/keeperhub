@@ -27,15 +27,29 @@ import {
 } from "@/lib/hooks/use-notifications";
 import { useOrganization } from "@/lib/hooks/use-organization";
 import {
-  MAX_MUTE_DAYS,
-  MAX_MUTE_REASON,
+  MAX_PAUSE_DAYS,
+  MAX_PAUSE_REASON,
   MAX_REMINDERS,
   MAX_THRESHOLD,
-  MIN_MUTE_REASON,
+  MIN_PAUSE_REASON,
   MIN_THRESHOLD,
   REFUSALS_STOPPED_MS,
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
+import {
+  CHANGE_PAUSE,
+  PAUSE_ALERTS,
+  PAUSE_FOR,
+  PAUSE_MAX,
+  PAUSE_SUBMIT,
+  PAUSE_UNTIL,
+  PAUSED,
+  PAUSED_TOAST,
+  pausedFor,
+  pauseEffect,
+  RESUME_ALERTS,
+  RESUMED_TOAST,
+} from "@/lib/notifications/failure-alerts/pause-copy";
 import {
   methodText,
   refusalFixHref,
@@ -65,7 +79,7 @@ import {
   timeLimitLabel,
   toLocalInput,
 } from "./format";
-import { memberLabel, muteSentence } from "./member-label";
+import { memberLabel, pauseSentence } from "./member-label";
 import { EmailMethodCard } from "./method-card";
 import {
   channelsPayload,
@@ -83,11 +97,11 @@ import {
 } from "./save-state";
 
 type Loaded = WorkflowAlertView & { canManage: boolean };
-type Panel = null | "mute";
+type Panel = null | "pause";
 /** Custom rules save this long after the last edit. */
 const AUTOSAVE_MS = 1500;
 
-// One id for every save toast, so "muted" then "back on" replace each other
+// One id for every save toast, so "paused" then "back on" replace each other
 // instead of stacking over the panel's buttons.
 const SAVE_TOAST = "workflow-failure-alerts-save";
 
@@ -104,13 +118,13 @@ const STATUS_NOT_REFRESHED =
 /** Panel buttons wrap their label instead of overflowing a narrow panel; 44px tall on touch. */
 const WRAP_BUTTON =
   "h-auto min-h-8 min-w-0 max-w-full whitespace-normal pointer-coarse:min-h-11";
-const MUTE_CHOICES: { id: string; label: string; ms: number | "success" }[] = [
+const PAUSE_CHOICES: { id: string; label: string; ms: number | "success" }[] = [
   { id: "1h", label: "1 hour", ms: HOUR_MS },
   { id: "24h", label: "24 hours", ms: 24 * HOUR_MS },
   { id: "7d", label: "7 days", ms: 7 * 24 * HOUR_MS },
   {
     id: "success",
-    label: `Until it works again (up to ${MAX_MUTE_DAYS} days)`,
+    label: `Until it works again (up to ${MAX_PAUSE_DAYS} days)`,
     ms: "success",
   },
 ];
@@ -176,7 +190,7 @@ function OrgToggles({
 function RulesView({
   threshold,
   timeLimitMinutes,
-  pauseWorkflow,
+  disableWorkflow,
   remindDaily,
   notifyRecovery,
   emails,
@@ -184,7 +198,7 @@ function RulesView({
 }: {
   threshold: number;
   timeLimitMinutes: number | null;
-  pauseWorkflow: boolean;
+  disableWorkflow: boolean;
   remindDaily: boolean;
   notifyRecovery: boolean;
   emails: string[];
@@ -225,7 +239,7 @@ function RulesView({
                   <span className="min-w-0 break-words">
                     {methodText(c.kind, c.destination, c.connectionName)}
                     {c.role === "backup" ? ", backup" : ""}
-                    {c.pausedAt ? ", paused" : ""}
+                    {c.stoppedAt ? ", stopped working" : ""}
                   </span>
                 </li>
               ))}
@@ -253,7 +267,7 @@ function RulesView({
             <span className="text-muted-foreground">No time limit</span>
           )}
         </p>
-        {pauseWorkflow && (
+        {disableWorkflow && (
           <p className="text-xs">
             Disables this workflow when it reaches the limit.
           </p>
@@ -301,13 +315,13 @@ function runsLeft(view: Loaded): string {
 type PanelIncident = NonNullable<Loaded["status"]["incident"]>;
 
 /** What happens next for a workflow failing below its limit. */
-function failingNext(view: Loaded, muted: boolean): string {
-  // A mute never hides the turn-off, so that comes first.
-  if (view.override.pauseWorkflow) {
-    return `${runsLeft(view)} and KeeperHub alerts your team and turns this workflow off${muted ? ", even while it is muted" : ""}.`;
+function failingNext(view: Loaded, paused: boolean): string {
+  // A pause never hides the turn-off, so that comes first.
+  if (view.override.disableWorkflow) {
+    return `${runsLeft(view)} and KeeperHub alerts your team and turns this workflow off${paused ? ", even while it is paused" : ""}.`;
   }
-  if (muted) {
-    return "No alert while it is muted. Failures since the mute are reported when it ends.";
+  if (paused) {
+    return `${pauseEffect("workflow")} while it is paused. Failures since the pause are reported when it ends.`;
   }
   return `The alert goes out at ${failedRuns(view.effective.threshold)}${describeTimeLimit(view.effective.timeLimitMinutes)}.`;
 }
@@ -340,8 +354,8 @@ function refusalsStopped(lastRefusedAt: string | null): boolean {
   );
 }
 
-function isMutedView(view: Loaded): boolean {
-  return Boolean(view.override.mutedUntil || view.override.muteUntilSuccess);
+function isPausedView(view: Loaded): boolean {
+  return Boolean(view.override.pausedUntil || view.override.pauseUntilSuccess);
 }
 
 const ALERTS_NOT_SAVED =
@@ -352,7 +366,7 @@ const ALERTS_DROPPED =
 const ALERTS_LOST =
   "Your alert rule change could not be saved. This workflow keeps its saved rules.";
 
-/** "Alerts" in a workflow's Properties: the rule, what is failing, mute and change. */
+/** "Alerts" in a workflow's Properties: the rule, what is failing, pause and change. */
 export function WorkflowFailureAlerts({
   workflowId,
   triggerType,
@@ -381,14 +395,14 @@ export function WorkflowFailureAlerts({
   const [customChannels, setCustomChannels] = useState<DraftChannel[] | null>(
     null
   );
-  const [muteDate, setMuteDate] = useState("");
-  const [muteChoice, setMuteChoice] = useState<string | null>(null);
-  const [muteReason, setMuteReason] = useState("");
-  const [pauseWorkflow, setPauseWorkflow] = useState(false);
+  const [pauseDate, setPauseDate] = useState("");
+  const [pauseChoice, setPauseChoice] = useState<string | null>(null);
+  const [pauseReason, setPauseReason] = useState("");
+  const [disableWorkflow, setDisableWorkflow] = useState(false);
   // The tab on screen; the rules in use are marked on their tab.
   const [tab, setTab] = useState<"org" | "custom">("org");
   const panelRef = useRef<HTMLDivElement>(null);
-  const muteButtonRef = useRef<HTMLButtonElement>(null);
+  const pauseButtonRef = useRef<HTMLButtonElement>(null);
   // Which button opened the panel, to give focus back to when it closes.
   const openerRef = useRef<Panel>(null);
   // The custom rules as edited, kept current each render for the autosave.
@@ -453,7 +467,7 @@ export function WorkflowFailureAlerts({
       }
       setTimeLimit(limit);
       setCustomRecipients(next.override.recipientUserIds);
-      setPauseWorkflow(next.override.pauseWorkflow);
+      setDisableWorkflow(next.override.disableWorkflow);
       setCustomChannels(
         next.override.customChannels
           ? draftsFromViews(next.override.channels)
@@ -499,12 +513,12 @@ export function WorkflowFailureAlerts({
     }
     const opener = openerRef.current;
     openerRef.current = null;
-    if (opener === "mute") {
-      focusInPlace(muteButtonRef.current);
+    if (opener === "pause") {
+      focusInPlace(pauseButtonRef.current);
     }
   }, [panel]);
 
-  // Escape closes the mute panel like Cancel; a native listener, so a portalled
+  // Escape closes the pause panel like Cancel; a native listener, so a portalled
   // select's Escape closes only that list.
   useEffect(() => {
     const element = panelRef.current;
@@ -557,7 +571,7 @@ export function WorkflowFailureAlerts({
         timerRef.current = null;
       }
     };
-  }, [threshold, timeLimit, customRecipients, customChannels, pauseWorkflow]);
+  }, [threshold, timeLimit, customRecipients, customChannels, disableWorkflow]);
 
   // Resolves true once the custom rules are saved; an unfinished draft stays
   // unsaved here, and a failed save says so wherever the user is.
@@ -710,14 +724,14 @@ export function WorkflowFailureAlerts({
 
   const applies = Boolean(triggerType && triggerType !== "Manual");
   const canManage = view.canManage;
-  const muted = isMutedView(view);
+  const paused = isPausedView(view);
   const custom = view.effective.source === "custom";
   // Off because its alert turned it off, and not turned back on since.
-  const pausedAt = view.status.incident?.workflowPausedAt ?? null;
-  const resumedAt = view.status.incident?.workflowResumedAt ?? null;
-  const pausedByAlert =
-    pausedAt !== null &&
-    (resumedAt === null || resumedAt < pausedAt) &&
+  const disabledAt = view.status.incident?.workflowDisabledAt ?? null;
+  const reenabledAt = view.status.incident?.workflowReenabledAt ?? null;
+  const disabledByAlert =
+    disabledAt !== null &&
+    (reenabledAt === null || reenabledAt < disabledAt) &&
     !enabled;
   // The fix link the alert carries; none when the workflow cannot run.
   const fix = view.status.incident?.refused
@@ -731,20 +745,20 @@ export function WorkflowFailureAlerts({
       Number(threshold) <= MAX_THRESHOLD
     );
 
-  /** The mute exactly as stored: the server sees it unchanged, so it is never re-announced. */
-  const keptMute = (latest: Loaded): Record<string, unknown> => ({
-    mutedUntil: latest.override.mutedUntil,
-    muteUntilSuccess: latest.override.muteUntilSuccess,
-    muteReason: latest.override.muteReason,
+  /** The pause exactly as stored: the server sees it unchanged, so it is never re-announced. */
+  const keptPause = (latest: Loaded): Record<string, unknown> => ({
+    pausedUntil: latest.override.pausedUntil,
+    pauseUntilSuccess: latest.override.pauseUntilSuccess,
+    pauseReason: latest.override.pauseReason,
   });
-  /** The override as stored, so a mute change keeps the custom fields. */
+  /** The override as stored, so a pause change keeps the custom fields. */
   const storedOverride = (latest: Loaded): Record<string, unknown> => ({
     threshold: latest.override.threshold,
     timeLimitMinutes: latest.override.timeLimitMinutes,
     recipientUserIds: latest.override.recipientUserIds,
     customChannels: latest.override.customChannels,
     channels: channelsPayload(draftsFromViews(latest.override.channels)),
-    pauseWorkflow: latest.override.pauseWorkflow,
+    disableWorkflow: latest.override.disableWorkflow,
   });
   const orgPause =
     view.org.pause && new Date(view.org.pause.until).getTime() > Date.now()
@@ -824,47 +838,44 @@ export function WorkflowFailureAlerts({
   };
 
   const reasonOk =
-    muteReason.trim().length >= MIN_MUTE_REASON &&
-    muteReason.trim().length <= MAX_MUTE_REASON;
+    pauseReason.trim().length >= MIN_PAUSE_REASON &&
+    pauseReason.trim().length <= MAX_PAUSE_REASON;
   const choiceOk =
-    muteChoice !== null && (muteChoice !== "date" || muteDate !== "");
+    pauseChoice !== null && (pauseChoice !== "date" || pauseDate !== "");
 
-  /** Mutes (or extends) with a reason; the server tells everyone before it takes effect. */
-  const mute = async (): Promise<void> => {
-    const choice = MUTE_CHOICES.find((c) => c.id === muteChoice);
+  /** Pauses (or extends) with a reason; the server tells everyone before it takes effect. */
+  const pause = async (): Promise<void> => {
+    const choice = PAUSE_CHOICES.find((c) => c.id === pauseChoice);
     if (!(reasonOk && choiceOk)) {
       return;
     }
-    let mutedUntil: string | null = null;
-    if (muteChoice === "date") {
-      mutedUntil = new Date(muteDate).toISOString();
+    let pausedUntil: string | null = null;
+    if (pauseChoice === "date") {
+      pausedUntil = new Date(pauseDate).toISOString();
     } else if (choice && choice.ms !== "success") {
-      mutedUntil = new Date(Date.now() + choice.ms).toISOString();
+      pausedUntil = new Date(Date.now() + choice.ms).toISOString();
     }
     sendPendingDraft();
     const ok = await put(
       (latest) => ({
         ...storedOverride(latest),
-        mutedUntil,
-        muteUntilSuccess: choice?.ms === "success",
-        muteReason: muteReason.trim(),
+        pausedUntil,
+        pauseUntilSuccess: choice?.ms === "success",
+        pauseReason: pauseReason.trim(),
       }),
-      "Alerts muted. Everyone who gets this workflow's alerts was told."
+      PAUSED_TOAST
     );
     if (ok) {
       setPanel(null);
-      setMuteChoice(null);
-      setMuteReason("");
-      setMuteDate("");
+      setPauseChoice(null);
+      setPauseReason("");
+      setPauseDate("");
     }
   };
 
-  const unmute = async (): Promise<void> => {
+  const resume = async (): Promise<void> => {
     sendPendingDraft();
-    await put(
-      storedOverride,
-      "Alerts back on. Everyone who gets this workflow's alerts was told."
-    );
+    await put(storedOverride, RESUMED_TOAST);
   };
 
   const timeLimitValue = (): number | null => {
@@ -880,7 +891,7 @@ export function WorkflowFailureAlerts({
     recipientUserIds: customRecipients,
     customChannels: customChannels !== null,
     channels: customChannels ? channelsPayload(customChannels) : [],
-    pauseWorkflow,
+    disableWorkflow,
   };
   const savedRules = {
     threshold: view.override.threshold,
@@ -890,7 +901,7 @@ export function WorkflowFailureAlerts({
     channels: view.override.customChannels
       ? channelsPayload(draftsFromViews(view.override.channels))
       : [],
-    pauseWorkflow: view.override.pauseWorkflow,
+    disableWorkflow: view.override.disableWorkflow,
   };
   const draftKey = JSON.stringify(draftRules);
   const rulesDirty =
@@ -902,10 +913,10 @@ export function WorkflowFailureAlerts({
   );
   const rulesReady = !thresholdInvalid && methodsReady;
 
-  /** The custom rules as edited, with the mute as stored, for any save of the draft. */
+  /** The custom rules as edited, with the pause as stored, for any save of the draft. */
   const draftBody = (latest: Loaded): Record<string, unknown> => ({
     ...draftRules,
-    ...keptMute(latest),
+    ...keptPause(latest),
   });
 
   const saveDraft = (): Promise<boolean> => {
@@ -973,7 +984,7 @@ export function WorkflowFailureAlerts({
     },
   };
 
-  /** Before a mute change, a finished edit goes out first so neither undoes the other. */
+  /** Before a pause change, a finished edit goes out first so neither undoes the other. */
   const sendPendingDraft = (): void => {
     if (rulesDirty && rulesReady) {
       saveDraft().catch(() => undefined);
@@ -992,8 +1003,8 @@ export function WorkflowFailureAlerts({
         recipientUserIds: null,
         customChannels: false,
         channels: [],
-        pauseWorkflow: false,
-        ...keptMute(latest),
+        disableWorkflow: false,
+        ...keptPause(latest),
       }),
       "This workflow now has its own rules",
       { reset: true }
@@ -1007,7 +1018,7 @@ export function WorkflowFailureAlerts({
     droppedKeyRef.current = dropped;
     const ok = await put(
       (latest) => ({
-        ...keptMute(latest),
+        ...keptPause(latest),
       }),
       "Back on the org rules",
       { reset: true }
@@ -1040,19 +1051,19 @@ export function WorkflowFailureAlerts({
   );
 
   // The tabs say which rules are in use; the badge is for what overrides both.
-  const muteSummary = muteSentence({
-    by: view.override.mutedBy,
-    account: view.override.mutedByAccount,
-    untilItWorks: view.override.muteUntilSuccess,
-    mutedUntil: view.override.mutedUntil,
-    reason: view.override.muteReason,
+  const pauseSummary = pauseSentence({
+    by: view.override.pausedBy,
+    account: view.override.pausedByAccount,
+    untilItWorks: view.override.pauseUntilSuccess,
+    pausedUntil: view.override.pausedUntil,
+    reason: view.override.pauseReason,
   });
 
   let tag: { label: string; className?: string } | null = null;
   if (!applies) {
     tag = { label: "Not used" };
-  } else if (muted) {
-    tag = { label: "Muted", className: WARNING_TEXT };
+  } else if (paused) {
+    tag = { label: PAUSED, className: WARNING_TEXT };
   }
   const editing = canManage && custom;
   const chooseTab = (next: string): void => {
@@ -1080,7 +1091,7 @@ export function WorkflowFailureAlerts({
   return (
     <div
       className="scroll-mt-20 space-y-3"
-      data-muted={muted}
+      data-paused={paused}
       data-source={custom ? "custom" : "org"}
       data-testid="workflow-failure-alerts"
     >
@@ -1095,8 +1106,7 @@ export function WorkflowFailureAlerts({
 
       {orgPause && (
         <Notice data-testid="workflow-failure-alerts-org-paused" tone="warning">
-          Alerts are paused for the whole organization until{" "}
-          {formatWhen(orgPause.until)}
+          {pausedFor("org")} until {formatWhen(orgPause.until)}
           {orgPause.reason ? `: ${orgPause.reason}` : ""}.
         </Notice>
       )}
@@ -1110,16 +1120,16 @@ export function WorkflowFailureAlerts({
       )}
 
       {applies && view.status.incident && (
-        // Muted means someone already knows, so the box stops shouting.
+        // Paused means someone already knows, so the box stops shouting.
         <Notice
           className="scroll-mt-20 p-3 text-sm"
-          tone={muted || pausedByAlert ? "warning" : "danger"}
+          tone={paused || disabledByAlert ? "warning" : "danger"}
         >
           <div className="min-w-0 space-y-2 break-words">
             <p className="font-medium">
-              {incidentTitle(view.status.incident, pausedByAlert)}
+              {incidentTitle(view.status.incident, disabledByAlert)}
             </p>
-            {pausedByAlert && (
+            {disabledByAlert && (
               <p className="text-xs">
                 KeeperHub turned it off, as set for this workflow. Fix the
                 cause, then press Enable workflow.
@@ -1197,7 +1207,7 @@ export function WorkflowFailureAlerts({
                   Disable workflow
                 </Button>
               )}
-              {enableToggle && pausedByAlert && (
+              {enableToggle && disabledByAlert && (
                 <Button
                   className={WRAP_BUTTON}
                   onClick={() => enableToggle.toggle(true)}
@@ -1222,170 +1232,169 @@ export function WorkflowFailureAlerts({
             {view.status.firstFailedAt
               ? `Started failing ${timeAgo(view.status.firstFailedAt)}. `
               : null}
-            {failingNext(view, muted)}
+            {failingNext(view, paused)}
           </p>
         </Notice>
       )}
 
       {applies && (
-        // One mute for the workflow, outside the rules tabs: it silences either setup.
+        // One pause for the workflow, outside the rules tabs: it silences either setup.
         <div
           className="space-y-3 break-words rounded-lg border p-3 text-sm"
-          data-testid="failure-alerts-mute-area"
+          data-testid="failure-alerts-workflow-pause-area"
         >
-          <h3 className="font-semibold text-sm">Mute alerts</h3>
-          {muted ? (
+          <h3 className="font-semibold text-sm">{PAUSE_ALERTS}</h3>
+          {paused ? (
             <p className="flex items-start gap-2">
               <BellOff
                 aria-hidden="true"
                 className={cn("mt-0.5 size-4 shrink-0", WARNING_TEXT)}
               />
               <span className="min-w-0">
-                <TextWithEmails text={`${muteSummary}.`} />
-                {view.override.pauseWorkflow
-                  ? " Alerts are off for this workflow whichever rules it uses: failures still show in Runs, and nobody is told unless KeeperHub turns it off at the limit."
-                  : " Alerts are off for this workflow whichever rules it uses: failures still show in Runs, and nobody is told until the mute ends."}
+                <TextWithEmails text={`${pauseSummary}.`} />
+                {` ${pauseEffect("workflow")}${
+                  view.override.disableWorkflow
+                    ? ", unless KeeperHub turns it off at the limit"
+                    : " until the pause ends"
+                }, whichever rules it uses. Failures still show in Runs.`}
               </span>
             </p>
           ) : (
             <p className="text-muted-foreground text-xs">
-              Alerts are on for this workflow. A mute stops its alerts whichever
-              rules it uses.
+              Alerts are on for this workflow. A pause stops its alerts
+              whichever rules it uses.
             </p>
           )}
           {canManage && panel === null && (
             <div className="flex flex-wrap gap-2">
-              {muted ? (
+              {paused ? (
                 <Button
                   className={WRAP_BUTTON}
-                  data-testid="failure-alerts-unmute"
+                  data-testid="failure-alerts-workflow-resume"
                   disabled={saving}
-                  onClick={unmute}
-                  ref={muteButtonRef}
+                  onClick={resume}
+                  ref={pauseButtonRef}
                   size="sm"
                   type="button"
                   variant="outline"
                 >
-                  Unmute
+                  {RESUME_ALERTS}
                 </Button>
               ) : null}
-              {muted ? (
+              {paused ? (
                 <Button
                   className={WRAP_BUTTON}
-                  data-testid="failure-alerts-mute-extend"
-                  onClick={() => openPanel("mute")}
+                  data-testid="failure-alerts-workflow-pause-extend"
+                  onClick={() => openPanel("pause")}
                   size="sm"
                   type="button"
                   variant="outline"
                 >
-                  Change or extend the mute
+                  {CHANGE_PAUSE}
                 </Button>
               ) : (
                 <Button
                   className={WRAP_BUTTON}
-                  data-testid="failure-alerts-mute-open"
-                  onClick={() => openPanel("mute")}
-                  ref={muteButtonRef}
+                  data-testid="failure-alerts-workflow-pause-open"
+                  onClick={() => openPanel("pause")}
+                  ref={pauseButtonRef}
                   size="sm"
                   type="button"
                   variant="outline"
                 >
                   <BellOff className="size-3.5" />
-                  Mute
+                  {PAUSE_ALERTS}
                 </Button>
               )}
             </div>
           )}
 
-          {panel === "mute" && (
+          {panel === "pause" && (
             <div
               className="space-y-2"
-              data-testid="failure-alerts-mute"
+              data-testid="failure-alerts-workflow-pause"
               ref={panelRef}
             >
-              <p className="text-xs">
-                {muted ? "Mute until" : "Mute alerts for"}
-              </p>
+              <p className="text-xs">{paused ? PAUSE_UNTIL : PAUSE_FOR}</p>
               <div className="flex flex-wrap gap-2">
-                {MUTE_CHOICES.map((choice) => (
+                {PAUSE_CHOICES.map((choice) => (
                   <Button
-                    aria-pressed={muteChoice === choice.id}
+                    aria-pressed={pauseChoice === choice.id}
                     className={WRAP_BUTTON}
-                    data-mute={choice.id}
+                    data-pause={choice.id}
                     disabled={saving}
                     key={choice.id}
                     onClick={() => {
-                      setMuteChoice(choice.id);
-                      setMuteDate("");
+                      setPauseChoice(choice.id);
+                      setPauseDate("");
                     }}
                     size="sm"
                     type="button"
-                    variant={muteChoice === choice.id ? "default" : "outline"}
+                    variant={pauseChoice === choice.id ? "default" : "outline"}
                   >
                     {choice.label}
                   </Button>
                 ))}
               </div>
-              <Label className="text-xs" htmlFor="wf-mute-until">
+              <Label className="text-xs" htmlFor="wf-pause-until">
                 Or until
               </Label>
               <Input
                 className="h-8 w-full min-w-0 max-w-xs"
-                id="wf-mute-until"
+                id="wf-pause-until"
                 max={toLocalInput(
-                  new Date(Date.now() + MAX_MUTE_DAYS * 24 * HOUR_MS)
+                  new Date(Date.now() + MAX_PAUSE_DAYS * 24 * HOUR_MS)
                 )}
                 min={toLocalInput(new Date())}
                 onChange={(e) => {
-                  setMuteDate(e.target.value);
-                  setMuteChoice(e.target.value ? "date" : null);
+                  setPauseDate(e.target.value);
+                  setPauseChoice(e.target.value ? "date" : null);
                 }}
                 type="datetime-local"
-                value={muteDate}
+                value={pauseDate}
               />
-              <Label className="text-xs" htmlFor="wf-mute-reason">
+              <Label className="text-xs" htmlFor="wf-pause-reason">
                 Reason
               </Label>
               <Input
-                aria-describedby="wf-mute-reason-help"
-                aria-invalid={muteReason !== "" && !reasonOk}
+                aria-describedby="wf-pause-reason-help"
+                aria-invalid={pauseReason !== "" && !reasonOk}
                 className="h-8"
-                data-testid="failure-alerts-mute-reason"
-                id="wf-mute-reason"
-                maxLength={MAX_MUTE_REASON}
-                onChange={(e) => setMuteReason(e.target.value)}
+                data-testid="failure-alerts-workflow-pause-reason"
+                id="wf-pause-reason"
+                maxLength={MAX_PAUSE_REASON}
+                onChange={(e) => setPauseReason(e.target.value)}
                 placeholder="e.g. RPC migration"
-                value={muteReason}
+                value={pauseReason}
               />
               <p
                 className={cn(
                   "text-xs",
-                  muteReason !== "" && !reasonOk
+                  pauseReason !== "" && !reasonOk
                     ? "text-destructive"
                     : "text-muted-foreground"
                 )}
-                id="wf-mute-reason-help"
+                id="wf-pause-reason-help"
               >
-                {MIN_MUTE_REASON} to {MAX_MUTE_REASON} characters.
+                {MIN_PAUSE_REASON} to {MAX_PAUSE_REASON} characters.
               </p>
               <p className="text-muted-foreground text-xs">
                 Everyone who gets this workflow's alerts, and every owner, sees
-                the reason and is told now and when the mute ends. A mute lasts
-                at most {MAX_MUTE_DAYS} days. When it ends, alerts start again
-                by themselves.
+                the reason and is told now and when the pause ends. {PAUSE_MAX}{" "}
+                When it ends, alerts start again by themselves.
               </p>
               <div className="flex flex-wrap gap-2">
                 <Button
                   className={WRAP_BUTTON}
-                  data-testid="failure-alerts-mute-submit"
+                  data-testid="failure-alerts-workflow-pause-submit"
                   disabled={saving || !(reasonOk && choiceOk)}
                   onClick={() => {
-                    mute().catch(() => undefined);
+                    pause().catch(() => undefined);
                   }}
                   size="sm"
                   type="button"
                 >
-                  Mute and notify
+                  {PAUSE_SUBMIT}
                 </Button>
                 <Button
                   className={WRAP_BUTTON}
@@ -1403,7 +1412,7 @@ export function WorkflowFailureAlerts({
               {!(saving || (reasonOk && choiceOk)) && (
                 <p className="text-muted-foreground text-xs">
                   {choiceOk
-                    ? "Give a reason to mute."
+                    ? "Give a reason to pause."
                     : "Pick how long, and give a reason."}
                 </p>
               )}
@@ -1441,9 +1450,9 @@ export function WorkflowFailureAlerts({
             <TabsContent className="space-y-4 pt-1" value="org">
               <RulesView
                 channels={view.org.channels}
+                disableWorkflow={false}
                 emails={orgEmails(view)}
                 notifyRecovery={view.org.notifyRecovery}
-                pauseWorkflow={false}
                 remindDaily={view.org.remindDaily}
                 threshold={view.org.threshold}
                 timeLimitMinutes={view.org.timeLimitMinutes}
@@ -1538,9 +1547,9 @@ export function WorkflowFailureAlerts({
                                       integrationId: c.integrationId,
                                       destination: c.destination,
                                       role: c.role,
-                                      // A paused org method is copied paused.
-                                      pausedReason: c.pausedAt
-                                        ? (c.pausedReason ??
+                                      // A stopped org method is copied stopped.
+                                      stoppedReason: c.stoppedAt
+                                        ? (c.stoppedReason ??
                                           "It stopped working.")
                                         : undefined,
                                     }))
@@ -1636,20 +1645,23 @@ export function WorkflowFailureAlerts({
                     <div className="space-y-1">
                       <div className="flex items-center gap-2">
                         <Checkbox
-                          aria-describedby="wf-pause-workflow-help"
-                          checked={pauseWorkflow}
-                          id="wf-pause-workflow"
+                          aria-describedby="wf-disable-workflow-help"
+                          checked={disableWorkflow}
+                          id="wf-disable-workflow"
                           onCheckedChange={(checked) =>
-                            setPauseWorkflow(checked === true)
+                            setDisableWorkflow(checked === true)
                           }
                         />
-                        <Label className="text-xs" htmlFor="wf-pause-workflow">
+                        <Label
+                          className="text-xs"
+                          htmlFor="wf-disable-workflow"
+                        >
                           Disable this workflow when it reaches the limit
                         </Label>
                       </div>
                       <p
                         className="pl-6 text-muted-foreground text-xs"
-                        id="wf-pause-workflow-help"
+                        id="wf-disable-workflow-help"
                       >
                         Disables it when it fails that many runs in a row or the
                         wallet runs out of funds; the time limit never disables
@@ -1668,7 +1680,7 @@ export function WorkflowFailureAlerts({
                       remindDaily={view.org.remindDaily}
                     />
                   </section>
-                  {panel !== "mute" && saveErrorBox}
+                  {panel !== "pause" && saveErrorBox}
                 </div>
               ) : (
                 // Not editable here: what it holds, or the org's rules it would start from.
@@ -1676,9 +1688,9 @@ export function WorkflowFailureAlerts({
                   channels={
                     custom ? view.effective.channels : view.org.channels
                   }
+                  disableWorkflow={custom && view.override.disableWorkflow}
                   emails={custom ? view.effective.emails : orgEmails(view)}
                   notifyRecovery={view.org.notifyRecovery}
-                  pauseWorkflow={custom && view.override.pauseWorkflow}
                   remindDaily={view.org.remindDaily}
                   threshold={
                     custom ? view.effective.threshold : view.org.threshold
@@ -1766,7 +1778,7 @@ export function WorkflowFailureAlerts({
             </p>
           )}
 
-          {!editing && panel !== "mute" && saveErrorBox}
+          {!editing && panel !== "pause" && saveErrorBox}
         </div>
       )}
 

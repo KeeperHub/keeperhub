@@ -262,6 +262,7 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
               "is it working",
               "pause alerts",
               "resume alerts",
+              "mute alerts",
               "maintenance",
             ],
           },

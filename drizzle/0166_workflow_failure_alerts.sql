@@ -8,8 +8,8 @@ CREATE TABLE "alert_methods" (
 	"integration_id" text NOT NULL,
 	"destination" text DEFAULT '' NOT NULL,
 	"role" text DEFAULT 'always' NOT NULL,
-	"paused_at" timestamp,
-	"paused_reason" text,
+	"stopped_at" timestamp,
+	"stopped_reason" text,
 	"last_delivered_at" timestamp,
 	"last_failed_at" timestamp,
 	"last_error" text,
@@ -78,12 +78,12 @@ CREATE TABLE "alert_overrides" (
 	"time_limit_minutes" integer,
 	"recipient_user_ids" jsonb,
 	"custom_channels" boolean DEFAULT false NOT NULL,
-	"muted_until" timestamp,
-	"muted_at" timestamp,
-	"mute_until_success" boolean DEFAULT false NOT NULL,
-	"mute_reason" text,
-	"muted_by" text,
-	"pause_workflow" boolean DEFAULT false NOT NULL,
+	"paused_until" timestamp,
+	"paused_at" timestamp,
+	"pause_until_success" boolean DEFAULT false NOT NULL,
+	"pause_reason" text,
+	"paused_by_user_id" text,
+	"disable_workflow" boolean DEFAULT false NOT NULL,
 	"version" integer DEFAULT 0 NOT NULL,
 	"updated_by" text,
 	"updated_at" timestamp DEFAULT now() NOT NULL
@@ -109,8 +109,8 @@ CREATE TABLE "alert_incidents" (
 	"reminder_count" integer DEFAULT 0 NOT NULL,
 	"last_notified_at" timestamp DEFAULT now() NOT NULL,
 	"alert_queued_at" timestamp,
-	"workflow_paused_at" timestamp,
-	"workflow_resumed_at" timestamp,
+	"workflow_disabled_at" timestamp,
+	"workflow_reenabled_at" timestamp,
 	"resolved_at" timestamp,
 	"resolved_reason" text,
 	"resolving_execution_id" text,
@@ -171,7 +171,7 @@ CREATE TRIGGER queue_alert_check
   WHEN (NEW.status IN ('success', 'error', 'skipped'))
   EXECUTE FUNCTION public.queue_alert_check();
 --> statement-breakpoint
--- Sets workflow_resumed_at on open incidents when a workflow is re-enabled by any
+-- Sets workflow_reenabled_at on open incidents when a workflow is re-enabled by any
 -- path, so the incident stops holding it. Never blocks the Enable switch: errors
 -- are swallowed with a warning.
 CREATE OR REPLACE FUNCTION public.mark_alert_incident_resumed()
@@ -181,10 +181,10 @@ AS $$
 BEGIN
   BEGIN
     UPDATE alert_incidents
-      SET workflow_resumed_at = now()
+      SET workflow_reenabled_at = now()
       WHERE workflow_id = NEW.id
         AND resolved_at IS NULL
-        AND workflow_paused_at IS NOT NULL;
+        AND workflow_disabled_at IS NOT NULL;
   EXCEPTION WHEN OTHERS THEN
     RAISE WARNING 'mark_alert_incident_resumed failed: %', SQLERRM;
   END;

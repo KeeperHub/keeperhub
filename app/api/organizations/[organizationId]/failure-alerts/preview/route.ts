@@ -11,7 +11,12 @@ import {
 import { resolveOrgAccess } from "@/lib/notifications/failure-alerts/route-auth";
 import type { MessagePreview } from "@/lib/notifications/failure-alerts/view-types";
 
-const SAMPLES = new Set<SampleKind>(["alert", "missed", "paused", "recovery"]);
+const SAMPLES = new Set<SampleKind>([
+  "alert",
+  "missed",
+  "disabled",
+  "recovery",
+]);
 
 /** Each channel's message, rendered by the real message code. Any member. */
 export async function GET(

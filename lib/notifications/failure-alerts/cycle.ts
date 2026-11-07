@@ -13,7 +13,6 @@ import {
   queueReminders,
   requeueLostAlerts,
 } from "./evaluator";
-import { endExpiredMutes } from "./mute-notices";
 import { endExpiredOrgPauses } from "./org-pause";
 import {
   type DrainStats,
@@ -24,6 +23,7 @@ import {
   runHealthChecks,
 } from "./outbox";
 import { isFailureAlertsRolloutActive } from "./rollout";
+import { endExpiredWorkflowPauses } from "./workflow-pause-notices";
 
 type CycleReport = EvaluationStats &
   DrainStats & {
@@ -79,11 +79,11 @@ export async function runFailureAlertCycle(
     };
   }
 
-  await stage("end-pauses", async () => {
+  await stage("end-org-pauses", async () => {
     await endExpiredOrgPauses(now);
   });
-  await stage("end-mutes", async () => {
-    await endExpiredMutes(now);
+  await stage("end-workflow-pauses", async () => {
+    await endExpiredWorkflowPauses(now);
   });
   await stage("evaluate", () => evaluateQueuedWorkflows(now, evaluation));
   await stage("missed-schedules", () => checkMissedSchedules(now, evaluation));

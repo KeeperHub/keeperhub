@@ -15,6 +15,12 @@ import {
   MAX_REMINDERS,
   OUT_OF_FUNDS_THRESHOLD,
 } from "./constants";
+import {
+  PAUSE_HEADLINE,
+  pausedFor,
+  pauseEffect,
+  RESUME_ALERTS,
+} from "./pause-copy";
 import { isOutOfFunds } from "./streak";
 import {
   EMAILS_KEPT_FOR_NEW_FAILURES,
@@ -77,9 +83,9 @@ export type MessageInput =
       incident: AlertIncident;
       backupReason?: string;
       /** KeeperHub turned the workflow off: first time, or again after a resume. */
-      paused?: "first" | "again";
-      /** Failed runs that led to this pause, when not the incident's count. */
-      pausedFailures?: number;
+      disabled?: "first" | "again";
+      /** Failed runs that led to turning it off, when not the incident's count. */
+      disabledFailures?: number;
       testNote?: string;
       /** Reminder number, and the most there will be. */
       reminderNumber?: number;
@@ -89,7 +95,7 @@ export type MessageInput =
       kind: "grouped";
       workflows: (AlertWorkflow & {
         failureCount: number;
-        workflowPaused?: boolean;
+        workflowDisabled?: boolean;
         lastError?: string | null;
         openedBy?: FailureIncidentTrigger;
         refused?: Refused;
@@ -111,7 +117,7 @@ export type MessageInput =
       ranAt?: Date | null;
     })
   | (OrgFields & {
-      kind: "channel_paused";
+      kind: "channel_stopped";
       channelLabel: string;
       /** slack, discord, telegram or pagerduty; unknown on older notices. */
       channelKind?: string;
@@ -125,30 +131,30 @@ export type MessageInput =
       reason: string | null;
       by: string | null;
       /** Workflows set to turn off at their limit; unknown when undefined. */
-      pausingWorkflows?: number;
+      disablingWorkflows?: number;
     })
   | (OrgFields & { kind: "alerts_resumed"; by: string | null })
   | (OrgFields & {
-      kind: "workflow_muted";
+      kind: "workflow_paused";
       workflow: { id: string; name: string };
       by: string | null;
       byAccount: string | null;
       reason: string | null;
       until: Date | null;
       untilItWorks: boolean;
-      /** A mute that was already on was changed. */
+      /** A pause that was already on was changed. */
       changed?: boolean;
     })
   | (OrgFields & {
-      kind: "workflow_unmuted";
+      kind: "workflow_resumed";
       workflow: { id: string; name: string };
       by: string | null;
       byAccount: string | null;
     })
   | (OrgFields & {
-      kind: "mute_ended";
+      kind: "workflow_pause_ended";
       workflow: { id: string; name: string };
-      /** Who muted it, for the record. */
+      /** Who paused it, for the record. */
       by: string | null;
       reason: string | null;
       until: Date | null;
@@ -186,7 +192,7 @@ export type MessageInput =
     });
 
 /** Example messages for the preview and the Test buttons. */
-export type SampleKind = "alert" | "missed" | "paused" | "recovery";
+export type SampleKind = "alert" | "missed" | "disabled" | "recovery";
 
 const EMAIL_LIKE = /@/;
 
@@ -452,7 +458,7 @@ function failingHeadline(
       ];
 }
 
-function pausedHeadline(
+function disabledHeadline(
   workflow: AlertWorkflow,
   failures: number,
   again: boolean,
@@ -473,7 +479,7 @@ function pausedHeadline(
   ];
 }
 
-const PAUSED_NEXT_STEP =
+const DISABLED_NEXT_STEP =
   "KeeperHub turned it off because this workflow is set to turn off when it fails too often or runs out of funds. It will not run until someone turns it back on: fix the cause, then press Enable workflow in the workflow's Alerts panel.";
 
 type Banner = { html: string; text: string; chat: ChatPart[] };
@@ -569,17 +575,17 @@ function renderCleaned(input: MessageInput, now: Date): RenderedMessage {
       return renderGrouped(input);
     case "recovery":
       return renderRecovery(input, now);
-    case "channel_paused":
-      return renderChannelPaused(input);
+    case "channel_stopped":
+      return renderChannelStopped(input);
     case "launch_notice":
       return renderLaunchNotice(input);
     case "alerts_paused":
     case "alerts_resumed":
       return renderOrgPause(input);
-    case "workflow_muted":
-    case "workflow_unmuted":
-    case "mute_ended":
-      return renderMuteNotice(input, now);
+    case "workflow_paused":
+    case "workflow_resumed":
+    case "workflow_pause_ended":
+      return renderPauseNotice(input, now);
     case "recipients_removed":
       return renderRecipientsRemoved(input);
     case "cap_warning":
@@ -594,7 +600,7 @@ const MISSED_DETAIL =
 const FUNDING_NEXT_STEP =
   "Add funds to the wallet that pays for it; the next run picks them up. The error above shows what it had and what it needed.";
 const FAILING_NEXT_STEP =
-  "It keeps running and failing until someone fixes, mutes or disables it.";
+  "It keeps running and failing until someone fixes it, pauses its alerts or disables it.";
 const MISSED_NEXT_STEP =
   "You can run it by hand from the editor; you will be told when it runs on its own again.";
 /** What fixes a plan or billing refusal. */
@@ -663,11 +669,11 @@ function renderAlert(
     ? fixLink(appUrl, input.organizationId, refusalFixLink(refused.reason))
     : null;
   const reminder = input.kind === "reminder";
-  const headlineParts = input.paused
-    ? pausedHeadline(
+  const headlineParts = input.disabled
+    ? disabledHeadline(
         workflow,
-        input.pausedFailures ?? incident.failureCount,
-        input.paused === "again",
+        input.disabledFailures ?? incident.failureCount,
+        input.disabled === "again",
         incident.openedBy === "funding"
       )
     : failingHeadline(workflow, incident, reminder, now);
@@ -688,8 +694,8 @@ function renderAlert(
       : null;
   const foot = footer(input);
   let nextStep = FAILING_NEXT_STEP;
-  if (input.paused) {
-    nextStep = PAUSED_NEXT_STEP;
+  if (input.disabled) {
+    nextStep = DISABLED_NEXT_STEP;
   } else if (refused) {
     nextStep = `${refusalFix(refused.reason)}${REFUSED_NEXT_TAIL}`;
     if (!fix) {
@@ -706,17 +712,17 @@ function renderAlert(
       ? ` (reminder ${input.reminderNumber} of ${input.maxReminders ?? MAX_REMINDERS})`
       : "";
   let label = "Action needed";
-  if (missed && !(refused || input.paused)) {
+  if (missed && !(refused || input.disabled)) {
     label = "Check";
-  } else if (reminder && !input.paused) {
+  } else if (reminder && !input.disabled) {
     label = refused ? `Action needed${count}` : `Still failing${count}`;
   }
   const last =
     reminder &&
-    !input.paused &&
+    !input.disabled &&
     input.reminderNumber !== undefined &&
     input.reminderNumber >= (input.maxReminders ?? MAX_REMINDERS);
-  const amber = missed && !refused && !input.paused;
+  const amber = missed && !refused && !input.disabled;
   const accent = amber ? "#b45309" : "#b91c1c";
   const tint = amber ? "#fffbeb" : "#fef2f2";
   const ago = formatDuration(now.getTime() - incident.firstFailedAt.getTime());
@@ -825,7 +831,7 @@ ${foot.text}`;
       })
     ),
     summary: summaryOf(
-      `${orgName}: ${refused && !input.paused ? refusedSentence(workflow.name, refused, incident.openedBy) : headline}`
+      `${orgName}: ${refused && !input.disabled ? refusedSentence(workflow.name, refused, incident.openedBy) : headline}`
     ),
   };
 }
@@ -859,7 +865,7 @@ type GroupedWorkflow = Extract<
   { kind: "grouped" }
 >["workflows"][number];
 
-const DIGEST_NOTE = `You get this about once a day, for up to ${MAX_REMINDERS} days, while they keep failing or not running. To stop it for one workflow, mute it in its Properties; to stop it for all, turn off "Remind once a day" in Settings > Alerts.`;
+const DIGEST_NOTE = `You get this about once a day, for up to ${MAX_REMINDERS} days, while they keep failing or not running. To stop it for one workflow, pause its alerts in its Properties; to stop it for all, turn off "Remind once a day" in Settings > Alerts.`;
 
 /** A grouped alert lists this many workflows, then "And N more". */
 const GROUPED_LIST_MAX = 10;
@@ -874,7 +880,7 @@ function outOfFunds(w: GroupedWorkflow): boolean {
 }
 
 function groupedRank(w: GroupedWorkflow): number {
-  if (w.workflowPaused) {
+  if (w.workflowDisabled) {
     return 0;
   }
   if (outOfFunds(w)) {
@@ -934,7 +940,7 @@ function renderGrouped(
 ): RenderedMessage {
   const { orgName, appUrl } = input;
   const workflows = sortGrouped(input.workflows.map(withRefused));
-  const turnedOff = workflows.filter((w) => w.workflowPaused).length;
+  const turnedOff = workflows.filter((w) => w.workflowDisabled).length;
   const notRunning = workflows.filter((w) => isNotRunning(w.openedBy)).length;
   const failing = workflows.length - notRunning;
   const refusedAny = workflows.some(
@@ -984,8 +990,8 @@ function renderGrouped(
     .join(" ");
   const backup = backupBanner(input.backupReason);
   const foot = footer(input);
-  const pausedNote = (w: GroupedWorkflow): string =>
-    `${outOfFunds(w) && !fundsNow(w) ? ", ran out of funds earlier" : ""}${w.workflowPaused ? ", turned off" : ""}`;
+  const disabledNote = (w: GroupedWorkflow): string =>
+    `${outOfFunds(w) && !fundsNow(w) ? ", ran out of funds earlier" : ""}${w.workflowDisabled ? ", turned off" : ""}`;
   // The prefix only when funds are the latest error; else a note that they ran out earlier.
   const fundsNow = (w: GroupedWorkflow): boolean =>
     !isNotRunning(w.openedBy) && isOutOfFunds(w.lastError ?? null);
@@ -1001,7 +1007,7 @@ function renderGrouped(
   // What a not-running workflow says in place of its failure count.
   const state = (w: GroupedWorkflow): string => {
     if (!isNotRunning(w.openedBy)) {
-      return `: ${plural(w.failureCount, "failed run", "failed runs")} in a row${pausedNote(w)}`;
+      return `: ${plural(w.failureCount, "failed run", "failed runs")} in a row${disabledNote(w)}`;
     }
     return w.refused
       ? ` is not running: ${refusedLead(w.openedBy)}`
@@ -1132,19 +1138,19 @@ function renderRecovery(
   };
 }
 
-/** How a paused method comes back: the daily check proves all but Slack (token only). */
+/** How a stopped method comes back: the daily check proves all but Slack (token only). */
 function channelResumeText(kind: string | undefined): string {
   if (kind === "slack") {
-    return "It is paused until a test on it succeeds.";
+    return "Nothing is sent to it until a test on it succeeds.";
   }
   if (kind) {
-    return "It is paused; it is checked every day and turns back on by itself when it works, or when a test succeeds.";
+    return "Nothing is sent to it for now; it is checked every day and turns back on by itself when it works, or when a test succeeds.";
   }
-  return "It is paused until a test succeeds; apart from Slack, it is also checked every day and turns back on by itself when it works.";
+  return "Nothing is sent to it until a test succeeds; apart from Slack, it is also checked every day and turns back on by itself when it works.";
 }
 
-function renderChannelPaused(
-  input: Extract<MessageInput, { kind: "channel_paused" }>
+function renderChannelStopped(
+  input: Extract<MessageInput, { kind: "channel_stopped" }>
 ): RenderedMessage {
   const { workflow } = input;
   const link = workflow
@@ -1244,8 +1250,8 @@ function renderOrgPause(
   const paused = input.kind === "alerts_paused";
   const headlineParts = [
     paused
-      ? `Alerts are paused until ${formatUtc(input.until)}`
-      : "Alerts are back on",
+      ? `${pausedFor("org")} until ${formatUtc(input.until)}`
+      : PAUSE_HEADLINE.resumed,
   ];
   const headline = plain(headlineParts);
   let detailParts: ChatPart[];
@@ -1258,13 +1264,11 @@ function renderOrgPause(
       ...(input.reason
         ? [": ", user(input.reason.replace(TRAILING_DOTS, ""))]
         : []),
-      `. ${orgPauseEffect(input.pausingWorkflows)}`,
+      `. ${orgPauseEffect(input.disablingWorkflows)}`,
     ];
   } else {
     detailParts = [
-      ...(input.by
-        ? [user(input.by), " turned them back on"]
-        : ["The pause ended"]),
+      ...(input.by ? [user(input.by), " resumed them"] : ["The pause ended"]),
       ". Any workflow still failing is reported now.",
     ];
   }
@@ -1301,7 +1305,7 @@ function actorNames(
 }
 
 /** " until it works again, at most until X", " until X", or nothing. */
-function muteUntilText(until: Date | null, untilItWorks: boolean): string {
+function pauseUntilText(until: Date | null, untilItWorks: boolean): string {
   if (untilItWorks) {
     return until
       ? ` until it works again, at most until ${formatUtc(until)}`
@@ -1345,10 +1349,10 @@ function noticeMessage(params: {
   };
 }
 
-function renderMuteNotice(
+function renderPauseNotice(
   input: Extract<
     MessageInput,
-    { kind: "workflow_muted" | "workflow_unmuted" | "mute_ended" }
+    { kind: "workflow_paused" | "workflow_resumed" | "workflow_pause_ended" }
   >,
   now: Date
 ): RenderedMessage {
@@ -1357,29 +1361,29 @@ function renderMuteNotice(
     reason ? [" Reason: ", user(reason.replace(TRAILING_DOTS, "")), "."] : [];
   let headline: string;
   let detail: (reader: "email" | "chat") => ChatPart[];
-  if (input.kind === "workflow_muted") {
+  if (input.kind === "workflow_paused") {
     const who = actorNames(input.by, input.byAccount);
-    headline = `${input.changed ? "Mute changed" : "Alerts muted"}: ${name}`;
+    headline = `${input.changed ? PAUSE_HEADLINE.changed : PAUSE_HEADLINE.paused}: ${name}`;
     detail = (reader) => [
       user(who[reader]),
-      ` ${input.changed ? "changed the mute on" : "muted"} failure alerts for `,
+      ` ${input.changed ? "changed the pause on" : "paused"} failure alerts for `,
       user(name),
-      `${muteUntilText(input.until, input.untilItWorks)}.`,
+      `${pauseUntilText(input.until, input.untilItWorks)}.`,
       ...reasonParts(input.reason),
-      " While muted, nobody is told if it fails. Not expected? Unmute it in the workflow's Alerts panel.",
+      ` ${pauseEffect("workflow")} while it is paused. Not expected? Press ${RESUME_ALERTS} in the workflow's Alerts panel.`,
     ];
-  } else if (input.kind === "workflow_unmuted") {
+  } else if (input.kind === "workflow_resumed") {
     const who = actorNames(input.by, input.byAccount);
-    headline = `Alerts unmuted: ${name}`;
+    headline = `${PAUSE_HEADLINE.resumed}: ${name}`;
     detail = (reader) => [
       user(who[reader]),
-      " unmuted failure alerts for ",
+      " resumed failure alerts for ",
       user(name),
       ". Failures are reported again.",
     ];
   } else {
-    headline = `Mute ended: ${name}`;
-    const failed = `${input.failedRuns} run${input.failedRuns === 1 ? "" : "s"} failed while it was muted.`;
+    headline = `${PAUSE_HEADLINE.ended}: ${name}`;
+    const failed = `${input.failedRuns} run${input.failedRuns === 1 ? "" : "s"} failed while it was paused.`;
     let state = input.failingNow
       ? " It is still failing, so an alert follows."
       : " It is working now.";
@@ -1387,9 +1391,9 @@ function renderMuteNotice(
       state = ` It is still failing; the alert goes out when the organization's alerts resume at ${formatUtc(input.alertsPausedUntil)}.`;
     }
     detail = () => [
-      input.ended === "worked" ? "It works again, so the mute" : "The mute",
+      input.ended === "worked" ? "It works again, so the pause" : "The pause",
       ...(input.by ? [" set by ", user(input.by)] : []),
-      `${muteUntilText(input.until, input.untilItWorks)} ended at ${formatUtc(now)}.`,
+      `${pauseUntilText(input.until, input.untilItWorks)} ended at ${formatUtc(now)}.`,
       ...reasonParts(input.reason),
       ` ${failed}${state}`,
     ];
@@ -1470,7 +1474,7 @@ function renderLaunchNotice(
 const SAMPLE_OPENED_BY: Record<SampleKind, FailureIncidentTrigger> = {
   alert: "count",
   missed: "missed",
-  paused: "funding",
+  disabled: "funding",
   recovery: "count",
 };
 
@@ -1489,7 +1493,7 @@ export function renderSample(
   now: Date = new Date()
 ): RenderedMessage {
   // A plain count alert; the turned-off sample is the funds case, with its Add funds link.
-  const funds = sample === "paused";
+  const funds = sample === "disabled";
   const incident: AlertIncident = {
     failureCount: funds ? OUT_OF_FUNDS_THRESHOLD : DEFAULT_THRESHOLD,
     firstFailedAt: new Date(now.getTime() - 47 * 60 * 1000),
@@ -1521,7 +1525,7 @@ export function renderSample(
       workflow: SAMPLE_WORKFLOW,
       incident,
       testNote,
-      paused: sample === "paused" ? "first" : undefined,
+      disabled: sample === "disabled" ? "first" : undefined,
     },
     now
   );

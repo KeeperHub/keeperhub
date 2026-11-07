@@ -108,7 +108,7 @@ vi.mock("@/lib/notifications/failure-alerts/senders", () => ({
 }));
 vi.mock("@/lib/notifications/failure-alerts/policy", () => ({
   ensureOrgSettings: vi.fn(async () => undefined),
-  isMuted: vi.fn(() => false),
+  isWorkflowPaused: vi.fn(() => false),
   loadChannels: vi.fn(async () => []),
   loadChannelsByIds: vi.fn(async () => new Map()),
   loadEffectivePolicy: vi.fn(async () => ({
@@ -189,8 +189,8 @@ describe("queueReminders", () => {
       organizationId: "in",
       workflowId: "wf",
       reminderCount: 1,
-      workflowPausedAt: null,
-      workflowResumedAt: null,
+      workflowDisabledAt: null,
+      workflowReenabledAt: null,
     },
     enabled: true,
     deletedAt: null,
@@ -424,7 +424,7 @@ describe("drainOutbox", () => {
               lastError: "boom",
               openedBy: "count",
               resolvedAt: null,
-              workflowPausedAt: null,
+              workflowDisabledAt: null,
             },
           ];
         case schema.workflows:
@@ -482,7 +482,7 @@ describe("runHealthChecks", () => {
     integrationId: "i1",
     destination: "-1001",
     role: "always",
-    pausedAt: null,
+    stoppedAt: null,
   });
 
   it("checks the due channels of orgs in the rollout", async () => {

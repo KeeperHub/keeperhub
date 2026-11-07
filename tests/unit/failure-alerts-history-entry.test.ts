@@ -54,7 +54,7 @@ describe("toHistoryEntry", () => {
       by: "KeeperHub",
       byAccount: null,
       workflows: [{ id: "wf_nightly", name: "Nightly sync" }],
-      muteUntil: null,
+      pauseUntil: null,
     });
   });
 

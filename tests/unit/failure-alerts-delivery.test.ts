@@ -36,7 +36,7 @@ const channel = (
   integrationId: `i-${kind}`,
   destination: kind === "discord" ? "" : `dest-${kind}`,
   role: "always" as const,
-  pausedAt: null,
+  stoppedAt: null,
   ...patch,
 });
 
@@ -52,7 +52,7 @@ describe("buildMessageRows", () => {
       channels: [
         channel("slack"),
         channel("discord", { role: "backup" }),
-        channel("telegram", { pausedAt: new Date() }),
+        channel("telegram", { stoppedAt: new Date() }),
         channel("pagerduty"),
       ],
       includePagerDuty: true,

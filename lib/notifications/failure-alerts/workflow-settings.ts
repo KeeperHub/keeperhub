@@ -21,18 +21,13 @@ import type { TriggerNodeLike } from "@/lib/workflow/trigger-display-key";
 import { signInAccounts } from "./accounts";
 import {
   CLOCK_SKEW_MS,
-  MAX_MUTE_DAYS,
-  MAX_MUTE_REASON,
-  MIN_MUTE_REASON,
-  MUTE_CHANGES_PER_HOUR,
+  MAX_PAUSE_DAYS,
+  MAX_PAUSE_REASON,
+  MIN_PAUSE_REASON,
+  WORKFLOW_PAUSE_CHANGES_PER_HOUR,
 } from "./constants";
 import { parseEndTime } from "./end-time";
 import { nameOf } from "./messages";
-import {
-  actorOf,
-  queueRemovedNotice,
-  queueWorkflowNotice,
-} from "./mute-notices";
 import {
   effectiveRecipientIds,
   hasReachableManager,
@@ -65,6 +60,11 @@ import {
   refusedReasonOf,
   type WorkflowAlertView,
 } from "./view-types";
+import {
+  actorOf,
+  queueRemovedNotice,
+  queueWorkflowNotice,
+} from "./workflow-pause-notices";
 import { runsOnItsOwn, workflowTriggerType } from "./workflow-trigger";
 
 export async function loadWorkflowForAlerts(workflowId: string): Promise<{
@@ -153,11 +153,13 @@ export async function loadWorkflowAlertView(
     ],
     viewerUserId
   );
-  const mutedByAccount = override?.mutedBy
-    ? (await signInAccounts([override.mutedBy])).get(override.mutedBy)
+  const pausedByAccount = override?.pausedByUserId
+    ? (await signInAccounts([override.pausedByUserId])).get(
+        override.pausedByUserId
+      )
     : null;
-  const muteActive = Boolean(
-    override?.mutedUntil && override.mutedUntil > new Date()
+  const pauseActive = Boolean(
+    override?.pausedUntil && override.pausedUntil > new Date()
   );
   const trigger = workflowTriggerType(workflow.nodes);
   const channelViews = override?.customChannels
@@ -191,15 +193,15 @@ export async function loadWorkflowAlertView(
       ),
       customChannels: override?.customChannels ?? false,
       channels: workflowChannels,
-      // An ended mute is not shown: saved back, it would re-mute.
-      mutedUntil: muteActive
-        ? (override?.mutedUntil?.toISOString() ?? null)
+      // An ended pause is not shown: saved back, it would re-pause.
+      pausedUntil: pauseActive
+        ? (override?.pausedUntil?.toISOString() ?? null)
         : null,
-      muteUntilSuccess: muteActive && (override?.muteUntilSuccess ?? false),
-      muteReason: muteActive ? (override?.muteReason ?? null) : null,
-      mutedBy: muteActive ? nameOf(override?.mutedBy, members) : null,
-      mutedByAccount: muteActive ? (mutedByAccount ?? null) : null,
-      pauseWorkflow: override?.pauseWorkflow ?? false,
+      pauseUntilSuccess: pauseActive && (override?.pauseUntilSuccess ?? false),
+      pauseReason: pauseActive ? (override?.pauseReason ?? null) : null,
+      pausedBy: pauseActive ? nameOf(override?.pausedByUserId, members) : null,
+      pausedByAccount: pauseActive ? (pausedByAccount ?? null) : null,
+      disableWorkflow: override?.disableWorkflow ?? false,
     },
     effective: {
       threshold: policy.threshold,
@@ -232,9 +234,10 @@ export async function loadWorkflowAlertView(
             ),
             openedBy: incident.openedBy,
             since: incident.firstFailedAt.toISOString(),
-            workflowPausedAt: incident.workflowPausedAt?.toISOString() ?? null,
-            workflowResumedAt:
-              incident.workflowResumedAt?.toISOString() ?? null,
+            workflowDisabledAt:
+              incident.workflowDisabledAt?.toISOString() ?? null,
+            workflowReenabledAt:
+              incident.workflowReenabledAt?.toISOString() ?? null,
             refused: isRefusedIncident(incident),
             refusedReason: refusedReasonOf(incident),
             lastRefusedAt:
@@ -250,121 +253,121 @@ export async function loadWorkflowAlertView(
   };
 }
 
-/** Required for every mute or change to one. */
-export const MUTE_REASON_REQUIRED = `Say why you are muting (${MIN_MUTE_REASON} to ${MAX_MUTE_REASON} characters).`;
+/** Required for every pause or change to one. */
+export const PAUSE_REASON_REQUIRED = `Say why you are pausing (${MIN_PAUSE_REASON} to ${MAX_PAUSE_REASON} characters).`;
 
-/** The mute as sent; the cap and reason are checked only when it changes. */
-function parseMute(
+/** The pause as sent; the cap and reason are checked only when it changes. */
+function parsePause(
   body: Record<string, unknown>,
   now: Date
 ): {
-  mutedUntil: Date | null;
-  muteUntilSuccess: boolean;
-  muteReason: string;
+  pausedUntil: Date | null;
+  pauseUntilSuccess: boolean;
+  pauseReason: string;
 } {
-  const untilSuccess = body.muteUntilSuccess === true;
-  let mutedUntil: Date | null = null;
-  if (typeof body.mutedUntil === "string" && body.mutedUntil) {
-    mutedUntil = parseEndTime(body.mutedUntil);
-    if (!mutedUntil || mutedUntil <= now) {
-      throw new SettingsError("Pick a mute end in the future.");
+  const untilSuccess = body.pauseUntilSuccess === true;
+  let pausedUntil: Date | null = null;
+  if (typeof body.pausedUntil === "string" && body.pausedUntil) {
+    pausedUntil = parseEndTime(body.pausedUntil);
+    if (!pausedUntil || pausedUntil <= now) {
+      throw new SettingsError("Pick a pause end in the future.");
     }
   }
-  // "Until it works" still ends after MAX_MUTE_DAYS, so no mute is forever.
-  if (untilSuccess && !mutedUntil) {
-    mutedUntil = new Date(now.getTime() + MAX_MUTE_DAYS * DAY_MS);
+  // "Until it works" still ends after MAX_PAUSE_DAYS, so no pause is forever.
+  if (untilSuccess && !pausedUntil) {
+    pausedUntil = new Date(now.getTime() + MAX_PAUSE_DAYS * DAY_MS);
   }
   return {
-    mutedUntil,
-    muteUntilSuccess: untilSuccess,
+    pausedUntil,
+    pauseUntilSuccess: untilSuccess,
     // One line, no control or bidi characters, like an org pause reason.
-    muteReason:
-      typeof body.muteReason === "string" ? oneLine(body.muteReason) : "",
+    pauseReason:
+      typeof body.pauseReason === "string" ? oneLine(body.pauseReason) : "",
   };
 }
 
-type StoredMute = {
-  mutedUntil: Date | null;
-  muteUntilSuccess: boolean;
-  muteReason: string | null;
-  mutedBy: string | null;
-  mutedAt: Date | null;
+type StoredPause = {
+  pausedUntil: Date | null;
+  pauseUntilSuccess: boolean;
+  pauseReason: string | null;
+  pausedByUserId: string | null;
+  pausedAt: Date | null;
 };
 
-/** A stored mute still in force; every mute has an end. */
-function activeMute(stored: StoredMute | undefined, now: Date): boolean {
-  return Boolean(stored?.mutedUntil && stored.mutedUntil > now);
+/** A stored pause still in force; every pause has an end. */
+function activePause(stored: StoredPause | undefined, now: Date): boolean {
+  return Boolean(stored?.pausedUntil && stored.pausedUntil > now);
 }
 
-/** How a save changes the mute, and the mute fields to store. */
-function nextMute(
-  stored: StoredMute | undefined,
-  sent: ReturnType<typeof parseMute>,
+/** How a save changes the pause, and the pause fields to store. */
+function nextPause(
+  stored: StoredPause | undefined,
+  sent: ReturnType<typeof parsePause>,
   userId: string,
   now: Date
 ): {
-  change: "muted" | "changed" | "unmuted" | null;
-  fields: StoredMute;
+  change: "paused" | "changed" | "resumed" | null;
+  fields: StoredPause;
 } {
-  const wasMuted = activeMute(stored, now);
-  const muted = Boolean(sent.mutedUntil || sent.muteUntilSuccess);
-  if (!muted) {
-    // An ended mute not yet announced stays put: the cycle ends it and tells everyone.
-    if (stored?.mutedUntil && !wasMuted) {
+  const wasPaused = activePause(stored, now);
+  const paused = Boolean(sent.pausedUntil || sent.pauseUntilSuccess);
+  if (!paused) {
+    // An ended pause not yet announced stays put: the cycle ends it and tells everyone.
+    if (stored?.pausedUntil && !wasPaused) {
       return { change: null, fields: stored };
     }
     return {
-      change: wasMuted ? "unmuted" : null,
+      change: wasPaused ? "resumed" : null,
       fields: {
-        mutedUntil: null,
-        muteUntilSuccess: false,
-        muteReason: null,
-        mutedBy: null,
-        mutedAt: null,
+        pausedUntil: null,
+        pauseUntilSuccess: false,
+        pauseReason: null,
+        pausedByUserId: null,
+        pausedAt: null,
       },
     };
   }
   const same =
-    wasMuted &&
-    stored?.muteUntilSuccess === sent.muteUntilSuccess &&
-    stored?.mutedUntil?.getTime() === sent.mutedUntil?.getTime() &&
-    (!sent.muteReason || sent.muteReason === stored?.muteReason);
+    wasPaused &&
+    stored?.pauseUntilSuccess === sent.pauseUntilSuccess &&
+    stored?.pausedUntil?.getTime() === sent.pausedUntil?.getTime() &&
+    (!sent.pauseReason || sent.pauseReason === stored?.pauseReason);
   if (same && stored) {
-    // An unrelated edit sends the mute back as it was: who muted and why stay.
+    // An unrelated edit sends the pause back as it was: who paused and why stay.
     return { change: null, fields: stored };
   }
-  const cap = now.getTime() + MAX_MUTE_DAYS * DAY_MS;
-  if (sent.mutedUntil && sent.mutedUntil.getTime() > cap + CLOCK_SKEW_MS) {
+  const cap = now.getTime() + MAX_PAUSE_DAYS * DAY_MS;
+  if (sent.pausedUntil && sent.pausedUntil.getTime() > cap + CLOCK_SKEW_MS) {
     // Just past the cap is most likely a device clock running ahead of ours.
-    const clockAhead = sent.mutedUntil.getTime() <= cap + HOUR_MS;
+    const clockAhead = sent.pausedUntil.getTime() <= cap + HOUR_MS;
     throw new SettingsError(
       clockAhead
-        ? `A mute can last at most ${MAX_MUTE_DAYS} days, and your device's clock looks ahead of ours. Pick a shorter time.`
-        : `A mute can last at most ${MAX_MUTE_DAYS} days.`
+        ? `A pause can last at most ${MAX_PAUSE_DAYS} days, and your device's clock looks ahead of ours. Pick a shorter time.`
+        : `A pause can last at most ${MAX_PAUSE_DAYS} days.`
     );
   }
-  const reason = sent.muteReason;
-  if (reason.length < MIN_MUTE_REASON || reason.length > MAX_MUTE_REASON) {
-    throw new SettingsError(MUTE_REASON_REQUIRED);
+  const reason = sent.pauseReason;
+  if (reason.length < MIN_PAUSE_REASON || reason.length > MAX_PAUSE_REASON) {
+    throw new SettingsError(PAUSE_REASON_REQUIRED);
   }
   return {
-    change: wasMuted ? "changed" : "muted",
+    change: wasPaused ? "changed" : "paused",
     fields: {
-      mutedUntil:
-        sent.mutedUntil && sent.mutedUntil.getTime() > cap
+      pausedUntil:
+        sent.pausedUntil && sent.pausedUntil.getTime() > cap
           ? new Date(cap)
-          : sent.mutedUntil,
-      muteUntilSuccess: sent.muteUntilSuccess,
-      muteReason: reason,
-      mutedBy: userId,
-      // A changed mute keeps its start, so the failures it hid are all counted.
-      mutedAt: wasMuted ? (stored?.mutedAt ?? now) : now,
+          : sent.pausedUntil,
+      pauseUntilSuccess: sent.pauseUntilSuccess,
+      pauseReason: reason,
+      pausedByUserId: userId,
+      // A changed pause keeps its start, so the failures it hid are all counted.
+      pausedAt: wasPaused ? (stored?.pausedAt ?? now) : now,
     },
   };
 }
 
-/** Too many mute notices for one workflow in an hour: refused, so nobody is flooded. */
-async function refuseTooManyMuteChanges(
+/** Too many pause notices for one workflow in an hour: refused, so nobody is flooded. */
+async function refuseTooManyPauseChanges(
   tx: Tx,
   organizationId: string,
   workflowId: string,
@@ -379,16 +382,16 @@ async function refuseTooManyMuteChanges(
       and(
         eq(failureAlertDeliveries.organizationId, organizationId),
         inArray(failureAlertDeliveries.kind, [
-          "workflow_muted",
-          "workflow_unmuted",
+          "workflow_paused",
+          "workflow_resumed",
         ]),
         sql`${failureAlertDeliveries.context}->>'workflowId' = ${workflowId}`,
         gt(failureAlertDeliveries.createdAt, new Date(now.getTime() - HOUR_MS))
       )
     );
-  if (Number(row?.notices ?? 0) >= MUTE_CHANGES_PER_HOUR) {
+  if (Number(row?.notices ?? 0) >= WORKFLOW_PAUSE_CHANGES_PER_HOUR) {
     throw new SettingsError(
-      `This workflow's mute changed ${MUTE_CHANGES_PER_HOUR} times in the last hour. Try again later.`,
+      `This workflow's pause changed ${WORKFLOW_PAUSE_CHANGES_PER_HOUR} times in the last hour. Try again later.`,
       429
     );
   }
@@ -403,9 +406,9 @@ export async function saveWorkflowOverride(params: {
 }): Promise<
   Record<string, unknown> & {
     rulesChanged: boolean;
-    muteChange: "muted" | "changed" | "unmuted" | null;
-    muteBefore: StoredMute | null;
-    muteAfter: StoredMute;
+    pauseChange: "paused" | "changed" | "resumed" | null;
+    pauseBefore: StoredPause | null;
+    pauseAfter: StoredPause;
   }
 > {
   const { workflowId, organizationId, userId, body } = params;
@@ -473,7 +476,7 @@ export async function saveWorkflowOverride(params: {
         ? null
         : await parseChannels(body.channels, organizationId, { verify: true });
   }
-  const mute = parseMute(body, now);
+  const pause = parsePause(body, now);
   const expectedVersion = parseVersion(body.version);
   const currentVersion = async (tx: Tx): Promise<number> => {
     const [row] = await tx
@@ -482,29 +485,29 @@ export async function saveWorkflowOverride(params: {
       .where(eq(workflowFailureAlertOverrides.workflowId, workflowId));
     return row?.version ?? 0;
   };
-  const pauseWorkflow = body.pauseWorkflow === true;
+  const disableWorkflow = body.disableWorkflow === true;
 
   const empty =
     threshold === null &&
     timeLimitMinutes === null &&
     recipientUserIds === null &&
     !customChannels &&
-    !mute.mutedUntil &&
-    !mute.muteUntilSuccess &&
-    !pauseWorkflow;
+    !pause.pausedUntil &&
+    !pause.pauseUntilSuccess &&
+    !disableWorkflow;
   const actor = await actorOf(userId, members);
   const orgList = orgPolicy.recipientUserIds;
 
   // Only what the evaluator reads needs a fresh evaluation; who is told does not.
   let rulesChanged = true;
-  let muteChange: "muted" | "changed" | "unmuted" | null = null;
-  let muteBefore: StoredMute | null = null;
-  let muteAfter: StoredMute = {
-    mutedUntil: null,
-    muteUntilSuccess: false,
-    muteReason: null,
-    mutedBy: null,
-    mutedAt: null,
+  let pauseChange: "paused" | "changed" | "resumed" | null = null;
+  let pauseBefore: StoredPause | null = null;
+  let pauseAfter: StoredPause = {
+    pausedUntil: null,
+    pauseUntilSuccess: false,
+    pauseReason: null,
+    pausedByUserId: null,
+    pausedAt: null,
   };
   await db.transaction(async (tx: Tx) => {
     await lockOrgSettings(tx, organizationId);
@@ -515,24 +518,24 @@ export async function saveWorkflowOverride(params: {
         threshold: workflowFailureAlertOverrides.threshold,
         timeLimitMinutes: workflowFailureAlertOverrides.timeLimitMinutes,
         recipientUserIds: workflowFailureAlertOverrides.recipientUserIds,
-        mutedUntil: workflowFailureAlertOverrides.mutedUntil,
-        muteUntilSuccess: workflowFailureAlertOverrides.muteUntilSuccess,
-        muteReason: workflowFailureAlertOverrides.muteReason,
-        mutedBy: workflowFailureAlertOverrides.mutedBy,
-        mutedAt: workflowFailureAlertOverrides.mutedAt,
-        pauseWorkflow: workflowFailureAlertOverrides.pauseWorkflow,
+        pausedUntil: workflowFailureAlertOverrides.pausedUntil,
+        pauseUntilSuccess: workflowFailureAlertOverrides.pauseUntilSuccess,
+        pauseReason: workflowFailureAlertOverrides.pauseReason,
+        pausedByUserId: workflowFailureAlertOverrides.pausedByUserId,
+        pausedAt: workflowFailureAlertOverrides.pausedAt,
+        disableWorkflow: workflowFailureAlertOverrides.disableWorkflow,
       })
       .from(workflowFailureAlertOverrides)
       .where(eq(workflowFailureAlertOverrides.workflowId, workflowId))
-      // Waits for an ending mute, so a save never writes it back.
+      // Waits for an ending pause, so a save never writes it back.
       .for("update");
-    const decided = nextMute(stored, mute, userId, now);
+    const decided = nextPause(stored, pause, userId, now);
     if (decided.change) {
-      await refuseTooManyMuteChanges(tx, organizationId, workflowId, now);
+      await refuseTooManyPauseChanges(tx, organizationId, workflowId, now);
     }
-    muteChange = decided.change;
-    muteBefore = stored && activeMute(stored, now) ? stored : null;
-    muteAfter = decided.fields;
+    pauseChange = decided.change;
+    pauseBefore = stored && activePause(stored, now) ? stored : null;
+    pauseAfter = decided.fields;
 
     if (empty) {
       // An all-empty row follows the org, and keeps its version so a stale tab is still refused.
@@ -544,7 +547,7 @@ export async function saveWorkflowOverride(params: {
           recipientUserIds: null,
           customChannels: false,
           ...decided.fields,
-          pauseWorkflow: false,
+          disableWorkflow: false,
           version: current + 1,
           updatedBy: userId,
           updatedAt: now,
@@ -560,7 +563,7 @@ export async function saveWorkflowOverride(params: {
         recipientUserIds,
         customChannels,
         ...decided.fields,
-        pauseWorkflow,
+        disableWorkflow,
         updatedBy: userId,
         updatedAt: now,
       };
@@ -568,9 +571,9 @@ export async function saveWorkflowOverride(params: {
         !stored ||
         stored.threshold !== values.threshold ||
         stored.timeLimitMinutes !== values.timeLimitMinutes ||
-        stored.mutedUntil?.getTime() !== values.mutedUntil?.getTime() ||
-        stored.muteUntilSuccess !== values.muteUntilSuccess ||
-        stored.pauseWorkflow !== values.pauseWorkflow;
+        stored.pausedUntil?.getTime() !== values.pausedUntil?.getTime() ||
+        stored.pauseUntilSuccess !== values.pauseUntilSuccess ||
+        stored.disableWorkflow !== values.disableWorkflow;
       const next = { ...values, version: current + 1 };
       await tx
         .insert(workflowFailureAlertOverrides)
@@ -591,17 +594,17 @@ export async function saveWorkflowOverride(params: {
         organizationId,
         workflow,
         kind:
-          decided.change === "unmuted" ? "workflow_unmuted" : "workflow_muted",
+          decided.change === "resumed" ? "workflow_resumed" : "workflow_paused",
         policy: beforePolicy,
         members,
         context:
-          decided.change === "unmuted"
+          decided.change === "resumed"
             ? { ...actor }
             : {
                 ...actor,
-                reason: fields.muteReason,
-                until: fields.mutedUntil?.toISOString() ?? null,
-                untilItWorks: fields.muteUntilSuccess,
+                reason: fields.pauseReason,
+                until: fields.pausedUntil?.toISOString() ?? null,
+                untilItWorks: fields.pauseUntilSuccess,
                 changed: decided.change === "changed",
               },
         now,
@@ -634,9 +637,9 @@ export async function saveWorkflowOverride(params: {
     return {
       reset: true,
       rulesChanged: true,
-      muteChange,
-      muteBefore,
-      muteAfter,
+      pauseChange,
+      pauseBefore,
+      pauseAfter,
     };
   }
   return {
@@ -650,13 +653,13 @@ export async function saveWorkflowOverride(params: {
       destination: c.destination,
       role: c.role,
     })),
-    mutedUntil: muteAfter.mutedUntil?.toISOString() ?? null,
-    muteUntilSuccess: muteAfter.muteUntilSuccess,
-    muteReason: muteAfter.muteReason,
-    pauseWorkflow,
+    pausedUntil: pauseAfter.pausedUntil?.toISOString() ?? null,
+    pauseUntilSuccess: pauseAfter.pauseUntilSuccess,
+    pauseReason: pauseAfter.pauseReason,
+    disableWorkflow,
     rulesChanged,
-    muteChange,
-    muteBefore,
-    muteAfter,
+    pauseChange,
+    pauseBefore,
+    pauseAfter,
   };
 }

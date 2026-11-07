@@ -63,7 +63,7 @@ export const orgFailureAlertSettings = pgTable(
   ]
 );
 
-/** Chat/PagerDuty channel. No FK on integrationId, on purpose: pause and tell, never cascade. */
+/** Chat/PagerDuty channel. No FK on integrationId, on purpose: stop it and tell, never cascade. */
 export const failureAlertChannels = pgTable(
   "alert_methods",
   {
@@ -81,8 +81,8 @@ export const failureAlertChannels = pgTable(
       .default("always")
       .$type<FailureAlertChannelRole>(),
     // Set after a permanent error or a day of failed retries; a good test clears it.
-    pausedAt: timestamp("paused_at"),
-    pausedReason: text("paused_reason"),
+    stoppedAt: timestamp("stopped_at"),
+    stoppedReason: text("stopped_reason"),
     lastDeliveredAt: timestamp("last_delivered_at"),
     lastFailedAt: timestamp("last_failed_at"),
     lastError: text("last_error"),
@@ -125,15 +125,15 @@ export const workflowFailureAlertOverrides = pgTable(
     recipientUserIds: jsonb("recipient_user_ids").$type<string[] | null>(),
     // True: use this workflow's alert_methods rows instead of the org's.
     customChannels: boolean("custom_channels").notNull().default(false),
-    mutedUntil: timestamp("muted_until"),
-    muteUntilSuccess: boolean("mute_until_success").notNull().default(false),
-    muteReason: text("mute_reason"),
-    // The user id of whoever muted; kept until the mute itself changes.
-    mutedBy: text("muted_by"),
-    // When the current mute began: failures since then are reported when it ends.
-    mutedAt: timestamp("muted_at"),
+    pausedUntil: timestamp("paused_until"),
+    pauseUntilSuccess: boolean("pause_until_success").notNull().default(false),
+    pauseReason: text("pause_reason"),
+    // The user id of whoever paused; kept until the pause itself changes.
+    pausedByUserId: text("paused_by_user_id"),
+    // When the current pause began: failures since then are reported when it ends.
+    pausedAt: timestamp("paused_at"),
     // Per workflow only: an org-wide switch could stop every automation at once.
-    pauseWorkflow: boolean("pause_workflow").notNull().default(false),
+    disableWorkflow: boolean("disable_workflow").notNull().default(false),
     // Bumped on every save; a save sent with an older one is refused.
     version: integer("version").notNull().default(0),
     updatedBy: text("updated_by"),
@@ -202,9 +202,9 @@ export const workflowFailureIncidents = pgTable(
     // Set with the alert's queueing; an open incident without it gets re-queued.
     alertQueuedAt: timestamp("alert_queued_at"),
     // While the workflow stays off, the incident stays open: stopped is not fixed.
-    workflowPausedAt: timestamp("workflow_paused_at"),
-    // Set by a trigger on workflows.enabled; an older pause no longer holds the incident.
-    workflowResumedAt: timestamp("workflow_resumed_at"),
+    workflowDisabledAt: timestamp("workflow_disabled_at"),
+    // Set by a trigger on workflows.enabled; an older disable no longer holds the incident.
+    workflowReenabledAt: timestamp("workflow_reenabled_at"),
     resolvedAt: timestamp("resolved_at"),
     resolvedReason: text("resolved_reason").$type<FailureIncidentResolution>(),
     resolvingExecutionId: text("resolving_execution_id"),
@@ -240,17 +240,17 @@ export type FailureAlertMessageKind =
   | "alert"
   | "reminder"
   | "recovery"
-  | "channel_paused"
+  | "channel_stopped"
   | "launch_notice"
   | "alerts_paused"
   | "alerts_resumed"
   | "cap_warning"
   // A Test from the Alerts page, recorded once sent; never queued.
   | "test"
-  // A workflow's alerts muted (or the mute changed), unmuted, or the mute ended.
-  | "workflow_muted"
-  | "workflow_unmuted"
-  | "mute_ended"
+  // A workflow's alerts paused (or the pause changed), resumed, or the pause ended.
+  | "workflow_paused"
+  | "workflow_resumed"
+  | "workflow_pause_ended"
   // People taken off a recipient list are told once.
   | "recipients_removed";
 

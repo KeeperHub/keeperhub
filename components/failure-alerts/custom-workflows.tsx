@@ -4,26 +4,29 @@ import Link from "next/link";
 import type { OrgSettingsView } from "@/lib/notifications/failure-alerts/view-types";
 import { TextWithEmails } from "./email-text";
 import { failedRuns, timeLimitLabel } from "./format";
-import { muteSentence } from "./member-label";
+import { pauseSentence } from "./member-label";
 
 type CustomWorkflow = OrgSettingsView["customWorkflows"][number];
-type MutedWorkflow = OrgSettingsView["mutedWorkflows"][number];
+type PausedWorkflow = OrgSettingsView["pausedWorkflows"][number];
 
-/** The Setup line's mute, worded as on Overview and in the workflow panel. */
-function muteText(w: CustomWorkflow, mute: MutedWorkflow | undefined): string {
-  return muteSentence({
-    by: mute?.by ?? null,
-    account: mute?.byAccount ?? null,
-    untilItWorks: w.muteUntilSuccess,
-    mutedUntil: w.mutedUntil,
-    reason: mute?.reason ?? null,
+/** The Setup line's pause, worded as on Overview and in the workflow panel. */
+function pauseText(
+  w: CustomWorkflow,
+  pause: PausedWorkflow | undefined
+): string {
+  return pauseSentence({
+    by: pause?.by ?? null,
+    account: pause?.byAccount ?? null,
+    untilItWorks: w.pauseUntilSuccess,
+    pausedUntil: w.pausedUntil,
+    reason: pause?.reason ?? null,
   });
 }
 
-/** What this workflow does differently: its mute as one sentence, its own rules as another. */
+/** What this workflow does differently: its pause as one sentence, its own rules as another. */
 function differences(
   w: CustomWorkflow,
-  mute: MutedWorkflow | undefined
+  pause: PausedWorkflow | undefined
 ): string {
   const parts: string[] = [];
   if (w.threshold) {
@@ -40,13 +43,13 @@ function differences(
   if (w.customChannels) {
     parts.push("uses its own methods");
   }
-  if (w.pauseWorkflow) {
+  if (w.disableWorkflow) {
     parts.push("disables itself at its limit");
   }
   const sentences: string[] = [];
-  if (w.muteUntilSuccess || w.mutedUntil) {
-    const muted = muteText(w, mute);
-    sentences.push(muted.endsWith(".") ? muted : `${muted}.`);
+  if (w.pauseUntilSuccess || w.pausedUntil) {
+    const paused = pauseText(w, pause);
+    sentences.push(paused.endsWith(".") ? paused : `${paused}.`);
   }
   if (parts.length > 0) {
     sentences.push(`Own rules: ${parts.join(", ")}.`);
@@ -54,16 +57,16 @@ function differences(
   return sentences.join(" ") || "Own settings.";
 }
 
-/** Workflows that do not follow the org rules, so mutes are never forgotten. */
+/** Workflows that do not follow the org rules, so pauses are never forgotten. */
 export function CustomWorkflowsList({
   workflows,
-  muted = [],
+  paused = [],
 }: {
   workflows: CustomWorkflow[];
-  /** Who muted each one and why. */
-  muted?: MutedWorkflow[];
+  /** Who paused each one and why. */
+  paused?: PausedWorkflow[];
 }): React.ReactElement {
-  const muteById = new Map(muted.map((m) => [m.id, m]));
+  const pauseById = new Map(paused.map((m) => [m.id, m]));
   return (
     <ul
       className="divide-y rounded-md border"
@@ -82,7 +85,7 @@ export function CustomWorkflowsList({
           </Link>
           <span className="flex flex-col gap-0.5 text-xs @xl/settings:items-end">
             <span className="text-muted-foreground">
-              <TextWithEmails text={differences(w, muteById.get(w.id))} />
+              <TextWithEmails text={differences(w, pauseById.get(w.id))} />
             </span>
             {w.brokenMethods > 0 && (
               <span

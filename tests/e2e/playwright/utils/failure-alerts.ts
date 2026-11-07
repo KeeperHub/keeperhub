@@ -92,7 +92,7 @@ export async function seedFailureAlerts(): Promise<AlertsFixture> {
         `;
       }
       await tx`
-        INSERT INTO alert_methods (id, organization_id, kind, integration_id, destination, role, paused_at, paused_reason, last_health_check_at, created_by)
+        INSERT INTO alert_methods (id, organization_id, kind, integration_id, destination, role, stopped_at, stopped_reason, last_health_check_at, created_by)
         VALUES (${generateId()}, ${orgId}, 'telegram', ${telegramId}, '-1002233445566', 'always',
           ${ago(60)}, 'Telegram rejected the bot token', ${now}, ${userId})
       `;
@@ -228,8 +228,8 @@ async function cleanupLeftoverOrg(): Promise<void> {
 
 export type OverrideRow = {
   threshold: number | null;
-  pauseWorkflow: boolean;
-  mutedUntil: Date | null;
+  disableWorkflow: boolean;
+  pausedUntil: Date | null;
   customChannels: boolean;
 };
 
@@ -240,17 +240,17 @@ export async function readOverride(
   const sql = getDbConnection();
   try {
     const [row] = await sql`
-      SELECT threshold, pause_workflow, muted_until, custom_channels FROM alert_overrides
+      SELECT threshold, disable_workflow, paused_until, custom_channels FROM alert_overrides
       WHERE workflow_id = ${workflowId}
         AND (threshold IS NOT NULL OR time_limit_minutes IS NOT NULL
           OR recipient_user_ids IS NOT NULL OR custom_channels
-          OR muted_until IS NOT NULL OR mute_until_success OR pause_workflow)
+          OR paused_until IS NOT NULL OR pause_until_success OR disable_workflow)
     `;
     return row
       ? {
           threshold: row.threshold as number | null,
-          pauseWorkflow: row.pause_workflow as boolean,
-          mutedUntil: row.muted_until as Date | null,
+          disableWorkflow: row.disable_workflow as boolean,
+          pausedUntil: row.paused_until as Date | null,
           customChannels: row.custom_channels as boolean,
         }
       : null;

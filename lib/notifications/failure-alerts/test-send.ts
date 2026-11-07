@@ -277,7 +277,7 @@ export async function sendTest(params: {
     integrationId: target.integrationId,
     destination: target.destination,
     role: "always" as const,
-    pausedAt: null,
+    stoppedAt: null,
   };
 
   let outcome: DeliveryOutcome;
@@ -327,9 +327,9 @@ export async function sendTest(params: {
       .set({
         lastTestedAt: now,
         lastTestOk: outcome.ok,
-        // A passing test is how a paused channel comes back.
+        // A passing test is how a stopped channel comes back.
         ...(outcome.ok
-          ? { pausedAt: null, pausedReason: null }
+          ? { stoppedAt: null, stoppedReason: null }
           : { lastFailedAt: now, lastError: outcome.message }),
       })
       .where(

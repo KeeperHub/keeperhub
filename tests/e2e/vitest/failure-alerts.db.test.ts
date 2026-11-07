@@ -542,7 +542,7 @@ async function settingsError(run: () => Promise<unknown>): Promise<{
   return { message: "" };
 }
 
-const PAUSED_WORDING = /turned off/i;
+const DISABLED_WORDING = /turned off/i;
 const TEST_WORDING = /test/i;
 const PAGED_WORDING = /paged/i;
 const EMAIL_WORDING = /email/i;
@@ -742,32 +742,32 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(mailsAbout(eps, "Slow schedule")).toHaveLength(before);
     });
 
-    it("opens no incident while muted, re-checks when the mute ends, then alerts", async () => {
-      const muted = await makeWorkflow(eps, "Muted one");
+    it("opens no incident while paused, re-checks when the pause ends, then alerts", async () => {
+      const paused = await makeWorkflow(eps, "Paused one");
       await db.insert(workflowFailureAlertOverrides).values({
-        workflowId: muted,
+        workflowId: paused,
         organizationId: eps.orgId,
-        mutedUntil: at(60),
+        pausedUntil: at(60),
       });
-      await addFailures(eps, muted, 5);
+      await addFailures(eps, paused, 5);
       await runCycle();
-      expect(await openIncident(muted)).toBeUndefined();
+      expect(await openIncident(paused)).toBeUndefined();
       const [queued] = await db
         .select()
         .from(workflowFailureAlertQueue)
-        .where(eq(workflowFailureAlertQueue.workflowId, muted));
+        .where(eq(workflowFailureAlertQueue.workflowId, paused));
       expect(queued?.dueAt.getTime()).toBeGreaterThan(Date.now());
 
       await db
         .update(workflowFailureAlertOverrides)
-        .set({ mutedUntil: at(-1) })
-        .where(eq(workflowFailureAlertOverrides.workflowId, muted));
+        .set({ pausedUntil: at(-1) })
+        .where(eq(workflowFailureAlertOverrides.workflowId, paused));
       await db
         .update(workflowFailureAlertQueue)
         .set({ dueAt: at(-1) })
-        .where(eq(workflowFailureAlertQueue.workflowId, muted));
+        .where(eq(workflowFailureAlertQueue.workflowId, paused));
       await runCycle();
-      expect(await openIncident(muted)).toBeDefined();
+      expect(await openIncident(paused)).toBeDefined();
     });
 
     it("never alerts for a manual-only workflow", async () => {
@@ -1085,8 +1085,8 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       const posts = callsTo(discord.token).filter((c) => c.method === "POST");
       expect(posts).toHaveLength(1);
       const after = await channelById(discord.id);
-      expect(after?.pausedAt).toBeTruthy();
-      expect(after?.pausedReason).toBeTruthy();
+      expect(after?.stoppedAt).toBeTruthy();
+      expect(after?.stoppedReason).toBeTruthy();
     });
 
     it("delivers the late alert and the paused-channel notice once email recovers", async () => {
@@ -1103,7 +1103,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await runCycle();
       expect(mailsAbout(acme, "Harvest keeper").length).toBeGreaterThan(0);
       expect(await sentEmails(acme, "alert")).toHaveLength(1);
-      expect(await sentEmails(acme, "channel_paused")).toHaveLength(1);
+      expect(await sentEmails(acme, "channel_stopped")).toHaveLength(1);
     });
   });
 
@@ -1248,8 +1248,8 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     it("the silent check pauses a dead channel without posting to it", async () => {
       await runCycle();
       const after = await channelById(dead.id);
-      expect(after?.pausedAt).toBeTruthy();
-      expect(after?.pausedReason).toBeTruthy();
+      expect(after?.stoppedAt).toBeTruthy();
+      expect(after?.stoppedReason).toBeTruthy();
       const deliveries = await deliveriesOf(org.orgId);
       expect(deliveries.some((d) => d.channelId === dead.id)).toBe(false);
       const calls = callsTo(dead.token);
@@ -1259,7 +1259,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
 
     it("leaves a working channel live, records the check and posts nothing", async () => {
       const after = await channelById(live.id);
-      expect(after?.pausedAt).toBeNull();
+      expect(after?.stoppedAt).toBeNull();
       expect(after?.lastHealthCheckAt).toBeTruthy();
       const calls = callsTo(live.token);
       expect(calls.length).toBeGreaterThan(0);
@@ -1268,7 +1268,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
 
     it("tells the owner the channel was paused", async () => {
       await runCycle();
-      expect(await sentEmails(org, "channel_paused")).toHaveLength(1);
+      expect(await sentEmails(org, "channel_stopped")).toHaveLength(1);
     });
 
     it("a workflow's own method that dies tells the owner, the alert people and the workflow's people, and is flagged", async () => {
@@ -1320,7 +1320,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await runCycle();
 
       const notices = (await deliveriesOf(own.orgId)).filter(
-        (d) => d.kind === "channel_paused" && d.channel === "email"
+        (d) => d.kind === "channel_stopped" && d.channel === "email"
       );
       expect(new Set(notices.map((d) => d.recipient))).toEqual(
         new Set([
@@ -1803,14 +1803,14 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await db.insert(workflowFailureAlertOverrides).values({
         workflowId: twice,
         organizationId: org.orgId,
-        pauseWorkflow: true,
+        disableWorkflow: true,
       });
       await addRun(org, twice, "error", { at: at(-120) });
       await addRun(org, twice, "error", { at: at(-30) });
       await runCycle();
       const incident = await openIncident(twice);
       expect(incident?.openedBy).toBe("time");
-      expect(incident?.workflowPausedAt).toBeNull();
+      expect(incident?.workflowDisabledAt).toBeNull();
       expect(await isEnabled(twice)).toBe(true);
     });
   });
@@ -1979,7 +1979,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(mailsTo(sigma)).toHaveLength(0);
       const channel = await channelById(dead.id);
       expect(channel?.lastHealthCheckAt).toBeNull();
-      expect(channel?.pausedAt).toBeNull();
+      expect(channel?.stoppedAt).toBeNull();
       expect(callsTo(dead.token)).toHaveLength(0);
       const left = await db
         .select()
@@ -2017,7 +2017,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     let eta: Org;
     let wf: string;
     let lateWf: string;
-    let pausedIncidentId: string | undefined;
+    let disabledIncidentId: string | undefined;
     let lateIncidentId: string | undefined;
 
     beforeAll(async () => {
@@ -2027,7 +2027,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         workflowId: wf,
         organizationId: eta.orgId,
         threshold: 2,
-        pauseWorkflow: true,
+        disableWorkflow: true,
       });
       // Starts the org's count before any failure.
       await runCycle();
@@ -2038,11 +2038,11 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await addRun(eta, wf, "error", { at: at(-2) });
       await runCycle();
       const incident = await openIncident(wf);
-      pausedIncidentId = incident?.id;
+      disabledIncidentId = incident?.id;
       expect(await isEnabled(wf)).toBe(false);
-      expect(incident?.workflowPausedAt).toBeTruthy();
+      expect(incident?.workflowDisabledAt).toBeTruthy();
       const [alert] = mailsAbout(eta, "Auto Pause Keeper");
-      expect(alert?.subject).toMatch(PAUSED_WORDING);
+      expect(alert?.subject).toMatch(DISABLED_WORDING);
     });
 
     it("writes the pause to the audit log", async () => {
@@ -2052,7 +2052,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         .where(
           and(
             eq(securityAuditLog.resourceId, wf),
-            eq(securityAuditLog.action, "workflow.paused_by_failure_alerts")
+            eq(securityAuditLog.action, "workflow.disabled_by_failure_alerts")
           )
         );
       expect(audit).toBeDefined();
@@ -2060,7 +2060,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
 
     it("keeps the incident open while the workflow is off", async () => {
       await runCycle();
-      expect((await openIncident(wf))?.id).toBe(pausedIncidentId);
+      expect((await openIncident(wf))?.id).toBe(disabledIncidentId);
     });
 
     it("one failure after turning it back on does not pause it again", async () => {
@@ -2077,14 +2077,14 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(await isEnabled(wf)).toBe(false);
       const about = mailsAbout(eta, "Auto Pause Keeper");
       expect(about).toHaveLength(before + 1);
-      expect(about.at(-1)?.subject).toMatch(PAUSED_WORDING);
+      expect(about.at(-1)?.subject).toMatch(DISABLED_WORDING);
     });
 
     it("fixed and turned back on: the incident resolves as a recovery", async () => {
       await setEnabled(wf, true);
       await addRun(eta, wf, "success", { at: at(0.3) });
       await runCycle();
-      expect((await incidentById(pausedIncidentId))?.resolvedReason).toBe(
+      expect((await incidentById(disabledIncidentId))?.resolvedReason).toBe(
         "success"
       );
     });
@@ -2105,20 +2105,20 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await db.insert(workflowFailureAlertOverrides).values({
         workflowId: lateWf,
         organizationId: eta.orgId,
-        pauseWorkflow: true,
+        disableWorkflow: true,
       });
       await addRun(eta, lateWf, "error", { at: at(0.4) });
       await runCycle();
       expect(await isEnabled(lateWf)).toBe(false);
       const about = mailsAbout(eta, "Late Pause Keeper");
       expect(about).toHaveLength(before + 1);
-      expect(about.at(-1)?.subject).toMatch(PAUSED_WORDING);
+      expect(about.at(-1)?.subject).toMatch(DISABLED_WORDING);
     });
 
     it("records turning it back on in the database", async () => {
       await setEnabled(lateWf, true);
       expect(
-        (await incidentById(lateIncidentId))?.workflowResumedAt
+        (await incidentById(lateIncidentId))?.workflowReenabledAt
       ).toBeTruthy();
     });
 
@@ -2314,7 +2314,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         workflowId: wf,
         organizationId: lambda.orgId,
         threshold: 2,
-        pauseWorkflow: true,
+        disableWorkflow: true,
       });
       until = at(60);
       await orgPause.pauseOrgAlerts({
@@ -2348,7 +2348,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       const notice = (await deliveriesOf(lambda.orgId)).find(
         (d) => d.kind === "alerts_paused"
       );
-      expect(notice?.context?.pausingWorkflows).toBe(1);
+      expect(notice?.context?.disablingWorkflows).toBe(1);
     });
 
     it("extending the pause keeps them held until the new end", async () => {
@@ -2462,7 +2462,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         workflowId: wf,
         organizationId: xi.orgId,
         threshold: 2,
-        pauseWorkflow: true,
+        disableWorkflow: true,
       });
       await pause(xi, at(60));
       await addRun(xi, wf, "error", { at: at(-2) });
@@ -2653,7 +2653,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         await save({
           threshold: 4,
           recipientUserIds: [zeta.userId],
-          pauseWorkflow: true,
+          disableWorkflow: true,
         })
       ).toBe(true);
     });
@@ -2683,16 +2683,16 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(view.customWorkflows.some((w) => w.id === wf)).toBe(false);
     });
 
-    it("ends a mute until it works once it works, as a new version", async () => {
-      const wf = await makeWorkflow(zeta, "Mute until works");
+    it("ends a pause until it works once it works, as a new version", async () => {
+      const wf = await makeWorkflow(zeta, "Pause until works");
       await db.insert(workflowFailureAlertOverrides).values({
         workflowId: wf,
         organizationId: zeta.orgId,
-        muteUntilSuccess: true,
-        mutedUntil: at(6 * 24 * 60),
-        mutedBy: zeta.userId,
-        // Muted an hour ago, so the success below clearly comes after it.
-        mutedAt: at(-60),
+        pauseUntilSuccess: true,
+        pausedUntil: at(6 * 24 * 60),
+        pausedByUserId: zeta.userId,
+        // Paused an hour ago, so the success below clearly comes after it.
+        pausedAt: at(-60),
         updatedAt: at(-60),
         version: 3,
       });
@@ -2702,8 +2702,8 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         .select()
         .from(workflowFailureAlertOverrides)
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
-      expect(row?.muteUntilSuccess).toBe(false);
-      expect(row?.mutedUntil).toBeNull();
+      expect(row?.pauseUntilSuccess).toBe(false);
+      expect(row?.pausedUntil).toBeNull();
       expect(row?.version).toBe(4);
     });
 
@@ -2813,7 +2813,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
                 integrationId,
                 destination: "",
                 role: "always",
-                pausedReason: reason,
+                stoppedReason: reason,
               },
             ],
           },
@@ -2830,9 +2830,9 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
             eq(failureAlertChannels.integrationId, integrationId)
           )
         );
-      expect(restored?.pausedAt).toBeTruthy();
+      expect(restored?.stoppedAt).toBeTruthy();
       // The browser's text is not stored: it could say anything.
-      expect(restored?.pausedReason).toBe("It was paused when it was removed");
+      expect(restored?.stoppedReason).toBe("It was paused when it was removed");
     });
 
     it("shows a wallet member's step-up inbox only to that member", async () => {
@@ -3269,7 +3269,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         "alert",
         "reminder",
         "recovery",
-        "channel_paused",
+        "channel_stopped",
         "launch_notice",
       ]) {
         expect(kinds, [...kinds].join(" ")).toContain(kind);
@@ -3630,7 +3630,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await db.insert(workflowFailureAlertOverrides).values({
         workflowId: wf,
         organizationId: org.orgId,
-        pauseWorkflow: true,
+        disableWorkflow: true,
       });
       const until = at(120);
       await orgPause.pauseOrgAlerts({
@@ -3676,7 +3676,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await db.insert(workflowFailureAlertOverrides).values({
         workflowId: wf,
         organizationId: org.orgId,
-        pauseWorkflow: true,
+        disableWorkflow: true,
       });
       await addRun(org, wf, "error", { at: at(-120) });
       await addRun(org, wf, "error", { at: at(-90) });
@@ -3701,7 +3701,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await db.insert(workflowFailureAlertOverrides).values({
         workflowId: wf,
         organizationId: org.orgId,
-        pauseWorkflow: true,
+        disableWorkflow: true,
       });
       await fundsFailure(org, wf, -3);
       await fundsFailure(org, wf, -2);
@@ -4127,7 +4127,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         workflowId: wf,
         organizationId: org.orgId,
         threshold: 2,
-        pauseWorkflow: true,
+        disableWorkflow: true,
       });
       for (const minutes of [-5, -4, -3, -2, -1]) {
         await refusedRun(org, wf, minutes, {
@@ -4140,7 +4140,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       const incident = await openIncident(wf);
       expect(incident?.openedBy).toBe("refused");
       expect(incident?.failureCount).toBe(0);
-      expect(incident?.workflowPausedAt).toBeNull();
+      expect(incident?.workflowDisabledAt).toBeNull();
       expect(await isEnabled(wf)).toBe(true);
     });
 
@@ -4558,7 +4558,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(all.map((row) => row.openedBy)).toEqual(["missed"]);
     });
   });
-  describe("mute safeguards", { timeout: SUITE_TIMEOUT }, () => {
+  describe("pause safeguards", { timeout: SUITE_TIMEOUT }, () => {
     async function person(
       org: Org,
       role: "admin" | "member",
@@ -4609,47 +4609,47 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     const inHours = (hours: number): string =>
       new Date(Date.now() + hours * 3_600_000).toISOString();
 
-    it("caps a mute at 7 days and asks why", async () => {
-      const org = await makeOrg("mutecap");
-      const wf = await makeWorkflow(org, "Mute cap");
+    it("caps a pause at 7 days and asks why", async () => {
+      const org = await makeOrg("wfpausecap");
+      const wf = await makeWorkflow(org, "Pause cap");
       const tooLong = await settingsError(() =>
-        save(org, wf, { mutedUntil: inHours(8 * 24), muteReason: "Upgrade" })
+        save(org, wf, { pausedUntil: inHours(8 * 24), pauseReason: "Upgrade" })
       );
-      expect(tooLong.message).toBe("A mute can last at most 7 days.");
+      expect(tooLong.message).toBe("A pause can last at most 7 days.");
       // A browser clock a little ahead: "7 days" is trimmed to the cap, not refused.
       const skewed = new Date(Date.now() + 7 * 24 * 3_600_000 + 60_000);
       await save(org, wf, {
-        mutedUntil: skewed.toISOString(),
-        muteReason: "Clock ahead",
+        pausedUntil: skewed.toISOString(),
+        pauseReason: "Clock ahead",
       });
       const [trimmed] = await db
         .select()
         .from(workflowFailureAlertOverrides)
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
-      expect(trimmed?.mutedUntil?.getTime()).toBeLessThan(skewed.getTime());
+      expect(trimmed?.pausedUntil?.getTime()).toBeLessThan(skewed.getTime());
       await save(org, wf, {});
       const noReason = await settingsError(() =>
-        save(org, wf, { mutedUntil: inHours(24) })
+        save(org, wf, { pausedUntil: inHours(24) })
       );
-      expect(noReason.message).toBe(workflowSettings.MUTE_REASON_REQUIRED);
+      expect(noReason.message).toBe(workflowSettings.PAUSE_REASON_REQUIRED);
       const shortReason = await settingsError(() =>
-        save(org, wf, { mutedUntil: inHours(24), muteReason: "ab" })
+        save(org, wf, { pausedUntil: inHours(24), pauseReason: "ab" })
       );
       expect(shortReason.status).toBe(400);
       // "Until it works" ends after 7 days at most.
-      await save(org, wf, { muteUntilSuccess: true, muteReason: "Upgrade" });
+      await save(org, wf, { pauseUntilSuccess: true, pauseReason: "Upgrade" });
       const [row] = await db
         .select()
         .from(workflowFailureAlertOverrides)
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
-      expect(row?.mutedUntil?.getTime()).toBeLessThanOrEqual(
+      expect(row?.pausedUntil?.getTime()).toBeLessThanOrEqual(
         Date.now() + 7 * 24 * 3_600_000 + 1000
       );
     });
 
-    it("announces a mute to the people it silences and every owner, keeps who and why on other edits, and re-announces a change", async () => {
-      const org = await makeOrg("muteannounce");
-      const admin = await person(org, "admin", "muteadmin");
+    it("announces a pause to the people it silences and every owner, keeps who and why on other edits, and re-announces a change", async () => {
+      const org = await makeOrg("wfpauseannounce");
+      const admin = await person(org, "admin", "wfpauseadmin");
       // The org's alerts go to the admin only; the owner hears as an owner.
       await settings.saveOrgSettings(
         org.orgId,
@@ -4659,53 +4659,53 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         ),
         org.userId
       );
-      const wf = await makeWorkflow(org, "Announced mute");
+      const wf = await makeWorkflow(org, "Announced pause");
       const until = inHours(24);
       const first = await save(
         org,
         wf,
-        { mutedUntil: until, muteReason: "RPC migration" },
+        { pausedUntil: until, pauseReason: "RPC migration" },
         admin.id
       );
-      expect(first.muteChange).toBe("muted");
-      const muted = await notices(org.orgId, "workflow_muted");
-      expect(muted.map((d) => d.recipient).sort()).toEqual(
+      expect(first.pauseChange).toBe("wfpaused");
+      const paused = await notices(org.orgId, "workflow_paused");
+      expect(paused.map((d) => d.recipient).sort()).toEqual(
         [admin.email, org.email].sort()
       );
-      expect(muted[0]?.context).toMatchObject({
+      expect(paused[0]?.context).toMatchObject({
         reason: "RPC migration",
         byUserId: admin.id,
         byAccount: admin.email,
         workflowId: wf,
       });
 
-      // A threshold edit by the owner sends the mute back unchanged: nothing new is told.
-      const edit = await save(org, wf, { threshold: 4, mutedUntil: until });
-      expect(edit.muteChange).toBeNull();
+      // A threshold edit by the owner sends the pause back unchanged: nothing new is told.
+      const edit = await save(org, wf, { threshold: 4, pausedUntil: until });
+      expect(edit.pauseChange).toBeNull();
       const [kept] = await db
         .select()
         .from(workflowFailureAlertOverrides)
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
-      expect(kept?.mutedBy).toBe(admin.id);
-      expect(kept?.muteReason).toBe("RPC migration");
-      expect(await notices(org.orgId, "workflow_muted")).toHaveLength(2);
+      expect(kept?.pausedByUserId).toBe(admin.id);
+      expect(kept?.pauseReason).toBe("RPC migration");
+      expect(await notices(org.orgId, "workflow_paused")).toHaveLength(2);
 
       // Extending is a change: told again.
       const extended = await save(org, wf, {
         threshold: 4,
-        mutedUntil: inHours(48),
-        muteReason: "Still migrating",
+        pausedUntil: inHours(48),
+        pauseReason: "Still migrating",
       });
-      expect(extended.muteChange).toBe("changed");
-      const after = await notices(org.orgId, "workflow_muted");
+      expect(extended.pauseChange).toBe("changed");
+      const after = await notices(org.orgId, "workflow_paused");
       expect(after).toHaveLength(4);
       expect(after.some((d) => d.context?.changed === true)).toBe(true);
 
       const view = await settings.loadOrgSettingsView(org.orgId, org.userId);
-      expect(view.mutedWorkflows).toEqual([
+      expect(view.pausedWorkflows).toEqual([
         expect.objectContaining({
           id: wf,
-          by: "muteannounce owner",
+          by: "pauseannounce owner",
           byAccount: org.email,
           reason: "Still migrating",
           failing: false,
@@ -4713,48 +4713,48 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         }),
       ]);
 
-      // Unmute: told, and the workflow leaves the muted list.
-      const unmuted = await save(org, wf, { threshold: 4 });
-      expect(unmuted.muteChange).toBe("unmuted");
-      expect(await notices(org.orgId, "workflow_unmuted")).toHaveLength(2);
+      // Resume: told, and the workflow leaves the paused list.
+      const resumed = await save(org, wf, { threshold: 4 });
+      expect(resumed.pauseChange).toBe("resumed");
+      expect(await notices(org.orgId, "workflow_resumed")).toHaveLength(2);
       const cleared = await settings.loadOrgSettingsView(org.orgId, org.userId);
-      expect(cleared.mutedWorkflows).toEqual([]);
+      expect(cleared.pausedWorkflows).toEqual([]);
     });
 
-    it("ends an expired mute exactly once, counts what it hid, and alerts at once when still failing", async () => {
-      const org = await makeOrg("muteexpire");
-      const wf = await makeWorkflow(org, "Expiring mute");
+    it("ends an expired pause exactly once, counts what it hid, and alerts at once when still failing", async () => {
+      const org = await makeOrg("wfpauseexpire");
+      const wf = await makeWorkflow(org, "Expiring pause");
       await save(org, wf, {
-        mutedUntil: inHours(1),
-        muteReason: "Maintenance",
+        pausedUntil: inHours(1),
+        pauseReason: "Maintenance",
       });
       await db
         .update(workflowFailureAlertOverrides)
-        .set({ mutedAt: at(-8) })
+        .set({ pausedAt: at(-8) })
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       // Inside the org's counting window, so they would have alerted.
       await addFailures(org, wf, 4, -6);
       await runCycle();
       expect(await openIncident(wf)).toBeUndefined();
-      const muted = await settings.loadOrgSettingsView(org.orgId, org.userId);
-      expect(muted.mutedWorkflows[0]).toMatchObject({
+      const paused = await settings.loadOrgSettingsView(org.orgId, org.userId);
+      expect(paused.pausedWorkflows[0]).toMatchObject({
         failing: true,
         failedRuns: 4,
       });
 
       await db
         .update(workflowFailureAlertOverrides)
-        .set({ mutedUntil: at(-1) })
+        .set({ pausedUntil: at(-1) })
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       await runCycle();
       await runCycle();
-      const ended = await notices(org.orgId, "mute_ended");
+      const ended = await notices(org.orgId, "workflow_pause_ended");
       expect(ended).toHaveLength(1);
       expect(ended[0]?.context).toMatchObject({
         ended: "expired",
         failedRuns: 4,
         failingNow: true,
-        mutedBy: "muteexpire owner",
+        pausedBy: "pauseexpire owner",
         reason: "Maintenance",
       });
       expect(typeof ended[0]?.context?.until).toBe("string");
@@ -4762,13 +4762,13 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect((await notices(org.orgId, "alert")).length).toBeGreaterThan(0);
     });
 
-    it("counts runs as the streak does when a mute ends, and ends a deleted workflow's mute without a notice", async () => {
-      const org = await makeOrg("mutecount");
+    it("counts runs as the streak does when a pause ends, and ends a deleted workflow's pause without a notice", async () => {
+      const org = await makeOrg("wfpausecount");
       const wf = await makeWorkflow(org, "Platform error last");
-      await save(org, wf, { mutedUntil: inHours(1), muteReason: "Upgrade" });
+      await save(org, wf, { pausedUntil: inHours(1), pauseReason: "Upgrade" });
       await db
         .update(workflowFailureAlertOverrides)
-        .set({ mutedAt: at(-8) })
+        .set({ pausedAt: at(-8) })
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       await addFailures(org, wf, 3, -6);
       // KeeperHub's own error is not an attempt: the workflow is still failing.
@@ -4776,43 +4776,46 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await addRun(org, wf, "error", { at: at(-1), errorType: "system" });
       await db
         .update(workflowFailureAlertOverrides)
-        .set({ mutedUntil: at(-1) })
+        .set({ pausedUntil: at(-1) })
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       await runCycle();
-      const ended = await notices(org.orgId, "mute_ended");
+      const ended = await notices(org.orgId, "workflow_pause_ended");
       expect(ended).toHaveLength(1);
       expect(ended[0]?.context).toMatchObject({
         failedRuns: 3,
         failingNow: true,
       });
 
-      const gone = await makeOrg("mutegone");
-      const deleted = await makeWorkflow(gone, "Deleted while muted");
-      await save(gone, deleted, { mutedUntil: inHours(1), muteReason: "Old" });
+      const gone = await makeOrg("wfpausegone");
+      const deleted = await makeWorkflow(gone, "Deleted while paused");
+      await save(gone, deleted, {
+        pausedUntil: inHours(1),
+        pauseReason: "Old",
+      });
       await db
         .update(workflows)
         .set({ deletedAt: new Date() })
         .where(eq(workflows.id, deleted));
       await db
         .update(workflowFailureAlertOverrides)
-        .set({ mutedUntil: at(-1) })
+        .set({ pausedUntil: at(-1) })
         .where(eq(workflowFailureAlertOverrides.workflowId, deleted));
       await runCycle();
-      expect(await notices(gone.orgId, "mute_ended")).toHaveLength(0);
+      expect(await notices(gone.orgId, "workflow_pause_ended")).toHaveLength(0);
       const [cleared] = await db
         .select()
         .from(workflowFailureAlertOverrides)
         .where(eq(workflowFailureAlertOverrides.workflowId, deleted));
-      expect(cleared?.mutedUntil).toBeNull();
+      expect(cleared?.pausedUntil).toBeNull();
     });
 
-    it("a mute ending on a workflow whose runs are refused does not say it works", async () => {
-      const org = await makeOrg("muterefused");
-      const wf = await makeWorkflow(org, "Refused while muted");
-      await save(org, wf, { mutedUntil: inHours(1), muteReason: "Billing" });
+    it("a pause ending on a workflow whose runs are refused does not say it works", async () => {
+      const org = await makeOrg("wfpauserefused");
+      const wf = await makeWorkflow(org, "Refused while paused");
+      await save(org, wf, { pausedUntil: inHours(1), pauseReason: "Billing" });
       await db
         .update(workflowFailureAlertOverrides)
-        .set({ mutedAt: at(-8) })
+        .set({ pausedAt: at(-8) })
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       await addFailures(org, wf, 2, -6);
       const startedAt = at(-1);
@@ -4832,35 +4835,38 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       });
       await db
         .update(workflowFailureAlertOverrides)
-        .set({ mutedUntil: at(-1) })
+        .set({ pausedUntil: at(-1) })
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       await runCycle();
-      const ended = await notices(org.orgId, "mute_ended");
+      const ended = await notices(org.orgId, "workflow_pause_ended");
       expect(ended).toHaveLength(1);
       expect(ended[0]?.context).toMatchObject({ failingNow: true });
     });
 
-    it("ends an until-it-works mute once when it works", async () => {
-      const org = await makeOrg("muteworks");
+    it("ends an until-it-works pause once when it works", async () => {
+      const org = await makeOrg("wfpauseworks");
       const wf = await makeWorkflow(org, "Works again");
-      await save(org, wf, { muteUntilSuccess: true, muteReason: "Flaky RPC" });
+      await save(org, wf, {
+        pauseUntilSuccess: true,
+        pauseReason: "Flaky RPC",
+      });
       // Started a little earlier, so the success below clearly comes after it.
       await db
         .update(workflowFailureAlertOverrides)
-        .set({ mutedAt: at(-5) })
+        .set({ pausedAt: at(-5) })
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       await addRun(org, wf, "success");
       await runCycle();
       await addRun(org, wf, "success");
       await runCycle();
-      const ended = await notices(org.orgId, "mute_ended");
+      const ended = await notices(org.orgId, "workflow_pause_ended");
       expect(ended).toHaveLength(1);
       expect(ended[0]?.context).toMatchObject({
         ended: "worked",
         failingNow: false,
       });
       const view = await settings.loadOrgSettingsView(org.orgId, org.userId);
-      expect(view.mutedWorkflows).toEqual([]);
+      expect(view.pausedWorkflows).toEqual([]);
     });
 
     it("tells people taken off a list, and owners; adding people removes nobody", async () => {
@@ -4962,13 +4968,13 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(wfRemoved.map((d) => d.recipient)).toContain(org.email);
     });
 
-    it("keeps an expired mute for the cycle to end and announce, whatever is saved meanwhile", async () => {
-      const org = await makeOrg("muteexpiredsave");
+    it("keeps an expired pause for the cycle to end and announce, whatever is saved meanwhile", async () => {
+      const org = await makeOrg("wfpauseexpiredsave");
       const wf = await makeWorkflow(org, "Expired then saved");
-      await save(org, wf, { mutedUntil: inHours(1), muteReason: "Upgrade" });
+      await save(org, wf, { pausedUntil: inHours(1), pauseReason: "Upgrade" });
       await db
         .update(workflowFailureAlertOverrides)
-        .set({ mutedUntil: at(-1) })
+        .set({ pausedUntil: at(-1) })
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       const loaded = await workflowSettings.loadWorkflowForAlerts(wf);
       if (!loaded) {
@@ -4978,29 +4984,29 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         loaded,
         org.userId
       );
-      // Shown as not muted, so saving the view back cannot re-mute.
-      expect(view.override.mutedUntil).toBeNull();
-      expect(view.override.muteUntilSuccess).toBe(false);
+      // Shown as not paused, so saving the view back cannot re-pause.
+      expect(view.override.pausedUntil).toBeNull();
+      expect(view.override.pauseUntilSuccess).toBe(false);
       const edit = await save(org, wf, { threshold: 4 });
-      expect(edit.muteChange).toBeNull();
+      expect(edit.pauseChange).toBeNull();
       await runCycle();
-      expect(await notices(org.orgId, "mute_ended")).toHaveLength(1);
+      expect(await notices(org.orgId, "workflow_pause_ended")).toHaveLength(1);
     });
 
-    it("sends a reminder at once when a mute ends on an incident still open from before it", async () => {
-      const org = await makeOrg("mutereminder");
-      const wf = await makeWorkflow(org, "Muted after its alert");
+    it("sends a reminder at once when a pause ends on an incident still open from before it", async () => {
+      const org = await makeOrg("wfpausereminder");
+      const wf = await makeWorkflow(org, "Paused after its alert");
       await addRun(org, wf, "success", { at: at(-120) });
       await addFailures(org, wf, 3);
       await runCycle();
       expect(await openIncident(wf)).toBeDefined();
-      await save(org, wf, { mutedUntil: inHours(1), muteReason: "Looking" });
+      await save(org, wf, { pausedUntil: inHours(1), pauseReason: "Looking" });
       await addFailures(org, wf, 2, -2);
       await runCycle();
       const before = (await notices(org.orgId, "reminder")).length;
       await db
         .update(workflowFailureAlertOverrides)
-        .set({ mutedUntil: at(-1) })
+        .set({ pausedUntil: at(-1) })
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       await runCycle();
       await runCycle();
@@ -5009,36 +5015,36 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       );
     });
 
-    it("ends an until-it-works mute only on a success after it began", async () => {
-      const org = await makeOrg("muteearly");
+    it("ends an until-it-works pause only on a success after it began", async () => {
+      const org = await makeOrg("wfpauseearly");
       const wf = await makeWorkflow(org, "Old success");
       await addRun(org, wf, "success", { at: at(-30) });
-      await save(org, wf, { muteUntilSuccess: true, muteReason: "Watching" });
+      await save(org, wf, { pauseUntilSuccess: true, pauseReason: "Watching" });
       // Started a little earlier, so the success below clearly comes after it.
       await db
         .update(workflowFailureAlertOverrides)
-        .set({ mutedAt: at(-5) })
+        .set({ pausedAt: at(-5) })
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       await runCycle();
-      expect(await notices(org.orgId, "mute_ended")).toHaveLength(0);
+      expect(await notices(org.orgId, "workflow_pause_ended")).toHaveLength(0);
       await addRun(org, wf, "success");
       await runCycle();
-      expect(await notices(org.orgId, "mute_ended")).toHaveLength(1);
+      expect(await notices(org.orgId, "workflow_pause_ended")).toHaveLength(1);
     });
 
-    it("refuses a seventh mute change in an hour, and announces a reason-only change", async () => {
-      const org = await makeOrg("mutelimit");
+    it("refuses a seventh pause change in an hour, and announces a reason-only change", async () => {
+      const org = await makeOrg("wfpauselimit");
       const wf = await makeWorkflow(org, "Toggled");
       const until = inHours(3);
-      await save(org, wf, { mutedUntil: until, muteReason: "First reason" });
+      await save(org, wf, { pausedUntil: until, pauseReason: "First reason" });
       const reworded = await save(org, wf, {
-        mutedUntil: until,
-        muteReason: "Second reason",
+        pausedUntil: until,
+        pauseReason: "Second reason",
       });
-      expect(reworded.muteChange).toBe("changed");
+      expect(reworded.pauseChange).toBe("changed");
       for (const i of [1, 2]) {
         await save(org, wf, {});
-        await save(org, wf, { mutedUntil: until, muteReason: `Again ${i}` });
+        await save(org, wf, { pausedUntil: until, pauseReason: `Again ${i}` });
       }
       const tooMany = await settingsError(() => save(org, wf, {}));
       expect(tooMany.status).toBe(429);
@@ -5066,22 +5072,22 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await save(
         org,
         wf,
-        { mutedUntil: inHours(2), muteReason: "Mine" },
+        { pausedUntil: inHours(2), pauseReason: "Mine" },
         adminA.id
       );
-      const told = (await notices(org.orgId, "workflow_muted")).map(
+      const told = (await notices(org.orgId, "workflow_paused")).map(
         (d) => d.recipient
       );
       expect(told).toContain(adminB.email);
     });
 
-    it("lists mute notices in Sent alerts and finds a workflow by id or its current name", async () => {
+    it("lists pause notices in Sent alerts and finds a workflow by id or its current name", async () => {
       const org = await makeOrg("wfilter");
       const wf = await makeWorkflow(org, "Old name");
       await addRun(org, wf, "success", { at: at(-120) });
       await addFailures(org, wf, 3);
       await runCycle();
-      await save(org, wf, { mutedUntil: inHours(2), muteReason: "Checking" });
+      await save(org, wf, { pausedUntil: inHours(2), pauseReason: "Checking" });
       await db
         .update(workflows)
         .set({ name: wfName("Brand new name") })
@@ -5096,25 +5102,25 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         ).entries.map((e) => e.kind);
       const byName = await kinds({ workflow: "brand new" });
       expect(byName).toContain("alert");
-      expect(byName).toContain("workflow_muted");
+      expect(byName).toContain("workflow_paused");
       expect(await kinds({ workflow: wf })).toEqual(byName);
       expect(await kinds({ workflow: "Old name" })).toEqual([]);
-      const muted = (
+      const paused = (
         await settings.loadHistory(org.orgId, {
           page: 1,
-          kind: "workflow_muted",
+          kind: "workflow_paused",
         })
       ).entries[0];
-      expect(muted?.by).toBe("wfilter owner");
-      expect(muted?.byAccount).toBe(org.email);
-      expect(muted?.note).toBe("Reason: Checking");
+      expect(paused?.by).toBe("wfilter owner");
+      expect(paused?.byAccount).toBe(org.email);
+      expect(paused?.note).toBe("Reason: Checking");
       // The end time goes to the page as a timestamp, shown in the viewer's time.
-      expect(muted?.muteUntil?.at).toBeTruthy();
-      expect(muted?.workflows[0]?.id).toBe(wf);
+      expect(paused?.pauseUntil?.at).toBeTruthy();
+      expect(paused?.workflows[0]?.id).toBe(wf);
       // Shown by default with the alerts, and under People's actions.
-      expect(await kinds({ scope: "alerts" })).toContain("workflow_muted");
+      expect(await kinds({ scope: "alerts" })).toContain("workflow_paused");
       const people = await kinds({ scope: "people" });
-      expect(people).toContain("workflow_muted");
+      expect(people).toContain("workflow_paused");
       expect(people).not.toContain("alert");
     });
   });

@@ -3,7 +3,7 @@ import {
   type HistoryEntry,
   historyBy,
   historyNote,
-  muteUntilOf,
+  pauseUntilOf,
 } from "@/lib/notifications/failure-alerts/view-types";
 
 // Sent alerts rows, one per delivery. Pure for testing; the SQL is in history-rows.ts.
@@ -89,7 +89,7 @@ function rowWorkflows(
   if (row.workflowId && row.workflowName) {
     return [{ id: row.workflowId, name: row.workflowName }];
   }
-  // Mute and removal notices name their workflow in their context.
+  // Pause and removal notices name their workflow in their context.
   const context = row.context ?? {};
   if (
     typeof context.workflowId === "string" &&
@@ -126,6 +126,6 @@ export function toHistoryEntry(
     // Filled in by loadHistory, which looks the account up.
     byAccount: null,
     workflows: rowWorkflows(row, groupedNames),
-    muteUntil: muteUntilOf(row.context, row.kind),
+    pauseUntil: pauseUntilOf(row.context, row.kind),
   };
 }
