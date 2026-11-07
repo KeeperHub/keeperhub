@@ -15,6 +15,7 @@ import {
 } from "@/lib/notifications/failure-alerts/constants";
 import {
   CHANGE_PAUSE,
+  ORG_PAUSE_SCOPE,
   PAUSE_ALERTS,
   PAUSE_FOR,
   PAUSE_MAX,
@@ -22,6 +23,7 @@ import {
   PAUSE_UNTIL,
   PAUSED,
   pausedBy,
+  reasonSentence,
 } from "@/lib/notifications/failure-alerts/pause-copy";
 import {
   type OrgSettingsView,
@@ -156,7 +158,7 @@ export function AlertsStateBody({
       </p>
       <p className="text-sm">
         <TextWithEmails text={pauseAuthor(pause)} />
-        {pause.reason ? `: ${pause.reason}` : ""}.{" "}
+        {reasonSentence(pause.reason)}.{" "}
         <span className="text-muted-foreground">
           {orgPauseEffect(disablingWorkflows)}
         </span>
@@ -249,7 +251,8 @@ export function PauseAlertsForm({
       <div className="space-y-1">
         <h2 className="font-semibold text-sm">{PAUSE_ALERTS}</h2>
         <p className="text-muted-foreground text-xs">
-          For maintenance. {PAUSE_MAX} {orgPauseEffect(disablingWorkflows)}
+          For maintenance. {ORG_PAUSE_SCOPE} {PAUSE_MAX}{" "}
+          {orgPauseEffect(disablingWorkflows)}
         </p>
       </div>
       <div className="space-y-2">

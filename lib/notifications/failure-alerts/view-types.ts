@@ -327,13 +327,14 @@ export const FAILURE_ALERT_KIND_LABEL: Record<FailureAlertMessageKind, string> =
     recovery: "Recovered",
     channel_stopped: "Method stopped working",
     launch_notice: "Alerts turned on",
+    // The five pause kinds side by side, so the What filter lists them together.
     alerts_paused: PAUSE_KIND_LABEL.orgPaused,
     alerts_resumed: PAUSE_KIND_LABEL.orgResumed,
-    cap_warning: "Email limit warning",
-    test: "Test",
     workflow_alerts_paused: PAUSE_KIND_LABEL.workflowPaused,
     workflow_alerts_resumed: PAUSE_KIND_LABEL.workflowResumed,
     workflow_alerts_pause_ended: PAUSE_KIND_LABEL.workflowEnded,
+    cap_warning: "Email limit warning",
+    test: "Test",
     recipients_removed: "Removed from alerts",
   };
 

@@ -49,6 +49,7 @@ import {
   pauseEffect,
   pauseToast,
   RESUME_ALERTS,
+  reasonSentence,
 } from "@/lib/notifications/failure-alerts/pause-copy";
 import {
   methodText,
@@ -1111,7 +1112,7 @@ export function WorkflowFailureAlerts({
       {orgPause && (
         <Notice data-testid="workflow-failure-alerts-org-paused" tone="warning">
           {ORG_ALERTS_PAUSED} until {formatWhen(orgPause.until)}
-          {orgPause.reason ? `: ${orgPause.reason}` : ""}.
+          {reasonSentence(orgPause.reason)}.
         </Notice>
       )}
 

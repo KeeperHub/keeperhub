@@ -2,7 +2,10 @@ import { truncateAddress } from "@/lib/address-utils";
 import { walletAddressFromEmail } from "@/lib/auth/wallet-constants";
 import { actorLabel } from "@/lib/notifications/failure-alerts/actor-label";
 import { requiredManagers } from "@/lib/notifications/failure-alerts/constants";
-import { pausedBy } from "@/lib/notifications/failure-alerts/pause-copy";
+import {
+  pausedBy,
+  reasonSentence,
+} from "@/lib/notifications/failure-alerts/pause-copy";
 import { formatWhen } from "./format";
 
 /** A wallet account's login is a synthetic address; show the wallet instead. */
@@ -65,5 +68,5 @@ export function pauseSentence(m: {
   const until = m.untilItWorks
     ? `until it works again${m.pausedUntil ? ` (at most until ${formatWhen(m.pausedUntil)})` : ""}`
     : `until ${formatWhen(m.pausedUntil ?? "")}`;
-  return `${pausedBy(who, "workflow")} ${until}${m.reason ? `: ${m.reason}` : ""}`;
+  return `${pausedBy(who, "workflow")} ${until}${reasonSentence(m.reason)}`;
 }

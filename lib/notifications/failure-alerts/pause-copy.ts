@@ -5,6 +5,8 @@ import { MAX_PAUSE_DAYS } from "./constants";
 
 type PauseScope = "org" | "workflow";
 
+const TRAILING_DOTS = /\.+$/;
+
 /** What a workflow pause save did, as the server reports it. */
 export type PauseChange = "paused" | "changed" | "resumed" | null;
 
@@ -20,6 +22,8 @@ export const ALERTS_PAUSED = "Alerts paused";
 export const ORG_ALERTS_PAUSED = "Alerts are paused for the whole organization";
 export const ORG_ALERTS_RESUMED = "Alerts resumed for the whole organization";
 export const PAUSE_MAX = `A pause lasts at most ${MAX_PAUSE_DAYS} days.`;
+export const ORG_PAUSE_SCOPE =
+  "Pauses alerts for every workflow in this organization.";
 const RESUMED_TOAST =
   "This workflow's alerts resumed. Everyone who gets its alerts, and every owner, was told.";
 const PAUSED_TOAST =
@@ -73,6 +77,12 @@ export function pauseToast(
   }
   // Ended or resumed elsewhere first: the cycle or that resume tells people.
   return action === "resume" ? ALREADY_RESUMED_TOAST : PAUSE_UNCHANGED_TOAST;
+}
+
+/** " Reason: X" as its own sentence, after a sentence that has no period yet. */
+export function reasonSentence(reason: string | null | undefined): string {
+  const text = reason?.trim().replace(TRAILING_DOTS, "");
+  return text ? `. Reason: ${text}` : "";
 }
 
 /** "Paused by Dana" on the org card; "Alerts paused by Dana" beside a workflow. */
