@@ -182,7 +182,7 @@ async function latestRunFailed(workflowId: string): Promise<boolean> {
   return run?.status === "error" || run?.refused === true;
 }
 
-/** Every workflow paused right now, failing ones first, for Needs attention. */
+/** Every workflow whose alerts are paused now, failing ones first, for Needs attention. */
 export async function loadAlertsPausedWorkflows(
   organizationId: string,
   members: OrgMember[],
@@ -392,7 +392,7 @@ export async function endExpiredWorkflowPauses(now: Date): Promise<number> {
   );
 }
 
-/** An "until it works" pause on a workflow whose run `successRunId` worked after it was paused. */
+/** An "until it works" pause on a workflow whose run `successRunId` worked after its alerts were paused. */
 export async function endPauseBecauseItWorks(
   workflowId: string,
   successRunId: string,

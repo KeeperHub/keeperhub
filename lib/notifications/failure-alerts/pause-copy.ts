@@ -15,18 +15,21 @@ export const PAUSE_UNTIL = "Pause until";
 export const PAUSED = "Paused";
 export const ALERTS_PAUSED = "Alerts paused";
 export const ORG_ALERTS_PAUSED = "Alerts are paused for the whole organization";
+export const ORG_ALERTS_RESUMED = "Alerts resumed for the whole organization";
 export const PAUSE_MAX = `A pause lasts at most ${MAX_PAUSE_DAYS} days.`;
 export const RESUMED_TOAST =
   "Alerts resumed. Everyone who was told of the pause is told it ended.";
 export const PAUSED_TOAST =
-  "Alerts paused. Everyone who gets this workflow's alerts was told.";
+  "Alerts paused. Everyone who gets this workflow's alerts, and every owner, was told.";
+export const PAUSE_CHANGED_TOAST =
+  "Pause changed. Everyone who gets this workflow's alerts, and every owner, was told.";
 
-/** Headlines of the pause notices; the workflow name follows. */
+/** Headlines of a workflow's pause notices; its name follows. */
 export const PAUSE_HEADLINE = {
   paused: ALERTS_PAUSED,
-  changed: "Pause changed",
+  changed: "Alerts pause changed",
   resumed: "Alerts resumed",
-  ended: "Pause ended",
+  ended: "Alerts pause ended",
 } as const;
 
 /** History labels: each scope its own, so the What filter tells them apart. */
@@ -35,7 +38,7 @@ export const PAUSE_KIND_LABEL = {
   orgResumed: "All alerts resumed",
   workflowPaused: "Workflow alerts paused",
   workflowResumed: "Workflow alerts resumed",
-  workflowEnded: "Workflow pause ended",
+  workflowEnded: "Workflow alerts pause ended",
 } as const;
 
 /** What a pause does, without the closing period. */

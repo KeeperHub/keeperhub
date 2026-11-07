@@ -41,6 +41,7 @@ import {
   CHANGE_PAUSE,
   ORG_ALERTS_PAUSED,
   PAUSE_ALERTS,
+  PAUSE_CHANGED_TOAST,
   PAUSE_FOR,
   PAUSE_MAX,
   PAUSE_SUBMIT,
@@ -863,7 +864,7 @@ export function WorkflowFailureAlerts({
         pauseUntilSuccess: choice?.ms === "success",
         pauseReason: pauseReason.trim(),
       }),
-      PAUSED_TOAST
+      paused ? PAUSE_CHANGED_TOAST : PAUSED_TOAST
     );
     if (ok) {
       setPanel(null);

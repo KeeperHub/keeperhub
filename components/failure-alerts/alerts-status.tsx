@@ -131,15 +131,33 @@ function HealthyLine({
 
 const TRAILING_DOT = /\.$/;
 
-/** "Slack #ops stopped working: <why>." or "Telegram X is not delivering: <why>.", then what still works. */
+type BrokenState = "missing" | "stopped" | "failing";
+
+const BROKEN_WORDS: Record<BrokenState, string> = {
+  missing: "lost its connection",
+  stopped: "stopped working",
+  failing: "is not delivering",
+};
+
+function brokenState(c: {
+  connectionMissing?: boolean;
+  stoppedAt: string | null;
+}): BrokenState {
+  if (c.connectionMissing) {
+    return "missing";
+  }
+  return c.stoppedAt ? "stopped" : "failing";
+}
+
+/** "Slack #ops stopped working: <why>.", then what still works. */
 function brokenDetail(
-  broken: { label: string; stopped: boolean; why: string | null }[],
+  broken: { label: string; state: BrokenState; why: string | null }[],
   stillWorking: string[]
 ): string {
   const each = broken
     .map((b) => {
-      // Same words as the method card: stopped is set aside, not delivering still retries.
-      const state = b.stopped ? "stopped working" : "is not delivering";
+      // The method card's states, in its order: missing, stopped, not delivering.
+      const state = BROKEN_WORDS[b.state];
       return b.why
         ? `${b.label} ${state}: ${b.why.replace(TRAILING_DOT, "")}`
         : `${b.label} ${state}`;
@@ -417,7 +435,7 @@ export function AlertsHealth({
       detail: brokenDetail(
         broken.map((c) => ({
           label: label(c),
-          stopped: Boolean(c.stoppedAt),
+          state: brokenState(c),
           why: c.stoppedAt ? (c.stoppedReason ?? c.lastError) : c.lastError,
         })),
         [...(emailWorks ? ["Email"] : []), ...working.map(label)]

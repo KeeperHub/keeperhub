@@ -174,7 +174,7 @@ describe("inactiveResolution", () => {
     orgDeactivatedAt: null,
   };
 
-  it("treats a deactivated org like a paused workflow", () => {
+  it("treats a deactivated org like a turned-off workflow", () => {
     expect(inactiveResolution(live, "Schedule")).toBeNull();
     expect(
       inactiveResolution({ ...live, orgDeactivatedAt: now }, "Schedule")

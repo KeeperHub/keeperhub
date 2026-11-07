@@ -17,6 +17,7 @@ import {
 } from "./constants";
 import {
   ORG_ALERTS_PAUSED,
+  ORG_ALERTS_RESUMED,
   PAUSE_HEADLINE,
   pauseEffect,
   RESUME_ALERTS,
@@ -1251,7 +1252,7 @@ function renderOrgPause(
   const headlineParts = [
     paused
       ? `${ORG_ALERTS_PAUSED} until ${formatUtc(input.until)}`
-      : PAUSE_HEADLINE.resumed,
+      : ORG_ALERTS_RESUMED,
   ];
   const headline = plain(headlineParts);
   let detailParts: ChatPart[];
