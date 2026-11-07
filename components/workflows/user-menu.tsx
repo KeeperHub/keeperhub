@@ -120,7 +120,7 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
   };
   const [orgModalOpen, setOrgModalOpen] = useState(false);
   const { organization } = useOrganization();
-  const { isOwner } = useActiveMember();
+  const { isOwner, isViewer } = useActiveMember();
   const router = useRouter();
   const expandLauncher = useSetAtom(gettingStartedOpenAtom);
   const launcherDocked = useAtomValue(gettingStartedDockedAtom);
@@ -271,7 +271,7 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
             </DropdownMenuItem>
             <DropdownMenuSeparator />
           </div>
-          {showGettingStarted && (
+          {showGettingStarted && !isViewer && (
             <>
               <DropdownMenuItem onClick={openGettingStarted}>
                 <Rocket className="size-4" />

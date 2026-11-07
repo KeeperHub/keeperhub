@@ -38,9 +38,11 @@ vi.mock("@/lib/middleware/require-scope", () => ({
 }));
 
 vi.mock("@/lib/workflow/access", () => ({
-  getWorkflowAccess: vi
-    .fn()
-    .mockResolvedValue({ hasFullAccess: true, isDeleted: false }),
+  getWorkflowAccess: vi.fn().mockResolvedValue({
+    hasFullAccess: true,
+    canEdit: true,
+    isDeleted: false,
+  }),
 }));
 
 import { workflowExecutionLogs, workflowExecutions } from "@/lib/db/schema";

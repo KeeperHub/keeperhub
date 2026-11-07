@@ -14,7 +14,8 @@ import {
   getScopePolicy,
   getScopePolicyForMint,
 } from "@/lib/mcp/scope-policy";
-import { isUserMemberOfOrganization } from "@/lib/workflow/access";
+import { isViewerRole } from "@/lib/organization/role-label";
+import { getActiveMemberRole } from "@/lib/workflow/access";
 
 export type OAuthTokenPayload = {
   sub: string;
@@ -267,17 +268,27 @@ export async function authenticateOAuthToken(
   // current membership on every use so a token keeps no authority after the
   // user is removed from (or leaves) the organization.
   //
-  // Note: isUserMemberOfOrganization joins on users.deactivatedAt IS NULL, so
+  // Note: getActiveMemberRole joins on users.deactivatedAt IS NULL, so
   // this check also rejects a deactivated user. The explicit deactivation
   // guard above is therefore retained for its security telemetry (the Sentry
   // captureMessage / console.warn), not for access control - it surfaces the
   // anomaly that this membership check would otherwise reject silently.
-  const isMember = await isUserMemberOfOrganization(payload.sub, payload.org);
-  if (!isMember) {
+  const role = await getActiveMemberRole(payload.sub, payload.org);
+  if (role === null) {
     return {
       authenticated: false,
       error: "User is no longer a member of this organization",
       statusCode: 401,
+    };
+  }
+
+  // Viewers have UI-only access, so a token issued before a downgrade to
+  // viewer stops working as soon as the role changes.
+  if (isViewerRole(role)) {
+    return {
+      authenticated: false,
+      error: "User has view-only access to this organization",
+      statusCode: 403,
     };
   }
 

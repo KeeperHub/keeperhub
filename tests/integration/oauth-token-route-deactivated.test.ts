@@ -36,6 +36,8 @@ vi.mock("@/lib/mcp/oauth-auth", () => ({
 
 vi.mock("@/lib/workflow/access", () => ({
   isUserMemberOfOrganization: mockIsMember,
+  getActiveMemberRole: async (...args: unknown[]) =>
+    (await mockIsMember(...args)) ? "member" : null,
 }));
 
 vi.mock("@/lib/mcp/oauth-store", () => ({

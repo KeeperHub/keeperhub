@@ -16,7 +16,7 @@ import { useSettingsContext } from "./settings-context";
 import { TableSkeleton } from "./skeletons";
 
 export function ConnectionsSection(): React.ReactElement {
-  const { refreshAll } = useSettingsContext();
+  const { canEdit, refreshAll } = useSettingsContext();
   const [filter, setFilter] = useState("");
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<Integration | null>(null);
@@ -27,16 +27,18 @@ export function ConnectionsSection(): React.ReactElement {
     <>
       <SectionHeader
         action={
-          <Button onClick={() => setAdding((v) => !v)}>
-            <Plus className="size-4" />
-            Add connection
-          </Button>
+          canEdit ? (
+            <Button onClick={() => setAdding((v) => !v)}>
+              <Plus className="size-4" />
+              Add connection
+            </Button>
+          ) : undefined
         }
         description="Credentials your workflows reuse: PagerDuty, Discord, Slack, Telegram, Safe and databases."
         title="Connections"
       />
 
-      {adding && (
+      {canEdit && adding && (
         <AddConnectionPanel
           onDone={() => {
             setAdding(false);
@@ -45,7 +47,7 @@ export function ConnectionsSection(): React.ReactElement {
         />
       )}
 
-      {editing && (
+      {canEdit && editing && (
         <SettingsCard
           description="Update the credentials KeeperHub uses for this service."
           title={`Edit ${editing.name}`}
@@ -89,7 +91,7 @@ export function ConnectionsSection(): React.ReactElement {
         )}
         {!loading && connections.length > 0 && (
           <ConnectionsTable
-            canManage
+            canManage={canEdit}
             connections={connections}
             onEdit={setEditing}
             onRemove={remove}

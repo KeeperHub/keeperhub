@@ -12,11 +12,13 @@ const {
   mockGateCountry,
   mockResolveDevice,
   mockReadDeviceCookie,
+  mockIsViewerForRequest,
 } = vi.hoisted(() => ({
   mockGetSession: vi.fn(),
   mockGateCountry: vi.fn(),
   mockResolveDevice: vi.fn(),
   mockReadDeviceCookie: vi.fn(),
+  mockIsViewerForRequest: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -37,6 +39,9 @@ vi.mock("@/lib/security/device-trust", () => ({
 }));
 vi.mock("@/lib/device-cookie", () => ({
   readDeviceCookie: mockReadDeviceCookie,
+}));
+vi.mock("@/lib/security/viewer-gate", () => ({
+  isViewerForRequest: mockIsViewerForRequest,
 }));
 
 import { proxy } from "@/proxy";
@@ -60,6 +65,8 @@ beforeEach(() => {
   mockResolveDevice.mockResolvedValue(null);
   mockReadDeviceCookie.mockReset();
   mockReadDeviceCookie.mockReturnValue(null);
+  mockIsViewerForRequest.mockReset();
+  mockIsViewerForRequest.mockResolvedValue(false);
 });
 
 describe("CSRF proxy", () => {
@@ -878,5 +885,80 @@ describe("markdown content negotiation", () => {
     expect(typeof freshProxy).toBe("function");
     const { PUBLIC_PAGE_PATHS } = await import("@/lib/site/content");
     expect(PUBLIC_PAGE_PATHS).not.toContain("/terms");
+  });
+});
+
+describe("Viewer read-only gate", () => {
+  const headers = {
+    cookie: "better-auth.session_token=tok",
+    origin: "http://localhost:3000",
+  };
+
+  beforeEach(() => {
+    mockGetSession.mockReset();
+    mockGetSession.mockResolvedValue({
+      user: { id: "u1", twoFactorEnabled: true },
+      session: { requiresMfa: false, activeOrganizationId: "org-1" },
+    });
+  });
+
+  it("blocks a viewer's write with 403 viewer_read_only", async () => {
+    mockIsViewerForRequest.mockResolvedValue(true);
+    const res = await proxy(
+      make("/api/workflows/create", { method: "POST", headers })
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: "viewer_read_only" });
+    expect(mockIsViewerForRequest).toHaveBeenCalledWith(
+      expect.anything(),
+      "u1",
+      "org-1"
+    );
+    // The MFA gate's session lookup is reused rather than repeated.
+    expect(mockGetSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks a viewer approving a CLI device login", async () => {
+    mockIsViewerForRequest.mockResolvedValue(true);
+    const res = await proxy(
+      make("/api/auth/device/approve", { method: "POST", headers })
+    );
+    expect(res.status).toBe(403);
+    // /api/auth/ skips the MFA gate, so the viewer gate looks the session up.
+    expect(mockGetSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets a viewer read", async () => {
+    mockIsViewerForRequest.mockResolvedValue(true);
+    const res = await proxy(make("/api/workflows", { headers }));
+    expect(res.status).toBe(200);
+    expect(mockIsViewerForRequest).not.toHaveBeenCalled();
+  });
+
+  it("lets a viewer manage their own account", async () => {
+    mockIsViewerForRequest.mockResolvedValue(true);
+    const res = await proxy(
+      make("/api/user/password", { method: "POST", headers })
+    );
+    expect(res.status).toBe(200);
+    expect(mockIsViewerForRequest).not.toHaveBeenCalled();
+  });
+
+  it("lets a non-viewer write", async () => {
+    const res = await proxy(
+      make("/api/workflows/create", { method: "POST", headers })
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("leaves cookieless API-key callers to their own auth", async () => {
+    const res = await proxy(
+      make("/api/workflows/create", {
+        method: "POST",
+        headers: { Authorization: "Bearer kh_test" },
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(mockIsViewerForRequest).not.toHaveBeenCalled();
   });
 });

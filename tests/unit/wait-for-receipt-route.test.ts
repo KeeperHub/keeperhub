@@ -60,6 +60,7 @@ describe("GET wait-for-receipt route", () => {
     });
     mockGetWorkflowAccess.mockResolvedValue({
       hasFullAccess: true,
+      canEdit: true,
       isDeleted: false,
     });
     mockFindFirst.mockResolvedValue({ id: "exec-1", workflow: { id: "wf-1" } });
@@ -138,6 +139,7 @@ describe("GET wait-for-receipt route", () => {
   it("returns 404 when the caller lacks access", async () => {
     mockGetWorkflowAccess.mockResolvedValue({
       hasFullAccess: false,
+      canEdit: false,
       isDeleted: false,
     });
 

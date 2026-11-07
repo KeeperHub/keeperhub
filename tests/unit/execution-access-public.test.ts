@@ -128,6 +128,7 @@ describe("resolveExecutionViewAccess", () => {
       isCreatorWithCurrentAccess: true,
       isSameOrg: true,
       hasFullAccess: true,
+      canEdit: true,
       isDeleted: false,
     });
 
@@ -153,6 +154,7 @@ describe("resolveExecutionViewAccess", () => {
       isCreatorWithCurrentAccess: false,
       isSameOrg: false,
       hasFullAccess: false,
+      canEdit: false,
       isDeleted: false,
     });
 
@@ -213,6 +215,7 @@ describe("resolveExecutionViewAccess", () => {
       isCreatorWithCurrentAccess: true,
       isSameOrg: true,
       hasFullAccess: true,
+      canEdit: true,
       isDeleted: false,
     });
 
@@ -264,6 +267,7 @@ describe("resolveExecutionViewAccess", () => {
       isCreatorWithCurrentAccess: true,
       isSameOrg: true,
       hasFullAccess: true,
+      canEdit: true,
       isDeleted: true,
     });
 
@@ -300,6 +304,7 @@ describe("resolveExecutionViewAccess", () => {
       isCreatorWithCurrentAccess: true,
       isSameOrg: true,
       hasFullAccess: true,
+      canEdit: true,
       isDeleted: false,
     });
 
@@ -328,6 +333,7 @@ describe("resolveExecutionViewAccess", () => {
       isCreatorWithCurrentAccess: true,
       isSameOrg: true,
       hasFullAccess: true,
+      canEdit: true,
       isDeleted: false,
     });
 
@@ -398,6 +404,7 @@ describe("resolveExecutionViewAccess", () => {
       isCreatorWithCurrentAccess: false,
       isSameOrg: false,
       hasFullAccess: false,
+      canEdit: false,
       isDeleted: false,
     });
 
@@ -433,6 +440,7 @@ describe("resolveExecutionViewAccess", () => {
       isCreatorWithCurrentAccess: false,
       isSameOrg: false,
       hasFullAccess: false,
+      canEdit: false,
       isDeleted: false,
     });
 
@@ -468,6 +476,7 @@ describe("resolveExecutionViewAccess", () => {
       isCreatorWithCurrentAccess: false,
       isSameOrg: false,
       hasFullAccess: false,
+      canEdit: false,
       isDeleted: false,
     });
 

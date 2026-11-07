@@ -46,6 +46,7 @@ import { hashWorkflowDefinition } from "@/lib/workflow/content-hash";
 import { executeWorkflowInBackground } from "@/lib/workflow/execute-in-background";
 import { loadWorkflowForExecution } from "@/lib/workflow/load-for-execution";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
+import { VIEWER_READ_ONLY_ERROR } from "@/lib/security/viewer-policy";
 type ValidateApiKeyResult = {
   valid: boolean;
   userId?: string;
@@ -242,6 +243,14 @@ export async function POST(
 
     if (!access.hasFullAccess) {
       return failResponse(workflowId, timer, HttpStatus.NOT_FOUND, "Workflow not found");
+    }
+    if (!access.canEdit) {
+      return failResponse(
+        workflowId,
+        timer,
+        HttpStatus.FORBIDDEN,
+        VIEWER_READ_ONLY_ERROR.error
+      );
     }
 
     // Verify this is a webhook-triggered workflow

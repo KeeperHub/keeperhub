@@ -41,7 +41,7 @@ The slug is used in URLs and must be unique. It should contain only lowercase le
 Organization members can invite others to join:
 
 1. Go to Settings > Organization > Users
-2. Enter the email address of the person to invite and pick a role
+2. Enter the email address of the person to invite and pick a role (choose **Viewer** for read-only access)
 3. Send the invitation
 
 The invited user will see it under Settings > Account > Profile and can accept
@@ -60,12 +60,11 @@ Under Settings > Account > Profile you can:
 
 ## Shared Workflows
 
-Workflows created within an organization are automatically shared with all members:
+Workflows created within an organization are automatically shared with everyone in it:
 
-- All members can view organization workflows
-- All members can edit organization workflows
-- All members can view run history
-- All members can enable or disable workflows
+- Everyone in the organization can view its workflows and run history
+- Members, admins, and owners can edit, run, enable, and disable workflows
+- Viewers see workflows in a read-only editor
 
 ## Leaving an Organization
 
@@ -91,8 +90,9 @@ wallet go with it, and this cannot be undone.
 
 ## Roles
 
-Organizations have three roles: owner, admin, and member. See [Access Control](/users-teams-orgs/permissions) for the full breakdown.
+Organizations have four roles: owner, admin, member, and viewer. See [Access Control](/users-teams-orgs/permissions) for the full breakdown.
 
+- **Viewers** can see everything in the organization, including workflows, run history, and settings, and change nothing.
 - **Members** collaborate on the organization's workflows: create, edit, delete, enable, disable, and view run history.
 - **Admins** can additionally create and revoke organization API keys and view the security audit trail.
 - **Owners** control the most sensitive actions: withdrawing funds from the organization wallet, exporting the wallet key, and exporting the audit trail.

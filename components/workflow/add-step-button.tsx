@@ -12,6 +12,7 @@ import { useSetAtom } from "jotai";
 import { Plus } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useCallback, useMemo } from "react";
+import { useActiveMember } from "@/lib/hooks/use-organization";
 import {
   addNodeAtom,
   autosaveAtom,
@@ -57,6 +58,7 @@ export function AddStepButton({
   const setNodes = useSetAtom(nodesAtom);
   const setActiveTab = useSetAtom(propertiesPanelActiveTabAtom);
   const setHasUnsavedChanges = useSetAtom(hasUnsavedChangesAtom);
+  const { isViewer } = useActiveMember();
   const triggerAutosave = useSetAtom(autosaveAtom);
   const showStepSettings = useShowStepSettings();
 
@@ -187,6 +189,10 @@ export function AddStepButton({
       triggerAutosave,
     ]
   );
+
+  if (isViewer) {
+    return null;
+  }
 
   // Hide the "+" button on the "done" handle once a Collect is already connected
   if (sourceHandleId === "done" && outgoingEdges.length > 0) {

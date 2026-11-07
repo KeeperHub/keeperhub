@@ -77,6 +77,8 @@ vi.mock("@sentry/nextjs", () => ({
 }));
 vi.mock("@/lib/workflow/access", () => ({
   isUserMemberOfOrganization: mockIsMember,
+  getActiveMemberRole: async (...args: unknown[]) =>
+    (await mockIsMember(...args)) ? "member" : null,
 }));
 vi.mock("@/lib/auth", () => ({
   auth: {

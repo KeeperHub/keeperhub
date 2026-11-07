@@ -52,6 +52,7 @@ vi.mock("@/lib/auth-deactivation-guard", () => ({
 
 vi.mock("@/lib/workflow/access", () => ({
   isUserMemberOfOrganization: vi.fn(async () => true),
+  getActiveMemberRole: vi.fn(async () => "member"),
 }));
 
 import { POST } from "@/app/api/oauth/token/route";

@@ -166,3 +166,41 @@ describe("authenticateApiKey -- deactivated creator handling", () => {
     expect(mockSelectLimit).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("authenticateApiKey -- viewer creator handling", () => {
+  it("rejects a key whose creator is now a viewer in the org", async () => {
+    mockSelectLimit.mockResolvedValue([
+      {
+        id: "key-1",
+        organizationId: "org-1",
+        createdBy: "user-1",
+        creatorDeactivatedAt: null,
+        creatorMemberId: "member-1",
+        creatorRole: "viewer",
+      },
+    ]);
+
+    const result = await authenticateApiKey(buildRequest());
+
+    expect(result.authenticated).toBe(false);
+    expect(result.statusCode).toBe(403);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("authenticates a key whose creator is a member", async () => {
+    mockSelectLimit.mockResolvedValue([
+      {
+        id: "key-1",
+        organizationId: "org-1",
+        createdBy: "user-1",
+        creatorDeactivatedAt: null,
+        creatorMemberId: "member-1",
+        creatorRole: "member",
+      },
+    ]);
+
+    const result = await authenticateApiKey(buildRequest());
+
+    expect(result.authenticated).toBe(true);
+  });
+});

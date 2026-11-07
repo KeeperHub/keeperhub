@@ -25,6 +25,7 @@ import type { AddressBookEntry } from "@/lib/api-client";
 import { addressBookApi } from "@/lib/api-client";
 import { useSession } from "@/lib/auth-client";
 import { useDebounce } from "@/lib/hooks/use-debounce";
+import { useActiveMember } from "@/lib/hooks/use-organization";
 import { usePagination } from "@/lib/hooks/use-pagination";
 
 type AddressBookOverlayProps = {
@@ -163,6 +164,7 @@ function AddressBookSearchAndControls({
 }
 
 type AddressBookTableProps = {
+  canEdit: boolean;
   entries: AddressBookEntry[];
   deleting: string | null;
   onDelete: (entry: AddressBookEntry) => void;
@@ -171,6 +173,7 @@ type AddressBookTableProps = {
 };
 
 function AddressBookTable({
+  canEdit,
   entries,
   deleting,
   onDelete,
@@ -190,6 +193,7 @@ function AddressBookTable({
         <TableBody>
           {entries.map((entry) => (
             <AddressBookRow
+              canEdit={canEdit}
               deleting={deleting}
               entry={entry}
               key={entry.id}
@@ -290,6 +294,7 @@ function AddressBookPagination({
 export function AddressBookOverlay({ overlayId }: AddressBookOverlayProps) {
   const { push, closeAll } = useOverlay();
   const { data: session } = useSession();
+  const { isViewer } = useActiveMember();
   const [loading, setLoading] = useState(true);
   const [entries, setEntries] = useState<AddressBookEntry[]>([]);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -410,7 +415,7 @@ export function AddressBookOverlay({ overlayId }: AddressBookOverlayProps) {
   return (
     <Overlay
       actions={[
-        ...(isTemporalAccount
+        ...(isTemporalAccount || isViewer
           ? []
           : [
               {
@@ -457,6 +462,7 @@ export function AddressBookOverlay({ overlayId }: AddressBookOverlayProps) {
             ) : (
               <>
                 <AddressBookTable
+                  canEdit={!isViewer}
                   deleting={deleting}
                   entries={paginatedEntries}
                   onDelete={handleDelete}

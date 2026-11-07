@@ -45,7 +45,9 @@ vi.mock("@/lib/middleware/auth-helpers", () => ({
 }));
 
 vi.mock("@/lib/workflow/access", () => ({
-  getWorkflowAccess: vi.fn().mockResolvedValue({ hasFullAccess: true }),
+  getWorkflowAccess: vi
+    .fn()
+    .mockResolvedValue({ hasFullAccess: true, canEdit: true }),
 }));
 
 vi.mock("@/lib/utils/redact", () => ({

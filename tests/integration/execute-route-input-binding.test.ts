@@ -218,6 +218,7 @@ describe("execute route - input binding", {
       isCreatorWithCurrentAccess: false,
       isSameOrg: true,
       hasFullAccess: true,
+      canEdit: true,
       isDeleted: false,
     });
     mockGetDualAuthContext.mockResolvedValue({

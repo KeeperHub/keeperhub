@@ -1,8 +1,9 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { member } from "@/lib/db/schema";
+import type { OrgRole } from "@/lib/organization/role-label";
 
-export type OrgRole = "owner" | "admin" | "member";
+export type { OrgRole } from "@/lib/organization/role-label";
 
 /**
  * The caller's role in an organization, or null if they are not a member.

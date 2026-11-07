@@ -77,7 +77,7 @@ export async function POST(
     );
   }
 
-  if (!access.hasFullAccess) {
+  if (!access.canEdit) {
     return applyRateLimitHeaders(
       NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 }),
       rateLimit

@@ -11,6 +11,7 @@ import {
   buildPendingOauthMfaSetCookie,
   encodePendingOauthMfaCookie,
 } from "@/lib/oauth-mfa-cookie";
+import { isViewerRole } from "@/lib/organization/role-label";
 import { issueCliDeviceApiKey } from "@/lib/organization-api-key";
 import {
   buildPendingSignupSetCookie,
@@ -18,6 +19,7 @@ import {
 } from "@/lib/pending-signup-cookie";
 import { sanitizeNextPath } from "@/lib/sanitize-next-path";
 import { buildAuditMetadata } from "@/lib/security/audit-log";
+import { getOrgRole } from "@/lib/security/org-role";
 
 const handlers = toNextJsHandler(auth);
 
@@ -369,6 +371,24 @@ async function issueApiKeyForDeviceGrant(
             "No active organization for this account; cannot complete device login.",
         },
         { status: HttpStatus.INTERNAL_SERVER_ERROR }
+      );
+    }
+
+    const role = await getOrgRole(
+      sessionRow.userId,
+      sessionRow.activeOrganizationId
+    );
+    if (isViewerRole(role)) {
+      return NextResponse.json(
+        {
+          error: "access_denied",
+          error_description:
+            "Viewers have UI-only access to this organization; CLI login is not available.",
+        },
+        {
+          status: HttpStatus.FORBIDDEN,
+          headers: { "Cache-Control": "no-store" },
+        }
       );
     }
 

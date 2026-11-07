@@ -4,7 +4,11 @@ import { useAtomValue } from "jotai";
 import { Eye } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api-client";
-import { currentWorkflowIdAtom, previewVersionAtom } from "@/lib/workflow/store";
+import {
+  currentWorkflowIdAtom,
+  isWorkflowOwnerAtom,
+  previewVersionAtom,
+} from "@/lib/workflow/store";
 import { useVersionPreview } from "@/lib/workflow/use-version-preview";
 
 /**
@@ -17,6 +21,7 @@ import { useVersionPreview } from "@/lib/workflow/use-version-preview";
 export function VersionPreviewBanner(): React.ReactElement | null {
   const previewVersion = useAtomValue(previewVersionAtom);
   const workflowId = useAtomValue(currentWorkflowIdAtom);
+  const canRestore = useAtomValue(isWorkflowOwnerAtom);
   const { exitPreview, restore } = useVersionPreview();
   const [busy, setBusy] = useState(false);
   const [currentVersion, setCurrentVersion] = useState<number | null>(null);
@@ -82,7 +87,7 @@ export function VersionPreviewBanner(): React.ReactElement | null {
       >
         Exit preview
       </button>
-      {!isCurrent && (
+      {!isCurrent && canRestore && (
         <>
           <div className="h-5 w-px bg-border" />
           <button

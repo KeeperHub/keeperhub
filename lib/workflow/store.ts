@@ -124,6 +124,9 @@ export const currentWorkflowPublicTagsAtom = atom<
   Array<{ id: string; name: string; slug: string }>
 >([]);
 export const isWorkflowOwnerAtom = atom<boolean>(true); // Whether current user owns this workflow
+// The caller reads this workflow as a viewer of its organization: full read
+// access (runs, history) but no edits.
+export const isWorkflowViewerAtom = atom<boolean>(false);
 export const isWorkflowEnabled = atom<boolean>(false);
 // The toolbar's Enable switch handler (validation, sign-in prompt, API call),
 // published for the Configuration sheet's switch so it always acts on the
@@ -681,6 +684,7 @@ export const resetWorkflowStateForOrgSwitchAtom = atom(null, (_get, set) => {
   set(currentWorkflowVisibilityAtom, "private");
   set(currentWorkflowPublicTagsAtom, []);
   set(isWorkflowOwnerAtom, true);
+  set(isWorkflowViewerAtom, false);
   set(isWorkflowEnabled, false);
   set(workflowNotFoundAtom, false);
   set(currentExecutionIdAtom, null);

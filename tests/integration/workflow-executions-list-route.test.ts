@@ -187,6 +187,7 @@ describe("GET /api/workflows/[workflowId]/executions", () => {
     mockFindFirst.mockResolvedValue({ id: WORKFLOW_ID, deletedAt: null });
     mockGetWorkflowAccess.mockResolvedValue({
       hasFullAccess: true,
+      canEdit: true,
       isDeleted: false,
     });
     mockSelect.mockImplementation(selectChain);
@@ -383,6 +384,7 @@ describe("GET /api/workflows/[workflowId]/executions", () => {
     it("applies the same 404 as the full view when access is refused", async () => {
       mockGetWorkflowAccess.mockResolvedValue({
         hasFullAccess: false,
+        canEdit: false,
         isDeleted: false,
       });
       const response = await call("?view=summary");
@@ -393,6 +395,7 @@ describe("GET /api/workflows/[workflowId]/executions", () => {
     it("applies the same 404 as the full view when the workflow is soft-deleted", async () => {
       mockGetWorkflowAccess.mockResolvedValue({
         hasFullAccess: true,
+        canEdit: true,
         isDeleted: true,
       });
       const response = await call("?view=summary");

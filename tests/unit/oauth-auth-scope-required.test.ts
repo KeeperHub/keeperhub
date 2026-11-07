@@ -41,6 +41,8 @@ vi.mock("@sentry/nextjs", () => ({
 
 vi.mock("@/lib/workflow/access", () => ({
   isUserMemberOfOrganization: mockIsMember,
+  getActiveMemberRole: async (...args: unknown[]) =>
+    (await mockIsMember(...args)) ? "member" : null,
 }));
 
 const TEST_SECRET = "test-secret-32-bytes-long-enough-for-hs256";

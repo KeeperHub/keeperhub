@@ -369,7 +369,10 @@ describe("workflow execute redispatch guard", () => {
       isAnonymous: false,
       scope: "mcp:write",
     });
-    mockGetWorkflowAccess.mockResolvedValue({ hasFullAccess: true });
+    mockGetWorkflowAccess.mockResolvedValue({
+      hasFullAccess: true,
+      canEdit: true,
+    });
 
     const response = await callExecute({ executionId: "exec_foreign" });
     const body = await response.json();
@@ -390,7 +393,10 @@ describe("workflow execute redispatch guard", () => {
       isAnonymous: false,
       scope: "mcp:write",
     });
-    mockGetWorkflowAccess.mockResolvedValue({ hasFullAccess: true });
+    mockGetWorkflowAccess.mockResolvedValue({
+      hasFullAccess: true,
+      canEdit: true,
+    });
 
     const response = await callExecute({});
     const body = await response.json();

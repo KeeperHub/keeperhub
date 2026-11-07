@@ -7,6 +7,7 @@ import { useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api-client";
 import { authClient, useSession } from "@/lib/auth-client";
+import { useActiveMember } from "@/lib/hooks/use-organization";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import {
@@ -74,6 +75,7 @@ function createDefaultNodes(): {
 export function useStartBuilding(): { startBuilding: () => Promise<void> } {
   const router = useRouter();
   const { data: session } = useSession();
+  const { isViewer } = useActiveMember();
   const setNodes = useSetAtom(nodesAtom);
   const setEdges = useSetAtom(edgesAtom);
   const setIsTransitioningFromHomepage = useSetAtom(
@@ -95,6 +97,13 @@ export function useStartBuilding(): { startBuilding: () => Promise<void> } {
   // of creating a new one. Anonymous users are limited to a single workflow.
   const startBuilding = useCallback(async () => {
     if (hasCreatedWorkflowRef.current) {
+      return;
+    }
+    if (isViewer) {
+      toast.error("Viewers cannot create workflows in this organization");
+      if (tourRequested) {
+        setTourRequested(false);
+      }
       return;
     }
     hasCreatedWorkflowRef.current = true;
@@ -139,6 +148,7 @@ export function useStartBuilding(): { startBuilding: () => Promise<void> } {
       }
     }
   }, [
+    isViewer,
     session,
     setNodes,
     setEdges,

@@ -17,6 +17,8 @@ vi.mock("@/lib/db/schema", () => ({ users: { id: "id" } }));
 vi.mock("@sentry/nextjs", () => ({ captureMessage: vi.fn() }));
 vi.mock("@/lib/workflow/access", () => ({
   isUserMemberOfOrganization: mockIsMember,
+  getActiveMemberRole: async (...args: unknown[]) =>
+    (await mockIsMember(...args)) ? "member" : null,
 }));
 vi.mock("@/lib/mcp/connections", () => ({ touchConnection: mockTouch }));
 

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { authClient } from "@/lib/auth-client";
-import { roleLabel } from "@/lib/organization/role-label";
+import { type OrgRole, roleLabel } from "@/lib/organization/role-label";
 import { useSettingsContext } from "../settings-context";
 import { cacheRead, cacheWrite } from "./settings-cache";
 
@@ -200,7 +200,7 @@ export function useOrgMembers(): OrgMembersState {
         const { error } = await authClient.organization.inviteMember({
           email: invitation.email,
           organizationId,
-          role: invitation.role as "member" | "admin" | "owner",
+          role: invitation.role as OrgRole,
         });
         if (error) {
           toast.error(error.message || "Could not resend the invitation");
