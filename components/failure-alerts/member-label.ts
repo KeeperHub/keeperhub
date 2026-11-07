@@ -56,7 +56,7 @@ export function lastRecipientNote(onlyOne: boolean): string {
     : "An owner or admin who can get email must always get alerts. Tick another one first.";
 }
 
-/** "Paused by Dana (dana@x.com) until Nov 13: reason", worded the same on every surface. */
+/** "Alerts paused by Dana (dana@x.com) until Nov 13. Reason: X", worded the same on every surface. */
 export function pauseSentence(m: {
   by: string | null;
   account: string | null;

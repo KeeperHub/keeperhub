@@ -79,7 +79,7 @@ export function pauseToast(
   return action === "resume" ? ALREADY_RESUMED_TOAST : PAUSE_UNCHANGED_TOAST;
 }
 
-/** " Reason: X" as its own sentence, after a sentence that has no period yet. */
+/** ". Reason: X", ending the sentence before it; empty when there is no reason. */
 export function reasonSentence(reason: string | null | undefined): string {
   const text = reason?.trim().replace(TRAILING_DOTS, "");
   return text ? `. Reason: ${text}` : "";

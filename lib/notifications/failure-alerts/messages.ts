@@ -1263,7 +1263,7 @@ function renderOrgPause(
     detailParts = [
       ...who,
       ...(input.reason
-        ? [": ", user(input.reason.replace(TRAILING_DOTS, ""))]
+        ? [". Reason: ", user(input.reason.replace(TRAILING_DOTS, ""))]
         : []),
       `. ${orgPauseEffect(input.disablingWorkflows)}`,
     ];

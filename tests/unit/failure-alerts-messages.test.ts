@@ -225,7 +225,7 @@ describe("org pause", () => {
 
   it("says workflows set to turn off still turn off", () => {
     expect(paused(2).text).toContain(
-      "Ana paused them: Upgrade. Workflows keep running, but if one fails, no alert goes out until then. The 2 set to turn off at their limit still turn off; you are told about those when the pause ends."
+      "Ana paused them. Reason: Upgrade. Workflows keep running, but if one fails, no alert goes out until then. The 2 set to turn off at their limit still turn off; you are told about those when the pause ends."
     );
     expect(paused(1).text).toContain(
       "The 1 set to turn off at its limit still turns off; you are told about it"
@@ -468,7 +468,7 @@ describe("chat escaping", () => {
     const slack = fitChat(paused.chatVariants, "slack");
     expect(slack).not.toMatch(/<[!@]/);
     expect(slack).toContain(
-      "&lt;@U123&gt; paused them: &lt;!channel&gt; upgrade"
+      "&lt;@U123&gt; paused them. Reason: &lt;!channel&gt; upgrade"
     );
   });
 });
