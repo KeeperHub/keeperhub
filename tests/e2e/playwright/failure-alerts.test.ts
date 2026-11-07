@@ -134,7 +134,7 @@ test.describe("Failure alerts", () => {
     // Setup problems and workflow problems are two lists of the same shape.
     const setupIssues = page.getByTestId("failure-alerts-setup-issues");
     await expect(setupIssues).toBeVisible();
-    // The seeded Telegram method was paused by a failed delivery.
+    // The seeded Telegram method was stopped by a failed delivery.
     await expect(setupIssues).toContainText("1 method needs attention");
     const workflows = page.getByTestId("failure-alerts-failing");
     await expect(workflows).toContainText(fixture.failingName);
@@ -189,10 +189,10 @@ test.describe("Failure alerts", () => {
       "data-status",
       "working"
     );
-    // The seeded Telegram method was paused by a failed delivery.
+    // The seeded Telegram method was stopped by a failed delivery.
     await expect(methodCard(page, "telegram")).toHaveAttribute(
       "data-status",
-      "paused"
+      "stopped"
     );
     for (const card of await methodCards(page).all()) {
       await expect(
