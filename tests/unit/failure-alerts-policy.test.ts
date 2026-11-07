@@ -71,7 +71,7 @@ describe("mergePolicy", () => {
     expect(policy.source).toBe("custom");
   });
 
-  it("pauses the workflow only when its own override asks", () => {
+  it("turns the workflow off only when its own override asks", () => {
     expect(mergePolicy(DEFAULT_ORG_POLICY, [], null, []).disableWorkflow).toBe(
       false
     );

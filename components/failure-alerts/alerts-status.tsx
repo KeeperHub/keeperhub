@@ -149,6 +149,19 @@ function brokenState(c: {
   return c.stoppedAt ? "stopped" : "failing";
 }
 
+/** The method card's own reason; none for a lost connection, whose old errors are stale. */
+function brokenWhy(c: {
+  connectionMissing?: boolean;
+  stoppedAt: string | null;
+  stoppedReason: string | null;
+  lastError: string | null;
+}): string | null {
+  if (c.connectionMissing) {
+    return null;
+  }
+  return c.stoppedAt ? (c.stoppedReason ?? c.lastError) : c.lastError;
+}
+
 /** "Slack #ops stopped working: <why>.", then what still works. */
 function brokenDetail(
   broken: { label: string; state: BrokenState; why: string | null }[],
@@ -397,8 +410,8 @@ export function AlertsHealth({
         tone: "warning" as const,
         detail:
           w.brokenMethods === 1
-            ? "1 of its own methods stopped working"
-            : `${w.brokenMethods} of its own methods stopped working`,
+            ? "1 of its own methods needs attention"
+            : `${w.brokenMethods} of its own methods need attention`,
       })),
   ];
   const setupIssues: Issue[] = [];
@@ -436,7 +449,7 @@ export function AlertsHealth({
         broken.map((c) => ({
           label: label(c),
           state: brokenState(c),
-          why: c.stoppedAt ? (c.stoppedReason ?? c.lastError) : c.lastError,
+          why: brokenWhy(c),
         })),
         [...(emailWorks ? ["Email"] : []), ...working.map(label)]
       ),

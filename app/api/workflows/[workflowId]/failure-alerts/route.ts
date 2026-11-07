@@ -115,7 +115,7 @@ export async function PUT(
     });
 
     const view = await loadWorkflowAlertView(workflow, access.userId);
-    return NextResponse.json({ ...view, canManage: true });
+    return NextResponse.json({ ...view, canManage: true, pauseChange });
   } catch (error) {
     const handled = settingsErrorResponse(error);
     if (handled) {

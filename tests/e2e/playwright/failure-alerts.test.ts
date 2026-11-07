@@ -635,7 +635,9 @@ test.describe("Failure alerts", () => {
       .toBeNull();
   });
 
-  test("Overview resumes a paused workflow in one click", async ({ page }) => {
+  test("Overview resumes a workflow's paused alerts in one click", async ({
+    page,
+  }) => {
     const section = await openProperties(page, fixture.failingId);
     await section.getByTestId("failure-alerts-workflow-pause-open").click();
     const pause = section.getByTestId("failure-alerts-workflow-pause");

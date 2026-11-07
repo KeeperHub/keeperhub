@@ -395,7 +395,7 @@ async function refuseTooManyPauseChanges(
     );
   if (Number(row?.notices ?? 0) >= WORKFLOW_PAUSE_CHANGES_PER_HOUR) {
     throw new SettingsError(
-      `This workflow's pause changed ${WORKFLOW_PAUSE_CHANGES_PER_HOUR} times in the last hour. Try again later.`,
+      `This workflow's alerts pause changed ${WORKFLOW_PAUSE_CHANGES_PER_HOUR} times in the last hour. Try again later.`,
       429
     );
   }

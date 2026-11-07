@@ -41,15 +41,13 @@ import {
   CHANGE_PAUSE,
   ORG_ALERTS_PAUSED,
   PAUSE_ALERTS,
-  PAUSE_CHANGED_TOAST,
   PAUSE_FOR,
   PAUSE_MAX,
   PAUSE_SUBMIT,
   PAUSE_UNTIL,
-  PAUSED_TOAST,
   pauseEffect,
+  pauseToast,
   RESUME_ALERTS,
-  RESUMED_TOAST,
 } from "@/lib/notifications/failure-alerts/pause-copy";
 import {
   methodText,
@@ -776,7 +774,8 @@ export function WorkflowFailureAlerts({
   /** Queues a save; the body is built from the view as the last save left it. */
   const put = (
     body: (latest: Loaded) => Record<string, unknown>,
-    done: string | null,
+    /** The success toast, or one picked from what the server says changed. */
+    done: string | null | ((pauseChange: string | null) => string),
     options: {
       /** The draft sent; its answer resets the drafts only if still current. */
       sentKey?: string;
@@ -802,6 +801,7 @@ export function WorkflowFailureAlerts({
         });
         const data = (await res.json().catch(() => ({}))) as Loaded & {
           error?: string;
+          pauseChange?: string | null;
         };
         if (!res.ok) {
           setSaveError(refusalFrom(res.status, data.error));
@@ -819,8 +819,10 @@ export function WorkflowFailureAlerts({
           apply(data);
         }
         invalidateNotificationStatus(organization?.id);
-        if (done) {
-          toast.success(done, { id: SAVE_TOAST });
+        const message =
+          typeof done === "function" ? done(data.pauseChange ?? null) : done;
+        if (message) {
+          toast.success(message, { id: SAVE_TOAST });
         }
         return true;
       } catch {
@@ -864,7 +866,7 @@ export function WorkflowFailureAlerts({
         pauseUntilSuccess: choice?.ms === "success",
         pauseReason: pauseReason.trim(),
       }),
-      paused ? PAUSE_CHANGED_TOAST : PAUSED_TOAST
+      pauseToast
     );
     if (ok) {
       setPanel(null);
@@ -876,7 +878,7 @@ export function WorkflowFailureAlerts({
 
   const resume = async (): Promise<void> => {
     sendPendingDraft();
-    await put(storedOverride, RESUMED_TOAST);
+    await put(storedOverride, pauseToast);
   };
 
   const timeLimitValue = (): number | null => {

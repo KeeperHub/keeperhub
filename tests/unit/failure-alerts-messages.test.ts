@@ -619,6 +619,9 @@ describe("wording", () => {
     expect(messages[0]?.subject).toBe(
       "[Acme] Alerts are paused for the whole organization until 2026-10-28 16:00 UTC"
     );
+    expect(messages[1]?.subject).toBe(
+      "[Acme] Alerts resumed for the whole organization"
+    );
     expect(messages[3]?.subject).toBe(
       "[Acme] 80 of the 100 alert emails for this month are used"
     );
@@ -1324,6 +1327,25 @@ describe("typed names and reasons in notices", () => {
       "the alert goes out when the organization's alerts resume"
     );
     expect(message.text).not.toContain("so an alert follows");
+    expect(message.subject).toBe(`[Acme] Alerts pause ended: ${workflow.name}`);
+  });
+
+  it("names a changed pause as the alerts' pause, not the workflow's", () => {
+    const message = renderMessage({
+      ...org,
+      kind: "workflow_alerts_paused",
+      workflow,
+      by: "Dana",
+      byAccount: null,
+      reason: "RPC move",
+      until: new Date("2026-11-08T00:00:00Z"),
+      untilItWorks: false,
+      changed: true,
+    });
+    expect(message.subject).toBe(
+      `[Acme] Alerts pause changed: ${workflow.name}`
+    );
+    expect(message.text).toContain("while its alerts are paused");
   });
 });
 

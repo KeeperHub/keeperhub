@@ -43,7 +43,7 @@ PUT /api/workflows/{workflowId}/failure-alerts
 | `pauseUntilSuccess` | boolean | Pause until the workflow works again, at most 7 days |
 | `pauseReason` | string | Required to pause, extend or change a pause: 3 to 200 characters |
 
-Sending the pause fields unchanged keeps the pause as it is. Sending neither `pausedUntil` nor `pauseUntilSuccess` resumes.
+Sending the pause fields unchanged keeps the pause as it is. Sending neither `pausedUntil` nor `pauseUntilSuccess` resumes. The response is the same as the `GET`, plus `pauseChange`: `paused`, `changed`, `resumed`, or `null` when the pause did not change.
 
 Every pause, change to a pause and resume is announced: the people the workflow's alerts reached before the change, and every owner, get a notice by email and on the workflow's chat methods, and it is listed in the organization's sent alerts. People taken off a recipient list are told the same way. A workflow's pause can change at most 6 times an hour; more is refused with `429`.
 

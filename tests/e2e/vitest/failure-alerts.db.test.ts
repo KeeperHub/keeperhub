@@ -2013,7 +2013,9 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
   });
 
   // Steps run in order and share one org; each story has its own workflow.
-  describe("workflow auto-pause and resume", { timeout: SUITE_TIMEOUT }, () => {
+  describe("workflow turned off at the limit, then on", {
+    timeout: SUITE_TIMEOUT,
+  }, () => {
     let eta: Org;
     let wf: string;
     let lateWf: string;
@@ -2022,7 +2024,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
 
     beforeAll(async () => {
       eta = await makeOrg("eta");
-      wf = await makeWorkflow(eta, "Auto Pause Keeper");
+      wf = await makeWorkflow(eta, "Auto Off Keeper");
       await db.insert(workflowFailureAlertOverrides).values({
         workflowId: wf,
         organizationId: eta.orgId,
@@ -2041,7 +2043,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       disabledIncidentId = incident?.id;
       expect(await isEnabled(wf)).toBe(false);
       expect(incident?.workflowDisabledAt).toBeTruthy();
-      const [alert] = mailsAbout(eta, "Auto Pause Keeper");
+      const [alert] = mailsAbout(eta, "Auto Off Keeper");
       expect(alert?.subject).toMatch(DISABLED_WORDING);
     });
 
@@ -2071,11 +2073,11 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     });
 
     it("still failing after turning it back on: paused again, and told", async () => {
-      const before = mailsAbout(eta, "Auto Pause Keeper").length;
+      const before = mailsAbout(eta, "Auto Off Keeper").length;
       await addRun(eta, wf, "error", { at: at(0.2) });
       await runCycle();
       expect(await isEnabled(wf)).toBe(false);
-      const about = mailsAbout(eta, "Auto Pause Keeper");
+      const about = mailsAbout(eta, "Auto Off Keeper");
       expect(about).toHaveLength(before + 1);
       expect(about.at(-1)?.subject).toMatch(DISABLED_WORDING);
     });
@@ -2090,7 +2092,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     });
 
     it("alerts without pausing when the pause option is off", async () => {
-      lateWf = await makeWorkflow(eta, "Late Pause Keeper");
+      lateWf = await makeWorkflow(eta, "Late Off Keeper");
       for (const m of [6, 5, 4, 3, 2]) {
         await addRun(eta, lateWf, "error", { at: at(-m) });
       }
@@ -2101,7 +2103,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     });
 
     it("ticking pause after the alert pauses the still-failing workflow and says so", async () => {
-      const before = mailsAbout(eta, "Late Pause Keeper").length;
+      const before = mailsAbout(eta, "Late Off Keeper").length;
       await db.insert(workflowFailureAlertOverrides).values({
         workflowId: lateWf,
         organizationId: eta.orgId,
@@ -2110,7 +2112,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await addRun(eta, lateWf, "error", { at: at(0.4) });
       await runCycle();
       expect(await isEnabled(lateWf)).toBe(false);
-      const about = mailsAbout(eta, "Late Pause Keeper");
+      const about = mailsAbout(eta, "Late Off Keeper");
       expect(about).toHaveLength(before + 1);
       expect(about.at(-1)?.subject).toMatch(DISABLED_WORDING);
     });
@@ -2122,7 +2124,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       ).toBeTruthy();
     });
 
-    it("turned back on, then off by hand: the incident closes like any paused workflow", async () => {
+    it("turned back on, then off by hand: the incident closes like any turned-off workflow", async () => {
       await setEnabled(lateWf, false);
       await runCycle();
       expect((await incidentById(lateIncidentId))?.resolvedReason).toBe(

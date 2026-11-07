@@ -139,7 +139,7 @@ describe("alerts status when nobody can be reached", () => {
     } as OrgSettingsView);
     expect(html).toContain("Workflows that need attention (1)");
     expect(html).toContain("Vault keeper");
-    expect(html).toContain("1 of its own methods stopped working");
+    expect(html).toContain("1 of its own methods needs attention");
     expect(html).not.toContain("All healthy");
   });
 });

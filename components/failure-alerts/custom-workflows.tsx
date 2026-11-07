@@ -93,8 +93,8 @@ export function CustomWorkflowsList({
                 data-testid="failure-alerts-custom-broken"
               >
                 {w.brokenMethods === 1
-                  ? "1 of its methods stopped working"
-                  : `${w.brokenMethods} of its methods stopped working`}
+                  ? "1 of its methods needs attention"
+                  : `${w.brokenMethods} of its methods need attention`}
               </span>
             )}
           </span>

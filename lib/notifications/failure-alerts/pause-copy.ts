@@ -18,10 +18,12 @@ export const ORG_ALERTS_PAUSED = "Alerts are paused for the whole organization";
 export const ORG_ALERTS_RESUMED = "Alerts resumed for the whole organization";
 export const PAUSE_MAX = `A pause lasts at most ${MAX_PAUSE_DAYS} days.`;
 export const RESUMED_TOAST =
-  "Alerts resumed. Everyone who was told of the pause is told it ended.";
-export const PAUSED_TOAST =
+  "This workflow's alerts resumed. Everyone who gets its alerts, and every owner, was told.";
+const PAUSED_TOAST =
   "Alerts paused. Everyone who gets this workflow's alerts, and every owner, was told.";
-export const PAUSE_CHANGED_TOAST =
+const PAUSE_UNCHANGED_TOAST =
+  "Saved. The pause did not change, so nobody was told.";
+const PAUSE_CHANGED_TOAST =
   "Pause changed. Everyone who gets this workflow's alerts, and every owner, was told.";
 
 /** Headlines of a workflow's pause notices; its name follows. */
@@ -46,6 +48,17 @@ export function pauseEffect(scope: PauseScope): string {
   return scope === "org"
     ? "Workflows keep running, but if one fails, no alert goes out"
     : "This workflow keeps running, but if it fails, no alert goes out";
+}
+
+/** The toast for a saved pause, from what the server says changed. */
+export function pauseToast(change: string | null | undefined): string {
+  if (change === "paused") {
+    return PAUSED_TOAST;
+  }
+  if (change === "changed") {
+    return PAUSE_CHANGED_TOAST;
+  }
+  return change === "resumed" ? RESUMED_TOAST : PAUSE_UNCHANGED_TOAST;
 }
 
 /** "Paused by Dana" on the org card; "Alerts paused by Dana" beside a workflow. */
