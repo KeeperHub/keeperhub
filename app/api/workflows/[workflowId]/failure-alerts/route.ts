@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import type { PauseChange } from "@/lib/notifications/failure-alerts/pause-copy";
 import {
   authenticate,
   orgAccess,
@@ -18,7 +19,7 @@ import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
 const ENDPOINT = "/api/workflows/[workflowId]/failure-alerts";
 
 function pauseAction(
-  change: "paused" | "changed" | "resumed" | null
+  change: PauseChange
 ): string {
   if (change === "resumed") {
     return "workflow.failure_alerts_resumed";

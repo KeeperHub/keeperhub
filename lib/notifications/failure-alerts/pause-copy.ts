@@ -5,6 +5,9 @@ import { MAX_PAUSE_DAYS } from "./constants";
 
 type PauseScope = "org" | "workflow";
 
+/** What a workflow pause save did, as the server reports it. */
+export type PauseChange = "paused" | "changed" | "resumed" | null;
+
 export const PAUSE_ALERTS = "Pause alerts";
 export const RESUME_ALERTS = "Resume alerts";
 export const RESUMING_ALERTS = "Resuming...";
@@ -17,12 +20,13 @@ export const ALERTS_PAUSED = "Alerts paused";
 export const ORG_ALERTS_PAUSED = "Alerts are paused for the whole organization";
 export const ORG_ALERTS_RESUMED = "Alerts resumed for the whole organization";
 export const PAUSE_MAX = `A pause lasts at most ${MAX_PAUSE_DAYS} days.`;
-export const RESUMED_TOAST =
+const RESUMED_TOAST =
   "This workflow's alerts resumed. Everyone who gets its alerts, and every owner, was told.";
 const PAUSED_TOAST =
   "Alerts paused. Everyone who gets this workflow's alerts, and every owner, was told.";
 const PAUSE_UNCHANGED_TOAST =
   "Saved. The pause did not change, so nobody was told.";
+const ALREADY_RESUMED_TOAST = "This workflow's alerts were already back on.";
 const PAUSE_CHANGED_TOAST =
   "Pause changed. Everyone who gets this workflow's alerts, and every owner, was told.";
 
@@ -34,9 +38,12 @@ export const PAUSE_HEADLINE = {
   ended: "Alerts pause ended",
 } as const;
 
+/** Short org-wide pause line, for the banner on small screens and the history. */
+export const ORG_PAUSED_SHORT = "All alerts paused";
+
 /** History labels: each scope its own, so the What filter tells them apart. */
 export const PAUSE_KIND_LABEL = {
-  orgPaused: "All alerts paused",
+  orgPaused: ORG_PAUSED_SHORT,
   orgResumed: "All alerts resumed",
   workflowPaused: "Workflow alerts paused",
   workflowResumed: "Workflow alerts resumed",
@@ -50,15 +57,22 @@ export function pauseEffect(scope: PauseScope): string {
     : "This workflow keeps running, but if it fails, no alert goes out";
 }
 
-/** The toast for a saved pause, from what the server says changed. */
-export function pauseToast(change: string | null | undefined): string {
+/** The toast for a pause or resume, from what the server says changed. */
+export function pauseToast(
+  change: PauseChange | undefined,
+  action: "pause" | "resume"
+): string {
   if (change === "paused") {
     return PAUSED_TOAST;
   }
   if (change === "changed") {
     return PAUSE_CHANGED_TOAST;
   }
-  return change === "resumed" ? RESUMED_TOAST : PAUSE_UNCHANGED_TOAST;
+  if (change === "resumed") {
+    return RESUMED_TOAST;
+  }
+  // Ended or resumed elsewhere first: the cycle or that resume tells people.
+  return action === "resume" ? ALREADY_RESUMED_TOAST : PAUSE_UNCHANGED_TOAST;
 }
 
 /** "Paused by Dana" on the org card; "Alerts paused by Dana" beside a workflow. */

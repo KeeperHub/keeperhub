@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { PAYG_BLOCK_MESSAGES } from "@/lib/billing/payg/errors";
+import { pauseToast } from "@/lib/notifications/failure-alerts/pause-copy";
 import { SCHEDULE_INVALID_REFUSAL } from "@/lib/workflow/not-executable";
 
 vi.mock("server-only", () => ({}));
@@ -1399,6 +1400,20 @@ describe("daily reminder digest", () => {
     });
     expect(message.subject).toContain(
       "3 workflows need attention: 2 still failing, 1 not running"
+    );
+  });
+});
+
+describe("pause toasts", () => {
+  it("say who was told only when the server changed the pause", () => {
+    expect(pauseToast("paused", "pause")).toContain("every owner, was told");
+    expect(pauseToast("changed", "pause")).toMatch(/^Pause changed\./);
+    expect(pauseToast("resumed", "resume")).toMatch(
+      /^This workflow's alerts resumed\./
+    );
+    expect(pauseToast(null, "pause")).toContain("nobody was told");
+    expect(pauseToast(null, "resume")).toBe(
+      "This workflow's alerts were already back on."
     );
   });
 });

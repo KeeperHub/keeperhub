@@ -28,7 +28,7 @@ import {
 } from "./constants";
 import { parseEndTime } from "./end-time";
 import { nameOf } from "./messages";
-import { PAUSE_MAX } from "./pause-copy";
+import { PAUSE_MAX, type PauseChange } from "./pause-copy";
 import {
   effectiveRecipientIds,
   hasReachableManager,
@@ -310,7 +310,7 @@ function nextPause(
   userId: string,
   now: Date
 ): {
-  change: "paused" | "changed" | "resumed" | null;
+  change: PauseChange;
   fields: StoredPause;
 } {
   const wasPaused = activeWorkflowPause(stored, now);
@@ -410,7 +410,7 @@ export async function saveWorkflowOverride(params: {
 }): Promise<
   Record<string, unknown> & {
     rulesChanged: boolean;
-    pauseChange: "paused" | "changed" | "resumed" | null;
+    pauseChange: PauseChange;
     pauseBefore: StoredPause | null;
     pauseAfter: StoredPause;
   }
@@ -504,7 +504,7 @@ export async function saveWorkflowOverride(params: {
 
   // Only what the evaluator reads needs a fresh evaluation; who is told does not.
   let rulesChanged = true;
-  let pauseChange: "paused" | "changed" | "resumed" | null = null;
+  let pauseChange: PauseChange = null;
   let pauseBefore: StoredPause | null = null;
   let pauseAfter: StoredPause = {
     pausedUntil: null,

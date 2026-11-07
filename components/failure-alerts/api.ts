@@ -1,4 +1,5 @@
 import { invalidateNotificationStatus } from "@/lib/hooks/use-notifications";
+import type { PauseChange } from "@/lib/notifications/failure-alerts/pause-copy";
 import type {
   TestRequest,
   TestResult,
@@ -67,15 +68,18 @@ export async function fetchView<T>(url: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-/** Resumes a workflow from Overview, sending its saved setup back unchanged; null when done, else why not. */
+/** Resumes a workflow from Overview, sending its saved setup back unchanged; what changed, or why not. */
 export async function resumeWorkflowAlerts(
   workflowId: string
-): Promise<string | null> {
+): Promise<{ error: string } | { change: PauseChange }> {
   const url = `/api/workflows/${encodeURIComponent(workflowId)}/failure-alerts`;
   try {
     const current = await fetch(url);
     if (!current.ok) {
-      return "Could not read this workflow's alerts. Open them and resume there.";
+      return {
+        error:
+          "Could not read this workflow's alerts. Open them and resume there.",
+      };
     }
     const view = (await current.json()) as WorkflowAlertView;
     const o = view.override;
@@ -96,10 +100,17 @@ export async function resumeWorkflowAlerts(
     });
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
-      return body.error ?? "Could not resume. Open its Alerts and try there.";
+      return {
+        error: body.error ?? "Could not resume. Open its Alerts and try there.",
+      };
     }
-    return null;
+    const saved = (await res.json().catch(() => ({}))) as {
+      pauseChange?: PauseChange;
+    };
+    return { change: saved.pauseChange ?? null };
   } catch {
-    return "Could not reach KeeperHub. Check your connection and try again.";
+    return {
+      error: "Could not reach KeeperHub. Check your connection and try again.",
+    };
   }
 }

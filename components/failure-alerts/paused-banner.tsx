@@ -6,7 +6,7 @@ import { AppBannerSlot } from "@/components/app-banner-slot";
 import { NOTICE_TONE_CLASS } from "@/components/ui/notice";
 import {
   ORG_ALERTS_PAUSED,
-  PAUSE_KIND_LABEL,
+  ORG_PAUSED_SHORT,
   pauseEffect,
 } from "@/lib/notifications/failure-alerts/pause-copy";
 import { cn } from "@/lib/utils";
@@ -31,7 +31,7 @@ export function FailureAlertsPausedBanner({
         <span className="min-w-0 truncate">
           {/* Short below laptop width and on short (landscape) screens. */}
           <span className="lg:hidden [@media(max-height:500px)]:inline">
-            {PAUSE_KIND_LABEL.orgPaused} until {formatWhen(until)}.
+            {ORG_PAUSED_SHORT} until {formatWhen(until)}.
           </span>
           <span className="hidden lg:inline [@media(max-height:500px)]:hidden">
             {ORG_ALERTS_PAUSED} until {formatWhen(until)}. {pauseEffect("org")}.

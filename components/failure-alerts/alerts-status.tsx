@@ -8,8 +8,8 @@ import { timeAgo } from "@/components/settings/hub/relative-time";
 import { Button } from "@/components/ui/button";
 import { WARNING_SURFACE, WARNING_TEXT } from "@/components/ui/notice";
 import {
+  pauseToast,
   RESUME_ALERTS,
-  RESUMED_TOAST,
   RESUMING_ALERTS,
 } from "@/lib/notifications/failure-alerts/pause-copy";
 import {
@@ -257,7 +257,7 @@ function IssueSection({
   );
 }
 
-/** Resume straight from Overview; everyone who was told of the pause is told it ended. */
+/** Resume straight from Overview; the toast says who was told, from what the server did. */
 function ResumeButton({
   workflowId,
   onDone,
@@ -273,13 +273,13 @@ function ResumeButton({
       disabled={busy}
       onClick={async () => {
         setBusy(true);
-        const error = await resumeWorkflowAlerts(workflowId);
+        const result = await resumeWorkflowAlerts(workflowId);
         setBusy(false);
-        if (error) {
-          toast.error(error);
+        if ("error" in result) {
+          toast.error(result.error);
           return;
         }
-        toast.success(RESUMED_TOAST);
+        toast.success(pauseToast(result.change, "resume"));
         onDone?.();
       }}
       type="button"

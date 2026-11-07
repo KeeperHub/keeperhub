@@ -45,6 +45,7 @@ import {
   PAUSE_MAX,
   PAUSE_SUBMIT,
   PAUSE_UNTIL,
+  type PauseChange,
   pauseEffect,
   pauseToast,
   RESUME_ALERTS,
@@ -775,7 +776,7 @@ export function WorkflowFailureAlerts({
   const put = (
     body: (latest: Loaded) => Record<string, unknown>,
     /** The success toast, or one picked from what the server says changed. */
-    done: string | null | ((pauseChange: string | null) => string),
+    done: string | null | ((pauseChange: PauseChange) => string),
     options: {
       /** The draft sent; its answer resets the drafts only if still current. */
       sentKey?: string;
@@ -801,7 +802,7 @@ export function WorkflowFailureAlerts({
         });
         const data = (await res.json().catch(() => ({}))) as Loaded & {
           error?: string;
-          pauseChange?: string | null;
+          pauseChange?: PauseChange;
         };
         if (!res.ok) {
           setSaveError(refusalFrom(res.status, data.error));
@@ -866,7 +867,7 @@ export function WorkflowFailureAlerts({
         pauseUntilSuccess: choice?.ms === "success",
         pauseReason: pauseReason.trim(),
       }),
-      pauseToast
+      (change) => pauseToast(change, "pause")
     );
     if (ok) {
       setPanel(null);
@@ -878,7 +879,7 @@ export function WorkflowFailureAlerts({
 
   const resume = async (): Promise<void> => {
     sendPendingDraft();
-    await put(storedOverride, pauseToast);
+    await put(storedOverride, (change) => pauseToast(change, "resume"));
   };
 
   const timeLimitValue = (): number | null => {
