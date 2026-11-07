@@ -4711,7 +4711,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(view.alertsPausedWorkflows).toEqual([
         expect.objectContaining({
           id: wf,
-          by: "pauseannounce owner",
+          by: "wfpauseannounce owner",
           byAccount: org.email,
           reason: "Still migrating",
           failing: false,
@@ -4762,7 +4762,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         ended: "expired",
         failedRuns: 4,
         failingNow: true,
-        pausedBy: "pauseexpire owner",
+        pausedBy: "wfpauseexpire owner",
         reason: "Maintenance",
       });
       expect(typeof ended[0]?.context?.until).toBe("string");
