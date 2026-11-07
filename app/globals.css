@@ -488,28 +488,40 @@
   }
 }
 
-/* Above the editor's phone toolbar (below md), clear of the safe area */
+/* Clearances above a bar at the bottom of the editor (the phone toolbar, the
+   Use template bar), clear of the safe area: the zoom controls, and toasts
+   (and the phone AI prompt) 8px above the bar, 54px tall at its offset. */
+:root {
+  --controls-above-bottom-bar: calc(env(safe-area-inset-bottom, 0px) + 5.5rem);
+  --above-bottom-bar: calc(max(1rem, env(safe-area-inset-bottom)) + 3.875rem);
+}
+
+/* Below md the editor's toolbar is at the bottom. */
 @media (width < 48rem) {
   .workflow-controls-panel {
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 5.5rem) !important;
+    bottom: var(--controls-above-bottom-bar) !important;
   }
-  /* The AI prompt 8px above the toolbar (54px tall at the toolbar's bottom
-     offset), narrow enough to stay clear of the zoom controls at the right. */
+  /* Narrow enough to stay clear of the zoom controls at the right. */
   .workflow-prompt {
-    bottom: calc(max(1rem, env(safe-area-inset-bottom)) + 3.875rem);
+    bottom: var(--above-bottom-bar);
     max-width: calc(100% - 6rem);
   }
-  /* While the editor's toolbar is on the page, toasts sit 8px above it, not
-     on it: Sonner's offsets below 600px (full width) and from 600px. They
-     are set inline on the toaster, hence !important. */
+  /* Sonner's offsets below 600px (full width) and from 600px, set inline on
+     the toaster, hence !important. */
   body:has([data-editor-toolbar]) [data-sonner-toaster] {
-    --above-editor-toolbar: calc(
-      max(1rem, env(safe-area-inset-bottom)) +
-      3.875rem
-    );
-    --mobile-offset-bottom: var(--above-editor-toolbar) !important;
-    --offset-bottom: var(--above-editor-toolbar) !important;
+    --mobile-offset-bottom: var(--above-bottom-bar) !important;
+    --offset-bottom: var(--above-bottom-bar) !important;
   }
+}
+
+/* The Use template bar lifts the zoom controls and toasts that come near
+   its card (data-lifts-*, measured in workflow-toolbar.tsx). */
+body:has([data-lifts-controls]) .workflow-controls-panel {
+  bottom: var(--controls-above-bottom-bar) !important;
+}
+body:has([data-lifts-toasts]) [data-sonner-toaster] {
+  --mobile-offset-bottom: var(--above-bottom-bar) !important;
+  --offset-bottom: var(--above-bottom-bar) !important;
 }
 
 /* Statuspage embedded widget overrides */

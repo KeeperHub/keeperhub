@@ -279,7 +279,7 @@ select inside the panel closes only that.
 ### Known gaps
 
 - The workflow editor's own buttons do not fit a phone held upright (they run
-  off the screen), nor does Use template on someone else's public workflow.
+  off the screen).
 - On a phone turned sideways below about 700px (740px while Run shows a longer
   label) they overlap the squeezed switcher; the avatar and the nav button stay
   reachable.
