@@ -5,8 +5,8 @@ import Link from "next/link";
 import { AppBannerSlot } from "@/components/app-banner-slot";
 import { NOTICE_TONE_CLASS } from "@/components/ui/notice";
 import {
+  ORG_ALERTS_PAUSED,
   PAUSE_HEADLINE,
-  pausedFor,
   pauseEffect,
 } from "@/lib/notifications/failure-alerts/pause-copy";
 import { cn } from "@/lib/utils";
@@ -34,7 +34,7 @@ export function FailureAlertsPausedBanner({
             {PAUSE_HEADLINE.paused} until {formatWhen(until)}.
           </span>
           <span className="hidden lg:inline [@media(max-height:500px)]:hidden">
-            {pausedFor("org")} until {formatWhen(until)}. {pauseEffect("org")}.
+            {ORG_ALERTS_PAUSED} until {formatWhen(until)}. {pauseEffect("org")}.
           </span>
         </span>
         {/* Outside the truncated text, so the way to resume never gets cut. */}

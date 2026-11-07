@@ -19,7 +19,7 @@ GET /api/workflows/{workflowId}/failure-alerts
 
 Returns the organization's rules, the workflow's own settings (`override`), the settings in effect, its current failing state, and `version`, which a change must send back.
 
-While the workflow is paused, `override` carries `pausedUntil`, `pauseUntilSuccess`, `pauseReason`, `pausedBy` and `pausedByAccount`; otherwise they are `null` (`pauseUntilSuccess` is `false`).
+While the workflow's alerts are paused, `override` carries `pausedUntil`, `pauseUntilSuccess`, `pauseReason`, `pausedBy` and `pausedByAccount`; otherwise they are `null` (`pauseUntilSuccess` is `false`).
 
 `connections` lists the connections shared with the organization that a method can use. `unsharedConnections` lists your own connections that are not shared, which a method cannot use until they are.
 
@@ -133,8 +133,8 @@ Every alert, reminder, recovery and notice sent to the organization, newest firs
 | `limit` | number | Rows per page, at most 500 |
 | `workflow` | string | A workflow's exact id, or part of its current name, so alerts sent before a rename still match. At most 200 characters |
 | `workflowId` | string | One workflow's exact id |
-| `kind` | string | One message kind, such as `alert`, `reminder`, `recovery`, `workflow_paused`, `workflow_resumed`, `workflow_pause_ended` or `recipients_removed` |
-| `scope` | string | `alerts`: alerts, reminders, recoveries and notices about silencing, without pause notices or tests. `people`: what people did: pauses and resumes (of one workflow or the whole organization), removals from alerts and tests |
+| `kind` | string | One message kind, such as `alert`, `reminder`, `recovery`, `workflow_alerts_paused`, `workflow_alerts_resumed`, `workflow_alerts_pause_ended` or `recipients_removed` |
+| `scope` | string | `alerts`: alerts, reminders, recoveries and notices about silencing, without the organization-wide pause notices or tests. `people`: what people did: pauses and resumes (of one workflow or the whole organization), removals from alerts and tests |
 | `result` | string | `delivered`, `failed`, `waiting` or `withdrawn` |
 | `channel` | string | `email`, `slack`, `discord`, `telegram` or `pagerduty` |
 | `by` | string | Who caused it: a person's name, or `KeeperHub` |

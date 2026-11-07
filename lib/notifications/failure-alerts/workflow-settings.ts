@@ -28,6 +28,7 @@ import {
 } from "./constants";
 import { parseEndTime } from "./end-time";
 import { nameOf } from "./messages";
+import { PAUSE_MAX } from "./pause-copy";
 import {
   effectiveRecipientIds,
   hasReachableManager,
@@ -295,7 +296,10 @@ type StoredPause = {
 };
 
 /** A stored pause still in force; every pause has an end. */
-function activePause(stored: StoredPause | undefined, now: Date): boolean {
+function activeWorkflowPause(
+  stored: StoredPause | undefined,
+  now: Date
+): boolean {
   return Boolean(stored?.pausedUntil && stored.pausedUntil > now);
 }
 
@@ -309,7 +313,7 @@ function nextPause(
   change: "paused" | "changed" | "resumed" | null;
   fields: StoredPause;
 } {
-  const wasPaused = activePause(stored, now);
+  const wasPaused = activeWorkflowPause(stored, now);
   const paused = Boolean(sent.pausedUntil || sent.pauseUntilSuccess);
   if (!paused) {
     // An ended pause not yet announced stays put: the cycle ends it and tells everyone.
@@ -342,8 +346,8 @@ function nextPause(
     const clockAhead = sent.pausedUntil.getTime() <= cap + HOUR_MS;
     throw new SettingsError(
       clockAhead
-        ? `A pause can last at most ${MAX_PAUSE_DAYS} days, and your device's clock looks ahead of ours. Pick a shorter time.`
-        : `A pause can last at most ${MAX_PAUSE_DAYS} days.`
+        ? `${PAUSE_MAX} Your device's clock looks ahead of ours. Pick a shorter time.`
+        : PAUSE_MAX
     );
   }
   const reason = sent.pauseReason;
@@ -382,8 +386,8 @@ async function refuseTooManyPauseChanges(
       and(
         eq(failureAlertDeliveries.organizationId, organizationId),
         inArray(failureAlertDeliveries.kind, [
-          "workflow_paused",
-          "workflow_resumed",
+          "workflow_alerts_paused",
+          "workflow_alerts_resumed",
         ]),
         sql`${failureAlertDeliveries.context}->>'workflowId' = ${workflowId}`,
         gt(failureAlertDeliveries.createdAt, new Date(now.getTime() - HOUR_MS))
@@ -534,7 +538,7 @@ export async function saveWorkflowOverride(params: {
       await refuseTooManyPauseChanges(tx, organizationId, workflowId, now);
     }
     pauseChange = decided.change;
-    pauseBefore = stored && activePause(stored, now) ? stored : null;
+    pauseBefore = stored && activeWorkflowPause(stored, now) ? stored : null;
     pauseAfter = decided.fields;
 
     if (empty) {
@@ -594,7 +598,9 @@ export async function saveWorkflowOverride(params: {
         organizationId,
         workflow,
         kind:
-          decided.change === "resumed" ? "workflow_resumed" : "workflow_paused",
+          decided.change === "resumed"
+            ? "workflow_alerts_resumed"
+            : "workflow_alerts_paused",
         policy: beforePolicy,
         members,
         context:

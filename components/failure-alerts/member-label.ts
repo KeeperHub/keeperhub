@@ -65,5 +65,5 @@ export function pauseSentence(m: {
   const until = m.untilItWorks
     ? `until it works again${m.pausedUntil ? ` (at most until ${formatWhen(m.pausedUntil)})` : ""}`
     : `until ${formatWhen(m.pausedUntil ?? "")}`;
-  return `${pausedBy(who)} ${until}${m.reason ? `: ${m.reason}` : ""}`;
+  return `${pausedBy(who, "workflow")} ${until}${m.reason ? `: ${m.reason}` : ""}`;
 }

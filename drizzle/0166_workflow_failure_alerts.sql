@@ -174,7 +174,7 @@ CREATE TRIGGER queue_alert_check
 -- Sets workflow_reenabled_at on open incidents when a workflow is re-enabled by any
 -- path, so the incident stops holding it. Never blocks the Enable switch: errors
 -- are swallowed with a warning.
-CREATE OR REPLACE FUNCTION public.mark_alert_incident_resumed()
+CREATE OR REPLACE FUNCTION public.mark_alert_incident_reenabled()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
@@ -186,14 +186,14 @@ BEGIN
         AND resolved_at IS NULL
         AND workflow_disabled_at IS NOT NULL;
   EXCEPTION WHEN OTHERS THEN
-    RAISE WARNING 'mark_alert_incident_resumed failed: %', SQLERRM;
+    RAISE WARNING 'mark_alert_incident_reenabled failed: %', SQLERRM;
   END;
   RETURN NEW;
 END;
 $$;
 --> statement-breakpoint
-CREATE TRIGGER mark_alert_incident_resumed
+CREATE TRIGGER mark_alert_incident_reenabled
   AFTER UPDATE OF enabled ON workflows
   FOR EACH ROW
   WHEN (OLD.enabled = false AND NEW.enabled = true)
-  EXECUTE FUNCTION public.mark_alert_incident_resumed();
+  EXECUTE FUNCTION public.mark_alert_incident_reenabled();

@@ -108,7 +108,7 @@ vi.mock("@/lib/notifications/failure-alerts/senders", () => ({
 }));
 vi.mock("@/lib/notifications/failure-alerts/policy", () => ({
   ensureOrgSettings: vi.fn(async () => undefined),
-  isWorkflowPaused: vi.fn(() => false),
+  isWorkflowAlertsPaused: vi.fn(() => false),
   loadChannels: vi.fn(async () => []),
   loadChannelsByIds: vi.fn(async () => new Map()),
   loadEffectivePolicy: vi.fn(async () => ({

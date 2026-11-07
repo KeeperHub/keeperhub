@@ -22,6 +22,7 @@ import {
   MAX_PAUSES_PER_HOUR,
 } from "./constants";
 import { parseEndTime } from "./end-time";
+import { PAUSE_MAX } from "./pause-copy";
 import {
   ensureOrgSettings,
   loadChannels,
@@ -209,8 +210,8 @@ export async function pauseOrgAlerts(params: {
     if (until.getTime() > latest.getTime() + CLOCK_SKEW_MS) {
       throw new SettingsError(
         ongoing
-          ? `A pause can last up to 7 days in all, so this one can run until ${latest.toUTCString()} at most.`
-          : "Alerts can be paused for up to 7 days."
+          ? `${PAUSE_MAX} This one began earlier, so it can run until ${latest.toUTCString()} at most.`
+          : PAUSE_MAX
       );
     }
     if (until > latest) {

@@ -353,9 +353,9 @@ const text = (value: unknown): string | null =>
 /** A pause or removal notice from what was stored when it was queued. */
 function pauseNoticeInput(
   kind:
-    | "workflow_paused"
-    | "workflow_resumed"
-    | "workflow_pause_ended"
+    | "workflow_alerts_paused"
+    | "workflow_alerts_resumed"
+    | "workflow_alerts_pause_ended"
     | "recipients_removed",
   context: Record<string, unknown>,
   org: { orgName: string; organizationId: string; appUrl: string }
@@ -381,10 +381,10 @@ function pauseNoticeInput(
     };
   }
   const named = workflow ?? { id: "", name: "A workflow" };
-  if (kind === "workflow_resumed") {
+  if (kind === "workflow_alerts_resumed") {
     return { ...org, kind, workflow: named, by, byAccount };
   }
-  if (kind === "workflow_pause_ended") {
+  if (kind === "workflow_alerts_pause_ended") {
     return {
       ...org,
       kind,
@@ -474,9 +474,9 @@ async function renderRow(
       by: typeof context.by === "string" ? context.by : null,
     };
   } else if (
-    row.kind === "workflow_paused" ||
-    row.kind === "workflow_resumed" ||
-    row.kind === "workflow_pause_ended" ||
+    row.kind === "workflow_alerts_paused" ||
+    row.kind === "workflow_alerts_resumed" ||
+    row.kind === "workflow_alerts_pause_ended" ||
     row.kind === "recipients_removed"
   ) {
     input = pauseNoticeInput(row.kind, context, org);

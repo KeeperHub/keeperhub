@@ -79,7 +79,7 @@ import {
 } from "./view-types";
 import {
   actorOf,
-  loadPausedWorkflows,
+  loadAlertsPausedWorkflows,
   queueRemovedNotice,
 } from "./workflow-pause-notices";
 
@@ -414,7 +414,10 @@ export async function loadOrgSettingsView(
               : null,
           }
         : null,
-    pausedWorkflows: await loadPausedWorkflows(organizationId, members),
+    alertsPausedWorkflows: await loadAlertsPausedWorkflows(
+      organizationId,
+      members
+    ),
     failingNow,
     unreachable: !isReachable(
       resolveRecipientEmails(policy.recipientUserIds, members),
@@ -939,8 +942,8 @@ export type HistorySince = keyof typeof HISTORY_SINCE_MS;
 
 /** What people did: pauses (workflow and org), removals and tests. */
 export const HISTORY_PEOPLE_KINDS = [
-  "workflow_paused",
-  "workflow_resumed",
+  "workflow_alerts_paused",
+  "workflow_alerts_resumed",
   "alerts_paused",
   "alerts_resumed",
   "recipients_removed",
@@ -950,16 +953,16 @@ export const HISTORY_PEOPLE_KINDS = [
 export const HISTORY_SCOPES = ["alerts", "people"] as const;
 export type HistoryScope = (typeof HISTORY_SCOPES)[number];
 
-/** The default view of the log: real alerts and problems, not pause notices or tests. */
+/** The default view of the log: real alerts and problems, not org-wide pause notices or tests. */
 export const HISTORY_ALERT_KINDS = [
   "alert",
   "reminder",
   "recovery",
   "channel_stopped",
   "cap_warning",
-  "workflow_paused",
-  "workflow_resumed",
-  "workflow_pause_ended",
+  "workflow_alerts_paused",
+  "workflow_alerts_resumed",
+  "workflow_alerts_pause_ended",
   "recipients_removed",
 ] as const;
 

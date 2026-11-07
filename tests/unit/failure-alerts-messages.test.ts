@@ -1281,7 +1281,10 @@ describe("typed names and reasons in notices", () => {
   const hostile = "Edge\nBcc: x@evil.test ‮gnp.exe";
 
   it("keeps the subject to one line and drops bidi characters everywhere", () => {
-    for (const kind of ["workflow_paused", "workflow_resumed"] as const) {
+    for (const kind of [
+      "workflow_alerts_paused",
+      "workflow_alerts_resumed",
+    ] as const) {
       const message = renderMessage({
         ...org,
         kind,
@@ -1300,11 +1303,11 @@ describe("typed names and reasons in notices", () => {
     }
   });
 
-  it("says the alert waits for the org's pause when a pause ends while paused", () => {
+  it("says the alert waits for the org's pause when a workflow pause ends during it", () => {
     const message = renderMessage(
       {
         ...org,
-        kind: "workflow_pause_ended",
+        kind: "workflow_alerts_pause_ended",
         workflow,
         by: null,
         reason: null,

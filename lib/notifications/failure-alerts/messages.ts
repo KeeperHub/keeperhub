@@ -16,8 +16,8 @@ import {
   OUT_OF_FUNDS_THRESHOLD,
 } from "./constants";
 import {
+  ORG_ALERTS_PAUSED,
   PAUSE_HEADLINE,
-  pausedFor,
   pauseEffect,
   RESUME_ALERTS,
 } from "./pause-copy";
@@ -135,7 +135,7 @@ export type MessageInput =
     })
   | (OrgFields & { kind: "alerts_resumed"; by: string | null })
   | (OrgFields & {
-      kind: "workflow_paused";
+      kind: "workflow_alerts_paused";
       workflow: { id: string; name: string };
       by: string | null;
       byAccount: string | null;
@@ -146,13 +146,13 @@ export type MessageInput =
       changed?: boolean;
     })
   | (OrgFields & {
-      kind: "workflow_resumed";
+      kind: "workflow_alerts_resumed";
       workflow: { id: string; name: string };
       by: string | null;
       byAccount: string | null;
     })
   | (OrgFields & {
-      kind: "workflow_pause_ended";
+      kind: "workflow_alerts_pause_ended";
       workflow: { id: string; name: string };
       /** Who paused it, for the record. */
       by: string | null;
@@ -582,9 +582,9 @@ function renderCleaned(input: MessageInput, now: Date): RenderedMessage {
     case "alerts_paused":
     case "alerts_resumed":
       return renderOrgPause(input);
-    case "workflow_paused":
-    case "workflow_resumed":
-    case "workflow_pause_ended":
+    case "workflow_alerts_paused":
+    case "workflow_alerts_resumed":
+    case "workflow_alerts_pause_ended":
       return renderPauseNotice(input, now);
     case "recipients_removed":
       return renderRecipientsRemoved(input);
@@ -1250,7 +1250,7 @@ function renderOrgPause(
   const paused = input.kind === "alerts_paused";
   const headlineParts = [
     paused
-      ? `${pausedFor("org")} until ${formatUtc(input.until)}`
+      ? `${ORG_ALERTS_PAUSED} until ${formatUtc(input.until)}`
       : PAUSE_HEADLINE.resumed,
   ];
   const headline = plain(headlineParts);
@@ -1352,7 +1352,12 @@ function noticeMessage(params: {
 function renderPauseNotice(
   input: Extract<
     MessageInput,
-    { kind: "workflow_paused" | "workflow_resumed" | "workflow_pause_ended" }
+    {
+      kind:
+        | "workflow_alerts_paused"
+        | "workflow_alerts_resumed"
+        | "workflow_alerts_pause_ended";
+    }
   >,
   now: Date
 ): RenderedMessage {
@@ -1361,7 +1366,7 @@ function renderPauseNotice(
     reason ? [" Reason: ", user(reason.replace(TRAILING_DOTS, "")), "."] : [];
   let headline: string;
   let detail: (reader: "email" | "chat") => ChatPart[];
-  if (input.kind === "workflow_paused") {
+  if (input.kind === "workflow_alerts_paused") {
     const who = actorNames(input.by, input.byAccount);
     headline = `${input.changed ? PAUSE_HEADLINE.changed : PAUSE_HEADLINE.paused}: ${name}`;
     detail = (reader) => [
@@ -1370,9 +1375,9 @@ function renderPauseNotice(
       user(name),
       `${pauseUntilText(input.until, input.untilItWorks)}.`,
       ...reasonParts(input.reason),
-      ` ${pauseEffect("workflow")} while it is paused. Not expected? Press ${RESUME_ALERTS} in the workflow's Alerts panel.`,
+      ` ${pauseEffect("workflow")} while its alerts are paused. Not expected? Press ${RESUME_ALERTS} in the workflow's Alerts panel.`,
     ];
-  } else if (input.kind === "workflow_resumed") {
+  } else if (input.kind === "workflow_alerts_resumed") {
     const who = actorNames(input.by, input.byAccount);
     headline = `${PAUSE_HEADLINE.resumed}: ${name}`;
     detail = (reader) => [
@@ -1383,7 +1388,7 @@ function renderPauseNotice(
     ];
   } else {
     headline = `${PAUSE_HEADLINE.ended}: ${name}`;
-    const failed = `${input.failedRuns} run${input.failedRuns === 1 ? "" : "s"} failed while it was paused.`;
+    const failed = `${input.failedRuns} run${input.failedRuns === 1 ? "" : "s"} failed while its alerts were paused.`;
     let state = input.failingNow
       ? " It is still failing, so an alert follows."
       : " It is working now.";

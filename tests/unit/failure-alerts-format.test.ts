@@ -50,7 +50,7 @@ describe("describeRule", () => {
     );
   });
 
-  it("leaves out paused methods and names backups", () => {
+  it("leaves out stopped methods and names backups", () => {
     const text = describeRule({
       ...base,
       channels: [
@@ -142,7 +142,7 @@ describe("deliveryStatus", () => {
     ).toBe("Queued");
   });
 
-  it("shows a dropped row as not delivered, a withdrawn one paused", () => {
+  it("shows a dropped row as not delivered, a withdrawn one muted", () => {
     expect(
       deliveryStatus(
         { ...row, state: "skipped", lastError: SKIP_REASON.stale },

@@ -19,7 +19,7 @@ import {
   type OrgSettingsView,
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
-import { resumeWorkflow } from "./api";
+import { resumeWorkflowAlerts } from "./api";
 import { TextWithEmails } from "./email-text";
 import {
   failedRuns,
@@ -131,16 +131,18 @@ function HealthyLine({
 
 const TRAILING_DOT = /\.$/;
 
-/** "Slack #ops stopped working: <why>.", then what still works. */
+/** "Slack #ops stopped working: <why>." or "Telegram X is not delivering: <why>.", then what still works. */
 function brokenDetail(
-  broken: { label: string; why: string | null }[],
+  broken: { label: string; stopped: boolean; why: string | null }[],
   stillWorking: string[]
 ): string {
   const each = broken
     .map((b) => {
+      // Same words as the method card: stopped is set aside, not delivering still retries.
+      const state = b.stopped ? "stopped working" : "is not delivering";
       return b.why
-        ? `${b.label} stopped working: ${b.why.replace(TRAILING_DOT, "")}`
-        : `${b.label} stopped working`;
+        ? `${b.label} ${state}: ${b.why.replace(TRAILING_DOT, "")}`
+        : `${b.label} ${state}`;
     })
     .join(". ");
   if (stillWorking.length === 0) {
@@ -240,7 +242,7 @@ function ResumeButton({
       disabled={busy}
       onClick={async () => {
         setBusy(true);
-        const error = await resumeWorkflow(workflowId);
+        const error = await resumeWorkflowAlerts(workflowId);
         setBusy(false);
         if (error) {
           toast.error(error);
@@ -315,7 +317,7 @@ export function AlertsHealth({
     : (working[0] && label(working[0])) || "";
 
   // Every active pause shows, so silencing a workflow is never quiet.
-  const paused = data.pausedWorkflows ?? [];
+  const paused = data.alertsPausedWorkflows ?? [];
   const pausedIds = new Set(paused.map((w) => w.id));
   const pauseRow = (w: (typeof paused)[number]): AttentionRow => {
     const pauseLine = pauseSentence({
@@ -330,7 +332,7 @@ export function AlertsHealth({
     if (w.failing) {
       state =
         w.failedRuns > 0
-          ? `Still failing: ${failedRuns(w.failedRuns)} since it was paused.`
+          ? `Still failing: ${failedRuns(w.failedRuns)} since its alerts were paused.`
           : "Still failing.";
     }
     return {
@@ -351,7 +353,7 @@ export function AlertsHealth({
       action: "Open its Alerts",
     };
   };
-  // Failing first (nobody has acted), then failing while paused, then other pauses and broken own methods.
+  // Failing first (nobody has acted), then failing with alerts paused, then other pauses and broken own methods.
   const rows: AttentionRow[] = [
     ...data.failingNow
       .filter((w) => !pausedIds.has(w.workflowId))
@@ -415,6 +417,7 @@ export function AlertsHealth({
       detail: brokenDetail(
         broken.map((c) => ({
           label: label(c),
+          stopped: Boolean(c.stoppedAt),
           why: c.stoppedAt ? (c.stoppedReason ?? c.lastError) : c.lastError,
         })),
         [...(emailWorks ? ["Email"] : []), ...working.map(label)]
@@ -467,13 +470,13 @@ export function AlertsHealth({
       </div>
     ) : undefined,
     testId: pausedIds.has(row.id)
-      ? "failure-alerts-paused-workflow"
+      ? "failure-alerts-workflow-alerts-paused"
       : undefined,
   }));
 
   const workflowSection = workflowIssues.length > 0 && (
     <IssueSection
-      description="Workflows that are failing or not running, paused, or whose own methods stopped working."
+      description="Workflows that are failing or not running, have their alerts paused, or whose own methods stopped working."
       issues={workflowIssues}
       testId="failure-alerts-failing"
       title="Workflows that need attention"

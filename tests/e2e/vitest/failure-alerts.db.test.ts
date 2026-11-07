@@ -2832,7 +2832,9 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         );
       expect(restored?.stoppedAt).toBeTruthy();
       // The browser's text is not stored: it could say anything.
-      expect(restored?.stoppedReason).toBe("It was paused when it was removed");
+      expect(restored?.stoppedReason).toBe(
+        "It had stopped working when it was removed"
+      );
     });
 
     it("shows a wallet member's step-up inbox only to that member", async () => {
@@ -4615,7 +4617,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       const tooLong = await settingsError(() =>
         save(org, wf, { pausedUntil: inHours(8 * 24), pauseReason: "Upgrade" })
       );
-      expect(tooLong.message).toBe("A pause can last at most 7 days.");
+      expect(tooLong.message).toBe("A pause lasts at most 7 days.");
       // A browser clock a little ahead: "7 days" is trimmed to the cap, not refused.
       const skewed = new Date(Date.now() + 7 * 24 * 3_600_000 + 60_000);
       await save(org, wf, {
@@ -4667,8 +4669,8 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         { pausedUntil: until, pauseReason: "RPC migration" },
         admin.id
       );
-      expect(first.pauseChange).toBe("wfpaused");
-      const paused = await notices(org.orgId, "workflow_paused");
+      expect(first.pauseChange).toBe("paused");
+      const paused = await notices(org.orgId, "workflow_alerts_paused");
       expect(paused.map((d) => d.recipient).sort()).toEqual(
         [admin.email, org.email].sort()
       );
@@ -4688,7 +4690,9 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       expect(kept?.pausedByUserId).toBe(admin.id);
       expect(kept?.pauseReason).toBe("RPC migration");
-      expect(await notices(org.orgId, "workflow_paused")).toHaveLength(2);
+      expect(await notices(org.orgId, "workflow_alerts_paused")).toHaveLength(
+        2
+      );
 
       // Extending is a change: told again.
       const extended = await save(org, wf, {
@@ -4697,12 +4701,12 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         pauseReason: "Still migrating",
       });
       expect(extended.pauseChange).toBe("changed");
-      const after = await notices(org.orgId, "workflow_paused");
+      const after = await notices(org.orgId, "workflow_alerts_paused");
       expect(after).toHaveLength(4);
       expect(after.some((d) => d.context?.changed === true)).toBe(true);
 
       const view = await settings.loadOrgSettingsView(org.orgId, org.userId);
-      expect(view.pausedWorkflows).toEqual([
+      expect(view.alertsPausedWorkflows).toEqual([
         expect.objectContaining({
           id: wf,
           by: "pauseannounce owner",
@@ -4716,9 +4720,11 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       // Resume: told, and the workflow leaves the paused list.
       const resumed = await save(org, wf, { threshold: 4 });
       expect(resumed.pauseChange).toBe("resumed");
-      expect(await notices(org.orgId, "workflow_resumed")).toHaveLength(2);
+      expect(await notices(org.orgId, "workflow_alerts_resumed")).toHaveLength(
+        2
+      );
       const cleared = await settings.loadOrgSettingsView(org.orgId, org.userId);
-      expect(cleared.pausedWorkflows).toEqual([]);
+      expect(cleared.alertsPausedWorkflows).toEqual([]);
     });
 
     it("ends an expired pause exactly once, counts what it hid, and alerts at once when still failing", async () => {
@@ -4737,7 +4743,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await runCycle();
       expect(await openIncident(wf)).toBeUndefined();
       const paused = await settings.loadOrgSettingsView(org.orgId, org.userId);
-      expect(paused.pausedWorkflows[0]).toMatchObject({
+      expect(paused.alertsPausedWorkflows[0]).toMatchObject({
         failing: true,
         failedRuns: 4,
       });
@@ -4748,7 +4754,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       await runCycle();
       await runCycle();
-      const ended = await notices(org.orgId, "workflow_pause_ended");
+      const ended = await notices(org.orgId, "workflow_alerts_pause_ended");
       expect(ended).toHaveLength(1);
       expect(ended[0]?.context).toMatchObject({
         ended: "expired",
@@ -4779,7 +4785,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         .set({ pausedUntil: at(-1) })
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       await runCycle();
-      const ended = await notices(org.orgId, "workflow_pause_ended");
+      const ended = await notices(org.orgId, "workflow_alerts_pause_ended");
       expect(ended).toHaveLength(1);
       expect(ended[0]?.context).toMatchObject({
         failedRuns: 3,
@@ -4801,7 +4807,9 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         .set({ pausedUntil: at(-1) })
         .where(eq(workflowFailureAlertOverrides.workflowId, deleted));
       await runCycle();
-      expect(await notices(gone.orgId, "workflow_pause_ended")).toHaveLength(0);
+      expect(
+        await notices(gone.orgId, "workflow_alerts_pause_ended")
+      ).toHaveLength(0);
       const [cleared] = await db
         .select()
         .from(workflowFailureAlertOverrides)
@@ -4838,7 +4846,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         .set({ pausedUntil: at(-1) })
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       await runCycle();
-      const ended = await notices(org.orgId, "workflow_pause_ended");
+      const ended = await notices(org.orgId, "workflow_alerts_pause_ended");
       expect(ended).toHaveLength(1);
       expect(ended[0]?.context).toMatchObject({ failingNow: true });
     });
@@ -4859,14 +4867,14 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await runCycle();
       await addRun(org, wf, "success");
       await runCycle();
-      const ended = await notices(org.orgId, "workflow_pause_ended");
+      const ended = await notices(org.orgId, "workflow_alerts_pause_ended");
       expect(ended).toHaveLength(1);
       expect(ended[0]?.context).toMatchObject({
         ended: "worked",
         failingNow: false,
       });
       const view = await settings.loadOrgSettingsView(org.orgId, org.userId);
-      expect(view.pausedWorkflows).toEqual([]);
+      expect(view.alertsPausedWorkflows).toEqual([]);
     });
 
     it("tells people taken off a list, and owners; adding people removes nobody", async () => {
@@ -4990,7 +4998,9 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       const edit = await save(org, wf, { threshold: 4 });
       expect(edit.pauseChange).toBeNull();
       await runCycle();
-      expect(await notices(org.orgId, "workflow_pause_ended")).toHaveLength(1);
+      expect(
+        await notices(org.orgId, "workflow_alerts_pause_ended")
+      ).toHaveLength(1);
     });
 
     it("sends a reminder at once when a pause ends on an incident still open from before it", async () => {
@@ -5026,10 +5036,14 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         .set({ pausedAt: at(-5) })
         .where(eq(workflowFailureAlertOverrides.workflowId, wf));
       await runCycle();
-      expect(await notices(org.orgId, "workflow_pause_ended")).toHaveLength(0);
+      expect(
+        await notices(org.orgId, "workflow_alerts_pause_ended")
+      ).toHaveLength(0);
       await addRun(org, wf, "success");
       await runCycle();
-      expect(await notices(org.orgId, "workflow_pause_ended")).toHaveLength(1);
+      expect(
+        await notices(org.orgId, "workflow_alerts_pause_ended")
+      ).toHaveLength(1);
     });
 
     it("refuses a seventh pause change in an hour, and announces a reason-only change", async () => {
@@ -5075,7 +5089,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         { pausedUntil: inHours(2), pauseReason: "Mine" },
         adminA.id
       );
-      const told = (await notices(org.orgId, "workflow_paused")).map(
+      const told = (await notices(org.orgId, "workflow_alerts_paused")).map(
         (d) => d.recipient
       );
       expect(told).toContain(adminB.email);
@@ -5102,13 +5116,13 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         ).entries.map((e) => e.kind);
       const byName = await kinds({ workflow: "brand new" });
       expect(byName).toContain("alert");
-      expect(byName).toContain("workflow_paused");
+      expect(byName).toContain("workflow_alerts_paused");
       expect(await kinds({ workflow: wf })).toEqual(byName);
       expect(await kinds({ workflow: "Old name" })).toEqual([]);
       const paused = (
         await settings.loadHistory(org.orgId, {
           page: 1,
-          kind: "workflow_paused",
+          kind: "workflow_alerts_paused",
         })
       ).entries[0];
       expect(paused?.by).toBe("wfilter owner");
@@ -5118,9 +5132,11 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(paused?.pauseUntil?.at).toBeTruthy();
       expect(paused?.workflows[0]?.id).toBe(wf);
       // Shown by default with the alerts, and under People's actions.
-      expect(await kinds({ scope: "alerts" })).toContain("workflow_paused");
+      expect(await kinds({ scope: "alerts" })).toContain(
+        "workflow_alerts_paused"
+      );
       const people = await kinds({ scope: "people" });
-      expect(people).toContain("workflow_paused");
+      expect(people).toContain("workflow_alerts_paused");
       expect(people).not.toContain("alert");
     });
   });

@@ -1044,7 +1044,7 @@ export function OrgFailureAlertsSection({
                     workflow's Properties.
                   </p>
                   <CustomWorkflowsList
-                    paused={data.pausedWorkflows}
+                    paused={data.alertsPausedWorkflows}
                     workflows={data.customWorkflows}
                   />
                 </div>

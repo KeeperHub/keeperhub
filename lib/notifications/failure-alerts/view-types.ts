@@ -12,7 +12,7 @@ import {
   type NotExecutableReason,
   refusalCannotRun,
 } from "@/lib/workflow/not-executable";
-import { PAUSE_HEADLINE, pauseEffect } from "./pause-copy";
+import { PAUSE_KIND_LABEL, pauseEffect } from "./pause-copy";
 import { SKIP_REASON } from "./stored-reasons";
 
 export type ChannelView = {
@@ -76,7 +76,7 @@ export type OrgSettingsView = {
     customRecipients: boolean;
     customChannels: boolean;
     disableWorkflow: boolean;
-    /** Its own methods that are paused or lost their connection. */
+    /** Its own methods that stopped working or lost their connection. */
     brokenMethods: number;
   }[];
   /** Last alert of any kind delivered to anyone, for "it works" proof. */
@@ -92,7 +92,7 @@ export type OrgSettingsView = {
     byAccount: string | null;
   } | null;
   /** Every workflow whose alerts are paused right now, failing ones first. */
-  pausedWorkflows: {
+  alertsPausedWorkflows: {
     id: string;
     name: string;
     pausedUntil: string | null;
@@ -140,7 +140,7 @@ export type HistoryEntry = {
   lastError: string | null;
   /** When a queued row is next tried: later than now for a held recovery. */
   nextAttemptAt: string;
-  /** Which channel a pause notice is about, a pause's reason, or why a backup was sent. */
+  /** Which channel a stopped-method notice is about, a pause's reason, or why a backup was sent. */
   note: string | null;
   /** Who caused it: a person for a pause, resume or test, else KeeperHub. */
   by: string;
@@ -327,13 +327,13 @@ export const FAILURE_ALERT_KIND_LABEL: Record<FailureAlertMessageKind, string> =
     recovery: "Recovered",
     channel_stopped: "Method stopped working",
     launch_notice: "Alerts turned on",
-    alerts_paused: PAUSE_HEADLINE.paused,
-    alerts_resumed: PAUSE_HEADLINE.resumed,
+    alerts_paused: PAUSE_KIND_LABEL.orgPaused,
+    alerts_resumed: PAUSE_KIND_LABEL.orgResumed,
     cap_warning: "Email limit warning",
     test: "Test",
-    workflow_paused: PAUSE_HEADLINE.paused,
-    workflow_resumed: PAUSE_HEADLINE.resumed,
-    workflow_pause_ended: PAUSE_HEADLINE.ended,
+    workflow_alerts_paused: PAUSE_KIND_LABEL.workflowPaused,
+    workflow_alerts_resumed: PAUSE_KIND_LABEL.workflowResumed,
+    workflow_alerts_pause_ended: PAUSE_KIND_LABEL.workflowEnded,
     recipients_removed: "Removed from alerts",
   };
 
@@ -342,8 +342,8 @@ export const PERSON_KINDS: readonly string[] = [
   "alerts_paused",
   "alerts_resumed",
   "test",
-  "workflow_paused",
-  "workflow_resumed",
+  "workflow_alerts_paused",
+  "workflow_alerts_resumed",
   "recipients_removed",
 ];
 
@@ -364,7 +364,7 @@ export function pauseUntilOf(
   context: Record<string, unknown> | null,
   kind?: string
 ): HistoryEntry["pauseUntil"] {
-  if (kind !== "workflow_paused") {
+  if (kind !== "workflow_alerts_paused") {
     return null;
   }
   const at =
@@ -385,13 +385,13 @@ function pauseHistoryNote(
   context: Record<string, unknown> | null,
   kind?: string
 ): string | null | undefined {
-  if (kind === "workflow_paused") {
+  if (kind === "workflow_alerts_paused") {
     return reasonNote(context);
   }
-  if (kind === "workflow_resumed") {
+  if (kind === "workflow_alerts_resumed") {
     return null;
   }
-  if (kind === "workflow_pause_ended") {
+  if (kind === "workflow_alerts_pause_ended") {
     const failed =
       typeof context?.failedRuns === "number" ? context.failedRuns : 0;
     const ending =
@@ -400,8 +400,8 @@ function pauseHistoryNote(
         : "Pause ran out";
     const failures =
       failed === 0
-        ? "no failures while paused"
-        : `${failed} failure${failed === 1 ? "" : "s"} while paused`;
+        ? "no failures while its alerts were paused"
+        : `${failed} failure${failed === 1 ? "" : "s"} while its alerts were paused`;
     const reason =
       typeof context?.reason === "string" && context.reason
         ? `Reason: ${context.reason}`
@@ -416,7 +416,7 @@ function pauseHistoryNote(
   return undefined;
 }
 
-/** Which channel a pause notice is about, why a backup was sent, or a workflow turned off. */
+/** Which channel a stopped-method notice is about, why a backup was sent, or a workflow turned off. */
 export function historyNote(
   context: Record<string, unknown> | null,
   kind?: string

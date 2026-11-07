@@ -244,7 +244,10 @@ export async function loadEffectivePolicy(
 }
 
 /** Every pause has an end (at most MAX_PAUSE_DAYS); "until it works" ends sooner if it works. */
-export function isWorkflowPaused(policy: EffectivePolicy, now: Date): boolean {
+export function isWorkflowAlertsPaused(
+  policy: EffectivePolicy,
+  now: Date
+): boolean {
   return (
     policy.workflowPausedUntil !== null && policy.workflowPausedUntil > now
   );

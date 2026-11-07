@@ -366,7 +366,7 @@ test.describe("Failure alerts", () => {
 
     // The pause is never quiet: Needs attention lists it, Sent alerts logs it.
     await openAlerts(page, "overview");
-    const pausedRow = page.getByTestId("failure-alerts-paused-workflow");
+    const pausedRow = page.getByTestId("failure-alerts-workflow-alerts-paused");
     await expect(pausedRow).toContainText(fixture.failingName, FIRST_VISIT);
     await expect(pausedRow).toContainText("E2E RPC move");
     await expect(page.getByText("All healthy")).toHaveCount(0);
@@ -374,7 +374,7 @@ test.describe("Failure alerts", () => {
     await expect(
       page
         .getByTestId("failure-alert-history-row")
-        .and(page.locator('[data-kind="workflow_paused"]'))
+        .and(page.locator('[data-kind="workflow_alerts_paused"]'))
         .filter({ hasText: fixture.failingName })
     ).toHaveCount(1, SAVE_TIMEOUT);
 
@@ -468,7 +468,7 @@ test.describe("Failure alerts", () => {
     // People's actions shows the earlier pause and none of the alerts.
     await page.getByTestId("failure-alert-history-scope-people").click();
     await expect(
-      rows.and(page.locator('[data-kind="workflow_paused"]')).first()
+      rows.and(page.locator('[data-kind="workflow_alerts_paused"]')).first()
     ).toBeVisible(SAVE_TIMEOUT);
     await expect(rows.and(page.locator('[data-kind="alert"]'))).toHaveCount(0);
     await expect(rows.filter({ hasText: "Reason:" }).first()).toBeVisible();
@@ -496,7 +496,9 @@ test.describe("Failure alerts", () => {
       "No messages match these filters.",
       SAVE_TIMEOUT
     );
-    await expect(empty).toContainText("Pause notices and tests are hidden.");
+    await expect(empty).toContainText(
+      "Organization-wide pause notices and tests are hidden."
+    );
     await empty.getByRole("button", { name: "Clear filters" }).click();
     await expect(rows.first()).toBeVisible(SAVE_TIMEOUT);
 
@@ -650,7 +652,9 @@ test.describe("Failure alerts", () => {
       .toBeTruthy();
     try {
       await openAlerts(page, "overview");
-      const pausedRow = page.getByTestId("failure-alerts-paused-workflow");
+      const pausedRow = page.getByTestId(
+        "failure-alerts-workflow-alerts-paused"
+      );
       await expect(pausedRow).toContainText("E2E quick fix", FIRST_VISIT);
       await pausedRow.getByTestId("failure-alerts-overview-resume").click();
       await expect

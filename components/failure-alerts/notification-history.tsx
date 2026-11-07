@@ -763,7 +763,7 @@ export function NotificationHistory({
                 )}
                 {scope === "alerts" && !compact && (
                   <span>
-                    Pause notices and tests are hidden.{" "}
+                    Organization-wide pause notices and tests are hidden.{" "}
                     <Button
                       className="h-auto px-0 text-xs"
                       data-testid="failure-alert-history-show-everything"

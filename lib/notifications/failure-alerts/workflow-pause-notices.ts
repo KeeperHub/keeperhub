@@ -62,7 +62,10 @@ function ownerEmails(members: OrgMember[]): string[] {
 export async function queueWorkflowNotice(params: {
   organizationId: string;
   workflow: { id: string; name: string };
-  kind: "workflow_paused" | "workflow_resumed" | "workflow_pause_ended";
+  kind:
+    | "workflow_alerts_paused"
+    | "workflow_alerts_resumed"
+    | "workflow_alerts_pause_ended";
   policy: EffectivePolicy;
   members: OrgMember[];
   context: Record<string, unknown>;
@@ -180,11 +183,11 @@ async function latestRunFailed(workflowId: string): Promise<boolean> {
 }
 
 /** Every workflow paused right now, failing ones first, for Needs attention. */
-export async function loadPausedWorkflows(
+export async function loadAlertsPausedWorkflows(
   organizationId: string,
   members: OrgMember[],
   now: Date = new Date()
-): Promise<OrgSettingsView["pausedWorkflows"]> {
+): Promise<OrgSettingsView["alertsPausedWorkflows"]> {
   const rows = await db
     .select({
       id: workflows.id,
@@ -339,7 +342,7 @@ async function tellPauseEnded(
     await queueWorkflowNotice({
       organizationId: pause.organizationId,
       workflow: { id: pause.workflowId, name: pause.name },
-      kind: "workflow_pause_ended",
+      kind: "workflow_alerts_pause_ended",
       policy,
       members,
       context: {

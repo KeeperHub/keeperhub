@@ -68,7 +68,7 @@ export async function fetchView<T>(url: string): Promise<T> {
 }
 
 /** Resumes a workflow from Overview, sending its saved setup back unchanged; null when done, else why not. */
-export async function resumeWorkflow(
+export async function resumeWorkflowAlerts(
   workflowId: string
 ): Promise<string | null> {
   const url = `/api/workflows/${encodeURIComponent(workflowId)}/failure-alerts`;

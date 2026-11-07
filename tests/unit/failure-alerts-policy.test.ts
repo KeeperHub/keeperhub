@@ -5,7 +5,7 @@ vi.mock("@/lib/db", () => ({ db: {} }));
 
 const {
   DEFAULT_ORG_POLICY,
-  isWorkflowPaused,
+  isWorkflowAlertsPaused,
   mergePolicy,
   resolveRecipientEmails,
 } = await import("@/lib/notifications/failure-alerts/policy");
@@ -109,8 +109,8 @@ describe("mergePolicy", () => {
       []
     );
     expect(policy.source).toBe("default");
-    expect(isWorkflowPaused(policy, new Date("2029-01-01"))).toBe(true);
-    expect(isWorkflowPaused(policy, new Date("2031-01-01"))).toBe(false);
+    expect(isWorkflowAlertsPaused(policy, new Date("2029-01-01"))).toBe(true);
+    expect(isWorkflowAlertsPaused(policy, new Date("2031-01-01"))).toBe(false);
   });
 });
 

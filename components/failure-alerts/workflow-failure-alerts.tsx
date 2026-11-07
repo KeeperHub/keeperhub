@@ -37,15 +37,15 @@ import {
   TIME_LIMIT_OPTIONS_MINUTES,
 } from "@/lib/notifications/failure-alerts/constants";
 import {
+  ALERTS_PAUSED,
   CHANGE_PAUSE,
+  ORG_ALERTS_PAUSED,
   PAUSE_ALERTS,
   PAUSE_FOR,
   PAUSE_MAX,
   PAUSE_SUBMIT,
   PAUSE_UNTIL,
-  PAUSED,
   PAUSED_TOAST,
-  pausedFor,
   pauseEffect,
   RESUME_ALERTS,
   RESUMED_TOAST,
@@ -101,7 +101,7 @@ type Panel = null | "pause";
 /** Custom rules save this long after the last edit. */
 const AUTOSAVE_MS = 1500;
 
-// One id for every save toast, so "paused" then "back on" replace each other
+// One id for every save toast, so "paused" then "resumed" replace each other
 // instead of stacking over the panel's buttons.
 const SAVE_TOAST = "workflow-failure-alerts-save";
 
@@ -318,10 +318,10 @@ type PanelIncident = NonNullable<Loaded["status"]["incident"]>;
 function failingNext(view: Loaded, paused: boolean): string {
   // A pause never hides the turn-off, so that comes first.
   if (view.override.disableWorkflow) {
-    return `${runsLeft(view)} and KeeperHub alerts your team and turns this workflow off${paused ? ", even while it is paused" : ""}.`;
+    return `${runsLeft(view)} and KeeperHub alerts your team and turns this workflow off${paused ? ", even while its alerts are paused" : ""}.`;
   }
   if (paused) {
-    return `${pauseEffect("workflow")} while it is paused. Failures since the pause are reported when it ends.`;
+    return `${pauseEffect("workflow")} while its alerts are paused. Failures since the pause are reported when it ends.`;
   }
   return `The alert goes out at ${failedRuns(view.effective.threshold)}${describeTimeLimit(view.effective.timeLimitMinutes)}.`;
 }
@@ -1063,7 +1063,7 @@ export function WorkflowFailureAlerts({
   if (!applies) {
     tag = { label: "Not used" };
   } else if (paused) {
-    tag = { label: PAUSED, className: WARNING_TEXT };
+    tag = { label: ALERTS_PAUSED, className: WARNING_TEXT };
   }
   const editing = canManage && custom;
   const chooseTab = (next: string): void => {
@@ -1106,7 +1106,7 @@ export function WorkflowFailureAlerts({
 
       {orgPause && (
         <Notice data-testid="workflow-failure-alerts-org-paused" tone="warning">
-          {pausedFor("org")} until {formatWhen(orgPause.until)}
+          {ORG_ALERTS_PAUSED} until {formatWhen(orgPause.until)}
           {orgPause.reason ? `: ${orgPause.reason}` : ""}.
         </Notice>
       )}
@@ -1256,7 +1256,7 @@ export function WorkflowFailureAlerts({
                   view.override.disableWorkflow
                     ? ", unless KeeperHub turns it off at the limit"
                     : " until the pause ends"
-                }, whichever rules it uses. Failures still show in Runs.`}
+                }. This holds whichever rules it uses; failures still show in Runs.`}
               </span>
             </p>
           ) : (

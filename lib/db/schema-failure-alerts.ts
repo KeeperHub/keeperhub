@@ -248,9 +248,9 @@ export type FailureAlertMessageKind =
   // A Test from the Alerts page, recorded once sent; never queued.
   | "test"
   // A workflow's alerts paused (or the pause changed), resumed, or the pause ended.
-  | "workflow_paused"
-  | "workflow_resumed"
-  | "workflow_pause_ended"
+  | "workflow_alerts_paused"
+  | "workflow_alerts_resumed"
+  | "workflow_alerts_pause_ended"
   // People taken off a recipient list are told once.
   | "recipients_removed";
 

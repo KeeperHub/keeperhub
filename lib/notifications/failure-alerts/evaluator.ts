@@ -68,7 +68,7 @@ import { activePause } from "./org-pause";
 import {
   type EffectivePolicy,
   ensureOrgSettings,
-  isWorkflowPaused,
+  isWorkflowAlertsPaused,
   loadChannels,
   loadEffectivePolicy,
   loadOrgPolicy,
@@ -786,7 +786,7 @@ async function openIfRefused(
   if (orgPause) {
     return orgPause;
   }
-  if (isWorkflowPaused(policy, now)) {
+  if (isWorkflowAlertsPaused(policy, now)) {
     return policy.workflowPausedUntil;
   }
   // One refusal after the accepted run, inside the recovery hold: the incident it closed continues.
@@ -1018,7 +1018,7 @@ async function evaluateWorkflow(
     return orgPause;
   }
   // A workflow pause never hides turning it off: doing that silently is worse.
-  if (isWorkflowPaused(policy, now) && !disables) {
+  if (isWorkflowAlertsPaused(policy, now) && !disables) {
     // Alerts start again if it is still failing when the pause ends.
     return policy.workflowPausedUntil;
   }
@@ -1496,7 +1496,7 @@ async function owedByOrg(
         : null;
       if (
         !policy?.remindDaily ||
-        isWorkflowPaused(policy, now) ||
+        isWorkflowAlertsPaused(policy, now) ||
         isHeld(incident) ||
         workflow.orgHaltedAt ||
         inactiveResolution(workflow, workflowTriggerType(workflow.nodes)) ||
@@ -2008,7 +2008,7 @@ export async function checkMissedSchedules(
         row.workflowId
       );
       if (
-        isWorkflowPaused(policy, now) ||
+        isWorkflowAlertsPaused(policy, now) ||
         activePause(policy.orgPausedUntil, now)
       ) {
         continue;

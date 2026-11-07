@@ -37,7 +37,7 @@ type AlertsPause = NonNullable<OrgSettingsView["pause"]>;
 
 /** "Paused by Dana (dana@x.com)", or by the account when the name is only a role. */
 function pauseAuthor(pause: AlertsPause): string {
-  return pausedBy(actorLabel(pause.by, pause.byAccount));
+  return pausedBy(actorLabel(pause.by, pause.byAccount), "org");
 }
 
 const CHOICES = [

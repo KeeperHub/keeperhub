@@ -86,7 +86,7 @@ describe("pauseSentence", () => {
       reason: "RPC move",
     });
     expect(timed).toMatch(
-      /^Paused by Dana \(dana@example\.com\) until .+: RPC move$/
+      /^Alerts paused by Dana \(dana@example\.com\) until .+: RPC move$/
     );
     const works = pauseSentence({
       by: "An admin",
@@ -96,7 +96,7 @@ describe("pauseSentence", () => {
       reason: null,
     });
     expect(works).toMatch(
-      /^Paused by An admin until it works again \(at most until .+\)$/
+      /^Alerts paused by An admin until it works again \(at most until .+\)$/
     );
   });
 });

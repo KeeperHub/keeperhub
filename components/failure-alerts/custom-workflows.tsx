@@ -7,7 +7,7 @@ import { failedRuns, timeLimitLabel } from "./format";
 import { pauseSentence } from "./member-label";
 
 type CustomWorkflow = OrgSettingsView["customWorkflows"][number];
-type PausedWorkflow = OrgSettingsView["pausedWorkflows"][number];
+type PausedWorkflow = OrgSettingsView["alertsPausedWorkflows"][number];
 
 /** The Setup line's pause, worded as on Overview and in the workflow panel. */
 function pauseText(
