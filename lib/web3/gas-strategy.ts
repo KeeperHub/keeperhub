@@ -222,8 +222,8 @@ async function getPercentileFees(
       .filter((r: bigint) => r > BigInt(0));
 
     if (rewards.length === 0) {
-      // Fallback to default
-      return { baseFee, priorityFee: parseGwei("1.5") };
+      // No block paid a tip, so none is needed; clampPriorityFee applies the chain floor.
+      return { baseFee, priorityFee: BigInt(0) };
     }
 
     // Sort and get actual percentile
@@ -248,7 +248,7 @@ async function getPercentileFees(
     const feeData = await runRpc(rpcManager, provider, (p) => p.getFeeData());
     return {
       baseFee: feeData.maxFeePerGas ?? parseGwei("50"),
-      priorityFee: feeData.maxPriorityFeePerGas ?? parseGwei("1.5"),
+      priorityFee: feeData.maxPriorityFeePerGas ?? BigInt(0),
     };
   }
 }
@@ -271,16 +271,16 @@ export const HARDCODED_CHAIN_OVERRIDES: Record<
     gasLimitMultiplier: 2.0,
     minPriorityFeeGwei: 0.1,
   },
-  // Arbitrum One
+  // Arbitrum One. The sequencer orders first-come-first-served, so a tip buys nothing.
   42161: {
     gasLimitMultiplier: 1.5, // L2 estimates are more accurate
-    minPriorityFeeGwei: 0.01,
+    minPriorityFeeGwei: 0,
     maxPriorityFeeGwei: 10,
   },
   // Arbitrum Sepolia
   421614: {
     gasLimitMultiplier: 1.5,
-    minPriorityFeeGwei: 0.01,
+    minPriorityFeeGwei: 0,
     maxPriorityFeeGwei: 10,
   },
   // Base
