@@ -1163,6 +1163,13 @@
       "when": 1793627038019,
       "tag": "0165_keep_1042_drop_dead_exec_log_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 166,
+      "version": "7",
+      "when": 1794315815976,
+      "tag": "0166_arbitrum_zero_priority_fee_floor",
+      "breakpoints": true
     }
   ]
 }
