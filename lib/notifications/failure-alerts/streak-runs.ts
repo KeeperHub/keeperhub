@@ -11,6 +11,7 @@ import {
   outerRun,
   refusedSql,
 } from "@/lib/workflow/refused-runs";
+import { STREAK_LOOKBACK_MS } from "./constants";
 import { isRefusedRun, type StreakRun } from "./streak";
 
 /** Refused before it started (plan limit, unpaid, not runnable): neither a run nor a failure. */
@@ -169,10 +170,14 @@ export async function loadNewestRefusal(
   return row ?? null;
 }
 
-/** Newest finished runs, without platform errors or refusals (summarizeStreak steps over them too). */
+/**
+ * Newest finished runs of the last STREAK_LOOKBACK_MS, without platform errors
+ * or refusals (summarizeStreak steps over them too).
+ */
 export async function loadStreakRuns(
   workflowId: string,
-  limit: number
+  limit: number,
+  now: Date
 ): Promise<StreakRun[]> {
   return await db
     .select({
@@ -191,10 +196,17 @@ export async function loadStreakRuns(
     .where(
       and(
         eq(workflowExecutions.workflowId, workflowId),
+        // The bound keeps the plan on (workflow_id, started_at) instead of the global started_at index.
+        gte(
+          workflowExecutions.startedAt,
+          new Date(now.getTime() - STREAK_LOOKBACK_MS)
+        ),
         isNotNull(workflowExecutions.completedAt),
         isNull(workflowExecutions.deletedAt),
         sql`(${workflowExecutions.status} <> 'error'
           OR ${workflowExecutions.errorType} IS DISTINCT FROM ${ExecutionErrorType.SYSTEM})`,
+        // A literal, so a partial index excluding skipped rows can match it under a generic plan.
+        sql`${workflowExecutions.status} <> 'skipped'`,
         sql`NOT ${REFUSED_RUN_SQL}`
       )
     )

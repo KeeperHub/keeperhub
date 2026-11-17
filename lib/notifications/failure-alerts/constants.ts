@@ -87,6 +87,8 @@ export const MIN_TIME_RULE_FAILURES = 2;
 export const OUT_OF_FUNDS_THRESHOLD = 2;
 /** A workflow that is not on a schedule is reported as not running after this many refused runs in a row. */
 export const REFUSED_RUNS_THRESHOLD = 2;
+/** Streaks read runs this far back, so refused-run history never has to be walked (a follow-up makes it exact). */
+export const STREAK_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 /** A refusal this recent labels a "not running" schedule as refused. */
 export const REFUSAL_RECENT_MS = 60 * 60 * 1000;
 /** No refusal for this long: reminders stop (nothing is trying to run, so nothing recovers). */
@@ -108,6 +110,12 @@ export const MISSED_SCAN_LIMIT = 2000;
 export const MISSED_RUNS_PLATFORM_ALERT = 20;
 /** Queue or outbox rows waiting this long mean the evaluator is not running. */
 export const BACKLOG_ALERT_MS = 10 * 60 * 1000;
+/** Heartbeat row the evaluator writes whenever it claims queued workflows. */
+export const EVALUATE_HEARTBEAT = "evaluate";
+/** No claim this long while runs ended: the run trigger is failing. */
+export const HEARTBEAT_STALE_MS = 15 * 60 * 1000;
+/** A run that ended this long ago has had time to be queued and claimed. */
+export const RUN_QUEUE_GRACE_MS = 5 * 60 * 1000;
 
 /** An open incident with no alert queued after this long lost it in a crash. */
 export const ALERT_REQUEUE_AFTER_MS = 2 * 60 * 1000;

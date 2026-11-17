@@ -2,7 +2,7 @@ import { CronExpressionParser } from "cron-parser";
 import { MISSED_RUN_GRACE_MS } from "./constants";
 
 /** A run may start this much before its due time (dispatcher clock, phantom row). */
-const DISPATCH_TOLERANCE_MS = 60 * 1000;
+export const DISPATCH_TOLERANCE_MS = 60 * 1000;
 
 type ScheduleTiming = {
   cronExpression: string;

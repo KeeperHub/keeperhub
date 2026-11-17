@@ -16,6 +16,7 @@ import {
 import { db } from "@/lib/db";
 import {
   failureAlertDeliveries,
+  failureAlertHeartbeat,
   organization,
   orgFailureAlertSettings,
   workflowExecutions,
@@ -42,6 +43,7 @@ import {
   DEFAULT_THRESHOLD,
   DIGEST_PULL_IN_MS,
   EVALUATE_BUDGET_MS,
+  EVALUATE_HEARTBEAT,
   GROUP_ALERTS_FROM,
   MAX_REMINDERS,
   MAX_WORKFLOWS_PER_RUN,
@@ -63,7 +65,11 @@ import {
   recordDisable,
   turnOffForIncident,
 } from "./disable-at-limit";
-import { missedDueAt, ranRecentlyCutoff } from "./missed-runs";
+import {
+  DISPATCH_TOLERANCE_MS,
+  missedDueAt,
+  ranRecentlyCutoff,
+} from "./missed-runs";
 import { activePause } from "./org-pause";
 import {
   type EffectivePolicy,
@@ -899,7 +905,7 @@ async function evaluateWorkflow(
     MIN_STREAK_WINDOW,
     policy.threshold * STREAK_WINDOW_MULTIPLIER
   );
-  const runs = await loadStreakRuns(workflowId, window);
+  const runs = await loadStreakRuns(workflowId, window, now);
   const summary = summarizeStreak(runs, policy.countingSince, window);
 
   // A late schedule's incident ends with any run that started; failures then count as usual.
@@ -1692,7 +1698,7 @@ async function launchNoticeRows(
     return [];
   }
 
-  const failingNow = await findFailingWorkflows(organizationId);
+  const failingNow = await findFailingWorkflows(organizationId, now);
   const owners = resolveRecipientEmails(
     null,
     await loadOrgMembers(organizationId)
@@ -1712,7 +1718,10 @@ async function launchNoticeRows(
 
 const LAUNCH_SCAN_LIMIT = 200;
 
-async function findFailingWorkflows(organizationId: string): Promise<
+async function findFailingWorkflows(
+  organizationId: string,
+  now: Date
+): Promise<
   {
     id: string;
     name: string;
@@ -1746,7 +1755,8 @@ async function findFailingWorkflows(organizationId: string): Promise<
     }
     const runs = await loadStreakRuns(
       candidate.id,
-      DEFAULT_THRESHOLD * STREAK_WINDOW_MULTIPLIER
+      DEFAULT_THRESHOLD * STREAK_WINDOW_MULTIPLIER,
+      now
     );
     const summary = summarizeStreak(runs, null, runs.length + 1);
     if (summary.failures >= DEFAULT_THRESHOLD) {
@@ -1888,9 +1898,14 @@ export async function checkMissedSchedules(
         sql`greatest(${workflowSchedules.createdAt}, ${workflowSchedules.updatedAt})`.mapWith(
           workflowSchedules.updatedAt
         ),
+      // Bounded: an older start changes neither missedDueAt (notBefore is later) nor refusalFor.
       lastStartedAt: sql`(SELECT max(${workflowExecutions.startedAt})
         FROM ${workflowExecutions}
         WHERE ${workflowExecutions.workflowId} = ${workflows.id}
+          AND ${workflowExecutions.startedAt} >= least(
+            greatest(${workflowSchedules.createdAt}, ${workflowSchedules.updatedAt})
+              - make_interval(secs => ${DISPATCH_TOLERANCE_MS / 1000}),
+            ${new Date(now.getTime() - REFUSAL_RECENT_MS).toISOString()}::timestamp)
           AND ${STARTED_RUN_SQL})`.mapWith(workflowExecutions.startedAt),
     })
     .from(workflowSchedules)
@@ -1932,12 +1947,10 @@ export async function checkMissedSchedules(
         : null;
     return dueAt ? [{ ...row, dueAt }] : [];
   });
-  const earliestDue = Math.min(
-    ...dueAnywhere.map((row) => row.dueAt.getTime())
-  );
+  // refusalFor drops anything older, whatever the due time.
   const refusals = await latestRefusals(
     dueAnywhere.map((row) => row.workflowId),
-    new Date(earliestDue - REFUSAL_RECENT_MS)
+    new Date(now.getTime() - REFUSAL_RECENT_MS)
   );
   // Refused runs (a plan limit, unpaid) are not a scheduler outage.
   const lateAnywhere = dueAnywhere.filter(
@@ -2063,6 +2076,24 @@ export async function checkMissedSchedules(
 }
 
 /** Drain the queue in batches until it is empty or the budget runs out, then queue the alerts. */
+/** Tells the watchdog the queue is being fed and read; never holds up the cycle. */
+async function beat(claimed: number): Promise<void> {
+  await db
+    .insert(failureAlertHeartbeat)
+    .values({ name: EVALUATE_HEARTBEAT, claimed })
+    .onConflictDoUpdate({
+      target: failureAlertHeartbeat.name,
+      set: { beatAt: sql`now()`, claimed },
+    })
+    .catch((error: unknown) => {
+      logSystemError(
+        ErrorCategory.WORKFLOW_ENGINE,
+        "[FailureAlerts] Could not write the heartbeat",
+        error
+      );
+    });
+}
+
 export async function evaluateQueuedWorkflows(
   now: Date,
   stats: EvaluationStats,
@@ -2105,6 +2136,9 @@ export async function evaluateQueuedWorkflows(
         );
       }
     }
+  }
+  if (seen.size > 0) {
+    await beat(seen.size);
   }
   await queueAlerts(opened, now, stats);
 }

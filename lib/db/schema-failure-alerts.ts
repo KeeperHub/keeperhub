@@ -163,6 +163,13 @@ export const workflowFailureAlertQueue = pgTable(
   (table) => [index("idx_alert_queue_due").on(table.dueAt)]
 );
 
+/** The evaluator's last claim of queued workflows; the watchdog pages when runs end but nothing is claimed. */
+export const failureAlertHeartbeat = pgTable("alert_heartbeat", {
+  name: text("name").primaryKey(),
+  beatAt: timestamp("beat_at").notNull().defaultNow(),
+  claimed: integer("claimed").notNull().default(0),
+});
+
 export type FailureIncidentResolution =
   | "success"
   | "ran"

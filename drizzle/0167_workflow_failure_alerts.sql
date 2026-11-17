@@ -1,5 +1,47 @@
 SET lock_timeout = '3s';
 
+-- workflow_executions is the busiest table: lock it first, holding nothing else while
+-- waiting (the FKs below lock organization and workflows; the workflow delete locks
+-- executions before workflows).
+CREATE TABLE "alert_queue" (
+	"workflow_id" text PRIMARY KEY NOT NULL,
+	"due_at" timestamp DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX "idx_alert_queue_due" ON "alert_queue" USING btree ("due_at");
+--> statement-breakpoint
+-- Queues the workflow for the alert evaluator when a run ends in success, error or
+-- skipped (refused or expired). Never blocks a run: errors are only logged as a warning.
+-- The EXCEPTION block costs a subtransaction per fire: batch bulk status updates.
+-- Off switch without a table lock: replace this function with one that only
+-- does RETURN NEW; re-running this definition turns it back on.
+CREATE OR REPLACE FUNCTION public.queue_alert_check()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' AND OLD.status IS NOT DISTINCT FROM NEW.status THEN
+    RETURN NEW;
+  END IF;
+  BEGIN
+    INSERT INTO alert_queue (workflow_id, due_at)
+    VALUES (NEW.workflow_id, now())
+    ON CONFLICT (workflow_id) DO UPDATE
+      SET due_at = now()
+      WHERE alert_queue.due_at > now();
+  EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'queue_alert_check failed: %', SQLERRM;
+  END;
+  RETURN NEW;
+END;
+$$;
+--> statement-breakpoint
+CREATE TRIGGER queue_alert_check
+  AFTER INSERT OR UPDATE OF status ON workflow_executions
+  FOR EACH ROW
+  WHEN (NEW.status IN ('success', 'error', 'skipped'))
+  EXECUTE FUNCTION public.queue_alert_check();
+--> statement-breakpoint
 CREATE TABLE "alert_methods" (
 	"id" text PRIMARY KEY NOT NULL,
 	"organization_id" text NOT NULL,
@@ -89,11 +131,6 @@ CREATE TABLE "alert_overrides" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "alert_queue" (
-	"workflow_id" text PRIMARY KEY NOT NULL,
-	"due_at" timestamp DEFAULT now() NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE "alert_incidents" (
 	"id" text PRIMARY KEY NOT NULL,
 	"organization_id" text NOT NULL,
@@ -117,59 +154,57 @@ CREATE TABLE "alert_incidents" (
 	"opening_execution_id" text
 );
 --> statement-breakpoint
-ALTER TABLE "alert_methods" ADD CONSTRAINT "alert_methods_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "alert_methods" ADD CONSTRAINT "alert_methods_workflow_fk" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "alert_deliveries" ADD CONSTRAINT "alert_deliveries_incident_fk" FOREIGN KEY ("incident_id") REFERENCES "public"."alert_incidents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "alert_deliveries" ADD CONSTRAINT "alert_deliveries_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "alert_email_usage" ADD CONSTRAINT "alert_email_usage_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "alert_settings" ADD CONSTRAINT "alert_settings_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "alert_overrides" ADD CONSTRAINT "alert_overrides_workflow_fk" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "alert_overrides" ADD CONSTRAINT "alert_overrides_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "alert_incidents" ADD CONSTRAINT "alert_incidents_workflow_fk" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "alert_incidents" ADD CONSTRAINT "alert_incidents_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "uq_alert_methods_destination" ON "alert_methods" USING btree ("organization_id",coalesce("workflow_id", ''),"integration_id","destination");--> statement-breakpoint
-CREATE INDEX "idx_alert_methods_workflow" ON "alert_methods" USING btree ("workflow_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "uq_alert_deliveries_dedup" ON "alert_deliveries" USING btree ("dedup_key");--> statement-breakpoint
-CREATE INDEX "idx_alert_deliveries_incident" ON "alert_deliveries" USING btree ("incident_id");--> statement-breakpoint
-CREATE INDEX "idx_alert_deliveries_backup_due" ON "alert_deliveries" USING btree ("backup_at") WHERE "alert_deliveries"."is_backup" = false AND "alert_deliveries"."backup_sent_at" IS NULL AND "alert_deliveries"."state" IN ('pending', 'retrying', 'sending', 'failed', 'capped');--> statement-breakpoint
-CREATE INDEX "idx_alert_deliveries_due" ON "alert_deliveries" USING btree ("next_attempt_at") WHERE "alert_deliveries"."state" IN ('pending', 'retrying', 'sending');--> statement-breakpoint
-CREATE INDEX "idx_alert_deliveries_org_created" ON "alert_deliveries" USING btree ("organization_id","created_at" DESC NULLS LAST);--> statement-breakpoint
-CREATE INDEX "idx_alert_deliveries_created" ON "alert_deliveries" USING btree ("created_at");--> statement-breakpoint
-CREATE INDEX "idx_alert_queue_due" ON "alert_queue" USING btree ("due_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "uq_alert_incidents_open" ON "alert_incidents" USING btree ("workflow_id") WHERE "alert_incidents"."resolved_at" IS NULL;--> statement-breakpoint
-CREATE INDEX "idx_alert_incidents_org" ON "alert_incidents" USING btree ("organization_id");--> statement-breakpoint
-CREATE INDEX "idx_alert_incidents_workflow" ON "alert_incidents" USING btree ("workflow_id");--> statement-breakpoint
-CREATE INDEX "idx_alert_incidents_resolved" ON "alert_incidents" USING btree ("resolved_at") WHERE "alert_incidents"."resolved_at" IS NOT NULL;--> statement-breakpoint
+CREATE TABLE "alert_heartbeat" (
+	"name" text PRIMARY KEY NOT NULL,
+	"beat_at" timestamp DEFAULT now() NOT NULL,
+	"claimed" integer DEFAULT 0 NOT NULL
+);
+--> statement-breakpoint
+ALTER TABLE "alert_methods" ADD CONSTRAINT "alert_methods_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "alert_methods" ADD CONSTRAINT "alert_methods_workflow_fk" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "alert_deliveries" ADD CONSTRAINT "alert_deliveries_incident_fk" FOREIGN KEY ("incident_id") REFERENCES "public"."alert_incidents"("id") ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "alert_deliveries" ADD CONSTRAINT "alert_deliveries_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "alert_email_usage" ADD CONSTRAINT "alert_email_usage_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "alert_settings" ADD CONSTRAINT "alert_settings_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "alert_overrides" ADD CONSTRAINT "alert_overrides_workflow_fk" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "alert_overrides" ADD CONSTRAINT "alert_overrides_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "alert_incidents" ADD CONSTRAINT "alert_incidents_workflow_fk" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "alert_incidents" ADD CONSTRAINT "alert_incidents_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_alert_methods_destination" ON "alert_methods" USING btree ("organization_id",coalesce("workflow_id", ''),"integration_id","destination");
+--> statement-breakpoint
+CREATE INDEX "idx_alert_methods_workflow" ON "alert_methods" USING btree ("workflow_id");
+--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_alert_deliveries_dedup" ON "alert_deliveries" USING btree ("dedup_key");
+--> statement-breakpoint
+CREATE INDEX "idx_alert_deliveries_incident" ON "alert_deliveries" USING btree ("incident_id");
+--> statement-breakpoint
+CREATE INDEX "idx_alert_deliveries_backup_due" ON "alert_deliveries" USING btree ("backup_at") WHERE "alert_deliveries"."is_backup" = false AND "alert_deliveries"."backup_sent_at" IS NULL AND "alert_deliveries"."state" IN ('pending', 'retrying', 'sending', 'failed', 'capped');
+--> statement-breakpoint
+CREATE INDEX "idx_alert_deliveries_due" ON "alert_deliveries" USING btree ("next_attempt_at") WHERE "alert_deliveries"."state" IN ('pending', 'retrying', 'sending');
+--> statement-breakpoint
+CREATE INDEX "idx_alert_deliveries_org_created" ON "alert_deliveries" USING btree ("organization_id","created_at" DESC NULLS LAST);
+--> statement-breakpoint
+CREATE INDEX "idx_alert_deliveries_created" ON "alert_deliveries" USING btree ("created_at");
+--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_alert_incidents_open" ON "alert_incidents" USING btree ("workflow_id") WHERE "alert_incidents"."resolved_at" IS NULL;
+--> statement-breakpoint
+CREATE INDEX "idx_alert_incidents_org" ON "alert_incidents" USING btree ("organization_id");
+--> statement-breakpoint
+CREATE INDEX "idx_alert_incidents_workflow" ON "alert_incidents" USING btree ("workflow_id");
+--> statement-breakpoint
+CREATE INDEX "idx_alert_incidents_resolved" ON "alert_incidents" USING btree ("resolved_at") WHERE "alert_incidents"."resolved_at" IS NOT NULL;
+--> statement-breakpoint
 CREATE INDEX "idx_alert_incidents_opening_run" ON "alert_incidents" USING btree ("organization_id","opening_execution_id") WHERE "alert_incidents"."opening_execution_id" IS NOT NULL;
---> statement-breakpoint
--- Queues the workflow for the alert evaluator when a run ends in success, error or
--- skipped (refused or expired). Never blocks a run: errors are only logged as a warning.
-CREATE OR REPLACE FUNCTION public.queue_alert_check()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  IF TG_OP = 'UPDATE' AND OLD.status IS NOT DISTINCT FROM NEW.status THEN
-    RETURN NEW;
-  END IF;
-  BEGIN
-    INSERT INTO alert_queue (workflow_id, due_at)
-    VALUES (NEW.workflow_id, now())
-    ON CONFLICT (workflow_id) DO UPDATE
-      SET due_at = now()
-      WHERE alert_queue.due_at > now();
-  EXCEPTION WHEN OTHERS THEN
-    RAISE WARNING 'queue_alert_check failed: %', SQLERRM;
-  END;
-  RETURN NEW;
-END;
-$$;
---> statement-breakpoint
-CREATE TRIGGER queue_alert_check
-  AFTER INSERT OR UPDATE OF status ON workflow_executions
-  FOR EACH ROW
-  WHEN (NEW.status IN ('success', 'error', 'skipped'))
-  EXECUTE FUNCTION public.queue_alert_check();
 --> statement-breakpoint
 -- Sets workflow_reenabled_at on open incidents when a workflow is re-enabled by any
 -- path, so the incident stops holding it. Never blocks the Enable switch: errors

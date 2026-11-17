@@ -8,6 +8,7 @@ import { EXECUTION_LIMIT_REFUSAL } from "../../../lib/billing/dispatch-refusal";
 import {
   failureAlertChannels,
   failureAlertDeliveries,
+  failureAlertHeartbeat,
   integrations,
   member,
   organization,
@@ -3550,6 +3551,71 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     it("a cycle reports no failed stages", async () => {
       const report = await runCycle();
       expect(report.errors).toEqual([]);
+    });
+
+    it("sees a disabled run trigger", async () => {
+      await db.execute(
+        sql`ALTER TABLE workflow_executions DISABLE TRIGGER queue_alert_check`
+      );
+      try {
+        const report = await watchdog.checkFailureAlertsRunning();
+        expect(report.triggersOff).toEqual([
+          "workflow_executions.queue_alert_check",
+        ]);
+      } finally {
+        await db.execute(
+          sql`ALTER TABLE workflow_executions ENABLE TRIGGER queue_alert_check`
+        );
+      }
+      const after = await watchdog.checkFailureAlertsRunning();
+      expect(after.triggersOff).toEqual([]);
+    });
+
+    it("sees runs that ended while nothing was claimed, until a cycle claims", async () => {
+      const org = await makeOrg("heartbeat");
+      const workflowId = await makeWorkflow(org, "heartbeat");
+      await addRun(org, workflowId, "success", { at: at(-10) });
+      // As if the trigger had failed: the run never reached the queue.
+      await db
+        .delete(workflowFailureAlertQueue)
+        .where(eq(workflowFailureAlertQueue.workflowId, workflowId));
+      await db
+        .insert(failureAlertHeartbeat)
+        .values({ name: "evaluate", beatAt: at(-30), claimed: 1 })
+        .onConflictDoUpdate({
+          target: failureAlertHeartbeat.name,
+          set: { beatAt: at(-30) },
+        });
+      expect((await watchdog.checkFailureAlertsRunning()).queueSilent).toBe(
+        true
+      );
+
+      await addRun(org, workflowId, "success");
+      await runCycle();
+      const [beat] = await db
+        .select()
+        .from(failureAlertHeartbeat)
+        .where(eq(failureAlertHeartbeat.name, "evaluate"));
+      expect(beat?.claimed).toBeGreaterThanOrEqual(1);
+      expect((await watchdog.checkFailureAlertsRunning()).queueSilent).toBe(
+        false
+      );
+    });
+  });
+
+  describe("streak look-back", { timeout: SUITE_TIMEOUT }, () => {
+    it("reads runs of the last 30 days only, refusals left out", async () => {
+      const org = await makeOrg("lookback");
+      const workflowId = await makeWorkflow(org, "lookback");
+      await addRun(org, workflowId, "error", { at: at(-31 * 24 * 60) });
+      await addRun(org, workflowId, "error", { at: at(-29 * 24 * 60) });
+      await addRun(org, workflowId, "skipped", { at: at(-60) });
+      await addRun(org, workflowId, "error", { at: at(-30) });
+      const { loadStreakRuns } = await import(
+        "@/lib/notifications/failure-alerts/streak-runs"
+      );
+      const runs = await loadStreakRuns(workflowId, 10, new Date());
+      expect(runs.map((run) => run.status)).toEqual(["error", "error"]);
     });
   });
 
