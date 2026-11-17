@@ -324,8 +324,6 @@ export default defineAbiProtocol({
           receiver: wallet(),
           owner: wallet(),
         },
-        // Large enough to cover stUSDS borrows exceeding its assets, so the
-        // withdraw and redeem fixtures that follow have exit liquidity.
         "st-usds-vault-deposit": {
           assets: amount("USDS", "100000"),
           receiver: wallet(),
@@ -344,6 +342,16 @@ export default defineAbiProtocol({
           receiver: wallet(),
           owner: wallet(),
         },
+      },
+      // stUSDS exits need unused funds, which live borrow utilisation can
+      // exhaust; the fabrication clears the ilk's debt on the fork first.
+      fabrications: {
+        "st-usds-vault-withdraw": [
+          { kind: "stusds-exit-liquidity", contract: contract("stUsds") },
+        ],
+        "st-usds-vault-redeem": [
+          { kind: "stusds-exit-liquidity", contract: contract("stUsds") },
+        ],
       },
       skipped: {
         "get-susds-balance-l2":
