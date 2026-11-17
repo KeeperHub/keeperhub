@@ -2661,6 +2661,93 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       ).toBe(true);
     });
 
+    it("keeps a rules edit made while the workflow's alerts are paused", async () => {
+      const wf = await makeWorkflow(zeta, "Paused rules edit");
+      const until = new Date(Math.floor(at(120).getTime() / 1000) * 1000);
+      await db.insert(workflowFailureAlertOverrides).values({
+        workflowId: wf,
+        organizationId: zeta.orgId,
+        threshold: 3,
+        pausedUntil: until,
+        pauseReason: "Maintenance window",
+        pausedByUserId: zeta.userId,
+        pausedAt: at(-10),
+        version: 1,
+      });
+      const result = await workflowSettings.saveWorkflowOverride({
+        workflowId: wf,
+        organizationId: zeta.orgId,
+        userId: zeta.userId,
+        // The panel sends the pause back as it was.
+        body: {
+          threshold: 5,
+          timeLimitMinutes: 60,
+          recipientUserIds: [zeta.userId],
+          pausedUntil: until.toISOString(),
+          pauseUntilSuccess: false,
+          pauseReason: "Maintenance window",
+          version: 1,
+        },
+      });
+      expect(result.rulesChanged).toBe(true);
+      expect(result.pauseChange).toBeNull();
+      const [row] = await db
+        .select()
+        .from(workflowFailureAlertOverrides)
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      expect(row?.threshold).toBe(5);
+      expect(row?.timeLimitMinutes).toBe(60);
+      expect(row?.recipientUserIds).toEqual([zeta.userId]);
+      expect(row?.pausedUntil?.getTime()).toBe(until.getTime());
+      expect(row?.pauseReason).toBe("Maintenance window");
+    });
+
+    it("saves edits after a pause ended while the panel was open, but refuses a new past end", async () => {
+      const wf = await makeWorkflow(zeta, "Ended pause edit");
+      const ended = new Date(Math.floor(at(-1).getTime() / 1000) * 1000);
+      await db.insert(workflowFailureAlertOverrides).values({
+        workflowId: wf,
+        organizationId: zeta.orgId,
+        threshold: 3,
+        pausedUntil: ended,
+        pauseReason: "Maintenance window",
+        pausedByUserId: zeta.userId,
+        pausedAt: at(-60),
+        version: 1,
+      });
+      const save = (body: Record<string, unknown>) =>
+        workflowSettings.saveWorkflowOverride({
+          workflowId: wf,
+          organizationId: zeta.orgId,
+          userId: zeta.userId,
+          body,
+        });
+      await save({
+        threshold: 6,
+        pausedUntil: ended.toISOString(),
+        pauseUntilSuccess: false,
+        pauseReason: "Maintenance window",
+        version: 1,
+      });
+      const [row] = await db
+        .select()
+        .from(workflowFailureAlertOverrides)
+        .where(eq(workflowFailureAlertOverrides.workflowId, wf));
+      expect(row?.threshold).toBe(6);
+      // Left for the cycle, which ends it and tells everyone.
+      expect(row?.pausedUntil?.getTime()).toBe(ended.getTime());
+
+      const error = await settingsError(() =>
+        save({
+          threshold: 6,
+          pausedUntil: at(-5).toISOString(),
+          pauseReason: "Another window",
+          version: 2,
+        })
+      );
+      expect(error.status).toBe(400);
+    });
+
     it("refuses a save from a tab older than a reset with 409", async () => {
       const wf = await makeWorkflow(zeta, "Reset keeper");
       const save = (body: Record<string, unknown>) =>

@@ -231,7 +231,7 @@ function RulesView({
               {channels.map((c) => (
                 <li
                   className="flex min-w-0 items-center gap-1.5 text-xs"
-                  key={`${c.kind}:${c.destination}:${c.connectionName ?? ""}`}
+                  key={c.id}
                 >
                   <IntegrationIcon
                     className="size-4 shrink-0"
@@ -337,7 +337,9 @@ function alertLine(incident: PanelIncident): React.ReactNode {
     <>
       Alert sent {timeAgo(incident.openedAt)} to{" "}
       {incident.deliveredTo.map((to, i) => (
-        <span key={to}>
+        // Two methods can share a label (Discord has no destination).
+        // biome-ignore lint/suspicious/noArrayIndexKey: labels can repeat; the list is fixed per render
+        <span key={`${i}:${to}`}>
           {i > 0 && ", "}
           <EmailText email={to} />
         </span>

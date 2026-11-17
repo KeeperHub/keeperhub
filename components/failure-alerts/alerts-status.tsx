@@ -192,6 +192,8 @@ export function statusCardClass(data: OrgSettingsView): string {
 
 type AttentionRow = {
   id: string;
+  /** Row type, so one workflow's rows of different kinds keep distinct keys. */
+  kind: "failing" | "paused" | "methods";
   name: string;
   href: string;
   detail: React.ReactNode;
@@ -368,6 +370,7 @@ export function AlertsHealth({
     }
     return {
       id: w.id,
+      kind: "paused",
       name: w.name,
       href: `/workflows/${w.id}`,
       // Paused means someone already knows: yellow, as in the workflow panel.
@@ -390,6 +393,7 @@ export function AlertsHealth({
       .filter((w) => !pausedIds.has(w.workflowId))
       .map((w) => ({
         id: w.workflowId,
+        kind: "failing" as const,
         name: w.name,
         href: `/workflows/${w.workflowId}?tab=runs`,
         tone: "danger" as const,
@@ -405,6 +409,7 @@ export function AlertsHealth({
       .filter((w) => w.brokenMethods > 0)
       .map((w) => ({
         id: w.id,
+        kind: "methods" as const,
         name: w.name,
         href: `/workflows/${w.id}`,
         tone: "warning" as const,
@@ -476,7 +481,7 @@ export function AlertsHealth({
   }
 
   const workflowIssues: Issue[] = rows.map((row) => ({
-    id: `${row.tone}:${row.id}`,
+    id: `${row.kind}:${row.id}`,
     tone: row.tone,
     title: (
       <Link

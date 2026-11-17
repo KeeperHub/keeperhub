@@ -44,6 +44,10 @@ async function handle(
       return denied;
     }
     const after = await action(organizationId, access);
+    // A refused request (bad body) is answered as is: nothing changed, nothing to audit.
+    if (after instanceof NextResponse) {
+      return after;
+    }
     await recordAuditEvent({
       actor: {
         userId: access.userId,

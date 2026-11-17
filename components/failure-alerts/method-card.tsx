@@ -1025,18 +1025,17 @@ function recipientsLine(reachable: MemberView[]): React.ReactNode {
   if (reachable.length === 0) {
     return "Nobody chosen has an email KeeperHub can reach.";
   }
-  const names = reachable.map(memberLabel);
-  if (names.length > 2) {
-    return `Goes to ${names.length} people. Test sends one email to you.`;
+  if (reachable.length > 2) {
+    return `Goes to ${reachable.length} people. Test sends one email to you.`;
   }
-  // Addresses wrap only before "@", never at a hyphen.
+  // Addresses wrap only before "@", never at a hyphen. Keyed by id: two people can share a name.
   return (
     <>
       Goes to{" "}
-      {names.map((name, i) => (
-        <span key={name}>
+      {reachable.map((m, i) => (
+        <span key={m.userId}>
           {i > 0 && " and "}
-          <EmailText email={name} />
+          <EmailText email={memberLabel(m)} />
         </span>
       ))}
       . Test sends one email to you.

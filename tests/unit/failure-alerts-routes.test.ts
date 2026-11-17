@@ -352,6 +352,25 @@ describe("PUT pause audit", () => {
   });
 });
 
+describe("PUT pause with a body that is not a JSON object", () => {
+  it.each([
+    ["an array", JSON.stringify([1])],
+    ["broken JSON", "{not json"],
+  ])("answers 400 for %s and audits nothing", async (_name, body) => {
+    const res = await pauseRoute.PUT(
+      new Request("http://localhost/api/x", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body,
+      }),
+      orgCtx()
+    );
+    expect(res.status).toBe(400);
+    expect(mocks.pauseOrgAlerts).not.toHaveBeenCalled();
+    expect(mocks.recordAuditEvent).not.toHaveBeenCalled();
+  });
+});
+
 describe("re-queue only when the rules change", () => {
   it.each([true, false])(
     "org save with rulesChanged %s",

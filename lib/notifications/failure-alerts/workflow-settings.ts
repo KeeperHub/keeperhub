@@ -257,7 +257,9 @@ export async function loadWorkflowAlertView(
 /** Required for every pause or change to one. */
 export const PAUSE_REASON_REQUIRED = `Say why you are pausing (${MIN_PAUSE_REASON} to ${MAX_PAUSE_REASON} characters).`;
 
-/** The pause as sent; the cap and reason are checked only when it changes. */
+const PAUSE_END_IN_FUTURE = "Pick a pause end in the future.";
+
+/** The pause as sent; the end, cap and reason are checked only when it changes (nextPause). */
 function parsePause(
   body: Record<string, unknown>,
   now: Date
@@ -270,8 +272,8 @@ function parsePause(
   let pausedUntil: Date | null = null;
   if (typeof body.pausedUntil === "string" && body.pausedUntil) {
     pausedUntil = parseEndTime(body.pausedUntil);
-    if (!pausedUntil || pausedUntil <= now) {
-      throw new SettingsError("Pick a pause end in the future.");
+    if (!pausedUntil) {
+      throw new SettingsError(PAUSE_END_IN_FUTURE);
     }
   }
   // "Until it works" still ends after MAX_PAUSE_DAYS, so no pause is forever.
@@ -294,6 +296,17 @@ type StoredPause = {
   pausedByUserId: string | null;
   pausedAt: Date | null;
 };
+
+/** Only the pause columns: the row also holds rules, which a save must not overwrite. */
+function pauseFields(stored: StoredPause): StoredPause {
+  return {
+    pausedUntil: stored.pausedUntil,
+    pauseUntilSuccess: stored.pauseUntilSuccess,
+    pauseReason: stored.pauseReason,
+    pausedByUserId: stored.pausedByUserId,
+    pausedAt: stored.pausedAt,
+  };
+}
 
 /** A stored pause still in force; every pause has an end. */
 function activeWorkflowPause(
@@ -318,7 +331,7 @@ function nextPause(
   if (!paused) {
     // An ended pause not yet announced stays put: the cycle ends it and tells everyone.
     if (stored?.pausedUntil && !wasPaused) {
-      return { change: null, fields: stored };
+      return { change: null, fields: pauseFields(stored) };
     }
     return {
       change: wasPaused ? "resumed" : null,
@@ -331,14 +344,17 @@ function nextPause(
       },
     };
   }
+  // An unrelated edit sends the pause back as it was (even one that just ended): who paused and why stay.
   const same =
-    wasPaused &&
-    stored?.pauseUntilSuccess === sent.pauseUntilSuccess &&
-    stored?.pausedUntil?.getTime() === sent.pausedUntil?.getTime() &&
-    (!sent.pauseReason || sent.pauseReason === stored?.pauseReason);
+    stored?.pausedUntil &&
+    stored.pauseUntilSuccess === sent.pauseUntilSuccess &&
+    stored.pausedUntil.getTime() === sent.pausedUntil?.getTime() &&
+    (!sent.pauseReason || sent.pauseReason === stored.pauseReason);
   if (same && stored) {
-    // An unrelated edit sends the pause back as it was: who paused and why stay.
-    return { change: null, fields: stored };
+    return { change: null, fields: pauseFields(stored) };
+  }
+  if (sent.pausedUntil && sent.pausedUntil <= now) {
+    throw new SettingsError(PAUSE_END_IN_FUTURE);
   }
   const cap = now.getTime() + MAX_PAUSE_DAYS * DAY_MS;
   if (sent.pausedUntil && sent.pausedUntil.getTime() > cap + CLOCK_SKEW_MS) {
