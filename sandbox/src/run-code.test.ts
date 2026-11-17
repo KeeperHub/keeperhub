@@ -332,6 +332,83 @@ describe("runCode — sandbox child_process runner", () => {
   });
 });
 
+// The host side of the grandchild must never call into a value user code
+// produced: a user-replaced Promise.prototype.then, finally, getter or toJSON
+// would receive host functions or host-built argument arrays, whose
+// .constructor is the host Function. Each payload reports whether it reached
+// process through its own result.
+describe("runCode keeps host functions out of user hooks", () => {
+  const PROXY_PROBE = `
+    const status = { escaped: false };
+    const probe = new Proxy(function () {}, {
+      apply(_target, _thisArg, args) {
+        try {
+          args.constructor.constructor("return process")();
+          status.escaped = true;
+        } catch (_e) {}
+        return "probe";
+      },
+    });
+  `;
+
+  it.each([
+    [
+      "a Promise.prototype.then override",
+      `
+        const realThen = Promise.prototype.then;
+        let armed = false;
+        Promise.prototype.then = function (onF, onR) {
+          if (armed || typeof onF !== "function") return realThen.call(this, onF, onR);
+          armed = true;
+          try {
+            const proc = onF.constructor("return process")();
+            return realThen.call(this, function () { return onF({ escaped: true, pid: proc.pid }); });
+          } catch (e) {
+            return realThen.call(this, function () { return onF({ escaped: false, err: String(e) }); });
+          }
+        };
+        return { escaped: false };
+      `,
+    ],
+    [
+      "a Promise.prototype.finally override",
+      `
+        const out = { escaped: false };
+        const realFinally = Promise.prototype.finally;
+        Promise.prototype.finally = function (f) {
+          try { f.constructor("return process")(); out.escaped = true; } catch (_e) {}
+          return realFinally.call(this, f);
+        };
+        return out;
+      `,
+    ],
+    [
+      "a Proxy getter on the result",
+      `
+        ${PROXY_PROBE}
+        const out = {};
+        Object.defineProperty(out, "probe", { enumerable: true, get: probe });
+        out.status = status;
+        return out;
+      `,
+    ],
+    [
+      "a Proxy toJSON passed to console.log",
+      `
+        ${PROXY_PROBE}
+        console.log({ toJSON: probe });
+        return status;
+      `,
+    ],
+  ])("contains %s", async (_label, code) => {
+    const outcome = await runCode({ code, timeoutMs: 5000 });
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(JSON.stringify(outcome.result)).not.toContain('"escaped":true');
+    }
+  });
+});
+
 // The frame the server relays is produced by the (untrusted) grandchild; a
 // vm-escaped child can forge it. The shallow relay guard confirms a plausible
 // envelope on the UN-REVIVED frame; the main-app client strictly validates the
