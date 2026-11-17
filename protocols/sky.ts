@@ -348,6 +348,10 @@ export default defineAbiProtocol({
           "L2 action - sUsdsL2 contract only on Base/Arbitrum (bridged, ERC-20 only)",
         "get-susds-total-supply-l2":
           "L2 action - sUsdsL2 contract only on Base/Arbitrum (bridged, ERC-20 only)",
+        "st-usds-vault-withdraw":
+          "stUSDS borrows exceed its assets on mainnet, so exits revert with StUsds/insufficient-unused-funds",
+        "st-usds-vault-redeem":
+          "stUSDS borrows exceed its assets on mainnet, so exits revert with StUsds/insufficient-unused-funds",
       },
       // approve-dai and approve-usds run the app's real approve-token path,
       // which fans out cold token state on a fresh fork and runs past the

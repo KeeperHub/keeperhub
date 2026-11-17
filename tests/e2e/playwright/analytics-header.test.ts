@@ -41,10 +41,15 @@ function centreY(found: { y: number; height: number }): number {
 
 async function expectHeaderFits(page: Page, width: number): Promise<void> {
   await page.setViewportSize({ width, height: 844 });
+  // A throw ends expect.poll at once, so a control mid re-layout keeps it polling.
   await expect
-    .poll(() => overlaps(refreshButton(page), customButton(page)), {
-      message: `refresh clear of Custom at ${width}px`,
-    })
+    .poll(
+      () =>
+        overlaps(refreshButton(page), customButton(page)).catch(
+          () => "not rendered"
+        ),
+      { message: `refresh clear of Custom at ${width}px` }
+    )
     .toBe(false);
   for (const control of [refreshButton(page), customButton(page)]) {
     await expect(control, `wholly on screen at ${width}px`).toBeInViewport({
