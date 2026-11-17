@@ -38,9 +38,7 @@ import {
 } from "@/lib/notifications/failure-alerts/constants";
 import {
   ALERTS_PAUSED,
-  CHANGE_PAUSE,
   ORG_ALERTS_PAUSED,
-  PAUSE_ALERTS,
   PAUSE_FOR,
   PAUSE_MAX,
   PAUSE_SUBMIT,
@@ -48,7 +46,6 @@ import {
   type PauseChange,
   pauseEffect,
   pauseToast,
-  RESUME_ALERTS,
   reasonSentence,
 } from "@/lib/notifications/failure-alerts/pause-copy";
 import {
@@ -90,6 +87,7 @@ import {
   nextKey,
 } from "./method-drafts";
 import { NotificationHistory } from "./notification-history";
+import { AlertsSwitch, ChangePauseLink } from "./pause-alerts";
 import {
   NETWORK_REFUSAL,
   refusalFrom,
@@ -1250,7 +1248,26 @@ export function WorkflowFailureAlerts({
           className="space-y-3 break-words rounded-lg border p-3 text-sm"
           data-testid="failure-alerts-workflow-pause-area"
         >
-          <h3 className="font-semibold text-sm">{PAUSE_ALERTS}</h3>
+          {/* Same On/Paused switch as the org Status card: off opens the pause form, on resumes. */}
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+            <div className="min-w-0 space-y-1">
+              <h3 className="font-semibold text-sm">Status</h3>
+              <p className="text-muted-foreground text-xs">
+                Pause this workflow's alerts, or see who paused them.
+              </p>
+            </div>
+            <AlertsSwitch
+              busy={saving || panel === "pause"}
+              canManage={canManage}
+              onPause={() => openPanel("pause")}
+              onResume={() => {
+                resume().catch(() => undefined);
+              }}
+              paused={paused}
+              switchRef={pauseButtonRef}
+              testId="failure-alerts-workflow"
+            />
+          </div>
           {paused ? (
             <p className="flex items-start gap-2">
               <BellOff
@@ -1267,53 +1284,21 @@ export function WorkflowFailureAlerts({
               </span>
             </p>
           ) : (
-            <p className="text-muted-foreground text-xs">
-              Alerts are on for this workflow. A pause stops its alerts
+            <p>
+              On: its alerts go out using the rules it uses. A pause holds them
               whichever rules it uses.
             </p>
           )}
-          {canManage && panel === null && (
-            <div className="flex flex-wrap gap-2">
-              {paused ? (
-                <Button
-                  className={WRAP_BUTTON}
-                  data-testid="failure-alerts-workflow-resume"
-                  disabled={saving}
-                  onClick={resume}
-                  ref={pauseButtonRef}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  {RESUME_ALERTS}
-                </Button>
-              ) : null}
-              {paused ? (
-                <Button
-                  className={WRAP_BUTTON}
-                  data-testid="failure-alerts-workflow-pause-extend"
-                  onClick={() => openPanel("pause")}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  {CHANGE_PAUSE}
-                </Button>
-              ) : (
-                <Button
-                  className={WRAP_BUTTON}
-                  data-testid="failure-alerts-workflow-pause-open"
-                  onClick={() => openPanel("pause")}
-                  ref={pauseButtonRef}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  <BellOff className="size-3.5" />
-                  {PAUSE_ALERTS}
-                </Button>
-              )}
-            </div>
+          {canManage && paused && panel === null && (
+            <ChangePauseLink
+              onClick={() => openPanel("pause")}
+              testId="failure-alerts-workflow-pause-extend"
+            />
+          )}
+          {!canManage && (
+            <p className="text-muted-foreground text-xs">
+              Only owners and admins can pause or resume alerts.
+            </p>
           )}
 
           {panel === "pause" && (

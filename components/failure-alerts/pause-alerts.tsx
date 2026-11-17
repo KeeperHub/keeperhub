@@ -74,6 +74,8 @@ export function AlertsSwitch({
   busy,
   onPause,
   onResume,
+  testId = "failure-alerts",
+  switchRef,
 }: {
   paused: boolean;
   canManage: boolean;
@@ -81,6 +83,10 @@ export function AlertsSwitch({
   busy: boolean;
   onPause: () => void;
   onResume: () => void;
+  /** Prefix for the state and switch test ids (org page or a workflow). */
+  testId?: string;
+  /** Where focus returns when the pause form closes. */
+  switchRef?: React.Ref<HTMLButtonElement>;
 }): React.ReactElement {
   return (
     <div className="flex items-center gap-3">
@@ -89,7 +95,7 @@ export function AlertsSwitch({
           "font-semibold text-sm",
           paused ? WARNING_TEXT : "text-keeperhub-green-dark"
         )}
-        data-testid="failure-alerts-state"
+        data-testid={`${testId}-state`}
       >
         {paused ? PAUSED : "On"}
       </span>
@@ -98,11 +104,33 @@ export function AlertsSwitch({
           paused ? "Alerts paused. Turn on to resume now" : "Alerts on"
         }
         checked={!paused}
-        data-testid="failure-alerts-switch"
+        data-testid={`${testId}-switch`}
         disabled={!canManage || busy}
         onCheckedChange={(on) => (on ? onResume() : onPause())}
+        ref={switchRef}
       />
     </div>
+  );
+}
+
+/** Reopens the pause form to change its end or reason. */
+export function ChangePauseLink({
+  onClick,
+  testId,
+}: {
+  onClick: () => void;
+  testId: string;
+}): React.ReactElement {
+  return (
+    <Button
+      className="h-auto px-0 text-xs underline underline-offset-4"
+      data-testid={testId}
+      onClick={onClick}
+      type="button"
+      variant="link"
+    >
+      {CHANGE_PAUSE}
+    </Button>
   );
 }
 
@@ -164,15 +192,7 @@ export function AlertsStateBody({
         </span>
       </p>
       {canManage ? (
-        <Button
-          className="h-auto px-0 text-xs underline underline-offset-4"
-          data-testid="failure-alerts-extend"
-          onClick={onExtend}
-          type="button"
-          variant="link"
-        >
-          {CHANGE_PAUSE}
-        </Button>
+        <ChangePauseLink onClick={onExtend} testId="failure-alerts-extend" />
       ) : (
         <p className="text-muted-foreground text-xs">
           Only owners and admins can resume alerts.

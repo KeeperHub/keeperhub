@@ -324,7 +324,8 @@ test.describe("Failure alerts", () => {
   }) => {
     let section = await openProperties(page, fixture.failingId);
 
-    const pauseOpen = section.getByTestId("failure-alerts-workflow-pause-open");
+    // The Status switch: turning it off opens the pause form.
+    const pauseOpen = section.getByTestId("failure-alerts-workflow-switch");
     await expect(section).toHaveAttribute("data-source", "org");
     // One pause for the whole workflow, outside the rules tabs, on either tab.
     const rulesCard = section.getByTestId("failure-alerts-rules-card");
@@ -332,13 +333,16 @@ test.describe("Failure alerts", () => {
       await section.getByTestId(`failure-alerts-tab-${tab}`).click();
       await expect(pauseOpen).toHaveCount(1);
       await expect(
-        rulesCard.getByTestId("failure-alerts-workflow-pause-open")
+        rulesCard.getByTestId("failure-alerts-workflow-switch")
       ).toHaveCount(0);
       await expect(
         section
           .getByTestId("failure-alerts-workflow-pause-area")
-          .getByTestId("failure-alerts-workflow-pause-open")
+          .getByTestId("failure-alerts-workflow-switch")
       ).toHaveCount(1);
+      await expect(
+        section.getByTestId("failure-alerts-workflow-state")
+      ).toHaveText("On");
     }
     await section.getByTestId("failure-alerts-tab-org").click();
     await pauseOpen.click();
@@ -379,7 +383,11 @@ test.describe("Failure alerts", () => {
     ).toHaveCount(1, SAVE_TIMEOUT);
 
     section = await openProperties(page, fixture.failingId);
-    await section.getByTestId("failure-alerts-workflow-resume").click();
+    await expect(
+      section.getByTestId("failure-alerts-workflow-state")
+    ).toHaveText("Paused");
+    // Turning the switch back on resumes at once, as on the org page.
+    await section.getByTestId("failure-alerts-workflow-switch").click();
     await expect
       .poll(
         async () =>
@@ -639,7 +647,7 @@ test.describe("Failure alerts", () => {
     page,
   }) => {
     const section = await openProperties(page, fixture.failingId);
-    await section.getByTestId("failure-alerts-workflow-pause-open").click();
+    await section.getByTestId("failure-alerts-workflow-switch").click();
     const pause = section.getByTestId("failure-alerts-workflow-pause");
     await pause.locator('[data-pause="1h"]').click();
     await pause
@@ -670,9 +678,9 @@ test.describe("Failure alerts", () => {
     } finally {
       // Leave the shared fixture resumed even if a step above failed.
       const left = await openProperties(page, fixture.failingId);
-      const resume = left.getByTestId("failure-alerts-workflow-resume");
-      if ((await resume.count()) > 0) {
-        await resume.click();
+      const state = left.getByTestId("failure-alerts-workflow-state");
+      if ((await state.textContent()) === "Paused") {
+        await left.getByTestId("failure-alerts-workflow-switch").click();
       }
     }
   });
