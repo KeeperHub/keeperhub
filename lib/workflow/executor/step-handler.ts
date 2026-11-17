@@ -119,7 +119,8 @@ function stepActionTypes(
   loggedInput: unknown,
   context: StepContext | undefined
 ): (string | undefined)[] {
-  const actionType = (loggedInput as Record<string, unknown>)._actionType;
+  const actionType = (loggedInput as Record<string, unknown> | null)
+    ?._actionType;
   return [
     typeof actionType === "string" ? actionType : undefined,
     context?.nodeType,
