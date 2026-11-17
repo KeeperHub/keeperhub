@@ -474,12 +474,13 @@ describe("chat escaping", () => {
 });
 
 describe("error text", () => {
+  const TELEGRAM_TOKEN = `123456789:${"fake_telegram_token_".padEnd(35, "0")}`;
   const SECRET_ERROR =
     "fetch https://eth-mainnet.g.alchemy.com/v2/abcdefghijklmnop1234 failed; " +
     "POST https://rpc.example.com/x?key=s3cr3t-key; Authorization: Bearer eyJhbGciOi.payload.sig; " +
     "api_key=sk_live_123456 password: hunter2 " +
     "https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXXXXXXXXXXXXXX " +
-    "https://api.telegram.org/bot123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/sendMessage";
+    `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
   const incident = {
     failureCount: 3,
     firstFailedAt: new Date("2026-10-28T11:00:00Z"),
@@ -493,7 +494,7 @@ describe("error text", () => {
     "sk_live_123456",
     "hunter2",
     "XXXXXXXXXXXXXXXXXXXXXXXX",
-    "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
+    TELEGRAM_TOKEN,
   ];
 
   it("masks keys, tokens and secret URLs in every channel", () => {
@@ -689,14 +690,15 @@ describe("wording", () => {
   });
 
   it("gives samples one Alerts settings link, not two named for a workflow", () => {
-    const ALERTS = "https://app.test/settings/org-1/alerts";
+    const ALERTS_PATH = "/settings/org-1/alerts";
+    const ALERTS = `https://app.test${ALERTS_PATH}`;
     for (const sample of ["alert", "missed", "disabled", "recovery"] as const) {
       const message = renderSample(org, sample, "Test", now);
       for (const text of [message.text, message.chat]) {
         expect(text).toContain(`Open Alerts settings: ${ALERTS}`);
         const links = text
           .split("\n")
-          .filter((line) => line.includes(ALERTS))
+          .filter((line) => line.includes(ALERTS_PATH))
           .filter((line) => !line.includes("Change who gets these"));
         expect(links).toEqual([`Open Alerts settings: ${ALERTS}`]);
         expect(text).not.toContain("Open the failing workflow");
