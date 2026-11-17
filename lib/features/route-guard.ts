@@ -7,6 +7,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { isBillingEnabled } from "@/lib/billing/feature-flag";
 import { getOrgPlan } from "@/lib/billing/plans-server";
+import { FEATURE_UPGRADE_REQUIRED_ERROR } from "./plan-gate";
 import type { WorkflowFeatureViolation, WorkflowNodeRef } from "./types";
 import { validateWorkflowFeatures } from "./workflow-validator";
 
@@ -14,8 +15,7 @@ type GuardAllowed = { blocked: false };
 type GuardBlocked = { blocked: true; response: NextResponse };
 export type FeatureGuardResult = GuardAllowed | GuardBlocked;
 
-export const FEATURE_UPGRADE_REQUIRED_ERROR =
-  "This workflow uses features that require a paid plan.";
+export { FEATURE_UPGRADE_REQUIRED_ERROR } from "./plan-gate";
 
 function buildBlockedResponse(
   violations: readonly WorkflowFeatureViolation[],

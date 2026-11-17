@@ -6,6 +6,7 @@
 import "server-only";
 
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { checkActionPlanGate } from "@/lib/features/plan-gate";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { withPluginMetrics } from "@/lib/metrics/instrumentation/plugin";
 import { recordStepMetrics } from "@/lib/metrics/instrumentation/workflow";
@@ -108,6 +109,21 @@ function redactStepError(
   return context?.nodeType?.startsWith("web3/")
     ? redactAllUrls(message)
     : redactSecretUrls(message);
+}
+
+/**
+ * Every identity the step carries for its action: `_actionType` is set by the
+ * executor and the direct-execution route, `nodeType` by the step context.
+ */
+function stepActionTypes(
+  loggedInput: unknown,
+  context: StepContext | undefined
+): (string | undefined)[] {
+  const actionType = (loggedInput as Record<string, unknown>)._actionType;
+  return [
+    typeof actionType === "string" ? actionType : undefined,
+    context?.nodeType,
+  ];
 }
 
 /**
@@ -362,7 +378,15 @@ async function withStepLoggingInner<TInput extends StepInput, TOutput>(
   const logInfo = await logStepStart(context, loggedInput);
 
   try {
-    const produced = await stepLogic();
+    // Plan gate at the layer every dispatched step passes through, so a gated
+    // action cannot run for an unpaid org via a route that skipped its guard.
+    const planBlock = await checkActionPlanGate(
+      stepActionTypes(loggedInput, context),
+      context?.organizationId
+    );
+    const produced: TOutput = planBlock
+      ? (planBlock as unknown as TOutput)
+      : await stepLogic();
 
     // A result larger than the stored-output limit fails here, before it is
     // persisted, handed back to the executor or read by a later step. Storing
