@@ -22,6 +22,25 @@ describe("isDisposableEmailDomain", () => {
     expect(isDisposableEmailDomain("user@10minutemail.com")).toBe(true);
   });
 
+  it("blocks domains added in the refreshed vendored list", () => {
+    expect(isDisposableEmailDomain("user@fldubai.com")).toBe(true);
+    expect(isDisposableEmailDomain("user@euploading.com")).toBe(true);
+  });
+
+  it("does not block mainstream providers", () => {
+    for (const domain of [
+      "gmail.com",
+      "outlook.com",
+      "hotmail.com",
+      "yahoo.com",
+      "icloud.com",
+      "proton.me",
+      "protonmail.com",
+    ]) {
+      expect(isDisposableEmailDomain(`user@${domain}`)).toBe(false);
+    }
+  });
+
   it("blocks aliasing services (privacy-proxy tier)", () => {
     expect(isDisposableEmailDomain("user@simplelogin.com")).toBe(true);
     expect(isDisposableEmailDomain("user@duck.com")).toBe(true);
