@@ -16,8 +16,12 @@ const SSLMODE_PATTERN = /([?&])sslmode=[^&]*/;
 export const HOST_NOT_ALLOWED_MESSAGE =
   "Host is not allowed: must resolve to a public address";
 
-/** Error code carried by a connection refused because its host is not public. */
-export const HOST_NOT_ALLOWED_CODE = "HOST_NOT_ALLOWED";
+/**
+ * Code of the error `lib/safe-fetch.ts` raises when it refuses a connection
+ * (`SsrfBlockedError`). Matched by value because this module must not import
+ * the server-only safe-fetch module.
+ */
+const SSRF_BLOCKED_CODE = "SSRF_BLOCKED";
 
 function safeDecodeUriComponent(s: string): string {
   try {
@@ -159,7 +163,7 @@ export function getDatabaseErrorMessage(error: unknown): string {
   // can't trigger a false match. Only canned strings are returned, never raw text.
   const { codes, text } = collectErrorChain(error);
 
-  if (codes.has(HOST_NOT_ALLOWED_CODE)) {
+  if (codes.has(SSRF_BLOCKED_CODE)) {
     return HOST_NOT_ALLOWED_MESSAGE;
   }
   if (codes.has("ECONNREFUSED") || text.includes("ECONNREFUSED")) {

@@ -1,6 +1,6 @@
 import postgres from "postgres";
 import {
-  assertConnectionUrlIsPublic,
+  assertSinglePostgresHost,
   withPublicOnlySocket,
 } from "@/lib/db/connection-host-guard";
 import {
@@ -8,6 +8,7 @@ import {
   type DatabaseConnectionConfig,
   getDatabaseErrorMessage,
   getPostgresConnectionOptions,
+  HOST_NOT_ALLOWED_MESSAGE,
 } from "@/lib/db/connection-utils";
 import { assertUrlIsPublic, SsrfBlockedError } from "@/lib/safe-fetch";
 import type { IntegrationType } from "@/lib/types/integration";
@@ -35,25 +36,28 @@ export async function testDatabaseConnection(
     );
 
     try {
-      await assertConnectionUrlIsPublic(normalizedUrl);
+      assertSinglePostgresHost(normalizedUrl);
     } catch (guardError) {
       return {
         status: "error",
         message:
           guardError instanceof Error
             ? guardError.message
-            : "Host is not allowed: must resolve to a public address",
+            : HOST_NOT_ALLOWED_MESSAGE,
       };
     }
 
     connection = postgres(
       normalizedUrl,
-      withPublicOnlySocket({
-        max: 1,
-        idle_timeout: 5,
-        connect_timeout: 5,
-        ssl,
-      })
+      withPublicOnlySocket(
+        {
+          max: 1,
+          idle_timeout: 5,
+          connect_timeout: 5,
+          ssl,
+        },
+        "database-test"
+      )
     );
 
     await connection`SELECT 1`;
@@ -94,13 +98,12 @@ export async function handleDatabaseTest(
  * Connection-test files (plugins/*\/test.ts) are reachable from the
  * client-bundled plugin registry, so they cannot import the server-only SSRF
  * guard and fetch user-supplied instance URLs with raw `fetch`. Validate every
- * user-supplied URL field here, on the server, before the test runs, mirroring
- * the assertConnectionUrlIsPublic pre-flight used for database connection
- * tests. This is a write-time DNS check; the test's own one-shot fetch happens
- * immediately after, so the rebinding window is negligible.
+ * user-supplied URL field here, on the server, before the test runs. This is a
+ * write-time DNS check; the test's own one-shot fetch happens immediately
+ * after, so the rebinding window is negligible.
  *
  * Note: `assertUrlIsPublic` is always-on; it does not honor
- * `SAFE_FETCH_SHADOW`, matching the database-test and RPC pre-flights. So
+ * `SAFE_FETCH_SHADOW`, matching the RPC pre-flight. So
  * "Test Connection" blocks a `localhost`/private instance URL even in local
  * dev, where `safeFetch` (used by workflow execution) runs in shadow mode and
  * would allow it. If you need to test against a local explorer in dev, run the

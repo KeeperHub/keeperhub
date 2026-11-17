@@ -2,17 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-const { mockPostgres, mockLookup } = vi.hoisted(() => ({
+const { mockPostgres } = vi.hoisted(() => ({
   mockPostgres: vi.fn(),
-  mockLookup: vi.fn(),
 }));
 
 vi.mock("postgres", () => ({
   default: (...args: unknown[]) => mockPostgres(...args),
-}));
-
-vi.mock("node:dns", () => ({
-  promises: { lookup: mockLookup },
 }));
 
 vi.mock("@/plugins/registry", () => ({
@@ -31,7 +26,6 @@ function makeClient(): (() => Promise<unknown>) & { end: () => Promise<void> } {
 
 beforeEach(() => {
   mockPostgres.mockReset();
-  mockLookup.mockReset();
 });
 
 describe("testDatabaseConnection", () => {
@@ -51,17 +45,22 @@ describe("testDatabaseConnection", () => {
     expect(typeof options.socket).toBe("function");
   });
 
-  it("refuses a host that resolves to a private address before any client", async () => {
-    mockLookup.mockResolvedValue([{ address: "10.0.0.5", family: 4 }]);
+  it.each([
+    [
+      "percent-encoded comma",
+      "postgres://u:p@10.0.0.5%2Cx.attacker.example/db",
+    ],
+    ["plain comma", "postgres://u:p@a.example,b.example/db"],
+  ])(
+    "rejects a multi-host connection string (%s) before any client is built",
+    async (_label, url) => {
+      const result = await testDatabaseConnection(url);
 
-    const result = await testDatabaseConnection(
-      "postgres://u:p@db.example:5432/db"
-    );
-
-    expect(result).toEqual({
-      status: "error",
-      message: HOST_NOT_ALLOWED_MESSAGE,
-    });
-    expect(mockPostgres).not.toHaveBeenCalled();
-  });
+      expect(result).toEqual({
+        status: "error",
+        message: HOST_NOT_ALLOWED_MESSAGE,
+      });
+      expect(mockPostgres).not.toHaveBeenCalled();
+    }
+  );
 });

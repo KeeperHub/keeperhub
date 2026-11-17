@@ -11,12 +11,13 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { fetchCredentials } from "@/lib/credential-fetcher";
 import {
-  assertConnectionUrlIsPublic,
+  assertSinglePostgresHost,
   withPublicOnlySocket,
 } from "@/lib/db/connection-host-guard";
 import {
   getDatabaseErrorMessage,
   getPostgresConnectionOptions,
+  HOST_NOT_ALLOWED_MESSAGE,
   type PostgresSslOption,
 } from "@/lib/db/connection-utils";
 import { MAX_CAUSE_DEPTH } from "@/lib/errors/cause-chain";
@@ -83,12 +84,15 @@ function createDatabaseClient(
 ): postgres.Sql {
   return postgres(
     normalizedUrl,
-    withPublicOnlySocket({
-      max: 1,
-      connect_timeout: connectTimeoutSeconds,
-      idle_timeout: 20,
-      ssl: ssl as false | "require" | "prefer",
-    })
+    withPublicOnlySocket(
+      {
+        max: 1,
+        connect_timeout: connectTimeoutSeconds,
+        idle_timeout: 20,
+        ssl: ssl as false | "require" | "prefer",
+      },
+      "database-query"
+    )
   );
 }
 
@@ -259,14 +263,14 @@ async function databaseQuery(
   );
 
   try {
-    await assertConnectionUrlIsPublic(normalizedUrl);
+    assertSinglePostgresHost(normalizedUrl);
   } catch (guardError) {
     return {
       success: false,
       error:
         guardError instanceof Error
           ? guardError.message
-          : "Host is not allowed: must resolve to a public address",
+          : HOST_NOT_ALLOWED_MESSAGE,
     };
   }
 

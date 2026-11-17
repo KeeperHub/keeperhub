@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   getDatabaseErrorMessage,
-  HOST_NOT_ALLOWED_CODE,
   HOST_NOT_ALLOWED_MESSAGE,
 } from "@/lib/db/connection-utils";
 
@@ -67,16 +66,21 @@ describe("getDatabaseErrorMessage", () => {
     expect(message).toContain("42P01");
   });
 
-  it("maps a top-level HOST_NOT_ALLOWED to the not-allowed message", () => {
-    const error = Object.assign(new Error(HOST_NOT_ALLOWED_MESSAGE), {
-      code: HOST_NOT_ALLOWED_CODE,
-    });
-    expect(getDatabaseErrorMessage(error)).toBe(HOST_NOT_ALLOWED_MESSAGE);
+  it("maps a top-level SSRF block to the not-allowed message without echoing it", () => {
+    const error = Object.assign(
+      new Error(
+        "Outbound request to db.example (resolved to 10.0.0.5) blocked by SSRF policy (private-ip)."
+      ),
+      { code: "SSRF_BLOCKED" }
+    );
+    const message = getDatabaseErrorMessage(error);
+    expect(message).toBe(HOST_NOT_ALLOWED_MESSAGE);
+    expect(message).not.toContain("10.0.0.5");
   });
 
-  it("maps a drizzle-wrapped HOST_NOT_ALLOWED (code on cause)", () => {
-    const error = drizzleWrapped(HOST_NOT_ALLOWED_MESSAGE, {
-      code: HOST_NOT_ALLOWED_CODE,
+  it("maps a drizzle-wrapped SSRF block (code on cause)", () => {
+    const error = drizzleWrapped("blocked by SSRF policy (private-ip).", {
+      code: "SSRF_BLOCKED",
     });
     expect(getDatabaseErrorMessage(error)).toBe(HOST_NOT_ALLOWED_MESSAGE);
   });
