@@ -22,10 +22,13 @@ import {
   createEmptyGroup,
   createEmptyRule,
   isUnaryOperator,
+} from "@/lib/workflow/nodes/condition/builder-utils";
+import {
+  closedOperatorLabel,
   OPERATOR_GROUPS,
   OPERATOR_METADATA,
   operatorsForCategory,
-} from "@/lib/workflow/nodes/condition/builder-utils";
+} from "@/lib/workflow/nodes/condition/operator-metadata";
 import { cn } from "@/lib/utils";
 
 type ConditionQueryBuilderProps = {
@@ -75,10 +78,13 @@ function RuleRow({
         }
         value={rule.operator}
       >
-        <SelectTrigger className="h-9 w-[120px] shrink-0 text-xs">
-          <SelectValue />
+        <SelectTrigger
+          className="h-9 w-36 shrink-0 text-xs"
+          title={closedOperatorLabel(rule.operator)}
+        >
+          <SelectValue>{closedOperatorLabel(rule.operator)}</SelectValue>
         </SelectTrigger>
-        <SelectContent className="max-w-[280px]">
+        <SelectContent className="max-w-xs">
           {OPERATOR_OPTION_GROUPS.map((optionGroup) => (
             <SelectGroup key={optionGroup.label}>
               <SelectLabel>{optionGroup.label}</SelectLabel>

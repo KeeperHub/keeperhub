@@ -14,7 +14,7 @@ import {
 } from "@/lib/web3/solidity-values";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST } from "@/lib/workflow/executor/system-action-types";
-import { hasTemplateToken } from "@/lib/workflow/template-ref";
+import { valueContainsTemplate } from "@/lib/workflow/template-ref";
 import {
   type ActionConfigField,
   type ActionConfigFieldBase,
@@ -68,6 +68,7 @@ const SUMMARY_NAME_PRIORITY: Record<ActionConfigValidationIssueCode, number> = {
   UNKNOWN_ACTION_TYPE: 0,
   MISSING_REQUIRED_FIELD: 1,
   INVALID_FIELD_TYPE: 1,
+  INVALID_FIELD_VALUE: 1,
   UNKNOWN_FIELD: 2,
 };
 
@@ -173,7 +174,8 @@ export type ActionConfigValidationIssueCode =
   | "UNKNOWN_ACTION_TYPE"
   | "UNKNOWN_FIELD"
   | "MISSING_REQUIRED_FIELD"
-  | "INVALID_FIELD_TYPE";
+  | "INVALID_FIELD_TYPE"
+  | "INVALID_FIELD_VALUE";
 
 export type ActionConfigValidationIssue = {
   code: ActionConfigValidationIssueCode;
@@ -357,10 +359,6 @@ function flattenConfigFields(
   }
 
   return flattened;
-}
-
-function valueContainsTemplate(value: unknown): boolean {
-  return typeof value === "string" && hasTemplateToken(value);
 }
 
 function isJsonArrayString(value: unknown): boolean {
@@ -562,6 +560,7 @@ function validateFieldValue(
             expected: field.solidityType ?? "int",
             received: value,
           };
+    case "switch":
     case "protocol-bool":
       if (valueContainsTemplate(value)) {
         return { valid: true };
@@ -760,6 +759,7 @@ export function validateWorkflowActionConfigs(
     }
 
     const identity = nodeIdentity(node, `nodes[${nodeIndex}]`);
+    const issuesBeforeNode = issues.length;
     const fields = flattenConfigFields(action.configFields);
     const fieldsByKey = new Map(fields.map((field) => [field.key, field]));
     const aliasMap = getLegacyAliasMap(actionType);
@@ -860,6 +860,25 @@ export function validateWorkflowActionConfigs(
           message: `Invalid value for field "${field.key}" on action "${actionType}".`,
         });
       }
+    }
+
+    // Cross-field rules run once the per-field checks pass, so one mistake
+    // is not reported twice.
+    const crossFieldIssue =
+      issues.length === issuesBeforeNode
+        ? action.validateConfig?.(config)
+        : undefined;
+    if (crossFieldIssue) {
+      issues.push({
+        code: "INVALID_FIELD_VALUE",
+        path: `nodes[${nodeIndex}].data.config.${crossFieldIssue.field}`,
+        actionType,
+        field: crossFieldIssue.field,
+        nodeId: identity.nodeId,
+        nodeLabel: identity.nodeLabel,
+        received: config[crossFieldIssue.field],
+        message: crossFieldIssue.message,
+      });
     }
   }
 

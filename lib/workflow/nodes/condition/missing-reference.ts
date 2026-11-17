@@ -15,21 +15,26 @@
  * author did not intend.
  */
 
+// A symbol key, so data parsed from JSON (an upstream item, a webhook body)
+// can never pass for the marker. It must never cross a step boundary: a
+// serialized marker loses the key and reads as ordinary data.
+const MISSING_REFERENCE = Symbol("keeperhub.missingReference");
+
 export type MissingReference = {
-  readonly __keeperhubMissingReference: true;
+  readonly [MISSING_REFERENCE]: true;
   /** Resolver diagnostic, including the available field names. */
   readonly detail: string;
 };
 
 export function makeMissingReference(detail: string): MissingReference {
-  return { __keeperhubMissingReference: true, detail };
+  return { [MISSING_REFERENCE]: true, detail };
 }
 
 export function isMissingReference(value: unknown): value is MissingReference {
   return (
     typeof value === "object" &&
     value !== null &&
-    (value as MissingReference).__keeperhubMissingReference === true
+    (value as Partial<MissingReference>)[MISSING_REFERENCE] === true
   );
 }
 

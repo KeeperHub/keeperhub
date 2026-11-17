@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-
 import type {
   ConditionGroup,
   ConditionRule,
@@ -11,6 +10,7 @@ import {
   isUnaryOperator,
   visualConditionToExpression,
 } from "@/lib/workflow/nodes/condition/builder-utils";
+import { closedOperatorLabel } from "@/lib/workflow/nodes/condition/operator-metadata";
 
 function rule(
   left: string,
@@ -761,5 +761,15 @@ describe("condition-builder-utils", () => {
         expect(r.operator).toBe("exists");
       });
     });
+  });
+});
+
+describe("closedOperatorLabel", () => {
+  it("names the group only where the label repeats", () => {
+    expect(closedOperatorLabel("contains")).toBe("Text: contains");
+    expect(closedOperatorLabel("arrayContains")).toBe("Array: contains");
+    expect(closedOperatorLabel("objectIsEmpty")).toBe("Object: is empty");
+    expect(closedOperatorLabel("startsWith")).toBe("starts with");
+    expect(closedOperatorLabel("===")).toBe("equals");
   });
 });

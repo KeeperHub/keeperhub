@@ -1,13 +1,23 @@
 import type { IntegrationPlugin } from "@/plugins/registry";
 import { registerIntegration } from "@/plugins/registry-core";
 import { DataIcon } from "./icon";
+import { checkFilterConfig } from "./steps/filter-core";
+import {
+  CASE_FOLDING_FILTER_OPERATORS,
+  DEFAULT_FILTER_OPERATOR,
+  FILTER_OPERATOR_OPTIONS,
+  filterOperatorLabel,
+  KEEP_ALL_OPERATOR,
+  PRESENCE_FILTER_OPERATORS,
+  VALUELESS_FILTER_OPERATORS,
+} from "./steps/filter-operators";
 
 const dataPlugin: IntegrationPlugin = {
   type: "data",
   egress: "none",
   label: "Data",
   description:
-    "Reshape workflow data without writing a script: encode and decode strings, convert numbers between decimal and hex, hash a value with keccak256 or SHA-2, pull named fields out of upstream node output, flatten monitoring results into a findings list, and hold static configuration on the canvas.",
+    "Reshape workflow data without writing a script: encode and decode strings, convert numbers between decimal and hex, hash a value with keccak256 or SHA-2, pull named fields out of upstream node output, filter an array or pull one field from every item, flatten monitoring results into a findings list, and hold static configuration on the canvas.",
   icon: DataIcon,
   requiresCredentials: false,
   formFields: [],
@@ -206,6 +216,180 @@ const dataPlugin: IntegrationPlugin = {
             { value: "fail", label: "Fail the step" },
           ],
           defaultValue: "null",
+        },
+      ],
+    },
+    {
+      slug: "filter",
+      label: "Filter Array",
+      description:
+        "Keep only the items of an array that pass a test, using the Condition operators plus does not contain / start with / end with, and pull one field out of every match into a flat array. Reports the source position (and an optional label) of each match and how many items could not be tested. Choose keep every item to only pull the field.",
+      category: "Data",
+      stepFunction: "filterStep",
+      stepImportPath: "filter",
+      requiresCredentials: false,
+      validateConfig: checkFilterConfig,
+      outputFields: [
+        { field: "success", description: "Whether filtering succeeded" },
+        { field: "items", description: "The items that passed the test" },
+        {
+          field: "values",
+          description:
+            "The Return field of each matching item, as a flat array (null where an item has no such field)",
+        },
+        {
+          field: "indexes",
+          description:
+            "Source position (from 0) of each matching item, to look up a parallel array",
+        },
+        {
+          field: "labels",
+          description:
+            "The Labels entry of each matching item (empty when Labels is not set), e.g. the clipper names a batch read was given",
+        },
+        { field: "count", description: "Number of matching items" },
+        {
+          field: "skippedIndexes",
+          description: "Source position of each item the test could not apply to",
+        },
+        {
+          field: "skippedLabels",
+          description:
+            "The Labels entry of each skipped item (empty when Labels is not set), e.g. the spell whose read failed",
+        },
+        {
+          field: "missingReturn",
+          description:
+            "Number of matching items that have no Return field; their value is null",
+        },
+        {
+          field: "skipped",
+          description:
+            "Number of items the test could not apply to, e.g. a missing field or null under a number test",
+        },
+        { field: "total", description: "Number of items in the source" },
+        { field: "error", description: "Error message if filtering failed" },
+      ],
+      configFields: [
+        {
+          key: "source",
+          label: "Source",
+          type: "template-textarea",
+          required: true,
+          rows: 3,
+          placeholder: "{{@node1:Batch Read.results}}",
+          helpTip:
+            "A JSON array, usually an upstream array field. Up to 10,000 items.",
+          example: '[{"success": true, "result": "0x01"}]',
+        },
+        {
+          key: "field",
+          label: "Field to test",
+          type: "template-input",
+          placeholder: "success or meta.name",
+          helpText:
+            "Leave blank to test each item itself, e.g. an array of names.",
+          helpTip: `Dotted path inside each item, e.g. success, meta.name or topics.1 (a number picks a list entry).\n\nAn item without this field counts as skipped, except under the tests that check for a missing value: ${PRESENCE_FILTER_OPERATORS.map(
+            (operator) => filterOperatorLabel(operator)
+          ).join(", ")}.`,
+          example: "success",
+          showWhen: { field: "operator", notEquals: KEEP_ALL_OPERATOR },
+        },
+        {
+          key: "operator",
+          label: "Operator",
+          type: "select",
+          required: true,
+          options: FILTER_OPERATOR_OPTIONS.map((option) => ({
+            value: option.value,
+            label: option.label,
+            group: option.group,
+            description: option.description,
+          })),
+          defaultValue: DEFAULT_FILTER_OPERATOR,
+          helpTip:
+            "The Condition tests, plus does not contain, does not start with and does not end with.\n\nEach test only looks at items it applies to: number tests at numbers, numeric text and hex; boolean tests at true and false; text tests at text and numbers; array and object tests at lists and objects. By default any other item fails the step; see If an item can't be tested.",
+          example: "isTrue",
+        },
+        {
+          key: "value",
+          label: "Value",
+          type: "template-input",
+          required: true,
+          placeholder: "e.g. EMSP_, true or 100",
+          helpTip:
+            'What each item is compared with. Spaces around it are trimmed; quote it to keep them.\n\nText tests and has key: the text as typed, quotes removed.\nNumber tests: a number, e.g. 100, 1.5 or 0x64.\nArray length: a whole number.\nOther tests: 5 is a number, true and false are booleans, null is null, anything else is text. Quote to force text, e.g. "true" matches the text, not the boolean. Quoting a number changes nothing under equals, which compares numbers by value.',
+          showWhen: {
+            all: VALUELESS_FILTER_OPERATORS.map((operator) => ({
+              field: "operator",
+              notEquals: operator,
+            })),
+          },
+        },
+        {
+          key: "ignoreCase",
+          label: "Ignore case",
+          type: "switch",
+          defaultValue: "false",
+          helpText:
+            "Match text whatever its letter case, e.g. a checksummed address against a lowercase one.",
+          showWhen: {
+            all: FILTER_OPERATOR_OPTIONS.map((option) => option.value)
+              .filter((value) => !CASE_FOLDING_FILTER_OPERATORS.includes(value))
+              .map((operator) => ({ field: "operator", notEquals: operator })),
+          },
+        },
+        {
+          key: "returnField",
+          label: "Return field",
+          type: "template-input",
+          placeholder: "result",
+          defaultValue: "",
+          helpTip:
+            "Dotted path pulled from each matching item into values. Leave blank to use Field to test. With Return field blank and either Field to test blank or keep every item, values holds the whole items.\n\nExample: Field to test success, Return field result. values then lists the result of every successful call.",
+        },
+        {
+          key: "missingReturn",
+          label: "If a match has no Return field",
+          type: "select",
+          options: [
+            { value: "keep", label: "Keep it, with null in values" },
+            { value: "fail", label: "Fail the step" },
+          ],
+          defaultValue: "keep",
+          helpTip:
+            "A matching item without the Return field gets null in values and is counted in missingReturn. Fail the step instead when a missing field means the path is wrong, e.g. a typo in Return field.",
+        },
+        {
+          key: "labels",
+          label: "Labels",
+          type: "template-textarea",
+          rows: 2,
+          // Blank, so the AI prompt example does not seed placeholder text.
+          defaultValue: "",
+          placeholder:
+            '{{@node1:Spell names.result}} or ["MCD_CLIP_ETH_A", "MCD_CLIP_WBTC_A"]',
+          helpText:
+            "Optional. A list as long as Source, so an alert can name what matched.",
+          helpTip:
+            "A JSON array with one entry per Source item, in the same order, e.g. the names of the contracts a batch read was given. The entries at the matching positions come out in labels, and those of skipped items in skippedLabels.\n\nIt must have exactly as many entries as Source, or the step fails.",
+        },
+        {
+          key: "untestable",
+          label: "If an item can't be tested",
+          type: "select",
+          options: [
+            { value: "fail", label: "Fail the step" },
+            { value: "skip", label: "Skip it and count it in skipped" },
+          ],
+          defaultValue: "fail",
+          helpTip:
+            "An item can't be tested when the field is missing, or its value is the wrong kind for the test: null under a number or boolean test, an object under a text test. A reverted batch read has result null, so it counts here.\n\nFail the step is the default, so a read an attacker can make revert cannot pass quietly. Skip keeps the run going: branch on skipped > 0 to alert on it, and use skippedLabels to name the items.",
+          showWhen: {
+            all: [KEEP_ALL_OPERATOR, ...PRESENCE_FILTER_OPERATORS].map(
+              (operator) => ({ field: "operator", notEquals: operator })
+            ),
+          },
         },
       ],
     },

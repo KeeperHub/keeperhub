@@ -43,6 +43,7 @@ import {
   PagerDutyTestNodeButton,
   PagerDutyTriggerNodeField,
 } from "@/components/workflow/config/pagerduty-resource-field";
+import { PlainSwitchField } from "@/components/workflow/config/plain-switch-field";
 import { SponsorGasField } from "@/components/workflow/config/sponsor-gas-field";
 import { TokenSelectField } from "@/components/workflow/config/token-select-field";
 import { integrationsAtom } from "@/lib/integrations-store";
@@ -697,6 +698,23 @@ registerFieldRenderer(
       label={field.label}
       onChange={(checked) => onUpdateConfig(field.key, checked)}
       value={config[field.key]}
+    />
+  )
+);
+
+/**
+ * Generic Switch Field
+ * A plain boolean toggle; the step reads true or "true" as on.
+ */
+registerFieldRenderer(
+  "switch",
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <PlainSwitchField
+      config={config}
+      disabled={disabled}
+      field={field}
+      key={field.key}
+      onUpdateConfig={onUpdateConfig}
     />
   )
 );

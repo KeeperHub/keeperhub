@@ -1,0 +1,197 @@
+// @vitest-environment jsdom
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Select, SelectContent, SelectItem } from "@/components/ui/select";
+import {
+  isSwitchOn,
+  PlainSwitchField,
+} from "@/components/workflow/config/plain-switch-field";
+import {
+  groupedSelectLabel,
+  groupSelectOptions,
+  qualifiedOptionLabel,
+} from "@/lib/workflow/editor/select-option-groups";
+import type { ActionConfigFieldBase } from "@/plugins/registry";
+
+describe("groupSelectOptions", () => {
+  it("puts consecutive options of one group under one header, in order", () => {
+    const groups = groupSelectOptions([
+      { value: "a", label: "A", group: "Text" },
+      { value: "b", label: "B", group: "Text" },
+      { value: "c", label: "C", group: "Number" },
+      { value: "d", label: "D" },
+    ]);
+    expect(groups.map((group) => group.label)).toEqual(["Text", "Number", ""]);
+    expect(groups[0].options.map((option) => option.value)).toEqual(["a", "b"]);
+  });
+
+  it("keeps an ungrouped list as one headerless group", () => {
+    const groups = groupSelectOptions([
+      { value: "a", label: "A" },
+      { value: "b", label: "B" },
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].label).toBe("");
+  });
+});
+
+describe("isSwitchOn", () => {
+  it('reads true or "true", falling back to the default while unset', () => {
+    expect(isSwitchOn(true, undefined)).toBe(true);
+    expect(isSwitchOn("true", undefined)).toBe(true);
+    expect(isSwitchOn(undefined, "true")).toBe(true);
+    expect(isSwitchOn(false, "true")).toBe(false);
+    expect(isSwitchOn(undefined, "false")).toBe(false);
+    expect(isSwitchOn(undefined, undefined)).toBe(false);
+  });
+});
+
+describe("PlainSwitchField", () => {
+  const field: ActionConfigFieldBase = {
+    key: "ignoreCase",
+    label: "Ignore case",
+    type: "switch",
+    defaultValue: "false",
+    helpText: "Match text whatever its letter case.",
+  };
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(() => root.unmount());
+    container.remove();
+  });
+
+  async function render(
+    config: Record<string, unknown>,
+    onUpdateConfig = vi.fn()
+  ): Promise<HTMLElement> {
+    await act(async () =>
+      root.render(
+        <PlainSwitchField
+          config={config}
+          field={field}
+          onUpdateConfig={onUpdateConfig}
+        />
+      )
+    );
+    const toggle = container.querySelector<HTMLElement>('[role="switch"]');
+    if (!toggle) {
+      throw new Error("no switch rendered");
+    }
+    return toggle;
+  }
+
+  it("starts off, with its label and help text", async () => {
+    const toggle = await render({});
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain("Ignore case");
+    expect(container.textContent).toContain(
+      "Match text whatever its letter case."
+    );
+  });
+
+  it("writes a boolean when toggled", async () => {
+    const onUpdateConfig = vi.fn();
+    const toggle = await render({}, onUpdateConfig);
+    await act(async () => toggle.click());
+    expect(onUpdateConfig).toHaveBeenCalledWith("ignoreCase", true);
+  });
+
+  it("shows a stored true as on", async () => {
+    const toggle = await render({ ignoreCase: true });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+});
+
+describe("groupedSelectLabel", () => {
+  const options = [
+    { value: "contains", label: "contains", group: "Text" },
+    { value: "arrayContains", label: "contains", group: "Array" },
+    { value: "startsWith", label: "starts with", group: "Text" },
+    { value: "plain", label: "plain" },
+  ];
+
+  it("names the group only where the label repeats", () => {
+    expect(groupedSelectLabel(options, "contains")).toBe("Text: contains");
+    expect(groupedSelectLabel(options, "arrayContains")).toBe(
+      "Array: contains"
+    );
+    expect(groupedSelectLabel(options, "startsWith")).toBe("starts with");
+    expect(groupedSelectLabel(options, "plain")).toBe("plain");
+    expect(groupedSelectLabel(options, "missing")).toBeUndefined();
+  });
+
+  it("always names the group in the full label used by messages", () => {
+    expect(qualifiedOptionLabel(options, "startsWith")).toBe(
+      "Text: starts with"
+    );
+  });
+});
+
+describe("SelectItem hints and SwitchField help", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(() => root.unmount());
+    container.remove();
+  });
+
+  it("shows an option's hint as visible text in the open list", async () => {
+    await act(async () =>
+      root.render(
+        <Select open value="a">
+          <SelectContent>
+            <SelectItem description="Text includes the value" value="a">
+              contains
+            </SelectItem>
+          </SelectContent>
+        </Select>
+      )
+    );
+    const option = document.body.querySelector('[role="option"]');
+    expect(option?.textContent).toContain("contains");
+    expect(option?.textContent).toContain("Text includes the value");
+    const describedBy = option?.getAttribute("aria-describedby");
+    expect(document.getElementById(describedBy ?? "")?.textContent).toBe(
+      "Text includes the value"
+    );
+  });
+
+  it("links the switch to its help text for screen readers", async () => {
+    await act(async () =>
+      root.render(
+        <PlainSwitchField
+          config={{}}
+          field={{
+            key: "ignoreCase",
+            label: "Ignore case",
+            type: "switch",
+            helpText: "Match text whatever its letter case.",
+          }}
+          onUpdateConfig={vi.fn()}
+        />
+      )
+    );
+    const toggle = container.querySelector('[role="switch"]');
+    const describedBy = toggle?.getAttribute("aria-describedby");
+    expect(describedBy).toBe("ignoreCase-description");
+    expect(document.getElementById(describedBy ?? "")?.textContent).toBe(
+      "Match text whatever its letter case."
+    );
+  });
+});
