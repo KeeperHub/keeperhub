@@ -474,12 +474,13 @@ describe("chat escaping", () => {
 });
 
 describe("error text", () => {
+  const TELEGRAM_TOKEN = `123456789:${"fake_telegram_token_".padEnd(35, "0")}`;
   const SECRET_ERROR =
     "fetch https://eth-mainnet.g.alchemy.com/v2/abcdefghijklmnop1234 failed; " +
     "POST https://rpc.example.com/x?key=s3cr3t-key; Authorization: Bearer eyJhbGciOi.payload.sig; " +
     "api_key=sk_live_123456 password: hunter2 " +
     "https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXXXXXXXXXXXXXX " +
-    "https://api.telegram.org/bot123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/sendMessage";
+    `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
   const incident = {
     failureCount: 3,
     firstFailedAt: new Date("2026-10-28T11:00:00Z"),
@@ -493,7 +494,7 @@ describe("error text", () => {
     "sk_live_123456",
     "hunter2",
     "XXXXXXXXXXXXXXXXXXXXXXXX",
-    "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
+    TELEGRAM_TOKEN,
   ];
 
   it("masks keys, tokens and secret URLs in every channel", () => {
