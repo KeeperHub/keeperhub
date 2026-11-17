@@ -20,7 +20,6 @@ import {
   ORG_ALERTS_RESUMED,
   PAUSE_HEADLINE,
   pauseEffect,
-  RESUME_ALERTS,
 } from "./pause-copy";
 import { isOutOfFunds } from "./streak";
 import {
@@ -1376,7 +1375,7 @@ function renderPauseNotice(
       user(name),
       `${pauseUntilText(input.until, input.untilItWorks)}.`,
       ...reasonParts(input.reason),
-      ` ${pauseEffect("workflow")} while its alerts are paused. Not expected? Press ${RESUME_ALERTS} in the workflow's Alerts panel.`,
+      ` ${pauseEffect("workflow")} while its alerts are paused. Not expected? Turn its Status switch back on in the workflow's Alerts panel.`,
     ];
   } else if (input.kind === "workflow_alerts_resumed") {
     const who = actorNames(input.by, input.byAccount);

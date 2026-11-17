@@ -1285,8 +1285,8 @@ export function WorkflowFailureAlerts({
             </p>
           ) : (
             <p>
-              On: its alerts go out using the rules it uses. A pause holds them
-              whichever rules it uses.
+              On: its alerts go out under the rules it uses. A pause holds them
+              either way.
             </p>
           )}
           {canManage && paused && panel === null && (

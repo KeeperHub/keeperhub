@@ -348,8 +348,12 @@ test.describe("Failure alerts", () => {
     await pauseOpen.click();
     const pause = section.getByTestId("failure-alerts-workflow-pause");
     await expect(pause).toBeVisible();
+    // Like the org switch: it stays on, and locked, until the pause is confirmed.
+    await expect(pauseOpen).toBeDisabled();
+    await expect(pauseOpen).toBeChecked();
     await page.keyboard.press("Escape");
     await expect(pause).toHaveCount(0);
+    await expect(pauseOpen).toBeFocused();
     await pauseOpen.click();
     // A pause needs a length and a reason; nothing saves until both are given.
     await pause.locator('[data-pause="24h"]').click();
@@ -397,6 +401,9 @@ test.describe("Failure alerts", () => {
       .toBeNull();
 
     await expect(section).toHaveAttribute("data-paused", "false");
+    await expect(
+      section.getByTestId("failure-alerts-workflow-state")
+    ).toHaveText("On");
     // Both tabs show Rules, Email and Methods; a tab only shows, its button switches.
     await expect(section.getByTestId("failure-alerts-tab-org")).toHaveAttribute(
       "data-state",

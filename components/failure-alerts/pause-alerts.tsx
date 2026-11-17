@@ -64,6 +64,14 @@ function timeLeft(ms: number): string {
   return `in ${Math.round(ms / DAY_MS)} days`;
 }
 
+/** Only people who can resume are told the switch resumes. */
+function switchLabel(paused: boolean, canManage: boolean): string {
+  if (!paused) {
+    return "Alerts on";
+  }
+  return canManage ? "Alerts paused. Turn on to resume now" : "Alerts paused";
+}
+
 /**
  * On or Paused, and the switch: turning it off opens the pause form (it stays
  * on until the pause is confirmed); turning it on resumes at once.
@@ -100,9 +108,7 @@ export function AlertsSwitch({
         {paused ? PAUSED : "On"}
       </span>
       <Switch
-        aria-label={
-          paused ? "Alerts paused. Turn on to resume now" : "Alerts on"
-        }
+        aria-label={switchLabel(paused, canManage)}
         checked={!paused}
         data-testid={`${testId}-switch`}
         disabled={!canManage || busy}
