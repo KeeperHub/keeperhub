@@ -28,14 +28,20 @@ export function SettingsNavList({
   variant?: "rail" | "menu";
 }): React.ReactElement {
   const pathname = usePathname();
-  const { isAdmin, isOwner, isLoading, organizationId } = useSettingsContext();
+  const { alertsEnabled, isAdmin, isOwner, isLoading, organizationId } =
+    useSettingsContext();
   const noOrganization = !(organizationId || isLoading);
   const { invitations } = useUserInvitations();
   const menu = variant === "menu";
 
   const groups = SETTINGS_NAV.map((group) => ({
     items: group.items.filter((item) =>
-      isSettingsItemVisible(item, { isAdmin, isOwner, noOrganization })
+      isSettingsItemVisible(item, {
+        alertsEnabled,
+        isAdmin,
+        isOwner,
+        noOrganization,
+      })
     ),
     label: group.label,
   })).filter((group) => group.items.length > 0);

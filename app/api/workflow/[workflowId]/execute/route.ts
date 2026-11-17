@@ -41,6 +41,7 @@ import { getWorkflowAccess } from "@/lib/workflow/access";
 import { hashWorkflowDefinition } from "@/lib/workflow/content-hash";
 import { executeWorkflowInBackground } from "@/lib/workflow/execute-in-background";
 import { loadWorkflowForExecution } from "@/lib/workflow/load-for-execution";
+import { markRunRefused } from "@/lib/workflow/refused-runs";
 import {
   resolveExecutionInput,
   topLevelInputDeprecationHeaders,
@@ -599,18 +600,17 @@ export async function POST(
       paygOverflow: executionGuard.limitResult?.paygOverflow === true,
     });
     if (paygCharge.applicable && !paygCharge.ok) {
-      await db
-        .update(workflowExecutions)
-        .set({
-          status: "error",
-          error: paygCharge.message,
-          errorCategory: "billing",
-          errorType: "user",
-          // Unpaid means the run never started, so it consumes no quota.
-          billable: false,
-          completedAt: new Date(),
-        })
-        .where(eq(workflowExecutions.id, executionId));
+      // Unpaid: refused before it started, so it consumes no quota.
+      await markRunRefused(
+        {
+          executionId,
+          fromStatuses: ["phantom", "pending", "running"],
+          reason: paygCharge.message,
+          category: ErrorCategory.BILLING,
+          at: new Date(),
+        },
+        db
+      );
       return recordIdempotentResponse(
         idem,
         withDeprecation(

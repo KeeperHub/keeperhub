@@ -184,8 +184,9 @@ const NEW_WORKFLOW_FAILED_MESSAGE = "Failed to create workflow";
  * New Workflow, in the sidebar and in the phone drawer: makes a workflow and
  * hands it to `onCreated`. An anonymous visitor who already has their one
  * workflow is told why and sent to it; a workflow that could not be made is
- * reported (and logged) and the user sent home. `onSettled` runs once the
- * workflow is made or not, before anything navigates.
+ * reported (and logged) and the user sent home, or kept on the page with
+ * `stayOnFailure`. `onSettled` runs once the workflow is made or not, before
+ * anything navigates. Resolves false when no workflow could be made.
  */
 export async function runNewWorkflow({
   isAnonymous,
@@ -193,13 +194,16 @@ export async function runNewWorkflow({
   push,
   onSettled,
   onCreated,
+  stayOnFailure = false,
 }: {
   isAnonymous: boolean;
   hasSession: boolean;
   push: (href: string) => void;
   onSettled?: () => void;
   onCreated: (workflowId: string) => Promise<void> | void;
-}): Promise<void> {
+  /** Set after an unsaved-changes Leave, so a failure keeps the page. */
+  stayOnFailure?: boolean;
+}): Promise<boolean> {
   let started: Awaited<ReturnType<typeof startNewWorkflow>>;
   try {
     started = await startNewWorkflow({ isAnonymous, hasSession });
@@ -207,14 +211,17 @@ export async function runNewWorkflow({
     onSettled?.();
     console.error("[New Workflow] Could not create a workflow", error);
     toast.error(NEW_WORKFLOW_FAILED_MESSAGE);
-    push("/");
-    return;
+    if (!stayOnFailure) {
+      push("/");
+    }
+    return false;
   }
   onSettled?.();
   if (!started.created) {
     toast.info(ANONYMOUS_WORKFLOW_CAP_MESSAGE);
     push(`/workflows/${started.id}`);
-    return;
+    return true;
   }
   await onCreated(started.id);
+  return true;
 }

@@ -33,7 +33,7 @@ import {
   SendMessageCommand,
   SQSClient,
 } from "@aws-sdk/client-sqs";
-import { and, eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import {
@@ -51,9 +51,22 @@ import { generateId } from "../lib/utils/id";
 import { ErrorCategory, logSystemError } from "../lib/logging";
 import { checkConcurrencyLimit } from "../lib/workflow/concurrency";
 import { hashWorkflowDefinition } from "../lib/workflow/content-hash";
+import {
+  insertRefusedRun,
+  markRunRefused,
+} from "../lib/workflow/refused-runs";
 import { SHUTDOWN_TIMEOUT_MS } from "../lib/workflow/executor/runner-constants";
 import { loadWorkflowForExecution } from "../lib/workflow/load-for-execution";
+import {
+  notExecutableRefusal,
+  SCHEDULE_INVALID_REFUSAL,
+  WORKFLOW_NOT_FOUND_REFUSAL,
+} from "../lib/workflow/not-executable";
 import type { WorkflowNode } from "../lib/workflow/store";
+import {
+  EXECUTION_LIMIT_REFUSAL,
+  planFeatureRefusalMessage,
+} from "../lib/billing/dispatch-refusal";
 import { chargePaygExecution } from "../lib/billing/payg/charge";
 import { PAYG_OVERFLOW_REASON } from "../lib/billing/payg/constants";
 import { type ApiExecuteTriggerType, executeViaApi } from "./api-execute";
@@ -161,30 +174,20 @@ async function settlePaygOverflow(params: {
     `[Executor] PAYG charge blocked ${params.triggerType} trigger for workflow ${params.workflowId}: org=${params.organizationId} reason=${charge.reason}`
   );
   if (params.claimedStatus === "running") {
-    const resolved = await db
-      .update(workflowExecutions)
-      .set({
-        // Refused before it started: 'skipped', not 'error'. Same reasoning as
-        // resolveToSkipped - an unpaid charge is not a failed run.
-        status: "skipped",
-        error: charge.message,
-        errorCategory: "billing",
-        errorType: "user",
-        // Unpaid means the run never started, so it consumes no quota.
-        billable: false,
-        completedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(workflowExecutions.id, params.executionId),
-          eq(workflowExecutions.status, "running")
-        )
-      )
-      .returning({ id: workflowExecutions.id });
+    // Refused before it started (an unpaid charge is not a failed run).
+    const resolved = await markRunRefused(
+      {
+        executionId: params.executionId,
+        fromStatuses: ["running"],
+        reason: charge.message,
+        category: "billing",
+        at: new Date(),
+      },
+      db
+    );
 
-    // The row no longer carries an error status, so nothing else counts it.
     // Gated on the CAS matching so a re-delivery cannot double-count.
-    if (resolved.length > 0) {
+    if (resolved) {
       await recordSkippedSample(db, {
         workflowId: params.workflowId,
         reason: "payg_unpaid",
@@ -194,7 +197,6 @@ async function settlePaygOverflow(params: {
     await resolveToSkipped(db, params.executionId, {
       error: charge.message,
       errorCategory: "billing",
-      errorType: "user",
       reason: "payg_unpaid",
     });
   }
@@ -485,7 +487,7 @@ async function processExecutorMessage(
     console.error(`[Executor] Workflow not found: ${workflowId}`);
     await discardPhantomRow(db, message.executionId, {
       reason: "not_found",
-      error: "Execution skipped: workflow not found.",
+      error: WORKFLOW_NOT_FOUND_REFUSAL,
     });
     return;
   }
@@ -495,7 +497,7 @@ async function processExecutorMessage(
     );
     await discardPhantomRow(db, message.executionId, {
       reason: loaded.reason,
-      error: `Execution skipped: workflow is not executable (${loaded.reason}).`,
+      error: notExecutableRefusal(loaded.reason),
     });
     return;
   }
@@ -518,7 +520,7 @@ async function processExecutorMessage(
     if (!valid) {
       await discardPhantomRow(db, message.executionId, {
         reason: "schedule_invalid",
-        error: "Execution skipped: schedule is disabled or no longer exists.",
+        error: SCHEDULE_INVALID_REFUSAL,
       });
       return;
     }
@@ -536,10 +538,8 @@ async function processExecutorMessage(
     // it surfaces correctly instead of being aged to a system P-code.
     // No phantom -> keep the prior silent-skip behaviour.
     await resolveToSkipped(db, message.executionId, {
-      error:
-        "Execution skipped: your plan's monthly execution limit has been reached.",
+      error: EXECUTION_LIMIT_REFUSAL,
       errorCategory: "billing",
-      errorType: "user",
       reason: "execution_limit",
     });
     return;
@@ -554,79 +554,53 @@ async function processExecutorMessage(
     const gatedFeatureIds = featureResult.violations
       .map((v) => v.featureId)
       .join(",");
-    const errorMessage = `Workflow uses features that require a paid plan: ${featureResult.violations
-      .map((v) => v.feature.name)
-      .join(", ")}`;
+    const errorMessage = planFeatureRefusalMessage(
+      featureResult.violations.map((v) => v.feature.name)
+    );
     console.warn(
       `[Executor] Feature guard blocked ${triggerType} trigger for workflow ${workflowId}: org=${workflow.organizationId} gated=${gatedFeatureIds}`
     );
-    // Record a failed execution row so the user sees this in their dashboard
-    // instead of the trigger silently vanishing. Matches the shape of a regular
-    // step failure (status=error, completedAt set) so the rest of the UI
-    // and metrics pipeline pick it up uniformly.
-    const blockedInput = buildInput(message);
+    const blockedInput = toJsonSafe(buildInput(message)) as Record<
+      string,
+      unknown
+    >;
     const blockedUserId =
       "userId" in message ? message.userId : workflow.userId;
 
-    // KEEP-693: if a pre-created row exists for this trigger, resolve it in
-    // place to the refused (billing/user) state rather than inserting a second
-    // row -- and so the reaper does not later age the orphan to a system P-code.
-    // Matches both 'phantom' (scheduler/event-tracker pre-created) and 'pending'
-    // (API pre-created for manual triggers). Falls through to an insert when
-    // there is no executionId (legacy messages or no pre-create).
-    let blockedResolved = false;
-    if (message.executionId) {
-      const resolved = await db
-        .update(workflowExecutions)
-        .set({
-          // A gated action means the run was refused, not that it failed.
-          status: "skipped",
-          error: errorMessage,
-          errorCategory: "billing",
-          errorType: "user",
-          billable: false,
-          input: toJsonSafe(blockedInput) as Record<string, unknown>,
-          completedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(workflowExecutions.id, message.executionId),
-            inArray(workflowExecutions.status, ["phantom", "pending"])
-          )
+    // Resolve a pre-created row in place, else (legacy) record its hourly row. A failed
+    // write throws; processMessage logs it and deletes the message (no redelivery).
+    const blockedResolved = message.executionId
+      ? await markRunRefused(
+          {
+            executionId: message.executionId,
+            fromStatuses: ["phantom", "pending"],
+            reason: errorMessage,
+            category: "billing",
+            at: new Date(),
+            input: blockedInput,
+          },
+          db
         )
-        .returning({ id: workflowExecutions.id });
-      blockedResolved = resolved.length > 0;
-    }
-
+      : null;
     if (!blockedResolved) {
-      const blockedExecutionId = generateId();
-      // KEEP-612: attribute the source so blocked scheduled/block/event rows
-      // are not NULL in the audit columns. No client request here (SQS
-      // dispatch), so ip/country/key are correctly left null.
-      const blockedAttribution = buildAttribution({ source: triggerType });
-      await withBackstopCapture(
-        { workflowId, userId: blockedUserId, source: triggerType },
-        () =>
-          db.insert(workflowExecutions).values({
-            id: blockedExecutionId,
-            workflowId,
-            organizationId: workflow.organizationId,
-            userId: blockedUserId,
-            status: "skipped",
-            billable: false,
-            input: toJsonSafe(blockedInput) as Record<string, unknown>,
-            error: errorMessage,
-            errorCategory: "billing",
-            errorType: "user",
-            startedAt: new Date(),
-            completedAt: new Date(),
-            ...blockedAttribution,
-          })
+      await insertRefusedRun(
+        {
+          workflowId,
+          organizationId: workflow.organizationId,
+          userId: blockedUserId,
+          reason: errorMessage,
+          reasonCode: "plan_feature",
+          category: "billing",
+          triggerSource: triggerType,
+          at: new Date(),
+          input: blockedInput,
+        },
+        db
       );
     }
 
-    // Exactly one row was written above, by whichever branch ran, and it is no
-    // longer an error row, so this is the only thing that counts the refusal.
+    // Counted per refusal: the hourly row may have been left as is, and a
+    // refused row is never counted by any finalize path.
     await recordSkippedSample(db, { workflowId, reason: "plan_feature" });
     return;
   }

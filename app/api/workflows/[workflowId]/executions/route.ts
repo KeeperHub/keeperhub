@@ -178,6 +178,11 @@ async function summaryResponse(
           sql<string>`to_char(${workflowExecutions.startedAt}, 'YYYY-MM-DD HH24:MI:SS.US')`.as(
             "started_at_key"
           ),
+        // Only skipped rows are read, so no large step output is detoasted.
+        refusals:
+          sql<number | null>`CASE WHEN ${workflowExecutions.status} = 'skipped' THEN (${workflowExecutions.output}->>'refusals')::int END`.as(
+            "refusals"
+          ),
       },
       orderBy: [desc(workflowExecutions.startedAt), desc(workflowExecutions.id)],
       limit: limit + 1,
