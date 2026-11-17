@@ -1,5 +1,5 @@
 {
-  "id": "f4210bf0-b86d-4a2f-873d-0d6ac5898869",
+  "id": "3b63ee4f-ac77-4a33-bf3a-759f6063ce37",
   "prevId": "c8375298-0a92-4b59-a2b5-62fddad0f564",
   "version": "7",
   "dialect": "postgresql",
@@ -8958,7 +8958,7 @@
             }
           ],
           "isUnique": false,
-          "where": "\"workflow_executions\".\"status\" <> 'skipped'",
+          "where": "(\"workflow_executions\".\"status\" <> 'skipped' AND \"workflow_executions\".\"completed_at\" IS NOT NULL AND \"workflow_executions\".\"deleted_at\" IS NULL\n    AND (\"workflow_executions\".\"status\" <> 'error' OR (\"workflow_executions\".\"error_type\" IS DISTINCT FROM 'system'\n      AND (\"workflow_executions\".\"error_category\" IS DISTINCT FROM 'billing' OR \"workflow_executions\".\"billable\"))))",
           "concurrently": false,
           "method": "btree",
           "with": {}

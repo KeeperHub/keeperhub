@@ -109,7 +109,7 @@ export async function checkFailureAlertsRunning(): Promise<WatchdogReport> {
   if (queueSilent && triggersOff.length === 0) {
     page(
       "Runs are ending but no workflow reached the alert queue",
-      `no trigger-fed row taken in ${Math.round(HEARTBEAT_STALE_MS / 60_000)} min; queue_alert_check may be failing or switched off (warnings in the Postgres log)`
+      `no trigger-fed row taken in ${Math.round(HEARTBEAT_STALE_MS / 60_000)} min; queue_alert_check may be failing or switched off (warnings in the Postgres log), or the evaluator fails before it records what it took`
     );
   }
   return { queueLagMs, outboxLagMs, triggersOff, queueSilent };

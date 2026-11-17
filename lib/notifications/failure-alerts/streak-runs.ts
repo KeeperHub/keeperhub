@@ -2,6 +2,7 @@ import "server-only";
 
 import { and, desc, eq, gte, isNotNull, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { countedRunSql } from "@/lib/db/counted-runs";
 import { workflowExecutions } from "@/lib/db/schema";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { STATE_REFUSAL_PATTERN } from "@/lib/workflow/not-executable";
@@ -198,9 +199,9 @@ export async function loadStreakRuns(
         isNull(workflowExecutions.deletedAt),
         sql`(${workflowExecutions.status} <> 'error'
           OR ${workflowExecutions.errorType} IS DISTINCT FROM ${ExecutionErrorType.SYSTEM})`,
-        // The index predicate, as a literal so a generic plan still matches it.
-        sql`${workflowExecutions.status} <> 'skipped'`,
-        sql`NOT ${REFUSED_RUN_SQL}`
+        sql`NOT ${REFUSED_RUN_SQL}`,
+        // The index predicate, verbatim (literals), so the planner can use it.
+        countedRunSql(workflowExecutions)
       )
     )
     .orderBy(desc(COUNTED_STARTED_AT_SQL))

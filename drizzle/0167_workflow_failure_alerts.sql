@@ -30,8 +30,9 @@ BEGIN
     INSERT INTO alert_queue (workflow_id, due_at, fed_at)
     VALUES (NEW.workflow_id, now(), now())
     ON CONFLICT (workflow_id) DO UPDATE
-      SET due_at = least(alert_queue.due_at, now()), fed_at = now()
-      WHERE alert_queue.due_at > now() OR alert_queue.fed_at IS NULL;
+      SET due_at = now(), fed_at = now()
+      WHERE alert_queue.due_at > now() OR alert_queue.fed_at IS NULL
+        OR alert_queue.fed_at < now() - interval '1 minute';
   EXCEPTION WHEN OTHERS THEN
     RAISE WARNING 'queue_alert_check failed: %', SQLERRM;
   END;
