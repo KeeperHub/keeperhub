@@ -7,6 +7,7 @@ import { resolveAbi } from "@/lib/abi/cache";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { resolvePayableEther } from "@/lib/execute/protocol-eth-value";
+import { enforceWorkflowFeatures } from "@/lib/features/route-guard";
 import {
   beginIdempotentFromRequest,
   dispositionForExecutionOutcome,
@@ -459,6 +460,14 @@ export async function POST(
 
   // Enter ALS error context so plugin step errors carry org labels
   await enterApiExecuteErrorContext(apiKeyCtx.organizationId);
+
+  const featureGuard = await enforceWorkflowFeatures(
+    [{ id: actionType, actionType }],
+    apiKeyCtx.organizationId
+  );
+  if (featureGuard.blocked) {
+    return featureGuard.response;
+  }
 
   const rateLimit = checkRateLimit(apiKeyCtx.apiKeyId);
   if (!rateLimit.allowed) {
