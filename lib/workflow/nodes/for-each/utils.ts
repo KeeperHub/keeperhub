@@ -1,3 +1,5 @@
+import { readOwnField } from "@/lib/utils/read-own-field";
+
 /**
  * Pure helper functions for For Each loop features.
  *
@@ -26,7 +28,7 @@ export function traverseDotPath(root: unknown, path: string): unknown {
   let data: unknown = root;
   for (const part of path.split(".")) {
     if (data && typeof data === "object" && !Array.isArray(data)) {
-      data = (data as Record<string, unknown>)[part];
+      data = readOwnField(data, part);
       if (data === undefined) {
         return null;
       }
