@@ -12,7 +12,7 @@ export function hasOwnField(value: unknown, key: string): boolean {
   if (value === null || value === undefined || BLOCKED_FIELDS.has(key)) {
     return false;
   }
-  return Object.hasOwn(Object(value), key);
+  return Object.hasOwn(new Object(value), key);
 }
 
 /** Read an own field of `value`, or undefined when it is missing or blocked. */
@@ -20,5 +20,5 @@ export function readOwnField(value: unknown, key: string): unknown {
   if (!hasOwnField(value, key)) {
     return;
   }
-  return (Object(value) as Record<string, unknown>)[key];
+  return (new Object(value) as Record<string, unknown>)[key];
 }
