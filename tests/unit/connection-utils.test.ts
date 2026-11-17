@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { getDatabaseErrorMessage } from "@/lib/db/connection-utils";
+import {
+  getDatabaseErrorMessage,
+  HOST_NOT_ALLOWED_CODE,
+  HOST_NOT_ALLOWED_MESSAGE,
+} from "@/lib/db/connection-utils";
 
 const REFUSED =
   "Connection refused. Please check your database URL and ensure the database is running.";
@@ -61,6 +65,20 @@ describe("getDatabaseErrorMessage", () => {
     const message = getDatabaseErrorMessage(error);
     expect(message).toContain("does not exist");
     expect(message).toContain("42P01");
+  });
+
+  it("maps a top-level HOST_NOT_ALLOWED to the not-allowed message", () => {
+    const error = Object.assign(new Error(HOST_NOT_ALLOWED_MESSAGE), {
+      code: HOST_NOT_ALLOWED_CODE,
+    });
+    expect(getDatabaseErrorMessage(error)).toBe(HOST_NOT_ALLOWED_MESSAGE);
+  });
+
+  it("maps a drizzle-wrapped HOST_NOT_ALLOWED (code on cause)", () => {
+    const error = drizzleWrapped(HOST_NOT_ALLOWED_MESSAGE, {
+      code: HOST_NOT_ALLOWED_CODE,
+    });
+    expect(getDatabaseErrorMessage(error)).toBe(HOST_NOT_ALLOWED_MESSAGE);
   });
 
   it("falls back to the generic message and does not leak raw text", () => {

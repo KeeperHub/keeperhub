@@ -10,7 +10,10 @@ import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { fetchCredentials } from "@/lib/credential-fetcher";
-import { assertConnectionUrlIsPublic } from "@/lib/db/connection-host-guard";
+import {
+  assertConnectionUrlIsPublic,
+  withPublicOnlySocket,
+} from "@/lib/db/connection-host-guard";
 import {
   getDatabaseErrorMessage,
   getPostgresConnectionOptions,
@@ -78,12 +81,15 @@ function createDatabaseClient(
   ssl: PostgresSslOption,
   connectTimeoutSeconds: number = DEFAULT_CONNECT_TIMEOUT_SECONDS
 ): postgres.Sql {
-  return postgres(normalizedUrl, {
-    max: 1,
-    connect_timeout: connectTimeoutSeconds,
-    idle_timeout: 20,
-    ssl: ssl as false | "require" | "prefer",
-  });
+  return postgres(
+    normalizedUrl,
+    withPublicOnlySocket({
+      max: 1,
+      connect_timeout: connectTimeoutSeconds,
+      idle_timeout: 20,
+      ssl: ssl as false | "require" | "prefer",
+    })
+  );
 }
 
 /** Serialize template-resolved values into types postgres.js can bind directly */

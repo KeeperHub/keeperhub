@@ -10,6 +10,10 @@
  * parsing, IPv6-bracket stripping, and the underlying `assertHostIsPublic`
  * check, so a plugin needs exactly one import and one call.
  *
+ * `createPublicOnlySocketFactory` is the matching connect-time check. Pass it
+ * to the driver as its socket factory so the socket dials only addresses
+ * that pass the same check, from the same DNS answer it connects to.
+ *
  * Lives in its own module (rather than connection-utils.ts) because it
  * pulls in `lib/safe-fetch.ts`, which has `import "server-only"`.
  * `drizzle.config.ts` imports `getDatabaseUrl` from connection-utils at
@@ -22,27 +26,23 @@
  */
 import "server-only";
 
-import type { LookupAddress } from "node:dns";
+import type { LookupAddress, LookupOptions } from "node:dns";
 import { promises as dns } from "node:dns";
-import { isIP } from "node:net";
+import { isIP, connect as netConnect, type Socket } from "node:net";
+import {
+  HOST_NOT_ALLOWED_CODE,
+  HOST_NOT_ALLOWED_MESSAGE,
+} from "@/lib/db/connection-utils";
 import { isBlockedHost, isBlockedIp } from "@/lib/safe-fetch";
 
 /**
- * Reject connection-test attempts against private / loopback / link-local
- * destinations. Used by the integration-test endpoint, which dials a
- * user-supplied host over raw TCP via the `postgres` package, a path that
- * does not go through `safe-fetch.ts` (HTTP-only). Always-on (no env
- * flag): there is no legitimate reason for an `/api/integrations/test`
- * request to resolve to a non-public address.
+ * Reject connection attempts against private / loopback / link-local
+ * destinations. Always-on (no env flag): there is no legitimate reason for
+ * a user-supplied database host to resolve to a non-public address.
  *
- * Caveat: there is a small TOCTOU window between this DNS check and the
- * subsequent TCP connect during which an attacker-controlled domain
- * could rebind. Closing that window requires resolving once and
- * dialling the resolved IP directly, which is out of scope for this
- * fix (would mean rewriting how the postgres client is invoked). The
- * TOCTOU surface for postgres TCP is much narrower than HTTP DNS
- * rebinding (no scriptable client behind the connection), so we accept
- * it here.
+ * This is the early check that gives a fast, clear error. The connection
+ * itself must still go through `createPublicOnlySocketFactory`, which checks
+ * the address the socket actually dials.
  */
 export async function assertHostIsPublic(host: string): Promise<void> {
   const trimmed = host.trim();
@@ -51,13 +51,13 @@ export async function assertHostIsPublic(host: string): Promise<void> {
   }
 
   if (isBlockedHost(trimmed).blocked) {
-    throw new Error("Host is not allowed: must resolve to a public address");
+    throw new Error(HOST_NOT_ALLOWED_MESSAGE);
   }
 
   if (isIP(trimmed) !== 0) {
     const verdict = isBlockedIp(trimmed);
     if (verdict.blocked) {
-      throw new Error("Host is not allowed: must resolve to a public address");
+      throw new Error(HOST_NOT_ALLOWED_MESSAGE);
     }
     return;
   }
@@ -72,7 +72,7 @@ export async function assertHostIsPublic(host: string): Promise<void> {
   for (const addr of addresses) {
     const verdict = isBlockedIp(addr.address);
     if (verdict.blocked) {
-      throw new Error("Host is not allowed: must resolve to a public address");
+      throw new Error(HOST_NOT_ALLOWED_MESSAGE);
     }
   }
 }
@@ -120,4 +120,134 @@ export async function assertConnectionUrlIsPublic(url: string): Promise<void> {
   const stripped =
     host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
   await assertHostIsPublic(stripped);
+}
+
+function hostNotAllowedError(): Error {
+  return Object.assign(new Error(HOST_NOT_ALLOWED_MESSAGE), {
+    code: HOST_NOT_ALLOWED_CODE,
+  });
+}
+
+type LookupCallback = (
+  error: NodeJS.ErrnoException | null,
+  address: string | LookupAddress[],
+  family?: number
+) => void;
+
+/**
+ * DNS lookup for the socket itself. Every resolved address must be public,
+ * so the socket can only dial an address that passed the check.
+ */
+export function publicOnlyLookup(
+  hostname: string,
+  options: LookupOptions,
+  callback: LookupCallback
+): void {
+  dns.lookup(hostname, { ...options, all: true }).then(
+    (addresses) => {
+      const [first] = addresses;
+      const blocked = addresses.some(
+        ({ address }) => isBlockedIp(address).blocked
+      );
+      if (!first || blocked) {
+        callback(hostNotAllowedError(), []);
+        return;
+      }
+      if (options.all) {
+        callback(null, addresses);
+        return;
+      }
+      callback(null, first.address, first.family);
+    },
+    (error: NodeJS.ErrnoException) => {
+      callback(error, []);
+    }
+  );
+}
+
+/**
+ * Open a TCP socket to a user-supplied host, refusing any non-public
+ * address. Resolves once the socket is connected; rejects with a
+ * `HOST_NOT_ALLOWED` error, the underlying socket error, or a
+ * `CONNECT_TIMEOUT` error after `timeoutMs`.
+ */
+export function connectToPublicHost(
+  host: string | undefined,
+  port: number | undefined,
+  timeoutMs: number
+): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    if (!host || port === undefined) {
+      reject(new Error("Connection string is missing a host"));
+      return;
+    }
+    const bare =
+      host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+    const isLiteral = isIP(bare) !== 0;
+    // An IP literal skips DNS, so it is checked here instead of in the lookup.
+    const blocked = isLiteral
+      ? isBlockedIp(bare).blocked
+      : isBlockedHost(bare).blocked;
+    if (blocked) {
+      reject(hostNotAllowedError());
+      return;
+    }
+
+    const socket = netConnect({ host: bare, port, lookup: publicOnlyLookup });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(
+        Object.assign(new Error(`write CONNECT_TIMEOUT ${host}:${port}`), {
+          code: "CONNECT_TIMEOUT",
+        })
+      );
+    }, timeoutMs);
+    const onError = (error: Error): void => {
+      clearTimeout(timer);
+      socket.destroy();
+      reject(error);
+    };
+    socket.once("error", onError);
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      socket.off("error", onError);
+      // postgres.js reads socket.host for the TLS servername (SNI) and for
+      // its own connection error messages.
+      Object.assign(socket, { host, port });
+      resolve(socket);
+    });
+  });
+}
+
+/** Target the driver passes to its socket factory (parsed host/port lists). */
+export type SocketFactoryTarget = { host: string[]; port: number[] };
+
+export type PublicOnlySocketFactory = (
+  target: SocketFactoryTarget
+) => Promise<Socket>;
+
+/**
+ * Socket factory for postgres.js (`socket` option). The driver then never
+ * resolves or dials the host itself. Only the first host is used.
+ */
+export function createPublicOnlySocketFactory(
+  connectTimeoutSeconds: number
+): PublicOnlySocketFactory {
+  return ({ host, port }) =>
+    connectToPublicHost(host[0], port[0], connectTimeoutSeconds * 1000);
+}
+
+/**
+ * Return postgres.js options with the public-only socket factory added,
+ * using the same connect timeout. `socket` is a documented postgres.js
+ * option that its type definitions omit, so it is added here rather than
+ * in the caller's object literal.
+ */
+export function withPublicOnlySocket<T extends { connect_timeout: number }>(
+  options: T
+): T {
+  return {
+    ...options,
+    socket: createPublicOnlySocketFactory(options.connect_timeout),
+  };
 }

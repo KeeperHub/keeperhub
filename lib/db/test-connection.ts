@@ -1,5 +1,8 @@
 import postgres from "postgres";
-import { assertConnectionUrlIsPublic } from "@/lib/db/connection-host-guard";
+import {
+  assertConnectionUrlIsPublic,
+  withPublicOnlySocket,
+} from "@/lib/db/connection-host-guard";
 import {
   buildDatabaseUrlFromConfig,
   type DatabaseConnectionConfig,
@@ -43,12 +46,15 @@ export async function testDatabaseConnection(
       };
     }
 
-    connection = postgres(normalizedUrl, {
-      max: 1,
-      idle_timeout: 5,
-      connect_timeout: 5,
-      ssl,
-    });
+    connection = postgres(
+      normalizedUrl,
+      withPublicOnlySocket({
+        max: 1,
+        idle_timeout: 5,
+        connect_timeout: 5,
+        ssl,
+      })
+    );
 
     await connection`SELECT 1`;
 

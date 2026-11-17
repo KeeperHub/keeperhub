@@ -217,6 +217,17 @@ describe("databaseQueryStep connection timeout + retry", () => {
     expect(options.connect_timeout).toBe(30);
   });
 
+  it("passes the public-only socket factory to postgres", async () => {
+    mockPostgres.mockImplementation(() =>
+      makeClient(() => Promise.resolve([{ ok: 1 }]))
+    );
+
+    await databaseQueryStep(PUBLIC_DB_INPUT);
+
+    const options = mockPostgres.mock.calls[0][1] as { socket?: unknown };
+    expect(typeof options.socket).toBe("function");
+  });
+
   it("passes a configured connect_timeout, clamped to 60", async () => {
     mockPostgres.mockImplementation(() =>
       makeClient(() => Promise.resolve([{ ok: 1 }]))
