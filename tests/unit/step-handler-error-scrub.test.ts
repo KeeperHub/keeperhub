@@ -15,6 +15,10 @@ vi.mock("@/lib/workflow/executor/step-claim", () => ({
   releaseStepClaim: vi.fn(() => Promise.resolve()),
   stepClaimScope: vi.fn((scope: unknown) => scope),
 }));
+// The plan gate is covered in step-handler-plan-gate.test.ts.
+vi.mock("@/lib/features/plan-gate", () => ({
+  checkActionPlanGate: vi.fn(() => Promise.resolve(null)),
+}));
 vi.mock("@/lib/workflow/executor/logging", () => ({
   incrementCompletedSteps: vi.fn(),
   logStepCompleteDb: vi.fn(),

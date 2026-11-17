@@ -205,6 +205,7 @@ describe("Workflow duplicate API", () => {
     vi.mocked(enforceWorkflowFeatures).mockResolvedValueOnce({
       blocked: true,
       response: blockedResponse as never,
+      violations: [],
     });
     mockDbQuery.workflows.findFirst.mockResolvedValue({
       ...sourceWorkflow,

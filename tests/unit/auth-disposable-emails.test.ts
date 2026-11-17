@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   disposableEmailBlocklistSize,
   isDisposableEmailDomain,
+  NEVER_BLOCKED_DOMAINS,
 } from "@/lib/auth-disposable-emails";
 
 describe("isDisposableEmailDomain", () => {
@@ -20,6 +21,17 @@ describe("isDisposableEmailDomain", () => {
 
   it("blocks 10MinuteMail", () => {
     expect(isDisposableEmailDomain("user@10minutemail.com")).toBe(true);
+  });
+
+  it("blocks domains added in the refreshed vendored list", () => {
+    expect(isDisposableEmailDomain("user@fldubai.com")).toBe(true);
+    expect(isDisposableEmailDomain("user@euploading.com")).toBe(true);
+  });
+
+  it("never blocks mainstream providers", () => {
+    for (const domain of NEVER_BLOCKED_DOMAINS) {
+      expect(isDisposableEmailDomain(`user@${domain}`)).toBe(false);
+    }
   });
 
   it("blocks aliasing services (privacy-proxy tier)", () => {

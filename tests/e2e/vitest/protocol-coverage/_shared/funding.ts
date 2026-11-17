@@ -40,6 +40,7 @@ import {
   fabricateElapsedCooldown,
   fabricateErc20Allowance,
   fabricateErc20Balance,
+  fabricateStUsdsExitLiquidity,
 } from "./fabricate-state";
 
 export const ERC20_ABI = [
@@ -260,7 +261,11 @@ export async function runActionFabrications(
       chainId,
       walletAddress
     );
-    await fabricateElapsedCooldown(provider, target, walletAddress);
+    if (spec.kind === "stusds-exit-liquidity") {
+      await fabricateStUsdsExitLiquidity(provider, target);
+    } else {
+      await fabricateElapsedCooldown(provider, target, walletAddress);
+    }
   }
 }
 

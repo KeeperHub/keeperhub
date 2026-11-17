@@ -50,6 +50,7 @@ import {
 export {
   buildTriggerEvent,
   buildUpdateEvent,
+  CHANGE_EVENT_PATH,
   cleanCustomDetails,
   cleanDisplayField,
   cleanLinks,

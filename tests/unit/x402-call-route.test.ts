@@ -160,8 +160,13 @@ vi.mock("@/app/api/execute/_lib/concurrency-limit", () => ({
   checkConcurrencyLimit: mockCheckConcurrencyLimit,
 }));
 
+const mockMarkRunRefused = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/workflow/refused-runs", () => ({
+  markRunRefused: mockMarkRunRefused,
+}));
+
 vi.mock("@/lib/logging", () => ({
-  ErrorCategory: { WORKFLOW_ENGINE: "workflow_engine" },
+  ErrorCategory: { WORKFLOW_ENGINE: "workflow_engine", BILLING: "billing" },
   logSystemError: mockLogSystemError,
 }));
 
@@ -540,9 +545,14 @@ describe("POST /api/mcp/workflows/[slug]/call", () => {
     expect(body.status).toBe("error");
     // The workflow must NOT start when the charge is blocked.
     expect(mockStart).not.toHaveBeenCalled();
-    // The reserved row is resolved to a billing error.
-    expect(mockDbUpdateSet).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "error", errorCategory: "billing" })
+    // The reserved row becomes a refused run, same shape as every refusal.
+    expect(mockMarkRunRefused).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionId: "exec-payg-blocked",
+        fromStatuses: ["running"],
+        category: "billing",
+      }),
+      expect.anything()
     );
   });
 

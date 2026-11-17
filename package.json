@@ -58,6 +58,7 @@
     "test:e2e:bfcache:dev": "playwright test back-forward-hydration",
     "test:e2e:bfcache:prod": "NEXT_BUILD_MODE=production playwright test back-forward-hydration",
     "dep-audit": "tsx scripts/dep-audit.ts",
+    "update:disposable-domains": "tsx scripts/update-disposable-email-domains.ts",
     "discover": "tsx tests/e2e/playwright/discover.ts",
     "test:health": "tsx tests/e2e/playwright/health.ts",
     "test:trace-probe": "node --test scripts/trace-method-probe.test.mjs",
