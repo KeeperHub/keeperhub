@@ -168,7 +168,7 @@ export function emptyStats(): EvaluationStats {
 }
 
 /** One claim's rows share its lease, kept as Postgres text (a raw Date parses as local time). */
-type Claimed = { workflowId: string; lease: string };
+type Claimed = { workflowId: string; lease: string; fedAt: string | null };
 
 /** Claim due workflows with a five-minute lease, skipping ones this cycle already took. */
 async function claimQueue(skip: ReadonlySet<string>): Promise<Claimed[]> {
@@ -179,7 +179,11 @@ async function claimQueue(skip: ReadonlySet<string>): Promise<Claimed[]> {
           sql`, `
         )})`
       : sql``;
-  const rows = await db.execute<{ workflow_id: string; lease: string }>(sql`
+  const rows = await db.execute<{
+    workflow_id: string;
+    lease: string;
+    fed_at: string | null;
+  }>(sql`
     UPDATE ${workflowFailureAlertQueue}
     SET due_at = ${LEASE}
     WHERE workflow_id IN (
@@ -189,11 +193,12 @@ async function claimQueue(skip: ReadonlySet<string>): Promise<Claimed[]> {
       LIMIT ${MAX_WORKFLOWS_PER_RUN}
       FOR UPDATE SKIP LOCKED
     )
-    RETURNING workflow_id, due_at::text AS lease
+    RETURNING workflow_id, due_at::text AS lease, fed_at::text AS fed_at
   `);
   return [...rows].map((row) => ({
     workflowId: row.workflow_id,
     lease: row.lease,
+    fedAt: row.fed_at,
   }));
 }
 
@@ -271,7 +276,7 @@ async function handBack(rows: Claimed[], lease: string): Promise<void> {
 
 /** While the rollout is off nothing is evaluated: the trigger still queues every run, so clear it. */
 export async function clearQueueWhileOff(): Promise<void> {
-  await db.execute(sql`
+  const rows = await db.execute<{ fed_at: string | null }>(sql`
     DELETE FROM ${workflowFailureAlertQueue}
     WHERE workflow_id IN (
       SELECT workflow_id FROM ${workflowFailureAlertQueue}
@@ -279,7 +284,21 @@ export async function clearQueueWhileOff(): Promise<void> {
       LIMIT 5000
       FOR UPDATE SKIP LOCKED
     )
+    RETURNING fed_at::text AS fed_at
   `);
+  // Still proof the trigger works, so turning alerts on does not page.
+  const cleared = [...rows];
+  if (cleared.length > 0) {
+    await beat(cleared.length, newestFed(cleared.map((row) => row.fed_at)));
+  }
+}
+
+/** The newest of Postgres timestamp texts (same format, so they sort as strings). */
+function newestFed(fedAts: (string | null)[]): string | null {
+  return fedAts.reduce<string | null>(
+    (newest, at) => (at && (!newest || at > newest) ? at : newest),
+    null
+  );
 }
 
 async function loadWorkflow(workflowId: string): Promise<WorkflowRow | null> {
@@ -905,7 +924,7 @@ async function evaluateWorkflow(
     MIN_STREAK_WINDOW,
     policy.threshold * STREAK_WINDOW_MULTIPLIER
   );
-  const runs = await loadStreakRuns(workflowId, window, now);
+  const runs = await loadStreakRuns(workflowId, window);
   const summary = summarizeStreak(runs, policy.countingSince, window);
 
   // A late schedule's incident ends with any run that started; failures then count as usual.
@@ -1698,7 +1717,7 @@ async function launchNoticeRows(
     return [];
   }
 
-  const failingNow = await findFailingWorkflows(organizationId, now);
+  const failingNow = await findFailingWorkflows(organizationId);
   const owners = resolveRecipientEmails(
     null,
     await loadOrgMembers(organizationId)
@@ -1718,10 +1737,7 @@ async function launchNoticeRows(
 
 const LAUNCH_SCAN_LIMIT = 200;
 
-async function findFailingWorkflows(
-  organizationId: string,
-  now: Date
-): Promise<
+async function findFailingWorkflows(organizationId: string): Promise<
   {
     id: string;
     name: string;
@@ -1755,8 +1771,7 @@ async function findFailingWorkflows(
     }
     const runs = await loadStreakRuns(
       candidate.id,
-      DEFAULT_THRESHOLD * STREAK_WINDOW_MULTIPLIER,
-      now
+      DEFAULT_THRESHOLD * STREAK_WINDOW_MULTIPLIER
     );
     const summary = summarizeStreak(runs, null, runs.length + 1);
     if (summary.failures >= DEFAULT_THRESHOLD) {
@@ -2075,15 +2090,19 @@ export async function checkMissedSchedules(
   await refreshMissedRefusals(now);
 }
 
-/** Drain the queue in batches until it is empty or the budget runs out, then queue the alerts. */
-/** Tells the watchdog the queue is being fed and read; never holds up the cycle. */
-async function beat(claimed: number): Promise<void> {
+/** Records the newest trigger-fed row taken, for the watchdog; never holds up the cycle. */
+async function beat(claimed: number, fedAt: string | null): Promise<void> {
+  const fed = fedAt ? sql`${fedAt}::timestamp` : sql`NULL::timestamp`;
   await db
     .insert(failureAlertHeartbeat)
-    .values({ name: EVALUATE_HEARTBEAT, claimed })
+    .values({ name: EVALUATE_HEARTBEAT, claimed, fedAt: sql`${fed}` })
     .onConflictDoUpdate({
       target: failureAlertHeartbeat.name,
-      set: { beatAt: sql`now()`, claimed },
+      set: {
+        beatAt: sql`now()`,
+        claimed,
+        fedAt: sql`greatest(${failureAlertHeartbeat.fedAt}, ${fed})`,
+      },
     })
     .catch((error: unknown) => {
       logSystemError(
@@ -2094,6 +2113,7 @@ async function beat(claimed: number): Promise<void> {
     });
 }
 
+/** Drain the queue in batches until it is empty or the budget runs out, then queue the alerts. */
 export async function evaluateQueuedWorkflows(
   now: Date,
   stats: EvaluationStats,
@@ -2102,6 +2122,7 @@ export async function evaluateQueuedWorkflows(
   const opened: OpenedIncident[] = [];
   const started = Date.now();
   const seen = new Set<string>();
+  let fed: string | null = null;
   let full = true;
   while (full && Date.now() < deadline) {
     const claimed = await claimQueue(seen);
@@ -2109,6 +2130,7 @@ export async function evaluateQueuedWorkflows(
     const lease = claimed[0]?.lease ?? "";
     for (const row of claimed) {
       seen.add(row.workflowId);
+      fed = newestFed([fed, row.fedAt]);
     }
     // Rechecks are dated from this batch's time, so they are not due again within the budget.
     const batchNow = new Date(now.getTime() + Date.now() - started);
@@ -2138,7 +2160,7 @@ export async function evaluateQueuedWorkflows(
     }
   }
   if (seen.size > 0) {
-    await beat(seen.size);
+    await beat(seen.size, fed);
   }
   await queueAlerts(opened, now, stats);
 }

@@ -2480,6 +2480,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "fed_at": {
+          "name": "fed_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -9222,6 +9228,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "fed_at": {
+          "name": "fed_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {

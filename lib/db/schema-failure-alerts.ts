@@ -159,15 +159,18 @@ export const workflowFailureAlertQueue = pgTable(
   {
     workflowId: text("workflow_id").primaryKey(),
     dueAt: timestamp("due_at").notNull().defaultNow(),
+    /** Set only by the run trigger: proof it is feeding the queue. */
+    fedAt: timestamp("fed_at"),
   },
   (table) => [index("idx_alert_queue_due").on(table.dueAt)]
 );
 
-/** The evaluator's last claim of queued workflows; the watchdog pages when runs end but nothing is claimed. */
+/** Newest trigger-fed queue row the evaluator took; the watchdog pages when runs end but it goes stale. */
 export const failureAlertHeartbeat = pgTable("alert_heartbeat", {
   name: text("name").primaryKey(),
   beatAt: timestamp("beat_at").notNull().defaultNow(),
   claimed: integer("claimed").notNull().default(0),
+  fedAt: timestamp("fed_at"),
 });
 
 export type FailureIncidentResolution =

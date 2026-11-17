@@ -28,7 +28,7 @@ type WatchdogReport = {
   outboxLagMs: number;
   /** Triggers missing or not firing (tgenabled other than O or A). */
   triggersOff: string[];
-  /** Runs ended a while ago, yet the evaluator claimed nothing since: the trigger is failing. */
+  /** Runs ended, yet no trigger-fed queue row was taken since: the trigger is failing. */
   queueSilent: boolean;
 };
 
@@ -66,7 +66,7 @@ export async function checkFailureAlertsRunning(): Promise<WatchdogReport> {
       queue_lag: number;
       outbox_lag: number;
       runs_ended: boolean;
-      beat_recent: boolean;
+      fed_recent: boolean;
     }
   >(sql`
     SELECT
@@ -79,8 +79,8 @@ export async function checkFailureAlertsRunning(): Promise<WatchdogReport> {
         WHERE ${workflowExecutions.startedAt} >= now() - make_interval(secs => ${staleSecs})
           AND ${workflowExecutions.completedAt} <= now() - make_interval(secs => ${graceSecs})
           AND ${workflowExecutions.status} IN ('success', 'error', 'skipped')) AS runs_ended,
-      COALESCE((SELECT beat_at >= now() - make_interval(secs => ${staleSecs})
-        FROM ${failureAlertHeartbeat} WHERE name = ${EVALUATE_HEARTBEAT}), false) AS beat_recent,
+      COALESCE((SELECT fed_at >= now() - make_interval(secs => ${staleSecs + graceSecs})
+        FROM ${failureAlertHeartbeat} WHERE name = ${EVALUATE_HEARTBEAT}), false) AS fed_recent,
       ${triggersOn}
   `);
   const row = [...rows][0];
@@ -89,10 +89,12 @@ export async function checkFailureAlertsRunning(): Promise<WatchdogReport> {
   const triggersOff = ALERT_TRIGGERS.filter(
     (t) => Number(row?.[t.name] ?? 0) === 0
   ).map((t) => `${t.table}.${t.name}`);
-  // The trigger queues every ended run and each cycle claims it within a minute.
-  const queueSilent = Boolean(row?.runs_ended) && !row?.beat_recent;
+  const backlog = queueLagMs > BACKLOG_ALERT_MS;
+  // The trigger stamps each ended run's queue row, and a cycle takes it within a minute.
+  // A backlog means the evaluator is down instead, which pages on its own.
+  const queueSilent = Boolean(row?.runs_ended) && !row?.fed_recent && !backlog;
 
-  if (queueLagMs > BACKLOG_ALERT_MS || outboxLagMs > BACKLOG_ALERT_MS) {
+  if (backlog || outboxLagMs > BACKLOG_ALERT_MS) {
     page(
       "Failure notifications are not being processed",
       `oldest queued workflow ${Math.round(queueLagMs / 60_000)} min, oldest due message ${Math.round(outboxLagMs / 60_000)} min`
@@ -107,7 +109,7 @@ export async function checkFailureAlertsRunning(): Promise<WatchdogReport> {
   if (queueSilent && triggersOff.length === 0) {
     page(
       "Runs are ending but no workflow reached the alert queue",
-      `nothing claimed in ${Math.round(HEARTBEAT_STALE_MS / 60_000)} min; queue_alert_check may be failing (warnings in the Postgres log)`
+      `no trigger-fed row taken in ${Math.round(HEARTBEAT_STALE_MS / 60_000)} min; queue_alert_check may be failing or switched off (warnings in the Postgres log)`
     );
   }
   return { queueLagMs, outboxLagMs, triggersOff, queueSilent };

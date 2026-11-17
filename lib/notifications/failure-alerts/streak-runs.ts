@@ -11,7 +11,6 @@ import {
   outerRun,
   refusedSql,
 } from "@/lib/workflow/refused-runs";
-import { STREAK_LOOKBACK_MS } from "./constants";
 import { isRefusedRun, type StreakRun } from "./streak";
 
 /** Refused before it started (plan limit, unpaid, not runnable): neither a run nor a failure. */
@@ -170,14 +169,13 @@ export async function loadNewestRefusal(
   return row ?? null;
 }
 
-/**
- * Newest finished runs of the last STREAK_LOOKBACK_MS, without platform errors
- * or refusals (summarizeStreak steps over them too).
- */
+/** The key of idx_workflow_executions_workflow_started_counted (0169); written the same so the planner matches it. */
+const COUNTED_STARTED_AT_SQL = sql`(CASE WHEN ${workflowExecutions.status} <> 'skipped' THEN ${workflowExecutions.startedAt} END)`;
+
+/** Newest finished runs, without platform errors or refusals (summarizeStreak steps over them too). */
 export async function loadStreakRuns(
   workflowId: string,
-  limit: number,
-  now: Date
+  limit: number
 ): Promise<StreakRun[]> {
   return await db
     .select({
@@ -196,20 +194,15 @@ export async function loadStreakRuns(
     .where(
       and(
         eq(workflowExecutions.workflowId, workflowId),
-        // The bound keeps the plan on (workflow_id, started_at) instead of the global started_at index.
-        gte(
-          workflowExecutions.startedAt,
-          new Date(now.getTime() - STREAK_LOOKBACK_MS)
-        ),
         isNotNull(workflowExecutions.completedAt),
         isNull(workflowExecutions.deletedAt),
         sql`(${workflowExecutions.status} <> 'error'
           OR ${workflowExecutions.errorType} IS DISTINCT FROM ${ExecutionErrorType.SYSTEM})`,
-        // A literal, so a partial index excluding skipped rows can match it under a generic plan.
+        // The index predicate, as a literal so a generic plan still matches it.
         sql`${workflowExecutions.status} <> 'skipped'`,
         sql`NOT ${REFUSED_RUN_SQL}`
       )
     )
-    .orderBy(desc(workflowExecutions.startedAt))
+    .orderBy(desc(COUNTED_STARTED_AT_SQL))
     .limit(limit);
 }

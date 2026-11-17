@@ -1184,6 +1184,13 @@
       "when": 1794927631576,
       "tag": "0168_users_step_up_email_index",
       "breakpoints": true
+    },
+    {
+      "idx": 169,
+      "version": "7",
+      "when": 1794929957849,
+      "tag": "0169_failure_alerts_streak_index",
+      "breakpoints": true
     }
   ]
 }

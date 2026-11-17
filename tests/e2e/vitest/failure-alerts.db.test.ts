@@ -3571,24 +3571,39 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(after.triggersOff).toEqual([]);
     });
 
-    it("sees runs that ended while nothing was claimed, until a cycle claims", async () => {
+    it("sees a run trigger that stopped feeding the queue, even while other rows are claimed", async () => {
       const org = await makeOrg("heartbeat");
       const workflowId = await makeWorkflow(org, "heartbeat");
-      await addRun(org, workflowId, "success", { at: at(-10) });
-      // As if the trigger had failed: the run never reached the queue.
+      const recheck = await makeWorkflow(org, "heartbeat-recheck");
+      const [fn] = [
+        ...(await db.execute<{ def: string }>(
+          sql`SELECT pg_get_functiondef('public.queue_alert_check'::regproc) AS def`
+        )),
+      ];
+      // Older feeds from other tests must not count as fresh proof.
+      await db.execute(sql`UPDATE alert_queue SET fed_at = NULL`);
       await db
-        .delete(workflowFailureAlertQueue)
-        .where(eq(workflowFailureAlertQueue.workflowId, workflowId));
-      await db
-        .insert(failureAlertHeartbeat)
-        .values({ name: "evaluate", beatAt: at(-30), claimed: 1 })
-        .onConflictDoUpdate({
-          target: failureAlertHeartbeat.name,
-          set: { beatAt: at(-30) },
-        });
-      expect((await watchdog.checkFailureAlertsRunning()).queueSilent).toBe(
-        true
+        .update(failureAlertHeartbeat)
+        .set({ fedAt: at(-30) })
+        .where(eq(failureAlertHeartbeat.name, "evaluate"));
+      // The documented off switch: the trigger stays enabled but queues nothing.
+      await db.execute(
+        sql.raw(`CREATE OR REPLACE FUNCTION public.queue_alert_check()
+          RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$`)
       );
+      try {
+        await addRun(org, workflowId, "success", { at: at(-10) });
+        // App code still queues (a recheck), and the cycle takes it.
+        await db
+          .insert(workflowFailureAlertQueue)
+          .values({ workflowId: recheck, dueAt: at(-1) });
+        await runCycle();
+        const report = await watchdog.checkFailureAlertsRunning();
+        expect(report.triggersOff).toEqual([]);
+        expect(report.queueSilent).toBe(true);
+      } finally {
+        await db.execute(sql.raw(fn?.def ?? ""));
+      }
 
       await addRun(org, workflowId, "success");
       await runCycle();
@@ -3603,19 +3618,23 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     });
   });
 
-  describe("streak look-back", { timeout: SUITE_TIMEOUT }, () => {
-    it("reads runs of the last 30 days only, refusals left out", async () => {
-      const org = await makeOrg("lookback");
-      const workflowId = await makeWorkflow(org, "lookback");
+  describe("streak runs", { timeout: SUITE_TIMEOUT }, () => {
+    it("reads old runs too (monthly schedules), refusals left out", async () => {
+      const org = await makeOrg("streakruns");
+      const workflowId = await makeWorkflow(org, "streakruns");
+      await addRun(org, workflowId, "error", { at: at(-62 * 24 * 60) });
       await addRun(org, workflowId, "error", { at: at(-31 * 24 * 60) });
-      await addRun(org, workflowId, "error", { at: at(-29 * 24 * 60) });
       await addRun(org, workflowId, "skipped", { at: at(-60) });
       await addRun(org, workflowId, "error", { at: at(-30) });
       const { loadStreakRuns } = await import(
         "@/lib/notifications/failure-alerts/streak-runs"
       );
-      const runs = await loadStreakRuns(workflowId, 10, new Date());
-      expect(runs.map((run) => run.status)).toEqual(["error", "error"]);
+      const runs = await loadStreakRuns(workflowId, 10);
+      expect(runs.map((run) => run.status)).toEqual([
+        "error",
+        "error",
+        "error",
+      ]);
     });
   });
 

@@ -5,7 +5,8 @@ SET lock_timeout = '3s';
 -- executions before workflows).
 CREATE TABLE "alert_queue" (
 	"workflow_id" text PRIMARY KEY NOT NULL,
-	"due_at" timestamp DEFAULT now() NOT NULL
+	"due_at" timestamp DEFAULT now() NOT NULL,
+	"fed_at" timestamp
 );
 --> statement-breakpoint
 CREATE INDEX "idx_alert_queue_due" ON "alert_queue" USING btree ("due_at");
@@ -14,7 +15,9 @@ CREATE INDEX "idx_alert_queue_due" ON "alert_queue" USING btree ("due_at");
 -- skipped (refused or expired). Never blocks a run: errors are only logged as a warning.
 -- The EXCEPTION block costs a subtransaction per fire: batch bulk status updates.
 -- Off switch without a table lock: replace this function with one that only
--- does RETURN NEW; re-running this definition turns it back on.
+-- does RETURN NEW (the watchdog pages while it is off); re-running this
+-- definition turns it back on. Only this trigger sets fed_at, which the
+-- watchdog uses to tell it is working.
 CREATE OR REPLACE FUNCTION public.queue_alert_check()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -24,11 +27,11 @@ BEGIN
     RETURN NEW;
   END IF;
   BEGIN
-    INSERT INTO alert_queue (workflow_id, due_at)
-    VALUES (NEW.workflow_id, now())
+    INSERT INTO alert_queue (workflow_id, due_at, fed_at)
+    VALUES (NEW.workflow_id, now(), now())
     ON CONFLICT (workflow_id) DO UPDATE
-      SET due_at = now()
-      WHERE alert_queue.due_at > now();
+      SET due_at = least(alert_queue.due_at, now()), fed_at = now()
+      WHERE alert_queue.due_at > now() OR alert_queue.fed_at IS NULL;
   EXCEPTION WHEN OTHERS THEN
     RAISE WARNING 'queue_alert_check failed: %', SQLERRM;
   END;
@@ -157,8 +160,12 @@ CREATE TABLE "alert_incidents" (
 CREATE TABLE "alert_heartbeat" (
 	"name" text PRIMARY KEY NOT NULL,
 	"beat_at" timestamp DEFAULT now() NOT NULL,
-	"claimed" integer DEFAULT 0 NOT NULL
+	"claimed" integer DEFAULT 0 NOT NULL,
+	"fed_at" timestamp
 );
+--> statement-breakpoint
+-- Seeded so the watchdog does not page before the first cycle after deploy.
+INSERT INTO "alert_heartbeat" ("name", "fed_at") VALUES ('evaluate', now());
 --> statement-breakpoint
 ALTER TABLE "alert_methods" ADD CONSTRAINT "alert_methods_org_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;
 --> statement-breakpoint

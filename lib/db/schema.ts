@@ -857,6 +857,14 @@ export const workflowExecutions = pgTable(
       table.workflowId,
       table.startedAt.desc()
     ),
+    // Failure-alert streaks (COUNTED_STARTED_AT_SQL): newest runs without walking refused rows.
+    // Keyed on an expression so no other index can serve that ORDER BY.
+    index("idx_workflow_executions_workflow_started_counted")
+      .on(
+        table.workflowId,
+        sql`(CASE WHEN ${table.status} <> 'skipped' THEN ${table.startedAt} END) DESC`
+      )
+      .where(sql`${table.status} <> 'skipped'`),
     index("idx_workflow_executions_status").on(table.status),
     index("idx_workflow_executions_user_id").on(table.userId),
     // Backs the FK to organization: without it the RI check on an organization

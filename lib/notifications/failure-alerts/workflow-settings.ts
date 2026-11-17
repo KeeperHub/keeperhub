@@ -108,7 +108,7 @@ export async function loadWorkflowAlertView(
       loadChannelViews(workflow.organizationId, workflow.id),
     ]);
 
-  const runs = await loadStreakRuns(workflow.id, STATUS_WINDOW, new Date());
+  const runs = await loadStreakRuns(workflow.id, STATUS_WINDOW);
   const summary = summarizeStreak(runs, policy.countingSince, STATUS_WINDOW);
 
   const [incident] = await db
