@@ -1,6 +1,6 @@
 {
-  "id": "f85d31a9-9f31-4167-a47a-2b6c87609980",
-  "prevId": "8fb254e1-be0f-45ed-8459-b048be956294",
+  "id": "c8375298-0a92-4b59-a2b5-62fddad0f564",
+  "prevId": "f85d31a9-9f31-4167-a47a-2b6c87609980",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -7966,7 +7966,24 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "idx_users_step_up_email": {
+          "name": "idx_users_step_up_email",
+          "columns": [
+            {
+              "expression": "step_up_email",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"users\".\"step_up_email\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {

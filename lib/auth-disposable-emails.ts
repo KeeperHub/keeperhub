@@ -46,10 +46,44 @@ const CURATED_HEADLINE_DOMAINS: readonly string[] = [
   "ironvest.com",
 ];
 
-const BLOCKED_DOMAINS: ReadonlySet<string> = new Set<string>([
-  ...CURATED_HEADLINE_DOMAINS.map((d) => d.toLowerCase()),
-  ...(bundledDomains as readonly string[]).map((d) => d.toLowerCase()),
-]);
+// Mainstream providers are never blocked, whatever the vendored list says, so
+// a bad upstream refresh cannot lock real users out of sign-up.
+export const NEVER_BLOCKED_DOMAINS: readonly string[] = [
+  "gmail.com",
+  "googlemail.com",
+  "outlook.com",
+  "hotmail.com",
+  "live.com",
+  "msn.com",
+  "yahoo.com",
+  "icloud.com",
+  "me.com",
+  "mac.com",
+  "aol.com",
+  "proton.me",
+  "protonmail.com",
+  "pm.me",
+  "gmx.com",
+  "gmx.de",
+  "zoho.com",
+  "yandex.com",
+  "yandex.ru",
+  "mail.ru",
+  "qq.com",
+  "163.com",
+  "fastmail.com",
+  "tutanota.com",
+  "hey.com",
+];
+
+const NEVER_BLOCKED: ReadonlySet<string> = new Set(NEVER_BLOCKED_DOMAINS);
+
+const BLOCKED_DOMAINS: ReadonlySet<string> = new Set<string>(
+  [
+    ...CURATED_HEADLINE_DOMAINS.map((d) => d.toLowerCase()),
+    ...(bundledDomains as readonly string[]).map((d) => d.toLowerCase()),
+  ].filter((d) => !NEVER_BLOCKED.has(d))
+);
 
 function extractDomain(email: string): string | null {
   const at = email.lastIndexOf("@");

@@ -7,6 +7,7 @@ import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { db } from "@/lib/db";
 import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { integrations } from "@/lib/db/schema";
+import { enforceWorkflowFeatures } from "@/lib/features/route-guard";
 import {
   beginIdempotentFromRequest,
   dispositionForExecutionOutcome,
@@ -794,6 +795,14 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: `Unknown action type: ${actionType}` },
       { status: HttpStatus.BAD_REQUEST }
     );
+  }
+
+  const featureGuard = await enforceWorkflowFeatures(
+    [{ id: resolved.actionType, actionType: resolved.actionType }],
+    apiKeyCtx.organizationId
+  );
+  if (featureGuard.blocked) {
+    return featureGuard.response;
   }
 
   if (effectiveIntegrationId) {

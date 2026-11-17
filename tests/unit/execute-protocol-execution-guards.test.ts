@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const enforceWorkflowFeaturesMock = vi.fn();
+vi.mock("@/lib/features/route-guard", () => ({
+  enforceWorkflowFeatures: (...args: unknown[]) =>
+    enforceWorkflowFeaturesMock(...args),
+}));
+
 vi.mock("server-only", () => ({}));
 vi.mock("@/protocols", () => ({}));
 
@@ -119,6 +125,7 @@ async function postSwap(): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  enforceWorkflowFeaturesMock.mockResolvedValue({ blocked: false });
   enforceExecutionLimitMock.mockResolvedValue({ blocked: false });
   requireWalletMock.mockResolvedValue(null);
   checkAndReserveExecutionMock.mockResolvedValue({
@@ -225,6 +232,23 @@ describe("A-07 / KEEP-793: protocol write actions are gated and recorded", () =>
 
     expect(response.status).toBe(422);
     expect(checkAndReserveExecutionMock).not.toHaveBeenCalled();
+    expect(writeContractCoreMock).not.toHaveBeenCalled();
+  });
+
+  it("checks the requested action against the org plan and stops when it is gated", async () => {
+    enforceWorkflowFeaturesMock.mockResolvedValue({
+      blocked: true,
+      response: NextResponse.json({ error: "upgrade" }, { status: 403 }),
+    });
+
+    const response = await postSwap();
+
+    expect(response.status).toBe(403);
+    expect(enforceWorkflowFeaturesMock).toHaveBeenCalledWith(
+      [{ id: "test-protocol/swap", actionType: "test-protocol/swap" }],
+      "org_1"
+    );
+    expect(enforceExecutionLimitMock).not.toHaveBeenCalled();
     expect(writeContractCoreMock).not.toHaveBeenCalled();
   });
 
