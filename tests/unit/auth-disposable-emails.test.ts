@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   disposableEmailBlocklistSize,
   isDisposableEmailDomain,
+  NEVER_BLOCKED_DOMAINS,
 } from "@/lib/auth-disposable-emails";
 
 describe("isDisposableEmailDomain", () => {
@@ -27,16 +28,8 @@ describe("isDisposableEmailDomain", () => {
     expect(isDisposableEmailDomain("user@euploading.com")).toBe(true);
   });
 
-  it("does not block mainstream providers", () => {
-    for (const domain of [
-      "gmail.com",
-      "outlook.com",
-      "hotmail.com",
-      "yahoo.com",
-      "icloud.com",
-      "proton.me",
-      "protonmail.com",
-    ]) {
+  it("never blocks mainstream providers", () => {
+    for (const domain of NEVER_BLOCKED_DOMAINS) {
       expect(isDisposableEmailDomain(`user@${domain}`)).toBe(false);
     }
   });
