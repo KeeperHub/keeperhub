@@ -689,14 +689,15 @@ describe("wording", () => {
   });
 
   it("gives samples one Alerts settings link, not two named for a workflow", () => {
-    const ALERTS = "https://app.test/settings/org-1/alerts";
+    const ALERTS_PATH = "/settings/org-1/alerts";
+    const ALERTS = `https://app.test${ALERTS_PATH}`;
     for (const sample of ["alert", "missed", "disabled", "recovery"] as const) {
       const message = renderSample(org, sample, "Test", now);
       for (const text of [message.text, message.chat]) {
         expect(text).toContain(`Open Alerts settings: ${ALERTS}`);
         const links = text
           .split("\n")
-          .filter((line) => line.includes(ALERTS))
+          .filter((line) => line.includes(ALERTS_PATH))
           .filter((line) => !line.includes("Change who gets these"));
         expect(links).toEqual([`Open Alerts settings: ${ALERTS}`]);
         expect(text).not.toContain("Open the failing workflow");
