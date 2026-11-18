@@ -219,7 +219,7 @@ function validateMixedCall(
   }
 
   if (typeof fn !== "string" || !fn) {
-    return { error: `Call ${index + 1} missing abiFunction` };
+    return { error: `Call ${index + 1} missing function.` };
   }
 
   if (typeof abi !== "string" || !abi) {

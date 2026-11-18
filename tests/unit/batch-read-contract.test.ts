@@ -740,7 +740,7 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("missing abiFunction");
+    expect(result.error).toContain("missing function.");
   });
 
   it("fails when call is missing abi", async () => {

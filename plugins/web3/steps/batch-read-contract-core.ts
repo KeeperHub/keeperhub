@@ -248,7 +248,11 @@ function exampleValue(type: string, components?: AbiParam[]): string {
 }
 
 function exampleEntry(fn: ListFunction): string {
-  return `[${fn.inputs.map((input) => exampleValue(input.type, input.components)).join(", ")}]`;
+  const example = fn.inputs
+    .map((input) => exampleValue(input.type, input.components))
+    .join(", ");
+  // A very wide tuple would otherwise make a very long message.
+  return echo(`[${example}]`, MAX_REASON_LENGTH);
 }
 
 /** A plain value type, so a bare entry cannot be mistaken for an argument set. */

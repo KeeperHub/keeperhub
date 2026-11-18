@@ -336,6 +336,23 @@ async function failure(
   return outcome.error ?? "";
 }
 
+// "Fails fast" is asserted as an end state: the error, no RPC call and no
+// encoding; the duration bound is only a generous backstop.
+async function failureBeforeEncoding(
+  overrides: Partial<BatchReadContractCoreInput>
+): Promise<string> {
+  const encode = vi.spyOn(ethers.Interface.prototype, "encodeFunctionData");
+  const started = Date.now();
+  try {
+    const message = await failure(overrides);
+    expect(encode).not.toHaveBeenCalled();
+    expect(Date.now() - started).toBeLessThan(5000);
+    return message;
+  } finally {
+    encode.mockRestore();
+  }
+}
+
 const addressList = (
   contractAddresses: unknown,
   extra: Partial<BatchReadContractCoreInput> = {}
@@ -502,7 +519,7 @@ describe("batch-read-contract - contract addresses from a list", () => {
     const list = Array.from({ length: 5000 }, (_, i) => addr(i + 1));
     const outcome = await run(addressList(list, { batchSize: "500" }));
     expect(outcome.totalCalls).toBe(5000);
-  });
+  }, 30_000);
 
   it("caps the list text at 1 MB", async () => {
     const padded = `[${" ".repeat(2_400_000)}"${addr(1)}"]`;
@@ -956,9 +973,8 @@ describe("batch-read-contract - list limits and shapes", () => {
 
   it("caps the encoded call data of one run at 10 MB, before any call", async () => {
     const list = Array.from({ length: 5000 }, (_, i) => addr(i + 1));
-    const started = Date.now();
     expect(
-      await failure(
+      await failureBeforeEncoding(
         addressList(list, {
           abiFunction: "blob",
           functionArgs: JSON.stringify([`0x${"ab".repeat(3000)}`]),
@@ -967,7 +983,6 @@ describe("batch-read-contract - list limits and shapes", () => {
     ).toBe(
       "The calls' data adds up to 14.7 MB; the limit is 10 MB per run. Use smaller arguments or fewer addresses."
     );
-    expect(Date.now() - started).toBeLessThan(2000);
   });
 
   it("encodes shared arguments once for every address", async () => {
@@ -1035,27 +1050,22 @@ describe("batch-read-contract - review round 2", () => {
     for (const length of [300_000, 520_000]) {
       const zeros = `[[[${Array.from({ length }, () => "0").join(",")}]]]`;
       expect(Buffer.byteLength(zeros)).toBeLessThan(1_048_576);
-      const started = Date.now();
-      const message = await failure(argsList(zeros, "sum"));
+      const message = await failureBeforeEncoding(argsList(zeros, "sum"));
       expect(message).toMatch(
         /^Argument Sets entry 1 is about [\d,]+ KB of call data; the limit is 64 KB per call\. Use smaller arguments\.$/
       );
-      expect(Date.now() - started).toBeLessThan(1000);
     }
   });
 
   it("caps one call before encoding a huge uint256[][] of empty arrays", async () => {
     const empties = `[[[${Array.from({ length: 260_000 }, () => "[]").join(",")}]]]`;
     expect(Buffer.byteLength(empties)).toBeLessThan(1_048_576);
-    const started = Date.now();
-    const message = await failure(argsList(empties, "nested"));
+    const message = await failureBeforeEncoding(argsList(empties, "nested"));
     expect(message).toMatch(/^Argument Sets entry 1 is about [\d,]+ KB/);
-    expect(Date.now() - started).toBeLessThan(1000);
   });
 
   it("caps the shared Function Arguments at about 64 KB", async () => {
-    const started = Date.now();
-    const message = await failure(
+    const message = await failureBeforeEncoding(
       addressList([addr(1)], {
         abiFunction: "sum",
         functionArgs: `[[${Array.from({ length: 400_000 }, () => "0").join(",")}]]`,
@@ -1064,18 +1074,15 @@ describe("batch-read-contract - review round 2", () => {
     expect(message).toMatch(
       /^Function Arguments is about [\d,]+ KB of call data; the limit is 64 KB per call\. Use smaller arguments\.$/
     );
-    expect(Date.now() - started).toBeLessThan(1000);
   });
 
   it("caps a run at 50,000 values: 50,001 fails fast, 50,000 runs", async () => {
     const tenZeros = `[[${Array.from({ length: 9 }, () => "0").join(",")}]]`;
     const elevenZeros = `[[${Array.from({ length: 10 }, () => "0").join(",")}]]`;
     const over = `[${[...Array.from({ length: 4999 }, () => tenZeros), elevenZeros].join(",")}]`;
-    const started = Date.now();
-    expect(await failure(argsList(over, "sum"))).toBe(
+    expect(await failureBeforeEncoding(argsList(over, "sum"))).toBe(
       "The calls add up to 50,001 values; the limit is 50,000 per run. Use fewer or smaller entries."
     );
-    expect(Date.now() - started).toBeLessThan(1000);
 
     // A plain revert per call keeps the mock out of the timing.
     mockStaticCall.mockImplementation((calls: Call[]) =>
@@ -1084,7 +1091,7 @@ describe("batch-read-contract - review round 2", () => {
     const exact = `[${Array.from({ length: 5000 }, () => tenZeros).join(",")}]`;
     const outcome = await run({ ...argsList(exact, "sum"), batchSize: "500" });
     expect(outcome.totalCalls).toBe(5000);
-  }, 60_000);
+  }, 30_000);
 
   it("runs 5,000 getAddress-style bytes32 lookups", async () => {
     const keys = Array.from(
@@ -1093,7 +1100,7 @@ describe("batch-read-contract - review round 2", () => {
     );
     const outcome = await run({ ...argsList(keys, "key"), batchSize: "500" });
     expect(outcome.totalCalls).toBe(5000);
-  }, 60_000);
+  }, 30_000);
 
   it("cuts a failed multicall's message and log, which carry the call data", async () => {
     mockStaticCall.mockRejectedValueOnce(
@@ -1219,21 +1226,21 @@ describe("batch-read-contract - review round 3", () => {
   const bigArrayText = `[${Array.from({ length: 450_000 }, () => "0").join(",")}]`;
 
   it("parses a tuple's array held as text, then caps it, fast and without RPC", async () => {
-    const started = Date.now();
     expect(
-      await failure(argsList(JSON.stringify([[[bigArrayText]]]), "wrap"))
+      await failureBeforeEncoding(
+        argsList(JSON.stringify([[[bigArrayText]]]), "wrap")
+      )
     ).toMatch(
       /^Argument Sets entry 1 is about [\d,]+ KB of call data; the limit is 64 KB per call\. Use smaller arguments\.$/
     );
     expect(
-      await failure(
+      await failureBeforeEncoding(
         addressList([addr(1)], {
           abiFunction: "wrap",
           functionArgs: JSON.stringify([[bigArrayText]]),
         })
       )
     ).toMatch(/^Function Arguments is about [\d,]+ KB of call data/);
-    expect(Date.now() - started).toBeLessThan(1000);
   });
 
   it("refuses a top-level tuple held as text", async () => {
@@ -1282,11 +1289,9 @@ describe("batch-read-contract - review round 3", () => {
   it("counts values parsed from inner text toward the 50,000 cap", async () => {
     const inner = JSON.stringify(Array.from({ length: 1500 }, () => 0));
     const list = `[${Array.from({ length: 40 }, () => JSON.stringify([[inner]])).join(",")}]`;
-    const started = Date.now();
-    expect(await failure(argsList(list, "nested"))).toMatch(
+    expect(await failureBeforeEncoding(argsList(list, "nested"))).toMatch(
       /^The calls add up to [\d,]+ values; the limit is 50,000 per run\. Use fewer or smaller entries\.$/
     );
-    expect(Date.now() - started).toBeLessThan(1000);
   });
 
   it("refuses a primitive where an array type is expected", async () => {
@@ -1322,6 +1327,30 @@ describe("batch-read-contract - review round 3", () => {
     expect(await failure(argsList(["x"], "pairU"))).toBe(
       'Argument Sets entry 1 must be an array of 1 value for pairU (p), got a string. Make each entry an array like [[1, "0x..."]].'
     );
+  });
+
+  it("cuts the example entry for a very wide tuple", async () => {
+    const components = Array.from({ length: 100 }, (_, i) => ({
+      name: `member${i}`,
+      type: "uint256",
+    }));
+    const abi = JSON.stringify([
+      {
+        name: "wide",
+        type: "function",
+        stateMutability: "view",
+        inputs: [
+          { name: "w", type: "tuple", components },
+          { name: "n", type: "uint256" },
+        ],
+        outputs: [{ name: "", type: "uint256" }],
+      },
+    ]);
+    const message = await failure({ ...argsList(["x"], "wide"), abi });
+    expect(message).toMatch(
+      /^Argument Sets entry 1 must be an array of 2 values for wide \(w, n\), got a string\. Make each entry an array like \[\{"member0": 1, .*\.\.\.\.$/
+    );
+    expect(message.length).toBeLessThan(400);
   });
 
   it("names a bad address in a mixed call like the other modes", async () => {
