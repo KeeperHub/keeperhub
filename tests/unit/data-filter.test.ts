@@ -1214,18 +1214,54 @@ describe("data/filter", () => {
         });
         expect(result.indexes, value).toEqual([0]);
       }
-      const tiny = await ok({
-        source: "[1e-7, 2e-7]",
-        operator: "===",
-        value: "0.0000001",
+    });
+
+    it("keeps a Value a double would print with an exponent as exact text", async () => {
+      const big = "1000000000000000000000";
+      const bigItems = source([
+        big,
+        "1000000000000000000001",
+        "999999999999999999999",
+      ]);
+      expect(
+        (await ok({ source: bigItems, operator: "===", value: big })).indexes
+      ).toEqual([0]);
+      expect(
+        (await ok({ source: bigItems, operator: "!==", value: big })).indexes
+      ).toEqual([1, 2]);
+      const tinyItems = source(["0.0000001", "0.00000010", "0.0000002"]);
+      expect(
+        (await ok({ source: tinyItems, operator: "===", value: "0.0000001" }))
+          .indexes
+      ).toEqual([0, 1]);
+      expect(
+        (await ok({ source: tinyItems, operator: "!==", value: "0.0000001" }))
+          .indexes
+      ).toEqual([2]);
+      const contains = await ok({
+        source: source([[big], ["1"]]),
+        operator: "arrayContains",
+        value: big,
       });
-      expect(tiny.indexes).toEqual([0]);
-      const notTiny = await ok({
-        source: "[1e-7, 2e-7]",
-        operator: "!==",
-        value: "0.0000001",
+      expect(contains.indexes).toEqual([0]);
+    });
+
+    it("refuses a Value longer than 10,000 characters", async () => {
+      const result = await fails({
+        source: '["a"]',
+        operator: "contains",
+        value: "x".repeat(10_001),
       });
-      expect(notTiny.indexes).toEqual([1]);
+      expect(result.error).toContain(
+        'Value for "Text: contains" is longer than 10,000 characters.'
+      );
+    });
+
+    it("says a half-typed array is not valid JSON", async () => {
+      const result = await fails({ source: "[1, 2", operator: "keepAll" });
+      expect(result.error).toContain(
+        "Source is not valid JSON, e.g. a missing ] or quote."
+      );
     });
 
     it("still reads a plain number Value as a number", async () => {

@@ -1044,7 +1044,11 @@ export function formatActionConfigValidationResponse(
             );
             shown++;
           }
-          return `Invalid node(s): ${entries.join(", ")}. `;
+          // A quoted reason has commas of its own, so entries then part on "; ".
+          const separator = [...labels.values()].some((entry) => entry.detail)
+            ? "; "
+            : ", ";
+          return `Invalid node(s): ${entries.join(separator)}. `;
         })()
       : "";
   return {

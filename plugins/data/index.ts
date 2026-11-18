@@ -289,7 +289,7 @@ const dataPlugin: IntegrationPlugin = {
           placeholder: "success or meta.name",
           helpText:
             "Leave blank to test each item itself, e.g. an array of names.",
-          helpTip: `Dotted path inside each item, e.g. success, meta.name or topics.1 (a number picks a list entry).\n\nAn item without this field counts as skipped, except under the tests that check for a missing value: ${PRESENCE_FILTER_OPERATORS.map(
+          helpTip: `Dotted path inside each item, e.g. success, meta.name or topics.1 (a number picks a list entry).\n\nAn item without this field can't be tested: it fails the step, or is counted in skipped when If an item can't be tested is set to skip. The tests that check for a missing value test it as usual: ${PRESENCE_FILTER_OPERATORS.map(
             (operator) => filterOperatorLabel(operator)
           ).join(", ")}.`,
           example: "success",
