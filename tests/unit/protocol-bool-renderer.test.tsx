@@ -97,6 +97,14 @@ describe("registered protocol-bool renderer", () => {
     ).toBe(false);
   });
 
+  it("shows 60 whole characters uncut even when they take 61 UTF-16 units", async () => {
+    const saved = `${"x".repeat(57)}\u{1F600}`;
+    await renderWith(saved);
+    const value = container.querySelector(`#${FIELD.key}-unrecognized bdi`);
+    expect(value?.textContent).toBe(JSON.stringify(saved));
+    expect(value?.hasAttribute("title")).toBe(false);
+  });
+
   it("never leaves half an escape at the cut", async () => {
     await renderWith(`${"x".repeat(57)}\u202E${"y".repeat(10)}`);
     const value = container.querySelector(`#${FIELD.key}-unrecognized bdi`);

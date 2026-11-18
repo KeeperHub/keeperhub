@@ -715,7 +715,11 @@ export function fieldJsonType(
 export function fieldEnumValues(
   field: ActionConfigFieldBase
 ): string[] | undefined {
-  if (field.type !== "select" || field.allowTemplate || !field.options?.length) {
+  if (
+    field.type !== "select" ||
+    field.allowTemplate ||
+    !field.options?.length
+  ) {
     return;
   }
   return field.options.map((option) => option.value);

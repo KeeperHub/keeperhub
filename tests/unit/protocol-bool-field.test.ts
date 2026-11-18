@@ -38,10 +38,20 @@ describe("protocolBoolFieldValue", () => {
 
   it("writes control, bidi and separator characters out as escapes", () => {
     const { unrecognized } = protocolBoolFieldValue(
-      "a\u202Eb\u200Bc\u0085d\u2028e\u2029f",
+      "a\u202Eb\u200Bc\u0085d\u2028e\u2029f\u007Fg",
       "true"
     );
-    expect(unrecognized).toBe('"a\\u202eb\\u200bc\\u0085d\\u2028e\\u2029f"');
+    expect(unrecognized).toBe(
+      '"a\\u202eb\\u200bc\\u0085d\\u2028e\\u2029f\\u007fg"'
+    );
+  });
+
+  it("cuts at 1000 whole characters, not UTF-16 units", () => {
+    const { unrecognized } = protocolBoolFieldValue(
+      `${"x".repeat(998)}\u{1F600}zz`,
+      "true"
+    );
+    expect(unrecognized).toBe(`"${"x".repeat(998)}\u{1F600}…`);
   });
 
   it("marks a value cut at 1000 characters", () => {
