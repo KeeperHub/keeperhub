@@ -565,7 +565,10 @@ registerFieldRenderer(
   ({ field, config, onUpdateConfig, disabled }) => {
     const { ProtocolBoolField, protocolBoolFieldValue } =
       require("@/components/workflow/config/protocol-fields/protocol-bool-field") as typeof import("@/components/workflow/config/protocol-fields/protocol-bool-field");
-    const value = protocolBoolFieldValue(config[field.key], field.defaultValue);
+    const { value, unrecognized } = protocolBoolFieldValue(
+      config[field.key],
+      field.defaultValue
+    );
 
     return (
       <div className="space-y-2" key={field.key}>
@@ -574,6 +577,7 @@ registerFieldRenderer(
           disabled={disabled}
           fieldKey={field.key}
           onChange={(val: unknown) => onUpdateConfig(field.key, val)}
+          unrecognized={unrecognized}
           value={value}
         />
       </div>
