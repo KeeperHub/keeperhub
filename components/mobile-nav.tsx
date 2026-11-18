@@ -27,6 +27,7 @@ import {
 } from "@/components/nav-items";
 import { confirmLeave } from "@/components/navigation-guard";
 import { OrgSwitcher } from "@/components/organization/org-switcher";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { AddressBookOverlay } from "@/components/overlays/address-book-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
 import { Button } from "@/components/ui/button";
@@ -41,6 +42,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { LEVEL_TAP_GRACE_MS, usePressGrace } from "@/hooks/use-press-grace";
 import { useSession } from "@/lib/auth-client";
 import { isEscapeHandled, markEscapeHandled } from "@/lib/escape-key";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { useActiveMember } from "@/lib/hooks/use-organization";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
@@ -247,6 +249,8 @@ function MobileNavBody({
   const { openAuthPrompt } = useAuthPrompt();
   const { open: openOverlay } = useOverlay();
   const { isAdmin, isOwner } = useActiveMember();
+  // Signed-out visitors have no role yet may still start, so gate on viewer only.
+  const { isViewer } = useOrgAccess();
   const router = useRouter();
   const pathname = usePathname();
   const params = useParams();
@@ -381,29 +385,31 @@ function MobileNavBody({
         </div>
       )}
       <div className="flex shrink-0 items-center border-b px-2.5 py-2.5">
-        <button
-          className={cn(
-            NEW_WORKFLOW_LOOK,
-            "flex h-11 w-full justify-center px-3 transition-colors disabled:opacity-60"
-          )}
-          data-testid="mobile-nav-new"
-          disabled={busy}
-          onClick={() => {
-            // A workflow that could not be made is reported in
-            // runNewWorkflow; anything after that is only logged.
-            newWorkflow().catch((error: unknown) => {
-              console.error("[MobileNav] New Workflow", error);
-            });
-          }}
-          type="button"
-        >
-          {creating ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <Plus className="size-3.5" />
-          )}
-          <span>New Workflow</span>
-        </button>
+        <ViewOnlyTooltip className="w-full" isViewer={isViewer}>
+          <button
+            className={cn(
+              NEW_WORKFLOW_LOOK,
+              "flex h-11 w-full justify-center px-3 transition-colors disabled:opacity-60"
+            )}
+            data-testid="mobile-nav-new"
+            disabled={busy || isViewer}
+            onClick={() => {
+              // A workflow that could not be made is reported in
+              // runNewWorkflow; anything after that is only logged.
+              newWorkflow().catch((error: unknown) => {
+                console.error("[MobileNav] New Workflow", error);
+              });
+            }}
+            type="button"
+          >
+            {creating ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Plus className="size-3.5" />
+            )}
+            <span>New Workflow</span>
+          </button>
+        </ViewOnlyTooltip>
       </div>
       <nav
         aria-label="Main navigation"

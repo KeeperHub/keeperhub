@@ -47,6 +47,7 @@ import {
   topLevelInputDeprecationHeaders,
 } from "@/lib/workflow/resolve-execution-input";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
+import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 
 /**
  * Set the bare-shape deprecation headers on a response.
@@ -257,6 +258,9 @@ export async function POST(
           { error: "Workflow not found" },
           { status: HttpStatus.NOT_FOUND }
         );
+      }
+      if (!access.canEdit) {
+        return viewerReadOnlyResponse();
       }
 
       userId = authContext.userId ?? workflow.userId;

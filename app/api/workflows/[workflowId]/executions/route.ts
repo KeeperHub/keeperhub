@@ -19,6 +19,7 @@ import {
   executionLogNotDeleted,
   executionLogSoftDeleteValues,
 } from "@/lib/workflow/soft-delete";
+import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 
 const SUMMARY_DEFAULT_LIMIT = 20;
 const SUMMARY_MAX_LIMIT = 100;
@@ -380,6 +381,9 @@ export async function DELETE(
         { error: "Workflow not found" },
         { status: 404 }
       );
+    }
+    if (!access.canEdit) {
+      return viewerReadOnlyResponse();
     }
 
     // Only the runs not already purged; keeps deletedCount accurate on re-runs.

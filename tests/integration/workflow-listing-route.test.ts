@@ -11,6 +11,8 @@ const {
   mockMemberLimit,
   mockSelectFrom,
   mockValidateWorkflowIntegrations,
+  mockExecutionsFindFirst,
+  mockTransaction,
   capturedSet,
 } = vi.hoisted(() => ({
   mockGetDualAuthContext: vi.fn(),
@@ -19,6 +21,8 @@ const {
   mockMemberLimit: vi.fn(),
   mockSelectFrom: vi.fn(),
   mockValidateWorkflowIntegrations: vi.fn(),
+  mockExecutionsFindFirst: vi.fn(),
+  mockTransaction: vi.fn(),
   // Side-effect capture of the most recent db.update().set() argument so
   // workflowType-auto-flip tests can verify what the route actually persisted
   // (the response is the value returned by mockUpdateReturning, so it can't
@@ -36,7 +40,11 @@ vi.mock("@/lib/db", () => ({
       workflows: {
         findFirst: mockWorkflowsFindFirst,
       },
+      workflowExecutions: {
+        findFirst: mockExecutionsFindFirst,
+      },
     },
+    transaction: mockTransaction,
     update: vi.fn(() => ({
       set: vi.fn((data: Record<string, unknown>) => {
         capturedSet.data = data;
@@ -78,6 +86,7 @@ vi.mock("@/lib/db/schema", () => ({
   projects: { id: "id", organizationId: "organization_id" },
   tags: { id: "id", organizationId: "organization_id" },
   workflowExecutions: { workflowId: "workflow_id" },
+  workflowSchedules: { workflowId: "workflow_id" },
 }));
 
 vi.mock("@/lib/logging", () => ({
@@ -117,7 +126,7 @@ vi.mock("next/cache", () => ({
   revalidateTag: vi.fn(),
 }));
 
-import { GET, PATCH } from "@/app/api/workflows/[workflowId]/route";
+import { DELETE, GET, PATCH } from "@/app/api/workflows/[workflowId]/route";
 
 const SANITIZED_PREFIX_RE = /^SANITIZED:/;
 
@@ -1851,5 +1860,86 @@ describe("PATCH /api/workflows/[workflowId] — workflowType auto-flip", () => {
     expect(response.status).toBe(200);
     expect(capturedSet.data?.workflowType).toBeUndefined();
     expect(capturedSet.data?.listingVersion).toBeUndefined();
+  });
+});
+
+describe("PATCH and DELETE /api/workflows/[workflowId] refuse a viewer", () => {
+  const VIEWER_ERROR = {
+    error: "Viewers have read-only access to this organization",
+    code: "viewer_read_only",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedSet.data = null;
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user-456",
+      organizationId: "org-123",
+      authMethod: "session",
+    });
+    mockValidateWorkflowIntegrations.mockResolvedValue({ valid: true });
+    mockSelectFrom.mockResolvedValue([]);
+    mockWorkflowsFindFirst.mockResolvedValue(makeWorkflow());
+    mockExecutionsFindFirst.mockResolvedValue(undefined);
+    mockTransaction.mockImplementation(
+      async (
+        callback: (tx: Record<string, unknown>) => Promise<void>
+      ): Promise<void> => {
+        await callback({
+          delete: vi.fn(() => ({ where: vi.fn() })),
+          update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn() })) })),
+        });
+      }
+    );
+  });
+
+  it("PATCH returns 403 for a same-org viewer and writes nothing", async () => {
+    mockMemberLimit.mockResolvedValue([{ id: "member-2", role: "viewer" }]);
+
+    const response = await PATCH(createRequest("PATCH", { name: "Renamed" }), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual(VIEWER_ERROR);
+    expect(capturedSet.data).toBeNull();
+    expect(mockUpdateReturning).not.toHaveBeenCalled();
+  });
+
+  it("PATCH saves for a same-org member", async () => {
+    mockMemberLimit.mockResolvedValue([{ id: "member-2", role: "member" }]);
+    mockUpdateReturning.mockResolvedValue([makeWorkflow({ name: "Renamed" })]);
+
+    const response = await PATCH(createRequest("PATCH", { name: "Renamed" }), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(200);
+    expect(capturedSet.data?.name).toBe("Renamed");
+  });
+
+  it("DELETE returns 403 for a same-org viewer and deletes nothing", async () => {
+    mockMemberLimit.mockResolvedValue([{ id: "member-2", role: "viewer" }]);
+
+    const response = await DELETE(createRequest("DELETE"), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual(VIEWER_ERROR);
+    expect(mockExecutionsFindFirst).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+
+  it("DELETE soft-deletes for a same-org member", async () => {
+    mockMemberLimit.mockResolvedValue([{ id: "member-2", role: "member" }]);
+
+    const response = await DELETE(createRequest("DELETE"), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ success: true });
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 });

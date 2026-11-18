@@ -6,7 +6,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { IntegrationsManager } from "@/components/settings/integrations-manager";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { integrationsVersionAtom } from "@/lib/integrations-store";
+import { VIEWER_DISABLED_REASON } from "@/lib/organization/role-label";
 import { AddConnectionOverlay } from "./add-connection-overlay";
 import { Overlay } from "./overlay";
 import { useOverlay } from "./overlay-provider";
@@ -53,6 +55,8 @@ export function IntegrationsOverlay({
     hasChangesRef.current = true;
   }, []);
 
+  const { canEdit, isViewer } = useOrgAccess();
+
   const handleAddConnection = () => {
     push(AddConnectionOverlay, {
       onSuccess: handleIntegrationChange,
@@ -66,6 +70,8 @@ export function IntegrationsOverlay({
           label: "Add Connection",
           variant: "outline",
           onClick: handleAddConnection,
+          disabled: !canEdit,
+          disabledReason: isViewer ? VIEWER_DISABLED_REASON : undefined,
         },
         { label: "Done", onClick: handleClose },
       ]}

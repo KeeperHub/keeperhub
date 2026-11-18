@@ -4,6 +4,7 @@ import { History, Plus } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Pager } from "@/components/activity/pager";
+import { DisabledReasonTooltip } from "@/components/organization/view-only-tooltip";
 import {
   type ApiKey,
   CreateApiKeyOverlay,
@@ -26,6 +27,7 @@ export function KeysCard({
   keyType,
   showCreator,
   canManage,
+  canRevoke = canManage,
   readOnlyReason,
   activity,
 }: {
@@ -35,6 +37,9 @@ export function KeysCard({
   keyType: "webhook" | "organisation";
   showCreator: boolean;
   canManage: boolean;
+  // Revoking can be allowed where creating is not.
+  canRevoke?: boolean;
+  // Shown only once the role is known, so it never flashes while loading.
   readOnlyReason?: string;
   activity?: { resourceType: string; title: string } | null;
 }): React.ReactElement {
@@ -75,21 +80,25 @@ export function KeysCard({
                 Activity
               </Button>
             )}
-            <Button
-              disabled={!canManage}
-              onClick={() =>
-                push(CreateApiKeyOverlay, {
-                  endpoint: listEndpoint,
-                  keyType,
-                  onCreated: (key: ApiKey) => keys.handleKeyCreated(key),
-                })
-              }
-              size="sm"
-              variant="outline"
+            <DisabledReasonTooltip
+              reason={canManage ? undefined : readOnlyReason}
             >
-              <Plus className="size-3.5" />
-              New key
-            </Button>
+              <Button
+                disabled={!canManage}
+                onClick={() =>
+                  push(CreateApiKeyOverlay, {
+                    endpoint: listEndpoint,
+                    keyType,
+                    onCreated: (key: ApiKey) => keys.handleKeyCreated(key),
+                  })
+                }
+                size="sm"
+                variant="outline"
+              >
+                <Plus className="size-3.5" />
+                New key
+              </Button>
+            </DisabledReasonTooltip>
           </div>
         }
         bodyClassName="p-2"
@@ -121,7 +130,7 @@ export function KeysCard({
           <>
             <ApiKeysTable
               apiKeys={keys.apiKeys}
-              canDelete={canManage}
+              canDelete={canRevoke}
               deleteEndpoint={deleteEndpoint}
               onDelete={keys.handleDelete}
               showCreator={showCreator}

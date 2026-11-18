@@ -29,12 +29,12 @@ import {
   isSelfInvite,
   isValidInvite,
 } from "@/lib/onboarding/invite-validation";
+import type { InviteRole } from "@/lib/organization/role-label";
 import { cn } from "@/lib/utils";
 
 const NEXT_PATH = "/welcome/pay-per-execution";
 const BACK_PATH = "/welcome/create-org";
 
-type InviteRole = "member" | "admin";
 type InviteRow = { id: string; value: string; role: InviteRole };
 
 function newRow(): InviteRow {
@@ -222,6 +222,7 @@ export function InviteMembersStep(): React.ReactElement {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="viewer">Viewer</SelectItem>
                       <SelectItem value="member">Member</SelectItem>
                       <SelectItem value="admin">Admin</SelectItem>
                     </SelectContent>
