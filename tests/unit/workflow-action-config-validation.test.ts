@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import {
   formatActionConfigValidationResponse,
   hasDraftActionNodes,
@@ -2406,6 +2407,51 @@ describe("validateWorkflowActionConfigs - Batch Read Contract calls from a list"
     expect(result.issues.map((issue) => issue.field)).toEqual([
       "abiFetchAddress",
     ]);
+  });
+
+  it("accepts both lists as native JSON arrays, as MCP agents send them", () => {
+    expect(
+      validateWorkflowActionConfigs([
+        actionNode("web3/batch-read-contract", {
+          ...uniform,
+          callsFrom: "address-list",
+          contractAddresses: ["0x0000000000000000000000000000000000000001"],
+        }),
+        actionNode(
+          "web3/batch-read-contract",
+          {
+            ...uniform,
+            callsFrom: "args-list",
+            contractAddress: "0x0000000000000000000000000000000000000001",
+            argsFromList: ["1", "2"],
+          },
+          "node-2"
+        ),
+      ])
+    ).toEqual({ valid: true, issues: [] });
+  });
+
+  it("fetches the ABI from Fetch ABI From only for an address list in Same function mode", () => {
+    const abiField = findActionById("web3/batch-read-contract")
+      ?.configFields.flatMap((field) =>
+        field.type === "group" ? field.fields : [field]
+      )
+      .find((field) => field.key === "abi");
+    const when = abiField?.contractAddressFieldWhen;
+    expect(when?.field).toBe("abiFetchAddress");
+    const fetchesElsewhere = (config: Record<string, unknown>): boolean =>
+      evaluateShowWhen(when?.showWhen, config);
+    expect(fetchesElsewhere({ callsFrom: "address-list" })).toBe(true);
+    expect(
+      fetchesElsewhere({ inputMode: "uniform", callsFrom: "address-list" })
+    ).toBe(true);
+    expect(
+      fetchesElsewhere({ inputMode: "mixed", callsFrom: "address-list" })
+    ).toBe(false);
+    expect(fetchesElsewhere({ inputMode: "uniform", callsFrom: "rows" })).toBe(
+      false
+    );
+    expect(fetchesElsewhere({ inputMode: "uniform" })).toBe(false);
   });
 
   it("rejects a Calls from value that is not an option", () => {

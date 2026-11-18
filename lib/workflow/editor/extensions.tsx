@@ -71,8 +71,11 @@ registerFieldRenderer(
   "abi-with-auto-fetch",
   ({ field, config, onUpdateConfig, disabled }) => {
     const override = field.contractAddressFieldWhen;
-    const contractAddressField =
+    const fetchElsewhere = Boolean(
       override && evaluateShowWhen(override.showWhen, config)
+    );
+    const contractAddressField =
+      fetchElsewhere && override
         ? override.field
         : field.contractAddressField || "contractAddress";
     const networkField = field.networkField || "network";
@@ -85,6 +88,11 @@ registerFieldRenderer(
           {field.label}
         </Label>
         <AbiWithAutoFetchField
+          autoFetchPlaceholder={
+            fetchElsewhere
+              ? "ABI will be fetched automatically when an address to fetch from and a network are set"
+              : undefined
+          }
           config={config}
           contractAddressField={contractAddressField}
           contractInteractionType={field.contractInteractionType}

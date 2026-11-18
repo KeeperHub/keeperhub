@@ -853,9 +853,10 @@ function renderAbiFunctionArgs(
         onChange={(val) => onUpdateConfig(field.key, val)}
         value={value}
       />
-      {field.helpText && (
-        <p className="text-muted-foreground text-xs">{field.helpText}</p>
-      )}
+      {field.helpText &&
+        resolveFunctionInputs(abiValue, functionValue).inputs.length > 0 && (
+          <p className="text-muted-foreground text-xs">{field.helpText}</p>
+        )}
     </div>
   );
 }
@@ -896,8 +897,12 @@ function renderField(
     return null;
   }
 
+  const raw = config[field.key];
+  // A list sent as a native array by the API is shown as its JSON text.
   const value =
-    (config[field.key] as string | undefined) || field.defaultValue || "";
+    field.acceptsJsonArray && Array.isArray(raw)
+      ? JSON.stringify(raw)
+      : (raw as string | undefined) || field.defaultValue || "";
 
   // Special handling for abi-function-select
   if (field.type === "abi-function-select") {

@@ -223,6 +223,19 @@ describe("collectContractRefs, batch-read-contract calls from a list", () => {
     ]);
   });
 
+  it("uses Contract Address in mixed mode even if callsFrom was left on address-list", () => {
+    const refs = collectContractRefs([
+      batchReadNode({
+        inputMode: "mixed",
+        callsFrom: "address-list",
+        abiFetchAddress: "0x00000000000000000000000000000000000000b2",
+      }),
+    ]);
+    expect(refs.map((ref) => ref.contractAddress)).toEqual([
+      "0x00000000000000000000000000000000000000a1",
+    ]);
+  });
+
   it("skips an address list without Fetch ABI from", () => {
     expect(
       collectContractRefs([batchReadNode({ callsFrom: "address-list" })])

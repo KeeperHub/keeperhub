@@ -17,14 +17,19 @@ import {
   CALLS_FROM_ADDRESS_LIST,
   CALLS_FROM_ARGS_LIST,
   type CallsFrom,
+  calldataBytes,
+  checkRunCalldata,
+  echo,
   type ListFunction,
+  MAX_REASON_LENGTH,
   MAX_TOTAL_CALLS,
   parseListInput,
   requireArguments,
   resolveCallsFrom,
+  resolveListFunction,
   SHARED_ARGS_LABEL,
   sharedArgsForList,
-} from "@/plugins/web3/steps/batch-read-list-core";
+} from "@/plugins/web3/steps/batch-read-contract-core";
 import {
   applyReadFailOnError,
   type ReadDestinationFailure,
@@ -305,8 +310,7 @@ function structureDecodedResult(
  */
 function encodeUniformCalls(
   normalizedCalls: NormalizedCall[],
-  parsedAbi: ethers.JsonFragment[],
-  listEntryName?: (index: number) => string
+  parsedAbi: ethers.JsonFragment[]
 ): { encoded: EncodedCallWithMeta[]; error?: string } {
   let iface: ethers.Interface;
   try {
@@ -318,46 +322,38 @@ function encodeUniformCalls(
     };
   }
 
-  const functionAbis = new Map<
-    string,
-    { outputs?: { name?: string; type?: string }[] }
-  >();
-  for (const item of parsedAbi) {
-    const abiItem = item as {
-      type?: string;
-      name?: string;
-      outputs?: { name?: string; type?: string }[];
-    };
-    if (abiItem.type === "function" && abiItem.name) {
-      functionAbis.set(abiItem.name, { outputs: abiItem.outputs });
-    }
-  }
-
+  // Every uniform call names the same function; a picked overload is stored
+  // as its full signature, so resolve it once and encode by signature.
+  const resolved = new Map<string, ListFunction>();
   const encoded: EncodedCallWithMeta[] = [];
   for (const [index, call] of normalizedCalls.entries()) {
-    if (!functionAbis.has(call.abiFunction)) {
-      return {
-        encoded: [],
-        error: `Function '${call.abiFunction}' not found in ABI (call index ${index})`,
-      };
+    let fn = resolved.get(call.abiFunction);
+    if (!fn) {
+      try {
+        fn = resolveListFunction(parsedAbi, call.abiFunction);
+      } catch (error) {
+        return {
+          encoded: [],
+          error: `${getErrorMessage(error)} (call index ${index})`,
+        };
+      }
+      resolved.set(call.abiFunction, fn);
     }
 
     try {
-      const callData = iface.encodeFunctionData(call.abiFunction, call.args);
+      const callData = iface.encodeFunctionData(fn.signature, call.args);
       encoded.push({
         target: call.contractAddress,
         allowFailure: true,
         callData,
-        abiFunction: call.abiFunction,
+        abiFunction: fn.signature,
         iface,
-        functionAbi: functionAbis.get(call.abiFunction),
+        functionAbi: { outputs: fn.outputs },
       });
     } catch (error) {
       return {
         encoded: [],
-        error: listEntryName
-          ? `${listEntryName(index)} could not be encoded for ${call.abiFunction}: ${getErrorMessage(error)}.`
-          : `Failed to encode call at index ${index} (${call.abiFunction}): ${getErrorMessage(error)}`,
+        error: `Failed to encode call at index ${index} (${call.abiFunction}): ${getErrorMessage(error)}`,
       };
     }
   }
@@ -643,95 +639,121 @@ function prepareRowCalls(
     : { encoded: encodeResult.encoded };
 }
 
-function findListFunction(
-  parsedAbi: ethers.JsonFragment[],
-  name: string
-): ListFunction | undefined {
-  const item = parsedAbi.find(
-    (fragment) => fragment.type === "function" && fragment.name === name
-  );
-  if (!item) {
-    return;
+type ListContext = {
+  fn: ListFunction;
+  iface: ethers.Interface;
+};
+
+function encodeForList(
+  ctx: ListContext,
+  args: unknown[],
+  where: string
+): string {
+  try {
+    return ctx.iface.encodeFunctionData(ctx.fn.signature, args);
+  } catch (error) {
+    throw new Error(
+      `${where} could not be encoded for ${ctx.fn.name}: ${echo(getErrorMessage(error), MAX_REASON_LENGTH)}`
+    );
   }
-  const inputs = (item.inputs ?? []).map((input) => ({
-    name: input.name,
-    type: input.type ?? "",
-  }));
-  return { name, inputs };
 }
 
-/** Calls from a list, checked entry by entry before any RPC call. */
-function buildListCalls(
-  input: BatchReadContractInput,
-  callsFrom: typeof CALLS_FROM_ARGS_LIST | typeof CALLS_FROM_ADDRESS_LIST,
-  fn: ListFunction
-): NormalizedCall[] {
-  if (callsFrom === CALLS_FROM_ADDRESS_LIST) {
-    const args = sharedArgsForList(input.functionArgs, fn);
-    const entries = parseListInput(
-      input.contractAddresses,
-      ADDRESS_LIST_LABEL,
-      '["0xabc..."]'
-    );
-    return addressesFromList(entries).map((contractAddress) => ({
-      contractAddress,
-      abiFunction: fn.name,
-      args,
-    }));
-  }
+function listCall(
+  ctx: ListContext,
+  target: string,
+  callData: string
+): EncodedCallWithMeta {
+  return {
+    target,
+    allowFailure: true,
+    callData,
+    abiFunction: ctx.fn.signature,
+    iface: ctx.iface,
+    functionAbi: { outputs: ctx.fn.outputs },
+  };
+}
 
+/** Same function and arguments on every address: encoded once, reused. */
+function encodeAddressList(
+  input: BatchReadContractInput,
+  ctx: ListContext
+): EncodedCallWithMeta[] {
+  const args = sharedArgsForList(input.functionArgs, ctx.fn);
+  const callData = encodeForList(ctx, args, SHARED_ARGS_LABEL);
+  const entries = parseListInput(
+    input.contractAddresses,
+    ADDRESS_LIST_LABEL,
+    '["0xabc..."]'
+  );
+  checkRunCalldata(calldataBytes(callData) * entries.length, "addresses");
+  return addressesFromList(entries).map((target) =>
+    listCall(ctx, target, callData)
+  );
+}
+
+function encodeArgsList(
+  input: BatchReadContractInput,
+  ctx: ListContext
+): EncodedCallWithMeta[] {
   const { contractAddress } = input;
   if (!contractAddress) {
-    throw new Error("Contract Address is required in uniform mode");
+    throw new Error("Contract Address is required.");
   }
   if (!ethers.isAddress(contractAddress)) {
-    throw new Error(`Invalid contract address: ${contractAddress}`);
+    throw new Error(`Invalid contract address: ${echo(contractAddress)}`);
   }
-  requireArguments(fn);
+  requireArguments(ctx.fn);
   const entries = parseListInput(
     input.argsFromList,
     ARGS_LIST_LABEL,
     '[["0xabc..."]]'
   );
-  return argSetsFromList(entries, fn).map((args) => ({
-    contractAddress,
-    abiFunction: fn.name,
-    args,
-  }));
+  let total = 0;
+  return argSetsFromList(entries, ctx.fn).map((args, index) => {
+    const callData = encodeForList(
+      ctx,
+      args,
+      `${ARGS_LIST_LABEL} entry ${index + 1}`
+    );
+    total += calldataBytes(callData);
+    checkRunCalldata(total, "entries");
+    return listCall(ctx, contractAddress, callData);
+  });
 }
 
+/** Calls from a list, checked entry by entry before any RPC call. */
 function prepareListCalls(
   input: BatchReadContractInput,
   abi: string,
   callsFrom: typeof CALLS_FROM_ARGS_LIST | typeof CALLS_FROM_ADDRESS_LIST
 ): PreparedCalls {
   if (!input.abiFunction) {
-    return { error: "Function is required in uniform mode" };
+    return { error: "Function is required." };
   }
   const { parsed: parsedAbi, error: abiError } = parseAbi(abi);
   if (abiError) {
     return { error: abiError };
   }
-  const fn = findListFunction(parsedAbi, input.abiFunction);
-  if (!fn) {
-    return { error: `Function '${input.abiFunction}' not found in ABI` };
-  }
-
-  let calls: NormalizedCall[];
+  let iface: ethers.Interface;
   try {
-    calls = buildListCalls(input, callsFrom, fn);
+    iface = new ethers.Interface(parsedAbi);
+  } catch (error) {
+    return { error: `Failed to parse ABI: ${getErrorMessage(error)}` };
+  }
+  try {
+    const ctx: ListContext = {
+      fn: resolveListFunction(parsedAbi, input.abiFunction),
+      iface,
+    };
+    return {
+      encoded:
+        callsFrom === CALLS_FROM_ARGS_LIST
+          ? encodeArgsList(input, ctx)
+          : encodeAddressList(input, ctx),
+    };
   } catch (error) {
     return { error: getErrorMessage(error) };
   }
-
-  const entryName =
-    callsFrom === CALLS_FROM_ARGS_LIST
-      ? (index: number): string => `${ARGS_LIST_LABEL} entry ${index + 1}`
-      : (): string => SHARED_ARGS_LABEL;
-  const encodeResult = encodeUniformCalls(calls, parsedAbi, entryName);
-  return encodeResult.error
-    ? { error: encodeResult.error }
-    : { encoded: encodeResult.encoded };
 }
 
 /**

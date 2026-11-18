@@ -1484,7 +1484,7 @@ const web3Plugin: IntegrationPlugin = {
       slug: "batch-read-contract",
       label: "Batch Read Contract",
       description:
-        "Call the same contract function with multiple argument sets in a single RPC call using Multicall3",
+        "Call one contract function with many argument sets, or on a list of contracts, in a single RPC call using Multicall3",
       category: "Web3",
       stepFunction: "batchReadContractStep",
       stepImportPath: "batch-read-contract",
@@ -1527,7 +1527,7 @@ const web3Plugin: IntegrationPlugin = {
           defaultValue: "uniform",
           required: true,
           helpTip:
-            "Uniform: one contract + one function + array of arg sets. Mixed: each call has its own contract, function, and args.",
+            "Same function: one function called with many argument sets, or on a list of contracts (e.g. done() on every spell). Different contracts: each call has its own network, contract, function, and args.",
         },
         {
           key: "network",
@@ -1540,7 +1540,7 @@ const web3Plugin: IntegrationPlugin = {
         },
         {
           key: "callsFrom",
-          label: "Calls from",
+          label: "Calls From",
           type: "select",
           options: [
             { value: "rows", label: "Rows I add here" },
@@ -1568,10 +1568,11 @@ const web3Plugin: IntegrationPlugin = {
         },
         {
           key: "contractAddresses",
-          label: "Contract addresses",
+          label: "Contract Addresses",
           type: "template-textarea",
           rows: 3,
           required: true,
+          acceptsJsonArray: true,
           placeholder: '{{@node1:Label.result}} or ["0xabc...", "0xdef..."]',
           helpText:
             "One call per address, in order, all on the network above. Up to 5,000 addresses.",
@@ -1584,7 +1585,7 @@ const web3Plugin: IntegrationPlugin = {
         },
         {
           key: "abiFetchAddress",
-          label: "Fetch ABI from",
+          label: "Fetch ABI From",
           type: "template-input",
           placeholder: "0x... one contract with the same ABI (optional)",
           isAddressField: true,
@@ -1604,7 +1605,12 @@ const web3Plugin: IntegrationPlugin = {
           contractAddressField: "contractAddress",
           contractAddressFieldWhen: {
             field: "abiFetchAddress",
-            showWhen: { field: "callsFrom", equals: "address-list" },
+            showWhen: {
+              all: [
+                { field: "inputMode", notEquals: "mixed" },
+                { field: "callsFrom", equals: "address-list" },
+              ],
+            },
           },
           contractInteractionType: "read",
           networkField: "network",
@@ -1639,13 +1645,15 @@ const web3Plugin: IntegrationPlugin = {
         },
         {
           key: "argsFromList",
-          label: "Argument sets",
+          label: "Argument Sets",
           type: "template-textarea",
           rows: 3,
           required: true,
-          placeholder: '{{@node1:Label.result}} or [["0xabc...", 5], ["0xdef...", 6]]',
+          acceptsJsonArray: true,
+          placeholder:
+            '{{@node1:Label.result}} or [["0xabc...", 5], ["0xdef...", 6]]',
           helpText:
-            'One call per entry, in order. An entry is the call\'s arguments in order, e.g. ["0xabc...", 5]. For a function with one argument, an entry can be the bare value. Up to 5,000 entries.',
+            'One call per entry, in order. An entry is the call\'s arguments in order, e.g. ["0xabc...", 5]. For a function with one plain argument (address, number, string, bool, bytes), an entry can be the bare value. Up to 5,000 entries.',
           showWhen: {
             all: [
               { field: "inputMode", oneOf: ["uniform", ""] },
@@ -1655,12 +1663,11 @@ const web3Plugin: IntegrationPlugin = {
         },
         {
           key: "functionArgs",
-          label: "Arguments",
+          label: "Function Arguments",
           type: "abi-function-args",
           abiField: "abi",
           abiFunctionField: "abiFunction",
-          helpText:
-            "Any arguments set here go to every contract in the list.",
+          helpText: "These arguments go to every contract in the list.",
           showWhen: {
             all: [
               { field: "inputMode", oneOf: ["uniform", ""] },

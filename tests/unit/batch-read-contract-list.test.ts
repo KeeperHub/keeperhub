@@ -78,6 +78,44 @@ import {
 
 const LIST_ABI = [
   {
+    name: "flag",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "on", type: "bool" }],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    name: "flags",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "list", type: "bool[]" }],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    name: "bal",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "who", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "bal",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "who", type: "address" },
+      { name: "id", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "blob",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "data", type: "bytes" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
     name: "done",
     type: "function",
     stateMutability: "view",
@@ -119,7 +157,7 @@ function addr(n: number): string {
 const CONTRACT = addr(0xc0);
 const LETTERED = "0x0000000000000000000000000000000000abcdef";
 const HEX_LETTER = /[a-fA-F]/g;
-const ENCODE_FAILURE = /^Argument sets entry 2 could not be encoded for echo: /;
+const ENCODE_FAILURE = /^Argument Sets entry 2 could not be encoded for echo: /;
 
 function flipCase(c: string): string {
   return c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase();
@@ -156,6 +194,20 @@ function answer(call: Call): [boolean, string] {
       const total = ids.reduce((a, b) => a + b, BigInt(0));
       return [true, iface.encodeFunctionResult("sum", [total])];
     }
+    case "flag":
+      return [true, iface.encodeFunctionResult("flag", [parsed.args[0]])];
+    case "flags": {
+      const list = parsed.args[0] as boolean[];
+      return [true, iface.encodeFunctionResult("flags", [list.at(-1)])];
+    }
+    case "bal":
+      // Answers with the number of arguments, so the overload used is visible.
+      return [
+        true,
+        iface.encodeFunctionResult(parsed.fragment.format(), [
+          BigInt(parsed.args.length),
+        ]),
+      ];
     default:
       return [
         true,
@@ -298,25 +350,25 @@ describe("batch-read-contract - contract addresses from a list", () => {
 
   it("fails on an empty list without calling the RPC", async () => {
     expect(await failure(addressList([]))).toBe(
-      "Contract addresses is empty. Check the node that produces it."
+      "Contract Addresses is empty. Check the node that produces it."
     );
   });
 
   it("fails when the list is not JSON", async () => {
     expect(await failure(addressList("0x01, 0x02"))).toBe(
-      'Contract addresses is not a JSON array. Reference an array from an earlier node, e.g. {{@node1:Label.result}}, or type one like ["0xabc..."].'
+      'Contract Addresses is not a JSON array. Reference an array from an earlier node, e.g. {{@node1:Label.result}}, or type one like ["0xabc..."].'
     );
   });
 
   it("fails when the list is JSON but not an array", async () => {
     expect(await failure(addressList({ items: [addr(1)] }))).toBe(
-      "Contract addresses must be an array, got an object. Point it at the array itself, e.g. {{@node1:Label.result.items}}."
+      "Contract Addresses must be an array, got an object. Point it at the array itself, e.g. {{@node1:Label.result.items}}."
     );
   });
 
   it("fails when the list is blank", async () => {
     expect(await failure(addressList(""))).toContain(
-      "Contract addresses is required."
+      "Contract Addresses is required."
     );
   });
 
@@ -324,13 +376,13 @@ describe("batch-read-contract - contract addresses from a list", () => {
     expect(
       await failure(addressList([addr(1), addr(2), addr(3), "0x12"]))
     ).toBe(
-      'Contract addresses entry 4 is not a valid address: "0x12". Each entry must be a 0x address with 40 hex characters.'
+      'Contract Addresses entry 4 is not a valid address: "0x12". Each entry must be a 0x address with 40 hex characters.'
     );
   });
 
   it("names an entry that is not a string", async () => {
     expect(await failure(addressList([addr(1), { a: 1 }]))).toBe(
-      "Contract addresses entry 2 must be an address string, got an object."
+      'Contract Addresses entry 2 must be an address string, got an object. Point the list at the addresses themselves, e.g. ["0xabc..."].'
     );
   });
 
@@ -338,14 +390,14 @@ describe("batch-read-contract - contract addresses from a list", () => {
     const good = ethers.getAddress(LETTERED);
     const bad = `0x${good.slice(2).replace(HEX_LETTER, flipCase)}`;
     expect(await failure(addressList([bad]))).toBe(
-      `Contract addresses entry 1 has a bad checksum: "${bad}". Use the address exactly as published, or in all lower case.`
+      `Contract Addresses entry 1 has a bad checksum: "${bad}". Use the address exactly as published, or in all lower case.`
     );
   });
 
   it("caps the list at 5,000 entries", async () => {
     const list = Array.from({ length: 5001 }, (_, i) => addr(i + 1));
     expect(await failure(addressList(list))).toBe(
-      "Contract addresses has 5,001 entries; the limit is 5,000 calls per run. Split the list across two Batch Read nodes or filter it first."
+      "Contract Addresses has 5,001 entries; the limit is 5,000 calls per run. Split the list across two Batch Read nodes or filter it first."
     );
   });
 
@@ -358,7 +410,7 @@ describe("batch-read-contract - contract addresses from a list", () => {
   it("caps the list text at 1 MB", async () => {
     const padded = `[${" ".repeat(2_400_000)}"${addr(1)}"]`;
     expect(await failure(addressList(padded))).toBe(
-      "Contract addresses is 2.3 MB; the limit is 1 MB. Filter the list first, e.g. with Filter Array."
+      "Contract Addresses is 2.3 MB; the limit is 1 MB. Filter the list first or split it across two Batch Read nodes."
     );
   });
 
@@ -371,7 +423,7 @@ describe("batch-read-contract - contract addresses from a list", () => {
         })
       )
     ).toBe(
-      "Arguments has 1 value but allowance takes 2 (owner, spender). Fill in every argument; the same ones go to every contract in the list."
+      "Function Arguments has 1 value but allowance takes 2 (owner, spender). Fill in every argument; the same ones go to every contract in the list."
     );
   });
 
@@ -381,7 +433,7 @@ describe("batch-read-contract - contract addresses from a list", () => {
       success: true,
       results: null,
       totalCalls: null,
-      error: "Contract addresses is empty. Check the node that produces it.",
+      error: "Contract Addresses is empty. Check the node that produces it.",
     });
     expect(mockStaticCall).not.toHaveBeenCalled();
   });
@@ -438,13 +490,13 @@ describe("batch-read-contract - argument sets from a list", () => {
         argsList([[OWNER, SPENDER], [OWNER, SPENDER], [OWNER]], "allowance")
       )
     ).toBe(
-      'Argument sets entry 3 has 1 value but allowance takes 2 (owner, spender). Make each entry an array like ["0x...", "0x..."].'
+      'Argument Sets entry 3 has 1 value but allowance takes 2 (owner, spender). Make each entry an array like ["0x...", "0x..."].'
     );
   });
 
   it("mentions the bare value when the function takes one plain argument", async () => {
     expect(await failure(argsList([["1", "2"]]))).toBe(
-      "Argument sets entry 1 has 2 values but echo takes 1 (x). Make each entry an array like [1], or the bare value."
+      "Argument Sets entry 1 has 2 values but echo takes 1 (x). Make each entry an array like [1], or the bare value."
     );
   });
 
@@ -452,13 +504,13 @@ describe("batch-read-contract - argument sets from a list", () => {
     expect(
       await failure(argsList([[OWNER, SPENDER], OWNER], "allowance"))
     ).toBe(
-      "Argument sets entry 2 must be an array of 2 values for allowance (owner, spender), got a string."
+      "Argument Sets entry 2 must be an array of 2 values for allowance (owner, spender), got a string."
     );
   });
 
   it("explains that a function without arguments needs the address list", async () => {
     expect(await failure(argsList([[], []], "done"))).toBe(
-      'done takes no arguments, so a list of argument sets has nothing to change between calls. To call it on many contracts, set Calls from to "A list of contract addresses".'
+      'done takes no arguments, so a list of argument sets has nothing to change between calls. To call it on many contracts, set Calls From to "A list of contract addresses".'
     );
   });
 
@@ -470,20 +522,20 @@ describe("batch-read-contract - argument sets from a list", () => {
 
   it("fails on an empty list without calling the RPC", async () => {
     expect(await failure(argsList([]))).toBe(
-      "Argument sets is empty. Check the node that produces it."
+      "Argument Sets is empty. Check the node that produces it."
     );
   });
 
   it("fails when the list is not JSON", async () => {
     expect(await failure(argsList("1, 2"))).toBe(
-      'Argument sets is not a JSON array. Reference an array from an earlier node, e.g. {{@node1:Label.result}}, or type one like [["0xabc..."]].'
+      'Argument Sets is not a JSON array. Reference an array from an earlier node, e.g. {{@node1:Label.result}}, or type one like [["0xabc..."]].'
     );
   });
 
   it("caps the list at 5,000 entries", async () => {
     const list = Array.from({ length: 6200 }, (_, i) => String(i));
     expect(await failure(argsList(list))).toBe(
-      "Argument sets has 6,200 entries; the limit is 5,000 calls per run. Split the list across two Batch Read nodes or filter it first."
+      "Argument Sets has 6,200 entries; the limit is 5,000 calls per run. Split the list across two Batch Read nodes or filter it first."
     );
   });
 
@@ -538,7 +590,7 @@ describe("batch-read-contract - Calls from and saved workflows", () => {
 
   it("rejects an unknown Calls from value", async () => {
     expect(await failure({ callsFrom: "everything" })).toBe(
-      'Calls from must be "rows", "args-list" or "address-list", got "everything".'
+      'Calls From must be "rows", "args-list" or "address-list", got "everything".'
     );
   });
 
@@ -558,5 +610,279 @@ describe("batch-read-contract - Calls from and saved workflows", () => {
       ]),
     });
     expect(outcome.results).toEqual([{ success: true, result: "6" }]);
+  });
+});
+
+describe("batch-read-contract - list argument types", () => {
+  it.each([
+    ["true", true],
+    ["false", false],
+    [true, true],
+    [false, false],
+    [" FALSE ", false],
+  ])("encodes %j as %j from Argument Sets", async (entry, expected) => {
+    const outcome = await run(argsList([entry], "flag"));
+    expect(outcome.results).toEqual([{ success: true, result: expected }]);
+  });
+
+  it.each([
+    ["true", true],
+    ["false", false],
+    [true, true],
+    [false, false],
+  ])("encodes %j as %j from Function Arguments", async (arg, expected) => {
+    const outcome = await run(
+      addressList([addr(1)], {
+        abiFunction: "flag",
+        functionArgs: JSON.stringify([arg]),
+      })
+    );
+    expect(outcome.results).toEqual([{ success: true, result: expected }]);
+  });
+
+  it.each([
+    ["0", '"0"'],
+    ["no", '"no"'],
+    [1, "1"],
+  ])("refuses %j for a bool in Argument Sets", async (entry, shown) => {
+    expect(await failure(argsList(["true", entry], "flag"))).toBe(
+      `Argument Sets entry 2: on must be true or false, got ${shown}.`
+    );
+  });
+
+  it.each([
+    ["0", '"0"'],
+    ["no", '"no"'],
+    [1, "1"],
+  ])("refuses %j for a bool in Function Arguments", async (arg, shown) => {
+    expect(
+      await failure(
+        addressList([addr(1)], {
+          abiFunction: "flag",
+          functionArgs: JSON.stringify([arg]),
+        })
+      )
+    ).toBe(`Function Arguments: on must be true or false, got ${shown}.`);
+  });
+
+  it("checks bools inside an array argument", async () => {
+    expect(await failure(argsList([[["true", "maybe"]]], "flags"))).toBe(
+      'Argument Sets entry 1: list[1] must be true or false, got "maybe".'
+    );
+    const outcome = await run(argsList([[["true", "false"]]], "flags"));
+    expect(outcome.results).toEqual([{ success: true, result: false }]);
+  });
+
+  it("refuses an object or null as the bare value of a one-argument function", async () => {
+    expect(await failure(argsList(["1", { wallet: addr(1) }]))).toBe(
+      "Argument Sets entry 2 must be a value for echo (x), got an object. Point the list at the values themselves, e.g. {{@node1:Label.result.wallets}}."
+    );
+    expect(await failure(argsList([null]))).toBe(
+      "Argument Sets entry 1 must be a value for echo (x), got null. Point the list at the values themselves, e.g. {{@node1:Label.result.wallets}}."
+    );
+  });
+
+  it("cuts a long encoder reason to 200 characters", async () => {
+    const message = await failure(argsList([`9${"x".repeat(500)}`]));
+    expect(
+      message.startsWith(
+        "Argument Sets entry 1 could not be encoded for echo: "
+      )
+    ).toBe(true);
+    expect(message.length).toBeLessThan(320);
+    expect(message.endsWith("...")).toBe(true);
+  });
+
+  it("names the encoder failure without a doubled full stop", async () => {
+    const message = await failure(argsList(["1", "not a number"]));
+    expect(message).toMatch(ENCODE_FAILURE);
+    expect(message.endsWith(").") || message.endsWith("..")).toBe(false);
+  });
+
+  it("cuts a long Contract Address in its error", async () => {
+    const long = `0x${"z".repeat(300)}`;
+    expect(await failure({ ...argsList(["1"]), contractAddress: long })).toBe(
+      `Invalid contract address: ${long.slice(0, 60)}...`
+    );
+  });
+});
+
+describe("batch-read-contract - overloaded functions", () => {
+  it("calls the overload picked by its signature from a list", async () => {
+    const one = await run(
+      addressList([addr(1)], {
+        abiFunction: "bal(address)",
+        functionArgs: JSON.stringify([OWNER]),
+      })
+    );
+    expect(one.results).toEqual([{ success: true, result: "1" }]);
+
+    const two = await run({
+      callsFrom: "args-list",
+      contractAddress: CONTRACT,
+      abiFunction: "bal(address,uint256)",
+      argsFromList: JSON.stringify([[OWNER, "5"]]),
+    });
+    expect(two.results).toEqual([{ success: true, result: "2" }]);
+  });
+
+  it("calls the overload picked by its signature from the rows", async () => {
+    const outcome = await run({
+      contractAddress: CONTRACT,
+      abiFunction: "bal(address,uint256)",
+      argsList: JSON.stringify([[OWNER, "5"]]),
+    });
+    expect(outcome.results).toEqual([{ success: true, result: "2" }]);
+  });
+
+  it("asks which overload to use for a bare overloaded name", async () => {
+    expect(
+      await failure(
+        addressList([addr(1)], {
+          abiFunction: "bal",
+          functionArgs: JSON.stringify([OWNER]),
+        })
+      )
+    ).toBe(
+      "Function 'bal' matches more than one function in the ABI. Pick the one you mean in Function."
+    );
+  });
+});
+
+describe("batch-read-contract - list limits and shapes", () => {
+  it("takes native arrays, as API and MCP callers send them", async () => {
+    const byAddress = await run({
+      callsFrom: "address-list",
+      abiFunction: "done",
+      contractAddresses: [addr(2), addr(1)],
+    });
+    expect(seenTargets).toEqual([addr(2), addr(1)]);
+    expect(byAddress.totalCalls).toBe(2);
+
+    const byArgs = await run({
+      callsFrom: "args-list",
+      contractAddress: CONTRACT,
+      abiFunction: "echo",
+      argsFromList: ["4", ["5"]],
+      functionArgs: ["ignored"],
+    });
+    expect(byArgs.results?.map((r) => r.result)).toEqual(["4", "5"]);
+  });
+
+  it("applies the 1 MB cap to a native array, measured as JSON text", async () => {
+    const big = [`0x${"0".repeat(1_100_000)}`];
+    expect(
+      await failure({
+        callsFrom: "address-list",
+        abiFunction: "done",
+        contractAddresses: big,
+      })
+    ).toBe(
+      "Contract Addresses is 1.1 MB; the limit is 1 MB. Filter the list first or split it across two Batch Read nodes."
+    );
+  });
+
+  it("accepts exactly 1 MB of list text and refuses one byte more", async () => {
+    const entry = `"${addr(1)}"`;
+    const fill = (size: number): string =>
+      `[${entry}${" ".repeat(size - entry.length - 2)}]`;
+    const exact = fill(1_048_576);
+    expect(Buffer.byteLength(exact)).toBe(1_048_576);
+    // Trailing spaces are trimmed before measuring, so pad inside the array.
+    expect((await run(addressList(exact))).totalCalls).toBe(1);
+
+    mockStaticCall.mockClear();
+    const over = fill(1_048_577);
+    expect(await failure(addressList(over))).toBe(
+      "Contract Addresses is 1.1 MB; the limit is 1 MB. Filter the list first or split it across two Batch Read nodes."
+    );
+  });
+
+  it("puts Function Arguments under the same 1 MB cap", async () => {
+    expect(
+      await failure(
+        addressList([addr(1)], {
+          abiFunction: "blob",
+          functionArgs: JSON.stringify([`0x${"ab".repeat(600_000)}`]),
+        })
+      )
+    ).toBe(
+      "Function Arguments is 1.2 MB; the limit is 1 MB. Use smaller arguments."
+    );
+  });
+
+  it("caps the encoded call data of one run at 10 MB, before any call", async () => {
+    const list = Array.from({ length: 5000 }, (_, i) => addr(i + 1));
+    const started = Date.now();
+    expect(
+      await failure(
+        addressList(list, {
+          abiFunction: "blob",
+          functionArgs: JSON.stringify([`0x${"ab".repeat(3000)}`]),
+        })
+      )
+    ).toBe(
+      "The calls' data adds up to 14.7 MB; the limit is 10 MB per run. Use smaller arguments or fewer addresses."
+    );
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("encodes shared arguments once for every address", async () => {
+    const encode = vi.spyOn(ethers.Interface.prototype, "encodeFunctionData");
+    await run(
+      addressList([addr(1), addr(2), addr(3)], {
+        abiFunction: "echo",
+        functionArgs: JSON.stringify(["1"]),
+      })
+    );
+    expect(encode).toHaveBeenCalledTimes(1);
+    encode.mockRestore();
+  });
+
+  it("accepts an address with spaces around it", async () => {
+    const outcome = await run(addressList([` ${addr(5)} `]));
+    expect(seenTargets).toEqual([addr(5)]);
+    expect(outcome.totalCalls).toBe(1);
+  });
+
+  it("runs the rows when Calls From is an empty string", async () => {
+    const outcome = await run({
+      callsFrom: "",
+      contractAddress: CONTRACT,
+      abiFunction: "echo",
+      argsList: JSON.stringify([["3"]]),
+    });
+    expect(outcome.results).toEqual([{ success: true, result: "3" }]);
+  });
+
+  it("does not use Function or Contract Address jargon from the rows", async () => {
+    expect(await failure({ ...argsList(["1"]), contractAddress: "" })).toBe(
+      "Contract Address is required."
+    );
+    expect(await failure({ ...argsList(["1"]), abiFunction: "" })).toBe(
+      "Function is required."
+    );
+  });
+
+  it("shows a tuple argument as {...} in the example entry", async () => {
+    const abi = JSON.stringify([
+      {
+        name: "pair",
+        type: "function",
+        stateMutability: "view",
+        inputs: [
+          {
+            name: "key",
+            type: "tuple",
+            components: [{ name: "a", type: "uint256" }],
+          },
+          { name: "n", type: "uint256" },
+        ],
+        outputs: [{ name: "", type: "uint256" }],
+      },
+    ]);
+    expect(await failure({ ...argsList([[{ a: "1" }]], "pair"), abi })).toBe(
+      "Argument Sets entry 1 has 1 value but pair takes 2 (key, n). Make each entry an array like [{...}, 1]."
+    );
   });
 });

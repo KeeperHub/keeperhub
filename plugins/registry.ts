@@ -125,6 +125,10 @@ export type ActionConfigFieldBase = {
   // and the button appears to do nothing at all.
   valueFormat?: "json";
 
+  // A template-textarea that also takes a native JSON array, as API and MCP
+  // callers send one; the editor shows it as JSON text.
+  acceptsJsonArray?: boolean;
+
   // Min value (for number fields)
   min?: number;
 

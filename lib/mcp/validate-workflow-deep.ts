@@ -171,6 +171,7 @@ export function collectContractRefs(nodes: unknown): ContractRef[] {
     // Contract Address is hidden and may hold a stale value.
     const contractAddress =
       actionType === "web3/batch-read-contract" &&
+      config.inputMode !== "mixed" &&
       config.callsFrom === "address-list"
         ? config.abiFetchAddress
         : config.contractAddress;
