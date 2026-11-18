@@ -350,6 +350,40 @@ function isPrimitive(value: unknown): boolean {
   );
 }
 
+function tooManyDigits(path: string, value: number): string {
+  const example = value < 0 ? "-12345678901234567890" : "12345678901234567890";
+  return `${path} has too many digits to send as a number and may have lost some. Write it in quotes, like "${example}", or have the earlier node send it as text`;
+}
+
+// Text is read with the encoder's own parse, so a value it would refuse is
+// named by path here. A JSON number past 2^53 has already lost digits.
+function integerLeafError(value: unknown, path: string): string | undefined {
+  if (typeof value === "string") {
+    if (value.trim().length > MAX_INTEGER_TEXT) {
+      return `${path} is too long for a whole number. Use at most 78 digits`;
+    }
+    try {
+      ethers.getBigInt(value);
+      return;
+    } catch {
+      return `${path} must be a whole number in digits, got ${showValue(value)}`;
+    }
+  }
+  if (typeof value === "bigint") {
+    return;
+  }
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return `${path} must be a whole number, got ${typeof value === "number" ? "NaN" : showValue(value)}`;
+  }
+  if (!Number.isFinite(value)) {
+    return tooManyDigits(path, value);
+  }
+  if (!Number.isInteger(value)) {
+    return `${path} must be a whole number, got ${showValue(value)}`;
+  }
+  return Number.isSafeInteger(value) ? undefined : tooManyDigits(path, value);
+}
+
 /**
  * The checks lib/abi leaves to the encoder, made before encoding so a list
  * entry fails with its own name: a bool must be true or false, an address a
@@ -368,24 +402,10 @@ function checkListLeaf(
   if (type === "address") {
     return addressError(value, path);
   }
-  if (
-    INTEGER_TYPE_RE.test(type) &&
-    typeof value === "string" &&
-    value.trim().length > MAX_INTEGER_TEXT
-  ) {
-    return `${path} is too long for a whole number. Use at most 78 digits`;
-  }
-  // A JSON number past 2^53 has already lost digits, and a fraction is not a
-  // whole number; ethers would call either one out of range.
-  if (INTEGER_TYPE_RE.test(type) && typeof value === "number") {
-    if (!Number.isFinite(value)) {
-      return `${path} must be a whole number, got ${String(value)}`;
-    }
-    if (!Number.isInteger(value)) {
-      return `${path} must be a whole number, got ${showValue(value)}`;
-    }
-    if (!Number.isSafeInteger(value)) {
-      return `${path} has too many digits to send as a number and may have lost some. Write it in quotes, or have the earlier node send it as text, e.g. "12345678901234567890"`;
+  if (INTEGER_TYPE_RE.test(type)) {
+    const error = integerLeafError(value, path);
+    if (error) {
+      return error;
     }
   }
   const bytes = BYTES_N_RE.exec(type);
@@ -623,12 +643,14 @@ export function encodeReason(error: unknown, fn: ListFunction): string {
   const reported = ETHERS_ARGUMENT_RE.exec(message)?.[1];
   const found = reportedParam(fn, reported);
   const name = found?.path;
-  const subject = name ? `${name} ` : "it ";
+  const subject = name ? `${name} ` : "a value ";
   if (NUMBER_RANGE_RE.test(message)) {
     return outOfRange(subject, found?.type);
   }
   if (NUMBER_FAULT_RE.test(message)) {
-    return `${subject}must be a whole number in digits.`;
+    const value = (error as { value?: unknown } | null)?.value;
+    const got = value === undefined ? "" : `, got ${showValue(value)}`;
+    return `${subject}must be a whole number in digits${got}.`;
   }
   const reason = echo(message.replace(ETHERS_DETAIL_RE, ""), MAX_REASON_LENGTH);
   const prefix = name ? `${name}: ` : "";
@@ -779,29 +801,31 @@ function positionalTupleError(
   return;
 }
 
-// With as many values as inputs, a tuple given a plain value is the mistake:
-// name it, rather than report two counts that look the same.
+// With as many values as inputs and one tuple holding a plain value, that
+// tuple is the mistake: name it, rather than report two counts.
 function tupleSlotError(
   entry: unknown[],
   fn: ListFunction,
-  at: string,
-  consumed: number
+  at: string
 ): Error | undefined {
   if (entry.length !== fn.inputs.length) {
     return;
   }
-  const index = fn.inputs.findIndex(
-    (input, i) =>
-      input.type === "tuple" &&
-      Boolean(input.components?.length) &&
-      !isPlainObject(entry[i])
+  const slots = fn.inputs.flatMap((input, index) =>
+    input.type === "tuple" &&
+    input.components?.length &&
+    !isPlainObject(entry[index])
+      ? [index]
+      : []
   );
-  if (index < 0) {
+  if (slots.length !== 1) {
     return;
   }
+  const index = slots[0];
   const input = fn.inputs[index];
+  const members = input.components?.length ?? 0;
   return new Error(
-    `${at}: ${input.name || `arg${index}`} must be an object with its member names, like ${echo(exampleValue(input.type, input.components), MAX_REASON_LENGTH)}, got ${showValue(entry[index])}. Or give all ${count(consumed)} values flat.`
+    `${at}: ${input.name || `arg${index}`} must be an object with its member names, like ${echo(exampleValue(input.type, input.components), MAX_REASON_LENGTH)}, got ${showValue(entry[index])}. Or give its ${count(members)} members flat in its place.`
   );
 }
 
@@ -826,8 +850,7 @@ function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
   const reshaped = reshapeArgsCounted(entry, fn);
   if (entry.length !== reshaped.consumed) {
     const positional =
-      positionalTupleError(entry, fn, at) ??
-      tupleSlotError(entry, fn, at, reshaped.consumed);
+      positionalTupleError(entry, fn, at) ?? tupleSlotError(entry, fn, at);
     if (positional) {
       throw positional;
     }

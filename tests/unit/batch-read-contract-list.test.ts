@@ -672,9 +672,7 @@ describe("batch-read-contract - argument sets from a list", () => {
   });
 
   it("names an entry that cannot be encoded", async () => {
-    expect(await failure(argsList(["1", "not a number"]))).toMatch(
-      ENCODE_FAILURE
-    );
+    expect(await failure(argsList(["1", "-1"]))).toMatch(ENCODE_FAILURE);
   });
 
   it("fails on an empty list without calling the RPC", async () => {
@@ -842,9 +840,8 @@ describe("batch-read-contract - list argument types", () => {
   });
 
   it("says a number must be a whole number, without ethers' details", async () => {
-    const whole = "x must be a whole number in digits.";
     expect(await failure(argsList(["9x"]))).toBe(
-      `Argument Sets entry 1 could not be encoded for echo: ${whole}`
+      'Argument Sets entry 1: x must be a whole number in digits, got "9x".'
     );
     // 79 digits: past uint256 but under the length guard.
     const range =
@@ -903,7 +900,7 @@ describe("batch-read-contract - list argument types", () => {
   });
 
   it("names the encoder failure without a doubled full stop", async () => {
-    const message = await failure(argsList(["1", "not a number"]));
+    const message = await failure(argsList(["1", "-1"]));
     expect(message).toMatch(ENCODE_FAILURE);
     expect(message.endsWith(").") || message.endsWith("..")).toBe(false);
   });
@@ -1201,7 +1198,7 @@ describe("batch-read-contract - review round 2", () => {
       'Argument Sets entry 1: give p as an object with its member names, like {"flag": true, "x": 1}, not as an array.'
     );
     expect(await failure(argsList([["false"]], "cfg"))).toBe(
-      'Argument Sets entry 1: p must be an object with its member names, like {"flag": true, "x": 1}, got "false". Or give all 2 values flat.'
+      'Argument Sets entry 1: p must be an object with its member names, like {"flag": true, "x": 1}, got "false". Or give its 2 members flat in its place.'
     );
   });
 
@@ -1912,7 +1909,7 @@ describe("batch-read-contract - review fixes, round 3", () => {
       { name: "x", type: "uint256" },
     ]);
     expect(await failure({ ...argsList([[1, 2]], "flat"), abi })).toBe(
-      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got 1. Or give all 3 values flat.'
+      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got 1. Or give its 2 members flat in its place.'
     );
   });
 });
@@ -1939,7 +1936,7 @@ describe("batch-read-contract - review fixes, round 4", () => {
       { name: "a", type: "uint8" },
     ]);
     const message =
-      "Argument Sets entry 1 could not be encoded for twin: it is out of range for its type. Check that each number fits its type in the ABI.";
+      "Argument Sets entry 1 could not be encoded for twin: a value is out of range for its type. Check that each number fits its type in the ABI.";
     expect(
       await failure({ ...argsList([[{ a: "1" }, "300"]], "twin"), abi })
     ).toBe(message);
@@ -1964,7 +1961,7 @@ describe("batch-read-contract - review fixes, round 4", () => {
     expect(
       await failure({ ...argsList([[{ a: "1" }, { a: "300" }]], "pair"), abi })
     ).toBe(
-      "Argument Sets entry 1 could not be encoded for pair: it is out of range for its type. Check that each number fits its type in the ABI."
+      "Argument Sets entry 1 could not be encoded for pair: a value is out of range for its type. Check that each number fits its type in the ABI."
     );
   });
 
@@ -2085,7 +2082,7 @@ describe("batch-read-contract - second review", () => {
       { name: "x", type: "uint256" },
     ]);
     expect(await failure({ ...argsList([["1", "2"]], "flat"), abi })).toBe(
-      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got "1". Or give all 3 values flat.'
+      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got "1". Or give its 2 members flat in its place.'
     );
     mockStaticCall.mockClear();
     expect(
@@ -2122,7 +2119,7 @@ describe("batch-read-contract - second review", () => {
     expect(
       await failure({ ...argsList("[12345678901234567890]", "bal"), abi })
     ).toBe(
-      'Argument Sets entry 1: id has too many digits to send as a number and may have lost some. Write it in quotes, or have the earlier node send it as text, e.g. "12345678901234567890".'
+      'Argument Sets entry 1: id has too many digits to send as a number and may have lost some. Write it in quotes, like "12345678901234567890", or have the earlier node send it as text.'
     );
     expect(await failure({ ...argsList("[1.5]", "bal"), abi })).toBe(
       "Argument Sets entry 1: id must be a whole number, got 1.5."
@@ -2178,7 +2175,7 @@ describe("batch-read-contract - second review, round 2", () => {
     expect(
       await failure({ ...argsList([["[1,2]"]], "g"), abi: arrayFirst })
     ).toBe(
-      'Argument Sets entry 1: t must be an object with its member names, like {"xs": [1, 1], "s": "..."}, got "[1,2]". Or give all 2 values flat.'
+      'Argument Sets entry 1: t must be an object with its member names, like {"xs": [1, 1], "s": "..."}, got "[1,2]". Or give its 2 members flat in its place.'
     );
   });
 
@@ -2220,7 +2217,129 @@ describe("batch-read-contract - second review, round 2", () => {
     expect(
       await failure({ ...argsList("[-12345678901234567890]", "signed"), abi })
     ).toContain(
-      "v has too many digits to send as a number and may have lost some."
+      'v has too many digits to send as a number and may have lost some. Write it in quotes, like "-12345678901234567890"'
+    );
+  });
+
+  const pairs = abiWith("two", [
+    {
+      name: "t",
+      type: "tuple",
+      components: [
+        { name: "a", type: "uint256" },
+        { name: "b", type: "uint256" },
+      ],
+    },
+    {
+      name: "v",
+      type: "tuple",
+      components: [
+        { name: "c", type: "uint256" },
+        { name: "d", type: "uint256" },
+      ],
+    },
+    { name: "x", type: "uint256" },
+    { name: "y", type: "uint256" },
+  ]);
+
+  it("walks past a tuple given flat to name the next one", async () => {
+    expect(
+      await failure({ ...argsList([[1, 2, [1, 2], 3, 4]], "two"), abi: pairs })
+    ).toBe(
+      'Argument Sets entry 1: give v as an object with its member names, like {"c": 1, "d": 1}, not as an array.'
+    );
+    expect(
+      await failure({
+        ...argsList([[1, 2, '{"c":1,"d":2}', 3, 4]], "two"),
+        abi: pairs,
+      })
+    ).toBe(
+      'Argument Sets entry 1: give v as an object with its member names, like {"c": 1, "d": 1}, not as text.'
+    );
+  });
+
+  it("names a tuple slot only when one tuple holds a plain value", async () => {
+    expect(
+      await failure({
+        ...argsList([[{ a: 1, b: 2 }, "1", 3, 4]], "two"),
+        abi: pairs,
+      })
+    ).toBe(
+      'Argument Sets entry 1: v must be an object with its member names, like {"c": 1, "d": 1}, got "1". Or give its 2 members flat in its place.'
+    );
+    // t flat and y missing: both tuple places hold plain values.
+    expect(
+      await failure({
+        ...argsList([[1, 2, { c: 1, d: 2 }, 3]], "two"),
+        abi: pairs,
+      })
+    ).toMatch(/^Argument Sets entry 1 has 4 values, but two takes 4 /);
+    // Fewer values than inputs: the count message, not the slot.
+    expect(
+      await failure({
+        ...argsList([[{ a: 1, b: 2 }, "1", 3]], "two"),
+        abi: pairs,
+      })
+    ).toMatch(/^Argument Sets entry 1 has 3 values, but two takes 4 /);
+  });
+
+  it("names a bad integer by its path before encoding", async () => {
+    const abi = abiWith("tw", [
+      { name: "who", type: "address" },
+      { name: "n", type: "uint256" },
+      {
+        name: "t",
+        type: "tuple",
+        components: [
+          { name: "a", type: "uint256" },
+          { name: "s", type: "string" },
+        ],
+      },
+      { name: "ids", type: "uint256[]" },
+    ]);
+    const call = (n: unknown, a: unknown, ids: unknown): unknown[][] => [
+      [OWNER, n, { a, s: "y" }, ids],
+    ];
+    for (const text of ["x", "1.0", "1,000", "1e18", "--1"]) {
+      expect(
+        await failure({ ...argsList(call(text, "1", []), "tw"), abi })
+      ).toBe(
+        `Argument Sets entry 1: n must be a whole number in digits, got ${JSON.stringify(text)}.`
+      );
+    }
+    expect(
+      await failure({ ...argsList(call("1", "1.5", []), "tw"), abi })
+    ).toBe(
+      'Argument Sets entry 1: t.a must be a whole number in digits, got "1.5".'
+    );
+    expect(
+      await failure({ ...argsList(call("1", "1", ["1", "x"]), "tw"), abi })
+    ).toBe(
+      'Argument Sets entry 1: ids[1] must be a whole number in digits, got "x".'
+    );
+    expect(await failure({ ...argsList(call(true, "1", []), "tw"), abi })).toBe(
+      "Argument Sets entry 1: n must be a whole number, got true."
+    );
+    mockStaticCall.mockClear();
+    const outcome = await run({
+      ...argsList(call(" 5 ", "0x10", ["-0", "7"]), "tw"),
+      abi,
+    });
+    expect(outcome.totalCalls).toBe(1);
+  });
+
+  it("asks for quotes for a non-finite number, and names NaN", async () => {
+    // JSON cannot hold these; a list passed as a value can.
+    expect(
+      await failure({
+        ...argsList([]),
+        argsFromList: [Number.POSITIVE_INFINITY],
+      })
+    ).toBe(
+      'Argument Sets entry 1: x has too many digits to send as a number and may have lost some. Write it in quotes, like "12345678901234567890", or have the earlier node send it as text.'
+    );
+    expect(await failure({ ...argsList([]), argsFromList: [Number.NaN] })).toBe(
+      "Argument Sets entry 1: x must be a whole number, got NaN."
     );
   });
 });
