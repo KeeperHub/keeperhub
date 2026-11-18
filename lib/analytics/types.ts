@@ -89,6 +89,15 @@ export type UnifiedRun = {
   errorCode: string | null;
   errorType: ExecutionErrorType | null;
   errorCategory: string | null;
+  /** On a failed workflow run that set off a failure alert. */
+  alert?: RunAlert;
+};
+
+/** The failure alert a run set off: when, on which methods, and how it went. */
+export type RunAlert = {
+  sentAt: string;
+  channels: string[];
+  state: "delivered" | "sending" | "failed";
 };
 
 export type AnalyticsSummary = {

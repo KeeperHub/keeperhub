@@ -19,6 +19,8 @@ const {
   mockMemberLimit,
   mockValidateWorkflowIntegrations,
   mockSyncWorkflowSchedule,
+  mockUpdateSet,
+  mockTransaction,
 } = vi.hoisted(() => ({
   mockGetDualAuthContext: vi.fn(),
   mockWorkflowsFindFirst: vi.fn(),
@@ -27,6 +29,8 @@ const {
   mockMemberLimit: vi.fn(),
   mockValidateWorkflowIntegrations: vi.fn(),
   mockSyncWorkflowSchedule: vi.fn(),
+  mockUpdateSet: vi.fn(),
+  mockTransaction: vi.fn(),
 }));
 
 vi.mock("@/lib/middleware/auth-helpers", () => ({
@@ -40,13 +44,17 @@ vi.mock("@/lib/db", () => ({
         findFirst: mockWorkflowsFindFirst,
       },
     },
-    update: vi.fn(() => ({
-      set: vi.fn(() => ({
-        where: vi.fn(() => ({
-          returning: mockUpdateReturning,
-        })),
-      })),
+    update: vi.fn((table: unknown) => ({
+      set: vi.fn((values: unknown) => {
+        mockUpdateSet(table, values);
+        return {
+          where: vi.fn(() =>
+            Object.assign(Promise.resolve(), { returning: mockUpdateReturning })
+          ),
+        };
+      }),
     })),
+    transaction: mockTransaction,
     delete: vi.fn(() => ({
       where: vi.fn().mockResolvedValue(undefined),
     })),
@@ -78,7 +86,7 @@ vi.mock("@/lib/db/schema", () => ({
   projects: { id: "id", organizationId: "organization_id" },
   tags: { id: "id", organizationId: "organization_id" },
   workflowExecutions: { workflowId: "workflow_id" },
-  workflowSchedules: { workflowId: "workflow_id" },
+  workflowSchedules: { table: "workflow_schedules", workflowId: "workflow_id" },
 }));
 
 vi.mock("@/lib/logging", () => ({
@@ -149,6 +157,14 @@ function scheduleTriggerNode(
   };
 }
 
+/** A transaction runs its callback on the same mocked client. */
+function runTransactionsOnMockDb(): void {
+  mockTransaction.mockImplementation(
+    async (run: (tx: unknown) => Promise<unknown>) =>
+      run((await import("@/lib/db")).db)
+  );
+}
+
 function existingWorkflow(): Record<string, unknown> {
   return {
     id: "wf-1",
@@ -188,6 +204,7 @@ describe("KEEP-581: PATCH /api/workflows/[workflowId] schedule interval guard", 
     mockMemberLimit.mockResolvedValue([{ id: "m-1" }]);
     mockSyncWorkflowSchedule.mockResolvedValue({ synced: true });
     mockUpdateReturning.mockResolvedValue([existingWorkflow()]);
+    runTransactionsOnMockDb();
   });
 
   it("returns 400 with SCHEDULE_INTERVAL_TOO_SMALL when scheduleIntervalSeconds is 30", async () => {
@@ -267,6 +284,7 @@ describe("PATCH /api/workflows/[workflowId] schedule registration", () => {
     mockUpdateReturning.mockResolvedValue([
       { ...existingWorkflow(), nodes: [scheduleTriggerNode(null)] },
     ]);
+    runTransactionsOnMockDb();
   });
 
   it("rejects enabling an incomplete Pyth trigger before writing", async () => {
@@ -341,7 +359,46 @@ describe("PATCH /api/workflows/[workflowId] schedule registration", () => {
     expect(mockSyncWorkflowSchedule).toHaveBeenCalledWith(
       "wf-1",
       [scheduleTriggerNode(null)],
-      expect.any(String)
+      expect.any(String),
+      { restart: true }
+    );
+  });
+
+  it("restarts missed-run counting when an off workflow is turned on", async () => {
+    // The sync only logs a warning on failure; the restart must not depend on it.
+    mockSyncWorkflowSchedule.mockResolvedValue(undefined);
+
+    const response = await PATCH(makeRequest({ enabled: true }), { params });
+
+    expect(response.status).toBe(200);
+    expect(mockSyncWorkflowSchedule).toHaveBeenCalledWith(
+      "wf-1",
+      [scheduleTriggerNode(null)],
+      expect.any(String),
+      { restart: true }
+    );
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(mockUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ table: "workflow_schedules" }),
+      { updatedAt: expect.any(Date) }
+    );
+  });
+
+  it("does not restart counting for a workflow that was already on", async () => {
+    mockWorkflowsFindFirst.mockResolvedValue(existingWorkflow());
+
+    await PATCH(makeRequest({ enabled: true }), { params });
+
+    expect(mockSyncWorkflowSchedule).toHaveBeenCalledWith(
+      "wf-1",
+      [scheduleTriggerNode(null)],
+      expect.any(String),
+      { restart: false }
+    );
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(mockUpdateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ table: "workflow_schedules" }),
+      expect.anything()
     );
   });
 
@@ -359,7 +416,8 @@ describe("PATCH /api/workflows/[workflowId] schedule registration", () => {
     expect(mockSyncWorkflowSchedule).toHaveBeenCalledWith(
       "wf-1",
       [scheduleTriggerNode(null)],
-      expect.any(String)
+      expect.any(String),
+      { restart: false }
     );
   });
 

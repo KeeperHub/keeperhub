@@ -497,6 +497,15 @@ const plugins = [
         await Promise.resolve();
       },
 
+      async beforeCreateInvitation(data) {
+        if (isDisposableEmailDomain(data.invitation.email)) {
+          throw new APIError("BAD_REQUEST", {
+            message: DISPOSABLE_EMAIL_REJECTION_MESSAGE,
+          });
+        }
+        await Promise.resolve();
+      },
+
       async afterCreateInvitation(data) {
         await recordAuditEvent({
           actor: {

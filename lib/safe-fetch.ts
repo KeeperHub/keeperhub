@@ -445,9 +445,11 @@ type LookupCallback = Parameters<LookupFunction>[2];
 
 /**
  * Connector DNS lookup: checks every resolved address before any socket
- * opens, then Node tries each one in turn like a plain `fetch`.
+ * opens, then Node tries each one in turn like a plain `fetch`. Also used as
+ * the `lookup` of non-HTTP sockets to user-supplied hosts (see
+ * `lib/db/connection-host-guard.ts`).
  */
-function validatingLookup(
+export function validatingLookup(
   hostname: string,
   options: LookupOptions,
   callback: LookupCallback
@@ -483,31 +485,47 @@ const baseConnector = buildConnector({
 });
 
 /**
+ * Connect-time check of the dial target itself: the hostname denylist for a
+ * name, and the IP check for a literal, which skips DNS and so is checked
+ * here instead of in `validatingLookup`. Returns the error to fail the
+ * connection with, or undefined to allow it (including in shadow mode).
+ */
+export function checkConnectTarget(
+  hostname: string
+): SsrfBlockedError | undefined {
+  const family = isIP(hostname);
+  if (family !== 0) {
+    return checkResolvedAddresses(hostname, [{ address: hostname, family }]);
+  }
+  const hostCheck = isBlockedHost(hostname);
+  if (!hostCheck.blocked) {
+    return;
+  }
+  return refuseConnection({
+    hostname,
+    reason: hostCheck.reason,
+    plugin: currentPlugin(),
+  });
+}
+
+/**
+ * Run `fn` with `plugin` attributed to every block recorded inside it. For
+ * callers that dial through `validatingLookup` / `checkConnectTarget`
+ * directly instead of through `safeFetch`.
+ */
+export function runWithSafeFetchPlugin<T>(plugin: string, fn: () => T): T {
+  return pluginContext.run({ plugin }, fn);
+}
+
+/**
  * Runs per connection, redirect hops included, so a redirect target gets the
- * same hostname denylist as the entry URL. An IP literal skips DNS, so it is
- * checked here instead of in `validatingLookup`.
+ * same hostname denylist as the entry URL.
  */
 function validatingConnect(
   options: ConnectOptions,
   callback: ConnectCallback
 ): void {
-  const { hostname } = options;
-  const family = isIP(hostname);
-  let blockError: SsrfBlockedError | undefined;
-  if (family === 0) {
-    const hostCheck = isBlockedHost(hostname);
-    if (hostCheck.blocked) {
-      blockError = refuseConnection({
-        hostname,
-        reason: hostCheck.reason,
-        plugin: currentPlugin(),
-      });
-    }
-  } else {
-    blockError = checkResolvedAddresses(hostname, [
-      { address: hostname, family },
-    ]);
-  }
+  const blockError = checkConnectTarget(options.hostname);
   if (blockError) {
     callback(blockError, null);
     return;
