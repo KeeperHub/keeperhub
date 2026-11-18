@@ -28,6 +28,18 @@ describe("isDisposableEmailDomain", () => {
     expect(isDisposableEmailDomain("user@euploading.com")).toBe(true);
   });
 
+  it("blocks subdomains of a blocked domain", () => {
+    expect(isDisposableEmailDomain("user@wfe.marchslurp.com")).toBe(true);
+    expect(isDisposableEmailDomain("user@a.b.roomsranked.com")).toBe(true);
+    expect(isDisposableEmailDomain("user@x1.arcadehearth.com")).toBe(true);
+    expect(isDisposableEmailDomain("user@mx.mailinator.com")).toBe(true);
+  });
+
+  it("does not block a blocked domain's parent or a public suffix", () => {
+    expect(isDisposableEmailDomain("user@com")).toBe(false);
+    expect(isDisposableEmailDomain("user@mail.example.com")).toBe(false);
+  });
+
   it("never blocks mainstream providers", () => {
     for (const domain of NEVER_BLOCKED_DOMAINS) {
       expect(isDisposableEmailDomain(`user@${domain}`)).toBe(false);

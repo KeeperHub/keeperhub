@@ -587,9 +587,12 @@ app:
       value: "true"
     # Workflow failure notifications rollout: off | all | orgs:<id>,<id> |
     # percent:<n>. Read by lib/notifications/failure-alerts/rollout.ts.
+    # Comes from Parameter Store; create it before deploy (a missing SSM
+    # param blocks the pod): /eks/techops-prod/keeperhub/failure-alerts-rollout
     FAILURE_ALERTS_ROLLOUT:
-      type: kv
-      value: "off"
+      type: parameterStore
+      name: failure-alerts-rollout
+      parameter_name: /eks/techops-prod/keeperhub/failure-alerts-rollout
     # Free trials (server-side runtime flags). TRIALS_ENABLED gates the trial
     # offer + in-app nudge; the rest tune length and repeat behavior.
     # TRIALS_ENABLED and TRIAL_TIER come from Parameter Store so we can flip the
