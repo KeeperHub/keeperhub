@@ -782,16 +782,22 @@ describe("batch-read-contract - list argument types", () => {
   it("says a number must be a whole number, without ethers' details", async () => {
     const whole =
       'x must be a whole number; write large numbers in quotes, e.g. "12345678901234567890".';
-    expect(await failure(argsList([`9${"x".repeat(500)}`]))).toBe(
+    expect(await failure(argsList(["9x"]))).toBe(
       `Argument Sets entry 1 could not be encoded for echo: ${whole}`
     );
-    expect(
-      await failure(
-        argsList([
-          "12345678901234567890123456789012345678901234567890123456789012345678901234567890",
-        ])
-      )
-    ).toBe(`Argument Sets entry 1 could not be encoded for echo: ${whole}`);
+    // 79 digits: past uint256 but under the length guard.
+    expect(await failure(argsList(["9".repeat(79)]))).toBe(
+      `Argument Sets entry 1 could not be encoded for echo: ${whole}`
+    );
+  });
+
+  it("refuses integer text longer than 80 characters before encoding", async () => {
+    expect(await failure(argsList(["9".repeat(81)]))).toBe(
+      "Argument Sets entry 1: x is too long for a whole number."
+    );
+    expect(await failure(argsList([`9${"x".repeat(500)}`]))).toBe(
+      "Argument Sets entry 1: x is too long for a whole number."
+    );
   });
 
   it("checks address arguments before encoding", async () => {
@@ -1019,7 +1025,7 @@ describe("batch-read-contract - list limits and shapes", () => {
       },
     ]);
     expect(await failure({ ...argsList([[{ a: "1" }]], "pair"), abi })).toBe(
-      "Argument Sets entry 1 has 1 value but pair takes 2 (key, n). Make each entry an array like [{...}, 1]."
+      'Argument Sets entry 1 has 1 value but pair takes 2 (key, n). Make each entry an array like [{"a": 1}, 1].'
     );
   });
 });
@@ -1136,7 +1142,7 @@ describe("batch-read-contract - review round 2", () => {
     expect(outcome.results?.map((r) => r.result)).toEqual([false, true]);
     mockStaticCall.mockClear();
     expect(await failure(argsList([[["false"]]], "cfg"))).toBe(
-      "Argument Sets entry 1: p has 1 value but its tuple takes 2 (flag, x)."
+      "Argument Sets entry 1: p has 1 value but its tuple takes 2 (flag, x). Give one value per member, in order."
     );
   });
 
@@ -1239,7 +1245,7 @@ describe("batch-read-contract - review round 3", () => {
         })
       )
     ).toBe(
-      "Function Arguments: t must be an array or object for its tuple (a), got a string."
+      "Function Arguments: t must be an array or object for its tuple (a), got text. Give the value as a JSON array, not as text holding one."
     );
   });
 
@@ -1266,10 +1272,10 @@ describe("batch-read-contract - review round 3", () => {
         })
       )
     ).toBe(
-      "Function Arguments: m[0] must be an array for uint256[], got a string."
+      "Function Arguments: m[0] must be an array for uint256[], got text that is not a JSON array."
     );
     expect(await failure(argsList([[["[1,"]]], "nested"))).toBe(
-      "Argument Sets entry 1: m[0] must be an array for uint256[], got a string."
+      "Argument Sets entry 1: m[0] must be an array for uint256[], got text that is not a JSON array."
     );
   });
 
@@ -1285,7 +1291,7 @@ describe("batch-read-contract - review round 3", () => {
 
   it("refuses a primitive where an array type is expected", async () => {
     expect(await failure(argsList([["5"]], "sum"))).toBe(
-      "Argument Sets entry 1: ids must be an array for uint256[], got a string."
+      "Argument Sets entry 1: ids must be an array for uint256[], got text. Give the value as a JSON array, not as text holding one."
     );
   });
 
@@ -1296,10 +1302,43 @@ describe("batch-read-contract - review round 3", () => {
     expect(outcome.results?.map((r) => r.result)).toEqual(["6", "9"]);
     mockStaticCall.mockClear();
     expect(await failure(argsList([[["5"]]], "pairU"))).toBe(
-      "Argument Sets entry 1: p has 1 value but its tuple takes 2 (uint256, address)."
+      "Argument Sets entry 1: p has 1 value but its tuple takes 2 (uint256, address). Give one value per member, in order."
     );
     expect(await failure(argsList([[["5", "0x12"]]], "pairU"))).toBe(
       'Argument Sets entry 1: p.1 must be a 0x address with 40 hex characters, got "0x12".'
+    );
+  });
+
+  it("refuses an object for a tuple with unnamed members", async () => {
+    expect(await failure(argsList([[{ a: "5", b: addr(1) }]], "pairU"))).toBe(
+      "Argument Sets entry 1: p takes its values in order for its tuple (uint256, address); give an array."
+    );
+  });
+
+  it("shows tuple members in the example entry", async () => {
+    expect(await failure(argsList(["x"], "cfg"))).toBe(
+      'Argument Sets entry 1 must be an array of 1 value for cfg (p), got a string. Make each entry an array like [{"flag": true, "x": 1}].'
+    );
+    expect(await failure(argsList(["x"], "pairU"))).toBe(
+      'Argument Sets entry 1 must be an array of 1 value for pairU (p), got a string. Make each entry an array like [[1, "0x..."]].'
+    );
+  });
+
+  it("names a bad address in a mixed call like the other modes", async () => {
+    const outcome = await run({
+      inputMode: "mixed",
+      calls: JSON.stringify([
+        {
+          network: "ethereum",
+          contractAddress: `0x${"z".repeat(300)}`,
+          abi: ABI,
+          abiFunction: "echo",
+          args: ["1"],
+        },
+      ]),
+    });
+    expect(outcome.error).toBe(
+      `Call 1: Contract Address is not a valid address: "0x${"z".repeat(58)}...". Use a 0x address with 40 hex characters.`
     );
   });
 

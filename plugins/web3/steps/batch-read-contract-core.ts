@@ -23,6 +23,8 @@ const EN_US = "en-US";
 const HEX_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const SCALAR_TYPE_RE = /^(address|bool|string|bytes\d*|u?int\d*)$/;
 const INTEGER_TYPE_RE = /^u?int\d*$/;
+// A uint256 has at most 78 digits; longer text is refused before encoding.
+const MAX_INTEGER_TEXT = 80;
 const ARRAY_TYPE_RE = /^(.*)\[(\d*)\]$/;
 const BYTES_N_RE = /^bytes(\d+)$/;
 const HEX_RE = /^0x[0-9a-fA-F]*$/;
@@ -218,12 +220,20 @@ function inputNames(fn: ListFunction): string {
     .join(", ");
 }
 
-function exampleValue(type: string): string {
+function exampleValue(type: string, components?: AbiParam[]): string {
   if (type.endsWith("]")) {
     return "[...]";
   }
   if (type === "tuple") {
-    return "{...}";
+    if (!components?.length) {
+      return "{...}";
+    }
+    const members = components.map((c) => exampleValue(c.type, c.components));
+    // Unnamed members can only be given in order.
+    if (components.some((c) => !c.name)) {
+      return `[${members.join(", ")}]`;
+    }
+    return `{${components.map((c, i) => `"${c.name}": ${members[i]}`).join(", ")}}`;
   }
   if (type === "address" || type.startsWith("bytes")) {
     return '"0x..."';
@@ -238,7 +248,7 @@ function exampleValue(type: string): string {
 }
 
 function exampleEntry(fn: ListFunction): string {
-  return `[${fn.inputs.map((input) => exampleValue(input.type)).join(", ")}]`;
+  return `[${fn.inputs.map((input) => exampleValue(input.type, input.components)).join(", ")}]`;
 }
 
 /** A plain value type, so a bare entry cannot be mistaken for an argument set. */
@@ -295,11 +305,15 @@ function structureTuples(
   const array = ARRAY_TYPE_RE.exec(type);
   const isTuple = type === "tuple" && Boolean(components?.length);
   const value = array || isTuple ? parseNestedText(raw, nested) : raw;
+  let got = describeKind(value);
+  if (typeof value === "string") {
+    got = nested
+      ? "text that is not a JSON array"
+      : "text. Give the value as a JSON array, not as text holding one";
+  }
   if (array) {
     if (!Array.isArray(value)) {
-      throw new Error(
-        `${path} must be an array for ${type}, got ${describeKind(value)}.`
-      );
+      throw new Error(`${path} must be an array for ${type}, got ${got}.`);
     }
     return value.map((item, index) =>
       structureTuples(item, array[1], components, `${path}[${index}]`, true)
@@ -311,7 +325,7 @@ function structureTuples(
   if (Array.isArray(value)) {
     if (value.length !== components.length) {
       throw new Error(
-        `${path} has ${plural(value.length, "value")} but its tuple takes ${count(components.length)} (${tupleNames(components)}).`
+        `${path} has ${plural(value.length, "value")} but its tuple takes ${count(components.length)} (${tupleNames(components)}). Give one value per member, in order.`
       );
     }
     const members = components.map((component, index) =>
@@ -333,6 +347,11 @@ function structureTuples(
     return out;
   }
   if (typeof value === "object" && value !== null) {
+    if (components.some((component) => !component.name)) {
+      throw new Error(
+        `${path} takes its values in order for its tuple (${tupleNames(components)}); give an array.`
+      );
+    }
     const out: Record<string, unknown> = { ...(value as object) };
     for (const component of components) {
       out[component.name] = structureTuples(
@@ -346,7 +365,7 @@ function structureTuples(
     return out;
   }
   throw new Error(
-    `${path} must be an array or object for its tuple (${tupleNames(components)}), got ${describeKind(value)}.`
+    `${path} must be an array or object for its tuple (${tupleNames(components)}), got ${got}.`
   );
 }
 
@@ -406,6 +425,13 @@ function checkLeaf(value: unknown, type: string, path: string): unknown {
   }
   if (type === "address") {
     return checkAddress(value, path);
+  }
+  if (
+    INTEGER_TYPE_RE.test(type) &&
+    typeof value === "string" &&
+    value.trim().length > MAX_INTEGER_TEXT
+  ) {
+    throw new Error(`${path} is too long for a whole number.`);
   }
   const bytes = BYTES_N_RE.exec(type);
   if (bytes) {

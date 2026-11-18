@@ -725,7 +725,7 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("invalid address");
+    expect(result.error).toContain("Contract Address is not a valid address");
   });
 
   it("fails when call is missing abiFunction", async () => {
@@ -755,7 +755,7 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("missing abi");
+    expect(result.error).toContain("missing ABI.");
   });
 
   it("fails when call ABI has function not found", async () => {
@@ -798,7 +798,7 @@ describe("batch-read-contract - mixed mode validation", () => {
       ]),
     });
     expect(result.error).toContain("Call 2");
-    expect(result.error).toContain("invalid address");
+    expect(result.error).toContain("Contract Address is not a valid address");
   });
 });
 

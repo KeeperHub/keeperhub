@@ -213,7 +213,9 @@ function validateMixedCall(
   }
 
   if (!ethers.isAddress(addr)) {
-    return { error: `Call ${index + 1} has invalid address: ${addr}` };
+    return {
+      error: `Call ${index + 1}: Contract Address is not a valid address: "${echo(addr)}". Use a 0x address with 40 hex characters.`,
+    };
   }
 
   if (typeof fn !== "string" || !fn) {
@@ -221,7 +223,7 @@ function validateMixedCall(
   }
 
   if (typeof abi !== "string" || !abi) {
-    return { error: `Call ${index + 1} missing abi` };
+    return { error: `Call ${index + 1} missing ABI.` };
   }
 
   return {
@@ -379,7 +381,7 @@ function encodeMixedCalls(normalizedCalls: NormalizedCall[]): {
     if (!call.abi) {
       return {
         encoded: [],
-        error: `Call ${index + 1} missing ABI`,
+        error: `Call ${index + 1} missing ABI.`,
       };
     }
 
@@ -408,7 +410,7 @@ function encodeMixedCalls(normalizedCalls: NormalizedCall[]): {
     } catch (error) {
       return {
         encoded: [],
-        error: `Call ${index + 1}: ${getErrorMessage(error)}`,
+        error: `Call ${index + 1}: ${echo(getErrorMessage(error), MAX_REASON_LENGTH)}`,
       };
     }
 
