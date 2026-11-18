@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { getDatabaseErrorMessage } from "@/lib/db/connection-utils";
+import {
+  getDatabaseErrorMessage,
+  HOST_NOT_ALLOWED_MESSAGE,
+} from "@/lib/db/connection-utils";
 
 const REFUSED =
   "Connection refused. Please check your database URL and ensure the database is running.";
@@ -61,6 +64,25 @@ describe("getDatabaseErrorMessage", () => {
     const message = getDatabaseErrorMessage(error);
     expect(message).toContain("does not exist");
     expect(message).toContain("42P01");
+  });
+
+  it("maps a top-level SSRF block to the not-allowed message without echoing it", () => {
+    const error = Object.assign(
+      new Error(
+        "Outbound request to db.example (resolved to 10.0.0.5) blocked by SSRF policy (private-ip)."
+      ),
+      { code: "SSRF_BLOCKED" }
+    );
+    const message = getDatabaseErrorMessage(error);
+    expect(message).toBe(HOST_NOT_ALLOWED_MESSAGE);
+    expect(message).not.toContain("10.0.0.5");
+  });
+
+  it("maps a drizzle-wrapped SSRF block (code on cause)", () => {
+    const error = drizzleWrapped("blocked by SSRF policy (private-ip).", {
+      code: "SSRF_BLOCKED",
+    });
+    expect(getDatabaseErrorMessage(error)).toBe(HOST_NOT_ALLOWED_MESSAGE);
   });
 
   it("falls back to the generic message and does not leak raw text", () => {

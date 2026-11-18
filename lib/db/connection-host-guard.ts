@@ -1,14 +1,15 @@
 /**
- * SSRF guards for non-HTTP outbound connections (Postgres today; MongoDB,
- * Redis, SMTP, etc. in future). The HTTP path uses `safeFetch` /
- * `assertUrlIsPublic` from `lib/safe-fetch.ts`; this module is the single
- * source of truth for everything else that opens a socket to a
- * user-supplied host.
+ * SSRF guards for non-HTTP outbound connections to user-supplied hosts
+ * (Postgres today). The HTTP path uses `safeFetch` from `lib/safe-fetch.ts`;
+ * this module reuses the same lookup and connect checks for raw sockets, so
+ * there is one copy of the SSRF logic.
  *
- * `assertConnectionUrlIsPublic` is the call any such plugin should make
- * before it hands a connection string to its driver. It composes URL
- * parsing, IPv6-bracket stripping, and the underlying `assertHostIsPublic`
- * check, so a plugin needs exactly one import and one call.
+ * - `assertSinglePostgresHost` is a parse-only check that runs before a
+ *   client is built. It reads the host the way postgres.js does and rejects
+ *   a connection string with more than one host.
+ * - `withPublicOnlySocket` gives postgres.js a socket factory. The socket
+ *   resolves the host through `validatingLookup`, so every address it may
+ *   dial is checked on the same DNS answer it connects to.
  *
  * Lives in its own module (rather than connection-utils.ts) because it
  * pulls in `lib/safe-fetch.ts`, which has `import "server-only"`.
@@ -22,102 +23,141 @@
  */
 import "server-only";
 
-import type { LookupAddress } from "node:dns";
-import { promises as dns } from "node:dns";
-import { isIP } from "node:net";
-import { isBlockedHost, isBlockedIp } from "@/lib/safe-fetch";
+import {
+  type LookupFunction,
+  connect as netConnect,
+  type Socket,
+} from "node:net";
+import { HOST_NOT_ALLOWED_MESSAGE } from "@/lib/db/connection-utils";
+import { logSecurityEvent } from "@/lib/logging";
+import {
+  checkConnectTarget,
+  runWithSafeFetchPlugin,
+  SsrfBlockedError,
+  stripIpv6Brackets,
+  validatingLookup,
+} from "@/lib/safe-fetch";
+
+const MISSING_HOST_MESSAGE = "Connection string is missing a host";
+
+// postgres.js ends the authority at the first `/` or `?`.
+const AUTHORITY_END = /[?/]/;
 
 /**
- * Reject connection-test attempts against private / loopback / link-local
- * destinations. Used by the integration-test endpoint, which dials a
- * user-supplied host over raw TCP via the `postgres` package, a path that
- * does not go through `safe-fetch.ts` (HTTP-only). Always-on (no env
- * flag): there is no legitimate reason for an `/api/integrations/test`
- * request to resolve to a non-public address.
- *
- * Caveat: there is a small TOCTOU window between this DNS check and the
- * subsequent TCP connect during which an attacker-controlled domain
- * could rebind. Closing that window requires resolving once and
- * dialling the resolved IP directly, which is out of scope for this
- * fix (would mean rewriting how the postgres client is invoked). The
- * TOCTOU surface for postgres TCP is much narrower than HTTP DNS
- * rebinding (no scriptable client behind the connection), so we accept
- * it here.
- */
-export async function assertHostIsPublic(host: string): Promise<void> {
-  const trimmed = host.trim();
-  if (trimmed === "") {
-    throw new Error("Host is required");
-  }
-
-  if (isBlockedHost(trimmed).blocked) {
-    throw new Error("Host is not allowed: must resolve to a public address");
-  }
-
-  if (isIP(trimmed) !== 0) {
-    const verdict = isBlockedIp(trimmed);
-    if (verdict.blocked) {
-      throw new Error("Host is not allowed: must resolve to a public address");
-    }
-    return;
-  }
-
-  let addresses: LookupAddress[];
-  try {
-    addresses = await dns.lookup(trimmed, { all: true });
-  } catch {
-    throw new Error("Host could not be resolved");
-  }
-
-  for (const addr of addresses) {
-    const verdict = isBlockedIp(addr.address);
-    if (verdict.blocked) {
-      throw new Error("Host is not allowed: must resolve to a public address");
-    }
-  }
-}
-
-/**
- * Extract the hostname from a postgres connection URL.
- *
- * Returns null if the URL is malformed; callers should treat that as a
- * validation failure.
- */
-export function extractHostFromConnectionString(url: string): string | null {
-  try {
-    return new URL(url).hostname || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The single source of truth for "is this connection string allowed to be
- * dialled?" for non-HTTP outbound plugins.
- *
- * Composes URL parsing, IPv6-bracket stripping, and the underlying
- * `assertHostIsPublic` check. Plugins that take a user-supplied connection
- * string (Postgres today; MongoDB, Redis, SMTP, raw TCP, anything that
- * opens a socket to a user-controlled host) should call this once at the
- * top of their step, before constructing any client.
+ * Parse-only check, run before a client is built. Reads the host part of the
+ * connection string exactly as postgres.js 3.x does in `parseUrl` (the
+ * authority up to the first `/` or `?`, the part after the first `@`,
+ * percent-decoded) and rejects it when it names more than one host. The
+ * socket factory dials only one host, and postgres.js leaves a query pending
+ * forever when the factory refuses the first of several hosts.
  *
  * Throws on:
- * - missing or unparseable host (`Error("Connection string is missing a host")`)
- * - blocked hostname pattern, blocked IP, or DNS that resolves to one
- *   (`Error("Host is not allowed: must resolve to a public address")`)
- * - DNS failure (`Error("Host could not be resolved")`)
+ * - more than one host (`Error("Host is not allowed: must resolve to a public address")`)
+ * - a missing or unparseable host (`Error("Connection string is missing a host")`)
  *
- * Error messages never echo the input URL, so they are safe to surface
- * to the workflow caller. Plugins that already strip secrets from
- * connection strings before logging do not need any additional sanitisation
- * for errors raised here.
+ * Error messages never echo the input URL.
  */
-export async function assertConnectionUrlIsPublic(url: string): Promise<void> {
-  const host = extractHostFromConnectionString(url);
-  if (!host) {
-    throw new Error("Connection string is missing a host");
+export function assertSinglePostgresHost(url: string): void {
+  let host: string;
+  try {
+    const authority =
+      url.slice(url.indexOf("://") + 3).split(AUTHORITY_END)[0] ?? "";
+    host = decodeURIComponent(authority.slice(authority.indexOf("@") + 1));
+  } catch {
+    throw new Error(MISSING_HOST_MESSAGE);
   }
-  const stripped =
-    host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
-  await assertHostIsPublic(stripped);
+  // postgres.js builds a URL from the first host; mirror its parse failure.
+  if (
+    host === "" ||
+    !URL.canParse(url.replace(host, host.split(",")[0] ?? ""))
+  ) {
+    throw new Error(MISSING_HOST_MESSAGE);
+  }
+  if (host.includes(",")) {
+    throw new Error(HOST_NOT_ALLOWED_MESSAGE);
+  }
+}
+
+function recordBlockedConnection(
+  error: SsrfBlockedError,
+  plugin: string
+): void {
+  logSecurityEvent("ssrf_connection_blocked", {
+    plugin,
+    hostname: error.hostname,
+    resolved_ip: error.resolvedIp,
+    reason: error.reason,
+  });
+}
+
+function blockRecordingLookup(plugin: string): LookupFunction {
+  return (hostname, options, callback) => {
+    validatingLookup(hostname, options, (error, address, family) => {
+      if (error instanceof SsrfBlockedError) {
+        recordBlockedConnection(error, plugin);
+      }
+      callback(error, address, family);
+    });
+  };
+}
+
+function ignoreSocketError(): void {
+  // The caller attaches its own error listener once the factory returns.
+}
+
+/** Target postgres.js passes to its socket factory (parsed host/port lists). */
+export type SocketFactoryTarget = { host: string[]; port: number[] };
+
+export type PublicOnlySocketFactory = (
+  target: SocketFactoryTarget
+) => Promise<Socket>;
+
+/**
+ * Socket factory for postgres.js (`socket` option). The driver then never
+ * resolves or dials the host itself.
+ *
+ * The socket is returned while it is still connecting, so the driver's own
+ * `connect_timeout` covers DNS, TCP, TLS and startup as one budget. Blocks
+ * are recorded under `plugin` in the safe-fetch block metric and as a
+ * security event. Only the first host is dialled, which is why callers run
+ * `assertSinglePostgresHost` first.
+ */
+export function createPublicOnlySocketFactory(
+  plugin: string
+): PublicOnlySocketFactory {
+  const lookup = blockRecordingLookup(plugin);
+  return ({ host, port }) =>
+    runWithSafeFetchPlugin(plugin, () => {
+      const [rawHost] = host;
+      const [rawPort] = port;
+      if (!rawHost || rawPort === undefined) {
+        return Promise.reject(new Error(MISSING_HOST_MESSAGE));
+      }
+      const target = stripIpv6Brackets(rawHost);
+      const blockError = checkConnectTarget(target);
+      if (blockError) {
+        recordBlockedConnection(blockError, plugin);
+        return Promise.reject(blockError);
+      }
+      const socket = netConnect({ host: target, port: rawPort, lookup });
+      // Keep a listener attached until the driver has taken over the socket.
+      socket.on("error", ignoreSocketError);
+      // postgres.js reads socket.host for the TLS servername (SNI) and for
+      // its own connection error messages.
+      Object.assign(socket, { host: rawHost, port: rawPort });
+      return Promise.resolve(socket);
+    });
+}
+
+/**
+ * Return postgres.js options with the public-only socket factory added.
+ * `socket` is a documented postgres.js option that its type definitions
+ * omit, so it is added here rather than in the caller's object literal; the
+ * return type keeps it visible to the type system.
+ */
+export function withPublicOnlySocket<T extends object>(
+  options: T,
+  plugin: string
+): T & { socket: PublicOnlySocketFactory } {
+  return { ...options, socket: createPublicOnlySocketFactory(plugin) };
 }
