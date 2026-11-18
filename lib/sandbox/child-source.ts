@@ -157,7 +157,7 @@ export function createSandboxResultReader(
 
 /**
  * Tag key for the result codec. The child encodes its outcome as tagged JSON
- * (see `encodeResult` in the template) so the parent can recover it with a
+ * (see `encodeValue` in the template's sandboxBootstrap) so the parent can recover it with a
  * SAFE `JSON.parse` instead of `v8.deserialize` -- which Node documents as
  * unsafe on untrusted data. A 1-key `{ "$": <tag> }` object carries a typed
  * value (bigint, Date, Map, ...); plain user objects that happen to contain a
@@ -360,8 +360,7 @@ function encodeSandboxSet(value: Set<unknown>, seen: Set<unknown>): unknown {
 }
 
 function encodeSandboxView(value: ArrayBufferView): unknown {
-  // Mirror the inline encodeResult's falsy check: a missing or empty
-  // constructor name falls back to Uint8Array.
+  // A missing or empty constructor name falls back to Uint8Array.
   const ctorName = value.constructor?.name;
   const kind =
     ctorName === undefined || ctorName === "" ? "Uint8Array" : ctorName;
@@ -480,14 +479,15 @@ function encodeSandboxNode(value: unknown, seen: Set<unknown>): unknown {
 /**
  * Encode an arbitrary value as the tagged-JSON wire form `decodeSandboxResult`
  * reads back; the exact inverse of `decodeSandboxNode`. Used by the standalone
- * sandbox server to put a result on the HTTP response (the in-pod grandchild
- * uses the inline `encodeResult` instead, since it cannot import this module).
+ * sandbox server to put a result on the HTTP response (the grandchild encodes
+ * inside the sandbox realm with `encodeValue` in sandboxBootstrap instead, since
+ * it cannot import this module).
  *
- * keep in lockstep with decodeSandboxNode and the inline encodeResult in
+ * keep in lockstep with decodeSandboxNode and the in-realm encodeValue in
  * SANDBOX_CHILD_SOURCE: the three share one tag scheme ("$"-keyed envelopes for
  * undefined, non-finite/-0 numbers, bigint, Date, RegExp, Map, Set, byte views,
  * and "$"-collision escaping). Throws on a value with no safe representation
- * (function, symbol, or a circular reference), mirroring the inline encodeResult.
+ * (function, symbol, or a circular reference), mirroring encodeValue.
  */
 export function encodeSandboxResult(value: unknown): string {
   return JSON.stringify(encodeSandboxNode(value, new Set<unknown>()));
@@ -513,10 +513,6 @@ export const SANDBOX_CHILD_SOURCE = `
 "use strict";
 const { createContext, runInContext } = require("node:vm");
 const fs = require("node:fs");
-// Cross-realm type predicates. User values now come from the sandbox's own
-// realm, so \`value instanceof Date\` (host Date) is false for a sandbox Date;
-// these read internal slots instead and work across realms.
-const types = require("node:util").types;
 const dnsPromises = require("node:dns").promises;
 const { BlockList, isIP } = require("node:net");
 const http = require("node:http");
@@ -1070,8 +1066,60 @@ async function cancelResponseBody(response) {
 //     only. Handing back a host object (a Response, a plain {} built in the
 //     host realm, a rejected host Error) would reopen the hole, so fetch
 //     results arrive as JSON text and are rebuilt here.
+//   - The host never calls a method on, awaits, coerces or walks a value user
+//     code produced. Any such call can land in a user-replaced
+//     Promise.prototype.then, getter, toJSON or Proxy trap that receives host
+//     functions or host-built argument arrays, and their .constructor is the
+//     host Function. The user's promise is therefore settled here, and the
+//     outcome and every console argument are encoded here to JSON text, all
+//     through intrinsics captured below before user code runs. The returned
+//     settleUserCode is the host's only entry point after that.
 function sandboxBootstrap(bridge) {
   "use strict";
+
+  const reflectApply = Reflect.apply;
+  const objectKeys = Object.keys;
+  const objectIs = Object.is;
+  const isArray = Array.isArray;
+  const isView = ArrayBuffer.isView;
+  const isFiniteNumber = Number.isFinite;
+  const isNaNNumber = Number.isNaN;
+  const toStringValue = String;
+  const jsonStringify = JSON.stringify;
+  const NativeUint8Array = Uint8Array;
+  const RegExpPrototype = RegExp.prototype;
+  const TypedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+  const dateGetTime = Date.prototype.getTime;
+  const mapForEach = Map.prototype.forEach;
+  const setForEach = Set.prototype.forEach;
+  const regExpSource = getterOf(RegExp.prototype, "source");
+  const regExpFlags = getterOf(RegExp.prototype, "flags");
+  const mapSize = getterOf(Map.prototype, "size");
+  const setSize = getterOf(Set.prototype, "size");
+  const arrayBufferByteLength = getterOf(ArrayBuffer.prototype, "byteLength");
+  const typedArrayTag = getterOf(TypedArrayPrototype, Symbol.toStringTag);
+  const typedArrayBuffer = getterOf(TypedArrayPrototype, "buffer");
+  const typedArrayByteOffset = getterOf(TypedArrayPrototype, "byteOffset");
+  const typedArrayByteLength = getterOf(TypedArrayPrototype, "byteLength");
+  const typedArrayLength = getterOf(TypedArrayPrototype, "length");
+  const dataViewBuffer = getterOf(DataView.prototype, "buffer");
+  const dataViewByteOffset = getterOf(DataView.prototype, "byteOffset");
+  const dataViewByteLength = getterOf(DataView.prototype, "byteLength");
+
+  function getterOf(target, key) {
+    return Object.getOwnPropertyDescriptor(target, key).get;
+  }
+
+  // Brand check through an intrinsic accessor: it reads an internal slot, so
+  // neither a Proxy nor a forged prototype chain can pass it.
+  function hasSlot(getter, value) {
+    try {
+      reflectApply(getter, value, []);
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }
 
   const HEX = "0123456789ABCDEF";
   const B64_CHARS =
@@ -1101,18 +1149,21 @@ function sandboxBootstrap(bridge) {
     );
   }
 
+  // bytes is always a Uint8Array; its length and characters are read without
+  // going through prototype methods user code can replace.
   function bytesToBase64(bytes) {
+    const length = reflectApply(typedArrayLength, bytes, []);
     let out = "";
-    for (let i = 0; i < bytes.length; i += 3) {
-      const hasSecond = i + 1 < bytes.length;
-      const hasThird = i + 2 < bytes.length;
+    for (let i = 0; i < length; i += 3) {
+      const hasSecond = i + 1 < length;
+      const hasThird = i + 2 < length;
       const b0 = bytes[i];
       const b1 = hasSecond ? bytes[i + 1] : 0;
       const b2 = hasThird ? bytes[i + 2] : 0;
-      out += B64_CHARS.charAt(b0 >> 2);
-      out += B64_CHARS.charAt(((b0 & 3) << 4) | (b1 >> 4));
-      out += hasSecond ? B64_CHARS.charAt(((b1 & 15) << 2) | (b2 >> 6)) : "=";
-      out += hasThird ? B64_CHARS.charAt(b2 & 63) : "=";
+      out += B64_CHARS[b0 >> 2];
+      out += B64_CHARS[((b0 & 3) << 4) | (b1 >> 4)];
+      out += hasSecond ? B64_CHARS[((b1 & 15) << 2) | (b2 >> 6)] : "=";
+      out += hasThird ? B64_CHARS[b2 & 63] : "=";
     }
     return out;
   }
@@ -2080,18 +2131,300 @@ function sandboxBootstrap(bridge) {
     });
   }
 
+  // ---- console -------------------------------------------------------------
+  //
+  // Each argument is JSON round-tripped here (falling back to its string form)
+  // and only the resulting text crosses, so user toJSON / toString / Proxy
+  // hooks run against this realm's JSON and String, never the host's.
+
+  function serializeLogArg(value) {
+    try {
+      const json = jsonStringify(value);
+      if (typeof json === "string") {
+        return json;
+      }
+    } catch (_e) {
+      // fall back to the string form below
+    }
+    try {
+      return jsonStringify(toStringValue(value));
+    } catch (_e) {
+      return '"[unserializable]"';
+    }
+  }
+
+  function serializeLogArgs(args) {
+    let out = "[";
+    for (let i = 0; i < args.length; i++) {
+      if (i > 0) {
+        out += ",";
+      }
+      out += serializeLogArg(args[i]);
+    }
+    return out + "]";
+  }
+
+  // ---- result settlement ---------------------------------------------------
+  //
+  // Tagged-JSON encoder for the user's result, producing the same wire form as
+  // encodeSandboxResult in this module (keep the two and decodeSandboxNode in
+  // lockstep). It emits JSON text directly instead of
+  // building objects for JSON.stringify, so no prototype hook can observe or
+  // reshape the intermediate form, and every type check is an internal-slot
+  // brand check rather than instanceof or a constructor name.
+
+  const UNSERIALIZABLE = { reason: "" };
+
+  function unserializable(reason) {
+    UNSERIALIZABLE.reason = reason;
+    throw UNSERIALIZABLE;
+  }
+
+  function encodeNumber(value) {
+    if (isFiniteNumber(value) && !objectIs(value, -0)) {
+      return jsonStringify(value);
+    }
+    let token = "-0";
+    if (isNaNNumber(value)) {
+      token = "NaN";
+    } else if (!isFiniteNumber(value)) {
+      token = value > 0 ? "Inf" : "-Inf";
+    }
+    return '{"$":"num","v":"' + token + '"}';
+  }
+
+  function encodeBytes(kind, buffer, offset, length) {
+    return (
+      '{"$":"bytes","k":' +
+      jsonStringify(kind) +
+      ',"v":"' +
+      bytesToBase64(new NativeUint8Array(buffer, offset, length)) +
+      '"}'
+    );
+  }
+
+  function encodeView(value) {
+    const kind = reflectApply(typedArrayTag, value, []);
+    if (kind === undefined) {
+      return encodeBytes(
+        "DataView",
+        reflectApply(dataViewBuffer, value, []),
+        reflectApply(dataViewByteOffset, value, []),
+        reflectApply(dataViewByteLength, value, [])
+      );
+    }
+    return encodeBytes(
+      kind,
+      reflectApply(typedArrayBuffer, value, []),
+      reflectApply(typedArrayByteOffset, value, []),
+      reflectApply(typedArrayByteLength, value, [])
+    );
+  }
+
+  function encodeCollection(tag, forEach, value, ancestors, isMap) {
+    let out = "";
+    reflectApply(forEach, value, [
+      function encodeEntry(entryValue, entryKey) {
+        if (out !== "") {
+          out += ",";
+        }
+        out += isMap
+          ? "[" +
+            encodeValue(entryKey, ancestors) +
+            "," +
+            encodeValue(entryValue, ancestors) +
+            "]"
+          : encodeValue(entryValue, ancestors);
+      },
+    ]);
+    return '{"$":"' + tag + '","v":[' + out + "]}";
+  }
+
+  function encodePlainObject(value, ancestors) {
+    const keys = objectKeys(value);
+    let out = "{";
+    let hasTagKey = false;
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (key === "$") {
+        hasTagKey = true;
+      }
+      if (i > 0) {
+        out += ",";
+      }
+      out += jsonStringify(key) + ":" + encodeValue(value[key], ancestors);
+    }
+    out += "}";
+    // Escape a user object that literally carries a "$" key so the parent does
+    // not mistake it for a type tag.
+    return hasTagKey ? '{"$":"obj","v":' + out + "}" : out;
+  }
+
+  function encodeComposite(value, ancestors) {
+    if (isArray(value)) {
+      // Holes read as undefined, matching encodeSandboxResult.
+      const length = value.length;
+      let out = "[";
+      for (let i = 0; i < length; i++) {
+        if (i > 0) {
+          out += ",";
+        }
+        out += encodeValue(value[i], ancestors);
+      }
+      return out + "]";
+    }
+    if (hasSlot(dateGetTime, value)) {
+      const time = reflectApply(dateGetTime, value, []);
+      return (
+        '{"$":"date","v":' +
+        (isFiniteNumber(time) ? jsonStringify(time) : "null") +
+        "}"
+      );
+    }
+    if (value !== RegExpPrototype && hasSlot(regExpSource, value)) {
+      return (
+        '{"$":"regexp","src":' +
+        jsonStringify(reflectApply(regExpSource, value, [])) +
+        ',"flags":' +
+        jsonStringify(toStringValue(reflectApply(regExpFlags, value, []))) +
+        "}"
+      );
+    }
+    if (hasSlot(mapSize, value)) {
+      return encodeCollection("map", mapForEach, value, ancestors, true);
+    }
+    if (hasSlot(setSize, value)) {
+      return encodeCollection("set", setForEach, value, ancestors, false);
+    }
+    if (hasSlot(arrayBufferByteLength, value)) {
+      return encodeBytes(
+        "ArrayBuffer",
+        value,
+        0,
+        reflectApply(arrayBufferByteLength, value, [])
+      );
+    }
+    if (isView(value)) {
+      return encodeView(value);
+    }
+    return encodePlainObject(value, ancestors);
+  }
+
+  // ancestors is the chain of objects currently being encoded, for cycle
+  // detection.
+  function encodeValue(value, ancestors) {
+    if (value === null) {
+      return "null";
+    }
+    const type = typeof value;
+    if (type === "undefined") {
+      return '{"$":"undef"}';
+    }
+    if (type === "boolean") {
+      return value ? "true" : "false";
+    }
+    if (type === "string") {
+      return jsonStringify(value);
+    }
+    if (type === "number") {
+      return encodeNumber(value);
+    }
+    if (type === "bigint") {
+      return '{"$":"bigint","v":"' + toStringValue(value) + '"}';
+    }
+    if (type !== "object") {
+      unserializable(type);
+    }
+    for (let node = ancestors; node !== null; node = node.parent) {
+      if (node.value === value) {
+        unserializable("circular reference");
+      }
+    }
+    return encodeComposite(value, { value: value, parent: ancestors });
+  }
+
+  function describeThrown(err) {
+    let message;
+    let stack;
+    try {
+      const rawMessage = err ? err.message : undefined;
+      message = rawMessage ? toStringValue(rawMessage) : toStringValue(err);
+    } catch (_e) {
+      message = "Thrown value could not be converted to a string";
+    }
+    try {
+      const rawStack = err ? err.stack : undefined;
+      stack = rawStack ? toStringValue(rawStack) : undefined;
+    } catch (_e) {
+      stack = undefined;
+    }
+    return { message: message, stack: stack };
+  }
+
+  function failureText(message, stack) {
+    return (
+      '{"ok":false,"errorMessage":' +
+      jsonStringify(message) +
+      (stack === undefined ? "" : ',"errorStack":' + jsonStringify(stack)) +
+      "}"
+    );
+  }
+
+  function thrownText(err) {
+    const thrown = describeThrown(err);
+    return failureText(thrown.message, thrown.stack);
+  }
+
+  function resultText(result) {
+    let encoded;
+    try {
+      encoded = encodeValue(result, null);
+    } catch (err) {
+      const reason =
+        err === UNSERIALIZABLE ? UNSERIALIZABLE.reason : describeThrown(err).message;
+      return failureText("Result is not serializable: " + reason, undefined);
+    }
+    return '{"ok":true,"result":' + encoded + "}";
+  }
+
+  // await settles a native promise through the realm's internal
+  // PerformPromiseThen without reading its then property, and any other value
+  // (a thenable, a promise whose constructor was changed) is only ever handed
+  // this realm's own resolving functions.
+  async function settleUserPromise(pending) {
+    let result;
+    try {
+      result = await pending;
+    } catch (err) {
+      bridge.settle(thrownText(err));
+      return;
+    }
+    bridge.settle(resultText(result));
+  }
+
+  // threw is true when running the user script threw synchronously (syntax
+  // error, CPU timeout, or a throw outside the async wrapper); value is then
+  // the thrown value, otherwise the script's completion value.
+  function settleUserCode(threw, value) {
+    if (threw) {
+      bridge.settle(thrownText(value));
+      return;
+    }
+    settleUserPromise(value);
+  }
+
   // ---- install -------------------------------------------------------------
 
   const provided = {
     console: {
       log: function log() {
-        bridge.log("log", Array.prototype.slice.call(arguments));
+        bridge.log("log", serializeLogArgs(arguments));
       },
       warn: function warn() {
-        bridge.log("warn", Array.prototype.slice.call(arguments));
+        bridge.log("warn", serializeLogArgs(arguments));
       },
       error: function error() {
-        bridge.log("error", Array.prototype.slice.call(arguments));
+        bridge.log("error", serializeLogArgs(arguments));
       },
     },
     crypto: {
@@ -2120,6 +2453,8 @@ function sandboxBootstrap(bridge) {
       configurable: true,
     });
   }
+
+  return settleUserCode;
 }
 
 // Defense in depth on the bridge: with a null prototype, a bridge function
@@ -2226,31 +2561,72 @@ async function marshalResponse(response, finalUrl, redirected) {
   };
 }
 
-function safeCloneArg(value) {
-  try {
-    return JSON.parse(JSON.stringify(value));
-  } catch (_) {
-    try {
-      return String(value);
-    } catch (_e) {
-      return "[unserializable]";
+const LOG_LEVELS = new Set(["log", "warn", "error"]);
+
+// Logged values arrive as JSON text built in the sandbox realm and are parsed
+// here into plain host data. A logged object that literally carries a "$" key
+// is wrapped so the parent's decoder does not read it as a type tag.
+function escapeLogValue(value) {
+  if (Array.isArray(value)) {
+    const items = [];
+    for (const item of value) {
+      items.push(escapeLogValue(item));
     }
+    return items;
   }
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  const out = {};
+  let hasTagKey = false;
+  for (const key of Object.keys(value)) {
+    if (key === "$") {
+      hasTagKey = true;
+    }
+    // defineProperty so a "__proto__" key stays an own data property.
+    Object.defineProperty(out, key, {
+      value: escapeLogValue(value[key]),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return hasTagKey ? { "$": "obj", "v": out } : out;
+}
+
+// Rebuild the outcome from the JSON text the sandbox realm reported. result is
+// already in the tagged wire form and is passed through untouched.
+function outcomeFromReport(outcomeJson, logs) {
+  const report = JSON.parse(outcomeJson);
+  if (report.ok === true) {
+    return { ok: true, result: report.result, logs: logs };
+  }
+  return {
+    ok: false,
+    errorMessage: String(report.errorMessage),
+    errorStack: typeof report.errorStack === "string" ? report.errorStack : undefined,
+    logs: logs,
+  };
 }
 
 function run(input) {
   const { code, timeoutMs } = input;
   const logs = [];
 
-  function captureLog(level, args) {
+  let resolveReport;
+  const reported = new Promise(function onReport(resolve) {
+    resolveReport = resolve;
+  });
+
+  function captureLog(level, argsJson) {
     if (logs.length >= MAX_LOG_ENTRIES) {
       return;
     }
-    const cloned = new Array(args.length);
-    for (let i = 0; i < args.length; i++) {
-      cloned[i] = safeCloneArg(args[i]);
+    const args = JSON.parse(argsJson);
+    if (!Array.isArray(args)) {
+      return;
     }
-    logs.push({ level: level, args: cloned });
+    logs.push({ level: level, args: escapeLogValue(args) });
   }
 
   // Turn the request spec the sandbox realm handed over (strings only) back
@@ -2441,19 +2817,34 @@ function run(input) {
   // entry takes and returns primitives, and none of them may throw: a host
   // exception crossing into user code would be a catchable host Error, and
   // err.constructor.constructor is the host Function again. Failures therefore
-  // come back as a JSON envelope or through the reject callback.
+  // come back as a JSON envelope or through the reject callback. Each entry
+  // checks its arguments' types before touching them: coercing a non-primitive
+  // here (new URL(obj), JSON.parse(obj)) would run a user toString or
+  // Symbol.toPrimitive from host code, and a Proxy there receives a host-realm
+  // argument array.
   const bridge = {
-    log: function bridgeLog(level, args) {
+    log: function bridgeLog(level, argsJson) {
+      if (typeof level !== "string" || !LOG_LEVELS.has(level) || typeof argsJson !== "string") {
+        return;
+      }
       try {
-        captureLog(level, args);
+        captureLog(level, argsJson);
       } catch (_e) {
-        // a hostile toString on a logged value must not break the run
+        // an entry too deep to rebuild is dropped rather than failing the run
+      }
+    },
+    settle: function bridgeSettle(outcomeJson) {
+      if (typeof outcomeJson === "string") {
+        resolveReport(outcomeJson);
       }
     },
     randomUUID: function bridgeRandomUUID() {
       return crypto.randomUUID();
     },
     parseUrl: function bridgeParseUrl(input, base) {
+      if (typeof input !== "string" || (base !== null && typeof base !== "string")) {
+        return JSON.stringify({ ok: false, e: "Invalid URL" });
+      }
       try {
         const url = base === null ? new URL(input) : new URL(input, base);
         return JSON.stringify({ ok: true, v: urlComponents(url) });
@@ -2462,6 +2853,9 @@ function run(input) {
       }
     },
     setUrl: function bridgeSetUrl(href, name, value) {
+      if (typeof href !== "string" || typeof name !== "string" || typeof value !== "string") {
+        return JSON.stringify({ ok: false, e: "Invalid URL" });
+      }
       try {
         if (!URL_SETTABLE_COMPONENTS.has(name)) {
           return JSON.stringify({ ok: false, e: "Invalid URL component: " + name });
@@ -2473,9 +2867,22 @@ function run(input) {
         return JSON.stringify({ ok: false, e: errorMessageOf(err) });
       }
     },
+    // onFulfilled / onRejected are the bootstrap's own fetch callbacks, never a
+    // user-supplied value, and are only ever called with primitives.
     startFetch: function bridgeStartFetch(specJson, onFulfilled, onRejected) {
       const id = nextFetchId;
       nextFetchId += 1;
+      if (typeof onFulfilled !== "function" || typeof onRejected !== "function") {
+        return id;
+      }
+      if (typeof specJson !== "string") {
+        try {
+          onRejected("sandbox fetch: invalid request", "TypeError");
+        } catch (_e) {
+          // the sandbox realm rejected its own promise; nothing to do here
+        }
+        return id;
+      }
       try {
         const abort = new AbortController();
         inflightFetches.set(id, abort);
@@ -2508,6 +2915,9 @@ function run(input) {
       return id;
     },
     abortFetch: function bridgeAbortFetch(id) {
+      if (typeof id !== "number") {
+        return;
+      }
       const abort = inflightFetches.get(id);
       if (!abort) {
         return;
@@ -2543,27 +2953,33 @@ function run(input) {
     sandbox,
     { filename: "sandbox-bootstrap.js" }
   );
-  installSandboxGlobals(bridge);
+  const settleUserCode = installSandboxGlobals(bridge);
 
   const wrappedCode = "(async () => {\\n" + code + "\\n})()";
 
-  const userPromise = runInContext(wrappedCode, sandbox, {
-    timeout: timeoutMs,
-    filename: "user-code.js",
-  }).then(
-    function onResult(result) {
-      return { ok: true, result: result, logs: logs };
-    },
-    function onError(err) {
-      return {
-        ok: false,
-        errorMessage:
-          err && err.message ? String(err.message) : String(err),
-        errorStack: err && err.stack ? String(err.stack) : undefined,
-        logs: logs,
-      };
-    }
-  );
+  // Whatever the script yields -- normally the wrapper's promise, but user code
+  // can close the wrapper early and make it any value, or throw -- is handed
+  // straight back to the realm untouched. The host never calls a method on it
+  // or awaits it; settleUserCode reports the outcome through bridge.settle as
+  // JSON text.
+  let threw = false;
+  let completion;
+  try {
+    completion = runInContext(wrappedCode, sandbox, {
+      timeout: timeoutMs,
+      filename: "user-code.js",
+    });
+  } catch (err) {
+    threw = true;
+    completion = err;
+  }
+  try {
+    settleUserCode(threw, completion);
+  } catch (_e) {
+    resolveReport(
+      JSON.stringify({ ok: false, errorMessage: "Sandbox could not settle the user code" })
+    );
+  }
 
   // In-child wall-clock timeout. The vm \`timeout\` option only covers sync
   // CPU; a user promise that never settles (e.g. \`await new Promise(() => {})\`)
@@ -2582,155 +2998,44 @@ function run(input) {
       });
     }, timeoutMs);
   });
-  const settledUserPromise = userPromise.finally(function clearTimer() {
+  const userOutcome = reported.then(function onReported(outcomeJson) {
     clearTimeout(timeoutTimer);
+    return outcomeFromReport(outcomeJson, logs);
   });
-  return Promise.race([settledUserPromise, timeoutPromise]);
+  return Promise.race([userOutcome, timeoutPromise]);
 }
 
-// Encode an outcome as tagged JSON. The PARENT recovers it with JSON.parse
-// (safe on untrusted input) plus decodeSandboxResult(), so it never runs
-// v8.deserialize on bytes a sandbox escape could control. Mirrors
-// decodeSandboxNode in this module exactly; keep the two in lockstep.
-// Throws on a value with no safe representation (function, symbol, cycle),
-// which writeResult maps to a structured "not serializable" outcome.
-function encodeResult(value, seen) {
-  if (value === null) {
-    return null;
+// Assemble the fd-3 frame. Every input is host data: result arrives already in
+// the tagged wire form (encoded inside the sandbox realm by settleUserCode),
+// logs were escaped as they were captured, and the error fields are strings.
+// The PARENT recovers the frame with JSON.parse (safe on untrusted input) plus
+// decodeSandboxResult(), so it never runs v8.deserialize on bytes a sandbox
+// escape could control.
+function resultFrame(message) {
+  if (message.ok === true) {
+    return { ok: true, result: message.result, logs: message.logs };
   }
-  const t = typeof value;
-  if (t === "undefined") {
-    return { "$": "undef" };
+  const frame = { ok: false, errorMessage: message.errorMessage, logs: message.logs };
+  if (message.errorStack !== undefined) {
+    frame.errorStack = message.errorStack;
   }
-  if (t === "boolean" || t === "string") {
-    return value;
-  }
-  if (t === "number") {
-    if (Number.isFinite(value) && !Object.is(value, -0)) {
-      return value;
-    }
-    let token = "-0";
-    if (Number.isNaN(value)) {
-      token = "NaN";
-    } else if (value === Infinity) {
-      token = "Inf";
-    } else if (value === -Infinity) {
-      token = "-Inf";
-    }
-    return { "$": "num", "v": token };
-  }
-  if (t === "bigint") {
-    return { "$": "bigint", "v": value.toString() };
-  }
-  if (t === "function" || t === "symbol") {
-    // Bare reason; writeResult's catch adds the "Result is not serializable: "
-    // prefix so the message is not doubled.
-    throw new Error(t);
-  }
-  if (seen.has(value)) {
-    throw new Error("circular reference");
-  }
-  seen.add(value);
-  try {
-    if (Array.isArray(value)) {
-      const arr = new Array(value.length);
-      for (let i = 0; i < value.length; i++) {
-        arr[i] = encodeResult(value[i], seen);
-      }
-      return arr;
-    }
-    // node:util type predicates, not instanceof: the value was built by the
-    // sandbox realm's own Date / Map / Set, which are not this realm's.
-    if (types.isDate(value)) {
-      return { "$": "date", "v": value.getTime() };
-    }
-    if (types.isRegExp(value)) {
-      return { "$": "regexp", "src": value.source, "flags": value.flags };
-    }
-    if (types.isMap(value)) {
-      const entries = [];
-      for (const pair of value) {
-        entries.push([encodeResult(pair[0], seen), encodeResult(pair[1], seen)]);
-      }
-      return { "$": "map", "v": entries };
-    }
-    if (types.isSet(value)) {
-      const items = [];
-      for (const item of value) {
-        items.push(encodeResult(item, seen));
-      }
-      return { "$": "set", "v": items };
-    }
-    if (types.isArrayBuffer(value)) {
-      return {
-        "$": "bytes",
-        "k": "ArrayBuffer",
-        "v": Buffer.from(value).toString("base64"),
-      };
-    }
-    if (ArrayBuffer.isView(value)) {
-      const kind =
-        value.constructor && value.constructor.name
-          ? value.constructor.name
-          : "Uint8Array";
-      return {
-        "$": "bytes",
-        "k": kind,
-        "v": Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString(
-          "base64"
-        ),
-      };
-    }
-    const out = {};
-    let hasTagKey = false;
-    const keys = Object.keys(value);
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      if (key === "$") {
-        hasTagKey = true;
-      }
-      const encoded = encodeResult(value[key], seen);
-      if (key === "__proto__") {
-        // Only "__proto__" needs defineProperty (a plain assignment invokes the
-        // prototype setter and drops it); every other key uses cheap assignment.
-        Object.defineProperty(out, key, {
-          value: encoded,
-          enumerable: true,
-          writable: true,
-          configurable: true,
-        });
-      } else {
-        out[key] = encoded;
-      }
-    }
-    // Escape a user object that literally carries a "$" key so the parent does
-    // not mistake it for a type tag.
-    return hasTagKey ? { "$": "obj", "v": out } : out;
-  } finally {
-    seen.delete(value);
-  }
+  return frame;
 }
 
 function writeResult(message) {
   let payload;
   try {
-    payload = Buffer.from(JSON.stringify(encodeResult(message, new Set())), "utf8");
-  } catch (cloneErr) {
+    payload = Buffer.from(JSON.stringify(resultFrame(message)), "utf8");
+  } catch (frameErr) {
     payload = Buffer.from(
       JSON.stringify(
-        encodeResult(
-          {
-            ok: false,
-            errorMessage:
-              "Result is not serializable: " +
-              (cloneErr && cloneErr.message
-                ? cloneErr.message
-                : String(cloneErr)),
-            errorStack: undefined,
-            logs: [],
-          },
-          new Set()
-        )
+        resultFrame({
+          ok: false,
+          errorMessage:
+            "Result is not serializable: " +
+            (frameErr && frameErr.message ? frameErr.message : String(frameErr)),
+          logs: [],
+        })
       ),
       "utf8"
     );

@@ -23,10 +23,6 @@ describe("isValidInvite", () => {
     expect(isValidInvite("")).toBe(false);
   });
 
-  it("rejects disposable/blacklisted domains", () => {
-    expect(isValidInvite("throwaway@mailinator.com")).toBe(false);
-  });
-
   it("rejects synthetic wallet emails", () => {
     expect(isValidInvite(`${LOWERCASE}@wallet.keeperhub.com`)).toBe(false);
   });

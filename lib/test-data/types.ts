@@ -247,7 +247,13 @@ export type SetupSpec = {
  * tests/e2e/vitest/protocol-coverage/_shared/fabricate-state.ts.
  */
 export type StateFabrication = {
-  kind: "elapsed-cooldown";
+  /**
+   * "elapsed-cooldown": see above. "stusds-exit-liquidity": zero the
+   * stUSDS ilk's normalised debt (Vat ilks[ilk].Art) so withdraw and redeem
+   * have unused funds regardless of live borrow utilisation; see
+   * fabricateStUsdsExitLiquidity.
+   */
+  kind: "elapsed-cooldown" | "stusds-exit-liquidity";
   /** Target contract: contract("key") binding or a literal 0x address. */
   contract: InputBinding;
 };

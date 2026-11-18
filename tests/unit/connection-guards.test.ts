@@ -1,265 +1,306 @@
+import type { Socket } from "node:net";
+import postgres from "postgres";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-const { mockLookup } = vi.hoisted(() => ({ mockLookup: vi.fn() }));
+const { fakeDns, lookupCalls, mockSecurityEvent, incrementCounter } =
+  vi.hoisted(() => ({
+    fakeDns: new Map<string, { address: string; family: number }[]>(),
+    lookupCalls: [] as string[],
+    mockSecurityEvent: vi.fn(),
+    incrementCounter: vi.fn(),
+  }));
 
-vi.mock("node:dns", () => ({
-  promises: { lookup: mockLookup },
+// The callback-form `lookup` (used by safe-fetch's `validatingLookup`) answers
+// from `fakeDns` on a later tick, as the real resolver does, and fails with
+// ENOTFOUND for any other name. No test touches real DNS.
+vi.mock("node:dns", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:dns")>();
+  function lookup(
+    hostname: string,
+    options: { all?: boolean },
+    callback: (...args: unknown[]) => void
+  ): void {
+    lookupCalls.push(hostname);
+    const addresses = fakeDns.get(hostname);
+    setImmediate(() => {
+      if (!addresses) {
+        callback(
+          Object.assign(new Error(`getaddrinfo ENOTFOUND ${hostname}`), {
+            code: "ENOTFOUND",
+          }),
+          []
+        );
+        return;
+      }
+      if (options.all) {
+        callback(null, addresses);
+        return;
+      }
+      callback(null, addresses[0]?.address, addresses[0]?.family);
+    });
+  }
+  return { ...actual, lookup };
+});
+
+vi.mock("@/lib/metrics", () => ({
+  getMetricsCollector: () => ({
+    incrementCounter,
+    recordLatency: vi.fn(),
+    recordError: vi.fn(),
+    setGauge: vi.fn(),
+  }),
+}));
+
+vi.mock("@/lib/logging", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/logging")>()),
+  logSecurityEvent: mockSecurityEvent,
 }));
 
 import {
-  assertConnectionUrlIsPublic,
-  assertHostIsPublic,
-  extractHostFromConnectionString,
+  assertSinglePostgresHost,
+  createPublicOnlySocketFactory,
+  withPublicOnlySocket,
 } from "@/lib/db/connection-host-guard";
+import { HOST_NOT_ALLOWED_MESSAGE } from "@/lib/db/connection-utils";
+
+const MISSING_HOST = "Connection string is missing a host";
+const PLUGIN = "database-query";
+
+function socketError(socket: Socket): Promise<NodeJS.ErrnoException> {
+  return new Promise((resolve) => {
+    socket.once("error", resolve);
+  });
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
+  fakeDns.clear();
+  lookupCalls.length = 0;
 });
 
-describe("assertHostIsPublic", () => {
-  it("rejects empty host", async () => {
-    await expect(assertHostIsPublic("")).rejects.toThrow("Host is required");
+describe("assertSinglePostgresHost", () => {
+  it.each([
+    ["hostname with port", "postgres://u:p@db.example.com:5432/db"],
+    ["encoded @ in the password", "postgres://u:p%40x@db.example.com/db"],
+    ["IPv4 literal with query", "postgresql://u:p@1.1.1.1/db?sslmode=require"],
+  ])("accepts a single host: %s", (_label, url) => {
+    expect(() => assertSinglePostgresHost(url)).not.toThrow();
   });
 
+  it.each([
+    [
+      "percent-encoded comma",
+      "postgres://u:p@10.0.0.5%2Cx.attacker.example/db",
+    ],
+    [
+      "lower-case encoded comma",
+      "postgres://u:p@10.0.0.5%2cx.attacker.example/db",
+    ],
+    ["plain comma", "postgres://u:p@a.example,b.example:5433/db"],
+  ])("rejects more than one host: %s", (_label, url) => {
+    expect(() => assertSinglePostgresHost(url)).toThrow(
+      HOST_NOT_ALLOWED_MESSAGE
+    );
+  });
+
+  it.each([
+    ["empty string", ""],
+    ["plain garbage", "not-a-url"],
+    ["scheme only", "postgres://"],
+    ["empty host", "postgres://u:p@/db"],
+    ["malformed percent escape", "postgres://u:p@db%zz.example/db"],
+  ])("rejects a missing or unparseable host: %s", (_label, url) => {
+    expect(() => assertSinglePostgresHost(url)).toThrow(MISSING_HOST);
+  });
+
+  it.each([
+    "postgres://u:p@db.example.com:5432/db",
+    "postgres://u:p@10.0.0.5%2Cx.attacker.example/db",
+    "postgres://u:p@a.example,b.example:5433/db",
+    "postgres://u:p%40x@db.example.com/db",
+    "postgres://u:p%2C@db.example.com/db",
+  ])("agrees with postgres.js on how many hosts %s names", async (url) => {
+    const sql = postgres(url, { max: 1 });
+    const postgresSeesSeveral = sql.options.host.length > 1;
+    await sql.end();
+
+    let rejected = false;
+    try {
+      assertSinglePostgresHost(url);
+    } catch {
+      rejected = true;
+    }
+    expect(rejected).toBe(postgresSeesSeveral);
+  });
+
+  it("never echoes the connection string", () => {
+    const url =
+      "postgres://supersecretuser:supersecretpassword@10.0.0.1%2Cinternal.example/db";
+    expect(() => assertSinglePostgresHost(url)).toThrow(
+      HOST_NOT_ALLOWED_MESSAGE
+    );
+    try {
+      assertSinglePostgresHost(url);
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(message).not.toContain("supersecret");
+      expect(message).not.toContain("10.0.0.1");
+      expect(message).not.toContain("internal");
+    }
+  });
+});
+
+describe("createPublicOnlySocketFactory", () => {
   it.each([
     ["IPv4 loopback", "127.0.0.1"],
     ["IPv4 private 10/8", "10.0.0.1"],
     ["IPv4 private 192.168/16", "192.168.1.1"],
-    ["IPv4 link-local 169.254/16", "169.254.169.254"],
-    ["IPv4 CGNAT", "100.64.0.1"],
-    ["IPv4 unspecified", "0.0.0.0"],
-    ["IPv6 loopback", "::1"],
-    ["IPv6 unique-local fc00::/7", "fc00::1"],
-    ["IPv6 link-local fe80::/10", "fe80::1"],
+    ["IPv4 IMDS link-local", "169.254.169.254"],
+    ["IPv6 loopback (bracketed)", "[::1]"],
+    ["IPv6 ULA", "fc00::1"],
+    ["IPv6 site-local NAT64", "64:ff9b:1::1"],
     ["IPv4-mapped IPv6 to private", "::ffff:127.0.0.1"],
-  ])("rejects literal %s", async (_label, ip) => {
-    await expect(assertHostIsPublic(ip)).rejects.toThrow(
-      "Host is not allowed: must resolve to a public address"
+  ])("refuses the literal %s without a DNS lookup", async (_label, host) => {
+    const factory = createPublicOnlySocketFactory(PLUGIN);
+
+    await expect(factory({ host: [host], port: [5432] })).rejects.toMatchObject(
+      { code: "SSRF_BLOCKED" }
     );
-    expect(mockLookup).not.toHaveBeenCalled();
+    expect(lookupCalls).toHaveLength(0);
   });
 
   it.each([
-    ["public Cloudflare", "1.1.1.1"],
-    ["public Google", "8.8.8.8"],
-    ["public IPv6", "2606:4700:4700::1111"],
-  ])("permits public literal %s", async (_label, ip) => {
-    await expect(assertHostIsPublic(ip)).resolves.toBeUndefined();
-    expect(mockLookup).not.toHaveBeenCalled();
-  });
-
-  it("permits hostname that resolves only to public addresses", async () => {
-    mockLookup.mockResolvedValue([
-      { address: "8.8.8.8", family: 4 },
-      { address: "2001:4860:4860::8888", family: 6 },
-    ]);
-
-    await expect(assertHostIsPublic("dns.google")).resolves.toBeUndefined();
-    expect(mockLookup).toHaveBeenCalledWith("dns.google", { all: true });
-  });
-
-  it("rejects hostname that resolves to a private address", async () => {
-    mockLookup.mockResolvedValue([{ address: "10.0.0.5", family: 4 }]);
-
-    // Uses .example TLD so the hostname does not match the pre-DNS
-    // isBlockedHost denylist; we want to exercise the DNS-resolution path
-    // specifically.
-    await expect(assertHostIsPublic("internal-db.example")).rejects.toThrow(
-      "Host is not allowed: must resolve to a public address"
-    );
-    expect(mockLookup).toHaveBeenCalled();
-  });
-
-  it("rejects hostname that resolves to a mix of public and private addresses", async () => {
-    mockLookup.mockResolvedValue([
-      { address: "8.8.8.8", family: 4 },
-      { address: "192.168.1.1", family: 4 },
-    ]);
-
-    await expect(assertHostIsPublic("dual-homed.example")).rejects.toThrow(
-      "Host is not allowed: must resolve to a public address"
-    );
-  });
-
-  it("rejects hostname that fails DNS resolution", async () => {
-    mockLookup.mockRejectedValue(new Error("ENOTFOUND"));
-
-    await expect(assertHostIsPublic("nx.invalid")).rejects.toThrow(
-      "Host could not be resolved"
-    );
-  });
-
-  it("rejects localhost before any DNS lookup", async () => {
-    // isBlockedHost catches `localhost` as a pre-DNS pattern, so the
-    // resolver is never consulted. The mock is only here to prove the
-    // negative.
-    mockLookup.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
-
-    await expect(assertHostIsPublic("localhost")).rejects.toThrow(
-      "Host is not allowed: must resolve to a public address"
-    );
-    expect(mockLookup).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["case-insensitive localhost", "LOCALHOST"],
-    ["trailing-dot FQDN form", "localhost."],
+    ["localhost", "localhost"],
+    ["upper-case localhost", "LOCALHOST"],
+    ["trailing-dot localhost", "localhost."],
     ["mDNS .local suffix", "raspberrypi.local"],
     [".internal suffix", "service.internal"],
     ["EC2 VPC internal hostname", "ip-10-0-0-5.us-east-2.compute.internal"],
     ["k8s service DNS", "keeperhub-common.keeperhub.svc.cluster.local"],
-    ["k8s pod DNS", "mypod.keeperhub.pod.cluster.local"],
-  ])("rejects %s before any DNS lookup", async (_label, host) => {
-    await expect(assertHostIsPublic(host)).rejects.toThrow(
-      "Host is not allowed: must resolve to a public address"
+  ])("refuses the hostname %s without a DNS lookup", async (_label, host) => {
+    const factory = createPublicOnlySocketFactory(PLUGIN);
+
+    await expect(factory({ host: [host], port: [5432] })).rejects.toMatchObject(
+      { code: "SSRF_BLOCKED" }
     );
-    expect(mockLookup).not.toHaveBeenCalled();
+    expect(lookupCalls).toHaveLength(0);
+  });
+
+  it("refuses a hostname whose DNS answer is private, at connect time", async () => {
+    fakeDns.set("db.example", [{ address: "10.0.0.5", family: 4 }]);
+    const factory = createPublicOnlySocketFactory(PLUGIN);
+
+    const socket = await factory({ host: ["db.example"], port: [5432] });
+    const error = await socketError(socket);
+
+    expect(error).toMatchObject({ code: "SSRF_BLOCKED" });
+    expect(lookupCalls).toEqual(["db.example"]);
+  });
+
+  it("refuses an answer that mixes public and private addresses", async () => {
+    fakeDns.set("dual.example", [
+      { address: "93.184.216.34", family: 4 },
+      { address: "192.168.1.1", family: 4 },
+    ]);
+    const factory = createPublicOnlySocketFactory(PLUGIN);
+
+    const socket = await factory({ host: ["dual.example"], port: [5432] });
+
+    await expect(socketError(socket)).resolves.toMatchObject({
+      code: "SSRF_BLOCKED",
+    });
+  });
+
+  it("passes a DNS failure through unchanged", async () => {
+    const factory = createPublicOnlySocketFactory(PLUGIN);
+
+    const socket = await factory({ host: ["nx.example"], port: [5432] });
+
+    await expect(socketError(socket)).resolves.toMatchObject({
+      code: "ENOTFOUND",
+    });
+    expect(mockSecurityEvent).not.toHaveBeenCalled();
+  });
+
+  it("records a security event and the safe-fetch block metric for a refused DNS answer", async () => {
+    fakeDns.set("db.example", [{ address: "10.0.0.5", family: 4 }]);
+    const factory = createPublicOnlySocketFactory(PLUGIN);
+
+    await socketError(await factory({ host: ["db.example"], port: [5432] }));
+
+    expect(mockSecurityEvent).toHaveBeenCalledWith(
+      "ssrf_connection_blocked",
+      expect.objectContaining({
+        plugin: PLUGIN,
+        hostname: "db.example",
+        resolved_ip: "10.0.0.5",
+        reason: "private-ip",
+      })
+    );
+    expect(incrementCounter).toHaveBeenCalledWith(
+      "safe_fetch.blocks.total",
+      expect.objectContaining({ plugin_name: PLUGIN, shadow: "false" })
+    );
+  });
+
+  it("records a security event and the block metric for a refused literal", async () => {
+    const factory = createPublicOnlySocketFactory(PLUGIN);
+
+    await factory({ host: ["169.254.169.254"], port: [5432] }).catch(
+      () => undefined
+    );
+
+    expect(mockSecurityEvent).toHaveBeenCalledWith(
+      "ssrf_connection_blocked",
+      expect.objectContaining({ plugin: PLUGIN, hostname: "169.254.169.254" })
+    );
+    expect(incrementCounter).toHaveBeenCalledWith(
+      "safe_fetch.blocks.total",
+      expect.objectContaining({ plugin_name: PLUGIN })
+    );
+  });
+
+  it("keeps an error listener on the socket it returns", async () => {
+    fakeDns.set("db.example", [{ address: "10.0.0.5", family: 4 }]);
+    const factory = createPublicOnlySocketFactory(PLUGIN);
+
+    const socket = await factory({ host: ["db.example"], port: [5432] });
+
+    expect(socket.listenerCount("error")).toBeGreaterThan(0);
+    expect(() => socket.emit("error", new Error("peer reset"))).not.toThrow();
+    socket.destroy();
+  });
+
+  it("keeps the original hostname on the socket for TLS SNI", async () => {
+    fakeDns.set("db.example", [{ address: "10.0.0.5", family: 4 }]);
+    const factory = createPublicOnlySocketFactory(PLUGIN);
+
+    const socket = await factory({ host: ["db.example"], port: [6543] });
+
+    expect(socket).toMatchObject({ host: "db.example", port: 6543 });
+    socket.destroy();
+  });
+
+  it("rejects a target with no host", async () => {
+    const factory = createPublicOnlySocketFactory(PLUGIN);
+
+    await expect(factory({ host: [], port: [5432] })).rejects.toThrow(
+      MISSING_HOST
+    );
   });
 });
 
-describe("extractHostFromConnectionString", () => {
-  it.each([
-    [
-      "postgres scheme with IPv4 host",
-      "postgres://u:p@10.0.0.1:5432/db",
-      "10.0.0.1",
-    ],
-    [
-      "postgresql scheme with hostname",
-      "postgresql://user:pass@db.example.com:5432/mydb",
-      "db.example.com",
-    ],
-    [
-      "URL-encoded password with @",
-      "postgres://user:p%40ss@db.example.com:5432/db",
-      "db.example.com",
-    ],
-    ["no port", "postgres://u:p@host.example/db", "host.example"],
-    ["no credentials", "postgres://host.example:5432/db", "host.example"],
-    [
-      "IPv6 host (square-bracketed per URL spec)",
-      "postgres://u:p@[::1]:5432/db",
-      "[::1]",
-    ],
-  ])("extracts %s", (_label, url, expected) => {
-    expect(extractHostFromConnectionString(url)).toBe(expected);
-  });
-
-  it.each([
-    ["empty string", ""],
-    ["plain garbage", "not-a-url"],
-    ["scheme-only", "postgres://"],
-  ])("returns null for %s", (_label, url) => {
-    expect(extractHostFromConnectionString(url)).toBeNull();
-  });
-
-  it("end-to-end: a connection string pointing at 10.0.0.1 is rejected by the guard", async () => {
-    const url = "postgres://u:p@10.0.0.1:5432/db";
-    const host = extractHostFromConnectionString(url);
-    expect(host).toBe("10.0.0.1");
-    if (!host) {
-      throw new Error("Unreachable: extraction returned null");
-    }
-    await expect(assertHostIsPublic(host)).rejects.toThrow(
-      "Host is not allowed: must resolve to a public address"
+describe("withPublicOnlySocket", () => {
+  it("adds a typed socket factory and keeps the other options", () => {
+    const options = withPublicOnlySocket(
+      { max: 1, connect_timeout: 5 },
+      PLUGIN
     );
-    expect(mockLookup).not.toHaveBeenCalled();
-  });
-});
 
-describe("assertConnectionUrlIsPublic", () => {
-  it.each([
-    ["IPv4 loopback", "postgres://u:p@127.0.0.1:5432/db"],
-    ["IPv4 private 10/8", "postgres://u:p@10.0.0.1:5432/db"],
-    ["IPv4 private 192.168/16", "postgres://u:p@192.168.1.1:5432/db"],
-    ["IPv4 IMDS link-local", "postgres://u:p@169.254.169.254:5432/db"],
-    ["IPv6 loopback (bracketed)", "postgres://u:p@[::1]:5432/db"],
-    ["IPv6 ULA (bracketed)", "postgres://u:p@[fc00::1]:5432/db"],
-    ["IPv6 site-local NAT64", "postgres://u:p@[64:ff9b:1::1]:5432/db"],
-    ["IPv6 Teredo", "postgres://u:p@[2001::1]:5432/db"],
-    [
-      "IPv4-mapped IPv6 to private",
-      "postgres://u:p@[::ffff:127.0.0.1]:5432/db",
-    ],
-  ])("rejects %s before any DNS lookup", async (_label, url) => {
-    await expect(assertConnectionUrlIsPublic(url)).rejects.toThrow(
-      "Host is not allowed: must resolve to a public address"
-    );
-    expect(mockLookup).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["localhost", "postgres://u:p@localhost:5432/db"],
-    [
-      "k8s service DNS",
-      "postgres://u:p@db.keeperhub.svc.cluster.local:5432/db",
-    ],
-    [
-      "EC2 VPC internal hostname",
-      "postgres://u:p@ip-10-0-0-5.us-east-2.compute.internal:5432/db",
-    ],
-    ["mDNS suffix", "postgres://u:p@raspberrypi.local:5432/db"],
-  ])(
-    "rejects hostname pattern %s before any DNS lookup",
-    async (_label, url) => {
-      await expect(assertConnectionUrlIsPublic(url)).rejects.toThrow(
-        "Host is not allowed: must resolve to a public address"
-      );
-      expect(mockLookup).not.toHaveBeenCalled();
-    }
-  );
-
-  it("rejects hostname that resolves to a private address", async () => {
-    mockLookup.mockResolvedValue([{ address: "10.0.0.5", family: 4 }]);
-    await expect(
-      assertConnectionUrlIsPublic("postgres://u:p@db.example/x")
-    ).rejects.toThrow("Host is not allowed: must resolve to a public address");
-    expect(mockLookup).toHaveBeenCalled();
-  });
-
-  it("permits hostname that resolves only to public addresses", async () => {
-    mockLookup.mockResolvedValue([{ address: "1.1.1.1", family: 4 }]);
-    await expect(
-      assertConnectionUrlIsPublic("postgres://u:p@db.example.com:5432/db")
-    ).resolves.toBeUndefined();
-  });
-
-  it.each([
-    ["IPv4 literal", "postgres://u:p@1.1.1.1:5432/db"],
-    [
-      "IPv6 literal (bracketed)",
-      "postgres://u:p@[2606:4700:4700::1111]:5432/db",
-    ],
-  ])("permits public %s without any DNS lookup", async (_label, url) => {
-    await expect(assertConnectionUrlIsPublic(url)).resolves.toBeUndefined();
-    expect(mockLookup).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["empty string", ""],
-    ["plain garbage", "not-a-url"],
-    ["scheme-only", "postgres://"],
-  ])("throws for malformed URL: %s", async (_label, url) => {
-    await expect(assertConnectionUrlIsPublic(url)).rejects.toThrow(
-      "Connection string is missing a host"
-    );
-    expect(mockLookup).not.toHaveBeenCalled();
-  });
-
-  it("error messages never echo the connection string", async () => {
-    let thrown: unknown;
-    try {
-      await assertConnectionUrlIsPublic(
-        "postgres://supersecretuser:supersecretpassword@10.0.0.1:5432/internal"
-      );
-    } catch (err) {
-      thrown = err;
-    }
-    const message = thrown instanceof Error ? thrown.message : String(thrown);
-    expect(message).not.toContain("supersecret");
-    expect(message).not.toContain("10.0.0.1");
-    expect(message).not.toContain("internal");
+    expect(options).toMatchObject({ max: 1, connect_timeout: 5 });
+    expect(typeof options.socket).toBe("function");
   });
 });

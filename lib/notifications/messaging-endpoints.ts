@@ -27,6 +27,14 @@ export function telegramSendMessageUrl(botToken: string): string {
   return `${TELEGRAM_API_HOST}/bot${botToken}/sendMessage`;
 }
 
+/** Slack's token check, used by the silent channel health check. */
+export const SLACK_AUTH_TEST_URL = `${SLACK_API_URL}/auth.test`;
+
+/** Reads a chat without posting to it, used by the silent health check. */
+export function telegramGetChatUrl(botToken: string, chatId: string): string {
+  return `${TELEGRAM_API_HOST}/bot${botToken}/getChat?chat_id=${encodeURIComponent(chatId)}`;
+}
+
 /**
  * Whether a stored value is a Discord webhook this may post to.
  *

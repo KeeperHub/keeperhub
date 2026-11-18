@@ -1,9 +1,9 @@
-# Type: scheduled | Weekly refresh of the disposable email domain blocklist
+# Type: scheduled | Daily refresh of the disposable email domain blocklist
 name: Disposable Email Domains Refresh
 
 on:
   schedule:
-    - cron: "0 6 * * 1"
+    - cron: "0 6 * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -38,12 +38,19 @@ jobs:
           curl -fsSL --max-time 60 \
             https://raw.githubusercontent.com/7c/fakefilter/main/txt/data.txt \
             -o "$RUNNER_TEMP/lists/fakefilter.txt"
+          curl -fsSL --max-time 60 \
+            https://raw.githubusercontent.com/disposable/disposable-email-domains/master/domains.txt \
+            -o "$RUNNER_TEMP/lists/disposable.txt"
+          curl -fsSL --max-time 60 https://api.mail.tm/domains \
+            | jq -r '."hydra:member"[].domain' > "$RUNNER_TEMP/lists/mail-tm.txt"
 
       - name: Regenerate the vendored list
         run: |
           pnpm tsx scripts/update-disposable-email-domains.ts \
             "$RUNNER_TEMP/lists/disposable-email-domains.txt" \
-            "$RUNNER_TEMP/lists/fakefilter.txt"
+            "$RUNNER_TEMP/lists/fakefilter.txt" \
+            "$RUNNER_TEMP/lists/disposable.txt" \
+            "$RUNNER_TEMP/lists/mail-tm.txt"
 
       - name: Run the disposable email tests
         run: pnpm vitest run tests/unit/auth-disposable-emails.test.ts
@@ -74,4 +81,4 @@ jobs:
             --head "$BRANCH" \
             --title "chore: refresh disposable email domain list" \
             --label no-issue-required \
-            --body "Weekly refresh of \`lib/auth-disposable-email-domains.json\` from disposable-email-domains/disposable-email-domains and 7c/fakefilter: ${ADDED} domains added, ${REMOVED} removed. The disposable email tests passed on this list before the PR was opened, and mainstream providers in \`NEVER_BLOCKED_DOMAINS\` are never blocked."
+            --body "Daily refresh of \`lib/auth-disposable-email-domains.json\` from disposable-email-domains/disposable-email-domains, 7c/fakefilter, disposable/disposable-email-domains and the mail.tm domain feed: ${ADDED} domains added, ${REMOVED} removed. The disposable email tests passed on this list before the PR was opened, and mainstream providers in \`NEVER_BLOCKED_DOMAINS\` are never blocked."

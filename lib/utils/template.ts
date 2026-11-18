@@ -8,6 +8,7 @@
  * `lib/workflow/executor/template-resolution.ts`.
  */
 
+import { readOwnField } from "@/lib/utils/read-own-field";
 import {
   recordUnresolved,
   type TemplateResolutionTracker,
@@ -335,7 +336,7 @@ export function processConfigTemplates(
 function mapFieldOverArray(cursor: unknown[], key: string): unknown {
   const mapped = cursor.map((item) =>
     item !== null && typeof item === "object"
-      ? (item as Record<string, unknown>)[key]
+      ? readOwnField(item, key)
       : undefined
   );
   const allMissing =
@@ -366,7 +367,7 @@ function resolveFieldPath(data: unknown, fieldPath: string): unknown {
     const arrayMatch = trimmedPart.match(ARRAY_ACCESS_PATTERN);
     if (arrayMatch) {
       const [, field, index] = arrayMatch;
-      const fieldValue = (current as Record<string, unknown>)?.[field];
+      const fieldValue = readOwnField(current, field);
       if (Array.isArray(fieldValue)) {
         current = fieldValue[Number.parseInt(index, 10)];
       } else {
@@ -375,7 +376,7 @@ function resolveFieldPath(data: unknown, fieldPath: string): unknown {
     } else if (Array.isArray(current)) {
       current = mapFieldOverArray(current, trimmedPart);
     } else {
-      current = (current as Record<string, unknown>)?.[trimmedPart];
+      current = readOwnField(current, trimmedPart);
     }
 
     if (current === undefined || current === null) {
@@ -441,7 +442,7 @@ function resolveExpressionById(
     const arrayMatch = part.match(ARRAY_ACCESS_PATTERN);
     if (arrayMatch) {
       const [, field, index] = arrayMatch;
-      const fieldValue = (current as Record<string, unknown>)?.[field];
+      const fieldValue = readOwnField(current, field);
       if (Array.isArray(fieldValue)) {
         current = fieldValue[Number.parseInt(index, 10)];
       } else {
@@ -450,7 +451,7 @@ function resolveExpressionById(
     } else if (Array.isArray(current)) {
       current = mapFieldOverArray(current, part);
     } else {
-      current = (current as Record<string, unknown>)?.[part];
+      current = readOwnField(current, part);
     }
 
     if (current === undefined || current === null) {
@@ -498,7 +499,7 @@ function resolveExpression(
     const arrayMatch = part.match(ARRAY_ACCESS_PATTERN);
     if (arrayMatch) {
       const [, field, index] = arrayMatch;
-      const fieldValue = (current as Record<string, unknown>)?.[field];
+      const fieldValue = readOwnField(current, field);
       if (Array.isArray(fieldValue)) {
         current = fieldValue[Number.parseInt(index, 10)];
       } else {
@@ -507,7 +508,7 @@ function resolveExpression(
     } else if (Array.isArray(current)) {
       current = mapFieldOverArray(current, part);
     } else {
-      current = (current as Record<string, unknown>)?.[part];
+      current = readOwnField(current, part);
     }
 
     if (current === undefined || current === null) {

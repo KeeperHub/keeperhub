@@ -44,6 +44,11 @@ const CURATED_HEADLINE_DOMAINS: readonly string[] = [
   "duck.com",
   "burnermail.io",
   "ironvest.com",
+  // Catch-all burner domains that mint a random subdomain per address
+  "marchslurp.com",
+  "roomsranked.com",
+  "arcadehearth.com",
+  "9k3r.com",
 ];
 
 // Mainstream providers are never blocked, whatever the vendored list says, so
@@ -101,7 +106,13 @@ export function isDisposableEmailDomain(email: string): boolean {
   if (!domain) {
     return false;
   }
-  return BLOCKED_DOMAINS.has(domain);
+  const labels = domain.split(".");
+  for (let i = 0; i < labels.length - 1; i++) {
+    if (BLOCKED_DOMAINS.has(labels.slice(i).join("."))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function disposableEmailBlocklistSize(): number {

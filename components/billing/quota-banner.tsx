@@ -2,6 +2,7 @@
 
 import { AlertTriangle, X } from "lucide-react";
 import Link from "next/link";
+import { AppBannerSlot } from "@/components/app-banner-slot";
 import type { QuotaStatus } from "@/lib/hooks/use-quota-status";
 
 /**
@@ -9,14 +10,17 @@ import type { QuotaStatus } from "@/lib/hooks/use-quota-status";
  *
  * Driven by the same lib/billing/quota-threshold signal as the quota warning
  * email, so the percentage shown here is the percentage that was mailed. Shares
- * the fixed 36px slot the announcement banner uses, and outranks it.
+ * the fixed slot the announcement banner uses, and outranks it.
  */
 export function QuotaBanner({
   status,
   onDismiss,
+  row = 0,
 }: {
   status: QuotaStatus;
   onDismiss: () => void;
+  /** Banners above it in the stack. */
+  row?: number;
 }): React.ReactElement {
   const atLimit = (status.threshold ?? 0) >= 100;
 
@@ -42,10 +46,12 @@ export function QuotaBanner({
   }
 
   return (
-    <output
-      className={`pointer-events-auto fixed top-0 right-0 left-0 z-[55] flex h-9 items-center justify-center border-b px-12 text-sm backdrop-blur-sm ${tone}`}
+    <AppBannerSlot
+      className={`px-12 ${tone}`}
       data-testid="quota-banner"
       data-threshold={status.threshold}
+      role="status"
+      row={row}
     >
       <p className="flex items-center gap-2 truncate">
         <AlertTriangle aria-hidden="true" className="size-4 shrink-0" />
@@ -71,6 +77,6 @@ export function QuotaBanner({
       >
         <X className="size-3.5" />
       </button>
-    </output>
+    </AppBannerSlot>
   );
 }
