@@ -1188,7 +1188,7 @@ describe("data/filter", () => {
     });
   });
 
-  describe("maintainer review", () => {
+  describe("Value read as a number or kept as text", () => {
     it("compares a long decimal Value exactly, without rounding it", async () => {
       const value = "0.1000000000000000000001";
       const equal = await ok({
@@ -1203,6 +1203,29 @@ describe("data/filter", () => {
         value,
       });
       expect(notEqual.indexes).toEqual([0]);
+    });
+
+    it("reads an exact decimal written any way as a number", async () => {
+      for (const value of ["1.50", "+1.5", "001.5"]) {
+        const result = await ok({
+          source: '[[1.5], ["1.50"]]',
+          operator: "arrayContains",
+          value,
+        });
+        expect(result.indexes, value).toEqual([0]);
+      }
+      const tiny = await ok({
+        source: "[1e-7, 2e-7]",
+        operator: "===",
+        value: "0.0000001",
+      });
+      expect(tiny.indexes).toEqual([0]);
+      const notTiny = await ok({
+        source: "[1e-7, 2e-7]",
+        operator: "!==",
+        value: "0.0000001",
+      });
+      expect(notTiny.indexes).toEqual([1]);
     });
 
     it("still reads a plain number Value as a number", async () => {

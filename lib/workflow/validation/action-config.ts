@@ -54,9 +54,9 @@ const NODE_LABEL_MAX_CHARS = 100;
 // An UNKNOWN_FIELD issue carries a config key the caller chose, so field names
 // are sanitised on the same path as labels, with a tighter cap.
 const FIELD_NAME_MAX_CHARS = 40;
-// Cross-field messages quoted in the summary, and how long each may be.
-const SUMMARY_DETAILS = 3;
-const DETAIL_MAX_CHARS = 300;
+// How much of an action's cross-field message the summary quotes.
+const DETAIL_MAX_CHARS = 200;
+const TRAILING_PERIOD = /\.$/;
 
 // Per-node field names rendered into the message before it elides the rest.
 const SUMMARY_FIELDS_PER_NODE = 3;
@@ -983,6 +983,7 @@ export function formatActionConfigValidationResponse(
               display: string;
               fallback: string;
               fields: Map<string, number>;
+              detail?: string;
             }
           >();
           for (const issue of validation.issues) {
@@ -995,6 +996,11 @@ export function formatActionConfigValidationResponse(
               fields: new Map<string, number>(),
             };
             entry.count++;
+            // An action's own cross-field check explains itself, so its
+            // message stands in for the field list in this node's entry.
+            if (issue.code === "INVALID_FIELD_VALUE" && !entry.detail) {
+              entry.detail = issue.message;
+            }
             const field = issueFieldName(issue);
             if (field) {
               // One name can come from several issues; keep the most blocking
@@ -1011,7 +1017,13 @@ export function formatActionConfigValidationResponse(
           }
           const entries: string[] = [];
           let shown = 0;
-          for (const { count, display, fallback, fields } of labels.values()) {
+          for (const {
+            count,
+            display,
+            fallback,
+            fields,
+            detail,
+          } of labels.values()) {
             if (shown >= 3) {
               entries.push(`and ${labels.size - 3} more`);
               break;
@@ -1025,7 +1037,11 @@ export function formatActionConfigValidationResponse(
             const ordered = [...fields.entries()]
               .sort(([, a], [, b]) => a - b)
               .map(([name]) => name);
-            entries.push(`"${label}"${formatNodeFields(ordered, count)}`);
+            entries.push(
+              detail
+                ? `"${label}": ${sanitiseSummaryText(detail, DETAIL_MAX_CHARS).replace(TRAILING_PERIOD, "")}`
+                : `"${label}"${formatNodeFields(ordered, count)}`
+            );
             shown++;
           }
           return `Invalid node(s): ${entries.join(", ")}. `;
@@ -1033,23 +1049,7 @@ export function formatActionConfigValidationResponse(
       : "";
   return {
     error: "INVALID_ACTION_CONFIG",
-    message: `Workflow contains invalid action configuration. ${summary}${crossFieldDetails(validation.issues)}Fix the listed fields and save again.`,
+    message: `Workflow contains invalid action configuration. ${summary}Fix the listed fields and save again.`,
     invalidFields: validation.issues,
   };
-}
-
-// An action's own cross-field check explains itself ("Value for 'Number:
-// greater than' must be a number"), so its message goes into the summary the
-// editor shows; the per-field issues are already named by field above.
-function crossFieldDetails(issues: ActionConfigValidationIssue[]): string {
-  const details = issues
-    .filter((issue) => issue.code === "INVALID_FIELD_VALUE")
-    .slice(0, SUMMARY_DETAILS)
-    .map((issue) => {
-      const label = sanitiseNodeLabel(
-        issue.nodeLabel ?? issue.nodeId ?? issue.path
-      );
-      return `"${label}": ${sanitiseSummaryText(issue.message, DETAIL_MAX_CHARS)} `;
-    });
-  return details.join("");
 }

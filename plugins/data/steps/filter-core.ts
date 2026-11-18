@@ -4,8 +4,8 @@
  *
  * Each item is tested with the Condition node's own expression and evaluator.
  * An item a test cannot apply to (a missing field, null under a number or
- * boolean test, an object under a text test) is skipped and counted, or fails
- * the step when the node is set to.
+ * boolean test, an object under a text test) fails the step, or is skipped
+ * and counted when the node is set to skip.
  */
 
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
@@ -35,7 +35,7 @@ import {
   PRESENCE_FILTER_OPERATORS,
   TEXT_FILTER_OPERATORS,
   VALUELESS_FILTER_OPERATORS,
-} from "./filter-operators";
+} from "../filter-operators";
 import { isPlainObject, resolveSegments } from "./resolve-path-core";
 
 export type { FilterCoreInput } from "../filter-config";
@@ -43,7 +43,7 @@ export type { FilterCoreInput } from "../filter-config";
 const ITEM_VAR = "__v0";
 const VALUE_VAR = "__v1";
 
-export type FilterOutput = {
+type FilterOutput = {
   success: true;
   items: unknown[];
   values: unknown[];

@@ -13,13 +13,13 @@ import {
   formatActionConfigValidationResponse,
   validateWorkflowActionConfigs,
 } from "@/lib/workflow/validation/action-config";
-import { filterArray } from "@/plugins/data/steps/filter-core";
 import {
   FILTER_OPERATOR_OPTIONS,
   KEEP_ALL_OPERATOR,
   PRESENCE_FILTER_OPERATORS,
   VALUELESS_FILTER_OPERATORS,
-} from "@/plugins/data/steps/filter-operators";
+} from "@/plugins/data/filter-operators";
+import { filterArray } from "@/plugins/data/steps/filter-core";
 import {
   findActionById,
   flattenConfigFields,
@@ -28,9 +28,10 @@ import {
 
 const ACTION_TYPE = "data/filter";
 const ROOT = join(import.meta.dirname, "..", "..");
-// `import x from "y"`, `export ... from "y"` and `import "y"`, not `import type`.
+// `import x from "y"`, `export ... from "y"` and `import "y"`, with either
+// quote and with or without a semicolon; not `import type`.
 const IMPORT_RE =
-  /^(?:(?:import|export)\s+(?!type\b)[^;]*?\sfrom\s+|import\s+)"([^"]+)";/gm;
+  /^(?:(?:import|export)\s+(?!type\b)[^;]*?\sfrom\s+|import\s+)["']([^"']+)["']/gm;
 
 const CONDITION_OPERATORS = Object.keys(
   OPERATOR_METADATA
@@ -453,7 +454,7 @@ describe("data/filter definition", () => {
     });
   });
 
-  describe("maintainer review", () => {
+  describe("save errors and what the definition loads", () => {
     it("puts the cross-field reason in the 422 summary the editor shows", () => {
       const validation = validateWorkflowActionConfigs([
         actionNode(
@@ -461,8 +462,19 @@ describe("data/filter definition", () => {
         ),
       ]);
       expect(formatActionConfigValidationResponse(validation).message).toBe(
-        'Workflow contains invalid action configuration. Invalid node(s): "Filter" (value). "Filter": Value for \'Number: greater than\' must be a number, e.g. 100 or 0x64. Fix the listed fields and save again.'
+        "Workflow contains invalid action configuration. Invalid node(s): \"Filter\": Value for 'Number: greater than' must be a number, e.g. 100 or 0x64. Fix the listed fields and save again."
       );
+    });
+
+    it("names a node with a blank label by its id in the summary", () => {
+      const node = actionNode(
+        editorConfig({ source: "[1]", operator: ">", value: "abc" })
+      );
+      node.data.label = "   ";
+      const validation = validateWorkflowActionConfigs([node]);
+      expect(
+        formatActionConfigValidationResponse(validation).message
+      ).toContain('Invalid node(s): "node-1": Value for');
     });
 
     it("keeps the condition evaluator out of what the plugin definition loads", () => {

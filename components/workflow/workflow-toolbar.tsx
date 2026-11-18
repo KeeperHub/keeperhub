@@ -39,6 +39,7 @@ import {
   api,
   type Project,
   type Tag,
+  WORKFLOW_SAVE_ERROR_TOAST,
   workflowSaveErrorMessage,
 } from "@/lib/api-client";
 import { useProjects, useTags } from "@/lib/hooks/use-org-data";
@@ -697,7 +698,8 @@ function useWorkflowHandlers({
         workflowSaveErrorMessage(
           error,
           "Failed to save workflow. Please try again."
-        )
+        ),
+        WORKFLOW_SAVE_ERROR_TOAST
       );
       return false;
     } finally {

@@ -7,7 +7,6 @@
  */
 
 import { qualifiedOptionLabel } from "@/lib/workflow/editor/select-option-groups";
-import type { SelectOption } from "@/plugins/registry";
 import type { ConditionOperator } from "@/lib/workflow/nodes/condition/builder-types";
 import {
   OPERATOR_GROUPS,
@@ -15,6 +14,7 @@ import {
   type OperatorCategory,
   operatorsForCategory,
 } from "@/lib/workflow/nodes/condition/operator-metadata";
+import type { SelectOption } from "@/plugins/registry";
 
 export const KEEP_ALL_OPERATOR = "keepAll";
 export const DEFAULT_FILTER_OPERATOR = "===";
@@ -26,12 +26,9 @@ const NEGATED_TEXT_OPERATORS = {
   notEndsWith: "endsWith",
 } as const satisfies Record<string, ConditionOperator>;
 
-export type NegatedTextOperator = keyof typeof NEGATED_TEXT_OPERATORS;
+type NegatedTextOperator = keyof typeof NEGATED_TEXT_OPERATORS;
 
-export type FilterConditionOperator = Exclude<
-  ConditionOperator,
-  "matchesRegex"
->;
+type FilterConditionOperator = Exclude<ConditionOperator, "matchesRegex">;
 
 export type FilterOperator =
   | FilterConditionOperator
@@ -39,7 +36,7 @@ export type FilterOperator =
   | typeof KEEP_ALL_OPERATOR;
 
 // A select option, so the operator list goes to the field as it is.
-export type FilterOperatorOption = SelectOption & {
+type FilterOperatorOption = SelectOption & {
   value: FilterOperator;
   group: string;
   description: string;
@@ -47,7 +44,7 @@ export type FilterOperatorOption = SelectOption & {
 
 // Where Filter's test differs from Condition's, its hint says so.
 const NUMBER_TEST_SCOPE = "numbers, numeric text and hex are tested";
-const BOOLEAN_TEST_SCOPE = "other values are skipped";
+const BOOLEAN_TEST_SCOPE = "other values can't be tested";
 
 const FILTER_HINTS: Partial<Record<FilterOperator, string>> = {
   contains: "Text includes the value",

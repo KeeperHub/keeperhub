@@ -10,7 +10,7 @@ import {
   KEEP_ALL_OPERATOR,
   PRESENCE_FILTER_OPERATORS,
   VALUELESS_FILTER_OPERATORS,
-} from "./steps/filter-operators";
+} from "./filter-operators";
 
 const dataPlugin: IntegrationPlugin = {
   type: "data",
@@ -245,7 +245,7 @@ const dataPlugin: IntegrationPlugin = {
         {
           field: "labels",
           description:
-            "The Labels entry of each matching item (empty when Labels is not set), e.g. the clipper names a batch read was given",
+            "The Labels entry of each matching item (empty when Labels is not set), e.g. the contract names a batch read was given",
         },
         { field: "count", description: "Number of matching items" },
         {

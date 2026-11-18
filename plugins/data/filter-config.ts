@@ -17,7 +17,7 @@ import {
   PRESENCE_FILTER_OPERATORS,
   TEXT_FILTER_OPERATORS,
   VALUELESS_FILTER_OPERATORS,
-} from "./steps/filter-operators";
+} from "./filter-operators";
 import { parseJsonValue, splitPath } from "./steps/resolve-path-core";
 
 export const MAX_FILTER_ITEMS = 10_000;
@@ -28,6 +28,9 @@ const MAX_PATH_LENGTH = 500;
 const MAX_ECHOED_LENGTH = 60;
 
 const DECIMAL_TEXT = /^[+-]?\d+(\.\d+)?$/;
+const DECIMAL_PARTS = /^([+-]?)(\d+)(?:\.(\d+))?$/;
+const LEADING_ZEROS = /^0+/;
+const TRAILING_ZEROS = /0+$/;
 const WHOLE_NUMBER_TEXT = /^\d+$/;
 const HEX_TEXT = /^0x[0-9a-fA-F]+$/;
 const DOUBLE_QUOTED = /^"[\s\S]*"$/;
@@ -227,9 +230,55 @@ function unquote(text: string): string | undefined {
   return SINGLE_QUOTED.exec(text)?.[1];
 }
 
-// Reads Value as Condition reads a typed operand. A number that a double
-// cannot hold exactly (past 2^53, or a long decimal) stays text, which the
-// evaluator compares by value without rounding.
+// A decimal written plainly: sign, integer digits without leading zeros and
+// fraction digits without trailing zeros, so equal values read the same.
+function canonicalDecimal(
+  sign: string,
+  whole: string,
+  fraction: string
+): string {
+  const integer = whole.replace(LEADING_ZEROS, "") || "0";
+  const decimals = fraction.replace(TRAILING_ZEROS, "");
+  const digits = decimals ? `${integer}.${decimals}` : integer;
+  return digits === "0" ? "0" : `${sign === "-" ? "-" : ""}${digits}`;
+}
+
+// The double's own decimal, written out without an exponent (1e-7 becomes
+// 0.0000001), in canonical form.
+function numberDecimal(number: number): string {
+  const [mantissa, exponentText] = String(number).split("e");
+  const exponent = Number(exponentText ?? 0);
+  const sign = mantissa.startsWith("-") ? "-" : "";
+  const [whole, fraction = ""] = mantissa.replace("-", "").split(".");
+  const digits = whole + fraction;
+  const point = whole.length + exponent;
+  if (point <= 0) {
+    return canonicalDecimal(sign, "0", "0".repeat(-point) + digits);
+  }
+  if (point >= digits.length) {
+    return canonicalDecimal(
+      sign,
+      digits + "0".repeat(point - digits.length),
+      ""
+    );
+  }
+  return canonicalDecimal(sign, digits.slice(0, point), digits.slice(point));
+}
+
+// True when the typed decimal is exactly the double it parses to, so reading
+// it as a number loses nothing.
+function sameDecimal(text: string, number: number): boolean {
+  if (!Number.isFinite(number)) {
+    return false;
+  }
+  const [, sign = "", whole, fraction = ""] = DECIMAL_PARTS.exec(text) ?? [];
+  return canonicalDecimal(sign, whole, fraction) === numberDecimal(number);
+}
+
+// Reads Value as Condition reads a typed operand. A decimal the double it
+// parses to holds exactly (1.50, 007, 1e-7 written out) is a number; one it
+// would round (past 2^53, or a long decimal) stays text, which the evaluator
+// compares by value without rounding.
 function toTypedValue(text: string): unknown {
   const quoted = unquote(text);
   if (quoted !== undefined) {
@@ -237,7 +286,7 @@ function toTypedValue(text: string): unknown {
   }
   if (DECIMAL_TEXT.test(text)) {
     const number = Number(text);
-    return String(number) === text ? number : text;
+    return sameDecimal(text, number) ? number : text;
   }
   const keywords: Record<string, unknown> = {
     true: true,

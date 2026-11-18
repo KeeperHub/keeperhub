@@ -7,7 +7,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Button } from "@/components/ui/button";
-import { api, workflowSaveErrorMessage } from "@/lib/api-client";
+import {
+  api,
+  WORKFLOW_SAVE_ERROR_TOAST,
+  workflowSaveErrorMessage,
+} from "@/lib/api-client";
 import { dedupeEdges } from "@/lib/workflow/editor/edge-helpers";
 import {
   currentWorkflowIdAtom,
@@ -270,7 +274,8 @@ export function AIPrompt({ workflowId, onWorkflowCreated }: AIPromptProps): Reac
       } catch (error) {
         console.error("Failed to generate workflow:", error);
         toast.error(
-          workflowSaveErrorMessage(error, "Failed to generate workflow")
+          workflowSaveErrorMessage(error, "Failed to generate workflow"),
+          WORKFLOW_SAVE_ERROR_TOAST
         );
       } finally {
         setIsGenerating(false);

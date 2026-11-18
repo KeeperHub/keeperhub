@@ -164,6 +164,13 @@ export class ApiError extends Error {
   }
 }
 
+// One toast for save failures, held long enough to read the reason; a later
+// failed autosave replaces it instead of stacking another.
+export const WORKFLOW_SAVE_ERROR_TOAST = {
+  id: "workflow-save-error",
+  duration: 10_000,
+} as const;
+
 // A refused workflow save says which node and setting to fix; show that
 // rather than a generic "try again".
 export function workflowSaveErrorMessage(

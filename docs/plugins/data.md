@@ -164,7 +164,7 @@ Keeps only the items of an array that pass a test, and pulls one field out of ev
 
 Each operator in the list shows a one-line hint under its name. Once chosen, an operator whose name repeats across groups shows with its group, e.g. **Text: contains** or **Array: contains**; the others show their name alone. Condition's operator list does the same. Error messages always name the group.
 
-- **equals** compares by value: `"1.0"` equals `1`, and integers of any size written as text compare exactly. `"true"` does not equal `true`.
+- **equals** compares by value: `"1.0"` equals `1`, and numbers of any length written as text compare exactly. `"true"` does not equal `true`.
 - **soft equals** compares loosely, as JavaScript `==` does: `"0"` soft equals `0`, and hex text such as `"0x01"` soft equals `1`. Pick it only when items mix numbers, text and booleans on purpose.
 - The **does not** tests keep the text and number items that fail the matching test. Starts with `VAULT_` followed by a second Filter Array with does not start with `VAULT_OLD_` keeps the vaults without the retired ones.
 
@@ -172,8 +172,8 @@ Each operator in the list shows a one-line hint under its name. Once chosen, an 
 
 - Spaces around Value are trimmed; quote it to keep them, e.g. `" VAULT_"`.
 - **Text tests and has key**: the text as typed, so `007` stays `007`. Surrounding quotes are removed, and inside double quotes escapes such as `\n` and `\"` work as in a Condition.
-- When Value is left empty, the error says what this test needs: a number, a whole number, a key, or `""` for empty text.
-- **Number tests**: a decimal number such as `100`, `-5` or `1.5`, or hex written with a lowercase `0x` such as `0x64`, up to 100 characters. Exponents (`1e3`), `0X64` and negative hex are not numbers. Anything else fails the step, and is refused when the workflow is saved. Integers of any size compare exactly, so an 18-decimal threshold can be typed in full.
+- When a run finds Value empty (only spaces, or a template that resolves to nothing), the error says what this test needs: a number, a whole number, a key, or `""` for empty text. Saving with Value left blank is refused as a missing field.
+- **Number tests**: a decimal number such as `100`, `-5` or `1.5`, or hex written with a lowercase `0x` such as `0x64`, up to 100 characters. Exponents (`1e3`), `0X64` and negative hex are not numbers. Anything else fails the step, and is refused when the workflow is saved. Numbers of any length compare exactly, so a wei amount such as `1000000000000000000` can be typed in full.
 - **Array: length**: a whole number such as `3`, small enough to count exactly. Anything else is refused when the workflow is saved.
 - A Value, Source or Labels built from a template (`{{...}}`) is checked when the step runs, since its content is only known then; one typed by hand is checked when the workflow is saved.
 - **Every other test**: as in a Condition. `5` is a number, `true` and `false` are booleans, `null` is null, anything else is text. Quote it to force text, e.g. `"true"` matches the text `true` but not the boolean. Quoting a number changes nothing under equals, which compares numbers by value.

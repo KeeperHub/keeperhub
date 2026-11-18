@@ -239,6 +239,8 @@ export const CONDITION_OPERATOR_OPTIONS: readonly SelectOption[] =
 // The closed dropdown names the group only where the label repeats
 // ("Text: contains" vs "Array: contains"), so it fits Condition's narrow select.
 export function closedOperatorLabel(operator: ConditionOperator): string {
+  // Every operator is in the options (a test pins it); the fallback only
+  // keeps the return type a string.
   return (
     groupedSelectLabel(CONDITION_OPERATOR_OPTIONS, operator) ??
     OPERATOR_METADATA[operator].label
