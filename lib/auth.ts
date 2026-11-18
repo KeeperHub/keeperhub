@@ -11,7 +11,7 @@ import {
   siwe,
   twoFactor,
 } from "better-auth/plugins";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { generateSiweNonce } from "viem/siwe";
 import { recordWalletInAddressBook } from "@/lib/address-book/record-wallet";
@@ -44,7 +44,7 @@ import {
 } from "@/lib/logging";
 import { revokeRefreshTokensForUserOrg } from "@/lib/mcp/oauth-store";
 import { revokeMcpGrantsOnViewerDowngrade } from "@/lib/org/viewer-downgrade";
-import { isViewerRole } from "@/lib/organization/role-label";
+import { isViewerRole, VIEWER_ROLE } from "@/lib/organization/role-label";
 import { recordAuditEvent } from "@/lib/security/audit-log";
 import {
   CLIENT_IP_HEADERS,
@@ -1079,10 +1079,16 @@ export const auth = betterAuth({
           // Backfill the active org for sessions that don't carry one yet.
           if (!orgId) {
             try {
+              // Prefer an org the user can act in, then the oldest; the CLI
+              // device grant mints its key for this org.
               const [member] = await db
                 .select()
                 .from(memberTable)
                 .where(eq(memberTable.userId, session.userId))
+                .orderBy(
+                  sql`case when ${memberTable.role} = ${VIEWER_ROLE} then 1 else 0 end`,
+                  asc(memberTable.createdAt)
+                )
                 .limit(1);
 
               if (member) {

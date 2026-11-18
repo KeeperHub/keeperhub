@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { workflows } from "@/lib/db/schema";
 import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
+import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 import { getWorkflowAccess } from "@/lib/workflow/access";
 import {
   runWorkflowSimulation,
@@ -79,7 +80,9 @@ export async function POST(
 
   if (!access.canEdit) {
     return applyRateLimitHeaders(
-      NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 }),
+      access.hasFullAccess
+        ? viewerReadOnlyResponse()
+        : NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 }),
       rateLimit
     );
   }

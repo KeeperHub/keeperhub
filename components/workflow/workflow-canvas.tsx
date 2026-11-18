@@ -41,6 +41,7 @@ import {
   isPanelAnimatingAtom,
   isSidebarCollapsedAtom,
   isTransitioningFromHomepageAtom,
+  isWorkflowOwnerAtom,
   nodesAtom,
   onEdgesChangeAtom,
   onNodesChangeAtom,
@@ -54,7 +55,6 @@ import {
   type WorkflowNode,
   type WorkflowNodeType,
 } from "@/lib/workflow/store";
-import { useActiveMember } from "@/lib/hooks/use-organization";
 import { hasDuplicateEdge } from "@/lib/workflow/editor/edge-helpers";
 import { Edge } from "../ai-elements/edge";
 import { Panel } from "../ai-elements/panel";
@@ -121,10 +121,10 @@ export function WorkflowCanvas() {
   );
   const applyNodesChange = useSetAtom(onNodesChangeAtom);
   const applyEdgesChange = useSetAtom(onEdgesChangeAtom);
-  // Viewers can select nodes to read their config but cannot move, connect,
-  // delete or add anything.
-  const { isViewer } = useActiveMember();
-  const isReadOnly = isViewer && isWorkflowRoute;
+  // Anyone who cannot edit this workflow (viewers included) can select nodes
+  // to read their config but cannot move, connect, delete or add anything.
+  const canEditWorkflow = useAtomValue(isWorkflowOwnerAtom);
+  const isReadOnly = isWorkflowRoute && !canEditWorkflow;
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
       applyNodesChange(

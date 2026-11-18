@@ -19,7 +19,7 @@ import {
   executionLogNotDeleted,
   executionLogSoftDeleteValues,
 } from "@/lib/workflow/soft-delete";
-import { VIEWER_READ_ONLY_ERROR } from "@/lib/security/viewer-policy";
+import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 
 const SUMMARY_DEFAULT_LIMIT = 20;
 const SUMMARY_MAX_LIMIT = 100;
@@ -378,7 +378,7 @@ export async function DELETE(
       );
     }
     if (!access.canEdit) {
-      return NextResponse.json(VIEWER_READ_ONLY_ERROR, { status: 403 });
+      return viewerReadOnlyResponse();
     }
 
     // Only the runs not already purged; keeps deletedCount accurate on re-runs.

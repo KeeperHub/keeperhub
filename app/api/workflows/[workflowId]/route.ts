@@ -51,7 +51,7 @@ import {
   type WorkflowNodeForValidation,
 } from "@/lib/workflow/validation/action-config";
 import { findInvalidTemplateTokens } from "@/lib/workflow/validation/template-syntax";
-import { VIEWER_READ_ONLY_ERROR } from "@/lib/security/viewer-policy";
+import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 async function fetchWorkflowPublicTags(
   workflowId: string
 ): Promise<Array<{ id: string; name: string; slug: string }>> {
@@ -399,7 +399,7 @@ export async function PATCH(
       );
     }
     if (!canEdit) {
-      return NextResponse.json(VIEWER_READ_ONLY_ERROR, { status: 403 });
+      return viewerReadOnlyResponse();
     }
 
     const body = await request.json();
@@ -1053,7 +1053,7 @@ export async function DELETE(
       );
     }
     if (!canEdit) {
-      return NextResponse.json(VIEWER_READ_ONLY_ERROR, { status: 403 });
+      return viewerReadOnlyResponse();
     }
 
     // Check for existing executions before deleting

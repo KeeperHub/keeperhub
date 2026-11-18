@@ -260,6 +260,11 @@ export const autosaveAtom = atom(
       return;
     }
 
+    // A caller who cannot edit this workflow has nothing to save.
+    if (!get(isWorkflowOwnerAtom)) {
+      return;
+    }
+
     const saveFunc = async () => {
       try {
         set(isSavingAtom, true);

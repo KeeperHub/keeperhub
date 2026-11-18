@@ -46,7 +46,10 @@ vi.mock("@/lib/db/schema", () => ({ users: { id: "id" } }));
 // test is exercised in isolation.
 vi.mock("@/lib/workflow/access", () => ({
   isUserMemberOfOrganization: vi.fn().mockResolvedValue(true),
-  getActiveMemberRole: vi.fn().mockResolvedValue("member"),
+}));
+
+vi.mock("@/lib/security/org-role", () => ({
+  getOrgRole: vi.fn().mockResolvedValue("member"),
 }));
 
 vi.mock("@sentry/nextjs", () => ({

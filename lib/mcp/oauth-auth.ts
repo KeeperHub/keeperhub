@@ -15,7 +15,7 @@ import {
   getScopePolicyForMint,
 } from "@/lib/mcp/scope-policy";
 import { isViewerRole } from "@/lib/organization/role-label";
-import { getActiveMemberRole } from "@/lib/workflow/access";
+import { getOrgRole } from "@/lib/security/org-role";
 
 export type OAuthTokenPayload = {
   sub: string;
@@ -268,12 +268,12 @@ export async function authenticateOAuthToken(
   // current membership on every use so a token keeps no authority after the
   // user is removed from (or leaves) the organization.
   //
-  // Note: getActiveMemberRole joins on users.deactivatedAt IS NULL, so
+  // Note: getOrgRole joins on users.deactivatedAt IS NULL, so
   // this check also rejects a deactivated user. The explicit deactivation
   // guard above is therefore retained for its security telemetry (the Sentry
   // captureMessage / console.warn), not for access control - it surfaces the
   // anomaly that this membership check would otherwise reject silently.
-  const role = await getActiveMemberRole(payload.sub, payload.org);
+  const role = await getOrgRole(payload.sub, payload.org);
   if (role === null) {
     return {
       authenticated: false,

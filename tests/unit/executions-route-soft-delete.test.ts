@@ -11,6 +11,7 @@ const updateSetMock = vi.fn((_values: Record<string, unknown>) => ({
   where: updateWhereMock,
 }));
 const updateMock = vi.fn(() => ({ set: updateSetMock }));
+const getWorkflowAccessMock = vi.fn();
 
 vi.mock("@/lib/db", () => ({
   db: {
@@ -38,11 +39,7 @@ vi.mock("@/lib/middleware/require-scope", () => ({
 }));
 
 vi.mock("@/lib/workflow/access", () => ({
-  getWorkflowAccess: vi.fn().mockResolvedValue({
-    hasFullAccess: true,
-    canEdit: true,
-    isDeleted: false,
-  }),
+  getWorkflowAccess: getWorkflowAccessMock,
 }));
 
 import { workflowExecutionLogs, workflowExecutions } from "@/lib/db/schema";
@@ -51,6 +48,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   deleteWhereMock.mockResolvedValue(undefined);
   updateWhereMock.mockResolvedValue(undefined);
+  getWorkflowAccessMock.mockResolvedValue({
+    hasFullAccess: true,
+    canEdit: true,
+    isDeleted: false,
+  });
 });
 
 // Purging execution history must not reduce the billable count, and must not
@@ -115,5 +117,57 @@ describe("executions DELETE route soft-deletes runs", () => {
     expect(body.deletedCount).toBe(0);
     expect(updateMock).not.toHaveBeenCalled();
     expect(deleteMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("executions DELETE route refuses a viewer", () => {
+  it("returns 403 viewer_read_only and purges nothing when canEdit is false", async () => {
+    findFirstMock.mockResolvedValueOnce({
+      id: "wf_1",
+      userId: "user_2",
+      organizationId: "org_1",
+    });
+    getWorkflowAccessMock.mockResolvedValueOnce({
+      hasFullAccess: true,
+      canEdit: false,
+      isDeleted: false,
+    });
+
+    const { DELETE } = await import(
+      "@/app/api/workflows/[workflowId]/executions/route"
+    );
+    const response = await DELETE(
+      new Request("http://test/executions", { method: "DELETE" }),
+      { params: Promise.resolve({ workflowId: "wf_1" }) }
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: "Viewers have read-only access to this organization",
+      code: "viewer_read_only",
+    });
+    expect(findManyMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it("lets an editor past the viewer check when canEdit is true", async () => {
+    findFirstMock.mockResolvedValueOnce({
+      id: "wf_1",
+      userId: "user_2",
+      organizationId: "org_1",
+    });
+    findManyMock.mockResolvedValueOnce([{ id: "exec_1" }]);
+
+    const { DELETE } = await import(
+      "@/app/api/workflows/[workflowId]/executions/route"
+    );
+    const response = await DELETE(
+      new Request("http://test/executions", { method: "DELETE" }),
+      { params: Promise.resolve({ workflowId: "wf_1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(updateMock).toHaveBeenCalledWith(workflowExecutions);
   });
 });

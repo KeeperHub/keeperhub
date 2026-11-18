@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { ErrorCategory, logSecurityEvent, logUserError } from "@/lib/logging";
 import { type OAuthScope, scopeSatisfies } from "@/lib/mcp/oauth-scopes";
 import type { AuthMethod } from "@/lib/middleware/auth-helpers";
+import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 
 /**
  * Identifies the denied caller in the security signal. Never carries the
@@ -21,9 +22,8 @@ export type ScopeDenialContext = {
    *
    * Optional so a caller that genuinely cannot say gets the requirement with no
    * remediation claim, rather than a guess that may be wrong for the credential
-   * in hand. "session" carries no scope, so scopeSatisfies admits it before a
-   * denial can be built; it falls to the no-remediation branch if it ever
-   * arrives.
+   * in hand. A "session" carries a scope only for a viewer's write, which is
+   * refused with the viewer error instead.
    */
   credentialType?: AuthMethod;
 };
@@ -52,7 +52,8 @@ function remediationFor(credentialType: AuthMethod | undefined): string {
  * MCP tool wrapper checks, but the REST routes those tools call dropped it and
  * ran any authenticated caller. `grantedScope === undefined` means the caller
  * carries no scope at all -- a cookie session, an internal service, or an API
- * key whose `scope` column is NULL -- and is intentionally full-access.
+ * key whose `scope` column is NULL -- and is intentionally full-access. A
+ * viewer's session gets `mcp:read` on writes, so write sinks refuse it.
  * Returns a 403 envelope (RFC 6750 3.1) when denied, null when allowed.
  *
  * A denial is a security detection signal, not just a client error: it is a
@@ -66,6 +67,9 @@ export function requireScope(
 ): NextResponse | null {
   if (scopeSatisfies(grantedScope, required)) {
     return null;
+  }
+  if (context?.credentialType === "session") {
+    return viewerReadOnlyResponse();
   }
 
   // Loki only -- no Sentry argument. A scope denial is the caller using a

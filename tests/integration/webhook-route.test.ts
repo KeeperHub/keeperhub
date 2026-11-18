@@ -419,6 +419,40 @@ describe("POST /api/workflows/:workflowId/webhook", () => {
     });
   });
 
+  describe("viewer role", () => {
+    it("returns 403 with the viewer error and starts no run for a viewer key holder", async () => {
+      setupHappyPath();
+      mockMemberLimit.mockResolvedValue([{ id: "member-1", role: "viewer" }]);
+
+      const response = await POST(
+        createWebhookRequest(VALID_API_KEY, { event: "test" }),
+        createContext(WORKFLOW_ID)
+      );
+
+      expect(response.status).toBe(403);
+      const data = await response.json();
+      expect(data.error).toBe(
+        "Viewers have read-only access to this organization"
+      );
+      expect(mockValidateIntegrations).not.toHaveBeenCalled();
+      expect(mockEnforceExecutionLimit).not.toHaveBeenCalled();
+      expect(mockInsertReturning).not.toHaveBeenCalled();
+    });
+
+    it("runs the workflow for a member key holder", async () => {
+      setupHappyPath();
+      mockMemberLimit.mockResolvedValue([{ id: "member-1", role: "member" }]);
+
+      const response = await POST(
+        createWebhookRequest(VALID_API_KEY, { event: "test" }),
+        createContext(WORKFLOW_ID)
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockInsertReturning).toHaveBeenCalled();
+    });
+  });
+
   describe("webhook trigger validation", () => {
     it("should return 400 when workflow is not webhook-triggered", async () => {
       mockOrgGateLimit.mockResolvedValue([

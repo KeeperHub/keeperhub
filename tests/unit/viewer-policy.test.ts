@@ -11,6 +11,17 @@ const API_DIR = join(process.cwd(), "app/api");
 const ROUTE_FILE = /^route(\.[a-z]+)?\.ts$/;
 const MUTATING_EXPORT =
   /export\s+(?:async\s+)?(?:function|const)\s+(POST|PUT|PATCH|DELETE)\b/g;
+// Re-exported handlers: `export { POST } from "..."` or `export { POST, GET }`.
+const REEXPORT_BLOCK = /export\s*\{([^}]*)\}/g;
+const METHOD_NAME = /\b(POST|PUT|PATCH|DELETE)\b/g;
+
+function mutatingMethods(source: string): string[] {
+  const methods = [...source.matchAll(MUTATING_EXPORT)].map((m) => m[1]);
+  for (const block of source.matchAll(REEXPORT_BLOCK)) {
+    methods.push(...[...block[1].matchAll(METHOD_NAME)].map((m) => m[1]));
+  }
+  return methods;
+}
 
 function listRouteFiles(dir: string): string[] {
   const files: string[] = [];
@@ -43,9 +54,7 @@ const mutatingRoutes = listRouteFiles(API_DIR)
   .map((file) => ({
     file: relative(process.cwd(), file).split(sep).join("/"),
     url: routeUrl(file),
-    methods: [...readFileSync(file, "utf8").matchAll(MUTATING_EXPORT)].map(
-      (m) => m[1]
-    ),
+    methods: mutatingMethods(readFileSync(file, "utf8")),
   }))
   .filter((route) => route.methods.length > 0);
 
@@ -90,7 +99,6 @@ const EXPECTED_VIEWER_EXEMPT = [
   "app/api/user/onboarding/complete/route.ts",
   "app/api/user/password/route.ts",
   "app/api/user/route.ts",
-  "app/api/user/rpc-preferences/[chainId]/route.ts",
   "app/api/user/sessions/[sessionId]/revoke/route.ts",
   "app/api/user/step-up/email/route.ts",
   "app/api/user/totp/backup-codes/route.ts",
@@ -106,8 +114,11 @@ const EXPECTED_VIEWER_EXEMPT = [
 ];
 
 describe("viewer policy: every mutating API route", () => {
-  it("discovers the mutating routes", () => {
+  it("discovers the mutating routes, re-exported handlers included", () => {
     expect(mutatingRoutes.length).toBeGreaterThan(100);
+    expect(mutatingRoutes.map((route) => route.file)).toContain(
+      "app/api/workflows/[workflowId]/execute/route.ts"
+    );
   });
 
   it("exempts exactly the expected routes and denies the rest", () => {
@@ -152,9 +163,8 @@ describe("viewer policy: request classification", () => {
     expect(requiresViewerCheck("POST", "/workflows/x")).toBe(false);
   });
 
-  it("blocks CLI device approval although it sits under /api/auth/", () => {
-    expect(requiresViewerCheck("POST", "/api/auth/device/approve")).toBe(true);
-    expect(requiresViewerCheck("POST", "/api/auth/device/approve/")).toBe(true);
+  it("leaves CLI device approval to the token step's role check", () => {
+    expect(requiresViewerCheck("POST", "/api/auth/device/approve")).toBe(false);
     expect(requiresViewerCheck("POST", "/api/auth/sign-out")).toBe(false);
   });
 

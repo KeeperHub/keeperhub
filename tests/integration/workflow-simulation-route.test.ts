@@ -124,6 +124,14 @@ const forbiddenAccess = {
   isDeleted: false,
 };
 
+const viewerAccess = {
+  isCreatorWithCurrentAccess: false,
+  isSameOrg: true,
+  hasFullAccess: true,
+  canEdit: false,
+  isDeleted: false,
+};
+
 const deletedAccess = {
   isCreatorWithCurrentAccess: true,
   isSameOrg: true,
@@ -218,6 +226,25 @@ describe("/api/workflows/[workflowId]/simulate", () => {
       ok: false,
       error: "FORBIDDEN",
     });
+    expect(mockRunWorkflowSimulation).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 and does not simulate for a same-org viewer", async () => {
+    mockWorkflowRows = [workflowRow];
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user-viewer",
+      organizationId: OWNER_ORG_ID,
+      authMethod: "session" as const,
+    });
+    mockGetWorkflowAccess.mockResolvedValue(viewerAccess);
+
+    const response = await POST(
+      makeRequest(WORKFLOW_ID),
+      makeParams(WORKFLOW_ID)
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: "viewer_read_only" });
     expect(mockRunWorkflowSimulation).not.toHaveBeenCalled();
   });
 

@@ -29,6 +29,7 @@ export type BroadcastMode = "manual" | "schedule";
 export type HoldPaymentCoreInput = {
   organizationId: string;
   userId?: string;
+  createdByUserId?: string;
   network: string;
   tokenConfig: string | Record<string, unknown>;
   amount: string;
@@ -215,7 +216,7 @@ export async function executeHoldPayment(
 
     const held = await createHeldPayment({
       organizationId: input.organizationId,
-      createdByUserId: input.userId,
+      createdByUserId: input.createdByUserId ?? input.userId,
       workflowId: input.workflowId,
       executionId: input.executionId,
       chainId,

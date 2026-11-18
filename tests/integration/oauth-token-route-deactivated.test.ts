@@ -11,7 +11,7 @@ const {
   mockDeleteRefreshToken,
   mockStoreRefreshToken,
   mockCreateAccessToken,
-  mockIsMember,
+  mockGetOrgRole,
 } = vi.hoisted(() => ({
   mockUsersFindFirst: vi.fn(),
   mockGetAuthCode: vi.fn(),
@@ -21,7 +21,7 @@ const {
   mockDeleteRefreshToken: vi.fn(),
   mockStoreRefreshToken: vi.fn(),
   mockCreateAccessToken: vi.fn(),
-  mockIsMember: vi.fn(),
+  mockGetOrgRole: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -34,10 +34,8 @@ vi.mock("@/lib/mcp/oauth-auth", () => ({
   createAccessToken: mockCreateAccessToken,
 }));
 
-vi.mock("@/lib/workflow/access", () => ({
-  isUserMemberOfOrganization: mockIsMember,
-  getActiveMemberRole: async (...args: unknown[]) =>
-    (await mockIsMember(...args)) ? "member" : null,
+vi.mock("@/lib/security/org-role", () => ({
+  getOrgRole: mockGetOrgRole,
 }));
 
 vi.mock("@/lib/mcp/oauth-store", () => ({
@@ -97,7 +95,7 @@ beforeEach(() => {
   mockCreateAccessToken.mockResolvedValue("access-token-stub");
   // Default to a current member so deactivation-focused cases are unaffected;
   // membership-focused cases override this explicitly.
-  mockIsMember.mockResolvedValue(true);
+  mockGetOrgRole.mockResolvedValue("member");
 });
 
 describe("POST /api/oauth/token -- authorization_code grant", () => {
@@ -174,7 +172,7 @@ describe("POST /api/oauth/token -- refresh_token grant", () => {
       scope: "read",
     });
     mockUsersFindFirst.mockResolvedValue({ deactivatedAt: null });
-    mockIsMember.mockResolvedValue(true);
+    mockGetOrgRole.mockResolvedValue("member");
 
     const response = await postForm({
       grant_type: "refresh_token",
@@ -200,7 +198,7 @@ describe("POST /api/oauth/token -- refresh_token grant", () => {
       scope: "read",
     });
     mockUsersFindFirst.mockResolvedValue({ deactivatedAt: null });
-    mockIsMember.mockResolvedValue(false);
+    mockGetOrgRole.mockResolvedValue(null);
 
     const response = await postForm({
       grant_type: "refresh_token",
@@ -213,8 +211,32 @@ describe("POST /api/oauth/token -- refresh_token grant", () => {
     expect(body.error).toBe("invalid_grant");
     expect(body.detail).toBe("User is no longer a member of this organization");
     expect(body.error_description).toBe(body.detail);
-    expect(mockIsMember).toHaveBeenCalledWith(TEST_USER_ID, TEST_ORG_ID);
+    expect(mockGetOrgRole).toHaveBeenCalledWith(TEST_USER_ID, TEST_ORG_ID);
     expect(mockDeleteRefreshToken).toHaveBeenCalledWith("refresh-1");
+    expect(mockStoreRefreshToken).not.toHaveBeenCalled();
+    expect(mockCreateAccessToken).not.toHaveBeenCalled();
+  });
+
+  it("rejects refresh_token exchange for a viewer", async () => {
+    stubActiveOAuthClient();
+    mockGetRefreshToken.mockResolvedValue({
+      userId: TEST_USER_ID,
+      organizationId: TEST_ORG_ID,
+      clientId: TEST_CLIENT_ID,
+      scope: "read",
+    });
+    mockUsersFindFirst.mockResolvedValue({ deactivatedAt: null });
+    mockGetOrgRole.mockResolvedValue("viewer");
+
+    const response = await postForm({
+      grant_type: "refresh_token",
+      refresh_token: "refresh-1",
+      client_id: TEST_CLIENT_ID,
+    });
+
+    expect(response.status).toBe(401);
+    const body = (await response.json()) as EnvelopeBody;
+    expect(body.error).toBe("invalid_grant");
     expect(mockStoreRefreshToken).not.toHaveBeenCalled();
     expect(mockCreateAccessToken).not.toHaveBeenCalled();
   });

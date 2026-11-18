@@ -11,6 +11,8 @@
  * action.
  */
 
+import { NextResponse } from "next/server";
+
 const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 const VIEWER_EXEMPT_EXACT_PATHS = new Set<string>([
@@ -33,7 +35,6 @@ const VIEWER_EXEMPT_PREFIXES: readonly string[] = [
   "/api/user/sessions/",
   "/api/user/step-up/",
   "/api/user/totp/",
-  "/api/user/rpc-preferences/",
   "/api/organizations/invitations/",
   "/api/oauth/",
   "/api/internal/",
@@ -52,9 +53,6 @@ const VIEWER_EXEMPT_PATTERNS: readonly RegExp[] = [
   /^\/api\/mcp\/workflows\/[^/]+\/call(?:\/|$)/,
 ];
 
-// Approving a CLI device login mints an API key for the active organization.
-const VIEWER_BLOCKED_AUTH_PATHS = new Set<string>(["/api/auth/device/approve"]);
-
 const ORG_PATH_PATTERN = /^\/api\/organizations\/([^/]+)(?:\/|$)/;
 const NON_ORG_ID_SEGMENTS = new Set(["invitations", "circuit-breaker"]);
 
@@ -62,6 +60,11 @@ export const VIEWER_READ_ONLY_ERROR = {
   error: "Viewers have read-only access to this organization",
   code: "viewer_read_only",
 } as const;
+
+/** The 403 every viewer refusal returns, from the proxy and the routes. */
+export function viewerReadOnlyResponse(): NextResponse {
+  return NextResponse.json(VIEWER_READ_ONLY_ERROR, { status: 403 });
+}
 
 export function isStateChangingMethod(method: string): boolean {
   return STATE_CHANGING_METHODS.has(method.toUpperCase());
@@ -76,9 +79,6 @@ function normalisePath(pathname: string): string {
 /** True when a viewer session may make this state-changing API call. */
 export function isViewerExemptMutation(pathname: string): boolean {
   const path = normalisePath(pathname);
-  if (VIEWER_BLOCKED_AUTH_PATHS.has(path)) {
-    return false;
-  }
   if (VIEWER_EXEMPT_EXACT_PATHS.has(path)) {
     return true;
   }

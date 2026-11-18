@@ -406,6 +406,55 @@ describe("workflow execute redispatch guard", () => {
     expect(mockExecuteWorkflowInBackground).toHaveBeenCalled();
   });
 
+  it("refuses a same-org viewer with 403 and starts no run", async () => {
+    mockAuthenticateInternalService.mockResolvedValue({ authenticated: false });
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user_2",
+      organizationId: "org_1",
+      authMethod: "session",
+      isAnonymous: false,
+      scope: "mcp:write",
+    });
+    mockGetWorkflowAccess.mockResolvedValue({
+      hasFullAccess: true,
+      canEdit: false,
+    });
+
+    const response = await callExecute({});
+    const body = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(body).toEqual({
+      error: "Viewers have read-only access to this organization",
+      code: "viewer_read_only",
+    });
+    expect(mockValidateWorkflowIntegrations).not.toHaveBeenCalled();
+    expect(mockInsertValues).not.toHaveBeenCalled();
+    expect(mockChargePaygIfBillable).not.toHaveBeenCalled();
+    expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
+  });
+
+  it("lets a same-org editor past the viewer check", async () => {
+    mockAuthenticateInternalService.mockResolvedValue({ authenticated: false });
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user_2",
+      organizationId: "org_1",
+      authMethod: "session",
+      isAnonymous: false,
+      scope: "mcp:write",
+    });
+    mockGetWorkflowAccess.mockResolvedValue({
+      hasFullAccess: true,
+      canEdit: true,
+    });
+
+    const response = await callExecute({});
+
+    expect(response.status).toBe(200);
+    expect(mockInsertValues).toHaveBeenCalled();
+    expect(mockExecuteWorkflowInBackground).toHaveBeenCalled();
+  });
+
   it("refuses a pending row that belongs to another organization", async () => {
     mockFindExecution.mockResolvedValue({
       id: "exec_victim",

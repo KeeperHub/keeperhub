@@ -1,7 +1,5 @@
-import { and, eq, isNull } from "drizzle-orm";
-import { db } from "@/lib/db";
-import { member, users } from "@/lib/db/schema";
 import { isViewerRole } from "@/lib/organization/role-label";
+import { getOrgRole } from "@/lib/security/org-role";
 
 type WorkflowAccessSubject = {
   userId: string | null;
@@ -32,38 +30,11 @@ export type WorkflowAccess = {
   isDeleted: boolean;
 };
 
-/**
- * The user's role in the organization, or null when they are not a member or
- * their account is deactivated.
- */
-export async function getActiveMemberRole(
-  userId: string,
-  organizationId: string
-): Promise<string | null> {
-  const [membership] = await db
-    .select({ id: member.id, role: member.role })
-    .from(member)
-    .innerJoin(users, eq(member.userId, users.id))
-    .where(
-      and(
-        eq(member.userId, userId),
-        eq(member.organizationId, organizationId),
-        isNull(users.deactivatedAt)
-      )
-    )
-    .limit(1);
-
-  if (!membership) {
-    return null;
-  }
-  return membership.role;
-}
-
 export async function isUserMemberOfOrganization(
   userId: string,
   organizationId: string
 ): Promise<boolean> {
-  return (await getActiveMemberRole(userId, organizationId)) !== null;
+  return (await getOrgRole(userId, organizationId)) !== null;
 }
 
 export async function getWorkflowAccess(
@@ -84,7 +55,7 @@ export async function getWorkflowAccess(
 
   const currentRole =
     hasSameOrgContext && userId !== null && workflow.organizationId !== null
-      ? await getActiveMemberRole(userId, workflow.organizationId)
+      ? await getOrgRole(userId, workflow.organizationId)
       : null;
 
   const isSameOrg = currentRole !== null;

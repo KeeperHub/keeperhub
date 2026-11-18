@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mockGetOrgRole, mockResolveSessionOrg } = vi.hoisted(() => ({
   mockGetOrgRole: vi.fn(),
@@ -7,13 +7,11 @@ const { mockGetOrgRole, mockResolveSessionOrg } = vi.hoisted(() => ({
 
 vi.mock("@/lib/security/org-role", () => ({ getOrgRole: mockGetOrgRole }));
 vi.mock("@/lib/middleware/auth-helpers", () => ({
+  ORG_HEADER: "x-organization-id",
   resolveSessionOrg: mockResolveSessionOrg,
 }));
 
-import {
-  isViewerForRequest,
-  viewerForbidden,
-} from "@/lib/security/viewer-gate";
+import { isViewerForRequest } from "@/lib/security/viewer-gate";
 
 const NOT_FOUND = {
   error: "Organization not found",
@@ -28,6 +26,7 @@ function request(path: string, headers: Record<string, string> = {}): Request {
   });
 }
 
+// Results are cached per caller and target, so each case uses its own user.
 describe("isViewerForRequest", () => {
   beforeEach(() => {
     mockGetOrgRole.mockReset();
@@ -40,11 +39,11 @@ describe("isViewerForRequest", () => {
       role: "viewer",
     });
     await expect(
-      isViewerForRequest(request("/api/projects"), "u1", "org-1")
+      isViewerForRequest(request("/api/projects"), "u-resolver", "org-1")
     ).resolves.toBe(true);
     expect(mockResolveSessionOrg).toHaveBeenCalledWith(
       expect.any(Request),
-      "u1",
+      "u-resolver",
       "org-1"
     );
     expect(mockGetOrgRole).not.toHaveBeenCalled();
@@ -56,7 +55,7 @@ describe("isViewerForRequest", () => {
       role: "member",
     });
     await expect(
-      isViewerForRequest(request("/api/projects"), "u1", "org-1")
+      isViewerForRequest(request("/api/projects"), "u-member", "org-1")
     ).resolves.toBe(false);
   });
 
@@ -65,40 +64,28 @@ describe("isViewerForRequest", () => {
     await expect(
       isViewerForRequest(
         request("/api/organizations/org-2/mfa-enforcement"),
-        "u1",
+        "u-path",
         "org-1"
       )
     ).resolves.toBe(true);
-    expect(mockGetOrgRole).toHaveBeenCalledWith("u1", "org-2");
+    expect(mockGetOrgRole).toHaveBeenCalledWith("u-path", "org-2");
     expect(mockResolveSessionOrg).not.toHaveBeenCalled();
   });
 
-  it("blocks a viewer in the active org who names an unknown org in the header", async () => {
-    mockResolveSessionOrg.mockResolvedValue(NOT_FOUND);
-    mockGetOrgRole.mockResolvedValue("viewer");
-    await expect(
-      isViewerForRequest(
-        request("/api/workflows/current", { "x-organization-id": "nope" }),
-        "u1",
-        "org-1"
-      )
-    ).resolves.toBe(true);
-    expect(mockGetOrgRole).toHaveBeenCalledWith("u1", "org-1");
-  });
-
-  it("blocks a viewer in the active org who names an org they administer", async () => {
+  it("lets an admin of the header org through who is not a viewer in the active org", async () => {
     mockResolveSessionOrg.mockResolvedValue({
       organizationId: "org-2",
       role: "admin",
     });
-    mockGetOrgRole.mockResolvedValue("viewer");
+    mockGetOrgRole.mockResolvedValue("member");
     await expect(
       isViewerForRequest(
-        request("/api/workflows/current", { "x-organization-id": "org-2" }),
-        "u1",
+        request("/api/projects/p1", { "x-organization-id": "org-2" }),
+        "u-header-admin",
         "org-1"
       )
-    ).resolves.toBe(true);
+    ).resolves.toBe(false);
+    expect(mockGetOrgRole).toHaveBeenCalledWith("u-header-admin", "org-1");
   });
 
   it("blocks a viewer in the org the header names", async () => {
@@ -109,7 +96,64 @@ describe("isViewerForRequest", () => {
     await expect(
       isViewerForRequest(
         request("/api/projects", { "x-organization-id": "org-2" }),
-        "u1",
+        "u-header-viewer",
+        "org-1"
+      )
+    ).resolves.toBe(true);
+  });
+
+  it("blocks a viewer in the active org even when the header names another org", async () => {
+    mockResolveSessionOrg.mockResolvedValue({
+      organizationId: "personal",
+      role: "owner",
+    });
+    mockGetOrgRole.mockResolvedValue("viewer");
+    await expect(
+      isViewerForRequest(
+        request("/api/user/rpc-preferences/1", {
+          "x-organization-id": "personal",
+        }),
+        "u-header-escape",
+        "org-1"
+      )
+    ).resolves.toBe(true);
+    expect(mockGetOrgRole).toHaveBeenCalledWith("u-header-escape", "org-1");
+  });
+
+  it("skips the second lookup when the header names the active org", async () => {
+    mockResolveSessionOrg.mockResolvedValue({
+      organizationId: "org-1",
+      role: "member",
+    });
+    await expect(
+      isViewerForRequest(
+        request("/api/projects", { "x-organization-id": "org-1" }),
+        "u-header-same",
+        "org-1"
+      )
+    ).resolves.toBe(false);
+    expect(mockGetOrgRole).not.toHaveBeenCalled();
+  });
+
+  it("leaves an org that does not resolve to the route", async () => {
+    mockResolveSessionOrg.mockResolvedValue(NOT_FOUND);
+    mockGetOrgRole.mockResolvedValue("member");
+    await expect(
+      isViewerForRequest(
+        request("/api/projects", { "x-organization-id": "nope" }),
+        "u-unknown",
+        "org-1"
+      )
+    ).resolves.toBe(false);
+  });
+
+  it("still checks the active org when the header org does not resolve", async () => {
+    mockResolveSessionOrg.mockResolvedValue(NOT_FOUND);
+    mockGetOrgRole.mockResolvedValue("viewer");
+    await expect(
+      isViewerForRequest(
+        request("/api/projects", { "x-organization-id": "nope" }),
+        "u-unknown-viewer",
         "org-1"
       )
     ).resolves.toBe(true);
@@ -121,27 +165,51 @@ describe("isViewerForRequest", () => {
       role: "owner",
     });
     await expect(
-      isViewerForRequest(request("/api/projects"), "u1", null)
+      isViewerForRequest(request("/api/projects"), "u-no-active", null)
     ).resolves.toBe(false);
-    expect(mockGetOrgRole).not.toHaveBeenCalled();
-  });
-});
-
-describe("viewerForbidden", () => {
-  beforeEach(() => {
-    mockGetOrgRole.mockReset();
   });
 
-  it("returns a 403 for a viewer", async () => {
-    mockGetOrgRole.mockResolvedValue("viewer");
-    const res = await viewerForbidden("u1", "org-1");
-    expect(res?.status).toBe(403);
-    expect(await res?.json()).toMatchObject({ code: "viewer_read_only" });
+  it("answers a repeat request from the cache", async () => {
+    mockResolveSessionOrg.mockResolvedValue({
+      organizationId: "org-1",
+      role: "viewer",
+    });
+    await isViewerForRequest(request("/api/projects"), "u-cached", "org-1");
+    await expect(
+      isViewerForRequest(request("/api/tags"), "u-cached", "org-1")
+    ).resolves.toBe(true);
+    expect(mockResolveSessionOrg).toHaveBeenCalledOnce();
   });
 
-  it("returns null for other roles and when there is no org", async () => {
-    mockGetOrgRole.mockResolvedValue("member");
-    await expect(viewerForbidden("u1", "org-1")).resolves.toBeNull();
-    await expect(viewerForbidden("u1", null)).resolves.toBeNull();
+  describe("cache expiry", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("looks the role up again after the TTL", async () => {
+      vi.useFakeTimers();
+      mockResolveSessionOrg.mockResolvedValue({
+        organizationId: "org-1",
+        role: "member",
+      });
+      await expect(
+        isViewerForRequest(request("/api/projects"), "u-ttl", "org-1")
+      ).resolves.toBe(false);
+
+      mockResolveSessionOrg.mockResolvedValue({
+        organizationId: "org-1",
+        role: "viewer",
+      });
+      vi.advanceTimersByTime(9000);
+      await expect(
+        isViewerForRequest(request("/api/projects"), "u-ttl", "org-1")
+      ).resolves.toBe(false);
+
+      vi.advanceTimersByTime(2000);
+      await expect(
+        isViewerForRequest(request("/api/projects"), "u-ttl", "org-1")
+      ).resolves.toBe(true);
+      expect(mockResolveSessionOrg).toHaveBeenCalledTimes(2);
+    });
   });
 });

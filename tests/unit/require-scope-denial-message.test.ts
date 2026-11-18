@@ -69,4 +69,12 @@ describe("requireScope denial message — remediation matches the credential", (
       requireScope("mcp:write", "mcp:read", { credentialType: "api-key" })
     ).toBeNull();
   });
+
+  it("gives a viewer's session the viewer error, not a scope remediation", async () => {
+    const response = requireScope("mcp:read", "mcp:write", {
+      credentialType: "session",
+    });
+    expect(response?.status).toBe(403);
+    expect(await response?.json()).toMatchObject({ code: "viewer_read_only" });
+  });
 });

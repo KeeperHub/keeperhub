@@ -38,8 +38,8 @@ vi.mock("@sentry/nextjs", () => ({
   captureMessage: vi.fn(),
 }));
 
-vi.mock("@/lib/workflow/access", () => ({
-  getActiveMemberRole: mockGetRole,
+vi.mock("@/lib/security/org-role", () => ({
+  getOrgRole: mockGetRole,
 }));
 
 const TEST_SECRET = "test-secret-32-bytes-long-enough-for-hs256";

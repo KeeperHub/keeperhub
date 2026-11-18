@@ -918,14 +918,13 @@ describe("Viewer read-only gate", () => {
     expect(mockGetSession).toHaveBeenCalledTimes(1);
   });
 
-  it("blocks a viewer approving a CLI device login", async () => {
+  it("leaves CLI device approval to the token step", async () => {
     mockIsViewerForRequest.mockResolvedValue(true);
     const res = await proxy(
       make("/api/auth/device/approve", { method: "POST", headers })
     );
-    expect(res.status).toBe(403);
-    // /api/auth/ skips the MFA gate, so the viewer gate looks the session up.
-    expect(mockGetSession).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(200);
+    expect(mockIsViewerForRequest).not.toHaveBeenCalled();
   });
 
   it("lets a viewer read", async () => {

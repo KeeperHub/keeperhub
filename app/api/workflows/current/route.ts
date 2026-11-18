@@ -9,7 +9,7 @@ import { extractActionTypeNodes } from "@/lib/features";
 import { enforceWorkflowFeatures } from "@/lib/features/route-guard";
 import { getOrgContext } from "@/lib/middleware/org-context";
 import { isViewerRole } from "@/lib/organization/role-label";
-import { VIEWER_READ_ONLY_ERROR } from "@/lib/security/viewer-policy";
+import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 import { generateId } from "@/lib/utils/id";
 import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
 import {
@@ -115,7 +115,7 @@ export async function POST(request: Request) {
       );
     }
     if (isViewerRole(orgContext.member?.role)) {
-      return NextResponse.json(VIEWER_READ_ONLY_ERROR, { status: 403 });
+      return viewerReadOnlyResponse();
     }
 
     // Org principal: drafts are org-owned like any workflow (matches runtime).

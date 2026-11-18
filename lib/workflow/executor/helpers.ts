@@ -3,6 +3,8 @@ import "server-only";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
+import { isViewerRole } from "@/lib/organization/role-label";
+import { getOrgRole } from "@/lib/security/org-role";
 
 /**
  * Get organizationId from executionId
@@ -77,6 +79,25 @@ export async function getUserIdFromExecution(
 }
 
 /**
+ * The user whose RPC preferences a run in this org may use: the run's user,
+ * only while they are an active non-viewer member of the org. Anyone else
+ * could steer the org's reads and writes through their own preferences.
+ */
+export async function rpcPreferenceUserId(
+  userId: string | undefined,
+  organizationId: string | undefined
+): Promise<string | undefined> {
+  if (!(userId && organizationId)) {
+    return;
+  }
+  const role = await getOrgRole(userId, organizationId);
+  if (role === null || isViewerRole(role)) {
+    return;
+  }
+  return userId;
+}
+
+/**
  * Lenient variant of getUserIdFromExecution for per-user RPC preference
  * lookups in read steps. RPC preferences are a per-user convenience, not an
  * authority signal, so a missing context, an unknown execution, or a
@@ -91,12 +112,25 @@ export async function getRpcPreferenceUserId(
     return;
   }
   try {
-    const execution = await db
-      .select({ userId: workflowExecutions.userId })
+    const [execution] = await db
+      .select({
+        userId: workflowExecutions.userId,
+        executionOrganizationId: workflowExecutions.organizationId,
+        workflowOrganizationId: workflows.organizationId,
+      })
       .from(workflowExecutions)
+      .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
       .where(eq(workflowExecutions.id, executionId))
       .limit(1);
-    return execution[0]?.userId;
+    if (!execution) {
+      return;
+    }
+    return await rpcPreferenceUserId(
+      execution.userId,
+      execution.executionOrganizationId ??
+        execution.workflowOrganizationId ??
+        undefined
+    );
   } catch {
     return;
   }

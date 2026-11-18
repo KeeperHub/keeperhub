@@ -19,13 +19,14 @@ import {
   storeRefreshToken,
 } from "@/lib/mcp/oauth-store";
 import { checkIpRateLimit, getClientIp } from "@/lib/mcp/rate-limit";
+import { isViewerRole } from "@/lib/organization/role-label";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
 import {
   oauthAuthorizationCodeSchema,
   oauthRefreshTokenSchema,
 } from "@/lib/schemas/oauth";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
-import { isUserMemberOfOrganization } from "@/lib/workflow/access";
+import { getOrgRole } from "@/lib/security/org-role";
 
 export const dynamic = "force-dynamic";
 
@@ -359,10 +360,21 @@ async function handleRefreshToken(
   // single access token, so without this a user removed from (or who left)
   // the org could keep cycling the refresh token into fresh org-scoped
   // access tokens indefinitely.
-  if (!(await isUserMemberOfOrganization(entry.userId, entry.organizationId))) {
+  const role = await getOrgRole(entry.userId, entry.organizationId);
+  if (role === null) {
     return routeError(
       request,
       "User is no longer a member of this organization",
+      HttpStatus.UNAUTHORIZED,
+      "invalid_grant"
+    );
+  }
+  // Viewers have UI-only access, so their grant ends here even when the
+  // revoke on downgrade did not land.
+  if (isViewerRole(role)) {
+    return routeError(
+      request,
+      "User has view-only access to this organization",
       HttpStatus.UNAUTHORIZED,
       "invalid_grant"
     );

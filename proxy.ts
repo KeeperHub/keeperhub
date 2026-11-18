@@ -14,7 +14,7 @@ import { isViewerForRequest } from "@/lib/security/viewer-gate";
 import {
   isStateChangingMethod,
   requiresViewerCheck,
-  VIEWER_READ_ONLY_ERROR,
+  viewerReadOnlyResponse,
 } from "@/lib/security/viewer-policy";
 import { negotiate } from "@/lib/site/accept";
 import { NEGOTIABLE_PATHS, negotiablePage } from "@/lib/site/content";
@@ -492,7 +492,7 @@ async function viewerBlock(
   if (!(await isViewerForRequest(request, session.user.id, activeOrgId))) {
     return null;
   }
-  return NextResponse.json(VIEWER_READ_ONLY_ERROR, { status: 403 });
+  return viewerReadOnlyResponse();
 }
 
 // ---------------------------------------------------------------------------

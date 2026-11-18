@@ -26,6 +26,7 @@ export function KeysCard({
   keyType,
   showCreator,
   canManage,
+  canRevoke = canManage,
   readOnlyReason,
   activity,
 }: {
@@ -35,6 +36,8 @@ export function KeysCard({
   keyType: "webhook" | "organisation";
   showCreator: boolean;
   canManage: boolean;
+  // Revoking can be allowed where creating is not.
+  canRevoke?: boolean;
   readOnlyReason?: string;
   activity?: { resourceType: string; title: string } | null;
 }): React.ReactElement {
@@ -121,7 +124,7 @@ export function KeysCard({
           <>
             <ApiKeysTable
               apiKeys={keys.apiKeys}
-              canDelete={canManage}
+              canDelete={canRevoke}
               deleteEndpoint={deleteEndpoint}
               onDelete={keys.handleDelete}
               showCreator={showCreator}

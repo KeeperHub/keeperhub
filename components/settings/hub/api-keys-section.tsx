@@ -6,7 +6,8 @@ import { useSettingsContext } from "./settings-context";
 
 const ORG_READ_ONLY =
   "Only organization admins or owners can create or revoke these keys.";
-const VIEWER_READ_ONLY = "Viewers cannot create or revoke keys.";
+const VIEWER_READ_ONLY =
+  "Viewers can revoke their webhook keys but not create new ones.";
 
 export function ApiKeysSection(): React.ReactElement {
   const { canEdit, isAdmin } = useSettingsContext();
@@ -39,6 +40,7 @@ export function ApiKeysSection(): React.ReactElement {
             : null
         }
         canManage={canEdit}
+        canRevoke
         description="Authenticate calls into this organization's webhook triggers, so a third-party service can run a webhook-triggered workflow. Scoped to webhooks only, and valid for this organization."
         keyType="webhook"
         listEndpoint="/api/api-keys"

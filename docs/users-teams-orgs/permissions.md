@@ -27,7 +27,7 @@ Viewers can see everything in the organization and change nothing. The role suit
 
 Viewers work in the browser. API keys, MCP agent connections, and CLI login require the member role or higher. Viewers keep control of their own account (profile, password, two-factor authentication, and sessions) and can leave the organization at any time.
 
-When a member is changed to viewer, the API keys, webhook keys, and agent connections they use with the organization stop working right away. Scheduled and event-triggered workflows keep running.
+When a member is changed to viewer, the API keys, webhook keys, and agent connections they use with the organization stop working right away. Scheduled and event-triggered workflows keep running, using the platform's default RPC endpoints instead of the viewer's custom ones.
 
 ### Member
 

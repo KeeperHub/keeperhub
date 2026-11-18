@@ -46,7 +46,7 @@ import {
   topLevelInputDeprecationHeaders,
 } from "@/lib/workflow/resolve-execution-input";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
-import { VIEWER_READ_ONLY_ERROR } from "@/lib/security/viewer-policy";
+import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 
 /**
  * Set the bare-shape deprecation headers on a response.
@@ -259,7 +259,7 @@ export async function POST(
         );
       }
       if (!access.canEdit) {
-        return NextResponse.json(VIEWER_READ_ONLY_ERROR, { status: HttpStatus.FORBIDDEN });
+        return viewerReadOnlyResponse();
       }
 
       userId = authContext.userId ?? workflow.userId;

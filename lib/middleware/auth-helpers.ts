@@ -94,7 +94,7 @@ function checkSessionOrigin(request: Request): AuthFailure | null {
 
 export type AuthMethod = "oauth" | "api-key" | "session";
 
-const ORG_HEADER = "x-organization-id";
+export const ORG_HEADER = "x-organization-id";
 
 /**
  * KEEP-563: resolve the session-auth caller's effective organization, taking

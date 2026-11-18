@@ -8,16 +8,16 @@ import {
   useNodes,
   useUpdateNodeInternals,
 } from "@xyflow/react";
-import { useSetAtom } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import { Plus } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useCallback, useMemo } from "react";
-import { useActiveMember } from "@/lib/hooks/use-organization";
 import {
   addNodeAtom,
   autosaveAtom,
   edgesAtom,
   hasUnsavedChangesAtom,
+  isWorkflowOwnerAtom,
   nodesAtom,
   propertiesPanelActiveTabAtom,
   type WorkflowEdge,
@@ -58,7 +58,7 @@ export function AddStepButton({
   const setNodes = useSetAtom(nodesAtom);
   const setActiveTab = useSetAtom(propertiesPanelActiveTabAtom);
   const setHasUnsavedChanges = useSetAtom(hasUnsavedChangesAtom);
-  const { isViewer } = useActiveMember();
+  const canEditWorkflow = useAtomValue(isWorkflowOwnerAtom);
   const triggerAutosave = useSetAtom(autosaveAtom);
   const showStepSettings = useShowStepSettings();
 
@@ -190,7 +190,7 @@ export function AddStepButton({
     ]
   );
 
-  if (isViewer) {
+  if (!canEditWorkflow) {
     return null;
   }
 
