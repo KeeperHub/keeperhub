@@ -44,6 +44,10 @@ import {
   PagerDutyTriggerNodeField,
 } from "@/components/workflow/config/pagerduty-resource-field";
 import { PlainSwitchField } from "@/components/workflow/config/plain-switch-field";
+import {
+  ProtocolBoolField,
+  protocolBoolFieldValue,
+} from "@/components/workflow/config/protocol-fields/protocol-bool-field";
 import { SponsorGasField } from "@/components/workflow/config/sponsor-gas-field";
 import { TokenSelectField } from "@/components/workflow/config/token-select-field";
 import { integrationsAtom } from "@/lib/integrations-store";
@@ -563,8 +567,6 @@ registerFieldRenderer(
 registerFieldRenderer(
   "protocol-bool",
   ({ field, config, onUpdateConfig, disabled }) => {
-    const { ProtocolBoolField, protocolBoolFieldValue } =
-      require("@/components/workflow/config/protocol-fields/protocol-bool-field") as typeof import("@/components/workflow/config/protocol-fields/protocol-bool-field");
     const { value, unrecognized } = protocolBoolFieldValue(
       config[field.key],
       field.defaultValue

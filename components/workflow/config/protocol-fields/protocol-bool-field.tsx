@@ -8,7 +8,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TemplateBadgeInput } from "@/components/ui/template-badge-input";
-import { hasTemplateToken, valueContainsTemplate } from "@/lib/workflow/template-ref";
+import {
+  hasTemplateToken,
+  valueContainsTemplate,
+} from "@/lib/workflow/template-ref";
 
 type ProtocolBoolFieldProps = {
   fieldKey: string;
@@ -24,13 +27,27 @@ export type ProtocolBoolFieldValue = {
   unrecognized?: string;
 };
 
+// Invisible format characters (bidi overrides, zero-width) could reorder or
+// hide what the message shows, so they are written out as escapes.
+const FORMAT_CHARACTER = /\p{Cf}/gu;
+const MAX_KEPT_LENGTH = 1000;
 const MAX_SHOWN_LENGTH = 60;
 
 function describeSaved(saved: unknown): string {
-  const text = JSON.stringify(saved) ?? String(saved);
-  return text.length > MAX_SHOWN_LENGTH
-    ? `${text.slice(0, MAX_SHOWN_LENGTH)}...`
-    : text;
+  const text = (JSON.stringify(saved) ?? String(saved)).replace(
+    FORMAT_CHARACTER,
+    (char) => `\\u${(char.codePointAt(0) ?? 0).toString(16).padStart(4, "0")}`
+  );
+  return text.slice(0, MAX_KEPT_LENGTH);
+}
+
+/** The saved value as the message shows it; a cut string keeps its quotes. */
+export function shortenSaved(text: string): string {
+  if (text.length <= MAX_SHOWN_LENGTH) {
+    return text;
+  }
+  const cut = `${text.slice(0, MAX_SHOWN_LENGTH)}...`;
+  return text.startsWith('"') ? `${cut}"` : cut;
 }
 
 // A saved JSON true/false (agents may send one) shows as the matching option.
@@ -92,9 +109,12 @@ export function ProtocolBoolField({
         </SelectContent>
       </Select>
       {unrecognized && (
-        <p className="mt-1 break-all text-xs text-destructive" id={errorId}>
-          Saved value {unrecognized} is not true or false. Pick one to replace
-          it.
+        <p className="mt-1 text-xs text-destructive" id={errorId}>
+          Saved value{" "}
+          <span className="wrap-anywhere font-mono" title={unrecognized}>
+            {shortenSaved(unrecognized)}
+          </span>{" "}
+          is not true or false.{disabled ? "" : " Pick one to replace it."}
         </p>
       )}
     </div>

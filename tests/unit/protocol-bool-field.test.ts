@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { protocolBoolFieldValue } from "@/components/workflow/config/protocol-fields/protocol-bool-field";
+import {
+  protocolBoolFieldValue,
+  shortenSaved,
+} from "@/components/workflow/config/protocol-fields/protocol-bool-field";
 
 // The action schema tells agents a Solidity bool is a JSON boolean, so the
 // editor has to show one saved that way, not the default or an empty select.
@@ -19,8 +22,8 @@ describe("protocolBoolFieldValue", () => {
     });
   });
 
-  // At runtime these encode as true (a non-empty string), so they must not
-  // read as unset or as the default.
+  // Save validation refuses these, so they must not read as unset or as the
+  // default.
   it.each([
     [0, "0"],
     [1, "1"],
@@ -35,8 +38,15 @@ describe("protocolBoolFieldValue", () => {
     });
   });
 
-  it("shortens a long unrecognized value", () => {
+  it("shortens a long value for the message and keeps its quotes", () => {
     const { unrecognized } = protocolBoolFieldValue("x".repeat(200), "true");
-    expect(unrecognized).toBe(`"${"x".repeat(59)}...`);
+    expect(unrecognized).toBe(`"${"x".repeat(200)}"`);
+    expect(shortenSaved(unrecognized ?? "")).toBe(`"${"x".repeat(59)}..."`);
+    expect(shortenSaved("[".repeat(100))).toBe(`${"[".repeat(60)}...`);
+  });
+
+  it("writes invisible format characters out as escapes", () => {
+    const { unrecognized } = protocolBoolFieldValue("a\u202Eb\u200Bc", "true");
+    expect(unrecognized).toBe('"a\\u202eb\\u200bc"');
   });
 });
