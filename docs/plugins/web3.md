@@ -304,18 +304,19 @@ Schedule (every block)
   -> Write Contract: execute the workable job
 ```
 
-### Uniswap V2 Pair Reserves (Uniform Mode)
+### Uniswap V2 Pair Reserves (Address List)
 
-Read reserves from multiple Uniswap V2 pairs. `getReserves()` takes no parameters, so each arg set is empty -- just click "Add Arg Set" for each pair contract you want to query. Returns `(reserve0, reserve1, blockTimestampLast)` per call.
+Read reserves from multiple Uniswap V2 pairs. Every pair has the same `getReserves()` function, so set Calls from to a list of contract addresses: one call per pair, in the list's order. `getReserves()` takes no parameters, so Arguments stays empty. Returns `(reserve0, reserve1, blockTimestampLast)` per call.
 
 ```
 Schedule (every 5 min)
   -> Batch Read Contract:
        inputMode: uniform
        network: ethereum
-       contractAddress: 0xPairAddress
+       callsFrom: address-list
+       contractAddresses: ["0xPair1", "0xPair2", "0xPair3"]
+       abiFetchAddress: 0xPair1   (only used to fetch the ABI)
        function: getReserves()
-       argsList: (no parameters -- function has no inputs, single arg set added)
   -> Discord: "Pair reserves: {{@batch:Batch Read Contract.results}}"
 ```
 
@@ -338,22 +339,20 @@ Schedule (every hour)
   -> Discord: "Low allowance detected"
 ```
 
-### Loop + Batch Read (Dynamic Address List)
+### Balances for a Dynamic Wallet List (Argument Sets)
 
-Use a database query to get a dynamic list of addresses, then batch-read their balances. Each arg set's "account" field uses a template variable.
+Use a database query to get the current list of wallets, then batch-read their balances. The query returns the wallets as one JSON array, which becomes the Argument sets list. `balanceOf` takes one argument, so each wallet address is used as it is.
 
 ```
 Schedule (daily)
-  -> Database Query: SELECT address FROM monitored_wallets
+  -> Database Query: SELECT json_agg(address) AS wallets FROM monitored_wallets
   -> Batch Read Contract:
        inputMode: uniform
        network: ethereum
+       callsFrom: args-list
        contractAddress: 0xUSDC
        function: balanceOf(address)
-       argsList:
-         Call 1: account = {{@db:Database Query.rows[0].address}}
-         Call 2: account = {{@db:Database Query.rows[1].address}}
-         ...
+       argsFromList: {{@db:Database Query.rows[0].wallets}}
   -> Aggregate:
        operation: sum
        inputMode: array
@@ -361,6 +360,8 @@ Schedule (daily)
        fieldPath: result
   -> Discord: "Total USDC across {{@batch:Batch Read Contract.totalCalls}} wallets: {{@total:Aggregate.result}}"
 ```
+
+A wallet added to the table is read on the next run, with no change to the workflow.
 
 ### Partial Failure Detection
 
