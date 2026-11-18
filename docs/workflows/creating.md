@@ -158,7 +158,7 @@ same rules.
   pattern, which the error states, so there is nothing to work out; long `{n}` repeats add up
   fastest), text of up to 4,096 characters (longer text fails the
   run), and at most 16 regex tests in one Condition. Matching never backtracks and has a fixed
-  budget per Condition and per workflow run, loops included (5,000,000 and 50,000,000 steps x
+  budget per Condition and per workflow run, loops included (5,000,000 and 10,000,000 steps x
   characters tested), so it cannot hold up a run for more than a few seconds. A value that is
   missing, or comes from a node that did not run, fails the test; add an **exists** rule before it.
 - **Condition length:** a condition of any kind may be up to 10,000 characters.

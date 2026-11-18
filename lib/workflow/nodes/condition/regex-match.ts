@@ -17,10 +17,13 @@ export const MAX_REGEX_CALLS = 16;
 export const MAX_CONDITION_REGEX_WORK = 5_000_000;
 // A Filter Array step runs on its own: about 2.5 s at most.
 export const MAX_FILTER_REGEX_WORK = 25_000_000;
-// All Condition evaluations of one workflow run together, For Each included.
-export const MAX_RUN_REGEX_WORK = 50_000_000;
-// A compile is charged by pattern length, so 16 long patterns cost a budget.
+// All Condition evaluations of one pass of a workflow run, For Each
+// included: about 1 s. The body replays on resume, so keep each pass small.
+export const MAX_RUN_REGEX_WORK = 10_000_000;
+// A compile is charged by pattern length and compiled steps, on every call,
+// cached or not, so whether a condition fits never depends on the cache.
 const COMPILE_WORK_PER_CHAR = 2000;
+const COMPILE_WORK_PER_STEP = 400;
 
 export const REGEX_ARITY_ERROR =
   'matchesRegex takes two values: the text and a quoted pattern, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
@@ -187,6 +190,7 @@ export function compileRegex(
     );
   }
   const key = `${ignoreCase ? "i" : "-"}${pattern}`;
+  budget?.chargeCompile(pattern.length * COMPILE_WORK_PER_CHAR);
   const cached = compiled.get(key);
   if (cached) {
     // Least recently used goes first: a hit moves the entry to the end.
@@ -195,9 +199,9 @@ export function compileRegex(
     if (typeof cached === "string") {
       throw new Error(cached);
     }
+    budget?.chargeCompile(cached.programSize() * COMPILE_WORK_PER_STEP);
     return cached;
   }
-  budget?.chargeCompile(pattern.length);
   let entry: RE2JS | string;
   try {
     entry = compileUncached(pattern, ignoreCase);
@@ -215,6 +219,7 @@ export function compileRegex(
   if (typeof entry === "string") {
     throw new Error(entry);
   }
+  budget?.chargeCompile(entry.programSize() * COMPILE_WORK_PER_STEP);
   return entry;
 }
 
@@ -277,8 +282,8 @@ export class RegexBudget {
     this.parent?.spend(units, steps);
   }
 
-  chargeCompile(patternLength: number): void {
-    this.spend(patternLength * COMPILE_WORK_PER_CHAR);
+  chargeCompile(units: number): void {
+    this.spend(units);
   }
 
   charge(regex: CompiledRegex, textLength: number): void {

@@ -58,17 +58,21 @@ describe("regex hardening", () => {
       expect(performance.now() - again).toBeLessThan(Math.max(5, firstMs / 4));
     });
 
-    it("charges a compile only on a cache miss", () => {
-      const budget = new RegexBudget(1_000_000);
+    it("charges a compile the same whether or not it is cached", () => {
       const pattern = `^${"q".repeat(400)}`;
-      compileRegex(pattern, false, budget);
-      // A second compile of the same pattern is free; a miss costs 800,000.
-      expect(() => {
-        for (let i = 0; i < 5; i++) {
-          compileRegex(pattern, false, budget);
-        }
-      }).not.toThrow();
-      expect(() => compileRegex(`^${"r".repeat(400)}`, false, budget)).toThrow(
+      // Warm the cache, then charge a cached compile: 400 x 2,000 for the
+      // length plus the compiled steps x 400.
+      compileRegex(pattern, false);
+      const budget = new RegexBudget(1_000_000);
+      expect(() => compileRegex(pattern, false, budget)).not.toThrow();
+      expect(() => compileRegex(pattern, false, budget)).toThrow(
+        RegexBudgetError
+      );
+    });
+
+    it("charges by compiled steps, so a short expanding pattern is not cheap", () => {
+      const budget = new RegexBudget(300_000);
+      expect(() => compileRegex("x\\pL{990}", false, budget)).toThrow(
         RegexBudgetError
       );
     });
@@ -79,7 +83,8 @@ describe("regex hardening", () => {
       const runBudget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
       const text = "a".repeat(4096);
       const call = '!matchesRegex(__v0, "(?i)(?:\\\\w?){450}x")';
-      // Each evaluation fits its own 5 million; the run stops after about 13.
+      // Each evaluation fits its own 5 million; the run's 10 million stops it
+      // after two or three.
       let evaluations = 0;
       expect(() => {
         for (let i = 0; i < 100; i++) {
@@ -87,8 +92,8 @@ describe("regex hardening", () => {
           evaluations++;
         }
       }).toThrow("reached the run's matching limit");
-      expect(evaluations).toBeGreaterThan(5);
-      expect(evaluations).toBeLessThan(20);
+      expect(evaluations).toBeGreaterThan(0);
+      expect(evaluations).toBeLessThan(4);
     });
   });
 
