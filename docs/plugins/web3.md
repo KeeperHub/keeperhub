@@ -156,7 +156,7 @@ Encode / Decode returns a one-entry array as a plain string, not a list. If the 
 
 To use another Batch Read Contract's `results` as a list, map them to their `result` values first (for example with a Code node): each entry of `results` is an object, not an address or a value.
 
-A list from a source you do not control (a webhook body, an HTTP response) decides which contracts are called. Calls are read-only and cannot spend, but any contract in the list can make the whole batch fail, or return the values it chooses. Filter such a list, or check it against an allow-list, before it reaches Batch Read Contract.
+A list from a source you do not control (a webhook body, an HTTP response) decides which contracts are called. Calls are read-only and cannot spend, but any contract in the list can make its own call fail, or the whole batch (for example by using up all the gas), or return the values it chooses. Filter such a list, or check it against an allow-list, before it reaches Batch Read Contract.
 
 **Mixed Mode:**
 
@@ -374,7 +374,7 @@ Schedule (daily)
   -> Discord: "Total USDC across {{@batch:Batch Read Contract.totalCalls}} wallets: {{@total:Aggregate.result}}"
 ```
 
-A wallet added to the table is read on the next run, with no change to the workflow.
+A wallet added to the table is read on the next run, with no change to the workflow. An empty table gives an empty list, which fails the step; turn Fail workflow on error off to pass it on as a soft error instead.
 
 ### Partial Failure Detection
 
