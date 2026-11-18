@@ -24,8 +24,8 @@ import {
   type ActionConfigFieldBase,
   findActionById,
   getAllActions,
-  isDefaultOnToggleField,
   isDisplayOnlyField,
+  isFieldShown,
   isToggleField,
 } from "@/plugins/registry";
 
@@ -850,14 +850,9 @@ export function validateWorkflowActionConfigs(
       if (isDisplayOnlyField(field.type)) {
         continue;
       }
-      const visible = evaluateShowWhen(field.showWhen, config);
       if (isToggleField(field.type)) {
-        // Default-on toggles are read by the step even when the form hides
-        // them (e.g. Sponsor gas behind a network that is itself a template).
-        if (
-          (visible || isDefaultOnToggleField(field.type)) &&
-          !isToggleValue(config[field.key])
-        ) {
+        // Default-on toggles are checked even when hidden; the step reads them.
+        if (isFieldShown(field, config) && !isToggleValue(config[field.key])) {
           issues.push(
             toggleIssue(
               `nodes[${nodeIndex}].data.config.${field.key}`,
@@ -870,7 +865,7 @@ export function validateWorkflowActionConfigs(
         }
         continue;
       }
-      if (!visible) {
+      if (!evaluateShowWhen(field.showWhen, config)) {
         continue;
       }
 
