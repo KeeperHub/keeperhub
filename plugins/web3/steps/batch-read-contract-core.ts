@@ -33,8 +33,10 @@ const EN_US = "en-US";
 const SCALAR_TYPE_RE = /^(address|bool|string|bytes\d*|u?int\d*)$/;
 const INTEGER_TYPE_RE = /^u?int\d*$/;
 const INTEGER_PREFIX_RE = /^u?int/;
-// A uint256 has at most 78 digits; longer text is refused before encoding.
-const MAX_INTEGER_TEXT = 80;
+// The longest integer text that can fit 256 bits: "-0b" and 256 binary digits.
+const MAX_INTEGER_TEXT = 260;
+const DIGIT_RE = /\d/;
+const E_NOTATION_RE = /^\s*[+-]?\d+(\.\d+)?e[+-]?\d+\s*$/i;
 const ARRAY_TYPE_RE = /^(.*)\[(\d*)\]$/;
 const ARRAY_SUFFIXES_RE = /(\[\d*\])+$/;
 // Levels an example expands; with at most 3 items shown per array it stays short.
@@ -44,7 +46,6 @@ const HEX_RE = /^0x[0-9a-fA-F]*$/;
 const ETHERS_DETAIL_RE = /\s*\([^()]*\bcode=[A-Z_]+[^()]*\)/g;
 const ETHERS_ARGUMENT_RE = /argument="([^"]+)"/;
 const NUMBER_RANGE_RE = /overflow|underflow|out-of-bounds/i;
-const NUMBER_FAULT_RE = /BigNumberish|Cannot convert|NUMERIC_FAULT/i;
 // validateArgsForAbi's wording for a blank or absent value.
 const BLANK_ERROR_RE = /cannot be empty|is missing$/;
 const LIST_SIZE_STEP =
@@ -112,8 +113,15 @@ function plural(n: number, word: string): string {
   return `${count(n)} ${word}${n === 1 ? "" : "s"}`;
 }
 
+// A list passed as a value may hold a bigint, which JSON.stringify refuses.
+function jsonText(value: unknown): string | undefined {
+  return JSON.stringify(value, (_key, item: unknown) =>
+    typeof item === "bigint" ? item.toString() : item
+  );
+}
+
 function showValue(value: unknown): string {
-  return echo(JSON.stringify(value) ?? String(value));
+  return echo(jsonText(value) ?? String(value));
 }
 
 // Rounded up, so a value just over a limit never reads as the limit itself.
@@ -122,7 +130,7 @@ function megabytes(bytes: number): string {
 }
 
 function textBytes(value: unknown): number {
-  const text = typeof value === "string" ? value : JSON.stringify(value);
+  const text = typeof value === "string" ? value : jsonText(value);
   return Buffer.byteLength(text ?? "", "utf8");
 }
 
@@ -350,24 +358,42 @@ function isPrimitive(value: unknown): boolean {
   );
 }
 
-function tooManyDigits(path: string, value: number): string {
+function tooManyDigits(path: string, value: number, type: string): string {
+  if (value < 0 && type.startsWith("uint")) {
+    return outOfRange(`${path} `, type);
+  }
   const example = value < 0 ? "-12345678901234567890" : "12345678901234567890";
   return `${path} has too many digits to send as a number and may have lost some. Write it in quotes, like "${example}", or have the earlier node send it as text`;
 }
 
-// Text is read with the encoder's own parse, so a value it would refuse is
-// named by path here. A JSON number past 2^53 has already lost digits.
-function integerLeafError(value: unknown, path: string): string | undefined {
+// Read with the encoder's own parse, so text it would refuse is named by path.
+// Text with no digit ("  ", "-") is refused too: the encoder reads it as 0.
+function integerTextError(value: string, path: string): string | undefined {
+  if (value.length > MAX_INTEGER_TEXT) {
+    return `${path} is too long for a whole number. Use at most 78 digits`;
+  }
+  const refused = `${path} must be a whole number in digits, got ${showValue(value)}`;
+  if (!DIGIT_RE.test(value)) {
+    return refused;
+  }
+  try {
+    ethers.getBigInt(value);
+    return;
+  } catch {
+    return E_NOTATION_RE.test(value)
+      ? `${refused}. Write out all the digits`
+      : refused;
+  }
+}
+
+// A JSON number past 2^53 has already lost digits.
+function integerLeafError(
+  value: unknown,
+  path: string,
+  type: string
+): string | undefined {
   if (typeof value === "string") {
-    if (value.trim().length > MAX_INTEGER_TEXT) {
-      return `${path} is too long for a whole number. Use at most 78 digits`;
-    }
-    try {
-      ethers.getBigInt(value);
-      return;
-    } catch {
-      return `${path} must be a whole number in digits, got ${showValue(value)}`;
-    }
+    return integerTextError(value, path);
   }
   if (typeof value === "bigint") {
     return;
@@ -376,12 +402,14 @@ function integerLeafError(value: unknown, path: string): string | undefined {
     return `${path} must be a whole number, got ${typeof value === "number" ? "NaN" : showValue(value)}`;
   }
   if (!Number.isFinite(value)) {
-    return tooManyDigits(path, value);
+    return tooManyDigits(path, value, type);
   }
   if (!Number.isInteger(value)) {
     return `${path} must be a whole number, got ${showValue(value)}`;
   }
-  return Number.isSafeInteger(value) ? undefined : tooManyDigits(path, value);
+  return Number.isSafeInteger(value)
+    ? undefined
+    : tooManyDigits(path, value, type);
 }
 
 /**
@@ -403,7 +431,7 @@ function checkListLeaf(
     return addressError(value, path);
   }
   if (INTEGER_TYPE_RE.test(type)) {
-    const error = integerLeafError(value, path);
+    const error = integerLeafError(value, path, type);
     if (error) {
       return error;
     }
@@ -646,11 +674,6 @@ export function encodeReason(error: unknown, fn: ListFunction): string {
   const subject = name ? `${name} ` : "a value ";
   if (NUMBER_RANGE_RE.test(message)) {
     return outOfRange(subject, found?.type);
-  }
-  if (NUMBER_FAULT_RE.test(message)) {
-    const value = (error as { value?: unknown } | null)?.value;
-    const got = value === undefined ? "" : `, got ${showValue(value)}`;
-    return `${subject}must be a whole number in digits${got}.`;
   }
   const reason = echo(message.replace(ETHERS_DETAIL_RE, ""), MAX_REASON_LENGTH);
   const prefix = name ? `${name}: ` : "";

@@ -854,8 +854,12 @@ describe("batch-read-contract - list argument types", () => {
     );
   });
 
-  it("refuses integer text longer than 80 characters before encoding", async () => {
-    expect(await failure(argsList(["9".repeat(81)]))).toBe(
+  it("refuses integer text longer than 260 characters before encoding", async () => {
+    expect(await failure(argsList(["9".repeat(261)]))).toBe(
+      "Argument Sets entry 1: x is too long for a whole number. Use at most 78 digits."
+    );
+    // Padding counts: the encoder would parse all of it.
+    expect(await failure(argsList([`${" ".repeat(300)}5`]))).toBe(
       "Argument Sets entry 1: x is too long for a whole number. Use at most 78 digits."
     );
     expect(await failure(argsList([`9${"x".repeat(500)}`]))).toBe(
@@ -2300,7 +2304,7 @@ describe("batch-read-contract - second review, round 2", () => {
     const call = (n: unknown, a: unknown, ids: unknown): unknown[][] => [
       [OWNER, n, { a, s: "y" }, ids],
     ];
-    for (const text of ["x", "1.0", "1,000", "1e18", "--1"]) {
+    for (const text of ["x", "1.0", "1,000", "--1", "   ", "-", "0x"]) {
       expect(
         await failure({ ...argsList(call(text, "1", []), "tw"), abi })
       ).toBe(
@@ -2341,5 +2345,33 @@ describe("batch-read-contract - second review, round 2", () => {
     expect(await failure({ ...argsList([]), argsFromList: [Number.NaN] })).toBe(
       "Argument Sets entry 1: x must be a whole number, got NaN."
     );
+  });
+
+  it("asks for all the digits for e-notation text", async () => {
+    expect(await failure(argsList(["1e18"]))).toBe(
+      'Argument Sets entry 1: x must be a whole number in digits, got "1e18". Write out all the digits.'
+    );
+  });
+
+  it("calls a negative number past 2^53 out of range for a uint", async () => {
+    expect(await failure(argsList("[-12345678901234567890]"))).toBe(
+      "Argument Sets entry 1: x is out of range for uint256, which cannot be negative and has a maximum."
+    );
+  });
+
+  it("takes a bigint, and names one where a number cannot go", async () => {
+    mockStaticCall.mockClear();
+    const outcome = await run({ ...argsList([]), argsFromList: [[BigInt(5)]] });
+    expect(outcome.totalCalls).toBe(1);
+    mockStaticCall.mockClear();
+    expect(
+      await failure({ ...argsList([]), argsFromList: [[[BigInt(5)]]] })
+    ).toBe('Argument Sets entry 1: x must be a whole number, got ["5"].');
+  });
+
+  it("encodes the longest binary text a uint256 can take", async () => {
+    mockStaticCall.mockClear();
+    const outcome = await run(argsList([`0b${"1".repeat(256)}`]));
+    expect(outcome.totalCalls).toBe(1);
   });
 });
