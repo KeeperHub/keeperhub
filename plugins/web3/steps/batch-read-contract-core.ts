@@ -37,8 +37,6 @@ const INTEGER_PREFIX_RE = /^u?int/;
 const MAX_INTEGER_TEXT = 260;
 const DIGIT_RE = /\d/;
 const E_NOTATION_RE = /^\s*[+-]?(\d+(\.\d*)?|\.\d+)e[+-]?\d+\s*$/i;
-// A JSON number past 2^53 can never fit an integer type this narrow.
-const MAX_SAFE_BITS = 53;
 const ARRAY_TYPE_RE = /^(.*)\[(\d*)\]$/;
 const ARRAY_SUFFIXES_RE = /(\[\d*\])+$/;
 // Levels an example expands; with at most 3 items shown per array it stays short.
@@ -360,9 +358,23 @@ function isPrimitive(value: unknown): boolean {
   );
 }
 
+function integerBits(type: string): number {
+  return Number(type.replace(INTEGER_PREFIX_RE, "")) || 256;
+}
+
+// Past the type's limits even after rounding: a typed 2^64 - 1 reads as 2^64,
+// which is not past uint64's, so it keeps the quotes advice.
+function pastIntegerLimit(value: number, type: string): boolean {
+  const bits = integerBits(type);
+  if (type.startsWith("uint")) {
+    return value < 0 || value > 2 ** bits;
+  }
+  const limit = 2 ** (bits - 1);
+  return value > limit || value < -limit;
+}
+
 function tooManyDigits(path: string, value: number, type: string): string {
-  const bits = Number(type.replace(INTEGER_PREFIX_RE, "")) || 256;
-  if (bits <= MAX_SAFE_BITS || (value < 0 && type.startsWith("uint"))) {
+  if (pastIntegerLimit(value, type)) {
     return outOfRange(`${path} `, type);
   }
   const example = value < 0 ? "-12345678901234567890" : "12345678901234567890";
@@ -654,7 +666,7 @@ function outOfRange(subject: string, type: string | undefined): string {
     return `${subject}is out of range for its type. Check that each number fits its type in the ABI.`;
   }
   const unsigned = type.startsWith("uint");
-  const bits = Number(type.replace(INTEGER_PREFIX_RE, "")) || 256;
+  const bits = integerBits(type);
   if (bits <= 64) {
     const two = BigInt(2);
     const low = unsigned ? BigInt(0) : -(two ** BigInt(bits - 1));

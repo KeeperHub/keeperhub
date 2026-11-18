@@ -2332,7 +2332,7 @@ describe("batch-read-contract - second review, round 2", () => {
     expect(outcome.totalCalls).toBe(1);
   });
 
-  it("asks for quotes for a non-finite number, and names NaN", async () => {
+  it("calls a non-finite number out of range, and names NaN", async () => {
     // JSON cannot hold these; a list passed as a value can.
     expect(
       await failure({
@@ -2340,7 +2340,7 @@ describe("batch-read-contract - second review, round 2", () => {
         argsFromList: [Number.POSITIVE_INFINITY],
       })
     ).toBe(
-      'Argument Sets entry 1: x has too many digits to send as a number and may have lost some. Write it in quotes, like "12345678901234567890", or have the earlier node send it as text.'
+      "Argument Sets entry 1: x is out of range for uint256, which cannot be negative and has a maximum."
     );
     expect(await failure({ ...argsList([]), argsFromList: [Number.NaN] })).toBe(
       "Argument Sets entry 1: x must be a whole number, got NaN."
@@ -2356,6 +2356,37 @@ describe("batch-read-contract - second review, round 2", () => {
     );
   });
 
+  it("keeps the quotes advice for a type's maximum written as a number", async () => {
+    // Each rounds to exactly 2^bits or 2^(bits-1), which is not past the limit.
+    const two = BigInt(2);
+    const cases: [string, string][] = [
+      ["uint64", "18446744073709551615"],
+      ["uint256", (two ** BigInt(256) - BigInt(1)).toString()],
+      ["int256", (two ** BigInt(255) - BigInt(1)).toString()],
+      ["int256", (-(two ** BigInt(255))).toString()],
+    ];
+    for (const [type, digits] of cases) {
+      const abi = abiWith("edge", [{ name: "v", type }]);
+      expect(
+        await failure({ ...argsList(`[${digits}]`, "edge"), abi }),
+        type
+      ).toContain("v has too many digits to send as a number");
+    }
+    const abi = abiWith("edge", [{ name: "v", type: "uint256" }]);
+    expect(await failure({ ...argsList("[1e80]", "edge"), abi })).toBe(
+      "Argument Sets entry 1: v is out of range for uint256, which cannot be negative and has a maximum."
+    );
+    const signed = abiWith("edge", [{ name: "v", type: "int256" }]);
+    for (const list of ["[1e80]", "[-1e80]"]) {
+      expect(
+        await failure({ ...argsList(list, "edge"), abi: signed }),
+        list
+      ).toBe(
+        "Argument Sets entry 1: v is out of range for int256, which has a minimum and a maximum."
+      );
+    }
+  });
+
   it("calls a number past 2^53 out of range for a type of 53 bits or less", async () => {
     const abi = abiWith("small", [{ name: "v", type: "uint8" }]);
     for (const list of ["[1e20]", "[-1e20]", "[1e400]"]) {
@@ -2363,6 +2394,10 @@ describe("batch-read-contract - second review, round 2", () => {
         "Argument Sets entry 1: v is out of range for uint8. Use a whole number from 0 to 255."
       );
     }
+    const wide = abiWith("small", [{ name: "v", type: "uint64" }]);
+    expect(await failure({ ...argsList("[1e20]", "small"), abi: wide })).toBe(
+      "Argument Sets entry 1: v is out of range for uint64. Use a whole number from 0 to 18446744073709551615."
+    );
     const signed = abiWith("small", [{ name: "v", type: "int48" }]);
     expect(await failure({ ...argsList("[1e20]", "small"), abi: signed })).toBe(
       "Argument Sets entry 1: v is out of range for int48. Use a whole number from -140737488355328 to 140737488355327."
