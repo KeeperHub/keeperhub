@@ -216,11 +216,15 @@ function validateMixedCall(
   const abi = typedCall.abi;
 
   if (typeof fn !== "string" || !fn) {
-    return { error: `Call ${index + 1} missing function.` };
+    return {
+      error: `Call ${index + 1} has no function. Pick one for this call.`,
+    };
   }
 
   if (typeof abi !== "string" || !abi) {
-    return { error: `Call ${index + 1} missing ABI.` };
+    return {
+      error: `Call ${index + 1} has no ABI. Add the ABI for this call.`,
+    };
   }
 
   return {
@@ -261,9 +265,21 @@ function buildMixedCalls(callsJson: string | undefined): {
   }
 
   const destinations: { network: string; address: string }[] = [];
+  if (parsedCalls.length > MAX_TOTAL_CALLS) {
+    return {
+      calls: [],
+      error: `Too many calls (${parsedCalls.length}). Maximum is ${MAX_TOTAL_CALLS}.`,
+    };
+  }
+
   for (const [index, call] of parsedCalls.entries()) {
-    if (typeof call !== "object" || call === null) {
-      return { calls: [], error: `Call ${index + 1} must be an object` };
+    // A call that is not an object has nowhere to call either.
+    if (typeof call !== "object" || call === null || Array.isArray(call)) {
+      return {
+        calls: [],
+        error: `Call ${index + 1} must be an object with its network, contract, ABI and function.`,
+        destinationError: true,
+      };
     }
     const destination = mixedCallDestination(
       call as Record<string, unknown>,
@@ -415,7 +431,7 @@ function encodeMixedCalls(normalizedCalls: NormalizedCall[]): {
     if (!call.abi) {
       return {
         encoded: [],
-        error: `Call ${index + 1} missing ABI.`,
+        error: `Call ${index + 1} has no ABI. Add the ABI for this call.`,
       };
     }
 

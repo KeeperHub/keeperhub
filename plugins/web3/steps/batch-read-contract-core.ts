@@ -23,6 +23,8 @@ const MAX_RUN_CALLDATA_BYTES = 10 * 1_048_576;
 // Encoding time grows faster than size, so one call and one run are bounded.
 const MAX_CALL_CALLDATA_BYTES = 64 * 1024;
 const MAX_RUN_VALUES = 50_000;
+// Parameters and tuple members a list's function may declare, nested included.
+const MAX_ABI_PARAMS = 1000;
 
 export const ARGS_LIST_LABEL = "Argument Sets";
 export const ADDRESS_LIST_LABEL = "Contract Addresses";
@@ -40,8 +42,10 @@ const BYTES_N_RE = /^bytes(\d+)$/;
 const HEX_RE = /^0x[0-9a-fA-F]*$/;
 const ETHERS_DETAIL_RE = /\s*\([^()]*\bcode=[A-Z_]+[^()]*\)/g;
 const ETHERS_ARGUMENT_RE = /argument="([^"]+)"/;
-const NUMBER_FAULT_RE =
-  /overflow|underflow|out-of-bounds|BigNumberish|Cannot convert|NUMERIC_FAULT/i;
+const NUMBER_RANGE_RE = /overflow|underflow|out-of-bounds/i;
+const NUMBER_FAULT_RE = /BigNumberish|Cannot convert|NUMERIC_FAULT/i;
+// validateArgsForAbi's wording for a blank or absent value.
+const BLANK_ERROR_RE = /cannot be empty|is missing$/;
 const LIST_SIZE_STEP =
   "Filter the list first or split it across two Batch Read nodes.";
 
@@ -149,8 +153,10 @@ export function addressError(
   }
   const shown =
     typeof value === "string" ? `"${echo(text)}"` : showValue(value);
+  const trimmed = text.trim();
   const spaced =
-    text !== text.trim() && ethers.isAddress(text.trim())
+    text !== trimmed &&
+    EVM_ADDRESS_RE.test(trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`)
       ? " Remove the spaces around it."
       : " Use a 0x address with 40 hex characters.";
   return `${label} is not a valid address: ${shown}.${spaced}`;
@@ -281,8 +287,13 @@ function inputNames(fn: ListFunction): string {
 }
 
 function exampleValue(type: string, components?: AbiParam[]): string {
-  if (type.endsWith("]")) {
-    return "[...]";
+  const array = ARRAY_TYPE_RE.exec(type);
+  if (array) {
+    const item = exampleValue(array[1], components);
+    const size = Number(array[2]);
+    return array[2] && size <= 3
+      ? `[${new Array<string>(size).fill(item).join(", ")}]`
+      : `[${item}, ${item}]`;
   }
   if (type === "tuple") {
     if (!components?.length || components.some((c) => !c.name)) {
@@ -336,7 +347,7 @@ function checkListLeaf(
   if (type === "bool") {
     return typeof value === "boolean"
       ? undefined
-      : `${path} must be true or false, got ${showValue(value)}`;
+      : `${path} must be true or false, got ${showValue(value)}. Use true or false`;
   }
   if (type === "address") {
     return addressError(value, path);
@@ -346,7 +357,7 @@ function checkListLeaf(
     typeof value === "string" &&
     value.trim().length > MAX_INTEGER_TEXT
   ) {
-    return `${path} is too long for a whole number`;
+    return `${path} is too long for a whole number. Use one of up to 78 digits`;
   }
   const bytes = BYTES_N_RE.exec(type);
   if (
@@ -375,10 +386,11 @@ function prepareArgs(
   fn: ListFunction,
   where: string,
   valuesBefore: number,
-  nextStep: string
+  nextStep: (error: string) => string
 ): { args: unknown[]; bytes: number; values: number } {
   const estimate = estimateCalldata(reshaped, fn, where, valuesBefore);
   const shaped = coerceArgsForAbi(reshaped, fn);
+  // Validation stops at the first failure, so this tells whose message it is.
   let leafError = false;
   // List values are resolved at run time, so a {{...}} string is plain text.
   const validation = validateArgsForAbi(shaped, fn, {
@@ -392,7 +404,7 @@ function prepareArgs(
   });
   if (!validation.ok) {
     // The list's own checks name their next step; the shared ones do not.
-    const step = leafError ? "" : ` ${nextStep}`;
+    const step = leafError ? "" : ` ${nextStep(validation.error)}`;
     throw new Error(`${where}: ${sentence(validation.error)}${step}`);
   }
   return { args: shaped, ...estimate };
@@ -416,7 +428,7 @@ function addToTally(tally: Tally, bytes: number): void {
   }
   if (tally.values > tally.maxValues) {
     throw new Error(
-      `The calls hold more than ${count(MAX_RUN_VALUES)} values, the limit per run. Use fewer or smaller entries.`
+      `The calls hold more than ${count(MAX_RUN_VALUES)} values, the limit per run. Use fewer entries or smaller arguments.`
     );
   }
 }
@@ -475,6 +487,9 @@ function estimateValue(
   addToTally(tally, 32);
 }
 
+// Per tuple's components, so each declared type is walked once, not per item.
+const dynamicTuples = new WeakMap<AbiParam[], boolean>();
+
 function isDynamicType(
   type: string,
   components: AbiParam[] | undefined
@@ -486,10 +501,15 @@ function isDynamicType(
   if (array) {
     return isDynamicType(array[1], components);
   }
-  return (
-    type === "tuple" &&
-    (components ?? []).some((c) => isDynamicType(c.type, c.components))
-  );
+  if (type !== "tuple" || !components) {
+    return false;
+  }
+  let dynamic = dynamicTuples.get(components);
+  if (dynamic === undefined) {
+    dynamic = components.some((c) => isDynamicType(c.type, c.components));
+    dynamicTuples.set(components, dynamic);
+  }
+  return dynamic;
 }
 
 /** Estimated call data of one call, and how many values it holds; throws at a cap. */
@@ -522,8 +542,13 @@ export function encodeReason(error: unknown, fn: ListFunction): string {
   } else if (names.length === 1) {
     name = names[0];
   }
+  const subject = name ? `${name} ` : "it ";
+  if (NUMBER_RANGE_RE.test(message)) {
+    const type = fn.inputs.find((input) => input.name === name)?.type;
+    return `${subject}is out of range for ${type ?? "its type"}. A uint cannot be negative, and each type has a maximum.`;
+  }
   if (NUMBER_FAULT_RE.test(message)) {
-    return `${name ? `${name} ` : "it "}must be a whole number; write large numbers in quotes, e.g. "12345678901234567890".`;
+    return `${subject}must be a whole number; write large numbers in quotes, e.g. "12345678901234567890".`;
   }
   const reason = echo(message.replace(ETHERS_DETAIL_RE, ""), MAX_REASON_LENGTH);
   const prefix = name ? `${name}: ` : "";
@@ -553,12 +578,31 @@ function unnamedTuple(
   return;
 }
 
-/** Arguments are shaped by member name, as in Read Contract, so every tuple member needs one. */
-function requireNamedTuples(fn: ListFunction): void {
+/** Every parameter and tuple member in the inputs, nested ones included. */
+function paramCount(params: AbiParam[] | undefined): number {
+  let total = 0;
+  for (const param of params ?? []) {
+    total += 1 + paramCount(param.components);
+  }
+  return total;
+}
+
+/**
+ * A function the lists can fill: every tuple member named (arguments go by
+ * member name, as in Read Contract) and at most MAX_ABI_PARAMS parameters,
+ * since shaping, estimating and encoding each walk the declared types.
+ */
+function checkListFunction(fn: ListFunction): void {
   const at = unnamedTuple(fn.inputs, "");
   if (at) {
     throw new Error(
       `${fn.name} takes a tuple with unnamed members (${at}). Tuple values are given by member name, so Batch Read cannot fill this one.`
+    );
+  }
+  const params = paramCount(fn.inputs);
+  if (params > MAX_ABI_PARAMS) {
+    throw new Error(
+      `${fn.name} declares ${count(params)} parameters and tuple members; a list can call a function with up to ${count(MAX_ABI_PARAMS)}.`
     );
   }
 }
@@ -601,14 +645,22 @@ function positionalTupleError(
     return;
   }
   const index = fn.inputs.findIndex(
-    (input, i) => input.type === "tuple" && Array.isArray(args[i])
+    (input, i) =>
+      input.type === "tuple" &&
+      args[i] !== undefined &&
+      args[i] !== "" &&
+      (typeof args[i] !== "object" ||
+        args[i] === null ||
+        Array.isArray(args[i]))
   );
   if (index < 0) {
     return;
   }
   const input = fn.inputs[index];
+  const given =
+    typeof args[index] === "string" ? "text" : describeKind(args[index]);
   return new Error(
-    `${at}: give ${input.name || `arg${index}`} as an object with its member names, like ${exampleValue(input.type, input.components)}, not as an array.`
+    `${at}: give ${input.name || `arg${index}`} as an object with its member names, like ${exampleValue(input.type, input.components)}, not as ${given}.`
   );
 }
 
@@ -656,8 +708,9 @@ export function argSetsFromList(
   entries: unknown[],
   fn: ListFunction
 ): unknown[][] {
-  requireNamedTuples(fn);
-  const nextStep = `Make each entry an array like ${exampleEntry(fn)}.`;
+  checkListFunction(fn);
+  const nextStep = (): string =>
+    `An entry for ${fn.name} looks like ${exampleEntry(fn)}.`;
   let bytes = 0;
   let values = 0;
   return entries.map((entry, index) => {
@@ -719,7 +772,7 @@ export function sharedArgsForList(
   if (fn.inputs.length === 0) {
     return [];
   }
-  requireNamedTuples(fn);
+  checkListFunction(fn);
   checkTextSize(raw ?? "", SHARED_ARGS_LABEL, "Use smaller arguments.");
   let parsed: unknown = raw ?? [];
   if (typeof parsed === "string") {
@@ -743,7 +796,10 @@ export function sharedArgsForList(
     fn,
     SHARED_ARGS_LABEL,
     0,
-    `Fill in the arguments for ${fn.name} (${inputNames(fn)}); only a string may be left blank.`
+    (error) =>
+      BLANK_ERROR_RE.test(error)
+        ? "Fill in every argument; only a string may be left blank."
+        : `Check the arguments for ${fn.name} (${inputNames(fn)}).`
   );
   checkRunCalldata(prepared.bytes * copies, "addresses");
   return prepared.args;

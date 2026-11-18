@@ -1642,7 +1642,7 @@ const web3Plugin: IntegrationPlugin = {
           placeholder:
             '{{@node1:Label.result}} or [["0xabc...", 5], ["0xdef...", 6]]',
           helpText:
-            'One call per entry, in order. An entry is the call\'s arguments in order, e.g. ["0xabc...", 5]. For a function with one plain argument (address, number, string, bool, bytes or bytes32), an entry can be the bare value. Up to 5,000 entries.',
+            'One call per entry, in order. An entry is the call\'s arguments in order, e.g. ["0xabc...", 5]. For a function with one plain argument (address, number, string, bool, bytes or bytes32), an entry can be the bare value. A tuple is an object keyed by its member names. Up to 5,000 entries.',
           showWhen: SHOW_WHEN_ARGS_LIST,
         },
         {
@@ -1651,7 +1651,8 @@ const web3Plugin: IntegrationPlugin = {
           type: "abi-function-args",
           abiField: "abi",
           abiFunctionField: "abiFunction",
-          helpText: "These arguments go to every contract in the list.",
+          helpText:
+            "These arguments go to every contract in the list. Fill in each one; only a string may be left blank.",
           showWhen: SHOW_WHEN_ADDRESS_LIST,
         },
         {
@@ -1684,7 +1685,7 @@ const web3Plugin: IntegrationPlugin = {
           ],
         },
         readFailOnErrorField(
-          "When off, a failed read passes a soft error to the next node instead of failing the run: a failed batch, a problem with the ABI, function or arguments, a bad Argument Sets entry, an empty list ([]) or one over the size limits. Only problems that leave the step with nowhere to call still fail the run: a missing or unknown network, unresolved RPC config, or a missing or invalid contract address (Contract Address, a call's network or address in Different contracts/functions mode, or a blank Contract Addresses or a bad entry in it)."
+          "When off, a failed read passes a soft error to the next node instead of failing the run: a failed batch, a problem with the ABI, function or arguments, a bad Argument Sets entry, an empty list ([]) or one over the size limits. Only problems that leave the step with nowhere to call still fail the run: a missing or unknown network, unresolved RPC config, or a missing or invalid contract address (Contract Address, a call's network or address in Different contracts/functions mode, or a blank Contract Addresses, one that is not a list, or a bad entry in it)."
         ),
       ],
     },

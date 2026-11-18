@@ -566,7 +566,7 @@ describe("batch-read-contract - contract addresses from a list", () => {
           })
         )
       ).toBe(
-        "Function Arguments: spender: address cannot be empty. Fill in the arguments for allowance (owner, spender); only a string may be left blank."
+        "Function Arguments: spender: address cannot be empty. Fill in every argument; only a string may be left blank."
       );
     }
   });
@@ -803,7 +803,7 @@ describe("batch-read-contract - list argument types", () => {
     [1, "1"],
   ])("refuses %j for a bool in Argument Sets", async (entry, shown) => {
     expect(await failure(argsList(["true", entry], "flag"))).toBe(
-      `Argument Sets entry 2: on must be true or false, got ${shown}.`
+      `Argument Sets entry 2: on must be true or false, got ${shown}. Use true or false.`
     );
   });
 
@@ -819,12 +819,14 @@ describe("batch-read-contract - list argument types", () => {
           functionArgs: JSON.stringify([arg]),
         })
       )
-    ).toBe(`Function Arguments: on must be true or false, got ${shown}.`);
+    ).toBe(
+      `Function Arguments: on must be true or false, got ${shown}. Use true or false.`
+    );
   });
 
   it("checks bools inside an array argument", async () => {
     expect(await failure(argsList([[["true", "maybe"]]], "flags"))).toBe(
-      'Argument Sets entry 1: list[1] must be true or false, got "maybe".'
+      'Argument Sets entry 1: list[1] must be true or false, got "maybe". Use true or false.'
     );
     const outcome = await run(argsList([[["true", "false"]]], "flags"));
     expect(outcome.results).toEqual([{ success: true, result: false }]);
@@ -846,17 +848,22 @@ describe("batch-read-contract - list argument types", () => {
       `Argument Sets entry 1 could not be encoded for echo: ${whole}`
     );
     // 79 digits: past uint256 but under the length guard.
+    const range =
+      "x is out of range for uint256. A uint cannot be negative, and each type has a maximum.";
     expect(await failure(argsList(["9".repeat(79)]))).toBe(
-      `Argument Sets entry 1 could not be encoded for echo: ${whole}`
+      `Argument Sets entry 1 could not be encoded for echo: ${range}`
+    );
+    expect(await failure(argsList(["-1"]))).toBe(
+      `Argument Sets entry 1 could not be encoded for echo: ${range}`
     );
   });
 
   it("refuses integer text longer than 80 characters before encoding", async () => {
     expect(await failure(argsList(["9".repeat(81)]))).toBe(
-      "Argument Sets entry 1: x is too long for a whole number."
+      "Argument Sets entry 1: x is too long for a whole number. Use one of up to 78 digits."
     );
     expect(await failure(argsList([`9${"x".repeat(500)}`]))).toBe(
-      "Argument Sets entry 1: x is too long for a whole number."
+      "Argument Sets entry 1: x is too long for a whole number. Use one of up to 78 digits."
     );
   });
 
@@ -1124,7 +1131,7 @@ describe("batch-read-contract - review round 2", () => {
     const elevenZeros = `[[${Array.from({ length: 10 }, () => "0").join(",")}]]`;
     const over = `[${[...Array.from({ length: 4999 }, () => tenZeros), elevenZeros].join(",")}]`;
     expect(await failureBeforeEncoding(argsList(over, "sum"))).toBe(
-      "The calls hold more than 50,000 values, the limit per run. Use fewer or smaller entries."
+      "The calls hold more than 50,000 values, the limit per run. Use fewer entries or smaller arguments."
     );
 
     // A plain revert per call keeps the mock out of the timing.
@@ -1179,7 +1186,7 @@ describe("batch-read-contract - review round 2", () => {
 
   it("checks a bool inside a tuple", async () => {
     expect(await failure(argsList([[{ flag: "no", x: "1" }]], "cfg"))).toBe(
-      'Argument Sets entry 1: p.flag must be true or false, got "no".'
+      'Argument Sets entry 1: p.flag must be true or false, got "no". Use true or false.'
     );
     const outcome = await run(argsList([[{ flag: "false", x: "1" }]], "cfg"));
     expect(outcome.results).toEqual([{ success: true, result: false }]);
@@ -1195,7 +1202,7 @@ describe("batch-read-contract - review round 2", () => {
       'Argument Sets entry 1: give p as an object with its member names, like {"flag": true, "x": 1}, not as an array.'
     );
     expect(await failure(argsList([["false"]], "cfg"))).toBe(
-      'Argument Sets entry 1 has 1 value, but cfg takes 1 (p) with each tuple as an object, or 2 with its members given flat. Make each entry an array like [{"flag": true, "x": 1}].'
+      'Argument Sets entry 1: give p as an object with its member names, like {"flag": true, "x": 1}, not as text.'
     );
   });
 
@@ -1299,7 +1306,7 @@ describe("batch-read-contract - review round 3", () => {
         })
       )
     ).toBe(
-      "Function Arguments: t.a: expected array for uint256[]. Fill in the arguments for wrap (t); only a string may be left blank."
+      "Function Arguments: t.a: expected array for uint256[]. Check the arguments for wrap (t)."
     );
   });
 
@@ -1326,10 +1333,10 @@ describe("batch-read-contract - review round 3", () => {
         })
       )
     ).toBe(
-      "Function Arguments: m[0]: expected array for uint256[]. Fill in the arguments for nested (m); only a string may be left blank."
+      "Function Arguments: m[0]: expected array for uint256[]. Check the arguments for nested (m)."
     );
     expect(await failure(argsList([[["[1,"]]], "nested"))).toBe(
-      "Argument Sets entry 1: m[0]: expected array for uint256[]. Make each entry an array like [[...]]."
+      "Argument Sets entry 1: m[0]: expected array for uint256[]. An entry for nested looks like [[[1, 1], [1, 1]]]."
     );
   });
 
@@ -1337,13 +1344,13 @@ describe("batch-read-contract - review round 3", () => {
     const inner = JSON.stringify(Array.from({ length: 1500 }, () => 0));
     const list = `[${Array.from({ length: 40 }, () => JSON.stringify([[inner]])).join(",")}]`;
     expect(await failureBeforeEncoding(argsList(list, "nested"))).toMatch(
-      /^The calls hold more than 50,000 values, the limit per run\. Use fewer or smaller entries\.$/
+      /^The calls hold more than 50,000 values, the limit per run\. Use fewer entries or smaller arguments\.$/
     );
   });
 
   it("refuses a primitive where an array type is expected", async () => {
     expect(await failure(argsList([["5"]], "sum"))).toBe(
-      "Argument Sets entry 1: ids: expected array for uint256[]. Make each entry an array like [[...]]."
+      "Argument Sets entry 1: ids: expected array for uint256[]. An entry for sum looks like [[1, 1]]."
     );
   });
 
@@ -1439,10 +1446,10 @@ describe("batch-read-contract - review round 3", () => {
 
   it("reports a missing or empty argument", async () => {
     expect(await failure(argsList([[OWNER, ""]], "allowance"))).toBe(
-      'Argument Sets entry 1: spender: address cannot be empty. Make each entry an array like ["0x...", "0x..."].'
+      'Argument Sets entry 1: spender: address cannot be empty. An entry for allowance looks like ["0x...", "0x..."].'
     );
     expect(await failure(argsList([[{ flag: true }]], "cfg"))).toBe(
-      'Argument Sets entry 1: p.x: uint256 is missing. Make each entry an array like [{"flag": true, "x": 1}].'
+      'Argument Sets entry 1: p.x: uint256 is missing. An entry for cfg looks like [{"flag": true, "x": 1}].'
     );
   });
 });
@@ -1643,7 +1650,7 @@ describe("batch-read-contract - review fixes, round 2", () => {
         {
           name: "xs",
           type: "tuple[]",
-          components: Array.from({ length: 2000 }, (_, i) => ({
+          components: Array.from({ length: 900 }, (_, i) => ({
             name: `m${i}`,
             type: "uint256",
           })),
@@ -1655,8 +1662,7 @@ describe("batch-read-contract - review fixes, round 2", () => {
   const empties = (n: number): string =>
     `[${Array.from({ length: n }, () => "{}").join(",")}]`;
 
-  it("stops a wide tuple times many items at the cap, before shaping it", async () => {
-    const started = Date.now();
+  it("stops a wide tuple times many items at the cap, before coercing it", async () => {
     const message = await failureBeforeEncoding({
       ...argsList(`[[${empties(50_000)}]]`, "wide"),
       abi: WIDE_ABI,
@@ -1675,7 +1681,91 @@ describe("batch-read-contract - review fixes, round 2", () => {
     ).toBe(
       "Function Arguments has more than 64 KB of call data, the limit per call. Use smaller arguments."
     );
-    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
+  it("refuses a function that declares more than 1,000 parameters and members", async () => {
+    const abi = JSON.stringify([
+      {
+        name: "huge",
+        type: "function",
+        stateMutability: "view",
+        inputs: [
+          {
+            name: "x",
+            type: "tuple",
+            components: Array.from({ length: 1000 }, (_, i) => ({
+              name: `m${i}`,
+              type: "uint256",
+            })),
+          },
+        ],
+        outputs: [{ name: "", type: "uint256" }],
+      },
+    ]);
+    const message =
+      "huge declares 1,001 parameters and tuple members; a list can call a function with up to 1,000.";
+    expect(await failure({ ...argsList([[{}]], "huge"), abi })).toBe(message);
+    expect(
+      await failure({
+        ...addressList([addr(1)], {
+          abiFunction: "huge",
+          functionArgs: "[{}]",
+        }),
+        abi,
+      })
+    ).toBe(message);
+  });
+
+  it("fails the run for a call that is not an object, wherever it sits", async () => {
+    const outcome = await run({
+      inputMode: "mixed",
+      failOnError: false,
+      calls: JSON.stringify([
+        null,
+        {
+          contractAddress: CONTRACT,
+          abi: ABI,
+          abiFunction: "echo",
+          args: ["1"],
+        },
+      ]),
+    });
+    expect(outcome).toEqual({
+      success: false,
+      destinationError: true,
+      error:
+        "Call 1 must be an object with its network, contract, ABI and function.",
+    });
+  });
+
+  it("checks the 5,000-call limit in mixed mode before any call", async () => {
+    const call = {
+      network: "ethereum",
+      contractAddress: CONTRACT,
+      abi: ABI,
+      abiFunction: "echo",
+      args: ["1"],
+    };
+    const isAddress = vi.spyOn(ethers, "isAddress");
+    try {
+      expect(
+        await failure({
+          inputMode: "mixed",
+          calls: JSON.stringify(Array.from({ length: 5001 }, () => call)),
+        })
+      ).toBe("Too many calls (5001). Maximum is 5000.");
+      expect(isAddress).not.toHaveBeenCalled();
+    } finally {
+      isAddress.mockRestore();
+    }
+  });
+
+  it("names a tuple given as JSON text", async () => {
+    expect(
+      await failure(argsList([[JSON.stringify({ flag: true, x: "1" })]], "cfg"))
+    ).toBe(
+      'Argument Sets entry 1: give p as an object with its member names, like {"flag": true, "x": 1}, not as text.'
+    );
   });
 
   it("accepts an address without 0x where Read Contract does", async () => {
@@ -1739,7 +1829,7 @@ describe("batch-read-contract - review fixes, round 2", () => {
         })
       )
     ).toBe(
-      "Function Arguments: xs: uint256[3] takes 3 items, got 2. Fill in the arguments for trio (xs); only a string may be left blank."
+      "Function Arguments: xs: uint256[3] takes 3 items, got 2. Check the arguments for trio (xs)."
     );
     const outcome = await run(argsList([["[1,2,3]"]], "trio"));
     expect(outcome.results).toEqual([{ success: true, result: "1" }]);

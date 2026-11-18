@@ -744,7 +744,9 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("missing function.");
+    expect(result.error).toContain(
+      "Call 1 has no function. Pick one for this call."
+    );
   });
 
   it("fails when call is missing abi", async () => {
@@ -759,7 +761,9 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("missing ABI.");
+    expect(result.error).toContain(
+      "Call 1 has no ABI. Add the ABI for this call."
+    );
   });
 
   it("fails when call ABI has function not found", async () => {

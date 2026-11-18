@@ -216,6 +216,22 @@ const RULES: readonly Rule[] = [
     errorType: ExecutionErrorType.USER,
     code: null,
   },
+  // Batch Read Contract checks its config and lists before any call; each
+  // message names the field or entry ("Call N", "Argument Sets entry N").
+  {
+    pattern:
+      /Function '.+' (is not in|matches more than one function in) the ABI|\bis not a valid address: |\bhas a bad checksum: "/i,
+    errorCategory: ErrorCategory.VALIDATION,
+    errorType: ExecutionErrorType.USER,
+    code: null,
+  },
+  {
+    pattern:
+      /^(Argument Sets|Contract Addresses|Function Arguments|Calls From)\b|^Call \d+ (has no|must be)\b|^The calls(' data adds up to| hold more than) |^(Contract Address|Contract ABI|Function) is required\b|takes no arguments, so a list of argument sets|takes a tuple with unnamed members|declares [\d,]+ parameters and tuple members/,
+    errorCategory: ErrorCategory.VALIDATION,
+    errorType: ExecutionErrorType.USER,
+    code: null,
+  },
   {
     pattern: /^For Each:\s*arraySource is required/i,
     errorCategory: ErrorCategory.CONFIGURATION,
