@@ -22,7 +22,7 @@ describe("ActionSchema - Batch Read Contract list inputs", () => {
   const batchRead = schemaFor("web3/batch-read-contract");
   const fields = { ...batchRead.requiredFields, ...batchRead.optionalFields };
 
-  it("describes the Calls from options", () => {
+  it("describes the Calls From options", () => {
     expect(fields.callsFrom).toBe(
       'string ("rows" | "args-list" | "address-list") - Calls From'
     );
@@ -69,6 +69,9 @@ describe("ActionSchema - Batch Read Contract list inputs", () => {
       'argsFromList is required only for "args-list" and contractAddresses only for "address-list"'
     );
     expect(tip).toContain("contractAddress is not used");
+    expect(tip).toContain(
+      "abi is still required, and abiFetchAddress is only where the editor fetches it from and what the deep check compares against"
+    );
     expect(tip).toContain("a string holding one");
     expect(tip).toContain("up to 5,000 calls per run");
   });
