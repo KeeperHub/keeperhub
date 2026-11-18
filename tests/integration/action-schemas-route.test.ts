@@ -72,9 +72,9 @@ const mockPlugins = [
 ];
 
 vi.mock("@/plugins/registry", async (importOriginal) => ({
-  // The real toggle list, so the schema types toggles as the app does.
-  isToggleField: (await importOriginal<typeof import("@/plugins/registry")>())
-    .isToggleField,
+  // The real field-type mapping, so the schema types fields as the app does.
+  fieldJsonType: (await importOriginal<typeof import("@/plugins/registry")>())
+    .fieldJsonType,
   getAllIntegrations: () => mockPlugins,
   computeActionId: (pluginType: string, slug: string) =>
     `${pluginType}.${slug}`,

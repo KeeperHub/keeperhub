@@ -19,11 +19,11 @@ import { isDirectExecutionSupported } from "@/plugins/protocol/steps/resolve-pro
 import {
   type ActionConfigFieldBase,
   computeActionId,
+  fieldJsonType,
   flattenConfigFields,
   getAllIntegrations,
   type IntegrationPlugin,
   isDisplayOnlyField,
-  isToggleField,
   type PluginAction,
 } from "@/plugins/registry";
 
@@ -100,16 +100,20 @@ export type BuildActionSchemasOptions = {
   type?: string;
 };
 
+// The step also takes the two strings, and the editor takes a template.
+export const PROTOCOL_BOOL_TYPE_TEXT =
+  'boolean (true or false; also the strings "true" and "false", or a {{@nodeId:Label.field}} template)';
+
 function mapFieldType(field: ActionConfigFieldBase): string {
-  if (isToggleField(field.type)) {
-    return "boolean";
+  // The JSON type comes from the same function the pin schema uses.
+  const jsonType = fieldJsonType(field.type);
+  if (jsonType === "boolean") {
+    return field.type === "protocol-bool" ? PROTOCOL_BOOL_TYPE_TEXT : "boolean";
+  }
+  if (jsonType === "number") {
+    return "number";
   }
   switch (field.type) {
-    case "number":
-      return "number";
-    // Same type as the pin schema; the step also takes the two strings.
-    case "protocol-bool":
-      return 'boolean (true or false; the strings "true" and "false" also work)';
     case "chain-select":
       return "string (chain ID)";
     case "token-select":

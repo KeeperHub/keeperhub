@@ -2,17 +2,21 @@
 // agents. Two hand-written mappings drifted once (#2777: two toggles were
 // boolean in one and string in the other), and again the other way round for
 // Solidity bool inputs (#2781), so this sweeps every registered action and
-// holds them to one answer on which fields are booleans.
+// holds every field to one JSON type in both.
 
 import { describe, expect, it } from "vitest";
 import { isSwitchOn } from "@/components/workflow/config/plain-switch-field";
-import { transformPluginAction } from "@/lib/action-schemas/builder";
+import {
+  PROTOCOL_BOOL_TYPE_TEXT,
+  transformPluginAction,
+} from "@/lib/action-schemas/builder";
 import { preparePinDataForWorkflow } from "@/lib/mcp/prepare-test-pin-data";
 import { resolveFailOnError } from "@/lib/utils";
 import { resolveSponsorGas } from "@/lib/web3/sponsorship-feature-flag";
 import { validateWorkflowActionConfigs } from "@/lib/workflow/validation/action-config";
 import {
   computeActionId,
+  fieldJsonType,
   flattenConfigFields,
   getAllIntegrations,
   isDisplayOnlyField,
@@ -79,8 +83,34 @@ function collectFields(): FieldCase[] {
   return cases;
 }
 
-describe("pin schema and action schema agree on booleans", () => {
+// The description is "<type>[ (detail)] - <label>[ - <placeholder>]".
+const TYPE_WORD = /^\w+/;
+
+describe("pin schema and action schema agree on field types", () => {
   const cases = collectFields();
+
+  it("gives every field the same JSON type in both schemas", () => {
+    expect(cases.length).toBeGreaterThan(0);
+    const wrong = cases
+      .filter((field) => {
+        const expected = fieldJsonType(field.type);
+        return (
+          field.actionSchemaType.match(TYPE_WORD)?.[0] !== expected ||
+          field.pinType !== expected
+        );
+      })
+      .map(
+        (field) =>
+          `${field.actionType}.${field.key} (${field.type}): action "${field.actionSchemaType.match(TYPE_WORD)?.[0]}", pin "${field.pinType}"`
+      );
+    expect(wrong).toEqual([]);
+  });
+
+  it("checks fields of every JSON type", () => {
+    expect(new Set(cases.map((field) => fieldJsonType(field.type)))).toEqual(
+      new Set(["string", "number", "boolean"])
+    );
+  });
 
   it("finds the toggle fields it is meant to check", () => {
     const toggles = cases.filter((field) => isToggleField(field.type));
@@ -119,12 +149,13 @@ describe("pin schema and action schema agree on booleans", () => {
   });
 
   // The pin schema stays strict: JSON true/false only.
-  it("lists the strings a Solidity bool also takes", () => {
+  it("lists the strings and the template a Solidity bool also takes", () => {
+    expect(PROTOCOL_BOOL_TYPE_TEXT).toContain('"true" and "false"');
+    expect(PROTOCOL_BOOL_TYPE_TEXT).toContain("{{@nodeId:Label.field}}");
     for (const field of cases.filter((f) => f.type === "protocol-bool")) {
-      // The description is "<type> - <label>[ - <placeholder>]".
       const [typeText] = field.actionSchemaType.split(" - ");
       expect(typeText, `${field.actionType}.${field.key}`).toBe(
-        'boolean (true or false; the strings "true" and "false" also work)'
+        PROTOCOL_BOOL_TYPE_TEXT
       );
     }
   });

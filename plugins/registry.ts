@@ -694,6 +694,19 @@ export function isToggleField(type: string | undefined): boolean {
   return type !== undefined && TOGGLE_FIELD_TYPES.has(type);
 }
 
+/** A field's JSON type; the action schema and the pin schema both use it. */
+export function fieldJsonType(
+  type: string | undefined
+): "string" | "number" | "boolean" {
+  if (type === "number") {
+    return "number";
+  }
+  if (isToggleField(type) || type === "protocol-bool") {
+    return "boolean";
+  }
+  return "string";
+}
+
 /** What a toggle does when it is left unset, by the rule its step applies. */
 export function toggleDefault(field: ActionConfigFieldBase): boolean {
   return DEFAULT_ON_TOGGLE_TYPES.has(field.type)

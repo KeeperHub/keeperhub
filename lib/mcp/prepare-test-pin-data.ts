@@ -1,5 +1,6 @@
 import type { ActionConfigFieldBase, PluginAction } from "@/plugins/registry";
 import {
+  fieldJsonType,
   flattenConfigFields,
   getAllIntegrations,
   isDisplayOnlyField,
@@ -156,20 +157,16 @@ function buildPropertyForField(
 ): PinDataPropertySchema {
   const description = field.helpTip ?? field.label;
 
-  if (field.type === "number") {
+  // The JSON type comes from the same function the action schema uses.
+  const jsonType = fieldJsonType(field.type);
+  if (jsonType === "number") {
     return { type: "number", description };
   }
 
-  if (isToggleField(field.type)) {
-    return {
-      type: "boolean",
-      description,
-      default: toggleDefault(field),
-    };
-  }
-
-  if (field.type === "protocol-bool") {
-    return { type: "boolean", description };
+  if (jsonType === "boolean") {
+    return isToggleField(field.type)
+      ? { type: "boolean", description, default: toggleDefault(field) }
+      : { type: "boolean", description };
   }
 
   if (field.type === "select" && field.options !== undefined) {
