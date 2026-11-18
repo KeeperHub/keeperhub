@@ -563,10 +563,9 @@ registerFieldRenderer(
 registerFieldRenderer(
   "protocol-bool",
   ({ field, config, onUpdateConfig, disabled }) => {
-    const { ProtocolBoolField } =
+    const { ProtocolBoolField, protocolBoolFieldValue } =
       require("@/components/workflow/config/protocol-fields/protocol-bool-field") as typeof import("@/components/workflow/config/protocol-fields/protocol-bool-field");
-    const value =
-      (config[field.key] as string | undefined) || field.defaultValue || "";
+    const value = protocolBoolFieldValue(config[field.key], field.defaultValue);
 
     return (
       <div className="space-y-2" key={field.key}>

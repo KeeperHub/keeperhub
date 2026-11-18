@@ -1,7 +1,8 @@
 // The MCP pin schema and the action schema describe the same config fields to
 // agents. Two hand-written mappings drifted once (#2777: two toggles were
-// boolean in one and string in the other), so this sweeps every registered
-// action and holds them to one answer on which fields are booleans.
+// boolean in one and string in the other), and again the other way round for
+// Solidity bool inputs (#2781), so this sweeps every registered action and
+// holds them to one answer on which fields are booleans.
 
 import { describe, expect, it } from "vitest";
 import { isSwitchOn } from "@/components/workflow/config/plain-switch-field";
@@ -9,6 +10,7 @@ import { transformPluginAction } from "@/lib/action-schemas/builder";
 import { preparePinDataForWorkflow } from "@/lib/mcp/prepare-test-pin-data";
 import { resolveFailOnError } from "@/lib/utils";
 import { resolveSponsorGas } from "@/lib/web3/sponsorship-feature-flag";
+import { validateWorkflowActionConfigs } from "@/lib/workflow/validation/action-config";
 import {
   computeActionId,
   flattenConfigFields,
@@ -99,6 +101,63 @@ describe("pin schema and action schema agree on booleans", () => {
           !field.actionSchemaType.startsWith("boolean") ||
           field.pinType !== "boolean"
       )
+      .map((field) => `${field.actionType}.${field.key}`);
+    expect(wrong).toEqual([]);
+  });
+
+  it("types every Solidity bool input as boolean in both schemas", () => {
+    const bools = cases.filter((field) => field.type === "protocol-bool");
+    expect(bools.length).toBeGreaterThan(0);
+    const wrong = bools
+      .filter(
+        (field) =>
+          !field.actionSchemaType.startsWith("boolean") ||
+          field.pinType !== "boolean"
+      )
+      .map((field) => `${field.actionType}.${field.key}`);
+    expect(wrong).toEqual([]);
+  });
+
+  // The pin schema stays strict: JSON true/false only.
+  it("lists the strings a Solidity bool also takes", () => {
+    for (const field of cases.filter((f) => f.type === "protocol-bool")) {
+      // The description is "<type> - <label>[ - <placeholder>]".
+      const [typeText] = field.actionSchemaType.split(" - ");
+      expect(typeText, `${field.actionType}.${field.key}`).toBe(
+        'boolean (true or false; the strings "true" and "false" also work)'
+      );
+    }
+  });
+
+  it('saves true/false (JSON or string) for a Solidity bool and refuses "yes"', () => {
+    const issuesFor = (field: FieldCase, value: unknown): string[] =>
+      validateWorkflowActionConfigs([
+        {
+          id: "n",
+          type: "action",
+          data: {
+            type: "action",
+            config: { actionType: field.actionType, [field.key]: value },
+          },
+        },
+      ])
+        .issues.filter((issue) => issue.field === field.key)
+        .map((issue) => issue.code);
+    for (const field of cases.filter((f) => f.type === "protocol-bool")) {
+      const at = `${field.actionType}.${field.key}`;
+      for (const value of [true, false, "true", "false"]) {
+        expect(issuesFor(field, value), `${at} ${value}`).toEqual([]);
+      }
+      // Saving a template is unchanged.
+      expect(issuesFor(field, "{{@a:A.flag}}"), at).toEqual([]);
+      expect(issuesFor(field, "yes"), at).not.toEqual([]);
+    }
+  });
+
+  it("types a field boolean in the action schema wherever the pin schema does", () => {
+    const wrong = cases
+      .filter((field) => field.pinType === "boolean")
+      .filter((field) => !field.actionSchemaType.startsWith("boolean"))
       .map((field) => `${field.actionType}.${field.key}`);
     expect(wrong).toEqual([]);
   });

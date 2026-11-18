@@ -107,6 +107,9 @@ function mapFieldType(field: ActionConfigFieldBase): string {
   switch (field.type) {
     case "number":
       return "number";
+    // Same type as the pin schema; the step also takes the two strings.
+    case "protocol-bool":
+      return 'boolean (true or false; the strings "true" and "false" also work)';
     case "chain-select":
       return "string (chain ID)";
     case "token-select":

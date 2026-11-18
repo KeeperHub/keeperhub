@@ -17,6 +17,17 @@ type ProtocolBoolFieldProps = {
   disabled?: boolean;
 };
 
+// A saved JSON true/false (agents may send one) shows as the matching option.
+export function protocolBoolFieldValue(
+  saved: unknown,
+  defaultValue: string | undefined
+): string {
+  if (typeof saved === "boolean") {
+    return String(saved);
+  }
+  return (typeof saved === "string" && saved) || defaultValue || "";
+}
+
 export function ProtocolBoolField({
   fieldKey,
   value,
