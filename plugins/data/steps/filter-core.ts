@@ -13,6 +13,7 @@ import { getErrorMessage } from "@/lib/utils";
 import { operatorToExpression } from "@/lib/workflow/nodes/condition/expression";
 import { compileSafeCondition } from "@/lib/workflow/nodes/condition/safe-eval";
 import {
+  exactNumberOf,
   type FilterCoreInput,
   type FilterSettings,
   readSettings,
@@ -39,6 +40,15 @@ import {
 import { isPlainObject, resolveSegments } from "./resolve-path-core";
 
 export type { FilterCoreInput } from "../filter-config";
+
+// Tests where a number item meets a Value kept as text (see exactNumberOf).
+const NUMBER_TWIN_OPERATORS: readonly FilterOperator[] = [
+  "===",
+  "!==",
+  "==",
+  "!=",
+  "arrayContains",
+];
 
 const ITEM_VAR = "__v0";
 const VALUE_VAR = "__v1";
@@ -175,10 +185,17 @@ function makeMatcher(
     ? undefined
     : readValue(rawValue, operator);
   const comparison = ignoreCase ? foldCase(value) : value;
+  // A Value kept as exact text that is also exactly a number: number items
+  // are compared with the number, as a Condition literal would be.
+  const asNumber = NUMBER_TWIN_OPERATORS.includes(operator)
+    ? exactNumberOf(value)
+    : undefined;
   const evaluate = compileSafeCondition(
     operatorToExpression(baseConditionOperator(operator), ITEM_VAR, VALUE_VAR)
   );
   const negate = isNegatedTextOperator(operator);
+  const test = (item: unknown, against: unknown): boolean =>
+    Boolean(evaluate({ [ITEM_VAR]: item, [VALUE_VAR]: against }));
 
   return (fieldValue: unknown): boolean | Untestable => {
     const tested = toTestedValue(fieldValue, operator);
@@ -186,9 +203,14 @@ function makeMatcher(
       return tested;
     }
     const item = ignoreCase ? foldCase(tested.value) : tested.value;
-    const passed = Boolean(
-      evaluate({ [ITEM_VAR]: item, [VALUE_VAR]: comparison })
-    );
+    let passed: boolean;
+    if (asNumber === undefined) {
+      passed = test(item, comparison);
+    } else if (operator === "arrayContains") {
+      passed = test(item, comparison) || test(item, asNumber);
+    } else {
+      passed = test(item, typeof item === "number" ? asNumber : comparison);
+    }
     return negate ? !passed : passed;
   };
 }

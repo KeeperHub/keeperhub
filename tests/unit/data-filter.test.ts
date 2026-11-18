@@ -1246,6 +1246,53 @@ describe("data/filter", () => {
       expect(contains.indexes).toEqual([0]);
     });
 
+    it("matches a typed number whether an item holds it as text or as a number", async () => {
+      const big = "1000000000000000000000";
+      const items = source([big, 1e21, "1000000000000000000001", 1e20]);
+      expect(
+        (await ok({ source: items, operator: "===", value: big })).indexes
+      ).toEqual([0, 1]);
+      expect(
+        (await ok({ source: items, operator: "!==", value: big })).indexes
+      ).toEqual([2, 3]);
+      const tiny = source(["0.0000001", 1e-7, 2e-7]);
+      expect(
+        (await ok({ source: tiny, operator: "===", value: "0.0000001" }))
+          .indexes
+      ).toEqual([0, 1]);
+      const arrays = source([[1e-7], ["0.0000001"], [2e-7]]);
+      expect(
+        (
+          await ok({
+            source: arrays,
+            operator: "arrayContains",
+            value: "0.0000001",
+          })
+        ).indexes
+      ).toEqual([0, 1]);
+      // A decimal a double would round is not a number: only exact text matches.
+      const rounded = source([0.1, "0.1000000000000000000001"]);
+      expect(
+        (
+          await ok({
+            source: rounded,
+            operator: "===",
+            value: "0.1000000000000000000001",
+          })
+        ).indexes
+      ).toEqual([1]);
+    });
+
+    it("refuses a Value that reads as a number longer than 100 characters", async () => {
+      const long = `0.${"0".repeat(100)}1`;
+      for (const value of [long, `"${long}"`]) {
+        const result = await fails({ source: "[1]", operator: "===", value });
+        expect(result.error, value).toContain(
+          'Value for "General: equals" is a number longer than 100 characters.'
+        );
+      }
+    });
+
     it("refuses a Value longer than 10,000 characters", async () => {
       const result = await fails({
         source: '["a"]',
@@ -1260,7 +1307,7 @@ describe("data/filter", () => {
     it("says a half-typed array is not valid JSON", async () => {
       const result = await fails({ source: "[1, 2", operator: "keepAll" });
       expect(result.error).toContain(
-        "Source is not valid JSON, e.g. a missing ] or quote."
+        'Source is not valid JSON: check its brackets and quotes, e.g. a missing ] or ".'
       );
     });
 

@@ -466,6 +466,43 @@ describe("data/filter definition", () => {
       );
     });
 
+    it("parts entries on a semicolon when one quotes a reason", () => {
+      const bad = (id: string, label: string) => ({
+        ...actionNode(
+          editorConfig({ source: "[1]", operator: ">", value: "abc" })
+        ),
+        id,
+        data: {
+          ...actionNode(
+            editorConfig({ source: "[1]", operator: ">", value: "abc" })
+          ).data,
+          label,
+        },
+      });
+      const validation = validateWorkflowActionConfigs([
+        bad("n1", "A"),
+        bad("n2", "B"),
+        {
+          id: "n3",
+          type: "action",
+          data: {
+            label: "C",
+            type: "action",
+            config: {
+              actionType: "data/filter",
+              source: "[1]",
+              operator: "nope",
+            },
+          },
+        },
+      ]);
+      const reason =
+        "Value for 'Number: greater than' must be a number, e.g. 100 or 0x64";
+      expect(formatActionConfigValidationResponse(validation).message).toBe(
+        `Workflow contains invalid action configuration. Invalid node(s): "A": ${reason}; "B": ${reason}; "C" (operator, value). Fix the listed fields and save again.`
+      );
+    });
+
     it("names a node with a blank label by its id in the summary", () => {
       const node = actionNode(
         editorConfig({ source: "[1]", operator: ">", value: "abc" })

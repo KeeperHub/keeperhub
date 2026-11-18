@@ -175,7 +175,7 @@ function parseArrayInput(raw: unknown, name: string): unknown[] {
     if (typeof raw === "string" && raw.trim() !== "") {
       throw raw.trim().startsWith("[")
         ? new Error(
-            `${name} is not valid JSON, e.g. a missing ] or quote. Check the array you typed.`
+            `${name} is not valid JSON: check its brackets and quotes, e.g. a missing ] or ".`
           )
         : notAnArray(name);
     }
@@ -257,12 +257,21 @@ function canonicalDecimal(text: string): string {
   return negative && digits !== "0" ? `-${digits}` : digits;
 }
 
-// Reads Value as Condition reads a typed operand. A decimal that reads back
-// unchanged as a plain decimal (1.50, 007, +5) is a number. Any other (one a
-// double would round, or prints with an exponent) stays text, which the
-// evaluator compares by value without rounding.
-function toTypedValue(text: string): unknown {
+// Reads Value as a typed operand. A decimal that reads back unchanged as a
+// plain decimal (1.50, 007, +5) is a number. Any other (one a double would
+// round, or prints with an exponent) stays text, which the evaluator compares
+// by value without rounding against text items; the step compares number
+// items with exactNumberOf instead.
+function toTypedValue(text: string, label: string): unknown {
   const quoted = unquote(text);
+  const typed = quoted ?? text;
+  // The evaluator reads decimal text by value for every item, so a long one
+  // costs items x length; numbers past 100 characters are not needed.
+  if (DECIMAL_TEXT.test(typed) && typed.length > MAX_NUMBER_VALUE_LENGTH) {
+    throw new Error(
+      `Value for "${label}" is a number longer than ${MAX_NUMBER_VALUE_LENGTH} characters.`
+    );
+  }
   if (quoted !== undefined) {
     return quoted;
   }
@@ -276,6 +285,53 @@ function toTypedValue(text: string): unknown {
     null: null,
   };
   return Object.hasOwn(keywords, text) ? keywords[text] : text;
+}
+
+// A number's own decimal written without an exponent (1e-7 -> 0.0000001). A
+// double's exponent stays within about 330 digits, so this is bounded.
+function plainDecimal(number: number): string {
+  const literal = String(number);
+  const e = literal.indexOf("e");
+  if (e === -1) {
+    return literal;
+  }
+  const mantissa = literal.slice(0, e);
+  const negative = mantissa.startsWith("-");
+  const unsigned = negative ? mantissa.slice(1) : mantissa;
+  const point = unsigned.indexOf(".");
+  const digits =
+    point === -1
+      ? unsigned
+      : unsigned.slice(0, point) + unsigned.slice(point + 1);
+  const shift =
+    (point === -1 ? unsigned.length : point) + Number(literal.slice(e + 1));
+  let plain: string;
+  if (shift <= 0) {
+    plain = `0.${"0".repeat(-shift)}${digits}`;
+  } else if (shift >= digits.length) {
+    plain = digits + "0".repeat(shift - digits.length);
+  } else {
+    plain = `${digits.slice(0, shift)}.${digits.slice(shift)}`;
+  }
+  return negative ? `-${plain}` : plain;
+}
+
+/**
+ * The number a decimal text Value is, when it is exactly one (its shortest
+ * double reads back as the same decimal), so a number item can be compared
+ * with a number, as Condition does with a typed literal. Text that prints with
+ * an exponent (1000000000000000000000, 0.0000001) qualifies; a decimal a
+ * double would round does not.
+ */
+export function exactNumberOf(value: unknown): number | undefined {
+  if (typeof value !== "string" || !DECIMAL_TEXT.test(value)) {
+    return;
+  }
+  const number = Number(value);
+  return Number.isFinite(number) &&
+    plainDecimal(number) === canonicalDecimal(value)
+    ? number
+    : undefined;
 }
 
 // A number, bigint, decimal text or hex text in a form the evaluator orders
@@ -361,7 +417,12 @@ export function readValue(raw: unknown, operator: FilterOperator): unknown {
     );
   }
   // Each item is compared with the whole Value, so its length bounds a run.
-  if (typeof raw === "string" && raw.length > MAX_VALUE_LENGTH) {
+  // Number tests have their own, shorter limit, checked first.
+  if (
+    typeof raw === "string" &&
+    raw.length > MAX_VALUE_LENGTH &&
+    !NUMBER_FILTER_OPERATORS.includes(operator)
+  ) {
     throw new Error(
       `Value for "${label}" is longer than ${MAX_VALUE_LENGTH.toLocaleString(EN_US)} characters.`
     );
@@ -384,7 +445,7 @@ export function readValue(raw: unknown, operator: FilterOperator): unknown {
   if (operator === "arrayLength") {
     return requireWholeNumber(text, label);
   }
-  return typeof value === "string" ? toTypedValue(value) : value;
+  return typeof value === "string" ? toTypedValue(value, label) : value;
 }
 
 /**

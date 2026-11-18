@@ -172,12 +172,12 @@ Each operator in the list shows a one-line hint under its name. Once chosen, an 
 
 - Spaces around Value are trimmed; quote it to keep them, e.g. `" VAULT_"`.
 - **Text tests and has key**: the text as typed, so `007` stays `007`. Surrounding quotes are removed, and inside double quotes escapes such as `\n` and `\"` work as in a Condition.
-- When Value is only spaces, or a template resolves to nothing, the error says what this test needs: a number, a whole number, a key, or `""` for empty text. Left blank, saving is refused as a missing field. Value can be up to 10,000 characters.
+- When Value is only spaces, or a template resolves to nothing, the error says what this test needs: a number, a whole number, a key, or `""` for empty text. Left blank, saving is refused as a missing field.
 - **Number tests**: a decimal number such as `100`, `-5` or `1.5`, or hex written with a lowercase `0x` such as `0x64`, up to 100 characters. Exponents (`1e3`), `0X64` and negative hex are not numbers. Anything else fails the step, and is refused when the workflow is saved. Long numbers compare exactly, so a wei amount such as `1000000000000000000` can be typed in full.
 - **Array: length**: a whole number such as `3`, small enough to count exactly. Anything else is refused when the workflow is saved.
 - A Value, Source or Labels built from a template (`{{...}}`) is checked when the step runs, since its content is only known then; one typed by hand is checked when the workflow is saved.
 - **Every other test**: as in a Condition. `5` is a number, `true` and `false` are booleans, `null` is null, anything else is text. Quote it to force text, e.g. `"true"` matches the text `true` but not the boolean. Quoting a number changes nothing under equals, which compares numbers by value.
-- A number item that JavaScript prints with an exponent (`1e21` and up, or below `0.000001`) is not compared by value, as in a Condition; send such amounts as text, which compares exactly.
+- Under equals, not equals and Array: contains, a typed number such as `1000000000000000000000` or `0.0000001` matches the same amount whether an item holds it as text or as a number. A Value that reads as a number can be up to 100 characters; other Values up to 10,000.
 - Hex text such as `0x1f` is text under equals, so `"0x01"` does not equal `"0x1"`. Number tests and soft equals read it as a number.
 - Text is case-sensitive unless Ignore case is on, so a checksummed address does not equal its lowercase form by default.
 - From the API, a number Value too large to be exact (past 2^53) is refused; send it as text instead.
