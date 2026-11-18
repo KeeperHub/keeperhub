@@ -59,13 +59,12 @@ export function SwitchField({
             </p>
             {onReset && !disabled && (
               <Button
-                aria-label={`Reset ${label} to default`}
                 className="h-auto min-h-6 p-0 py-1 text-xs"
                 onClick={onReset}
                 type="button"
                 variant="link"
               >
-                Reset to default
+                Reset to default<span className="sr-only"> ({label})</span>
               </Button>
             )}
           </div>

@@ -14,7 +14,7 @@ import { SponsorGasField } from "@/components/workflow/config/sponsor-gas-field"
 import { registerFieldRenderer } from "@/lib/workflow/editor/extension-registry";
 import { fieldIsSet } from "@/lib/workflow/editor/group-summary";
 import { sponsorGasField } from "@/plugins/field-fragments";
-import type { ActionConfigField } from "@/plugins/registry";
+import { type ActionConfigField, isFieldShown } from "@/plugins/registry";
 
 const TEMPLATE = "{{@webhook:Webhook.flag}}";
 const HINT =
@@ -106,8 +106,8 @@ function sponsorToggle(): HTMLButtonElement | null {
 }
 
 function resetButton(): HTMLButtonElement | undefined {
-  return [...container.querySelectorAll("button")].find(
-    (button) => button.textContent === RESET
+  return [...container.querySelectorAll("button")].find((button) =>
+    button.textContent?.startsWith(RESET)
   );
 }
 
@@ -164,6 +164,21 @@ describe("a Sponsor gas holding a stray value", () => {
     expect(
       fieldIsSet(field, { network: UNCOVERED_NETWORK, sponsorGas: false })
     ).toBe(false);
+  });
+});
+
+describe("isFieldShown", () => {
+  const field = sponsorGasField();
+
+  it("shows a hidden default-on toggle only while it holds a stray value", () => {
+    const hidden = { network: UNCOVERED_NETWORK };
+    expect(isFieldShown(field, { ...hidden, sponsorGas: TEMPLATE })).toBe(true);
+    expect(isFieldShown(field, hidden)).toBe(false);
+    expect(isFieldShown(field, { ...hidden, sponsorGas: false })).toBe(false);
+  });
+
+  it("shows it whenever its condition holds", () => {
+    expect(isFieldShown(field, { network: COVERED_NETWORK })).toBe(true);
   });
 });
 
@@ -257,10 +272,8 @@ describe("the stray-value hint on every toggle", () => {
         ).toContain("-stray");
         const button = resetButton();
         expect(button?.getAttribute("type")).toBe("button");
-        expect(button?.getAttribute("aria-label")).toBe(
-          `Reset ${label} to default`
-        );
-        expect(button?.className).toContain("min-h-6");
+        // The accessible name keeps the visible text and adds the field.
+        expect(button?.textContent).toBe(`${RESET} (${label})`);
         act(() => button?.click());
         expect(onReset).toHaveBeenCalledTimes(1);
       }
