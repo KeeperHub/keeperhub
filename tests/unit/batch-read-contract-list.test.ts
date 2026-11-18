@@ -2376,6 +2376,25 @@ describe("batch-read-contract - second review, round 2", () => {
     expect(await failure({ ...argsList("[1e80]", "edge"), abi })).toBe(
       "Argument Sets entry 1: v is out of range for uint256, which cannot be negative and has a maximum."
     );
+    // The next double past 2^64: just over the limit.
+    const wide = abiWith("edge", [{ name: "v", type: "uint64" }]);
+    expect(
+      await failure({
+        ...argsList("[18446744073709556000]", "edge"),
+        abi: wide,
+      })
+    ).toBe(
+      "Argument Sets entry 1: v is out of range for uint64. Use a whole number from 0 to 18446744073709551615."
+    );
+    const narrow = abiWith("edge", [{ name: "v", type: "int64" }]);
+    expect(
+      await failure({
+        ...argsList("[-9223372036854777856]", "edge"),
+        abi: narrow,
+      })
+    ).toBe(
+      "Argument Sets entry 1: v is out of range for int64. Use a whole number from -9223372036854775808 to 9223372036854775807."
+    );
     const signed = abiWith("edge", [{ name: "v", type: "int256" }]);
     for (const list of ["[1e80]", "[-1e80]"]) {
       expect(
