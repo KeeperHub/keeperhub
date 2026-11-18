@@ -176,42 +176,44 @@ function buildUniformCalls(
 }
 
 /**
+ * A mixed call's destination (network and contract address), or why it has
+ * none. Checked for every call before anything else, so a bad destination
+ * fails the run whatever comes first in the list.
+ */
+function mixedCallDestination(
+  call: Record<string, unknown>,
+  index: number
+): { network: string; address: string } | { error: string } {
+  const { network, contractAddress } = call;
+  if (typeof network !== "string" || !network) {
+    return {
+      error: `Call ${index + 1} has no network. Pick one for this call.`,
+    };
+  }
+  const address =
+    typeof contractAddress === "string" ? contractAddress.trim() : "";
+  if (!address) {
+    return {
+      error: `Call ${index + 1} has no Contract Address. Enter the contract to call.`,
+    };
+  }
+  const invalid = addressError(address, `Call ${index + 1}: Contract Address`);
+  return invalid ? { error: invalid } : { network, address };
+}
+
+/**
  * Validate and normalize a single call object from mixed mode input
  */
 function validateMixedCall(
-  call: unknown,
-  index: number
+  typedCall: Record<string, unknown>,
+  index: number,
+  destination: { network: string; address: string }
 ):
   | { normalized: NormalizedCall; error?: undefined }
-  | { normalized?: undefined; error: string; destinationError?: true } {
-  if (typeof call !== "object" || call === null) {
-    return { error: `Call ${index + 1} must be an object` };
-  }
-
-  const typedCall = call as Record<string, unknown>;
-  const addr = typedCall.contractAddress;
+  | { normalized?: undefined; error: string } {
   const fn = typedCall.abiFunction;
   const args = typedCall.args;
   const abi = typedCall.abi;
-  const callNetwork = typedCall.network;
-
-  // Network and contract address are the destination: never softened.
-  if (typeof callNetwork !== "string" || !callNetwork) {
-    return { error: `Call ${index + 1} missing network`, destinationError: true };
-  }
-
-  const address = typeof addr === "string" ? addr.trim() : "";
-  if (!address) {
-    return {
-      error: `Call ${index + 1} missing contractAddress`,
-      destinationError: true,
-    };
-  }
-
-  const invalid = addressError(address, `Call ${index + 1}: Contract Address`);
-  if (invalid) {
-    return { error: invalid, destinationError: true };
-  }
 
   if (typeof fn !== "string" || !fn) {
     return { error: `Call ${index + 1} missing function.` };
@@ -223,11 +225,11 @@ function validateMixedCall(
 
   return {
     normalized: {
-      contractAddress: address,
+      contractAddress: destination.address,
       abiFunction: fn,
       args: Array.isArray(args) ? args : [],
       abi,
-      network: callNetwork,
+      network: destination.network,
     },
   };
 }
@@ -258,15 +260,26 @@ function buildMixedCalls(callsJson: string | undefined): {
     return { calls: [], error: "Calls must be a JSON array of call objects" };
   }
 
+  const destinations: { network: string; address: string }[] = [];
+  for (const [index, call] of parsedCalls.entries()) {
+    if (typeof call !== "object" || call === null) {
+      return { calls: [], error: `Call ${index + 1} must be an object` };
+    }
+    const destination = mixedCallDestination(
+      call as Record<string, unknown>,
+      index
+    );
+    if ("error" in destination) {
+      return { calls: [], error: destination.error, destinationError: true };
+    }
+    destinations.push(destination);
+  }
+
   const normalizedCalls: NormalizedCall[] = [];
   for (const [index, call] of parsedCalls.entries()) {
-    const result = validateMixedCall(call, index);
+    const result = validateMixedCall(call, index, destinations[index]);
     if (result.error !== undefined) {
-      return {
-        calls: [],
-        error: result.error,
-        destinationError: result.destinationError,
-      };
+      return { calls: [], error: result.error };
     }
     normalizedCalls.push(result.normalized);
   }

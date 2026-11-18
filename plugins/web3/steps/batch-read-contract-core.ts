@@ -1,11 +1,16 @@
 import { ethers } from "ethers";
-import { coerceArgsForAbi, reshapeArgsCounted } from "@/lib/abi/struct-args";
+import {
+  coerceArgsForAbi,
+  parseArrayComponentValue,
+  reshapeArgsCounted,
+} from "@/lib/abi/struct-args";
 import type { AbiParam } from "@/lib/abi/types";
 import { type AbiItem, resolveAbiFunction } from "@/lib/abi/utils";
 import {
   type ValidateArgsOptions,
   validateArgsForAbi,
 } from "@/lib/abi/validate-args";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
   CALLS_FROM_ADDRESS_LIST,
   CALLS_FROM_ARGS_LIST,
@@ -26,7 +31,6 @@ export const SHARED_ARGS_LABEL = "Function Arguments";
 const MAX_ECHOED_LENGTH = 60;
 export const MAX_REASON_LENGTH = 200;
 const EN_US = "en-US";
-const HEX_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const SCALAR_TYPE_RE = /^(address|bool|string|bytes\d*|u?int\d*)$/;
 const INTEGER_TYPE_RE = /^u?int\d*$/;
 // A uint256 has at most 78 digits; longer text is refused before encoding.
@@ -49,7 +53,7 @@ export type ListFunction = {
   outputs?: { name?: string; type: string }[];
 };
 
-export type CallsFrom =
+type CallsFrom =
   | typeof CALLS_FROM_ROWS
   | typeof CALLS_FROM_ARGS_LIST
   | typeof CALLS_FROM_ADDRESS_LIST;
@@ -127,21 +131,29 @@ function checkTextSize(value: unknown, label: string, nextStep: string): void {
 }
 
 /**
- * Why `value` is not a contract address, or undefined when it is: a 0x
- * address with 40 hex characters, with a valid checksum when mixed case.
- * Callers trim first where a template may leave whitespace around it.
+ * Why `value` is not an address, or undefined when it is. Accepts what Read
+ * Contract and the encoder accept (ethers.isAddress); mixed case must carry a
+ * valid checksum. Callers trim first where a template may add spaces.
  */
-export function addressError(value: unknown, label: string): string | undefined {
-  const address = typeof value === "string" ? value : "";
-  if (!HEX_ADDRESS_RE.test(address)) {
-    const shown =
-      typeof value === "string" ? `"${echo(value)}"` : showValue(value);
-    return `${label} is not a valid address: ${shown}. Use a 0x address with 40 hex characters.`;
+export function addressError(
+  value: unknown,
+  label: string
+): string | undefined {
+  const text = typeof value === "string" ? value : "";
+  if (text !== "" && ethers.isAddress(text)) {
+    return;
   }
-  if (!ethers.isAddress(address)) {
-    return `${label} has a bad checksum: "${address}". Use the address exactly as published, or in all lower case.`;
+  const hex = text.startsWith("0x") ? text : `0x${text}`;
+  if (EVM_ADDRESS_RE.test(hex)) {
+    return `${label} has a bad checksum: "${text}". Use the address exactly as published, or in all lower case.`;
   }
-  return;
+  const shown =
+    typeof value === "string" ? `"${echo(text)}"` : showValue(value);
+  const spaced =
+    text !== text.trim() && ethers.isAddress(text.trim())
+      ? " Remove the spaces around it."
+      : " Use a 0x address with 40 hex characters.";
+  return `${label} is not a valid address: ${shown}.${spaced}`;
 }
 
 /** Contract Address, trimmed and checked; throws DestinationError otherwise. */
@@ -202,7 +214,7 @@ export function parseListInput(
     const text = parsed.trim();
     if (text === "") {
       throw new Shape(
-        `${label} is empty or missing. Check the reference and the node that produces it.`
+        `${label} is missing: the field is blank or its reference resolved to nothing. Check the reference and the node that produces it.`
       );
     }
     checkTextSize(text, label, LIST_SIZE_STEP);
@@ -348,84 +360,119 @@ function checkListLeaf(
   return;
 }
 
-// List values are resolved at run time, so a {{...}} string is plain text.
-const LIST_VALIDATION: ValidateArgsOptions = {
-  resolved: true,
-  checkLeaf: checkListLeaf,
-};
-
 function sentence(text: string): string {
   return text.endsWith(".") ? text : `${text}.`;
 }
 
 /**
- * Check one reshaped argument set with Read Contract's pipeline (coerce, then
- * validate), estimating its size before the leaf checks or encoding.
+ * Check one reshaped argument set with Read Contract's pipeline. Its size is
+ * estimated first, on the reshaped value and with an early stop, so a wide
+ * tuple or a long list cannot cost much before a cap trips; then it is
+ * coerced and validated. `valuesBefore` is what earlier entries used.
  */
 function prepareArgs(
   reshaped: unknown[],
   fn: ListFunction,
-  where: string
+  where: string,
+  valuesBefore: number,
+  nextStep: string
 ): { args: unknown[]; bytes: number; values: number } {
+  const estimate = estimateCalldata(reshaped, fn, where, valuesBefore);
   const shaped = coerceArgsForAbi(reshaped, fn);
-  const estimate = estimateCalldata(shaped, fn);
-  checkCallSize(estimate.bytes, where);
-  const validation = validateArgsForAbi(shaped, fn, LIST_VALIDATION);
+  let leafError = false;
+  // List values are resolved at run time, so a {{...}} string is plain text.
+  const validation = validateArgsForAbi(shaped, fn, {
+    resolved: true,
+    fixedArrays: true,
+    checkLeaf: (value, type, path) => {
+      const error = checkListLeaf(value, type, path);
+      leafError = error !== undefined;
+      return error;
+    },
+  });
   if (!validation.ok) {
-    throw new Error(`${where}: ${sentence(validation.error)}`);
+    // The list's own checks name their next step; the shared ones do not.
+    const step = leafError ? "" : ` ${nextStep}`;
+    throw new Error(`${where}: ${sentence(validation.error)}${step}`);
   }
   return { args: shaped, ...estimate };
 }
 
+/** Running totals for one call's estimate, stopped as soon as a cap is passed. */
+type Tally = {
+  bytes: number;
+  values: number;
+  where: string;
+  maxValues: number;
+};
+
+function addToTally(tally: Tally, bytes: number): void {
+  tally.bytes += bytes;
+  tally.values += 1;
+  if (tally.bytes > MAX_CALL_CALLDATA_BYTES) {
+    throw new Error(
+      `${tally.where} has more than 64 KB of call data, the limit per call. Use smaller arguments.`
+    );
+  }
+  if (tally.values > tally.maxValues) {
+    throw new Error(
+      `The calls hold more than ${count(MAX_RUN_VALUES)} values, the limit per run. Use fewer or smaller entries.`
+    );
+  }
+}
+
 /** Bytes a dynamic value takes once encoded: its length word plus its padded data. */
-function dynamicBytes(value: unknown): number {
+function dynamicBytes(value: unknown, type: string): number {
   const text = typeof value === "string" ? value : "";
-  const length = HEX_RE.test(text)
-    ? Math.ceil((text.length - 2) / 2)
-    : Buffer.byteLength(text, "utf8");
+  const length =
+    type === "bytes" && HEX_RE.test(text)
+      ? Math.ceil((text.length - 2) / 2)
+      : Buffer.byteLength(text, "utf8");
   return 32 + Math.ceil(length / 32) * 32;
 }
 
 /**
- * An upper estimate of the encoded size of one value, 32 bytes per leaf and
- * per dynamic head or length word, computed without encoding anything.
+ * An upper estimate of one value's encoded size, 32 bytes per leaf and per
+ * dynamic head or length word, without encoding. Array text is read as the
+ * coerce step will read it, so text cannot slip past the estimate.
  */
 function estimateValue(
   value: unknown,
   type: string,
   components: AbiParam[] | undefined,
-  tally: { values: number }
-): number {
-  tally.values += 1;
+  tally: Tally
+): void {
   const array = ARRAY_TYPE_RE.exec(type);
   if (array) {
-    const items = Array.isArray(value) ? value : [];
+    addToTally(tally, 64);
+    const parsed = parseArrayComponentValue(value);
     const head = isDynamicType(array[1], components) ? 32 : 0;
-    let total = 64;
-    for (const item of items) {
-      total += head + estimateValue(item, array[1], components, tally);
+    for (const item of Array.isArray(parsed) ? parsed : []) {
+      if (head > 0) {
+        tally.bytes += head;
+      }
+      estimateValue(item, array[1], components, tally);
     }
-    return total;
+    return;
   }
   if (type === "tuple") {
-    let total = 32;
+    addToTally(tally, 32);
+    const members = value as Record<string, unknown> | undefined;
     for (const component of components ?? []) {
-      const member = (value as Record<string, unknown> | undefined)?.[
-        component.name
-      ];
-      total += estimateValue(
-        member,
+      estimateValue(
+        members?.[component.name],
         component.type,
         component.components,
         tally
       );
     }
-    return total;
+    return;
   }
   if (type === "string" || type === "bytes") {
-    return 32 + dynamicBytes(value);
+    addToTally(tally, 32 + dynamicBytes(value, type));
+    return;
   }
-  return 32;
+  addToTally(tally, 32);
 }
 
 function isDynamicType(
@@ -445,34 +492,23 @@ function isDynamicType(
   );
 }
 
-/** Estimated call data of one call, and how many values it holds. */
+/** Estimated call data of one call, and how many values it holds; throws at a cap. */
 function estimateCalldata(
   args: unknown[],
-  fn: ListFunction
+  fn: ListFunction,
+  where: string,
+  valuesBefore: number
 ): { bytes: number; values: number } {
-  const tally = { values: 0 };
-  let bytes = 4;
+  const tally: Tally = {
+    bytes: 4,
+    values: 0,
+    where,
+    maxValues: MAX_RUN_VALUES - valuesBefore,
+  };
   for (const [index, input] of fn.inputs.entries()) {
-    bytes += estimateValue(args[index], input.type, input.components, tally);
+    estimateValue(args[index], input.type, input.components, tally);
   }
-  return { bytes, values: tally.values };
-}
-
-/** One call's estimated call data, checked before its leaves or encoding. */
-function checkCallSize(bytes: number, where: string): void {
-  if (bytes > MAX_CALL_CALLDATA_BYTES) {
-    throw new Error(
-      `${where} is about ${count(Math.ceil(bytes / 1024))} KB of call data; the limit is 64 KB per call. Use smaller arguments.`
-    );
-  }
-}
-
-function checkRunValues(values: number): void {
-  if (values > MAX_RUN_VALUES) {
-    throw new Error(
-      `The calls add up to ${count(values)} values; the limit is ${count(MAX_RUN_VALUES)} per run. Use fewer or smaller entries.`
-    );
-  }
+  return { bytes: tally.bytes, values: tally.values };
 }
 
 /** An encoder error without ethers' detail suffix, in words for numbers. */
@@ -500,7 +536,9 @@ function unnamedTuple(
   path: string
 ): string | undefined {
   for (const [index, param] of (params ?? []).entries()) {
-    const at = path ? `${path}.${param.name || index}` : param.name || `arg${index}`;
+    const at = path
+      ? `${path}.${param.name || index}`
+      : param.name || `arg${index}`;
     if (!param.type.startsWith("tuple")) {
       continue;
     }
@@ -534,7 +572,7 @@ export function requireArguments(fn: ListFunction): void {
   }
 }
 
-/** A count message; a tuple given as flat values counts one per member. */
+/** A count message; with a tuple given flat, both counts are named. */
 function countMismatch(
   at: string,
   given: number,
@@ -543,12 +581,34 @@ function countMismatch(
   hint: string
 ): Error {
   const takes = fn.inputs.length;
-  const flat =
+  const names = inputNames(fn);
+  const expected =
     consumed === takes
-      ? ""
-      : `; its tuple given as flat values takes ${plural(consumed, "value")} in all`;
+      ? `${fn.name} takes ${count(takes)} (${names})`
+      : `${fn.name} takes ${count(takes)} (${names}) with each tuple as an object, or ${count(consumed)} with its members given flat`;
   return new Error(
-    `${at} has ${plural(given, "value")} but ${fn.name} takes ${count(takes)} (${inputNames(fn)})${flat}. ${hint}`
+    `${at} has ${plural(given, "value")}, but ${expected}. ${hint}`
+  );
+}
+
+/** A tuple given as an array of its members, which reads as flat values. */
+function positionalTupleError(
+  args: unknown[],
+  fn: ListFunction,
+  at: string
+): Error | undefined {
+  if (args.length > fn.inputs.length) {
+    return;
+  }
+  const index = fn.inputs.findIndex(
+    (input, i) => input.type === "tuple" && Array.isArray(args[i])
+  );
+  if (index < 0) {
+    return;
+  }
+  const input = fn.inputs[index];
+  return new Error(
+    `${at}: give ${input.name || `arg${index}`} as an object with its member names, like ${exampleValue(input.type, input.components)}, not as an array.`
   );
 }
 
@@ -572,15 +632,9 @@ function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
   }
   const reshaped = reshapeArgsCounted(entry, fn);
   if (entry.length !== reshaped.consumed) {
-    // A tuple given as an array of its members reads as flat values.
-    const positional = fn.inputs.findIndex(
-      (input, index) => input.type === "tuple" && Array.isArray(entry[index])
-    );
-    if (entry.length === takes && positional >= 0) {
-      const input = fn.inputs[positional];
-      throw new Error(
-        `${at}: give ${input.name || `arg${positional}`} as an object with its member names, like ${exampleValue(input.type, input.components)}, not as an array.`
-      );
+    const positional = positionalTupleError(entry, fn, at);
+    if (positional) {
+      throw positional;
     }
     const bare = scalar ? ", or the bare value" : "";
     throw countMismatch(
@@ -603,23 +657,24 @@ export function argSetsFromList(
   fn: ListFunction
 ): unknown[][] {
   requireNamedTuples(fn);
+  const nextStep = `Make each entry an array like ${exampleEntry(fn)}.`;
   let bytes = 0;
   let values = 0;
   return entries.map((entry, index) => {
     const at = `${ARGS_LIST_LABEL} entry ${index + 1}`;
-    const prepared = prepareArgs(entryToArgs(entry, fn, at), fn, at);
+    const args = entryToArgs(entry, fn, at);
+    const prepared = prepareArgs(args, fn, at, values, nextStep);
     bytes += prepared.bytes;
     values += prepared.values;
-    checkRunValues(values);
     checkRunCalldata(bytes, "entries");
     return prepared.args;
   });
 }
 
 /**
- * Function Arguments, reshaped, as the editor stores it: an input left blank is "", and
- * one never touched may be missing, so trailing blanks are trimmed or padded
- * to the function's inputs. An empty final `string` stays an empty string.
+ * Function Arguments, reshaped, read as the editor stores it: an input left
+ * blank is "" and one never touched may be missing, so trailing blanks are
+ * trimmed or padded to the inputs. An empty final `string` is sent as "".
  */
 function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
   let end = parsed.length;
@@ -629,6 +684,12 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
   const given = parsed.slice(0, end);
   const reshaped = reshapeArgsCounted(given, fn);
   const { consumed } = reshaped;
+  if (given.length !== consumed) {
+    const positional = positionalTupleError(given, fn, SHARED_ARGS_LABEL);
+    if (positional) {
+      throw positional;
+    }
+  }
   if (given.length > consumed) {
     throw countMismatch(
       SHARED_ARGS_LABEL,
@@ -641,7 +702,8 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
   if (given.length === consumed) {
     return reshaped.args;
   }
-  const padded = [...given, ...new Array<string>(consumed - given.length).fill("")];
+  const blanks = new Array<string>(consumed - given.length).fill("");
+  const padded = [...given, ...blanks];
   return reshapeArgsCounted(padded, fn).args;
 }
 
@@ -676,8 +738,13 @@ export function sharedArgsForList(
     );
   }
   // Encoded once and reused, so its values count once.
-  const prepared = prepareArgs(editorArgs(parsed, fn), fn, SHARED_ARGS_LABEL);
-  checkRunValues(prepared.values);
+  const prepared = prepareArgs(
+    editorArgs(parsed, fn),
+    fn,
+    SHARED_ARGS_LABEL,
+    0,
+    `Fill in the arguments for ${fn.name} (${inputNames(fn)}); only a string may be left blank.`
+  );
   checkRunCalldata(prepared.bytes * copies, "addresses");
   return prepared.args;
 }

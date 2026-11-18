@@ -32,7 +32,8 @@ function isPreStructuredObject(arg: unknown): boolean {
   return arg !== null && typeof arg === "object" && !Array.isArray(arg);
 }
 
-function parseArrayComponentValue(value: unknown): unknown {
+/** An array given as JSON text, parsed; anything else is returned as is. */
+export function parseArrayComponentValue(value: unknown): unknown {
   if (typeof value !== "string") {
     return value;
   }

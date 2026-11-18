@@ -125,7 +125,7 @@ No credentials required -- this is a read-only operation using Multicall3 at `0x
 | argsList        | No       | Argument sets for each call, used with `rows` (see Args List Builder below)              |
 | argsFromList    | With `args-list` | Argument Sets: a JSON array, usually a template, one entry per call           |
 | contractAddresses | With `address-list` | Contract Addresses: a JSON array, usually a template, one call per address |
-| functionArgs    | If the function takes arguments | With `address-list`: the arguments sent to every contract in the list; all of them are needed |
+| functionArgs    | If the function takes arguments | With `address-list`: the arguments sent to every contract in the list; fill in every one, only a `string` may be left blank |
 | abiFetchAddress | No       | With `address-list`: one contract with the same ABI, used only to fetch the ABI          |
 | batchSize       | No       | Max calls per Multicall3 request (default: 100, range: 1-500)                            |
 
@@ -138,19 +138,21 @@ The Args List field uses a dynamic builder instead of raw JSON. After selecting 
 The rows editor suits a fixed set of calls. When the calls come from an earlier node (a registry read, a database query, an HTTP response), set **Calls From** to a list instead:
 
 - **A list of argument sets** (`args-list`): one contract and function, one call per entry in **Argument Sets**. Each entry is the call's arguments in order, e.g. `["0xabc...", 5]`. For a function with one plain argument (an address, number, string, bool, bytes or bytes32), an entry can also be the bare value, e.g. `"0xabc..."`. Arguments are read as in Read Contract: a tuple is an object keyed by its member names, e.g. `{"token": "0xabc...", "amount": 5}`, or its members given flat, in order.
-- **A list of contract addresses** (`address-list`): one function, called on every address in **Contract Addresses** with the same **Function Arguments** (all of them, if the function takes any). Contract Address is not used; to fetch the ABI, enter any one contract with the same ABI in **Fetch ABI From** (it is not called), or tick Use manual ABI and paste it.
+- **A list of contract addresses** (`address-list`): one function, called on every address in **Contract Addresses** with the same **Function Arguments** (fill in every argument the function takes; only a `string` may be left blank, and is sent as an empty string). Contract Address is not used; to fetch the ABI, enter any one contract with the same ABI in **Fetch ABI From** (it is not called), or tick Use manual ABI and paste it.
 
 Both lists take a JSON array typed in the field or, more often, a reference to an array from an earlier node, e.g. `{{@registry:Read Contract.result}}` for a function that returns an array. Prefer one reference to the whole array over references mixed into a typed list. Results keep the list's order, duplicates included, so another list of names lines up with them by position.
 
 The list is checked before any call is made, and the step fails when:
 
-- the list is empty or missing, is a single value or not a JSON array, has more than 5,000 entries, or is larger than 1 MB
-- Function Arguments is larger than 1 MB, or leaves an argument blank that is not a `string` (a blank `string` is sent as an empty string)
+- the list is blank (a reference that resolved to nothing) or an empty array, is a single value or not a JSON array, has more than 5,000 entries, or is larger than 1 MB
+- Function Arguments is larger than 1 MB, or leaves an argument blank that is not a `string`
 - an entry is not a valid address, has the wrong number of arguments, or is not a plain value where one is expected (the message names the entry, counted from 1)
+- an address argument has spaces around it (an address in Contract Address or Contract Addresses is trimmed; one passed as an argument is not)
+- a tuple is given as an array of its members instead of an object keyed by member name, or the function takes a tuple whose members have no names (such a function cannot be called from a list)
 - an argument cannot be encoded for the function: a `bool` that is not `true` or `false`, a `bytes32` that is not 0x hex of that length (turn text into `bytes32` with the Encode / Decode node first), or a number that is not a whole number (write large numbers in quotes)
 - one call's arguments would encode to more than about 64 KB, the calls hold more than 50,000 values in all (Function Arguments, sent to every address, counts once), or the encoded calls add up to more than 10 MB
 
-With Fail workflow on error off, these failures, like a failed batch, are passed to the next node as `success: true` with `results` null and `error` set. Where the calls go still fails the run either way, as in Read Contract: a missing or unknown network, an RPC configuration that cannot be resolved, or a missing or invalid contract address. That covers Contract Address, a call's address in Different contracts mode, and Contract Addresses when it is blank, not a list, or has an entry that is not a valid address; an empty Contract Addresses list is passed on like the failures above.
+With Fail workflow on error off, these failures, like a failed batch, are passed to the next node as `success: true` with `results` null and `error` set. Only problems that leave the step with nowhere to call still fail the run, as in Read Contract: a missing or unknown network, an RPC configuration that cannot be resolved, or a missing or invalid contract address. That covers Contract Address, a call's network or address in Different contracts/functions mode, and Contract Addresses when it is blank, not a list, or has an entry that is not a valid address. An empty Contract Addresses list (`[]`) is passed on like the failures above.
 
 Encode / Decode returns a one-entry array as a plain string, not a list. If the list may hold a single entry, take it from a source that always returns an array.
 

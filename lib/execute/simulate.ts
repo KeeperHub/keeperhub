@@ -755,8 +755,11 @@ export function prepareSimulationCall(input: {
 
   try {
     const iface = new ethers.Interface(abiArray as ethers.InterfaceAbi);
-    const coerced = coerceArgsForAbi(argsOrError, abiFn);
-    const reshaped = reshapeArgsForAbi(coerced, abiFn);
+    // Reshape first, as the steps do, so coercion sees one value per input.
+    const reshaped = coerceArgsForAbi(
+      reshapeArgsForAbi(argsOrError, abiFn),
+      abiFn
+    );
     // Encode with the signature derived from the resolved entry, not with the
     // key as supplied: an API or MCP caller may send the legacy raw spelling
     // (`f(tuple)`), which resolves here but is not a fragment ethers accepts.

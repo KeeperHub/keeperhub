@@ -298,6 +298,7 @@ describe("validateArgsForAbi options", () => {
         ],
       },
       {
+        fixedArrays: true,
         checkLeaf: (_value, type, path) => {
           seen.push(`${path}:${type}`);
           return;
@@ -308,11 +309,42 @@ describe("validateArgsForAbi options", () => {
     expect(seen).toEqual(["xs[0]:uint256", "xs[1]:uint256", "t.a:uint256"]);
   });
 
-  it("checks the items of a fixed-size array", () => {
+  it("checks the items and length of a fixed-size array when asked", () => {
+    const fn = { inputs: [{ name: "xs", type: "uint256[2]" }] };
+    const options = { fixedArrays: true };
+    expect(validateArgsForAbi([["1", ""]], fn, options)).toEqual({
+      ok: false,
+      error: "xs[1]: uint256 cannot be empty",
+    });
+    expect(validateArgsForAbi([["1"]], fn, options)).toEqual({
+      ok: false,
+      error: "xs: uint256[2] takes 2 items, got 1",
+    });
+  });
+
+  it("leaves a fixed-size array to the encoder by default", () => {
+    // Positional tuples in a tuple[2] encode fine, so existing callers keep them.
     expect(
-      validateArgsForAbi([["1", ""]], {
-        inputs: [{ name: "xs", type: "uint256[2]" }],
-      })
-    ).toEqual({ ok: false, error: "xs[1]: uint256 cannot be empty" });
+      validateArgsForAbi(
+        [
+          [
+            ["1", "0x1"],
+            ["2", "0x2"],
+          ],
+        ],
+        {
+          inputs: [
+            {
+              name: "ps",
+              type: "tuple[2]",
+              components: [
+                { name: "a", type: "uint256" },
+                { name: "b", type: "address" },
+              ],
+            },
+          ],
+        }
+      )
+    ).toEqual({ ok: true });
   });
 });

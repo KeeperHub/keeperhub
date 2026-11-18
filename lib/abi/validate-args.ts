@@ -19,7 +19,10 @@ export type ValidationResult = { ok: true } | { ok: false; error: string };
 export type ValidateArgsOptions = {
   // Values already resolved at run time, so a {{...}} string is plain text.
   resolved?: boolean;
-  // A further check on each present, non-empty leaf; returns an error or undefined.
+  // Also walk fixed-size arrays (uint256[3]) and check their length. Off by
+  // default: a fixed-size array is otherwise left to the encoder as one leaf.
+  fixedArrays?: boolean;
+  // A further check on each leaf that passed the empty and missing checks.
   checkLeaf?: (
     value: unknown,
     type: string,
@@ -29,7 +32,7 @@ export type ValidateArgsOptions = {
 
 const TEMPLATE_VARIABLE_RE = /^\{\{.+\}\}$/;
 const BYTES_TYPE_RE = /^bytes\d*$/;
-const ARRAY_SUFFIX_RE = /\[\d*\]$/;
+const FIXED_ARRAY_RE = /\[(\d+)\]$/;
 
 function isTemplateVariable(
   value: unknown,
@@ -42,9 +45,18 @@ function isTemplateVariable(
   );
 }
 
-/** `uint256[]` and `uint256[3]` -> `uint256`. */
+/** `uint256[]` -> `uint256`; `uint256[3]` -> `uint256` when fixed arrays are walked. */
 function stripArraySuffix(type: string): string {
-  return type.replace(ARRAY_SUFFIX_RE, "");
+  return type.endsWith("[]")
+    ? type.slice(0, -2)
+    : type.replace(FIXED_ARRAY_RE, "");
+}
+
+function isWalkedArray(type: string, options: ValidateArgsOptions): boolean {
+  return (
+    type.endsWith("[]") ||
+    (options.fixedArrays === true && FIXED_ARRAY_RE.test(type))
+  );
 }
 
 /**
@@ -99,6 +111,13 @@ function validateArray(
 ): ValidationResult {
   if (!Array.isArray(value)) {
     return { ok: false, error: `${path}: expected array for ${type}` };
+  }
+  const fixed = FIXED_ARRAY_RE.exec(type);
+  if (fixed && value.length !== Number(fixed[1])) {
+    return {
+      ok: false,
+      error: `${path}: ${type} takes ${fixed[1]} items, got ${value.length}`,
+    };
   }
   const baseType = stripArraySuffix(type);
   for (let i = 0; i < value.length; i++) {
@@ -160,7 +179,7 @@ function validateValue(
   if (isTemplateVariable(value, options)) {
     return { ok: true };
   }
-  if (ARRAY_SUFFIX_RE.test(type)) {
+  if (isWalkedArray(type, options)) {
     return validateArray(value, type, components, path, options);
   }
   if (type === "tuple") {

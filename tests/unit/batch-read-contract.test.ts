@@ -694,7 +694,9 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("missing network");
+    expect(result.error).toContain(
+      "Call 1 has no network. Pick one for this call."
+    );
   });
 
   it("fails when call is missing contractAddress", async () => {
@@ -709,7 +711,9 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("missing contractAddress");
+    expect(result.error).toContain(
+      "Call 1 has no Contract Address. Enter the contract to call."
+    );
   });
 
   it("fails when call has invalid address", async () => {
