@@ -88,18 +88,33 @@ describe("matchesRegex", () => {
       expect(runRule("null", "nullable")).toBe(true);
     });
 
-    it("keeps quotes as part of the pattern, exactly as typed", () => {
-      expect(runRule('"ok"', '{"status":"ok"}')).toBe(true);
-      expect(runRule('"ok"', "broken")).toBe(false);
-      expect(runRule('"a"|"b"', '"b"')).toBe(true);
-      expect(runRule('"\\d+"', '"12"')).toBe(true);
+    it("reads the pattern exactly as typed, ends trimmed", () => {
+      expect(runRule('\\"ok\\"', '{"status":"ok"}')).toBe(true);
+      expect(runRule('\\"ok\\"', "broken")).toBe(false);
+      expect(runRule('a"|"b', 'xa"')).toBe(true);
       expect(runRule("  ^a  ", "ab")).toBe(true);
+      expect(runRule("^a[ ]", "a b")).toBe(true);
+    });
+
+    it("refuses a pattern wrapped in quotes or slashes, with the escape to use", () => {
+      for (const pattern of ['"ok"', "'ok'", '"a"|"b"']) {
+        expect(() => runRule(pattern, '"ok"'), pattern).toThrow(
+          "Leave out the quotes"
+        );
+      }
+      for (const pattern of ["/^0x/", "/^0x/i", "//"]) {
+        expect(() => runRule(pattern, "0x1"), pattern).toThrow(
+          "Leave out the /.../"
+        );
+      }
+      expect(runRule("\\/api\\/", "GET /api/v1")).toBe(true);
     });
 
     it("refuses a pattern from another node, whole or inside the pattern", () => {
       for (const pattern of [
         "{{@n1:Webhook.value}}",
         "^{{@n1:Webhook.value}}$",
+        "^{{@n1:Webhook.value}}0$",
       ]) {
         expect(() => runRule(pattern, "a"), pattern).toThrow(
           REGEX_SOURCE_ERROR
@@ -189,11 +204,25 @@ describe("matchesRegex", () => {
       }
     });
 
-    it("keeps saved rules when the stored text is the old new RegExp form", () => {
-      const saved = group([FIELD, "matchesRegex", "^0x"]);
-      expect(
-        editorConditionState(`new RegExp("^0x").test(String(${FIELD}))`, saved)
-      ).toEqual({ parsedGroup: null, initialMode: "visual" });
+    it("opens text it cannot rebuild as text, even beside a blank saved group", () => {
+      const blank: ConditionGroup = { id: "g", logic: "AND", rules: [] };
+      for (const condition of [
+        `new RegExp("^0x").test(String(${FIELD}))`,
+        `matchesRegex(${FIELD}, " ^a ")`,
+      ]) {
+        expect(editorConditionState(condition, blank), condition).toEqual({
+          parsedGroup: null,
+          initialMode: "expression",
+        });
+      }
+    });
+
+    it("opens a regex mixed into && and || as text, not as a garbled rule", () => {
+      const condition = `matchesRegex(${FIELD}, "^0x") || {{@n1:Webhook.other}} == "x" && {{@n1:Webhook.other}} == "y"`;
+      expect(editorConditionState(condition, undefined)).toEqual({
+        parsedGroup: null,
+        initialMode: "expression",
+      });
     });
 
     it("keeps parentheses and && inside a pattern in their rule", () => {
@@ -212,17 +241,6 @@ describe("matchesRegex", () => {
         [FIELD, "contains", "z"],
       ]);
     });
-
-    it("reads the old new RegExp form, two rules included", () => {
-      const reopened = expressionToConditionGroup(
-        `new RegExp("^a\\\\)").test(String(${FIELD})) && String(${FIELD}).includes("z")`
-      );
-      expect(reopened?.rules).toHaveLength(2);
-      expect(reopened?.rules[0]).toMatchObject({
-        operator: "matchesRegex",
-        rightOperand: "^a\\)",
-      });
-    });
   });
 
   describe("a typed expression", () => {
@@ -230,6 +248,35 @@ describe("matchesRegex", () => {
       expect(run(`matchesRegex(String(${FIELD}), "^\\\\d+$")`, "123")).toBe(
         true
       );
+    });
+
+    it("refuses a reference inside the pattern before it is filled in", () => {
+      for (const expression of [
+        `matchesRegex(${FIELD}, "^{{@n1:Webhook.other}}0$")`,
+        `matchesRegex(${FIELD}, "{{@n1:Webhook.other}}")`,
+      ]) {
+        expect(() => run(expression, "__v10"), expression).toThrow(
+          REGEX_SOURCE_ERROR
+        );
+      }
+    });
+
+    it("accepts a typed pattern that happens to read like a context name", () => {
+      expect(run(`matchesRegex(${FIELD}, "^__v0$")`, "__v0")).toBe(true);
+    });
+
+    it("allows 16 regex tests in one Condition and refuses 17", () => {
+      const calls = (count: number): string =>
+        Array.from(
+          { length: count },
+          (_, i) => `matchesRegex(${FIELD}, "^${i}")`
+        ).join(" || ");
+      expect(run(calls(16), "15")).toBe(true);
+      expect(() => run(calls(17), "1")).toThrow("at most 16 times");
+      expect(validateConditionExpressionUI(calls(17))).toEqual({
+        valid: false,
+        error: expect.stringContaining("at most 16 times"),
+      });
     });
 
     it("runs without String() around the field", () => {
@@ -369,7 +416,8 @@ describe("matchesRegex", () => {
       expect(regexPatternError("[a-")).toContain("Invalid regex pattern");
       expect(regexPatternError("\\0")).toBeUndefined();
       expect(regexPatternError("^0x[0-9a-f]{40}$")).toBeUndefined();
-      expect(regexPatternError("/api/v1/")).toBeUndefined();
+      expect(regexPatternError("/api/v1/")).toContain("Leave out the /.../");
+      expect(regexPatternError("\\/api\\/v1\\/")).toBeUndefined();
     });
 
     it("refuses a pattern that compiles to too many steps", () => {
@@ -444,10 +492,21 @@ describe("matchesRegex", () => {
   });
 
   describe("string masking in the validators", () => {
-    it("still refuses a blocked name used as a bracket key", () => {
-      expect(validateConditionExpression('__v0["constructor"]').valid).toBe(
-        false
-      );
+    it("still refuses a blocked name used as a bracket key, escapes decoded", () => {
+      for (const expression of [
+        '__v0["constructor"]',
+        '__v0["\\x63onstructor"]',
+        "__v0[ '__proto__' ]",
+      ]) {
+        expect(validateConditionExpression(expression).valid, expression).toBe(
+          false
+        );
+      }
+      expect(
+        validateConditionExpression("__v0 == \"a['constructor']\"")
+      ).toEqual({
+        valid: true,
+      });
     });
 
     it("accepts ordinary text values the old checks misread as code", () => {

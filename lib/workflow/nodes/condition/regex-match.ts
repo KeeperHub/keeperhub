@@ -11,26 +11,30 @@ import { RE2JS, RE2JSSyntaxException } from "re2js";
 export const MAX_REGEX_PATTERN_LENGTH = 512;
 export const MAX_REGEX_PROGRAM_SIZE = 1000;
 export const MAX_REGEX_TEXT_LENGTH = 4096;
+// Compiling is not charged to the budget, so the number of calls is capped.
+export const MAX_REGEX_CALLS = 16;
 // Up to about 4 s of matching at the worst measured cost per step.
 export const MAX_REGEX_RUN_WORK = 25_000_000;
 
 export const REGEX_ARITY_ERROR =
   'matchesRegex takes two values: the text and a quoted pattern, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
 export const REGEX_SOURCE_ERROR =
-  "Type the regex pattern itself; it can't come from another node or be built from other values";
+  "Type the regex pattern itself; it can't come from another node or be built from other values. To look for text from another node, use contains or starts with";
 export const REGEX_BACKSLASH_ERROR =
   'In a typed condition, double each backslash in the regex pattern, e.g. "^\\\\d+$" for ^\\d+$';
 export const REGEX_EMPTY_ERROR =
   "Enter a regex pattern; an empty one matches everything";
 export const REGEX_NON_TEXT_ERROR =
-  "matches regex tests text, numbers or booleans, not a list or object";
+  "Matches regex tests text, numbers or booleans, not a list or object";
+export const REGEX_CALLS_ERROR = `A condition can use matchesRegex at most ${MAX_REGEX_CALLS} times`;
 
 const MAX_CACHED_PATTERNS = 256;
 const SYNTAX_ERROR_PREFIX = "error parsing regexp: ";
 const LOOKAROUND_RE = /`\(\?<?[=!]/;
 const BACKREFERENCE_RE = /invalid escape sequence: `\\([1-9]|k)/;
 const UNICODE_ESCAPE_RE = /invalid escape sequence: `\\u/;
-const SLASH_DELIMITED_RE = /^\/.+\/[dgimsuvy]+$/;
+const SLASH_DELIMITED_RE = /^\/.*\/[dgimsuvy]*$/;
+const QUOTE_WRAPPED_RE = /^(["'])[\s\S]*\1$/;
 const BACKTICK_RE = /`/g;
 
 const compiled = new Map<string, RE2JS>();
@@ -58,9 +62,15 @@ function describeSyntaxError(message: string): string {
 }
 
 function compileUncached(pattern: string, ignoreCase: boolean): RE2JS {
-  if (SLASH_DELIMITED_RE.test(pattern)) {
+  // Both read as literal characters, which is almost never what was meant.
+  if (pattern.length > 1 && SLASH_DELIMITED_RE.test(pattern)) {
     throw new Error(
-      "Leave out the /.../ around the regex pattern. To ignore case, start it with (?i)"
+      "Leave out the /.../ around the regex pattern (write \\/ for a literal slash). To ignore case, start it with (?i)"
+    );
+  }
+  if (pattern.length > 1 && QUOTE_WRAPPED_RE.test(pattern)) {
+    throw new Error(
+      'Leave out the quotes around the regex pattern; they would have to appear in the text. To match quoted text, write \\"ok\\"'
     );
   }
   let regex: RE2JS;
@@ -130,9 +140,9 @@ export function regexPatternError(
 
 /** Raised when one run has spent its matching budget. */
 export class RegexBudgetError extends Error {
-  constructor() {
+  constructor(steps: number) {
     super(
-      `matches regex reached this node's matching limit: pattern steps x characters tested may total ${formatCount(MAX_REGEX_RUN_WORK)}. Test fewer or shorter values, or a simpler pattern`
+      `Matches regex reached this node's matching limit: this pattern has ${formatCount(steps)} steps, and steps x characters tested may total ${formatCount(MAX_REGEX_RUN_WORK)}. Test fewer or shorter values, or a simpler pattern`
     );
     this.name = "RegexBudgetError";
   }
@@ -143,9 +153,10 @@ export class RegexBudget {
   private remaining = MAX_REGEX_RUN_WORK;
 
   charge(regex: CompiledRegex, textLength: number): void {
-    this.remaining -= regex.programSize() * textLength;
+    const steps = regex.programSize();
+    this.remaining -= steps * textLength;
     if (this.remaining < 0) {
-      throw new RegexBudgetError();
+      throw new RegexBudgetError(steps);
     }
   }
 }

@@ -34,8 +34,10 @@ import {
 } from "./missing-reference";
 import {
   compileRegex,
+  MAX_REGEX_CALLS,
   REGEX_ARITY_ERROR,
   REGEX_BACKSLASH_ERROR,
+  REGEX_CALLS_ERROR,
   REGEX_NON_TEXT_ERROR,
   REGEX_SOURCE_ERROR,
   RegexBudget,
@@ -44,7 +46,6 @@ import {
 import { scanString } from "./string-literal";
 
 const WHITESPACE_RE = /\s/;
-const CONTEXT_VARIABLE_RE = /__[vb]\d+/g;
 
 const ALLOWED_METHODS = new Set([
   "includes",
@@ -865,29 +866,13 @@ function regexPattern(node: CallNode): string {
 // One budget per evaluation; evaluation is synchronous, so a module slot is safe.
 let activeRegexBudget: RegexBudget | undefined;
 
-// A reference typed inside the quotes arrives here renamed to its context
-// variable (__v0); refuse it rather than match that name as text.
-function holdsReference(
-  pattern: string,
-  ctx: Record<string, unknown>
-): boolean {
-  for (const [name] of pattern.matchAll(CONTEXT_VARIABLE_RE)) {
-    if (Object.hasOwn(ctx, name)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function evalRegexCall(node: CallNode, ctx: Record<string, unknown>): boolean {
   if (!activeRegexBudget) {
     throw new Error(`${REGEX_FUNCTION} runs only inside a compiled condition`);
   }
-  const pattern = regexPattern(node);
-  if (holdsReference(pattern, ctx)) {
-    throw new Error(REGEX_SOURCE_ERROR);
-  }
-  const regex = compileRegex(pattern);
+  // A reference typed inside the pattern is refused on the raw text, before
+  // references become __vN (preValidateConditionExpression).
+  const regex = compileRegex(regexPattern(node));
   const text = evalNode(node.arguments[0], ctx);
   if (isMissingReference(text)) {
     throw missingReferenceError(text);
@@ -1074,6 +1059,37 @@ export function safeEvaluateCondition(
   return compileSafeCondition(expression)(context);
 }
 
+function countRegexCalls(node: AstNode): number {
+  const children: AstNode[] = [];
+  switch (node.type) {
+    case "UnaryExpression":
+      children.push(node.argument);
+      break;
+    case "BinaryExpression":
+    case "LogicalExpression":
+      children.push(node.left, node.right);
+      break;
+    case "ConditionalExpression":
+      children.push(node.test, node.consequent, node.alternate);
+      break;
+    case "MemberExpression":
+      children.push(node.object, node.property);
+      break;
+    case "CallExpression":
+      children.push(node.callee, ...node.arguments);
+      break;
+    default:
+      break;
+  }
+  const own =
+    node.type === "CallExpression" &&
+    node.callee.type === "Identifier" &&
+    node.callee.name === REGEX_FUNCTION
+      ? 1
+      : 0;
+  return children.reduce((total, child) => total + countRegexCalls(child), own);
+}
+
 // Parses once, for callers that evaluate one expression against many contexts.
 export function compileSafeCondition(
   expression: string
@@ -1085,6 +1101,9 @@ export function compileSafeCondition(
     throw new Error(
       `Condition parse error: ${error instanceof Error ? error.message : String(error)}`
     );
+  }
+  if (countRegexCalls(ast) > MAX_REGEX_CALLS) {
+    throw new Error(REGEX_CALLS_ERROR);
   }
   return (context: Record<string, unknown>): unknown => {
     const outer = activeRegexBudget;

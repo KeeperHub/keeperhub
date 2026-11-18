@@ -453,7 +453,9 @@ function ConditionFields({
             value={conditionValue}
           />
           {validationError && (
-            <p className="text-destructive text-xs">{validationError}</p>
+            <p aria-live="polite" className="text-destructive text-xs">
+              {validationError}
+            </p>
           )}
           <p className="text-muted-foreground text-xs">
             Enter a JavaScript expression that evaluates to true or false. Use @

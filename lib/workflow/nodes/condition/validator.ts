@@ -29,9 +29,12 @@ import {
   hasTemplateToken,
   replaceTemplateTokens,
 } from "@/lib/workflow/template-ref";
+import { findRegexCalls, REGEX_OBJECT_RE } from "./regex-calls";
 import {
+  MAX_REGEX_CALLS,
   REGEX_ARITY_ERROR,
   REGEX_BACKSLASH_ERROR,
+  REGEX_CALLS_ERROR,
   REGEX_SOURCE_ERROR,
   regexPatternError,
 } from "./regex-match";
@@ -80,27 +83,58 @@ const DANGEROUS_PATTERNS = [
   /;/g,
 ];
 
-// JavaScript regex objects: the builder's old form, or a typed /.../.test(...).
-const REGEX_OBJECT_PATTERN =
-  /\bnew\s+RegExp\b|\/[^/\s]+\/[a-z]*\s*\.\s*test\s*\(/;
 const REGEX_OBJECT_ERROR =
   'Regex objects (new RegExp(...) or /.../) are not supported in conditions. Use matchesRegex(value, "pattern") or the "matches regex" operator';
 const UNTERMINATED_STRING_ERROR =
   "Condition has an unterminated string: a quote is never closed";
-// Masking hides string keys from the keyword scan, so check this form directly.
-const BLOCKED_KEY_PATTERN =
-  /\[\s*(["'])(?:constructor|__proto__|prototype)\1\s*\]/;
+// Masking hides string keys from the keyword scan, so a key is checked after
+// decoding, the way the interpreter reads it ("\x63onstructor" included).
+const BLOCKED_KEYS = new Set(["constructor", "__proto__", "prototype"]);
+const STRING_KEY_RE = /\[\s*["']/g;
+
+function blockedKeyError(
+  expression: string,
+  code: string
+): ValidationResult | undefined {
+  for (const match of code.matchAll(STRING_KEY_RE)) {
+    const quoteAt = match.index + match[0].length - 1;
+    const key = scanString(expression, quoteAt).value;
+    if (BLOCKED_KEYS.has(key)) {
+      return {
+        valid: false,
+        error: `Condition contains disallowed syntax: "[${key}]"`,
+      };
+    }
+  }
+  return;
+}
 
 // The scanner's own reason: an unclosed quote, or an escape it cannot read.
 function stringError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.startsWith("Unterminated")
     ? UNTERMINATED_STRING_ERROR
-    : `Condition has an invalid string: ${message}`;
+    : `Condition has an invalid string: ${message}. In a regex pattern, double each backslash`;
+}
+
+// Rules only the raw condition (references not yet filled in) can show: a
+// reference inside a regex pattern would be filled in as the name __v0.
+function rawRegexError(expression: string): ValidationResult | undefined {
+  const calls = findRegexCalls(expression);
+  if (calls.length > MAX_REGEX_CALLS) {
+    return { valid: false, error: REGEX_CALLS_ERROR };
+  }
+  for (const call of calls) {
+    const pattern = call.args[1];
+    if (pattern && hasTemplateToken(expression.slice(...pattern))) {
+      return { valid: false, error: REGEX_SOURCE_ERROR };
+    }
+  }
+  return;
 }
 
 function regexObjectError(code: string): ValidationResult | undefined {
-  return REGEX_OBJECT_PATTERN.test(code)
+  return REGEX_OBJECT_RE.test(code)
     ? { valid: false, error: REGEX_OBJECT_ERROR }
     : undefined;
 }
@@ -352,12 +386,9 @@ export function validateConditionExpression(
     return { valid: false, error: stringError(error) };
   }
 
-  const blockedKey = expression.match(BLOCKED_KEY_PATTERN);
+  const blockedKey = blockedKeyError(expression, code);
   if (blockedKey) {
-    return {
-      valid: false,
-      error: `Condition contains disallowed syntax: "${blockedKey[0]}"`,
-    };
+    return blockedKey;
   }
 
   const regexObject = regexObjectError(code);
@@ -448,7 +479,7 @@ export function preValidateConditionExpression(
     }
   }
 
-  return { valid: true };
+  return rawRegexError(expression) ?? { valid: true };
 }
 
 /**
@@ -1208,6 +1239,12 @@ function regexCallError(args: Token[][]): string | undefined {
 
 /** The run-time pattern rules, applied while the condition is typed. */
 function validateRegexCalls(tokens: Token[]): ValidationResult {
+  const calls = tokens.filter(
+    (token) => token.type === "identifier" && token.value === "matchesRegex"
+  ).length;
+  if (calls > MAX_REGEX_CALLS) {
+    return { valid: false, error: REGEX_CALLS_ERROR };
+  }
   for (const [index, token] of tokens.entries()) {
     const opensCall =
       token.type === "identifier" &&

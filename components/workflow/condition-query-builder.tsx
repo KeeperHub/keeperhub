@@ -180,7 +180,7 @@ function RuleRow({
         )}
       </div>
       {patternError && (
-        <p className="text-destructive text-xs" id={errorId}>
+        <p aria-live="polite" className="text-destructive text-xs" id={errorId}>
           {patternError}
         </p>
       )}

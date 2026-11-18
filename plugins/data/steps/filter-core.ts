@@ -353,6 +353,9 @@ function rejectUnusableNumber(value: unknown, label: string): void {
 }
 
 function valueTip(operator: FilterOperator): string {
+  if (isRegexOperator(operator)) {
+    return " Enter a pattern, e.g. ^EMSP_; ^$ matches empty text.";
+  }
   if (NUMBER_FILTER_OPERATORS.includes(operator)) {
     return " Enter a number, e.g. 100 or 0x64.";
   }

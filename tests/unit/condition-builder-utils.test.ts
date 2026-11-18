@@ -577,21 +577,6 @@ describe("condition-builder-utils", () => {
         expect(r.operator).toBe("matchesRegex");
         expect(r.rightOperand).toBe("^[a-z]+@");
       });
-
-      it("also reads the String(value) spelling", () => {
-        const r = parseFirstRule('matchesRegex(String("email"), "^[a-z]+@")');
-        expect(r.leftOperand).toBe("email");
-        expect(r.rightOperand).toBe("^[a-z]+@");
-      });
-
-      it("reopens the old new RegExp form as a regex rule", () => {
-        const r = parseFirstRule(
-          'new RegExp("^[a-z]+@").test(String("email"))'
-        );
-        expect(r.leftOperand).toBe("email");
-        expect(r.operator).toBe("matchesRegex");
-        expect(r.rightOperand).toBe("^[a-z]+@");
-      });
     });
 
     describe("template references", () => {

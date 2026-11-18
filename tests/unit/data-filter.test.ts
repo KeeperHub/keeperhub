@@ -97,13 +97,28 @@ describe("data/filter", () => {
       expect(result.items).toEqual(["EMSP_SPBEAM_HALT", "EMSP_LINE_WIPE"]);
     });
 
-    it("reads the pattern exactly as typed, quotes included", async () => {
-      const result = await ok({
+    it("reads the pattern as typed and refuses one wrapped in quotes", async () => {
+      const escaped = await ok({
         source: source(['"ok"', "ok", "broken"]),
+        operator: "matchesRegex",
+        value: '\\"ok\\"',
+      });
+      expect(escaped.items).toEqual(['"ok"']);
+      const wrapped = await fails({
+        source: source(["ok"]),
         operator: "matchesRegex",
         value: '"ok"',
       });
-      expect(result.items).toEqual(['"ok"']);
+      expect(wrapped.error).toContain("Leave out the quotes");
+    });
+
+    it("tells what an empty regex Value needs", async () => {
+      const result = await fails({
+        source: source(["a"]),
+        operator: "matchesRegex",
+        value: "",
+      });
+      expect(result.error).toContain("Enter a pattern, e.g. ^EMSP_");
     });
 
     it("keeps the rest with does not match regex", async () => {
