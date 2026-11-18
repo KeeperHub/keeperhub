@@ -10,12 +10,17 @@ vi.mock("server-only", () => ({}));
 import { applyBigIntConversion } from "@/lib/bigint-condition-utils";
 import { evaluateConditionExpression } from "@/lib/workflow/executor/executor.workflow";
 import type { ConditionGroup } from "@/lib/workflow/nodes/condition/builder-types";
-import { expressionToConditionGroup } from "@/lib/workflow/nodes/condition/builder-utils";
+import {
+  editorConditionState,
+  expressionToConditionGroup,
+} from "@/lib/workflow/nodes/condition/builder-utils";
 import { visualConditionToExpression } from "@/lib/workflow/nodes/condition/expression";
 import { makeMissingReference } from "@/lib/workflow/nodes/condition/missing-reference";
 import {
   MAX_REGEX_TEXT_LENGTH,
   REGEX_BACKSLASH_ERROR,
+  REGEX_EMPTY_ERROR,
+  REGEX_NON_TEXT_ERROR,
   REGEX_SOURCE_ERROR,
   regexPatternError,
 } from "@/lib/workflow/nodes/condition/regex-match";
@@ -83,15 +88,30 @@ describe("matchesRegex", () => {
       expect(runRule("null", "nullable")).toBe(true);
     });
 
-    it("takes one layer of typed quotes off, keeping the rest as written", () => {
-      expect(runRule('"\\d+"', "123")).toBe(true);
+    it("keeps quotes as part of the pattern, exactly as typed", () => {
+      expect(runRule('"ok"', '{"status":"ok"}')).toBe(true);
+      expect(runRule('"ok"', "broken")).toBe(false);
       expect(runRule('"a"|"b"', '"b"')).toBe(true);
+      expect(runRule('"\\d+"', '"12"')).toBe(true);
+      expect(runRule("  ^a  ", "ab")).toBe(true);
     });
 
-    it("refuses a pattern from another node", () => {
-      expect(() => runRule("{{@n1:Webhook.value}}", "a")).toThrow(
-        REGEX_SOURCE_ERROR
-      );
+    it("refuses a pattern from another node, whole or inside the pattern", () => {
+      for (const pattern of [
+        "{{@n1:Webhook.value}}",
+        "^{{@n1:Webhook.value}}$",
+      ]) {
+        expect(() => runRule(pattern, "a"), pattern).toThrow(
+          REGEX_SOURCE_ERROR
+        );
+      }
+    });
+
+    it("refuses a list or object, and tests null as its text", () => {
+      expect(() => runRule("object", { a: 1 })).toThrow(REGEX_NON_TEXT_ERROR);
+      expect(() => runRule("^a,b$", ["a", "b"])).toThrow(REGEX_NON_TEXT_ERROR);
+      expect(runRule("^null$", null)).toBe(true);
+      expect(runRule("^true$", true)).toBe(true);
     });
 
     it("reads words the keyword check looks for as data inside a pattern", () => {
@@ -134,6 +154,48 @@ describe("matchesRegex", () => {
   });
 
   describe("reopening a saved condition", () => {
+    it("rebuilds a typed pattern exactly, quotes and spaces included", () => {
+      for (const pattern of ['"[^"]*"', "^a  b", '"a"|"b"', "a), b"]) {
+        const expression = `matchesRegex(${FIELD}, ${JSON.stringify(pattern)})`;
+        const state = editorConditionState(expression, undefined);
+        expect(state.initialMode, pattern).toBe("visual");
+        expect(
+          state.parsedGroup && visualConditionToExpression(state.parsedGroup),
+          pattern
+        ).toBe(expression);
+      }
+    });
+
+    it("keeps a node label with parentheses and commas in the left value", () => {
+      const label = "{{@n1:Price (USD), latest.value}}";
+      const expression = `matchesRegex(${label}, "^1")`;
+      expect(expressionToConditionGroup(expression)?.rules[0]).toMatchObject({
+        leftOperand: label,
+        rightOperand: "^1",
+      });
+    });
+
+    it("keeps a typed condition as text when its rules would rebuild differently", () => {
+      for (const expression of [
+        `matchesRegex(${FIELD}, " ^a")`,
+        `matchesRegex(${FIELD}, "^\\d+$")`,
+      ]) {
+        expect(editorConditionState(expression, undefined), expression).toEqual(
+          {
+            parsedGroup: null,
+            initialMode: "expression",
+          }
+        );
+      }
+    });
+
+    it("keeps saved rules when the stored text is the old new RegExp form", () => {
+      const saved = group([FIELD, "matchesRegex", "^0x"]);
+      expect(
+        editorConditionState(`new RegExp("^0x").test(String(${FIELD}))`, saved)
+      ).toEqual({ parsedGroup: null, initialMode: "visual" });
+    });
+
     it("keeps parentheses and && inside a pattern in their rule", () => {
       const expression = visualConditionToExpression(
         group([FIELD, "matchesRegex", "Error\\("], [FIELD, "contains", "z"])
@@ -170,8 +232,18 @@ describe("matchesRegex", () => {
       );
     });
 
-    it("refuses a single backslash that JavaScript would drop", () => {
-      for (const pattern of ["^\\d+$", "a\\.b", "\\bword"]) {
+    it("runs without String() around the field", () => {
+      expect(run(`matchesRegex(${FIELD}, "^\\\\d+$")`, "123")).toBe(true);
+    });
+
+    it("refuses a single backslash that JavaScript would drop or decode", () => {
+      for (const pattern of [
+        "^\\d+$",
+        "a\\.b",
+        "\\bword",
+        "^\\x2e$",
+        "^\\u002e$",
+      ]) {
         const expression = `matchesRegex(String(${FIELD}), "${pattern}")`;
         expect(() => run(expression, "123"), pattern).toThrow(
           REGEX_BACKSLASH_ERROR
@@ -187,10 +259,36 @@ describe("matchesRegex", () => {
       expect(run(`!matchesRegex(String(${FIELD}), "^a")`, "b")).toBe(true);
     });
 
+    it("refuses an empty pattern", () => {
+      const expression = `matchesRegex(${FIELD}, "")`;
+      expect(() => run(expression, "a")).toThrow(REGEX_EMPTY_ERROR);
+      expect(validateConditionExpressionUI(expression)).toEqual({
+        valid: false,
+        error: REGEX_EMPTY_ERROR,
+      });
+    });
+
+    it("names an unreadable escape or an unclosed quote", () => {
+      expect(
+        validateConditionExpressionUI(`matchesRegex(${FIELD}, "\\x{00e9}")`)
+      ).toEqual({
+        valid: false,
+        error: expect.stringContaining("invalid string"),
+      });
+      expect(
+        validateConditionExpressionUI(`matchesRegex(${FIELD}, "^a`)
+      ).toEqual({
+        valid: false,
+        error: expect.stringContaining("never closed"),
+      });
+      expect(run(`matchesRegex(${FIELD}, "^\\\\x{00e9}$")`, "é")).toBe(true);
+    });
+
     it("refuses a pattern that is not one quoted literal", () => {
       for (const expression of [
         `matchesRegex(String(${FIELD}), ${FIELD})`,
         `matchesRegex(String(${FIELD}), "a" + "b")`,
+        `matchesRegex(${FIELD}, "^${FIELD}$")`,
       ]) {
         expect(() => run(expression, "a")).toThrow(REGEX_SOURCE_ERROR);
         expect(validateConditionExpressionUI(expression)).toEqual({
@@ -248,12 +346,10 @@ describe("matchesRegex", () => {
       ]) {
         expect(validateConditionExpressionUI(expression)).toEqual({
           valid: false,
-          error: expect.stringContaining(
-            'matchesRegex(String(value), "pattern")'
-          ),
+          error: expect.stringContaining('matchesRegex(value, "pattern")'),
         });
         expect(() => run(expression, "0x1")).toThrow(
-          "matchesRegex(String(value)"
+          'matchesRegex(value, "pattern")'
         );
       }
     });
@@ -261,7 +357,9 @@ describe("matchesRegex", () => {
 
   describe("pattern rules", () => {
     it("names what RE2 does not run and what to do instead", () => {
-      expect(regexPatternError("^(?=EMSP)")).toContain("Use a second rule");
+      expect(regexPatternError("^(?=EMSP)")).toContain(
+        "Test that part separately"
+      );
       expect(regexPatternError("(?<!x)a")).toContain(
         "Lookahead and lookbehind"
       );
@@ -303,10 +401,13 @@ describe("matchesRegex", () => {
     });
 
     it("stops one Condition at its matching budget", () => {
-      const call = `matchesRegex(String(${FIELD}), "(?i)(?:\\\\w?){450}x")`;
-      const expression = Array.from({ length: 7 }, () => call).join(" || ");
-      expect(() => run(expression, "a".repeat(MAX_REGEX_TEXT_LENGTH))).toThrow(
-        "reached its limit for one run"
+      const call = `matchesRegex(${FIELD}, "(?i)(?:\\\\w?){450}x")`;
+      const text = "a".repeat(MAX_REGEX_TEXT_LENGTH);
+      const calls = (count: number): string =>
+        Array.from({ length: count }, () => `!${call}`).join(" && ");
+      expect(run(calls(6), text)).toBe(true);
+      expect(() => run(calls(7), text)).toThrow(
+        "reached this node's matching limit"
       );
       // The budget is per evaluation, not per process.
       expect(runRule("(?i)(?:\\w?){450}x", "x")).toBe(true);
@@ -343,6 +444,12 @@ describe("matchesRegex", () => {
   });
 
   describe("string masking in the validators", () => {
+    it("still refuses a blocked name used as a bracket key", () => {
+      expect(validateConditionExpression('__v0["constructor"]').valid).toBe(
+        false
+      );
+    });
+
     it("accepts ordinary text values the old checks misread as code", () => {
       for (const value of [
         "foo bar baz",

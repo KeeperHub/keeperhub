@@ -111,7 +111,7 @@ export const OPERATOR_METADATA: Record<ConditionOperator, OperatorMeta> = {
     unary: false,
     category: "text",
     description:
-      "Text matches the pattern (regular expression) anywhere; ^ and $ match the whole text, (?i) ignores case",
+      "Text matches the pattern (regular expression) anywhere; ^ marks the start and $ the end, (?i) ignores case",
   },
   isEmpty: {
     label: "is empty",

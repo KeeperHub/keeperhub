@@ -36,6 +36,7 @@ import {
   compileRegex,
   REGEX_ARITY_ERROR,
   REGEX_BACKSLASH_ERROR,
+  REGEX_NON_TEXT_ERROR,
   REGEX_SOURCE_ERROR,
   RegexBudget,
   regexMatches,
@@ -43,6 +44,7 @@ import {
 import { scanString } from "./string-literal";
 
 const WHITESPACE_RE = /\s/;
+const CONTEXT_VARIABLE_RE = /__[vb]\d+/g;
 
 const ALLOWED_METHODS = new Set([
   "includes",
@@ -863,22 +865,37 @@ function regexPattern(node: CallNode): string {
 // One budget per evaluation; evaluation is synchronous, so a module slot is safe.
 let activeRegexBudget: RegexBudget | undefined;
 
+// A reference typed inside the quotes arrives here renamed to its context
+// variable (__v0); refuse it rather than match that name as text.
+function holdsReference(
+  pattern: string,
+  ctx: Record<string, unknown>
+): boolean {
+  for (const [name] of pattern.matchAll(CONTEXT_VARIABLE_RE)) {
+    if (Object.hasOwn(ctx, name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function evalRegexCall(node: CallNode, ctx: Record<string, unknown>): boolean {
-  const regex = compileRegex(regexPattern(node));
+  if (!activeRegexBudget) {
+    throw new Error(`${REGEX_FUNCTION} runs only inside a compiled condition`);
+  }
+  const pattern = regexPattern(node);
+  if (holdsReference(pattern, ctx)) {
+    throw new Error(REGEX_SOURCE_ERROR);
+  }
+  const regex = compileRegex(pattern);
   const text = evalNode(node.arguments[0], ctx);
   if (isMissingReference(text)) {
     throw missingReferenceError(text);
   }
   if (typeof text === "object" && text !== null) {
-    throw new Error(
-      "matches regex tests text, numbers or booleans, not a list or object"
-    );
+    throw new Error(REGEX_NON_TEXT_ERROR);
   }
-  return regexMatches(
-    regex,
-    String(text),
-    activeRegexBudget ?? new RegexBudget()
-  );
+  return regexMatches(regex, String(text), activeRegexBudget);
 }
 
 function evalCall(node: CallNode, ctx: Record<string, unknown>): unknown {

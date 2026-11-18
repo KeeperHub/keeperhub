@@ -25,7 +25,10 @@
  * - Comments
  */
 
-import { replaceTemplateTokens } from "@/lib/workflow/template-ref";
+import {
+  hasTemplateToken,
+  replaceTemplateTokens,
+} from "@/lib/workflow/template-ref";
 import {
   REGEX_ARITY_ERROR,
   REGEX_BACKSLASH_ERROR,
@@ -81,9 +84,20 @@ const DANGEROUS_PATTERNS = [
 const REGEX_OBJECT_PATTERN =
   /\bnew\s+RegExp\b|\/[^/\s]+\/[a-z]*\s*\.\s*test\s*\(/;
 const REGEX_OBJECT_ERROR =
-  'Regex objects (new RegExp(...) or /.../) are not supported in conditions. Use matchesRegex(String(value), "pattern") or the "matches regex" operator';
+  'Regex objects (new RegExp(...) or /.../) are not supported in conditions. Use matchesRegex(value, "pattern") or the "matches regex" operator';
 const UNTERMINATED_STRING_ERROR =
   "Condition has an unterminated string: a quote is never closed";
+// Masking hides string keys from the keyword scan, so check this form directly.
+const BLOCKED_KEY_PATTERN =
+  /\[\s*(["'])(?:constructor|__proto__|prototype)\1\s*\]/;
+
+// The scanner's own reason: an unclosed quote, or an escape it cannot read.
+function stringError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.startsWith("Unterminated")
+    ? UNTERMINATED_STRING_ERROR
+    : `Condition has an invalid string: ${message}`;
+}
 
 function regexObjectError(code: string): ValidationResult | undefined {
   return REGEX_OBJECT_PATTERN.test(code)
@@ -132,7 +146,6 @@ const IDENTIFIER_TOKEN_PATTERN = /^[a-zA-Z_]\w*$/;
 const EXTRA_SPACES_PATTERN = /\s{2,}/;
 const WHITESPACE_CHAR_PATTERN = /\s/;
 const TEMPLATE_VAR_PATTERN = /^\{\{@[^}]+\}\}/;
-const STRING_LITERAL_PATTERN = /^(['"])(?:(?<!\\)\\.|(?!\1).)*\1/;
 const NUMBER_PATTERN = /^\d+(\.\d+)?/;
 const IDENTIFIER_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*/;
 const OPERATOR_BEFORE_PATTERN =
@@ -335,8 +348,16 @@ export function validateConditionExpression(
   let code: string;
   try {
     code = maskStringLiterals(expression);
-  } catch {
-    return { valid: false, error: UNTERMINATED_STRING_ERROR };
+  } catch (error) {
+    return { valid: false, error: stringError(error) };
+  }
+
+  const blockedKey = expression.match(BLOCKED_KEY_PATTERN);
+  if (blockedKey) {
+    return {
+      valid: false,
+      error: `Condition contains disallowed syntax: "${blockedKey[0]}"`,
+    };
   }
 
   const regexObject = regexObjectError(code);
@@ -513,15 +534,20 @@ function tokenizeExpression(
       continue;
     }
 
-    // String literal: '...' or "..."
-    const stringMatch = expression.slice(i).match(STRING_LITERAL_PATTERN);
-    if (stringMatch) {
+    // String literal: '...' or "...", read by the interpreter's scanner.
+    if (expression[i] === '"' || expression[i] === "'") {
+      let next: number;
+      try {
+        next = scanString(expression, i).next;
+      } catch (error) {
+        return { valid: false, error: stringError(error) };
+      }
       tokens.push({
         type: "string",
-        value: stringMatch[0],
+        value: expression.slice(i, next),
         start: i,
       });
-      i += stringMatch[0].length;
+      i = next;
       continue;
     }
 
@@ -1132,7 +1158,7 @@ function validateCommas(tokens: Token[]): ValidationResult {
       return {
         valid: false,
         error:
-          'A comma only separates the values of a call, e.g. matchesRegex(String(value), "^0x")',
+          'A comma only separates the values of a call, e.g. matchesRegex(value, "^0x")',
       };
     }
   }
@@ -1170,15 +1196,14 @@ function regexCallError(args: Token[][]): string | undefined {
   if (rest.length > 0 || pattern.type !== "string") {
     return REGEX_SOURCE_ERROR;
   }
-  let scanned: ReturnType<typeof scanString>;
-  try {
-    scanned = scanString(pattern.value, 0);
-  } catch {
-    return UNTERMINATED_STRING_ERROR;
+  const scanned = scanString(pattern.value, 0);
+  if (scanned.lossy) {
+    return REGEX_BACKSLASH_ERROR;
   }
-  return scanned.lossy
-    ? REGEX_BACKSLASH_ERROR
-    : regexPatternError(scanned.value);
+  if (hasTemplateToken(scanned.value)) {
+    return REGEX_SOURCE_ERROR;
+  }
+  return regexPatternError(scanned.value);
 }
 
 /** The run-time pattern rules, applied while the condition is typed. */

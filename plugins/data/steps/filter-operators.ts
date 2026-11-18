@@ -28,10 +28,8 @@ export const NEGATED_TEXT_OPERATORS = {
 
 export type NegatedTextOperator = keyof typeof NEGATED_TEXT_OPERATORS;
 
-export type FilterConditionOperator = ConditionOperator;
-
 export type FilterOperator =
-  | FilterConditionOperator
+  | ConditionOperator
   | NegatedTextOperator
   | typeof KEEP_ALL_OPERATOR;
 
@@ -54,8 +52,9 @@ const FILTER_HINTS: Partial<Record<FilterOperator, string>> = {
   notStartsWith: "Text does not begin with the value",
   notEndsWith: "Text does not end with the value",
   matchesRegex:
-    "Text matches the pattern (regular expression) anywhere; ^ and $ match the whole text",
-  notMatchesRegex: "Text does not match the pattern (regular expression)",
+    "Text matches the pattern (regular expression) anywhere; ^ marks the start and $ the end",
+  notMatchesRegex:
+    "Text does not match the pattern (regular expression) anywhere; ^ marks the start and $ the end",
   ">": `Numerically greater than; ${NUMBER_TEST_SCOPE}`,
   ">=": `Numerically greater than or equal; ${NUMBER_TEST_SCOPE}`,
   "<": `Numerically less than; ${NUMBER_TEST_SCOPE}`,
@@ -73,7 +72,7 @@ const NEGATED_LABELS: Record<NegatedTextOperator, string> = {
 };
 
 function conditionOption(
-  op: FilterConditionOperator,
+  op: ConditionOperator,
   group: string
 ): FilterOperatorOption {
   return {
@@ -136,7 +135,7 @@ export function isNegatedTextOperator(
 // The Condition operator a Filter operator evaluates (a negation runs its base).
 export function baseConditionOperator(
   op: Exclude<FilterOperator, typeof KEEP_ALL_OPERATOR>
-): FilterConditionOperator {
+): ConditionOperator {
   return isNegatedTextOperator(op) ? NEGATED_TEXT_OPERATORS[op] : op;
 }
 
@@ -191,13 +190,13 @@ export const PRESENCE_FILTER_OPERATORS: readonly FilterOperator[] =
 export const LOOSE_EQUALITY_FILTER_OPERATORS: readonly FilterOperator[] = [
   "==",
   "!=",
-] satisfies readonly FilterConditionOperator[];
+] satisfies readonly ConditionOperator[];
 
 // Where Ignore case applies: comparisons of text against Value.
 export const CASE_FOLDING_FILTER_OPERATORS: readonly FilterOperator[] = [
   ...ALL_VALUES.filter((op) => categoryOf(op) === "general" && !isUnary(op)),
   ...TEXT_FILTER_OPERATORS,
-  ...(["arrayContains"] satisfies FilterConditionOperator[]),
+  ...(["arrayContains"] satisfies ConditionOperator[]),
 ];
 
 export function filterOperatorLabel(operator: FilterOperator): string {

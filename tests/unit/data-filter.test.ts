@@ -97,6 +97,15 @@ describe("data/filter", () => {
       expect(result.items).toEqual(["EMSP_SPBEAM_HALT", "EMSP_LINE_WIPE"]);
     });
 
+    it("reads the pattern exactly as typed, quotes included", async () => {
+      const result = await ok({
+        source: source(['"ok"', "ok", "broken"]),
+        operator: "matchesRegex",
+        value: '"ok"',
+      });
+      expect(result.items).toEqual(['"ok"']);
+    });
+
     it("keeps the rest with does not match regex", async () => {
       const result = await ok({
         source: source(CHAINLOG_NAMES),
@@ -197,7 +206,7 @@ describe("data/filter", () => {
         operator: "matchesRegex",
         value: "(?:\\w?){100}x",
       });
-      expect(result.error).toContain("reached its limit for one run");
+      expect(result.error).toContain("reached this node's matching limit");
       expect(result.error).not.toContain("Item at index");
     });
 

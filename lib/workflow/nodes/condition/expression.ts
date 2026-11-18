@@ -7,7 +7,6 @@
  * runtime rejects).
  */
 
-import { hasTemplateToken } from "@/lib/workflow/template-ref";
 import type {
   ConditionGroup,
   ConditionOperator,
@@ -15,6 +14,7 @@ import type {
 } from "./builder-types";
 import { isConditionGroup } from "./builder-types";
 import { OPERATOR_METADATA } from "./operator-metadata";
+import { readRegexPattern } from "./regex-match";
 
 // Decimal grammar the safe-eval tokenizer accepts (integer or fixed-point, optional sign).
 // Excludes hex like 0x... and exponents like 1e5, which Number() treats as numeric but the
@@ -63,24 +63,10 @@ function quoteText(text: string): string {
   return `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-/** A regex rule's pattern as typed: one layer of surrounding quotes removed. */
-export function regexRulePattern(operand: string): string {
-  const trimmed = operand.trim();
-  const quote = trimmed[0];
-  const quoted =
-    trimmed.length >= 2 &&
-    (quote === '"' || quote === "'") &&
-    trimmed.at(-1) === quote;
-  return quoted ? trimmed.slice(1, -1) : trimmed;
-}
-
-// Always a quoted literal, whatever it looks like (42, true, "a"|"b"). A
-// reference stays bare so the run refuses it rather than matching its text.
+// The pattern exactly as typed, always one quoted literal (42, true and
+// "a"|"b" included). A reference inside it is refused when the rule runs.
 function regexOperand(operand: string): string {
-  const trimmed = operand.trim();
-  return hasTemplateToken(trimmed)
-    ? trimmed
-    : quoteText(regexRulePattern(trimmed));
+  return quoteText(readRegexPattern(operand));
 }
 
 // Both sides arrive as expressions: wrapped operands, or variables such as __v0.
@@ -133,8 +119,10 @@ export function operatorToExpression(
     case "isNotUndefined":
       return `(${left} !== undefined)`;
 
+    // No String(): the call refuses a list or object instead of testing
+    // "[object Object]".
     case "matchesRegex":
-      return `matchesRegex(String(${left}), ${right})`;
+      return `matchesRegex(${left}, ${right})`;
 
     case "isTrue":
       return `${left} === true`;

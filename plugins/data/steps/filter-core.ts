@@ -17,6 +17,7 @@ import {
   REGEX_SOURCE_ERROR,
   RegexBudget,
   RegexBudgetError,
+  readRegexPattern,
   regexMatches,
   regexPatternError,
   regexTextTooLong,
@@ -379,16 +380,19 @@ function readValue(raw: unknown, operator: FilterOperator): unknown {
   if (value === undefined || value === null || value === "") {
     throw new Error(`Value is required for "${label}".${valueTip(operator)}`);
   }
-  const text = typeof value === "string" ? (unquote(value) ?? value) : value;
-  if (TEXT_FILTER_OPERATORS.includes(operator) || operator === "objectHasKey") {
-    const textValue = String(text);
-    const patternProblem = isRegexOperator(operator)
-      ? regexPatternError(textValue)
-      : undefined;
+  // A regex pattern is read exactly as typed, as in a Condition: quotes and
+  // backslashes are part of the pattern.
+  if (isRegexOperator(operator)) {
+    const pattern = readRegexPattern(String(value));
+    const patternProblem = regexPatternError(pattern);
     if (patternProblem) {
       throw new Error(`${patternProblem}.`);
     }
-    return textValue;
+    return pattern;
+  }
+  const text = typeof value === "string" ? (unquote(value) ?? value) : value;
+  if (TEXT_FILTER_OPERATORS.includes(operator) || operator === "objectHasKey") {
+    return String(text);
   }
   if (NUMBER_FILTER_OPERATORS.includes(operator)) {
     return requireNumeric(text, label);

@@ -120,7 +120,7 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | `contains` | contains | String | Left operand contains right operand |
 | `startsWith` | starts with | String | Left operand starts with right operand |
 | `endsWith` | ends with | String | Left operand ends with right operand |
-| `matchesRegex` | matches regex | Pattern | Left operand matches the RE2 pattern in the right operand, anywhere in the text unless anchored |
+| `matchesRegex` | matches regex | String | Left operand matches the regular expression in the right operand, anywhere in the text unless anchored with `^` and `$` |
 | `isEmpty` | is empty | Existence | Value is null, undefined, or empty string |
 | `isNotEmpty` | is not empty | Existence | Value is not null, undefined, or empty string |
 | `exists` | exists | Existence | Value is not null and not undefined |
@@ -131,21 +131,27 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | `isNotUndefined` | is not undefined | Existence | Value is anything except undefined (null still matches) |
 
 **Matches regex:** tests the text against a regular expression, anywhere in the text unless you
-anchor it with `^` and `$`. Start the pattern with `(?i)` to ignore case. For "does not match",
-connect the next step to the false output.
+anchor it: `^` marks the start and `$` the end. Start the pattern with `(?i)` to ignore case.
+Numbers, `true`/`false` and `null` are tested as their text (`null` as `null`); a list or object
+fails the run. For "does not match", connect the next step to the false output, or in a typed
+expression write `!matchesRegex(...)`.
 
 - **Syntax:** patterns use [RE2 syntax](https://github.com/google/re2/wiki/Syntax), which is
   close to JavaScript's. Not supported: lookahead and lookbehind, back-references such as `\1`,
-  and `\u` escapes (write `\x{00e9}` for `é`). `\s` does not match a non-breaking space. A pattern
-  that uses an unsupported feature is refused with a message naming it.
-- **Visual builder:** type the pattern as it is, without quotes or slashes, e.g.
-  `^0x[0-9a-fA-F]{40}$`. A pattern that cannot run shows an error under the rule. The pattern
-  cannot come from another node.
-- **Typed expression:** write `matchesRegex(String({{@nodeId:Label.field}}), "^0x[0-9a-fA-F]{40}$")`.
-  Inside the quotes, double each backslash: `"^\\d+$"` for `^\d+$`. A single backslash is refused.
+  and `\u` escapes (write `\x{00e9}` for `é`). `\s` does not match a non-breaking space. Those
+  three get a message naming them; other refused syntax quotes RE2's own message.
+- **Visual builder:** type the pattern exactly as it should run, e.g. `^0x[0-9a-fA-F]{40}$`.
+  Quotes are part of the pattern, so `"ok"` matches the text `"ok"` with its quotes. Leave out
+  `/.../` slashes. A pattern that cannot run shows an error under the rule. The pattern cannot
+  come from another node.
+- **Typed expression:** write `matchesRegex({{@nodeId:Label.field}}, "^0x[0-9a-fA-F]{40}$")`.
+  Inside the quotes, double each backslash: `"^\\d+$"` for `^\d+$`. A single backslash before
+  anything but a quote, `n`, `r` or `t` is refused rather than silently changing the pattern.
 - **Limits:** a pattern of up to 512 characters that compiles to at most 1,000 steps, and text of
-  up to 4,096 characters; longer text fails the run. Matching never backtracks, and one Condition
-  has a fixed matching budget, so a pattern cannot hold up a run for more than a few seconds.
+  up to 4,096 characters; longer text fails the run. One Condition has a matching budget of
+  25,000,000 pattern steps times characters tested, so it cannot hold up a run for more than a
+  few seconds. A typical pattern uses a tiny share of it: `^0x[0-9a-fA-F]{40}$` is 46 steps, so
+  one address costs 46 x 42 = 1,932.
 
 **What counts as a number:** an operand is compared by magnitude only when it is a
 plain decimal - an optional sign, digits, and at most one point, such as `42`, `-0.50` or

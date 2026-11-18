@@ -55,7 +55,7 @@ function render(pattern: string, onChange = vi.fn()): HTMLInputElement {
 describe("matches regex rule in the visual builder", () => {
   it("offers a plain pattern field, not the reference picker", () => {
     const input = render("^0x");
-    expect(input.placeholder).toBe("Pattern, e.g. ^0x[0-9a-fA-F]{40}$");
+    expect(input.placeholder).toBe("Pattern, e.g. ^0x[0-9a-f]+$");
     expect(input.value).toBe("^0x");
     expect(input.getAttribute("aria-invalid")).toBeNull();
     expect(container.textContent).not.toContain("Lookahead");

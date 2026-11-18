@@ -6,9 +6,9 @@
 
 const HEX_RE = /^[0-9a-fA-F]+$/;
 
-// Escapes that spell their character exactly. Any other (\d, \., \b) loses
-// or changes the backslash, which silently changes a regex pattern.
-const EXACT_ESCAPES = new Set(["\\", '"', "'", "n", "r", "t", "x", "u"]);
+// Escapes a regex reads the same either way. Any other (\d, \., \b, \x2e)
+// drops or changes a backslash, which silently changes a regex pattern.
+const EXACT_ESCAPES = new Set(["\\", '"', "'", "n", "r", "t"]);
 
 export type ScannedString = {
   value: string;

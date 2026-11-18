@@ -130,7 +130,7 @@ describe("validateConditionExpressionUI", () => {
       );
       expect(result).toEqual({
         valid: false,
-        error: expect.stringContaining("matchesRegex(String(value)"),
+        error: expect.stringContaining('matchesRegex(value, "pattern")'),
       });
     });
 

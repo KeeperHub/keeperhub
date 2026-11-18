@@ -1,10 +1,12 @@
 import { nanoid } from "nanoid";
+import { replaceTemplateTokens } from "@/lib/workflow/template-ref";
 import type {
   ConditionGroup,
   ConditionOperator,
   ConditionRule,
 } from "./builder-types";
 import { isConditionGroup } from "./builder-types";
+import { visualConditionToExpression } from "./expression";
 import { OPERATOR_METADATA } from "./operator-metadata";
 import { maskStringLiterals, scanString } from "./string-literal";
 
@@ -38,7 +40,7 @@ export { visualConditionToExpression } from "./expression";
 // ---------------------------------------------------------------------------
 
 // Top-level regex patterns for parseAtomicExpression (biome: useTopLevelRegex)
-const REGEX_MATCH_PATTERN = /^matchesRegex\(String\((.+?)\), (.+)\)$/;
+const REGEX_CALL_START = "matchesRegex(";
 // Saved before matchesRegex existed; it never ran, but should still reopen.
 const LEGACY_REGEX_MATCH_PATTERN =
   /^new RegExp\((.+?)\)\.test\(String\((.+?)\)\)$/;
@@ -77,30 +79,91 @@ function unwrapOperand(raw: string): string {
   return s;
 }
 
-// Quoted text blanked, same length, so parens and && inside a value are not
-// read as structure: a pattern such as "Error\\(" stays one operand.
+// References and quoted text blanked, same length, so parens, commas and &&
+// inside a value or a node label are not read as structure.
 function structureOf(expr: string): string {
+  const withoutReferences = replaceTemplateTokens(expr, ({ body }) =>
+    "_".repeat(body.length + 4)
+  );
   try {
-    return maskStringLiterals(expr);
+    return maskStringLiterals(withoutReferences);
   } catch {
-    return expr;
+    return withoutReferences;
   }
 }
 
-// A regex operand decoded exactly; the builder escapes only \ and ".
-function unwrapRegexOperand(raw: string): string {
+// A regex pattern only reopens as a rule when it is one complete literal that
+// decodes exactly; anything else stays a typed expression.
+function unwrapRegexOperand(raw: string): string | undefined {
   const s = raw.trim();
-  if (s.startsWith('"')) {
-    try {
-      const scanned = scanString(s, 0);
-      if (scanned.next === s.length) {
-        return scanned.value;
+  if (!s.startsWith('"')) {
+    return;
+  }
+  try {
+    const scanned = scanString(s, 0);
+    return scanned.next === s.length && !scanned.lossy
+      ? scanned.value
+      : undefined;
+  } catch {
+    return;
+  }
+}
+
+/** Index of the ")" closing the "(" at `open`, in a structure view. */
+function closingParen(structure: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < structure.length; i++) {
+    if (structure[i] === "(") {
+      depth++;
+    } else if (structure[i] === ")") {
+      depth--;
+      if (depth === 0) {
+        return i;
       }
-    } catch {
-      // Not one complete literal: fall through.
     }
   }
-  return unwrapOperand(s);
+  return -1;
+}
+
+/** `String(x)` unwrapped to `x`; anything else unchanged. */
+function unwrapStringCall(raw: string): string {
+  const s = raw.trim();
+  if (
+    s.startsWith("String(") &&
+    closingParen(structureOf(s), 6) === s.length - 1
+  ) {
+    return s.slice(7, -1);
+  }
+  return s;
+}
+
+// matchesRegex(left, "pattern"); String(left) is the earlier spelling.
+function parseRegexCall(s: string): ConditionRule | null {
+  const structure = structureOf(s);
+  const open = REGEX_CALL_START.length - 1;
+  if (closingParen(structure, open) !== s.length - 1) {
+    return null;
+  }
+  let depth = 0;
+  const commas: number[] = [];
+  for (let i = open + 1; i < s.length - 1; i++) {
+    if (structure[i] === "(") {
+      depth++;
+    } else if (structure[i] === ")") {
+      depth--;
+    } else if (structure[i] === "," && depth === 0) {
+      commas.push(i);
+    }
+  }
+  if (commas.length !== 1) {
+    return null;
+  }
+  const pattern = unwrapRegexOperand(s.slice(commas[0] + 1, -1));
+  if (pattern === undefined) {
+    return null;
+  }
+  const left = unwrapStringCall(s.slice(open + 1, commas[0]));
+  return makeRule(unwrapOperand(left), "matchesRegex", pattern);
 }
 
 /**
@@ -199,22 +262,15 @@ function makeRule(
 function parseAtomicExpression(expr: string): ConditionRule | null {
   const s = expr.trim();
 
-  // matchesRegex: matchesRegex(String(left), right)
-  const regexMatch = s.match(REGEX_MATCH_PATTERN);
-  if (regexMatch) {
-    return makeRule(
-      unwrapOperand(regexMatch[1]),
-      "matchesRegex",
-      unwrapRegexOperand(regexMatch[2])
-    );
+  if (s.startsWith(REGEX_CALL_START) && s.endsWith(")")) {
+    return parseRegexCall(s);
   }
   const legacyRegexMatch = s.match(LEGACY_REGEX_MATCH_PATTERN);
   if (legacyRegexMatch) {
-    return makeRule(
-      unwrapOperand(legacyRegexMatch[2]),
-      "matchesRegex",
-      unwrapRegexOperand(legacyRegexMatch[1])
-    );
+    const pattern = unwrapRegexOperand(legacyRegexMatch[1]);
+    return pattern === undefined
+      ? null
+      : makeRule(unwrapOperand(legacyRegexMatch[2]), "matchesRegex", pattern);
   }
 
   // String methods: String(left).includes(right), .startsWith(right), .endsWith(right)
@@ -343,6 +399,53 @@ function parseExpression(expr: string): ConditionGroup | ConditionRule | null {
  * Parse a condition expression string into a ConditionGroup.
  * Returns null if the expression cannot be parsed into visual form.
  */
+/** True when any rule in the group, nested groups included, uses `operator`. */
+export function groupUsesOperator(
+  group: ConditionGroup,
+  operator: ConditionOperator
+): boolean {
+  return group.rules.some((item) =>
+    isConditionGroup(item)
+      ? groupUsesOperator(item, operator)
+      : item.operator === operator
+  );
+}
+
+export type EditorConditionState = {
+  /** Rules parsed from the condition text, to save with the node. */
+  parsedGroup: ConditionGroup | null;
+  initialMode: "visual" | "expression";
+};
+
+/**
+ * How the editor opens a condition: from its saved rules, from rules parsed
+ * out of its text, or as text. The saved rules are what runs, so a regex rule
+ * is only taken from the text when it rebuilds that exact text.
+ */
+export function editorConditionState(
+  condition: string,
+  savedGroup: ConditionGroup | undefined
+): EditorConditionState {
+  if (!condition) {
+    return { parsedGroup: null, initialMode: "visual" };
+  }
+  if (savedGroup && visualConditionToExpression(savedGroup) === condition) {
+    return { parsedGroup: null, initialMode: "visual" };
+  }
+  const parsed = expressionToConditionGroup(condition);
+  const usable =
+    parsed !== null &&
+    (!groupUsesOperator(parsed, "matchesRegex") ||
+      visualConditionToExpression(parsed) === condition);
+  if (usable) {
+    return { parsedGroup: parsed, initialMode: "visual" };
+  }
+  return {
+    parsedGroup: null,
+    initialMode: savedGroup ? "visual" : "expression",
+  };
+}
+
 export function expressionToConditionGroup(
   expression: string
 ): ConditionGroup | null {

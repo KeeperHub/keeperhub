@@ -203,7 +203,7 @@ describe("condition-builder-utils", () => {
       it("should generate matchesRegex expression", () => {
         const g = group("AND", [rule("email", "matchesRegex", "^[a-z]+@")]);
         expect(visualConditionToExpression(g)).toBe(
-          'matchesRegex(String("email"), "^[a-z]+@")'
+          'matchesRegex("email", "^[a-z]+@")'
         );
       });
 
@@ -212,7 +212,7 @@ describe("condition-builder-utils", () => {
           rule("phone", "matchesRegex", "\\d{3}-\\d{4}"),
         ]);
         expect(visualConditionToExpression(g)).toBe(
-          'matchesRegex(String("phone"), "\\\\d{3}-\\\\d{4}")'
+          'matchesRegex("phone", "\\\\d{3}-\\\\d{4}")'
         );
       });
     });
@@ -572,9 +572,15 @@ describe("condition-builder-utils", () => {
 
     describe("regex operator", () => {
       it("should parse matchesRegex", () => {
-        const r = parseFirstRule('matchesRegex(String("email"), "^[a-z]+@")');
+        const r = parseFirstRule('matchesRegex("email", "^[a-z]+@")');
         expect(r.leftOperand).toBe("email");
         expect(r.operator).toBe("matchesRegex");
+        expect(r.rightOperand).toBe("^[a-z]+@");
+      });
+
+      it("also reads the String(value) spelling", () => {
+        const r = parseFirstRule('matchesRegex(String("email"), "^[a-z]+@")');
+        expect(r.leftOperand).toBe("email");
         expect(r.rightOperand).toBe("^[a-z]+@");
       });
 

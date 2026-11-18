@@ -40,7 +40,7 @@ import {
 } from "@/lib/workflow/nodes/http-request/constants";
 import {
   createEmptyGroup,
-  expressionToConditionGroup,
+  editorConditionState,
   visualConditionToExpression,
 } from "@/lib/workflow/nodes/condition/builder-utils";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
@@ -341,24 +341,10 @@ function ConditionFields({
   // Also derives the initial mode to avoid parsing the expression twice.
   // Re-parses when the stored visual group's expression doesn't match the
   // actual condition expression (e.g. after operator support was extended).
-  const { parsedGroup, initialMode } = useMemo(() => {
-    if (!conditionValue) {
-      return { parsedGroup: null, initialMode: "visual" as const };
-    }
-    if (existingConditionConfig) {
-      const storedExpression = visualConditionToExpression(
-        existingConditionConfig.group
-      );
-      if (storedExpression === conditionValue) {
-        return { parsedGroup: null, initialMode: "visual" as const };
-      }
-    }
-    const parsed = expressionToConditionGroup(conditionValue);
-    return {
-      parsedGroup: parsed,
-      initialMode: parsed !== null ? ("visual" as const) : ("expression" as const),
-    };
-  }, [conditionValue, existingConditionConfig]);
+  const { parsedGroup, initialMode } = useMemo(
+    () => editorConditionState(conditionValue, existingConditionConfig?.group),
+    [conditionValue, existingConditionConfig]
+  );
 
   // Persist the parsed group to config so it's saved with the workflow.
   // Track identity via conditionValue to reset when switching between nodes.
@@ -467,7 +453,7 @@ function ConditionFields({
             value={conditionValue}
           />
           {validationError && (
-            <p className="text-xs text-yellow-600">{validationError}</p>
+            <p className="text-destructive text-xs">{validationError}</p>
           )}
           <p className="text-muted-foreground text-xs">
             Enter a JavaScript expression that evaluates to true or false. Use @

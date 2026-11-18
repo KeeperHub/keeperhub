@@ -1,7 +1,7 @@
 "use client";
 
 import { Plus, Trash2, X } from "lucide-react";
-import { useId } from "react";
+import { useEffect, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -26,7 +26,6 @@ import {
   createEmptyRule,
   isUnaryOperator,
 } from "@/lib/workflow/nodes/condition/builder-utils";
-import { regexRulePattern } from "@/lib/workflow/nodes/condition/expression";
 import {
   closedOperatorLabel,
   OPERATOR_GROUPS,
@@ -35,6 +34,7 @@ import {
 } from "@/lib/workflow/nodes/condition/operator-metadata";
 import {
   REGEX_SOURCE_ERROR,
+  readRegexPattern,
   regexPatternError,
 } from "@/lib/workflow/nodes/condition/regex-match";
 import { hasTemplateToken } from "@/lib/workflow/template-ref";
@@ -61,7 +61,7 @@ function regexRuleError(operand: string): string | undefined {
   if (hasTemplateToken(operand)) {
     return REGEX_SOURCE_ERROR;
   }
-  return regexPatternError(regexRulePattern(operand));
+  return regexPatternError(readRegexPattern(operand));
 }
 
 const VALUE_CELL =
@@ -82,7 +82,17 @@ function RuleRow({
 }): React.ReactElement {
   const unary = isUnaryOperator(rule.operator);
   const regex = rule.operator === "matchesRegex";
-  const patternError = regex ? regexRuleError(rule.rightOperand) : undefined;
+  // Checked after a pause in typing, like expression mode, so "^(0x" does not
+  // flash an error mid-word.
+  const [checkedPattern, setCheckedPattern] = useState(rule.rightOperand);
+  useEffect(() => {
+    const timeoutId = setTimeout(
+      () => setCheckedPattern(rule.rightOperand),
+      400
+    );
+    return () => clearTimeout(timeoutId);
+  }, [rule.rightOperand]);
+  const patternError = regex ? regexRuleError(checkedPattern) : undefined;
   const errorId = useId();
 
   return (
@@ -150,7 +160,7 @@ function RuleRow({
               onChange={(event) =>
                 onChange({ ...rule, rightOperand: event.target.value })
               }
-              placeholder="Pattern, e.g. ^0x[0-9a-fA-F]{40}$"
+              placeholder="Pattern, e.g. ^0x[0-9a-f]+$"
               spellCheck={false}
               value={rule.rightOperand}
             />
@@ -218,7 +228,7 @@ function GroupBuilder({
 
   const logicToggle = (
     <div className="flex items-center gap-2 py-1">
-      <div className="min-w-0 flex-1 [&_[contenteditable]]:max-h-9 [&_[contenteditable]]:overflow-x-auto [&_[contenteditable]]:whitespace-nowrap [&_[contenteditable]]:[scrollbar-width:none]">
+      <div className={VALUE_CELL}>
         <div className="h-px w-full bg-border" />
       </div>
       <Select
@@ -236,7 +246,7 @@ function GroupBuilder({
           <SelectItem value="OR">OR</SelectItem>
         </SelectContent>
       </Select>
-      <div className="min-w-0 flex-1 [&_[contenteditable]]:max-h-9 [&_[contenteditable]]:overflow-x-auto [&_[contenteditable]]:whitespace-nowrap [&_[contenteditable]]:[scrollbar-width:none]">
+      <div className={VALUE_CELL}>
         <div className="h-px w-full bg-border" />
       </div>
       <div className="size-6 shrink-0" />

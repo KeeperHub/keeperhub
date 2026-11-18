@@ -1,3 +1,5 @@
+import { maskStringLiterals } from "@/lib/workflow/nodes/condition/string-literal";
+
 /**
  * BigInt-safe condition evaluation utilities
  *
@@ -33,20 +35,28 @@
 const INTEGER_RE = /^\d+$/;
 
 /**
- * Matches either a quoted string (single or double) to skip, a decimal number
- * (digits.digits) to skip, or a bare integer literal at a word boundary.
+ * Matches a decimal number (digits.digits) to skip, or a bare integer literal
+ * at a word boundary. Run on `codeView`, where quoted strings are blanked, so
+ * digits inside a string (a regex such as "\\d{25}") are never replaced.
  *
  * Order matters - decimal patterns are checked before bare integers so that
  * "3.14" is consumed as one match (and skipped) rather than splitting into
  * two digit matches ("3" and "14") which would produce invalid `__b0.__b1`.
  *
- * Group 1: quote character (string literal - skip)
- * Group 2: decimal number (float literal - skip, BigInt cannot represent floats)
- * Group 3: bare digit sequence (integer literal - replace with __b variable)
+ * Group 1: decimal number (float literal - skip, BigInt cannot represent floats)
+ * Group 2: bare digit sequence (integer literal - replace with __b variable)
  */
-// A quoted string runs to its closing quote, past escaped ones ("a\"25").
-const EXPRESSION_TOKEN_RE =
-  /(["'])(?:\\[\s\S]|(?!\1)[^\\])*\1|(\b\d+\.\d+\b)|\b(\d+)\b/g;
+const NUMBER_TOKEN_RE = /(\b\d+\.\d+\b)|\b(\d+)\b/g;
+
+// Strings blanked with the interpreter's own scanner, positions unchanged.
+// An unterminated string is refused by the validator before this runs.
+function codeView(expression: string): string {
+  try {
+    return maskStringLiterals(expression);
+  } catch {
+    return expression;
+  }
+}
 
 /**
  * Check if a digit string represents an integer beyond Number.MAX_SAFE_INTEGER.
@@ -90,9 +100,9 @@ export function needsBigIntMode(
     }
   }
 
-  for (const match of expression.matchAll(EXPRESSION_TOKEN_RE)) {
-    const digits = match[3];
-    // Skip quoted strings and decimals (digits is undefined when group 1 or 2 matched)
+  for (const match of codeView(expression).matchAll(NUMBER_TOKEN_RE)) {
+    const digits = match[2];
+    // Skip decimals (digits is undefined when group 1 matched)
     if (digits !== undefined && isLargeInteger(digits)) {
       return true;
     }
@@ -151,25 +161,22 @@ export function applyBigIntConversion(
     }
   }
 
+  // Find integers on the code view, replace them in the original text.
   let counter = 0;
-  const resultExpression = expression.replace(
-    EXPRESSION_TOKEN_RE,
-    (
-      fullMatch,
-      _quoteChar: string | undefined,
-      _decimal: string | undefined,
-      digits: string | undefined
-    ) => {
-      // If no digits captured, this is a quoted string or decimal - leave unchanged
-      if (digits === undefined) {
-        return fullMatch;
-      }
-      const varName = `__b${counter}`;
-      counter++;
-      converted[varName] = BigInt(digits);
-      return varName;
+  let resultExpression = "";
+  let last = 0;
+  for (const match of codeView(expression).matchAll(NUMBER_TOKEN_RE)) {
+    const digits = match[2];
+    if (digits === undefined) {
+      continue;
     }
-  );
+    const varName = `__b${counter}`;
+    counter++;
+    converted[varName] = BigInt(digits);
+    resultExpression += expression.slice(last, match.index) + varName;
+    last = match.index + digits.length;
+  }
+  resultExpression += expression.slice(last);
 
   return { expression: resultExpression, evalContext: converted };
 }

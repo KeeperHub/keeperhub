@@ -11,15 +11,19 @@ import { RE2JS, RE2JSSyntaxException } from "re2js";
 export const MAX_REGEX_PATTERN_LENGTH = 512;
 export const MAX_REGEX_PROGRAM_SIZE = 1000;
 export const MAX_REGEX_TEXT_LENGTH = 4096;
-// About 1.5 to 4 s of matching at the worst measured cost per step.
+// Up to about 4 s of matching at the worst measured cost per step.
 export const MAX_REGEX_RUN_WORK = 25_000_000;
 
 export const REGEX_ARITY_ERROR =
-  'matchesRegex takes two values: the text and a quoted pattern, e.g. matchesRegex(String(value), "^0x")';
+  'matchesRegex takes two values: the text and a quoted pattern, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
 export const REGEX_SOURCE_ERROR =
-  "Type the matches regex pattern into the rule; it can't come from another node or be built from other values";
+  "Type the regex pattern itself; it can't come from another node or be built from other values";
 export const REGEX_BACKSLASH_ERROR =
   'In a typed condition, double each backslash in the regex pattern, e.g. "^\\\\d+$" for ^\\d+$';
+export const REGEX_EMPTY_ERROR =
+  "Enter a regex pattern; an empty one matches everything";
+export const REGEX_NON_TEXT_ERROR =
+  "matches regex tests text, numbers or booleans, not a list or object";
 
 const MAX_CACHED_PATTERNS = 256;
 const SYNTAX_ERROR_PREFIX = "error parsing regexp: ";
@@ -27,6 +31,7 @@ const LOOKAROUND_RE = /`\(\?<?[=!]/;
 const BACKREFERENCE_RE = /invalid escape sequence: `\\([1-9]|k)/;
 const UNICODE_ESCAPE_RE = /invalid escape sequence: `\\u/;
 const SLASH_DELIMITED_RE = /^\/.+\/[dgimsuvy]+$/;
+const BACKTICK_RE = /`/g;
 
 const compiled = new Map<string, RE2JS>();
 
@@ -38,10 +43,10 @@ function formatCount(count: number): string {
 
 function describeSyntaxError(message: string): string {
   if (LOOKAROUND_RE.test(message)) {
-    return "Lookahead and lookbehind ((?=, (?!, (?<=, (?<!) are not supported in regex patterns. Use a second rule, or does not match regex in Filter Array";
+    return "Lookahead and lookbehind, such as (?= or (?<!, are not supported in regex patterns. Test that part separately, e.g. with a second Condition or Filter Array";
   }
   if (BACKREFERENCE_RE.test(message)) {
-    return "Back-references (\\1, \\k<name>) are not supported in regex patterns. Repeat the group's pattern instead";
+    return "Back-references such as \\1 or \\k<name> are not supported in regex patterns. Repeat the group's pattern instead";
   }
   if (UNICODE_ESCAPE_RE.test(message)) {
     return "\\u escapes are not supported in regex patterns. Write \\x{00e9} for é, or type the character itself";
@@ -49,7 +54,7 @@ function describeSyntaxError(message: string): string {
   const detail = message.startsWith(SYNTAX_ERROR_PREFIX)
     ? message.slice(SYNTAX_ERROR_PREFIX.length)
     : message;
-  return `Invalid regex pattern: ${detail}`;
+  return `Invalid regex pattern: ${detail.replace(BACKTICK_RE, '"')}`;
 }
 
 function compileUncached(pattern: string, ignoreCase: boolean): RE2JS {
@@ -76,11 +81,19 @@ function compileUncached(pattern: string, ignoreCase: boolean): RE2JS {
   return regex;
 }
 
+/** A typed pattern as it is read in both nodes: exactly as typed, ends trimmed. */
+export function readRegexPattern(typed: string): string {
+  return typed.trim();
+}
+
 /** Compiles a pattern, or throws an Error whose message is safe to show. */
 export function compileRegex(
   pattern: string,
   ignoreCase = false
 ): CompiledRegex {
+  if (pattern === "") {
+    throw new Error(REGEX_EMPTY_ERROR);
+  }
   if (pattern.length > MAX_REGEX_PATTERN_LENGTH) {
     throw new Error(
       `Regex pattern is ${formatCount(pattern.length)} characters; the limit is ${MAX_REGEX_PATTERN_LENGTH}`
@@ -119,7 +132,7 @@ export function regexPatternError(
 export class RegexBudgetError extends Error {
   constructor() {
     super(
-      `matches regex reached its limit for one run: pattern steps x characters tested may total ${formatCount(MAX_REGEX_RUN_WORK)}. Test fewer or shorter values, or simplify the pattern`
+      `matches regex reached this node's matching limit: pattern steps x characters tested may total ${formatCount(MAX_REGEX_RUN_WORK)}. Test fewer or shorter values, or a simpler pattern`
     );
     this.name = "RegexBudgetError";
   }
