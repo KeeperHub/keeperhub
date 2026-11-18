@@ -1404,6 +1404,15 @@ describe("data/filter", () => {
       expect(result.error).toBe(
         "Filter failed: Ignore case must be true or false."
       );
+      const spaced = await fails({
+        source: '["abc"]',
+        operator: "===",
+        value: "abc",
+        ignoreCase: " TRUE ",
+      });
+      expect(spaced.error).toBe(
+        "Filter failed: Ignore case must be true or false, with no spaces around it and in lowercase."
+      );
     });
 
     it("says how to skip an item that can't be tested", async () => {

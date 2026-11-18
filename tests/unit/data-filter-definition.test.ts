@@ -635,10 +635,13 @@ describe("data/filter definition", () => {
     it("says why any other Ignore case value is refused", () => {
       const cases: [unknown, string][] = [
         ["True", "Ignore case must be true or false, in lowercase."],
-        [" true", "Ignore case must be true or false, without spaces."],
+        [
+          " true",
+          "Ignore case must be true or false, with no spaces around it.",
+        ],
         [
           " TRUE ",
-          "Ignore case must be true or false, without spaces and in lowercase.",
+          "Ignore case must be true or false, with no spaces around it and in lowercase.",
         ],
         [1, "Ignore case must be true or false."],
         ["yes", "Ignore case must be true or false."],

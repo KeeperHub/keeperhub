@@ -172,18 +172,21 @@ export function resolveSwitch(
  */
 export function switchRefusal(name: string, value: unknown): string {
   const text = typeof value === "string" ? value : "";
-  const word = text.trim().toLowerCase();
+  const trimmed = text.trim();
+  const word = trimmed.toLowerCase();
   if (word !== "true" && word !== "false") {
     return `${name} must be true or false.`;
   }
   const hints: string[] = [];
-  if (text !== text.trim()) {
-    hints.push("without spaces");
+  if (text !== trimmed) {
+    hints.push("with no spaces around it");
   }
-  if (text.trim() !== word) {
+  if (trimmed !== word) {
     hints.push("in lowercase");
   }
-  return `${name} must be true or false, ${hints.join(" and ")}.`;
+  return hints.length > 0
+    ? `${name} must be true or false, ${hints.join(" and ")}.`
+    : `${name} must be true or false.`;
 }
 
 /**
