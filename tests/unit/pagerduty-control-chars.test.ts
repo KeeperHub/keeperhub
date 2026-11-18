@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { stripControlChars } from "@/lib/utils/control-chars";
+import {
+  escapeHiddenChars,
+  stripControlChars,
+} from "@/lib/utils/control-chars";
 import {
   buildTriggerEvent,
   cleanCustomDetails,
@@ -183,45 +186,34 @@ describe("the shared character class", () => {
   });
 });
 
-describe("stripControlChars, the shared rule", () => {
-  // The hand-picked list it replaced, kept so a narrower class fails here.
-  const FORMERLY_LISTED =
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: the list under test
-    /[\u0000-\u001f\u007f-\u009f\u00ad\ufeff\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+describe("escapeHiddenChars, for a value shown for inspection", () => {
+  // Built from code points: the formatter turns an escape into the raw character.
+  const hidden = (code: number): string => String.fromCodePoint(code);
 
-  it("removes every character the old list did", () => {
-    for (let code = 0; code <= 0xff_ff; code++) {
-      const char = String.fromCharCode(code);
-      if (FORMERLY_LISTED.test(char)) {
-        expect(stripControlChars(`a${char}b`), code.toString(16)).toBe("ab");
+  it("escapes every character stripControlChars removes, astral ones too", () => {
+    for (let code = 0; code <= 0x10_ff_ff; code++) {
+      if (code >= 0xd8_00 && code <= 0xdf_ff) {
+        continue;
+      }
+      const char = hidden(code);
+      if (stripControlChars(char) === "") {
+        expect(escapeHiddenChars(char), code.toString(16)).not.toBe(char);
       }
     }
   });
 
   it.each([
-    ["word joiner", "\u2060"],
-    ["invisible separator", "\u2063"],
-    ["Mongolian vowel separator", "\u180e"],
-    ["interlinear annotation", "\ufff9"],
-    ["tag character", "\u{E0041}"],
-    ["language tag", "\u{E0001}"],
-  ])("removes a %s too", (_name, char) => {
-    expect(stripControlChars(`tr${char}ue`)).toBe("true");
+    [0x20_60, "\\u2060"],
+    [0x18_0e, "\\u180e"],
+    [0xff_f9, "\\ufff9"],
+    [0xe_00_41, "\\u{e0041}"],
+    [0x20_28, "\\u2028"],
+  ])("escapes U+%s, which stripping leaves alone", (code, escaped) => {
+    expect(escapeHiddenChars(`a${hidden(code)}b`)).toBe(`a${escaped}b`);
   });
 
-  it("keeps tab, newline and carriage return only when asked", () => {
-    expect(stripControlChars("a\tb\nc\rd")).toBe("abcd");
-    expect(
-      stripControlChars("a\tb\nc\rd\u2028e", { keepLineBreaks: true })
-    ).toBe("a\tb\nc\rde");
-  });
-
-  it("takes a replacement string literally, or makes one from each character", () => {
-    expect(stripControlChars("a\u200bb", { replacement: "$&" })).toBe("a$&b");
-    expect(
-      stripControlChars("a\u200b\u{E0041}b", {
-        replacement: (char) => `<${char.codePointAt(0)?.toString(16)}>`,
-      })
-    ).toBe("a<200b><e0041>b");
+  it("leaves visible text, emoji included, as it is", () => {
+    const text = `caf\u00e9 ${hidden(0x1_f6_00)} true`;
+    expect(escapeHiddenChars(text)).toBe(text);
   });
 });

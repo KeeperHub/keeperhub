@@ -78,21 +78,20 @@ describe("registered protocol-bool renderer", () => {
   });
 
   // The cuts themselves are covered in protocol-bool-field.test.ts.
-  it("shows the cut value and puts the longer one in a tooltip", async () => {
-    const saved = "x".repeat(100);
-    await renderWith(saved);
+  it("shows a long value cut, with no tooltip to reach", async () => {
+    await renderWith("x".repeat(100));
     const value = container.querySelector(`#${FIELD.key}-unrecognized bdi`);
     expect(value?.textContent).toBe(`"${"x".repeat(60)}"…`);
-    expect(value?.getAttribute("title")).toBe(JSON.stringify(saved));
+    expect(value?.hasAttribute("title")).toBe(false);
   });
 
-  it("leaves a value shown whole without a tooltip", async () => {
-    await renderWith("yes");
+  it("reads a saved list out in words", async () => {
+    await renderWith([]);
     expect(
-      container
-        .querySelector(`#${FIELD.key}-unrecognized bdi`)
-        ?.hasAttribute("title")
-    ).toBe(false);
+      container.querySelector(`#${FIELD.key}-unrecognized`)?.textContent
+    ).toBe(
+      "Saved value (empty list) is not true or false. Select one to replace it."
+    );
   });
 
   it("does not ask a read-only viewer to pick", async () => {

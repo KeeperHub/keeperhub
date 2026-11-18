@@ -8,73 +8,66 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TemplateBadgeInput } from "@/components/ui/template-badge-input";
-import { stripControlChars } from "@/lib/utils/control-chars";
+import { escapeHiddenChars } from "@/lib/utils/control-chars";
 import { isSavableBoolValue } from "@/lib/workflow/validation/action-config";
 import { hasTemplateToken } from "@/lib/workflow/template-ref";
 
 type ProtocolBoolFieldProps = {
   fieldKey: string;
   value: string;
-  unrecognized?: UnrecognizedValue;
+  unrecognized?: string;
   onChange: (value: unknown) => void;
   disabled?: boolean;
 };
 
-// A saved value that is not a bool, shown so it is not mistaken for unset:
-// shortened for the message, longer for its tooltip.
-type UnrecognizedValue = { shown: string; full: string };
-
 type ProtocolBoolFieldValue = {
   value: string;
-  unrecognized?: UnrecognizedValue;
+  // A saved value that is not a bool, shown so it is not mistaken for unset.
+  unrecognized?: string;
 };
 
-const MAX_KEPT_LENGTH = 1000;
 const MAX_SHOWN_LENGTH = 60;
 
-// A control or bidi character could reorder or hide what the message shows,
-// so each is written out as an escape.
-function escapeHidden(char: string): string {
-  const code = (char.codePointAt(0) ?? 0).toString(16);
-  return code.length > 4 ? `\\u{${code}}` : `\\u${code.padStart(4, "0")}`;
+// Quoted one character at a time, each escaped (a control or bidi character
+// could reorder or hide the message), stopping before the shown text passes
+// MAX_SHOWN_LENGTH. So a cut never splits an escape, and a value of hidden
+// characters cannot grow past the limit. The mark sits outside the quotes.
+function quoteShortened(text: string): string {
+  let shown = "";
+  let size = 0;
+  for (const char of text) {
+    const piece = escapeHiddenChars(JSON.stringify(char).slice(1, -1));
+    // Counted in characters: an emoji is one, an escape is its length.
+    const pieceSize = Array.from(piece).length;
+    if (size + pieceSize > MAX_SHOWN_LENGTH) {
+      return `"${shown}"…`;
+    }
+    shown += piece;
+    size += pieceSize;
+  }
+  return `"${shown}"`;
 }
 
-function quote(text: string): string {
-  return stripControlChars(JSON.stringify(text), { replacement: escapeHidden });
-}
-
-// The raw string is cut by code point before it is quoted, so a cut never
-// splits a character or an escape. The mark sits outside the quotes.
-function shorten(text: string, length: number): string {
-  const head = Array.from(text.slice(0, length * 2 + 2));
-  return head.length <= length
-    ? quote(text)
-    : `${quote(head.slice(0, length).join(""))}…`;
-}
-
+// Summed up in words, not stringified: cheap for a huge one, and read aloud.
 function summarise(saved: object): string {
-  // Summed up, not stringified, so a huge one is cheap.
   if (Array.isArray(saved)) {
     if (saved.length === 0) {
-      return "[]";
+      return "(empty list)";
     }
-    return saved.length === 1 ? "[1 item]" : `[${saved.length} items]`;
+    return saved.length === 1
+      ? "(list of 1 item)"
+      : `(list of ${saved.length} items)`;
   }
-  return Object.keys(saved).length === 0 ? "{}" : "{…}";
+  return Object.keys(saved).length === 0 ? "(empty object)" : "(object)";
 }
 
-function describeSaved(saved: unknown): UnrecognizedValue {
+function describeSaved(saved: unknown): string {
   if (typeof saved === "string") {
-    return {
-      shown: shorten(saved, MAX_SHOWN_LENGTH),
-      full: shorten(saved, MAX_KEPT_LENGTH),
-    };
+    return quoteShortened(saved);
   }
-  const text =
-    typeof saved === "object" && saved !== null
-      ? summarise(saved)
-      : String(saved);
-  return { shown: text, full: text };
+  return typeof saved === "object" && saved !== null
+    ? summarise(saved)
+    : String(saved);
 }
 
 // A saved JSON true/false (agents may send one) shows as the matching option.
@@ -138,15 +131,8 @@ export function ProtocolBoolField({
       {unrecognized && (
         <p className="mt-1 text-xs text-destructive" id={errorId}>
           Saved value{" "}
-          <bdi
-            className="wrap-anywhere whitespace-pre-wrap font-mono"
-            title={
-              unrecognized.shown === unrecognized.full
-                ? undefined
-                : unrecognized.full
-            }
-          >
-            {unrecognized.shown}
+          <bdi className="wrap-anywhere whitespace-pre-wrap font-mono">
+            {unrecognized}
           </bdi>{" "}
           is not true or false.
           {disabled ? "" : " Select one to replace it."}
