@@ -167,6 +167,26 @@ export function resolveSwitch(
 }
 
 /**
+ * Why a switch refuses a value resolveSwitch cannot read, worded the same at
+ * save and at run. "True" or " true" is also told what to change.
+ */
+export function switchRefusal(name: string, value: unknown): string {
+  const text = typeof value === "string" ? value : "";
+  const word = text.trim().toLowerCase();
+  if (word !== "true" && word !== "false") {
+    return `${name} must be true or false.`;
+  }
+  const hints: string[] = [];
+  if (text !== text.trim()) {
+    hints.push("without spaces");
+  }
+  if (text.trim() !== word) {
+    hints.push("in lowercase");
+  }
+  return `${name} must be true or false, ${hints.join(" and ")}.`;
+}
+
+/**
  * Resolve a "fail workflow on error" config flag. Defaults to true (a failure
  * fails the step); only an explicit `false` (boolean or the "false" string
  * the visual editor may persist) opts into soft-fail. Shared by any step that

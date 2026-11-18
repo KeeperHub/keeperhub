@@ -4,7 +4,7 @@
  * editor loads, can run the save-time check without bundling it.
  */
 
-import { getErrorMessage, resolveSwitch } from "@/lib/utils";
+import { getErrorMessage, resolveSwitch, switchRefusal } from "@/lib/utils";
 import { valueContainsTemplate } from "@/lib/workflow/template-ref";
 import {
   DEFAULT_FILTER_OPERATOR,
@@ -105,9 +105,7 @@ function resolveOperator(raw: unknown): FilterOperator {
 function readSwitch(raw: unknown, name: string, defaultValue: string): boolean {
   const on = resolveSwitch(raw, defaultValue);
   if (on === undefined) {
-    const lower = typeof raw === "string" ? raw.toLowerCase() : undefined;
-    const hint = lower === "true" || lower === "false" ? ", in lowercase" : "";
-    throw new Error(`${name} must be true or false${hint}.`);
+    throw new Error(switchRefusal(name, raw));
   }
   return on;
 }

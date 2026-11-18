@@ -635,6 +635,11 @@ describe("data/filter definition", () => {
     it("says why any other Ignore case value is refused", () => {
       const cases: [unknown, string][] = [
         ["True", "Ignore case must be true or false, in lowercase."],
+        [" true", "Ignore case must be true or false, without spaces."],
+        [
+          " TRUE ",
+          "Ignore case must be true or false, without spaces and in lowercase.",
+        ],
         [1, "Ignore case must be true or false."],
         ["yes", "Ignore case must be true or false."],
       ];
@@ -710,6 +715,30 @@ describe("data/filter definition", () => {
         ),
       ]);
       expect(emojis.issues[0]?.received).toBe(`${"\u{1F600}".repeat(100)}...`);
+    });
+
+    it("never cuts an emoji in half in the summary", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "[1]",
+            value: "1",
+            ["\u{1F600}".repeat(50)]: 1,
+          })
+        ),
+      ]);
+      const { message } = formatActionConfigValidationResponse(validation);
+      expect(message.isWellFormed()).toBe(true);
+      expect(message).toContain("...");
+    });
+
+    it("echoes a small list or object as sent", () => {
+      for (const ignoreCase of [[1, 2], { a: { b: [1] } }]) {
+        const validation = validateWorkflowActionConfigs([
+          actionNode(editorConfig({ source: "[1]", value: "1", ignoreCase })),
+        ]);
+        expect(validation.issues[0]?.received).toEqual(ignoreCase);
+      }
     });
 
     it("parts entries on a comma when no reason is quoted", () => {

@@ -4,7 +4,7 @@ import {
   normalizeProtocolArrayValue,
   solidityArrayItemType,
 } from "@/lib/protocol-array-value";
-import { resolveSwitch } from "@/lib/utils";
+import { resolveSwitch, switchRefusal } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
@@ -89,9 +89,18 @@ function sanitiseSummaryText(text: string, maxChars: number): string {
     .replace(/\)/g, "]");
   stripped = stripped.trim();
   if (stripped.length > maxChars) {
-    return `${stripped.slice(0, maxChars - 3)}...`;
+    return `${cutText(stripped, maxChars - 3)}...`;
   }
   return stripped;
+}
+
+// The first `length` UTF-16 units, one fewer when that would end on the
+// first half of a surrogate pair (an emoji, for one).
+function cutText(text: string, length: number): string {
+  const last = text.charCodeAt(length - 1);
+  return last >= HIGH_SURROGATE_MIN && last <= HIGH_SURROGATE_MAX
+    ? text.slice(0, length - 1)
+    : text.slice(0, length);
 }
 
 function fixedArrayLength(
@@ -489,21 +498,16 @@ export function isKnownConfigKeyForAction(
 // A field value echoed in `received` is the caller's own input; long text is
 // cut and a large list or object is described rather than sent back whole.
 const RECEIVED_MAX_CHARS = 200;
+// 100 entries already serialise past 200 characters ("[0,0,...]").
+const RECEIVED_MAX_ENTRIES = 100;
 const HIGH_SURROGATE_MIN = 0xd8_00;
 const HIGH_SURROGATE_MAX = 0xdb_ff;
 
 function capReceived(value: unknown): unknown {
   if (typeof value === "string") {
-    if (value.length <= RECEIVED_MAX_CHARS) {
-      return value;
-    }
-    // Never end on the first half of an emoji (a UTF-16 surrogate pair).
-    const last = value.charCodeAt(RECEIVED_MAX_CHARS - 1);
-    const end =
-      last >= HIGH_SURROGATE_MIN && last <= HIGH_SURROGATE_MAX
-        ? RECEIVED_MAX_CHARS - 1
-        : RECEIVED_MAX_CHARS;
-    return `${value.slice(0, end)}...`;
+    return value.length > RECEIVED_MAX_CHARS
+      ? `${cutText(value, RECEIVED_MAX_CHARS)}...`
+      : value;
   }
   if (typeof value !== "object" || value === null) {
     return value;
@@ -511,11 +515,12 @@ function capReceived(value: unknown): unknown {
   const description = Array.isArray(value)
     ? `[a list of ${value.length}]`
     : "[an object]";
-  // Entry count first, so a long list is never serialised just to measure it.
+  // Top-level entry count first, so a list with many entries is not
+  // serialised just to measure it; a short one is, once.
   const entries = Array.isArray(value)
     ? value.length
     : Object.keys(value).length;
-  if (entries > RECEIVED_MAX_CHARS) {
+  if (entries >= RECEIVED_MAX_ENTRIES) {
     return description;
   }
   try {
@@ -524,12 +529,6 @@ function capReceived(value: unknown): unknown {
   } catch {
     return description;
   }
-}
-
-// "True" or "FALSE": the right word in the wrong case.
-function isMiscasedBool(value: unknown): boolean {
-  const lower = typeof value === "string" ? value.toLowerCase() : undefined;
-  return lower === "true" || lower === "false";
 }
 
 function validateStringLike(value: unknown): boolean {
@@ -621,7 +620,7 @@ function validateFieldValue(
             received: value,
             reason: valueContainsTemplate(value)
               ? `${field.label} does not take a template, only true or false.`
-              : `${field.label} must be true or false${isMiscasedBool(value) ? ", in lowercase" : ""}.`,
+              : switchRefusal(field.label, value),
           }
         : { valid: true };
     case "protocol-bool":
@@ -1107,7 +1106,9 @@ export function formatActionConfigValidationResponse(
             // A reason is quoted only for a node's sole issue; with others,
             // its fields are listed instead.
             const reason = count === 1 ? detail : undefined;
-            quotesReason ||= reason !== undefined;
+            if (reason) {
+              quotesReason = true;
+            }
             entries.push(
               reason
                 ? `"${label}": ${sanitiseSummaryText(reason, DETAIL_MAX_CHARS).replace(TRAILING_PERIOD, "")}`
