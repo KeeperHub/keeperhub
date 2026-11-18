@@ -13,6 +13,7 @@ import {
   mentionsRegex,
   REGEX_OBJECT_RE,
 } from "./regex-calls";
+import { MAX_REGEX_CALLS } from "./regex-match";
 import { scanString } from "./string-literal";
 
 export function isUnaryOperator(operator: ConditionOperator): boolean {
@@ -380,8 +381,13 @@ export function editorConditionState(
     mentionsRegex(condition) ||
     REGEX_OBJECT_RE.test(codeStructure(condition)) ||
     (parsed !== null && groupUsesRegex(parsed));
+  // More regex tests than a run allows stays text: the run refuses it, and
+  // thousands of rule rows would freeze the editor.
+  const tooManyRegex =
+    findRegexCalls(condition, MAX_REGEX_CALLS + 1).length > MAX_REGEX_CALLS;
   const usable =
     parsed !== null &&
+    !tooManyRegex &&
     (!involvesRegex || visualConditionToExpression(parsed) === condition);
   return usable
     ? { parsedGroup: parsed, initialMode: "visual" }

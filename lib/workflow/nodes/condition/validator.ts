@@ -118,6 +118,18 @@ function blockedKeyError(
   return;
 }
 
+// Several checks here scale worse than linearly; a cap keeps each one fast.
+export const MAX_CONDITION_LENGTH = 10_000;
+
+function lengthError(expression: string): ValidationResult | undefined {
+  return expression.length > MAX_CONDITION_LENGTH
+    ? {
+        valid: false,
+        error: `Condition is ${expression.length.toLocaleString("en-US")} characters; the limit is ${MAX_CONDITION_LENGTH.toLocaleString("en-US")}`,
+      }
+    : undefined;
+}
+
 // The scanner's own reason: an unclosed quote, or an escape it cannot read.
 function stringError(error: unknown, expression: string): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -393,6 +405,10 @@ export function validateConditionExpression(
   if (!expression || expression.trim() === "") {
     return { valid: false, error: "Condition expression cannot be empty" };
   }
+  const tooLong = lengthError(expression);
+  if (tooLong) {
+    return tooLong;
+  }
 
   // These checks read code, so quoted values are blanked first: "a b", "x=1"
   // or a regex like "^0x[0-9a-f]+$" is data, not syntax.
@@ -455,6 +471,10 @@ export function preValidateConditionExpression(
 ): ValidationResult {
   if (!expression || typeof expression !== "string") {
     return { valid: false, error: "Condition must be a non-empty string" };
+  }
+  const tooLong = lengthError(expression);
+  if (tooLong) {
+    return tooLong;
   }
 
   // Check for obviously dangerous patterns before any processing
@@ -1123,6 +1143,10 @@ export function validateConditionExpressionUI(
   // Empty expressions are valid (user might be typing)
   if (!expression || expression.trim() === "") {
     return { valid: true };
+  }
+  const tooLong = lengthError(expression);
+  if (tooLong) {
+    return tooLong;
   }
 
   const trimmed = expression.trim();

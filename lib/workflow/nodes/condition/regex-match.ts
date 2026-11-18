@@ -11,10 +11,16 @@ import { RE2JS, RE2JSSyntaxException } from "re2js";
 export const MAX_REGEX_PATTERN_LENGTH = 512;
 export const MAX_REGEX_PROGRAM_SIZE = 1000;
 export const MAX_REGEX_TEXT_LENGTH = 4096;
-// Compiling is not charged to the budget, so the number of calls is capped.
 export const MAX_REGEX_CALLS = 16;
-// Up to about 4 s of matching at the worst measured cost per step.
-export const MAX_REGEX_RUN_WORK = 25_000_000;
+// Budgets of pattern steps x characters tested, at about 100 ns each at worst.
+// A Condition runs in the shared executor loop: about 0.5 s at most.
+export const MAX_CONDITION_REGEX_WORK = 5_000_000;
+// A Filter Array step runs on its own: about 2.5 s at most.
+export const MAX_FILTER_REGEX_WORK = 25_000_000;
+// All Condition evaluations of one workflow run together, For Each included.
+export const MAX_RUN_REGEX_WORK = 50_000_000;
+// A compile is charged by pattern length, so 16 long patterns cost a budget.
+const COMPILE_WORK_PER_CHAR = 2000;
 
 export const REGEX_ARITY_ERROR =
   'matchesRegex takes two values: the text and a quoted pattern, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
@@ -26,6 +32,8 @@ export const REGEX_EMPTY_ERROR =
   "Enter a regex pattern, e.g. ^0x. To match empty text, use ^$";
 export const REGEX_NON_TEXT_ERROR =
   "The regex test checks text, numbers or booleans, not a list or object. Test a field inside it, or use Filter Array to test each item of a list";
+export const REGEX_UNDEFINED_ERROR =
+  "The regex test got no value (a missing field, or a node that did not run). Add an exists rule before it";
 export const REGEX_LITERAL_ERROR =
   'The regex pattern must be one quoted text, e.g. "^0x"';
 export const REGEX_DIRECT_ERROR =
@@ -50,7 +58,8 @@ const REPEAT_COUNT_RE = /invalid repeat count/;
 
 const BACKTICK_RE = /`/g;
 
-const compiled = new Map<string, RE2JS>();
+// Compiled patterns, and the message for refused ones.
+const compiled = new Map<string, RE2JS | string>();
 
 export type CompiledRegex = RE2JS;
 
@@ -166,7 +175,8 @@ export function readRegexPattern(typed: string): string {
 /** Compiles a pattern, or throws an Error whose message is safe to show. */
 export function compileRegex(
   pattern: string,
-  ignoreCase = false
+  ignoreCase = false,
+  budget?: RegexBudget
 ): CompiledRegex {
   if (pattern === "") {
     throw new Error(REGEX_EMPTY_ERROR);
@@ -179,17 +189,33 @@ export function compileRegex(
   const key = `${ignoreCase ? "i" : "-"}${pattern}`;
   const cached = compiled.get(key);
   if (cached) {
+    // Least recently used goes first: a hit moves the entry to the end.
+    compiled.delete(key);
+    compiled.set(key, cached);
+    if (typeof cached === "string") {
+      throw new Error(cached);
+    }
     return cached;
   }
-  const regex = compileUncached(pattern, ignoreCase);
+  budget?.chargeCompile(pattern.length);
+  let entry: RE2JS | string;
+  try {
+    entry = compileUncached(pattern, ignoreCase);
+  } catch (error) {
+    // A refused pattern is remembered too, so it is not compiled again.
+    entry = error instanceof Error ? error.message : String(error);
+  }
   if (compiled.size >= MAX_CACHED_PATTERNS) {
     const oldest = compiled.keys().next().value;
     if (oldest !== undefined) {
       compiled.delete(oldest);
     }
   }
-  compiled.set(key, regex);
-  return regex;
+  compiled.set(key, entry);
+  if (typeof entry === "string") {
+    throw new Error(entry);
+  }
+  return entry;
 }
 
 /** The message `compileRegex` would throw, or undefined for a usable pattern. */
@@ -205,26 +231,59 @@ export function regexPatternError(
   }
 }
 
-/** Raised when one run has spent its matching budget. */
+export type RegexBudgetScope = "node" | "run";
+
+/** Raised when a node or a whole run has spent its matching budget. */
 export class RegexBudgetError extends Error {
-  constructor(steps: number) {
+  constructor(limit: number, scope: RegexBudgetScope, steps?: number) {
+    const pattern =
+      steps === undefined
+        ? ""
+        : `this pattern has ${formatCount(steps)} steps, and `;
+    const where =
+      scope === "run"
+        ? "The regex tests in this workflow run reached the run's matching limit"
+        : "The regex test reached this node's matching limit";
     super(
-      `The regex test reached this node's matching limit: this pattern has ${formatCount(steps)} steps, and steps x characters tested may total ${formatCount(MAX_REGEX_RUN_WORK)}. Test fewer or shorter values or use a simpler pattern`
+      `${where}: ${pattern}steps x characters tested may total ${formatCount(limit)}. Test fewer or shorter values or use a simpler pattern`
     );
     this.name = "RegexBudgetError";
   }
 }
 
-/** The matching budget of one Condition evaluation or one Filter Array run. */
+/** The matching budget of one Condition evaluation or one Filter Array step. */
 export class RegexBudget {
-  private remaining = MAX_REGEX_RUN_WORK;
+  private remaining: number;
+  private readonly limit: number;
+  private readonly scope: RegexBudgetScope;
+  // A node's budget also draws on its run's, when there is one.
+  private readonly parent: RegexBudget | undefined;
+
+  constructor(
+    limit: number,
+    options: { scope?: RegexBudgetScope; parent?: RegexBudget } = {}
+  ) {
+    this.limit = limit;
+    this.remaining = limit;
+    this.scope = options.scope ?? "node";
+    this.parent = options.parent;
+  }
+
+  private spend(units: number, steps?: number): void {
+    this.remaining -= units;
+    if (this.remaining < 0) {
+      throw new RegexBudgetError(this.limit, this.scope, steps);
+    }
+    this.parent?.spend(units, steps);
+  }
+
+  chargeCompile(patternLength: number): void {
+    this.spend(patternLength * COMPILE_WORK_PER_CHAR);
+  }
 
   charge(regex: CompiledRegex, textLength: number): void {
     const steps = regex.programSize();
-    this.remaining -= steps * textLength;
-    if (this.remaining < 0) {
-      throw new RegexBudgetError(steps);
-    }
+    this.spend(steps * textLength, steps);
   }
 }
 

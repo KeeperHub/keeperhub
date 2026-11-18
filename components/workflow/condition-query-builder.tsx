@@ -1,7 +1,7 @@
 "use client";
 
 import { Plus, Trash2, X } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -97,7 +97,10 @@ function RuleRow({
     );
     return () => clearTimeout(timeoutId);
   }, [rule.rightOperand]);
-  const patternError = regex ? regexRuleError(checkedPattern) : undefined;
+  const patternError = useMemo(
+    () => (regex ? regexRuleError(checkedPattern) : undefined),
+    [regex, checkedPattern]
+  );
   const errorId = useId();
   const hintId = useId();
 

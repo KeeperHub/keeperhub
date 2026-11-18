@@ -24,8 +24,11 @@ import {
   ARRAY_INDEX_PATTERN,
   analyzeNodeUsage,
   buildEdgeMap,
+  commentSafe,
   escapeForTemplateLiteral,
+  escapeTemplateText,
   findTriggerNodes,
+  isExportableCondition,
   sanitizeFunctionName,
   sanitizeStepName,
   sanitizeVarName,
@@ -369,9 +372,11 @@ export function generateWorkflowSDKCode(
   }
 
   function buildConditionParams(config: Record<string, unknown>): string[] {
-    return [
-      `condition: ${convertTemplateToJS((config.condition as string) || "true")}`,
-    ];
+    const condition = (config.condition as string) || "true";
+    // Written as code, so only the run's grammar goes in.
+    return isExportableCondition(condition)
+      ? [`condition: ${convertTemplateToJS(condition)}`]
+      : ["condition: false /* not supported in exported code */"];
   }
 
   function buildFirecrawlParams(
@@ -602,15 +607,20 @@ ${stepBody}
     visitedLocal: Set<string>
   ): string[] {
     const condition = (node.data.config?.condition as string) || "true";
-    const convertedCondition = convertTemplateToJS(condition);
+    // The condition's own text is escaped before references become ${...}.
+    const convertedCondition = isExportableCondition(condition)
+      ? convertTemplateToJS(escapeTemplateText(condition))
+      : undefined;
     const nextNodes = edgesBySource.get(nodeId) || [];
     const conditionVarName = `conditionValue_${sanitizeVarName(nodeId)}`;
     const lines: string[] = [];
 
     if (nextNodes.length > 0) {
-      lines.push(`${indent}// ${node.data.label}`);
+      lines.push(`${indent}// ${commentSafe(node.data.label ?? "")}`);
       lines.push(
-        `${indent}const ${conditionVarName} = \`${escapeForTemplateLiteral(convertedCondition)}\`;`
+        convertedCondition === undefined
+          ? `${indent}const ${conditionVarName} = false; // not supported in exported code`
+          : `${indent}const ${conditionVarName} = \`${convertedCondition}\`;`
       );
       lines.push(`${indent}if (${conditionVarName}) {`);
 

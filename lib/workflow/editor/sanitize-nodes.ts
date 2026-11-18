@@ -44,6 +44,12 @@ const OPERATOR_ALIASES: Record<string, ConditionOperator> = {
   matches_regex: "matchesRegex",
   does_not_match_regex: "notMatchesRegex",
   not_matches_regex: "notMatchesRegex",
+  // Spellings agents use; an unknown one would become "equals" and never match.
+  regex: "matchesRegex",
+  matchRegex: "matchesRegex",
+  doesNotMatchRegex: "notMatchesRegex",
+  notMatchRegex: "notMatchesRegex",
+  not_match_regex: "notMatchesRegex",
 };
 
 const KNOWN_DATA_FIELDS = new Set([

@@ -1,5 +1,10 @@
+import { mentionsRegex } from "@/lib/workflow/nodes/condition/regex-calls";
+import { isSafeConditionExpression } from "@/lib/workflow/nodes/condition/safe-eval";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
-import { findTemplateTokens } from "@/lib/workflow/template-ref";
+import {
+  findTemplateTokens,
+  replaceTemplateTokens,
+} from "@/lib/workflow/template-ref";
 import { findActionById } from "@/plugins/registry";
 
 // Regex patterns at top level for performance
@@ -163,6 +168,32 @@ export function removeInvisibleChars(str: string): string {
  * Escape a string for safe use in template literals
  * Only escapes backslashes and backticks
  */
+/** Text that cannot end or break out of a // or /* comment. */
+export function commentSafe(text: string): string {
+  return text.replace(/[\r\n\u2028\u2029]+/g, " ").replace(/\*\//g, "*\\/");
+}
+
+/** Literal text for a template literal, escaped before references become ${...}. */
+export function escapeTemplateText(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/`/g, "\\`")
+    .replace(/\$\{/g, "\\${");
+}
+
+/**
+ * A condition that may be written into exported code: the run's grammar with
+ * references as variables, and no matchesRegex (exported code has no helper).
+ */
+export function isExportableCondition(condition: string): boolean {
+  if (mentionsRegex(condition)) {
+    return false;
+  }
+  return isSafeConditionExpression(
+    replaceTemplateTokens(condition, () => "__v0")
+  );
+}
+
 export function escapeForTemplateLiteral(str: string): string {
   if (!str) {
     return "";

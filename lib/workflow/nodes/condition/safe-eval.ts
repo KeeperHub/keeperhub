@@ -34,6 +34,7 @@ import {
 } from "./missing-reference";
 import {
   compileRegex,
+  MAX_CONDITION_REGEX_WORK,
   MAX_REGEX_CALLS,
   REGEX_ARITY_ERROR,
   REGEX_BACKSLASH_ERROR,
@@ -41,6 +42,7 @@ import {
   REGEX_LITERAL_ERROR,
   REGEX_NON_TEXT_ERROR,
   REGEX_SOURCE_ERROR,
+  REGEX_UNDEFINED_ERROR,
   RegexBudget,
   regexMatches,
 } from "./regex-match";
@@ -760,7 +762,7 @@ function applyBinary(
     case "%":
       return (left as number) % (right as number);
     case "**":
-      return (left as number) ** (right as number);
+      return power(left, right);
     default:
       throw new Error(`Operator not allowed in condition: ${operator}`);
   }
@@ -881,15 +883,34 @@ function evalRegexCall(node: CallNode, ctx: Record<string, unknown>): boolean {
   }
   // A reference typed inside the pattern is refused on the raw text, before
   // references become __vN (preValidateConditionExpression).
-  const regex = compileRegex(regexPattern(node));
+  const regex = compileRegex(regexPattern(node), false, activeRegexBudget);
   const text = evalNode(node.arguments[0], ctx);
   if (isMissingReference(text)) {
     throw missingReferenceError(text);
+  }
+  // e.g. a node on a branch that did not run: not the text "undefined".
+  if (text === undefined) {
+    throw new Error(REGEX_UNDEFINED_ERROR);
   }
   if (typeof text === "object" && text !== null) {
     throw new Error(REGEX_NON_TEXT_ERROR);
   }
   return regexMatches(regex, String(text), activeRegexBudget);
+}
+
+// Exact BigInt powers grow without bound; cap the size of the result.
+const MAX_POWER_BITS = BigInt(65_536);
+const ZERO = BigInt(0);
+
+function power(left: unknown, right: unknown): unknown {
+  if (typeof left === "bigint" && typeof right === "bigint" && right > ZERO) {
+    const magnitude = left < ZERO ? -left : left;
+    const bits = BigInt(magnitude.toString(2).length);
+    if (bits * right > MAX_POWER_BITS) {
+      throw new Error("Power result is too large for a condition");
+    }
+  }
+  return (left as number) ** (right as number);
 }
 
 function evalCall(node: CallNode, ctx: Record<string, unknown>): unknown {
@@ -1063,9 +1084,10 @@ function walkCall(node: CallNode): void {
  */
 export function safeEvaluateCondition(
   expression: string,
-  context: Record<string, unknown>
+  context: Record<string, unknown>,
+  runBudget?: RegexBudget
 ): unknown {
-  return compileSafeCondition(expression)(context);
+  return compileSafeCondition(expression)(context, runBudget);
 }
 
 function childNodes(node: AstNode): AstNode[] {
@@ -1115,7 +1137,7 @@ function countRegexCalls(node: AstNode): number {
 // Parses once, for callers that evaluate one expression against many contexts.
 export function compileSafeCondition(
   expression: string
-): (context: Record<string, unknown>) => unknown {
+): (context: Record<string, unknown>, runBudget?: RegexBudget) => unknown {
   let ast: AstNode;
   try {
     ast = parse(expression);
@@ -1127,9 +1149,14 @@ export function compileSafeCondition(
   if (countRegexCalls(ast) > MAX_REGEX_CALLS) {
     throw new Error(REGEX_CALLS_ERROR);
   }
-  return (context: Record<string, unknown>): unknown => {
+  return (
+    context: Record<string, unknown>,
+    runBudget?: RegexBudget
+  ): unknown => {
     const outer = activeRegexBudget;
-    activeRegexBudget = new RegexBudget();
+    activeRegexBudget = new RegexBudget(MAX_CONDITION_REGEX_WORK, {
+      parent: runBudget,
+    });
     try {
       return evalNode(ast, context);
     } finally {

@@ -46,7 +46,8 @@ const INTEGER_RE = /^\d+$/;
  * Group 1: decimal number (float literal - skip, BigInt cannot represent floats)
  * Group 2: bare digit sequence (integer literal - replace with __b variable)
  */
-const NUMBER_TOKEN_RE = /(\b\d+\.\d+\b)|\b(\d+)\b/g;
+// A number right after ".", "$" or "[" is a property name or index, not a literal.
+const NUMBER_TOKEN_RE = /(\b\d+\.\d+\b)|(?<![\w$.[])\b(\d+)\b/g;
 
 // Strings blanked with the interpreter's own scanner, positions unchanged.
 // An unterminated string is refused by the validator before this runs.

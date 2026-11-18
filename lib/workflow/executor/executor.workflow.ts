@@ -99,6 +99,10 @@ import {
   isMissingReference,
   makeMissingReference,
 } from "@/lib/workflow/nodes/condition/missing-reference";
+import {
+  MAX_RUN_REGEX_WORK,
+  RegexBudget,
+} from "@/lib/workflow/nodes/condition/regex-match";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
 import { safeEvaluateCondition } from "@/lib/workflow/nodes/condition/safe-eval";
 import {
@@ -488,7 +492,8 @@ export function evaluateConditionExpression(
   conditionExpression: unknown,
   outputs: NodeOutputs,
   nodeMap?: ReadonlyMap<string, unknown>,
-  executionResults?: Record<string, ExecutionResult>
+  executionResults?: Record<string, ExecutionResult>,
+  regexRunBudget?: RegexBudget
 ): ConditionEvalResult {
   console.log("[Condition] Original expression:", conditionExpression);
 
@@ -597,7 +602,11 @@ export function evaluateConditionExpression(
       // Safe AST interpreter (no new Function / no host access) for A-01.
       // Only reads the resolved __v/__b values and applies allowlisted
       // operators and methods.
-      const result = safeEvaluateCondition(transformedExpression, evalContext);
+      const result = safeEvaluateCondition(
+        transformedExpression,
+        evalContext,
+        regexRunBudget
+      );
       if (unresolvedFields.length > 0) {
         logWarn("[Condition] Reference(s) resolved to undefined", {
           unresolved: unresolvedFields.join(" | "),
@@ -733,6 +742,7 @@ async function executeActionStep(input: {
   stepFunctions: StepFunctionTable;
   nodeMap?: ReadonlyMap<string, unknown>;
   executionResults?: Record<string, ExecutionResult>;
+  regexRunBudget?: RegexBudget;
 }) {
   const { actionType, config, outputs, context, stepFunctions } = input;
 
@@ -772,7 +782,8 @@ async function executeActionStep(input: {
         originalExpression,
         outputs,
         input.nodeMap,
-        input.executionResults
+        input.executionResults,
+        input.regexRunBudget
       );
       evaluatedCondition = result.result;
       resolvedValues = result.resolvedValues;
@@ -2814,6 +2825,9 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
   // once it has, every step call downstream is reached synchronously, so the
   // order they are invoked in follows the graph rather than module-load timing.
   const stepFunctions = await preloadStepFunctions(nodes);
+  // Regex work of every Condition in this run, loops included. The body runs
+  // again on each resume, and each pass rebuilds this from zero.
+  const regexRunBudget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
 
   // Find trigger nodes
   const nodesWithIncoming = new Set(edges.map((e) => e.target));
@@ -3045,6 +3059,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           stepFunctions,
           nodeMap,
           executionResults: results,
+          regexRunBudget,
         }),
       // KEEP-543: Same KEEP-398/431 spurious-max-retries recovery pattern as
       // the top-level node executor, scoped to the current iteration.
@@ -3912,6 +3927,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           stepFunctions,
           nodeMap,
           executionResults: results,
+          regexRunBudget,
         });
 
         console.log("[Workflow Executor] Step result received:", {

@@ -1,7 +1,5 @@
 import { buildEdgesBySourceHandle } from "@/lib/workflow/editor/edge-handle-utils";
-import { mentionsRegex } from "@/lib/workflow/nodes/condition/regex-calls";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
-import { isSafeConditionExpression } from "@/lib/workflow/nodes/condition/safe-eval";
 import { DEFAULT_HTTP_METHOD } from "@/lib/workflow/nodes/http-request/constants";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import {
@@ -12,7 +10,9 @@ import { findActionById, flattenConfigFields } from "@/plugins/registry";
 import {
   analyzeNodeUsage,
   buildAccessPath,
+  commentSafe,
   getStepInfo,
+  isExportableCondition,
   removeInvisibleChars,
   toFriendlyVarName,
   toTypeScriptLiteral,
@@ -46,14 +46,6 @@ function escapeTemplateRaw(value: string): string {
     .replace(/\\/g, "\\\\")
     .replace(/`/g, "\\`")
     .replace(/\$\{/g, "\\${");
-}
-
-// Exported code has no matchesRegex (an RE2 helper), so those stay flagged.
-function isExportableCondition(condition: string): boolean {
-  if (mentionsRegex(condition)) {
-    return false;
-  }
-  return condition.includes("{{") || isSafeConditionExpression(condition);
 }
 
 /**
@@ -908,7 +900,9 @@ export function generateWorkflowCode(
     nodeId: string,
     indent: string
   ): string[] {
-    const lines: string[] = [`${indent}// Condition: ${node.data.label}`];
+    const lines: string[] = [
+      `${indent}// Condition: ${commentSafe(node.data.label ?? "")}`,
+    ];
 
     if (node.data.description) {
       lines.push(`${indent}// ${node.data.description}`);
@@ -925,15 +919,14 @@ export function generateWorkflowCode(
       let convertedCondition: string;
       if (condition) {
         convertedCondition = convertConditionToJS(condition);
-        const isDisplayableCondition =
-          isExportableCondition(convertedCondition);
+        const isDisplayableCondition = isExportableCondition(condition);
         if (!isDisplayableCondition) {
-          const errorMsg = `Condition node "${node.data.label || node.id}" contains unsupported syntax`;
+          const errorMsg = `Condition node "${commentSafe(node.data.label || node.id)}" contains unsupported syntax`;
           validationErrors.push(errorMsg);
           convertedCondition = `false /* ERROR: ${errorMsg} */`;
         }
       } else {
-        const errorMsg = `Condition node "${node.data.label || node.id}" has no condition expression configured`;
+        const errorMsg = `Condition node "${commentSafe(node.data.label || node.id)}" has no condition expression configured`;
         validationErrors.push(errorMsg);
         convertedCondition = `false /* ERROR: ${errorMsg} */`;
       }
@@ -1041,7 +1034,9 @@ export function generateWorkflowCode(
     indent: string,
     branchVisited: Set<string>
   ): string[] {
-    const lines: string[] = [`${indent}// Condition: ${node.data.label}`];
+    const lines: string[] = [
+      `${indent}// Condition: ${commentSafe(node.data.label ?? "")}`,
+    ];
     const condition = resolveConditionExpression(node.data.config);
 
     const {
@@ -1053,15 +1048,14 @@ export function generateWorkflowCode(
       let convertedCondition: string;
       if (condition) {
         convertedCondition = convertConditionToJS(condition);
-        const isDisplayableCondition =
-          isExportableCondition(convertedCondition);
+        const isDisplayableCondition = isExportableCondition(condition);
         if (!isDisplayableCondition) {
-          const errorMsg = `Condition node "${node.data.label || nodeId}" contains unsupported syntax`;
+          const errorMsg = `Condition node "${commentSafe(node.data.label || nodeId)}" contains unsupported syntax`;
           validationErrors.push(errorMsg);
           convertedCondition = `false /* ERROR: ${errorMsg} */`;
         }
       } else {
-        const errorMsg = `Condition node "${node.data.label || nodeId}" has no condition expression configured`;
+        const errorMsg = `Condition node "${commentSafe(node.data.label || nodeId)}" has no condition expression configured`;
         validationErrors.push(errorMsg);
         convertedCondition = `false /* ERROR: ${errorMsg} */`;
       }

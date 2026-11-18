@@ -586,12 +586,11 @@ describe("matchesRegex", () => {
     });
 
     it("stops one Condition at its matching budget", () => {
-      const call = `matchesRegex(${FIELD}, "(?i)(?:\\\\w?){450}x")`;
+      const call = `!matchesRegex(${FIELD}, "(?i)(?:\\\\w?){450}x")`;
       const text = "a".repeat(MAX_REGEX_TEXT_LENGTH);
-      const calls = (count: number): string =>
-        Array.from({ length: count }, () => `!${call}`).join(" && ");
-      expect(run(calls(6), text)).toBe(true);
-      expect(() => run(calls(7), text)).toThrow(
+      // 903 steps x 4,096 characters is about 3.7 million: one fits in 5 million.
+      expect(run(call, text)).toBe(true);
+      expect(() => run(`${call} && ${call}`, text)).toThrow(
         "reached this node's matching limit"
       );
       // The budget is per evaluation, not per process.
@@ -675,7 +674,7 @@ describe("matchesRegex", () => {
     });
 
     it("refuses an unterminated string before the large-integer rewrite", () => {
-      const expression = `__v0 > 1 && __v1 == "${'\\"'.repeat(40_000)}`;
+      const expression = `__v0 > 1 && __v1 == "${'\\"'.repeat(4000)}`;
       const started = performance.now();
       expect(validateConditionExpression(expression)).toEqual({
         valid: false,

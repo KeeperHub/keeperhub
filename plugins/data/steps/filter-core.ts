@@ -13,6 +13,7 @@ import { getErrorMessage } from "@/lib/utils";
 import { operatorToExpression } from "@/lib/workflow/nodes/condition/expression";
 import {
   compileRegex,
+  MAX_FILTER_REGEX_WORK,
   MAX_REGEX_TEXT_LENGTH,
   REGEX_SOURCE_ERROR,
   RegexBudget,
@@ -515,9 +516,9 @@ function makeRegexMatcher(
   pattern: string,
   ignoreCase: boolean
 ): Matcher {
-  const regex = compileRegex(pattern, ignoreCase);
+  const budget = new RegexBudget(MAX_FILTER_REGEX_WORK);
+  const regex = compileRegex(pattern, ignoreCase, budget);
   const negate = operator === "notMatchesRegex";
-  const budget = new RegexBudget();
   return (fieldValue: unknown): boolean | Untestable => {
     const tested = toTestedValue(fieldValue, operator);
     if ("reason" in tested) {
@@ -662,6 +663,17 @@ export function filterArray(input: FilterCoreInput): FilterResult {
   }
 }
 
+// A switch that changes how the test works must be set in the node, so
+// outside data cannot turn it on or off.
+function fixedSetting(raw: unknown, name: string): unknown {
+  if (valueContainsTemplate(raw)) {
+    throw new Error(
+      `${name} must be set here; it can't come from another node.`
+    );
+  }
+  return raw;
+}
+
 // A template Value is resolved at run time, except a regex pattern, which
 // must be typed so outside data cannot choose the test.
 function checkTemplateValue(raw: unknown, operator: FilterOperator): boolean {
@@ -682,8 +694,12 @@ function checkTemplateValue(raw: unknown, operator: FilterOperator): boolean {
 export function checkFilterConfig(
   config: Record<string, unknown>
 ): { field: string; message: string } | undefined {
+  // The test itself never comes from another node; only its inputs may.
   if (valueContainsTemplate(config.operator)) {
-    return;
+    return {
+      field: "operator",
+      message: "Pick the operator itself; it can't come from another node.",
+    };
   }
   const typed = (key: string): unknown =>
     valueContainsTemplate(config[key]) ? undefined : config[key];
@@ -717,7 +733,10 @@ export function checkFilterConfig(
       "ignoreCase",
       () =>
         CASE_FOLDING_FILTER_OPERATORS.includes(operator) &&
-        readSwitch(typed("ignoreCase"), "Ignore case"),
+        readSwitch(
+          fixedSetting(config.ignoreCase, "Ignore case"),
+          "Ignore case"
+        ),
     ],
     [
       "untestable",
