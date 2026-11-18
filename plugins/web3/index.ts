@@ -1550,7 +1550,7 @@ const web3Plugin: IntegrationPlugin = {
           defaultValue: "rows",
           helpTip:
             "Rows: add each call here. A list: take the calls from an earlier node's output, one call per entry, in order.",
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: { field: "inputMode", notEquals: "mixed" },
         },
         {
           key: "contractAddress",
@@ -1578,7 +1578,7 @@ const web3Plugin: IntegrationPlugin = {
             "One call per address, in order, all on the network above. Up to 5,000 addresses.",
           showWhen: {
             all: [
-              { field: "inputMode", oneOf: ["uniform", ""] },
+              { field: "inputMode", notEquals: "mixed" },
               { field: "callsFrom", equals: "address-list" },
             ],
           },
@@ -1590,10 +1590,10 @@ const web3Plugin: IntegrationPlugin = {
           placeholder: "0x... one contract with the same ABI (optional)",
           isAddressField: true,
           helpText:
-            "Only used to fetch the ABI; it is not called. Or paste the ABI with Use manual ABI.",
+            "Only used to fetch the ABI; it is not called. Or tick Use manual ABI and paste it.",
           showWhen: {
             all: [
-              { field: "inputMode", oneOf: ["uniform", ""] },
+              { field: "inputMode", notEquals: "mixed" },
               { field: "callsFrom", equals: "address-list" },
             ],
           },
@@ -1653,10 +1653,10 @@ const web3Plugin: IntegrationPlugin = {
           placeholder:
             '{{@node1:Label.result}} or [["0xabc...", 5], ["0xdef...", 6]]',
           helpText:
-            'One call per entry, in order. An entry is the call\'s arguments in order, e.g. ["0xabc...", 5]. For a function with one plain argument (address, number, string, bool, bytes), an entry can be the bare value. Up to 5,000 entries.',
+            'One call per entry, in order. An entry is the call\'s arguments in order, e.g. ["0xabc...", 5]. For a function with one plain argument (address, number, string, bool, bytes or bytes32), an entry can be the bare value. Up to 5,000 entries.',
           showWhen: {
             all: [
-              { field: "inputMode", oneOf: ["uniform", ""] },
+              { field: "inputMode", notEquals: "mixed" },
               { field: "callsFrom", equals: "args-list" },
             ],
           },
@@ -1670,7 +1670,7 @@ const web3Plugin: IntegrationPlugin = {
           helpText: "These arguments go to every contract in the list.",
           showWhen: {
             all: [
-              { field: "inputMode", oneOf: ["uniform", ""] },
+              { field: "inputMode", notEquals: "mixed" },
               { field: "callsFrom", equals: "address-list" },
             ],
           },
@@ -1704,7 +1704,9 @@ const web3Plugin: IntegrationPlugin = {
             },
           ],
         },
-        readFailOnErrorField(),
+        readFailOnErrorField(
+          "When off, a failed read passes a soft error to the next node instead of failing the run. This covers a failed batch and any problem with the ABI, function, arguments, Contract Address or list entries. Only an unknown network or unresolved RPC config still fails the run."
+        ),
       ],
     },
     {

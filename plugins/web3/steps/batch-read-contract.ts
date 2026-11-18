@@ -20,6 +20,7 @@ import {
   calldataBytes,
   checkRunCalldata,
   echo,
+  encodeReason,
   type ListFunction,
   MAX_REASON_LENGTH,
   MAX_TOTAL_CALLS,
@@ -131,7 +132,10 @@ function buildUniformCalls(
   argsList: string | undefined
 ): { calls: NormalizedCall[]; error?: string } {
   if (!contractAddress) {
-    return { calls: [], error: "Contract Address is required in uniform mode" };
+    return {
+      calls: [],
+      error: "Contract Address is required. Enter the contract to call.",
+    };
   }
 
   if (!ethers.isAddress(contractAddress)) {
@@ -142,7 +146,7 @@ function buildUniformCalls(
   }
 
   if (!abiFunction) {
-    return { calls: [], error: "Function is required in uniform mode" };
+    return { calls: [], error: "Function is required." };
   }
 
   if (!argsList || argsList.trim() === "") {
@@ -396,29 +400,26 @@ function encodeMixedCalls(normalizedCalls: NormalizedCall[]): {
       };
     }
 
-    // Find the function in this call's ABI
-    const functionAbiItem = callAbi.find(
-      (item) =>
-        (item as { type?: string }).type === "function" &&
-        item.name === call.abiFunction
-    ) as { outputs?: { name?: string; type?: string }[] } | undefined;
-
-    if (!functionAbiItem) {
+    // A picked overload is stored as its full signature; encode by it.
+    let fn: ListFunction;
+    try {
+      fn = resolveListFunction(callAbi, call.abiFunction);
+    } catch (error) {
       return {
         encoded: [],
-        error: `Call at index ${index}: Function '${call.abiFunction}' not found in ABI`,
+        error: `Call at index ${index}: ${getErrorMessage(error)}`,
       };
     }
 
     try {
-      const callData = iface.encodeFunctionData(call.abiFunction, call.args);
+      const callData = iface.encodeFunctionData(fn.signature, call.args);
       encoded.push({
         target: call.contractAddress,
         allowFailure: true,
         callData,
-        abiFunction: call.abiFunction,
+        abiFunction: fn.signature,
         iface,
-        functionAbi: functionAbiItem,
+        functionAbi: { outputs: fn.outputs },
       });
     } catch (error) {
       return {
@@ -444,7 +445,7 @@ function decodeCallResult(
     try {
       const decoded = callMeta.iface.parseError(returnData);
       if (decoded) {
-        revertReason = `Call reverted: ${decoded.name}(${decoded.args.join(", ")})`;
+        revertReason = `Call reverted: ${echo(`${decoded.name}(${decoded.args.join(", ")})`, MAX_REASON_LENGTH)}`;
       }
     } catch {
       if (returnData && returnData !== "0x") {
@@ -453,7 +454,7 @@ function decodeCallResult(
             ["string"],
             ethers.dataSlice(returnData, 4)
           );
-          revertReason = `Call reverted: ${reason[0]}`;
+          revertReason = `Call reverted: ${echo(String(reason[0]), MAX_REASON_LENGTH)}`;
         } catch {
           // Raw bytes
         }
@@ -475,7 +476,7 @@ function decodeCallResult(
     return {
       success: false,
       result: null,
-      error: `Failed to decode result: ${getErrorMessage(error)}`,
+      error: `Failed to decode result: ${echo(getErrorMessage(error), MAX_REASON_LENGTH)}`,
     };
   }
 }
@@ -521,10 +522,12 @@ async function executeMulticallBatches(
         results.push(decodeCallResult(callSuccess, returnData, callMeta));
       }
     } catch (error) {
+      // An ethers error carries the whole batch's call data; keep it short.
+      const reason = echo(getErrorMessage(error), MAX_REASON_LENGTH);
       logUserError(
         ErrorCategory.NETWORK_RPC,
-        `${LOG_PREFIX} Multicall batch ${batchIndex + 1} failed`,
-        error,
+        `${LOG_PREFIX} Multicall batch ${batchIndex + 1} failed: ${reason}`,
+        undefined,
         {
           plugin_name: "web3",
           action_name: "batch-read-contract",
@@ -533,7 +536,7 @@ async function executeMulticallBatches(
       );
       return {
         results: [],
-        error: `Multicall batch ${batchIndex + 1}/${totalBatches} failed: ${getErrorMessage(error)}`,
+        error: `Multicall batch ${batchIndex + 1}/${totalBatches} failed: ${reason}`,
       };
     }
   }
@@ -653,7 +656,7 @@ function encodeForList(
     return ctx.iface.encodeFunctionData(ctx.fn.signature, args);
   } catch (error) {
     throw new Error(
-      `${where} could not be encoded for ${ctx.fn.name}: ${echo(getErrorMessage(error), MAX_REASON_LENGTH)}`
+      `${where} could not be encoded for ${ctx.fn.name}: ${encodeReason(error, ctx.fn)}`
     );
   }
 }
@@ -678,13 +681,14 @@ function encodeAddressList(
   input: BatchReadContractInput,
   ctx: ListContext
 ): EncodedCallWithMeta[] {
-  const args = sharedArgsForList(input.functionArgs, ctx.fn);
-  const callData = encodeForList(ctx, args, SHARED_ARGS_LABEL);
   const entries = parseListInput(
     input.contractAddresses,
     ADDRESS_LIST_LABEL,
     '["0xabc..."]'
   );
+  // Bounded before encoding inside: encoding a large argument is itself slow.
+  const args = sharedArgsForList(input.functionArgs, ctx.fn, entries.length);
+  const callData = encodeForList(ctx, args, SHARED_ARGS_LABEL);
   checkRunCalldata(calldataBytes(callData) * entries.length, "addresses");
   return addressesFromList(entries).map((target) =>
     listCall(ctx, target, callData)
@@ -697,10 +701,14 @@ function encodeArgsList(
 ): EncodedCallWithMeta[] {
   const { contractAddress } = input;
   if (!contractAddress) {
-    throw new Error("Contract Address is required.");
+    throw new Error(
+      "Contract Address is required. Enter the contract to call."
+    );
   }
   if (!ethers.isAddress(contractAddress)) {
-    throw new Error(`Invalid contract address: ${echo(contractAddress)}`);
+    throw new Error(
+      `Contract Address is not a valid address: "${echo(contractAddress)}". Use a 0x address with 40 hex characters.`
+    );
   }
   requireArguments(ctx.fn);
   const entries = parseListInput(
@@ -766,11 +774,7 @@ async function executeUniformMode(
   const { network, abi } = input;
 
   if (!network) {
-    return { success: false, error: "Network is required in uniform mode" };
-  }
-
-  if (!abi) {
-    return { success: false, error: "ABI is required in uniform mode" };
+    return { success: false, error: "Network is required." };
   }
 
   let callsFrom: CallsFrom;
@@ -778,6 +782,17 @@ async function executeUniformMode(
     callsFrom = resolveCallsFrom(input.callsFrom);
   } catch (error) {
     return { success: false, error: getErrorMessage(error) };
+  }
+
+  if (!abi) {
+    const fetchFrom =
+      callsFrom === CALLS_FROM_ADDRESS_LIST
+        ? "Enter an address in Fetch ABI From to fetch it"
+        : "Enter Contract Address to fetch it";
+    return {
+      success: false,
+      error: `Contract ABI is required. ${fetchFrom}, or tick Use manual ABI and paste it.`,
+    };
   }
 
   const encodeResult =

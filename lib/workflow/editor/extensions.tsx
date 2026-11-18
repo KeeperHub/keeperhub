@@ -90,7 +90,7 @@ registerFieldRenderer(
         <AbiWithAutoFetchField
           autoFetchPlaceholder={
             fetchElsewhere
-              ? "ABI will be fetched automatically when an address to fetch from and a network are set"
+              ? "ABI will be fetched automatically when Fetch ABI From and Network are set"
               : undefined
           }
           config={config}

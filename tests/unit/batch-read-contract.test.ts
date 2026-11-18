@@ -289,7 +289,9 @@ describe("batch-read-contract - uniform mode validation", () => {
       contractAddress: VALID_ADDRESS,
       abiFunction: "nonExistentFunction",
     });
-    expect(result.error).toContain("not found in ABI");
+    expect(result.error).toContain(
+      "is not in the ABI. Pick it again in Function"
+    );
   });
 
   it("fails when argsList is invalid JSON", async () => {
@@ -770,7 +772,9 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("not found in ABI");
+    expect(result.error).toContain(
+      "is not in the ABI. Pick it again in Function"
+    );
   });
 
   it("reports correct index for validation errors", async () => {

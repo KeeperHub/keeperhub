@@ -22,7 +22,15 @@ const EN_US = "en-US";
 const HEX_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const SCALAR_TYPE_RE = /^(address|bool|string|bytes\d*|u?int\d*)$/;
 const INTEGER_TYPE_RE = /^u?int\d*$/;
-const ARRAY_TYPE_RE = /^(.*)\[\d*\]$/;
+const ARRAY_TYPE_RE = /^(.*)\[(\d*)\]$/;
+const BYTES_N_RE = /^bytes(\d+)$/;
+const HEX_RE = /^0x[0-9a-fA-F]*$/;
+const ETHERS_DETAIL_RE = /\s*\([^()]*\bcode=[A-Z_]+[^()]*\)/g;
+const ETHERS_ARGUMENT_RE = /argument="([^"]+)"/;
+const NUMBER_FAULT_RE =
+  /overflow|underflow|out-of-bounds|BigNumberish|Cannot convert|NUMERIC_FAULT/i;
+const LIST_SIZE_STEP =
+  "Filter the list first or split it across two Batch Read nodes.";
 
 export type ListFunction = {
   name: string;
@@ -50,7 +58,7 @@ export function resolveCallsFrom(value: unknown): CallsFrom {
     return value;
   }
   throw new Error(
-    `Calls From must be "${CALLS_FROM_ROWS}", "${CALLS_FROM_ARGS_LIST}" or "${CALLS_FROM_ADDRESS_LIST}", got "${echo(String(value))}".`
+    `Calls From must be "${CALLS_FROM_ROWS}", "${CALLS_FROM_ARGS_LIST}" or "${CALLS_FROM_ADDRESS_LIST}", got ${echo(typeof value === "string" ? `"${value}"` : (JSON.stringify(value) ?? String(value)))}.`
   );
 }
 
@@ -110,7 +118,9 @@ export function resolveListFunction(
     );
   }
   if (resolution.status === "not_found") {
-    throw new Error(`Function '${echo(key)}' not found in ABI`);
+    throw new Error(
+      `Function '${echo(key)}' is not in the ABI. Pick it again in Function, or check the ABI.`
+    );
   }
   return {
     name: resolution.entry.name,
@@ -130,25 +140,34 @@ export function parseListInput(
   typedExample: string
 ): unknown[] {
   let parsed: unknown = raw ?? "";
-  const sizeStep =
-    "Filter the list first or split it across two Batch Read nodes.";
+  const singleValue = `${label} got a single value, not a list. If it comes from Encode / Decode, a one-entry array comes back as a plain value; see the docs.`;
   if (typeof parsed === "string") {
     const text = parsed.trim();
     if (text === "") {
       throw new Error(
-        `${label} is required. Reference an array from an earlier node, e.g. {{@node1:Label.result}}, or type one like ${typedExample}.`
+        `${label} is empty or missing. Check the reference and the node that produces it.`
       );
     }
-    checkTextSize(text, label, sizeStep);
+    checkTextSize(text, label, LIST_SIZE_STEP);
     try {
       parsed = JSON.parse(text);
     } catch {
+      const looksLikeList = text.startsWith("[") || text.includes(",");
       throw new Error(
-        `${label} is not a JSON array. Reference an array from an earlier node, e.g. {{@node1:Label.result}}, or type one like ${typedExample}.`
+        looksLikeList
+          ? `${label} is not a JSON array. Reference an array from an earlier node, e.g. {{@node1:Label.result}}, or type one like ${typedExample}.`
+          : singleValue
       );
     }
   } else if (Array.isArray(parsed)) {
-    checkTextSize(parsed, label, sizeStep);
+    checkTextSize(parsed, label, LIST_SIZE_STEP);
+  }
+  if (
+    typeof parsed === "string" ||
+    typeof parsed === "number" ||
+    typeof parsed === "boolean"
+  ) {
+    throw new Error(singleValue);
   }
   if (!Array.isArray(parsed)) {
     throw new Error(
@@ -160,7 +179,7 @@ export function parseListInput(
   }
   if (parsed.length > MAX_TOTAL_CALLS) {
     throw new Error(
-      `${label} has ${count(parsed.length)} entries; the limit is ${count(MAX_TOTAL_CALLS)} calls per run. Split the list across two Batch Read nodes or filter it first.`
+      `${label} has ${count(parsed.length)} entries; the limit is ${count(MAX_TOTAL_CALLS)} calls per run. ${LIST_SIZE_STEP}`
     );
   }
   return parsed;
@@ -234,86 +253,244 @@ function isPrimitive(value: unknown): boolean {
   );
 }
 
-/** The first bool, at any depth, that is not a real boolean. */
-function findNonBoolean(
+/** Positional tuples become objects by component order, as validation expects. */
+function structureTuples(
   value: unknown,
   type: string,
   components: AbiParam[] | undefined,
   path: string
-): { path: string; value: unknown } | undefined {
+): unknown {
   const array = ARRAY_TYPE_RE.exec(type);
   if (array) {
-    if (!Array.isArray(value)) {
-      return;
-    }
-    for (const [index, item] of value.entries()) {
-      const found = findNonBoolean(
-        item,
-        array[1],
-        components,
-        `${path}[${index}]`
-      );
-      if (found) {
-        return found;
-      }
-    }
-    return;
+    return Array.isArray(value)
+      ? value.map((item, index) =>
+          structureTuples(item, array[1], components, `${path}[${index}]`)
+        )
+      : value;
   }
-  if (type === "tuple") {
-    if (typeof value !== "object" || value === null) {
-      return;
+  if (type !== "tuple" || !components?.length) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    if (value.length !== components.length) {
+      const names = components.map((c) => c.name || c.type).join(", ");
+      throw new Error(
+        `${path} has ${plural(value.length, "value")} but its tuple takes ${count(components.length)} (${names}).`
+      );
     }
-    for (const [index, component] of (components ?? []).entries()) {
-      const member = Array.isArray(value)
-        ? value[index]
-        : (value as Record<string, unknown>)[component.name];
-      const found = findNonBoolean(
-        member,
+    const out: Record<string, unknown> = {};
+    for (const [index, component] of components.entries()) {
+      out[component.name] = structureTuples(
+        value[index],
         component.type,
         component.components,
         `${path}.${component.name || index}`
       );
-      if (found) {
-        return found;
-      }
     }
-    return;
+    return out;
   }
-  if (type === "bool" && typeof value !== "boolean") {
-    return { path, value };
+  if (typeof value === "object" && value !== null) {
+    const out: Record<string, unknown> = { ...(value as object) };
+    for (const component of components) {
+      out[component.name] = structureTuples(
+        out[component.name],
+        component.type,
+        component.components,
+        `${path}.${component.name}`
+      );
+    }
+    return out;
   }
-  return;
+  return value;
 }
 
 /**
- * Shape and check one argument set the way read-contract does, then refuse
- * any bool that is not true or false so a text like "no" never encodes as true.
+ * Leaf checks ahead of encoding: a bool must be true or false, a bytesN
+ * must be 0x hex of its length; spaces around an address are trimmed.
  */
+function checkLeaves(
+  value: unknown,
+  type: string,
+  components: AbiParam[] | undefined,
+  path: string
+): unknown {
+  const array = ARRAY_TYPE_RE.exec(type);
+  if (array) {
+    return Array.isArray(value)
+      ? value.map((item, index) =>
+          checkLeaves(item, array[1], components, `${path}[${index}]`)
+        )
+      : value;
+  }
+  if (type === "tuple") {
+    if (typeof value !== "object" || value === null) {
+      return value;
+    }
+    const out: Record<string, unknown> = { ...(value as object) };
+    for (const component of components ?? []) {
+      out[component.name] = checkLeaves(
+        out[component.name],
+        component.type,
+        component.components,
+        `${path}.${component.name}`
+      );
+    }
+    return out;
+  }
+  if (type === "bool" && typeof value !== "boolean") {
+    throw new Error(
+      `${path} must be true or false, got ${echo(JSON.stringify(value) ?? String(value))}.`
+    );
+  }
+  const bytes = BYTES_N_RE.exec(type);
+  if (bytes) {
+    const size = Number(bytes[1]);
+    if (
+      typeof value !== "string" ||
+      !HEX_RE.test(value) ||
+      value.length !== 2 + size * 2
+    ) {
+      throw new Error(
+        `${path} must be 0x hex for ${type}, got ${echo(JSON.stringify(value) ?? String(value))}. Turn text into ${type} with the Encode / Decode node first.`
+      );
+    }
+  }
+  if (type === "address" && typeof value === "string") {
+    return value.trim();
+  }
+  return value;
+}
+
+/** Shape and check one argument set the way read-contract does; a bool must be true or false. */
 export function prepareArgs(
   args: unknown[],
   fn: ListFunction,
   where: string
 ): unknown[] {
   const entry = { inputs: fn.inputs };
-  const coerced = coerceArgsForAbi(reshapeArgsForAbi(args, entry), entry);
+  let shaped: unknown[];
+  try {
+    shaped = args.map((arg, index) => {
+      const input = fn.inputs[index];
+      return input
+        ? structureTuples(
+            arg,
+            input.type,
+            input.components,
+            input.name || `arg${index}`
+          )
+        : arg;
+    });
+  } catch (error) {
+    throw new Error(`${where}: ${(error as Error).message}`);
+  }
+  const coerced = coerceArgsForAbi(reshapeArgsForAbi(shaped, entry), entry);
   const validation = validateArgsForAbi(coerced, entry);
   if (!validation.ok) {
     throw new Error(`${where}: ${echo(validation.error, MAX_REASON_LENGTH)}.`);
   }
-  for (const [index, input] of fn.inputs.entries()) {
-    const found = findNonBoolean(
-      coerced[index],
-      input.type,
-      input.components,
-      input.name || `arg${index}`
-    );
-    if (found) {
-      throw new Error(
-        `${where}: ${found.path} must be true or false, got ${echo(JSON.stringify(found.value) ?? String(found.value))}.`
-      );
-    }
+  try {
+    return coerced.map((arg, index) => {
+      const input = fn.inputs[index];
+      return input
+        ? checkLeaves(
+            arg,
+            input.type,
+            input.components,
+            input.name || `arg${index}`
+          )
+        : arg;
+    });
+  } catch (error) {
+    throw new Error(`${where}: ${(error as Error).message}`);
   }
-  return coerced;
+}
+
+/** Bytes a dynamic value takes once encoded: its length word plus its padded data. */
+function dynamicBytes(value: unknown): number {
+  const text = typeof value === "string" ? value : "";
+  const length = HEX_RE.test(text)
+    ? Math.ceil((text.length - 2) / 2)
+    : Buffer.byteLength(text, "utf8");
+  return 32 + Math.ceil(length / 32) * 32;
+}
+
+/**
+ * An upper estimate of the encoded size of one value, 32 bytes per leaf and
+ * per dynamic head or length word, computed without encoding anything.
+ */
+function estimateValue(
+  value: unknown,
+  type: string,
+  components: AbiParam[] | undefined
+): number {
+  const array = ARRAY_TYPE_RE.exec(type);
+  if (array) {
+    const items = Array.isArray(value) ? value : [];
+    const head = isDynamicType(array[1], components) ? 32 : 0;
+    let total = 64;
+    for (const item of items) {
+      total += head + estimateValue(item, array[1], components);
+    }
+    return total;
+  }
+  if (type === "tuple") {
+    let total = 32;
+    for (const [index, component] of (components ?? []).entries()) {
+      const member = Array.isArray(value)
+        ? value[index]
+        : (value as Record<string, unknown> | undefined)?.[component.name];
+      total += estimateValue(member, component.type, component.components);
+    }
+    return total;
+  }
+  if (type === "string" || type === "bytes") {
+    return 32 + dynamicBytes(value);
+  }
+  return 32;
+}
+
+function isDynamicType(
+  type: string,
+  components: AbiParam[] | undefined
+): boolean {
+  if (type === "string" || type === "bytes" || type.endsWith("[]")) {
+    return true;
+  }
+  const array = ARRAY_TYPE_RE.exec(type);
+  if (array) {
+    return isDynamicType(array[1], components);
+  }
+  return (
+    type === "tuple" &&
+    (components ?? []).some((c) => isDynamicType(c.type, c.components))
+  );
+}
+
+/** Estimated call data of one call: selector plus every argument. */
+export function estimateCalldata(args: unknown[], fn: ListFunction): number {
+  let total = 4;
+  for (const [index, input] of fn.inputs.entries()) {
+    total += estimateValue(args[index], input.type, input.components);
+  }
+  return total;
+}
+
+/** An encoder error without ethers' detail suffix, in words for numbers. */
+export function encodeReason(error: unknown, fn: ListFunction): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (NUMBER_FAULT_RE.test(message)) {
+    const reported = ETHERS_ARGUMENT_RE.exec(message)?.[1];
+    const names = fn.inputs.map((input) => input.name);
+    let name: string | undefined;
+    if (reported && names.includes(reported)) {
+      name = reported;
+    } else if (names.length === 1) {
+      name = names[0];
+    }
+    return `${name ? `${name} ` : "it "}must be a whole number; write large numbers in quotes, e.g. "12345678901234567890".`;
+  }
+  return echo(message.replace(ETHERS_DETAIL_RE, ""), MAX_REASON_LENGTH);
 }
 
 /** A list of argument sets needs a function that takes some; checked before the list. */
@@ -359,9 +536,14 @@ export function argSetsFromList(
   entries: unknown[],
   fn: ListFunction
 ): unknown[][] {
+  let estimate = 0;
   return entries.map((entry, index) => {
     const at = `${ARGS_LIST_LABEL} entry ${index + 1}`;
-    return prepareArgs(entryToArgs(entry, fn, at), fn, at);
+    const raw = entryToArgs(entry, fn, at);
+    // Bounded before any shaping or encoding, which is slow on huge arrays.
+    estimate += estimateCalldata(raw, fn);
+    checkRunCalldata(estimate, "entries");
+    return prepareArgs(raw, fn, at);
   });
 }
 
@@ -369,7 +551,11 @@ export function argSetsFromList(
  * The one argument set sent to every contract in an address list. A function
  * without inputs ignores it: the editor shows no inputs to clear a stale value.
  */
-export function sharedArgsForList(raw: unknown, fn: ListFunction): unknown[] {
+export function sharedArgsForList(
+  raw: unknown,
+  fn: ListFunction,
+  copies: number
+): unknown[] {
   const takes = fn.inputs.length;
   if (takes === 0) {
     return [];
@@ -402,6 +588,7 @@ export function sharedArgsForList(raw: unknown, fn: ListFunction): unknown[] {
       `${SHARED_ARGS_LABEL} has ${plural(args.length, "value")} but ${fn.name} takes ${count(takes)} (${inputNames(fn)}). Fill in every argument; the same ones go to every contract in the list.`
     );
   }
+  checkRunCalldata(estimateCalldata(args, fn) * copies, "addresses");
   return prepareArgs(args, fn, SHARED_ARGS_LABEL);
 }
 

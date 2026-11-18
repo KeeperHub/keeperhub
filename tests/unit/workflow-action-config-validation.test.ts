@@ -2347,7 +2347,7 @@ describe("validateWorkflowActionConfigs - Batch Read Contract calls from a list"
       .issues.filter((issue) => issue.code === "MISSING_REQUIRED_FIELD")
       .map((issue) => issue.field);
 
-  it("keeps a saved workflow without Calls from valid, needing Contract Address as before", () => {
+  it("keeps a saved workflow without Calls From valid, needing Contract Address as before", () => {
     expect(
       validateWorkflowActionConfigs([
         actionNode("web3/batch-read-contract", {
@@ -2360,7 +2360,7 @@ describe("validateWorkflowActionConfigs - Batch Read Contract calls from a list"
     expect(missingFields(uniform)).toEqual(["contractAddress"]);
   });
 
-  it("needs Argument sets, not the rows, when Calls from is a list of argument sets", () => {
+  it("needs Argument Sets, not the rows, when Calls From is a list of argument sets", () => {
     expect(
       missingFields({
         ...uniform,
@@ -2378,7 +2378,7 @@ describe("validateWorkflowActionConfigs - Batch Read Contract calls from a list"
     ).toEqual([]);
   });
 
-  it("needs Contract addresses but not Contract Address when Calls from is a list of addresses", () => {
+  it("needs Contract Addresses but not Contract Address when Calls From is a list of addresses", () => {
     expect(missingFields({ ...uniform, callsFrom: "address-list" })).toEqual([
       "contractAddresses",
     ]);
@@ -2395,7 +2395,7 @@ describe("validateWorkflowActionConfigs - Batch Read Contract calls from a list"
     ).toEqual({ valid: true, issues: [] });
   });
 
-  it("checks Fetch ABI from as an address", () => {
+  it("checks Fetch ABI From as an address", () => {
     const result = validateWorkflowActionConfigs([
       actionNode("web3/batch-read-contract", {
         ...uniform,
@@ -2407,6 +2407,20 @@ describe("validateWorkflowActionConfigs - Batch Read Contract calls from a list"
     expect(result.issues.map((issue) => issue.field)).toEqual([
       "abiFetchAddress",
     ]);
+  });
+
+  it("shows the list fields when inputMode is absent, as the step runs it", () => {
+    const { inputMode: _omit, ...noMode } = uniform;
+    expect(missingFields({ ...noMode, callsFrom: "address-list" })).toContain(
+      "contractAddresses"
+    );
+    expect(
+      missingFields({
+        ...noMode,
+        callsFrom: "args-list",
+        contractAddress: "0x0000000000000000000000000000000000000001",
+      })
+    ).toContain("argsFromList");
   });
 
   it("accepts both lists as native JSON arrays, as MCP agents send them", () => {
@@ -2454,7 +2468,7 @@ describe("validateWorkflowActionConfigs - Batch Read Contract calls from a list"
     expect(fetchesElsewhere({ inputMode: "uniform" })).toBe(false);
   });
 
-  it("rejects a Calls from value that is not an option", () => {
+  it("rejects a Calls From value that is not an option", () => {
     const result = validateWorkflowActionConfigs([
       actionNode("web3/batch-read-contract", {
         ...uniform,

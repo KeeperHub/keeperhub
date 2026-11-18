@@ -70,6 +70,7 @@ vi.mock("ethers", async () => {
 });
 
 import { ethers } from "ethers";
+import { logUserError } from "@/lib/logging";
 import {
   type BatchReadContractCoreInput,
   type BatchReadContractInput,
@@ -77,6 +78,36 @@ import {
 } from "@/plugins/web3/steps/batch-read-contract";
 
 const LIST_ABI = [
+  {
+    name: "cfg",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      {
+        name: "p",
+        type: "tuple",
+        components: [
+          { name: "flag", type: "bool" },
+          { name: "x", type: "uint256" },
+        ],
+      },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    name: "key",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "_key", type: "bytes32" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "nested",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "m", type: "uint256[][]" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
   {
     name: "flag",
     type: "function",
@@ -194,6 +225,16 @@ function answer(call: Call): [boolean, string] {
       const total = ids.reduce((a, b) => a + b, BigInt(0));
       return [true, iface.encodeFunctionResult("sum", [total])];
     }
+    case "cfg":
+      return [
+        true,
+        iface.encodeFunctionResult("cfg", [
+          (parsed.args[0] as { flag: boolean }).flag,
+        ]),
+      ];
+    case "key":
+    case "nested":
+      return [true, iface.encodeFunctionResult(parsed.name, [BigInt(1)])];
     case "flag":
       return [true, iface.encodeFunctionResult("flag", [parsed.args[0]])];
     case "flags": {
@@ -366,9 +407,19 @@ describe("batch-read-contract - contract addresses from a list", () => {
     );
   });
 
-  it("fails when the list is blank", async () => {
-    expect(await failure(addressList(""))).toContain(
-      "Contract Addresses is required."
+  it("fails when the list is blank, as an empty reference resolves", async () => {
+    expect(await failure(addressList(""))).toBe(
+      "Contract Addresses is empty or missing. Check the reference and the node that produces it."
+    );
+  });
+
+  it("explains a single value where a list was expected", async () => {
+    const single =
+      "Contract Addresses got a single value, not a list. If it comes from Encode / Decode, a one-entry array comes back as a plain value; see the docs.";
+    expect(await failure(addressList(addr(1)))).toBe(single);
+    expect(await failure(addressList(JSON.stringify(addr(1))))).toBe(single);
+    expect(await failure(argsList("7"))).toBe(
+      single.replace("Contract Addresses", "Argument Sets")
     );
   });
 
@@ -397,7 +448,7 @@ describe("batch-read-contract - contract addresses from a list", () => {
   it("caps the list at 5,000 entries", async () => {
     const list = Array.from({ length: 5001 }, (_, i) => addr(i + 1));
     expect(await failure(addressList(list))).toBe(
-      "Contract Addresses has 5,001 entries; the limit is 5,000 calls per run. Split the list across two Batch Read nodes or filter it first."
+      "Contract Addresses has 5,001 entries; the limit is 5,000 calls per run. Filter the list first or split it across two Batch Read nodes."
     );
   });
 
@@ -535,13 +586,13 @@ describe("batch-read-contract - argument sets from a list", () => {
   it("caps the list at 5,000 entries", async () => {
     const list = Array.from({ length: 6200 }, (_, i) => String(i));
     expect(await failure(argsList(list))).toBe(
-      "Argument Sets has 6,200 entries; the limit is 5,000 calls per run. Split the list across two Batch Read nodes or filter it first."
+      "Argument Sets has 6,200 entries; the limit is 5,000 calls per run. Filter the list first or split it across two Batch Read nodes."
     );
   });
 
   it("still needs a valid Contract Address", async () => {
     expect(await failure({ ...argsList(["1"]), contractAddress: "0x12" })).toBe(
-      "Invalid contract address: 0x12"
+      'Contract Address is not a valid address: "0x12". Use a 0x address with 40 hex characters.'
     );
   });
 
@@ -554,8 +605,8 @@ describe("batch-read-contract - argument sets from a list", () => {
   });
 });
 
-describe("batch-read-contract - Calls from and saved workflows", () => {
-  it("runs the rows when Calls from is absent, as before the field existed", async () => {
+describe("batch-read-contract - Calls From and saved workflows", () => {
+  it("runs the rows when Calls From is absent, as before the field existed", async () => {
     const outcome = await run({
       contractAddress: CONTRACT,
       abiFunction: "echo",
@@ -564,7 +615,7 @@ describe("batch-read-contract - Calls from and saved workflows", () => {
     expect(outcome.results?.map((r) => r.result)).toEqual(["1", "2"]);
   });
 
-  it("runs the rows and ignores hidden list fields when Calls from is rows", async () => {
+  it("runs the rows and ignores hidden list fields when Calls From is rows", async () => {
     const outcome = await run({
       callsFrom: "rows",
       contractAddress: CONTRACT,
@@ -588,7 +639,7 @@ describe("batch-read-contract - Calls from and saved workflows", () => {
     );
   });
 
-  it("rejects an unknown Calls from value", async () => {
+  it("rejects an unknown Calls From value", async () => {
     expect(await failure({ callsFrom: "everything" })).toBe(
       'Calls From must be "rows", "args-list" or "address-list", got "everything".'
     );
@@ -682,15 +733,30 @@ describe("batch-read-contract - list argument types", () => {
     );
   });
 
-  it("cuts a long encoder reason to 200 characters", async () => {
-    const message = await failure(argsList([`9${"x".repeat(500)}`]));
+  it("says a number must be a whole number, without ethers' details", async () => {
+    const whole =
+      'x must be a whole number; write large numbers in quotes, e.g. "12345678901234567890".';
+    expect(await failure(argsList([`9${"x".repeat(500)}`]))).toBe(
+      `Argument Sets entry 1 could not be encoded for echo: ${whole}`
+    );
     expect(
-      message.startsWith(
-        "Argument Sets entry 1 could not be encoded for echo: "
+      await failure(
+        argsList([
+          "12345678901234567890123456789012345678901234567890123456789012345678901234567890",
+        ])
       )
-    ).toBe(true);
-    expect(message.length).toBeLessThan(320);
-    expect(message.endsWith("...")).toBe(true);
+    ).toBe(`Argument Sets entry 1 could not be encoded for echo: ${whole}`);
+  });
+
+  it("strips ethers' detail suffix from other encoder errors", async () => {
+    const message = await failure(
+      argsList([[OWNER, "0xnot-an-address"]], "allowance")
+    );
+    expect(message).toMatch(
+      /^Argument Sets entry 1 could not be encoded for allowance: /
+    );
+    expect(message).not.toContain("code=");
+    expect(message).not.toContain("version=");
   });
 
   it("names the encoder failure without a doubled full stop", async () => {
@@ -702,7 +768,7 @@ describe("batch-read-contract - list argument types", () => {
   it("cuts a long Contract Address in its error", async () => {
     const long = `0x${"z".repeat(300)}`;
     expect(await failure({ ...argsList(["1"]), contractAddress: long })).toBe(
-      `Invalid contract address: ${long.slice(0, 60)}...`
+      `Contract Address is not a valid address: "${long.slice(0, 60)}...". Use a 0x address with 40 hex characters.`
     );
   });
 });
@@ -857,7 +923,7 @@ describe("batch-read-contract - list limits and shapes", () => {
 
   it("does not use Function or Contract Address jargon from the rows", async () => {
     expect(await failure({ ...argsList(["1"]), contractAddress: "" })).toBe(
-      "Contract Address is required."
+      "Contract Address is required. Enter the contract to call."
     );
     expect(await failure({ ...argsList(["1"]), abiFunction: "" })).toBe(
       "Function is required."
@@ -884,5 +950,163 @@ describe("batch-read-contract - list limits and shapes", () => {
     expect(await failure({ ...argsList([[{ a: "1" }]], "pair"), abi })).toBe(
       "Argument Sets entry 1 has 1 value but pair takes 2 (key, n). Make each entry an array like [{...}, 1]."
     );
+  });
+});
+
+describe("batch-read-contract - review round 2", () => {
+  it("bounds the work before encoding a huge uint256[] (fails fast, no RPC)", async () => {
+    const zeros = `[[[${Array.from({ length: 520_000 }, () => "0").join(",")}]]]`;
+    expect(Buffer.byteLength(zeros)).toBeLessThan(1_048_576);
+    const started = Date.now();
+    const message = await failure(argsList(zeros, "sum"));
+    expect(message).toMatch(
+      /^The calls' data adds up to [\d.]+ MB; the limit is 10 MB per run\. Use smaller arguments or fewer entries\.$/
+    );
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("bounds the work before encoding a huge uint256[][] of empty arrays", async () => {
+    const empties = `[[[${Array.from({ length: 260_000 }, () => "[]").join(",")}]]]`;
+    expect(Buffer.byteLength(empties)).toBeLessThan(1_048_576);
+    const started = Date.now();
+    const message = await failure(argsList(empties, "nested"));
+    expect(message).toMatch(/^The calls' data adds up to/);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("bounds shared arguments the same way before encoding", async () => {
+    const started = Date.now();
+    const message = await failure(
+      addressList([addr(1)], {
+        abiFunction: "sum",
+        functionArgs: `[[${Array.from({ length: 400_000 }, () => "0").join(",")}]]`,
+      })
+    );
+    expect(message).toMatch(/fewer addresses\.$/);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("caps the encoded call data of a run in Argument Sets mode too", async () => {
+    const entry = `[[${Array.from({ length: 66 }, () => "0").join(",")}]]`;
+    const list = `[${Array.from({ length: 5000 }, () => entry).join(",")}]`;
+    expect(Buffer.byteLength(list)).toBeLessThan(1_048_576);
+    expect(await failure(argsList(list, "sum"))).toBe(
+      "The calls' data adds up to 10.1 MB; the limit is 10 MB per run. Use smaller arguments or fewer entries."
+    );
+  });
+
+  it("cuts a failed multicall's message and log, which carry the call data", async () => {
+    mockStaticCall.mockRejectedValueOnce(
+      new Error(
+        `call failed (transaction={ "data": "0x${"ab".repeat(200_000)}" })`
+      )
+    );
+    const outcome = await run(addressList([addr(1)]));
+    expect(outcome.success).toBe(false);
+    expect(outcome.error?.length).toBeLessThan(300);
+    const logged = vi
+      .mocked(logUserError)
+      .mock.calls.find(([, message]) =>
+        String(message).includes("Multicall batch")
+      );
+    expect(String(logged?.[1]).length).toBeLessThan(400);
+    expect(logged?.[2]).toBeUndefined();
+  });
+
+  it("cuts a long revert reason", async () => {
+    const reason = "r".repeat(5000);
+    const data = `0x08c379a0${ethers.AbiCoder.defaultAbiCoder().encode(["string"], [reason]).slice(2)}`;
+    mockStaticCall.mockResolvedValueOnce([[false, data]]);
+    const outcome = await run(addressList([addr(1)]));
+    const error = outcome.results?.[0].error ?? "";
+    expect(error.startsWith("Call reverted: ")).toBe(true);
+    expect(error.length).toBeLessThan(260);
+  });
+
+  it("checks a bool inside a tuple", async () => {
+    expect(await failure(argsList([[{ flag: "no", x: "1" }]], "cfg"))).toBe(
+      'Argument Sets entry 1: p.flag must be true or false, got "no".'
+    );
+    const outcome = await run(argsList([[{ flag: "false", x: "1" }]], "cfg"));
+    expect(outcome.results).toEqual([{ success: true, result: false }]);
+  });
+
+  it("reads a tuple written as a positional array", async () => {
+    const outcome = await run(
+      argsList([[["false", "1"]], [["true", "2"]]], "cfg")
+    );
+    expect(outcome.results?.map((r) => r.result)).toEqual([false, true]);
+    mockStaticCall.mockClear();
+    expect(await failure(argsList([[["false"]]], "cfg"))).toBe(
+      "Argument Sets entry 1: p has 1 value but its tuple takes 2 (flag, x)."
+    );
+  });
+
+  it("checks a bytes32 argument before encoding", async () => {
+    expect(await failure(argsList(["MCD_VAT"], "key"))).toBe(
+      'Argument Sets entry 1: _key must be 0x hex for bytes32, got "MCD_VAT". Turn text into bytes32 with the Encode / Decode node first.'
+    );
+    expect(await failure(argsList(["0x1234"], "key"))).toContain(
+      "_key must be 0x hex for bytes32"
+    );
+    const outcome = await run(argsList([`0x${"0".repeat(62)}01`], "key"));
+    expect(outcome.results).toEqual([{ success: true, result: "1" }]);
+  });
+
+  it("trims spaces around address arguments", async () => {
+    const outcome = await run(
+      argsList([[` ${OWNER} `, ` ${addr(9)}`]], "allowance")
+    );
+    expect(outcome.results).toEqual([{ success: true, result: "9" }]);
+  });
+
+  it("shows a Calls From object as JSON", async () => {
+    expect(await failure({ callsFrom: { a: 1 } as unknown as string })).toBe(
+      'Calls From must be "rows", "args-list" or "address-list", got {"a":1}.'
+    );
+  });
+
+  it("names Network and Contract ABI without mode jargon, with a next step", async () => {
+    expect(await failure({ ...argsList(["1"]), network: "" })).toBe(
+      "Network is required."
+    );
+    expect(await failure({ ...argsList(["1"]), abi: "" })).toBe(
+      "Contract ABI is required. Enter Contract Address to fetch it, or tick Use manual ABI and paste it."
+    );
+    expect(await failure({ ...addressList([addr(1)]), abi: "" })).toBe(
+      "Contract ABI is required. Enter an address in Fetch ABI From to fetch it, or tick Use manual ABI and paste it."
+    );
+  });
+
+  it("says a missing function is not in the ABI, with a next step", async () => {
+    expect(await failure(addressList([addr(1)], { abiFunction: "nope" }))).toBe(
+      "Function 'nope' is not in the ABI. Pick it again in Function, or check the ABI."
+    );
+  });
+
+  it("calls the overload picked by its signature in mixed mode", async () => {
+    const outcome = await run({
+      inputMode: "mixed",
+      calls: JSON.stringify([
+        {
+          network: "ethereum",
+          contractAddress: CONTRACT,
+          abi: ABI,
+          abiFunction: "bal(address,uint256)",
+          args: [OWNER, "5"],
+        },
+        {
+          network: "ethereum",
+          contractAddress: CONTRACT,
+          abi: ABI,
+          abiFunction: "bal(address)",
+          args: [OWNER],
+        },
+      ]),
+    });
+    expect(outcome.results).toEqual([
+      { success: true, result: "2" },
+      { success: true, result: "1" },
+    ]);
   });
 });

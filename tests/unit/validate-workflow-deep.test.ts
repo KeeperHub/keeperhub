@@ -211,7 +211,7 @@ describe("collectContractRefs, batch-read-contract calls from a list", () => {
     };
   }
 
-  it("checks the ABI against Fetch ABI from, not the hidden Contract Address", () => {
+  it("checks the ABI against Fetch ABI From, not the hidden Contract Address", () => {
     const refs = collectContractRefs([
       batchReadNode({
         callsFrom: "address-list",
@@ -236,7 +236,7 @@ describe("collectContractRefs, batch-read-contract calls from a list", () => {
     ]);
   });
 
-  it("skips an address list without Fetch ABI from", () => {
+  it("skips an address list without Fetch ABI From", () => {
     expect(
       collectContractRefs([batchReadNode({ callsFrom: "address-list" })])
     ).toHaveLength(0);
