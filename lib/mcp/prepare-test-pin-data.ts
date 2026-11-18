@@ -3,6 +3,8 @@ import {
   flattenConfigFields,
   getAllIntegrations,
   isDisplayOnlyField,
+  isToggleField,
+  toggleDefault,
 } from "@/plugins/registry";
 
 /**
@@ -158,7 +160,15 @@ function buildPropertyForField(
     return { type: "number", description };
   }
 
-  if (field.type === "protocol-bool" || field.type === "switch") {
+  if (isToggleField(field.type)) {
+    return {
+      type: "boolean",
+      description,
+      default: toggleDefault(field),
+    };
+  }
+
+  if (field.type === "protocol-bool") {
     return { type: "boolean", description };
   }
 

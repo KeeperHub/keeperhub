@@ -1,4 +1,5 @@
 import type { IntegrationType } from "@/lib/types/integration";
+import { resolveDefaultOnFlag } from "@/lib/utils";
 import {
   evaluateShowWhen,
   type ShowWhen,
@@ -674,6 +675,31 @@ const DISPLAY_ONLY_FIELD_SUFFIXES = [
   "-test-node",
   "-notice",
 ] as const;
+
+// Field types that hold a true/false toggle. The action schema and the MCP
+// pin schema both read this, so they agree on which toggle fields are booleans.
+const TOGGLE_FIELD_TYPES: ReadonlySet<string> = new Set([
+  "switch",
+  "fail-on-error-switch",
+  "gas-sponsorship-switch",
+]);
+
+// These resolve through resolveDefaultOnFlag, which ignores defaultValue.
+const DEFAULT_ON_TOGGLE_TYPES: ReadonlySet<string> = new Set([
+  "fail-on-error-switch",
+  "gas-sponsorship-switch",
+]);
+
+export function isToggleField(type: string | undefined): boolean {
+  return type !== undefined && TOGGLE_FIELD_TYPES.has(type);
+}
+
+/** What a toggle does when it is left unset, by the rule its step applies. */
+export function toggleDefault(field: ActionConfigFieldBase): boolean {
+  return DEFAULT_ON_TOGGLE_TYPES.has(field.type)
+    ? resolveDefaultOnFlag(undefined)
+    : field.defaultValue === "true";
+}
 
 export function isDisplayOnlyField(type: string | undefined): boolean {
   return (
