@@ -6,6 +6,7 @@ import type {
 } from "./builder-types";
 import { isConditionGroup } from "./builder-types";
 import { OPERATOR_METADATA } from "./operator-metadata";
+import { maskStringLiterals, scanString } from "./string-literal";
 
 export function isUnaryOperator(operator: ConditionOperator): boolean {
   return OPERATOR_METADATA[operator].unary;
@@ -76,6 +77,32 @@ function unwrapOperand(raw: string): string {
   return s;
 }
 
+// Quoted text blanked, same length, so parens and && inside a value are not
+// read as structure: a pattern such as "Error\\(" stays one operand.
+function structureOf(expr: string): string {
+  try {
+    return maskStringLiterals(expr);
+  } catch {
+    return expr;
+  }
+}
+
+// A regex operand decoded exactly; the builder escapes only \ and ".
+function unwrapRegexOperand(raw: string): string {
+  const s = raw.trim();
+  if (s.startsWith('"')) {
+    try {
+      const scanned = scanString(s, 0);
+      if (scanned.next === s.length) {
+        return scanned.value;
+      }
+    } catch {
+      // Not one complete literal: fall through.
+    }
+  }
+  return unwrapOperand(s);
+}
+
 /**
  * Split an expression at top-level `&&` or `||` (depth-0 only).
  * Returns the parts and the detected logic operator, or null if
@@ -88,17 +115,18 @@ function splitTopLevel(
   const parts: string[] = [];
   let current = "";
   let detectedLogic: "AND" | "OR" | null = null;
+  const structure = structureOf(expr);
 
   for (let i = 0; i < expr.length; i++) {
     const ch = expr[i];
-    if (ch === "(") {
+    if (structure[i] === "(") {
       depth++;
       current += ch;
-    } else if (ch === ")") {
+    } else if (structure[i] === ")") {
       depth--;
       current += ch;
     } else if (depth === 0) {
-      if (expr.slice(i, i + 4) === " && ") {
+      if (structure.slice(i, i + 4) === " && ") {
         if (detectedLogic === "OR") {
           return null; // mixed operators at same level — can't parse
         }
@@ -106,7 +134,7 @@ function splitTopLevel(
         parts.push(current.trim());
         current = "";
         i += 3; // skip " && "
-      } else if (expr.slice(i, i + 4) === " || ") {
+      } else if (structure.slice(i, i + 4) === " || ") {
         if (detectedLogic === "AND") {
           return null;
         }
@@ -139,11 +167,12 @@ function stripOuterParens(s: string): string {
   if (!(trimmed.startsWith("(") && trimmed.endsWith(")"))) {
     return trimmed;
   }
+  const structure = structureOf(trimmed);
   let depth = 0;
   for (let i = 0; i < trimmed.length - 1; i++) {
-    if (trimmed[i] === "(") {
+    if (structure[i] === "(") {
       depth++;
-    } else if (trimmed[i] === ")") {
+    } else if (structure[i] === ")") {
       depth--;
     }
     if (depth === 0) {
@@ -176,7 +205,7 @@ function parseAtomicExpression(expr: string): ConditionRule | null {
     return makeRule(
       unwrapOperand(regexMatch[1]),
       "matchesRegex",
-      unwrapOperand(regexMatch[2])
+      unwrapRegexOperand(regexMatch[2])
     );
   }
   const legacyRegexMatch = s.match(LEGACY_REGEX_MATCH_PATTERN);
@@ -184,7 +213,7 @@ function parseAtomicExpression(expr: string): ConditionRule | null {
     return makeRule(
       unwrapOperand(legacyRegexMatch[2]),
       "matchesRegex",
-      unwrapOperand(legacyRegexMatch[1])
+      unwrapRegexOperand(legacyRegexMatch[1])
     );
   }
 

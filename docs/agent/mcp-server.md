@@ -390,7 +390,7 @@ Condition nodes have dual output paths with `true` and `false` source handles. C
 
 Conditions support these operators: `==` (soft equals), `===` (equals), `!=` (soft not equals), `!==` (not equals), `>`, `>=`, `<`, `<=`, `contains`, `startsWith`, `endsWith`, `matchesRegex`, `isEmpty`, `isNotEmpty`, `exists`, `doesNotExist`, `isNull`, `isNotNull`, `isUndefined`, `isNotUndefined`.
 
-`matchesRegex` takes an RE2 pattern (JavaScript syntax without lookahead, lookbehind or back-references) typed as a quoted string, not a template reference; in an expression write `matchesRegex(String({{@nodeId:Label.field}}), "^0x[0-9a-fA-F]{40}$")`. Start the pattern with `(?i)` to ignore case.
+`matchesRegex` takes an [RE2](https://github.com/google/re2/wiki/Syntax) pattern: close to JavaScript's syntax, without lookahead, lookbehind, back-references or `\u` escapes. Start it with `(?i)` to ignore case. The pattern must be typed, not a template reference. In a visual rule, `rightOperand` is the bare pattern, e.g. `^0x[0-9a-fA-F]{40}$`. In an expression, write `matchesRegex(String({{@nodeId:Label.field}}), "^0x[0-9a-fA-F]{40}$")` and double each backslash inside the quotes (`"^\\d+$"`).
 
 Conditions reference previous node outputs using template syntax: `{{@nodeId:Label.field}}`.
 

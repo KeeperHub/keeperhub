@@ -318,7 +318,7 @@ const dataPlugin: IntegrationPlugin = {
           required: true,
           placeholder: "e.g. EMSP_, true or 100",
           helpTip:
-            'What each item is compared with. Spaces around it are trimmed; quote it to keep them.\n\nText tests and has key: the text as typed, quotes removed.\nMatches regex: an RE2 pattern, e.g. ^EMSP_; no lookahead or back-references.\nNumber tests: a number, e.g. 100, 1.5 or 0x64.\nArray length: a whole number.\nOther tests: 5 is a number, true and false are booleans, null is null, anything else is text. Quote to force text, e.g. "true" matches the text, not the boolean. Quoting a number changes nothing under equals, which compares numbers by value.',
+            'What each item is compared with. Spaces around it are trimmed; quote it to keep them.\n\nText tests and has key: the text as typed, quotes removed.\nMatches regex and does not match regex: a regular expression typed here, e.g. ^EMSP_ (no lookahead or back-references).\nNumber tests: a number, e.g. 100, 1.5 or 0x64.\nArray length: a whole number.\nOther tests: 5 is a number, true and false are booleans, null is null, anything else is text. Quote to force text, e.g. "true" matches the text, not the boolean. Quoting a number changes nothing under equals, which compares numbers by value.',
           showWhen: {
             all: VALUELESS_FILTER_OPERATORS.map((operator) => ({
               field: "operator",

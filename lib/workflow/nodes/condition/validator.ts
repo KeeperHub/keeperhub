@@ -26,7 +26,13 @@
  */
 
 import { replaceTemplateTokens } from "@/lib/workflow/template-ref";
-import { maskStringLiterals } from "./safe-eval";
+import {
+  REGEX_ARITY_ERROR,
+  REGEX_BACKSLASH_ERROR,
+  REGEX_SOURCE_ERROR,
+  regexPatternError,
+} from "./regex-match";
+import { maskStringLiterals, scanString } from "./string-literal";
 
 // Dangerous patterns that should never appear in conditions
 const DANGEROUS_PATTERNS = [
@@ -71,10 +77,19 @@ const DANGEROUS_PATTERNS = [
   /;/g,
 ];
 
-// The visual builder's old compiled form; conditions cannot construct objects.
-const NEW_REGEXP_PATTERN = /\bnew\s+RegExp\b/;
-const NEW_REGEXP_ERROR =
-  'new RegExp(...) is not supported in conditions. Use matchesRegex(String(value), "pattern") or the "matches regex" operator.';
+// JavaScript regex objects: the builder's old form, or a typed /.../.test(...).
+const REGEX_OBJECT_PATTERN =
+  /\bnew\s+RegExp\b|\/[^/\s]+\/[a-z]*\s*\.\s*test\s*\(/;
+const REGEX_OBJECT_ERROR =
+  'Regex objects (new RegExp(...) or /.../) are not supported in conditions. Use matchesRegex(String(value), "pattern") or the "matches regex" operator';
+const UNTERMINATED_STRING_ERROR =
+  "Condition has an unterminated string: a quote is never closed";
+
+function regexObjectError(code: string): ValidationResult | undefined {
+  return REGEX_OBJECT_PATTERN.test(code)
+    ? { valid: false, error: REGEX_OBJECT_ERROR }
+    : undefined;
+}
 
 // Allowed method names that can be called
 const ALLOWED_METHODS = new Set([
@@ -317,10 +332,16 @@ export function validateConditionExpression(
 
   // These checks read code, so quoted values are blanked first: "a b", "x=1"
   // or a regex like "^0x[0-9a-f]+$" is data, not syntax.
-  const code = maskStringLiterals(expression);
+  let code: string;
+  try {
+    code = maskStringLiterals(expression);
+  } catch {
+    return { valid: false, error: UNTERMINATED_STRING_ERROR };
+  }
 
-  if (NEW_REGEXP_PATTERN.test(code)) {
-    return { valid: false, error: NEW_REGEXP_ERROR };
+  const regexObject = regexObjectError(code);
+  if (regexObject) {
+    return regexObject;
   }
 
   // Check for dangerous patterns
@@ -389,7 +410,14 @@ export function preValidateConditionExpression(
     ({ body }) => (body.startsWith("@") ? "" : `{{${body}}}`)
   );
 
-  const lowerExpression = expressionWithoutTemplates.toLowerCase();
+  // Quoted values are data: "processed" or "^Retrieval" holds no keyword.
+  let code = expressionWithoutTemplates;
+  try {
+    code = maskStringLiterals(expressionWithoutTemplates);
+  } catch {
+    // Unterminated quote: check the raw text; the validator refuses it later.
+  }
+  const lowerExpression = code.toLowerCase();
   for (const keyword of dangerousKeywords) {
     if (lowerExpression.includes(keyword.toLowerCase())) {
       return {
@@ -1013,8 +1041,13 @@ export function validateConditionExpressionUI(
 
   const trimmed = expression.trim();
 
-  if (NEW_REGEXP_PATTERN.test(maskStringLiterals(trimmed))) {
-    return { valid: false, error: NEW_REGEXP_ERROR };
+  try {
+    const regexObject = regexObjectError(maskStringLiterals(trimmed));
+    if (regexObject) {
+      return regexObject;
+    }
+  } catch {
+    // Unterminated quote: the tokenizer below reports it.
   }
 
   // Check for extra spaces (2+ consecutive spaces) and identify the operator
@@ -1071,6 +1104,95 @@ export function validateConditionExpressionUI(
     return spacingCheck;
   }
 
-  // Validate operators
-  return validateOperators(tokens);
+  const operatorCheck = validateOperators(tokens);
+  if (!operatorCheck.valid) {
+    return operatorCheck;
+  }
+
+  const commaCheck = validateCommas(tokens);
+  if (!commaCheck.valid) {
+    return commaCheck;
+  }
+
+  return validateRegexCalls(tokens);
+}
+
+/** A comma is only valid between a call's arguments. */
+function validateCommas(tokens: Token[]): ValidationResult {
+  const calls: boolean[] = [];
+  for (const [index, token] of tokens.entries()) {
+    if (token.type !== "operator") {
+      continue;
+    }
+    if (token.value === "(") {
+      calls.push(tokens[index - 1]?.type === "identifier");
+    } else if (token.value === ")") {
+      calls.pop();
+    } else if (token.value === "," && !calls.at(-1)) {
+      return {
+        valid: false,
+        error:
+          'A comma only separates the values of a call, e.g. matchesRegex(String(value), "^0x")',
+      };
+    }
+  }
+  return { valid: true };
+}
+
+/** The argument tokens of the call whose "(" is at `open`, or undefined if unclosed. */
+function callArguments(tokens: Token[], open: number): Token[][] | undefined {
+  const args: Token[][] = [[]];
+  let depth = 0;
+  for (const token of tokens.slice(open + 1)) {
+    const isOperator = token.type === "operator";
+    if (isOperator && token.value === ")" && depth === 0) {
+      return args;
+    }
+    if (isOperator && token.value === "," && depth === 0) {
+      args.push([]);
+      continue;
+    }
+    if (isOperator && token.value === "(") {
+      depth += 1;
+    } else if (isOperator && token.value === ")") {
+      depth -= 1;
+    }
+    args.at(-1)?.push(token);
+  }
+  return;
+}
+
+function regexCallError(args: Token[][]): string | undefined {
+  if (args.length !== 2 || args.some((arg) => arg.length === 0)) {
+    return REGEX_ARITY_ERROR;
+  }
+  const [pattern, ...rest] = args[1];
+  if (rest.length > 0 || pattern.type !== "string") {
+    return REGEX_SOURCE_ERROR;
+  }
+  let scanned: ReturnType<typeof scanString>;
+  try {
+    scanned = scanString(pattern.value, 0);
+  } catch {
+    return UNTERMINATED_STRING_ERROR;
+  }
+  return scanned.lossy
+    ? REGEX_BACKSLASH_ERROR
+    : regexPatternError(scanned.value);
+}
+
+/** The run-time pattern rules, applied while the condition is typed. */
+function validateRegexCalls(tokens: Token[]): ValidationResult {
+  for (const [index, token] of tokens.entries()) {
+    const opensCall =
+      token.type === "identifier" &&
+      token.value === "matchesRegex" &&
+      tokens[index + 1]?.value === "(";
+    const args = opensCall ? callArguments(tokens, index + 1) : undefined;
+    const error = args ? regexCallError(args) : undefined;
+    if (error) {
+      return { valid: false, error };
+    }
+  }
+  return { valid: true };
 }

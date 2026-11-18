@@ -14,8 +14,12 @@ import { operatorToExpression } from "@/lib/workflow/nodes/condition/expression"
 import {
   compileRegex,
   MAX_REGEX_TEXT_LENGTH,
+  REGEX_SOURCE_ERROR,
+  RegexBudget,
+  RegexBudgetError,
   regexMatches,
   regexPatternError,
+  regexTextTooLong,
 } from "@/lib/workflow/nodes/condition/regex-match";
 import { compileSafeCondition } from "@/lib/workflow/nodes/condition/safe-eval";
 import { valueContainsTemplate } from "@/lib/workflow/template-ref";
@@ -50,9 +54,6 @@ export const MAX_FILTER_ITEMS = 10_000;
 export const MAX_NUMBER_VALUE_LENGTH = 100;
 export const MAX_PATH_LENGTH = 500;
 const MAX_ECHOED_LENGTH = 60;
-
-// RE2 is linear per item; this bounds the whole run across up to 10,000 items.
-const MAX_REGEX_RUN_TEXT = 1_000_000;
 
 const ITEM_VAR = "__v0";
 const VALUE_VAR = "__v1";
@@ -512,25 +513,19 @@ function makeRegexMatcher(
 ): Matcher {
   const regex = compileRegex(pattern, ignoreCase);
   const negate = isNegatedTextOperator(operator);
-  let budget = MAX_REGEX_RUN_TEXT;
+  const budget = new RegexBudget();
   return (fieldValue: unknown): boolean | Untestable => {
     const tested = toTestedValue(fieldValue, operator);
     if ("reason" in tested) {
       return tested;
     }
     const text = String(tested.value);
-    if (text.length > MAX_REGEX_TEXT_LENGTH) {
+    if (regexTextTooLong(text)) {
       return {
         reason: `its text is longer than ${MAX_REGEX_TEXT_LENGTH.toLocaleString("en-US")} characters`,
       };
     }
-    budget -= text.length;
-    if (budget < 0) {
-      throw new Error(
-        `matches regex reads at most ${MAX_REGEX_RUN_TEXT.toLocaleString("en-US")} characters in one run. Filter fewer or shorter items.`
-      );
-    }
-    const passed = regexMatches(regex, text);
+    const passed = regexMatches(regex, text, budget);
     return negate ? !passed : passed;
   };
 }
@@ -577,6 +572,10 @@ function testItem(
   try {
     return matches(resolveSegments(item, settings.testPath));
   } catch (error) {
+    // The run's budget, not this item: report it as is.
+    if (error instanceof RegexBudgetError) {
+      throw error;
+    }
     throw new Error(
       `Item at index ${index} could not be tested: ${getErrorMessage(error)}`
     );
@@ -657,6 +656,18 @@ export function filterArray(input: FilterCoreInput): FilterResult {
   }
 }
 
+// A template Value is resolved at run time, except a regex pattern, which
+// must be typed so outside data cannot choose the test.
+function checkTemplateValue(raw: unknown, operator: FilterOperator): boolean {
+  if (!valueContainsTemplate(raw)) {
+    return false;
+  }
+  if (isRegexOperator(operator)) {
+    throw new Error(`${REGEX_SOURCE_ERROR}.`);
+  }
+  return true;
+}
+
 /**
  * The save-time check: the step's own parsing, run on the settings a builder
  * typed, so a config that saves cannot fail every run. Values holding a
@@ -692,8 +703,8 @@ export function checkFilterConfig(
       "value",
       () =>
         VALUELESS_FILTER_OPERATORS.includes(operator) ||
+        checkTemplateValue(config.value, operator) ||
         // Read raw, not through typed(): readValue needs the original type.
-        valueContainsTemplate(config.value) ||
         readValue(config.value, operator),
     ],
     [

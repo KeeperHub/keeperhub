@@ -258,6 +258,49 @@ describe("data/filter definition", () => {
       ]);
       expect(result.valid).toBe(false);
     });
+
+    it("refuses a regex pattern from another node, but not a compared value", () => {
+      for (const operator of ["matchesRegex", "notMatchesRegex"]) {
+        const result = validateWorkflowActionConfigs([
+          actionNode(
+            editorConfig({
+              source: "{{@node1:Chainlog.result}}",
+              operator,
+              value: "{{@node2:Webhook.pattern}}",
+            })
+          ),
+        ]);
+        expect(result.valid, operator).toBe(false);
+        expect(JSON.stringify(result.issues), operator).toContain(
+          "can't come from another node"
+        );
+      }
+      const compared = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "{{@node1:Chainlog.result}}",
+            operator: "startsWith",
+            value: "{{@node2:Webhook.prefix}}",
+          })
+        ),
+      ]);
+      expect(compared).toEqual({ valid: true, issues: [] });
+    });
+
+    it("refuses a regex pattern that cannot run when saved", () => {
+      const result = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "{{@node1:Chainlog.result}}",
+            operator: "matchesRegex",
+            value: "^(?=EMSP)",
+          })
+        ),
+      ]);
+      expect(JSON.stringify(result.issues)).toContain(
+        "Lookahead and lookbehind"
+      );
+    });
   });
 
   describe("AI prompt example", () => {

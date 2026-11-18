@@ -32,9 +32,16 @@ import {
   type MissingReference,
   missingReferenceError,
 } from "./missing-reference";
-import { compileRegex, regexMatches } from "./regex-match";
+import {
+  compileRegex,
+  REGEX_ARITY_ERROR,
+  REGEX_BACKSLASH_ERROR,
+  REGEX_SOURCE_ERROR,
+  RegexBudget,
+  regexMatches,
+} from "./regex-match";
+import { scanString } from "./string-literal";
 
-const HEX_RE = /^[0-9a-fA-F]+$/;
 const WHITESPACE_RE = /\s/;
 
 const ALLOWED_METHODS = new Set([
@@ -122,7 +129,12 @@ const SINGLE_CHAR_PUNCTUATORS = new Set([
   ",",
 ]);
 
-type LiteralNode = { type: "Literal"; value: unknown };
+type LiteralNode = {
+  type: "Literal";
+  value: unknown;
+  /** A string whose escapes dropped a backslash, e.g. "\d" read as "d". */
+  lossy?: boolean;
+};
 type IdentifierNode = { type: "Identifier"; name: string };
 type UnaryNode = {
   type: "UnaryExpression";
@@ -169,7 +181,11 @@ type AstNode =
   | MemberNode
   | CallNode;
 
-type Token = { type: "num" | "str" | "ident" | "punct"; value: string };
+type Token = {
+  type: "num" | "str" | "ident" | "punct";
+  value: string;
+  lossy?: boolean;
+};
 
 function isIdentifierStart(ch: string): boolean {
   return (
@@ -186,98 +202,6 @@ function isIdentifierPart(ch: string): boolean {
 
 function isDigit(ch: string): boolean {
   return ch >= "0" && ch <= "9";
-}
-
-function decodeHexEscape(
-  src: string,
-  backslashIndex: number,
-  count: number
-): { value: string; next: number } {
-  const hex = src.slice(backslashIndex + 2, backslashIndex + 2 + count);
-  if (hex.length < count || !HEX_RE.test(hex)) {
-    throw new Error("Invalid escape sequence in string literal");
-  }
-  return {
-    value: String.fromCodePoint(Number.parseInt(hex, 16)),
-    next: backslashIndex + 2 + count,
-  };
-}
-
-function decodeUnicodeEscape(
-  src: string,
-  backslashIndex: number
-): { value: string; next: number } {
-  const afterU = backslashIndex + 2;
-  if (src[afterU] === "{") {
-    const end = src.indexOf("}", afterU);
-    if (end === -1) {
-      throw new Error("Invalid escape sequence in string literal");
-    }
-    const hex = src.slice(afterU + 1, end);
-    if (hex.length === 0 || !HEX_RE.test(hex)) {
-      throw new Error("Invalid escape sequence in string literal");
-    }
-    return {
-      value: String.fromCodePoint(Number.parseInt(hex, 16)),
-      next: end + 1,
-    };
-  }
-  return decodeHexEscape(src, backslashIndex, 4);
-}
-
-const SIMPLE_ESCAPES: Record<string, string> = {
-  n: "\n",
-  t: "\t",
-  r: "\r",
-  b: "\b",
-  f: "\f",
-  v: "\v",
-  "0": "\0",
-};
-
-function decodeEscape(
-  src: string,
-  backslashIndex: number
-): { value: string; next: number } {
-  const esc = src[backslashIndex + 1];
-  if (esc === undefined) {
-    throw new Error("Unterminated string literal");
-  }
-  if (esc === "x") {
-    return decodeHexEscape(src, backslashIndex, 2);
-  }
-  if (esc === "u") {
-    return decodeUnicodeEscape(src, backslashIndex);
-  }
-  const simple = SIMPLE_ESCAPES[esc];
-  if (simple !== undefined) {
-    return { value: simple, next: backslashIndex + 2 };
-  }
-  return { value: esc, next: backslashIndex + 2 };
-}
-
-function scanString(
-  src: string,
-  start: number
-): { value: string; next: number } {
-  const quote = src[start];
-  let i = start + 1;
-  let out = "";
-  while (i < src.length) {
-    const ch = src[i];
-    if (ch === "\\") {
-      const decoded = decodeEscape(src, i);
-      out += decoded.value;
-      i = decoded.next;
-      continue;
-    }
-    if (ch === quote) {
-      return { value: out, next: i + 1 };
-    }
-    out += ch;
-    i += 1;
-  }
-  throw new Error("Unterminated string literal");
 }
 
 function scanNumber(
@@ -324,7 +248,7 @@ function tokenize(src: string): Token[] {
     }
     if (ch === '"' || ch === "'") {
       const scanned = scanString(src, i);
-      tokens.push({ type: "str", value: scanned.value });
+      tokens.push({ type: "str", value: scanned.value, lossy: scanned.lossy });
       i = scanned.next;
       continue;
     }
@@ -413,7 +337,7 @@ function parse(expression: string): AstNode {
       return { type: "Literal", value: Number(token.value) };
     }
     if (token.type === "str") {
-      return { type: "Literal", value: token.value };
+      return { type: "Literal", value: token.value, lossy: token.lossy };
     }
     if (token.type === "ident") {
       return literalFromIdentifier(token.value);
@@ -924,18 +848,20 @@ function evalMember(node: MemberNode, ctx: Record<string, unknown>): unknown {
 // The pattern is a literal so it is known before any workflow data arrives.
 function regexPattern(node: CallNode): string {
   if (node.arguments.length !== 2) {
-    throw new Error(
-      `${REGEX_FUNCTION} takes two arguments: the text and a quoted pattern`
-    );
+    throw new Error(REGEX_ARITY_ERROR);
   }
   const pattern = node.arguments[1];
   if (pattern.type !== "Literal" || typeof pattern.value !== "string") {
-    throw new Error(
-      `The ${REGEX_FUNCTION} pattern must be typed in quotes, not taken from a reference`
-    );
+    throw new Error(REGEX_SOURCE_ERROR);
+  }
+  if (pattern.lossy) {
+    throw new Error(REGEX_BACKSLASH_ERROR);
   }
   return pattern.value;
 }
+
+// One budget per evaluation; evaluation is synchronous, so a module slot is safe.
+let activeRegexBudget: RegexBudget | undefined;
 
 function evalRegexCall(node: CallNode, ctx: Record<string, unknown>): boolean {
   const regex = compileRegex(regexPattern(node));
@@ -943,7 +869,16 @@ function evalRegexCall(node: CallNode, ctx: Record<string, unknown>): boolean {
   if (isMissingReference(text)) {
     throw missingReferenceError(text);
   }
-  return regexMatches(regex, String(text));
+  if (typeof text === "object" && text !== null) {
+    throw new Error(
+      "matches regex tests text, numbers or booleans, not a list or object"
+    );
+  }
+  return regexMatches(
+    regex,
+    String(text),
+    activeRegexBudget ?? new RegexBudget()
+  );
 }
 
 function evalCall(node: CallNode, ctx: Record<string, unknown>): unknown {
@@ -1134,7 +1069,15 @@ export function compileSafeCondition(
       `Condition parse error: ${error instanceof Error ? error.message : String(error)}`
     );
   }
-  return (context: Record<string, unknown>): unknown => evalNode(ast, context);
+  return (context: Record<string, unknown>): unknown => {
+    const outer = activeRegexBudget;
+    activeRegexBudget = new RegexBudget();
+    try {
+      return evalNode(ast, context);
+    } finally {
+      activeRegexBudget = outer;
+    }
+  };
 }
 
 /**
@@ -1149,32 +1092,4 @@ export function isSafeConditionExpression(expression: string): boolean {
   } catch {
     return false;
   }
-}
-
-/**
- * The expression with every string literal's contents replaced by "_", quotes
- * kept. Uses this tokenizer's own string scan, so the validator's text checks
- * skip exactly what the interpreter reads as data. Unterminated quotes return
- * the expression unchanged; the interpreter rejects those anyway.
- */
-export function maskStringLiterals(expression: string): string {
-  let out = "";
-  let i = 0;
-  while (i < expression.length) {
-    const ch = expression[i];
-    if (ch !== '"' && ch !== "'") {
-      out += ch;
-      i += 1;
-      continue;
-    }
-    let next: number;
-    try {
-      next = scanString(expression, i).next;
-    } catch {
-      return expression;
-    }
-    out += `${ch}${"_".repeat(next - i - 2)}${ch}`;
-    i = next;
-  }
-  return out;
 }

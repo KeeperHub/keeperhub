@@ -7,6 +7,7 @@
  * runtime rejects).
  */
 
+import { hasTemplateToken } from "@/lib/workflow/template-ref";
 import type {
   ConditionGroup,
   ConditionOperator,
@@ -55,8 +56,31 @@ function wrapOperand(operand: string): string {
     return trimmed;
   }
 
-  const escaped = trimmed.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  return `"${escaped}"`;
+  return quoteText(trimmed);
+}
+
+function quoteText(text: string): string {
+  return `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+/** A regex rule's pattern as typed: one layer of surrounding quotes removed. */
+export function regexRulePattern(operand: string): string {
+  const trimmed = operand.trim();
+  const quote = trimmed[0];
+  const quoted =
+    trimmed.length >= 2 &&
+    (quote === '"' || quote === "'") &&
+    trimmed.at(-1) === quote;
+  return quoted ? trimmed.slice(1, -1) : trimmed;
+}
+
+// Always a quoted literal, whatever it looks like (42, true, "a"|"b"). A
+// reference stays bare so the run refuses it rather than matching its text.
+function regexOperand(operand: string): string {
+  const trimmed = operand.trim();
+  return hasTemplateToken(trimmed)
+    ? trimmed
+    : quoteText(regexRulePattern(trimmed));
 }
 
 // Both sides arrive as expressions: wrapped operands, or variables such as __v0.
@@ -151,7 +175,9 @@ function ruleToExpression(rule: ConditionRule): string {
   return operatorToExpression(
     rule.operator,
     wrapOperand(rule.leftOperand),
-    wrapOperand(rule.rightOperand)
+    rule.operator === "matchesRegex"
+      ? regexOperand(rule.rightOperand)
+      : wrapOperand(rule.rightOperand)
   );
 }
 

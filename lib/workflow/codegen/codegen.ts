@@ -47,6 +47,14 @@ function escapeTemplateRaw(value: string): string {
     .replace(/\$\{/g, "\\${");
 }
 
+// Exported code has no matchesRegex (an RE2 helper), so those stay flagged.
+function isExportableCondition(condition: string): boolean {
+  if (condition.includes("matchesRegex(")) {
+    return false;
+  }
+  return condition.includes("{{") || isSafeConditionExpression(condition);
+}
+
 /**
  * Generate TypeScript code from workflow JSON with "use workflow" directive
  */
@@ -917,8 +925,7 @@ export function generateWorkflowCode(
       if (condition) {
         convertedCondition = convertConditionToJS(condition);
         const isDisplayableCondition =
-          convertedCondition.includes("{{") ||
-          isSafeConditionExpression(convertedCondition);
+          isExportableCondition(convertedCondition);
         if (!isDisplayableCondition) {
           const errorMsg = `Condition node "${node.data.label || node.id}" contains unsupported syntax`;
           validationErrors.push(errorMsg);
@@ -1046,8 +1053,7 @@ export function generateWorkflowCode(
       if (condition) {
         convertedCondition = convertConditionToJS(condition);
         const isDisplayableCondition =
-          convertedCondition.includes("{{") ||
-          isSafeConditionExpression(convertedCondition);
+          isExportableCondition(convertedCondition);
         if (!isDisplayableCondition) {
           const errorMsg = `Condition node "${node.data.label || nodeId}" contains unsupported syntax`;
           validationErrors.push(errorMsg);

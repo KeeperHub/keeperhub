@@ -167,7 +167,7 @@ Each operator in the list shows a one-line hint under its name. Once chosen, an 
 - **equals** compares by value: `"1.0"` equals `1`, and integers of any size written as text compare exactly. `"true"` does not equal `true`.
 - **soft equals** compares loosely, as JavaScript `==` does: `"0"` soft equals `0`, and hex text such as `"0x01"` soft equals `1`. Pick it only when items mix numbers, text and booleans on purpose.
 - The **does not** tests keep the text and number items that fail the matching test. Starts with `MCD_CLIP_` followed by a second Filter Array with does not start with `MCD_CLIP_CALC_` keeps the clippers without their calculators.
-- **matches regex** tests the text against a pattern, anywhere in it unless anchored: `^EMSP_` keeps names that start with `EMSP_`, and `^EMSP_(SPBEAM|LINE)_` keeps two families. Patterns use RE2 syntax, which is JavaScript's without lookahead, lookbehind or back-references; a pattern that uses them is refused with a message naming the feature. Patterns run in time proportional to the text, so no pattern can stall a run. Limits: 512 characters per pattern, 4,096 per item's text, and 1,000,000 characters across one run.
+- **matches regex** tests the text against a regular expression, anywhere in it unless anchored: `^EMSP_` keeps names that start with `EMSP_`, and `^EMSP_(SPBEAM|LINE)_` keeps two families. Type the pattern into Value without quotes or slashes; it cannot come from another node, and a pattern that cannot run is refused when the workflow is saved. Ignore case or a leading `(?i)` ignores letter case. Patterns use [RE2 syntax](https://github.com/google/re2/wiki/Syntax), close to JavaScript's; lookahead, lookbehind, back-references and `\u` escapes are not supported, and the error names the feature. Limits: a pattern of up to 512 characters that compiles to at most 1,000 steps, and 4,096 characters of text per item. One step also has a fixed matching budget, so a pattern cannot hold up a run for more than a few seconds; a step that reaches it fails, even in skip mode.
 
 ### How Value is read
 
@@ -219,7 +219,7 @@ Set **If an item can't be tested** to **Skip it and count it in skipped** to kee
 - **is true** matches only the boolean `true`, not the text `"true"` or `1`.
 - One node runs one test. For two tests, such as success is true and result is true, chain two Filter Array nodes.
 - Source must be an array. A single value, such as Encode / Decode's result for one input, fails with a message saying so.
-- Value is always compared as data. A value resolved from an upstream node cannot change the test.
+- Value is always compared as data. A value resolved from an upstream node cannot change the test. For matches regex, Value is the test itself, so it must be typed.
 - Settings the form hides for the chosen operator are ignored, so a leftover value cannot change or fail the step.
 - Settings typed by hand are checked when the workflow is saved with the same rules the step uses; a setting that comes from another node is checked when the run resolves it.
 

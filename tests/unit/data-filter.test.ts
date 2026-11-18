@@ -191,13 +191,23 @@ describe("data/filter", () => {
       );
     });
 
-    it("caps the text one run reads", async () => {
+    it("stops a run at its matching budget, without blaming one item", async () => {
       const result = await fails({
-        source: source(Array.from({ length: 300 }, () => "x".repeat(4000))),
+        source: source(Array.from({ length: 40 }, () => "a".repeat(4000))),
         operator: "matchesRegex",
-        value: "^EMSP_",
+        value: "(?:\\w?){100}x",
       });
-      expect(result.error).toContain("at most 1,000,000 characters");
+      expect(result.error).toContain("reached its limit for one run");
+      expect(result.error).not.toContain("Item at index");
+    });
+
+    it("refuses a pattern that compiles to too many steps", async () => {
+      const result = await fails({
+        source: "[1]",
+        operator: "matchesRegex",
+        value: "(?:\\w?){1000}x",
+      });
+      expect(result.error).toContain("the limit is 1,000");
     });
   });
 

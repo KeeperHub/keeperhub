@@ -130,13 +130,22 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | `isUndefined` | is undefined | Existence | Value is strictly undefined (null does not match) |
 | `isNotUndefined` | is not undefined | Existence | Value is anything except undefined (null still matches) |
 
-**Matches regex:** the pattern uses RE2 syntax, which is JavaScript's without lookahead,
-lookbehind or back-references; a pattern that uses them is refused with a message naming the
-feature. Matching takes time proportional to the text, so no pattern can stall a run. Anchor with
-`^` and `$` to match the whole text, and start with `(?i)` to ignore case. Type the pattern into
-the rule: it cannot come from another node. Patterns are limited to 512 characters and the tested
-text to 4,096. In an expression, write
-`matchesRegex(String({{@nodeId:Label.field}}), "^0x[0-9a-fA-F]{40}$")`.
+**Matches regex:** tests the text against a regular expression, anywhere in the text unless you
+anchor it with `^` and `$`. Start the pattern with `(?i)` to ignore case. For "does not match",
+connect the next step to the false output.
+
+- **Syntax:** patterns use [RE2 syntax](https://github.com/google/re2/wiki/Syntax), which is
+  close to JavaScript's. Not supported: lookahead and lookbehind, back-references such as `\1`,
+  and `\u` escapes (write `\x{00e9}` for `é`). `\s` does not match a non-breaking space. A pattern
+  that uses an unsupported feature is refused with a message naming it.
+- **Visual builder:** type the pattern as it is, without quotes or slashes, e.g.
+  `^0x[0-9a-fA-F]{40}$`. A pattern that cannot run shows an error under the rule. The pattern
+  cannot come from another node.
+- **Typed expression:** write `matchesRegex(String({{@nodeId:Label.field}}), "^0x[0-9a-fA-F]{40}$")`.
+  Inside the quotes, double each backslash: `"^\\d+$"` for `^\d+$`. A single backslash is refused.
+- **Limits:** a pattern of up to 512 characters that compiles to at most 1,000 steps, and text of
+  up to 4,096 characters; longer text fails the run. Matching never backtracks, and one Condition
+  has a fixed matching budget, so a pattern cannot hold up a run for more than a few seconds.
 
 **What counts as a number:** an operand is compared by magnitude only when it is a
 plain decimal - an optional sign, digits, and at most one point, such as `42`, `-0.50` or
