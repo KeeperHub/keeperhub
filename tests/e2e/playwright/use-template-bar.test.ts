@@ -12,6 +12,7 @@ import {
   dismissPhoneOverlays,
   isOnTop,
   overlaps,
+  box as sharedBox,
   textFits,
 } from "./utils/layout";
 
@@ -23,15 +24,9 @@ const HEIGHT = 844;
 // The button's name, the same while it imports.
 const NAME = "Use template: copy this workflow to your account";
 
-// Inside toPass a check must fail, not wait: an element that went away
-// mid-transition fails the attempt, and the next one measures again.
-async function box(locator: Locator): Promise<Box> {
-  const found = await locator.boundingBox({ timeout: 1000 });
-  if (!found) {
-    throw new Error("element is not rendered");
-  }
-  return found;
-}
+// Short timeout: these run inside toPass.
+const box = (locator: Locator): Promise<Box> =>
+  sharedBox(locator, { timeout: 1000 });
 
 const right = (b: Box): number => b.x + b.width;
 const bottom = (b: Box): number => b.y + b.height;
@@ -63,6 +58,8 @@ async function open(
   panel?: { width?: number; collapsed?: boolean }
 ): Promise<void> {
   await dismissPhoneOverlays(page);
+  // The page writes these back, so drop the last open()'s panel first.
+  await page.context().clearCookies({ name: /^sidebar-(width|collapsed)$/ });
   const url = process.env.BASE_URL || "http://localhost:3000";
   const cookies = [
     ...(panel?.width
@@ -368,6 +365,8 @@ test.describe("Use template bar, signed in", () => {
   test("from 768px: the read-only badge is always on screen", async ({
     page,
   }) => {
+    // Set once a canvas too narrow for the card's badge is reached.
+    let badgeBesideCard = false;
     for (const panel of [{ collapsed: true }, { width: 30 }, { width: 50 }]) {
       await open(page, 1024, foreignId, panel);
       const flyout = page.getByRole("region", { name: "Workflows" });
@@ -385,9 +384,16 @@ test.describe("Use template bar, signed in", () => {
           await expect(
             page.getByRole("button", { name: NAME }).filter({ visible: true })
           ).toHaveCount(1);
+          badgeBesideCard ||=
+            (await card(page).isVisible()) &&
+            (await page
+              .getByTestId("header-right")
+              .getByText("Preview", { exact: true })
+              .isVisible());
         });
       }
     }
+    expect(badgeBesideCard).toBe(true);
   });
 
   // A first toast, with none up before it, is lifted too.

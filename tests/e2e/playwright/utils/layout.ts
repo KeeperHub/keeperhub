@@ -18,8 +18,13 @@ function measured(target: Locator | Box): Promise<Box> | Box {
   return "boundingBox" in target ? box(target) : target;
 }
 
-export async function box(locator: Locator): Promise<Box> {
-  const found = await locator.boundingBox();
+// Pass a short timeout inside toPass, so a vanished element fails the
+// attempt instead of waiting out the whole retry window.
+export async function box(
+  locator: Locator,
+  options?: { timeout?: number }
+): Promise<Box> {
+  const found = await locator.boundingBox(options);
   if (!found) {
     throw new Error("element is not rendered");
   }
