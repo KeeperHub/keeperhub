@@ -10,6 +10,22 @@ import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
 import {
+  ADDRESS_LIST_LABEL,
+  ARGS_LIST_LABEL,
+  addressesFromList,
+  argSetsFromList,
+  CALLS_FROM_ADDRESS_LIST,
+  CALLS_FROM_ARGS_LIST,
+  type CallsFrom,
+  type ListFunction,
+  MAX_TOTAL_CALLS,
+  parseListInput,
+  requireArguments,
+  resolveCallsFrom,
+  SHARED_ARGS_LABEL,
+  sharedArgsForList,
+} from "@/plugins/web3/steps/batch-read-list-core";
+import {
   applyReadFailOnError,
   type ReadDestinationFailure,
   type ReadFailOnErrorInput,
@@ -22,7 +38,6 @@ import {
 const LOG_PREFIX = "[Batch Read Contract]";
 const DEFAULT_BATCH_SIZE = 100;
 const MAX_BATCH_SIZE = 500;
-const MAX_TOTAL_CALLS = 5000;
 
 type CallResult = {
   success: boolean;
@@ -53,6 +68,10 @@ export type BatchReadContractCoreInput = ReadFailOnErrorInput & {
   argsList?: string;
   calls?: string;
   batchSize?: string;
+  callsFrom?: string;
+  argsFromList?: string | unknown[];
+  contractAddresses?: string | unknown[];
+  functionArgs?: string | unknown[];
 };
 
 export type BatchReadContractInput = StepInput & BatchReadContractCoreInput;
@@ -286,7 +305,8 @@ function structureDecodedResult(
  */
 function encodeUniformCalls(
   normalizedCalls: NormalizedCall[],
-  parsedAbi: ethers.JsonFragment[]
+  parsedAbi: ethers.JsonFragment[],
+  listEntryName?: (index: number) => string
 ): { encoded: EncodedCallWithMeta[]; error?: string } {
   let iface: ethers.Interface;
   try {
@@ -335,7 +355,9 @@ function encodeUniformCalls(
     } catch (error) {
       return {
         encoded: [],
-        error: `Failed to encode call at index ${index} (${call.abiFunction}): ${getErrorMessage(error)}`,
+        error: listEntryName
+          ? `${listEntryName(index)} could not be encoded for ${call.abiFunction}: ${getErrorMessage(error)}.`
+          : `Failed to encode call at index ${index} (${call.abiFunction}): ${getErrorMessage(error)}`,
       };
     }
   }
@@ -587,6 +609,131 @@ function logValidationError(message: string): void {
   );
 }
 
+type PreparedCalls =
+  | { encoded: EncodedCallWithMeta[]; error?: undefined }
+  | { encoded?: undefined; error: string };
+
+function prepareRowCalls(
+  input: BatchReadContractInput,
+  abi: string
+): PreparedCalls {
+  const { calls: normalizedCalls, error: callsError } = buildUniformCalls(
+    input.contractAddress,
+    input.abiFunction,
+    input.argsList
+  );
+  if (callsError) {
+    return { error: callsError };
+  }
+  if (normalizedCalls.length === 0) {
+    return { error: "No calls to execute" };
+  }
+  if (normalizedCalls.length > MAX_TOTAL_CALLS) {
+    return {
+      error: `Too many calls (${normalizedCalls.length}). Maximum is ${MAX_TOTAL_CALLS}.`,
+    };
+  }
+  const { parsed: parsedAbi, error: abiError } = parseAbi(abi);
+  if (abiError) {
+    return { error: abiError };
+  }
+  const encodeResult = encodeUniformCalls(normalizedCalls, parsedAbi);
+  return encodeResult.error
+    ? { error: encodeResult.error }
+    : { encoded: encodeResult.encoded };
+}
+
+function findListFunction(
+  parsedAbi: ethers.JsonFragment[],
+  name: string
+): ListFunction | undefined {
+  const item = parsedAbi.find(
+    (fragment) => fragment.type === "function" && fragment.name === name
+  );
+  if (!item) {
+    return;
+  }
+  const inputs = (item.inputs ?? []).map((input) => ({
+    name: input.name,
+    type: input.type ?? "",
+  }));
+  return { name, inputs };
+}
+
+/** Calls from a list, checked entry by entry before any RPC call. */
+function buildListCalls(
+  input: BatchReadContractInput,
+  callsFrom: typeof CALLS_FROM_ARGS_LIST | typeof CALLS_FROM_ADDRESS_LIST,
+  fn: ListFunction
+): NormalizedCall[] {
+  if (callsFrom === CALLS_FROM_ADDRESS_LIST) {
+    const args = sharedArgsForList(input.functionArgs, fn);
+    const entries = parseListInput(
+      input.contractAddresses,
+      ADDRESS_LIST_LABEL,
+      '["0xabc..."]'
+    );
+    return addressesFromList(entries).map((contractAddress) => ({
+      contractAddress,
+      abiFunction: fn.name,
+      args,
+    }));
+  }
+
+  const { contractAddress } = input;
+  if (!contractAddress) {
+    throw new Error("Contract Address is required in uniform mode");
+  }
+  if (!ethers.isAddress(contractAddress)) {
+    throw new Error(`Invalid contract address: ${contractAddress}`);
+  }
+  requireArguments(fn);
+  const entries = parseListInput(
+    input.argsFromList,
+    ARGS_LIST_LABEL,
+    '[["0xabc..."]]'
+  );
+  return argSetsFromList(entries, fn).map((args) => ({
+    contractAddress,
+    abiFunction: fn.name,
+    args,
+  }));
+}
+
+function prepareListCalls(
+  input: BatchReadContractInput,
+  abi: string,
+  callsFrom: typeof CALLS_FROM_ARGS_LIST | typeof CALLS_FROM_ADDRESS_LIST
+): PreparedCalls {
+  if (!input.abiFunction) {
+    return { error: "Function is required in uniform mode" };
+  }
+  const { parsed: parsedAbi, error: abiError } = parseAbi(abi);
+  if (abiError) {
+    return { error: abiError };
+  }
+  const fn = findListFunction(parsedAbi, input.abiFunction);
+  if (!fn) {
+    return { error: `Function '${input.abiFunction}' not found in ABI` };
+  }
+
+  let calls: NormalizedCall[];
+  try {
+    calls = buildListCalls(input, callsFrom, fn);
+  } catch (error) {
+    return { error: getErrorMessage(error) };
+  }
+
+  const entryName =
+    callsFrom === CALLS_FROM_ARGS_LIST
+      ? (index: number): string => `${ARGS_LIST_LABEL} entry ${index + 1}`
+      : (): string => SHARED_ARGS_LABEL;
+  const encodeResult = encodeUniformCalls(calls, parsedAbi, entryName);
+  return encodeResult.error
+    ? { error: encodeResult.error }
+    : { encoded: encodeResult.encoded };
+}
+
 /**
  * Execute uniform mode: all calls on a single network
  */
@@ -604,36 +751,18 @@ async function executeUniformMode(
     return { success: false, error: "ABI is required in uniform mode" };
   }
 
-  const { calls: normalizedCalls, error: callsError } = buildUniformCalls(
-    input.contractAddress,
-    input.abiFunction,
-    input.argsList
-  );
-
-  if (callsError) {
-    logValidationError(callsError);
-    return { success: false, error: callsError };
+  let callsFrom: CallsFrom;
+  try {
+    callsFrom = resolveCallsFrom(input.callsFrom);
+  } catch (error) {
+    return { success: false, error: getErrorMessage(error) };
   }
 
-  if (normalizedCalls.length === 0) {
-    return { success: false, error: "No calls to execute" };
-  }
-
-  if (normalizedCalls.length > MAX_TOTAL_CALLS) {
-    return {
-      success: false,
-      error: `Too many calls (${normalizedCalls.length}). Maximum is ${MAX_TOTAL_CALLS}.`,
-    };
-  }
-
-  const { parsed: parsedAbi, error: abiError } = parseAbi(abi);
-  if (abiError) {
-    logValidationError(abiError);
-    return { success: false, error: abiError };
-  }
-
-  const encodeResult = encodeUniformCalls(normalizedCalls, parsedAbi);
-  if (encodeResult.error) {
+  const encodeResult =
+    callsFrom === CALLS_FROM_ARGS_LIST || callsFrom === CALLS_FROM_ADDRESS_LIST
+      ? prepareListCalls(input, abi, callsFrom)
+      : prepareRowCalls(input, abi);
+  if (encodeResult.error !== undefined) {
     logValidationError(encodeResult.error);
     return { success: false, error: encodeResult.error };
   }

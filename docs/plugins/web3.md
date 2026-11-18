@@ -118,15 +118,33 @@ No credentials required -- this is a read-only operation using Multicall3 at `0x
 | --------------- | -------- | ---------------------------------------------------------------------------------------- |
 | inputMode       | Yes      | `uniform` (default) or `mixed`                                                           |
 | network         | Yes      | EVM chain to execute on                                                                  |
-| contractAddress | Yes      | Target contract address (`0x...` or template variable)                                   |
+| callsFrom       | No       | Where the calls come from: `rows` (default), `args-list` or `address-list` (see Calls from a List below) |
+| contractAddress | Yes, except with `address-list` | Target contract address (`0x...` or template variable)            |
 | abi             | Yes      | Contract ABI (auto-fetched from block explorer or pasted manually)                       |
 | abiFunction     | Yes      | Function to call (selected from ABI)                                                     |
-| argsList        | No       | Argument sets for each call (see Args List Builder below)                                |
+| argsList        | No       | Argument sets for each call, used with `rows` (see Args List Builder below)              |
+| argsFromList    | With `args-list` | Argument sets: a JSON array, usually a template, one entry per call           |
+| contractAddresses | With `address-list` | Contract addresses: a JSON array, usually a template, one call per address |
+| functionArgs    | No       | With `address-list`: the arguments sent to every contract in the list                    |
+| abiFetchAddress | No       | With `address-list`: one contract with the same ABI, used only to fetch the ABI          |
 | batchSize       | No       | Max calls per Multicall3 request (default: 100, range: 1-500)                            |
 
 **Args List Builder (Uniform Mode):**
 
 The Args List field uses a dynamic builder instead of raw JSON. After selecting a function, the UI shows labeled inputs for each parameter based on the ABI signature. For example, selecting `allowance(address owner, address spender)` shows two labeled inputs per row: "owner (address)" and "spender (address)". Click "Add Arg Set" to add more rows, each representing one call. Template variables like `{{NodeName.value}}` are supported in all inputs.
+
+**Calls from a List (Uniform Mode):**
+
+The rows editor suits a fixed set of calls. When the calls come from an earlier node (a registry read, a database query, an HTTP response), set **Calls from** to a list instead:
+
+- **A list of argument sets** (`args-list`): one contract and function, one call per entry in **Argument sets**. Each entry is the call's arguments in order, e.g. `["0xabc...", 5]`. For a function with one plain argument (an address, number, string, bool or bytes), an entry can also be the bare value, e.g. `"0xabc..."`.
+- **A list of contract addresses** (`address-list`): one function, called on every address in **Contract addresses** with the same **Arguments**. Contract Address is not used; to fetch the ABI, enter any one contract with the same ABI in **Fetch ABI from** (it is not called), or paste the ABI with Use manual ABI.
+
+Both lists take a JSON array typed in the field or, more often, a template that resolves to one, e.g. `{{@keys:Encode / Decode.result}}`. Results keep the list's order, duplicates included, so another list of names lines up with them by position.
+
+The list is checked before any call is made. The step fails, naming the entry (counted from 1), when the list is empty, is not a JSON array, has more than 5,000 entries or is larger than 1 MB, or when an entry is not a valid address or has the wrong number of arguments. With Fail workflow on error off, these failures are passed to the next node like any other read error.
+
+A list from a source you do not control (a webhook body, an HTTP response) decides which contracts are called. Calls are read-only and cannot spend, but a contract built to use a lot of gas can make the whole multicall request fail. Prefer lists from on-chain registries, or filter outside lists first.
 
 **Mixed Mode:**
 
@@ -207,6 +225,26 @@ Schedule (every 5 min)
   -> Condition: {{@total:Aggregate.result}} < 1000000000000000000000
   -> Discord: "Low MKR liquidity: {{@total:Aggregate.result}} across {{@batch:Batch Read Contract.totalCalls}} pools"
 ```
+
+### Registry Lookup (Argument Sets from a List)
+
+Look up the address of every key a registry lists, without adding a row per key. A key added to the registry is picked up on the next run.
+
+```
+Schedule (every hour)
+  -> Read Contract:
+       contractAddress: 0xRegistry
+       function: list()            (returns bytes32[])
+  -> Batch Read Contract:
+       inputMode: uniform
+       network: ethereum
+       callsFrom: args-list
+       contractAddress: 0xRegistry
+       function: getAddress(bytes32)
+       argsFromList: {{@keys:Read Contract.result}}
+```
+
+`getAddress` takes one argument, so each key in the list is used as it is. `results[i]` is the address of the key at position `i` of the list.
 
 ### Multi-Contract Governance Dashboard (Mixed Mode)
 

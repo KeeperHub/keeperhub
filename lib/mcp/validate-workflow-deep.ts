@@ -166,7 +166,14 @@ export function collectContractRefs(nodes: unknown): ContractRef[] {
     if (!(isWrite || isRead)) {
       continue;
     }
-    const { contractAddress, network, abi: declaredAbi } = config;
+    const { network, abi: declaredAbi } = config;
+    // An address-list batch read takes its ABI from Fetch ABI from; its
+    // Contract Address is hidden and may hold a stale value.
+    const contractAddress =
+      actionType === "web3/batch-read-contract" &&
+      config.callsFrom === "address-list"
+        ? config.abiFetchAddress
+        : config.contractAddress;
     if (
       typeof contractAddress !== "string" ||
       typeof network !== "string" ||

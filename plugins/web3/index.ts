@@ -1539,19 +1539,73 @@ const web3Plugin: IntegrationPlugin = {
           showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
         },
         {
+          key: "callsFrom",
+          label: "Calls from",
+          type: "select",
+          options: [
+            { value: "rows", label: "Rows I add here" },
+            { value: "args-list", label: "A list of argument sets" },
+            { value: "address-list", label: "A list of contract addresses" },
+          ],
+          defaultValue: "rows",
+          helpTip:
+            "Rows: add each call here. A list: take the calls from an earlier node's output, one call per entry, in order.",
+          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+        },
+        {
           key: "contractAddress",
           label: "Contract Address",
           type: "template-input",
           placeholder: "0x... or {{NodeName.contractAddress}}",
           example: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
           required: true,
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: {
+            all: [
+              { field: "inputMode", oneOf: ["uniform", ""] },
+              { field: "callsFrom", notEquals: "address-list" },
+            ],
+          },
+        },
+        {
+          key: "contractAddresses",
+          label: "Contract addresses",
+          type: "template-textarea",
+          rows: 3,
+          required: true,
+          placeholder: '{{@node1:Label.result}} or ["0xabc...", "0xdef..."]',
+          helpText:
+            "One call per address, in order, all on the network above. Up to 5,000 addresses.",
+          showWhen: {
+            all: [
+              { field: "inputMode", oneOf: ["uniform", ""] },
+              { field: "callsFrom", equals: "address-list" },
+            ],
+          },
+        },
+        {
+          key: "abiFetchAddress",
+          label: "Fetch ABI from",
+          type: "template-input",
+          placeholder: "0x... one contract with the same ABI (optional)",
+          isAddressField: true,
+          helpText:
+            "Only used to fetch the ABI; it is not called. Or paste the ABI with Use manual ABI.",
+          showWhen: {
+            all: [
+              { field: "inputMode", oneOf: ["uniform", ""] },
+              { field: "callsFrom", equals: "address-list" },
+            ],
+          },
         },
         {
           key: "abi",
           label: "Contract ABI",
           type: "abi-with-auto-fetch",
           contractAddressField: "contractAddress",
+          contractAddressFieldWhen: {
+            field: "abiFetchAddress",
+            showWhen: { field: "callsFrom", equals: "address-list" },
+          },
           contractInteractionType: "read",
           networkField: "network",
           rows: 6,
@@ -1575,7 +1629,44 @@ const web3Plugin: IntegrationPlugin = {
           abiFunctionField: "abiFunction",
           helpTip:
             "Add argument sets for each call. Each row represents one call with the selected function's parameters.",
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: {
+            all: [
+              { field: "inputMode", oneOf: ["uniform", ""] },
+              { field: "callsFrom", notEquals: "args-list" },
+              { field: "callsFrom", notEquals: "address-list" },
+            ],
+          },
+        },
+        {
+          key: "argsFromList",
+          label: "Argument sets",
+          type: "template-textarea",
+          rows: 3,
+          required: true,
+          placeholder: '{{@node1:Label.result}} or [["0xabc...", 5], ["0xdef...", 6]]',
+          helpText:
+            'One call per entry, in order. An entry is the call\'s arguments in order, e.g. ["0xabc...", 5]. For a function with one argument, an entry can be the bare value. Up to 5,000 entries.',
+          showWhen: {
+            all: [
+              { field: "inputMode", oneOf: ["uniform", ""] },
+              { field: "callsFrom", equals: "args-list" },
+            ],
+          },
+        },
+        {
+          key: "functionArgs",
+          label: "Arguments",
+          type: "abi-function-args",
+          abiField: "abi",
+          abiFunctionField: "abiFunction",
+          helpText:
+            "Any arguments set here go to every contract in the list.",
+          showWhen: {
+            all: [
+              { field: "inputMode", oneOf: ["uniform", ""] },
+              { field: "callsFrom", equals: "address-list" },
+            ],
+          },
         },
         {
           key: "calls",

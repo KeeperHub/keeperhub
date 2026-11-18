@@ -853,6 +853,9 @@ function renderAbiFunctionArgs(
         onChange={(val) => onUpdateConfig(field.key, val)}
         value={value}
       />
+      {field.helpText && (
+        <p className="text-muted-foreground text-xs">{field.helpText}</p>
+      )}
     </div>
   );
 }

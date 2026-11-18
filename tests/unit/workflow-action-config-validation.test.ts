@@ -2322,3 +2322,111 @@ describe("protocol-array element validation", () => {
     ).toEqual({ valid: true, issues: [] });
   });
 });
+
+describe("validateWorkflowActionConfigs - Batch Read Contract calls from a list", () => {
+  const ABI = JSON.stringify([
+    {
+      inputs: [{ name: "x", type: "uint256" }],
+      name: "echo",
+      outputs: [{ name: "", type: "uint256" }],
+      stateMutability: "view",
+      type: "function",
+    },
+  ]);
+  const uniform = {
+    inputMode: "uniform",
+    network: "1",
+    abi: ABI,
+    abiFunction: "echo",
+  };
+  const missingFields = (config: Record<string, unknown>): unknown[] =>
+    validateWorkflowActionConfigs([
+      actionNode("web3/batch-read-contract", config),
+    ])
+      .issues.filter((issue) => issue.code === "MISSING_REQUIRED_FIELD")
+      .map((issue) => issue.field);
+
+  it("keeps a saved workflow without Calls from valid, needing Contract Address as before", () => {
+    expect(
+      validateWorkflowActionConfigs([
+        actionNode("web3/batch-read-contract", {
+          ...uniform,
+          contractAddress: "0x0000000000000000000000000000000000000001",
+          argsList: '[["1"]]',
+        }),
+      ])
+    ).toEqual({ valid: true, issues: [] });
+    expect(missingFields(uniform)).toEqual(["contractAddress"]);
+  });
+
+  it("needs Argument sets, not the rows, when Calls from is a list of argument sets", () => {
+    expect(
+      missingFields({
+        ...uniform,
+        callsFrom: "args-list",
+        contractAddress: "0x0000000000000000000000000000000000000001",
+      })
+    ).toEqual(["argsFromList"]);
+    expect(
+      missingFields({
+        ...uniform,
+        callsFrom: "args-list",
+        contractAddress: "0x0000000000000000000000000000000000000001",
+        argsFromList: "{{@n1:Encode.result}}",
+      })
+    ).toEqual([]);
+  });
+
+  it("needs Contract addresses but not Contract Address when Calls from is a list of addresses", () => {
+    expect(missingFields({ ...uniform, callsFrom: "address-list" })).toEqual([
+      "contractAddresses",
+    ]);
+    expect(
+      validateWorkflowActionConfigs([
+        actionNode("web3/batch-read-contract", {
+          ...uniform,
+          callsFrom: "address-list",
+          contractAddresses: "{{@n1:Filter Array.values}}",
+          abiFetchAddress: "0x0000000000000000000000000000000000000002",
+          functionArgs: '["1"]',
+        }),
+      ])
+    ).toEqual({ valid: true, issues: [] });
+  });
+
+  it("checks Fetch ABI from as an address", () => {
+    const result = validateWorkflowActionConfigs([
+      actionNode("web3/batch-read-contract", {
+        ...uniform,
+        callsFrom: "address-list",
+        contractAddresses: '["0x0000000000000000000000000000000000000001"]',
+        abiFetchAddress: "not an address",
+      }),
+    ]);
+    expect(result.issues.map((issue) => issue.field)).toEqual([
+      "abiFetchAddress",
+    ]);
+  });
+
+  it("rejects a Calls from value that is not an option", () => {
+    const result = validateWorkflowActionConfigs([
+      actionNode("web3/batch-read-contract", {
+        ...uniform,
+        contractAddress: "0x0000000000000000000000000000000000000001",
+        callsFrom: "everything",
+      }),
+    ]);
+    expect(result.issues.map((issue) => issue.field)).toEqual(["callsFrom"]);
+  });
+
+  it("does not ask for list fields in mixed mode", () => {
+    expect(
+      missingFields({
+        inputMode: "mixed",
+        callsFrom: "address-list",
+        calls:
+          '[{"network":"1","contractAddress":"0x0000000000000000000000000000000000000001","abi":"[]","abiFunction":"foo","args":[]}]',
+      })
+    ).toEqual([]);
+  });
+});

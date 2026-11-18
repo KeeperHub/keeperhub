@@ -56,6 +56,7 @@ import {
   registerFieldRenderer,
   registerIntegrationFormHandler,
 } from "@/lib/workflow/editor/extension-registry";
+import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { nodesAtom } from "@/lib/workflow/store";
 
 // ============================================================================
@@ -69,8 +70,11 @@ import { nodesAtom } from "@/lib/workflow/store";
 registerFieldRenderer(
   "abi-with-auto-fetch",
   ({ field, config, onUpdateConfig, disabled }) => {
+    const override = field.contractAddressFieldWhen;
     const contractAddressField =
-      field.contractAddressField || "contractAddress";
+      override && evaluateShowWhen(override.showWhen, config)
+        ? override.field
+        : field.contractAddressField || "contractAddress";
     const networkField = field.networkField || "network";
     const value =
       (config[field.key] as string | undefined) || field.defaultValue || "";

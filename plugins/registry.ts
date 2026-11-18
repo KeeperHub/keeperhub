@@ -172,6 +172,9 @@ export type ActionConfigFieldBase = {
   // For abi-with-auto-fetch: which field contains the contract address
   contractAddressField?: string;
 
+  // For abi-with-auto-fetch: fetch from this field instead while showWhen holds
+  contractAddressFieldWhen?: { field: string; showWhen: ShowWhen };
+
   // For abi-with-auto-fetch: which field contains the network
   networkField?: string;
 
