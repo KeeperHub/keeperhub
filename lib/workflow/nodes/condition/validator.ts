@@ -38,6 +38,7 @@ import {
   REGEX_SOURCE_ERROR,
   regexPatternError,
 } from "./regex-match";
+import { BLOCKED_PROPS } from "./safe-eval";
 import { maskStringLiterals, scanString } from "./string-literal";
 
 // Dangerous patterns that should never appear in conditions
@@ -85,11 +86,11 @@ const DANGEROUS_PATTERNS = [
 
 const REGEX_OBJECT_ERROR =
   'Regex objects (new RegExp(...) or /.../) are not supported in conditions. Use matchesRegex(value, "pattern") or the "matches regex" operator';
+const REGEX_CALL_TEXT_RE = /\bmatchesRegex\s*\(/;
 const UNTERMINATED_STRING_ERROR =
   "Condition has an unterminated string: a quote is never closed";
 // Masking hides string keys from the keyword scan, so a key is checked after
 // decoding, the way the interpreter reads it ("\x63onstructor" included).
-const BLOCKED_KEYS = new Set(["constructor", "__proto__", "prototype"]);
 const STRING_KEY_RE = /\[\s*["']/g;
 
 function blockedKeyError(
@@ -99,7 +100,7 @@ function blockedKeyError(
   for (const match of code.matchAll(STRING_KEY_RE)) {
     const quoteAt = match.index + match[0].length - 1;
     const key = scanString(expression, quoteAt).value;
-    if (BLOCKED_KEYS.has(key)) {
+    if (BLOCKED_PROPS.has(key)) {
       return {
         valid: false,
         error: `Condition contains disallowed syntax: "[${key}]"`,
@@ -110,21 +111,22 @@ function blockedKeyError(
 }
 
 // The scanner's own reason: an unclosed quote, or an escape it cannot read.
-function stringError(error: unknown): string {
+function stringError(error: unknown, expression: string): string {
   const message = error instanceof Error ? error.message : String(error);
-  return message.startsWith("Unterminated")
-    ? UNTERMINATED_STRING_ERROR
-    : `Condition has an invalid string: ${message}. In a regex pattern, double each backslash`;
+  if (message.startsWith("Unterminated")) {
+    return UNTERMINATED_STRING_ERROR;
+  }
+  const reason = `${message[0]?.toLowerCase() ?? ""}${message.slice(1)}`;
+  const hint = REGEX_CALL_TEXT_RE.test(expression)
+    ? ". In a regex pattern, double each backslash"
+    : "";
+  return `Condition has an ${reason}${hint}`;
 }
 
-// Rules only the raw condition (references not yet filled in) can show: a
+// Only the raw condition (references not yet filled in) shows this: a
 // reference inside a regex pattern would be filled in as the name __v0.
 function rawRegexError(expression: string): ValidationResult | undefined {
-  const calls = findRegexCalls(expression);
-  if (calls.length > MAX_REGEX_CALLS) {
-    return { valid: false, error: REGEX_CALLS_ERROR };
-  }
-  for (const call of calls) {
+  for (const call of findRegexCalls(expression)) {
     const pattern = call.args[1];
     if (pattern && hasTemplateToken(expression.slice(...pattern))) {
       return { valid: false, error: REGEX_SOURCE_ERROR };
@@ -383,7 +385,7 @@ export function validateConditionExpression(
   try {
     code = maskStringLiterals(expression);
   } catch (error) {
-    return { valid: false, error: stringError(error) };
+    return { valid: false, error: stringError(error, expression) };
   }
 
   const blockedKey = blockedKeyError(expression, code);
@@ -571,7 +573,7 @@ function tokenizeExpression(
       try {
         next = scanString(expression, i).next;
       } catch (error) {
-        return { valid: false, error: stringError(error) };
+        return { valid: false, error: stringError(error, expression) };
       }
       tokens.push({
         type: "string",

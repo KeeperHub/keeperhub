@@ -21,11 +21,11 @@ export const REGEX_ARITY_ERROR =
 export const REGEX_SOURCE_ERROR =
   "Type the regex pattern itself; it can't come from another node or be built from other values. To look for text from another node, use contains or starts with";
 export const REGEX_BACKSLASH_ERROR =
-  'In a typed condition, double each backslash in the regex pattern, e.g. "^\\\\d+$" for ^\\d+$';
+  'In Expression mode, double each backslash in the regex pattern, e.g. "^\\\\d+$" for ^\\d+$';
 export const REGEX_EMPTY_ERROR =
-  "Enter a regex pattern; an empty one matches everything";
+  "Enter a regex pattern, e.g. ^0x; ^$ matches empty text";
 export const REGEX_NON_TEXT_ERROR =
-  "Matches regex tests text, numbers or booleans, not a list or object";
+  "Matches regex tests text, numbers or booleans, not a list or object. Test a field inside it, or use Filter Array to test each item of a list";
 export const REGEX_CALLS_ERROR = `A condition can use matchesRegex at most ${MAX_REGEX_CALLS} times`;
 
 const MAX_CACHED_PATTERNS = 256;
@@ -33,8 +33,11 @@ const SYNTAX_ERROR_PREFIX = "error parsing regexp: ";
 const LOOKAROUND_RE = /`\(\?<?[=!]/;
 const BACKREFERENCE_RE = /invalid escape sequence: `\\([1-9]|k)/;
 const UNICODE_ESCAPE_RE = /invalid escape sequence: `\\u/;
-const SLASH_DELIMITED_RE = /^\/.*\/[dgimsuvy]*$/;
-const QUOTE_WRAPPED_RE = /^(["'])[\s\S]*\1$/;
+// JavaScript-style /pattern/flags: refused when it has flags or regex syntax
+// inside, so a plain path such as /api/ can still be matched literally.
+const SLASH_DELIMITED_RE = /^\/([\s\S]*)\/([dgimsuvy]*)$/;
+const REGEX_SYNTAX_RE = /[\^$\\[(*+?{|]/;
+const ESCAPE_HINT_RE = /escape sequence|trailing backslash/;
 const BACKTICK_RE = /`/g;
 
 const compiled = new Map<string, RE2JS>();
@@ -58,19 +61,39 @@ function describeSyntaxError(message: string): string {
   const detail = message.startsWith(SYNTAX_ERROR_PREFIX)
     ? message.slice(SYNTAX_ERROR_PREFIX.length)
     : message;
-  return `Invalid regex pattern: ${detail.replace(BACKTICK_RE, '"')}`;
+  const hint = ESCAPE_HINT_RE.test(detail)
+    ? ". Put a backslash before a character to match it as is, e.g. \\. or \\\\"
+    : "";
+  return `Invalid regex pattern: ${detail.replace(BACKTICK_RE, '"')}${hint}`;
+}
+
+// One quoted string, e.g. "ok"; not 'yes'|'no', which only starts and ends
+// with a quote.
+function isQuoteWrapped(pattern: string): boolean {
+  const quote = pattern[0];
+  return (
+    pattern.length > 1 &&
+    (quote === '"' || quote === "'") &&
+    pattern.at(-1) === quote &&
+    !pattern.slice(1, -1).includes(quote)
+  );
 }
 
 function compileUncached(pattern: string, ignoreCase: boolean): RE2JS {
   // Both read as literal characters, which is almost never what was meant.
-  if (pattern.length > 1 && SLASH_DELIMITED_RE.test(pattern)) {
+  const slashes = SLASH_DELIMITED_RE.exec(pattern);
+  if (
+    pattern.length > 1 &&
+    slashes &&
+    (slashes[2] !== "" || REGEX_SYNTAX_RE.test(slashes[1]))
+  ) {
     throw new Error(
-      "Leave out the /.../ around the regex pattern (write \\/ for a literal slash). To ignore case, start it with (?i)"
+      "Leave out the /.../ around the regex pattern; the slashes and flags would be matched as text. To ignore case, start the pattern with (?i)"
     );
   }
-  if (pattern.length > 1 && QUOTE_WRAPPED_RE.test(pattern)) {
+  if (isQuoteWrapped(pattern)) {
     throw new Error(
-      'Leave out the quotes around the regex pattern; they would have to appear in the text. To match quoted text, write \\"ok\\"'
+      "Leave out the quotes around the regex pattern; they would be matched as part of the text. To match a quote, put a backslash before it"
     );
   }
   let regex: RE2JS;
@@ -142,7 +165,7 @@ export function regexPatternError(
 export class RegexBudgetError extends Error {
   constructor(steps: number) {
     super(
-      `Matches regex reached this node's matching limit: this pattern has ${formatCount(steps)} steps, and steps x characters tested may total ${formatCount(MAX_REGEX_RUN_WORK)}. Test fewer or shorter values, or a simpler pattern`
+      `Matches regex reached this node's matching limit: this pattern has ${formatCount(steps)} steps, and steps x characters tested may total ${formatCount(MAX_REGEX_RUN_WORK)}. Test fewer or shorter values (e.g. split the list across two Filter Array nodes), or a simpler pattern`
     );
     this.name = "RegexBudgetError";
   }

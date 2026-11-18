@@ -4,6 +4,7 @@
  */
 
 import { replaceTemplateTokens } from "@/lib/workflow/template-ref";
+import { MAX_REGEX_CALLS } from "./regex-match";
 import { maskStringLiterals } from "./string-literal";
 
 const REGEX_CALL_RE = /\bmatchesRegex\s*\(/g;
@@ -17,30 +18,37 @@ export const REGEX_OBJECT_RE =
  * inside a value or a node label are not read as structure.
  */
 export function codeStructure(expression: string): string {
+  return maskedStructure(expression) ?? expression;
+}
+
+// Undefined when a quote is never closed: no reliable structure to read.
+function maskedStructure(expression: string): string | undefined {
   const withoutReferences = replaceTemplateTokens(expression, ({ body }) =>
     "_".repeat(body.length + 4)
   );
   try {
     return maskStringLiterals(withoutReferences);
   } catch {
-    return withoutReferences;
+    return;
   }
 }
 
-/** Index of the ")" closing the "(" at `open`, or -1. */
-export function closingParen(structure: string, open: number): number {
-  let depth = 0;
-  for (let i = open; i < structure.length; i++) {
+// Each "(" mapped to its ")" in one pass, so finding a call's end never
+// rescans the text.
+function pairParens(structure: string): Map<number, number> {
+  const pairs = new Map<number, number>();
+  const open: number[] = [];
+  for (let i = 0; i < structure.length; i++) {
     if (structure[i] === "(") {
-      depth++;
+      open.push(i);
     } else if (structure[i] === ")") {
-      depth--;
-      if (depth === 0) {
-        return i;
+      const start = open.pop();
+      if (start !== undefined) {
+        pairs.set(start, i);
       }
     }
   }
-  return -1;
+  return pairs;
 }
 
 export type RegexCall = {
@@ -73,15 +81,29 @@ function argumentSpans(
   return spans;
 }
 
-/** Every matchesRegex call outside quoted text, with its value spans. */
-export function findRegexCalls(expression: string): RegexCall[] {
-  const structure = codeStructure(expression);
+/**
+ * The matchesRegex calls outside quoted text, with their value spans, up to
+ * `limit` of them: more than the cap is refused anyway, and stopping there
+ * keeps the scan linear in the text.
+ */
+export function findRegexCalls(
+  expression: string,
+  limit = MAX_REGEX_CALLS + 1
+): RegexCall[] {
+  const structure = maskedStructure(expression);
   const calls: RegexCall[] = [];
+  if (structure === undefined) {
+    return calls;
+  }
+  const pairs = pairParens(structure);
   for (const match of structure.matchAll(REGEX_CALL_RE)) {
     const open = match.index + match[0].length - 1;
-    const close = closingParen(structure, open);
-    if (close !== -1) {
+    const close = pairs.get(open);
+    if (close !== undefined) {
       calls.push({ open, close, args: argumentSpans(structure, open, close) });
+      if (calls.length >= limit) {
+        break;
+      }
     }
   }
   return calls;

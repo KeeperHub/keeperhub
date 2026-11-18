@@ -31,6 +31,7 @@ import {
 } from "@/lib/workflow/nodes/condition/safe-eval";
 import { maskStringLiterals } from "@/lib/workflow/nodes/condition/string-literal";
 import {
+  preValidateConditionExpression,
   validateConditionExpression,
   validateConditionExpressionUI,
 } from "@/lib/workflow/nodes/condition/validator";
@@ -96,18 +97,21 @@ describe("matchesRegex", () => {
       expect(runRule("^a[ ]", "a b")).toBe(true);
     });
 
-    it("refuses a pattern wrapped in quotes or slashes, with the escape to use", () => {
-      for (const pattern of ['"ok"', "'ok'", '"a"|"b"']) {
+    it("refuses a pattern wrapped in quotes, or in /.../ with flags or regex syntax", () => {
+      for (const pattern of ['"ok"', "'ok'"]) {
         expect(() => runRule(pattern, '"ok"'), pattern).toThrow(
           "Leave out the quotes"
         );
       }
-      for (const pattern of ["/^0x/", "/^0x/i", "//"]) {
+      for (const pattern of ["/^0x/", "/^0x/i", "/api/i", "/a+/"]) {
         expect(() => runRule(pattern, "0x1"), pattern).toThrow(
           "Leave out the /.../"
         );
       }
-      expect(runRule("\\/api\\/", "GET /api/v1")).toBe(true);
+      // Only one quoted string counts as wrapped; plain paths match as text.
+      expect(runRule("'yes'|'no'", "'no'")).toBe(true);
+      expect(runRule("/api/", "GET /api/v1")).toBe(true);
+      expect(runRule("//", "https://x")).toBe(true);
     });
 
     it("refuses a pattern from another node, whole or inside the pattern", () => {
@@ -265,6 +269,14 @@ describe("matchesRegex", () => {
       expect(run(`matchesRegex(${FIELD}, "^__v0$")`, "__v0")).toBe(true);
     });
 
+    it("scans many unclosed regex calls in linear time", () => {
+      const text = "matchesRegex(".repeat(20_000);
+      const started = performance.now();
+      preValidateConditionExpression(text);
+      editorConditionState(text, undefined);
+      expect(performance.now() - started).toBeLessThan(3000);
+    });
+
     it("allows 16 regex tests in one Condition and refuses 17", () => {
       const calls = (count: number): string =>
         Array.from(
@@ -320,7 +332,7 @@ describe("matchesRegex", () => {
         validateConditionExpressionUI(`matchesRegex(${FIELD}, "\\x{00e9}")`)
       ).toEqual({
         valid: false,
-        error: expect.stringContaining("invalid string"),
+        error: expect.stringContaining("invalid escape sequence"),
       });
       expect(
         validateConditionExpressionUI(`matchesRegex(${FIELD}, "^a`)
@@ -416,8 +428,8 @@ describe("matchesRegex", () => {
       expect(regexPatternError("[a-")).toContain("Invalid regex pattern");
       expect(regexPatternError("\\0")).toBeUndefined();
       expect(regexPatternError("^0x[0-9a-f]{40}$")).toBeUndefined();
-      expect(regexPatternError("/api/v1/")).toContain("Leave out the /.../");
-      expect(regexPatternError("\\/api\\/v1\\/")).toBeUndefined();
+      expect(regexPatternError("/api/v1/")).toBeUndefined();
+      expect(regexPatternError("/^api/")).toContain("Leave out the /.../");
     });
 
     it("refuses a pattern that compiles to too many steps", () => {

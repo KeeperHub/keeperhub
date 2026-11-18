@@ -452,14 +452,16 @@ function ConditionFields({
             placeholder="e.g., 5 > 3, status === 200, {{PreviousNode.value}} > 100"
             value={conditionValue}
           />
-          {validationError && (
-            <p aria-live="polite" className="text-destructive text-xs">
-              {validationError}
-            </p>
-          )}
+          <p aria-live="polite" className="text-destructive text-xs">
+            {validationError}
+          </p>
           <p className="text-muted-foreground text-xs">
             Enter a JavaScript expression that evaluates to true or false. Use @
             to reference previous node outputs.
+          </p>
+          <p className="text-muted-foreground text-xs">
+            Regex: matchesRegex(@field, &quot;^0x&quot;). Inside the quotes,
+            double each backslash: &quot;^\\d+$&quot; for ^\d+$.
           </p>
         </div>
       )}

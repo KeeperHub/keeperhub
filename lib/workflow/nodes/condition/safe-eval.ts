@@ -59,7 +59,11 @@ const ALLOWED_METHODS = new Set([
 
 const ALLOWED_UNARY = new Set(["!", "-", "+", "typeof"]);
 
-const BLOCKED_PROPS = new Set(["constructor", "__proto__", "prototype"]);
+export const BLOCKED_PROPS: ReadonlySet<string> = new Set([
+  "constructor",
+  "__proto__",
+  "prototype",
+]);
 
 // A missing field must not read as the text "[object Object]".
 const ALLOWED_GLOBALS: Record<string, (...args: unknown[]) => unknown> = {

@@ -55,10 +55,14 @@ function render(pattern: string, onChange = vi.fn()): HTMLInputElement {
 describe("matches regex rule in the visual builder", () => {
   it("offers a plain pattern field, not the reference picker", () => {
     const input = render("^0x");
-    expect(input.placeholder).toBe("Pattern, e.g. ^0x[0-9a-f]+$");
+    expect(input.placeholder).toBe("Pattern, e.g. ^EMSP_");
     expect(input.value).toBe("^0x");
     expect(input.getAttribute("aria-invalid")).toBeNull();
     expect(container.textContent).not.toContain("Lookahead");
+    const hint = container.querySelector(
+      `[id="${input.getAttribute("aria-describedby")}"]`
+    );
+    expect(hint?.textContent).toContain("^ marks the start, $ the end");
   });
 
   it("shows a pattern that cannot run under the rule, linked to the field", () => {

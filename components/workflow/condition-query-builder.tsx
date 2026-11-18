@@ -53,6 +53,10 @@ const OPERATOR_OPTION_GROUPS = OPERATOR_GROUPS.map((groupMeta) => ({
   operators: operatorsForCategory(groupMeta.category),
 }));
 
+// Shown under a regex rule until its pattern has an error to show instead.
+const REGEX_RULE_HINT =
+  "Matches anywhere in the text: ^ marks the start, $ the end, (?i) ignores case. Type the pattern as it should run, without quotes or /.../.";
+
 // The run-time pattern rules, shown while the pattern is typed.
 function regexRuleError(operand: string): string | undefined {
   if (operand.trim() === "") {
@@ -152,7 +156,7 @@ function RuleRow({
         {regex && (
           <div className={VALUE_CELL}>
             <Input
-              aria-describedby={patternError ? errorId : undefined}
+              aria-describedby={errorId}
               aria-invalid={patternError ? true : undefined}
               aria-label="Regex pattern"
               className="font-mono text-xs md:text-xs"
@@ -160,7 +164,7 @@ function RuleRow({
               onChange={(event) =>
                 onChange({ ...rule, rightOperand: event.target.value })
               }
-              placeholder="Pattern, e.g. ^0x[0-9a-f]+$"
+              placeholder="Pattern, e.g. ^EMSP_"
               spellCheck={false}
               value={rule.rightOperand}
             />
@@ -179,9 +183,16 @@ function RuleRow({
           </Button>
         )}
       </div>
-      {patternError && (
-        <p aria-live="polite" className="text-destructive text-xs" id={errorId}>
-          {patternError}
+      {regex && (
+        <p
+          aria-live="polite"
+          className={cn(
+            "text-xs",
+            patternError ? "text-destructive" : "text-muted-foreground"
+          )}
+          id={errorId}
+        >
+          {patternError ?? REGEX_RULE_HINT}
         </p>
       )}
     </div>
