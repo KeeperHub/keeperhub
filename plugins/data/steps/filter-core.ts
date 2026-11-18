@@ -22,6 +22,7 @@ import {
   regexMatches,
   regexPatternError,
   regexTextTooLong,
+  withoutExpressionNote,
 } from "@/lib/workflow/nodes/condition/regex-match";
 import { compileSafeCondition } from "@/lib/workflow/nodes/condition/safe-eval";
 import { valueContainsTemplate } from "@/lib/workflow/template-ref";
@@ -390,7 +391,7 @@ function readValue(raw: unknown, operator: FilterOperator): unknown {
     const pattern = readRegexPattern(String(value));
     const patternProblem = regexPatternError(pattern);
     if (patternProblem) {
-      throw new Error(`${patternProblem}.`);
+      throw new Error(`${withoutExpressionNote(patternProblem)}.`);
     }
     return pattern;
   }

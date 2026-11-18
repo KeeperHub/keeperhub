@@ -110,6 +110,8 @@ describe("data/filter", () => {
         value: '"ok"',
       });
       expect(wrapped.error).toContain("Leave out the quotes");
+      // Filter Array has no Expression mode, so its message has no such note.
+      expect(wrapped.error).not.toContain("Expression mode");
     });
 
     it("tells what an empty regex Value needs", async () => {

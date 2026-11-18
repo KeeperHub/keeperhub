@@ -108,6 +108,13 @@ function describeSyntaxError(message: string): string {
   return `Invalid regex pattern: ${detail.replace(BACKTICK_RE, '"')}${hint}`;
 }
 
+const EXPRESSION_NOTE_RE = / \(in Expression mode[^)]*\)/;
+
+/** A message without its Condition-only Expression mode note (Filter Array has none). */
+export function withoutExpressionNote(message: string): string {
+  return message.replace(EXPRESSION_NOTE_RE, "");
+}
+
 // One message for both modes: Expression mode needs three backslashes, since
 // the condition's own quotes take one level of escaping.
 function quoteWrappedError(quote: string): string {
