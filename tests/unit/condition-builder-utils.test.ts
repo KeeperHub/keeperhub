@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { groupedSelectLabel } from "@/lib/workflow/editor/select-option-groups";
 import type {
   ConditionGroup,
+  ConditionOperator,
   ConditionRule,
 } from "@/lib/workflow/nodes/condition/builder-types";
 import {
@@ -10,7 +12,12 @@ import {
   isUnaryOperator,
   visualConditionToExpression,
 } from "@/lib/workflow/nodes/condition/builder-utils";
-import { closedOperatorLabel } from "@/lib/workflow/nodes/condition/operator-metadata";
+import {
+  CONDITION_OPERATOR_OPTIONS,
+  closedOperatorLabel,
+  OPERATOR_GROUPS,
+  operatorsForCategory,
+} from "@/lib/workflow/nodes/condition/operator-metadata";
 
 function rule(
   left: string,
@@ -771,5 +778,16 @@ describe("closedOperatorLabel", () => {
     expect(closedOperatorLabel("objectIsEmpty")).toBe("Object: is empty");
     expect(closedOperatorLabel("startsWith")).toBe("starts with");
     expect(closedOperatorLabel("===")).toBe("equals");
+  });
+
+  it("matches the shared select label over Condition's own options", () => {
+    for (const option of CONDITION_OPERATOR_OPTIONS) {
+      expect(closedOperatorLabel(option.value as ConditionOperator)).toBe(
+        groupedSelectLabel(CONDITION_OPERATOR_OPTIONS, option.value)
+      );
+    }
+    expect(CONDITION_OPERATOR_OPTIONS.map((option) => option.value)).toEqual(
+      OPERATOR_GROUPS.flatMap((group) => operatorsForCategory(group.category))
+    );
   });
 });

@@ -704,7 +704,7 @@ registerFieldRenderer(
 
 /**
  * Generic Switch Field
- * A plain boolean toggle; the step reads true or "true" as on.
+ * A plain boolean toggle, read by resolveSwitch as its step reads it.
  */
 registerFieldRenderer(
   "switch",
