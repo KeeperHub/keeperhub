@@ -40,6 +40,12 @@ describe("isDisposableEmailDomain", () => {
     expect(isDisposableEmailDomain("user@mail.example.com")).toBe(false);
   });
 
+  it("blocks catch-all burner domains served by temp-mail providers", () => {
+    expect(isDisposableEmailDomain("user@9k3r.com")).toBe(true);
+    expect(isDisposableEmailDomain("user@davopa.com")).toBe(true);
+    expect(isDisposableEmailDomain("user@gonrr.net")).toBe(true);
+  });
+
   it("never blocks mainstream providers", () => {
     for (const domain of NEVER_BLOCKED_DOMAINS) {
       expect(isDisposableEmailDomain(`user@${domain}`)).toBe(false);
