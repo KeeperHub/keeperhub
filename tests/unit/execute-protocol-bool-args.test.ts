@@ -4,18 +4,14 @@
 // runs each through the same arg pipeline writeContractCore applies and
 // decodes the calldata.
 
-import { Interface } from "ethers";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
 import { buildProtocolFunctionArgs } from "@/app/api/execute/_lib/protocol-function-args";
-import {
-  coerceArgsForAbi,
-  type FunctionAbiEntry,
-  reshapeArgsForAbi,
-} from "@/lib/abi/struct-args";
-import { registerProtocol } from "@/lib/protocol-registry";
+import { coerceArgsForAbi, reshapeArgsForAbi } from "@/lib/abi/struct-args";
+import { getProtocol, registerProtocol } from "@/lib/protocol-registry";
+import { fragmentFor, ifaceFor } from "@/lib/test-data/encode-action";
 import aaveDef from "@/protocols/aave-v3";
 
 registerProtocol(aaveDef);
@@ -34,17 +30,16 @@ function encodedFlag(useAsCollateral: unknown): boolean {
   if (!result.ok) {
     throw new Error(`${result.field}: ${result.error}`);
   }
-  const abi = JSON.parse(aaveDef.contracts.pool.abi ?? "[]") as Array<
-    FunctionAbiEntry & { name?: string }
-  >;
-  const entry = abi.find((item) => item.name === FUNCTION);
-  if (!entry) {
-    throw new Error(`${FUNCTION} not in the pool ABI`);
+  const protocol = getProtocol("aave-v3");
+  const action = protocol?.actions.find((a) => a.function === FUNCTION);
+  if (!(protocol && action)) {
+    throw new Error(`aave-v3 ${FUNCTION} not registered`);
   }
+  const iface = ifaceFor(protocol, action);
+  const { abi } = fragmentFor(iface, action);
   // What writeContractCore does with functionArgs before it encodes.
   const parsed = JSON.parse(result.functionArgs ?? "[]") as unknown[];
-  const args = coerceArgsForAbi(reshapeArgsForAbi(parsed, entry), entry);
-  const iface = new Interface(abi);
+  const args = coerceArgsForAbi(reshapeArgsForAbi(parsed, abi), abi);
   const decoded = iface.decodeFunctionData(
     FUNCTION,
     iface.encodeFunctionData(FUNCTION, args)

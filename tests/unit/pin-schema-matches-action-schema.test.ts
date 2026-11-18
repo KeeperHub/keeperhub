@@ -4,6 +4,7 @@
 // Solidity bool inputs (#2781), so this sweeps every registered action and
 // holds every field to one JSON type in both.
 
+import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it } from "vitest";
 import { isSwitchOn } from "@/components/workflow/config/plain-switch-field";
 import {
@@ -16,6 +17,7 @@ import { resolveSponsorGas } from "@/lib/web3/sponsorship-feature-flag";
 import { validateWorkflowActionConfigs } from "@/lib/workflow/validation/action-config";
 import {
   computeActionId,
+  fieldEnumValues,
   fieldJsonType,
   flattenConfigFields,
   getAllIntegrations,
@@ -31,6 +33,9 @@ type FieldCase = {
   actionSchemaType: string;
   pinType: string | undefined;
   pinDefault: unknown;
+  pinEnum: string[] | undefined;
+  enumValues: string[] | undefined;
+  hasOptions: boolean;
   defaultValue: string | undefined;
 };
 
@@ -75,6 +80,9 @@ function collectFields(): FieldCase[] {
           actionSchemaType: described[field.key] ?? "",
           pinType: pin?.pinSchema.properties[field.key]?.type,
           pinDefault: pin?.pinSchema.properties[field.key]?.default,
+          pinEnum: pin?.pinSchema.properties[field.key]?.enum,
+          enumValues: fieldEnumValues(field),
+          hasOptions: field.options !== undefined,
           defaultValue: field.defaultValue,
         });
       }
@@ -104,6 +112,34 @@ describe("pin schema and action schema agree on field types", () => {
           `${field.actionType}.${field.key} (${field.type}): action "${field.actionSchemaType.match(TYPE_WORD)?.[0]}", pin "${field.pinType}"`
       );
     expect(wrong).toEqual([]);
+  });
+
+  // Same JSON type is not enough: a closed list in one and an open string in
+  // the other drifts with both still saying "string".
+  it("lists the same closed values in both schemas", () => {
+    const wrong: string[] = [];
+    for (const field of cases) {
+      const at = `${field.actionType}.${field.key}`;
+      const [typeText] = field.actionSchemaType.split(" - ");
+      if (!isDeepStrictEqual(field.pinEnum, field.enumValues)) {
+        wrong.push(`${at}: pin enum ${JSON.stringify(field.pinEnum)}`);
+      }
+      if (field.pinEnum !== undefined) {
+        const listed = field.pinEnum.map((v) => `"${v}"`).join(" | ");
+        if (typeText !== `string (${listed || "select"})`) {
+          wrong.push(`${at}: action "${typeText}"`);
+        }
+      } else if (field.hasOptions && !typeText.includes("template")) {
+        wrong.push(`${at}: open in the pin schema, closed "${typeText}"`);
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it("finds closed and template-taking option lists to check", () => {
+    const withOptions = cases.filter((field) => field.hasOptions);
+    expect(withOptions.some((field) => field.pinEnum !== undefined)).toBe(true);
+    expect(withOptions.some((field) => field.pinEnum === undefined)).toBe(true);
   });
 
   it("checks fields of every JSON type", () => {
@@ -183,22 +219,6 @@ describe("pin schema and action schema agree on field types", () => {
       expect(issuesFor(field, "{{@a:A.flag}}"), at).toEqual([]);
       expect(issuesFor(field, "yes"), at).not.toEqual([]);
     }
-  });
-
-  it("types a field boolean in the action schema wherever the pin schema does", () => {
-    const wrong = cases
-      .filter((field) => field.pinType === "boolean")
-      .filter((field) => !field.actionSchemaType.startsWith("boolean"))
-      .map((field) => `${field.actionType}.${field.key}`);
-    expect(wrong).toEqual([]);
-  });
-
-  it("types a field boolean in the pin schema wherever the action schema does", () => {
-    const wrong = cases
-      .filter((field) => field.actionSchemaType.startsWith("boolean"))
-      .filter((field) => field.pinType !== "boolean")
-      .map((field) => `${field.actionType}.${field.key}`);
-    expect(wrong).toEqual([]);
   });
 
   it("advertises the default each toggle's step applies when unset", () => {

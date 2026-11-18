@@ -676,8 +676,8 @@ const DISPLAY_ONLY_FIELD_SUFFIXES = [
   "-notice",
 ] as const;
 
-// Field types that hold a true/false toggle. The action schema and the MCP
-// pin schema both read this, so they agree on which toggle fields are booleans.
+// Field types that hold a true/false toggle. fieldJsonType types them boolean
+// for both MCP schemas; the pin schema also reads it for each toggle's default.
 const TOGGLE_FIELD_TYPES: ReadonlySet<string> = new Set([
   "switch",
   "fail-on-error-switch",
@@ -705,6 +705,20 @@ export function fieldJsonType(
     return "boolean";
   }
   return "string";
+}
+
+/**
+ * The values of a closed enum field, or undefined when the field takes other
+ * values too. Both MCP schemas use it: an enum in one is a closed list in the
+ * other.
+ */
+export function fieldEnumValues(
+  field: ActionConfigFieldBase
+): string[] | undefined {
+  if (field.type !== "select" || field.allowTemplate) {
+    return;
+  }
+  return field.options?.map((option) => option.value);
 }
 
 /** What a toggle does when it is left unset, by the rule its step applies. */

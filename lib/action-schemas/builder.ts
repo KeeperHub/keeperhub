@@ -19,6 +19,7 @@ import { isDirectExecutionSupported } from "@/plugins/protocol/steps/resolve-pro
 import {
   type ActionConfigFieldBase,
   computeActionId,
+  fieldEnumValues,
   fieldJsonType,
   flattenConfigFields,
   getAllIntegrations,
@@ -100,9 +101,14 @@ export type BuildActionSchemasOptions = {
   type?: string;
 };
 
-// The step also takes the two strings, and the editor takes a template.
+// Steps and direct execution also take the two strings; only a workflow step
+// resolves a template.
 export const PROTOCOL_BOOL_TYPE_TEXT =
-  'boolean (true or false; also the strings "true" and "false", or a {{@nodeId:Label.field}} template)';
+  'boolean (true or false; also the lowercase strings "true" and "false"; in a workflow step, also a {{@nodeId:Label.field}} template that resolves to one of these)';
+
+function quoteOptions(values: string[]): string {
+  return values.map((value) => `"${value}"`).join(" | ") || "select";
+}
 
 function mapFieldType(field: ActionConfigFieldBase): string {
   // The JSON type comes from the same function the pin schema uses.
@@ -131,8 +137,12 @@ function mapFieldType(field: ActionConfigFieldBase): string {
     case "event-list-builder":
       return 'string (JSON array of up to 20 entries, each {"contractAddress":"0x...","abi":"<JSON ABI string>","eventName":"Transfer","eventArgs":{"from":"0x..."}}) - eventArgs is optional and takes the same indexed-argument filter as a single event';
     case "select": {
-      const options =
-        field.options?.map((o) => `"${o.value}"`).join(" | ") || "select";
+      // A closed list here is the pin schema's enum: both use fieldEnumValues.
+      const closed = fieldEnumValues(field);
+      if (closed !== undefined) {
+        return `string (${quoteOptions(closed)})`;
+      }
+      const options = quoteOptions(field.options?.map((o) => o.value) ?? []);
       // A field that takes a template says so, or an agent reads a closed
       // enum and never offers the capability the field's help text does.
       return field.allowTemplate
