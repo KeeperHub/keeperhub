@@ -144,7 +144,7 @@ Keeps only the items of an array that pass a test, and pulls one field out of ev
 | Field to test | No | Dotted path inside each item, e.g. `success`, `meta.name` or `topics.1` (a number picks a list entry). A path with an empty part such as `a..b` is refused. Blank tests each item itself, for an array of names or numbers. Hidden for **No test: keep every item** |
 | Operator | Yes | The test, chosen from the groups below. Default **General: equals** |
 | Value | For tests that compare | What each item is compared with. See How Value is read |
-| Ignore case | No | Off by default; from the API, `true` or `false`. When on, text is matched whatever its letter case. Applies to equals, not equals, soft equals, soft not equals, contains, starts with, ends with, their **does not** forms and **Array: contains** |
+| Ignore case | No | Off by default; from the API, `true` or `false` (a JSON boolean or lowercase text), never a template. When on, text is matched whatever its letter case. Applies to equals, not equals, soft equals, soft not equals, contains, starts with, ends with, their **does not** forms and **Array: contains** |
 | Return field | No | Dotted path pulled from each match into **values**. Blank uses Field to test. With Return field blank and either Field to test blank or **keep every item**, **values** holds the matching items themselves |
 | If a match has no Return field | No | **Keep it, with null in values** (default) or **Fail the step**. Either way the match is counted in **missingReturn**, so a mistyped Return field shows up |
 | Labels | No | A JSON array as long as Source, in the same order, e.g. the names of the contracts a batch read was given. The entry at each position comes out in **labels** for matches and **skippedLabels** for skipped items. A different length fails the step, and is refused at save when both are typed |
@@ -223,7 +223,7 @@ Set **If an item can't be tested** to **Skip it and count it in skipped** to kee
 - Matches regex is not available in this node yet. Use contains, starts with or ends with and their **does not** forms.
 - Value is always compared as data. A value resolved from an upstream node cannot change the test.
 - Settings the form hides for the chosen operator are ignored, so a leftover value cannot change or fail the step.
-- Settings typed by hand are checked when the workflow is saved with the same rules the step uses; a setting that comes from another node is checked when the run resolves it.
+- Settings typed by hand are checked when the workflow is saved with the same rules the step uses; a setting that comes from another node is checked when the run resolves it. Ignore case cannot come from another node: a template there is refused at save.
 
 ### Examples
 

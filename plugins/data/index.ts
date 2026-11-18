@@ -335,6 +335,8 @@ const dataPlugin: IntegrationPlugin = {
           defaultValue: IGNORE_CASE_DEFAULT,
           helpText:
             "Match text whatever its letter case, e.g. a checksummed address against a lowercase one.",
+          helpTip:
+            "Off by default. Applies to equals, not equals, soft equals, soft not equals, the text tests and Array: contains. From the API or MCP, send true or false; a template is not accepted.",
           showWhen: shownWhenOperatorReads((rule) => rule.readsIgnoreCase),
         },
         {

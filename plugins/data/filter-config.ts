@@ -105,7 +105,7 @@ function resolveOperator(raw: unknown): FilterOperator {
 function readSwitch(raw: unknown, name: string, defaultValue: string): boolean {
   const on = resolveSwitch(raw, defaultValue);
   if (on === undefined) {
-    throw new Error(`${name} must be true or false.`);
+    throw new Error(`${name} must be true or false, in lowercase.`);
   }
   return on;
 }
@@ -451,7 +451,8 @@ export function readValue(raw: unknown, operator: FilterOperator): unknown {
 /**
  * The save-time check: the step's own parsing, run on the settings a builder
  * typed, so a config that saves cannot fail every run. Values holding a
- * template are left to the run, where they are resolved.
+ * template are left to the run, where they are resolved. Ignore case is not
+ * here: as a plain switch it is checked, templates refused, by the field rule.
  */
 export function checkFilterConfig(
   config: Record<string, unknown>
@@ -482,12 +483,6 @@ export function checkFilterConfig(
         // Read raw, not through typed(): readValue needs the original type.
         valueContainsTemplate(config.value) ||
         readValue(config.value, operator),
-    ],
-    [
-      "ignoreCase",
-      () =>
-        rule.readsIgnoreCase &&
-        readSwitch(typed("ignoreCase"), "Ignore case", IGNORE_CASE_DEFAULT),
     ],
     [
       "untestable",

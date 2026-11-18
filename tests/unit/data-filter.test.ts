@@ -1389,7 +1389,21 @@ describe("data/filter", () => {
         value: "abc",
         ignoreCase: "True",
       });
-      expect(result.error).toContain("Ignore case must be true or false.");
+      expect(result.error).toContain(
+        "Ignore case must be true or false, in lowercase."
+      );
+    });
+
+    it("says how to skip an item that can't be tested", async () => {
+      const result = await runDefault({
+        source: "[null]",
+        operator: ">",
+        value: "1",
+      });
+      expect(result.success).toBe(false);
+      expect((result as FilterFailure).error).toBe(
+        `Filter failed: Item at index 0 can't be tested with "Number: greater than": its value is null. To count such items in skipped instead, set "If an item can't be tested" to Skip.`
+      );
     });
 
     it("gives each test kind the same untestable reasons as before", async () => {

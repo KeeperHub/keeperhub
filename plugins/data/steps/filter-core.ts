@@ -36,15 +36,6 @@ import { isPlainObject, resolveSegments } from "./resolve-path-core";
 
 export type { FilterCoreInput } from "../filter-config";
 
-// Tests where a number item meets a Value kept as text (see exactNumberOf).
-const NUMBER_TWIN_OPERATORS: readonly FilterOperator[] = [
-  "===",
-  "!==",
-  "==",
-  "!=",
-  "arrayContains",
-];
-
 const ITEM_VAR = "__v0";
 const VALUE_VAR = "__v1";
 
@@ -128,9 +119,10 @@ function readText(value: unknown): { value: unknown } | Untestable {
 }
 
 // What the test sees for an item that is there, or why it cannot apply.
-const ITEM_READERS: Record<FilterTestKind, ItemReader> = {
-  none: (value) => ({ value }),
-  presence: (value) => ({ value }),
+const ITEM_READERS: Record<
+  Exclude<FilterTestKind, "none" | "presence">,
+  ItemReader
+> = {
   any: (value) => ({ value }),
   loose: (value) =>
     isPrimitive(value) ? { value } : { reason: describeShape(value) },
@@ -148,12 +140,12 @@ const ITEM_READERS: Record<FilterTestKind, ItemReader> = {
 
 const MISSING_FIELD: Untestable = { reason: "the field is missing" };
 
-// Picked once per run; presence tests are the only ones that see a missing field.
+// Picked once per run. Presence tests take any item, a missing field included.
 function itemReaderFor(test: FilterTestKind): ItemReader {
-  const read = ITEM_READERS[test];
-  if (test === "presence") {
-    return read;
+  if (test === "none" || test === "presence") {
+    return (value) => ({ value });
   }
+  const read = ITEM_READERS[test];
   return (value) => (value === undefined ? MISSING_FIELD : read(value));
 }
 
@@ -174,9 +166,12 @@ function makeMatcher(
   // number items are compared with the number, as a Condition literal would
   // be. Under Array: contains an unquoted one is that number and a quoted one
   // stays text, as for any other Value.
-  const asNumber = NUMBER_TWIN_OPERATORS.includes(operator)
-    ? exactNumberOf(value)
-    : undefined;
+  // Tests where a number item can meet a Value kept as text.
+  const numberTwin =
+    rule.test === "any" ||
+    rule.test === "loose" ||
+    operator === "arrayContains";
+  const asNumber = numberTwin ? exactNumberOf(value) : undefined;
   const containsNumber =
     operator === "arrayContains" &&
     asNumber !== undefined &&
@@ -250,7 +245,7 @@ function runFilter(input: FilterCoreInput): FilterOutput {
     if (typeof result === "object") {
       if (settings.untestable === "fail") {
         throw new Error(
-          `Item at index ${index} can't be tested with "${filterOperatorLabel(settings.operator)}": ${result.reason}.`
+          `Item at index ${index} can't be tested with "${filterOperatorLabel(settings.operator)}": ${result.reason}. To count such items in skipped instead, set "If an item can't be tested" to Skip.`
         );
       }
       output.skipped += 1;

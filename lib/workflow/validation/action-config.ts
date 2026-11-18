@@ -209,9 +209,10 @@ export type WorkflowNodeForValidation = {
   };
 };
 
+// `reason`, when given, is the message shown to the builder.
 type FieldCheckResult =
   | { valid: true }
-  | { valid: false; expected: string; received: unknown };
+  | { valid: false; expected: string; received: unknown; reason?: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -485,6 +486,16 @@ export function isKnownConfigKeyForAction(
   return isLegacyIgnoredField(actionType, key);
 }
 
+// Echoed values are the caller's own input; long text is cut so a refused
+// save does not send it all back.
+const RECEIVED_MAX_CHARS = 200;
+
+function capReceived(value: unknown): unknown {
+  return typeof value === "string" && value.length > RECEIVED_MAX_CHARS
+    ? `${value.slice(0, RECEIVED_MAX_CHARS)}...`
+    : value;
+}
+
 function validateStringLike(value: unknown): boolean {
   return typeof value === "string" || typeof value === "number";
 }
@@ -568,7 +579,12 @@ function validateFieldValue(
     // only true or false.
     case "switch":
       return resolveSwitch(value, undefined) === undefined
-        ? { valid: false, expected: "boolean", received: value }
+        ? {
+            valid: false,
+            expected: "boolean",
+            received: value,
+            reason: `${field.label} must be true or false, in lowercase; it does not take a template.`,
+          }
         : { valid: true };
     case "protocol-bool":
       if (valueContainsTemplate(value)) {
@@ -857,16 +873,22 @@ export function validateWorkflowActionConfigs(
 
       const fieldCheck = validateFieldValue(field, value);
       if (!fieldCheck.valid) {
+        // A check that explains itself is quoted in the summary, as a
+        // cross-field issue is.
         issues.push({
-          code: "INVALID_FIELD_TYPE",
+          code: fieldCheck.reason
+            ? "INVALID_FIELD_VALUE"
+            : "INVALID_FIELD_TYPE",
           path: `nodes[${nodeIndex}].data.config.${field.key}`,
           actionType,
           field: field.key,
           nodeId: identity.nodeId,
           nodeLabel: identity.nodeLabel,
           expected: fieldCheck.expected,
-          received: fieldCheck.received,
-          message: `Invalid value for field "${field.key}" on action "${actionType}".`,
+          received: capReceived(fieldCheck.received),
+          message:
+            fieldCheck.reason ??
+            `Invalid value for field "${field.key}" on action "${actionType}".`,
         });
       }
     }

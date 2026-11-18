@@ -17,7 +17,8 @@
 
 // A symbol key, so data parsed from JSON (an upstream item, a webhook body)
 // can never pass for the marker. Symbol.for, so a copy of this module in
-// another bundle still knows it. A serialized marker loses the key.
+// another bundle still knows it. A serialized marker loses the key. The key
+// is process-wide, so never run user code in this process (e.g. node:vm).
 const MISSING_REFERENCE = Symbol.for("keeperhub.missingReference");
 
 export type MissingReference = {

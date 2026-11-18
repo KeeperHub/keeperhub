@@ -13,10 +13,7 @@ import {
   formatActionConfigValidationResponse,
   validateWorkflowActionConfigs,
 } from "@/lib/workflow/validation/action-config";
-import {
-  checkFilterConfig,
-  IGNORE_CASE_DEFAULT,
-} from "@/plugins/data/filter-config";
+import { IGNORE_CASE_DEFAULT } from "@/plugins/data/filter-config";
 import {
   FILTER_OPERATOR_OPTIONS,
   filterOperatorRule,
@@ -598,15 +595,20 @@ describe("data/filter definition", () => {
           untestable: "maybe",
         };
         for (const key of Object.keys(bad) as RuleField[]) {
-          const issue = checkFilterConfig({
-            source: "[1]",
-            operator: option.value,
-            value: "1",
-            [key]: bad[key],
-          });
-          expect(issue?.field, `${option.value} ${key}`).toBe(
-            read.includes(key) ? key : undefined
-          );
+          const { issues } = validateWorkflowActionConfigs([
+            actionNode(
+              editorConfig({
+                source: "[1]",
+                operator: option.value,
+                value: "1",
+                [key]: bad[key],
+              })
+            ),
+          ]);
+          expect(
+            issues.map((issue) => issue.field),
+            `${option.value} ${key}`
+          ).toEqual(read.includes(key) ? [key] : []);
         }
       }
     });
@@ -625,6 +627,23 @@ describe("data/filter definition", () => {
       expect(validation.issues.map((issue) => issue.field)).toEqual([
         "ignoreCase",
       ]);
+      expect(formatActionConfigValidationResponse(validation).message).toBe(
+        'Workflow contains invalid action configuration. Invalid node(s): "Filter": Ignore case must be true or false, in lowercase; it does not take a template. Fix the listed fields and save again.'
+      );
+    });
+
+    it("cuts a long refused value it echoes back", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "[1]",
+            value: "1",
+            ignoreCase: "x".repeat(5000),
+          })
+        ),
+      ]);
+      const [issue] = validation.issues;
+      expect(issue?.received).toBe(`${"x".repeat(200)}...`);
     });
 
     it("does not echo a typed Source back in a cross-field issue", () => {

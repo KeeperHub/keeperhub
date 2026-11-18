@@ -2,7 +2,7 @@
  * Operator options for data/filter. No "use step": the plugin definition and
  * the step core both read this list.
  *
- * Every set below is derived from Condition's operator metadata, so an
+ * Each operator's rule is derived from Condition's operator metadata, so an
  * operator added there is classified here without a second list to update.
  */
 
