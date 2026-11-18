@@ -13,8 +13,7 @@
  *
  * Callers differ in two ways and only two, so both are arguments here rather
  * than a reason to keep a second copy of the class: whether tab, newline and
- * carriage return survive, and whether a removed character leaves a space
- * behind. This module has no imports, deliberately - one of its readers is
+ * carriage return survive, and what a removed character leaves behind. This module has no imports, deliberately - one of its readers is
  * bundled into the browser and another cannot pull in the plugin registry.
  */
 
@@ -32,8 +31,8 @@ const CONTROL_CHARS_KEEPING_LINE_BREAKS_RE =
 export type StripControlCharsOptions = {
   /** Keep tab, newline and carriage return - for a field allowed lines. */
   keepLineBreaks?: boolean;
-  /** What each removed character becomes. Defaults to removal. */
-  replacement?: string;
+  /** What each removed character becomes: a string, or one made from it. */
+  replacement?: string | ((char: string) => string);
 };
 
 /** Remove them. Returns the value unchanged when it carries none. */
@@ -44,5 +43,8 @@ export function stripControlChars(
   const pattern = options.keepLineBreaks
     ? CONTROL_CHARS_KEEPING_LINE_BREAKS_RE
     : ALL_CONTROL_CHARS_RE;
-  return value.replace(pattern, options.replacement ?? "");
+  const { replacement = "" } = options;
+  return typeof replacement === "string"
+    ? value.replace(pattern, replacement)
+    : value.replace(pattern, replacement);
 }

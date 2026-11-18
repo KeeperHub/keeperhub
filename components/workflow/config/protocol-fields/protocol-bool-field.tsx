@@ -8,6 +8,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TemplateBadgeInput } from "@/components/ui/template-badge-input";
+import { stripControlChars } from "@/lib/utils/control-chars";
 import { isSavableBoolValue } from "@/lib/workflow/validation/action-config";
 import { hasTemplateToken } from "@/lib/workflow/template-ref";
 
@@ -25,38 +26,49 @@ type ProtocolBoolFieldValue = {
   unrecognized?: string;
 };
 
-// Control and invisible format characters (bidi overrides, zero-width) could
-// reorder or hide what the message shows, so they are written out as escapes.
-const HIDDEN_CHARACTER = /[\p{Cc}\p{Cf}]/gu;
 const MAX_KEPT_LENGTH = 1000;
 const MAX_SHOWN_LENGTH = 60;
+// The start of a JSON or \\uXXXX escape left open by a cut.
+const PARTIAL_ESCAPE = /\\(?:u[0-9a-f]{0,3})?$/;
 
 // Cuts by code point, so a cut never splits a character in two.
 function cut(text: string, length: number): string {
   return Array.from(text).slice(0, length).join("");
 }
 
+// A control or bidi character could reorder or hide what the message shows,
+// so each is written out as an escape.
+function escapeHidden(char: string): string {
+  return `\\u${(char.codePointAt(0) ?? 0).toString(16).padStart(4, "0")}`;
+}
+
 function describeSaved(saved: unknown): string {
-  // Cut first, so a huge saved value costs no more than a short one.
-  // 2 UTF-16 units per code point at most, so the slice keeps enough.
+  // An object or array is summed up, not stringified, so a huge one is cheap.
+  if (Array.isArray(saved)) {
+    return `[${saved.length} items]`;
+  }
+  if (typeof saved === "object" && saved !== null) {
+    return "{…}";
+  }
+  // A huge string is cut first, so it costs no more than a short one.
   const head =
     typeof saved === "string"
       ? cut(saved.slice(0, MAX_KEPT_LENGTH * 2), MAX_KEPT_LENGTH)
       : saved;
-  const text = cut(JSON.stringify(head) ?? String(head), MAX_KEPT_LENGTH);
-  return text.replace(
-    HIDDEN_CHARACTER,
-    (char) => `\\u${(char.codePointAt(0) ?? 0).toString(16).padStart(4, "0")}`
-  );
+  const text = stripControlChars(JSON.stringify(head) ?? String(head), {
+    replacement: escapeHidden,
+  });
+  const kept = cut(text, MAX_KEPT_LENGTH);
+  return kept.length < text.length ? `${kept}…` : kept;
 }
 
-// The saved value as the message shows it; a cut string keeps its quotes.
+// The saved value as the message shows it; the mark sits outside the quotes.
 function shortenSaved(text: string): string {
   if (Array.from(text).length <= MAX_SHOWN_LENGTH) {
     return text;
   }
-  const shown = `${cut(text, MAX_SHOWN_LENGTH)}...`;
-  return text.startsWith('"') ? `${shown}"` : shown;
+  const shown = cut(text, MAX_SHOWN_LENGTH).replace(PARTIAL_ESCAPE, "");
+  return text.startsWith('"') ? `${shown}"…` : `${shown}…`;
 }
 
 // A saved JSON true/false (agents may send one) shows as the matching option.
@@ -70,8 +82,8 @@ export function protocolBoolFieldValue(
   if (typeof saved === "boolean") {
     return { value: String(saved) };
   }
-  if (isSavableBoolValue(saved)) {
-    return { value: saved as string };
+  if (typeof saved === "string" && isSavableBoolValue(saved)) {
+    return { value: saved };
   }
   return { value: "", unrecognized: describeSaved(saved) };
 }
@@ -128,7 +140,7 @@ export function ProtocolBoolField({
             {shown}
           </bdi>{" "}
           is not true or false.
-          {disabled ? "" : " Choose true or false to replace it."}
+          {disabled ? "" : " Select true or false to replace it."}
         </p>
       )}
     </div>

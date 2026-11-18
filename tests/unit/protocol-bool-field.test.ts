@@ -25,7 +25,8 @@ describe("protocolBoolFieldValue", () => {
     [0, "0"],
     [1, "1"],
     [null, "null"],
-    [{ a: 1 }, '{"a":1}'],
+    [{ a: 1 }, "{…}"],
+    [[1, 2, 3], "[3 items]"],
     ["yes", '"yes"'],
     ["TRUE", '"TRUE"'],
   ])("flags saved %j instead of showing the default", (saved, shown) => {
@@ -35,19 +36,26 @@ describe("protocolBoolFieldValue", () => {
     });
   });
 
-  it("keeps at most 1000 characters of a huge saved value", () => {
+  it("writes control, bidi and separator characters out as escapes", () => {
     const { unrecognized } = protocolBoolFieldValue(
-      "x".repeat(5_000_000),
+      "a\u202Eb\u200Bc\u0085d\u2028e\u2029f",
       "true"
     );
-    expect(unrecognized).toBe(`"${"x".repeat(999)}`);
+    expect(unrecognized).toBe('"a\\u202eb\\u200bc\\u0085d\\u2028e\\u2029f"');
   });
 
-  it("writes control and invisible format characters out as escapes", () => {
+  it("marks a value cut at 1000 characters", () => {
+    const { unrecognized } = protocolBoolFieldValue("x".repeat(5000), "true");
+    expect(unrecognized).toBe(`"${"x".repeat(999)}…`);
+  });
+
+  it("sums up a huge array instead of stringifying it", () => {
+    const started = performance.now();
     const { unrecognized } = protocolBoolFieldValue(
-      "a\u202Eb\u200Bc\u0085d",
+      new Array(1_000_000).fill(12_345),
       "true"
     );
-    expect(unrecognized).toBe('"a\\u202eb\\u200bc\\u0085d"');
+    expect(unrecognized).toBe("[1000000 items]");
+    expect(performance.now() - started).toBeLessThan(50);
   });
 });

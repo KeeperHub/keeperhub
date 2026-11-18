@@ -44,7 +44,7 @@ import {
   PagerDutyTriggerNodeField,
 } from "@/components/workflow/config/pagerduty-resource-field";
 import { PlainSwitchField } from "@/components/workflow/config/plain-switch-field";
-// Imported statically, unlike its siblings' require, so a jsdom test can render it.
+// Imported statically: client-only like this file, and a jsdom test renders it.
 import {
   ProtocolBoolField,
   protocolBoolFieldValue,
