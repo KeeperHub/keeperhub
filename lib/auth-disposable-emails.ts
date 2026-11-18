@@ -48,6 +48,7 @@ const CURATED_HEADLINE_DOMAINS: readonly string[] = [
   "marchslurp.com",
   "roomsranked.com",
   "arcadehearth.com",
+  "9k3r.com",
 ];
 
 // Mainstream providers are never blocked, whatever the vendored list says, so

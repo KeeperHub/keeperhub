@@ -1,7 +1,7 @@
 /**
  * Regenerates lib/auth-disposable-email-domains.json from the upstream
  * disposable-domain lists. The disposable-email-domains-refresh workflow
- * downloads the lists and runs this weekly; it can also be run by hand.
+ * downloads the lists and runs this daily; it can also be run by hand.
  *
  * Refuses to write when the merged list shrinks sharply (a truncated or
  * failed download) so a bad fetch never weakens the sign-up check.
