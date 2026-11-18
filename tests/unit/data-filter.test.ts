@@ -1394,6 +1394,18 @@ describe("data/filter", () => {
       );
     });
 
+    it("adds the lowercase hint only for a miscased true or false", async () => {
+      const result = await fails({
+        source: '["abc"]',
+        operator: "===",
+        value: "abc",
+        ignoreCase: 1,
+      });
+      expect(result.error).toBe(
+        "Filter failed: Ignore case must be true or false."
+      );
+    });
+
     it("says how to skip an item that can't be tested", async () => {
       const result = await runDefault({
         source: "[null]",
@@ -1402,7 +1414,7 @@ describe("data/filter", () => {
       });
       expect(result.success).toBe(false);
       expect((result as FilterFailure).error).toBe(
-        `Filter failed: Item at index 0 can't be tested with "Number: greater than": its value is null. To go on past such items, set "If an item can't be tested" to "Skip it and count it in skipped" (skip).`
+        `Filter failed: Item at index 0 can't be tested with "Number: greater than": its value is null. To keep the run going past such items, set "If an item can't be tested" to "Skip it and count it in skipped" (skip).`
       );
     });
 

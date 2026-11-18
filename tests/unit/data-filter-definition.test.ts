@@ -633,16 +633,19 @@ describe("data/filter definition", () => {
     });
 
     it("says why any other Ignore case value is refused", () => {
-      for (const ignoreCase of ["True", 1, "yes"]) {
+      const cases: [unknown, string][] = [
+        ["True", "Ignore case must be true or false, in lowercase."],
+        [1, "Ignore case must be true or false."],
+        ["yes", "Ignore case must be true or false."],
+      ];
+      for (const [ignoreCase, reason] of cases) {
         const validation = validateWorkflowActionConfigs([
           actionNode(editorConfig({ source: "[1]", value: "1", ignoreCase })),
         ]);
         expect(
           formatActionConfigValidationResponse(validation).message,
           String(ignoreCase)
-        ).toContain(
-          '"Filter": Ignore case must be true or false, in lowercase.'
-        );
+        ).toContain(`"Filter": ${reason}`);
       }
     });
 
@@ -678,6 +681,12 @@ describe("data/filter definition", () => {
         bogus: "[an object]",
         ignoreCase: "[a list of 500]",
       });
+      const small = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({ source: "[1]", value: "1", ignoreCase: ["true"] })
+        ),
+      ]);
+      expect(small.issues[0]?.received).toEqual(["true"]);
     });
 
     it("never cuts an emoji in half when it shortens a value", () => {
@@ -690,8 +699,35 @@ describe("data/filter definition", () => {
           })
         ),
       ]);
-      expect(validation.issues[0]?.received).toBe(
-        `${"x".repeat(199)}\u{1F600}...`
+      expect(validation.issues[0]?.received).toBe(`${"x".repeat(199)}...`);
+      const emojis = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "[1]",
+            value: "1",
+            ignoreCase: "\u{1F600}".repeat(150),
+          })
+        ),
+      ]);
+      expect(emojis.issues[0]?.received).toBe(`${"\u{1F600}".repeat(100)}...`);
+    });
+
+    it("parts entries on a comma when no reason is quoted", () => {
+      const node = (id: string, config: Record<string, unknown>) => ({
+        id,
+        type: "action",
+        data: {
+          label: id,
+          type: "action",
+          config: { actionType: ACTION_TYPE, ...config },
+        },
+      });
+      const validation = validateWorkflowActionConfigs([
+        node("A", { operator: "===", value: "a", ignoreCase: "True" }),
+        node("B", { operator: "nope" }),
+      ]);
+      expect(formatActionConfigValidationResponse(validation).message).toBe(
+        'Workflow contains invalid action configuration. Invalid node(s): "A" (source, ignoreCase), "B" (source, operator, value). Fix the listed fields and save again.'
       );
     });
 

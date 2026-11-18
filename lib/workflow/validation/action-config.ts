@@ -486,32 +486,50 @@ export function isKnownConfigKeyForAction(
   return isLegacyIgnoredField(actionType, key);
 }
 
-// Echoed values are the caller's own input; a long one is cut, and a large
-// list or object is described, so a refused save does not send it all back.
+// A field value echoed in `received` is the caller's own input; long text is
+// cut and a large list or object is described rather than sent back whole.
 const RECEIVED_MAX_CHARS = 200;
+const HIGH_SURROGATE_MIN = 0xd8_00;
+const HIGH_SURROGATE_MAX = 0xdb_ff;
 
 function capReceived(value: unknown): unknown {
   if (typeof value === "string") {
-    // Array.from splits by code point, so an emoji is never cut in half.
-    const chars = Array.from(value.slice(0, RECEIVED_MAX_CHARS + 1));
-    return chars.length > RECEIVED_MAX_CHARS ||
-      value.length > chars.join("").length
-      ? `${chars.slice(0, RECEIVED_MAX_CHARS).join("")}...`
-      : value;
+    if (value.length <= RECEIVED_MAX_CHARS) {
+      return value;
+    }
+    // Never end on the first half of an emoji (a UTF-16 surrogate pair).
+    const last = value.charCodeAt(RECEIVED_MAX_CHARS - 1);
+    const end =
+      last >= HIGH_SURROGATE_MIN && last <= HIGH_SURROGATE_MAX
+        ? RECEIVED_MAX_CHARS - 1
+        : RECEIVED_MAX_CHARS;
+    return `${value.slice(0, end)}...`;
   }
   if (typeof value !== "object" || value === null) {
     return value;
   }
-  let size: number;
+  const description = Array.isArray(value)
+    ? `[a list of ${value.length}]`
+    : "[an object]";
+  // Entry count first, so a long list is never serialised just to measure it.
+  const entries = Array.isArray(value)
+    ? value.length
+    : Object.keys(value).length;
+  if (entries > RECEIVED_MAX_CHARS) {
+    return description;
+  }
   try {
-    size = JSON.stringify(value)?.length ?? 0;
+    const size = JSON.stringify(value)?.length ?? 0;
+    return size > RECEIVED_MAX_CHARS ? description : value;
   } catch {
-    size = Number.POSITIVE_INFINITY;
+    return description;
   }
-  if (size <= RECEIVED_MAX_CHARS) {
-    return value;
-  }
-  return Array.isArray(value) ? `[a list of ${value.length}]` : "[an object]";
+}
+
+// "True" or "FALSE": the right word in the wrong case.
+function isMiscasedBool(value: unknown): boolean {
+  const lower = typeof value === "string" ? value.toLowerCase() : undefined;
+  return lower === "true" || lower === "false";
 }
 
 function validateStringLike(value: unknown): boolean {
@@ -603,7 +621,7 @@ function validateFieldValue(
             received: value,
             reason: valueContainsTemplate(value)
               ? `${field.label} does not take a template, only true or false.`
-              : `${field.label} must be true or false, in lowercase.`,
+              : `${field.label} must be true or false${isMiscasedBool(value) ? ", in lowercase" : ""}.`,
           }
         : { valid: true };
     case "protocol-bool":
@@ -1065,6 +1083,7 @@ export function formatActionConfigValidationResponse(
           }
           const entries: string[] = [];
           let shown = 0;
+          let quotesReason = false;
           for (const {
             count,
             display,
@@ -1085,21 +1104,20 @@ export function formatActionConfigValidationResponse(
             const ordered = [...fields.entries()]
               .sort(([, a], [, b]) => a - b)
               .map(([name]) => name);
-            // With other issues on the node, its fields are listed instead.
+            // A reason is quoted only for a node's sole issue; with others,
+            // its fields are listed instead.
+            const reason = count === 1 ? detail : undefined;
+            quotesReason ||= reason !== undefined;
             entries.push(
-              detail && count === 1
-                ? `"${label}": ${sanitiseSummaryText(detail, DETAIL_MAX_CHARS).replace(TRAILING_PERIOD, "")}`
+              reason
+                ? `"${label}": ${sanitiseSummaryText(reason, DETAIL_MAX_CHARS).replace(TRAILING_PERIOD, "")}`
                 : `"${label}"${formatNodeFields(ordered, count)}`
             );
             shown++;
           }
           // A quoted reason has commas of its own, so the shown entries then
           // part on "; ".
-          const separator = [...labels.values()]
-            .slice(0, 3)
-            .some((entry) => entry.detail)
-            ? "; "
-            : ", ";
+          const separator = quotesReason ? "; " : ", ";
           return `Invalid node(s): ${entries.join(separator)}. `;
         })()
       : "";

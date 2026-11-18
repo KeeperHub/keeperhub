@@ -241,7 +241,7 @@ function runFilter(input: FilterCoreInput): FilterOutput {
     if (typeof result === "object") {
       if (settings.untestable === "fail") {
         throw new Error(
-          `Item at index ${index} can't be tested with "${filterOperatorLabel(settings.operator)}": ${result.reason}. To go on past such items, set "If an item can't be tested" to "Skip it and count it in skipped" (skip).`
+          `Item at index ${index} can't be tested with "${filterOperatorLabel(settings.operator)}": ${result.reason}. To keep the run going past such items, set "If an item can't be tested" to "Skip it and count it in skipped" (skip).`
         );
       }
       output.skipped += 1;

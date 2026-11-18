@@ -105,7 +105,9 @@ function resolveOperator(raw: unknown): FilterOperator {
 function readSwitch(raw: unknown, name: string, defaultValue: string): boolean {
   const on = resolveSwitch(raw, defaultValue);
   if (on === undefined) {
-    throw new Error(`${name} must be true or false, in lowercase.`);
+    const lower = typeof raw === "string" ? raw.toLowerCase() : undefined;
+    const hint = lower === "true" || lower === "false" ? ", in lowercase" : "";
+    throw new Error(`${name} must be true or false${hint}.`);
   }
   return on;
 }
