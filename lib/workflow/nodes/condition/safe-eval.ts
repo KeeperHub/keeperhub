@@ -38,6 +38,7 @@ import {
   REGEX_ARITY_ERROR,
   REGEX_BACKSLASH_ERROR,
   REGEX_CALLS_ERROR,
+  REGEX_LITERAL_ERROR,
   REGEX_NON_TEXT_ERROR,
   REGEX_SOURCE_ERROR,
   RegexBudget,
@@ -859,7 +860,11 @@ function regexPattern(node: CallNode): string {
   }
   const pattern = node.arguments[1];
   if (pattern.type !== "Literal" || typeof pattern.value !== "string") {
-    throw new Error(REGEX_SOURCE_ERROR);
+    // Built from a variable means taken from another node; anything else
+    // (!"a", 1) is just not quoted text.
+    throw new Error(
+      mentionsIdentifier(pattern) ? REGEX_SOURCE_ERROR : REGEX_LITERAL_ERROR
+    );
   }
   if (pattern.lossy) {
     throw new Error(REGEX_BACKSLASH_ERROR);
@@ -1063,7 +1068,7 @@ export function safeEvaluateCondition(
   return compileSafeCondition(expression)(context);
 }
 
-function countRegexCalls(node: AstNode): number {
+function childNodes(node: AstNode): AstNode[] {
   const children: AstNode[] = [];
   switch (node.type) {
     case "UnaryExpression":
@@ -1085,13 +1090,26 @@ function countRegexCalls(node: AstNode): number {
     default:
       break;
   }
+  return children;
+}
+
+function mentionsIdentifier(node: AstNode): boolean {
+  return (
+    node.type === "Identifier" || childNodes(node).some(mentionsIdentifier)
+  );
+}
+
+function countRegexCalls(node: AstNode): number {
   const own =
     node.type === "CallExpression" &&
     node.callee.type === "Identifier" &&
     node.callee.name === REGEX_FUNCTION
       ? 1
       : 0;
-  return children.reduce((total, child) => total + countRegexCalls(child), own);
+  return childNodes(node).reduce(
+    (total, child) => total + countRegexCalls(child),
+    own
+  );
 }
 
 // Parses once, for callers that evaluate one expression against many contexts.

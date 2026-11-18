@@ -40,8 +40,7 @@ import {
   REGEX_BACKSLASH_ERROR,
   REGEX_CALLS_ERROR,
   REGEX_DIRECT_ERROR,
-  REGEX_QUOTE_ERROR,
-  REGEX_QUOTE_TYPED_ERROR,
+  REGEX_LITERAL_ERROR,
   REGEX_SOURCE_ERROR,
   regexPatternError,
 } from "./regex-match";
@@ -914,6 +913,13 @@ function validateOperatorBoundaries(tokens: Token[]): ValidationResult {
 /**
  * Validates consecutive operators
  */
+function negatesOperand(token: Token | undefined): boolean {
+  return (
+    token !== undefined &&
+    (token.type !== "operator" || ["(", "!", "-"].includes(token.value))
+  );
+}
+
 function validateConsecutiveOperators(tokens: Token[]): ValidationResult {
   for (let j = 0; j < tokens.length - 1; j++) {
     const current = tokens[j];
@@ -924,8 +930,9 @@ function validateConsecutiveOperators(tokens: Token[]): ValidationResult {
       if (current.value === "!" || current.value === "-") {
         continue;
       }
-      // Allow a negation after any operator: a && !b, (!b), as the builder writes
-      if (next.value === "!") {
+      // Allow a negation after any operator (a && !b, (!b), as the builder
+      // writes) when it negates something: not "(!)" or "! &&".
+      if (next.value === "!" && negatesOperand(tokens[j + 2])) {
         continue;
       }
       // Allow ) before operators
@@ -1250,7 +1257,11 @@ function regexCallError(args: Token[][]): string | undefined {
   }
   const [pattern, ...rest] = args[1];
   if (rest.length > 0 || pattern.type !== "string") {
-    return REGEX_SOURCE_ERROR;
+    // A reference or name means taken from another node; else not quoted text.
+    const fromNode = args[1].some(
+      (token) => token.type === "template" || token.type === "identifier"
+    );
+    return fromNode ? REGEX_SOURCE_ERROR : REGEX_LITERAL_ERROR;
   }
   const scanned = scanString(pattern.value, 0);
   if (scanned.lossy) {
@@ -1261,11 +1272,10 @@ function regexCallError(args: Token[][]): string | undefined {
   }
   // Advice given in pattern terms needs its backslashes doubled when typed here.
   const problem = regexPatternError(scanned.value);
-  if (problem === REGEX_QUOTE_ERROR) {
-    return REGEX_QUOTE_TYPED_ERROR;
-  }
-  return problem && BACKSLASH_ADVICE_RE.test(problem)
-    ? `${problem} (in Expression mode, each backslash in the pattern is written twice)`
+  return problem &&
+    BACKSLASH_ADVICE_RE.test(problem) &&
+    !problem.includes("Expression mode")
+    ? `${problem} (in Expression mode, type each backslash twice)`
     : problem;
 }
 

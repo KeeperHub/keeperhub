@@ -326,7 +326,7 @@ describe("matchesRegex", () => {
         `${FIELD}.matchesRegex(${FIELD}, "a")`,
       ]) {
         expect(() => run(expression, "a"), expression).toThrow(
-          "Call matchesRegex directly"
+          "Write matchesRegex( exactly"
         );
         expect(
           validateConditionExpressionUI(expression).valid,
@@ -357,10 +357,10 @@ describe("matchesRegex", () => {
       const expression = `matchesRegex (${FIELD}, "^0x")`;
       expect(validateConditionExpressionUI(expression)).toEqual({
         valid: false,
-        error: expect.stringContaining("Call matchesRegex directly"),
+        error: expect.stringContaining("Write matchesRegex( exactly"),
       });
       expect(() => run(expression, "0x1")).toThrow(
-        "Call matchesRegex directly"
+        "Write matchesRegex( exactly"
       );
     });
 
@@ -371,6 +371,30 @@ describe("matchesRegex", () => {
       expect(validateConditionExpressionUI(expression)).toEqual({
         valid: true,
       });
+    });
+
+    it("refuses a negation with nothing to negate in the editor", () => {
+      for (const expression of ["(!)", `${FIELD} === 1 || !)`]) {
+        expect(
+          validateConditionExpressionUI(expression).valid,
+          expression
+        ).toBe(false);
+      }
+    });
+
+    it("says a pattern built without a reference must be one quoted text", () => {
+      for (const expression of [
+        `matchesRegex(${FIELD}, "a" + "b")`,
+        `matchesRegex(${FIELD}, !"a")`,
+      ]) {
+        expect(() => run(expression, "ab"), expression).toThrow(
+          "must be one quoted text"
+        );
+        expect(validateConditionExpressionUI(expression), expression).toEqual({
+          valid: false,
+          error: expect.stringContaining("must be one quoted text"),
+        });
+      }
     });
 
     it("keeps an indirect call as text when the editor opens it", () => {
@@ -434,7 +458,6 @@ describe("matchesRegex", () => {
     it("refuses a pattern that is not one quoted literal", () => {
       for (const expression of [
         `matchesRegex(String(${FIELD}), ${FIELD})`,
-        `matchesRegex(String(${FIELD}), "a" + "b")`,
         `matchesRegex(${FIELD}, "^${FIELD}$")`,
       ]) {
         expect(() => run(expression, "a")).toThrow(REGEX_SOURCE_ERROR);
@@ -526,6 +549,11 @@ describe("matchesRegex", () => {
       expect(regexPatternError("*.eth")).toContain("For any text, write .*");
       expect(regexPatternError("\\q")).toContain("Remove that backslash");
       expect(regexPatternError("a{2,1}")).toContain("smaller number first");
+      expect(regexPatternError("?abc")).toContain("To match ? itself");
+      expect(regexPatternError("?abc")).not.toContain(".*");
+      expect(regexPatternError("a{2000}")).toContain("go up to 1,000");
+      // The last quote is escaped, so this is not one quoted string.
+      expect(regexPatternError('"a\\"')).toBeUndefined();
       expect(regexPatternError("/^api/")).toContain("Leave out the /.../");
     });
 

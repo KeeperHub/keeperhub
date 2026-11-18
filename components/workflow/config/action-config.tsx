@@ -464,8 +464,8 @@ function ConditionFields({
             to reference previous node outputs.
           </p>
           <p className="text-muted-foreground text-xs">
-            Regex: matchesRegex(field, &quot;^0x&quot;), picking the field with @.
-            Inside the quotes, write each backslash twice, e.g. &quot;^\\d+$&quot;.
+            Regex: matchesRegex(@field, &quot;^0x&quot;). Inside the quotes, type
+            each backslash twice, e.g. &quot;^\\d+$&quot;.
           </p>
         </div>
       )}

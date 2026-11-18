@@ -51,9 +51,9 @@ const FILTER_HINTS: Partial<Record<FilterOperator, string>> = {
   notStartsWith: "Text does not begin with the value",
   notEndsWith: "Text does not end with the value",
   matchesRegex:
-    "Text matches the regular expression anywhere (^ start, $ end, (?i) ignore case)",
+    "Text matches the regular expression anywhere; ^ start, $ end, (?i) ignore case",
   notMatchesRegex:
-    "Text does not match the regular expression anywhere (^ start, $ end, (?i) ignore case)",
+    "Text does not match the regular expression anywhere; ^ start, $ end, (?i) ignore case",
   ">": `Numerically greater than; ${NUMBER_TEST_SCOPE}`,
   ">=": `Numerically greater than or equal; ${NUMBER_TEST_SCOPE}`,
   "<": `Numerically less than; ${NUMBER_TEST_SCOPE}`,

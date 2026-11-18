@@ -138,7 +138,8 @@ same rules.
 
 - **Values:** numbers and `true`/`false` are tested as their text, and so is `null`: `^n`
   matches a null field. If the field can be null, add an **is not null** rule. A list or object
-  fails the run. (Filter Array differs: it skips `null` and booleans.)
+  fails the run. (Filter Array differs: `null` and booleans are items it can't test, which fail the
+  step unless it is set to skip them.)
 - **Syntax:** patterns use [RE2 syntax](https://github.com/google/re2/wiki/Syntax), which is
   close to JavaScript's. Lookahead and lookbehind, back-references such as `\1`, and `\u` escapes
   (write `\x{00e9}` for `é`) are not supported and get a message naming them; other refused
@@ -154,7 +155,8 @@ same rules.
   Inside the quotes, double each backslash: `"^\\d+$"` for `^\d+$`. A single backslash before
   anything but a quote, `n`, `r` or `t` is refused rather than silently changing the pattern.
 - **Limits:** a pattern of up to 512 characters and 1,000 steps (RE2's size for the compiled
-  pattern; long `{n}` repeats add up fastest), text of up to 4,096 characters (longer text fails the
+  pattern, which the error states, so there is nothing to work out; long `{n}` repeats add up
+  fastest), text of up to 4,096 characters (longer text fails the
   run), and at most 16 regex tests in one Condition. Matching never backtracks and has a fixed
   budget per Condition, so it cannot hold up a run for more than a few seconds.
 

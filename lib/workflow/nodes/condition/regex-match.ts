@@ -21,17 +21,15 @@ export const REGEX_ARITY_ERROR =
 export const REGEX_SOURCE_ERROR =
   "Type the regex pattern itself; it can't come from another node or be built from other values. To look for text from another node, use contains or starts with";
 export const REGEX_BACKSLASH_ERROR =
-  'In Expression mode, double each backslash in the regex pattern, e.g. "^\\\\d+$" for ^\\d+$';
+  'In Expression mode, type each backslash in the regex pattern twice, e.g. "^\\\\d+$" for ^\\d+$';
 export const REGEX_EMPTY_ERROR =
   "Enter a regex pattern, e.g. ^0x. To match empty text, use ^$";
 export const REGEX_NON_TEXT_ERROR =
-  "Matches regex tests text, numbers or booleans, not a list or object. Test a field inside it, or use Filter Array to test each item of a list";
-export const REGEX_QUOTE_ERROR =
-  "Leave out the quotes around the regex pattern; they would be matched as part of the text. To match a quote, put a backslash before it";
-export const REGEX_QUOTE_TYPED_ERROR =
-  'Leave out the quotes around the regex pattern; they would be matched as part of the text. To match a quote here, write \\\\\\" (three backslashes, then the quote)';
+  "The regex test checks text, numbers or booleans, not a list or object. Test a field inside it, or use Filter Array to test each item of a list";
+export const REGEX_LITERAL_ERROR =
+  'The regex pattern must be one quoted text, e.g. "^0x"';
 export const REGEX_DIRECT_ERROR =
-  'Call matchesRegex directly, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
+  'Write matchesRegex( exactly: no space before "(" and nothing around the name, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
 export const REGEX_CALLS_ERROR = `A condition can use matchesRegex at most ${MAX_REGEX_CALLS} times`;
 
 const MAX_CACHED_PATTERNS = 256;
@@ -44,6 +42,8 @@ const UNICODE_ESCAPE_RE = /invalid escape sequence: `\\u/;
 const SLASH_DELIMITED_RE = /^\/([\s\S]*)\/([gimsuy]*)$/;
 const REGEX_SYNTAX_RE = /[\^$\\[(*+?{|]/;
 const BAD_ESCAPE_RE = /invalid escape sequence/;
+const REPETITION_OPERATOR_RE = /operator: `([^`]*)`/;
+const LARGE_COUNT_RE = /\d{4,}/;
 const TRAILING_BACKSLASH_RE = /trailing backslash/;
 const REPETITION_RE = /repetition operator/;
 const REPEAT_COUNT_RE = /invalid repeat count/;
@@ -67,10 +67,14 @@ function syntaxHint(detail: string): string {
     return ". Write \\\\ to match a backslash";
   }
   if (REPETITION_RE.test(detail)) {
-    return ". For any text, write .*; to match * or + itself, put a backslash before it";
+    const operator = REPETITION_OPERATOR_RE.exec(detail)?.[1] ?? "";
+    const anyText = operator.startsWith("*") ? " For any text, write .*." : "";
+    return `. To match ${operator[0] ?? "it"} itself, put a backslash before it.${anyText}`;
   }
   if (REPEAT_COUNT_RE.test(detail)) {
-    return ". Write the smaller number first, e.g. {2,5}; counts over 1,000 are refused";
+    return LARGE_COUNT_RE.test(detail)
+      ? ". Repeat counts go up to 1,000"
+      : ". Write the smaller number first, e.g. {2,5}";
   }
   return "";
 }
@@ -92,6 +96,12 @@ function describeSyntaxError(message: string): string {
   return `Invalid regex pattern: ${detail.replace(BACKTICK_RE, '"')}${hint}`;
 }
 
+// One message for both modes: Expression mode needs three backslashes, since
+// the condition's own quotes take one level of escaping.
+function quoteWrappedError(quote: string): string {
+  return `Leave out the quotes around the regex pattern; they would be matched as part of the text. To match a quote, put a backslash before it (in Expression mode, type \\\\\\${quote}: three backslashes, then the quote)`;
+}
+
 // One quoted string, e.g. "ok" or "a\"b"; not 'yes'|'no', which only starts
 // and ends with a quote.
 function isQuoteWrapped(pattern: string): boolean {
@@ -111,7 +121,8 @@ function isQuoteWrapped(pattern: string): boolean {
     }
     backslashes = ch === "\\" ? backslashes + 1 : 0;
   }
-  return true;
+  // "a\" ends in an escaped quote, so it is not wrapped either.
+  return backslashes % 2 === 0;
 }
 
 function compileUncached(pattern: string, ignoreCase: boolean): RE2JS {
@@ -127,7 +138,7 @@ function compileUncached(pattern: string, ignoreCase: boolean): RE2JS {
     );
   }
   if (isQuoteWrapped(pattern)) {
-    throw new Error(REGEX_QUOTE_ERROR);
+    throw new Error(quoteWrappedError(pattern[0]));
   }
   let regex: RE2JS;
   try {
@@ -198,7 +209,7 @@ export function regexPatternError(
 export class RegexBudgetError extends Error {
   constructor(steps: number) {
     super(
-      `The regex test reached this node's matching limit: this pattern has ${formatCount(steps)} steps, and steps x characters tested may total ${formatCount(MAX_REGEX_RUN_WORK)}. Test fewer or shorter values, or a simpler pattern`
+      `The regex test reached this node's matching limit: this pattern has ${formatCount(steps)} steps, and steps x characters tested may total ${formatCount(MAX_REGEX_RUN_WORK)}. Test fewer or shorter values or use a simpler pattern`
     );
     this.name = "RegexBudgetError";
   }

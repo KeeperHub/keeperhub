@@ -56,7 +56,7 @@ const OPERATOR_OPTION_GROUPS = OPERATOR_GROUPS.map((groupMeta) => ({
 
 // Shown under a regex rule until its pattern has an error to show instead.
 const REGEX_RULE_HINT =
-  "Tested anywhere in the text. ^ start, $ end, (?i) ignore case. No quotes or /.../.";
+  "The pattern can be anywhere in the text. ^ start, $ end, (?i) ignore case. No quotes or /.../.";
 
 // The run-time pattern rules, shown while the pattern is typed.
 function regexRuleError(operand: string): string | undefined {

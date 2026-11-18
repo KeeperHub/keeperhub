@@ -1,7 +1,7 @@
 import { buildEdgesBySourceHandle } from "@/lib/workflow/editor/edge-handle-utils";
+import { mentionsRegex } from "@/lib/workflow/nodes/condition/regex-calls";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
 import { isSafeConditionExpression } from "@/lib/workflow/nodes/condition/safe-eval";
-import { maskStringLiterals } from "@/lib/workflow/nodes/condition/string-literal";
 import { DEFAULT_HTTP_METHOD } from "@/lib/workflow/nodes/http-request/constants";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import {
@@ -48,17 +48,9 @@ function escapeTemplateRaw(value: string): string {
     .replace(/\$\{/g, "\\${");
 }
 
-const REGEX_CALL_RE = /\bmatchesRegex\s*\(/;
-
 // Exported code has no matchesRegex (an RE2 helper), so those stay flagged.
 function isExportableCondition(condition: string): boolean {
-  let code = condition;
-  try {
-    code = maskStringLiterals(condition);
-  } catch {
-    // Unterminated quote: isSafeConditionExpression refuses it below.
-  }
-  if (REGEX_CALL_RE.test(code)) {
+  if (mentionsRegex(condition)) {
     return false;
   }
   return condition.includes("{{") || isSafeConditionExpression(condition);

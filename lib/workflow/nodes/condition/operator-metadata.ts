@@ -111,14 +111,14 @@ export const OPERATOR_METADATA: Record<ConditionOperator, OperatorMeta> = {
     unary: false,
     category: "text",
     description:
-      'Text matches the regular expression anywhere (^ start, $ end, (?i) ignore case). null reads as "null"',
+      'Text matches the regular expression anywhere; ^ start, $ end, (?i) ignore case. null is tested as "null"',
   },
   notMatchesRegex: {
     label: "does not match regex",
     unary: false,
     category: "text",
     description:
-      'Text does not match the regular expression anywhere (^ start, $ end, (?i) ignore case). null reads as "null"',
+      'Text does not match the regular expression anywhere; ^ start, $ end, (?i) ignore case. null is tested as "null": add is not null to leave it out',
   },
   isEmpty: {
     label: "is empty",
