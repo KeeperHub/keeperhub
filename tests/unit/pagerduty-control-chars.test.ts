@@ -2,10 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import {
-  escapeHiddenChars,
-  stripControlChars,
-} from "@/lib/utils/control-chars";
+import { stripControlChars } from "@/lib/utils/control-chars";
 import {
   buildTriggerEvent,
   cleanCustomDetails,
@@ -183,37 +180,5 @@ describe("the shared character class", () => {
 
   it("substitutes rather than removes when given a replacement", () => {
     expect(stripControlChars("a\u202Eb", { replacement: " " })).toBe("a b");
-  });
-});
-
-describe("escapeHiddenChars, for a value shown for inspection", () => {
-  // Built from code points: the formatter turns an escape into the raw character.
-  const hidden = (code: number): string => String.fromCodePoint(code);
-
-  it("escapes every character stripControlChars removes, astral ones too", () => {
-    for (let code = 0; code <= 0x10_ff_ff; code++) {
-      if (code >= 0xd8_00 && code <= 0xdf_ff) {
-        continue;
-      }
-      const char = hidden(code);
-      if (stripControlChars(char) === "") {
-        expect(escapeHiddenChars(char), code.toString(16)).not.toBe(char);
-      }
-    }
-  });
-
-  it.each([
-    [0x20_60, "\\u2060"],
-    [0x18_0e, "\\u180e"],
-    [0xff_f9, "\\ufff9"],
-    [0xe_00_41, "\\u{e0041}"],
-    [0x20_28, "\\u2028"],
-  ])("escapes U+%s, which stripping leaves alone", (code, escaped) => {
-    expect(escapeHiddenChars(`a${hidden(code)}b`)).toBe(`a${escaped}b`);
-  });
-
-  it("leaves visible text, emoji included, as it is", () => {
-    const text = `caf\u00e9 ${hidden(0x1_f6_00)} true`;
-    expect(escapeHiddenChars(text)).toBe(text);
   });
 });

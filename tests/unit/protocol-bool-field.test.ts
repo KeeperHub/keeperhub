@@ -6,13 +6,17 @@ function hidden(code: number): string {
   return String.fromCodePoint(code);
 }
 
-function unrecognized(saved: unknown): string {
-  const result = protocolBoolFieldValue(saved, "true").unrecognized;
-  if (result === undefined) {
-    throw new Error(`${String(saved)} was not flagged`);
-  }
-  return result;
+function flagged(saved: unknown): unknown {
+  const { value, unrecognized } = protocolBoolFieldValue(saved, "true");
+  expect(value).toBe("");
+  expect(unrecognized).toBeDefined();
+  return unrecognized;
 }
+
+const literal = (text: string, shortened = false): unknown => ({
+  literal: text,
+  shortened,
+});
 
 // The action schema tells agents a Solidity bool is a JSON boolean, so the
 // editor has to show one saved that way, not the default or an empty select.
@@ -40,55 +44,54 @@ describe("protocolBoolFieldValue", () => {
     [null, "null"],
     ["yes", '"yes"'],
     ["TRUE", '"TRUE"'],
-    [{ a: 1 }, "(object)"],
-    [{}, "(empty object)"],
-    [[1, 2, 3], "(list of 3 items)"],
-    [[1], "(list of 1 item)"],
-    [[], "(empty list)"],
-  ])("flags saved %j as %s", (saved, shown) => {
-    expect(protocolBoolFieldValue(saved, "true")).toEqual({
-      value: "",
-      unrecognized: shown,
-    });
+  ])("shows saved %j as the value %s", (saved, text) => {
+    expect(flagged(saved)).toEqual(literal(text));
   });
 
-  it("sums up a huge array instead of stringifying it", () => {
-    expect(unrecognized(new Array(1_000_000).fill(12_345))).toBe(
-      "(list of 1000000 items)"
-    );
+  it.each([
+    [{ a: 1 }, "an object"],
+    [{}, "an empty object"],
+    [[1, 2, 3], "a list of 3 items"],
+    [[1], "a list of 1 item"],
+    [[], "an empty list"],
+    [new Array(1_000_000).fill(12_345), "a list of 1000000 items"],
+  ])("describes saved %j as %s", (saved, kind) => {
+    expect(flagged(saved)).toEqual({ kind });
   });
 
   it("writes hidden characters out as escapes", () => {
-    const saved = `a${hidden(0x20_2e)}b${hidden(0x20_0b)}c${hidden(0x85)}d${hidden(0x20_28)}e${hidden(0x20_60)}f${hidden(0xe_00_41)}g`;
-    expect(unrecognized(saved)).toBe(
-      '"a\\u202eb\\u200bc\\u0085d\\u2028e\\u2060f\\u{e0041}g"'
+    const saved = `a${hidden(0x20_2e)}b${hidden(0x20_0b)}c${hidden(0x85)}d${hidden(0x20_28)}e${hidden(0xfe_0f)}f${hidden(0xe_00_41)}g`;
+    expect(flagged(saved)).toEqual(
+      literal('"a\\u202eb\\u200bc\\u0085d\\u2028e\\ufe0ff\\u{e0041}g"')
     );
   });
 
-  it("shows at most 60 characters, cut at a whole character, the mark outside", () => {
-    expect(unrecognized("x".repeat(60))).toBe(`"${"x".repeat(60)}"`);
-    expect(unrecognized("x".repeat(61))).toBe(`"${"x".repeat(60)}"…`);
+  it("shows at most 60 whole characters and says when it cut", () => {
     const emoji = hidden(0x1_f6_00);
-    expect(unrecognized(`${"x".repeat(59)}${emoji}`)).toBe(
-      `"${"x".repeat(59)}${emoji}"`
+    expect(flagged("x".repeat(60))).toEqual(literal(`"${"x".repeat(60)}"`));
+    expect(flagged("x".repeat(61))).toEqual(
+      literal(`"${"x".repeat(60)}"`, true)
     );
-    expect(unrecognized(`${"x".repeat(59)}${emoji}z`)).toBe(
-      `"${"x".repeat(59)}${emoji}"…`
+    expect(flagged(`${"x".repeat(59)}${emoji}`)).toEqual(
+      literal(`"${"x".repeat(59)}${emoji}"`)
+    );
+    expect(flagged(`${"x".repeat(59)}${emoji}z`)).toEqual(
+      literal(`"${"x".repeat(59)}${emoji}"`, true)
     );
   });
 
-  // A value of hidden characters must not grow past the limit once escaped.
   it("keeps a value of hidden characters within 60 once escaped", () => {
-    const shown = unrecognized(hidden(0xe_00_41).repeat(100));
-    expect(shown).toBe(`"${"\\u{e0041}".repeat(6)}"…`);
+    expect(flagged(hidden(0xe_00_41).repeat(100))).toEqual(
+      literal(`"${"\\u{e0041}".repeat(6)}"`, true)
+    );
   });
 
   // Escapes are added whole or not at all.
   it.each([
-    [`${"x".repeat(59)}\\yyyy`, `"${"x".repeat(59)}"…`],
-    [`${"x".repeat(58)}\\yyyy`, `"${"x".repeat(58)}\\\\"…`],
-    [`${"x".repeat(59)}"yyyy`, `"${"x".repeat(59)}"…`],
-  ])("never splits an escape for %j", (saved, shown) => {
-    expect(unrecognized(saved)).toBe(shown);
+    [`${"x".repeat(59)}\\yyyy`, `"${"x".repeat(59)}"`],
+    [`${"x".repeat(58)}\\yyyy`, `"${"x".repeat(58)}\\\\"`],
+    [`${"x".repeat(59)}"yyyy`, `"${"x".repeat(59)}"`],
+  ])("never splits an escape for %j", (saved, text) => {
+    expect(flagged(saved)).toEqual(literal(text, true));
   });
 });

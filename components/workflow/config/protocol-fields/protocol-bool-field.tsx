@@ -15,24 +15,25 @@ import { hasTemplateToken } from "@/lib/workflow/template-ref";
 type ProtocolBoolFieldProps = {
   fieldKey: string;
   value: string;
-  unrecognized?: string;
+  unrecognized?: UnrecognizedValue;
   onChange: (value: unknown) => void;
   disabled?: boolean;
 };
 
+// A saved value that is not a bool, shown so it is not mistaken for unset:
+// a string as its quoted text, anything else by what it is.
+type UnrecognizedValue = { literal: string; shortened: boolean } | { kind: string };
+
 type ProtocolBoolFieldValue = {
   value: string;
-  // A saved value that is not a bool, shown so it is not mistaken for unset.
-  unrecognized?: string;
+  unrecognized?: UnrecognizedValue;
 };
 
 const MAX_SHOWN_LENGTH = 60;
 
-// Quoted one character at a time, each escaped (a control or bidi character
-// could reorder or hide the message), stopping before the shown text passes
-// MAX_SHOWN_LENGTH. So a cut never splits an escape, and a value of hidden
-// characters cannot grow past the limit. The mark sits outside the quotes.
-function quoteShortened(text: string): string {
+// Escaped one character at a time and cut before 60 shown characters, so a
+// cut never splits an escape and hidden characters cannot pass the limit.
+function quoteShortened(text: string): UnrecognizedValue {
   let shown = "";
   let size = 0;
   for (const char of text) {
@@ -40,34 +41,34 @@ function quoteShortened(text: string): string {
     // Counted in characters: an emoji is one, an escape is its length.
     const pieceSize = Array.from(piece).length;
     if (size + pieceSize > MAX_SHOWN_LENGTH) {
-      return `"${shown}"…`;
+      return { literal: `"${shown}"`, shortened: true };
     }
     shown += piece;
     size += pieceSize;
   }
-  return `"${shown}"`;
+  return { literal: `"${shown}"`, shortened: false };
 }
 
-// Summed up in words, not stringified: cheap for a huge one, and read aloud.
-function summarise(saved: object): string {
+// In words, not stringified: cheap for a huge one, and read aloud.
+function describeObject(saved: object): string {
   if (Array.isArray(saved)) {
     if (saved.length === 0) {
-      return "(empty list)";
+      return "an empty list";
     }
     return saved.length === 1
-      ? "(list of 1 item)"
-      : `(list of ${saved.length} items)`;
+      ? "a list of 1 item"
+      : `a list of ${saved.length} items`;
   }
-  return Object.keys(saved).length === 0 ? "(empty object)" : "(object)";
+  return Object.keys(saved).length === 0 ? "an empty object" : "an object";
 }
 
-function describeSaved(saved: unknown): string {
+function describeSaved(saved: unknown): UnrecognizedValue {
   if (typeof saved === "string") {
     return quoteShortened(saved);
   }
   return typeof saved === "object" && saved !== null
-    ? summarise(saved)
-    : String(saved);
+    ? { kind: describeObject(saved) }
+    : { literal: String(saved), shortened: false };
 }
 
 // A saved JSON true/false (agents may send one) shows as the matching option.
@@ -130,11 +131,18 @@ export function ProtocolBoolField({
       </Select>
       {unrecognized && (
         <p className="mt-1 text-xs text-destructive" id={errorId}>
-          Saved value{" "}
-          <bdi className="wrap-anywhere whitespace-pre-wrap font-mono">
-            {unrecognized}
-          </bdi>{" "}
-          is not true or false.
+          {"kind" in unrecognized ? (
+            `Saved value is ${unrecognized.kind}, not true or false.`
+          ) : (
+            <>
+              Saved value{" "}
+              <bdi className="wrap-anywhere whitespace-pre-wrap font-mono">
+                {unrecognized.literal}
+              </bdi>
+              {unrecognized.shortened ? " (shortened)" : ""} is not true or
+              false.
+            </>
+          )}
           {disabled ? "" : " Select one to replace it."}
         </p>
       )}

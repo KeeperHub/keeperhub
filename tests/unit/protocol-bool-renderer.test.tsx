@@ -78,20 +78,22 @@ describe("registered protocol-bool renderer", () => {
   });
 
   // The cuts themselves are covered in protocol-bool-field.test.ts.
-  it("shows a long value cut, with no tooltip to reach", async () => {
+  it("says when it cut a long value, with no tooltip to reach", async () => {
     await renderWith("x".repeat(100));
-    const value = container.querySelector(`#${FIELD.key}-unrecognized bdi`);
-    expect(value?.textContent).toBe(`"${"x".repeat(60)}"…`);
-    expect(value?.hasAttribute("title")).toBe(false);
+    const message = container.querySelector(`#${FIELD.key}-unrecognized`);
+    expect(message?.textContent).toBe(
+      `Saved value "${"x".repeat(60)}" (shortened) is not true or false. Select one to replace it.`
+    );
+    expect(message?.querySelector("bdi")?.hasAttribute("title")).toBe(false);
   });
 
-  it("reads a saved list out in words", async () => {
+  it("describes a saved list in words, outside the value's monospace", async () => {
     await renderWith([]);
-    expect(
-      container.querySelector(`#${FIELD.key}-unrecognized`)?.textContent
-    ).toBe(
-      "Saved value (empty list) is not true or false. Select one to replace it."
+    const message = container.querySelector(`#${FIELD.key}-unrecognized`);
+    expect(message?.textContent).toBe(
+      "Saved value is an empty list, not true or false. Select one to replace it."
     );
+    expect(message?.querySelector("bdi")).toBeNull();
   });
 
   it("does not ask a read-only viewer to pick", async () => {
