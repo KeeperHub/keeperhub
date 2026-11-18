@@ -1,6 +1,7 @@
 "use client";
 
 import { Loader2 } from "lucide-react";
+import { DisabledReasonTooltip } from "@/components/organization/view-only-tooltip";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { OverlayAction, OverlayFooterProps } from "./types";
@@ -10,14 +11,21 @@ import type { OverlayAction, OverlayFooterProps } from "./types";
  */
 function ActionButton({ action }: { action: OverlayAction }) {
   return (
-    <Button
-      disabled={action.disabled || action.loading}
-      onClick={action.onClick}
-      variant={action.variant ?? "default"}
+    <DisabledReasonTooltip
+      reason={action.disabled ? action.disabledReason : undefined}
     >
-      {action.loading && <Loader2 className="mr-2 size-4 animate-spin" />}
-      {action.label}
-    </Button>
+      <Button
+        className={
+          action.disabled && action.disabledReason ? "w-full" : undefined
+        }
+        disabled={action.disabled || action.loading}
+        onClick={action.onClick}
+        variant={action.variant ?? "default"}
+      >
+        {action.loading && <Loader2 className="mr-2 size-4 animate-spin" />}
+        {action.label}
+      </Button>
+    </DisabledReasonTooltip>
   );
 }
 

@@ -45,6 +45,7 @@ const TEST_PREFIX = "test_rpc_wf_e2e_";
 const TEST_WORKFLOW_PREFIX = `${TEST_PREFIX}wf_`;
 const TEST_EXECUTION_PREFIX = `${TEST_PREFIX}exec_`;
 const TEST_ORG_ID = `${TEST_PREFIX}org`;
+const TEST_MEMBER_ID = `${TEST_PREFIX}member`;
 
 // Test RPC URLs - use TechOps Sepolia for primary (reliable)
 const CUSTOM_PRIMARY_RPC = "https://chain.techops.services/eth-sepolia";
@@ -113,6 +114,7 @@ describe.skipIf(SKIP_INFRA_TESTS)(
 
       // Ensure the org that owns the test workflows exists (workflows.organizationId
       // is NOT NULL and the scheduler/executor INNER JOINs organization).
+      await queryClient`DELETE FROM member WHERE organization_id = ${TEST_ORG_ID}`;
       await queryClient`DELETE FROM organization WHERE id = ${TEST_ORG_ID}`;
       await db.insert(organization).values({
         id: TEST_ORG_ID,
@@ -120,6 +122,11 @@ describe.skipIf(SKIP_INFRA_TESTS)(
         slug: TEST_ORG_ID,
         createdAt: new Date(),
       });
+      // Runs use a creator's RPC preferences only while they can act in the org.
+      await queryClient`
+        INSERT INTO member (id, organization_id, user_id, role, created_at)
+        VALUES (${TEST_MEMBER_ID}, ${TEST_ORG_ID}, ${TEST_USER_ID}, 'owner', now())
+      `;
     });
 
     // Clean up before each test
@@ -145,6 +152,7 @@ describe.skipIf(SKIP_INFRA_TESTS)(
         await queryClient`DELETE FROM workflow_executions WHERE id LIKE ${`${TEST_EXECUTION_PREFIX}%`}`;
         await queryClient`DELETE FROM workflow_schedules WHERE workflow_id LIKE ${`${TEST_WORKFLOW_PREFIX}%`}`;
         await queryClient`DELETE FROM workflows WHERE id LIKE ${`${TEST_WORKFLOW_PREFIX}%`}`;
+        await queryClient`DELETE FROM member WHERE organization_id = ${TEST_ORG_ID}`;
         await queryClient`DELETE FROM organization WHERE id = ${TEST_ORG_ID}`;
         await db
           .delete(userRpcPreferences)
@@ -572,6 +580,32 @@ describe.skipIf(SKIP_INFRA_TESTS)(
         // The log only appears when userId resolves successfully
         const execution2 = await getExecutionResult(executionId2);
         expect(execution2?.status).toBe("success");
+      }, 120_000);
+
+      it("ignores the RPC preferences of a creator who is now a viewer", async () => {
+        const workflowId = `${TEST_WORKFLOW_PREFIX}viewer_creator`;
+        const executionId = `${TEST_EXECUTION_PREFIX}viewer_creator`;
+
+        await createCheckBalanceWorkflow(workflowId, "sepolia", TEST_ADDRESS);
+        await db.insert(userRpcPreferences).values({
+          userId: TEST_USER_ID,
+          chainId: sepoliaChainId,
+          primaryRpcUrl: CUSTOM_PRIMARY_RPC,
+        });
+        await queryClient`UPDATE member SET role = 'viewer' WHERE id = ${TEST_MEMBER_ID}`;
+
+        try {
+          await createExecution(executionId, workflowId);
+          const result = await runWorkflowRunner(workflowId, executionId, {
+            timeout: 60_000,
+          });
+          expect(result.exitCode).toBe(0);
+          expect(result.stdout).not.toContain("Using user RPC preferences");
+          const execution = await getExecutionResult(executionId);
+          expect(execution?.status).toBe("success");
+        } finally {
+          await queryClient`UPDATE member SET role = 'owner' WHERE id = ${TEST_MEMBER_ID}`;
+        }
       }, 120_000);
     });
 

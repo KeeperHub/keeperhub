@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { IntegrationIcon } from "@/components/ui/integration-icon";
 import { Spinner } from "@/components/ui/spinner";
 import { api, type Integration } from "@/lib/api-client";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { useActiveMember } from "@/lib/hooks/use-organization";
 import { SYSTEM_INTEGRATION_LABELS } from "@/lib/integrations/system";
 import { integrationsAtom } from "@/lib/integrations-store";
@@ -40,6 +41,7 @@ export function IntegrationsManager({
     }
   }, [highlightId]);
   const { isAdmin } = useActiveMember();
+  const { canEdit } = useOrgAccess();
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [loading, setLoading] = useState(true);
   const [_testingId, setTestingId] = useState<string | null>(null);
@@ -223,22 +225,26 @@ export function IntegrationsManager({
                   <History className="size-3" />
                 </Button>
               )}
-              <Button
-                className="size-7"
-                onClick={() => handleEdit(integration)}
-                size="icon"
-                variant="outline"
-              >
-                <Pencil className="size-3" />
-              </Button>
-              <Button
-                className="size-7"
-                onClick={() => handleDelete(integration)}
-                size="icon"
-                variant="outline"
-              >
-                <Trash2 className="size-3" />
-              </Button>
+              {canEdit && (
+                <>
+                  <Button
+                    className="size-7"
+                    onClick={() => handleEdit(integration)}
+                    size="icon"
+                    variant="outline"
+                  >
+                    <Pencil className="size-3" />
+                  </Button>
+                  <Button
+                    className="size-7"
+                    onClick={() => handleDelete(integration)}
+                    size="icon"
+                    variant="outline"
+                  >
+                    <Trash2 className="size-3" />
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         ))}

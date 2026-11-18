@@ -22,7 +22,11 @@ import {
   useOrganization,
   useOrganizations,
 } from "@/lib/hooks/use-organization";
-import type { OrgRole } from "@/lib/organization/role-label";
+import {
+  canEditOrg,
+  isViewerRole,
+  type OrgRole,
+} from "@/lib/organization/role-label";
 
 type SettingsContextValue = {
   organizationId: string | null;
@@ -32,6 +36,10 @@ type SettingsContextValue = {
   roleLoading: boolean;
   isOwner: boolean;
   isAdmin: boolean;
+  /** False for viewers, who read everything in the org and change nothing, and while the role loads. */
+  canEdit: boolean;
+  /** The role is known to be viewer; never true while it loads. */
+  isViewer: boolean;
   isLoading: boolean;
   /**
    * Bumps on every active-organization change and on refreshAll(). Every
@@ -161,6 +169,8 @@ export function SettingsProvider({
   // disappears once the answer arrives.
   const isOwner = role === "owner";
   const isAdmin = role === "owner" || role === "admin";
+  const canEdit = canEditOrg(role);
+  const isViewer = isViewerRole(role);
   const fetchedAlertsEnabled = useAlertsEnabled(organizationId);
   // The server's list answers at once; the request covers an org joined since.
   const alertsEnabled =
@@ -179,10 +189,12 @@ export function SettingsProvider({
 
   const value = useMemo<SettingsContextValue>(
     () => ({
+      canEdit,
       alertsEnabled,
       isAdmin,
       isLoading: orgLoading || memberLoading,
       isOwner,
+      isViewer,
       organizationId,
       organizationName: organization?.name ?? null,
       refreshAll,
@@ -191,9 +203,11 @@ export function SettingsProvider({
       roleLoading,
     }),
     [
+      canEdit,
       alertsEnabled,
       isAdmin,
       isOwner,
+      isViewer,
       memberLoading,
       roleLoading,
       organization?.name,

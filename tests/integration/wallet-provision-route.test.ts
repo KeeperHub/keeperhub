@@ -108,6 +108,51 @@ describe("GET /api/user/wallet/provision", () => {
     expect(mockProvision).not.toHaveBeenCalled();
   });
 
+  it("returns 403 for a viewer and never provisions a wallet", async () => {
+    mockGetOrgContext.mockResolvedValue(
+      authedContext({
+        member: {
+          id: "m-1",
+          organizationId: ORG_ID,
+          userId: USER_ID,
+          role: "viewer",
+          createdAt: new Date(),
+        },
+      })
+    );
+
+    const res = await GET(request());
+
+    expect(res.status).toBe(403);
+    expect(mockProvision).not.toHaveBeenCalled();
+  });
+
+  it("streams provisioning for a member", async () => {
+    mockGetOrgContext.mockResolvedValue(
+      authedContext({
+        member: {
+          id: "m-1",
+          organizationId: ORG_ID,
+          userId: USER_ID,
+          role: "member",
+          createdAt: new Date(),
+        },
+      })
+    );
+    mockProvision.mockResolvedValue({
+      created: true,
+      walletAddress: "0xabc",
+      walletId: "w-1",
+      subOrgId: "s-1",
+    });
+
+    const res = await GET(request());
+
+    expect(res.status).toBe(200);
+    await res.text();
+    expect(mockProvision).toHaveBeenCalledTimes(1);
+  });
+
   it("streams provisioning then ready and calls the provisioner with org + email", async () => {
     mockGetOrgContext.mockResolvedValue(authedContext());
     mockProvision.mockResolvedValue({

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuthPrompt } from "@/components/auth/provider";
 import { confirmLeave } from "@/components/navigation-guard";
 import { GettingStartedLauncher } from "@/components/onboarding/getting-started-launcher";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { AddressBookOverlay } from "@/components/overlays/address-book-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
 import {
@@ -16,6 +17,7 @@ import {
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useSession } from "@/lib/auth-client";
 import { isEscapeFromOverlay, isEscapeHandled } from "@/lib/escape-key";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { useActiveMember } from "@/lib/hooks/use-organization";
 import type { NavPanelStates } from "@/lib/hooks/use-persisted-nav-state";
 import { usePersistedNavState } from "@/lib/hooks/use-persisted-nav-state";
@@ -82,10 +84,13 @@ function SidebarHeader({
   expanded,
   onToggle,
   onNewWorkflow,
+  newWorkflowDisabled,
 }: {
   expanded: boolean;
   onToggle: () => void;
   onNewWorkflow: () => void;
+  // True for viewers, who cannot create workflows.
+  newWorkflowDisabled: boolean;
 }): React.ReactNode {
   return (
     <div
@@ -94,29 +99,33 @@ function SidebarHeader({
         expanded ? "px-3" : "relative justify-center pr-0.5"
       )}
     >
-      <button
-        aria-label="New Workflow"
-        className={cn(
-          expanded
-            ? cn(
-                NEW_WORKFLOW_LOOK,
-                "group/new flex px-2 py-1 transition-all duration-200 hover:shadow-[0_0_8px_rgba(0,255,100,0.08)] active:scale-[0.97]"
-              )
-            : "z-20 flex items-center justify-center text-keeperhub-green transition-colors hover:text-keeperhub-green-dark"
-        )}
-        data-testid="nav-new"
-        onClick={onNewWorkflow}
-        type="button"
-      >
-        <Plus
+      <ViewOnlyTooltip className="z-20" isViewer={newWorkflowDisabled}>
+        <button
+          aria-label="New Workflow"
           className={cn(
             expanded
-              ? "size-3.5 transition-transform duration-150 group-hover/new:rotate-90"
-              : "size-4"
+              ? cn(
+                  NEW_WORKFLOW_LOOK,
+                  "group/new flex px-2 py-1 transition-all duration-200 hover:shadow-[0_0_8px_rgba(0,255,100,0.08)] active:scale-[0.97]"
+                )
+              : "z-20 flex items-center justify-center text-keeperhub-green transition-colors hover:text-keeperhub-green-dark",
+            "disabled:pointer-events-none disabled:opacity-50"
           )}
-        />
-        {expanded && <span>New Workflow</span>}
-      </button>
+          data-testid="nav-new"
+          disabled={newWorkflowDisabled}
+          onClick={onNewWorkflow}
+          type="button"
+        >
+          <Plus
+            className={cn(
+              expanded
+                ? "size-3.5 transition-transform duration-150 group-hover/new:rotate-90"
+                : "size-4"
+            )}
+          />
+          {expanded && <span>New Workflow</span>}
+        </button>
+      </ViewOnlyTooltip>
       <button
         aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
         className={cn(
@@ -217,6 +226,8 @@ export function NavigationSidebar(): React.ReactNode {
   const { openAuthPrompt } = useAuthPrompt();
   const { open: openOverlay } = useOverlay();
   const { isAdmin, isOwner } = useActiveMember();
+  // Signed-out visitors have no role yet may still start, so gate on viewer only.
+  const { isViewer } = useOrgAccess();
   const router = useRouter();
   const pathname = usePathname();
   const params = useParams();
@@ -483,6 +494,7 @@ export function NavigationSidebar(): React.ReactNode {
       >
         <SidebarHeader
           expanded={expanded}
+          newWorkflowDisabled={isViewer}
           onNewWorkflow={() => {
             handleNewWorkflow().catch((error: unknown) => {
               console.error("[Sidebar] New Workflow", error);
@@ -515,7 +527,7 @@ export function NavigationSidebar(): React.ReactNode {
           </div>
         </nav>
 
-        <GettingStartedLauncher compact={!showLabels} />
+        {!isViewer && <GettingStartedLauncher compact={!showLabels} />}
 
         <div className="flex flex-col gap-1 border-t px-2.5 py-3">
           {FOOTER_LINKS.map((item) => {
