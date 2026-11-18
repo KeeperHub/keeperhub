@@ -36,7 +36,7 @@ import {
   validateConditionExpressionUI,
 } from "@/lib/workflow/nodes/condition/validator";
 
-const ADDRESS = "0x9759A6Ac90977b93B58547b4A71c78317f391A28";
+const ADDRESS = "0x00000000000000000000000000000000000000aB";
 const FIELD = "{{@n1:Webhook.value}}";
 
 function group(...rules: [string, string, string][]): ConditionGroup {
