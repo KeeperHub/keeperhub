@@ -1,7 +1,7 @@
 import type { IntegrationPlugin } from "@/plugins/registry";
 import { registerIntegration } from "@/plugins/registry-core";
 import { DataIcon } from "./icon";
-import { checkFilterConfig } from "./steps/filter-core";
+import { checkFilterConfig } from "./filter-config";
 import {
   CASE_FOLDING_FILTER_OPERATORS,
   DEFAULT_FILTER_OPERATOR,
@@ -255,7 +255,7 @@ const dataPlugin: IntegrationPlugin = {
         {
           field: "skippedLabels",
           description:
-            "The Labels entry of each skipped item (empty when Labels is not set), e.g. the spell whose read failed",
+            "The Labels entry of each skipped item (empty when Labels is not set), e.g. the contract whose read failed",
         },
         {
           field: "missingReturn",
@@ -300,12 +300,7 @@ const dataPlugin: IntegrationPlugin = {
           label: "Operator",
           type: "select",
           required: true,
-          options: FILTER_OPERATOR_OPTIONS.map((option) => ({
-            value: option.value,
-            label: option.label,
-            group: option.group,
-            description: option.description,
-          })),
+          options: [...FILTER_OPERATOR_OPTIONS],
           defaultValue: DEFAULT_FILTER_OPERATOR,
           helpTip:
             "The Condition tests, plus does not contain, does not start with and does not end with.\n\nEach test only looks at items it applies to: number tests at numbers, numeric text and hex; boolean tests at true and false; text tests at text and numbers; array and object tests at lists and objects. By default any other item fails the step; see If an item can't be tested.",
@@ -316,7 +311,7 @@ const dataPlugin: IntegrationPlugin = {
           label: "Value",
           type: "template-input",
           required: true,
-          placeholder: "e.g. EMSP_, true or 100",
+          placeholder: "e.g. VAULT_, true or 100",
           helpTip:
             'What each item is compared with. Spaces around it are trimmed; quote it to keep them.\n\nText tests and has key: the text as typed, quotes removed.\nNumber tests: a number, e.g. 100, 1.5 or 0x64.\nArray length: a whole number.\nOther tests: 5 is a number, true and false are booleans, null is null, anything else is text. Quote to force text, e.g. "true" matches the text, not the boolean. Quoting a number changes nothing under equals, which compares numbers by value.',
           showWhen: {
@@ -368,7 +363,7 @@ const dataPlugin: IntegrationPlugin = {
           // Blank, so the AI prompt example does not seed placeholder text.
           defaultValue: "",
           placeholder:
-            '{{@node1:Spell names.result}} or ["MCD_CLIP_ETH_A", "MCD_CLIP_WBTC_A"]',
+            '{{@node1:Contract names.result}} or ["VAULT_A", "VAULT_B"]',
           helpText:
             "Optional. A list as long as Source, so an alert can name what matched.",
           helpTip:

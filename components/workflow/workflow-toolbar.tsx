@@ -34,7 +34,13 @@ import { WalletToolbarButton } from "@/components/workflow/wallet-toolbar-button
 import { BUILTIN_NODE_ID } from "@/lib/workflow/editor/builtin-variables";
 import { useAuthPrompt } from "@/components/auth/provider";
 import { isAnonymousUser } from "@/lib/is-anonymous";
-import { api, ApiError, type Project, type Tag } from "@/lib/api-client";
+import {
+  ApiError,
+  api,
+  type Project,
+  type Tag,
+  workflowSaveErrorMessage,
+} from "@/lib/api-client";
 import { useProjects, useTags } from "@/lib/hooks/use-org-data";
 import { VersionPreviewBanner } from "./version-preview-banner";
 import { useSession } from "@/lib/auth-client";
@@ -687,7 +693,12 @@ function useWorkflowHandlers({
       return true;
     } catch (error) {
       console.error("Failed to save workflow:", error);
-      toast.error("Failed to save workflow. Please try again.");
+      toast.error(
+        workflowSaveErrorMessage(
+          error,
+          "Failed to save workflow. Please try again."
+        )
+      );
       return false;
     } finally {
       setIsSaving(false);

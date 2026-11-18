@@ -7,6 +7,7 @@
  */
 
 import { qualifiedOptionLabel } from "@/lib/workflow/editor/select-option-groups";
+import type { SelectOption } from "@/plugins/registry";
 import type { ConditionOperator } from "@/lib/workflow/nodes/condition/builder-types";
 import {
   OPERATOR_GROUPS,
@@ -19,7 +20,7 @@ export const KEEP_ALL_OPERATOR = "keepAll";
 export const DEFAULT_FILTER_OPERATOR = "===";
 
 // Filter-only negations of the Text tests; regex stays out until it is safe.
-export const NEGATED_TEXT_OPERATORS = {
+const NEGATED_TEXT_OPERATORS = {
   notContains: "contains",
   notStartsWith: "startsWith",
   notEndsWith: "endsWith",
@@ -37,9 +38,9 @@ export type FilterOperator =
   | NegatedTextOperator
   | typeof KEEP_ALL_OPERATOR;
 
-export type FilterOperatorOption = {
+// A select option, so the operator list goes to the field as it is.
+export type FilterOperatorOption = SelectOption & {
   value: FilterOperator;
-  label: string;
   group: string;
   description: string;
 };
@@ -161,10 +162,6 @@ function isUnary(op: FilterOperator): boolean {
 // Operators that take no Value: Condition's unary operators plus keep every item.
 export const VALUELESS_FILTER_OPERATORS: readonly FilterOperator[] =
   ALL_VALUES.filter(isUnary);
-
-// Operators that compare against Value.
-export const VALUE_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter((op) => !isUnary(op));
 
 // Text tests that compare against Value (is empty / is not empty take none).
 export const TEXT_FILTER_OPERATORS: readonly FilterOperator[] =

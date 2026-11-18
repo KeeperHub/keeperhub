@@ -10,12 +10,12 @@ vi.mock("@/lib/metrics/instrumentation/plugin", async () =>
   (await import("../mocks/step-mocks")).pluginMetricsPassthrough()
 );
 
+import { MAX_FILTER_ITEMS } from "@/plugins/data/filter-config";
 import {
   type FilterCoreInput,
   type FilterInput,
   filterStep,
 } from "@/plugins/data/steps/filter";
-import { MAX_FILTER_ITEMS } from "@/plugins/data/steps/filter-core";
 
 type FilterSuccess = {
   success: true;
@@ -1185,6 +1185,45 @@ describe("data/filter", () => {
         labels: '["a"]',
       });
       expect(result.error).toContain("Labels has 1 entry but Source has 2");
+    });
+  });
+
+  describe("maintainer review", () => {
+    it("compares a long decimal Value exactly, without rounding it", async () => {
+      const value = "0.1000000000000000000001";
+      const equal = await ok({
+        source: '["0.1", "0.1000000000000000000001"]',
+        operator: "===",
+        value,
+      });
+      expect(equal.indexes).toEqual([1]);
+      const notEqual = await ok({
+        source: '["0.1", "0.1000000000000000000001"]',
+        operator: "!==",
+        value,
+      });
+      expect(notEqual.indexes).toEqual([0]);
+    });
+
+    it("still reads a plain number Value as a number", async () => {
+      const result = await ok({
+        source: '[5, "5", 6]',
+        operator: "===",
+        value: "5",
+      });
+      expect(result.indexes).toEqual([0, 1]);
+    });
+
+    it("leaves labels and skippedLabels empty without Labels", async () => {
+      const result = await ok({
+        source: "[true, null, false]",
+        operator: "isTrue",
+      });
+      expect(result).toMatchObject({
+        labels: [],
+        skippedLabels: [],
+        skipped: 1,
+      });
     });
   });
 });

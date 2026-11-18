@@ -166,14 +166,14 @@ Each operator in the list shows a one-line hint under its name. Once chosen, an 
 
 - **equals** compares by value: `"1.0"` equals `1`, and integers of any size written as text compare exactly. `"true"` does not equal `true`.
 - **soft equals** compares loosely, as JavaScript `==` does: `"0"` soft equals `0`, and hex text such as `"0x01"` soft equals `1`. Pick it only when items mix numbers, text and booleans on purpose.
-- The **does not** tests keep the text and number items that fail the matching test. Starts with `MCD_CLIP_` followed by a second Filter Array with does not start with `MCD_CLIP_CALC_` keeps the clippers without their calculators.
+- The **does not** tests keep the text and number items that fail the matching test. Starts with `VAULT_` followed by a second Filter Array with does not start with `VAULT_OLD_` keeps the vaults without the retired ones.
 
 ### How Value is read
 
-- Spaces around Value are trimmed; quote it to keep them, e.g. `" EMSP_"`.
+- Spaces around Value are trimmed; quote it to keep them, e.g. `" VAULT_"`.
 - **Text tests and has key**: the text as typed, so `007` stays `007`. Surrounding quotes are removed, and inside double quotes escapes such as `\n` and `\"` work as in a Condition.
 - When Value is left empty, the error says what this test needs: a number, a whole number, a key, or `""` for empty text.
-- **Number tests**: a decimal number such as `100`, `-5` or `1.5`, or hex written with a lowercase `0x` such as `0x64`, up to 100 characters. Exponents (`1e3`), `0X64` and negative hex are not numbers. Anything else fails the step, and is refused when the workflow is saved. Integers of any size compare exactly, so a rad-scale threshold can be typed in full.
+- **Number tests**: a decimal number such as `100`, `-5` or `1.5`, or hex written with a lowercase `0x` such as `0x64`, up to 100 characters. Exponents (`1e3`), `0X64` and negative hex are not numbers. Anything else fails the step, and is refused when the workflow is saved. Integers of any size compare exactly, so an 18-decimal threshold can be typed in full.
 - **Array: length**: a whole number such as `3`, small enough to count exactly. Anything else is refused when the workflow is saved.
 - A Value, Source or Labels built from a template (`{{...}}`) is checked when the step runs, since its content is only known then; one typed by hand is checked when the workflow is saved.
 - **Every other test**: as in a Condition. `5` is a number, `true` and `false` are booleans, `null` is null, anything else is text. Quote it to force text, e.g. `"true"` matches the text `true` but not the boolean. Quoting a number changes nothing under equals, which compares numbers by value.
@@ -192,7 +192,7 @@ Each test only looks at items it applies to:
 - soft equals and soft not equals at single values, not lists or objects
 - every test except the presence ones (exists, does not exist, is null, is not null, is undefined, is not undefined, is empty, is not empty) needs the field to be there
 
-By default such an item fails the step: a reverted Batch Read Contract call comes back with `result: null`, so under **is true** or **less than** it stops the run rather than reading as "not cast" or as a low value. Someone who can make a monitored read revert cannot make the monitor pass quietly. A failed step marks the run as failed in Runs, and workflow failure alerts report it if they are set up; the next scheduled run starts as usual.
+By default such an item fails the step: a reverted Batch Read Contract call comes back with `result: null`, so under **is true** or **less than** it stops the run rather than reading as "not paused" or as a low value. Someone who can make a monitored read revert cannot make the monitor pass quietly. A failed step marks the run as failed in Runs, and workflow failure alerts report it if they are set up; the next scheduled run starts as usual.
 
 Set **If an item can't be tested** to **Skip it and count it in skipped** to keep the run going. Skipped items are neither kept nor dropped silently: they are counted in **skipped**, with their positions in **skippedIndexes** and their Labels entries in **skippedLabels**. A monitor in skip mode must branch on `skipped > 0`, or a failed read hides what it was meant to catch.
 
@@ -204,11 +204,11 @@ Set **If an item can't be tested** to **Skip it and count it in skipped** to kee
 | items | The items that passed the test |
 | values | The Return field of each match, as a flat array (`null` where a match has no such field) |
 | indexes | The source position of each match, counting from 0 |
-| labels | The Labels entry of each match, e.g. the clipper that tripped (empty when Labels is not set) |
+| labels | The Labels entry of each match, e.g. the vault that tripped (empty when Labels is not set) |
 | count | Number of matching items |
 | skipped | Number of items the test could not apply to (skip mode) |
 | skippedIndexes | The source position of each skipped item |
-| skippedLabels | The Labels entry of each skipped item, e.g. the spell whose read failed (empty when Labels is not set) |
+| skippedLabels | The Labels entry of each skipped item, e.g. the contract whose read failed (empty when Labels is not set) |
 | missingReturn | Number of matching items without the Return field. Their entry in **values** is `null`, as is a Return field that holds `null`; only this count tells the two apart. A mistyped Return field shows up here |
 | total | Number of items in the source |
 | error | Error message if filtering failed |
@@ -225,42 +225,42 @@ Set **If an item can't be tested** to **Skip it and count it in skipped** to kee
 
 ### Examples
 
-List the Chainlog's emergency spells, the `EMSP_` keys:
+List a registry's vault keys, the ones starting with `VAULT_`:
 
 ```
 -> Filter Array:
      Source: {{@decode:Encode / Decode.result}}
      Operator: Text: starts with
-     Value: EMSP_
+     Value: VAULT_
 ```
 
-**values** holds the matching names. These keys stand in the Chainlog all the time, so alerting on `count > 0` here would fire on every run. Alert on `count == 0` here instead: an empty list means the Chainlog read or the decode went wrong. To detect a cast, read each spell's `done()` with Batch Read Contract and filter that, as below.
+**values** holds the matching names. These keys stay in the registry all the time, so alerting on `count > 0` here would fire on every run. Alert on `count == 0` here instead: an empty list means the registry read or the decode went wrong. To detect a paused vault, read each vault's `paused()` with Batch Read Contract and filter that, as below.
 
-Alert when any spell has been cast:
+Alert when any vault is paused:
 
 ```
--> Static Config (Spell names):
-     value: ["EMSP_SPBEAM_HALT", "EMSP_LINE_WIPE"]
--> Batch Read Contract (Mixed mode): done() on each spell's address, one call per spell, in the same order
+-> Static Config (Vault names):
+     value: ["VAULT_A", "VAULT_B"]
+-> Batch Read Contract (Mixed mode): paused() on each vault's address, one call per vault, in the same order
 -> Filter Array:
      Source: {{@batch:Batch Read Contract.results}}
      Field to test: result
      Operator: Boolean: is true
-     Labels: {{@names:Spell names.result}}
+     Labels: {{@names:Vault names.result}}
      If an item can't be tested: Skip it and count it in skipped
 -> Condition: {{@filter:Filter Array.count}} > 0
-   -> Discord: Spells cast: {{@filter:Filter Array.labels}}
+   -> Discord: Vaults paused: {{@filter:Filter Array.labels}}
 -> Condition: {{@filter:Filter Array.skipped}} > 0
-   -> Discord: Could not read done() for {{@filter:Filter Array.skippedLabels}}
+   -> Discord: Could not read paused() for {{@filter:Filter Array.skippedLabels}}
 ```
 
-The two Conditions are parallel branches from Filter Array, so each alert fires on its own. Batch Read Contract's calls are rows added in the editor, so Labels is a matching list of names kept beside it, in the same order, since Labels is matched to Source by position. A new emergency spell needs both a new call and a new name; a different length fails the step rather than mislabelling. **labels** then names each cast spell and **skippedLabels** each spell whose `done()` reverted, so a failed read is never reported as a cast. A list shows in a message as JSON, e.g. `["EMSP_LINE_WIPE"]`. To notice a spell the monitor does not read yet, alert when the Chainlog list above and Spell names differ in length: `{{@filter:Emergency spells.count}} != {{@names:Spell names.count}}`, with the first Filter Array named Emergency spells.
+The two Conditions are parallel branches from Filter Array, so each alert fires on its own. Batch Read Contract's calls are rows added in the editor, so Labels is a matching list of names kept beside it, in the same order, since Labels is matched to Source by position. A new vault needs both a new call and a new name; a different length fails the step rather than mislabelling. **labels** then names each paused vault and **skippedLabels** each vault whose `paused()` reverted, so a failed read is never reported as paused. A list shows in a message as JSON, e.g. `["VAULT_B"]`. To notice a vault the monitor does not read yet, alert when the registry list above and Vault names differ in length: `{{@filter:Registry vaults.count}} != {{@names:Vault names.count}}`, with the first Filter Array named Registry vaults.
 
-If every spell shows up in **skipped**, check what `result` holds: a function whose single output is named returns `{ name: value }`, so Field to test becomes `result.<name>`.
+If every vault shows up in **skipped**, check what `result` holds: a function whose single output is named returns `{ name: value }`, so Field to test becomes `result.<name>`.
 
-`done()` stays true once a spell is cast, so the cast alert repeats on every run until the spell is handled and the workflow is changed or turned off.
+`paused()` stays true until the vault is unpaused, so the alert repeats on every run until then, or until the workflow is changed or turned off.
 
-This monitor sets **Skip** on purpose. With the default **Fail the step**, one reverted `done()` fails the whole step, so the cast alert for every other spell in that run would not go out; only a run-failure alert would, and only if failure alerts are set up.
+This monitor sets **Skip** on purpose. With the default **Fail the step**, one reverted `paused()` fails the whole step, so the alert for every other vault in that run would not go out; only a run-failure alert would, and only if failure alerts are set up.
 
 Pull every result into a flat list, failed calls included:
 

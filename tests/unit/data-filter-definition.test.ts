@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildConfigForActionTypeChange } from "@/lib/workflow/editor/action-type-transition";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
@@ -7,13 +9,15 @@ import {
   OPERATOR_METADATA,
   operatorsForCategory,
 } from "@/lib/workflow/nodes/condition/operator-metadata";
-import { validateWorkflowActionConfigs } from "@/lib/workflow/validation/action-config";
+import {
+  formatActionConfigValidationResponse,
+  validateWorkflowActionConfigs,
+} from "@/lib/workflow/validation/action-config";
 import { filterArray } from "@/plugins/data/steps/filter-core";
 import {
   FILTER_OPERATOR_OPTIONS,
   KEEP_ALL_OPERATOR,
   PRESENCE_FILTER_OPERATORS,
-  VALUE_FILTER_OPERATORS,
   VALUELESS_FILTER_OPERATORS,
 } from "@/plugins/data/steps/filter-operators";
 import {
@@ -23,6 +27,10 @@ import {
 } from "@/plugins/registry";
 
 const ACTION_TYPE = "data/filter";
+const ROOT = join(import.meta.dirname, "..", "..");
+// `import x from "y"`, `export ... from "y"` and `import "y"`, not `import type`.
+const IMPORT_RE =
+  /^(?:(?:import|export)\s+(?!type\b)[^;]*?\sfrom\s+|import\s+)"([^"]+)";/gm;
 
 const CONDITION_OPERATORS = Object.keys(
   OPERATOR_METADATA
@@ -142,26 +150,20 @@ describe("data/filter definition", () => {
       }
     });
 
-    it("puts every operator in exactly one handling group", () => {
+    it("shows Value exactly for the operators that are not valueless", () => {
+      const value = field("value");
       for (const option of FILTER_OPERATOR_OPTIONS) {
-        const groups = [
-          VALUELESS_FILTER_OPERATORS,
-          VALUE_FILTER_OPERATORS,
-        ].filter((list) => list.includes(option.value));
-        expect(groups, option.value).toHaveLength(1);
+        const takesValue = !VALUELESS_FILTER_OPERATORS.includes(option.value);
+        expect(
+          evaluateShowWhen(value.showWhen, { operator: option.value }),
+          option.value
+        ).toBe(takesValue);
       }
     });
 
     it("puts the grouped options on the select, defaulting to equals", () => {
       const operator = field("operator");
-      expect(operator.options).toEqual(
-        FILTER_OPERATOR_OPTIONS.map(({ value, label, group, description }) => ({
-          value,
-          label,
-          group,
-          description,
-        }))
-      );
+      expect(operator.options).toEqual([...FILTER_OPERATOR_OPTIONS]);
       expect(operator.defaultValue).toBe("===");
       expect(operator.required).toBe(true);
     });
@@ -450,4 +452,68 @@ describe("data/filter definition", () => {
       expect(issues).toEqual([]);
     });
   });
+
+  describe("maintainer review", () => {
+    it("puts the cross-field reason in the 422 summary the editor shows", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({ source: "[1]", operator: ">", value: "abc" })
+        ),
+      ]);
+      expect(formatActionConfigValidationResponse(validation).message).toBe(
+        'Workflow contains invalid action configuration. Invalid node(s): "Filter" (value). "Filter": Value for \'Number: greater than\' must be a number, e.g. 100 or 0x64. Fix the listed fields and save again.'
+      );
+    });
+
+    it("keeps the condition evaluator out of what the plugin definition loads", () => {
+      const loaded = runtimeImports("plugins/data/index.ts");
+      for (const heavy of [
+        "plugins/data/steps/filter-core.ts",
+        "lib/workflow/nodes/condition/safe-eval.ts",
+        "lib/workflow/nodes/condition/expression.ts",
+      ]) {
+        expect(loaded, heavy).not.toContain(heavy);
+      }
+      expect(loaded).toContain("plugins/data/filter-config.ts");
+    });
+  });
 });
+
+// Every module a file loads at run time, following value imports only (type
+// imports are erased), resolved to repo-relative paths.
+function runtimeImports(entry: string): string[] {
+  const seen = new Set<string>();
+  const pending = [entry];
+  while (pending.length > 0) {
+    const file = pending.pop() as string;
+    if (seen.has(file)) {
+      continue;
+    }
+    seen.add(file);
+    const text = readFileSync(join(ROOT, file), "utf8");
+    for (const match of text.matchAll(IMPORT_RE)) {
+      const resolved = resolveImport(file, match[1]);
+      if (resolved) {
+        pending.push(resolved);
+      }
+    }
+  }
+  return [...seen];
+}
+
+function resolveImport(from: string, spec: string): string | undefined {
+  let base: string;
+  if (spec.startsWith("@/")) {
+    base = spec.slice(2);
+  } else if (spec.startsWith(".")) {
+    base = join(dirname(from), spec);
+  } else {
+    return;
+  }
+  for (const candidate of [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`]) {
+    if (existsSync(join(ROOT, candidate))) {
+      return candidate;
+    }
+  }
+  return;
+}

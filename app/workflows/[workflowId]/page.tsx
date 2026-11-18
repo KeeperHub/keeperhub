@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { NodeConfigPanel } from "@/components/workflow/node-config-panel";
 import { useGatedWorkflowWarning } from "@/hooks/use-features";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { api } from "@/lib/api-client";
+import { api, workflowSaveErrorMessage } from "@/lib/api-client";
 import { authClient, useSession } from "@/lib/auth-client";
 import {
   getPendingClaim,
@@ -427,7 +427,9 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
         });
       } catch (error) {
         console.error("Failed to generate workflow:", error);
-        toast.error("Failed to generate workflow");
+        toast.error(
+          workflowSaveErrorMessage(error, "Failed to generate workflow")
+        );
       } finally {
         setIsGenerating(false);
       }
@@ -885,7 +887,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
       setHasUnsavedChanges(false);
     } catch (error) {
       console.error("Failed to save workflow:", error);
-      toast.error("Failed to save workflow");
+      toast.error(workflowSaveErrorMessage(error, "Failed to save workflow"));
     } finally {
       setIsSaving(false);
     }

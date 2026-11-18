@@ -153,12 +153,28 @@ export type VoteResponse = {
 // API error class
 export class ApiError extends Error {
   status: number;
+  // The response's own `message`, when it sent one (the `error` is a code).
+  detail?: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, detail?: string) {
     super(message);
     this.status = status;
     this.name = "ApiError";
+    this.detail = detail;
   }
+}
+
+// A refused workflow save says which node and setting to fix; show that
+// rather than a generic "try again".
+export function workflowSaveErrorMessage(
+  error: unknown,
+  fallback: string
+): string {
+  return error instanceof ApiError &&
+    error.message === "INVALID_ACTION_CONFIG" &&
+    error.detail
+    ? error.detail
+    : fallback;
 }
 
 // Helper function to make API calls
@@ -175,7 +191,11 @@ async function apiCall<T>(endpoint: string, options?: RequestInit): Promise<T> {
     const error = await response
       .json()
       .catch(() => ({ error: "Unknown error" }));
-    throw new ApiError(response.status, error.error || "Request failed");
+    throw new ApiError(
+      response.status,
+      error.error || "Request failed",
+      typeof error.message === "string" ? error.message : undefined
+    );
   }
 
   return response.json();

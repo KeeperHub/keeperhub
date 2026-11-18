@@ -54,6 +54,9 @@ const NODE_LABEL_MAX_CHARS = 100;
 // An UNKNOWN_FIELD issue carries a config key the caller chose, so field names
 // are sanitised on the same path as labels, with a tighter cap.
 const FIELD_NAME_MAX_CHARS = 40;
+// Cross-field messages quoted in the summary, and how long each may be.
+const SUMMARY_DETAILS = 3;
+const DETAIL_MAX_CHARS = 300;
 
 // Per-node field names rendered into the message before it elides the rest.
 const SUMMARY_FIELDS_PER_NODE = 3;
@@ -1030,7 +1033,23 @@ export function formatActionConfigValidationResponse(
       : "";
   return {
     error: "INVALID_ACTION_CONFIG",
-    message: `Workflow contains invalid action configuration. ${summary}Fix the listed fields and save again.`,
+    message: `Workflow contains invalid action configuration. ${summary}${crossFieldDetails(validation.issues)}Fix the listed fields and save again.`,
     invalidFields: validation.issues,
   };
+}
+
+// An action's own cross-field check explains itself ("Value for 'Number:
+// greater than' must be a number"), so its message goes into the summary the
+// editor shows; the per-field issues are already named by field above.
+function crossFieldDetails(issues: ActionConfigValidationIssue[]): string {
+  const details = issues
+    .filter((issue) => issue.code === "INVALID_FIELD_VALUE")
+    .slice(0, SUMMARY_DETAILS)
+    .map((issue) => {
+      const label = sanitiseNodeLabel(
+        issue.nodeLabel ?? issue.nodeId ?? issue.path
+      );
+      return `"${label}": ${sanitiseSummaryText(issue.message, DETAIL_MAX_CHARS)} `;
+    });
+  return details.join("");
 }
