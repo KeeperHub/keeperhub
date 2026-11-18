@@ -175,7 +175,7 @@ function parseArrayInput(raw: unknown, name: string): unknown[] {
     if (typeof raw === "string" && raw.trim() !== "") {
       throw raw.trim().startsWith("[")
         ? new Error(
-            `${name} is not valid JSON: check its brackets and quotes, e.g. a missing ] or ".`
+            `${name} is not valid JSON: check its brackets and quotes, e.g. a missing ] or closing quote.`
           )
         : notAnArray(name);
     }
@@ -269,7 +269,7 @@ function toTypedValue(text: string, label: string): unknown {
   // costs items x length; numbers past 100 characters are not needed.
   if (DECIMAL_TEXT.test(typed) && typed.length > MAX_NUMBER_VALUE_LENGTH) {
     throw new Error(
-      `Value for "${label}" is a number longer than ${MAX_NUMBER_VALUE_LENGTH} characters.`
+      `Value for "${label}" is longer than ${MAX_NUMBER_VALUE_LENGTH} characters, the limit for a number.`
     );
   }
   if (quoted !== undefined) {
@@ -316,6 +316,11 @@ function plainDecimal(number: number): string {
   return negative ? `-${plain}` : plain;
 }
 
+/** True for a Value written in quotes, which forces text. */
+export function isQuotedValue(raw: unknown): boolean {
+  return typeof raw === "string" && unquote(raw.trim()) !== undefined;
+}
+
 /**
  * The number a decimal text Value is, when it is exactly one (its shortest
  * double reads back as the same decimal), so a number item can be compared
@@ -356,7 +361,7 @@ export function toNumeric(value: unknown): unknown {
 function requireNumeric(value: unknown, label: string): unknown {
   if (typeof value === "string" && value.length > MAX_NUMBER_VALUE_LENGTH) {
     throw new Error(
-      `Value for "${label}" is longer than ${MAX_NUMBER_VALUE_LENGTH} characters.`
+      `Value for "${label}" is longer than ${MAX_NUMBER_VALUE_LENGTH} characters, the limit for a number.`
     );
   }
   const numeric = toNumeric(value);

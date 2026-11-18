@@ -503,6 +503,32 @@ describe("data/filter definition", () => {
       );
     });
 
+    it("parts entries on a comma when no shown entry quotes a reason", () => {
+      const node = (id: string, config: Record<string, unknown>) => ({
+        id,
+        type: "action",
+        data: {
+          label: id,
+          type: "action",
+          config: { actionType: "data/filter", source: "[1]", ...config },
+        },
+      });
+      const validation = validateWorkflowActionConfigs([
+        node("A", { operator: "nope" }),
+        node("B", { operator: "nope" }),
+        node("C", { operator: "nope" }),
+        node("D", {
+          ...editorConfig(),
+          source: "[1]",
+          operator: ">",
+          value: "abc",
+        }),
+      ]);
+      expect(formatActionConfigValidationResponse(validation).message).toBe(
+        'Workflow contains invalid action configuration. Invalid node(s): "A" (operator, value), "B" (operator, value), "C" (operator, value), and 1 more. Fix the listed fields and save again.'
+      );
+    });
+
     it("names a node with a blank label by its id in the summary", () => {
       const node = actionNode(
         editorConfig({ source: "[1]", operator: ">", value: "abc" })

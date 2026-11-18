@@ -1239,9 +1239,9 @@ describe("data/filter", () => {
           .indexes
       ).toEqual([2]);
       const contains = await ok({
-        source: source([[big], ["1"]]),
+        source: source([[big], [1e21], ["1"]]),
         operator: "arrayContains",
-        value: big,
+        value: `"${big}"`,
       });
       expect(contains.indexes).toEqual([0]);
     });
@@ -1269,6 +1269,27 @@ describe("data/filter", () => {
             value: "0.0000001",
           })
         ).indexes
+      ).toEqual([0]);
+      expect(
+        (
+          await ok({
+            source: arrays,
+            operator: "arrayContains",
+            value: '"0.0000001"',
+          })
+        ).indexes
+      ).toEqual([1]);
+      const small = source([[5], ["5"]]);
+      expect(
+        (await ok({ source: small, operator: "arrayContains", value: "5" }))
+          .indexes
+      ).toEqual([0]);
+      expect(
+        (await ok({ source: small, operator: "arrayContains", value: '"5"' }))
+          .indexes
+      ).toEqual([1]);
+      expect(
+        (await ok({ source: items, operator: "==", value: big })).indexes
       ).toEqual([0, 1]);
       // A decimal a double would round is not a number: only exact text matches.
       const rounded = source([0.1, "0.1000000000000000000001"]);
@@ -1288,7 +1309,7 @@ describe("data/filter", () => {
       for (const value of [long, `"${long}"`]) {
         const result = await fails({ source: "[1]", operator: "===", value });
         expect(result.error, value).toContain(
-          'Value for "General: equals" is a number longer than 100 characters.'
+          'Value for "General: equals" is longer than 100 characters, the limit for a number.'
         );
       }
     });
@@ -1307,7 +1328,7 @@ describe("data/filter", () => {
     it("says a half-typed array is not valid JSON", async () => {
       const result = await fails({ source: "[1, 2", operator: "keepAll" });
       expect(result.error).toContain(
-        'Source is not valid JSON: check its brackets and quotes, e.g. a missing ] or ".'
+        "Source is not valid JSON: check its brackets and quotes, e.g. a missing ] or closing quote."
       );
     });
 

@@ -177,7 +177,8 @@ Each operator in the list shows a one-line hint under its name. Once chosen, an 
 - **Array: length**: a whole number such as `3`, small enough to count exactly. Anything else is refused when the workflow is saved.
 - A Value, Source or Labels built from a template (`{{...}}`) is checked when the step runs, since its content is only known then; one typed by hand is checked when the workflow is saved.
 - **Every other test**: as in a Condition. `5` is a number, `true` and `false` are booleans, `null` is null, anything else is text. Quote it to force text, e.g. `"true"` matches the text `true` but not the boolean. Quoting a number changes nothing under equals, which compares numbers by value.
-- Under equals, not equals and Array: contains, a typed number such as `1000000000000000000000` or `0.0000001` matches the same amount whether an item holds it as text or as a number. A Value that reads as a number can be up to 100 characters; other Values up to 10,000.
+- Under equals and not equals, strict or soft, a typed number such as `1000000000000000000000` or `0.0000001` matches the same amount whether an item holds it as text or as a number. Under Array: contains, an unquoted number matches number entries by amount, and a quoted one matches text entries spelled the same, as for any other Value.
+- Value can be up to 10,000 characters, and up to 100 when it reads as a number (under the number tests, or a decimal such as `0.5` under the other tests, quoted or not).
 - Hex text such as `0x1f` is text under equals, so `"0x01"` does not equal `"0x1"`. Number tests and soft equals read it as a number.
 - Text is case-sensitive unless Ignore case is on, so a checksummed address does not equal its lowercase form by default.
 - From the API, a number Value too large to be exact (past 2^53) is refused; send it as text instead.

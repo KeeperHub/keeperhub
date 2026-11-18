@@ -16,6 +16,7 @@ import {
   exactNumberOf,
   type FilterCoreInput,
   type FilterSettings,
+  isQuotedValue,
   readSettings,
   readValue,
   toLabels,
@@ -185,11 +186,17 @@ function makeMatcher(
     ? undefined
     : readValue(rawValue, operator);
   const comparison = ignoreCase ? foldCase(value) : value;
-  // A Value kept as exact text that is also exactly a number: number items
-  // are compared with the number, as a Condition literal would be.
+  // A Value kept as exact text that is also exactly a number. Under equals,
+  // number items are compared with the number, as a Condition literal would
+  // be. Under Array: contains an unquoted one is that number and a quoted one
+  // stays text, as for any other Value.
   const asNumber = NUMBER_TWIN_OPERATORS.includes(operator)
     ? exactNumberOf(value)
     : undefined;
+  const containsNumber =
+    operator === "arrayContains" &&
+    asNumber !== undefined &&
+    !isQuotedValue(rawValue);
   const evaluate = compileSafeCondition(
     operatorToExpression(baseConditionOperator(operator), ITEM_VAR, VALUE_VAR)
   );
@@ -204,10 +211,10 @@ function makeMatcher(
     }
     const item = ignoreCase ? foldCase(tested.value) : tested.value;
     let passed: boolean;
-    if (asNumber === undefined) {
+    if (containsNumber) {
+      passed = test(item, asNumber);
+    } else if (asNumber === undefined || operator === "arrayContains") {
       passed = test(item, comparison);
-    } else if (operator === "arrayContains") {
-      passed = test(item, comparison) || test(item, asNumber);
     } else {
       passed = test(item, typeof item === "number" ? asNumber : comparison);
     }
