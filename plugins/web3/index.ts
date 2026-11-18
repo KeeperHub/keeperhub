@@ -23,6 +23,18 @@ import {
   transferSuccessOutput,
 } from "@/plugins/field-fragments";
 import { registerIntegration } from "@/plugins/registry-core";
+import {
+  CALLS_FROM_ADDRESS_LIST,
+  CALLS_FROM_ARGS_LIST,
+  CALLS_FROM_ROWS,
+  INPUT_MODE_MIXED,
+  INPUT_MODE_UNIFORM,
+  SHOW_WHEN_ADDRESS_LIST,
+  SHOW_WHEN_ARGS_LIST,
+  SHOW_WHEN_CONTRACT_ADDRESS,
+  SHOW_WHEN_ROWS,
+  SHOW_WHEN_UNIFORM,
+} from "./batch-read-modes";
 import { Web3Icon } from "./icon";
 
 const web3Plugin: IntegrationPlugin = {
@@ -1516,15 +1528,15 @@ const web3Plugin: IntegrationPlugin = {
           type: "select",
           options: [
             {
-              value: "uniform",
+              value: INPUT_MODE_UNIFORM,
               label: "Same function, multiple args",
             },
             {
-              value: "mixed",
+              value: INPUT_MODE_MIXED,
               label: "Different contracts/functions",
             },
           ],
-          defaultValue: "uniform",
+          defaultValue: INPUT_MODE_UNIFORM,
           required: true,
           helpTip:
             "Same function: one function called with many argument sets, or on a list of contracts (e.g. done() on every spell). Different contracts: each call has its own network, contract, function, and args.",
@@ -1536,21 +1548,24 @@ const web3Plugin: IntegrationPlugin = {
           chainTypeFilter: "evm",
           placeholder: "Select network",
           required: true,
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: SHOW_WHEN_UNIFORM,
         },
         {
           key: "callsFrom",
           label: "Calls From",
           type: "select",
           options: [
-            { value: "rows", label: "Rows I add here" },
-            { value: "args-list", label: "A list of argument sets" },
-            { value: "address-list", label: "A list of contract addresses" },
+            { value: CALLS_FROM_ROWS, label: "Rows I add here" },
+            { value: CALLS_FROM_ARGS_LIST, label: "A list of argument sets" },
+            {
+              value: CALLS_FROM_ADDRESS_LIST,
+              label: "A list of contract addresses",
+            },
           ],
-          defaultValue: "rows",
+          defaultValue: CALLS_FROM_ROWS,
           helpTip:
             "Rows: add each call here. A list: take the calls from a JSON array, usually an earlier node's output, one call per entry, in order.",
-          showWhen: { field: "inputMode", notEquals: "mixed" },
+          showWhen: SHOW_WHEN_UNIFORM,
         },
         {
           key: "contractAddress",
@@ -1559,12 +1574,7 @@ const web3Plugin: IntegrationPlugin = {
           placeholder: "0x... or {{NodeName.contractAddress}}",
           example: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
           required: true,
-          showWhen: {
-            all: [
-              { field: "inputMode", oneOf: ["uniform", ""] },
-              { field: "callsFrom", notEquals: "address-list" },
-            ],
-          },
+          showWhen: SHOW_WHEN_CONTRACT_ADDRESS,
         },
         {
           key: "contractAddresses",
@@ -1576,12 +1586,7 @@ const web3Plugin: IntegrationPlugin = {
           placeholder: '{{@node1:Label.result}} or ["0xabc...", "0xdef..."]',
           helpText:
             "One call per address, in order, all on the network above. Up to 5,000 addresses.",
-          showWhen: {
-            all: [
-              { field: "inputMode", notEquals: "mixed" },
-              { field: "callsFrom", equals: "address-list" },
-            ],
-          },
+          showWhen: SHOW_WHEN_ADDRESS_LIST,
         },
         {
           key: "abiFetchAddress",
@@ -1591,12 +1596,7 @@ const web3Plugin: IntegrationPlugin = {
           isAddressField: true,
           helpText:
             "Only used to fetch the ABI; it is not called. Or tick Use manual ABI and paste it.",
-          showWhen: {
-            all: [
-              { field: "inputMode", notEquals: "mixed" },
-              { field: "callsFrom", equals: "address-list" },
-            ],
-          },
+          showWhen: SHOW_WHEN_ADDRESS_LIST,
         },
         {
           key: "abi",
@@ -1605,18 +1605,13 @@ const web3Plugin: IntegrationPlugin = {
           contractAddressField: "contractAddress",
           contractAddressFieldWhen: {
             field: "abiFetchAddress",
-            showWhen: {
-              all: [
-                { field: "inputMode", notEquals: "mixed" },
-                { field: "callsFrom", equals: "address-list" },
-              ],
-            },
+            showWhen: SHOW_WHEN_ADDRESS_LIST,
           },
           contractInteractionType: "read",
           networkField: "network",
           rows: 6,
           required: true,
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: SHOW_WHEN_UNIFORM,
         },
         {
           key: "abiFunction",
@@ -1625,7 +1620,7 @@ const web3Plugin: IntegrationPlugin = {
           abiField: "abi",
           placeholder: "Select a function",
           required: true,
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: SHOW_WHEN_UNIFORM,
         },
         {
           key: "argsList",
@@ -1635,13 +1630,7 @@ const web3Plugin: IntegrationPlugin = {
           abiFunctionField: "abiFunction",
           helpTip:
             "Add argument sets for each call. Each row represents one call with the selected function's parameters.",
-          showWhen: {
-            all: [
-              { field: "inputMode", oneOf: ["uniform", ""] },
-              { field: "callsFrom", notEquals: "args-list" },
-              { field: "callsFrom", notEquals: "address-list" },
-            ],
-          },
+          showWhen: SHOW_WHEN_ROWS,
         },
         {
           key: "argsFromList",
@@ -1654,12 +1643,7 @@ const web3Plugin: IntegrationPlugin = {
             '{{@node1:Label.result}} or [["0xabc...", 5], ["0xdef...", 6]]',
           helpText:
             'One call per entry, in order. An entry is the call\'s arguments in order, e.g. ["0xabc...", 5]. For a function with one plain argument (address, number, string, bool, bytes or bytes32), an entry can be the bare value. Up to 5,000 entries.',
-          showWhen: {
-            all: [
-              { field: "inputMode", notEquals: "mixed" },
-              { field: "callsFrom", equals: "args-list" },
-            ],
-          },
+          showWhen: SHOW_WHEN_ARGS_LIST,
         },
         {
           key: "functionArgs",
@@ -1668,12 +1652,7 @@ const web3Plugin: IntegrationPlugin = {
           abiField: "abi",
           abiFunctionField: "abiFunction",
           helpText: "These arguments go to every contract in the list.",
-          showWhen: {
-            all: [
-              { field: "inputMode", notEquals: "mixed" },
-              { field: "callsFrom", equals: "address-list" },
-            ],
-          },
+          showWhen: SHOW_WHEN_ADDRESS_LIST,
         },
         {
           key: "calls",
@@ -1684,7 +1663,7 @@ const web3Plugin: IntegrationPlugin = {
           contractInteractionType: "read",
           helpTip:
             "Add contract calls to batch. Each call has its own network, contract address, ABI, function, and arguments.",
-          showWhen: { field: "inputMode", equals: "mixed" },
+          showWhen: { field: "inputMode", equals: INPUT_MODE_MIXED },
         },
         {
           type: "group",
@@ -1705,7 +1684,7 @@ const web3Plugin: IntegrationPlugin = {
           ],
         },
         readFailOnErrorField(
-          "When off, a failed read passes a soft error to the next node instead of failing the run. This covers a failed batch and any problem with the ABI, function, arguments, Contract Address or list entries. Only an unknown network or unresolved RPC config still fails the run."
+          "When off, a failed read passes a soft error to the next node instead of failing the run: a failed batch, a problem with the ABI, function or arguments, a bad Argument Sets entry, or a list that is empty or over the size limits. Where the calls go still fails the run either way: a missing or unknown network, unresolved RPC config, or a missing or invalid contract address (Contract Address, a call's address in Different contracts mode, or Contract Addresses and its entries)."
         ),
       ],
     },

@@ -10,15 +10,20 @@ import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
 import {
-  ADDRESS_LIST_LABEL,
-  ARGS_LIST_LABEL,
-  addressesFromList,
-  argSetsFromList,
   CALLS_FROM_ADDRESS_LIST,
   CALLS_FROM_ARGS_LIST,
-  type CallsFrom,
+  isUniformInputMode,
+} from "@/plugins/web3/batch-read-modes";
+import {
+  ADDRESS_LIST_LABEL,
+  ARGS_LIST_LABEL,
+  addressError,
+  addressesFromList,
+  argSetsFromList,
   calldataBytes,
   checkRunCalldata,
+  contractAddressFrom,
+  DestinationError,
   echo,
   encodeReason,
   type ListFunction,
@@ -42,7 +47,6 @@ import {
 } from "@/plugins/web3/steps/structure-abi-result";
 
 const LOG_PREFIX = "[Batch Read Contract]";
-const HEX_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const DEFAULT_BATCH_SIZE = 100;
 const MAX_BATCH_SIZE = 500;
 
@@ -98,7 +102,8 @@ type EncodedCall = {
 };
 
 type EncodedCallWithMeta = EncodedCall & {
-  abiFunction: string;
+  // Resolved once per function, so each call and result skips the lookup.
+  fragment: ethers.FunctionFragment;
   iface: ethers.Interface;
   functionAbi?: { outputs?: { name?: string; type?: string }[] };
 };
@@ -128,24 +133,10 @@ function parseAbi(abi: string): {
  * Build normalized calls from uniform mode inputs
  */
 function buildUniformCalls(
-  contractAddress: string | undefined,
+  contractAddress: string,
   abiFunction: string | undefined,
   argsList: string | undefined
 ): { calls: NormalizedCall[]; error?: string } {
-  if (!contractAddress) {
-    return {
-      calls: [],
-      error: "Contract Address is required. Enter the contract to call.",
-    };
-  }
-
-  if (!ethers.isAddress(contractAddress)) {
-    return {
-      calls: [],
-      error: `Contract Address is not a valid address: "${echo(contractAddress)}". Use a 0x address with 40 hex characters.`,
-    };
-  }
-
   if (!abiFunction) {
     return { calls: [], error: "Function is required. Pick one in Function." };
   }
@@ -192,7 +183,7 @@ function validateMixedCall(
   index: number
 ):
   | { normalized: NormalizedCall; error?: undefined }
-  | { normalized?: undefined; error: string } {
+  | { normalized?: undefined; error: string; destinationError?: true } {
   if (typeof call !== "object" || call === null) {
     return { error: `Call ${index + 1} must be an object` };
   }
@@ -204,18 +195,22 @@ function validateMixedCall(
   const abi = typedCall.abi;
   const callNetwork = typedCall.network;
 
+  // Network and contract address are the destination: never softened.
   if (typeof callNetwork !== "string" || !callNetwork) {
-    return { error: `Call ${index + 1} missing network` };
+    return { error: `Call ${index + 1} missing network`, destinationError: true };
   }
 
-  if (typeof addr !== "string" || !addr) {
-    return { error: `Call ${index + 1} missing contractAddress` };
-  }
-
-  if (!ethers.isAddress(addr)) {
+  const address = typeof addr === "string" ? addr.trim() : "";
+  if (!address) {
     return {
-      error: `Call ${index + 1}: Contract Address is not a valid address: "${echo(addr)}". Use a 0x address with 40 hex characters.`,
+      error: `Call ${index + 1} missing contractAddress`,
+      destinationError: true,
     };
+  }
+
+  const invalid = addressError(address, `Call ${index + 1}: Contract Address`);
+  if (invalid) {
+    return { error: invalid, destinationError: true };
   }
 
   if (typeof fn !== "string" || !fn) {
@@ -228,7 +223,7 @@ function validateMixedCall(
 
   return {
     normalized: {
-      contractAddress: addr,
+      contractAddress: address,
       abiFunction: fn,
       args: Array.isArray(args) ? args : [],
       abi,
@@ -243,6 +238,7 @@ function validateMixedCall(
 function buildMixedCalls(callsJson: string | undefined): {
   calls: NormalizedCall[];
   error?: string;
+  destinationError?: true;
 } {
   if (!callsJson || callsJson.trim() === "") {
     return { calls: [], error: "Calls JSON is required in mixed mode" };
@@ -266,7 +262,11 @@ function buildMixedCalls(callsJson: string | undefined): {
   for (const [index, call] of parsedCalls.entries()) {
     const result = validateMixedCall(call, index);
     if (result.error !== undefined) {
-      return { calls: [], error: result.error };
+      return {
+        calls: [],
+        error: result.error,
+        destinationError: result.destinationError,
+      };
     }
     normalizedCalls.push(result.normalized);
   }
@@ -312,6 +312,27 @@ function structureDecodedResult(
   return structureAbiOutputs(outputValues, outputs);
 }
 
+type ResolvedFunction = {
+  fn: ListFunction;
+  fragment: ethers.FunctionFragment;
+};
+
+/** The picked function and its fragment, looked up once per function. */
+function resolveFunction(
+  iface: ethers.Interface,
+  parsedAbi: ethers.JsonFragment[],
+  key: string
+): ResolvedFunction {
+  const fn = resolveListFunction(parsedAbi, key);
+  const fragment = iface.getFunction(fn.signature);
+  if (!fragment) {
+    throw new Error(
+      `Function '${echo(key)}' is not in the ABI. Pick it again in Function, or check the ABI.`
+    );
+  }
+  return { fn, fragment };
+}
+
 /**
  * Encode calls for uniform mode (shared ABI)
  */
@@ -330,14 +351,14 @@ function encodeUniformCalls(
   }
 
   // Every uniform call names the same function; a picked overload is stored
-  // as its full signature, so resolve it once and encode by signature.
-  const resolved = new Map<string, ListFunction>();
+  // as its full signature, so resolve its fragment once and encode by it.
+  const resolved = new Map<string, ResolvedFunction>();
   const encoded: EncodedCallWithMeta[] = [];
   for (const [index, call] of normalizedCalls.entries()) {
     let fn = resolved.get(call.abiFunction);
     if (!fn) {
       try {
-        fn = resolveListFunction(parsedAbi, call.abiFunction);
+        fn = resolveFunction(iface, parsedAbi, call.abiFunction);
       } catch (error) {
         return {
           encoded: [],
@@ -348,14 +369,14 @@ function encodeUniformCalls(
     }
 
     try {
-      const callData = iface.encodeFunctionData(fn.signature, call.args);
+      const callData = iface.encodeFunctionData(fn.fragment, call.args);
       encoded.push({
         target: call.contractAddress,
         allowFailure: true,
         callData,
-        abiFunction: fn.signature,
+        fragment: fn.fragment,
         iface,
-        functionAbi: { outputs: fn.outputs },
+        functionAbi: { outputs: fn.fn.outputs },
       });
     } catch (error) {
       return {
@@ -404,9 +425,9 @@ function encodeMixedCalls(normalizedCalls: NormalizedCall[]): {
     }
 
     // A picked overload is stored as its full signature; encode by it.
-    let fn: ListFunction;
+    let fn: ResolvedFunction;
     try {
-      fn = resolveListFunction(callAbi, call.abiFunction);
+      fn = resolveFunction(iface, callAbi, call.abiFunction);
     } catch (error) {
       return {
         encoded: [],
@@ -415,14 +436,14 @@ function encodeMixedCalls(normalizedCalls: NormalizedCall[]): {
     }
 
     try {
-      const callData = iface.encodeFunctionData(fn.signature, call.args);
+      const callData = iface.encodeFunctionData(fn.fragment, call.args);
       encoded.push({
         target: call.contractAddress,
         allowFailure: true,
         callData,
-        abiFunction: fn.signature,
+        fragment: fn.fragment,
         iface,
-        functionAbi: { outputs: fn.outputs },
+        functionAbi: { outputs: fn.fn.outputs },
       });
     } catch (error) {
       return {
@@ -468,7 +489,7 @@ function decodeCallResult(
 
   try {
     const decoded = callMeta.iface.decodeFunctionResult(
-      callMeta.abiFunction,
+      callMeta.fragment,
       returnData
     );
     const structured = callMeta.functionAbi
@@ -615,14 +636,26 @@ function logValidationError(message: string): void {
 
 type PreparedCalls =
   | { encoded: EncodedCallWithMeta[]; error?: undefined }
-  | { encoded?: undefined; error: string };
+  | { encoded?: undefined; error: string; destinationError?: true };
+
+/** A failure before any call: logged, and marked when it is the destination. */
+function validationFailure(
+  error: string,
+  destinationError?: true
+): BatchReadContractResult {
+  logValidationError(error);
+  return destinationError
+    ? { success: false, destinationError, error }
+    : { success: false, error };
+}
 
 function prepareRowCalls(
   input: BatchReadContractInput,
-  abi: string
+  abi: string,
+  contractAddress: string
 ): PreparedCalls {
   const { calls: normalizedCalls, error: callsError } = buildUniformCalls(
-    input.contractAddress,
+    contractAddress,
     input.abiFunction,
     input.argsList
   );
@@ -647,8 +680,7 @@ function prepareRowCalls(
     : { encoded: encodeResult.encoded };
 }
 
-type ListContext = {
-  fn: ListFunction;
+type ListContext = ResolvedFunction & {
   iface: ethers.Interface;
 };
 
@@ -658,7 +690,7 @@ function encodeForList(
   where: string
 ): string {
   try {
-    return ctx.iface.encodeFunctionData(ctx.fn.signature, args);
+    return ctx.iface.encodeFunctionData(ctx.fragment, args);
   } catch (error) {
     throw new Error(
       `${where} could not be encoded for ${ctx.fn.name}: ${encodeReason(error, ctx.fn)}`
@@ -675,7 +707,7 @@ function listCall(
     target,
     allowFailure: true,
     callData,
-    abiFunction: ctx.fn.signature,
+    fragment: ctx.fragment,
     iface: ctx.iface,
     functionAbi: { outputs: ctx.fn.outputs },
   };
@@ -684,12 +716,10 @@ function listCall(
 /** Same function and arguments on every address: encoded once, reused. */
 function encodeAddressList(
   input: BatchReadContractInput,
-  ctx: ListContext
+  ctx: ListContext,
+  addresses: string[]
 ): EncodedCallWithMeta[] {
-  const addresses = addressesFromList(
-    parseListInput(input.contractAddresses, ADDRESS_LIST_LABEL, '["0xabc..."]')
-  );
-  // Bounded before encoding inside: encoding a large argument is itself slow.
+  // Shaped, checked and size-bounded before it is encoded.
   const args = sharedArgsForList(input.functionArgs, ctx.fn, addresses.length);
   const callData = encodeForList(ctx, args, SHARED_ARGS_LABEL);
   checkRunCalldata(calldataBytes(callData) * addresses.length, "addresses");
@@ -698,24 +728,9 @@ function encodeAddressList(
 
 function encodeArgsList(
   input: BatchReadContractInput,
-  ctx: ListContext
+  ctx: ListContext,
+  contractAddress: string
 ): EncodedCallWithMeta[] {
-  const contractAddress = input.contractAddress?.trim();
-  if (!contractAddress) {
-    throw new Error(
-      "Contract Address is required. Enter the contract to call."
-    );
-  }
-  if (!HEX_ADDRESS_RE.test(contractAddress)) {
-    throw new Error(
-      `Contract Address is not a valid address: "${echo(contractAddress)}". Use a 0x address with 40 hex characters.`
-    );
-  }
-  if (!ethers.isAddress(contractAddress)) {
-    throw new Error(
-      `Contract Address has a bad checksum: "${contractAddress}". Use the address exactly as published, or in all lower case.`
-    );
-  }
   requireArguments(ctx.fn);
   const entries = parseListInput(
     input.argsFromList,
@@ -735,40 +750,85 @@ function encodeArgsList(
   });
 }
 
+/** Where the calls go: one Contract Address, or every address in a list. */
+type Destination = { contractAddress: string } | { addresses: string[] };
+
 /** Calls from a list, checked entry by entry before any RPC call. */
 function prepareListCalls(
   input: BatchReadContractInput,
   abi: string,
-  callsFrom: typeof CALLS_FROM_ARGS_LIST | typeof CALLS_FROM_ADDRESS_LIST
-): PreparedCalls {
+  destination: Destination
+): EncodedCallWithMeta[] {
   if (!input.abiFunction) {
-    return { error: "Function is required. Pick one in Function." };
+    throw new Error("Function is required. Pick one in Function.");
   }
   const { parsed: parsedAbi, error: abiError } = parseAbi(abi);
   if (abiError) {
-    return { error: abiError };
+    throw new Error(abiError);
   }
   let iface: ethers.Interface;
   try {
     iface = new ethers.Interface(parsedAbi);
   } catch (error) {
-    return {
-      error: `Failed to parse ABI: ${echo(getErrorMessage(error), MAX_REASON_LENGTH)}`,
-    };
+    throw new Error(
+      `Failed to parse ABI: ${echo(getErrorMessage(error), MAX_REASON_LENGTH)}`
+    );
   }
+  const ctx: ListContext = {
+    ...resolveFunction(iface, parsedAbi, input.abiFunction),
+    iface,
+  };
+  return "addresses" in destination
+    ? encodeAddressList(input, ctx, destination.addresses)
+    : encodeArgsList(input, ctx, destination.contractAddress);
+}
+
+/**
+ * Check a uniform-mode config and encode its calls. The destination (Network,
+ * Contract Address or Contract Addresses) is checked first and fails as a
+ * DestinationError, so Fail workflow on error off does not soften it.
+ */
+function prepareUniformCalls(input: BatchReadContractInput): PreparedCalls {
   try {
-    const ctx: ListContext = {
-      fn: resolveListFunction(parsedAbi, input.abiFunction),
-      iface,
-    };
-    return {
-      encoded:
-        callsFrom === CALLS_FROM_ARGS_LIST
-          ? encodeArgsList(input, ctx)
-          : encodeAddressList(input, ctx),
-    };
+    if (!input.network) {
+      throw new DestinationError("Network is required. Pick one in Network.");
+    }
+    const callsFrom = resolveCallsFrom(input.callsFrom);
+    const destination: Destination =
+      callsFrom === CALLS_FROM_ADDRESS_LIST
+        ? {
+            addresses: addressesFromList(
+              parseListInput(
+                input.contractAddresses,
+                ADDRESS_LIST_LABEL,
+                '["0xabc..."]',
+                true
+              )
+            ),
+          }
+        : {
+            contractAddress: contractAddressFrom(
+              input.contractAddress,
+              "Contract Address"
+            ),
+          };
+    if (!input.abi) {
+      const fetchFrom =
+        callsFrom === CALLS_FROM_ADDRESS_LIST
+          ? "Enter an address in Fetch ABI From to fetch it"
+          : "Enter Contract Address to fetch it";
+      throw new Error(
+        `Contract ABI is required. ${fetchFrom}, or tick Use manual ABI and paste it.`
+      );
+    }
+    if (callsFrom === CALLS_FROM_ARGS_LIST || "addresses" in destination) {
+      return { encoded: prepareListCalls(input, input.abi, destination) };
+    }
+    return prepareRowCalls(input, input.abi, destination.contractAddress);
   } catch (error) {
-    return { error: getErrorMessage(error) };
+    return error instanceof DestinationError
+      ? { error: error.message, destinationError: true }
+      : { error: getErrorMessage(error) };
   }
 }
 
@@ -779,49 +839,18 @@ async function executeUniformMode(
   input: BatchReadContractInput,
   userId: string | undefined
 ): Promise<BatchReadContractResult> {
-  const { network, abi } = input;
-
-  if (!network) {
-    return {
-      success: false,
-      error: "Network is required. Pick one in Network.",
-    };
+  const prepared = prepareUniformCalls(input);
+  if (prepared.error !== undefined) {
+    return validationFailure(prepared.error, prepared.destinationError);
   }
 
-  let callsFrom: CallsFrom;
-  try {
-    callsFrom = resolveCallsFrom(input.callsFrom);
-  } catch (error) {
-    return { success: false, error: getErrorMessage(error) };
-  }
-
-  if (!abi) {
-    const fetchFrom =
-      callsFrom === CALLS_FROM_ADDRESS_LIST
-        ? "Enter an address in Fetch ABI From to fetch it"
-        : "Enter Contract Address to fetch it";
-    return {
-      success: false,
-      error: `Contract ABI is required. ${fetchFrom}, or tick Use manual ABI and paste it.`,
-    };
-  }
-
-  const encodeResult =
-    callsFrom === CALLS_FROM_ARGS_LIST || callsFrom === CALLS_FROM_ADDRESS_LIST
-      ? prepareListCalls(input, abi, callsFrom)
-      : prepareRowCalls(input, abi);
-  if (encodeResult.error !== undefined) {
-    logValidationError(encodeResult.error);
-    return { success: false, error: encodeResult.error };
-  }
-
-  const chainRpc = await resolveChainRpc(network, userId);
+  const chainRpc = await resolveChainRpc(input.network ?? "", userId);
   if (chainRpc.error !== undefined) {
     return { success: false, destinationError: true, error: chainRpc.error };
   }
 
   const { results, error: batchError } = await executeMulticallBatches(
-    encodeResult.encoded,
+    prepared.encoded,
     chainRpc.rpcManager,
     parseBatchSize(input.batchSize),
     chainRpc.chainId
@@ -862,30 +891,29 @@ async function executeMixedMode(
   input: BatchReadContractInput,
   userId: string | undefined
 ): Promise<BatchReadContractResult> {
-  const { calls: normalizedCalls, error: callsError } = buildMixedCalls(
-    input.calls
-  );
+  const {
+    calls: normalizedCalls,
+    error: callsError,
+    destinationError,
+  } = buildMixedCalls(input.calls);
 
   if (callsError) {
-    logValidationError(callsError);
-    return { success: false, error: callsError };
+    return validationFailure(callsError, destinationError);
   }
 
   if (normalizedCalls.length === 0) {
-    return { success: false, error: "No calls to execute" };
+    return validationFailure("No calls to execute");
   }
 
   if (normalizedCalls.length > MAX_TOTAL_CALLS) {
-    return {
-      success: false,
-      error: `Too many calls (${normalizedCalls.length}). Maximum is ${MAX_TOTAL_CALLS}.`,
-    };
+    return validationFailure(
+      `Too many calls (${normalizedCalls.length}). Maximum is ${MAX_TOTAL_CALLS}.`
+    );
   }
 
   const encodeResult = encodeMixedCalls(normalizedCalls);
   if (encodeResult.error) {
-    logValidationError(encodeResult.error);
-    return { success: false, error: encodeResult.error };
+    return validationFailure(encodeResult.error);
   }
 
   const batchSize = parseBatchSize(input.batchSize);
@@ -948,9 +976,7 @@ async function stepHandler(
   input: BatchReadContractInput
 ): Promise<BatchReadContractResult> {
   const userId = await getRpcPreferenceUserId(input._context?.executionId);
-  const isUniform = input.inputMode !== "mixed";
-
-  if (isUniform) {
+  if (isUniformInputMode(input.inputMode)) {
     return await executeUniformMode(input, userId);
   }
 

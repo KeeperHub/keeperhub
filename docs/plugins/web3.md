@@ -137,7 +137,7 @@ The Args List field uses a dynamic builder instead of raw JSON. After selecting 
 
 The rows editor suits a fixed set of calls. When the calls come from an earlier node (a registry read, a database query, an HTTP response), set **Calls From** to a list instead:
 
-- **A list of argument sets** (`args-list`): one contract and function, one call per entry in **Argument Sets**. Each entry is the call's arguments in order, e.g. `["0xabc...", 5]`. For a function with one plain argument (an address, number, string, bool, bytes or bytes32), an entry can also be the bare value, e.g. `"0xabc..."`.
+- **A list of argument sets** (`args-list`): one contract and function, one call per entry in **Argument Sets**. Each entry is the call's arguments in order, e.g. `["0xabc...", 5]`. For a function with one plain argument (an address, number, string, bool, bytes or bytes32), an entry can also be the bare value, e.g. `"0xabc..."`. Arguments are read as in Read Contract: a tuple is an object keyed by its member names, e.g. `{"token": "0xabc...", "amount": 5}`, or its members given flat, in order.
 - **A list of contract addresses** (`address-list`): one function, called on every address in **Contract Addresses** with the same **Function Arguments** (all of them, if the function takes any). Contract Address is not used; to fetch the ABI, enter any one contract with the same ABI in **Fetch ABI From** (it is not called), or tick Use manual ABI and paste it.
 
 Both lists take a JSON array typed in the field or, more often, a reference to an array from an earlier node, e.g. `{{@registry:Read Contract.result}}` for a function that returns an array. Prefer one reference to the whole array over references mixed into a typed list. Results keep the list's order, duplicates included, so another list of names lines up with them by position.
@@ -145,12 +145,12 @@ Both lists take a JSON array typed in the field or, more often, a reference to a
 The list is checked before any call is made, and the step fails when:
 
 - the list is empty or missing, is a single value or not a JSON array, has more than 5,000 entries, or is larger than 1 MB
-- Function Arguments is larger than 1 MB, or does not fill every argument the function takes
+- Function Arguments is larger than 1 MB, or leaves an argument blank that is not a `string` (a blank `string` is sent as an empty string)
 - an entry is not a valid address, has the wrong number of arguments, or is not a plain value where one is expected (the message names the entry, counted from 1)
 - an argument cannot be encoded for the function: a `bool` that is not `true` or `false`, a `bytes32` that is not 0x hex of that length (turn text into `bytes32` with the Encode / Decode node first), or a number that is not a whole number (write large numbers in quotes)
 - one call's arguments would encode to more than about 64 KB, the calls hold more than 50,000 values in all (Function Arguments, sent to every address, counts once), or the encoded calls add up to more than 10 MB
 
-With Fail workflow on error off, these failures, like a failed batch, are passed to the next node as `success: true` with `results` null and `error` set. Only an unknown network or RPC configuration that cannot be resolved still fails the run.
+With Fail workflow on error off, these failures, like a failed batch, are passed to the next node as `success: true` with `results` null and `error` set. Where the calls go still fails the run either way, as in Read Contract: a missing or unknown network, an RPC configuration that cannot be resolved, or a missing or invalid contract address. That covers Contract Address, a call's address in Different contracts mode, and Contract Addresses when it is blank, not a list, or has an entry that is not a valid address; an empty Contract Addresses list is passed on like the failures above.
 
 Encode / Decode returns a one-entry array as a plain string, not a list. If the list may hold a single entry, take it from a source that always returns an array.
 

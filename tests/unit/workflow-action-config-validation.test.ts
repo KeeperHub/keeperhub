@@ -1392,6 +1392,21 @@ describe("validateWorkflowActionConfigs", () => {
       );
     });
 
+    it("reads an absent inputMode on batch-read-contract as uniform, as the step does", () => {
+      const result = validateWorkflowActionConfigs([
+        actionNode("web3/batch-read-contract", {
+          callsFrom: "args-list",
+          argsFromList: '[["1"]]',
+          abi: "[]",
+          abiFunction: "echo",
+        }),
+      ]);
+      expect(result.valid).toBe(false);
+      expect(result.issues.map((i) => i.field)).toEqual(
+        expect.arrayContaining(["network", "contractAddress"])
+      );
+    });
+
     it("validates each node independently: one broken node does not invalidate sibling nodes", () => {
       const result = validateWorkflowActionConfigs([
         actionNode("discord/send-message", { discordMessage: "valid" }, "n-0"),

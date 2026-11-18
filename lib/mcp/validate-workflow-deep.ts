@@ -27,6 +27,10 @@ import {
 import { VALIDATION_WARNING_CODES } from "@/lib/mcp/validate-workflow-codes";
 import { isTemplateReference } from "@/lib/mcp/validate-workflow-web3";
 import { sleep } from "@/lib/sleep";
+import {
+  BATCH_READ_CONTRACT_ACTION_TYPE,
+  readsFromAddressList,
+} from "@/plugins/web3/batch-read-modes";
 
 /** The fast-tier options are passed through, so deepCheck reports a superset. */
 export type ValidateWorkflowDeepOptions = ValidateWorkflowOptions & {
@@ -170,9 +174,8 @@ export function collectContractRefs(nodes: unknown): ContractRef[] {
     // An address-list batch read takes its ABI from Fetch ABI From; its
     // Contract Address is hidden and may hold a stale value.
     const contractAddress =
-      actionType === "web3/batch-read-contract" &&
-      config.inputMode !== "mixed" &&
-      config.callsFrom === "address-list"
+      actionType === BATCH_READ_CONTRACT_ACTION_TYPE &&
+      readsFromAddressList(config)
         ? config.abiFetchAddress
         : config.contractAddress;
     if (

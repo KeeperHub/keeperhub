@@ -1,6 +1,16 @@
 import { ethers } from "ethers";
+import { coerceArgsForAbi, reshapeArgsCounted } from "@/lib/abi/struct-args";
 import type { AbiParam } from "@/lib/abi/types";
 import { type AbiItem, resolveAbiFunction } from "@/lib/abi/utils";
+import {
+  type ValidateArgsOptions,
+  validateArgsForAbi,
+} from "@/lib/abi/validate-args";
+import {
+  CALLS_FROM_ADDRESS_LIST,
+  CALLS_FROM_ARGS_LIST,
+  CALLS_FROM_ROWS,
+} from "@/plugins/web3/batch-read-modes";
 
 export const MAX_TOTAL_CALLS = 5000;
 const MAX_LIST_TEXT_BYTES = 1_048_576;
@@ -8,10 +18,6 @@ const MAX_RUN_CALLDATA_BYTES = 10 * 1_048_576;
 // Encoding time grows faster than size, so one call and one run are bounded.
 const MAX_CALL_CALLDATA_BYTES = 64 * 1024;
 const MAX_RUN_VALUES = 50_000;
-
-const CALLS_FROM_ROWS = "rows";
-export const CALLS_FROM_ARGS_LIST = "args-list";
-export const CALLS_FROM_ADDRESS_LIST = "address-list";
 
 export const ARGS_LIST_LABEL = "Argument Sets";
 export const ADDRESS_LIST_LABEL = "Contract Addresses";
@@ -48,6 +54,13 @@ export type CallsFrom =
   | typeof CALLS_FROM_ARGS_LIST
   | typeof CALLS_FROM_ADDRESS_LIST;
 
+/**
+ * A problem with where the calls go (Network, Contract Address or Contract
+ * Addresses): the read has nowhere to call, so Fail workflow on error off
+ * does not soften it, as in Read Contract.
+ */
+export class DestinationError extends Error {}
+
 /** Absent or blank means rows, so workflows saved before the field run as before. */
 export function resolveCallsFrom(value: unknown): CallsFrom {
   if (value === undefined || value === null || value === "") {
@@ -61,7 +74,7 @@ export function resolveCallsFrom(value: unknown): CallsFrom {
     return value;
   }
   throw new Error(
-    `Calls From must be "${CALLS_FROM_ROWS}", "${CALLS_FROM_ARGS_LIST}" or "${CALLS_FROM_ADDRESS_LIST}", got ${echo(typeof value === "string" ? `"${value}"` : (JSON.stringify(value) ?? String(value)))}.`
+    `Calls From must be "${CALLS_FROM_ROWS}", "${CALLS_FROM_ARGS_LIST}" or "${CALLS_FROM_ADDRESS_LIST}", got ${showValue(value)}.`
   );
 }
 
@@ -90,6 +103,10 @@ function plural(n: number, word: string): string {
   return `${count(n)} ${word}${n === 1 ? "" : "s"}`;
 }
 
+function showValue(value: unknown): string {
+  return echo(JSON.stringify(value) ?? String(value));
+}
+
 // Rounded up, so a value just over a limit never reads as the limit itself.
 function megabytes(bytes: number): string {
   return (Math.ceil((bytes / 1_048_576) * 10) / 10).toFixed(1);
@@ -107,6 +124,39 @@ function checkTextSize(value: unknown, label: string, nextStep: string): void {
       `${label} is ${megabytes(bytes)} MB; the limit is 1 MB. ${nextStep}`
     );
   }
+}
+
+/**
+ * Why `value` is not a contract address, or undefined when it is: a 0x
+ * address with 40 hex characters, with a valid checksum when mixed case.
+ * Callers trim first where a template may leave whitespace around it.
+ */
+export function addressError(value: unknown, label: string): string | undefined {
+  const address = typeof value === "string" ? value : "";
+  if (!HEX_ADDRESS_RE.test(address)) {
+    const shown =
+      typeof value === "string" ? `"${echo(value)}"` : showValue(value);
+    return `${label} is not a valid address: ${shown}. Use a 0x address with 40 hex characters.`;
+  }
+  if (!ethers.isAddress(address)) {
+    return `${label} has a bad checksum: "${address}". Use the address exactly as published, or in all lower case.`;
+  }
+  return;
+}
+
+/** Contract Address, trimmed and checked; throws DestinationError otherwise. */
+export function contractAddressFrom(value: unknown, label: string): string {
+  const address = typeof value === "string" ? value.trim() : value;
+  if (address === undefined || address === null || address === "") {
+    throw new DestinationError(
+      `${label} is required. Enter the contract to call.`
+    );
+  }
+  const error = addressError(address, label);
+  if (error) {
+    throw new DestinationError(error);
+  }
+  return address as string;
 }
 
 /** Resolve the picked function, a bare name or a full signature for an overload. */
@@ -136,18 +186,22 @@ export function resolveListFunction(
 /**
  * Parse a list input (resolved template text or a native array) into its
  * entries, enforcing the size and length caps before anything is called.
+ * For a destination list, a blank field or one that is not a list throws
+ * DestinationError; an empty list and the size caps stay ordinary errors.
  */
 export function parseListInput(
   raw: unknown,
   label: string,
-  typedExample: string
+  typedExample: string,
+  destination = false
 ): unknown[] {
+  const Shape = destination ? DestinationError : Error;
   let parsed: unknown = raw ?? "";
   const singleValue = `${label} got a single value, not a list. If it comes from Encode / Decode, a one-entry array comes back as a plain value; see the docs.`;
   if (typeof parsed === "string") {
     const text = parsed.trim();
     if (text === "") {
-      throw new Error(
+      throw new Shape(
         `${label} is empty or missing. Check the reference and the node that produces it.`
       );
     }
@@ -156,7 +210,7 @@ export function parseListInput(
       parsed = JSON.parse(text);
     } catch {
       const looksLikeList = text.startsWith("[") || text.includes(",");
-      throw new Error(
+      throw new Shape(
         looksLikeList
           ? `${label} is not a JSON array. Reference an array from an earlier node, e.g. {{@node1:Label.result}}, or type one like ${typedExample}.`
           : singleValue
@@ -170,10 +224,10 @@ export function parseListInput(
     typeof parsed === "number" ||
     typeof parsed === "boolean"
   ) {
-    throw new Error(singleValue);
+    throw new Shape(singleValue);
   }
   if (!Array.isArray(parsed)) {
-    throw new Error(
+    throw new Shape(
       `${label} must be an array, got ${describeKind(parsed)}. Point it at the array itself, e.g. {{@node1:Label.result.items}}.`
     );
   }
@@ -188,26 +242,20 @@ export function parseListInput(
   return parsed;
 }
 
-/** Every entry must be a 0x address with a valid checksum when mixed case. */
+/** Every entry must be a contract address; a bad one throws DestinationError. */
 export function addressesFromList(entries: unknown[]): string[] {
   const addresses: string[] = [];
   for (const [index, entry] of entries.entries()) {
     const at = `${ADDRESS_LIST_LABEL} entry ${index + 1}`;
     if (typeof entry !== "string") {
-      throw new Error(
+      throw new DestinationError(
         `${at} must be an address string, got ${describeKind(entry)}. Point the list at the addresses themselves, e.g. ["0xabc..."].`
       );
     }
     const address = entry.trim();
-    if (!HEX_ADDRESS_RE.test(address)) {
-      throw new Error(
-        `${at} is not a valid address: "${echo(entry)}". Each entry must be a 0x address with 40 hex characters.`
-      );
-    }
-    if (!ethers.isAddress(address)) {
-      throw new Error(
-        `${at} has a bad checksum: "${address}". Use the address exactly as published, or in all lower case.`
-      );
+    const error = addressError(address, at);
+    if (error) {
+      throw new DestinationError(error);
     }
     addresses.push(address);
   }
@@ -225,15 +273,10 @@ function exampleValue(type: string, components?: AbiParam[]): string {
     return "[...]";
   }
   if (type === "tuple") {
-    if (!components?.length) {
+    if (!components?.length || components.some((c) => !c.name)) {
       return "{...}";
     }
-    const members = components.map((c) => exampleValue(c.type, c.components));
-    // Unnamed members can only be given in order.
-    if (components.some((c) => !c.name)) {
-      return `[${members.join(", ")}]`;
-    }
-    return `{${components.map((c, i) => `"${c.name}": ${members[i]}`).join(", ")}}`;
+    return `{${components.map((c) => `"${c.name}": ${exampleValue(c.type, c.components)}`).join(", ")}}`;
   }
   if (type === "address" || type.startsWith("bytes")) {
     return '"0x..."';
@@ -268,256 +311,70 @@ function isPrimitive(value: unknown): boolean {
   );
 }
 
-function showValue(value: unknown): string {
-  return echo(JSON.stringify(value) ?? String(value));
-}
-
-function tupleNames(components: AbiParam[]): string {
-  return components.map((c) => c.name || c.type).join(", ");
-}
-
-/** Nested array or tuple text, as the editor stores it, parsed once. */
-function parseNestedText(value: unknown, nested: boolean): unknown {
-  if (!nested || typeof value !== "string") {
-    return value;
-  }
-  const text = value.trim();
-  if (!(text.startsWith("[") || text.startsWith("{"))) {
-    return value;
-  }
-  try {
-    return JSON.parse(text);
-  } catch {
-    return value;
-  }
-}
-
 /**
- * Give an argument its ABI shape: an array type must be an array, a tuple an
- * array or object. Text is parsed only below the top level, where the editor
- * stores inner arrays as text; the caller estimates the shaped result. A
- * positional tuple becomes an object when every component is named, and
- * stays an array otherwise (ethers takes both; unnamed members would collide).
+ * The checks lib/abi leaves to the encoder, made before encoding so a list
+ * entry fails with its own name: a bool must be true or false, an address a
+ * 0x address, a bytesN 0x hex of its length, a whole number not too long.
  */
-function structureTuples(
-  raw: unknown,
-  type: string,
-  components: AbiParam[] | undefined,
-  path: string,
-  nested = false
-): unknown {
-  const array = ARRAY_TYPE_RE.exec(type);
-  const isTuple = type === "tuple" && Boolean(components?.length);
-  const value = array || isTuple ? parseNestedText(raw, nested) : raw;
-  let got = describeKind(value);
-  if (typeof value === "string") {
-    got = nested
-      ? "text that is not a JSON array"
-      : "text. Give the value as a JSON array, not as text holding one";
-  }
-  if (array) {
-    if (!Array.isArray(value)) {
-      throw new Error(`${path} must be an array for ${type}, got ${got}.`);
-    }
-    return value.map((item, index) =>
-      structureTuples(item, array[1], components, `${path}[${index}]`, true)
-    );
-  }
-  if (!(isTuple && components)) {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    if (value.length !== components.length) {
-      throw new Error(
-        `${path} has ${plural(value.length, "value")} but its tuple takes ${count(components.length)} (${tupleNames(components)}). Give one value per member, in order.`
-      );
-    }
-    const members = components.map((component, index) =>
-      structureTuples(
-        value[index],
-        component.type,
-        component.components,
-        `${path}.${component.name || index}`,
-        true
-      )
-    );
-    if (components.some((component) => !component.name)) {
-      return members;
-    }
-    const out: Record<string, unknown> = {};
-    for (const [index, component] of components.entries()) {
-      out[component.name] = members[index];
-    }
-    return out;
-  }
-  if (typeof value === "object" && value !== null) {
-    if (components.some((component) => !component.name)) {
-      throw new Error(
-        `${path} takes its values in order for its tuple (${tupleNames(components)}); give an array.`
-      );
-    }
-    const out: Record<string, unknown> = { ...(value as object) };
-    for (const component of components) {
-      out[component.name] = structureTuples(
-        out[component.name],
-        component.type,
-        component.components,
-        `${path}.${component.name}`,
-        true
-      );
-    }
-    return out;
-  }
-  throw new Error(
-    `${path} must be an array or object for its tuple (${tupleNames(components)}), got ${got}.`
-  );
-}
-
-function checkAddress(value: unknown, path: string): string {
-  const address = typeof value === "string" ? value.trim() : "";
-  if (!HEX_ADDRESS_RE.test(address)) {
-    throw new Error(
-      `${path} must be a 0x address with 40 hex characters, got ${showValue(value)}.`
-    );
-  }
-  if (!ethers.isAddress(address)) {
-    throw new Error(
-      `${path} has a bad checksum: "${address}". Use the address exactly as published, or in all lower case.`
-    );
-  }
-  return address;
-}
-
-function checkBool(value: unknown, path: string): boolean {
-  if (typeof value === "boolean") {
-    return value;
-  }
-  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (text === "true" || text === "false") {
-    return text === "true";
-  }
-  throw new Error(`${path} must be true or false, got ${showValue(value)}.`);
-}
-
-function checkBytesN(
+function checkListLeaf(
   value: unknown,
   type: string,
-  size: number,
   path: string
-): void {
-  if (
-    typeof value !== "string" ||
-    !HEX_RE.test(value) ||
-    value.length !== 2 + size * 2
-  ) {
-    throw new Error(
-      `${path} must be 0x hex for ${type}, got ${showValue(value)}. Turn text into ${type} with the Encode / Decode node first.`
-    );
-  }
-}
-
-function checkLeaf(value: unknown, type: string, path: string): unknown {
-  if (value === undefined || value === null) {
-    throw new Error(`${path} is missing (${type}).`);
-  }
-  if (value === "" && type !== "string") {
-    const hint = type.startsWith("bytes") ? ' Use "0x" for empty bytes.' : "";
-    throw new Error(`${path} cannot be empty (${type}).${hint}`);
-  }
+): string | undefined {
   if (type === "bool") {
-    return checkBool(value, path);
+    return typeof value === "boolean"
+      ? undefined
+      : `${path} must be true or false, got ${showValue(value)}`;
   }
   if (type === "address") {
-    return checkAddress(value, path);
+    return addressError(value, path);
   }
   if (
     INTEGER_TYPE_RE.test(type) &&
     typeof value === "string" &&
     value.trim().length > MAX_INTEGER_TEXT
   ) {
-    throw new Error(`${path} is too long for a whole number.`);
+    return `${path} is too long for a whole number`;
   }
   const bytes = BYTES_N_RE.exec(type);
-  if (bytes) {
-    checkBytesN(value, type, Number(bytes[1]), path);
+  if (
+    bytes &&
+    (typeof value !== "string" ||
+      !HEX_RE.test(value) ||
+      value.length !== 2 + Number(bytes[1]) * 2)
+  ) {
+    return `${path} must be 0x hex for ${type}, got ${showValue(value)}. Turn text into ${type} with the Encode / Decode node first`;
   }
-  return value;
+  return;
+}
+
+// List values are resolved at run time, so a {{...}} string is plain text.
+const LIST_VALIDATION: ValidateArgsOptions = {
+  resolved: true,
+  checkLeaf: checkListLeaf,
+};
+
+function sentence(text: string): string {
+  return text.endsWith(".") ? text : `${text}.`;
 }
 
 /**
- * Leaf checks ahead of encoding, on the shaped argument: a bool must be true
- * or false, an address a 0x address, a bytesN 0x hex of its length.
+ * Check one reshaped argument set with Read Contract's pipeline (coerce, then
+ * validate), estimating its size before the leaf checks or encoding.
  */
-function checkLeaves(
-  value: unknown,
-  type: string,
-  components: AbiParam[] | undefined,
-  path: string
-): unknown {
-  const array = ARRAY_TYPE_RE.exec(type);
-  if (array) {
-    return (value as unknown[]).map((item, index) =>
-      checkLeaves(item, array[1], components, `${path}[${index}]`)
-    );
-  }
-  if (type !== "tuple" || !components?.length) {
-    return checkLeaf(value, type, path);
-  }
-  if (Array.isArray(value)) {
-    return components.map((component, index) =>
-      checkLeaves(
-        value[index],
-        component.type,
-        component.components,
-        `${path}.${component.name || index}`
-      )
-    );
-  }
-  const out: Record<string, unknown> = { ...(value as object) };
-  for (const component of components) {
-    out[component.name] = checkLeaves(
-      out[component.name],
-      component.type,
-      component.components,
-      `${path}.${component.name}`
-    );
-  }
-  return out;
-}
-
-/** Shape and check one argument set the way read-contract does; a bool must be true or false. */
 function prepareArgs(
-  args: unknown[],
+  reshaped: unknown[],
   fn: ListFunction,
   where: string
 ): { args: unknown[]; bytes: number; values: number } {
-  try {
-    const shaped = fn.inputs.map((input, index) =>
-      structureTuples(
-        args[index],
-        input.type,
-        input.components,
-        input.name || `arg${index}`
-      )
-    );
-    // Estimated again on the shaped value, so parsed inner text is counted.
-    const estimate = estimateCalldata(shaped, fn);
-    checkCallSize(estimate.bytes, where);
-    const checked = fn.inputs.map((input, index) =>
-      checkLeaves(
-        shaped[index],
-        input.type,
-        input.components,
-        input.name || `arg${index}`
-      )
-    );
-    return { args: checked, ...estimate };
-  } catch (error) {
-    const message = (error as Error).message;
-    throw new Error(
-      message.startsWith(where) ? message : `${where}: ${message}`
-    );
+  const shaped = coerceArgsForAbi(reshaped, fn);
+  const estimate = estimateCalldata(shaped, fn);
+  checkCallSize(estimate.bytes, where);
+  const validation = validateArgsForAbi(shaped, fn, LIST_VALIDATION);
+  if (!validation.ok) {
+    throw new Error(`${where}: ${sentence(validation.error)}`);
   }
+  return { args: shaped, ...estimate };
 }
 
 /** Bytes a dynamic value takes once encoded: its length word plus its padded data. */
@@ -552,10 +409,10 @@ function estimateValue(
   }
   if (type === "tuple") {
     let total = 32;
-    for (const [index, component] of (components ?? []).entries()) {
-      const member = Array.isArray(value)
-        ? value[index]
-        : (value as Record<string, unknown> | undefined)?.[component.name];
+    for (const component of components ?? []) {
+      const member = (value as Record<string, unknown> | undefined)?.[
+        component.name
+      ];
       total += estimateValue(
         member,
         component.type,
@@ -601,7 +458,7 @@ function estimateCalldata(
   return { bytes, values: tally.values };
 }
 
-/** One call's estimated call data, checked before it is shaped or encoded. */
+/** One call's estimated call data, checked before its leaves or encoding. */
 function checkCallSize(bytes: number, where: string): void {
   if (bytes > MAX_CALL_CALLDATA_BYTES) {
     throw new Error(
@@ -637,6 +494,37 @@ export function encodeReason(error: unknown, fn: ListFunction): string {
   return `${prefix}${reason}${reason.endsWith(".") ? "" : "."}`;
 }
 
+/** The first tuple with an unnamed member, by path; tuples go by member name. */
+function unnamedTuple(
+  params: AbiParam[] | undefined,
+  path: string
+): string | undefined {
+  for (const [index, param] of (params ?? []).entries()) {
+    const at = path ? `${path}.${param.name || index}` : param.name || `arg${index}`;
+    if (!param.type.startsWith("tuple")) {
+      continue;
+    }
+    if (param.components?.some((c) => !c.name)) {
+      return at;
+    }
+    const inner = unnamedTuple(param.components, at);
+    if (inner) {
+      return inner;
+    }
+  }
+  return;
+}
+
+/** Arguments are shaped by member name, as in Read Contract, so every tuple member needs one. */
+function requireNamedTuples(fn: ListFunction): void {
+  const at = unnamedTuple(fn.inputs, "");
+  if (at) {
+    throw new Error(
+      `${fn.name} takes a tuple with unnamed members (${at}). Tuple values are given by member name, so Batch Read cannot fill this one.`
+    );
+  }
+}
+
 /** A list of argument sets needs a function that takes some; checked before the list. */
 export function requireArguments(fn: ListFunction): void {
   if (fn.inputs.length === 0) {
@@ -646,6 +534,25 @@ export function requireArguments(fn: ListFunction): void {
   }
 }
 
+/** A count message; a tuple given as flat values counts one per member. */
+function countMismatch(
+  at: string,
+  given: number,
+  fn: ListFunction,
+  consumed: number,
+  hint: string
+): Error {
+  const takes = fn.inputs.length;
+  const flat =
+    consumed === takes
+      ? ""
+      : `; its tuple given as flat values takes ${plural(consumed, "value")} in all`;
+  return new Error(
+    `${at} has ${plural(given, "value")} but ${fn.name} takes ${count(takes)} (${inputNames(fn)})${flat}. ${hint}`
+  );
+}
+
+/** One entry as reshaped arguments, one value per input. */
 function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
   const takes = fn.inputs.length;
   const names = inputNames(fn);
@@ -663,13 +570,28 @@ function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
       `${at} must be an array of ${plural(takes, "value")} for ${fn.name} (${names}), got ${describeKind(entry)}. Make each entry an array like ${exampleEntry(fn)}.`
     );
   }
-  if (entry.length !== takes) {
+  const reshaped = reshapeArgsCounted(entry, fn);
+  if (entry.length !== reshaped.consumed) {
+    // A tuple given as an array of its members reads as flat values.
+    const positional = fn.inputs.findIndex(
+      (input, index) => input.type === "tuple" && Array.isArray(entry[index])
+    );
+    if (entry.length === takes && positional >= 0) {
+      const input = fn.inputs[positional];
+      throw new Error(
+        `${at}: give ${input.name || `arg${positional}`} as an object with its member names, like ${exampleValue(input.type, input.components)}, not as an array.`
+      );
+    }
     const bare = scalar ? ", or the bare value" : "";
-    throw new Error(
-      `${at} has ${plural(entry.length, "value")} but ${fn.name} takes ${count(takes)} (${names}). Make each entry an array like ${exampleEntry(fn)}${bare}.`
+    throw countMismatch(
+      at,
+      entry.length,
+      fn,
+      reshaped.consumed,
+      `Make each entry an array like ${exampleEntry(fn)}${bare}.`
     );
   }
-  return entry;
+  return reshaped.args;
 }
 
 /**
@@ -680,23 +602,47 @@ export function argSetsFromList(
   entries: unknown[],
   fn: ListFunction
 ): unknown[][] {
+  requireNamedTuples(fn);
   let bytes = 0;
   let values = 0;
   return entries.map((entry, index) => {
     const at = `${ARGS_LIST_LABEL} entry ${index + 1}`;
-    const raw = entryToArgs(entry, fn, at);
-    // Bounded before shaping, and again on the shaped value (inner text parsed).
-    const rough = estimateCalldata(raw, fn);
-    checkCallSize(rough.bytes, at);
-    checkRunValues(values + rough.values);
-    checkRunCalldata(bytes + rough.bytes, "entries");
-    const prepared = prepareArgs(raw, fn, at);
+    const prepared = prepareArgs(entryToArgs(entry, fn, at), fn, at);
     bytes += prepared.bytes;
     values += prepared.values;
     checkRunValues(values);
     checkRunCalldata(bytes, "entries");
     return prepared.args;
   });
+}
+
+/**
+ * Function Arguments, reshaped, as the editor stores it: an input left blank is "", and
+ * one never touched may be missing, so trailing blanks are trimmed or padded
+ * to the function's inputs. An empty final `string` stays an empty string.
+ */
+function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
+  let end = parsed.length;
+  while (end > 0 && parsed[end - 1] === "") {
+    end -= 1;
+  }
+  const given = parsed.slice(0, end);
+  const reshaped = reshapeArgsCounted(given, fn);
+  const { consumed } = reshaped;
+  if (given.length > consumed) {
+    throw countMismatch(
+      SHARED_ARGS_LABEL,
+      given.length,
+      fn,
+      consumed,
+      "The same arguments go to every contract in the list."
+    );
+  }
+  if (given.length === consumed) {
+    return reshaped.args;
+  }
+  const padded = [...given, ...new Array<string>(consumed - given.length).fill("")];
+  return reshapeArgsCounted(padded, fn).args;
 }
 
 /**
@@ -708,10 +654,10 @@ export function sharedArgsForList(
   fn: ListFunction,
   copies: number
 ): unknown[] {
-  const takes = fn.inputs.length;
-  if (takes === 0) {
+  if (fn.inputs.length === 0) {
     return [];
   }
+  requireNamedTuples(fn);
   checkTextSize(raw ?? "", SHARED_ARGS_LABEL, "Use smaller arguments.");
   let parsed: unknown = raw ?? [];
   if (typeof parsed === "string") {
@@ -729,23 +675,8 @@ export function sharedArgsForList(
       `${SHARED_ARGS_LABEL} must be an array, got ${describeKind(parsed)}. Fill in the arguments for ${fn.name} (${inputNames(fn)}).`
     );
   }
-  // The editor stores unfilled trailing inputs as "", as read-contract does.
-  let end = parsed.length;
-  while (end > 0 && parsed[end - 1] === "") {
-    end -= 1;
-  }
-  const args = parsed.slice(0, end);
-  if (args.length !== takes) {
-    throw new Error(
-      `${SHARED_ARGS_LABEL} has ${plural(args.length, "value")} but ${fn.name} takes ${count(takes)} (${inputNames(fn)}). Fill in every argument; the same ones go to every contract in the list.`
-    );
-  }
   // Encoded once and reused, so its values count once.
-  const rough = estimateCalldata(args, fn);
-  checkCallSize(rough.bytes, SHARED_ARGS_LABEL);
-  checkRunValues(rough.values);
-  checkRunCalldata(rough.bytes * copies, "addresses");
-  const prepared = prepareArgs(args, fn, SHARED_ARGS_LABEL);
+  const prepared = prepareArgs(editorArgs(parsed, fn), fn, SHARED_ARGS_LABEL);
   checkRunValues(prepared.values);
   checkRunCalldata(prepared.bytes * copies, "addresses");
   return prepared.args;
