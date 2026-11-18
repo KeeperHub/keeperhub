@@ -272,9 +272,14 @@ function answer(call: Call): [boolean, string] {
         ]),
       ];
     }
+    case "nested": {
+      // Answers with the sum of every inner value.
+      const rows = parsed.args[0] as bigint[][];
+      const total = rows.flat().reduce((a, b) => a + b, BigInt(0));
+      return [true, iface.encodeFunctionResult("nested", [total])];
+    }
     case "wrap":
     case "key":
-    case "nested":
       return [true, iface.encodeFunctionResult(parsed.name, [BigInt(1)])];
     case "flag":
       return [true, iface.encodeFunctionResult("flag", [parsed.args[0]])];
@@ -1207,18 +1212,25 @@ describe("batch-read-contract - review round 2", () => {
 describe("batch-read-contract - review round 3", () => {
   const bigArrayText = `[${Array.from({ length: 450_000 }, () => "0").join(",")}]`;
 
-  it("refuses a tuple's array held as text in Argument Sets, fast and without RPC", async () => {
+  it("parses a tuple's array held as text, then caps it, fast and without RPC", async () => {
     const started = Date.now();
     expect(
       await failure(argsList(JSON.stringify([[[bigArrayText]]]), "wrap"))
-    ).toBe(
-      "Argument Sets entry 1: t.a must be an array for uint256[], got a string."
+    ).toMatch(
+      /^Argument Sets entry 1 is about [\d,]+ KB of call data; the limit is 64 KB per call\. Use smaller arguments\.$/
     );
+    expect(
+      await failure(
+        addressList([addr(1)], {
+          abiFunction: "wrap",
+          functionArgs: JSON.stringify([[bigArrayText]]),
+        })
+      )
+    ).toMatch(/^Function Arguments is about [\d,]+ KB of call data/);
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
-  it("refuses a tuple held as text in Function Arguments, fast and without RPC", async () => {
-    const started = Date.now();
+  it("refuses a top-level tuple held as text", async () => {
     expect(
       await failure(
         addressList([addr(1)], {
@@ -1229,15 +1241,44 @@ describe("batch-read-contract - review round 3", () => {
     ).toBe(
       "Function Arguments: t must be an array or object for its tuple (a), got a string."
     );
+  });
+
+  it("takes editor-shaped Function Arguments for a uint256[][] parameter", async () => {
+    // The editor stores each inner array as its JSON text.
+    const outcome = await run(
+      addressList([addr(1), addr(2)], {
+        abiFunction: "nested",
+        functionArgs: JSON.stringify([["[1,2]", "[3]"]]),
+      })
+    );
+    expect(outcome.results).toEqual([
+      { success: true, result: "6" },
+      { success: true, result: "6" },
+    ]);
+  });
+
+  it("refuses inner text that is not a JSON array", async () => {
     expect(
       await failure(
         addressList([addr(1)], {
-          abiFunction: "wrap",
-          functionArgs: JSON.stringify([[bigArrayText]]),
+          abiFunction: "nested",
+          functionArgs: JSON.stringify([["oops"]]),
         })
       )
     ).toBe(
-      "Function Arguments: t.a must be an array for uint256[], got a string."
+      "Function Arguments: m[0] must be an array for uint256[], got a string."
+    );
+    expect(await failure(argsList([[["[1,"]]], "nested"))).toBe(
+      "Argument Sets entry 1: m[0] must be an array for uint256[], got a string."
+    );
+  });
+
+  it("counts values parsed from inner text toward the 50,000 cap", async () => {
+    const inner = JSON.stringify(Array.from({ length: 1500 }, () => 0));
+    const list = `[${Array.from({ length: 40 }, () => JSON.stringify([[inner]])).join(",")}]`;
+    const started = Date.now();
+    expect(await failure(argsList(list, "nested"))).toMatch(
+      /^The calls add up to [\d,]+ values; the limit is 50,000 per run\. Use fewer or smaller entries\.$/
     );
     expect(Date.now() - started).toBeLessThan(1000);
   });

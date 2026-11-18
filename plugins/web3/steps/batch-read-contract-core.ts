@@ -262,19 +262,39 @@ function tupleNames(components: AbiParam[]): string {
   return components.map((c) => c.name || c.type).join(", ");
 }
 
+/** Nested array or tuple text, as the editor stores it, parsed once. */
+function parseNestedText(value: unknown, nested: boolean): unknown {
+  if (!nested || typeof value !== "string") {
+    return value;
+  }
+  const text = value.trim();
+  if (!(text.startsWith("[") || text.startsWith("{"))) {
+    return value;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return value;
+  }
+}
+
 /**
- * Give an argument its ABI shape without parsing anything: an array type
- * must be an array, a tuple an array or object. A positional tuple becomes an
- * object by component order when every component is named, and stays an
- * array otherwise (ethers takes both; unnamed members would collide).
+ * Give an argument its ABI shape: an array type must be an array, a tuple an
+ * array or object. Text is parsed only below the top level, where the editor
+ * stores inner arrays as text; the caller estimates the shaped result. A
+ * positional tuple becomes an object when every component is named, and
+ * stays an array otherwise (ethers takes both; unnamed members would collide).
  */
 function structureTuples(
-  value: unknown,
+  raw: unknown,
   type: string,
   components: AbiParam[] | undefined,
-  path: string
+  path: string,
+  nested = false
 ): unknown {
   const array = ARRAY_TYPE_RE.exec(type);
+  const isTuple = type === "tuple" && Boolean(components?.length);
+  const value = array || isTuple ? parseNestedText(raw, nested) : raw;
   if (array) {
     if (!Array.isArray(value)) {
       throw new Error(
@@ -282,10 +302,10 @@ function structureTuples(
       );
     }
     return value.map((item, index) =>
-      structureTuples(item, array[1], components, `${path}[${index}]`)
+      structureTuples(item, array[1], components, `${path}[${index}]`, true)
     );
   }
-  if (type !== "tuple" || !components?.length) {
+  if (!(isTuple && components)) {
     return value;
   }
   if (Array.isArray(value)) {
@@ -299,7 +319,8 @@ function structureTuples(
         value[index],
         component.type,
         component.components,
-        `${path}.${component.name || index}`
+        `${path}.${component.name || index}`,
+        true
       )
     );
     if (components.some((component) => !component.name)) {
@@ -318,7 +339,8 @@ function structureTuples(
         out[component.name],
         component.type,
         component.components,
-        `${path}.${component.name}`
+        `${path}.${component.name}`,
+        true
       );
     }
     return out;
@@ -438,9 +460,8 @@ function prepareArgs(
   args: unknown[],
   fn: ListFunction,
   where: string
-): unknown[] {
+): { args: unknown[]; bytes: number; values: number } {
   try {
-    // No string is parsed here: the estimate already bounded what is shaped.
     const shaped = fn.inputs.map((input, index) =>
       structureTuples(
         args[index],
@@ -449,8 +470,10 @@ function prepareArgs(
         input.name || `arg${index}`
       )
     );
-    checkCallSize(estimateCalldata(shaped, fn).bytes, where);
-    return fn.inputs.map((input, index) =>
+    // Estimated again on the shaped value, so parsed inner text is counted.
+    const estimate = estimateCalldata(shaped, fn);
+    checkCallSize(estimate.bytes, where);
+    const checked = fn.inputs.map((input, index) =>
       checkLeaves(
         shaped[index],
         input.type,
@@ -458,6 +481,7 @@ function prepareArgs(
         input.name || `arg${index}`
       )
     );
+    return { args: checked, ...estimate };
   } catch (error) {
     const message = (error as Error).message;
     throw new Error(
@@ -631,14 +655,17 @@ export function argSetsFromList(
   return entries.map((entry, index) => {
     const at = `${ARGS_LIST_LABEL} entry ${index + 1}`;
     const raw = entryToArgs(entry, fn, at);
-    // Bounded before any shaping or encoding, which is slow on huge arrays.
-    const estimate = estimateCalldata(raw, fn);
-    checkCallSize(estimate.bytes, at);
-    bytes += estimate.bytes;
-    values += estimate.values;
+    // Bounded before shaping, and again on the shaped value (inner text parsed).
+    const rough = estimateCalldata(raw, fn);
+    checkCallSize(rough.bytes, at);
+    checkRunValues(values + rough.values);
+    checkRunCalldata(bytes + rough.bytes, "entries");
+    const prepared = prepareArgs(raw, fn, at);
+    bytes += prepared.bytes;
+    values += prepared.values;
     checkRunValues(values);
     checkRunCalldata(bytes, "entries");
-    return prepareArgs(raw, fn, at);
+    return prepared.args;
   });
 }
 
@@ -684,11 +711,14 @@ export function sharedArgsForList(
     );
   }
   // Encoded once and reused, so its values count once.
-  const estimate = estimateCalldata(args, fn);
-  checkCallSize(estimate.bytes, SHARED_ARGS_LABEL);
-  checkRunValues(estimate.values);
-  checkRunCalldata(estimate.bytes * copies, "addresses");
-  return prepareArgs(args, fn, SHARED_ARGS_LABEL);
+  const rough = estimateCalldata(args, fn);
+  checkCallSize(rough.bytes, SHARED_ARGS_LABEL);
+  checkRunValues(rough.values);
+  checkRunCalldata(rough.bytes * copies, "addresses");
+  const prepared = prepareArgs(args, fn, SHARED_ARGS_LABEL);
+  checkRunValues(prepared.values);
+  checkRunCalldata(prepared.bytes * copies, "addresses");
+  return prepared.args;
 }
 
 /** Total encoded call data of one run, checked before any RPC call. */
