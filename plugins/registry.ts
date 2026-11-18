@@ -694,9 +694,13 @@ export function isToggleField(type: string | undefined): boolean {
   return type !== undefined && TOGGLE_FIELD_TYPES.has(type);
 }
 
+export function isDefaultOnToggleField(type: string | undefined): boolean {
+  return type !== undefined && DEFAULT_ON_TOGGLE_TYPES.has(type);
+}
+
 /** What a toggle does when it is left unset, by the rule its step applies. */
 export function toggleDefault(field: ActionConfigFieldBase): boolean {
-  return DEFAULT_ON_TOGGLE_TYPES.has(field.type)
+  return isDefaultOnToggleField(field.type)
     ? resolveDefaultOnFlag(undefined)
     : field.defaultValue === "true";
 }

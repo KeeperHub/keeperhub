@@ -589,7 +589,7 @@ If you're building this action via the [Workflows API](/api/workflows) rather th
 | Contract ABI | `abi` | JSON-encoded string (same convention as `functionArgs`) |
 | Web3 Connection | `web3Connection` | Sender routing: `"default"` (org policy), `"eoa"` (force the Turnkey EOA), or `"safe:<safeWalletId>"`. The signing wallet is your org's Turnkey wallet, resolved automatically. |
 | Network | `network` | numeric chain id as a string (e.g. `"11155111"`) |
-| Fail workflow on error | `failOnError` | boolean, on by default. `false`, or the string `"false"`, softens a failed write into `success: true` with `error` set; any other value stays on. |
+| Fail workflow on error | `failOnError` | boolean, on by default. `false`, or the string `"false"`, softens a failed write into `success: true` with `error` set. Only `true`, `false`, `"true"` or `"false"` are accepted: a save with a template or any other text in this field is refused. |
 
 See the [generic web3 write-contract example](/api/workflows#generic-web3-write-contract-example-manual-trigger) in the Workflows API docs for a full working request body.
 

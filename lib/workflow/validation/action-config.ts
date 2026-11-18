@@ -20,7 +20,9 @@ import {
   type ActionConfigFieldBase,
   findActionById,
   getAllActions,
+  isDefaultOnToggleField,
   isDisplayOnlyField,
+  isToggleField,
 } from "@/plugins/registry";
 
 // Built from the shared union so this validator, the executor dispatch table,
@@ -40,6 +42,12 @@ const RESERVED_CONFIG_KEYS = new Set([
   // it.
   "useManualAbi",
 ]);
+
+// System actions are not in the plugin registry, so their on/off toggles are
+// listed here to get the same check as a plugin toggle field.
+const SYSTEM_ACTION_TOGGLE_KEYS: Record<string, readonly string[]> = {
+  "HTTP Request": ["failOnError"],
+};
 
 const DECIMAL_PATTERN = /^\d+(?:\.\d+)?$/;
 const FIXED_ARRAY_LENGTH_PATTERN = /\[(\d+)]$/;
@@ -485,6 +493,38 @@ function validateStringLike(value: unknown): boolean {
   return typeof value === "string" || typeof value === "number";
 }
 
+// A toggle has no template mode in the editor, and a template could let the
+// data it reads switch gas sponsorship or fail-on-error off.
+function isToggleValue(value: unknown): boolean {
+  return (
+    isMissingRequiredValue(value) ||
+    value === true ||
+    value === false ||
+    value === "true" ||
+    value === "false"
+  );
+}
+
+function toggleIssue(
+  path: string,
+  actionType: string,
+  key: string,
+  value: unknown,
+  identity: { nodeId?: string; nodeLabel?: string }
+): ActionConfigValidationIssue {
+  return {
+    code: "INVALID_FIELD_TYPE",
+    path,
+    actionType,
+    field: key,
+    nodeId: identity.nodeId,
+    nodeLabel: identity.nodeLabel,
+    expected: "boolean",
+    received: value,
+    message: `Field "${key}" on action "${actionType}" is an on/off toggle: set it to true or false. Templates and other text are not accepted.`,
+  };
+}
+
 function validateFieldValue(
   field: ActionConfigFieldBase,
   value: unknown
@@ -560,7 +600,6 @@ function validateFieldValue(
             expected: field.solidityType ?? "int",
             received: value,
           };
-    case "switch":
     case "protocol-bool":
       if (valueContainsTemplate(value)) {
         return { valid: true };
@@ -725,6 +764,19 @@ export function validateWorkflowActionConfigs(
     }
 
     if (SYSTEM_ACTION_TYPES.has(actionType)) {
+      for (const key of SYSTEM_ACTION_TOGGLE_KEYS[actionType] ?? []) {
+        if (!isToggleValue(config[key])) {
+          issues.push(
+            toggleIssue(
+              `nodes[${nodeIndex}].data.config.${key}`,
+              actionType,
+              key,
+              config[key],
+              nodeIdentity(node, `nodes[${nodeIndex}]`)
+            )
+          );
+        }
+      }
       continue;
     }
 
@@ -804,7 +856,25 @@ export function validateWorkflowActionConfigs(
       if (isDisplayOnlyField(field.type)) {
         continue;
       }
-      if (!evaluateShowWhen(field.showWhen, config)) {
+      const visible = evaluateShowWhen(field.showWhen, config);
+      // Default-on toggles are read by the step even when the form hides them
+      // (e.g. Sponsor gas behind a network that is itself a template).
+      if (
+        isToggleField(field.type) &&
+        (visible || isDefaultOnToggleField(field.type)) &&
+        !isToggleValue(config[field.key])
+      ) {
+        issues.push(
+          toggleIssue(
+            `nodes[${nodeIndex}].data.config.${field.key}`,
+            actionType,
+            field.key,
+            config[field.key],
+            identity
+          )
+        );
+      }
+      if (!visible || isToggleField(field.type)) {
         continue;
       }
 
