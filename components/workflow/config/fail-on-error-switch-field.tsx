@@ -34,6 +34,7 @@ export function FailOnErrorSwitchField({
       id={id}
       label={label}
       onChange={onChange}
+      storedValue={value}
     />
   );
 }

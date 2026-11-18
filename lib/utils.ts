@@ -146,6 +146,22 @@ export function resolveDefaultOnFlag(value: unknown): boolean {
   return value !== false && value !== "false";
 }
 
+export function isBoolLiteral(value: unknown): boolean {
+  return (
+    value === true || value === false || value === "true" || value === "false"
+  );
+}
+
+/** What an on/off toggle may hold: a boolean literal, or unset for its default. */
+export function isToggleValue(value: unknown): boolean {
+  return (
+    value === undefined ||
+    value === null ||
+    value === "" ||
+    isBoolLiteral(value)
+  );
+}
+
 /**
  * Resolve a "fail workflow on error" config flag. Defaults to true (a failure
  * fails the step); only an explicit `false` (boolean or the "false" string

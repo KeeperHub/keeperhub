@@ -1,5 +1,5 @@
 import type { IntegrationType } from "@/lib/types/integration";
-import { resolveDefaultOnFlag } from "@/lib/utils";
+import { isToggleValue, resolveDefaultOnFlag } from "@/lib/utils";
 import {
   evaluateShowWhen,
   type ShowWhen,
@@ -696,6 +696,14 @@ export function isToggleField(type: string | undefined): boolean {
 
 export function isDefaultOnToggleField(type: string | undefined): boolean {
   return type !== undefined && DEFAULT_ON_TOGGLE_TYPES.has(type);
+}
+
+// Save refuses this even when the form hides the field, so the form shows it.
+export function isStrayDefaultOnToggle(
+  field: ActionConfigFieldBase,
+  value: unknown
+): boolean {
+  return isDefaultOnToggleField(field.type) && !isToggleValue(value);
 }
 
 /** What a toggle does when it is left unset, by the rule its step applies. */

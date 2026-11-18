@@ -106,6 +106,8 @@ Templates work in any string-valued config field. Common places:
 - Database Query parameters (parameterized as `$1`, `$2`, ... at execution time)
 - Run Code source (string-valued upstream data is JSON-stringified into the code so it remains valid JavaScript when inlined)
 
+On/off toggles such as **Sponsor gas**, **Fail workflow on error** and **Ignore case** take only `true` or `false`. A save with a template in one is refused.
+
 Templates do **not** work inside binary fields (images, file uploads) or inside the workflow's structural metadata (node ids, edge ids, position).
 
 ## Referencing a field the editor has not seen yet

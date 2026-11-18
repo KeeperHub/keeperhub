@@ -51,6 +51,7 @@ export const SYSTEM_ACTIONS = {
       httpHeaders: "string - JSON object of headers",
       httpBody: "string - JSON request body (ignored for GET)",
       timeout: "number - Request timeout in seconds (default 5, min 1, max 30)",
+      // An on/off input here also needs SYSTEM_ACTION_TOGGLE_KEYS in validation/action-config.ts.
       failOnError:
         "boolean - Default true. When false, a non-2xx response or timeout does not fail the step; instead the next node receives { status, data: null, error }. Use for aggregator workflows where one source being down should not fail the whole run.",
       retryAttempts:

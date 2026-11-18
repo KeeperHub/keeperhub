@@ -23,6 +23,7 @@ import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import {
   type ActionConfigFieldBase,
   isDisplayOnlyField,
+  isStrayDefaultOnToggle,
 } from "@/plugins/registry";
 
 /** The stored value, as the form would have written it. */
@@ -63,7 +64,13 @@ export function fieldIsSet(
   // `hidden` is checked for the same reason `showWhen` is - `renderField`
   // honours both - so that a group holding one cannot badge permanently with
   // a label nobody can see.
-  if (field.hidden || !evaluateShowWhen(field.showWhen, config)) {
+  if (
+    field.hidden ||
+    !(
+      evaluateShowWhen(field.showWhen, config) ||
+      isStrayDefaultOnToggle(field, config[field.key])
+    )
+  ) {
     return false;
   }
   const value = storedValue(config, field.key);

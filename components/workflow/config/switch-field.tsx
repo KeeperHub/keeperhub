@@ -2,6 +2,7 @@
 
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { isToggleValue } from "@/lib/utils";
 
 type SwitchFieldProps = {
   id: string;
@@ -10,6 +11,8 @@ type SwitchFieldProps = {
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
+  // The raw saved value, only to flag one that is neither on nor off.
+  storedValue?: unknown;
 };
 
 /**
@@ -26,7 +29,15 @@ export function SwitchField({
   checked,
   onChange,
   disabled,
+  storedValue,
 }: SwitchFieldProps) {
+  const stray = !isToggleValue(storedValue);
+  const describedBy = [
+    description ? `${id}-description` : "",
+    stray ? `${id}-stray` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="space-y-0.5">
@@ -36,9 +47,15 @@ export function SwitchField({
             {description}
           </p>
         )}
+        {stray && (
+          <p className="text-destructive text-xs" id={`${id}-stray`}>
+            This was saved as something other than on or off. Turn it off and
+            on to fix it.
+          </p>
+        )}
       </div>
       <Switch
-        aria-describedby={description ? `${id}-description` : undefined}
+        aria-describedby={describedBy || undefined}
         checked={checked}
         disabled={disabled}
         id={id}

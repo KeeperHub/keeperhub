@@ -4,6 +4,7 @@ import {
   normalizeProtocolArrayValue,
   solidityArrayItemType,
 } from "@/lib/protocol-array-value";
+import { isBoolLiteral, isToggleValue } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
@@ -13,7 +14,10 @@ import {
   UNSIGNED_INTEGER_PATTERN,
 } from "@/lib/web3/solidity-values";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
-import { SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST } from "@/lib/workflow/executor/system-action-types";
+import {
+  SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST,
+  type SystemActionType,
+} from "@/lib/workflow/executor/system-action-types";
 import { valueContainsTemplate } from "@/lib/workflow/template-ref";
 import {
   type ActionConfigField,
@@ -44,8 +48,10 @@ const RESERVED_CONFIG_KEYS = new Set([
 ]);
 
 // System actions are not in the plugin registry, so their on/off toggles are
-// listed here to get the same check as a plugin toggle field.
-const SYSTEM_ACTION_TOGGLE_KEYS: Record<string, readonly string[]> = {
+// listed here. Their fields are described in lib/mcp/workflow-schema-constants.ts.
+const SYSTEM_ACTION_TOGGLE_KEYS: Partial<
+  Record<SystemActionType, readonly string[]>
+> = {
   "HTTP Request": ["failOnError"],
 };
 
@@ -216,6 +222,10 @@ export type WorkflowNodeForValidation = {
 type FieldCheckResult =
   | { valid: true }
   | { valid: false; expected: string; received: unknown };
+
+function isSystemActionType(value: string): value is SystemActionType {
+  return SYSTEM_ACTION_TYPES.has(value);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -495,16 +505,6 @@ function validateStringLike(value: unknown): boolean {
 
 // A toggle has no template mode in the editor, and a template could let the
 // data it reads switch gas sponsorship or fail-on-error off.
-function isToggleValue(value: unknown): boolean {
-  return (
-    isMissingRequiredValue(value) ||
-    value === true ||
-    value === false ||
-    value === "true" ||
-    value === "false"
-  );
-}
-
 function toggleIssue(
   path: string,
   actionType: string,
@@ -601,13 +601,7 @@ function validateFieldValue(
             received: value,
           };
     case "protocol-bool":
-      if (valueContainsTemplate(value)) {
-        return { valid: true };
-      }
-      return value === true ||
-        value === false ||
-        value === "true" ||
-        value === "false"
+      return valueContainsTemplate(value) || isBoolLiteral(value)
         ? { valid: true }
         : { valid: false, expected: "boolean", received: value };
     case "protocol-bytes":
@@ -763,7 +757,7 @@ export function validateWorkflowActionConfigs(
       continue;
     }
 
-    if (SYSTEM_ACTION_TYPES.has(actionType)) {
+    if (isSystemActionType(actionType)) {
       for (const key of SYSTEM_ACTION_TOGGLE_KEYS[actionType] ?? []) {
         if (!isToggleValue(config[key])) {
           issues.push(
@@ -857,24 +851,26 @@ export function validateWorkflowActionConfigs(
         continue;
       }
       const visible = evaluateShowWhen(field.showWhen, config);
-      // Default-on toggles are read by the step even when the form hides them
-      // (e.g. Sponsor gas behind a network that is itself a template).
-      if (
-        isToggleField(field.type) &&
-        (visible || isDefaultOnToggleField(field.type)) &&
-        !isToggleValue(config[field.key])
-      ) {
-        issues.push(
-          toggleIssue(
-            `nodes[${nodeIndex}].data.config.${field.key}`,
-            actionType,
-            field.key,
-            config[field.key],
-            identity
-          )
-        );
+      if (isToggleField(field.type)) {
+        // Default-on toggles are read by the step even when the form hides
+        // them (e.g. Sponsor gas behind a network that is itself a template).
+        if (
+          (visible || isDefaultOnToggleField(field.type)) &&
+          !isToggleValue(config[field.key])
+        ) {
+          issues.push(
+            toggleIssue(
+              `nodes[${nodeIndex}].data.config.${field.key}`,
+              actionType,
+              field.key,
+              config[field.key],
+              identity
+            )
+          );
+        }
+        continue;
       }
-      if (!visible || isToggleField(field.type)) {
+      if (!visible) {
         continue;
       }
 

@@ -60,6 +60,7 @@ import {
   type ActionConfigField,
   type ActionConfigFieldBase,
   isFieldGroup,
+  isStrayDefaultOnToggle,
   type SelectOption,
 } from "@/plugins/registry";
 import { SchemaBuilder } from "./schema-builder";
@@ -914,7 +915,12 @@ function renderField(
     return null;
   }
 
-  if (!evaluateShowWhen(field.showWhen, config)) {
+  if (
+    !(
+      evaluateShowWhen(field.showWhen, config) ||
+      isStrayDefaultOnToggle(field, config[field.key])
+    )
+  ) {
     return null;
   }
 

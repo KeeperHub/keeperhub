@@ -108,6 +108,8 @@ Turn it off to keep the action on your own wallet. Sponsorship is then not attem
 
 Through the API or MCP the field is `sponsorGas`, and it takes `true` or `false` (or the strings `"true"` and `"false"`). A save with a template or any other text in it is refused, so data from a webhook or another step cannot switch sponsorship off.
 
+To decide per run, branch with a Condition node to two write nodes, one with **Sponsor gas** on and one with it off.
+
 The toggle only removes sponsorship. Turning it on does not override the conditions above: an unsupported network, a Safe sender, a private mempool route, or an exhausted credit allowance still pays gas from the wallet.
 
 ### Safe wallets

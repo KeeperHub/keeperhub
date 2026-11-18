@@ -42,6 +42,7 @@ export function SponsorGasField({
         id={id}
         label={label}
         onChange={onChange}
+        storedValue={value}
       />
       {!sponsored && (
         <div className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-amber-700 text-xs dark:text-amber-300">
