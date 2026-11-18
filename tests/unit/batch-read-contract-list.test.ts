@@ -856,14 +856,14 @@ describe("batch-read-contract - list argument types", () => {
 
   it("refuses integer text longer than 260 characters before encoding", async () => {
     expect(await failure(argsList(["9".repeat(261)]))).toBe(
-      "Argument Sets entry 1: x is too long for a whole number. Use at most 78 digits."
+      "Argument Sets entry 1: x is too long for a whole number. Write it in at most 78 digits, with no spaces around it."
     );
     // Padding counts: the encoder would parse all of it.
     expect(await failure(argsList([`${" ".repeat(300)}5`]))).toBe(
-      "Argument Sets entry 1: x is too long for a whole number. Use at most 78 digits."
+      "Argument Sets entry 1: x is too long for a whole number. Write it in at most 78 digits, with no spaces around it."
     );
     expect(await failure(argsList([`9${"x".repeat(500)}`]))).toBe(
-      "Argument Sets entry 1: x is too long for a whole number. Use at most 78 digits."
+      "Argument Sets entry 1: x is too long for a whole number. Write it in at most 78 digits, with no spaces around it."
     );
   });
 
@@ -2350,6 +2350,22 @@ describe("batch-read-contract - second review, round 2", () => {
   it("asks for all the digits for e-notation text", async () => {
     expect(await failure(argsList(["1e18"]))).toBe(
       'Argument Sets entry 1: x must be a whole number in digits, got "1e18". Write out all the digits.'
+    );
+    expect(await failure(argsList([".5e3"]))).toBe(
+      'Argument Sets entry 1: x must be a whole number in digits, got ".5e3". Write out all the digits.'
+    );
+  });
+
+  it("calls a number past 2^53 out of range for a type of 53 bits or less", async () => {
+    const abi = abiWith("small", [{ name: "v", type: "uint8" }]);
+    for (const list of ["[1e20]", "[-1e20]", "[1e400]"]) {
+      expect(await failure({ ...argsList(list, "small"), abi }), list).toBe(
+        "Argument Sets entry 1: v is out of range for uint8. Use a whole number from 0 to 255."
+      );
+    }
+    const signed = abiWith("small", [{ name: "v", type: "int48" }]);
+    expect(await failure({ ...argsList("[1e20]", "small"), abi: signed })).toBe(
+      "Argument Sets entry 1: v is out of range for int48. Use a whole number from -140737488355328 to 140737488355327."
     );
   });
 

@@ -36,7 +36,9 @@ const INTEGER_PREFIX_RE = /^u?int/;
 // The longest integer text that can fit 256 bits: "-0b" and 256 binary digits.
 const MAX_INTEGER_TEXT = 260;
 const DIGIT_RE = /\d/;
-const E_NOTATION_RE = /^\s*[+-]?\d+(\.\d+)?e[+-]?\d+\s*$/i;
+const E_NOTATION_RE = /^\s*[+-]?(\d+(\.\d*)?|\.\d+)e[+-]?\d+\s*$/i;
+// A JSON number past 2^53 can never fit an integer type this narrow.
+const MAX_SAFE_BITS = 53;
 const ARRAY_TYPE_RE = /^(.*)\[(\d*)\]$/;
 const ARRAY_SUFFIXES_RE = /(\[\d*\])+$/;
 // Levels an example expands; with at most 3 items shown per array it stays short.
@@ -359,7 +361,8 @@ function isPrimitive(value: unknown): boolean {
 }
 
 function tooManyDigits(path: string, value: number, type: string): string {
-  if (value < 0 && type.startsWith("uint")) {
+  const bits = Number(type.replace(INTEGER_PREFIX_RE, "")) || 256;
+  if (bits <= MAX_SAFE_BITS || (value < 0 && type.startsWith("uint"))) {
     return outOfRange(`${path} `, type);
   }
   const example = value < 0 ? "-12345678901234567890" : "12345678901234567890";
@@ -370,7 +373,7 @@ function tooManyDigits(path: string, value: number, type: string): string {
 // Text with no digit ("  ", "-") is refused too: the encoder reads it as 0.
 function integerTextError(value: string, path: string): string | undefined {
   if (value.length > MAX_INTEGER_TEXT) {
-    return `${path} is too long for a whole number. Use at most 78 digits`;
+    return `${path} is too long for a whole number. Write it in at most 78 digits, with no spaces around it`;
   }
   const refused = `${path} must be a whole number in digits, got ${showValue(value)}`;
   if (!DIGIT_RE.test(value)) {
