@@ -647,6 +647,15 @@ describe("missing-reference marker", () => {
     expect(safeEvaluateCondition("!__v0", { __v0: forged })).toBe(false);
   });
 
+  it("knows a marker made by another copy of the module", () => {
+    const fromOtherBundle = {
+      [Symbol.for("keeperhub.missingReference")]: true,
+      detail: "x",
+    };
+    expect(isMissingReference(fromOtherBundle)).toBe(true);
+    expect(isMissingReference(makeMissingReference("x"))).toBe(true);
+  });
+
   it("still marks a real missing reference", () => {
     const marker = makeMissingReference("x was not found.");
     expect(isMissingReference(marker)).toBe(true);

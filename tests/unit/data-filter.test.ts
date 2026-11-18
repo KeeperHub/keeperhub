@@ -1189,6 +1189,17 @@ describe("data/filter", () => {
   });
 
   describe("Value read as a number or kept as text", () => {
+    it("keeps an 18-decimal token amount exact under equals and not equals", async () => {
+      const items = '["1", "1.000000000000000001", "1.000000000000000002"]';
+      const value = "1.000000000000000001";
+      const equal = await ok({ source: items, operator: "===", value });
+      expect(equal.indexes).toEqual([1]);
+      const notEqual = await ok({ source: items, operator: "!==", value });
+      expect(notEqual.indexes).toEqual([0, 2]);
+      const greater = await ok({ source: items, operator: ">", value });
+      expect(greater.indexes).toEqual([2]);
+    });
+
     it("compares a long decimal Value exactly, without rounding it", async () => {
       const value = "0.1000000000000000000001";
       const equal = await ok({
@@ -1351,6 +1362,64 @@ describe("data/filter", () => {
         skippedLabels: [],
         skipped: 1,
       });
+    });
+  });
+
+  describe("second review fixes", () => {
+    it("reads unset Ignore case as the field's declared default", async () => {
+      const unset = await ok({
+        source: '["ABC", "abc"]',
+        operator: "===",
+        value: "abc",
+      });
+      expect(unset.indexes).toEqual([1]);
+      const blank = await ok({
+        source: '["ABC", "abc"]',
+        operator: "===",
+        value: "abc",
+        ignoreCase: "",
+      });
+      expect(blank.indexes).toEqual([1]);
+    });
+
+    it("still refuses an Ignore case that is not true or false", async () => {
+      const result = await fails({
+        source: '["abc"]',
+        operator: "===",
+        value: "abc",
+        ignoreCase: "True",
+      });
+      expect(result.error).toContain("Ignore case must be true or false.");
+    });
+
+    it("gives each test kind the same untestable reasons as before", async () => {
+      const items = source([
+        { v: null },
+        { v: [1] },
+        { v: { a: 1 } },
+        {},
+        { v: "x" },
+      ]);
+      const cases: [string, number[]][] = [
+        [">", [0, 1, 2, 3, 4]],
+        ["isTrue", [0, 1, 2, 3, 4]],
+        ["contains", [0, 1, 2, 3]],
+        ["arrayIsEmpty", [0, 2, 3, 4]],
+        ["objectHasKey", [0, 1, 3, 4]],
+        ["==", [1, 2, 3]],
+        ["===", [3]],
+        ["exists", []],
+        ["isEmpty", []],
+      ];
+      for (const [operator, skipped] of cases) {
+        const result = await ok({
+          source: items,
+          field: "v",
+          operator,
+          value: "1",
+        });
+        expect(result.skippedIndexes, operator).toEqual(skipped);
+      }
     });
   });
 });

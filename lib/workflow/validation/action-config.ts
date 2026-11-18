@@ -4,6 +4,7 @@ import {
   normalizeProtocolArrayValue,
   solidityArrayItemType,
 } from "@/lib/protocol-array-value";
+import { resolveSwitch } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
@@ -563,7 +564,12 @@ function validateFieldValue(
             expected: field.solidityType ?? "int",
             received: value,
           };
+    // A plain switch has no template mode in the editor, and its step takes
+    // only true or false.
     case "switch":
+      return resolveSwitch(value, undefined) === undefined
+        ? { valid: false, expected: "boolean", received: value }
+        : { valid: true };
     case "protocol-bool":
       if (valueContainsTemplate(value)) {
         return { valid: true };
@@ -879,7 +885,7 @@ export function validateWorkflowActionConfigs(
         field: crossFieldIssue.field,
         nodeId: identity.nodeId,
         nodeLabel: identity.nodeLabel,
-        received: config[crossFieldIssue.field],
+        // No `received`: the field can hold a whole typed array.
         message: crossFieldIssue.message,
       });
     }

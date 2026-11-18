@@ -147,6 +147,26 @@ export function resolveDefaultOnFlag(value: unknown): boolean {
 }
 
 /**
+ * Read a plain on/off switch: unset (undefined, null or "") takes its declared
+ * default, which is off when none is declared. The editor and the step both
+ * read a switch through this. Undefined for any other value.
+ */
+export function resolveSwitch(
+  value: unknown,
+  defaultValue: unknown
+): boolean | undefined {
+  const unset = value === undefined || value === null || value === "";
+  const raw = unset ? (defaultValue ?? false) : value;
+  if (raw === true || raw === "true") {
+    return true;
+  }
+  if (raw === false || raw === "false") {
+    return false;
+  }
+  return;
+}
+
+/**
  * Resolve a "fail workflow on error" config flag. Defaults to true (a failure
  * fails the step); only an explicit `false` (boolean or the "false" string
  * the visual editor may persist) opts into soft-fail. Shared by any step that

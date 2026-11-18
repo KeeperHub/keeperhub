@@ -156,47 +156,85 @@ function isUnary(op: FilterOperator): boolean {
   );
 }
 
-// Operators that take no Value: Condition's unary operators plus keep every item.
-export const VALUELESS_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter(isUnary);
+/**
+ * How the step reads an item for a test, which decides the items it applies
+ * to: "presence" tests take any item, a missing field included; "any" (equals,
+ * not equals) takes any item that is there; "loose" only primitives.
+ */
+export type FilterTestKind =
+  | "none"
+  | "presence"
+  | "any"
+  | "loose"
+  | "text"
+  | "number"
+  | "boolean"
+  | "array"
+  | "object";
 
-// Text tests that compare against Value (is empty / is not empty take none).
-export const TEXT_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter((op) => categoryOf(op) === "text" && !isUnary(op));
+/**
+ * What one operator reads. The step, the save-time check and the form's
+ * showWhen all come from this, so a hidden setting is never read.
+ */
+export type FilterOperatorRule = {
+  test: FilterTestKind;
+  readsField: boolean;
+  readsValue: boolean;
+  readsIgnoreCase: boolean;
+  // Reads "If an item can't be tested": the test can meet an item it can't apply to.
+  canSkip: boolean;
+};
 
-export const NUMBER_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter((op) => categoryOf(op) === "number");
+function testKindOf(op: FilterOperator): FilterTestKind {
+  const category = categoryOf(op);
+  if (category === undefined) {
+    return "none";
+  }
+  if (isUnary(op) && (category === "general" || category === "text")) {
+    return "presence";
+  }
+  if (category === "general") {
+    return op === "==" || op === "!=" ? "loose" : "any";
+  }
+  return category;
+}
 
-export const BOOLEAN_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter((op) => categoryOf(op) === "boolean");
+function ruleOf(op: FilterOperator): FilterOperatorRule {
+  const test = testKindOf(op);
+  const readsValue = !isUnary(op);
+  return {
+    test,
+    readsField: test !== "none",
+    readsValue,
+    // Comparisons of text against Value.
+    readsIgnoreCase:
+      readsValue &&
+      (test === "any" ||
+        test === "loose" ||
+        test === "text" ||
+        op === "arrayContains"),
+    canSkip: test !== "none" && test !== "presence",
+  };
+}
 
-export const ARRAY_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter((op) => categoryOf(op) === "array");
+const RULES = new Map<FilterOperator, FilterOperatorRule>(
+  ALL_VALUES.map((op) => [op, ruleOf(op)])
+);
 
-export const OBJECT_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter((op) => categoryOf(op) === "object");
+export function filterOperatorRule(op: FilterOperator): FilterOperatorRule {
+  const rule = RULES.get(op);
+  if (!rule) {
+    throw new Error(`Unknown operator "${op}".`);
+  }
+  return rule;
+}
 
-// Unary General and Text tests: they ask whether a value is there at all.
-export const PRESENCE_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter(
-    (op) =>
-      op !== KEEP_ALL_OPERATOR &&
-      isUnary(op) &&
-      (categoryOf(op) === "general" || categoryOf(op) === "text")
-  );
-
-// Soft equals and soft not equals compare loosely, so they only see primitives.
-export const LOOSE_EQUALITY_FILTER_OPERATORS: readonly FilterOperator[] = [
-  "==",
-  "!=",
-] satisfies readonly FilterConditionOperator[];
-
-// Where Ignore case applies: comparisons of text against Value.
-export const CASE_FOLDING_FILTER_OPERATORS: readonly FilterOperator[] = [
-  ...ALL_VALUES.filter((op) => categoryOf(op) === "general" && !isUnary(op)),
-  ...TEXT_FILTER_OPERATORS,
-  ...(["arrayContains"] satisfies FilterConditionOperator[]),
-];
+/** The operators whose rule passes `predicate`, in option order. */
+export function filterOperatorsWhere(
+  predicate: (rule: FilterOperatorRule) => boolean
+): FilterOperator[] {
+  return ALL_VALUES.filter((op) => predicate(filterOperatorRule(op)));
+}
 
 export function filterOperatorLabel(operator: FilterOperator): string {
   return qualifiedOptionLabel(FILTER_OPERATOR_OPTIONS, operator) ?? operator;

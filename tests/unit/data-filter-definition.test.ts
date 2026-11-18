@@ -14,10 +14,14 @@ import {
   validateWorkflowActionConfigs,
 } from "@/lib/workflow/validation/action-config";
 import {
+  checkFilterConfig,
+  IGNORE_CASE_DEFAULT,
+} from "@/plugins/data/filter-config";
+import {
   FILTER_OPERATOR_OPTIONS,
+  filterOperatorRule,
+  filterOperatorsWhere,
   KEEP_ALL_OPERATOR,
-  PRESENCE_FILTER_OPERATORS,
-  VALUELESS_FILTER_OPERATORS,
 } from "@/plugins/data/filter-operators";
 import { filterArray } from "@/plugins/data/steps/filter-core";
 import {
@@ -32,6 +36,13 @@ const ROOT = join(import.meta.dirname, "..", "..");
 // quote and with or without a semicolon; not `import type`.
 const IMPORT_RE =
   /^(?:(?:import|export)\s+(?!type\b)[^;]*?\sfrom\s+|import\s+)["']([^"']+)["']/gm;
+
+const VALUELESS_FILTER_OPERATORS = filterOperatorsWhere(
+  (rule) => !rule.readsValue
+);
+const PRESENCE_FILTER_OPERATORS = filterOperatorsWhere(
+  (rule) => rule.test === "presence"
+);
 
 const CONDITION_OPERATORS = Object.keys(
   OPERATOR_METADATA
@@ -550,6 +561,91 @@ describe("data/filter definition", () => {
         expect(loaded, heavy).not.toContain(heavy);
       }
       expect(loaded).toContain("plugins/data/filter-config.ts");
+    });
+  });
+  describe("second review fixes", () => {
+    const RULE_FIELDS = {
+      field: "readsField",
+      value: "readsValue",
+      ignoreCase: "readsIgnoreCase",
+      untestable: "canSkip",
+    } as const;
+    type RuleField = keyof typeof RULE_FIELDS;
+
+    it("shows each operator-dependent field exactly where the step reads it", () => {
+      for (const option of FILTER_OPERATOR_OPTIONS) {
+        const rule = filterOperatorRule(option.value);
+        const shown = visibleKeys({ operator: option.value });
+        for (const key of Object.keys(RULE_FIELDS) as RuleField[]) {
+          expect(shown.includes(key), `${option.value} ${key}`).toBe(
+            rule[RULE_FIELDS[key]]
+          );
+        }
+      }
+    });
+
+    it("checks at save only the settings the operator reads", () => {
+      for (const option of FILTER_OPERATOR_OPTIONS) {
+        const rule = filterOperatorRule(option.value);
+        const read = (Object.keys(RULE_FIELDS) as RuleField[]).filter(
+          (key) => rule[RULE_FIELDS[key]]
+        );
+        // Each bad setting alone: refused exactly when the operator reads it.
+        const bad: Record<RuleField, unknown> = {
+          field: "a..b",
+          value: "",
+          ignoreCase: "maybe",
+          untestable: "maybe",
+        };
+        for (const key of Object.keys(bad) as RuleField[]) {
+          const issue = checkFilterConfig({
+            source: "[1]",
+            operator: option.value,
+            value: "1",
+            [key]: bad[key],
+          });
+          expect(issue?.field, `${option.value} ${key}`).toBe(
+            read.includes(key) ? key : undefined
+          );
+        }
+      }
+    });
+
+    it("refuses a template in Ignore case at save", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "[1]",
+            value: "1",
+            ignoreCase: "{{@cfg:Cfg.result.ignoreCase}}",
+          })
+        ),
+      ]);
+      expect(validation.valid).toBe(false);
+      expect(validation.issues.map((issue) => issue.field)).toEqual([
+        "ignoreCase",
+      ]);
+    });
+
+    it("does not echo a typed Source back in a cross-field issue", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: JSON.stringify([0, 1, 2, 3, 4]),
+            value: "1",
+            labels: '["a", "b", "c"]',
+          })
+        ),
+      ]);
+      expect(validation.issues).toHaveLength(1);
+      expect(validation.issues[0]).not.toHaveProperty("received");
+      expect(validation.issues[0].message).toContain(
+        "Labels has 3 entries but Source has 5"
+      );
+    });
+
+    it("declares Ignore case with the default the step applies", () => {
+      expect(field("ignoreCase").defaultValue).toBe(IGNORE_CASE_DEFAULT);
     });
   });
 });

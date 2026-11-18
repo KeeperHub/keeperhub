@@ -16,9 +16,9 @@
  */
 
 // A symbol key, so data parsed from JSON (an upstream item, a webhook body)
-// can never pass for the marker. It must never cross a step boundary: a
-// serialized marker loses the key and reads as ordinary data.
-const MISSING_REFERENCE = Symbol("keeperhub.missingReference");
+// can never pass for the marker. Symbol.for, so a copy of this module in
+// another bundle still knows it. A serialized marker loses the key.
+const MISSING_REFERENCE = Symbol.for("keeperhub.missingReference");
 
 export type MissingReference = {
   readonly [MISSING_REFERENCE]: true;

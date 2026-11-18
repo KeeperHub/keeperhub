@@ -4,19 +4,14 @@
  * editor loads, can run the save-time check without bundling it.
  */
 
-import { getErrorMessage } from "@/lib/utils";
+import { getErrorMessage, resolveSwitch } from "@/lib/utils";
 import { valueContainsTemplate } from "@/lib/workflow/template-ref";
 import {
-  CASE_FOLDING_FILTER_OPERATORS,
   DEFAULT_FILTER_OPERATOR,
   FILTER_OPERATOR_OPTIONS,
   type FilterOperator,
   filterOperatorLabel,
-  KEEP_ALL_OPERATOR,
-  NUMBER_FILTER_OPERATORS,
-  PRESENCE_FILTER_OPERATORS,
-  TEXT_FILTER_OPERATORS,
-  VALUELESS_FILTER_OPERATORS,
+  filterOperatorRule,
 } from "./filter-operators";
 import { parseJsonValue, splitPath } from "./steps/resolve-path-core";
 
@@ -27,6 +22,9 @@ const MAX_NUMBER_VALUE_LENGTH = 100;
 const MAX_PATH_LENGTH = 500;
 const MAX_VALUE_LENGTH = 10_000;
 const MAX_ECHOED_LENGTH = 60;
+
+/** Ignore case's form default, which the step also applies when it is unset. */
+export const IGNORE_CASE_DEFAULT = "false";
 
 const DECIMAL_TEXT = /^[+-]?\d+(\.\d+)?$/;
 const WHOLE_NUMBER_TEXT = /^\d+$/;
@@ -104,17 +102,12 @@ function resolveOperator(raw: unknown): FilterOperator {
   return operator as FilterOperator;
 }
 
-function readSwitch(raw: unknown, name: string): boolean {
-  if (raw === undefined || raw === null || raw === "") {
-    return false;
+function readSwitch(raw: unknown, name: string, defaultValue: string): boolean {
+  const on = resolveSwitch(raw, defaultValue);
+  if (on === undefined) {
+    throw new Error(`${name} must be true or false.`);
   }
-  if (raw === true || raw === "true") {
-    return true;
-  }
-  if (raw === false || raw === "false") {
-    return false;
-  }
-  throw new Error(`${name} must be true or false.`);
+  return on;
 }
 
 function readMissingReturnMode(raw: unknown): MissingReturnMode {
@@ -142,19 +135,20 @@ function readUntestableMode(raw: unknown): UntestableItemMode {
 // so a stale hidden value can neither steer nor fail the step.
 export function readSettings(input: FilterCoreInput): FilterSettings {
   const operator = resolveOperator(input.operator);
-  const keepAll = operator === KEEP_ALL_OPERATOR;
-  const fieldPath = keepAll ? "" : readPath(input.field, "Field to test");
+  const rule = filterOperatorRule(operator);
+  const fieldPath = rule.readsField
+    ? readPath(input.field, "Field to test")
+    : "";
   const returnField = readPath(input.returnField, "Return field");
-  const canSkip = !(keepAll || PRESENCE_FILTER_OPERATORS.includes(operator));
   return {
     operator,
     testPath: splitPath(fieldPath),
     returnPath: splitPath(returnField || fieldPath),
     returnField: returnField || fieldPath,
-    untestable: canSkip ? readUntestableMode(input.untestable) : "skip",
+    untestable: rule.canSkip ? readUntestableMode(input.untestable) : "skip",
     missingReturn: readMissingReturnMode(input.missingReturn),
-    ignoreCase: CASE_FOLDING_FILTER_OPERATORS.includes(operator)
-      ? readSwitch(input.ignoreCase, "Ignore case")
+    ignoreCase: rule.readsIgnoreCase
+      ? readSwitch(input.ignoreCase, "Ignore case", IGNORE_CASE_DEFAULT)
       : false,
   };
 }
@@ -402,7 +396,7 @@ function rejectUnusableNumber(value: unknown, label: string): void {
 }
 
 function valueTip(operator: FilterOperator): string {
-  if (NUMBER_FILTER_OPERATORS.includes(operator)) {
+  if (filterOperatorRule(operator).test === "number") {
     return " Enter a number, e.g. 100 or 0x64.";
   }
   if (operator === "arrayLength") {
@@ -416,6 +410,7 @@ function valueTip(operator: FilterOperator): string {
 
 export function readValue(raw: unknown, operator: FilterOperator): unknown {
   const label = filterOperatorLabel(operator);
+  const { test } = filterOperatorRule(operator);
   if (typeof raw === "object" && raw !== null) {
     throw new Error(
       `Value for "${label}" must be a single value, not a list or object.`
@@ -426,7 +421,7 @@ export function readValue(raw: unknown, operator: FilterOperator): unknown {
   if (
     typeof raw === "string" &&
     raw.length > MAX_VALUE_LENGTH &&
-    !NUMBER_FILTER_OPERATORS.includes(operator)
+    test !== "number"
   ) {
     throw new Error(
       `Value for "${label}" is longer than ${MAX_VALUE_LENGTH.toLocaleString(EN_US)} characters.`
@@ -441,10 +436,10 @@ export function readValue(raw: unknown, operator: FilterOperator): unknown {
     throw new Error(`Value is required for "${label}".${valueTip(operator)}`);
   }
   const text = typeof value === "string" ? (unquote(value) ?? value) : value;
-  if (TEXT_FILTER_OPERATORS.includes(operator) || operator === "objectHasKey") {
+  if (test === "text" || operator === "objectHasKey") {
     return String(text);
   }
-  if (NUMBER_FILTER_OPERATORS.includes(operator)) {
+  if (test === "number") {
     return requireNumeric(text, label);
   }
   if (operator === "arrayLength") {
@@ -469,22 +464,21 @@ export function checkFilterConfig(
   } catch (error) {
     return { field: "operator", message: getErrorMessage(error) };
   }
+  const rule = filterOperatorRule(operator);
   // Typed Source is parsed once and its length reused for the Labels check.
   let sourceLength: number | undefined;
-  // Same visibility rules as readSettings, field by field, so the issue
-  // names the field to fix.
+  // The operator's rule, as readSettings applies it, field by field, so the
+  // issue names the field to fix.
   const checks: [string, () => void][] = [
     [
       "field",
-      () =>
-        operator === KEEP_ALL_OPERATOR ||
-        readPath(typed("field"), "Field to test"),
+      () => !rule.readsField || readPath(typed("field"), "Field to test"),
     ],
     ["returnField", () => readPath(typed("returnField"), "Return field")],
     [
       "value",
       () =>
-        VALUELESS_FILTER_OPERATORS.includes(operator) ||
+        !rule.readsValue ||
         // Read raw, not through typed(): readValue needs the original type.
         valueContainsTemplate(config.value) ||
         readValue(config.value, operator),
@@ -492,15 +486,12 @@ export function checkFilterConfig(
     [
       "ignoreCase",
       () =>
-        CASE_FOLDING_FILTER_OPERATORS.includes(operator) &&
-        readSwitch(typed("ignoreCase"), "Ignore case"),
+        rule.readsIgnoreCase &&
+        readSwitch(typed("ignoreCase"), "Ignore case", IGNORE_CASE_DEFAULT),
     ],
     [
       "untestable",
-      () =>
-        operator === KEEP_ALL_OPERATOR ||
-        PRESENCE_FILTER_OPERATORS.includes(operator) ||
-        readUntestableMode(typed("untestable")),
+      () => !rule.canSkip || readUntestableMode(typed("untestable")),
     ],
     ["missingReturn", () => readMissingReturnMode(typed("missingReturn"))],
     [

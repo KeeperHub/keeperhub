@@ -24,19 +24,13 @@ import {
   toSourceArray,
 } from "../filter-config";
 import {
-  ARRAY_FILTER_OPERATORS,
-  BOOLEAN_FILTER_OPERATORS,
   baseConditionOperator,
   type FilterOperator,
+  type FilterTestKind,
   filterOperatorLabel,
+  filterOperatorRule,
   isNegatedTextOperator,
   KEEP_ALL_OPERATOR,
-  LOOSE_EQUALITY_FILTER_OPERATORS,
-  NUMBER_FILTER_OPERATORS,
-  OBJECT_FILTER_OPERATORS,
-  PRESENCE_FILTER_OPERATORS,
-  TEXT_FILTER_OPERATORS,
-  VALUELESS_FILTER_OPERATORS,
 } from "../filter-operators";
 import { isPlainObject, resolveSegments } from "./resolve-path-core";
 
@@ -110,66 +104,57 @@ function describeShape(value: unknown): string {
   return "its value is a number";
 }
 
-function applicableTo(
-  value: unknown,
-  operator: FilterOperator
-): { value: unknown } | Untestable | undefined {
-  if (NUMBER_FILTER_OPERATORS.includes(operator)) {
-    const numeric = toNumeric(value);
-    if (numeric !== undefined) {
-      return { value: numeric };
-    }
-    return {
-      reason:
-        typeof value === "string"
-          ? "its value is text that is not a number"
-          : describeShape(value),
-    };
+type ItemReader = (value: unknown) => { value: unknown } | Untestable;
+
+function readNumber(value: unknown): { value: unknown } | Untestable {
+  const numeric = toNumeric(value);
+  if (numeric !== undefined) {
+    return { value: numeric };
   }
-  if (BOOLEAN_FILTER_OPERATORS.includes(operator)) {
-    return typeof value === "boolean"
-      ? { value }
-      : { reason: `${describeShape(value)}, not true or false` };
-  }
-  if (TEXT_FILTER_OPERATORS.includes(operator)) {
-    const textual =
-      typeof value === "string" ||
-      typeof value === "number" ||
-      typeof value === "bigint";
-    return textual ? { value } : { reason: describeShape(value) };
-  }
-  return;
+  return {
+    reason:
+      typeof value === "string"
+        ? "its value is text that is not a number"
+        : describeShape(value),
+  };
 }
 
-// What the test sees for an item, or why the test cannot apply to it.
-function toTestedValue(
-  value: unknown,
-  operator: FilterOperator
-): { value: unknown } | Untestable {
-  if (PRESENCE_FILTER_OPERATORS.includes(operator)) {
-    return { value };
-  }
-  if (value === undefined) {
-    return { reason: "the field is missing" };
-  }
-  const typed = applicableTo(value, operator);
-  if (typed) {
-    return typed;
-  }
-  if (ARRAY_FILTER_OPERATORS.includes(operator)) {
-    return Array.isArray(value)
+function readText(value: unknown): { value: unknown } | Untestable {
+  const textual =
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "bigint";
+  return textual ? { value } : { reason: describeShape(value) };
+}
+
+// What the test sees for an item that is there, or why it cannot apply.
+const ITEM_READERS: Record<FilterTestKind, ItemReader> = {
+  none: (value) => ({ value }),
+  presence: (value) => ({ value }),
+  any: (value) => ({ value }),
+  loose: (value) =>
+    isPrimitive(value) ? { value } : { reason: describeShape(value) },
+  text: readText,
+  number: readNumber,
+  boolean: (value) =>
+    typeof value === "boolean"
       ? { value }
-      : { reason: "its value is not a list" };
+      : { reason: `${describeShape(value)}, not true or false` },
+  array: (value) =>
+    Array.isArray(value) ? { value } : { reason: "its value is not a list" },
+  object: (value) =>
+    isPlainObject(value) ? { value } : { reason: "its value is not an object" },
+};
+
+const MISSING_FIELD: Untestable = { reason: "the field is missing" };
+
+// Picked once per run; presence tests are the only ones that see a missing field.
+function itemReaderFor(test: FilterTestKind): ItemReader {
+  const read = ITEM_READERS[test];
+  if (test === "presence") {
+    return read;
   }
-  if (OBJECT_FILTER_OPERATORS.includes(operator)) {
-    return isPlainObject(value)
-      ? { value }
-      : { reason: "its value is not an object" };
-  }
-  if (LOOSE_EQUALITY_FILTER_OPERATORS.includes(operator)) {
-    return isPrimitive(value) ? { value } : { reason: describeShape(value) };
-  }
-  return { value };
+  return (value) => (value === undefined ? MISSING_FIELD : read(value));
 }
 
 type Matcher = (fieldValue: unknown) => boolean | Untestable;
@@ -182,9 +167,8 @@ function makeMatcher(
   if (operator === KEEP_ALL_OPERATOR) {
     return () => true;
   }
-  const value = VALUELESS_FILTER_OPERATORS.includes(operator)
-    ? undefined
-    : readValue(rawValue, operator);
+  const rule = filterOperatorRule(operator);
+  const value = rule.readsValue ? readValue(rawValue, operator) : undefined;
   const comparison = ignoreCase ? foldCase(value) : value;
   // A Value kept as exact text that is also exactly a number. Under equals,
   // number items are compared with the number, as a Condition literal would
@@ -201,11 +185,12 @@ function makeMatcher(
     operatorToExpression(baseConditionOperator(operator), ITEM_VAR, VALUE_VAR)
   );
   const negate = isNegatedTextOperator(operator);
+  const readItem = itemReaderFor(rule.test);
   const test = (item: unknown, against: unknown): boolean =>
     Boolean(evaluate({ [ITEM_VAR]: item, [VALUE_VAR]: against }));
 
   return (fieldValue: unknown): boolean | Untestable => {
-    const tested = toTestedValue(fieldValue, operator);
+    const tested = readItem(fieldValue);
     if ("reason" in tested) {
       return tested;
     }
