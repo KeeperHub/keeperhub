@@ -117,6 +117,11 @@ function mapFieldType(field: ActionConfigFieldBase): string {
       return "string (event name from ABI)";
     case "abi-event-args":
       return 'string (JSON object of indexed event parameter name to value, e.g. {"from":"0x..."}) - omit a parameter to match any value for it; only indexed parameters can be filtered';
+    case "args-list-builder":
+      return 'string (JSON array of argument arrays, one per call, in the function\'s parameter order, e.g. [["0xabc..."],["0xdef..."]])';
+    case "call-list-builder":
+      // A write batch is single-chain, so its rows carry no network.
+      return `string (JSON array of calls, each {${field.hideNetworkColumn ? "" : '"network":"1",'}"contractAddress":"0x...","abi":"<JSON ABI string>","abiFunction":"balanceOf","args":["0x..."]})`;
     case "event-list-builder":
       return 'string (JSON array of up to 20 entries, each {"contractAddress":"0x...","abi":"<JSON ABI string>","eventName":"Transfer","eventArgs":{"from":"0x..."}}) - eventArgs is optional and takes the same indexed-argument filter as a single event';
     case "select": {
@@ -483,6 +488,7 @@ export async function buildActionSchemasResponse(
       "web3 read actions (check-balance, read-contract) don't require wallet integration",
       "web3 write actions (transfer-funds, write-contract) require wallet integration",
       'web3/query-events queries one contract event by default, and eventQueries is only read when queryMode is "multiple". To watch several events or contracts in one node, set queryMode to "multiple" and pass eventQueries instead of the top-level contractAddress, abi, eventName and eventArgs. Each returned event then carries contractAddress and eventName, ordered by block then log index.',
+      'web3/batch-read-contract in uniform mode reads its calls from argsList rows by default. Set callsFrom to "args-list" to take them from argsFromList (a JSON array or a {{@nodeId:Label.field}} template resolving to one, each entry one call\'s arguments in order, or the bare value for a function with one plain argument), or to "address-list" to call abiFunction with the same functionArgs on every address in contractAddresses (a JSON array of 0x addresses or a template resolving to one); abiFetchAddress is only used to fetch the ABI there. Only the fields of the chosen source are read. Results keep the list\'s order, up to 5,000 calls per run; an empty list or a bad entry fails the step before any call.',
       "web3/query-transactions queries historical transactions by function call using block explorer APIs. Use it when the contract does not emit events for the operations you need to monitor. Provide functionArgs as a JSON array where empty strings are wildcards.",
       'tokenConfig must be a JSON string with format: {"mode":"custom","customToken":{"address":"0x...","symbol":"USDC"}}. On Solana actions (get-spl-token-balance, transfer-spl-token) customToken.address is the base58 mint address. Do NOT use a flat {address, symbol, decimals} object',
       "Use projectId to organize related workflows into a project (e.g., all Sky ESM workflows in one project)",
