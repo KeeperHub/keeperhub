@@ -120,7 +120,7 @@ describe("toggle fields at save", () => {
     ]);
     expect(result.issues).toMatchObject([
       {
-        message: `Field "sponsorGas" on action "${WRITE_CONTRACT}" is an on/off toggle: set it to true or false; anything else, a template included, is refused.`,
+        message: `Field "sponsorGas" on action "${WRITE_CONTRACT}" is an on/off toggle: set it to true or false, or remove it for the default; anything else, a template included, is refused.`,
       },
     ]);
     expect(formatActionConfigValidationResponse(result).message).toBe(

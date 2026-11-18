@@ -698,12 +698,18 @@ export function isDefaultOnToggleField(type: string | undefined): boolean {
   return type !== undefined && DEFAULT_ON_TOGGLE_TYPES.has(type);
 }
 
-// Save refuses this even when the form hides the field, so the form shows it.
-export function isStrayDefaultOnToggle(
+/**
+ * Whether the config form shows a field. A default-on toggle holding neither
+ * on nor off is shown even when its condition fails, as save refuses it.
+ */
+export function isFieldShown(
   field: ActionConfigFieldBase,
-  value: unknown
+  config: Record<string, unknown>
 ): boolean {
-  return isDefaultOnToggleField(field.type) && !isToggleValue(value);
+  return (
+    evaluateShowWhen(field.showWhen, config) ||
+    (isDefaultOnToggleField(field.type) && !isToggleValue(config[field.key]))
+  );
 }
 
 /** What a toggle does when it is left unset, by the rule its step applies. */

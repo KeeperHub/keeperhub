@@ -47,7 +47,6 @@ import {
   resolveAbiFunction,
 } from "@/lib/abi/utils";
 import { summariseGroup } from "@/lib/workflow/editor/group-summary";
-import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { parseAddressBookSelection } from "@/lib/address-book-selection";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { isToggleValue } from "@/lib/utils";
@@ -61,7 +60,7 @@ import {
   type ActionConfigField,
   type ActionConfigFieldBase,
   isFieldGroup,
-  isStrayDefaultOnToggle,
+  isFieldShown,
   isToggleField,
   type SelectOption,
 } from "@/plugins/registry";
@@ -917,12 +916,7 @@ function renderField(
     return null;
   }
 
-  if (
-    !(
-      evaluateShowWhen(field.showWhen, config) ||
-      isStrayDefaultOnToggle(field, config[field.key])
-    )
-  ) {
+  if (!isFieldShown(field, config)) {
     return null;
   }
 
@@ -1017,8 +1011,7 @@ function holdsStrayToggle(
       !field.hidden &&
       isToggleField(field.type) &&
       !isToggleValue(config[field.key]) &&
-      (evaluateShowWhen(field.showWhen, config) ||
-        isStrayDefaultOnToggle(field, config[field.key]))
+      isFieldShown(field, config)
   );
 }
 

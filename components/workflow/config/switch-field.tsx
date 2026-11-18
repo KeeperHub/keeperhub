@@ -54,12 +54,13 @@ export function SwitchField({
         {stray && (
           <div className="space-y-1">
             <p className="text-destructive text-xs" id={`${id}-stray`}>
-              Saved as a template or text, not on or off, so this workflow
-              can't be saved.
+              Holds a template or other value, not on or off, so this workflow
+              won't save.
             </p>
             {onReset && !disabled && (
               <Button
-                className="h-auto p-0 text-xs"
+                aria-label={`Reset ${label} to default`}
+                className="h-auto min-h-6 p-0 py-1 text-xs"
                 onClick={onReset}
                 type="button"
                 variant="link"

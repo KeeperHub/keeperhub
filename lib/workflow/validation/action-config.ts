@@ -521,7 +521,7 @@ function toggleIssue(
     nodeLabel: identity.nodeLabel,
     expected: "boolean",
     received: value,
-    message: `Field "${key}" on action "${actionType}" is an on/off toggle: set it to true or false; anything else, a template included, is refused.`,
+    message: `Field "${key}" on action "${actionType}" is an on/off toggle: set it to true or false, or remove it for the default; anything else, a template included, is refused.`,
   };
 }
 

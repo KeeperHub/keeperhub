@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // Save refuses a toggle holding anything but on or off, even when the form
 // hides it, so the form has to show it with a way to fix it.
-import { act, useState } from "react";
+import { act, type ReactElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -18,7 +18,7 @@ import type { ActionConfigField } from "@/plugins/registry";
 
 const TEMPLATE = "{{@webhook:Webhook.flag}}";
 const HINT =
-  "Saved as a template or text, not on or off, so this workflow can't be saved.";
+  "Holds a template or other value, not on or off, so this workflow won't save.";
 const RESET = "Reset to default";
 // A network sponsorship does not cover, so Sponsor gas is hidden.
 const UNCOVERED_NETWORK = "999999999";
@@ -201,40 +201,52 @@ describe("Ignore case holding a stray value", () => {
 });
 
 describe("the stray-value hint on every toggle", () => {
-  const toggles = [
-    (value: unknown, onReset: () => void, disabled: boolean) => (
-      <SponsorGasField
-        disabled={disabled}
-        id="t"
-        label="Sponsor gas"
-        onChange={vi.fn()}
-        onReset={onReset}
-        value={value}
-      />
-    ),
-    (value: unknown, onReset: () => void, disabled: boolean) => (
-      <FailOnErrorSwitchField
-        disabled={disabled}
-        id="t"
-        label="Fail workflow on error"
-        onChange={vi.fn()}
-        onReset={onReset}
-        value={value}
-      />
-    ),
-    (value: unknown, onReset: () => void, disabled: boolean) => (
-      <PlainSwitchField
-        config={{ ignoreCase: value }}
-        disabled={disabled}
-        field={{ key: "ignoreCase", label: "Ignore case", type: "switch" }}
-        onUpdateConfig={(_key, next) => next === undefined && onReset()}
-      />
-    ),
+  const toggles: [
+    string,
+    (value: unknown, onReset: () => void, disabled: boolean) => ReactElement,
+  ][] = [
+    [
+      "Sponsor gas",
+      (value, onReset, disabled) => (
+        <SponsorGasField
+          disabled={disabled}
+          id="t"
+          label="Sponsor gas"
+          onChange={vi.fn()}
+          onReset={onReset}
+          value={value}
+        />
+      ),
+    ],
+    [
+      "Fail workflow on error",
+      (value, onReset, disabled) => (
+        <FailOnErrorSwitchField
+          disabled={disabled}
+          id="t"
+          label="Fail workflow on error"
+          onChange={vi.fn()}
+          onReset={onReset}
+          value={value}
+        />
+      ),
+    ],
+    [
+      "Ignore case",
+      (value, onReset, disabled) => (
+        <PlainSwitchField
+          config={{ ignoreCase: value }}
+          disabled={disabled}
+          field={{ key: "ignoreCase", label: "Ignore case", type: "switch" }}
+          onUpdateConfig={(_key, next) => next === undefined && onReset()}
+        />
+      ),
+    ],
   ];
 
   it("shows with a reset button for a stray value and not for on or off", () => {
-    for (const toggle of toggles) {
-      for (const value of [TEMPLATE, "maybe", 1]) {
+    for (const [label, toggle] of toggles) {
+      for (const value of [TEMPLATE, "maybe", 1, { on: true }]) {
         const onReset = vi.fn();
         act(() => root.render(toggle(value, onReset, false)));
         expect(container.textContent, String(value)).toContain(HINT);
@@ -245,6 +257,10 @@ describe("the stray-value hint on every toggle", () => {
         ).toContain("-stray");
         const button = resetButton();
         expect(button?.getAttribute("type")).toBe("button");
+        expect(button?.getAttribute("aria-label")).toBe(
+          `Reset ${label} to default`
+        );
+        expect(button?.className).toContain("min-h-6");
         act(() => button?.click());
         expect(onReset).toHaveBeenCalledTimes(1);
       }
@@ -257,7 +273,7 @@ describe("the stray-value hint on every toggle", () => {
   });
 
   it("shows only the first sentence when the toggle is disabled", () => {
-    for (const toggle of toggles) {
+    for (const [, toggle] of toggles) {
       act(() => root.render(toggle(TEMPLATE, vi.fn(), true)));
       expect(container.textContent).toContain(HINT);
       expect(resetButton()).toBeUndefined();
