@@ -954,27 +954,29 @@ describe("batch-read-contract - list limits and shapes", () => {
 });
 
 describe("batch-read-contract - review round 2", () => {
-  it("bounds the work before encoding a huge uint256[] (fails fast, no RPC)", async () => {
-    const zeros = `[[[${Array.from({ length: 520_000 }, () => "0").join(",")}]]]`;
-    expect(Buffer.byteLength(zeros)).toBeLessThan(1_048_576);
-    const started = Date.now();
-    const message = await failure(argsList(zeros, "sum"));
-    expect(message).toMatch(
-      /^The calls' data adds up to [\d.]+ MB; the limit is 10 MB per run\. Use smaller arguments or fewer entries\.$/
-    );
-    expect(Date.now() - started).toBeLessThan(1000);
+  it("caps one call at about 64 KB before encoding a huge uint256[] (fails fast, no RPC)", async () => {
+    for (const length of [300_000, 520_000]) {
+      const zeros = `[[[${Array.from({ length }, () => "0").join(",")}]]]`;
+      expect(Buffer.byteLength(zeros)).toBeLessThan(1_048_576);
+      const started = Date.now();
+      const message = await failure(argsList(zeros, "sum"));
+      expect(message).toMatch(
+        /^Argument Sets entry 1 is about [\d,]+ KB of call data; the limit is 64 KB per call\. Use smaller arguments\.$/
+      );
+      expect(Date.now() - started).toBeLessThan(1000);
+    }
   });
 
-  it("bounds the work before encoding a huge uint256[][] of empty arrays", async () => {
+  it("caps one call before encoding a huge uint256[][] of empty arrays", async () => {
     const empties = `[[[${Array.from({ length: 260_000 }, () => "[]").join(",")}]]]`;
     expect(Buffer.byteLength(empties)).toBeLessThan(1_048_576);
     const started = Date.now();
     const message = await failure(argsList(empties, "nested"));
-    expect(message).toMatch(/^The calls' data adds up to/);
+    expect(message).toMatch(/^Argument Sets entry 1 is about [\d,]+ KB/);
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
-  it("bounds shared arguments the same way before encoding", async () => {
+  it("caps the shared Function Arguments at about 64 KB", async () => {
     const started = Date.now();
     const message = await failure(
       addressList([addr(1)], {
@@ -982,18 +984,39 @@ describe("batch-read-contract - review round 2", () => {
         functionArgs: `[[${Array.from({ length: 400_000 }, () => "0").join(",")}]]`,
       })
     );
-    expect(message).toMatch(/fewer addresses\.$/);
+    expect(message).toMatch(
+      /^Function Arguments is about [\d,]+ KB of call data; the limit is 64 KB per call\. Use smaller arguments\.$/
+    );
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
-  it("caps the encoded call data of a run in Argument Sets mode too", async () => {
-    const entry = `[[${Array.from({ length: 66 }, () => "0").join(",")}]]`;
-    const list = `[${Array.from({ length: 5000 }, () => entry).join(",")}]`;
-    expect(Buffer.byteLength(list)).toBeLessThan(1_048_576);
-    expect(await failure(argsList(list, "sum"))).toBe(
-      "The calls' data adds up to 10.1 MB; the limit is 10 MB per run. Use smaller arguments or fewer entries."
+  it("caps a run at 50,000 values: 50,001 fails fast, 50,000 runs", async () => {
+    const tenZeros = `[[${Array.from({ length: 9 }, () => "0").join(",")}]]`;
+    const elevenZeros = `[[${Array.from({ length: 10 }, () => "0").join(",")}]]`;
+    const over = `[${[...Array.from({ length: 4999 }, () => tenZeros), elevenZeros].join(",")}]`;
+    const started = Date.now();
+    expect(await failure(argsList(over, "sum"))).toBe(
+      "The calls add up to 50,001 values; the limit is 50,000 per run. Use fewer or smaller entries."
     );
-  });
+    expect(Date.now() - started).toBeLessThan(1000);
+
+    // A plain revert per call keeps the mock out of the timing.
+    mockStaticCall.mockImplementation((calls: Call[]) =>
+      Promise.resolve(calls.map(() => [false, "0x"]))
+    );
+    const exact = `[${Array.from({ length: 5000 }, () => tenZeros).join(",")}]`;
+    const outcome = await run({ ...argsList(exact, "sum"), batchSize: "500" });
+    expect(outcome.totalCalls).toBe(5000);
+  }, 60_000);
+
+  it("runs 5,000 getAddress-style bytes32 lookups", async () => {
+    const keys = Array.from(
+      { length: 5000 },
+      (_, i) => `0x${i.toString(16).padStart(64, "0")}`
+    );
+    const outcome = await run({ ...argsList(keys, "key"), batchSize: "500" });
+    expect(outcome.totalCalls).toBe(5000);
+  }, 60_000);
 
   it("cuts a failed multicall's message and log, which carry the call data", async () => {
     mockStaticCall.mockRejectedValueOnce(

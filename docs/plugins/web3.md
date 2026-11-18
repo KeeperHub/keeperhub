@@ -148,7 +148,7 @@ The list is checked before any call is made, and the step fails when:
 - Function Arguments is larger than 1 MB, or does not fill every argument the function takes
 - an entry is not a valid address, has the wrong number of arguments, or is not a plain value where one is expected (the message names the entry, counted from 1)
 - an argument cannot be encoded for the function: a `bool` that is not `true` or `false`, a `bytes32` that is not 0x hex of that length (turn text into `bytes32` with the Encode / Decode node first), or a number that is not a whole number (write large numbers in quotes)
-- the encoded calls add up to more than 10 MB
+- one call's arguments would encode to more than about 64 KB, the calls hold more than 50,000 values in all (Function Arguments, sent to every address, counts once), or the encoded calls add up to more than 10 MB
 
 With Fail workflow on error off, these failures, like a failed batch, are passed to the next node as `success: true` with `results` null and `error` set. Only an unknown network or RPC configuration that cannot be resolved still fails the run.
 

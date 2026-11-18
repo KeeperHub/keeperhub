@@ -7,6 +7,9 @@ import { validateArgsForAbi } from "@/lib/abi/validate-args";
 export const MAX_TOTAL_CALLS = 5000;
 export const MAX_LIST_TEXT_BYTES = 1_048_576;
 export const MAX_RUN_CALLDATA_BYTES = 10 * 1_048_576;
+// Encoding time grows faster than size, so one call and one run are bounded.
+export const MAX_CALL_CALLDATA_BYTES = 64 * 1024;
+export const MAX_RUN_VALUES = 50_000;
 
 export const CALLS_FROM_ROWS = "rows";
 export const CALLS_FROM_ARGS_LIST = "args-list";
@@ -422,15 +425,17 @@ function dynamicBytes(value: unknown): number {
 function estimateValue(
   value: unknown,
   type: string,
-  components: AbiParam[] | undefined
+  components: AbiParam[] | undefined,
+  tally: { values: number }
 ): number {
+  tally.values += 1;
   const array = ARRAY_TYPE_RE.exec(type);
   if (array) {
     const items = Array.isArray(value) ? value : [];
     const head = isDynamicType(array[1], components) ? 32 : 0;
     let total = 64;
     for (const item of items) {
-      total += head + estimateValue(item, array[1], components);
+      total += head + estimateValue(item, array[1], components, tally);
     }
     return total;
   }
@@ -440,7 +445,12 @@ function estimateValue(
       const member = Array.isArray(value)
         ? value[index]
         : (value as Record<string, unknown> | undefined)?.[component.name];
-      total += estimateValue(member, component.type, component.components);
+      total += estimateValue(
+        member,
+        component.type,
+        component.components,
+        tally
+      );
     }
     return total;
   }
@@ -467,13 +477,34 @@ function isDynamicType(
   );
 }
 
-/** Estimated call data of one call: selector plus every argument. */
-export function estimateCalldata(args: unknown[], fn: ListFunction): number {
-  let total = 4;
+/** Estimated call data of one call, and how many values it holds. */
+export function estimateCalldata(
+  args: unknown[],
+  fn: ListFunction
+): { bytes: number; values: number } {
+  const tally = { values: 0 };
+  let bytes = 4;
   for (const [index, input] of fn.inputs.entries()) {
-    total += estimateValue(args[index], input.type, input.components);
+    bytes += estimateValue(args[index], input.type, input.components, tally);
   }
-  return total;
+  return { bytes, values: tally.values };
+}
+
+/** One call's estimated call data, checked before it is shaped or encoded. */
+function checkCallSize(bytes: number, where: string): void {
+  if (bytes > MAX_CALL_CALLDATA_BYTES) {
+    throw new Error(
+      `${where} is about ${count(Math.ceil(bytes / 1024))} KB of call data; the limit is 64 KB per call. Use smaller arguments.`
+    );
+  }
+}
+
+function checkRunValues(values: number): void {
+  if (values > MAX_RUN_VALUES) {
+    throw new Error(
+      `The calls add up to ${count(values)} values; the limit is ${count(MAX_RUN_VALUES)} per run. Use fewer or smaller entries.`
+    );
+  }
 }
 
 /** An encoder error without ethers' detail suffix, in words for numbers. */
@@ -536,13 +567,18 @@ export function argSetsFromList(
   entries: unknown[],
   fn: ListFunction
 ): unknown[][] {
-  let estimate = 0;
+  let bytes = 0;
+  let values = 0;
   return entries.map((entry, index) => {
     const at = `${ARGS_LIST_LABEL} entry ${index + 1}`;
     const raw = entryToArgs(entry, fn, at);
     // Bounded before any shaping or encoding, which is slow on huge arrays.
-    estimate += estimateCalldata(raw, fn);
-    checkRunCalldata(estimate, "entries");
+    const estimate = estimateCalldata(raw, fn);
+    checkCallSize(estimate.bytes, at);
+    bytes += estimate.bytes;
+    values += estimate.values;
+    checkRunValues(values);
+    checkRunCalldata(bytes, "entries");
     return prepareArgs(raw, fn, at);
   });
 }
@@ -588,7 +624,11 @@ export function sharedArgsForList(
       `${SHARED_ARGS_LABEL} has ${plural(args.length, "value")} but ${fn.name} takes ${count(takes)} (${inputNames(fn)}). Fill in every argument; the same ones go to every contract in the list.`
     );
   }
-  checkRunCalldata(estimateCalldata(args, fn) * copies, "addresses");
+  // Encoded once and reused, so its values count once.
+  const estimate = estimateCalldata(args, fn);
+  checkCallSize(estimate.bytes, SHARED_ARGS_LABEL);
+  checkRunValues(estimate.values);
+  checkRunCalldata(estimate.bytes * copies, "addresses");
   return prepareArgs(args, fn, SHARED_ARGS_LABEL);
 }
 
