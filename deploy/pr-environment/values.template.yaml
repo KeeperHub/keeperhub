@@ -317,10 +317,11 @@ env:
     type: parameterStore
     name: feedback-api-key
     parameter_name: /eks/techops-staging/keeperhub-feedback/feedback-api-key
-  # Workflow failure notifications on for every org in PR environments.
+  # Workflow failure notifications rollout, shared with staging.
   FAILURE_ALERTS_ROLLOUT:
-    type: kv
-    value: "all"
+    type: parameterStore
+    name: failure-alerts-rollout
+    parameter_name: /eks/techops-staging/keeperhub/failure-alerts-rollout
   # Billing (Stripe)
   NEXT_PUBLIC_BILLING_ENABLED:
     type: kv
