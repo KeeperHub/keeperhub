@@ -13,12 +13,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, type SavedWorkflow } from "@/lib/api-client";
 import { authClient, useSession } from "@/lib/auth-client";
 import { getChainName, getExplorerUrl } from "@/lib/chain-utils";
-import { useActiveMember } from "@/lib/hooks/use-organization";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import {
   buildEventAbiFragment,
   type ProtocolAction,
@@ -45,6 +46,9 @@ const ROW_CLASS =
   "flex flex-col gap-3 py-4 transition-colors hover:bg-muted/50 sm:flex-row sm:items-center sm:justify-between sm:gap-0 sm:px-4";
 
 const ROW_BUTTON_CLASS = "w-full shrink-0 max-sm:h-11 sm:ml-4 sm:w-auto";
+// A viewer's disabled button sits in a tooltip span, which takes the row placement.
+const ROW_TOOLTIP_CLASS = "w-full shrink-0 sm:ml-4 sm:w-auto";
+const ROW_BUTTON_IN_TOOLTIP_CLASS = "w-full max-sm:h-11";
 
 function ActionTypeBadge({
   type,
@@ -71,12 +75,14 @@ export function ActionRow({
   isLast,
   isCreating,
   onUse,
+  viewOnly = false,
 }: {
   action: ProtocolAction;
   isLast: boolean;
   isCreating: boolean;
-  // Absent for viewers, who cannot create workflows.
-  onUse?: () => void;
+  onUse: () => void;
+  // True for viewers, who cannot create workflows.
+  viewOnly?: boolean;
 }): React.ReactElement {
   // Payer inputs render no field anywhere, so the line counts the ones a
   // workflow actually fills.
@@ -118,17 +124,17 @@ export function ActionRow({
             </p>
           )}
       </div>
-      {onUse && (
+      <ViewOnlyTooltip className={ROW_TOOLTIP_CLASS} isViewer={viewOnly}>
         <Button
-          className={ROW_BUTTON_CLASS}
-          disabled={isCreating}
+          className={viewOnly ? ROW_BUTTON_IN_TOOLTIP_CLASS : ROW_BUTTON_CLASS}
+          disabled={viewOnly || isCreating}
           onClick={onUse}
           size="sm"
           variant="outline"
         >
           {isCreating ? "Creating..." : "Use in Workflow"}
         </Button>
-      )}
+      </ViewOnlyTooltip>
     </div>
   );
 }
@@ -138,11 +144,13 @@ function EventRow({
   isLast,
   isCreating,
   onListen,
+  viewOnly,
 }: {
   event: ProtocolEvent;
   isLast: boolean;
   isCreating: boolean;
-  onListen?: () => void;
+  onListen: () => void;
+  viewOnly: boolean;
 }): React.ReactElement {
   return (
     <div
@@ -168,10 +176,10 @@ function EventRow({
           )
         </p>
       </div>
-      {onListen && (
+      <ViewOnlyTooltip className={ROW_TOOLTIP_CLASS} isViewer={viewOnly}>
         <Button
-          className={ROW_BUTTON_CLASS}
-          disabled={isCreating}
+          className={viewOnly ? ROW_BUTTON_IN_TOOLTIP_CLASS : ROW_BUTTON_CLASS}
+          disabled={viewOnly || isCreating}
           onClick={onListen}
           size="sm"
           variant="outline"
@@ -179,7 +187,7 @@ function EventRow({
           <Headphones className="mr-1.5 size-3.5" />
           {isCreating ? "Creating..." : "Listen to Event"}
         </Button>
-      )}
+      </ViewOnlyTooltip>
     </div>
   );
 }
@@ -205,7 +213,8 @@ export function ProtocolDetail({
 }: ProtocolDetailProps): React.ReactElement {
   const router = useRouter();
   const { data: session } = useSession();
-  const { isViewer } = useActiveMember();
+  // Signed-out visitors have no role yet may still build, so gate on viewer only.
+  const { isViewer } = useOrgAccess();
   const [creatingActionSlug, setCreatingActionSlug] = useState<string | null>(
     null
   );
@@ -494,11 +503,8 @@ export function ProtocolDetail({
                 isCreating={creatingActionSlug === action.slug}
                 isLast={index === protocol.actions.length - 1}
                 key={action.slug}
-                onUse={
-                  isViewer
-                    ? undefined
-                    : () => handleUseInWorkflow(protocol, action)
-                }
+                onUse={() => handleUseInWorkflow(protocol, action)}
+                viewOnly={isViewer}
               />
             ))}
           </div>
@@ -513,11 +519,8 @@ export function ProtocolDetail({
                   isCreating={creatingEventSlug === event.slug}
                   isLast={index === (protocol.events?.length ?? 0) - 1}
                   key={event.slug}
-                  onListen={
-                    isViewer
-                      ? undefined
-                      : () => handleListenToEvent(protocol, event)
-                  }
+                  onListen={() => handleListenToEvent(protocol, event)}
+                  viewOnly={isViewer}
                 />
               ))}
             </div>

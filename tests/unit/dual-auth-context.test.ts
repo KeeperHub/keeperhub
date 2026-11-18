@@ -731,11 +731,12 @@ describe("resolveCreatorContext — origin check wiring", () => {
   });
 });
 
-describe("session scope for viewers", () => {
+describe("viewer sessions in the auth helpers", () => {
   const cookieHeaders = {
     cookie: "better-auth.session_token=abc",
     origin: "http://localhost:3000",
   };
+  const WRITE_URL = "http://localhost/api/projects";
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -748,48 +749,77 @@ describe("session scope for viewers", () => {
     mockDefaultOrgLookup.mockResolvedValue([{ deactivatedAt: null }]);
   });
 
-  it("gives a viewer's write a read-only scope", async () => {
+  it("refuses a viewer's write in getDualAuthContext", async () => {
     mockDefaultOrgLookup.mockResolvedValue([
       { deactivatedAt: null, role: "viewer" },
     ]);
     const result = await getDualAuthContext(
-      makeRequest(cookieHeaders, { method: "POST" })
+      makeRequest(cookieHeaders, { method: "POST", url: WRITE_URL })
     );
-    expect(result).toMatchObject({ authMethod: "session", scope: "mcp:read" });
+    expect(result).toEqual({
+      error: "Viewers have read-only access to this organization",
+      code: "viewer_read_only",
+      status: 403,
+    });
   });
 
-  it("reads the role from the org named in X-Organization-Id", async () => {
+  it("refuses a viewer's write in resolveOrganizationId", async () => {
+    mockDefaultOrgLookup.mockResolvedValue([
+      { deactivatedAt: null, role: "viewer" },
+    ]);
+    const result = await resolveOrganizationId(
+      makeRequest(cookieHeaders, { method: "DELETE", url: WRITE_URL })
+    );
+    expect(result).toMatchObject({ code: "viewer_read_only", status: 403 });
+  });
+
+  it("refuses a viewer in the org named in X-Organization-Id", async () => {
     mockOrgLookup.mockResolvedValue([{ id: "org_target", role: "viewer" }]);
     const result = await resolveCreatorContext(
       makeRequest(
         { ...cookieHeaders, "x-organization-id": "org_target" },
-        { method: "POST" }
+        { method: "POST", url: WRITE_URL }
       )
     );
+    expect(result).toMatchObject({ code: "viewer_read_only", status: 403 });
+  });
+
+  it("lets a viewer make a write the policy allows", async () => {
+    mockDefaultOrgLookup.mockResolvedValue([
+      { deactivatedAt: null, role: "viewer" },
+    ]);
+    const result = await getDualAuthContext(
+      makeRequest(cookieHeaders, {
+        method: "POST",
+        url: "http://localhost/api/gas/estimate",
+      })
+    );
     expect(result).toMatchObject({
-      organizationId: "org_target",
-      scope: "mcp:read",
+      authMethod: "session",
+      organizationId: "org_session",
     });
   });
 
-  it("leaves a member's write unscoped", async () => {
+  it("lets a member write", async () => {
     mockDefaultOrgLookup.mockResolvedValue([
       { deactivatedAt: null, role: "member" },
     ]);
     const result = await resolveOrganizationId(
-      makeRequest(cookieHeaders, { method: "PATCH" })
+      makeRequest(cookieHeaders, { method: "PATCH", url: WRITE_URL })
     );
-    expect(result).toMatchObject({ authMethod: "session" });
-    expect((result as { scope?: string }).scope).toBeUndefined();
+    expect(result).toMatchObject({
+      authMethod: "session",
+      organizationId: "org_session",
+    });
   });
 
-  it("leaves a viewer's read unscoped", async () => {
+  it("lets a viewer read", async () => {
     mockDefaultOrgLookup.mockResolvedValue([
       { deactivatedAt: null, role: "viewer" },
     ]);
     const result = await resolveCreatorContext(
-      makeRequest(cookieHeaders, { method: "GET" })
+      makeRequest(cookieHeaders, { method: "GET", url: WRITE_URL })
     );
-    expect((result as { scope?: string }).scope).toBeUndefined();
+    expect(result).toMatchObject({ authMethod: "session" });
   });
 });

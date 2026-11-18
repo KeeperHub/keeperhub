@@ -92,7 +92,7 @@ wallet go with it, and this cannot be undone.
 
 Organizations have four roles: owner, admin, member, and viewer. See [Access Control](/users-teams-orgs/permissions) for the full breakdown.
 
-- **Viewers** can see everything in the organization, including workflows, run history, and settings, and change nothing.
+- **Viewers** can see workflows, run history, and settings, and change nothing. They cannot run workflows or move funds.
 - **Members** collaborate on the organization's workflows: create, edit, delete, enable, disable, and view run history.
 - **Admins** can additionally create and revoke organization API keys and view the security audit trail.
 - **Owners** control the most sensitive actions: withdrawing funds from the organization wallet, exporting the wallet key, and exporting the audit trail.

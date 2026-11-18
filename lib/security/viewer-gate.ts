@@ -5,7 +5,8 @@ import { orgIdFromPath } from "@/lib/security/viewer-policy";
 
 // Every state-changing session request passes the gate, so its answer is
 // cached briefly per caller and target. A role change reaches the gate within
-// the TTL; the routes' own role checks apply it immediately.
+// the TTL. Routes refuse viewers on their own as well (the shared auth helpers
+// and each session-only write route), so a demotion takes effect at once.
 const CACHE_TTL_MS = 10_000;
 const CACHE_MAX_ENTRIES = 10_000;
 const cache = new Map<string, { isViewer: boolean; expiresAt: number }>();

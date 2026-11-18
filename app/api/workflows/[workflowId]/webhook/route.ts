@@ -254,7 +254,8 @@ export async function POST(
         workflowId,
         timer,
         HttpStatus.FORBIDDEN,
-        VIEWER_READ_ONLY_ERROR.error
+        VIEWER_READ_ONLY_ERROR.error,
+        { code: VIEWER_READ_ONLY_ERROR.code }
       );
     }
 

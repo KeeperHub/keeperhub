@@ -27,6 +27,7 @@ import {
 } from "@/components/nav-items";
 import { confirmLeave } from "@/components/navigation-guard";
 import { OrgSwitcher } from "@/components/organization/org-switcher";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { AddressBookOverlay } from "@/components/overlays/address-book-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
 import { Button } from "@/components/ui/button";
@@ -41,6 +42,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { LEVEL_TAP_GRACE_MS, usePressGrace } from "@/hooks/use-press-grace";
 import { useSession } from "@/lib/auth-client";
 import { isEscapeHandled, markEscapeHandled } from "@/lib/escape-key";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { useActiveMember } from "@/lib/hooks/use-organization";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
@@ -246,7 +248,9 @@ function MobileNavBody({
   const { data: session, isPending } = useSession();
   const { openAuthPrompt } = useAuthPrompt();
   const { open: openOverlay } = useOverlay();
-  const { isAdmin, isOwner, isViewer } = useActiveMember();
+  const { isAdmin, isOwner } = useActiveMember();
+  // Signed-out visitors have no role yet may still start, so gate on viewer only.
+  const { isViewer } = useOrgAccess();
   const router = useRouter();
   const pathname = usePathname();
   const params = useParams();
@@ -380,15 +384,15 @@ function MobileNavBody({
           <OrgSwitcher menu={{ disabled: busy, onPick }} />
         </div>
       )}
-      {!isViewer && (
-        <div className="flex shrink-0 items-center border-b px-2.5 py-2.5">
+      <div className="flex shrink-0 items-center border-b px-2.5 py-2.5">
+        <ViewOnlyTooltip className="w-full" isViewer={isViewer}>
           <button
             className={cn(
               NEW_WORKFLOW_LOOK,
               "flex h-11 w-full justify-center px-3 transition-colors disabled:opacity-60"
             )}
             data-testid="mobile-nav-new"
-            disabled={busy}
+            disabled={busy || isViewer}
             onClick={() => {
               // A workflow that could not be made is reported in
               // runNewWorkflow; anything after that is only logged.
@@ -405,8 +409,8 @@ function MobileNavBody({
             )}
             <span>New Workflow</span>
           </button>
-        </div>
-      )}
+        </ViewOnlyTooltip>
+      </div>
       <nav
         aria-label="Main navigation"
         className="flex flex-1 flex-col gap-1 px-2.5 py-3"

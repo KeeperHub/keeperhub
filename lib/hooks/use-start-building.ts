@@ -7,7 +7,7 @@ import { useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api-client";
 import { authClient, useSession } from "@/lib/auth-client";
-import { useActiveMember } from "@/lib/hooks/use-organization";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import {
@@ -75,7 +75,8 @@ function createDefaultNodes(): {
 export function useStartBuilding(): { startBuilding: () => Promise<void> } {
   const router = useRouter();
   const { data: session } = useSession();
-  const { isViewer } = useActiveMember();
+  // Gates on viewer only: signed-out visitors have no role and may still start.
+  const { isViewer } = useOrgAccess();
   const setNodes = useSetAtom(nodesAtom);
   const setEdges = useSetAtom(edgesAtom);
   const setIsTransitioningFromHomepage = useSetAtom(

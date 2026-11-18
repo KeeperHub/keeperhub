@@ -10,7 +10,7 @@ const VIEWER_READ_ONLY =
   "Viewers can revoke their webhook keys but not create new ones.";
 
 export function ApiKeysSection(): React.ReactElement {
-  const { canEdit, isAdmin } = useSettingsContext();
+  const { canEdit, isAdmin, isViewer, roleLoading } = useSettingsContext();
 
   return (
     <>
@@ -28,7 +28,7 @@ export function ApiKeysSection(): React.ReactElement {
         description="Call the API and the CLI on this organization's behalf, across everything the scopes allow. Admins and owners can mint and revoke them."
         keyType="organisation"
         listEndpoint="/api/keys"
-        readOnlyReason={ORG_READ_ONLY}
+        readOnlyReason={roleLoading ? undefined : ORG_READ_ONLY}
         showCreator
         title="Organisation keys"
       />
@@ -44,7 +44,7 @@ export function ApiKeysSection(): React.ReactElement {
         description="Authenticate calls into this organization's webhook triggers, so a third-party service can run a webhook-triggered workflow. Scoped to webhooks only, and valid for this organization."
         keyType="webhook"
         listEndpoint="/api/api-keys"
-        readOnlyReason={VIEWER_READ_ONLY}
+        readOnlyReason={isViewer ? VIEWER_READ_ONLY : undefined}
         showCreator={false}
         title="Webhook keys"
       />

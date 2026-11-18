@@ -6,6 +6,7 @@ import {
   Check,
   Copy,
   Download,
+  Eye,
   Globe,
   Link2,
   Loader2,
@@ -27,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { MobileNav } from "@/components/mobile-nav";
 import { useSwitcherOffering } from "@/components/organization/org-switch-runner";
 import { OrgSwitcher } from "@/components/organization/org-switcher";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { GoLiveOverlay } from "@/components/overlays/go-live-overlay";
 import { ListingOverlay } from "@/components/overlays/listing-overlay";
 import { ManualRunInputOverlay } from "@/components/overlays/manual-run-input-overlay";
@@ -36,7 +38,8 @@ import { useAuthPrompt } from "@/components/auth/provider";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { api, ApiError, type Project, type Tag } from "@/lib/api-client";
 import { useProjects, useTags } from "@/lib/hooks/use-org-data";
-import { useActiveMember } from "@/lib/hooks/use-organization";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
+import { VIEWER_DISABLED_REASON } from "@/lib/organization/role-label";
 import { VersionPreviewBanner } from "./version-preview-banner";
 import { useSession } from "@/lib/auth-client";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
@@ -2086,23 +2089,29 @@ function RunButtonGroup({
   return button;
 }
 
+const READ_ONLY_BADGE_CLASS =
+  "border-2 border-[var(--color-text-accent)]/60 bg-[var(--color-bg-accent)]/10 font-semibold text-[var(--color-text-accent)] text-xs uppercase tracking-wider backdrop-blur-sm dark:border-[var(--color-text-accent)]/50 dark:bg-transparent";
+
 // Read-only badge - pill with a strong accent outline on the toolbar
-function ReadOnlyBadge({
-  className,
-  label = "Preview",
-}: {
-  className?: string;
-  label?: string;
-}) {
+function ReadOnlyBadge({ className }: { className?: string }) {
+  return (
+    <Badge className={cn(READ_ONLY_BADGE_CLASS, className)} variant="outline">
+      Preview
+    </Badge>
+  );
+}
+
+// A viewer's badge shows at every width: the icon alone below lg, with its label from lg.
+function ViewOnlyBadge() {
   return (
     <Badge
-      className={cn(
-        "border-2 border-[var(--color-text-accent)]/60 bg-[var(--color-bg-accent)]/10 font-semibold text-[var(--color-text-accent)] text-xs uppercase tracking-wider backdrop-blur-sm dark:border-[var(--color-text-accent)]/50 dark:bg-transparent",
-        className
-      )}
+      className={cn(READ_ONLY_BADGE_CLASS, "shrink-0")}
+      data-testid="workflow-read-only-badge"
+      title={VIEWER_DISABLED_REASON}
       variant="outline"
     >
-      {label}
+      <Eye aria-hidden="true" />
+      <span className="max-lg:sr-only">Read only</span>
     </Badge>
   );
 }
@@ -2112,35 +2121,40 @@ function UseTemplateButton({
   className,
   isUsingTemplate,
   onUseTemplate,
+  viewOnly,
 }: {
   className?: string;
   isUsingTemplate: boolean;
   onUseTemplate: () => void;
+  // True for viewers: a template lands in the active org, which they cannot change.
+  viewOnly: boolean;
 }) {
   return (
-    <button
-      aria-label="Use this workflow as a template"
-      className={cn(
-        "inline-flex h-8 items-center rounded-md border px-2.5 font-normal text-xs transition-colors duration-150 hover:bg-[var(--color-bg-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50 motion-reduce:transition-none phone-ui:shrink-0 phone-ui:whitespace-nowrap",
-        className
-      )}
-      data-analytics="template_use_clicked"
-      disabled={isUsingTemplate}
-      onClick={onUseTemplate}
-      style={{
-        borderColor: "color-mix(in oklab, var(--color-text-accent) 50%, transparent)",
-        color: "var(--color-text-accent)",
-      }}
-      title="Use this workflow as a template in your account"
-      type="button"
-    >
-      {isUsingTemplate ? (
-        <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-      ) : (
-        <Copy className="mr-1.5 size-3.5" />
-      )}
-      {isUsingTemplate ? "Importing…" : "Use template"}
-    </button>
+    <ViewOnlyTooltip className={className} isViewer={viewOnly}>
+      <button
+        aria-label="Use this workflow as a template"
+        className={cn(
+          "inline-flex h-8 items-center rounded-md border px-2.5 font-normal text-xs transition-colors duration-150 hover:bg-[var(--color-bg-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50 motion-reduce:transition-none phone-ui:shrink-0 phone-ui:whitespace-nowrap",
+          !viewOnly && className
+        )}
+        data-analytics="template_use_clicked"
+        disabled={viewOnly || isUsingTemplate}
+        onClick={onUseTemplate}
+        style={{
+          borderColor: "color-mix(in oklab, var(--color-text-accent) 50%, transparent)",
+          color: "var(--color-text-accent)",
+        }}
+        title="Use this workflow as a template in your account"
+        type="button"
+      >
+        {isUsingTemplate ? (
+          <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+        ) : (
+          <Copy className="mr-1.5 size-3.5" />
+        )}
+        {isUsingTemplate ? "Importing…" : "Use template"}
+      </button>
+    </ViewOnlyTooltip>
   );
 }
 
@@ -2151,7 +2165,8 @@ export const WorkflowToolbar = ({
   const state = useWorkflowState();
   const actions = useWorkflowActions(state);
   // Template use creates a workflow in the active org, which a viewer cannot.
-  const { isViewer } = useActiveMember();
+  // Signed-out visitors have no role yet may still use one, so gate on viewer only.
+  const { isViewer } = useOrgAccess();
   const isWorkflowViewer = useAtomValue(isWorkflowViewerAtom);
   // The phone menu's button, where the org switcher hands focus when it is
   // hidden (below xs).
@@ -2247,9 +2262,7 @@ export const WorkflowToolbar = ({
           {isWorkflowRoute &&
             effectiveWorkflowId &&
             !state.isOwner &&
-            isWorkflowViewer && (
-              <ReadOnlyBadge className="hidden lg:inline-flex" label="Read only" />
-            )}
+            isWorkflowViewer && <ViewOnlyBadge />}
           {isWorkflowRoute &&
             effectiveWorkflowId &&
             !state.isOwner &&
@@ -2257,13 +2270,12 @@ export const WorkflowToolbar = ({
             state.workflowVisibility === "public" && (
               <>
                 <ReadOnlyBadge className="hidden lg:inline-flex" />
-                {!isViewer && (
-                  <UseTemplateButton
-                    className="mouse-tablet:ml-2"
-                    isUsingTemplate={state.isDuplicating}
-                    onUseTemplate={actions.handleUseTemplate}
-                  />
-                )}
+                <UseTemplateButton
+                  className="mouse-tablet:ml-2"
+                  isUsingTemplate={state.isDuplicating}
+                  onUseTemplate={actions.handleUseTemplate}
+                  viewOnly={isViewer}
+                />
               </>
             )}
         </div>
@@ -2312,9 +2324,7 @@ export const WorkflowToolbar = ({
           {isWorkflowRoute &&
             effectiveWorkflowId &&
             !state.isOwner &&
-            isWorkflowViewer && (
-              <ReadOnlyBadge className="hidden lg:inline-flex" label="Read only" />
-            )}
+            isWorkflowViewer && <ViewOnlyBadge />}
           {isWorkflowRoute &&
             effectiveWorkflowId &&
             !state.isOwner &&
@@ -2322,12 +2332,11 @@ export const WorkflowToolbar = ({
             state.workflowVisibility === "public" && (
               <>
                 <ReadOnlyBadge className="hidden lg:inline-flex" />
-                {!isViewer && (
-                  <UseTemplateButton
-                    isUsingTemplate={state.isDuplicating}
-                    onUseTemplate={actions.handleUseTemplate}
-                  />
-                )}
+                <UseTemplateButton
+                  isUsingTemplate={state.isDuplicating}
+                  onUseTemplate={actions.handleUseTemplate}
+                  viewOnly={isViewer}
+                />
               </>
             )}
         </div>

@@ -2,6 +2,7 @@
 
 import { Plus } from "lucide-react";
 import { useState } from "react";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { ProjectFormDialog } from "@/components/projects/project-form-dialog";
 import { TagFormDialog } from "@/components/tags/tag-form-dialog";
 import { Button } from "@/components/ui/button";
@@ -13,7 +14,7 @@ import { GroupingTable } from "./workspace/grouping-table";
 
 export function WorkspaceSection(): React.ReactElement {
   const data = useProjectsTags();
-  const { canEdit } = useSettingsContext();
+  const { canEdit, isViewer } = useSettingsContext();
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [editingTag, setEditingTag] = useState<Tag | null>(null);
   const [projectDialog, setProjectDialog] = useState(false);
@@ -37,8 +38,9 @@ export function WorkspaceSection(): React.ReactElement {
 
       <SettingsCard
         action={
-          canEdit ? (
+          <ViewOnlyTooltip isViewer={isViewer}>
             <Button
+              disabled={!canEdit}
               onClick={() => openProject(null)}
               size="sm"
               variant="outline"
@@ -46,7 +48,7 @@ export function WorkspaceSection(): React.ReactElement {
               <Plus className="size-3.5" />
               New project
             </Button>
-          ) : undefined
+          </ViewOnlyTooltip>
         }
         bodyClassName="p-2"
         description="The top-level grouping in the workflows sidebar."
@@ -76,12 +78,17 @@ export function WorkspaceSection(): React.ReactElement {
 
       <SettingsCard
         action={
-          canEdit ? (
-            <Button onClick={() => openTag(null)} size="sm" variant="outline">
+          <ViewOnlyTooltip isViewer={isViewer}>
+            <Button
+              disabled={!canEdit}
+              onClick={() => openTag(null)}
+              size="sm"
+              variant="outline"
+            >
               <Plus className="size-3.5" />
               New tag
             </Button>
-          ) : undefined
+          </ViewOnlyTooltip>
         }
         bodyClassName="p-2"
         description="Tags subdivide a project in the second sidebar panel."

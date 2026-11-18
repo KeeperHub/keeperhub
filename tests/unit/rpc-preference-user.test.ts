@@ -37,12 +37,23 @@ describe("rpcPreferenceUserId", () => {
 
   it("drops a viewer's preferences", async () => {
     mockGetOrgRole.mockResolvedValue("viewer");
-    await expect(rpcPreferenceUserId("u1", "org-1")).resolves.toBeUndefined();
+    await expect(
+      rpcPreferenceUserId("u-viewer", "org-1")
+    ).resolves.toBeUndefined();
   });
 
   it("drops the preferences of someone no longer in the org", async () => {
     mockGetOrgRole.mockResolvedValue(null);
-    await expect(rpcPreferenceUserId("u1", "org-1")).resolves.toBeUndefined();
+    await expect(
+      rpcPreferenceUserId("u-removed", "org-1")
+    ).resolves.toBeUndefined();
+  });
+
+  it("reuses one role answer across a run's steps", async () => {
+    mockGetOrgRole.mockResolvedValue("member");
+    await rpcPreferenceUserId("u-cached", "org-1");
+    await rpcPreferenceUserId("u-cached", "org-1");
+    expect(mockGetOrgRole).toHaveBeenCalledOnce();
   });
 
   it("needs both a user and an org", async () => {
@@ -63,27 +74,27 @@ describe("getRpcPreferenceUserId", () => {
   it("checks the run's org, preferring the execution's own column", async () => {
     mockLimit.mockResolvedValue([
       {
-        userId: "u1",
+        userId: "u-run",
         executionOrganizationId: "org-run",
         workflowOrganizationId: "org-workflow",
       },
     ]);
     mockGetOrgRole.mockResolvedValue("admin");
-    await expect(getRpcPreferenceUserId("exec-1")).resolves.toBe("u1");
-    expect(mockGetOrgRole).toHaveBeenCalledWith("u1", "org-run");
+    await expect(getRpcPreferenceUserId("exec-1")).resolves.toBe("u-run");
+    expect(mockGetOrgRole).toHaveBeenCalledWith("u-run", "org-run");
   });
 
   it("falls back to the workflow's org for older runs", async () => {
     mockLimit.mockResolvedValue([
       {
-        userId: "u1",
+        userId: "u-old",
         executionOrganizationId: null,
         workflowOrganizationId: "org-workflow",
       },
     ]);
     mockGetOrgRole.mockResolvedValue("viewer");
     await expect(getRpcPreferenceUserId("exec-1")).resolves.toBeUndefined();
-    expect(mockGetOrgRole).toHaveBeenCalledWith("u1", "org-workflow");
+    expect(mockGetOrgRole).toHaveBeenCalledWith("u-old", "org-workflow");
   });
 
   it("uses the chain default when the run is unknown or the lookup fails", async () => {

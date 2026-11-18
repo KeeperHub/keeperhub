@@ -5,8 +5,10 @@ import Link from "next/link";
 import type { VoteOverridesMap } from "@/components/hub/use-vote-overrides";
 import { WorkflowTemplateGrid } from "@/components/hub/workflow-template-grid";
 import { WorkflowTemplateList } from "@/components/hub/workflow-template-list";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { Button } from "@/components/ui/button";
 import type { SavedWorkflow } from "@/lib/api-client";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import type { VoteDirection } from "@/lib/workflow/editor/votes";
 
 type HubResultsProps = {
@@ -30,6 +32,7 @@ export function HubResults({
   voteOverrides,
   onVote,
 }: HubResultsProps): React.ReactElement {
+  const { isViewer } = useOrgAccess();
   const workflows = isSearchActive ? searchResults : communityWorkflows;
   const isEmpty = !workflows || workflows.length === 0;
 
@@ -71,9 +74,17 @@ export function HubResults({
               <p className="mb-3 text-muted-foreground text-sm">
                 No templates available yet.
               </p>
-              <Button asChild className="h-8 text-xs" variant="outline">
-                <Link href="/workflows/new">Create a workflow</Link>
-              </Button>
+              {isViewer ? (
+                <ViewOnlyTooltip isViewer>
+                  <Button className="h-8 text-xs" disabled variant="outline">
+                    Create a workflow
+                  </Button>
+                </ViewOnlyTooltip>
+              ) : (
+                <Button asChild className="h-8 text-xs" variant="outline">
+                  <Link href="/workflows/new">Create a workflow</Link>
+                </Button>
+              )}
             </div>
           );
         }

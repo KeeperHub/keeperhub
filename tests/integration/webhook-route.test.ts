@@ -449,6 +449,7 @@ describe("POST /api/workflows/:workflowId/webhook", () => {
       expect(data.error).toBe(
         "Viewers have read-only access to this organization"
       );
+      expect(data.code).toBe("viewer_read_only");
       expect(mockValidateIntegrations).not.toHaveBeenCalled();
       expect(mockEnforceExecutionLimit).not.toHaveBeenCalled();
       expect(mockInsertReturning).not.toHaveBeenCalled();

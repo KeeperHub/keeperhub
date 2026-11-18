@@ -162,6 +162,39 @@ describe("POST /api/oauth/token -- authorization_code grant", () => {
   });
 });
 
+describe("POST /api/oauth/token -- authorization_code grant roles", () => {
+  it("refuses a code exchange for a viewer and stores no refresh token", async () => {
+    stubActiveOAuthClient();
+    mockGetAuthCode.mockResolvedValue({
+      userId: TEST_USER_ID,
+      organizationId: TEST_ORG_ID,
+      clientId: TEST_CLIENT_ID,
+      redirectUri: TEST_REDIRECT_URI,
+      codeChallenge: PKCE_CHALLENGE_S256,
+      codeChallengeMethod: "S256",
+      scope: "read",
+    });
+    mockUsersFindFirst.mockResolvedValue({ deactivatedAt: null });
+    mockGetOrgRole.mockResolvedValue("viewer");
+
+    const response = await postForm({
+      grant_type: "authorization_code",
+      code: "auth-code-1",
+      client_id: TEST_CLIENT_ID,
+      redirect_uri: TEST_REDIRECT_URI,
+      code_verifier: PKCE_VERIFIER,
+    });
+
+    expect(response.status).toBe(401);
+    const body = (await response.json()) as EnvelopeBody;
+    expect(body.error).toBe("invalid_grant");
+    expect(body.detail).toBe("User has view-only access to this organization");
+    expect(mockDeleteAuthCode).toHaveBeenCalledWith("auth-code-1");
+    expect(mockCreateAccessToken).not.toHaveBeenCalled();
+    expect(mockStoreRefreshToken).not.toHaveBeenCalled();
+  });
+});
+
 describe("POST /api/oauth/token -- refresh_token grant", () => {
   it("rotates tokens for an active user", async () => {
     stubActiveOAuthClient();

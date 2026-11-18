@@ -15,10 +15,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { WalletDigestMenu } from "@/components/workflow/wallet-digest-menu";
 import { toChecksumAddress, truncateAddress } from "@/lib/address-utils";
 import { isWalletEmail } from "@/lib/auth/wallet-constants";
-import { useActiveMember } from "@/lib/hooks/use-organization";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { authClient, useSession } from "@/lib/auth-client";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { usePinnedAccount } from "@/lib/wallet/use-default-account";
@@ -69,7 +70,7 @@ function AuthenticatedWalletToolbarButton(): React.ReactElement | null {
   const { data: activeOrg } = authClient.useActiveOrganization();
   const { hasWallet, walletAddress, isLoading } = useWalletInfo();
   const { isProvisioning } = useWalletProvisioning();
-  const { isViewer } = useActiveMember();
+  const { isViewer } = useOrgAccess();
 
   const pinned = usePinnedAccount(activeOrg?.id ?? null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -97,22 +98,21 @@ function AuthenticatedWalletToolbarButton(): React.ReactElement | null {
       );
     }
 
-    if (isViewer) {
-      return null;
-    }
-
     return (
-      <Button
-        className="h-9"
-        data-tour="create-wallet"
-        onClick={() => router.push(walletsHref)}
-        size="sm"
-        variant="outline"
-      >
-        <Plus className="size-4" />
-        <span className="hidden sm:inline">Create wallet</span>
-        <span className="sm:hidden">Wallet</span>
-      </Button>
+      <ViewOnlyTooltip isViewer={isViewer}>
+        <Button
+          className="h-9"
+          data-tour="create-wallet"
+          disabled={isViewer}
+          onClick={() => router.push(walletsHref)}
+          size="sm"
+          variant="outline"
+        >
+          <Plus className="size-4" />
+          <span className="hidden sm:inline">Create wallet</span>
+          <span className="sm:hidden">Wallet</span>
+        </Button>
+      </ViewOnlyTooltip>
     );
   }
 

@@ -11,10 +11,13 @@ import {
   apiError,
 } from "@/lib/errors/api-envelope";
 import { authenticateOAuthToken } from "@/lib/mcp/oauth-auth";
-import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
 import { getOrgContext } from "@/lib/middleware/org-context";
 import { isViewerRole } from "@/lib/organization/role-label";
-import { isStateChangingMethod } from "@/lib/security/viewer-policy";
+import {
+  isStateChangingMethod,
+  isViewerExemptMutation,
+  VIEWER_READ_ONLY_ERROR,
+} from "@/lib/security/viewer-policy";
 import {
   hasSessionCookie,
   isTrustedOrigin,
@@ -34,7 +37,7 @@ export type AuthFailure = {
   // `mfa_required` sits outside the documented set on purpose: the dialog
   // branches on it to route into step-up rather than showing a dead error, and
   // the docs already allow a route to raise a more specific code.
-  code: ApiErrorCode | "mfa_required";
+  code: ApiErrorCode | "mfa_required" | typeof VIEWER_READ_ONLY_ERROR.code;
   status: number;
 };
 
@@ -199,20 +202,26 @@ export async function resolveSessionOrg(
 }
 
 /**
- * Scope for a session caller. Sessions are otherwise unscoped (full access),
- * but a viewer is read-only in the org, so on a state-changing request their
- * session carries `mcp:read` and every `requireScope(..., SCOPE_MCP_WRITE)`
- * sink rejects it. The proxy's viewer gate is the primary block; this keeps
- * the routes closed if a request ever reaches them without passing it.
+ * Refuses a viewer's state-changing session request in the route itself, so a
+ * write never depends on the proxy gate (or its cache) alone. Paths a viewer
+ * may write to use the same allowlist as the proxy.
  */
-function sessionScope(
+function viewerSessionRefusal(
   request: Request,
   role: string | null
-): string | undefined {
-  if (isStateChangingMethod(request.method) && isViewerRole(role)) {
-    return SCOPE_MCP_READ;
+): AuthFailure | null {
+  if (
+    isViewerRole(role) &&
+    isStateChangingMethod(request.method) &&
+    !isViewerExemptMutation(new URL(request.url).pathname)
+  ) {
+    return {
+      error: VIEWER_READ_ONLY_ERROR.error,
+      code: VIEWER_READ_ONLY_ERROR.code,
+      status: 403,
+    };
   }
-  return;
+  return null;
 }
 
 export type DualAuthContext =
@@ -405,12 +414,15 @@ export async function getDualAuthContext(
   if ("error" in orgResult) {
     return orgResult;
   }
+  const viewerRefusal = viewerSessionRefusal(request, orgResult.role);
+  if (viewerRefusal) {
+    return viewerRefusal;
+  }
   return {
     userId: session.user.id,
     organizationId: orgResult.organizationId,
     authMethod: "session",
     apiKeyId: null,
-    scope: sessionScope(request, orgResult.role),
     isAnonymous: isAnonymousUserShape(session.user),
   };
 }
@@ -511,11 +523,14 @@ export async function resolveOrganizationId(
       status: 400,
     };
   }
+  const viewerRefusal = viewerSessionRefusal(request, orgResult.role);
+  if (viewerRefusal) {
+    return viewerRefusal;
+  }
   return {
     organizationId: orgResult.organizationId,
     authMethod: "session",
     apiKeyId: null,
-    scope: sessionScope(request, orgResult.role),
   };
 }
 
@@ -589,12 +604,15 @@ export async function resolveCreatorContext(request: Request): Promise<
       status: 400,
     };
   }
+  const viewerRefusal = viewerSessionRefusal(request, orgResult.role);
+  if (viewerRefusal) {
+    return viewerRefusal;
+  }
   return {
     organizationId: orgResult.organizationId,
     userId: session.user.id,
     authMethod: "session",
     apiKeyId: null,
-    scope: sessionScope(request, orgResult.role),
   };
 }
 

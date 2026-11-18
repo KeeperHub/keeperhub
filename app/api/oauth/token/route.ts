@@ -160,6 +160,36 @@ function verifyClientAuthentication(
   return null;
 }
 
+/**
+ * Org-scoped tokens go only to current members who can act in the org. A
+ * viewer has UI-only access, so a grant ends here even when the revoke on
+ * downgrade did not land.
+ */
+async function grantRoleError(
+  request: Request,
+  userId: string,
+  organizationId: string
+): Promise<Response | null> {
+  const role = await getOrgRole(userId, organizationId);
+  if (role === null) {
+    return routeError(
+      request,
+      "User is no longer a member of this organization",
+      HttpStatus.UNAUTHORIZED,
+      "invalid_grant"
+    );
+  }
+  if (isViewerRole(role)) {
+    return routeError(
+      request,
+      "User has view-only access to this organization",
+      HttpStatus.UNAUTHORIZED,
+      "invalid_grant"
+    );
+  }
+  return null;
+}
+
 async function handleAuthorizationCode(
   request: Request,
   params: URLSearchParams
@@ -251,6 +281,15 @@ async function handleAuthorizationCode(
       HttpStatus.UNAUTHORIZED,
       "invalid_grant"
     );
+  }
+
+  const roleError = await grantRoleError(
+    request,
+    authCode.userId,
+    authCode.organizationId
+  );
+  if (roleError) {
+    return roleError;
   }
 
   const accessToken = await createAccessToken({
@@ -360,24 +399,13 @@ async function handleRefreshToken(
   // single access token, so without this a user removed from (or who left)
   // the org could keep cycling the refresh token into fresh org-scoped
   // access tokens indefinitely.
-  const role = await getOrgRole(entry.userId, entry.organizationId);
-  if (role === null) {
-    return routeError(
-      request,
-      "User is no longer a member of this organization",
-      HttpStatus.UNAUTHORIZED,
-      "invalid_grant"
-    );
-  }
-  // Viewers have UI-only access, so their grant ends here even when the
-  // revoke on downgrade did not land.
-  if (isViewerRole(role)) {
-    return routeError(
-      request,
-      "User has view-only access to this organization",
-      HttpStatus.UNAUTHORIZED,
-      "invalid_grant"
-    );
+  const roleError = await grantRoleError(
+    request,
+    entry.userId,
+    entry.organizationId
+  );
+  if (roleError) {
+    return roleError;
   }
 
   const newRefreshToken = randomBytes(32).toString("hex");

@@ -27,6 +27,18 @@ export function isViewerRole(role: string | null | undefined): boolean {
 }
 
 /**
+ * True when the role may create, change, delete or run anything in the org.
+ * An unknown role (not loaded yet, or no membership) cannot.
+ */
+export function canEditOrg(role: string | null | undefined): boolean {
+  return Boolean(role) && !isViewerRole(role);
+}
+
+/** Tooltip for an action a viewer sees but cannot use. */
+export const VIEWER_DISABLED_REASON =
+  "View-only access: you cannot make changes in this organization";
+
+/**
  * Display name for a membership role. Roles are stored lowercase; every
  * user-facing surface should read them through here so casing and wording
  * stay consistent, including for roles we do not have a label for yet.

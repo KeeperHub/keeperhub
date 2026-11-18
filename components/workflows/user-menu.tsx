@@ -46,6 +46,7 @@ import {
   hasNotificationType,
   useNotificationStatus,
 } from "@/lib/hooks/use-notifications";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { useActiveMember, useOrganization } from "@/lib/hooks/use-organization";
 import { getPersonInitials } from "@/lib/initials";
 import { isAnonymousUser } from "@/lib/is-anonymous";
@@ -127,7 +128,8 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
   };
   const [orgModalOpen, setOrgModalOpen] = useState(false);
   const { organization } = useOrganization();
-  const { isAdmin, isViewer } = useActiveMember();
+  const { isAdmin } = useActiveMember();
+  const { isViewer } = useOrgAccess();
   const router = useRouter();
   const expandLauncher = useSetAtom(gettingStartedOpenAtom);
   const launcherDocked = useAtomValue(gettingStartedDockedAtom);

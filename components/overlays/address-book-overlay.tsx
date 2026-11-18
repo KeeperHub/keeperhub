@@ -25,8 +25,9 @@ import type { AddressBookEntry } from "@/lib/api-client";
 import { addressBookApi } from "@/lib/api-client";
 import { useSession } from "@/lib/auth-client";
 import { useDebounce } from "@/lib/hooks/use-debounce";
-import { useActiveMember } from "@/lib/hooks/use-organization";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { usePagination } from "@/lib/hooks/use-pagination";
+import { VIEWER_DISABLED_REASON } from "@/lib/organization/role-label";
 
 type AddressBookOverlayProps = {
   overlayId: string;
@@ -294,7 +295,7 @@ function AddressBookPagination({
 export function AddressBookOverlay({ overlayId }: AddressBookOverlayProps) {
   const { push, closeAll } = useOverlay();
   const { data: session } = useSession();
-  const { isViewer } = useActiveMember();
+  const { canEdit, isViewer } = useOrgAccess();
   const [loading, setLoading] = useState(true);
   const [entries, setEntries] = useState<AddressBookEntry[]>([]);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -415,13 +416,15 @@ export function AddressBookOverlay({ overlayId }: AddressBookOverlayProps) {
   return (
     <Overlay
       actions={[
-        ...(isTemporalAccount || isViewer
+        ...(isTemporalAccount
           ? []
           : [
               {
                 label: "Add New Address",
                 variant: "outline" as const,
                 onClick: handleOpenAddForm,
+                disabled: !canEdit,
+                disabledReason: isViewer ? VIEWER_DISABLED_REASON : undefined,
               },
             ]),
         { label: "Done", onClick: closeAll },
@@ -462,7 +465,7 @@ export function AddressBookOverlay({ overlayId }: AddressBookOverlayProps) {
             ) : (
               <>
                 <AddressBookTable
-                  canEdit={!isViewer}
+                  canEdit={canEdit}
                   deleting={deleting}
                   entries={paginatedEntries}
                   onDelete={handleDelete}

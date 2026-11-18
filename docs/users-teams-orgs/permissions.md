@@ -20,10 +20,12 @@ In your personal workspace you have full control:
 
 ### Viewer
 
-Viewers can see everything in the organization and change nothing. The role suits auditors, stakeholders, and anyone who needs visibility without edit rights:
+Viewers can see the organization's work and change nothing. They cannot create, edit, delete, or run workflows, and cannot move funds. The role suits auditors, stakeholders, and anyone who needs visibility without edit rights:
 
 - View all organization workflows, including their steps, run history, and version history
 - View projects, tags, connections, the address book, wallets and balances, and organization settings
+
+Held payments are visible to owners, and the security audit trail to admins and owners.
 
 Viewers work in the browser. API keys, MCP agent connections, and CLI login require the member role or higher. Viewers keep control of their own account (profile, password, two-factor authentication, and sessions) and can leave the organization at any time.
 

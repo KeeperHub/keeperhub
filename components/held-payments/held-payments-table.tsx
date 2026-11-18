@@ -17,7 +17,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { heldPaymentApi } from "@/lib/api-client";
-import { useActiveMember } from "@/lib/hooks/use-organization";
 import type {
   HeldPaymentStatus,
   HeldPaymentView,
@@ -204,12 +203,8 @@ function RowActions({
   payment: HeldPaymentView;
   onBroadcast: (payment: HeldPaymentView) => void;
   onCancel: (payment: HeldPaymentView) => void;
-}): React.ReactElement | null {
-  const { isViewer } = useActiveMember();
+}): React.ReactElement {
   if (payment.status === "pending") {
-    if (isViewer) {
-      return null;
-    }
     return (
       <div className="flex justify-end gap-2">
         <Button onClick={() => onBroadcast(payment)} size="sm">

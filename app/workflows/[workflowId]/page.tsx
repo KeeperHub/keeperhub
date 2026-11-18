@@ -13,6 +13,7 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { Button } from "@/components/ui/button";
 import { NodeConfigPanel } from "@/components/workflow/node-config-panel";
 import { useGatedWorkflowWarning } from "@/hooks/use-features";
@@ -23,7 +24,7 @@ import {
   getPendingClaim,
   useClaimWorkflow,
 } from "@/lib/hooks/use-claim-workflow";
-import { useActiveMember } from "@/lib/hooks/use-organization";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { SYSTEM_ACTION_INTEGRATIONS } from "@/lib/integrations/system";
 import {
   integrationsAtom,
@@ -206,7 +207,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
   );
   const [isOwner, setIsWorkflowOwner] = useAtom(isWorkflowOwnerAtom);
   const setIsWorkflowViewer = useSetAtom(isWorkflowViewerAtom);
-  const { isViewer } = useActiveMember();
+  const { isViewer } = useOrgAccess();
   const setIsWorkflowEnabled = useSetAtom(isWorkflowEnabled); // keeperhub custom field //
   const setCurrentWorkflowPublicTags = useSetAtom(
     currentWorkflowPublicTagsAtom
@@ -1070,9 +1071,10 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
               The workflow you're looking for doesn't exist or has been deleted.
             </p>
             <div className="flex justify-center gap-3">
-              {!isViewer && (
+              <ViewOnlyTooltip isViewer={isViewer}>
                 <Button
                   className="gap-2"
+                  disabled={isViewer}
                   onClick={async () => {
                     try {
                       await ensureSession();
@@ -1127,7 +1129,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
                   <Plus className="size-4" />
                   Start building
                 </Button>
-              )}
+              </ViewOnlyTooltip>
               <Button
                 className="gap-2"
                 onClick={() => router.push("/hub")}

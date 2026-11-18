@@ -3,6 +3,7 @@
 import { Globe, Plus } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { ScanDisclaimer } from "@/components/scan/scan-disclaimer";
 import { ScanInput } from "@/components/scan/scan-input";
 import { ScanNetworkStrip } from "@/components/scan/scan-network-strip";
@@ -10,7 +11,7 @@ import { ScanResults } from "@/components/scan/scan-results";
 import { SuggestionPreviewDrawer } from "@/components/scan/suggestion-preview-drawer";
 import { Button } from "@/components/ui/button";
 import { useSession } from "@/lib/auth-client";
-import { useActiveMember } from "@/lib/hooks/use-organization";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { useStartBuilding } from "@/lib/hooks/use-start-building";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import type { SuggestionDescriptor } from "@/lib/scan/suggestions/types";
@@ -121,7 +122,8 @@ export function ScanLanding(): React.ReactElement {
 
   const router = useRouter();
   const { startBuilding } = useStartBuilding();
-  const { isViewer } = useActiveMember();
+  // Signed-out visitors have no role yet may still start, so gate on viewer only.
+  const { isViewer } = useOrgAccess();
 
   const { data: session } = useSession();
   const isAuthenticated =
@@ -319,9 +321,10 @@ export function ScanLanding(): React.ReactElement {
                   <span className="h-px flex-1 bg-border" />
                 </div>
                 <div className="flex flex-wrap items-center justify-center gap-3">
-                  {!isViewer && (
+                  <ViewOnlyTooltip isViewer={isViewer}>
                     <Button
                       className="gap-2 shadow-lg"
+                      disabled={isViewer}
                       onClick={() => {
                         startBuilding().catch(() => {
                           // Errors are surfaced via toast inside startBuilding.
@@ -333,7 +336,7 @@ export function ScanLanding(): React.ReactElement {
                       <Plus className="size-4" />
                       Start building
                     </Button>
-                  )}
+                  </ViewOnlyTooltip>
                   <Button
                     className="gap-2 shadow-lg"
                     onClick={() => router.push("/hub")}

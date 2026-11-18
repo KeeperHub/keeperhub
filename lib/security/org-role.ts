@@ -1,7 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { member, users } from "@/lib/db/schema";
-import type { OrgRole } from "@/lib/organization/role-label";
+import { isViewerRole, type OrgRole } from "@/lib/organization/role-label";
 
 export type { OrgRole } from "@/lib/organization/role-label";
 
@@ -29,6 +29,17 @@ export async function getOrgRole(
     return null;
   }
   return row.role as OrgRole;
+}
+
+/** True when the user is a viewer in the organization (read-only there). */
+export async function isOrgViewer(
+  userId: string,
+  organizationId: string | null | undefined
+): Promise<boolean> {
+  if (!organizationId) {
+    return false;
+  }
+  return isViewerRole(await getOrgRole(userId, organizationId));
 }
 
 /** Owners and admins can see audit trails / history. Members cannot (yet). */

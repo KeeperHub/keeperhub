@@ -78,6 +78,14 @@ export async function getUserIdFromExecution(
   return execution[0].userId;
 }
 
+// A run's steps share one role answer instead of a lookup per step.
+const RPC_PREFERENCE_CACHE_TTL_MS = 30_000;
+const RPC_PREFERENCE_CACHE_MAX = 5000;
+const rpcPreferenceCache = new Map<
+  string,
+  { value: boolean; expiresAt: number }
+>();
+
 /**
  * The user whose RPC preferences a run in this org may use: the run's user,
  * only while they are an active non-viewer member of the org. Anyone else
@@ -90,11 +98,21 @@ export async function rpcPreferenceUserId(
   if (!(userId && organizationId)) {
     return;
   }
-  const role = await getOrgRole(userId, organizationId);
-  if (role === null || isViewerRole(role)) {
-    return;
+  const key = `${userId}|${organizationId}`;
+  const now = Date.now();
+  let allowed = rpcPreferenceCache.get(key);
+  if (!allowed || allowed.expiresAt <= now) {
+    const role = await getOrgRole(userId, organizationId);
+    allowed = {
+      value: role !== null && !isViewerRole(role),
+      expiresAt: now + RPC_PREFERENCE_CACHE_TTL_MS,
+    };
+    if (rpcPreferenceCache.size >= RPC_PREFERENCE_CACHE_MAX) {
+      rpcPreferenceCache.clear();
+    }
+    rpcPreferenceCache.set(key, allowed);
   }
-  return userId;
+  return allowed.value ? userId : undefined;
 }
 
 /**

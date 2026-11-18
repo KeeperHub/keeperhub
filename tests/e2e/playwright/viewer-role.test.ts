@@ -67,8 +67,9 @@ test.describe("viewer role", () => {
     await page.goto(`/workflows/${workflowId}`);
     await waitForCanvas(page);
 
-    await expect(page.getByText("Read only", { exact: true })).toBeVisible();
-    await expect(page.getByTestId("nav-new")).toHaveCount(0);
+    await expect(page.getByTestId("workflow-read-only-badge")).toBeVisible();
+    await expect(page.getByTestId("nav-new")).toBeDisabled();
+    await expect(page.getByTestId("add-step-button")).toHaveCount(0);
   });
 
   test("is refused on every write", async ({ apiRequest }) => {
@@ -81,8 +82,27 @@ test.describe("viewer role", () => {
       }),
       apiRequest.delete(`/api/workflows/${workflowId}`),
       apiRequest.post(`/api/workflow/${workflowId}/execute`, { data: {} }),
+      apiRequest.post(`/api/workflows/${workflowId}/execute`, { data: {} }),
+      apiRequest.post(`/api/workflows/${workflowId}/simulate`, { data: {} }),
+      apiRequest.put(`/api/workflows/${workflowId}/go-live`, { data: {} }),
+      apiRequest.post(`/api/workflows/${workflowId}/duplicate`, {
+        data: {},
+      }),
+      apiRequest.delete(`/api/workflows/${workflowId}/executions`),
       apiRequest.post("/api/projects", { data: { name: "Blocked" } }),
+      apiRequest.post("/api/tags", { data: { name: "Blocked" } }),
+      apiRequest.post("/api/public-tags", { data: { name: "Blocked" } }),
+      apiRequest.post("/api/integrations", {
+        data: { name: "Blocked", type: "webhook", config: {} },
+      }),
+      apiRequest.post("/api/integrations/test", {
+        data: { type: "webhook", config: {} },
+      }),
+      apiRequest.post("/api/address-book", {
+        data: { label: "Blocked", address: "0x0", network: "1" },
+      }),
       apiRequest.post("/api/keys", { data: { name: "Blocked" } }),
+      apiRequest.post("/api/api-keys", { data: { name: "Blocked" } }),
       // Naming another org in the header does not lift the active-org check.
       apiRequest.post("/api/workflows/current", {
         data: { nodes: [], edges: [] },

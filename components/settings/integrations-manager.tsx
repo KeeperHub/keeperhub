@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { IntegrationIcon } from "@/components/ui/integration-icon";
 import { Spinner } from "@/components/ui/spinner";
 import { api, type Integration } from "@/lib/api-client";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { useActiveMember } from "@/lib/hooks/use-organization";
 import { SYSTEM_INTEGRATION_LABELS } from "@/lib/integrations/system";
 import { integrationsAtom } from "@/lib/integrations-store";
@@ -39,7 +40,8 @@ export function IntegrationsManager({
       highlightedRef.current.scrollIntoView({ block: "nearest" });
     }
   }, [highlightId]);
-  const { isAdmin, isViewer } = useActiveMember();
+  const { isAdmin } = useActiveMember();
+  const { canEdit } = useOrgAccess();
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [loading, setLoading] = useState(true);
   const [_testingId, setTestingId] = useState<string | null>(null);
@@ -223,7 +225,7 @@ export function IntegrationsManager({
                   <History className="size-3" />
                 </Button>
               )}
-              {!isViewer && (
+              {canEdit && (
                 <>
                   <Button
                     className="size-7"
