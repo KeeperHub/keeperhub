@@ -676,18 +676,17 @@ const DISPLAY_ONLY_FIELD_SUFFIXES = [
   "-notice",
 ] as const;
 
-// Field types that hold a true/false toggle. The action schema and the MCP
-// pin schema both read this, so they agree on which toggle fields are booleans.
-const TOGGLE_FIELD_TYPES: ReadonlySet<string> = new Set([
-  "switch",
-  "fail-on-error-switch",
-  "gas-sponsorship-switch",
-]);
-
 // These resolve through resolveDefaultOnFlag, which ignores defaultValue.
 const DEFAULT_ON_TOGGLE_TYPES: ReadonlySet<string> = new Set([
   "fail-on-error-switch",
   "gas-sponsorship-switch",
+]);
+
+// Field types that hold a true/false toggle. The action schema and the MCP
+// pin schema both read this, so they agree on which toggle fields are booleans.
+const TOGGLE_FIELD_TYPES: ReadonlySet<string> = new Set([
+  "switch",
+  ...DEFAULT_ON_TOGGLE_TYPES,
 ]);
 
 export function isToggleField(type: string | undefined): boolean {
