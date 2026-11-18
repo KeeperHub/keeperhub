@@ -481,6 +481,17 @@ export function isKnownConfigKeyForAction(
   return isLegacyIgnoredField(actionType, key);
 }
 
+/** A bool field value save accepts; the editor's bool field uses it too. */
+export function isSavableBoolValue(value: unknown): boolean {
+  return (
+    value === true ||
+    value === false ||
+    value === "true" ||
+    value === "false" ||
+    valueContainsTemplate(value)
+  );
+}
+
 function validateStringLike(value: unknown): boolean {
   return typeof value === "string" || typeof value === "number";
 }
@@ -562,13 +573,7 @@ function validateFieldValue(
           };
     case "switch":
     case "protocol-bool":
-      if (valueContainsTemplate(value)) {
-        return { valid: true };
-      }
-      return value === true ||
-        value === false ||
-        value === "true" ||
-        value === "false"
+      return isSavableBoolValue(value)
         ? { valid: true }
         : { valid: false, expected: "boolean", received: value };
     case "protocol-bytes":

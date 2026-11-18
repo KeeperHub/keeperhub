@@ -61,7 +61,7 @@ describe("registered protocol-bool renderer", () => {
     await renderWith(0);
     const message = container.querySelector(`#${FIELD.key}-unrecognized`);
     expect(message?.textContent).toBe(
-      "Saved value 0 is not true or false. Pick one to replace it."
+      "Saved value 0 is not true or false. Choose true or false to replace it."
     );
     expect(trigger()?.getAttribute("aria-invalid")).toBe("true");
     expect(trigger()?.getAttribute("aria-describedby")).toBe(message?.id);
@@ -75,6 +75,26 @@ describe("registered protocol-bool renderer", () => {
     expect(trigger()?.hasAttribute("aria-invalid")).toBe(false);
     expect(trigger()?.hasAttribute("aria-describedby")).toBe(false);
     expect(trigger()?.textContent).toBe("false");
+  });
+
+  it("shortens a long value, keeps its quotes and puts it whole in a tooltip", async () => {
+    const saved = `${"x".repeat(60)}\u{1F600}${"y".repeat(100)}`;
+    await renderWith(saved);
+    const value = container.querySelector(`#${FIELD.key}-unrecognized bdi`);
+    expect(value?.textContent).toBe(`"${"x".repeat(59)}..."`);
+    expect(value?.getAttribute("title")).toBe(JSON.stringify(saved));
+  });
+
+  it("cuts by whole characters and leaves a short value without a tooltip", async () => {
+    await renderWith(`${"x".repeat(58)}\u{1F600}zz`);
+    const value = container.querySelector(`#${FIELD.key}-unrecognized bdi`);
+    expect(value?.textContent).toBe(`"${"x".repeat(58)}\u{1F600}..."`);
+    await renderWith("yes");
+    expect(
+      container
+        .querySelector(`#${FIELD.key}-unrecognized bdi`)
+        ?.hasAttribute("title")
+    ).toBe(false);
   });
 
   it("does not ask a read-only viewer to pick", async () => {
