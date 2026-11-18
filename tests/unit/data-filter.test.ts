@@ -1402,7 +1402,7 @@ describe("data/filter", () => {
       });
       expect(result.success).toBe(false);
       expect((result as FilterFailure).error).toBe(
-        `Filter failed: Item at index 0 can't be tested with "Number: greater than": its value is null. To count such items in skipped instead, set "If an item can't be tested" to Skip.`
+        `Filter failed: Item at index 0 can't be tested with "Number: greater than": its value is null. To go on past such items, set "If an item can't be tested" to "Skip it and count it in skipped" (skip).`
       );
     });
 

@@ -486,14 +486,32 @@ export function isKnownConfigKeyForAction(
   return isLegacyIgnoredField(actionType, key);
 }
 
-// Echoed values are the caller's own input; long text is cut so a refused
-// save does not send it all back.
+// Echoed values are the caller's own input; a long one is cut, and a large
+// list or object is described, so a refused save does not send it all back.
 const RECEIVED_MAX_CHARS = 200;
 
 function capReceived(value: unknown): unknown {
-  return typeof value === "string" && value.length > RECEIVED_MAX_CHARS
-    ? `${value.slice(0, RECEIVED_MAX_CHARS)}...`
-    : value;
+  if (typeof value === "string") {
+    // Array.from splits by code point, so an emoji is never cut in half.
+    const chars = Array.from(value.slice(0, RECEIVED_MAX_CHARS + 1));
+    return chars.length > RECEIVED_MAX_CHARS ||
+      value.length > chars.join("").length
+      ? `${chars.slice(0, RECEIVED_MAX_CHARS).join("")}...`
+      : value;
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  let size: number;
+  try {
+    size = JSON.stringify(value)?.length ?? 0;
+  } catch {
+    size = Number.POSITIVE_INFINITY;
+  }
+  if (size <= RECEIVED_MAX_CHARS) {
+    return value;
+  }
+  return Array.isArray(value) ? `[a list of ${value.length}]` : "[an object]";
 }
 
 function validateStringLike(value: unknown): boolean {
@@ -583,7 +601,9 @@ function validateFieldValue(
             valid: false,
             expected: "boolean",
             received: value,
-            reason: `${field.label} must be true or false, in lowercase; it does not take a template.`,
+            reason: valueContainsTemplate(value)
+              ? `${field.label} does not take a template, only true or false.`
+              : `${field.label} must be true or false, in lowercase.`,
           }
         : { valid: true };
     case "protocol-bool":
@@ -815,7 +835,7 @@ export function validateWorkflowActionConfigs(
         field: key,
         nodeId: identity.nodeId,
         nodeLabel: identity.nodeLabel,
-        received: value,
+        received: capReceived(value),
         message: `Unknown field "${key}" for action "${actionType}".`,
       });
     }
@@ -1024,8 +1044,8 @@ export function formatActionConfigValidationResponse(
               fields: new Map<string, number>(),
             };
             entry.count++;
-            // An action's own cross-field check explains itself, so its
-            // message stands in for the field list in this node's entry.
+            // A check that explains itself stands in for the field list when
+            // it is the node's only issue (see below).
             if (issue.code === "INVALID_FIELD_VALUE" && !entry.detail) {
               entry.detail = issue.message;
             }
@@ -1065,8 +1085,9 @@ export function formatActionConfigValidationResponse(
             const ordered = [...fields.entries()]
               .sort(([, a], [, b]) => a - b)
               .map(([name]) => name);
+            // With other issues on the node, its fields are listed instead.
             entries.push(
-              detail
+              detail && count === 1
                 ? `"${label}": ${sanitiseSummaryText(detail, DETAIL_MAX_CHARS).replace(TRAILING_PERIOD, "")}`
                 : `"${label}"${formatNodeFields(ordered, count)}`
             );

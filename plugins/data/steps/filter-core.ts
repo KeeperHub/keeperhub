@@ -140,7 +140,8 @@ const ITEM_READERS: Record<
 
 const MISSING_FIELD: Untestable = { reason: "the field is missing" };
 
-// Picked once per run. Presence tests take any item, a missing field included.
+// Picked once per run. Presence tests take any item, a missing field included;
+// keep every item never reads one (makeMatcher returns first).
 function itemReaderFor(test: FilterTestKind): ItemReader {
   if (test === "none" || test === "presence") {
     return (value) => ({ value });
@@ -162,16 +163,11 @@ function makeMatcher(
   const rule = filterOperatorRule(operator);
   const value = rule.readsValue ? readValue(rawValue, operator) : undefined;
   const comparison = ignoreCase ? foldCase(value) : value;
-  // A Value kept as exact text that is also exactly a number. Under equals,
-  // number items are compared with the number, as a Condition literal would
-  // be. Under Array: contains an unquoted one is that number and a quoted one
-  // stays text, as for any other Value.
-  // Tests where a number item can meet a Value kept as text.
-  const numberTwin =
-    rule.test === "any" ||
-    rule.test === "loose" ||
-    operator === "arrayContains";
-  const asNumber = numberTwin ? exactNumberOf(value) : undefined;
+  // A Value kept as exact text that is also exactly a number. Under equals
+  // and soft equals, number items are compared with the number, as a
+  // Condition literal would be. Under Array: contains an unquoted one is that
+  // number and a quoted one stays text.
+  const asNumber = rule.meetsNumberText ? exactNumberOf(value) : undefined;
   const containsNumber =
     operator === "arrayContains" &&
     asNumber !== undefined &&
@@ -245,7 +241,7 @@ function runFilter(input: FilterCoreInput): FilterOutput {
     if (typeof result === "object") {
       if (settings.untestable === "fail") {
         throw new Error(
-          `Item at index ${index} can't be tested with "${filterOperatorLabel(settings.operator)}": ${result.reason}. To count such items in skipped instead, set "If an item can't be tested" to Skip.`
+          `Item at index ${index} can't be tested with "${filterOperatorLabel(settings.operator)}": ${result.reason}. To go on past such items, set "If an item can't be tested" to "Skip it and count it in skipped" (skip).`
         );
       }
       output.skipped += 1;

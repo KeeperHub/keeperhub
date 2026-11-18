@@ -181,6 +181,8 @@ export type FilterOperatorRule = {
   readsField: boolean;
   readsValue: boolean;
   readsIgnoreCase: boolean;
+  // A number item can meet a Value kept as exact text (see exactNumberOf).
+  meetsNumberText: boolean;
   // Reads "If an item can't be tested": the test can meet an item it can't apply to.
   canSkip: boolean;
 };
@@ -202,17 +204,15 @@ function testKindOf(op: FilterOperator): FilterTestKind {
 function ruleOf(op: FilterOperator): FilterOperatorRule {
   const test = testKindOf(op);
   const readsValue = !isUnary(op);
+  const equality = test === "any" || test === "loose";
   return {
     test,
     readsField: test !== "none",
     readsValue,
     // Comparisons of text against Value.
     readsIgnoreCase:
-      readsValue &&
-      (test === "any" ||
-        test === "loose" ||
-        test === "text" ||
-        op === "arrayContains"),
+      readsValue && (equality || test === "text" || op === "arrayContains"),
+    meetsNumberText: readsValue && (equality || op === "arrayContains"),
     canSkip: test !== "none" && test !== "presence",
   };
 }

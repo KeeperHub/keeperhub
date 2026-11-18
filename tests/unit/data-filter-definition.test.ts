@@ -628,7 +628,70 @@ describe("data/filter definition", () => {
         "ignoreCase",
       ]);
       expect(formatActionConfigValidationResponse(validation).message).toBe(
-        'Workflow contains invalid action configuration. Invalid node(s): "Filter": Ignore case must be true or false, in lowercase; it does not take a template. Fix the listed fields and save again.'
+        'Workflow contains invalid action configuration. Invalid node(s): "Filter": Ignore case does not take a template, only true or false. Fix the listed fields and save again.'
+      );
+    });
+
+    it("says why any other Ignore case value is refused", () => {
+      for (const ignoreCase of ["True", 1, "yes"]) {
+        const validation = validateWorkflowActionConfigs([
+          actionNode(editorConfig({ source: "[1]", value: "1", ignoreCase })),
+        ]);
+        expect(
+          formatActionConfigValidationResponse(validation).message,
+          String(ignoreCase)
+        ).toContain(
+          '"Filter": Ignore case must be true or false, in lowercase.'
+        );
+      }
+    });
+
+    it("lists every field when the switch is not the node's only problem", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode({
+          operator: "===",
+          value: "a",
+          ignoreCase: "True",
+          bogus: 1,
+        }),
+      ]);
+      expect(formatActionConfigValidationResponse(validation).message).toBe(
+        'Workflow contains invalid action configuration. Invalid node(s): "Filter" (source, ignoreCase, bogus). Fix the listed fields and save again.'
+      );
+    });
+
+    it("describes a large list or object it echoes back instead of sending it", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "[1]",
+            value: "1",
+            ignoreCase: Array.from({ length: 500 }, (_, i) => i),
+            bogus: { text: "y".repeat(500) },
+          })
+        ),
+      ]);
+      const received = Object.fromEntries(
+        validation.issues.map((issue) => [issue.field, issue.received])
+      );
+      expect(received).toEqual({
+        bogus: "[an object]",
+        ignoreCase: "[a list of 500]",
+      });
+    });
+
+    it("never cuts an emoji in half when it shortens a value", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "[1]",
+            value: "1",
+            ignoreCase: `${"x".repeat(199)}${"\u{1F600}".repeat(5)}`,
+          })
+        ),
+      ]);
+      expect(validation.issues[0]?.received).toBe(
+        `${"x".repeat(199)}\u{1F600}...`
       );
     });
 
