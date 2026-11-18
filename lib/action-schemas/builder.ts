@@ -103,8 +103,8 @@ export type BuildActionSchemasOptions = {
 
 // Steps and direct execution also take the two strings; only a workflow step
 // resolves a template.
-export const PROTOCOL_BOOL_TYPE_TEXT =
-  'boolean (true or false; also the lowercase strings "true" and "false"; in a workflow step (not execute_protocol_action), also a {{@nodeId:Label.field}} template that resolves to one of these)';
+const PROTOCOL_BOOL_TYPE_TEXT =
+  'boolean (true or false, or the lowercase strings "true" and "false"; a {{@nodeId:Label.field}} template resolving to one of these works in a workflow step but not in execute_protocol_action)';
 
 function quoteOptions(values: string[]): string {
   return values.map((value) => `"${value}"`).join(" | ") || "select";

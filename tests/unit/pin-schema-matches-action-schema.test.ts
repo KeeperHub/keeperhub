@@ -7,10 +7,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it } from "vitest";
 import { isSwitchOn } from "@/components/workflow/config/plain-switch-field";
-import {
-  PROTOCOL_BOOL_TYPE_TEXT,
-  transformPluginAction,
-} from "@/lib/action-schemas/builder";
+import { transformPluginAction } from "@/lib/action-schemas/builder";
 import { preparePinDataForWorkflow } from "@/lib/mcp/prepare-test-pin-data";
 import { resolveFailOnError } from "@/lib/utils";
 import { resolveSponsorGas } from "@/lib/web3/sponsorship-feature-flag";
@@ -83,7 +80,7 @@ function collectFields(): FieldCase[] {
           pinDefault: pin?.pinSchema.properties[field.key]?.default,
           pinEnum: pin?.pinSchema.properties[field.key]?.enum,
           enumValues: fieldEnumValues(field),
-          hasOptions: field.options !== undefined,
+          hasOptions: (field.options?.length ?? 0) > 0,
           defaultValue: field.defaultValue,
         });
       }
@@ -201,13 +198,13 @@ describe("pin schema and action schema agree on field types", () => {
 
   // The pin schema stays strict: JSON true/false only.
   it("lists the strings and the template a Solidity bool also takes", () => {
-    expect(PROTOCOL_BOOL_TYPE_TEXT).toContain('"true" and "false"');
-    expect(PROTOCOL_BOOL_TYPE_TEXT).toContain("{{@nodeId:Label.field}}");
     for (const field of cases.filter((f) => f.type === "protocol-bool")) {
+      const at = `${field.actionType}.${field.key}`;
       const [typeText] = field.actionSchemaType.split(" - ");
-      expect(typeText, `${field.actionType}.${field.key}`).toBe(
-        PROTOCOL_BOOL_TYPE_TEXT
-      );
+      expect(typeText, at).toMatch(/^boolean \(/);
+      expect(typeText, at).toContain('"true" and "false"');
+      expect(typeText, at).toContain("{{@nodeId:Label.field}} template");
+      expect(typeText, at).toContain("not in execute_protocol_action");
     }
   });
 
