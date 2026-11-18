@@ -15,7 +15,7 @@ Interact with EVM-compatible blockchain networks and Solana. Read-only actions w
 | Get ERC20 Token Balance | Web3 | No | Check ERC20 token balance of any address |
 | Get SPL Token Balance | Web3 | No | Check SPL token balance of any Solana address |
 | Read Contract | Web3 | No | Call view/pure functions on smart contracts |
-| Batch Read Contract | Web3 | No | Batch multiple contract reads into one RPC call via Multicall3 |
+| Batch Read Contract | Web3 | No | Batch multiple contract reads into one RPC call via Multicall3, including one function on a list of contracts |
 | Get Transaction | Web3 | No | Fetch full transaction details by hash |
 | Get Address Nonce | Web3 | No | Read an address's mined and pending transaction counts |
 | Write Contract | Web3 | Wallet | Execute state-changing contract functions |
@@ -99,7 +99,7 @@ Schedule (every 5 min)
 
 ## Batch Read Contract
 
-Call the same contract function with multiple argument sets -- or different functions across different contracts -- in a single RPC call using Multicall3. Reduces dozens of individual read-contract nodes into one.
+Call one contract function with many argument sets, the same function on a list of contracts (for example `done()` on every spell), or different functions across different contracts, in a single RPC call using Multicall3. Reduces dozens of individual read-contract nodes into one.
 
 No credentials required -- this is a read-only operation using Multicall3 at `0xcA11bde05977b3631167028862bE2a173976CA11`.
 
@@ -107,7 +107,7 @@ No credentials required -- this is a read-only operation using Multicall3 at `0x
 
 | Mode    | Description                                                                 | Best For                                                              |
 | ------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Uniform | One contract, one function, multiple arg sets on a single network           | Same function across many inputs: `balanceOf(addr)` for 50 pools      |
+| Uniform (Same function, multiple args) | One function on a single network: one contract with many arg sets, or the same call on a list of contracts | `balanceOf(addr)` for 50 pools; `done()` on every spell in a list |
 | Mixed   | Each call has its own network, contract address, ABI, function, and args    | Heterogeneous reads: `hat()` + `approvals(addr)` on different chains  |
 
 ### Inputs
@@ -118,14 +118,14 @@ No credentials required -- this is a read-only operation using Multicall3 at `0x
 | --------------- | -------- | ---------------------------------------------------------------------------------------- |
 | inputMode       | Yes      | `uniform` (default) or `mixed`                                                           |
 | network         | Yes      | EVM chain to execute on                                                                  |
-| callsFrom       | No       | Where the calls come from: `rows` (default), `args-list` or `address-list` (see Calls from a List below) |
+| callsFrom       | No       | Where the calls come from: `rows` (default), `args-list` or `address-list` (see Calls From a List below) |
 | contractAddress | Yes, except with `address-list` | Target contract address (`0x...` or template variable)            |
 | abi             | Yes      | Contract ABI (auto-fetched from block explorer or pasted manually)                       |
 | abiFunction     | Yes      | Function to call (selected from ABI)                                                     |
 | argsList        | No       | Argument sets for each call, used with `rows` (see Args List Builder below)              |
-| argsFromList    | With `args-list` | Argument sets: a JSON array, usually a template, one entry per call           |
-| contractAddresses | With `address-list` | Contract addresses: a JSON array, usually a template, one call per address |
-| functionArgs    | No       | With `address-list`: the arguments sent to every contract in the list                    |
+| argsFromList    | With `args-list` | Argument Sets: a JSON array, usually a template, one entry per call           |
+| contractAddresses | With `address-list` | Contract Addresses: a JSON array, usually a template, one call per address |
+| functionArgs    | If the function takes arguments | With `address-list`: the arguments sent to every contract in the list; all of them are needed |
 | abiFetchAddress | No       | With `address-list`: one contract with the same ABI, used only to fetch the ABI          |
 | batchSize       | No       | Max calls per Multicall3 request (default: 100, range: 1-500)                            |
 
@@ -133,18 +133,30 @@ No credentials required -- this is a read-only operation using Multicall3 at `0x
 
 The Args List field uses a dynamic builder instead of raw JSON. After selecting a function, the UI shows labeled inputs for each parameter based on the ABI signature. For example, selecting `allowance(address owner, address spender)` shows two labeled inputs per row: "owner (address)" and "spender (address)". Click "Add Arg Set" to add more rows, each representing one call. Template variables like `{{NodeName.value}}` are supported in all inputs.
 
-**Calls from a List (Uniform Mode):**
+**Calls From a List (Uniform Mode):**
 
-The rows editor suits a fixed set of calls. When the calls come from an earlier node (a registry read, a database query, an HTTP response), set **Calls from** to a list instead:
+The rows editor suits a fixed set of calls. When the calls come from an earlier node (a registry read, a database query, an HTTP response), set **Calls From** to a list instead:
 
-- **A list of argument sets** (`args-list`): one contract and function, one call per entry in **Argument sets**. Each entry is the call's arguments in order, e.g. `["0xabc...", 5]`. For a function with one plain argument (an address, number, string, bool or bytes), an entry can also be the bare value, e.g. `"0xabc..."`.
-- **A list of contract addresses** (`address-list`): one function, called on every address in **Contract addresses** with the same **Arguments**. Contract Address is not used; to fetch the ABI, enter any one contract with the same ABI in **Fetch ABI from** (it is not called), or paste the ABI with Use manual ABI.
+- **A list of argument sets** (`args-list`): one contract and function, one call per entry in **Argument Sets**. Each entry is the call's arguments in order, e.g. `["0xabc...", 5]`. For a function with one plain argument (an address, number, string, bool or bytes), an entry can also be the bare value, e.g. `"0xabc..."`.
+- **A list of contract addresses** (`address-list`): one function, called on every address in **Contract Addresses** with the same **Function Arguments** (all of them, if the function takes any). Contract Address is not used; to fetch the ABI, enter any one contract with the same ABI in **Fetch ABI From** (it is not called), or paste the ABI with Use manual ABI.
 
-Both lists take a JSON array typed in the field or, more often, a template that resolves to one, e.g. `{{@keys:Encode / Decode.result}}`. Results keep the list's order, duplicates included, so another list of names lines up with them by position.
+Both lists take a JSON array typed in the field or, more often, a reference to an array from an earlier node, e.g. `{{@keys:Encode / Decode.result}}`. Prefer one reference to the whole array over references mixed into a typed list. Results keep the list's order, duplicates included, so another list of names lines up with them by position.
 
-The list is checked before any call is made. The step fails, naming the entry (counted from 1), when the list is empty, is not a JSON array, has more than 5,000 entries or is larger than 1 MB, or when an entry is not a valid address or has the wrong number of arguments. With Fail workflow on error off, these failures are passed to the next node like any other read error.
+The list is checked before any call is made, and the step fails when:
 
-A list from a source you do not control (a webhook body, an HTTP response) decides which contracts are called. Calls are read-only and cannot spend, but a contract built to use a lot of gas can make the whole multicall request fail. Prefer lists from on-chain registries, or filter outside lists first.
+- the list is empty, is not a JSON array, has more than 5,000 entries, or is larger than 1 MB
+- an entry is not a valid address, or has the wrong number of arguments (the message names the entry, counted from 1)
+- an entry cannot be encoded for the function, for example a text key where the function takes `bytes32`; turn text into `bytes32` with the Encode / Decode node first
+- a `bool` argument is not `true` or `false`
+- the encoded calls add up to more than 10 MB
+
+With Fail workflow on error off, these failures are passed to the next node like any other read error.
+
+Encode / Decode returns a one-entry array as a plain string, not a list. If the list may hold a single entry, take it from a source that always returns an array.
+
+To use another Batch Read Contract's `results` as a list, map them to their `result` values first (for example with a Code node): each entry of `results` is an object, not an address or a value.
+
+A list from a source you do not control (a webhook body, an HTTP response) decides which contracts are called. Calls are read-only and cannot spend, but any contract in the list can make the whole batch fail, or return the values it chooses. Filter such a list, or check it against an allow-list, before it reaches Batch Read Contract.
 
 **Mixed Mode:**
 
@@ -244,7 +256,7 @@ Schedule (every hour)
        argsFromList: {{@keys:Read Contract.result}}
 ```
 
-`getAddress` takes one argument, so each key in the list is used as it is. `results[i]` is the address of the key at position `i` of the list.
+If `list()` names its output (for example `keys`), the list is `{{@keys:Read Contract.result.keys}}`. `getAddress` takes one argument, so each key in the list is used as it is. `results[i]` is the address of the key at position `i` of the list.
 
 ### Multi-Contract Governance Dashboard (Mixed Mode)
 
@@ -306,7 +318,7 @@ Schedule (every block)
 
 ### Uniswap V2 Pair Reserves (Address List)
 
-Read reserves from multiple Uniswap V2 pairs. Every pair has the same `getReserves()` function, so set Calls from to a list of contract addresses: one call per pair, in the list's order. `getReserves()` takes no parameters, so Arguments stays empty. Returns `(reserve0, reserve1, blockTimestampLast)` per call.
+Read reserves from multiple Uniswap V2 pairs. Every pair has the same `getReserves()` function, so set Calls From to a list of contract addresses: one call per pair, in the list's order. `getReserves()` takes no parameters, so Function Arguments stays empty. Returns `(reserve0, reserve1, blockTimestampLast)` per call.
 
 ```
 Schedule (every 5 min)
@@ -341,11 +353,11 @@ Schedule (every hour)
 
 ### Balances for a Dynamic Wallet List (Argument Sets)
 
-Use a database query to get the current list of wallets, then batch-read their balances. The query returns the wallets as one JSON array, which becomes the Argument sets list. `balanceOf` takes one argument, so each wallet address is used as it is.
+Use a database query to get the current list of wallets, then batch-read their balances. The query returns the wallets as one JSON array, which becomes the Argument Sets list. `balanceOf` takes one argument, so each wallet address is used as it is.
 
 ```
 Schedule (daily)
-  -> Database Query: SELECT json_agg(address) AS wallets FROM monitored_wallets
+  -> Database Query: SELECT COALESCE(json_agg(address), '[]'::json) AS wallets FROM monitored_wallets
   -> Batch Read Contract:
        inputMode: uniform
        network: ethereum
