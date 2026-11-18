@@ -1685,7 +1685,7 @@ const web3Plugin: IntegrationPlugin = {
           ],
         },
         readFailOnErrorField(
-          "When off, a failed read passes a soft error to the next node instead of failing the run: a failed batch, a problem with the ABI, function or arguments, a bad Argument Sets entry, an empty list ([]) or one over the size limits. Only problems that leave the step with nowhere to call still fail the run: a missing or unknown network, unresolved RPC config, or a missing or invalid contract address (Contract Address, a call's network or address in Different contracts/functions mode, or a blank Contract Addresses, one that is not a list, or a bad entry in it)."
+          "When off, a failed read passes a soft error to the next node instead of failing the run: a failed batch, a problem with the ABI, function or arguments, a bad Argument Sets entry, an empty list ([]) or one over the size limits. Only problems that leave the step with nowhere to call still fail the run: a missing or unknown network, unresolved RPC config, or a missing or invalid contract address (Contract Address, a call's network or address in Different contracts/functions mode, or a call that is not an object, or a blank Contract Addresses, one that is not a list, or a bad entry in it)."
         ),
       ],
     },

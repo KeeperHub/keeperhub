@@ -849,7 +849,7 @@ describe("batch-read-contract - list argument types", () => {
     );
     // 79 digits: past uint256 but under the length guard.
     const range =
-      "x is out of range for uint256. A uint cannot be negative, and each type has a maximum.";
+      "x is out of range for uint256, which cannot be negative and has a maximum.";
     expect(await failure(argsList(["9".repeat(79)]))).toBe(
       `Argument Sets entry 1 could not be encoded for echo: ${range}`
     );
@@ -860,10 +860,10 @@ describe("batch-read-contract - list argument types", () => {
 
   it("refuses integer text longer than 80 characters before encoding", async () => {
     expect(await failure(argsList(["9".repeat(81)]))).toBe(
-      "Argument Sets entry 1: x is too long for a whole number. Use one of up to 78 digits."
+      "Argument Sets entry 1: x is too long for a whole number. Use at most 78 digits."
     );
     expect(await failure(argsList([`9${"x".repeat(500)}`]))).toBe(
-      "Argument Sets entry 1: x is too long for a whole number. Use one of up to 78 digits."
+      "Argument Sets entry 1: x is too long for a whole number. Use at most 78 digits."
     );
   });
 
@@ -1336,7 +1336,7 @@ describe("batch-read-contract - review round 3", () => {
       "Function Arguments: m[0]: expected array for uint256[]. Check the arguments for nested (m)."
     );
     expect(await failure(argsList([[["[1,"]]], "nested"))).toBe(
-      "Argument Sets entry 1: m[0]: expected array for uint256[]. An entry for nested looks like [[[1, 1], [1, 1]]]."
+      "Argument Sets entry 1: m[0]: expected array for uint256[]. An entry for nested looks like [[[...], [...]]]."
     );
   });
 
@@ -1855,6 +1855,65 @@ describe("batch-read-contract - review fixes, round 2", () => {
       )
     ).toBe(
       'Function Arguments: give p as an object with its member names, like {"flag": true, "x": 1}, not as an array.'
+    );
+  });
+});
+
+describe("batch-read-contract - review fixes, round 3", () => {
+  const abiWith = (name: string, inputs: unknown[]): string =>
+    JSON.stringify([
+      {
+        name,
+        type: "function",
+        stateMutability: "view",
+        inputs,
+        outputs: [{ name: "", type: "uint256" }],
+      },
+    ]);
+
+  it("keeps the example short for deeply nested arrays", async () => {
+    const abi = abiWith("deep", [
+      { name: "a", type: `uint256${"[3]".repeat(20)}` },
+      { name: "b", type: "uint256" },
+    ]);
+    const message = await failure({ ...argsList([5], "deep"), abi });
+    expect(message).toBe(
+      "Argument Sets entry 1 must be an array of 2 values for deep (a, b), got a number. Make each entry an array like [[[...], [...], [...]], 1]."
+    );
+  });
+
+  it("names the tuple member and its type when a number is out of range", async () => {
+    const abi = abiWith("small", [
+      { name: "p", type: "tuple", components: [{ name: "a", type: "uint8" }] },
+      { name: "k", type: "int8" },
+    ]);
+    expect(
+      await failure({ ...argsList([[{ a: "300" }, "1"]], "small"), abi })
+    ).toBe(
+      "Argument Sets entry 1 could not be encoded for small: p.a is out of range for uint8, which cannot be negative and has a maximum."
+    );
+    mockStaticCall.mockClear();
+    expect(
+      await failure({ ...argsList([[{ a: "1" }, "-200"]], "small"), abi })
+    ).toBe(
+      "Argument Sets entry 1 could not be encoded for small: k is out of range for int8, which has a minimum and a maximum."
+    );
+  });
+
+  it("gives a short flat tuple entry the count message, not the object hint", async () => {
+    const abi = abiWith("flat", [
+      {
+        name: "t",
+        type: "tuple",
+        components: [
+          { name: "a", type: "uint256" },
+          { name: "b", type: "uint256" },
+        ],
+      },
+      { name: "x", type: "uint256" },
+    ]);
+    expect(await failure({ ...argsList([[1, 2]], "flat"), abi })).toBe(
+      'Argument Sets entry 1 has 2 values, but flat takes 2 (t, x) with each tuple as an object, or 3 with its members given flat. Make each entry an array like [{"a": 1, "b": 1}, 1].'
     );
   });
 });

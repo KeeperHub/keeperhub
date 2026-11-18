@@ -264,7 +264,6 @@ function buildMixedCalls(callsJson: string | undefined): {
     return { calls: [], error: "Calls must be a JSON array of call objects" };
   }
 
-  const destinations: { network: string; address: string }[] = [];
   if (parsedCalls.length > MAX_TOTAL_CALLS) {
     return {
       calls: [],
@@ -272,6 +271,7 @@ function buildMixedCalls(callsJson: string | undefined): {
     };
   }
 
+  const destinations: { network: string; address: string }[] = [];
   for (const [index, call] of parsedCalls.entries()) {
     // A call that is not an object has nowhere to call either.
     if (typeof call !== "object" || call === null || Array.isArray(call)) {
@@ -932,12 +932,6 @@ async function executeMixedMode(
 
   if (normalizedCalls.length === 0) {
     return validationFailure("No calls to execute");
-  }
-
-  if (normalizedCalls.length > MAX_TOTAL_CALLS) {
-    return validationFailure(
-      `Too many calls (${normalizedCalls.length}). Maximum is ${MAX_TOTAL_CALLS}.`
-    );
   }
 
   const encodeResult = encodeMixedCalls(normalizedCalls);

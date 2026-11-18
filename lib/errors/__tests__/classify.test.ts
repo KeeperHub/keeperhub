@@ -183,6 +183,26 @@ describe("classifyExecutionError", () => {
       expect(r.errorType).toBe("user");
     });
 
+    it.each(["Too many calls (5001). Maximum is 5000.", "No calls to execute"])(
+      "classifies Batch Read's %s as validation + user",
+      (input) => {
+        const r = classifyExecutionError(input);
+        expect(r.errorCategory).toBe(ErrorCategory.VALIDATION);
+        expect(r.errorType).toBe("user");
+      }
+    );
+
+    it.each([
+      'Multicall batch 1/1 failed: server response 502 (body="0x1 is not a valid address: x")',
+      'Step "check is not a valid address: x" exceeded max retries',
+      "Failed to initialize organization wallet: Function 'x' is not in the ABI",
+    ])(
+      "does not relabel a system message quoting Batch Read text: %s",
+      (input) => {
+        expect(classifyExecutionError(input).errorType).toBe("system");
+      }
+    );
+
     it("DATABASE_URL is not configured: configuration + user", () => {
       const r = classifyExecutionError(
         "DATABASE_URL is not configured. Please add it in Project Integrations."

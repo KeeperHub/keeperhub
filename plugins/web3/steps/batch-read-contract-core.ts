@@ -38,6 +38,7 @@ const INTEGER_TYPE_RE = /^u?int\d*$/;
 // A uint256 has at most 78 digits; longer text is refused before encoding.
 const MAX_INTEGER_TEXT = 80;
 const ARRAY_TYPE_RE = /^(.*)\[(\d*)\]$/;
+const ARRAY_SUFFIXES_RE = /(\[\d*\])+$/;
 const BYTES_N_RE = /^bytes(\d+)$/;
 const HEX_RE = /^0x[0-9a-fA-F]*$/;
 const ETHERS_DETAIL_RE = /\s*\([^()]*\bcode=[A-Z_]+[^()]*\)/g;
@@ -286,20 +287,31 @@ function inputNames(fn: ListFunction): string {
     .join(", ");
 }
 
-function exampleValue(type: string, components?: AbiParam[]): string {
+/** One level of an argument's shape; deeper arrays and tuples show as [...] and {...}. */
+function exampleValue(
+  type: string,
+  components?: AbiParam[],
+  depth = 0
+): string {
   const array = ARRAY_TYPE_RE.exec(type);
   if (array) {
-    const item = exampleValue(array[1], components);
+    if (depth > 0) {
+      return "[...]";
+    }
+    const item = exampleValue(array[1], components, depth + 1);
     const size = Number(array[2]);
     return array[2] && size <= 3
       ? `[${new Array<string>(size).fill(item).join(", ")}]`
       : `[${item}, ${item}]`;
   }
   if (type === "tuple") {
-    if (!components?.length || components.some((c) => !c.name)) {
+    if (depth > 0 || !components?.length || components.some((c) => !c.name)) {
       return "{...}";
     }
-    return `{${components.map((c) => `"${c.name}": ${exampleValue(c.type, c.components)}`).join(", ")}}`;
+    const members = components.map(
+      (c) => `"${c.name}": ${exampleValue(c.type, c.components, depth + 1)}`
+    );
+    return `{${members.join(", ")}}`;
   }
   if (type === "address" || type.startsWith("bytes")) {
     return '"0x..."';
@@ -357,7 +369,7 @@ function checkListLeaf(
     typeof value === "string" &&
     value.trim().length > MAX_INTEGER_TEXT
   ) {
-    return `${path} is too long for a whole number. Use one of up to 78 digits`;
+    return `${path} is too long for a whole number. Use at most 78 digits`;
   }
   const bytes = BYTES_N_RE.exec(type);
   if (
@@ -531,21 +543,45 @@ function estimateCalldata(
   return { bytes: tally.bytes, values: tally.values };
 }
 
+/** The parameter or tuple member ethers named, by path, with its leaf type. */
+function findParam(
+  params: AbiParam[] | undefined,
+  name: string,
+  path: string
+): { path: string; type: string } | undefined {
+  for (const param of params ?? []) {
+    const at = path ? `${path}.${param.name}` : param.name;
+    if (param.name === name) {
+      return { path: at, type: param.type.replace(ARRAY_SUFFIXES_RE, "") };
+    }
+    const inner = findParam(param.components, name, at);
+    if (inner) {
+      return inner;
+    }
+  }
+  return;
+}
+
+function outOfRange(subject: string, type: string | undefined): string {
+  if (!(type && INTEGER_TYPE_RE.test(type))) {
+    return `${subject}is out of range for its type.`;
+  }
+  const limits = type.startsWith("uint")
+    ? "cannot be negative and has a maximum"
+    : "has a minimum and a maximum";
+  return `${subject}is out of range for ${type}, which ${limits}.`;
+}
+
 /** An encoder error without ethers' detail suffix, in words for numbers. */
 export function encodeReason(error: unknown, fn: ListFunction): string {
   const message = error instanceof Error ? error.message : String(error);
   const reported = ETHERS_ARGUMENT_RE.exec(message)?.[1];
-  const names = fn.inputs.map((input) => input.name);
-  let name: string | undefined;
-  if (reported && names.includes(reported)) {
-    name = reported;
-  } else if (names.length === 1) {
-    name = names[0];
-  }
+  const found = reported ? findParam(fn.inputs, reported, "") : undefined;
+  const only = fn.inputs.length === 1 ? fn.inputs[0] : undefined;
+  const name = found?.path ?? only?.name;
   const subject = name ? `${name} ` : "it ";
   if (NUMBER_RANGE_RE.test(message)) {
-    const type = fn.inputs.find((input) => input.name === name)?.type;
-    return `${subject}is out of range for ${type ?? "its type"}. A uint cannot be negative, and each type has a maximum.`;
+    return outOfRange(subject, found?.type);
   }
   if (NUMBER_FAULT_RE.test(message)) {
     return `${subject}must be a whole number; write large numbers in quotes, e.g. "12345678901234567890".`;
@@ -635,7 +671,7 @@ function countMismatch(
   );
 }
 
-/** A tuple given as an array of its members, which reads as flat values. */
+/** A tuple given as an array of its members or as text; other shapes get the count message. */
 function positionalTupleError(
   args: unknown[],
   fn: ListFunction,
@@ -647,18 +683,14 @@ function positionalTupleError(
   const index = fn.inputs.findIndex(
     (input, i) =>
       input.type === "tuple" &&
-      args[i] !== undefined &&
-      args[i] !== "" &&
-      (typeof args[i] !== "object" ||
-        args[i] === null ||
+      ((typeof args[i] === "string" && args[i] !== "") ||
         Array.isArray(args[i]))
   );
   if (index < 0) {
     return;
   }
   const input = fn.inputs[index];
-  const given =
-    typeof args[index] === "string" ? "text" : describeKind(args[index]);
+  const given = typeof args[index] === "string" ? "text" : "an array";
   return new Error(
     `${at}: give ${input.name || `arg${index}`} as an object with its member names, like ${exampleValue(input.type, input.components)}, not as ${given}.`
   );
