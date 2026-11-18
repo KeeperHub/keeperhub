@@ -1549,7 +1549,7 @@ const web3Plugin: IntegrationPlugin = {
           ],
           defaultValue: "rows",
           helpTip:
-            "Rows: add each call here. A list: take the calls from an earlier node's output, one call per entry, in order.",
+            "Rows: add each call here. A list: take the calls from a JSON array, usually an earlier node's output, one call per entry, in order.",
           showWhen: { field: "inputMode", notEquals: "mixed" },
         },
         {

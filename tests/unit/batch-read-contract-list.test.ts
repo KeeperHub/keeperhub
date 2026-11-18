@@ -76,8 +76,38 @@ import {
   type BatchReadContractInput,
   batchReadContractStep,
 } from "@/plugins/web3/steps/batch-read-contract";
+import { encodeReason } from "@/plugins/web3/steps/batch-read-contract-core";
 
 const LIST_ABI = [
+  {
+    name: "wrap",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      {
+        name: "t",
+        type: "tuple",
+        components: [{ name: "a", type: "uint256[]" }],
+      },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "pairU",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      {
+        name: "p",
+        type: "tuple",
+        components: [
+          { name: "", type: "uint256" },
+          { name: "", type: "address" },
+        ],
+      },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
   {
     name: "cfg",
     type: "function",
@@ -232,6 +262,17 @@ function answer(call: Call): [boolean, string] {
           (parsed.args[0] as { flag: boolean }).flag,
         ]),
       ];
+    case "pairU": {
+      // Answers with the first member plus the address's last byte.
+      const member = parsed.args[0] as [bigint, string];
+      return [
+        true,
+        iface.encodeFunctionResult("pairU", [
+          member[0] + BigInt(Number.parseInt(member[1].slice(-2), 16)),
+        ]),
+      ];
+    }
+    case "wrap":
     case "key":
     case "nested":
       return [true, iface.encodeFunctionResult(parsed.name, [BigInt(1)])];
@@ -555,7 +596,7 @@ describe("batch-read-contract - argument sets from a list", () => {
     expect(
       await failure(argsList([[OWNER, SPENDER], OWNER], "allowance"))
     ).toBe(
-      "Argument Sets entry 2 must be an array of 2 values for allowance (owner, spender), got a string."
+      'Argument Sets entry 2 must be an array of 2 values for allowance (owner, spender), got a string. Make each entry an array like ["0x...", "0x..."].'
     );
   });
 
@@ -748,15 +789,40 @@ describe("batch-read-contract - list argument types", () => {
     ).toBe(`Argument Sets entry 1 could not be encoded for echo: ${whole}`);
   });
 
-  it("strips ethers' detail suffix from other encoder errors", async () => {
-    const message = await failure(
-      argsList([[OWNER, "0xnot-an-address"]], "allowance")
+  it("checks address arguments before encoding", async () => {
+    expect(
+      await failure(argsList([[OWNER, "0xnot-an-address"]], "allowance"))
+    ).toBe(
+      'Argument Sets entry 1: spender must be a 0x address with 40 hex characters, got "0xnot-an-address".'
     );
-    expect(message).toMatch(
-      /^Argument Sets entry 1 could not be encoded for allowance: /
+    const good = ethers.getAddress(LETTERED);
+    const bad = `0x${good.slice(2).replace(HEX_LETTER, flipCase)}`;
+    expect(
+      await failure(
+        addressList([addr(1)], {
+          abiFunction: "allowance",
+          functionArgs: JSON.stringify([OWNER, bad]),
+        })
+      )
+    ).toBe(
+      `Function Arguments: spender has a bad checksum: "${bad}". Use the address exactly as published, or in all lower case.`
     );
-    expect(message).not.toContain("code=");
-    expect(message).not.toContain("version=");
+  });
+
+  it("strips ethers' detail suffix and names the argument", () => {
+    const fn = {
+      name: "f",
+      signature: "f(string)",
+      inputs: [{ name: "label", type: "string" }],
+    };
+    expect(
+      encodeReason(
+        new Error(
+          'invalid string value (argument="label", value=1, code=INVALID_ARGUMENT, version=6.17.0)'
+        ),
+        fn
+      )
+    ).toBe("label: invalid string value.");
   });
 
   it("names the encoder failure without a doubled full stop", async () => {
@@ -926,7 +992,7 @@ describe("batch-read-contract - list limits and shapes", () => {
       "Contract Address is required. Enter the contract to call."
     );
     expect(await failure({ ...argsList(["1"]), abiFunction: "" })).toBe(
-      "Function is required."
+      "Function is required. Pick one in Function."
     );
   });
 
@@ -1033,7 +1099,11 @@ describe("batch-read-contract - review round 2", () => {
         String(message).includes("Multicall batch")
       );
     expect(String(logged?.[1]).length).toBeLessThan(400);
-    expect(logged?.[2]).toBeUndefined();
+    // The error keeps its type for the structured log; only the text is cut.
+    const loggedError = logged?.[2] as Error;
+    expect(loggedError).toBeInstanceOf(Error);
+    expect(loggedError.name).toBe("Error");
+    expect(loggedError.message.length).toBeLessThan(260);
   });
 
   it("cuts a long revert reason", async () => {
@@ -1091,7 +1161,7 @@ describe("batch-read-contract - review round 2", () => {
 
   it("names Network and Contract ABI without mode jargon, with a next step", async () => {
     expect(await failure({ ...argsList(["1"]), network: "" })).toBe(
-      "Network is required."
+      "Network is required. Pick one in Network."
     );
     expect(await failure({ ...argsList(["1"]), abi: "" })).toBe(
       "Contract ABI is required. Enter Contract Address to fetch it, or tick Use manual ABI and paste it."
@@ -1131,5 +1201,101 @@ describe("batch-read-contract - review round 2", () => {
       { success: true, result: "2" },
       { success: true, result: "1" },
     ]);
+  });
+});
+
+describe("batch-read-contract - review round 3", () => {
+  const bigArrayText = `[${Array.from({ length: 450_000 }, () => "0").join(",")}]`;
+
+  it("refuses a tuple's array held as text in Argument Sets, fast and without RPC", async () => {
+    const started = Date.now();
+    expect(
+      await failure(argsList(JSON.stringify([[[bigArrayText]]]), "wrap"))
+    ).toBe(
+      "Argument Sets entry 1: t.a must be an array for uint256[], got a string."
+    );
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("refuses a tuple held as text in Function Arguments, fast and without RPC", async () => {
+    const started = Date.now();
+    expect(
+      await failure(
+        addressList([addr(1)], {
+          abiFunction: "wrap",
+          functionArgs: JSON.stringify([JSON.stringify({ a: [0, 0] })]),
+        })
+      )
+    ).toBe(
+      "Function Arguments: t must be an array or object for its tuple (a), got a string."
+    );
+    expect(
+      await failure(
+        addressList([addr(1)], {
+          abiFunction: "wrap",
+          functionArgs: JSON.stringify([[bigArrayText]]),
+        })
+      )
+    ).toBe(
+      "Function Arguments: t.a must be an array for uint256[], got a string."
+    );
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("refuses a primitive where an array type is expected", async () => {
+    expect(await failure(argsList([["5"]], "sum"))).toBe(
+      "Argument Sets entry 1: ids must be an array for uint256[], got a string."
+    );
+  });
+
+  it("keeps a tuple with unnamed members positional", async () => {
+    const outcome = await run(
+      argsList([[["5", addr(1)]], [[7, addr(2)]]], "pairU")
+    );
+    expect(outcome.results?.map((r) => r.result)).toEqual(["6", "9"]);
+    mockStaticCall.mockClear();
+    expect(await failure(argsList([[["5"]]], "pairU"))).toBe(
+      "Argument Sets entry 1: p has 1 value but its tuple takes 2 (uint256, address)."
+    );
+    expect(await failure(argsList([[["5", "0x12"]]], "pairU"))).toBe(
+      'Argument Sets entry 1: p.1 must be a 0x address with 40 hex characters, got "0x12".'
+    );
+  });
+
+  it("checks the address list before the shared Function Arguments", async () => {
+    expect(
+      await failure(
+        addressList(["0x12"], {
+          abiFunction: "allowance",
+          functionArgs: JSON.stringify([OWNER]),
+        })
+      )
+    ).toBe(
+      'Contract Addresses entry 1 is not a valid address: "0x12". Each entry must be a 0x address with 40 hex characters.'
+    );
+  });
+
+  it("trims Contract Address and names a bad checksum on it", async () => {
+    const outcome = await run({
+      ...argsList(["1"]),
+      contractAddress: ` ${CONTRACT} `,
+    });
+    expect(seenTargets).toEqual([CONTRACT]);
+    expect(outcome.totalCalls).toBe(1);
+    mockStaticCall.mockClear();
+    const good = ethers.getAddress(LETTERED);
+    const bad = `0x${good.slice(2).replace(HEX_LETTER, flipCase)}`;
+    expect(await failure({ ...argsList(["1"]), contractAddress: bad })).toBe(
+      `Contract Address has a bad checksum: "${bad}". Use the address exactly as published, or in all lower case.`
+    );
+  });
+
+  it("reports a missing or empty argument", async () => {
+    expect(await failure(argsList([[OWNER, ""]], "allowance"))).toBe(
+      "Argument Sets entry 1: spender cannot be empty (address)."
+    );
+    expect(await failure(argsList([[{ flag: true }]], "cfg"))).toBe(
+      "Argument Sets entry 1: p.x is missing (uint256)."
+    );
   });
 });

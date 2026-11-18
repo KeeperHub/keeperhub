@@ -70,7 +70,7 @@ describe("ActionSchema - Batch Read Contract list inputs", () => {
     );
     expect(tip).toContain("contractAddress is not used");
     expect(tip).toContain(
-      "abi is still required, and abiFetchAddress is only where the editor fetches it from and what the deep check compares against"
+      "abi is still required, and abiFetchAddress is only where the editor fetches it from and what workflow validation compares the ABI against"
     );
     expect(tip).toContain("a string holding one");
     expect(tip).toContain("up to 5,000 calls per run");

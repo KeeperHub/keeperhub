@@ -1,17 +1,15 @@
 import { ethers } from "ethers";
-import { coerceArgsForAbi, reshapeArgsForAbi } from "@/lib/abi/struct-args";
 import type { AbiParam } from "@/lib/abi/types";
 import { type AbiItem, resolveAbiFunction } from "@/lib/abi/utils";
-import { validateArgsForAbi } from "@/lib/abi/validate-args";
 
 export const MAX_TOTAL_CALLS = 5000;
-export const MAX_LIST_TEXT_BYTES = 1_048_576;
-export const MAX_RUN_CALLDATA_BYTES = 10 * 1_048_576;
+const MAX_LIST_TEXT_BYTES = 1_048_576;
+const MAX_RUN_CALLDATA_BYTES = 10 * 1_048_576;
 // Encoding time grows faster than size, so one call and one run are bounded.
-export const MAX_CALL_CALLDATA_BYTES = 64 * 1024;
-export const MAX_RUN_VALUES = 50_000;
+const MAX_CALL_CALLDATA_BYTES = 64 * 1024;
+const MAX_RUN_VALUES = 50_000;
 
-export const CALLS_FROM_ROWS = "rows";
+const CALLS_FROM_ROWS = "rows";
 export const CALLS_FROM_ARGS_LIST = "args-list";
 export const CALLS_FROM_ADDRESS_LIST = "address-list";
 
@@ -256,7 +254,20 @@ function isPrimitive(value: unknown): boolean {
   );
 }
 
-/** Positional tuples become objects by component order, as validation expects. */
+function showValue(value: unknown): string {
+  return echo(JSON.stringify(value) ?? String(value));
+}
+
+function tupleNames(components: AbiParam[]): string {
+  return components.map((c) => c.name || c.type).join(", ");
+}
+
+/**
+ * Give an argument its ABI shape without parsing anything: an array type
+ * must be an array, a tuple an array or object. A positional tuple becomes an
+ * object by component order when every component is named, and stays an
+ * array otherwise (ethers takes both; unnamed members would collide).
+ */
 function structureTuples(
   value: unknown,
   type: string,
@@ -265,30 +276,38 @@ function structureTuples(
 ): unknown {
   const array = ARRAY_TYPE_RE.exec(type);
   if (array) {
-    return Array.isArray(value)
-      ? value.map((item, index) =>
-          structureTuples(item, array[1], components, `${path}[${index}]`)
-        )
-      : value;
+    if (!Array.isArray(value)) {
+      throw new Error(
+        `${path} must be an array for ${type}, got ${describeKind(value)}.`
+      );
+    }
+    return value.map((item, index) =>
+      structureTuples(item, array[1], components, `${path}[${index}]`)
+    );
   }
   if (type !== "tuple" || !components?.length) {
     return value;
   }
   if (Array.isArray(value)) {
     if (value.length !== components.length) {
-      const names = components.map((c) => c.name || c.type).join(", ");
       throw new Error(
-        `${path} has ${plural(value.length, "value")} but its tuple takes ${count(components.length)} (${names}).`
+        `${path} has ${plural(value.length, "value")} but its tuple takes ${count(components.length)} (${tupleNames(components)}).`
       );
     }
-    const out: Record<string, unknown> = {};
-    for (const [index, component] of components.entries()) {
-      out[component.name] = structureTuples(
+    const members = components.map((component, index) =>
+      structureTuples(
         value[index],
         component.type,
         component.components,
         `${path}.${component.name || index}`
-      );
+      )
+    );
+    if (components.some((component) => !component.name)) {
+      return members;
+    }
+    const out: Record<string, unknown> = {};
+    for (const [index, component] of components.entries()) {
+      out[component.name] = members[index];
     }
     return out;
   }
@@ -304,12 +323,78 @@ function structureTuples(
     }
     return out;
   }
+  throw new Error(
+    `${path} must be an array or object for its tuple (${tupleNames(components)}), got ${describeKind(value)}.`
+  );
+}
+
+function checkAddress(value: unknown, path: string): string {
+  const address = typeof value === "string" ? value.trim() : "";
+  if (!HEX_ADDRESS_RE.test(address)) {
+    throw new Error(
+      `${path} must be a 0x address with 40 hex characters, got ${showValue(value)}.`
+    );
+  }
+  if (!ethers.isAddress(address)) {
+    throw new Error(
+      `${path} has a bad checksum: "${address}". Use the address exactly as published, or in all lower case.`
+    );
+  }
+  return address;
+}
+
+function checkBool(value: unknown, path: string): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (text === "true" || text === "false") {
+    return text === "true";
+  }
+  throw new Error(`${path} must be true or false, got ${showValue(value)}.`);
+}
+
+function checkBytesN(
+  value: unknown,
+  type: string,
+  size: number,
+  path: string
+): void {
+  if (
+    typeof value !== "string" ||
+    !HEX_RE.test(value) ||
+    value.length !== 2 + size * 2
+  ) {
+    throw new Error(
+      `${path} must be 0x hex for ${type}, got ${showValue(value)}. Turn text into ${type} with the Encode / Decode node first.`
+    );
+  }
+}
+
+function checkLeaf(value: unknown, type: string, path: string): unknown {
+  if (value === undefined || value === null) {
+    throw new Error(`${path} is missing (${type}).`);
+  }
+  if (value === "" && type !== "string") {
+    const hint = type.startsWith("bytes") ? ' Use "0x" for empty bytes.' : "";
+    throw new Error(`${path} cannot be empty (${type}).${hint}`);
+  }
+  if (type === "bool") {
+    return checkBool(value, path);
+  }
+  if (type === "address") {
+    return checkAddress(value, path);
+  }
+  const bytes = BYTES_N_RE.exec(type);
+  if (bytes) {
+    checkBytesN(value, type, Number(bytes[1]), path);
+  }
   return value;
 }
 
 /**
- * Leaf checks ahead of encoding: a bool must be true or false, a bytesN
- * must be 0x hex of its length; spaces around an address are trimmed.
+ * Leaf checks ahead of encoding, on the shaped argument: a bool must be true
+ * or false, an address a 0x address, a bytesN 0x hex of its length.
  */
 function checkLeaves(
   value: unknown,
@@ -319,93 +404,65 @@ function checkLeaves(
 ): unknown {
   const array = ARRAY_TYPE_RE.exec(type);
   if (array) {
-    return Array.isArray(value)
-      ? value.map((item, index) =>
-          checkLeaves(item, array[1], components, `${path}[${index}]`)
-        )
-      : value;
-  }
-  if (type === "tuple") {
-    if (typeof value !== "object" || value === null) {
-      return value;
-    }
-    const out: Record<string, unknown> = { ...(value as object) };
-    for (const component of components ?? []) {
-      out[component.name] = checkLeaves(
-        out[component.name],
-        component.type,
-        component.components,
-        `${path}.${component.name}`
-      );
-    }
-    return out;
-  }
-  if (type === "bool" && typeof value !== "boolean") {
-    throw new Error(
-      `${path} must be true or false, got ${echo(JSON.stringify(value) ?? String(value))}.`
+    return (value as unknown[]).map((item, index) =>
+      checkLeaves(item, array[1], components, `${path}[${index}]`)
     );
   }
-  const bytes = BYTES_N_RE.exec(type);
-  if (bytes) {
-    const size = Number(bytes[1]);
-    if (
-      typeof value !== "string" ||
-      !HEX_RE.test(value) ||
-      value.length !== 2 + size * 2
-    ) {
-      throw new Error(
-        `${path} must be 0x hex for ${type}, got ${echo(JSON.stringify(value) ?? String(value))}. Turn text into ${type} with the Encode / Decode node first.`
-      );
-    }
+  if (type !== "tuple" || !components?.length) {
+    return checkLeaf(value, type, path);
   }
-  if (type === "address" && typeof value === "string") {
-    return value.trim();
+  if (Array.isArray(value)) {
+    return components.map((component, index) =>
+      checkLeaves(
+        value[index],
+        component.type,
+        component.components,
+        `${path}.${component.name || index}`
+      )
+    );
   }
-  return value;
+  const out: Record<string, unknown> = { ...(value as object) };
+  for (const component of components) {
+    out[component.name] = checkLeaves(
+      out[component.name],
+      component.type,
+      component.components,
+      `${path}.${component.name}`
+    );
+  }
+  return out;
 }
 
 /** Shape and check one argument set the way read-contract does; a bool must be true or false. */
-export function prepareArgs(
+function prepareArgs(
   args: unknown[],
   fn: ListFunction,
   where: string
 ): unknown[] {
-  const entry = { inputs: fn.inputs };
-  let shaped: unknown[];
   try {
-    shaped = args.map((arg, index) => {
-      const input = fn.inputs[index];
-      return input
-        ? structureTuples(
-            arg,
-            input.type,
-            input.components,
-            input.name || `arg${index}`
-          )
-        : arg;
-    });
+    // No string is parsed here: the estimate already bounded what is shaped.
+    const shaped = fn.inputs.map((input, index) =>
+      structureTuples(
+        args[index],
+        input.type,
+        input.components,
+        input.name || `arg${index}`
+      )
+    );
+    checkCallSize(estimateCalldata(shaped, fn).bytes, where);
+    return fn.inputs.map((input, index) =>
+      checkLeaves(
+        shaped[index],
+        input.type,
+        input.components,
+        input.name || `arg${index}`
+      )
+    );
   } catch (error) {
-    throw new Error(`${where}: ${(error as Error).message}`);
-  }
-  const coerced = coerceArgsForAbi(reshapeArgsForAbi(shaped, entry), entry);
-  const validation = validateArgsForAbi(coerced, entry);
-  if (!validation.ok) {
-    throw new Error(`${where}: ${echo(validation.error, MAX_REASON_LENGTH)}.`);
-  }
-  try {
-    return coerced.map((arg, index) => {
-      const input = fn.inputs[index];
-      return input
-        ? checkLeaves(
-            arg,
-            input.type,
-            input.components,
-            input.name || `arg${index}`
-          )
-        : arg;
-    });
-  } catch (error) {
-    throw new Error(`${where}: ${(error as Error).message}`);
+    const message = (error as Error).message;
+    throw new Error(
+      message.startsWith(where) ? message : `${where}: ${message}`
+    );
   }
 }
 
@@ -478,7 +535,7 @@ function isDynamicType(
 }
 
 /** Estimated call data of one call, and how many values it holds. */
-export function estimateCalldata(
+function estimateCalldata(
   args: unknown[],
   fn: ListFunction
 ): { bytes: number; values: number } {
@@ -510,18 +567,20 @@ function checkRunValues(values: number): void {
 /** An encoder error without ethers' detail suffix, in words for numbers. */
 export function encodeReason(error: unknown, fn: ListFunction): string {
   const message = error instanceof Error ? error.message : String(error);
+  const reported = ETHERS_ARGUMENT_RE.exec(message)?.[1];
+  const names = fn.inputs.map((input) => input.name);
+  let name: string | undefined;
+  if (reported && names.includes(reported)) {
+    name = reported;
+  } else if (names.length === 1) {
+    name = names[0];
+  }
   if (NUMBER_FAULT_RE.test(message)) {
-    const reported = ETHERS_ARGUMENT_RE.exec(message)?.[1];
-    const names = fn.inputs.map((input) => input.name);
-    let name: string | undefined;
-    if (reported && names.includes(reported)) {
-      name = reported;
-    } else if (names.length === 1) {
-      name = names[0];
-    }
     return `${name ? `${name} ` : "it "}must be a whole number; write large numbers in quotes, e.g. "12345678901234567890".`;
   }
-  return echo(message.replace(ETHERS_DETAIL_RE, ""), MAX_REASON_LENGTH);
+  const reason = echo(message.replace(ETHERS_DETAIL_RE, ""), MAX_REASON_LENGTH);
+  const prefix = name ? `${name}: ` : "";
+  return `${prefix}${reason}${reason.endsWith(".") ? "" : "."}`;
 }
 
 /** A list of argument sets needs a function that takes some; checked before the list. */
@@ -547,7 +606,7 @@ function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
       );
     }
     throw new Error(
-      `${at} must be an array of ${plural(takes, "value")} for ${fn.name} (${names}), got ${describeKind(entry)}.`
+      `${at} must be an array of ${plural(takes, "value")} for ${fn.name} (${names}), got ${describeKind(entry)}. Make each entry an array like ${exampleEntry(fn)}.`
     );
   }
   if (entry.length !== takes) {

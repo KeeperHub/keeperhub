@@ -42,6 +42,7 @@ import {
 } from "@/plugins/web3/steps/structure-abi-result";
 
 const LOG_PREFIX = "[Batch Read Contract]";
+const HEX_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const DEFAULT_BATCH_SIZE = 100;
 const MAX_BATCH_SIZE = 500;
 
@@ -141,12 +142,12 @@ function buildUniformCalls(
   if (!ethers.isAddress(contractAddress)) {
     return {
       calls: [],
-      error: `Invalid contract address: ${contractAddress}`,
+      error: `Contract Address is not a valid address: "${echo(contractAddress)}". Use a 0x address with 40 hex characters.`,
     };
   }
 
   if (!abiFunction) {
-    return { calls: [], error: "Function is required." };
+    return { calls: [], error: "Function is required. Pick one in Function." };
   }
 
   if (!argsList || argsList.trim() === "") {
@@ -193,7 +194,7 @@ function validateMixedCall(
   | { normalized: NormalizedCall; error?: undefined }
   | { normalized?: undefined; error: string } {
   if (typeof call !== "object" || call === null) {
-    return { error: `Call at index ${index} must be an object` };
+    return { error: `Call ${index + 1} must be an object` };
   }
 
   const typedCall = call as Record<string, unknown>;
@@ -204,23 +205,23 @@ function validateMixedCall(
   const callNetwork = typedCall.network;
 
   if (typeof callNetwork !== "string" || !callNetwork) {
-    return { error: `Call at index ${index} missing network` };
+    return { error: `Call ${index + 1} missing network` };
   }
 
   if (typeof addr !== "string" || !addr) {
-    return { error: `Call at index ${index} missing contractAddress` };
+    return { error: `Call ${index + 1} missing contractAddress` };
   }
 
   if (!ethers.isAddress(addr)) {
-    return { error: `Call at index ${index} has invalid address: ${addr}` };
+    return { error: `Call ${index + 1} has invalid address: ${addr}` };
   }
 
   if (typeof fn !== "string" || !fn) {
-    return { error: `Call at index ${index} missing abiFunction` };
+    return { error: `Call ${index + 1} missing abiFunction` };
   }
 
   if (typeof abi !== "string" || !abi) {
-    return { error: `Call at index ${index} missing abi` };
+    return { error: `Call ${index + 1} missing abi` };
   }
 
   return {
@@ -322,7 +323,7 @@ function encodeUniformCalls(
   } catch (error) {
     return {
       encoded: [],
-      error: `Failed to parse ABI: ${getErrorMessage(error)}`,
+      error: `Failed to parse ABI: ${echo(getErrorMessage(error), MAX_REASON_LENGTH)}`,
     };
   }
 
@@ -338,7 +339,7 @@ function encodeUniformCalls(
       } catch (error) {
         return {
           encoded: [],
-          error: `${getErrorMessage(error)} (call index ${index})`,
+          error: getErrorMessage(error),
         };
       }
       resolved.set(call.abiFunction, fn);
@@ -357,7 +358,7 @@ function encodeUniformCalls(
     } catch (error) {
       return {
         encoded: [],
-        error: `Failed to encode call at index ${index} (${call.abiFunction}): ${getErrorMessage(error)}`,
+        error: `Failed to encode call ${index + 1} (${call.abiFunction}): ${echo(getErrorMessage(error), MAX_REASON_LENGTH)}`,
       };
     }
   }
@@ -378,7 +379,7 @@ function encodeMixedCalls(normalizedCalls: NormalizedCall[]): {
     if (!call.abi) {
       return {
         encoded: [],
-        error: `Call at index ${index} missing ABI`,
+        error: `Call ${index + 1} missing ABI`,
       };
     }
 
@@ -386,7 +387,7 @@ function encodeMixedCalls(normalizedCalls: NormalizedCall[]): {
     if (abiError) {
       return {
         encoded: [],
-        error: `Call at index ${index}: ${abiError}`,
+        error: `Call ${index + 1}: ${abiError}`,
       };
     }
 
@@ -396,7 +397,7 @@ function encodeMixedCalls(normalizedCalls: NormalizedCall[]): {
     } catch (error) {
       return {
         encoded: [],
-        error: `Call at index ${index}: Failed to parse ABI: ${getErrorMessage(error)}`,
+        error: `Call ${index + 1}: Failed to parse ABI: ${echo(getErrorMessage(error), MAX_REASON_LENGTH)}`,
       };
     }
 
@@ -407,7 +408,7 @@ function encodeMixedCalls(normalizedCalls: NormalizedCall[]): {
     } catch (error) {
       return {
         encoded: [],
-        error: `Call at index ${index}: ${getErrorMessage(error)}`,
+        error: `Call ${index + 1}: ${getErrorMessage(error)}`,
       };
     }
 
@@ -424,7 +425,7 @@ function encodeMixedCalls(normalizedCalls: NormalizedCall[]): {
     } catch (error) {
       return {
         encoded: [],
-        error: `Failed to encode call at index ${index} (${call.abiFunction}): ${getErrorMessage(error)}`,
+        error: `Failed to encode call ${index + 1} (${call.abiFunction}): ${echo(getErrorMessage(error), MAX_REASON_LENGTH)}`,
       };
     }
   }
@@ -524,10 +525,12 @@ async function executeMulticallBatches(
     } catch (error) {
       // An ethers error carries the whole batch's call data; keep it short.
       const reason = echo(getErrorMessage(error), MAX_REASON_LENGTH);
+      const logged = new Error(reason);
+      logged.name = error instanceof Error ? error.name : "Error";
       logUserError(
         ErrorCategory.NETWORK_RPC,
-        `${LOG_PREFIX} Multicall batch ${batchIndex + 1} failed: ${reason}`,
-        undefined,
+        `${LOG_PREFIX} Multicall batch ${batchIndex + 1} failed`,
+        logged,
         {
           plugin_name: "web3",
           action_name: "batch-read-contract",
@@ -681,33 +684,34 @@ function encodeAddressList(
   input: BatchReadContractInput,
   ctx: ListContext
 ): EncodedCallWithMeta[] {
-  const entries = parseListInput(
-    input.contractAddresses,
-    ADDRESS_LIST_LABEL,
-    '["0xabc..."]'
+  const addresses = addressesFromList(
+    parseListInput(input.contractAddresses, ADDRESS_LIST_LABEL, '["0xabc..."]')
   );
   // Bounded before encoding inside: encoding a large argument is itself slow.
-  const args = sharedArgsForList(input.functionArgs, ctx.fn, entries.length);
+  const args = sharedArgsForList(input.functionArgs, ctx.fn, addresses.length);
   const callData = encodeForList(ctx, args, SHARED_ARGS_LABEL);
-  checkRunCalldata(calldataBytes(callData) * entries.length, "addresses");
-  return addressesFromList(entries).map((target) =>
-    listCall(ctx, target, callData)
-  );
+  checkRunCalldata(calldataBytes(callData) * addresses.length, "addresses");
+  return addresses.map((target) => listCall(ctx, target, callData));
 }
 
 function encodeArgsList(
   input: BatchReadContractInput,
   ctx: ListContext
 ): EncodedCallWithMeta[] {
-  const { contractAddress } = input;
+  const contractAddress = input.contractAddress?.trim();
   if (!contractAddress) {
     throw new Error(
       "Contract Address is required. Enter the contract to call."
     );
   }
-  if (!ethers.isAddress(contractAddress)) {
+  if (!HEX_ADDRESS_RE.test(contractAddress)) {
     throw new Error(
       `Contract Address is not a valid address: "${echo(contractAddress)}". Use a 0x address with 40 hex characters.`
+    );
+  }
+  if (!ethers.isAddress(contractAddress)) {
+    throw new Error(
+      `Contract Address has a bad checksum: "${contractAddress}". Use the address exactly as published, or in all lower case.`
     );
   }
   requireArguments(ctx.fn);
@@ -736,7 +740,7 @@ function prepareListCalls(
   callsFrom: typeof CALLS_FROM_ARGS_LIST | typeof CALLS_FROM_ADDRESS_LIST
 ): PreparedCalls {
   if (!input.abiFunction) {
-    return { error: "Function is required." };
+    return { error: "Function is required. Pick one in Function." };
   }
   const { parsed: parsedAbi, error: abiError } = parseAbi(abi);
   if (abiError) {
@@ -746,7 +750,9 @@ function prepareListCalls(
   try {
     iface = new ethers.Interface(parsedAbi);
   } catch (error) {
-    return { error: `Failed to parse ABI: ${getErrorMessage(error)}` };
+    return {
+      error: `Failed to parse ABI: ${echo(getErrorMessage(error), MAX_REASON_LENGTH)}`,
+    };
   }
   try {
     const ctx: ListContext = {
@@ -774,7 +780,10 @@ async function executeUniformMode(
   const { network, abi } = input;
 
   if (!network) {
-    return { success: false, error: "Network is required." };
+    return {
+      success: false,
+      error: "Network is required. Pick one in Network.",
+    };
   }
 
   let callsFrom: CallsFrom;

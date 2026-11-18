@@ -245,7 +245,7 @@ describe("batch-read-contract - uniform mode validation", () => {
       contractAddress: "not-an-address",
       abiFunction: "balanceOf",
     });
-    expect(result.error).toContain("Invalid contract address");
+    expect(result.error).toContain("Contract Address is not a valid address");
   });
 
   it("fails when function is missing", async () => {
@@ -797,7 +797,7 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("index 1");
+    expect(result.error).toContain("Call 2");
     expect(result.error).toContain("invalid address");
   });
 });
