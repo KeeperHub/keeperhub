@@ -10,6 +10,7 @@ type SponsorGasFieldProps = {
   description?: string;
   value: unknown;
   onChange: (checked: boolean) => void;
+  onReset?: () => void;
   disabled?: boolean;
 };
 
@@ -29,6 +30,7 @@ export function SponsorGasField({
   description,
   value,
   onChange,
+  onReset,
   disabled,
 }: SponsorGasFieldProps) {
   const sponsored = resolveSponsorGas(value);
@@ -42,6 +44,7 @@ export function SponsorGasField({
         id={id}
         label={label}
         onChange={onChange}
+        onReset={onReset}
         storedValue={value}
       />
       {!sponsored && (

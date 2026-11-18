@@ -697,6 +697,7 @@ registerFieldRenderer(
       key={field.key}
       label={field.label}
       onChange={(checked) => onUpdateConfig(field.key, checked)}
+      onReset={() => onUpdateConfig(field.key, undefined)}
       value={config[field.key]}
     />
   )
@@ -736,6 +737,7 @@ registerFieldRenderer(
       key={field.key}
       label={field.label}
       onChange={(checked) => onUpdateConfig(field.key, checked)}
+      onReset={() => onUpdateConfig(field.key, undefined)}
       value={config[field.key]}
     />
   )

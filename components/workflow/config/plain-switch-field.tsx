@@ -32,6 +32,7 @@ export function PlainSwitchField({
       id={field.key}
       label={field.label}
       onChange={(checked) => onUpdateConfig(field.key, checked)}
+      onReset={() => onUpdateConfig(field.key, undefined)}
       storedValue={config[field.key]}
     />
   );

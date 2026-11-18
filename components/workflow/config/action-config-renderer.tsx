@@ -50,6 +50,7 @@ import { summariseGroup } from "@/lib/workflow/editor/group-summary";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { parseAddressBookSelection } from "@/lib/address-book-selection";
 import { toChecksumAddress } from "@/lib/address-utils";
+import { isToggleValue } from "@/lib/utils";
 import { parseSchemaFields } from "@/lib/schema-fields";
 import { getCustomFieldRenderer } from "@/lib/workflow/editor/extension-registry";
 import {
@@ -61,6 +62,7 @@ import {
   type ActionConfigFieldBase,
   isFieldGroup,
   isStrayDefaultOnToggle,
+  isToggleField,
   type SelectOption,
 } from "@/plugins/registry";
 import { SchemaBuilder } from "./schema-builder";
@@ -1004,6 +1006,22 @@ function renderField(
   );
 }
 
+// A shown toggle holding neither on nor off blocks the save, so its group
+// opens to show it.
+function holdsStrayToggle(
+  fields: ActionConfigFieldBase[],
+  config: Record<string, unknown>
+): boolean {
+  return fields.some(
+    (field) =>
+      !field.hidden &&
+      isToggleField(field.type) &&
+      !isToggleValue(config[field.key]) &&
+      (evaluateShowWhen(field.showWhen, config) ||
+        isStrayDefaultOnToggle(field, config[field.key]))
+  );
+}
+
 /**
  * Collapsible field group component
  */
@@ -1024,7 +1042,9 @@ function FieldGroup({
   defaultExpanded?: boolean;
   nodeId?: string;
 }) {
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  const [isExpanded, setIsExpanded] = useState(
+    () => defaultExpanded || holdsStrayToggle(fields, config)
+  );
   // Only worth computing for the collapsed state: expanded, the fields speak
   // for themselves.
   const summary = isExpanded ? null : summariseGroup(fields, config);

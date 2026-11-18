@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // Save refuses a toggle holding anything but on or off, even when the form
 // hides it, so the form has to show it with a way to fix it.
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,9 +17,12 @@ import { sponsorGasField } from "@/plugins/field-fragments";
 import type { ActionConfigField } from "@/plugins/registry";
 
 const TEMPLATE = "{{@webhook:Webhook.flag}}";
-const HINT = "This was saved as something other than on or off.";
+const HINT =
+  "Saved as a template or text, not on or off, so this workflow can't be saved.";
+const RESET = "Reset to default";
 // A network sponsorship does not cover, so Sponsor gas is hidden.
 const UNCOVERED_NETWORK = "999999999";
+const COVERED_NETWORK = "1";
 
 // Same wiring as the real renderer in lib/workflow/editor/extensions.tsx,
 // which pulls in the whole editor.
@@ -32,6 +35,7 @@ registerFieldRenderer(
       key={field.key}
       label={field.label}
       onChange={(checked) => onUpdateConfig(field.key, checked)}
+      onReset={() => onUpdateConfig(field.key, undefined)}
       value={config[field.key]}
     />
   )
@@ -54,25 +58,45 @@ afterEach(() => {
   container.remove();
 });
 
+// Holds the config the way the node panel does, so a click's end state shows.
+let saved: Record<string, unknown> = {};
+
+function Harness({
+  initial,
+  fields,
+}: {
+  initial: Record<string, unknown>;
+  fields: ActionConfigField[];
+}) {
+  const [config, setConfig] = useState(initial);
+  saved = config;
+  return (
+    <ActionConfigRenderer
+      config={config}
+      fields={fields}
+      onUpdateConfig={(key, value) => {
+        setConfig((current) => ({ ...current, [key]: value }));
+      }}
+    />
+  );
+}
+
 function renderFields(
   config: Record<string, unknown>,
-  onUpdateConfig = vi.fn()
+  { defaultExpanded = true }: { defaultExpanded?: boolean } = {}
 ): void {
   const fields: ActionConfigField[] = [
     {
       type: "group",
       label: "Advanced",
-      defaultExpanded: true,
+      defaultExpanded,
       fields: [sponsorGasField()],
     },
   ];
   act(() => {
+    // A new key remounts, so each case starts from its own config.
     root.render(
-      <ActionConfigRenderer
-        config={config}
-        fields={fields}
-        onUpdateConfig={onUpdateConfig}
-      />
+      <Harness fields={fields} initial={config} key={JSON.stringify(config)} />
     );
   });
 }
@@ -81,7 +105,13 @@ function sponsorToggle(): HTMLButtonElement | null {
   return container.querySelector<HTMLButtonElement>("#sponsorGas");
 }
 
-describe("a hidden Sponsor gas holding a stray value", () => {
+function resetButton(): HTMLButtonElement | undefined {
+  return [...container.querySelectorAll("button")].find(
+    (button) => button.textContent === RESET
+  );
+}
+
+describe("a Sponsor gas holding a stray value", () => {
   it("is shown with the hint when the network hides it", () => {
     for (const network of [UNCOVERED_NETWORK, TEMPLATE, undefined]) {
       renderFields({ network, sponsorGas: TEMPLATE });
@@ -97,19 +127,33 @@ describe("a hidden Sponsor gas holding a stray value", () => {
     }
   });
 
-  it("is fixed by turning it off and on", () => {
-    const onUpdateConfig = vi.fn();
+  it("resets a hidden one to unset, and the field hides again", () => {
+    renderFields({ network: UNCOVERED_NETWORK, sponsorGas: TEMPLATE });
+    act(() => resetButton()?.click());
+    expect(saved.sponsorGas).toBeUndefined();
+    expect(sponsorToggle()).toBeNull();
+    expect(container.textContent).not.toContain(HINT);
+  });
+
+  it("resets a visible one to unset, which reads as on", () => {
+    renderFields({ network: COVERED_NETWORK, sponsorGas: TEMPLATE });
+    act(() => resetButton()?.click());
+    expect(saved.sponsorGas).toBeUndefined();
+    expect(sponsorToggle()?.getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).not.toContain(HINT);
+  });
+
+  it("opens its collapsed group", () => {
     renderFields(
       { network: UNCOVERED_NETWORK, sponsorGas: TEMPLATE },
-      onUpdateConfig
+      { defaultExpanded: false }
     );
-    act(() => sponsorToggle()?.click());
-    expect(onUpdateConfig).toHaveBeenLastCalledWith("sponsorGas", false);
+    expect(sponsorToggle()).not.toBeNull();
     renderFields(
-      { network: UNCOVERED_NETWORK, sponsorGas: false },
-      onUpdateConfig
+      { network: COVERED_NETWORK, sponsorGas: false },
+      { defaultExpanded: false }
     );
-    expect(container.textContent).not.toContain(HINT);
+    expect(sponsorToggle()).toBeNull();
   });
 
   it("counts in the collapsed group's summary", () => {
@@ -123,46 +167,100 @@ describe("a hidden Sponsor gas holding a stray value", () => {
   });
 });
 
+describe("Ignore case holding a stray value", () => {
+  function IgnoreCase({ initial }: { initial: unknown }) {
+    const [config, setConfig] = useState<Record<string, unknown>>({
+      ignoreCase: initial,
+    });
+    saved = config;
+    return (
+      <PlainSwitchField
+        config={config}
+        field={{
+          key: "ignoreCase",
+          label: "Ignore case",
+          type: "switch",
+          defaultValue: "false",
+        }}
+        onUpdateConfig={(key, value) =>
+          setConfig((current) => ({ ...current, [key]: value }))
+        }
+      />
+    );
+  }
+
+  it("resets to unset, which reads as off", () => {
+    act(() => root.render(<IgnoreCase initial={TEMPLATE} />));
+    act(() => resetButton()?.click());
+    expect(saved.ignoreCase).toBeUndefined();
+    expect(
+      container.querySelector('[role="switch"]')?.getAttribute("aria-checked")
+    ).toBe("false");
+    expect(container.textContent).not.toContain(HINT);
+  });
+});
+
 describe("the stray-value hint on every toggle", () => {
-  it("shows under each toggle for a stray value and not for on or off", () => {
-    const toggles = [
-      (value: unknown) => (
-        <SponsorGasField
-          id="t"
-          label="Sponsor gas"
-          onChange={vi.fn()}
-          value={value}
-        />
-      ),
-      (value: unknown) => (
-        <FailOnErrorSwitchField
-          id="t"
-          label="Fail workflow on error"
-          onChange={vi.fn()}
-          value={value}
-        />
-      ),
-      (value: unknown) => (
-        <PlainSwitchField
-          config={{ ignoreCase: value }}
-          field={{ key: "ignoreCase", label: "Ignore case", type: "switch" }}
-          onUpdateConfig={vi.fn()}
-        />
-      ),
-    ];
+  const toggles = [
+    (value: unknown, onReset: () => void, disabled: boolean) => (
+      <SponsorGasField
+        disabled={disabled}
+        id="t"
+        label="Sponsor gas"
+        onChange={vi.fn()}
+        onReset={onReset}
+        value={value}
+      />
+    ),
+    (value: unknown, onReset: () => void, disabled: boolean) => (
+      <FailOnErrorSwitchField
+        disabled={disabled}
+        id="t"
+        label="Fail workflow on error"
+        onChange={vi.fn()}
+        onReset={onReset}
+        value={value}
+      />
+    ),
+    (value: unknown, onReset: () => void, disabled: boolean) => (
+      <PlainSwitchField
+        config={{ ignoreCase: value }}
+        disabled={disabled}
+        field={{ key: "ignoreCase", label: "Ignore case", type: "switch" }}
+        onUpdateConfig={(_key, next) => next === undefined && onReset()}
+      />
+    ),
+  ];
+
+  it("shows with a reset button for a stray value and not for on or off", () => {
     for (const toggle of toggles) {
       for (const value of [TEMPLATE, "maybe", 1]) {
-        act(() => root.render(toggle(value)));
+        const onReset = vi.fn();
+        act(() => root.render(toggle(value, onReset, false)));
         expect(container.textContent, String(value)).toContain(HINT);
-        const described = container
-          .querySelector('[role="switch"]')
-          ?.getAttribute("aria-describedby");
-        expect(described).toContain("-stray");
+        expect(
+          container
+            .querySelector('[role="switch"]')
+            ?.getAttribute("aria-describedby")
+        ).toContain("-stray");
+        const button = resetButton();
+        expect(button?.getAttribute("type")).toBe("button");
+        act(() => button?.click());
+        expect(onReset).toHaveBeenCalledTimes(1);
       }
       for (const value of [true, false, "true", "false", undefined, null, ""]) {
-        act(() => root.render(toggle(value)));
+        act(() => root.render(toggle(value, vi.fn(), false)));
         expect(container.textContent, String(value)).not.toContain(HINT);
+        expect(resetButton()).toBeUndefined();
       }
+    }
+  });
+
+  it("shows only the first sentence when the toggle is disabled", () => {
+    for (const toggle of toggles) {
+      act(() => root.render(toggle(TEMPLATE, vi.fn(), true)));
+      expect(container.textContent).toContain(HINT);
+      expect(resetButton()).toBeUndefined();
     }
   });
 });

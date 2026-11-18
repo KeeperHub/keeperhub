@@ -9,6 +9,7 @@ type FailOnErrorSwitchFieldProps = {
   description?: string;
   value: unknown;
   onChange: (checked: boolean) => void;
+  onReset?: () => void;
   disabled?: boolean;
 };
 
@@ -24,6 +25,7 @@ export function FailOnErrorSwitchField({
   description,
   value,
   onChange,
+  onReset,
   disabled,
 }: FailOnErrorSwitchFieldProps) {
   return (
@@ -34,6 +36,7 @@ export function FailOnErrorSwitchField({
       id={id}
       label={label}
       onChange={onChange}
+      onReset={onReset}
       storedValue={value}
     />
   );

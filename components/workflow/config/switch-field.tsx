@@ -1,5 +1,6 @@
 "use client";
 
+import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { isToggleValue } from "@/lib/utils";
@@ -13,6 +14,8 @@ type SwitchFieldProps = {
   disabled?: boolean;
   // The raw saved value, only to flag one that is neither on nor off.
   storedValue?: unknown;
+  // Clears the saved value, so the toggle falls back to its default.
+  onReset?: () => void;
 };
 
 /**
@@ -30,6 +33,7 @@ export function SwitchField({
   onChange,
   disabled,
   storedValue,
+  onReset,
 }: SwitchFieldProps) {
   const stray = !isToggleValue(storedValue);
   const describedBy = [
@@ -48,10 +52,22 @@ export function SwitchField({
           </p>
         )}
         {stray && (
-          <p className="text-destructive text-xs" id={`${id}-stray`}>
-            This was saved as something other than on or off. Turn it off and
-            on to fix it.
-          </p>
+          <div className="space-y-1">
+            <p className="text-destructive text-xs" id={`${id}-stray`}>
+              Saved as a template or text, not on or off, so this workflow
+              can't be saved.
+            </p>
+            {onReset && !disabled && (
+              <Button
+                className="h-auto p-0 text-xs"
+                onClick={onReset}
+                type="button"
+                variant="link"
+              >
+                Reset to default
+              </Button>
+            )}
+          </div>
         )}
       </div>
       <Switch
