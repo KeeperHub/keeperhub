@@ -266,3 +266,53 @@ describe("validateArgsForAbi", () => {
     });
   });
 });
+
+describe("validateArgsForAbi options", () => {
+  const flagFn = { inputs: [{ name: "on", type: "bool" }] };
+
+  it("treats a {{...}} string as plain text when values are resolved", () => {
+    expect(validateArgsForAbi(["{{@a:A.x}}"], flagFn)).toEqual({ ok: true });
+    expect(
+      validateArgsForAbi(["{{@a:A.x}}"], flagFn, {
+        resolved: true,
+        checkLeaf: (value, type, path) =>
+          type === "bool" && typeof value !== "boolean"
+            ? `${path} must be true or false`
+            : undefined,
+      })
+    ).toEqual({ ok: false, error: "on must be true or false" });
+  });
+
+  it("runs checkLeaf on every present leaf, inside arrays and tuples", () => {
+    const seen: string[] = [];
+    const result = validateArgsForAbi(
+      [["1", "2"], { a: "3" }],
+      {
+        inputs: [
+          { name: "xs", type: "uint256[2]" },
+          {
+            name: "t",
+            type: "tuple",
+            components: [{ name: "a", type: "uint256" }],
+          },
+        ],
+      },
+      {
+        checkLeaf: (_value, type, path) => {
+          seen.push(`${path}:${type}`);
+          return;
+        },
+      }
+    );
+    expect(result).toEqual({ ok: true });
+    expect(seen).toEqual(["xs[0]:uint256", "xs[1]:uint256", "t.a:uint256"]);
+  });
+
+  it("checks the items of a fixed-size array", () => {
+    expect(
+      validateArgsForAbi([["1", ""]], {
+        inputs: [{ name: "xs", type: "uint256[2]" }],
+      })
+    ).toEqual({ ok: false, error: "xs[1]: uint256 cannot be empty" });
+  });
+});
