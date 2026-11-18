@@ -579,7 +579,7 @@ function testItem(
     // The run's budget, not this item: report it with this node's way out.
     if (error instanceof RegexBudgetError) {
       throw new Error(
-        `${error.message}. Or split the list across two Filter Array nodes.`
+        `${error.message}, or split the list across two Filter Array nodes`
       );
     }
     throw new Error(

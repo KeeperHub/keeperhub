@@ -40,6 +40,8 @@ import {
   REGEX_BACKSLASH_ERROR,
   REGEX_CALLS_ERROR,
   REGEX_DIRECT_ERROR,
+  REGEX_QUOTE_ERROR,
+  REGEX_QUOTE_TYPED_ERROR,
   REGEX_SOURCE_ERROR,
   regexPatternError,
 } from "./regex-match";
@@ -922,6 +924,10 @@ function validateConsecutiveOperators(tokens: Token[]): ValidationResult {
       if (current.value === "!" || current.value === "-") {
         continue;
       }
+      // Allow a negation after any operator: a && !b, (!b), as the builder writes
+      if (next.value === "!") {
+        continue;
+      }
       // Allow ) before operators
       if (current.value === ")") {
         continue;
@@ -1122,6 +1128,9 @@ export function validateConditionExpressionUI(
   } catch {
     // Unterminated quote: the tokenizer below reports it.
   }
+  if (hasIndirectRegexUse(trimmed)) {
+    return { valid: false, error: REGEX_DIRECT_ERROR };
+  }
 
   // Check for extra spaces (2+ consecutive spaces) and identify the operator
   const extraSpacesMatch = trimmed.match(EXTRA_SPACES_PATTERN);
@@ -1252,8 +1261,11 @@ function regexCallError(args: Token[][]): string | undefined {
   }
   // Advice given in pattern terms needs its backslashes doubled when typed here.
   const problem = regexPatternError(scanned.value);
+  if (problem === REGEX_QUOTE_ERROR) {
+    return REGEX_QUOTE_TYPED_ERROR;
+  }
   return problem && BACKSLASH_ADVICE_RE.test(problem)
-    ? `${problem} (in Expression mode, write each backslash twice)`
+    ? `${problem} (in Expression mode, each backslash in the pattern is written twice)`
     : problem;
 }
 

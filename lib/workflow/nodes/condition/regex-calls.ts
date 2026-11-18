@@ -7,8 +7,8 @@ import { replaceTemplateTokens } from "@/lib/workflow/template-ref";
 import { MAX_REGEX_CALLS } from "./regex-match";
 import { maskStringLiterals } from "./string-literal";
 
-// A direct call; x.matchesRegex( or (matchesRegex)( is not one.
-const REGEX_CALL_RE = /(?<![\w$.])matchesRegex\s*\(/g;
+// A direct call; x.matchesRegex(, (matchesRegex)( or "matchesRegex (" is not.
+const REGEX_CALL_RE = /(?<![\w$.])matchesRegex\(/g;
 const REGEX_NAME_RE = /(?<![\w$])matchesRegex(?![\w$])/g;
 
 /** JavaScript regex objects: the builder's old form, or a typed /.../.test(...). */
@@ -81,6 +81,12 @@ function argumentSpans(
   }
   spans.push([start, close]);
   return spans;
+}
+
+/** True when matchesRegex appears outside quoted text, in any form. */
+export function mentionsRegex(expression: string): boolean {
+  REGEX_NAME_RE.lastIndex = 0;
+  return REGEX_NAME_RE.test(codeStructure(expression));
 }
 
 /**

@@ -7,7 +7,12 @@ import type {
 import { isConditionGroup } from "./builder-types";
 import { isRegexOperator, visualConditionToExpression } from "./expression";
 import { OPERATOR_METADATA } from "./operator-metadata";
-import { codeStructure, findRegexCalls, REGEX_OBJECT_RE } from "./regex-calls";
+import {
+  codeStructure,
+  findRegexCalls,
+  mentionsRegex,
+  REGEX_OBJECT_RE,
+} from "./regex-calls";
 import { scanString } from "./string-literal";
 
 export function isUnaryOperator(operator: ConditionOperator): boolean {
@@ -372,7 +377,7 @@ export function editorConditionState(
   // The text is checked too: a garbled parse can swallow a regex call, or the
   // old new RegExp form, whole.
   const involvesRegex =
-    findRegexCalls(condition).length > 0 ||
+    mentionsRegex(condition) ||
     REGEX_OBJECT_RE.test(codeStructure(condition)) ||
     (parsed !== null && groupUsesRegex(parsed));
   const usable =

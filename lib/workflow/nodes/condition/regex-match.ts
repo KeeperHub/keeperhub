@@ -26,6 +26,10 @@ export const REGEX_EMPTY_ERROR =
   "Enter a regex pattern, e.g. ^0x. To match empty text, use ^$";
 export const REGEX_NON_TEXT_ERROR =
   "Matches regex tests text, numbers or booleans, not a list or object. Test a field inside it, or use Filter Array to test each item of a list";
+export const REGEX_QUOTE_ERROR =
+  "Leave out the quotes around the regex pattern; they would be matched as part of the text. To match a quote, put a backslash before it";
+export const REGEX_QUOTE_TYPED_ERROR =
+  'Leave out the quotes around the regex pattern; they would be matched as part of the text. To match a quote here, write \\\\\\" (three backslashes, then the quote)';
 export const REGEX_DIRECT_ERROR =
   'Call matchesRegex directly, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
 export const REGEX_CALLS_ERROR = `A condition can use matchesRegex at most ${MAX_REGEX_CALLS} times`;
@@ -43,8 +47,7 @@ const BAD_ESCAPE_RE = /invalid escape sequence/;
 const TRAILING_BACKSLASH_RE = /trailing backslash/;
 const REPETITION_RE = /repetition operator/;
 const REPEAT_COUNT_RE = /invalid repeat count/;
-const UNESCAPED_DOUBLE_QUOTE_RE = /(^|[^\\])"/;
-const UNESCAPED_SINGLE_QUOTE_RE = /(^|[^\\])'/;
+
 const BACKTICK_RE = /`/g;
 
 const compiled = new Map<string, RE2JS>();
@@ -64,10 +67,10 @@ function syntaxHint(detail: string): string {
     return ". Write \\\\ to match a backslash";
   }
   if (REPETITION_RE.test(detail)) {
-    return ". To match * or + itself, put a backslash before it; for any text, write .*";
+    return ". For any text, write .*; to match * or + itself, put a backslash before it";
   }
   if (REPEAT_COUNT_RE.test(detail)) {
-    return ". Repeat counts go up to 1,000, with the smaller number first, e.g. {2,5}";
+    return ". Write the smaller number first, e.g. {2,5}; counts over 1,000 are refused";
   }
   return "";
 }
@@ -96,11 +99,19 @@ function isQuoteWrapped(pattern: string): boolean {
   if (pattern.length < 2 || pattern.at(-1) !== quote) {
     return false;
   }
-  const inner = pattern.slice(1, -1);
-  if (quote === '"') {
-    return !UNESCAPED_DOUBLE_QUOTE_RE.test(inner);
+  if (quote !== '"' && quote !== "'") {
+    return false;
   }
-  return quote === "'" && !UNESCAPED_SINGLE_QUOTE_RE.test(inner);
+  // Wrapped only if no quote inside stands unescaped (an even run of
+  // backslashes before it leaves it unescaped: "a\\"b" has a bare quote).
+  let backslashes = 0;
+  for (const ch of pattern.slice(1, -1)) {
+    if (ch === quote && backslashes % 2 === 0) {
+      return false;
+    }
+    backslashes = ch === "\\" ? backslashes + 1 : 0;
+  }
+  return true;
 }
 
 function compileUncached(pattern: string, ignoreCase: boolean): RE2JS {
@@ -116,9 +127,7 @@ function compileUncached(pattern: string, ignoreCase: boolean): RE2JS {
     );
   }
   if (isQuoteWrapped(pattern)) {
-    throw new Error(
-      "Leave out the quotes around the regex pattern; they would be matched as part of the text. To match a quote, put a backslash before it"
-    );
+    throw new Error(REGEX_QUOTE_ERROR);
   }
   let regex: RE2JS;
   try {
@@ -189,7 +198,7 @@ export function regexPatternError(
 export class RegexBudgetError extends Error {
   constructor(steps: number) {
     super(
-      `Matches regex reached this node's matching limit: this pattern has ${formatCount(steps)} steps, and steps x characters tested may total ${formatCount(MAX_REGEX_RUN_WORK)}. Test fewer or shorter values, or a simpler pattern`
+      `The regex test reached this node's matching limit: this pattern has ${formatCount(steps)} steps, and steps x characters tested may total ${formatCount(MAX_REGEX_RUN_WORK)}. Test fewer or shorter values, or a simpler pattern`
     );
     this.name = "RegexBudgetError";
   }

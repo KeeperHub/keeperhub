@@ -338,13 +338,45 @@ describe("matchesRegex", () => {
       ).toEqual({ valid: false, error: expect.stringContaining("closing )") });
     });
 
-    it("doubles the backslashes in advice shown for Expression mode", () => {
+    it("gives Expression mode its own quote advice", () => {
       expect(
         validateConditionExpressionUI(`matchesRegex(${FIELD}, "'ok'")`)
       ).toEqual({
         valid: false,
-        error: expect.stringContaining("write each backslash twice"),
+        error: expect.stringContaining("three backslashes"),
       });
+      // Following it works.
+      expect(
+        validateConditionExpressionUI(
+          `matchesRegex(${FIELD}, "\\\\\\"ok\\\\\\"")`
+        )
+      ).toEqual({ valid: true });
+    });
+
+    it("refuses a space before the call's parenthesis, in the editor and the run", () => {
+      const expression = `matchesRegex (${FIELD}, "^0x")`;
+      expect(validateConditionExpressionUI(expression)).toEqual({
+        valid: false,
+        error: expect.stringContaining("Call matchesRegex directly"),
+      });
+      expect(() => run(expression, "0x1")).toThrow(
+        "Call matchesRegex directly"
+      );
+    });
+
+    it("accepts the builder's negated rule after another rule in Expression mode", () => {
+      const expression = visualConditionToExpression(
+        group([FIELD, "===", "x"], [FIELD, "notMatchesRegex", "^EMSP_"])
+      );
+      expect(validateConditionExpressionUI(expression)).toEqual({
+        valid: true,
+      });
+    });
+
+    it("keeps an indirect call as text when the editor opens it", () => {
+      expect(
+        editorConditionState(`(matchesRegex)(${FIELD}, "^0x")`, undefined)
+      ).toEqual({ parsedGroup: null, initialMode: "expression" });
     });
 
     it("runs without String() around the field", () => {
@@ -489,7 +521,9 @@ describe("matchesRegex", () => {
       expect(regexPatternError("/api/ids")).toBeUndefined();
       expect(regexPatternError("/x/g")).toContain("Leave out the /.../");
       expect(regexPatternError('"a\\"b"')).toContain("Leave out the quotes");
-      expect(regexPatternError("*.eth")).toContain("for any text, write .*");
+      // An escaped backslash leaves the inner quote bare: not one quoted string.
+      expect(regexPatternError('"a\\\\"b"')).toBeUndefined();
+      expect(regexPatternError("*.eth")).toContain("For any text, write .*");
       expect(regexPatternError("\\q")).toContain("Remove that backslash");
       expect(regexPatternError("a{2,1}")).toContain("smaller number first");
       expect(regexPatternError("/^api/")).toContain("Leave out the /.../");
