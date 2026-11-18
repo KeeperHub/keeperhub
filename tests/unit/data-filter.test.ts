@@ -222,6 +222,7 @@ describe("data/filter", () => {
         value: "(?:\\w?){100}x",
       });
       expect(result.error).toContain("reached this node's matching limit");
+      expect(result.error).toContain("split the list across two Filter Array");
       expect(result.error).not.toContain("Item at index");
     });
 

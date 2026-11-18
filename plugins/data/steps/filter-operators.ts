@@ -23,7 +23,6 @@ export const NEGATED_TEXT_OPERATORS = {
   notContains: "contains",
   notStartsWith: "startsWith",
   notEndsWith: "endsWith",
-  notMatchesRegex: "matchesRegex",
 } as const satisfies Record<string, ConditionOperator>;
 
 export type NegatedTextOperator = keyof typeof NEGATED_TEXT_OPERATORS;
@@ -68,7 +67,6 @@ const NEGATED_LABELS: Record<NegatedTextOperator, string> = {
   notContains: "does not contain",
   notStartsWith: "does not start with",
   notEndsWith: "does not end with",
-  notMatchesRegex: "does not match regex",
 };
 
 function conditionOption(

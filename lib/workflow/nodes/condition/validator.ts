@@ -29,12 +29,17 @@ import {
   hasTemplateToken,
   replaceTemplateTokens,
 } from "@/lib/workflow/template-ref";
-import { findRegexCalls, REGEX_OBJECT_RE } from "./regex-calls";
+import {
+  findRegexCalls,
+  hasIndirectRegexUse,
+  REGEX_OBJECT_RE,
+} from "./regex-calls";
 import {
   MAX_REGEX_CALLS,
   REGEX_ARITY_ERROR,
   REGEX_BACKSLASH_ERROR,
   REGEX_CALLS_ERROR,
+  REGEX_DIRECT_ERROR,
   REGEX_SOURCE_ERROR,
   regexPatternError,
 } from "./regex-match";
@@ -87,6 +92,8 @@ const DANGEROUS_PATTERNS = [
 const REGEX_OBJECT_ERROR =
   'Regex objects (new RegExp(...) or /.../) are not supported in conditions. Use matchesRegex(value, "pattern") or the "matches regex" operator';
 const REGEX_CALL_TEXT_RE = /\bmatchesRegex\s*\(/;
+const BACKSLASH_ADVICE_RE = /backslash/;
+const REGEX_UNCLOSED_ERROR = "matchesRegex( is missing its closing )";
 const UNTERMINATED_STRING_ERROR =
   "Condition has an unterminated string: a quote is never closed";
 // Masking hides string keys from the keyword scan, so a key is checked after
@@ -126,7 +133,14 @@ function stringError(error: unknown, expression: string): string {
 // Only the raw condition (references not yet filled in) shows this: a
 // reference inside a regex pattern would be filled in as the name __v0.
 function rawRegexError(expression: string): ValidationResult | undefined {
-  for (const call of findRegexCalls(expression)) {
+  if (hasIndirectRegexUse(expression)) {
+    return { valid: false, error: REGEX_DIRECT_ERROR };
+  }
+  const calls = findRegexCalls(expression);
+  if (calls.length > MAX_REGEX_CALLS) {
+    return { valid: false, error: REGEX_CALLS_ERROR };
+  }
+  for (const call of calls) {
     const pattern = call.args[1];
     if (pattern && hasTemplateToken(expression.slice(...pattern))) {
       return { valid: false, error: REGEX_SOURCE_ERROR };
@@ -1236,7 +1250,11 @@ function regexCallError(args: Token[][]): string | undefined {
   if (hasTemplateToken(scanned.value)) {
     return REGEX_SOURCE_ERROR;
   }
-  return regexPatternError(scanned.value);
+  // Advice given in pattern terms needs its backslashes doubled when typed here.
+  const problem = regexPatternError(scanned.value);
+  return problem && BACKSLASH_ADVICE_RE.test(problem)
+    ? `${problem} (in Expression mode, write each backslash twice)`
+    : problem;
 }
 
 /** The run-time pattern rules, applied while the condition is typed. */
@@ -1248,12 +1266,14 @@ function validateRegexCalls(tokens: Token[]): ValidationResult {
     return { valid: false, error: REGEX_CALLS_ERROR };
   }
   for (const [index, token] of tokens.entries()) {
-    const opensCall =
-      token.type === "identifier" &&
-      token.value === "matchesRegex" &&
-      tokens[index + 1]?.value === "(";
-    const args = opensCall ? callArguments(tokens, index + 1) : undefined;
-    const error = args ? regexCallError(args) : undefined;
+    if (token.type !== "identifier" || token.value !== "matchesRegex") {
+      continue;
+    }
+    if (tokens[index - 1]?.value === "." || tokens[index + 1]?.value !== "(") {
+      return { valid: false, error: REGEX_DIRECT_ERROR };
+    }
+    const args = callArguments(tokens, index + 1);
+    const error = args ? regexCallError(args) : REGEX_UNCLOSED_ERROR;
     if (error) {
       return { valid: false, error };
     }

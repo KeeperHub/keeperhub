@@ -26,6 +26,7 @@ import {
   createEmptyRule,
   isUnaryOperator,
 } from "@/lib/workflow/nodes/condition/builder-utils";
+import { isRegexOperator } from "@/lib/workflow/nodes/condition/expression";
 import {
   closedOperatorLabel,
   OPERATOR_GROUPS,
@@ -55,7 +56,7 @@ const OPERATOR_OPTION_GROUPS = OPERATOR_GROUPS.map((groupMeta) => ({
 
 // Shown under a regex rule until its pattern has an error to show instead.
 const REGEX_RULE_HINT =
-  "Matches anywhere in the text: ^ marks the start, $ the end, (?i) ignores case. Type the pattern as it should run, without quotes or /.../.";
+  "Matches anywhere. ^ start, $ end, (?i) ignore case. No quotes or /.../.";
 
 // The run-time pattern rules, shown while the pattern is typed.
 function regexRuleError(operand: string): string | undefined {
@@ -85,7 +86,7 @@ function RuleRow({
   canRemove: boolean;
 }): React.ReactElement {
   const unary = isUnaryOperator(rule.operator);
-  const regex = rule.operator === "matchesRegex";
+  const regex = isRegexOperator(rule.operator);
   // Checked after a pause in typing, like expression mode, so "^(0x" does not
   // flash an error mid-word.
   const [checkedPattern, setCheckedPattern] = useState(rule.rightOperand);
@@ -98,6 +99,7 @@ function RuleRow({
   }, [rule.rightOperand]);
   const patternError = regex ? regexRuleError(checkedPattern) : undefined;
   const errorId = useId();
+  const hintId = useId();
 
   return (
     <div className="flex flex-col gap-1">
@@ -156,7 +158,7 @@ function RuleRow({
         {regex && (
           <div className={VALUE_CELL}>
             <Input
-              aria-describedby={errorId}
+              aria-describedby={patternError ? errorId : hintId}
               aria-invalid={patternError ? true : undefined}
               aria-label="Regex pattern"
               className="font-mono text-xs md:text-xs"
@@ -183,17 +185,21 @@ function RuleRow({
           </Button>
         )}
       </div>
+      {regex &&
+        (patternError ? (
+          <p className="text-destructive text-xs" id={errorId}>
+            {patternError}
+          </p>
+        ) : (
+          <p className="text-muted-foreground text-xs" id={hintId}>
+            {REGEX_RULE_HINT}
+          </p>
+        ))}
+      {/* Always mounted, so screen readers announce an error as it appears. */}
       {regex && (
-        <p
-          aria-live="polite"
-          className={cn(
-            "text-xs",
-            patternError ? "text-destructive" : "text-muted-foreground"
-          )}
-          id={errorId}
-        >
-          {patternError ?? REGEX_RULE_HINT}
-        </p>
+        <span aria-live="polite" className="sr-only">
+          {patternError}
+        </span>
       )}
     </div>
   );

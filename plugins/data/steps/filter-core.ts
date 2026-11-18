@@ -506,10 +506,7 @@ function toTestedValue(
 type Matcher = (fieldValue: unknown) => boolean | Untestable;
 
 function isRegexOperator(operator: FilterOperator): boolean {
-  return (
-    operator !== KEEP_ALL_OPERATOR &&
-    baseConditionOperator(operator) === "matchesRegex"
-  );
+  return operator === "matchesRegex" || operator === "notMatchesRegex";
 }
 
 // Ignore case uses RE2's flag: lowercasing the pattern would turn \D into \d.
@@ -519,7 +516,7 @@ function makeRegexMatcher(
   ignoreCase: boolean
 ): Matcher {
   const regex = compileRegex(pattern, ignoreCase);
-  const negate = isNegatedTextOperator(operator);
+  const negate = operator === "notMatchesRegex";
   const budget = new RegexBudget();
   return (fieldValue: unknown): boolean | Untestable => {
     const tested = toTestedValue(fieldValue, operator);
@@ -579,9 +576,11 @@ function testItem(
   try {
     return matches(resolveSegments(item, settings.testPath));
   } catch (error) {
-    // The run's budget, not this item: report it as is.
+    // The run's budget, not this item: report it with this node's way out.
     if (error instanceof RegexBudgetError) {
-      throw error;
+      throw new Error(
+        `${error.message}. Or split the list across two Filter Array nodes.`
+      );
     }
     throw new Error(
       `Item at index ${index} could not be tested: ${getErrorMessage(error)}`

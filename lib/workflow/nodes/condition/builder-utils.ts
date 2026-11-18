@@ -5,7 +5,7 @@ import type {
   ConditionRule,
 } from "./builder-types";
 import { isConditionGroup } from "./builder-types";
-import { visualConditionToExpression } from "./expression";
+import { isRegexOperator, visualConditionToExpression } from "./expression";
 import { OPERATOR_METADATA } from "./operator-metadata";
 import { codeStructure, findRegexCalls, REGEX_OBJECT_RE } from "./regex-calls";
 import { scanString } from "./string-literal";
@@ -211,6 +211,10 @@ function parseAtomicExpression(expr: string): ConditionRule | null {
   if (s.startsWith("matchesRegex(")) {
     return parseRegexCall(s);
   }
+  if (s.startsWith("!matchesRegex(")) {
+    const rule = parseRegexCall(s.slice(1));
+    return rule && { ...rule, operator: "notMatchesRegex" };
+  }
 
   // String methods: String(left).includes(right), .startsWith(right), .endsWith(right)
   const stringMethodMatch = s.match(STRING_METHOD_PATTERN);
@@ -334,15 +338,12 @@ function parseExpression(expr: string): ConditionGroup | ConditionRule | null {
   return null;
 }
 
-/** True when any rule in the group, nested groups included, uses `operator`. */
-function groupUsesOperator(
-  group: ConditionGroup,
-  operator: ConditionOperator
-): boolean {
+/** True when any rule in the group, nested groups included, tests a regex. */
+function groupUsesRegex(group: ConditionGroup): boolean {
   return group.rules.some((item) =>
     isConditionGroup(item)
-      ? groupUsesOperator(item, operator)
-      : item.operator === operator
+      ? groupUsesRegex(item)
+      : isRegexOperator(item.operator)
   );
 }
 
@@ -373,7 +374,7 @@ export function editorConditionState(
   const involvesRegex =
     findRegexCalls(condition).length > 0 ||
     REGEX_OBJECT_RE.test(codeStructure(condition)) ||
-    (parsed !== null && groupUsesOperator(parsed, "matchesRegex"));
+    (parsed !== null && groupUsesRegex(parsed));
   const usable =
     parsed !== null &&
     (!involvesRegex || visualConditionToExpression(parsed) === condition);

@@ -70,14 +70,13 @@ function actionNode(config: Record<string, unknown>) {
 
 describe("data/filter definition", () => {
   describe("operator options", () => {
-    it("offers every Condition operator, the four negations and keep every item", () => {
+    it("offers every Condition operator, the three negations and keep every item", () => {
       const offered = FILTER_OPERATOR_OPTIONS.map((option) => option.value);
       const expected = [
         ...CONDITION_OPERATORS,
         "notContains",
         "notStartsWith",
         "notEndsWith",
-        "notMatchesRegex",
         KEEP_ALL_OPERATOR,
       ];
       expect([...offered].sort()).toEqual([...expected].sort());

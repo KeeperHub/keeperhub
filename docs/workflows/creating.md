@@ -97,11 +97,11 @@ For trigger nodes, you'll also configure specific settings based on the trigger 
 
 ### Condition Configuration
 
-Condition nodes evaluate expressions and branch the workflow into **true** and **false** paths. Use the **Visual** builder for point-and-click rule creation, or switch to **Expression** mode to write raw JavaScript expressions.
+Condition nodes evaluate expressions and branch the workflow into **true** and **false** paths. Use the **Visual** builder for point-and-click rule creation, or switch to **Expression** mode to write JavaScript-style expressions (regex objects such as `new RegExp(...)` or `/.../.test(...)` are not supported; use `matchesRegex`).
 
 #### Visual Builder
 
-Each rule has a left operand, an operator, and (for binary operators) a right operand. Operands accept literal values or template references like `{{@nodeId:Label.field}}`.
+Each rule has a left operand, an operator, and (for binary operators) a right operand. Operands accept literal values or template references like `{{@nodeId:Label.field}}`, except a regex pattern, which must be typed.
 
 Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for complex conditions.
 
@@ -121,6 +121,7 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | `startsWith` | starts with | String | Left operand starts with right operand |
 | `endsWith` | ends with | String | Left operand ends with right operand |
 | `matchesRegex` | matches regex | String | Left operand matches the regular expression in the right operand, anywhere in the text unless anchored with `^` and `$` |
+| `notMatchesRegex` | does not match regex | String | Left operand does not match the regular expression in the right operand |
 | `isEmpty` | is empty | Existence | Value is null, undefined, or empty string |
 | `isNotEmpty` | is not empty | Existence | Value is not null, undefined, or empty string |
 | `exists` | exists | Existence | Value is not null and not undefined |
@@ -131,9 +132,9 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | `isNotUndefined` | is not undefined | Existence | Value is anything except undefined (null still matches) |
 
 **Matches regex:** tests the text against a regular expression, anywhere in the text unless you
-anchor it: `^` marks the start and `$` the end. Start the pattern with `(?i)` to ignore case. For
-"does not match", connect the next step to the false output, or in Expression mode write
-`!matchesRegex(...)`.
+anchor it: `^` marks the start and `$` the end. Start the pattern with `(?i)` to ignore case.
+**Does not match regex** is the opposite test (`!matchesRegex(...)` in Expression mode), with the
+same rules.
 
 - **Values:** numbers and `true`/`false` are tested as their text, and so is `null`: `^n`
   matches a null field. If the field can be null, add an **is not null** rule. A list or object
@@ -152,8 +153,8 @@ anchor it: `^` marks the start and `$` the end. Start the pattern with `(?i)` to
 - **Expression mode:** write `matchesRegex({{@nodeId:Label.field}}, "^0x[0-9a-fA-F]{40}$")`.
   Inside the quotes, double each backslash: `"^\\d+$"` for `^\d+$`. A single backslash before
   anything but a quote, `n`, `r` or `t` is refused rather than silently changing the pattern.
-- **Limits:** a pattern of up to 512 characters and size 1,000 (RE2 counts the steps it compiles
-  to; long `{n}` repeats add up fastest), text of up to 4,096 characters (longer text fails the
+- **Limits:** a pattern of up to 512 characters and 1,000 steps (RE2's size for the compiled
+  pattern; long `{n}` repeats add up fastest), text of up to 4,096 characters (longer text fails the
   run), and at most 16 regex tests in one Condition. Matching never backtracks and has a fixed
   budget per Condition, so it cannot hold up a run for more than a few seconds.
 

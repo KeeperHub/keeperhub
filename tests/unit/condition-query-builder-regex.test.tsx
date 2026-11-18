@@ -62,7 +62,7 @@ describe("matches regex rule in the visual builder", () => {
     const hint = container.querySelector(
       `[id="${input.getAttribute("aria-describedby")}"]`
     );
-    expect(hint?.textContent).toContain("^ marks the start, $ the end");
+    expect(hint?.textContent).toContain("^ start, $ end");
   });
 
   it("shows a pattern that cannot run under the rule, linked to the field", () => {
@@ -77,6 +77,51 @@ describe("matches regex rule in the visual builder", () => {
   it("flags a pattern taken from another node", () => {
     render("{{@n2:Webhook.pattern}}");
     expect(container.textContent).toContain("can't come from another node");
+  });
+
+  it("gives does not match regex the same pattern field", () => {
+    act(() =>
+      root.render(
+        <ConditionQueryBuilder
+          group={{
+            id: "g",
+            logic: "AND",
+            rules: [
+              {
+                id: "r",
+                leftOperand: "{{@n1:Webhook.value}}",
+                operator: "notMatchesRegex",
+                rightOperand: "(?=a)",
+              },
+            ],
+          }}
+          onChange={vi.fn()}
+        />
+      )
+    );
+    expect(
+      container.querySelector('input[aria-label="Regex pattern"]')
+    ).not.toBeNull();
+    expect(container.textContent).toContain("Lookahead and lookbehind");
+  });
+
+  it("announces the error through a live region that is always mounted", () => {
+    vi.useFakeTimers();
+    try {
+      render("^(?=EMSP)");
+      const live = container.querySelector('[aria-live="polite"]');
+      expect(live?.textContent).toContain("Lookahead and lookbehind");
+      render("^EMSP_");
+      // The check waits for a pause in typing.
+      act(() => {
+        vi.advanceTimersByTime(400);
+      });
+      expect(container.querySelector('[aria-live="polite"]')?.textContent).toBe(
+        ""
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("stays quiet while the pattern is empty", () => {

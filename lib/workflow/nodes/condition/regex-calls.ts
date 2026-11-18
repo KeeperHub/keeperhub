@@ -7,7 +7,9 @@ import { replaceTemplateTokens } from "@/lib/workflow/template-ref";
 import { MAX_REGEX_CALLS } from "./regex-match";
 import { maskStringLiterals } from "./string-literal";
 
-const REGEX_CALL_RE = /\bmatchesRegex\s*\(/g;
+// A direct call; x.matchesRegex( or (matchesRegex)( is not one.
+const REGEX_CALL_RE = /(?<![\w$.])matchesRegex\s*\(/g;
+const REGEX_NAME_RE = /(?<![\w$])matchesRegex(?![\w$])/g;
 
 /** JavaScript regex objects: the builder's old form, or a typed /.../.test(...). */
 export const REGEX_OBJECT_RE =
@@ -79,6 +81,20 @@ function argumentSpans(
   }
   spans.push([start, close]);
   return spans;
+}
+
+/**
+ * True when matchesRegex appears outside quoted text other than as a direct
+ * call, e.g. (matchesRegex)(...): the call checks below would miss it.
+ */
+export function hasIndirectRegexUse(expression: string): boolean {
+  const structure = maskedStructure(expression);
+  if (structure === undefined) {
+    return false;
+  }
+  const names = structure.match(REGEX_NAME_RE)?.length ?? 0;
+  const calls = structure.match(REGEX_CALL_RE)?.length ?? 0;
+  return names !== calls;
 }
 
 /**

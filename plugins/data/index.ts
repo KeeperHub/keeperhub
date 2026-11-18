@@ -308,7 +308,7 @@ const dataPlugin: IntegrationPlugin = {
           })),
           defaultValue: DEFAULT_FILTER_OPERATOR,
           helpTip:
-            "The Condition tests, plus does not contain, does not start with, does not end with and does not match regex.\n\nEach test only looks at items it applies to: number tests at numbers, numeric text and hex; boolean tests at true and false; text tests at text and numbers; array and object tests at lists and objects. By default any other item fails the step; see If an item can't be tested.",
+            "The Condition tests, plus does not contain, does not start with and does not end with.\n\nEach test only looks at items it applies to: number tests at numbers, numeric text and hex; boolean tests at true and false; text tests at text and numbers; array and object tests at lists and objects. By default any other item fails the step; see If an item can't be tested.",
           example: "isTrue",
         },
         {

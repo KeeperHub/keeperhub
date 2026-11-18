@@ -172,6 +172,35 @@ describe("matchesRegex", () => {
     });
   });
 
+  describe("does not match regex", () => {
+    function runNotRule(pattern: string, value: unknown): boolean {
+      const expression = resolveConditionExpression({
+        conditionConfig: { group: group([FIELD, "notMatchesRegex", pattern]) },
+      });
+      return run(expression ?? "", value);
+    }
+
+    it("is the opposite test, with the same pattern rules", () => {
+      expect(runNotRule("^EMSP_", "MCD_VAT")).toBe(true);
+      expect(runNotRule("^EMSP_", "EMSP_X")).toBe(false);
+      expect(() => runNotRule("(?=a)", "a")).toThrow("Lookahead");
+      expect(() => runNotRule("^{{@n1:Webhook.value}}", "a")).toThrow(
+        REGEX_SOURCE_ERROR
+      );
+    });
+
+    it("reopens as the same rule inside a group", () => {
+      const expression = visualConditionToExpression(
+        group([FIELD, "===", "x"], [FIELD, "notMatchesRegex", "^EMSP_"])
+      );
+      const state = editorConditionState(expression, undefined);
+      expect(state.initialMode).toBe("visual");
+      expect(
+        state.parsedGroup && visualConditionToExpression(state.parsedGroup)
+      ).toBe(expression);
+    });
+  });
+
   describe("reopening a saved condition", () => {
     it("rebuilds a typed pattern exactly, quotes and spaces included", () => {
       for (const pattern of ['"[^"]*"', "^a  b", '"a"|"b"', "a), b"]) {
@@ -288,6 +317,33 @@ describe("matchesRegex", () => {
       expect(validateConditionExpressionUI(calls(17))).toEqual({
         valid: false,
         error: expect.stringContaining("at most 16 times"),
+      });
+    });
+
+    it("refuses matchesRegex that is not called directly", () => {
+      for (const expression of [
+        `(matchesRegex)(${FIELD}, "^{{@n1:Webhook.other}}")`,
+        `${FIELD}.matchesRegex(${FIELD}, "a")`,
+      ]) {
+        expect(() => run(expression, "a"), expression).toThrow(
+          "Call matchesRegex directly"
+        );
+        expect(
+          validateConditionExpressionUI(expression).valid,
+          expression
+        ).toBe(false);
+      }
+      expect(
+        validateConditionExpressionUI(`matchesRegex(${FIELD}, "a"`)
+      ).toEqual({ valid: false, error: expect.stringContaining("closing )") });
+    });
+
+    it("doubles the backslashes in advice shown for Expression mode", () => {
+      expect(
+        validateConditionExpressionUI(`matchesRegex(${FIELD}, "'ok'")`)
+      ).toEqual({
+        valid: false,
+        error: expect.stringContaining("write each backslash twice"),
       });
     });
 
@@ -429,6 +485,13 @@ describe("matchesRegex", () => {
       expect(regexPatternError("\\0")).toBeUndefined();
       expect(regexPatternError("^0x[0-9a-f]{40}$")).toBeUndefined();
       expect(regexPatternError("/api/v1/")).toBeUndefined();
+      expect(regexPatternError("/users/id")).toBeUndefined();
+      expect(regexPatternError("/api/ids")).toBeUndefined();
+      expect(regexPatternError("/x/g")).toContain("Leave out the /.../");
+      expect(regexPatternError('"a\\"b"')).toContain("Leave out the quotes");
+      expect(regexPatternError("*.eth")).toContain("for any text, write .*");
+      expect(regexPatternError("\\q")).toContain("Remove that backslash");
+      expect(regexPatternError("a{2,1}")).toContain("smaller number first");
       expect(regexPatternError("/^api/")).toContain("Leave out the /.../");
     });
 

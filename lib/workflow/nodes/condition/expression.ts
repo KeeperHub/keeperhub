@@ -59,6 +59,10 @@ function wrapOperand(operand: string): string {
   return quoteText(trimmed);
 }
 
+export function isRegexOperator(operator: ConditionOperator): boolean {
+  return operator === "matchesRegex" || operator === "notMatchesRegex";
+}
+
 function quoteText(text: string): string {
   return `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
@@ -124,6 +128,9 @@ export function operatorToExpression(
     case "matchesRegex":
       return `matchesRegex(${left}, ${right})`;
 
+    case "notMatchesRegex":
+      return `!matchesRegex(${left}, ${right})`;
+
     case "isTrue":
       return `${left} === true`;
 
@@ -163,7 +170,7 @@ function ruleToExpression(rule: ConditionRule): string {
   return operatorToExpression(
     rule.operator,
     wrapOperand(rule.leftOperand),
-    rule.operator === "matchesRegex"
+    isRegexOperator(rule.operator)
       ? regexOperand(rule.rightOperand)
       : wrapOperand(rule.rightOperand)
   );

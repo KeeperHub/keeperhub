@@ -23,9 +23,11 @@ export const REGEX_SOURCE_ERROR =
 export const REGEX_BACKSLASH_ERROR =
   'In Expression mode, double each backslash in the regex pattern, e.g. "^\\\\d+$" for ^\\d+$';
 export const REGEX_EMPTY_ERROR =
-  "Enter a regex pattern, e.g. ^0x; ^$ matches empty text";
+  "Enter a regex pattern, e.g. ^0x. To match empty text, use ^$";
 export const REGEX_NON_TEXT_ERROR =
   "Matches regex tests text, numbers or booleans, not a list or object. Test a field inside it, or use Filter Array to test each item of a list";
+export const REGEX_DIRECT_ERROR =
+  'Call matchesRegex directly, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
 export const REGEX_CALLS_ERROR = `A condition can use matchesRegex at most ${MAX_REGEX_CALLS} times`;
 
 const MAX_CACHED_PATTERNS = 256;
@@ -35,9 +37,14 @@ const BACKREFERENCE_RE = /invalid escape sequence: `\\([1-9]|k)/;
 const UNICODE_ESCAPE_RE = /invalid escape sequence: `\\u/;
 // JavaScript-style /pattern/flags: refused when it has flags or regex syntax
 // inside, so a plain path such as /api/ can still be matched literally.
-const SLASH_DELIMITED_RE = /^\/([\s\S]*)\/([dgimsuvy]*)$/;
+const SLASH_DELIMITED_RE = /^\/([\s\S]*)\/([gimsuy]*)$/;
 const REGEX_SYNTAX_RE = /[\^$\\[(*+?{|]/;
-const ESCAPE_HINT_RE = /escape sequence|trailing backslash/;
+const BAD_ESCAPE_RE = /invalid escape sequence/;
+const TRAILING_BACKSLASH_RE = /trailing backslash/;
+const REPETITION_RE = /repetition operator/;
+const REPEAT_COUNT_RE = /invalid repeat count/;
+const UNESCAPED_DOUBLE_QUOTE_RE = /(^|[^\\])"/;
+const UNESCAPED_SINGLE_QUOTE_RE = /(^|[^\\])'/;
 const BACKTICK_RE = /`/g;
 
 const compiled = new Map<string, RE2JS>();
@@ -46,6 +53,23 @@ export type CompiledRegex = RE2JS;
 
 function formatCount(count: number): string {
   return count.toLocaleString("en-US");
+}
+
+// What to do next for the RE2 errors people hit most.
+function syntaxHint(detail: string): string {
+  if (BAD_ESCAPE_RE.test(detail)) {
+    return ". Remove that backslash, or write \\\\ to match a backslash";
+  }
+  if (TRAILING_BACKSLASH_RE.test(detail)) {
+    return ". Write \\\\ to match a backslash";
+  }
+  if (REPETITION_RE.test(detail)) {
+    return ". To match * or + itself, put a backslash before it; for any text, write .*";
+  }
+  if (REPEAT_COUNT_RE.test(detail)) {
+    return ". Repeat counts go up to 1,000, with the smaller number first, e.g. {2,5}";
+  }
+  return "";
 }
 
 function describeSyntaxError(message: string): string {
@@ -61,22 +85,22 @@ function describeSyntaxError(message: string): string {
   const detail = message.startsWith(SYNTAX_ERROR_PREFIX)
     ? message.slice(SYNTAX_ERROR_PREFIX.length)
     : message;
-  const hint = ESCAPE_HINT_RE.test(detail)
-    ? ". Put a backslash before a character to match it as is, e.g. \\. or \\\\"
-    : "";
+  const hint = syntaxHint(detail);
   return `Invalid regex pattern: ${detail.replace(BACKTICK_RE, '"')}${hint}`;
 }
 
-// One quoted string, e.g. "ok"; not 'yes'|'no', which only starts and ends
-// with a quote.
+// One quoted string, e.g. "ok" or "a\"b"; not 'yes'|'no', which only starts
+// and ends with a quote.
 function isQuoteWrapped(pattern: string): boolean {
   const quote = pattern[0];
-  return (
-    pattern.length > 1 &&
-    (quote === '"' || quote === "'") &&
-    pattern.at(-1) === quote &&
-    !pattern.slice(1, -1).includes(quote)
-  );
+  if (pattern.length < 2 || pattern.at(-1) !== quote) {
+    return false;
+  }
+  const inner = pattern.slice(1, -1);
+  if (quote === '"') {
+    return !UNESCAPED_DOUBLE_QUOTE_RE.test(inner);
+  }
+  return quote === "'" && !UNESCAPED_SINGLE_QUOTE_RE.test(inner);
 }
 
 function compileUncached(pattern: string, ignoreCase: boolean): RE2JS {
@@ -165,7 +189,7 @@ export function regexPatternError(
 export class RegexBudgetError extends Error {
   constructor(steps: number) {
     super(
-      `Matches regex reached this node's matching limit: this pattern has ${formatCount(steps)} steps, and steps x characters tested may total ${formatCount(MAX_REGEX_RUN_WORK)}. Test fewer or shorter values (e.g. split the list across two Filter Array nodes), or a simpler pattern`
+      `Matches regex reached this node's matching limit: this pattern has ${formatCount(steps)} steps, and steps x characters tested may total ${formatCount(MAX_REGEX_RUN_WORK)}. Test fewer or shorter values, or a simpler pattern`
     );
     this.name = "RegexBudgetError";
   }

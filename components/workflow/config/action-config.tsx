@@ -452,16 +452,20 @@ function ConditionFields({
             placeholder="e.g., 5 > 3, status === 200, {{PreviousNode.value}} > 100"
             value={conditionValue}
           />
-          <p aria-live="polite" className="text-destructive text-xs">
+          {validationError && (
+            <p className="text-destructive text-xs">{validationError}</p>
+          )}
+          {/* Always mounted, so screen readers announce an error as it appears. */}
+          <span aria-live="polite" className="sr-only">
             {validationError}
-          </p>
+          </span>
           <p className="text-muted-foreground text-xs">
             Enter a JavaScript expression that evaluates to true or false. Use @
             to reference previous node outputs.
           </p>
           <p className="text-muted-foreground text-xs">
-            Regex: matchesRegex(@field, &quot;^0x&quot;). Inside the quotes,
-            double each backslash: &quot;^\\d+$&quot; for ^\d+$.
+            Regex: matchesRegex(@reference, &quot;^0x&quot;); inside the quotes,
+            write each backslash twice, e.g. &quot;^\\d+$&quot;.
           </p>
         </div>
       )}
