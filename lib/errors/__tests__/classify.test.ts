@@ -196,6 +196,9 @@ describe("classifyExecutionError", () => {
       'Multicall batch 1/1 failed: server response 502 (body="0x1 is not a valid address: x")',
       'Step "check is not a valid address: x" exceeded max retries',
       "Failed to initialize organization wallet: Function 'x' is not in the ABI",
+      'Step "x takes a tuple with unnamed members" exceeded max retries',
+      'Multicall batch 1/1 failed: server response 502 (body="f declares 9 parameters and tuple members")',
+      "Failed to initialize organization wallet: takes no arguments, so a list of argument sets",
     ])(
       "does not relabel a system message quoting Batch Read text: %s",
       (input) => {

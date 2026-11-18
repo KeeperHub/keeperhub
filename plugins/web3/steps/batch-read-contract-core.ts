@@ -35,10 +35,13 @@ export const MAX_REASON_LENGTH = 200;
 const EN_US = "en-US";
 const SCALAR_TYPE_RE = /^(address|bool|string|bytes\d*|u?int\d*)$/;
 const INTEGER_TYPE_RE = /^u?int\d*$/;
+const INTEGER_PREFIX_RE = /^u?int/;
 // A uint256 has at most 78 digits; longer text is refused before encoding.
 const MAX_INTEGER_TEXT = 80;
 const ARRAY_TYPE_RE = /^(.*)\[(\d*)\]$/;
 const ARRAY_SUFFIXES_RE = /(\[\d*\])+$/;
+// Levels an example expands; with at most 3 items shown per array it stays short.
+const EXAMPLE_DEPTH = 2;
 const BYTES_N_RE = /^bytes(\d+)$/;
 const HEX_RE = /^0x[0-9a-fA-F]*$/;
 const ETHERS_DETAIL_RE = /\s*\([^()]*\bcode=[A-Z_]+[^()]*\)/g;
@@ -287,7 +290,7 @@ function inputNames(fn: ListFunction): string {
     .join(", ");
 }
 
-/** One level of an argument's shape; deeper arrays and tuples show as [...] and {...}. */
+/** Two levels of an argument's shape; deeper arrays and tuples show as [...] and {...}. */
 function exampleValue(
   type: string,
   components?: AbiParam[],
@@ -295,7 +298,7 @@ function exampleValue(
 ): string {
   const array = ARRAY_TYPE_RE.exec(type);
   if (array) {
-    if (depth > 0) {
+    if (depth >= EXAMPLE_DEPTH) {
       return "[...]";
     }
     const item = exampleValue(array[1], components, depth + 1);
@@ -305,7 +308,11 @@ function exampleValue(
       : `[${item}, ${item}]`;
   }
   if (type === "tuple") {
-    if (depth > 0 || !components?.length || components.some((c) => !c.name)) {
+    if (
+      depth >= EXAMPLE_DEPTH ||
+      !components?.length ||
+      components.some((c) => !c.name)
+    ) {
       return "{...}";
     }
     const members = components.map(
@@ -543,30 +550,65 @@ function estimateCalldata(
   return { bytes: tally.bytes, values: tally.values };
 }
 
-/** The parameter or tuple member ethers named, by path, with its leaf type. */
-function findParam(
+/** Every parameter or tuple member with this name, by path, with its leaf type. */
+function paramsNamed(
   params: AbiParam[] | undefined,
   name: string,
-  path: string
-): { path: string; type: string } | undefined {
+  path: string,
+  found: { path: string; type: string }[]
+): void {
   for (const param of params ?? []) {
     const at = path ? `${path}.${param.name}` : param.name;
     if (param.name === name) {
-      return { path: at, type: param.type.replace(ARRAY_SUFFIXES_RE, "") };
+      found.push({ path: at, type: param.type.replace(ARRAY_SUFFIXES_RE, "") });
     }
-    const inner = findParam(param.components, name, at);
-    if (inner) {
-      return inner;
-    }
+    paramsNamed(param.components, name, at, found);
   }
-  return;
+}
+
+/**
+ * The input ethers named. It reports only the leaf name, so a top-level input
+ * wins, a single nested match is used, and an ambiguous name names nothing.
+ * With no match (an array item has no name), a function's only input is used.
+ */
+function reportedParam(
+  fn: ListFunction,
+  reported: string | undefined
+): { path: string; type: string } | undefined {
+  const only = fn.inputs.length === 1 ? fn.inputs[0] : undefined;
+  const top = fn.inputs.filter((input) => input.name === reported);
+  const found: { path: string; type: string }[] = [];
+  if (top.length === 1) {
+    found.push({
+      path: top[0].name,
+      type: top[0].type.replace(ARRAY_SUFFIXES_RE, ""),
+    });
+  } else if (reported && top.length === 0) {
+    paramsNamed(fn.inputs, reported, "", found);
+  }
+  if (found.length === 1) {
+    return found[0];
+  }
+  // No usable name (an array item, or a name in several places).
+  return only && found.length === 0
+    ? { path: only.name, type: only.type.replace(ARRAY_SUFFIXES_RE, "") }
+    : undefined;
 }
 
 function outOfRange(subject: string, type: string | undefined): string {
   if (!(type && INTEGER_TYPE_RE.test(type))) {
     return `${subject}is out of range for its type.`;
   }
-  const limits = type.startsWith("uint")
+  const unsigned = type.startsWith("uint");
+  const bits = Number(type.replace(INTEGER_PREFIX_RE, "")) || 256;
+  if (bits <= 64) {
+    const two = BigInt(2);
+    const low = unsigned ? BigInt(0) : -(two ** BigInt(bits - 1));
+    const high =
+      (unsigned ? two ** BigInt(bits) : two ** BigInt(bits - 1)) - BigInt(1);
+    return `${subject}is out of range for ${type}. Use a whole number from ${low} to ${high}.`;
+  }
+  const limits = unsigned
     ? "cannot be negative and has a maximum"
     : "has a minimum and a maximum";
   return `${subject}is out of range for ${type}, which ${limits}.`;
@@ -576,9 +618,8 @@ function outOfRange(subject: string, type: string | undefined): string {
 export function encodeReason(error: unknown, fn: ListFunction): string {
   const message = error instanceof Error ? error.message : String(error);
   const reported = ETHERS_ARGUMENT_RE.exec(message)?.[1];
-  const found = reported ? findParam(fn.inputs, reported, "") : undefined;
-  const only = fn.inputs.length === 1 ? fn.inputs[0] : undefined;
-  const name = found?.path ?? only?.name;
+  const found = reportedParam(fn, reported);
+  const name = found?.path;
   const subject = name ? `${name} ` : "it ";
   if (NUMBER_RANGE_RE.test(message)) {
     return outOfRange(subject, found?.type);

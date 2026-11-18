@@ -227,7 +227,7 @@ const RULES: readonly Rule[] = [
   },
   {
     pattern:
-      /^(Argument Sets|Contract Addresses|Function Arguments|Calls From)\b|^Call \d+ (has no|must be)\b|^The calls(' data adds up to| hold more than) |^(Contract Address|Contract ABI|Function) is required\b|takes no arguments, so a list of argument sets|takes a tuple with unnamed members|declares [\d,]+ parameters and tuple members|^Too many calls \(\d+\)\. Maximum is \d+|^No calls to execute$/,
+      /^(Argument Sets|Contract Addresses|Function Arguments|Calls From)\b|^Call \d+ (has no|must be)\b|^The calls(' data adds up to| hold more than) |^(Contract Address|Contract ABI|Function) is required\b|^[A-Za-z_$][\w$]* (takes no arguments, so a list of argument sets|takes a tuple with unnamed members|declares [\d,]+ parameters and tuple members)|^Too many calls \(\d+\)\. Maximum is \d+|^No calls to execute$/,
     errorCategory: ErrorCategory.VALIDATION,
     errorType: ExecutionErrorType.USER,
     code: null,

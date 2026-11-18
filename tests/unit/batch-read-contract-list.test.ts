@@ -1336,7 +1336,7 @@ describe("batch-read-contract - review round 3", () => {
       "Function Arguments: m[0]: expected array for uint256[]. Check the arguments for nested (m)."
     );
     expect(await failure(argsList([[["[1,"]]], "nested"))).toBe(
-      "Argument Sets entry 1: m[0]: expected array for uint256[]. An entry for nested looks like [[[...], [...]]]."
+      "Argument Sets entry 1: m[0]: expected array for uint256[]. An entry for nested looks like [[[1, 1], [1, 1]]]."
     );
   });
 
@@ -1878,7 +1878,7 @@ describe("batch-read-contract - review fixes, round 3", () => {
     ]);
     const message = await failure({ ...argsList([5], "deep"), abi });
     expect(message).toBe(
-      "Argument Sets entry 1 must be an array of 2 values for deep (a, b), got a number. Make each entry an array like [[[...], [...], [...]], 1]."
+      "Argument Sets entry 1 must be an array of 2 values for deep (a, b), got a number. Make each entry an array like [[[[...], [...], [...]], [[...], [...], [...]], [[...], [...], [...]]], 1]."
     );
   });
 
@@ -1890,13 +1890,13 @@ describe("batch-read-contract - review fixes, round 3", () => {
     expect(
       await failure({ ...argsList([[{ a: "300" }, "1"]], "small"), abi })
     ).toBe(
-      "Argument Sets entry 1 could not be encoded for small: p.a is out of range for uint8, which cannot be negative and has a maximum."
+      "Argument Sets entry 1 could not be encoded for small: p.a is out of range for uint8. Use a whole number from 0 to 255."
     );
     mockStaticCall.mockClear();
     expect(
       await failure({ ...argsList([[{ a: "1" }, "-200"]], "small"), abi })
     ).toBe(
-      "Argument Sets entry 1 could not be encoded for small: k is out of range for int8, which has a minimum and a maximum."
+      "Argument Sets entry 1 could not be encoded for small: k is out of range for int8. Use a whole number from -128 to 127."
     );
   });
 
@@ -1914,6 +1914,71 @@ describe("batch-read-contract - review fixes, round 3", () => {
     ]);
     expect(await failure({ ...argsList([[1, 2]], "flat"), abi })).toBe(
       'Argument Sets entry 1 has 2 values, but flat takes 2 (t, x) with each tuple as an object, or 3 with its members given flat. Make each entry an array like [{"a": 1, "b": 1}, 1].'
+    );
+  });
+});
+
+describe("batch-read-contract - review fixes, round 4", () => {
+  const abiWith = (name: string, inputs: unknown[]): string =>
+    JSON.stringify([
+      {
+        name,
+        type: "function",
+        stateMutability: "view",
+        inputs,
+        outputs: [{ name: "", type: "uint256" }],
+      },
+    ]);
+
+  it("names the top-level input when a tuple member shares its name", async () => {
+    const abi = abiWith("twin", [
+      {
+        name: "p",
+        type: "tuple",
+        components: [{ name: "a", type: "uint256" }],
+      },
+      { name: "a", type: "uint8" },
+    ]);
+    expect(
+      await failure({ ...argsList([[{ a: "1" }, "300"]], "twin"), abi })
+    ).toBe(
+      "Argument Sets entry 1 could not be encoded for twin: a is out of range for uint8. Use a whole number from 0 to 255."
+    );
+  });
+
+  it("names nothing when only nested members share the name", async () => {
+    const abi = abiWith("pair", [
+      { name: "p", type: "tuple", components: [{ name: "a", type: "uint8" }] },
+      { name: "q", type: "tuple", components: [{ name: "a", type: "uint8" }] },
+    ]);
+    expect(
+      await failure({ ...argsList([[{ a: "1" }, { a: "300" }]], "pair"), abi })
+    ).toBe(
+      "Argument Sets entry 1 could not be encoded for pair: it is out of range for its type."
+    );
+  });
+
+  it("uses the only input's item type for an array item out of range", async () => {
+    const abi = abiWith("items", [{ name: "xs", type: "uint8[]" }]);
+    expect(await failure({ ...argsList([[["1", "300"]]], "items"), abi })).toBe(
+      "Argument Sets entry 1 could not be encoded for items: xs is out of range for uint8. Use a whole number from 0 to 255."
+    );
+  });
+
+  it("shows member names in the example for an array of tuples", async () => {
+    const abi = abiWith("orders", [
+      {
+        name: "os",
+        type: "tuple[]",
+        components: [
+          { name: "target", type: "address" },
+          { name: "ids", type: "uint256[]" },
+        ],
+      },
+      { name: "n", type: "uint256" },
+    ]);
+    expect(await failure({ ...argsList(["x"], "orders"), abi })).toBe(
+      'Argument Sets entry 1 must be an array of 2 values for orders (os, n), got a string. Make each entry an array like [[{"target": "0x...", "ids": [...]}, {"target": "0x...", "ids": [...]}], 1].'
     );
   });
 });
