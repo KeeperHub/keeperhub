@@ -842,8 +842,7 @@ describe("batch-read-contract - list argument types", () => {
   });
 
   it("says a number must be a whole number, without ethers' details", async () => {
-    const whole =
-      'x must be a whole number; write large numbers in quotes, e.g. "12345678901234567890".';
+    const whole = "x must be a whole number in digits.";
     expect(await failure(argsList(["9x"]))).toBe(
       `Argument Sets entry 1 could not be encoded for echo: ${whole}`
     );
@@ -1202,7 +1201,7 @@ describe("batch-read-contract - review round 2", () => {
       'Argument Sets entry 1: give p as an object with its member names, like {"flag": true, "x": 1}, not as an array.'
     );
     expect(await failure(argsList([["false"]], "cfg"))).toBe(
-      'Argument Sets entry 1 has 1 value, but cfg takes 1 (p) with each tuple as an object, or 2 with its members given flat. Make each entry an array like [{"flag": true, "x": 1}].'
+      'Argument Sets entry 1: p must be an object with its member names, like {"flag": true, "x": 1}, got "false". Or give all 2 values flat.'
     );
   });
 
@@ -1913,7 +1912,7 @@ describe("batch-read-contract - review fixes, round 3", () => {
       { name: "x", type: "uint256" },
     ]);
     expect(await failure({ ...argsList([[1, 2]], "flat"), abi })).toBe(
-      'Argument Sets entry 1 has 2 values, but flat takes 2 (t, x) with each tuple as an object, or 3 with its members given flat. Make each entry an array like [{"a": 1, "b": 1}, 1].'
+      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got 1. Or give all 3 values flat.'
     );
   });
 });
@@ -2086,7 +2085,7 @@ describe("batch-read-contract - second review", () => {
       { name: "x", type: "uint256" },
     ]);
     expect(await failure({ ...argsList([["1", "2"]], "flat"), abi })).toBe(
-      'Argument Sets entry 1 has 2 values, but flat takes 2 (t, x) with each tuple as an object, or 3 with its members given flat. Make each entry an array like [{"a": 1, "b": 1}, 1].'
+      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got "1". Or give all 3 values flat.'
     );
     mockStaticCall.mockClear();
     expect(
@@ -2123,7 +2122,7 @@ describe("batch-read-contract - second review", () => {
     expect(
       await failure({ ...argsList("[12345678901234567890]", "bal"), abi })
     ).toBe(
-      'Argument Sets entry 1: id is too large to send as a number and has already lost digits. Write it in quotes, e.g. "12345678901234567890".'
+      'Argument Sets entry 1: id has too many digits to send as a number and may have lost some. Write it in quotes, or have the earlier node send it as text, e.g. "12345678901234567890".'
     );
     expect(await failure({ ...argsList("[1.5]", "bal"), abi })).toBe(
       "Argument Sets entry 1: id must be a whole number, got 1.5."
@@ -2133,5 +2132,95 @@ describe("batch-read-contract - second review", () => {
       (await run({ ...argsList('["12345678901234567890"]', "bal"), abi }))
         .totalCalls
     ).toBe(1);
+  });
+});
+
+describe("batch-read-contract - second review, round 2", () => {
+  const abiWith = (name: string, inputs: unknown[]): string =>
+    JSON.stringify([
+      {
+        name,
+        type: "function",
+        stateMutability: "view",
+        inputs,
+        outputs: [{ name: "", type: "uint256" }],
+      },
+    ]);
+  const arrayFirst = abiWith("g", [
+    {
+      name: "t",
+      type: "tuple",
+      components: [
+        { name: "xs", type: "uint256[]" },
+        { name: "s", type: "string" },
+      ],
+    },
+  ]);
+
+  it("reads an array first member of a flat tuple as that member", async () => {
+    for (const functionArgs of [
+      ["[1,2]", ""],
+      [[1, 2], ""],
+      ["[1,2]"],
+      ["[1,2]", "x"],
+    ]) {
+      mockStaticCall.mockClear();
+      const outcome = await run({
+        ...addressList([addr(1)], {
+          abiFunction: "g",
+          functionArgs: JSON.stringify(functionArgs),
+        }),
+        abi: arrayFirst,
+      });
+      expect(outcome.totalCalls, JSON.stringify(functionArgs)).toBe(1);
+    }
+    mockStaticCall.mockClear();
+    expect(
+      await failure({ ...argsList([["[1,2]"]], "g"), abi: arrayFirst })
+    ).toBe(
+      'Argument Sets entry 1: t must be an object with its member names, like {"xs": [1, 1], "s": "..."}, got "[1,2]". Or give all 2 values flat.'
+    );
+  });
+
+  it("reads JSON text in a string first member as that member", async () => {
+    const abi = abiWith("h", [
+      {
+        name: "t",
+        type: "tuple",
+        components: [
+          { name: "s", type: "string" },
+          { name: "n", type: "string" },
+        ],
+      },
+    ]);
+    mockStaticCall.mockClear();
+    const outcome = await run({
+      ...addressList([addr(1)], {
+        abiFunction: "h",
+        functionArgs: JSON.stringify(['{"k":1}', ""]),
+      }),
+      abi,
+    });
+    expect(outcome.totalCalls).toBe(1);
+  });
+
+  it("still names a tuple given as JSON object text", async () => {
+    expect(
+      await failure({
+        ...argsList([[JSON.stringify({ xs: [1], s: "a" })]], "g"),
+        abi: arrayFirst,
+      })
+    ).toBe(
+      'Argument Sets entry 1: give t as an object with its member names, like {"xs": [1, 1], "s": "..."}, not as text.'
+    );
+  });
+
+  it("asks for quotes for a negative number past 2^53 too", async () => {
+    const abi = abiWith("signed", [{ name: "v", type: "int256" }]);
+    expect(
+      await failure({ ...argsList("[-12345678901234567890]", "signed"), abi })
+    ).toContain(
+      "v has too many digits to send as a number and may have lost some."
+    );
   });
 });

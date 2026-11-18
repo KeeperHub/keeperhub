@@ -149,7 +149,7 @@ The list is checked before any call is made, and the step fails when:
 - an entry is not a valid address, has the wrong number of arguments, or is not a plain value where one is expected (the message names the entry, counted from 1)
 - an address argument has spaces around it (an address in Contract Address or Contract Addresses is trimmed; one passed as an argument is not)
 - a tuple is given as an array of its members instead of an object keyed by member name, or the function takes a tuple whose members have no names (such a function cannot be called from a list)
-- an argument cannot be encoded for the function: a `bool` that is not `true` or `false`, a `bytes32` that is not 0x hex of that length (turn text into `bytes32` with the Encode / Decode node first), a number that is not a whole number (write large numbers in quotes) or does not fit its type (a `uint` cannot be negative), or a fixed-size array such as `uint256[3]` with the wrong number of items
+- an argument cannot be encoded for the function: a `bool` that is not `true` or `false`, a `bytes32` that is not 0x hex of that length (turn text into `bytes32` with the Encode / Decode node first), a number that is not a whole number, or one past 2^53 sent as a JSON number (which has already lost digits: send it in quotes, as text), or does not fit its type (a `uint` cannot be negative), or a fixed-size array such as `uint256[3]` with the wrong number of items
 - the function declares more than 1,000 parameters and tuple members in all
 - one call's arguments would encode to more than about 64 KB, the calls hold more than 50,000 values in all (Function Arguments, sent to every address, counts once), or the encoded calls add up to more than 10 MB
 

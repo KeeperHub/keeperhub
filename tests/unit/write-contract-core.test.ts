@@ -979,6 +979,39 @@ describe("writeContractCore functionArgs shape (#2359)", () => {
     ]);
   });
 
+  it("still refuses text for an array argument that is not a JSON array", async () => {
+    const real = await vi.importActual<typeof import("@/lib/abi/struct-args")>(
+      "@/lib/abi/struct-args"
+    );
+    const { coerceArgsForAbi, reshapeArgsForAbi } = await import(
+      "@/lib/abi/struct-args"
+    );
+    vi.mocked(reshapeArgsForAbi).mockImplementationOnce(real.reshapeArgsForAbi);
+    vi.mocked(coerceArgsForAbi).mockImplementationOnce(real.coerceArgsForAbi);
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "16602",
+      abi: JSON.stringify([
+        {
+          type: "function",
+          name: "sum",
+          stateMutability: "nonpayable",
+          inputs: [{ name: "ids", type: "uint256[]" }],
+          outputs: [],
+        },
+      ]),
+      abiFunction: "sum",
+      functionArgs: JSON.stringify(["1,2"]),
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("expected array for uint256[]");
+    }
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
   it("reads null, 0 and false as no arguments rather than a parse error", async () => {
     for (const absent of [null, 0, false, "", "   "]) {
       vi.clearAllMocks();

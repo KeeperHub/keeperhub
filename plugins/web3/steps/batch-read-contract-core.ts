@@ -378,11 +378,14 @@ function checkListLeaf(
   // A JSON number past 2^53 has already lost digits, and a fraction is not a
   // whole number; ethers would call either one out of range.
   if (INTEGER_TYPE_RE.test(type) && typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      return `${path} must be a whole number, got ${String(value)}`;
+    }
     if (!Number.isInteger(value)) {
       return `${path} must be a whole number, got ${showValue(value)}`;
     }
     if (!Number.isSafeInteger(value)) {
-      return `${path} is too large to send as a number and has already lost digits. Write it in quotes, e.g. "12345678901234567890"`;
+      return `${path} has too many digits to send as a number and may have lost some. Write it in quotes, or have the earlier node send it as text, e.g. "12345678901234567890"`;
     }
   }
   const bytes = BYTES_N_RE.exec(type);
@@ -625,7 +628,7 @@ export function encodeReason(error: unknown, fn: ListFunction): string {
     return outOfRange(subject, found?.type);
   }
   if (NUMBER_FAULT_RE.test(message)) {
-    return `${subject}must be a whole number; write large numbers in quotes, e.g. "12345678901234567890".`;
+    return `${subject}must be a whole number in digits.`;
   }
   const reason = echo(message.replace(ETHERS_DETAIL_RE, ""), MAX_REASON_LENGTH);
   const prefix = name ? `${name}: ` : "";
@@ -712,47 +715,93 @@ function countMismatch(
   );
 }
 
-/** Text that parses as a JSON object or array, e.g. a tuple sent as text. */
-function isJsonContainerText(value: unknown): boolean {
+/** A JSON object or array held as text, parsed; undefined for anything else. */
+function jsonContainerText(value: unknown): unknown {
   if (typeof value !== "string") {
-    return false;
+    return;
   }
   const text = value.trim();
   if (!(text.startsWith("{") || text.startsWith("["))) {
-    return false;
+    return;
   }
   try {
     const parsed: unknown = JSON.parse(text);
-    return typeof parsed === "object" && parsed !== null;
+    return typeof parsed === "object" && parsed !== null ? parsed : undefined;
   } catch {
-    return false;
+    return;
   }
 }
 
+function isPlainObject(value: unknown): boolean {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// True when a value at a tuple's place is the whole tuple in the wrong shape,
+// not its first member given flat: the first member decides what it can take.
+function isWholeTupleShape(value: unknown, first: AbiParam): boolean {
+  const firstIsArray = first.type.endsWith("]");
+  if (Array.isArray(value)) {
+    return !firstIsArray;
+  }
+  const parsed = jsonContainerText(value);
+  if (parsed === undefined || first.type === "string") {
+    return false;
+  }
+  return Array.isArray(parsed) ? !firstIsArray : true;
+}
+
 /**
- * A tuple given as an array of its members or as JSON text; a plain value at
- * the tuple's place is a flat member and gets the count message instead.
+ * A tuple given as an array of its members or as JSON text. Values are walked
+ * the way reshapeArgsCounted takes them, so a tuple given flat moves past all
+ * its members; anything else gets the count message.
  */
 function positionalTupleError(
   args: unknown[],
   fn: ListFunction,
   at: string
 ): Error | undefined {
-  if (args.length > fn.inputs.length) {
+  let cursor = 0;
+  for (const [index, input] of fn.inputs.entries()) {
+    const value = args[cursor];
+    const components = input.type === "tuple" ? input.components : undefined;
+    if (!components?.length || isPlainObject(value)) {
+      cursor += 1;
+      continue;
+    }
+    if (isWholeTupleShape(value, components[0])) {
+      const given = typeof value === "string" ? "text" : "an array";
+      return new Error(
+        `${at}: give ${input.name || `arg${index}`} as an object with its member names, like ${echo(exampleValue(input.type, components), MAX_REASON_LENGTH)}, not as ${given}.`
+      );
+    }
+    cursor += components.length;
+  }
+  return;
+}
+
+// With as many values as inputs, a tuple given a plain value is the mistake:
+// name it, rather than report two counts that look the same.
+function tupleSlotError(
+  entry: unknown[],
+  fn: ListFunction,
+  at: string,
+  consumed: number
+): Error | undefined {
+  if (entry.length !== fn.inputs.length) {
     return;
   }
   const index = fn.inputs.findIndex(
     (input, i) =>
       input.type === "tuple" &&
-      (isJsonContainerText(args[i]) || Array.isArray(args[i]))
+      Boolean(input.components?.length) &&
+      !isPlainObject(entry[i])
   );
   if (index < 0) {
     return;
   }
   const input = fn.inputs[index];
-  const given = typeof args[index] === "string" ? "text" : "an array";
   return new Error(
-    `${at}: give ${input.name || `arg${index}`} as an object with its member names, like ${echo(exampleValue(input.type, input.components), MAX_REASON_LENGTH)}, not as ${given}.`
+    `${at}: ${input.name || `arg${index}`} must be an object with its member names, like ${echo(exampleValue(input.type, input.components), MAX_REASON_LENGTH)}, got ${showValue(entry[index])}. Or give all ${count(consumed)} values flat.`
   );
 }
 
@@ -776,7 +825,9 @@ function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
   }
   const reshaped = reshapeArgsCounted(entry, fn);
   if (entry.length !== reshaped.consumed) {
-    const positional = positionalTupleError(entry, fn, at);
+    const positional =
+      positionalTupleError(entry, fn, at) ??
+      tupleSlotError(entry, fn, at, reshaped.consumed);
     if (positional) {
       throw positional;
     }
