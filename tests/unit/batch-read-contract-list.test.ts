@@ -1930,7 +1930,7 @@ describe("batch-read-contract - review fixes, round 4", () => {
       },
     ]);
 
-  it("names the top-level input when a tuple member shares its name", async () => {
+  it("names nothing when a tuple member shares a top-level input's name", async () => {
     const abi = abiWith("twin", [
       {
         name: "p",
@@ -1939,11 +1939,22 @@ describe("batch-read-contract - review fixes, round 4", () => {
       },
       { name: "a", type: "uint8" },
     ]);
+    const message =
+      "Argument Sets entry 1 could not be encoded for twin: it is out of range for its type. Check that each number fits its type in the ABI.";
     expect(
       await failure({ ...argsList([[{ a: "1" }, "300"]], "twin"), abi })
-    ).toBe(
-      "Argument Sets entry 1 could not be encoded for twin: a is out of range for uint8. Use a whole number from 0 to 255."
-    );
+    ).toBe(message);
+    mockStaticCall.mockClear();
+    const swapped = abiWith("twin", [
+      { name: "p", type: "tuple", components: [{ name: "a", type: "uint8" }] },
+      { name: "a", type: "uint256" },
+    ]);
+    expect(
+      await failure({
+        ...argsList([[{ a: "300" }, "1"]], "twin"),
+        abi: swapped,
+      })
+    ).toBe(message);
   });
 
   it("names nothing when only nested members share the name", async () => {
@@ -1954,7 +1965,7 @@ describe("batch-read-contract - review fixes, round 4", () => {
     expect(
       await failure({ ...argsList([[{ a: "1" }, { a: "300" }]], "pair"), abi })
     ).toBe(
-      "Argument Sets entry 1 could not be encoded for pair: it is out of range for its type."
+      "Argument Sets entry 1 could not be encoded for pair: it is out of range for its type. Check that each number fits its type in the ABI."
     );
   });
 
@@ -1979,6 +1990,39 @@ describe("batch-read-contract - review fixes, round 4", () => {
     ]);
     expect(await failure({ ...argsList(["x"], "orders"), abi })).toBe(
       'Argument Sets entry 1 must be an array of 2 values for orders (os, n), got a string. Make each entry an array like [[{"target": "0x...", "ids": [...]}, {"target": "0x...", "ids": [...]}], 1].'
+    );
+  });
+});
+
+describe("batch-read-contract - out-of-range wording by width", () => {
+  const abiOf = (type: string): string =>
+    JSON.stringify([
+      {
+        name: "w",
+        type: "function",
+        stateMutability: "view",
+        inputs: [{ name: "v", type }],
+        outputs: [{ name: "", type: "uint256" }],
+      },
+    ]);
+
+  it("gives the range up to 64 bits and the limits wording above", async () => {
+    expect(
+      await failure({
+        ...argsList(["18446744073709551616"], "w"),
+        abi: abiOf("uint64"),
+      })
+    ).toBe(
+      "Argument Sets entry 1 could not be encoded for w: v is out of range for uint64. Use a whole number from 0 to 18446744073709551615."
+    );
+    mockStaticCall.mockClear();
+    expect(
+      await failure({
+        ...argsList([`1${"0".repeat(39)}`], "w"),
+        abi: abiOf("int128"),
+      })
+    ).toBe(
+      "Argument Sets entry 1 could not be encoded for w: v is out of range for int128, which has a minimum and a maximum."
     );
   });
 });

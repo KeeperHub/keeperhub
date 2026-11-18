@@ -567,29 +567,22 @@ function paramsNamed(
 }
 
 /**
- * The input ethers named. It reports only the leaf name, so a top-level input
- * wins, a single nested match is used, and an ambiguous name names nothing.
- * With no match (an array item has no name), a function's only input is used.
+ * The input ethers named. It reports only the leaf name, so a name used once
+ * (top level or in a tuple) is named and one used more than once names
+ * nothing. With no name (an array item), a function's only input is used.
  */
 function reportedParam(
   fn: ListFunction,
   reported: string | undefined
 ): { path: string; type: string } | undefined {
-  const only = fn.inputs.length === 1 ? fn.inputs[0] : undefined;
-  const top = fn.inputs.filter((input) => input.name === reported);
   const found: { path: string; type: string }[] = [];
-  if (top.length === 1) {
-    found.push({
-      path: top[0].name,
-      type: top[0].type.replace(ARRAY_SUFFIXES_RE, ""),
-    });
-  } else if (reported && top.length === 0) {
+  if (reported) {
     paramsNamed(fn.inputs, reported, "", found);
   }
   if (found.length === 1) {
     return found[0];
   }
-  // No usable name (an array item, or a name in several places).
+  const only = fn.inputs.length === 1 ? fn.inputs[0] : undefined;
   return only && found.length === 0
     ? { path: only.name, type: only.type.replace(ARRAY_SUFFIXES_RE, "") }
     : undefined;
@@ -597,7 +590,7 @@ function reportedParam(
 
 function outOfRange(subject: string, type: string | undefined): string {
   if (!(type && INTEGER_TYPE_RE.test(type))) {
-    return `${subject}is out of range for its type.`;
+    return `${subject}is out of range for its type. Check that each number fits its type in the ABI.`;
   }
   const unsigned = type.startsWith("uint");
   const bits = Number(type.replace(INTEGER_PREFIX_RE, "")) || 256;
@@ -733,7 +726,7 @@ function positionalTupleError(
   const input = fn.inputs[index];
   const given = typeof args[index] === "string" ? "text" : "an array";
   return new Error(
-    `${at}: give ${input.name || `arg${index}`} as an object with its member names, like ${exampleValue(input.type, input.components)}, not as ${given}.`
+    `${at}: give ${input.name || `arg${index}`} as an object with its member names, like ${echo(exampleValue(input.type, input.components), MAX_REASON_LENGTH)}, not as ${given}.`
   );
 }
 
