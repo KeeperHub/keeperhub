@@ -2026,3 +2026,37 @@ describe("batch-read-contract - out-of-range wording by width", () => {
     );
   });
 });
+
+describe("batch-read-contract - positional tuple hint length", () => {
+  it("cuts a wide tuple's example to 200 characters", async () => {
+    const abi = JSON.stringify([
+      {
+        name: "broad",
+        type: "function",
+        stateMutability: "view",
+        inputs: [
+          {
+            name: "t",
+            type: "tuple",
+            components: Array.from({ length: 50 }, (_, i) => ({
+              name: `m${i}`,
+              type: "uint256",
+            })),
+          },
+          { name: "x", type: "uint256" },
+        ],
+        outputs: [{ name: "", type: "uint256" }],
+      },
+    ]);
+    const message = await failure({
+      ...argsList([[["1", "2"], "3"]], "broad"),
+      abi,
+    });
+    const prefix =
+      "Argument Sets entry 1: give t as an object with its member names, like ";
+    const suffix = ", not as an array.";
+    expect(message.startsWith(prefix)).toBe(true);
+    expect(message.endsWith(`...${suffix}`)).toBe(true);
+    expect(message.length - prefix.length - suffix.length).toBe(203);
+  });
+});
