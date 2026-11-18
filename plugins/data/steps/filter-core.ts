@@ -11,6 +11,12 @@
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getErrorMessage } from "@/lib/utils";
 import { operatorToExpression } from "@/lib/workflow/nodes/condition/expression";
+import {
+  compileRegex,
+  MAX_REGEX_TEXT_LENGTH,
+  regexMatches,
+  regexPatternError,
+} from "@/lib/workflow/nodes/condition/regex-match";
 import { compileSafeCondition } from "@/lib/workflow/nodes/condition/safe-eval";
 import { valueContainsTemplate } from "@/lib/workflow/template-ref";
 import {
@@ -44,6 +50,9 @@ export const MAX_FILTER_ITEMS = 10_000;
 export const MAX_NUMBER_VALUE_LENGTH = 100;
 export const MAX_PATH_LENGTH = 500;
 const MAX_ECHOED_LENGTH = 60;
+
+// RE2 is linear per item; this bounds the whole run across up to 10,000 items.
+const MAX_REGEX_RUN_TEXT = 1_000_000;
 
 const ITEM_VAR = "__v0";
 const VALUE_VAR = "__v1";
@@ -129,11 +138,6 @@ function resolveOperator(raw: unknown): FilterOperator {
     throw new Error("Operator must be text, e.g. startsWith.");
   }
   const operator = (raw ?? "").trim() || DEFAULT_FILTER_OPERATOR;
-  if (operator === "matchesRegex") {
-    throw new Error(
-      "Matches regex is not supported in Filter Array yet. Use contains, starts with or ends with."
-    );
-  }
   if (!KNOWN_OPERATORS.has(operator)) {
     const shown =
       operator.length > MAX_ECHOED_LENGTH
@@ -376,7 +380,14 @@ function readValue(raw: unknown, operator: FilterOperator): unknown {
   }
   const text = typeof value === "string" ? (unquote(value) ?? value) : value;
   if (TEXT_FILTER_OPERATORS.includes(operator) || operator === "objectHasKey") {
-    return String(text);
+    const textValue = String(text);
+    const patternProblem = isRegexOperator(operator)
+      ? regexPatternError(textValue)
+      : undefined;
+    if (patternProblem) {
+      throw new Error(`${patternProblem}.`);
+    }
+    return textValue;
   }
   if (NUMBER_FILTER_OPERATORS.includes(operator)) {
     return requireNumeric(text, label);
@@ -486,6 +497,44 @@ function toTestedValue(
 
 type Matcher = (fieldValue: unknown) => boolean | Untestable;
 
+function isRegexOperator(operator: FilterOperator): boolean {
+  return (
+    operator !== KEEP_ALL_OPERATOR &&
+    baseConditionOperator(operator) === "matchesRegex"
+  );
+}
+
+// Ignore case uses RE2's flag: lowercasing the pattern would turn \D into \d.
+function makeRegexMatcher(
+  operator: FilterOperator,
+  pattern: string,
+  ignoreCase: boolean
+): Matcher {
+  const regex = compileRegex(pattern, ignoreCase);
+  const negate = isNegatedTextOperator(operator);
+  let budget = MAX_REGEX_RUN_TEXT;
+  return (fieldValue: unknown): boolean | Untestable => {
+    const tested = toTestedValue(fieldValue, operator);
+    if ("reason" in tested) {
+      return tested;
+    }
+    const text = String(tested.value);
+    if (text.length > MAX_REGEX_TEXT_LENGTH) {
+      return {
+        reason: `its text is longer than ${MAX_REGEX_TEXT_LENGTH.toLocaleString("en-US")} characters`,
+      };
+    }
+    budget -= text.length;
+    if (budget < 0) {
+      throw new Error(
+        `matches regex reads at most ${MAX_REGEX_RUN_TEXT.toLocaleString("en-US")} characters in one run. Filter fewer or shorter items.`
+      );
+    }
+    const passed = regexMatches(regex, text);
+    return negate ? !passed : passed;
+  };
+}
+
 function makeMatcher(
   operator: FilterOperator,
   rawValue: unknown,
@@ -497,6 +546,9 @@ function makeMatcher(
   const value = VALUELESS_FILTER_OPERATORS.includes(operator)
     ? undefined
     : readValue(rawValue, operator);
+  if (isRegexOperator(operator)) {
+    return makeRegexMatcher(operator, String(value), ignoreCase);
+  }
   const comparison = ignoreCase ? foldCase(value) : value;
   const evaluate = compileSafeCondition(
     operatorToExpression(baseConditionOperator(operator), ITEM_VAR, VALUE_VAR)

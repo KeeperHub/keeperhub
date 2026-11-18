@@ -120,7 +120,7 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | `contains` | contains | String | Left operand contains right operand |
 | `startsWith` | starts with | String | Left operand starts with right operand |
 | `endsWith` | ends with | String | Left operand ends with right operand |
-| `matchesRegex` | matches regex | Pattern | Left operand matches regex pattern in right operand |
+| `matchesRegex` | matches regex | Pattern | Left operand matches the RE2 pattern in the right operand, anywhere in the text unless anchored |
 | `isEmpty` | is empty | Existence | Value is null, undefined, or empty string |
 | `isNotEmpty` | is not empty | Existence | Value is not null, undefined, or empty string |
 | `exists` | exists | Existence | Value is not null and not undefined |
@@ -129,6 +129,14 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | `isNotNull` | is not null | Existence | Value is anything except null (undefined still matches) |
 | `isUndefined` | is undefined | Existence | Value is strictly undefined (null does not match) |
 | `isNotUndefined` | is not undefined | Existence | Value is anything except undefined (null still matches) |
+
+**Matches regex:** the pattern uses RE2 syntax, which is JavaScript's without lookahead,
+lookbehind or back-references; a pattern that uses them is refused with a message naming the
+feature. Matching takes time proportional to the text, so no pattern can stall a run. Anchor with
+`^` and `$` to match the whole text, and start with `(?i)` to ignore case. Type the pattern into
+the rule: it cannot come from another node. Patterns are limited to 512 characters and the tested
+text to 4,096. In an expression, write
+`matchesRegex(String({{@nodeId:Label.field}}), "^0x[0-9a-fA-F]{40}$")`.
 
 **What counts as a number:** an operand is compared by magnitude only when it is a
 plain decimal - an optional sign, digits, and at most one point, such as `42`, `-0.50` or

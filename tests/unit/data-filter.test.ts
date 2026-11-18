@@ -87,6 +87,120 @@ function source(value: unknown): string {
 }
 
 describe("data/filter", () => {
+  describe("matches regex", () => {
+    it("keeps the names the pattern matches", async () => {
+      const result = await ok({
+        source: source(CHAINLOG_NAMES),
+        operator: "matchesRegex",
+        value: "^EMSP_(SPBEAM|LINE)_",
+      });
+      expect(result.items).toEqual(["EMSP_SPBEAM_HALT", "EMSP_LINE_WIPE"]);
+    });
+
+    it("keeps the rest with does not match regex", async () => {
+      const result = await ok({
+        source: source(CHAINLOG_NAMES),
+        operator: "notMatchesRegex",
+        value: "^EMSP_",
+      });
+      expect(result.items).toEqual(["MCD_VAT", "MCD_JUG", "PIP_ETH"]);
+    });
+
+    it("matches anywhere unless anchored, like RegExp#test", async () => {
+      const result = await ok({
+        source: source(CHAINLOG_NAMES),
+        operator: "matchesRegex",
+        value: "_ETH",
+      });
+      expect(result.items).toEqual(["PIP_ETH"]);
+    });
+
+    it("ignores case through RE2, without lowercasing the pattern", async () => {
+      const result = await ok({
+        source: source(["emsp_a", "EMSP_B", "MCD_1"]),
+        operator: "matchesRegex",
+        value: "^EMSP_\\D$",
+        ignoreCase: true,
+      });
+      expect(result.items).toEqual(["emsp_a", "EMSP_B"]);
+    });
+
+    it("tests numbers as their text", async () => {
+      const result = await ok({
+        source: source([100, 2500, 31]),
+        operator: "matchesRegex",
+        value: "^\\d{3}$",
+      });
+      expect(result.items).toEqual([100]);
+    });
+
+    it("refuses a pattern RE2 cannot run, naming the feature", async () => {
+      const lookahead = await fails({
+        source: "[1]",
+        operator: "matchesRegex",
+        value: "^(?=EMSP)",
+      });
+      expect(lookahead.error).toContain("Lookahead and lookbehind");
+      const backreference = await fails({
+        source: "[1]",
+        operator: "matchesRegex",
+        value: "(a)\\1",
+      });
+      expect(backreference.error).toContain("Back-references");
+      const broken = await fails({
+        source: "[1]",
+        operator: "matchesRegex",
+        value: "[a-",
+      });
+      expect(broken.error).toContain("Invalid regex pattern");
+    });
+
+    it("refuses an over-long pattern", async () => {
+      const result = await fails({
+        source: "[1]",
+        operator: "matchesRegex",
+        value: "a".repeat(513),
+      });
+      expect(result.error).toContain("the limit is 512");
+    });
+
+    it("runs a catastrophic-backtracking pattern in linear time", async () => {
+      const started = performance.now();
+      const result = await ok({
+        source: source([`${"a".repeat(4000)}!`]),
+        operator: "matchesRegex",
+        value: "^(a+)+$",
+      });
+      expect(result.count).toBe(0);
+      expect(performance.now() - started).toBeLessThan(1000);
+    });
+
+    it("treats text over 4,096 characters as untestable", async () => {
+      const input = {
+        source: source([`EMSP_${"x".repeat(4096)}`, "EMSP_A"]),
+        operator: "matchesRegex",
+        value: "^EMSP_",
+      };
+      const skipped = await ok(input);
+      expect(skipped.items).toEqual(["EMSP_A"]);
+      expect(skipped.skippedIndexes).toEqual([0]);
+      const failed = await runDefault(input);
+      expect(failed.success).toBe(false);
+      expect((failed as FilterFailure).error).toContain(
+        "longer than 4,096 characters"
+      );
+    });
+
+    it("caps the text one run reads", async () => {
+      const result = await fails({
+        source: source(Array.from({ length: 300 }, () => "x".repeat(4000))),
+        operator: "matchesRegex",
+        value: "^EMSP_",
+      });
+      expect(result.error).toContain("at most 1,000,000 characters");
+    });
+  });
+
   describe("the motivating examples", () => {
     it("keeps the Chainlog names that start with EMSP_", async () => {
       const result = await ok({
@@ -309,16 +423,6 @@ describe("data/filter", () => {
   });
 
   describe("failures", () => {
-    it("refuses matches regex", async () => {
-      const result = await fails({
-        source: source(CHAINLOG_NAMES),
-        operator: "matchesRegex",
-        value: "^EMSP_",
-      });
-      expect(result.error).toContain("Matches regex is not supported");
-      expect(result.errorClass).toBe("user");
-    });
-
     it("refuses an unknown operator", async () => {
       const result = await fails({ source: "[1]", operator: "between" });
       expect(result.error).toContain('Unknown operator "between"');
@@ -828,15 +932,6 @@ describe("data/filter", () => {
         operator: "exists",
       });
       expect(result.indexes).toEqual([0]);
-    });
-
-    it("names the node in the regex refusal", async () => {
-      const result = await fails({
-        source: "[1]",
-        operator: "matchesRegex",
-        value: "a",
-      });
-      expect(result.error).toContain("not supported in Filter Array yet");
     });
 
     it("trims Value and keeps spaces inside quotes", async () => {

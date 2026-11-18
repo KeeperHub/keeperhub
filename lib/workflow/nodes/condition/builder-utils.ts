@@ -37,7 +37,10 @@ export { visualConditionToExpression } from "./expression";
 // ---------------------------------------------------------------------------
 
 // Top-level regex patterns for parseAtomicExpression (biome: useTopLevelRegex)
-const REGEX_MATCH_PATTERN = /^new RegExp\((.+?)\)\.test\(String\((.+?)\)\)$/;
+const REGEX_MATCH_PATTERN = /^matchesRegex\(String\((.+?)\), (.+)\)$/;
+// Saved before matchesRegex existed; it never ran, but should still reopen.
+const LEGACY_REGEX_MATCH_PATTERN =
+  /^new RegExp\((.+?)\)\.test\(String\((.+?)\)\)$/;
 const STRING_METHOD_PATTERN =
   /^String\((.+?)\)\.(includes|startsWith|endsWith)\((.+)\)$/;
 const IS_EMPTY_PATTERN =
@@ -167,13 +170,21 @@ function makeRule(
 function parseAtomicExpression(expr: string): ConditionRule | null {
   const s = expr.trim();
 
-  // matchesRegex: new RegExp(right).test(String(left))
+  // matchesRegex: matchesRegex(String(left), right)
   const regexMatch = s.match(REGEX_MATCH_PATTERN);
   if (regexMatch) {
     return makeRule(
-      unwrapOperand(regexMatch[2]),
+      unwrapOperand(regexMatch[1]),
       "matchesRegex",
-      unwrapOperand(regexMatch[1])
+      unwrapOperand(regexMatch[2])
+    );
+  }
+  const legacyRegexMatch = s.match(LEGACY_REGEX_MATCH_PATTERN);
+  if (legacyRegexMatch) {
+    return makeRule(
+      unwrapOperand(legacyRegexMatch[2]),
+      "matchesRegex",
+      unwrapOperand(legacyRegexMatch[1])
     );
   }
 

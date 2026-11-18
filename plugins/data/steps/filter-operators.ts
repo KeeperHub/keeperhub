@@ -18,19 +18,17 @@ import {
 export const KEEP_ALL_OPERATOR = "keepAll";
 export const DEFAULT_FILTER_OPERATOR = "===";
 
-// Filter-only negations of the Text tests; regex stays out until it is safe.
+// Filter-only negations of the Text tests.
 export const NEGATED_TEXT_OPERATORS = {
   notContains: "contains",
   notStartsWith: "startsWith",
   notEndsWith: "endsWith",
+  notMatchesRegex: "matchesRegex",
 } as const satisfies Record<string, ConditionOperator>;
 
 export type NegatedTextOperator = keyof typeof NEGATED_TEXT_OPERATORS;
 
-export type FilterConditionOperator = Exclude<
-  ConditionOperator,
-  "matchesRegex"
->;
+export type FilterConditionOperator = ConditionOperator;
 
 export type FilterOperator =
   | FilterConditionOperator
@@ -55,6 +53,9 @@ const FILTER_HINTS: Partial<Record<FilterOperator, string>> = {
   notContains: "Text does not include the value",
   notStartsWith: "Text does not begin with the value",
   notEndsWith: "Text does not end with the value",
+  matchesRegex:
+    "Text matches the RE2 pattern anywhere; use ^ and $ to match it whole",
+  notMatchesRegex: "Text does not match the RE2 pattern",
   ">": `Numerically greater than; ${NUMBER_TEST_SCOPE}`,
   ">=": `Numerically greater than or equal; ${NUMBER_TEST_SCOPE}`,
   "<": `Numerically less than; ${NUMBER_TEST_SCOPE}`,
@@ -68,6 +69,7 @@ const NEGATED_LABELS: Record<NegatedTextOperator, string> = {
   notContains: "does not contain",
   notStartsWith: "does not start with",
   notEndsWith: "does not end with",
+  notMatchesRegex: "does not match regex",
 };
 
 function conditionOption(
@@ -91,19 +93,13 @@ function negatedOption(op: NegatedTextOperator): FilterOperatorOption {
   };
 }
 
-function isFilterConditionOperator(
-  op: ConditionOperator
-): op is FilterConditionOperator {
-  return op !== "matchesRegex";
-}
-
 function groupOptions(
   category: OperatorCategory,
   label: string
 ): FilterOperatorOption[] {
-  const options = operatorsForCategory(category)
-    .filter(isFilterConditionOperator)
-    .map((op) => conditionOption(op, label));
+  const options = operatorsForCategory(category).map((op) =>
+    conditionOption(op, label)
+  );
   if (category !== "text") {
     return options;
   }

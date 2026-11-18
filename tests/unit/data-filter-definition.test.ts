@@ -70,13 +70,14 @@ function actionNode(config: Record<string, unknown>) {
 
 describe("data/filter definition", () => {
   describe("operator options", () => {
-    it("offers every Condition operator except matches regex, the three negations and keep every item", () => {
+    it("offers every Condition operator, the four negations and keep every item", () => {
       const offered = FILTER_OPERATOR_OPTIONS.map((option) => option.value);
       const expected = [
-        ...CONDITION_OPERATORS.filter((op) => op !== "matchesRegex"),
+        ...CONDITION_OPERATORS,
         "notContains",
         "notStartsWith",
         "notEndsWith",
+        "notMatchesRegex",
         KEEP_ALL_OPERATOR,
       ];
       expect([...offered].sort()).toEqual([...expected].sort());
@@ -104,7 +105,7 @@ describe("data/filter definition", () => {
     it("uses Condition's labels, groups and order, each negation after its test", () => {
       const conditionOrder = OPERATOR_GROUPS.flatMap((group) =>
         operatorsForCategory(group.category)
-      ).filter((op) => op !== "matchesRegex");
+      );
       const conditionOptions = FILTER_OPERATOR_OPTIONS.filter(
         (option) => option.value in OPERATOR_METADATA
       );
@@ -125,6 +126,7 @@ describe("data/filter definition", () => {
         ["notContains", "contains"],
         ["notStartsWith", "startsWith"],
         ["notEndsWith", "endsWith"],
+        ["notMatchesRegex", "matchesRegex"],
       ]) {
         expect(values.indexOf(negation as never)).toBe(
           values.indexOf(base as never) + 1

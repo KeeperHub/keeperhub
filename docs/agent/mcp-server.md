@@ -390,6 +390,8 @@ Condition nodes have dual output paths with `true` and `false` source handles. C
 
 Conditions support these operators: `==` (soft equals), `===` (equals), `!=` (soft not equals), `!==` (not equals), `>`, `>=`, `<`, `<=`, `contains`, `startsWith`, `endsWith`, `matchesRegex`, `isEmpty`, `isNotEmpty`, `exists`, `doesNotExist`, `isNull`, `isNotNull`, `isUndefined`, `isNotUndefined`.
 
+`matchesRegex` takes an RE2 pattern (JavaScript syntax without lookahead, lookbehind or back-references) typed as a quoted string, not a template reference; in an expression write `matchesRegex(String({{@nodeId:Label.field}}), "^0x[0-9a-fA-F]{40}$")`. Start the pattern with `(?i)` to ignore case.
+
 Conditions reference previous node outputs using template syntax: `{{@nodeId:Label.field}}`.
 
 ## Web3 Action Reference

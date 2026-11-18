@@ -144,7 +144,7 @@ Keeps only the items of an array that pass a test, and pulls one field out of ev
 | Field to test | No | Dotted path inside each item, e.g. `success`, `meta.name` or `topics.1` (a number picks a list entry). A path with an empty part such as `a..b` is refused. Blank tests each item itself, for an array of names or numbers. Hidden for **No test: keep every item** |
 | Operator | Yes | The test, chosen from the groups below. Default **General: equals** |
 | Value | For tests that compare | What each item is compared with. See How Value is read |
-| Ignore case | No | Off by default; from the API, `true` or `false`. When on, text is matched whatever its letter case. Applies to equals, not equals, soft equals, soft not equals, contains, starts with, ends with, their **does not** forms and **Array: contains** |
+| Ignore case | No | Off by default; from the API, `true` or `false`. When on, text is matched whatever its letter case. Applies to equals, not equals, soft equals, soft not equals, contains, starts with, ends with, matches regex, their **does not** forms and **Array: contains** |
 | Return field | No | Dotted path pulled from each match into **values**. Blank uses Field to test. With Return field blank and either Field to test blank or **keep every item**, **values** holds the matching items themselves |
 | If a match has no Return field | No | **Keep it, with null in values** (default) or **Fail the step**. Either way the match is counted in **missingReturn**, so a mistyped Return field shows up |
 | Labels | No | A JSON array as long as Source, in the same order, e.g. the names of the contracts a batch read was given. The entry at each position comes out in **labels** for matches and **skippedLabels** for skipped items. A different length fails the step, and is refused at save when both are typed |
@@ -155,7 +155,7 @@ Keeps only the items of an array that pass a test, and pulls one field out of ev
 | Group | Operators |
 | ----- | --------- |
 | General | equals, not equals, soft equals, soft not equals, exists, does not exist, is null, is not null, is undefined, is not undefined |
-| Text | contains, does not contain, starts with, does not start with, ends with, does not end with, is empty, is not empty |
+| Text | contains, does not contain, starts with, does not start with, ends with, does not end with, matches regex, does not match regex, is empty, is not empty |
 | Number | greater than, greater than or equal, less than, less than or equal |
 | Boolean | is true, is false |
 | Array | is empty, is not empty, contains, length |
@@ -167,6 +167,7 @@ Each operator in the list shows a one-line hint under its name. Once chosen, an 
 - **equals** compares by value: `"1.0"` equals `1`, and integers of any size written as text compare exactly. `"true"` does not equal `true`.
 - **soft equals** compares loosely, as JavaScript `==` does: `"0"` soft equals `0`, and hex text such as `"0x01"` soft equals `1`. Pick it only when items mix numbers, text and booleans on purpose.
 - The **does not** tests keep the text and number items that fail the matching test. Starts with `MCD_CLIP_` followed by a second Filter Array with does not start with `MCD_CLIP_CALC_` keeps the clippers without their calculators.
+- **matches regex** tests the text against a pattern, anywhere in it unless anchored: `^EMSP_` keeps names that start with `EMSP_`, and `^EMSP_(SPBEAM|LINE)_` keeps two families. Patterns use RE2 syntax, which is JavaScript's without lookahead, lookbehind or back-references; a pattern that uses them is refused with a message naming the feature. Patterns run in time proportional to the text, so no pattern can stall a run. Limits: 512 characters per pattern, 4,096 per item's text, and 1,000,000 characters across one run.
 
 ### How Value is read
 
@@ -186,7 +187,7 @@ Each operator in the list shows a one-line hint under its name. Once chosen, an 
 Each test only looks at items it applies to:
 
 - number tests at numbers, numeric text and hex
-- text tests, including the **does not** forms, at text and numbers
+- text tests, including the **does not** forms, at text and numbers; matches regex also needs the text to be at most 4,096 characters
 - boolean tests (is true, is false) at `true` and `false` only
 - array tests at lists, object tests at objects
 - soft equals and soft not equals at single values, not lists or objects
@@ -218,7 +219,6 @@ Set **If an item can't be tested** to **Skip it and count it in skipped** to kee
 - **is true** matches only the boolean `true`, not the text `"true"` or `1`.
 - One node runs one test. For two tests, such as success is true and result is true, chain two Filter Array nodes.
 - Source must be an array. A single value, such as Encode / Decode's result for one input, fails with a message saying so.
-- Matches regex is not available in this node yet. Use contains, starts with or ends with and their **does not** forms.
 - Value is always compared as data. A value resolved from an upstream node cannot change the test.
 - Settings the form hides for the chosen operator are ignored, so a leftover value cannot change or fail the step.
 - Settings typed by hand are checked when the workflow is saved with the same rules the step uses; a setting that comes from another node is checked when the run resolves it.

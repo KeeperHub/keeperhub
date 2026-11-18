@@ -110,7 +110,8 @@ export const OPERATOR_METADATA: Record<ConditionOperator, OperatorMeta> = {
     label: "matches regex",
     unary: false,
     category: "text",
-    description: "Matches the regular expression (new RegExp(b).test(a))",
+    description:
+      "Matches the RE2 pattern anywhere in the text; start with (?i) to ignore case",
   },
   isEmpty: {
     label: "is empty",

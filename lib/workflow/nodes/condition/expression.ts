@@ -110,7 +110,7 @@ export function operatorToExpression(
       return `(${left} !== undefined)`;
 
     case "matchesRegex":
-      return `new RegExp(${right}).test(String(${left}))`;
+      return `matchesRegex(String(${left}), ${right})`;
 
     case "isTrue":
       return `${left} === true`;

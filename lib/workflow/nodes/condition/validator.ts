@@ -14,6 +14,7 @@
  * - Property access on variables: __v0.property, __v0[0], __v0["key"]
  * - Array methods: .includes(), .length
  * - String methods: .startsWith(), .endsWith(), .includes()
+ * - matchesRegex(text, "pattern"), checked by the interpreter
  *
  * NOT allowed:
  * - Function calls (except allowed methods)
@@ -25,6 +26,7 @@
  */
 
 import { replaceTemplateTokens } from "@/lib/workflow/template-ref";
+import { maskStringLiterals } from "./safe-eval";
 
 // Dangerous patterns that should never appear in conditions
 const DANGEROUS_PATTERNS = [
@@ -68,6 +70,11 @@ const DANGEROUS_PATTERNS = [
   // Semicolons (statement separator)
   /;/g,
 ];
+
+// The visual builder's old compiled form; conditions cannot construct objects.
+const NEW_REGEXP_PATTERN = /\bnew\s+RegExp\b/;
+const NEW_REGEXP_ERROR =
+  'new RegExp(...) is not supported in conditions. Use matchesRegex(String(value), "pattern") or the "matches regex" operator.';
 
 // Allowed method names that can be called
 const ALLOWED_METHODS = new Set([
@@ -308,32 +315,40 @@ export function validateConditionExpression(
     return { valid: false, error: "Condition expression cannot be empty" };
   }
 
+  // These checks read code, so quoted values are blanked first: "a b", "x=1"
+  // or a regex like "^0x[0-9a-f]+$" is data, not syntax.
+  const code = maskStringLiterals(expression);
+
+  if (NEW_REGEXP_PATTERN.test(code)) {
+    return { valid: false, error: NEW_REGEXP_ERROR };
+  }
+
   // Check for dangerous patterns
-  const dangerousCheck = checkDangerousPatterns(expression);
+  const dangerousCheck = checkDangerousPatterns(code);
   if (!dangerousCheck.valid) {
     return dangerousCheck;
   }
 
   // Check bracket expressions (array access vs array literals)
-  const bracketCheck = checkBracketExpressions(expression);
+  const bracketCheck = checkBracketExpressions(code);
   if (!bracketCheck.valid) {
     return bracketCheck;
   }
 
   // Check method calls are allowed
-  const methodCheck = checkMethodCalls(expression);
+  const methodCheck = checkMethodCalls(code);
   if (!methodCheck.valid) {
     return methodCheck;
   }
 
   // Validate balanced parentheses
-  const parenCheck = checkParentheses(expression);
+  const parenCheck = checkParentheses(code);
   if (!parenCheck.valid) {
     return parenCheck;
   }
 
   // Check for unauthorized identifiers
-  const identifierCheck = checkUnauthorizedIdentifiers(expression);
+  const identifierCheck = checkUnauthorizedIdentifiers(code);
   if (!identifierCheck.valid) {
     return identifierCheck;
   }
@@ -420,6 +435,7 @@ const VALID_OPERATORS_UI = new Set([
   "/",
   "%",
   ".",
+  ",", // separates call arguments: matchesRegex(text, "pattern")
 ]);
 
 const BINARY_OPERATORS_UI = new Set([
@@ -512,7 +528,7 @@ function tokenizeExpression(
 
     // Single character operators
     if (
-      ["!", ">", "<", "(", ")", "+", "-", "*", "/", "%", "."].includes(
+      ["!", ">", "<", "(", ")", "+", "-", "*", "/", "%", ".", ","].includes(
         expression[i]
       )
     ) {
@@ -996,6 +1012,10 @@ export function validateConditionExpressionUI(
   }
 
   const trimmed = expression.trim();
+
+  if (NEW_REGEXP_PATTERN.test(maskStringLiterals(trimmed))) {
+    return { valid: false, error: NEW_REGEXP_ERROR };
+  }
 
   // Check for extra spaces (2+ consecutive spaces) and identify the operator
   const extraSpacesMatch = trimmed.match(EXTRA_SPACES_PATTERN);

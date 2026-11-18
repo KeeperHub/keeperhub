@@ -16,8 +16,9 @@
  * - Unary: ! - + typeof
  * - Ternary: test ? a : b
  * - Member access: obj.prop, obj["key"], obj[0], .length
- * - Calls: String(...), Array.isArray(...), Object.keys(...), and the
- *   allowlisted instance methods (includes/startsWith/endsWith/toString/
+ * - Calls: String(...), Array.isArray(...), Object.keys(...),
+ *   matchesRegex(text, "pattern") (RE2, pattern must be a string literal), and
+ *   the allowlisted instance methods (includes/startsWith/endsWith/toString/
  *   toLowerCase/toUpperCase/trim)
  *
  * Everything else (arbitrary identifiers, array/object literals, prototype
@@ -31,6 +32,7 @@ import {
   type MissingReference,
   missingReferenceError,
 } from "./missing-reference";
+import { compileRegex, regexMatches } from "./regex-match";
 
 const HEX_RE = /^[0-9a-fA-F]+$/;
 const WHITESPACE_RE = /\s/;
@@ -49,9 +51,17 @@ const ALLOWED_UNARY = new Set(["!", "-", "+", "typeof"]);
 
 const BLOCKED_PROPS = new Set(["constructor", "__proto__", "prototype"]);
 
+// A missing field must not read as the text "[object Object]".
 const ALLOWED_GLOBALS: Record<string, (...args: unknown[]) => unknown> = {
-  String: (...args) => String(args[0]),
+  String: (...args) => {
+    if (isMissingReference(args[0])) {
+      throw missingReferenceError(args[0]);
+    }
+    return String(args[0]);
+  },
 };
+
+const REGEX_FUNCTION = "matchesRegex";
 
 const ALLOWED_STATIC: Record<string, (...args: unknown[]) => unknown> = {
   "Array.isArray": (...args) => Array.isArray(args[0]),
@@ -911,14 +921,43 @@ function evalMember(node: MemberNode, ctx: Record<string, unknown>): unknown {
   return (object as Record<string | number, unknown>)[key];
 }
 
+// The pattern is a literal so it is known before any workflow data arrives.
+function regexPattern(node: CallNode): string {
+  if (node.arguments.length !== 2) {
+    throw new Error(
+      `${REGEX_FUNCTION} takes two arguments: the text and a quoted pattern`
+    );
+  }
+  const pattern = node.arguments[1];
+  if (pattern.type !== "Literal" || typeof pattern.value !== "string") {
+    throw new Error(
+      `The ${REGEX_FUNCTION} pattern must be typed in quotes, not taken from a reference`
+    );
+  }
+  return pattern.value;
+}
+
+function evalRegexCall(node: CallNode, ctx: Record<string, unknown>): boolean {
+  const regex = compileRegex(regexPattern(node));
+  const text = evalNode(node.arguments[0], ctx);
+  if (isMissingReference(text)) {
+    throw missingReferenceError(text);
+  }
+  return regexMatches(regex, String(text));
+}
+
 function evalCall(node: CallNode, ctx: Record<string, unknown>): unknown {
   const callee = node.callee;
   if (callee.type === "Identifier") {
-    const fn = ALLOWED_GLOBALS[callee.name];
-    if (!fn) {
+    if (callee.name === REGEX_FUNCTION) {
+      return evalRegexCall(node, ctx);
+    }
+    if (!Object.hasOwn(ALLOWED_GLOBALS, callee.name)) {
       throw new Error(`Function "${callee.name}" is not allowed in condition`);
     }
-    return fn(...node.arguments.map((arg) => evalNode(arg, ctx)));
+    return ALLOWED_GLOBALS[callee.name](
+      ...node.arguments.map((arg) => evalNode(arg, ctx))
+    );
   }
   if (callee.type === "MemberExpression" && !callee.computed) {
     if (callee.property.type !== "Identifier") {
@@ -1045,7 +1084,9 @@ function walkMember(node: MemberNode): void {
 function walkCall(node: CallNode): void {
   const callee = node.callee;
   if (callee.type === "Identifier") {
-    if (!Object.hasOwn(ALLOWED_GLOBALS, callee.name)) {
+    if (callee.name === REGEX_FUNCTION) {
+      compileRegex(regexPattern(node));
+    } else if (!Object.hasOwn(ALLOWED_GLOBALS, callee.name)) {
       throw new Error(`Function "${callee.name}" is not allowed`);
     }
   } else if (callee.type === "MemberExpression" && !callee.computed) {
@@ -1108,4 +1149,32 @@ export function isSafeConditionExpression(expression: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The expression with every string literal's contents replaced by "_", quotes
+ * kept. Uses this tokenizer's own string scan, so the validator's text checks
+ * skip exactly what the interpreter reads as data. Unterminated quotes return
+ * the expression unchanged; the interpreter rejects those anyway.
+ */
+export function maskStringLiterals(expression: string): string {
+  let out = "";
+  let i = 0;
+  while (i < expression.length) {
+    const ch = expression[i];
+    if (ch !== '"' && ch !== "'") {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    let next: number;
+    try {
+      next = scanString(expression, i).next;
+    } catch {
+      return expression;
+    }
+    out += `${ch}${"_".repeat(next - i - 2)}${ch}`;
+    i = next;
+  }
+  return out;
 }

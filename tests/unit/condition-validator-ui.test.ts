@@ -117,11 +117,21 @@ describe("validateConditionExpressionUI", () => {
       expect(result.valid).toBe(true);
     });
 
-    it("should accept matchesRegex: new RegExp(pattern).test(String(ref))", () => {
+    it("should accept matchesRegex: matchesRegex(String(ref), pattern)", () => {
+      const result = validateConditionExpressionUI(
+        'matchesRegex(String({{@node1:Label.field}}), "pattern")'
+      );
+      expect(result.valid).toBe(true);
+    });
+
+    it("points the old new RegExp form at matchesRegex", () => {
       const result = validateConditionExpressionUI(
         'new RegExp("pattern").test(String({{@node1:Label.field}}))'
       );
-      expect(result.valid).toBe(true);
+      expect(result).toEqual({
+        valid: false,
+        error: expect.stringContaining("matchesRegex(String(value)"),
+      });
     });
 
     // #2502. The fixture above is punctuation-free, which is how a scan that read
@@ -129,7 +139,7 @@ describe("validateConditionExpressionUI", () => {
     // carry the characters the scan is looking for.
     it("should accept a quoted pattern carrying a character class", () => {
       const result = validateConditionExpressionUI(
-        'new RegExp("^0x[0-9a-fA-F]{40}$").test(String({{@node1:Label.field}}))'
+        'matchesRegex(String({{@node1:Label.field}}), "^0x[0-9a-fA-F]{40}$")'
       );
       expect(result.valid).toBe(true);
     });

@@ -44,7 +44,9 @@ const INTEGER_RE = /^\d+$/;
  * Group 2: decimal number (float literal - skip, BigInt cannot represent floats)
  * Group 3: bare digit sequence (integer literal - replace with __b variable)
  */
-const EXPRESSION_TOKEN_RE = /(["'])(?:(?!\1).)*\1|(\b\d+\.\d+\b)|\b(\d+)\b/g;
+// A quoted string runs to its closing quote, past escaped ones ("a\"25").
+const EXPRESSION_TOKEN_RE =
+  /(["'])(?:\\[\s\S]|(?!\1)[^\\])*\1|(\b\d+\.\d+\b)|\b(\d+)\b/g;
 
 /**
  * Check if a digit string represents an integer beyond Number.MAX_SAFE_INTEGER.
