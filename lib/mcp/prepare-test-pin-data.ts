@@ -180,7 +180,11 @@ function buildPropertyForField(
   // schema is `additionalProperties: false`, so an agent deriving the value
   // from an earlier step would have its pin data rejected for a value the
   // step resolves perfectly well.
-  if (field.type === "select" && field.options !== undefined) {
+  if (
+    field.type === "select" &&
+    field.allowTemplate &&
+    field.options !== undefined
+  ) {
     return {
       type: "string",
       description: `${description} Accepts one of ${field.options

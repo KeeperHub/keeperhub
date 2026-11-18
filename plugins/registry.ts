@@ -715,10 +715,10 @@ export function fieldJsonType(
 export function fieldEnumValues(
   field: ActionConfigFieldBase
 ): string[] | undefined {
-  if (field.type !== "select" || field.allowTemplate) {
+  if (field.type !== "select" || field.allowTemplate || !field.options?.length) {
     return;
   }
-  return field.options?.map((option) => option.value);
+  return field.options.map((option) => option.value);
 }
 
 /** What a toggle does when it is left unset, by the rule its step applies. */

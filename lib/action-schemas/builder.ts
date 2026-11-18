@@ -104,7 +104,7 @@ export type BuildActionSchemasOptions = {
 // Steps and direct execution also take the two strings; only a workflow step
 // resolves a template.
 export const PROTOCOL_BOOL_TYPE_TEXT =
-  'boolean (true or false; also the lowercase strings "true" and "false"; in a workflow step, also a {{@nodeId:Label.field}} template that resolves to one of these)';
+  'boolean (true or false; also the lowercase strings "true" and "false"; in a workflow step (not execute_protocol_action), also a {{@nodeId:Label.field}} template that resolves to one of these)';
 
 function quoteOptions(values: string[]): string {
   return values.map((value) => `"${value}"`).join(" | ") || "select";
@@ -142,9 +142,10 @@ function mapFieldType(field: ActionConfigFieldBase): string {
       if (closed !== undefined) {
         return `string (${quoteOptions(closed)})`;
       }
+      // Only a template-taking select, or one with no options, gets here. A
+      // field that takes a template says so, or an agent reads a closed enum
+      // and never offers the capability the field's help text does.
       const options = quoteOptions(field.options?.map((o) => o.value) ?? []);
-      // A field that takes a template says so, or an agent reads a closed
-      // enum and never offers the capability the field's help text does.
       return field.allowTemplate
         ? `string (${options}, or a {{@nodeId:Label.field}} template)`
         : `string (${options})`;

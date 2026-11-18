@@ -16,6 +16,7 @@ import { resolveFailOnError } from "@/lib/utils";
 import { resolveSponsorGas } from "@/lib/web3/sponsorship-feature-flag";
 import { validateWorkflowActionConfigs } from "@/lib/workflow/validation/action-config";
 import {
+  type ActionConfigFieldBase,
   computeActionId,
   fieldEnumValues,
   fieldJsonType,
@@ -142,6 +143,18 @@ describe("pin schema and action schema agree on field types", () => {
     expect(withOptions.some((field) => field.pinEnum === undefined)).toBe(true);
   });
 
+  it("treats a select with no options as open, not as an enum of nothing", () => {
+    for (const options of [undefined, []]) {
+      const field: ActionConfigFieldBase = {
+        key: "k",
+        label: "K",
+        type: "select",
+        options,
+      };
+      expect(fieldEnumValues(field), JSON.stringify(options)).toBeUndefined();
+    }
+  });
+
   it("checks fields of every JSON type", () => {
     expect(new Set(cases.map((field) => fieldJsonType(field.type)))).toEqual(
       new Set(["string", "number", "boolean"])
@@ -178,7 +191,9 @@ describe("pin schema and action schema agree on field types", () => {
       .filter(
         (field) =>
           !field.actionSchemaType.startsWith("boolean") ||
-          field.pinType !== "boolean"
+          field.pinType !== "boolean" ||
+          // Only toggles carry a default, as the tool description says.
+          field.pinDefault !== undefined
       )
       .map((field) => `${field.actionType}.${field.key}`);
     expect(wrong).toEqual([]);
