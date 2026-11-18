@@ -7,8 +7,10 @@ vi.mock("@/lib/db", () => ({
     select: () => ({
       from: () => ({
         leftJoin: () => ({
-          where: () => ({
-            limit: () => Promise.resolve(mockDbRows),
+          leftJoin: () => ({
+            where: () => ({
+              limit: () => Promise.resolve(mockDbRows),
+            }),
           }),
         }),
       }),
@@ -25,6 +27,12 @@ vi.mock("@/lib/db/schema", () => ({
     id: "organization.id",
     deactivatedAt: "organization.deactivatedAt",
     name: "organization.name",
+  },
+  users: {
+    id: "users.id",
+    isAnonymous: "users.isAnonymous",
+    email: "users.email",
+    name: "users.name",
   },
 }));
 
@@ -75,6 +83,27 @@ describe("loadWorkflowForExecution", () => {
       requireEnabled: true,
     });
     expect(result).toEqual({ status: "not_found" });
+  });
+
+  it("returns not_executable when the workflow owner is anonymous", async () => {
+    mockDbRows = [
+      {
+        workflow: WORKFLOW,
+        orgDeactivatedAt: null,
+        organizationName: "Test Org",
+        ownerIsAnonymous: true,
+        ownerEmail: "abc@anonymous.placeholder.invalid",
+        ownerName: "Anonymous",
+      },
+    ];
+    mockGetWorkflowExecutability.mockReturnValue({ executable: true });
+    const result = await loadWorkflowForExecution("wf-1", {
+      requireEnabled: false,
+    });
+    expect(result).toEqual({
+      status: "not_executable",
+      reason: "anonymous_owner",
+    });
   });
 
   it("returns ok with workflow and organizationName when executable", async () => {

@@ -9,6 +9,7 @@ import {
   isValidTierKey,
   type PlanLimits,
   type PlanName,
+  parsePlanName,
   type TierKey,
 } from "./plans";
 
@@ -27,6 +28,14 @@ export async function getOrgSubscription(
     .where(eq(organizationSubscriptions.organizationId, organizationId))
     .limit(1);
   return rows[0];
+}
+
+export async function getOrgPlan(organizationId: string): Promise<PlanName> {
+  const sub = await getOrgSubscription(organizationId);
+  if (!sub) {
+    return "free";
+  }
+  return parsePlanName(sub.plan);
 }
 
 export type OrgSubscriptionRead = {

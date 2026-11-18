@@ -434,4 +434,43 @@ describe("Schedule Sync Integration Tests", () => {
       expect(updated?.anchorAt).toBeNull();
     });
   });
+
+  // Missed-run alerts count from updated_at: a no-op save must not move it.
+  describe("updated_at only on a real change", () => {
+    const cronRow = { ...mockSchedule, intervalSeconds: null, anchorAt: null };
+
+    beforeEach(() => {
+      vi.useRealTimers();
+      mockDbQuery.workflowSchedules.findFirst.mockReset();
+    });
+
+    const lastSet = (): Record<string, unknown> | undefined => {
+      const result = mockDbUpdate.mock.results.at(-1)?.value as
+        | { set: ReturnType<typeof vi.fn> }
+        | undefined;
+      return result?.set.mock.calls.at(-1)?.[0];
+    };
+
+    it.each([
+      ["the same cron and timezone", "0 9 * * *", "UTC", {}, false],
+      ["a new cron", "0 10 * * *", "UTC", {}, true],
+      ["a new timezone", "0 9 * * *", "Europe/Paris", {}, true],
+      [
+        "a restart (turned back on)",
+        "0 9 * * *",
+        "UTC",
+        { restart: true },
+        true,
+      ],
+    ])("on %s", async (_label, cron, tz, options, moved) => {
+      const { syncWorkflowSchedule } = await import("@/lib/schedule-service");
+      mockDbQuery.workflowSchedules.findFirst.mockResolvedValueOnce(cronRow);
+      await syncWorkflowSchedule(
+        "wf_resave",
+        [createScheduleTriggerNode(cron, tz)],
+        options
+      );
+      expect("updatedAt" in (lastSet() ?? {})).toBe(moved);
+    });
+  });
 });

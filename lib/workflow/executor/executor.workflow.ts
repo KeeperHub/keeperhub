@@ -32,6 +32,7 @@ import {
   type StepImporter,
 } from "@/lib/step-registry";
 import { deserializeTriggerInput, getErrorMessageAsync } from "@/lib/utils";
+import { hasOwnField, readOwnField } from "@/lib/utils/read-own-field";
 import {
   collectReachable,
   isBackEdge,
@@ -94,6 +95,7 @@ import {
   TemplateResolutionError,
   type TemplateResolutionTracker,
 } from "@/lib/workflow/executor/template-resolution";
+import { readActionType } from "@/lib/workflow/node-config-read";
 import {
   isMissingReference,
   makeMissingReference,
@@ -322,10 +324,10 @@ function describeMissingFieldPath(data: unknown, fieldPath: string): string {
     if (arrayMatch) {
       const [, key, indexStr] = arrayMatch;
       const index = Number.parseInt(indexStr, 10);
-      if (!(key in container)) {
+      if (!hasOwnField(container, key)) {
         return `"${fieldPath}": "${key}" does not exist on the data. Available fields: ${Object.keys(container).join(", ") || "(none)"}.`;
       }
-      const arr = container[key];
+      const arr = readOwnField(container, key);
       if (!Array.isArray(arr)) {
         return `"${fieldPath}": "${key}" is not an array. Cannot access [${index}].`;
       }
@@ -336,10 +338,10 @@ function describeMissingFieldPath(data: unknown, fieldPath: string): string {
       continue;
     }
 
-    if (!(segment in container)) {
+    if (!hasOwnField(container, segment)) {
       return `"${fieldPath}": "${segment}" does not exist on the data. Available fields: ${Object.keys(container).join(", ") || "(none)"}.`;
     }
-    current = container[segment];
+    current = readOwnField(container, segment);
   }
 
   return `"${fieldPath}" could not be resolved.`;
@@ -687,7 +689,7 @@ export async function preloadStepFunctions(
     if (node.data.type !== "action") {
       continue;
     }
-    const actionType = node.data.config?.actionType as string | undefined;
+    const actionType = readActionType(node.data.config);
     if (actionType) {
       actionTypes.add(actionType);
     }
@@ -820,14 +822,13 @@ function resolveConfigFieldPath(data: unknown, fieldPath: string): unknown {
     const arrayMatch = trimmed.match(ARRAY_ACCESS_PATTERN);
     if (arrayMatch) {
       const [, key, indexStr] = arrayMatch;
-      const obj = current as Record<string, unknown>;
-      const arr = obj?.[key];
+      const arr = readOwnField(current, key);
       if (!Array.isArray(arr)) {
         return;
       }
       current = arr[Number.parseInt(indexStr, 10)];
     } else {
-      current = (current as Record<string, unknown>)?.[trimmed];
+      current = readOwnField(current, trimmed);
     }
     if (current === undefined || current === null) {
       return;
@@ -1690,10 +1691,10 @@ function resolveStrictPath(
         return { found: false, reason: "no-path" };
       }
       const obj = current as Record<string, unknown>;
-      if (!(key in obj)) {
+      if (!hasOwnField(obj, key)) {
         return { found: false, reason: "no-path" };
       }
-      const arr = obj[key];
+      const arr = readOwnField(obj, key);
       if (!Array.isArray(arr)) {
         return { found: false, reason: "no-path" };
       }
@@ -1712,10 +1713,10 @@ function resolveStrictPath(
       return { found: false, reason: "no-path" };
     }
     const obj = current as Record<string, unknown>;
-    if (!(trimmed in obj)) {
+    if (!hasOwnField(obj, trimmed)) {
       return { found: false, reason: "no-path" };
     }
-    current = obj[trimmed];
+    current = readOwnField(obj, trimmed);
   }
   return { found: true, value: current };
 }
@@ -3821,7 +3822,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
         };
       } else if (node.data.type === "action") {
         const config = node.data.config || {};
-        const actionType = config.actionType as string | undefined;
+        const actionType = readActionType(config);
 
         console.log("[Workflow Executor] Executing action node:", actionType);
 

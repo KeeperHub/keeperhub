@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
 import { start } from "workflow/api";
 import { checkConcurrencyLimit } from "@/app/api/execute/_lib/concurrency-limit";
+import { isAnonymousUserShape } from "@/lib/auth-anonymous-guard";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { priceQualifiesForMarketplaceExemption } from "@/lib/billing/marketplace-billing";
 import { chargePaygIfBillable } from "@/lib/billing/payg/charge";
@@ -10,6 +11,7 @@ import { resolveExecutionOrgMetadata } from "@/lib/db/org-helpers";
 import {
   organization,
   tags,
+  users,
   workflowExecutions,
   workflows,
 } from "@/lib/db/schema";
@@ -56,6 +58,7 @@ import { workflowReachableConditions } from "@/lib/workflow/executable";
 import { buildExecutorInput } from "@/lib/workflow/executor/build-executor-input";
 import { executeWorkflow } from "@/lib/workflow/executor/executor.workflow";
 import { calculateTotalSteps } from "@/lib/workflow/executor/progress";
+import { markRunRefused } from "@/lib/workflow/refused-runs";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 
 const corsHeaders = {
@@ -277,18 +280,17 @@ async function prepareExecution(
       paygOverflow: executionGuard.limitResult?.paygOverflow === true,
     });
     if (paygCharge.applicable && !paygCharge.ok) {
-      await db
-        .update(workflowExecutions)
-        .set({
-          status: "error",
-          error: paygCharge.message,
-          errorCategory: "billing",
-          errorType: "user",
-          // Unpaid means the run never started, so it consumes no quota.
-          billable: false,
-          completedAt: new Date(),
-        })
-        .where(eq(workflowExecutions.id, execution.id));
+      // Unpaid: refused before it started, so it consumes no quota.
+      await markRunRefused(
+        {
+          executionId: execution.id,
+          fromStatuses: ["running"],
+          reason: paygCharge.message,
+          category: ErrorCategory.BILLING,
+          at: new Date(),
+        },
+        db
+      );
       return {
         error: NextResponse.json(
           {
@@ -390,10 +392,18 @@ async function createAndStartExecution(
 
 async function lookupWorkflow(slug: string): Promise<CallRouteWorkflow | null> {
   const rows = await db
-    .select({ ...CALL_ROUTE_COLUMNS, tagName: tags.name })
+    .select({
+      ...CALL_ROUTE_COLUMNS,
+      tagName: tags.name,
+      ownerIsAnonymous: users.isAnonymous,
+      ownerEmail: users.email,
+      ownerName: users.name,
+      ownerDeactivatedAt: users.deactivatedAt,
+    })
     .from(workflows)
     .leftJoin(tags, eq(workflows.tagId, tags.id))
     .innerJoin(organization, eq(workflows.organizationId, organization.id))
+    .leftJoin(users, eq(workflows.userId, users.id))
     .where(
       and(
         eq(workflows.listedSlug, slug),
@@ -402,7 +412,29 @@ async function lookupWorkflow(slug: string): Promise<CallRouteWorkflow | null> {
       )
     )
     .limit(1);
-  return rows[0] ?? null;
+  const row = rows[0];
+  if (!row) {
+    return null;
+  }
+  const {
+    ownerIsAnonymous,
+    ownerEmail,
+    ownerName,
+    ownerDeactivatedAt,
+    ...workflow
+  } = row;
+  // A listing owned by an anonymous or deactivated account is never served.
+  if (
+    ownerDeactivatedAt ||
+    isAnonymousUserShape({
+      isAnonymous: ownerIsAnonymous,
+      email: ownerEmail,
+      name: ownerName,
+    })
+  ) {
+    return null;
+  }
+  return workflow;
 }
 
 function validateBody(

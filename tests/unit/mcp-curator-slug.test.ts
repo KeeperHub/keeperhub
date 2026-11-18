@@ -42,6 +42,30 @@ describe("mcp curator routes — slug collision and preservation", () => {
     vi.clearAllMocks();
   });
 
+  it("refuses to list or update a listing for an anonymous account", async () => {
+    vi.mocked(getDualAuthContext).mockResolvedValue({
+      userId: "anon-1",
+      organizationId: "org-anon",
+      authMethod: "session" as const,
+      apiKeyId: null,
+      isAnonymous: true,
+    });
+
+    const postRes = await POST(
+      makeRequest({ slug: "anon-slug" }),
+      makeParams()
+    );
+    const patchRes = await PATCH(
+      makeRequest({ category: "defi" }, "PATCH"),
+      makeParams()
+    );
+
+    expect(postRes.status).toBe(403);
+    expect(patchRes.status).toBe(403);
+    expect(listWorkflow).not.toHaveBeenCalled();
+    expect(updateWorkflowListing).not.toHaveBeenCalled();
+  });
+
   it("slug collision: POST with duplicate slug returns 409 with SLUG_CONFLICT error code", async () => {
     mockAuth();
     vi.mocked(listWorkflow).mockResolvedValue({

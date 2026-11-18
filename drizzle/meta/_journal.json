@@ -1156,6 +1156,41 @@
       "when": 1790830100000,
       "tag": "0164_account_issuer_nullable",
       "breakpoints": true
+    },
+    {
+      "idx": 165,
+      "version": "7",
+      "when": 1793627038019,
+      "tag": "0165_keep_1042_drop_dead_exec_log_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 166,
+      "version": "7",
+      "when": 1794315815976,
+      "tag": "0166_arbitrum_zero_priority_fee_floor",
+      "breakpoints": true
+    },
+    {
+      "idx": 167,
+      "version": "7",
+      "when": 1794927630576,
+      "tag": "0167_workflow_failure_alerts",
+      "breakpoints": true
+    },
+    {
+      "idx": 168,
+      "version": "7",
+      "when": 1794927631576,
+      "tag": "0168_users_step_up_email_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 169,
+      "version": "7",
+      "when": 1794931306913,
+      "tag": "0169_failure_alerts_streak_index",
+      "breakpoints": true
     }
   ]
 }
