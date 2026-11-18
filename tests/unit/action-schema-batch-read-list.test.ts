@@ -24,20 +24,20 @@ describe("ActionSchema - Batch Read Contract list inputs", () => {
 
   it("describes the Calls from options", () => {
     expect(fields.callsFrom).toBe(
-      'string ("rows" | "args-list" | "address-list") - Calls from'
+      'string ("rows" | "args-list" | "address-list") - Calls From'
     );
   });
 
   it("gives each list a shape an agent can follow", () => {
     expect(fields.argsFromList).toBe(
-      'string (supports {{@nodeId:Label.field}} templates) - Argument sets - {{@node1:Label.result}} or [["0xabc...", 5], ["0xdef...", 6]]'
+      'JSON array, or a string holding one (supports {{@nodeId:Label.field}} templates) - Argument Sets - {{@node1:Label.result}} or [["0xabc...", 5], ["0xdef...", 6]]'
     );
     expect(fields.contractAddresses).toBe(
-      'string (supports {{@nodeId:Label.field}} templates) - Contract addresses - {{@node1:Label.result}} or ["0xabc...", "0xdef..."]'
+      'JSON array, or a string holding one (supports {{@nodeId:Label.field}} templates) - Contract Addresses - {{@node1:Label.result}} or ["0xabc...", "0xdef..."]'
     );
-    expect(fields.abiFetchAddress).toContain("Fetch ABI from");
+    expect(fields.abiFetchAddress).toContain("Fetch ABI From");
     expect(fields.functionArgs).toBe(
-      "string (JSON array of function arguments) - Arguments"
+      "string (JSON array of function arguments) - Function Arguments"
     );
   });
 
@@ -65,7 +65,11 @@ describe("ActionSchema - Batch Read Contract list inputs", () => {
     const tip = tips.find((line) =>
       line.startsWith("web3/batch-read-contract")
     );
-    expect(tip).toContain('Set callsFrom to "args-list"');
+    expect(tip).toContain(
+      'argsFromList is required only for "args-list" and contractAddresses only for "address-list"'
+    );
+    expect(tip).toContain("contractAddress is not used");
+    expect(tip).toContain("a string holding one");
     expect(tip).toContain("up to 5,000 calls per run");
   });
 });

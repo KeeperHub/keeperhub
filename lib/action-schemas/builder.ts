@@ -138,7 +138,9 @@ function mapFieldType(field: ActionConfigFieldBase): string {
       return "boolean";
     case "template-input":
     case "template-textarea":
-      return "string (supports {{@nodeId:Label.field}} templates)";
+      return field.acceptsJsonArray
+        ? "JSON array, or a string holding one (supports {{@nodeId:Label.field}} templates)"
+        : "string (supports {{@nodeId:Label.field}} templates)";
     case "protocol-array":
     case "protocol-tuple-array":
       return 'string (JSON array, e.g. ["0x...","0x..."], or a {{@nodeId:Label.field}} template resolving to the whole array)';
@@ -488,7 +490,7 @@ export async function buildActionSchemasResponse(
       "web3 read actions (check-balance, read-contract) don't require wallet integration",
       "web3 write actions (transfer-funds, write-contract) require wallet integration",
       'web3/query-events queries one contract event by default, and eventQueries is only read when queryMode is "multiple". To watch several events or contracts in one node, set queryMode to "multiple" and pass eventQueries instead of the top-level contractAddress, abi, eventName and eventArgs. Each returned event then carries contractAddress and eventName, ordered by block then log index.',
-      'web3/batch-read-contract in uniform mode reads its calls from argsList rows by default. Set callsFrom to "args-list" to take them from argsFromList (a JSON array or a {{@nodeId:Label.field}} template resolving to one, each entry one call\'s arguments in order, or the bare value for a function with one plain argument), or to "address-list" to call abiFunction with the same functionArgs on every address in contractAddresses (a JSON array of 0x addresses or a template resolving to one); abiFetchAddress is only used to fetch the ABI there. Only the fields of the chosen source are read. Results keep the list\'s order, up to 5,000 calls per run; an empty list or a bad entry fails the step before any call.',
+      'web3/batch-read-contract with inputMode "uniform" (Same function, multiple args) reads its calls from callsFrom: "rows" (default) uses contractAddress and the argsList rows; "args-list" uses contractAddress and argsFromList, one call per entry, each entry the call\'s arguments in order or the bare value for a function with one plain argument; "address-list" calls abiFunction with the same functionArgs (all of them, if the function takes any) on every address in contractAddresses, and contractAddress is not used (abiFetchAddress only fetches the ABI). argsFromList is required only for "args-list" and contractAddresses only for "address-list". A list is a JSON array, a string holding one, or a {{@nodeId:Label.field}} template resolving to one. Only the fields of the chosen source are read. Results keep the list\'s order, up to 5,000 calls per run; an empty list or a bad entry fails the step before any call.',
       "web3/query-transactions queries historical transactions by function call using block explorer APIs. Use it when the contract does not emit events for the operations you need to monitor. Provide functionArgs as a JSON array where empty strings are wildcards.",
       'tokenConfig must be a JSON string with format: {"mode":"custom","customToken":{"address":"0x...","symbol":"USDC"}}. On Solana actions (get-spl-token-balance, transfer-spl-token) customToken.address is the base58 mint address. Do NOT use a flat {address, symbol, decimals} object',
       "Use projectId to organize related workflows into a project (e.g., all Sky ESM workflows in one project)",
