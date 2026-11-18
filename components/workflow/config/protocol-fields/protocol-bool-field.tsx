@@ -15,60 +15,66 @@ import { hasTemplateToken } from "@/lib/workflow/template-ref";
 type ProtocolBoolFieldProps = {
   fieldKey: string;
   value: string;
-  unrecognized?: string;
+  unrecognized?: UnrecognizedValue;
   onChange: (value: unknown) => void;
   disabled?: boolean;
 };
 
+// A saved value that is not a bool, shown so it is not mistaken for unset:
+// shortened for the message, longer for its tooltip.
+type UnrecognizedValue = { shown: string; full: string };
+
 type ProtocolBoolFieldValue = {
   value: string;
-  // A saved value that is not a bool, shown so it is not mistaken for unset.
-  unrecognized?: string;
+  unrecognized?: UnrecognizedValue;
 };
 
 const MAX_KEPT_LENGTH = 1000;
 const MAX_SHOWN_LENGTH = 60;
-// The start of a JSON or \\uXXXX escape left open by a cut.
-const PARTIAL_ESCAPE = /\\(?:u[0-9a-f]{0,3})?$/;
-
-// Cuts by code point, so a cut never splits a character in two.
-function cut(text: string, length: number): string {
-  return Array.from(text).slice(0, length).join("");
-}
 
 // A control or bidi character could reorder or hide what the message shows,
 // so each is written out as an escape.
 function escapeHidden(char: string): string {
-  return `\\u${(char.codePointAt(0) ?? 0).toString(16).padStart(4, "0")}`;
+  const code = (char.codePointAt(0) ?? 0).toString(16);
+  return code.length > 4 ? `\\u{${code}}` : `\\u${code.padStart(4, "0")}`;
 }
 
-function describeSaved(saved: unknown): string {
-  // An object or array is summed up, not stringified, so a huge one is cheap.
+function quote(text: string): string {
+  return stripControlChars(JSON.stringify(text), { replacement: escapeHidden });
+}
+
+// The raw string is cut by code point before it is quoted, so a cut never
+// splits a character or an escape. The mark sits outside the quotes.
+function shorten(text: string, length: number): string {
+  const head = Array.from(text.slice(0, length * 2 + 2));
+  return head.length <= length
+    ? quote(text)
+    : `${quote(head.slice(0, length).join(""))}…`;
+}
+
+function summarise(saved: object): string {
+  // Summed up, not stringified, so a huge one is cheap.
   if (Array.isArray(saved)) {
-    return `[${saved.length} items]`;
+    if (saved.length === 0) {
+      return "[]";
+    }
+    return saved.length === 1 ? "[1 item]" : `[${saved.length} items]`;
   }
-  if (typeof saved === "object" && saved !== null) {
-    return "{…}";
-  }
-  // A huge string is cut first, so it costs no more than a short one.
-  const head =
-    typeof saved === "string"
-      ? cut(saved.slice(0, MAX_KEPT_LENGTH * 2), MAX_KEPT_LENGTH)
-      : saved;
-  const text = stripControlChars(JSON.stringify(head) ?? String(head), {
-    replacement: escapeHidden,
-  });
-  const kept = cut(text, MAX_KEPT_LENGTH);
-  return kept.length < text.length ? `${kept}…` : kept;
+  return Object.keys(saved).length === 0 ? "{}" : "{…}";
 }
 
-// The saved value as the message shows it; the mark sits outside the quotes.
-function shortenSaved(text: string): string {
-  if (Array.from(text).length <= MAX_SHOWN_LENGTH) {
-    return text;
+function describeSaved(saved: unknown): UnrecognizedValue {
+  if (typeof saved === "string") {
+    return {
+      shown: shorten(saved, MAX_SHOWN_LENGTH),
+      full: shorten(saved, MAX_KEPT_LENGTH),
+    };
   }
-  const shown = cut(text, MAX_SHOWN_LENGTH).replace(PARTIAL_ESCAPE, "");
-  return text.startsWith('"') ? `${shown}"…` : `${shown}…`;
+  const text =
+    typeof saved === "object" && saved !== null
+      ? summarise(saved)
+      : String(saved);
+  return { shown: text, full: text };
 }
 
 // A saved JSON true/false (agents may send one) shows as the matching option.
@@ -110,7 +116,6 @@ export function ProtocolBoolField({
   }
 
   const errorId = `${fieldKey}-unrecognized`;
-  const shown = unrecognized ? shortenSaved(unrecognized) : "";
   return (
     <div>
       <Select
@@ -135,12 +140,16 @@ export function ProtocolBoolField({
           Saved value{" "}
           <bdi
             className="wrap-anywhere whitespace-pre-wrap font-mono"
-            title={shown === unrecognized ? undefined : unrecognized}
+            title={
+              unrecognized.shown === unrecognized.full
+                ? undefined
+                : unrecognized.full
+            }
           >
-            {shown}
+            {unrecognized.shown}
           </bdi>{" "}
           is not true or false.
-          {disabled ? "" : " Select true or false to replace it."}
+          {disabled ? "" : " Select one to replace it."}
         </p>
       )}
     </div>

@@ -61,7 +61,7 @@ describe("registered protocol-bool renderer", () => {
     await renderWith(0);
     const message = container.querySelector(`#${FIELD.key}-unrecognized`);
     expect(message?.textContent).toBe(
-      "Saved value 0 is not true or false. Select true or false to replace it."
+      "Saved value 0 is not true or false. Select one to replace it."
     );
     expect(trigger()?.getAttribute("aria-invalid")).toBe("true");
     expect(trigger()?.getAttribute("aria-describedby")).toBe(message?.id);
@@ -77,39 +77,22 @@ describe("registered protocol-bool renderer", () => {
     expect(trigger()?.textContent).toBe("false");
   });
 
-  it("shortens a long value, keeps its quotes and puts it whole in a tooltip", async () => {
-    const saved = `${"x".repeat(60)}\u{1F600}${"y".repeat(100)}`;
+  // The cuts themselves are covered in protocol-bool-field.test.ts.
+  it("shows the cut value and puts the longer one in a tooltip", async () => {
+    const saved = "x".repeat(100);
     await renderWith(saved);
     const value = container.querySelector(`#${FIELD.key}-unrecognized bdi`);
-    expect(value?.textContent).toBe(`"${"x".repeat(59)}"…`);
+    expect(value?.textContent).toBe(`"${"x".repeat(60)}"…`);
     expect(value?.getAttribute("title")).toBe(JSON.stringify(saved));
   });
 
-  it("cuts by whole characters and leaves a short value without a tooltip", async () => {
-    await renderWith(`${"x".repeat(58)}\u{1F600}zz`);
-    const value = container.querySelector(`#${FIELD.key}-unrecognized bdi`);
-    expect(value?.textContent).toBe(`"${"x".repeat(58)}\u{1F600}"…`);
+  it("leaves a value shown whole without a tooltip", async () => {
     await renderWith("yes");
     expect(
       container
         .querySelector(`#${FIELD.key}-unrecognized bdi`)
         ?.hasAttribute("title")
     ).toBe(false);
-  });
-
-  it("shows 60 whole characters uncut even when they take 61 UTF-16 units", async () => {
-    const saved = `${"x".repeat(57)}\u{1F600}`;
-    await renderWith(saved);
-    const value = container.querySelector(`#${FIELD.key}-unrecognized bdi`);
-    expect(value?.textContent).toBe(JSON.stringify(saved));
-    expect(value?.hasAttribute("title")).toBe(false);
-  });
-
-  it("never leaves half an escape at the cut", async () => {
-    await renderWith(`${"x".repeat(57)}\u202E${"y".repeat(10)}`);
-    const value = container.querySelector(`#${FIELD.key}-unrecognized bdi`);
-    // The cut lands after the "\\u" of "\\u202e", which is dropped.
-    expect(value?.textContent).toBe(`"${"x".repeat(57)}"…`);
   });
 
   it("does not ask a read-only viewer to pick", async () => {

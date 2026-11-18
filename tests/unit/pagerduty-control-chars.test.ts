@@ -182,3 +182,46 @@ describe("the shared character class", () => {
     expect(stripControlChars("a\u202Eb", { replacement: " " })).toBe("a b");
   });
 });
+
+describe("stripControlChars, the shared rule", () => {
+  // The hand-picked list it replaced, kept so a narrower class fails here.
+  const FORMERLY_LISTED =
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: the list under test
+    /[\u0000-\u001f\u007f-\u009f\u00ad\ufeff\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+
+  it("removes every character the old list did", () => {
+    for (let code = 0; code <= 0xff_ff; code++) {
+      const char = String.fromCharCode(code);
+      if (FORMERLY_LISTED.test(char)) {
+        expect(stripControlChars(`a${char}b`), code.toString(16)).toBe("ab");
+      }
+    }
+  });
+
+  it.each([
+    ["word joiner", "\u2060"],
+    ["invisible separator", "\u2063"],
+    ["Mongolian vowel separator", "\u180e"],
+    ["interlinear annotation", "\ufff9"],
+    ["tag character", "\u{E0041}"],
+    ["language tag", "\u{E0001}"],
+  ])("removes a %s too", (_name, char) => {
+    expect(stripControlChars(`tr${char}ue`)).toBe("true");
+  });
+
+  it("keeps tab, newline and carriage return only when asked", () => {
+    expect(stripControlChars("a\tb\nc\rd")).toBe("abcd");
+    expect(
+      stripControlChars("a\tb\nc\rd\u2028e", { keepLineBreaks: true })
+    ).toBe("a\tb\nc\rde");
+  });
+
+  it("takes a replacement string literally, or makes one from each character", () => {
+    expect(stripControlChars("a\u200bb", { replacement: "$&" })).toBe("a$&b");
+    expect(
+      stripControlChars("a\u200b\u{E0041}b", {
+        replacement: (char) => `<${char.codePointAt(0)?.toString(16)}>`,
+      })
+    ).toBe("a<200b><e0041>b");
+  });
+});
