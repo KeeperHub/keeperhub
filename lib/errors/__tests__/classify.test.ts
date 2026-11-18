@@ -183,14 +183,26 @@ describe("classifyExecutionError", () => {
       expect(r.errorType).toBe("user");
     });
 
-    it.each(["Too many calls (5001). Maximum is 5000.", "No calls to execute"])(
-      "classifies Batch Read's %s as validation + user",
-      (input) => {
-        const r = classifyExecutionError(input);
-        expect(r.errorCategory).toBe(ErrorCategory.VALIDATION);
-        expect(r.errorType).toBe("user");
-      }
-    );
+    it.each([
+      "Too many calls (5001). Maximum is 5000.",
+      "No calls to execute",
+      "Failed to parse ABI: invalid fragment",
+      "Call 2: Failed to parse ABI: invalid fragment",
+      "Call 2: Invalid ABI JSON: Unexpected token",
+      "Failed to encode call 1 (balanceOf): invalid address",
+      "ABI must be a JSON array",
+      "Call 3: ABI must be a JSON array",
+      "Calls JSON is required in mixed mode",
+      "Invalid Calls JSON: Unexpected end of JSON input",
+      "Calls must be a JSON array of call objects",
+      "Invalid Args List JSON: Unexpected token",
+      "Args List must be a JSON array of arg arrays",
+      "Args List entry at index 0 must be an array, got string",
+    ])("classifies Batch Read's %s as validation + user", (input) => {
+      const r = classifyExecutionError(input);
+      expect(r.errorCategory).toBe(ErrorCategory.VALIDATION);
+      expect(r.errorType).toBe("user");
+    });
 
     it.each([
       'Multicall batch 1/1 failed: server response 502 (body="0x1 is not a valid address: x")',

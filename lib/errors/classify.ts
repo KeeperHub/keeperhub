@@ -227,7 +227,7 @@ const RULES: readonly Rule[] = [
   },
   {
     pattern:
-      /^(Argument Sets|Contract Addresses|Function Arguments|Calls From)\b|^Call \d+ (has no|must be)\b|^The calls(' data adds up to| hold more than) |^(Contract Address|Contract ABI|Function) is required\b|^[A-Za-z_$][\w$]* (takes no arguments, so a list of argument sets|takes a tuple with unnamed members|declares [\d,]+ parameters and tuple members)|^Too many calls \(\d+\)\. Maximum is \d+|^No calls to execute$/,
+      /^(Argument Sets|Contract Addresses|Function Arguments|Calls From)\b|^Call \d+ (has no|must be)\b|^The calls(' data adds up to| hold more than) |^(Contract Address|Contract ABI|Function) is required\b|^[A-Za-z_$][\w$]* (takes no arguments, so a list of argument sets|takes a tuple with unnamed members|declares [\d,]+ parameters and tuple members)|^Too many calls \(\d+\)\. Maximum is \d+|^No calls to execute$|^(Call \d+: )?(Failed to parse ABI: |Invalid ABI JSON: |ABI must be a JSON array$)|^Failed to encode call \d+ \(|^Invalid (Args List|Calls) JSON: |^Args List (must be a JSON array|entry at index \d+ must be)|^Calls (JSON is required in mixed mode$|must be a JSON array)/,
     errorCategory: ErrorCategory.VALIDATION,
     errorType: ExecutionErrorType.USER,
     code: null,

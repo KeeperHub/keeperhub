@@ -6,10 +6,7 @@ import {
 } from "@/lib/abi/struct-args";
 import type { AbiParam } from "@/lib/abi/types";
 import { type AbiItem, resolveAbiFunction } from "@/lib/abi/utils";
-import {
-  type ValidateArgsOptions,
-  validateArgsForAbi,
-} from "@/lib/abi/validate-args";
+import { validateArgsForAbi } from "@/lib/abi/validate-args";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
   CALLS_FROM_ADDRESS_LIST,
@@ -378,6 +375,16 @@ function checkListLeaf(
   ) {
     return `${path} is too long for a whole number. Use at most 78 digits`;
   }
+  // A JSON number past 2^53 has already lost digits, and a fraction is not a
+  // whole number; ethers would call either one out of range.
+  if (INTEGER_TYPE_RE.test(type) && typeof value === "number") {
+    if (!Number.isInteger(value)) {
+      return `${path} must be a whole number, got ${showValue(value)}`;
+    }
+    if (!Number.isSafeInteger(value)) {
+      return `${path} is too large to send as a number and has already lost digits. Write it in quotes, e.g. "12345678901234567890"`;
+    }
+  }
   const bytes = BYTES_N_RE.exec(type);
   if (
     bytes &&
@@ -705,7 +712,27 @@ function countMismatch(
   );
 }
 
-/** A tuple given as an array of its members or as text; other shapes get the count message. */
+/** Text that parses as a JSON object or array, e.g. a tuple sent as text. */
+function isJsonContainerText(value: unknown): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const text = value.trim();
+  if (!(text.startsWith("{") || text.startsWith("["))) {
+    return false;
+  }
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === "object" && parsed !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A tuple given as an array of its members or as JSON text; a plain value at
+ * the tuple's place is a flat member and gets the count message instead.
+ */
 function positionalTupleError(
   args: unknown[],
   fn: ListFunction,
@@ -717,8 +744,7 @@ function positionalTupleError(
   const index = fn.inputs.findIndex(
     (input, i) =>
       input.type === "tuple" &&
-      ((typeof args[i] === "string" && args[i] !== "") ||
-        Array.isArray(args[i]))
+      (isJsonContainerText(args[i]) || Array.isArray(args[i]))
   );
   if (index < 0) {
     return;
