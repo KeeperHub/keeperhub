@@ -84,6 +84,9 @@ const DIGITS_ONLY = /[^0-9]/g;
 
 type ConfigValue = string | boolean | Record<string, unknown> | undefined;
 
+// Condition rules and the text they write.
+type WrittenRules = { group: ConditionGroup; written: string };
+
 type ActionConfigProps = {
   config: Record<string, unknown>;
   onUpdateConfig: (key: string, value: ConfigValue) => void;
@@ -342,7 +345,7 @@ export function ConditionFields({
   // Saved rules count when they write the text that runs. Unfinished rules
   // write "true", which runs nothing; they count only if no text runs either,
   // so a rule being filled in stays in the builder.
-  const savedGroup = useMemo(() => {
+  const saved = useMemo((): WrittenRules | undefined => {
     const group = existingConditionConfig?.group;
     if (!group) {
       return;
@@ -350,8 +353,9 @@ export function ConditionFields({
     const written = visualConditionToExpression(group);
     const matches =
       written === conditionValue || (written === "true" && !conditionValue);
-    return matches ? group : undefined;
+    return matches ? { group, written } : undefined;
   }, [existingConditionConfig, conditionValue]);
+  const savedGroup = saved?.group;
 
   // Rules for the condition text, when they rebuild it exactly, and the mode
   // to open in (editorConditionState).
@@ -368,6 +372,7 @@ export function ConditionFields({
   useEffect(() => {
     if (
       mode === "visual" &&
+      !disabled &&
       parsedGroup &&
       persistedForExpression.current !== conditionValue
     ) {
@@ -401,21 +406,21 @@ export function ConditionFields({
 
   // Switching modes keeps the saved rules; editing the text clears them, since
   // the text then runs. They come back if the text returns to what they write.
-  const rulesBeforeEdit = useRef<ConditionGroup | undefined>(undefined);
+  const rulesBeforeEdit = useRef<WrittenRules | undefined>(undefined);
   const handleExpressionChange = (value: string): void => {
-    const rules = savedGroup ?? rulesBeforeEdit.current;
-    const written = rules && visualConditionToExpression(rules);
-    // Unfinished rules write "true"; a typed "true" stays the text.
-    if (rules && written !== "true" && written === value) {
-      if (!savedGroup) {
-        onUpdateConfig("conditionConfig", { group: rules });
+    // Unfinished rules write "true" and run nothing: never kept or restored.
+    const finished = saved && saved.written !== "true" ? saved : undefined;
+    const rules = finished ?? rulesBeforeEdit.current;
+    if (rules && rules.written === value) {
+      if (!finished) {
+        onUpdateConfig("conditionConfig", { group: rules.group });
       }
       onUpdateConfig("condition", value);
       return;
     }
     if (existingConditionConfig) {
-      if (savedGroup && visualConditionToExpression(savedGroup) !== "true") {
-        rulesBeforeEdit.current = savedGroup;
+      if (finished) {
+        rulesBeforeEdit.current = finished;
       }
       onUpdateConfig("conditionConfig", undefined);
     }

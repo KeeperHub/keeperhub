@@ -97,12 +97,18 @@ let container: HTMLDivElement;
 let root: Root;
 let updates: Update[];
 
-function Harness({ initial }: { initial: Config }): React.ReactElement {
+function Harness({
+  initial,
+  disabled = false,
+}: {
+  initial: Config;
+  disabled?: boolean;
+}): React.ReactElement {
   const [config, setConfig] = useState<Config>(initial);
   return (
     <ConditionFields
       config={config}
-      disabled={false}
+      disabled={disabled}
       onUpdateConfig={(key, value) => {
         updates.push([key, value]);
         setConfig((current) => ({ ...current, [key]: value }));
@@ -111,8 +117,8 @@ function Harness({ initial }: { initial: Config }): React.ReactElement {
   );
 }
 
-function render(initial: Config): void {
-  act(() => root.render(<Harness initial={initial} />));
+function render(initial: Config, disabled = false): void {
+  act(() => root.render(<Harness disabled={disabled} initial={initial} />));
 }
 
 function click(label: string): void {
@@ -180,6 +186,43 @@ describe("Condition fields", () => {
       container.querySelector('[data-testid="first-left"]')?.textContent
     ).toBe(FIELD);
     expect(container.textContent).not.toContain("can't be shown as rules");
+  });
+
+  // Someone who can only view a workflow must not write to it by opening it.
+  it("saves parsed rules on open only for someone who can edit", () => {
+    render({ actionType: "Condition", condition: `${FIELD} === 1` }, true);
+    expect(updates).toEqual([]);
+    act(() => root.unmount());
+    root = createRoot(container);
+    render({ actionType: "Condition", condition: `${FIELD} === 1` });
+    expect(updates.map(([key]) => key)).toEqual(["conditionConfig"]);
+  });
+
+  // Unfinished rules write "true", which runs nothing: a typed "true" is the
+  // text, and those rules are never brought back by an edit.
+  it("keeps a typed true as text beside unfinished rules", () => {
+    render({ actionType: "Condition", conditionConfig: { group: PARTIAL } });
+    click("Expression");
+    type("true");
+    expect(updates).toEqual([
+      ["conditionConfig", undefined],
+      ["condition", "true"],
+    ]);
+    type("truex");
+    type("true");
+    expect(updates.filter(([key]) => key === "conditionConfig")).toEqual([
+      ["conditionConfig", undefined],
+    ]);
+  });
+
+  // The region is on the page before the switch, so the notice is announced.
+  it("announces the notice in a region that was already mounted", () => {
+    render({ actionType: "Condition", condition: `${FIELD} === 1\n|| x` });
+    const region = container.querySelector('[aria-live="polite"]');
+    expect(region?.textContent).toBe("");
+    click("Visual");
+    expect(region?.isConnected).toBe(true);
+    expect(region?.textContent).toContain("can't be shown as rules");
   });
 
   // The notice's warning: a rule edit replaces the text with the rules.
