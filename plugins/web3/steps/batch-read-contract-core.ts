@@ -773,7 +773,6 @@ function canGoFlat(input: AbiParam): boolean {
 }
 
 type FlatTuple = { label: string; members: number };
-type Reading = { flat: FlatTuple[]; end: number };
 
 // A tuple's members, read flat from start, can hold the values there: only a
 // member that is a tuple can take an object.
@@ -789,7 +788,7 @@ function membersFit(args: unknown[], input: AbiParam, start: number): boolean {
 
 // The values read with every tuple holding a plain value given flat where its
 // members fit. Tuples after an object on a plain input are not listed.
-function readFlat(args: unknown[], fn: ListFunction): Reading {
+function readFlat(args: unknown[], fn: ListFunction): FlatTuple[] {
   const flat: FlatTuple[] = [];
   let cursor = 0;
   let blocked = false;
@@ -808,7 +807,7 @@ function readFlat(args: unknown[], fn: ListFunction): Reading {
       cursor += 1;
     }
   }
-  return { flat, end: cursor };
+  return flat;
 }
 
 // The last place an object can go: a tuple's own place or a tuple member's,
@@ -834,7 +833,10 @@ function lastObjectPlace(fn: ListFunction): number {
   return last;
 }
 
-/** An object no tuple can take, named on the plain input it lands on. */
+/**
+ * An object no tuple can take, named on the plain input it lands on. A value
+ * both missing and extra can still shift it onto a tuple; the input is named.
+ */
 function objectOnPlainInput(
   entry: unknown[],
   fn: ListFunction,
@@ -859,7 +861,7 @@ function objectOnPlainInput(
       const name = input.name || `arg${index}`;
       const error =
         checkListLeaf(value, input.type, name) ??
-        `${name} takes a ${input.type}, got ${showValue(value)}`;
+        `${name} must be a value of type ${input.type}, got ${showValue(value)}`;
       return new Error(
         `${at}: ${sentence(error)} Only a tuple takes an object.`
       );
@@ -883,7 +885,7 @@ function countMismatch(
   const takes = fn.inputs.length;
   const names = inputNames(fn);
   const given = plural(args.length, "value");
-  let { flat } = readFlat(args, fn);
+  let flat = readFlat(args, fn);
   let flatCount = flat.reduce((total, t) => total + t.members - 1, takes);
   // As many values as inputs: a plain count would match, so the first tuple
   // holding a plain value is offered flat, or named when it can't go flat.
@@ -1072,7 +1074,9 @@ function nestedTupleError(
     return;
   }
   if (entry.length < fn.inputs.length || entry.length > cursor) {
-    return objectOnPlainInput(entry, fn, at) ?? countMismatch(at, entry, fn, hint());
+    return (
+      objectOnPlainInput(entry, fn, at) ?? countMismatch(at, entry, fn, hint())
+    );
   }
   const { input, index, value } = found;
   const components = input.components ?? [];

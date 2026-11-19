@@ -2599,6 +2599,124 @@ describe("batch-read-contract - second review, round 2", () => {
     );
   });
 
+  it("counts a tuple member's place as one an object can take", async () => {
+    const inner = abiWith("f", [
+      {
+        name: "t",
+        type: "tuple",
+        components: [
+          uint("a"),
+          { name: "m", type: "tuple", components: [uint("c"), uint("d")] },
+        ],
+      },
+      uint("x"),
+      uint("y"),
+      uint("z"),
+    ]);
+    expect
+      .soft(
+        await failure({
+          ...argsList([[1, { c: 1, d: 2 }, { z: 1 }]], "f"),
+          abi: inner,
+        })
+      )
+      .toBe(
+        'Argument Sets entry 1: x must be a whole number, got {"z":1}. Only a tuple takes an object.'
+      );
+    // A tuple starting with a tuple takes an object only in its own place.
+    const nested = abiWith("g", [
+      {
+        name: "o",
+        type: "tuple",
+        components: [
+          { name: "m", type: "tuple", components: [uint("c"), uint("d")] },
+          { name: "n", type: "tuple", components: [uint("e"), uint("f")] },
+        ],
+      },
+      uint("x"),
+      uint("y"),
+    ]);
+    expect
+      .soft(
+        await failure({
+          ...argsList(
+            [
+              [
+                { m: { c: 1, d: 2 }, n: { e: 1, f: 2 } },
+                { e: 1, f: 2 },
+              ],
+            ],
+            "g"
+          ),
+          abi: nested,
+        })
+      )
+      .toBe(
+        'Argument Sets entry 1: x must be a whole number, got {"e":1,"f":2}. Only a tuple takes an object.'
+      );
+  });
+
+  it("gives the count when values missing before a tuple may line it up", async () => {
+    const abi = abiWith("f", [
+      uint("w"),
+      uint("x"),
+      uint("y"),
+      { name: "t", ...pair },
+      uint("z"),
+    ]);
+    expect
+      .soft(await failure({ ...argsList([[1, 2, { a: 1, b: 2 }]], "f"), abi }))
+      .toBe(
+        'Argument Sets entry 1 has 3 values, but f takes 5 (w, x, y, t, z). Make each entry an array like [1, 1, 1, {"a": 1, "b": 1}, 1].'
+      );
+  });
+
+  it("names the plain input after a tuple starting with a tuple", async () => {
+    const abi = abiWith("f", [nestedO, uint("x"), uint("y")]);
+    expect
+      .soft(await failure({ ...argsList([[1, 2, { z: 1 }, 4]], "f"), abi }))
+      .toBe(
+        'Argument Sets entry 1: y must be a whole number, got {"z":1}. Only a tuple takes an object.'
+      );
+  });
+
+  it("leaves tuples after an object on a plain input out of the count", async () => {
+    const abi = abiWith("h", [
+      { name: "t", ...pair },
+      uint("x"),
+      { name: "u", ...pair },
+    ]);
+    expect
+      .soft(
+        await failure({ ...argsList([[1, 2, { z: 1 }, 4, 5, 6]], "h"), abi })
+      )
+      .toBe(
+        'Argument Sets entry 1 has 6 values for h (t, x, u), which takes 3 when t is an object, or 4 when t is given flat as its 2 members. Make each entry an array like [{"a": 1, "b": 1}, 1, {"a": 1, "b": 1}].'
+      );
+  });
+
+  it("names the plain input an object lands on before blaming a tuple slot", async () => {
+    const abi = abiWith("f", [{ name: "t", ...pair }, uint("x")]);
+    expect
+      .soft(await failure({ ...argsList([[1, { z: 1 }]], "f"), abi }))
+      .toBe(
+        'Argument Sets entry 1: x must be a whole number, got {"z":1}. Only a tuple takes an object.'
+      );
+  });
+
+  it("names a string input an object lands on", async () => {
+    const abi = abiWith("f", [
+      { name: "t", ...pair },
+      { name: "s", type: "string" },
+      uint("x"),
+    ]);
+    expect
+      .soft(await failure({ ...argsList([[1, 2, { a: 1 }]], "f"), abi }))
+      .toBe(
+        'Argument Sets entry 1: s must be a value of type string, got {"a":1}. Only a tuple takes an object.'
+      );
+  });
+
   it("names the plain input an object lands on when no tuple can take it", async () => {
     const abi = abiWith("mid", [
       { name: "who", type: "address" },
