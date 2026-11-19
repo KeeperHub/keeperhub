@@ -358,7 +358,8 @@ describe("regex hardening", () => {
         ).join(" || ");
         const repeats = Array.from(
           { length: 16 },
-          (_, i) => `matchesRegex(${FIELD}, "[a-z]${"abcdefghijklmnop"[i]}{990}")`
+          (_, i) =>
+            `matchesRegex(${FIELD}, "[a-z]${"abcdefghijklmnop"[i]}{990}")`
         ).join(" || ");
         for (const nodes of [
           [textNode("literal", literal), textNode("repeats", repeats)],
