@@ -892,14 +892,17 @@ function countMismatch(
   let flat = readFlat(args, fn);
   let flatCount = flat.reduce((total, t) => total + t.members - 1, takes);
   // As many values as inputs: a plain count would match, so the first tuple
-  // holding a plain value is offered flat, or named when it can't go flat.
-  // A one-member tuple given flat already lines up, so it is skipped.
+  // holding a plain value is offered flat, or named when it can't go flat and
+  // the entry lines up with it fixed. A one-member tuple given flat already
+  // lines up, so it is skipped.
   const index = fn.inputs.findIndex(
     (input, i) =>
       input.type === "tuple" &&
       Boolean(input.components?.length) &&
       !isPlainObject(args[i]) &&
-      !(canGoFlat(input) && input.components?.length === 1)
+      (canGoFlat(input)
+        ? input.components?.length !== 1
+        : linesUpFixed(args, fn, i))
   );
   if (flat.length === 0 && args.length === takes && index !== -1) {
     const input = fn.inputs[index];
@@ -909,6 +912,11 @@ function countMismatch(
     }
     flat = [{ label: input.name || `arg${index}`, members }];
     flatCount = takes + members - 1;
+  }
+  if (flat.length === 0 && args.length === takes) {
+    return new Error(
+      `${at} has ${given} for ${fn.name} (${names}), as many as it takes, but they don't line up with its inputs. ${hint}`
+    );
   }
   if (flat.length === 0 || flatCount === args.length) {
     return new Error(
@@ -1031,6 +1039,9 @@ function tupleSlotError(
   if (flat && components.some((_, k) => fits(index - k))) {
     return;
   }
+  if (!(flat || linesUpFixed(entry, fn, index))) {
+    return;
+  }
   return slotError(at, input, index, entry[index]);
 }
 
@@ -1050,48 +1061,78 @@ function slotError(
   );
 }
 
-// A tuple whose first member is a tuple can't be given flat, so one holding
-// a plain value is named when some reading lines up (each tuple one value, up
-// to every tuple that fits given flat); otherwise the count is given.
+// Every value has a place: each tuple is an object or its members given flat
+// (one starting with a tuple takes one value), no plain input holds an object,
+// and nothing is left over.
+function linesUp(entry: unknown[], fn: ListFunction): boolean {
+  let cursor = 0;
+  for (const input of fn.inputs) {
+    const value = entry[cursor];
+    const members = input.type === "tuple" ? (input.components?.length ?? 0) : 0;
+    if (members > 0 && (isPlainObject(value) || !canGoFlat(input))) {
+      if (cursor >= entry.length) {
+        return false;
+      }
+      cursor += 1;
+    } else if (members > 0) {
+      if (!membersFit(entry, input, cursor)) {
+        return false;
+      }
+      cursor += members;
+    } else if (cursor >= entry.length || isPlainObject(value)) {
+      return false;
+    } else {
+      cursor += 1;
+    }
+  }
+  return cursor === entry.length;
+}
+
+// The entry lines up with the value at place given as an object.
+function linesUpFixed(
+  entry: unknown[],
+  fn: ListFunction,
+  place: number
+): boolean {
+  const fixed = [...entry];
+  fixed[place] = {};
+  return linesUp(fixed, fn);
+}
+
+type NestedSlot = { input: AbiParam; index: number; place: number };
+
+// The first tuple starting with a tuple that holds a plain value, walked the
+// way reshapeArgsCounted takes the values.
+function nestedSlot(entry: unknown[], fn: ListFunction): NestedSlot | undefined {
+  let cursor = 0;
+  for (const [index, input] of fn.inputs.entries()) {
+    if (cursor >= entry.length) {
+      return;
+    }
+    const members = input.type === "tuple" ? (input.components?.length ?? 0) : 0;
+    if (members === 0 || isPlainObject(entry[cursor])) {
+      cursor += 1;
+    } else if (canGoFlat(input)) {
+      cursor += members;
+    } else {
+      return { input, index, place: cursor };
+    }
+  }
+  return;
+}
+
+// A tuple starting with a tuple can't be given flat. One holding a plain value
+// is named only when the entry lines up end to end with it given as an object.
 function nestedTupleError(
   entry: unknown[],
   fn: ListFunction,
-  at: string,
-  hint: () => string
+  at: string
 ): Error | undefined {
-  let cursor = 0;
-  let found: { input: AbiParam; index: number; value: unknown } | undefined;
-  for (const [index, input] of fn.inputs.entries()) {
-    const value = entry[cursor];
-    const members = input.components?.length ?? 0;
-    const plain = input.type === "tuple" && members > 0 && !isPlainObject(value);
-    if (plain && membersFit(entry, input, cursor)) {
-      cursor += members;
-      continue;
-    }
-    if (plain && !canGoFlat(input) && !found && cursor < entry.length) {
-      found = { input, index, value };
-    }
-    cursor += 1;
-  }
-  if (!found) {
+  const slot = nestedSlot(entry, fn);
+  if (!(slot && linesUpFixed(entry, fn, slot.place))) {
     return;
   }
-  if (entry.length < fn.inputs.length || entry.length > cursor) {
-    return (
-      objectOnPlainInput(entry, fn, at) ?? countMismatch(at, entry, fn, hint())
-    );
-  }
-  const { input, index, value } = found;
-  const components = input.components ?? [];
-  if (isWholeTupleShape(value, components[0])) {
-    const given = typeof value === "string" ? "text" : "an array";
-    const like = echo(exampleValue(input.type, components), MAX_REASON_LENGTH);
-    return new Error(
-      `${at}: give ${input.name || `arg${index}`} as an object with its member names, like ${like}, not as ${given}.`
-    );
-  }
-  return slotError(at, input, index, value);
+  return slotError(at, slot.input, slot.index, entry[slot.place]);
 }
 
 /** One entry as reshaped arguments, one value per input. */
@@ -1115,14 +1156,11 @@ function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
   // Built only when an entry fails: the example walks the whole ABI.
   const hint = (): string =>
     `Make each entry an array like ${exampleEntry(fn)}${scalar ? ", or the bare value" : ""}.`;
-  const nested = nestedTupleError(entry, fn, at, hint);
-  if (nested) {
-    throw nested;
-  }
   const reshaped = reshapeArgsCounted(entry, fn);
-  if (entry.length !== reshaped.consumed) {
+  if (entry.length !== reshaped.consumed || nestedSlot(entry, fn)) {
     throw (
       positionalTupleError(entry, fn, at) ??
+      nestedTupleError(entry, fn, at) ??
       objectOnPlainInput(entry, fn, at) ??
       tupleSlotError(entry, fn, at) ??
       countMismatch(at, entry, fn, hint())

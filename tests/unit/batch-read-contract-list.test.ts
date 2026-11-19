@@ -2788,10 +2788,10 @@ describe("batch-read-contract - second review, round 2", () => {
     ).toBe(
       'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got 1. Or give its 2 members flat in its place.'
     );
-    // o holds 5 and t given flat as (1, missing) lines up: o is named.
+    // o holds 5, but with o fixed t still holds a plain value: the count.
     const first = abiWith("h", [nestedO, { name: "t", ...pair }]);
     expect(await failure({ ...argsList([[5, 1]], "h"), abi: first })).toBe(
-      'Argument Sets entry 1: o must be an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, got 5.'
+      'Argument Sets entry 1 has 2 values for h (o, t), which takes 2 when t is an object, or 3 when t is given flat as its 2 members. Make each entry an array like [{"inner": {"a": 1, "b": 1}, "id": 1}, {"a": 1, "b": 1}].'
     );
   });
 
@@ -3092,5 +3092,84 @@ describe("batch-read-contract - second review, round 2", () => {
     mockStaticCall.mockClear();
     const outcome = await run(argsList([`0b${"1".repeat(256)}`]));
     expect(outcome.totalCalls).toBe(1);
+  });
+});
+
+describe("batch-read-contract - fourth review", () => {
+  const abiWith = (name: string, inputs: unknown[]): string =>
+    JSON.stringify([
+      {
+        name,
+        type: "function",
+        stateMutability: "view",
+        inputs,
+        outputs: [{ name: "", type: "uint256" }],
+      },
+    ]);
+  const uint = (name: string): { name: string; type: string } => ({
+    name,
+    type: "uint256",
+  });
+  const tupleOf = (
+    name: string,
+    components: unknown[]
+  ): { name: string; type: string; components: unknown[] } => ({
+    name,
+    type: "tuple",
+    components,
+  });
+
+  it("names a tuple given as text or an array before a tuple starting with a tuple", async () => {
+    const abi = abiWith("f", [
+      tupleOf("t", [uint("a"), tupleOf("b", [uint("p")])]),
+      tupleOf("s", [tupleOf("i", [uint("q")]), uint("c")]),
+      uint("x"),
+    ]);
+    const s = { i: { q: 1 }, c: 1 };
+    const asText =
+      'Argument Sets entry 1: give t as an object with its member names, like {"a": 1, "b": {"p": 1}}, not as text.';
+    expect
+      .soft(
+        await failure({
+          ...argsList([['{"a":1,"b":{"p":1}}', s, 5]], "f"),
+          abi,
+        })
+      )
+      .toBe(asText);
+    expect
+      .soft(await failure({ ...argsList([[[1, { p: 1 }], s, 5]], "f"), abi }))
+      .toBe(asText.replace("not as text", "not as an array"));
+  });
+
+  it("gives the count when a value before a tuple starting with a tuple is missing", async () => {
+    const abi = abiWith("f", [
+      uint("x"),
+      tupleOf("t", [tupleOf("i", [uint("p")])]),
+      tupleOf("s", [uint("a"), uint("b")]),
+    ]);
+    mockStaticCall.mockClear();
+    const ok = await run({
+      ...argsList([[1, { i: { p: 1 } }, 1, 2]], "f"),
+      abi,
+    });
+    expect(ok.success).toBe(true);
+    mockStaticCall.mockClear();
+    expect
+      .soft(await failure({ ...argsList([[{ i: { p: 1 } }, 1, 2]], "f"), abi }))
+      .toBe(
+        'Argument Sets entry 1 has 3 values for f (x, t, s), which takes 3 when s is an object, or 4 when s is given flat as its 2 members. Make each entry an array like [1, {"i": {"p": 1}}, {"a": 1, "b": 1}].'
+      );
+  });
+
+  it("does not give a count that matches when the values are out of place", async () => {
+    const abi = abiWith("f", [
+      uint("x"),
+      tupleOf("t", [tupleOf("i", [uint("p")])]),
+    ]);
+    expect
+      .soft(await failure({ ...argsList([[{ i: { p: 1 } }, 1]], "f"), abi }))
+      .toBe(
+        'Argument Sets entry 1 has 2 values for f (x, t), as many as it takes, but they don\'t line up with its inputs. Make each entry an array like [1, {"i": {"p": 1}}].'
+      );
   });
 });
