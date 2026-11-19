@@ -2439,6 +2439,113 @@ describe("batch-read-contract - second review, round 2", () => {
     );
   });
 
+  const nestedO = {
+    name: "o",
+    type: "tuple",
+    components: [{ name: "inner", ...pair }, uint("id")],
+  };
+
+  it("names a tuple starting with a tuple only when the entry lines up", async () => {
+    const valid = abiWith("f", [nestedO, uint("x")]);
+    const ok = await run({
+      ...argsList([[{ inner: { a: 1, b: 2 }, id: 3 }, 4]], "f"),
+      abi: valid,
+    });
+    expect(ok.success).toBe(true);
+    const [call] = mockStaticCall.mock.calls[0][0] as Call[];
+    expect(
+      new ethers.Interface(valid)
+        .decodeFunctionData("f", call.callData)
+        .toArray()
+    ).toEqual([[[BigInt(1), BigInt(2)], BigInt(3)], BigInt(4)]);
+    mockStaticCall.mockClear();
+    // x missing: the object is o's, so the count, not o, is given.
+    const middle = abiWith("g", [uint("x"), nestedO, uint("y")]);
+    expect(
+      await failure({
+        ...argsList([[{ inner: { a: 1, b: 2 }, id: 3 }, 4]], "g"),
+        abi: middle,
+      })
+    ).toBe(
+      'Argument Sets entry 1 has 2 values, but g takes 3 (x, o, y). Make each entry an array like [1, {"inner": {"a": 1, "b": 1}, "id": 1}, 1].'
+    );
+    // Too short to reach it.
+    const last = abiWith("h", [uint("x"), nestedO]);
+    expect(await failure({ ...argsList([[1]], "h"), abi: last })).toBe(
+      'Argument Sets entry 1 has 1 value, but h takes 2 (x, o). Make each entry an array like [1, {"inner": {"a": 1, "b": 1}, "id": 1}].'
+    );
+    // After a tuple given flat, o sits after its members.
+    const after = abiWith("k", [{ name: "t", ...pair }, nestedO]);
+    expect(await failure({ ...argsList([[1, 2, 3]], "k"), abi: after })).toBe(
+      'Argument Sets entry 1: o must be an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, got 3.'
+    );
+    expect(
+      await failure({ ...argsList([[1, 2, '{"inner":1}']], "k"), abi: after })
+    ).toBe(
+      'Argument Sets entry 1: give o as an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, not as text.'
+    );
+    const unnamed = abiWith("m", [{ ...nestedO, name: "" }, uint("x")]);
+    expect(await failure({ ...argsList([[1, 2]], "m"), abi: unnamed })).toBe(
+      'Argument Sets entry 1: arg0 must be an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, got 1.'
+    );
+  });
+
+  it("names a tuple when the values match the inputs but no reading fits", async () => {
+    const abi = abiWith("mid", [
+      { name: "who", type: "address" },
+      { name: "p", ...pair },
+      uint("k"),
+    ]);
+    expect(
+      await failure({
+        ...argsList([[addr(1), 1, { a: 1, b: 2 }]], "mid"),
+        abi,
+      })
+    ).toBe(
+      'Argument Sets entry 1: p must be an object with its member names, like {"a": 1, "b": 1}, got 1. Or give its 2 members flat in its place.'
+    );
+  });
+
+  it("counts a second tuple after the first one's members", async () => {
+    const abi = abiWith("f", [
+      { name: "t", ...pair },
+      uint("x"),
+      { name: "u", ...pair },
+    ]);
+    expect(await failure({ ...argsList([[1, 2, 3]], "f"), abi })).toBe(
+      'Argument Sets entry 1 has 3 values for f (t, x, u), which takes 3 when t is an object, or 4 when t is given flat as its 2 members. Make each entry an array like [{"a": 1, "b": 1}, 1, {"a": 1, "b": 1}].'
+    );
+    // The flat reading of t stops at u's object, so no flat count is offered.
+    const stop = abiWith("g", [
+      { name: "t", ...pair },
+      { name: "u", ...pair },
+      uint("x"),
+    ]);
+    expect(
+      await failure({
+        ...argsList([[1, 2, 3, { a: 1, b: 2 }]], "g"),
+        abi: stop,
+      })
+    ).toBe(
+      'Argument Sets entry 1 has 4 values, but g takes 3 (t, u, x). Make each entry an array like [{"a": 1, "b": 1}, {"a": 1, "b": 1}, 1].'
+    );
+  });
+
+  it("offers no flat count in Function Arguments for a tuple starting with a tuple", async () => {
+    const abi = abiWith("f", [nestedO, uint("x")]);
+    expect(
+      await failure(
+        addressList([addr(1)], {
+          abiFunction: "f",
+          abi,
+          functionArgs: JSON.stringify([1, 2, 3, 4]),
+        })
+      )
+    ).toBe(
+      "Function Arguments has 4 values, but f takes 2 (o, x). The same arguments go to every contract in the list."
+    );
+  });
+
   // Function Arguments pads missing values with blanks, so a tuple given flat
   // reads as a later argument left empty there.
   it("keeps Function Arguments padding and counts extra values", async () => {
@@ -2506,7 +2613,7 @@ describe("batch-read-contract - second review, round 2", () => {
       'Argument Sets entry 1: o must be an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, got 1.'
     );
     expect(await failure({ ...argsList([[1, 2, 3]], "f"), abi: nested })).toBe(
-      'Argument Sets entry 1: o must be an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, got 1.'
+      'Argument Sets entry 1 has 3 values, but f takes 2 (o, x). Make each entry an array like [{"inner": {"a": 1, "b": 1}, "id": 1}, 1].'
     );
     // Named before any count, whatever follows it.
     const before = abiWith("h", [
@@ -2536,7 +2643,7 @@ describe("batch-read-contract - second review, round 2", () => {
       },
     ]);
     expect(await failure({ ...argsList([[1, 2, 3]], "g"), abi: only })).toBe(
-      'Argument Sets entry 1: o must be an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, got 1.'
+      'Argument Sets entry 1 has 3 values, but g takes 1 (o). Make each entry an array like [{"inner": {"a": 1, "b": 1}, "id": 1}].'
     );
   });
 

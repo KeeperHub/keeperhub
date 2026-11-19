@@ -941,45 +941,87 @@ function tupleSlotError(
   if (flat && components.some((_, k) => fits(index - k))) {
     return;
   }
-  const orFlat = flat
+  return slotError(at, input, index, entry[index]);
+}
+
+/** A tuple holding a plain value, named; the flat line only where it can go flat. */
+function slotError(
+  at: string,
+  input: AbiParam,
+  index: number,
+  value: unknown
+): Error {
+  const members = input.components?.length ?? 0;
+  const orFlat = canGoFlat(input)
     ? ` Or give its ${count(members)} members flat in its place.`
     : "";
   return new Error(
-    `${at}: ${input.name || `arg${index}`} must be an object with its member names, like ${echo(exampleValue(input.type, input.components), MAX_REASON_LENGTH)}, got ${showValue(entry[index])}.${orFlat}`
+    `${at}: ${input.name || `arg${index}`} must be an object with its member names, like ${echo(exampleValue(input.type, input.components), MAX_REASON_LENGTH)}, got ${showValue(value)}.${orFlat}`
   );
 }
 
-// A tuple whose first member is a tuple, holding a plain value: read flat,
-// that value would land on the inner tuple, so the tuple itself is named.
-function nestedTupleError(
+// As many values as inputs, yet no flat reading lines up: the first tuple
+// holding a plain value is named rather than a count that matches.
+function equalCountSlotError(
   entry: unknown[],
   fn: ListFunction,
   at: string
 ): Error | undefined {
+  if (entry.length !== fn.inputs.length || flatTuples(entry, fn).length > 0) {
+    return;
+  }
+  const index = fn.inputs.findIndex(
+    (input, i) =>
+      input.type === "tuple" &&
+      Boolean(input.components?.length) &&
+      !isPlainObject(entry[i])
+  );
+  return index === -1
+    ? undefined
+    : slotError(at, fn.inputs[index], index, entry[index]);
+}
+
+// A tuple whose first member is a tuple can't be given flat, so one holding
+// a plain value is named when the entry lines up with it as an object, and
+// the count is given when it doesn't.
+function nestedTupleError(
+  entry: unknown[],
+  fn: ListFunction,
+  at: string,
+  hint: string
+): Error | undefined {
+  let found: { input: AbiParam; index: number; value: unknown } | undefined;
   let cursor = 0;
   for (const [index, input] of fn.inputs.entries()) {
     const components = input.components ?? [];
     const value = entry[cursor];
-    if (input.type !== "tuple" || components.length === 0 || isPlainObject(value)) {
-      cursor += 1;
+    const plain =
+      input.type === "tuple" && components.length > 0 && !isPlainObject(value);
+    if (plain && canGoFlat(input)) {
+      cursor += components.length;
       continue;
     }
-    if (!canGoFlat(input) && cursor < entry.length) {
-      const name = input.name || `arg${index}`;
-      const like = echo(exampleValue(input.type, components), MAX_REASON_LENGTH);
-      if (isWholeTupleShape(value, components[0])) {
-        const given = typeof value === "string" ? "text" : "an array";
-        return new Error(
-          `${at}: give ${name} as an object with its member names, like ${like}, not as ${given}.`
-        );
-      }
-      return new Error(
-        `${at}: ${name} must be an object with its member names, like ${like}, got ${showValue(value)}.`
-      );
+    if (plain && !found && cursor < entry.length) {
+      found = { input, index, value };
     }
-    cursor += components.length;
+    cursor += 1;
   }
-  return;
+  if (!found) {
+    return;
+  }
+  if (cursor !== entry.length) {
+    return countMismatch(at, entry, fn, hint);
+  }
+  const { input, index, value } = found;
+  const components = input.components ?? [];
+  if (isWholeTupleShape(value, components[0])) {
+    const given = typeof value === "string" ? "text" : "an array";
+    const like = echo(exampleValue(input.type, components), MAX_REASON_LENGTH);
+    return new Error(
+      `${at}: give ${input.name || `arg${index}`} as an object with its member names, like ${like}, not as ${given}.`
+    );
+  }
+  return slotError(at, input, index, value);
 }
 
 /** One entry as reshaped arguments, one value per input. */
@@ -1000,23 +1042,19 @@ function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
       `${at} must be an array of ${plural(takes, "value")} for ${fn.name} (${names}), got ${describeKind(entry)}. Make each entry an array like ${exampleEntry(fn)}.`
     );
   }
-  const nested = nestedTupleError(entry, fn, at);
+  const bare = scalar ? ", or the bare value" : "";
+  const hint = `Make each entry an array like ${exampleEntry(fn)}${bare}.`;
+  const nested = nestedTupleError(entry, fn, at, hint);
   if (nested) {
     throw nested;
   }
   const reshaped = reshapeArgsCounted(entry, fn);
   if (entry.length !== reshaped.consumed) {
-    const positional =
-      positionalTupleError(entry, fn, at) ?? tupleSlotError(entry, fn, at);
-    if (positional) {
-      throw positional;
-    }
-    const bare = scalar ? ", or the bare value" : "";
-    throw countMismatch(
-      at,
-      entry,
-      fn,
-      `Make each entry an array like ${exampleEntry(fn)}${bare}.`
+    throw (
+      positionalTupleError(entry, fn, at) ??
+      tupleSlotError(entry, fn, at) ??
+      equalCountSlotError(entry, fn, at) ??
+      countMismatch(at, entry, fn, hint)
     );
   }
   return reshaped.args;
