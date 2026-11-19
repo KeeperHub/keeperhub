@@ -3429,4 +3429,43 @@ describe("batch-read-contract - fourth review", () => {
         'Argument Sets entry 1: give a as an object with its member names, like {"x": 1, "y": 1}, not as text.'
       );
   });
+
+  it("walks past an earlier tuple to the plain input holding an object", async () => {
+    const abi = abiWith("f", [
+      tupleOf("t", [uint("a"), uint("b")]),
+      uint("x"),
+      tupleOf("n", [tupleOf("i", [uint("p")])]),
+    ]);
+    const named =
+      'Argument Sets entry 1: x must be a whole number, got {"i":{"p":1}}. Only a tuple takes an object.';
+    // t given flat, as an object, and as an array.
+    for (const entry of [
+      [1, 2, { i: { p: 1 } }, 5],
+      [{ a: 1, b: 2 }, { i: { p: 1 } }, 5],
+      [[1, 2], { i: { p: 1 } }, 5],
+    ]) {
+      expect
+        .soft(await failure({ ...argsList([entry], "f"), abi }))
+        .toBe(named);
+    }
+  });
+
+  it("does not name a plain input when an extra value may have shifted a tuple's object onto it", async () => {
+    const abi = abiWith("f", [
+      tupleOf("na", [tupleOf("i", [uint("p")]), uint("c")]),
+      uint("ub"),
+      tupleOf("lc", [uint("a"), tupleOf("b", [uint("p")])]),
+    ]);
+    expect(
+      await failure({
+        ...argsList(
+          [[9, { i: { p: 1 }, c: 1 }, 1, { a: 1, b: { p: 1 } }]],
+          "f"
+        ),
+        abi,
+      })
+    ).toBe(
+      'Argument Sets entry 1 has 4 values, but f takes 3 (na, ub, lc). Make each entry an array like [{"i": {"p": 1}, "c": 1}, 1, {"a": 1, "b": {"p": 1}}].'
+    );
+  });
 });

@@ -1137,13 +1137,15 @@ function linesUpFixed(
 }
 
 // The first plain input holding an object, named only when the entry lines up
-// end to end with a plain value in its place.
+// end to end with a plain value in its place, and the object fits no earlier
+// tuple holding a plain value (an extra value may have shifted it).
 function plainObjectError(
   entry: unknown[],
   fn: ListFunction,
   at: string
 ): Error | undefined {
   let cursor = 0;
+  const holdingPlain: AbiParam[] = [];
   for (const [index, input] of fn.inputs.entries()) {
     if (cursor >= entry.length) {
       return;
@@ -1151,9 +1153,13 @@ function plainObjectError(
     const value = entry[cursor];
     const members = input.type === "tuple" ? (input.components?.length ?? 0) : 0;
     if (members === 0 && isPlainObject(value)) {
-      return linesUpFixed(entry, fn, cursor, false, 0)
+      const shifted = holdingPlain.some((tuple) => objectFits(value, tuple));
+      return !shifted && linesUpFixed(entry, fn, cursor, false, 0)
         ? plainInputError(at, input, index, value)
         : undefined;
+    }
+    if (members > 0 && !isPlainObject(value)) {
+      holdingPlain.push(input);
     }
     cursor += members > 0 && !takesOneValue(value, input) ? members : 1;
   }
