@@ -1,4 +1,5 @@
 import { ADDRESS_BOOK_SELECTION_KEY } from "@/lib/address-book-selection";
+import { systemActionToggleKeys } from "@/lib/mcp/workflow-schema-constants";
 import {
   isSolidityArrayType,
   normalizeProtocolArrayValue,
@@ -31,6 +32,7 @@ import {
   getAllActions,
   isDefaultOnToggleField,
   isDisplayOnlyField,
+  isToggleField,
 } from "@/plugins/registry";
 
 // Built from the shared union so this validator, the executor dispatch table,
@@ -50,14 +52,6 @@ const RESERVED_CONFIG_KEYS = new Set([
   // it.
   "useManualAbi",
 ]);
-
-// System actions are not in the plugin registry, so their on/off toggles are
-// listed here. Their fields are described in lib/mcp/workflow-schema-constants.ts.
-const SYSTEM_ACTION_TOGGLE_KEYS: Partial<
-  Record<SystemActionType, readonly string[]>
-> = {
-  "HTTP Request": ["failOnError"],
-};
 
 const DECIMAL_PATTERN = /^\d+(?:\.\d+)?$/;
 const FIXED_ARRAY_LENGTH_PATTERN = /\[(\d+)]$/;
@@ -578,6 +572,67 @@ function toggleIssue(
   };
 }
 
+// The workflow's last saved config per node id.
+function savedConfigsById(
+  savedNodes: readonly unknown[] | undefined
+): Map<string, Record<string, unknown>> {
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const node of savedNodes ?? []) {
+    if (
+      isRecord(node) &&
+      typeof node.id === "string" &&
+      isRecord(node.data) &&
+      isRecord(node.data.config)
+    ) {
+      byId.set(node.id, node.data.config);
+    }
+  }
+  return byId;
+}
+
+function sameSavedValue(saved: unknown, value: unknown): boolean {
+  if (Object.is(saved, value)) {
+    return true;
+  }
+  return isRecord(saved) || Array.isArray(saved)
+    ? JSON.stringify(saved) === JSON.stringify(value)
+    : false;
+}
+
+// A toggle that still holds the stray value it was saved with is let through,
+// so a workflow saved before the toggle rule keeps saving and running as it
+// did. Only a new or changed value is refused.
+function strayKeptAsSaved(
+  saved: Record<string, unknown> | undefined,
+  config: Record<string, unknown>,
+  key: string
+): boolean {
+  return (
+    !isToggleValue(config[key]) &&
+    saved !== undefined &&
+    Object.hasOwn(saved, key) &&
+    sameSavedValue(saved[key], config[key])
+  );
+}
+
+// "refuse" a default-on toggle holding neither on nor off, even when its
+// condition fails, as the step still reads it. A plain switch goes through
+// the usual "check", shown fields only. A `hidden` field is skipped: the form
+// never shows it, so a value there could not be fixed.
+function toggleVerdict(
+  field: ActionConfigFieldBase,
+  value: unknown,
+  keptAsSaved: boolean
+): "refuse" | "skip" | "check" {
+  if (field.hidden || keptAsSaved) {
+    return "skip";
+  }
+  if (isDefaultOnToggleField(field.type)) {
+    return isToggleValue(value) ? "skip" : "refuse";
+  }
+  return "check";
+}
+
 function validateFieldValue(
   field: ActionConfigFieldBase,
   value: unknown
@@ -776,10 +831,17 @@ function validateFieldValue(
   }
 }
 
+export type ActionConfigValidationOptions = {
+  // The workflow's nodes as stored, when an existing workflow is saved.
+  savedNodes?: readonly unknown[];
+};
+
 export function validateWorkflowActionConfigs(
-  nodes: WorkflowNodeForValidation[]
+  nodes: WorkflowNodeForValidation[],
+  options: ActionConfigValidationOptions = {}
 ): ActionConfigValidationResult {
   const issues: ActionConfigValidationIssue[] = [];
+  const savedById = savedConfigsById(options.savedNodes);
 
   for (const [nodeIndex, node] of nodes.entries()) {
     if (node.id !== undefined && typeof node.id !== "string") {
@@ -823,9 +885,14 @@ export function validateWorkflowActionConfigs(
       continue;
     }
 
+    const saved =
+      typeof node.id === "string" ? savedById.get(node.id) : undefined;
+
     if (isSystemActionType(actionType)) {
-      for (const key of SYSTEM_ACTION_TOGGLE_KEYS[actionType] ?? []) {
-        if (!isToggleValue(config[key])) {
+      for (const key of systemActionToggleKeys(actionType)) {
+        if (
+          !(isToggleValue(config[key]) || strayKeptAsSaved(saved, config, key))
+        ) {
           issues.push(
             toggleIssue(
               `nodes[${nodeIndex}].data.config.${key}`,
@@ -916,10 +983,13 @@ export function validateWorkflowActionConfigs(
       if (isDisplayOnlyField(field.type)) {
         continue;
       }
-      // Default-on toggles are checked even when hidden, as the step reads
-      // them. A plain switch is checked below, only when shown.
-      if (isDefaultOnToggleField(field.type)) {
-        if (!isToggleValue(config[field.key])) {
+      if (isToggleField(field.type)) {
+        const verdict = toggleVerdict(
+          field,
+          config[field.key],
+          strayKeptAsSaved(saved, config, field.key)
+        );
+        if (verdict === "refuse") {
           issues.push(
             toggleIssue(
               `nodes[${nodeIndex}].data.config.${field.key}`,
@@ -930,7 +1000,9 @@ export function validateWorkflowActionConfigs(
             )
           );
         }
-        continue;
+        if (verdict !== "check") {
+          continue;
+        }
       }
       if (!evaluateShowWhen(field.showWhen, config)) {
         continue;

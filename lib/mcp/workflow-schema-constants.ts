@@ -51,7 +51,7 @@ export const SYSTEM_ACTIONS = {
       httpHeaders: "string - JSON object of headers",
       httpBody: "string - JSON request body (ignored for GET)",
       timeout: "number - Request timeout in seconds (default 5, min 1, max 30)",
-      // An on/off input here also needs SYSTEM_ACTION_TOGGLE_KEYS in validation/action-config.ts.
+      // A "boolean - " input is an on/off toggle: save takes only true or false.
       failOnError:
         "boolean - Default true. When false, a non-2xx response or timeout does not fail the step; instead the next node receives { status, data: null, error }. Use for aggregator workflows where one source being down should not fail the whole run.",
       retryAttempts:
@@ -434,3 +434,25 @@ export const TEMPLATE_SYNTAX = {
 // Helper types Phase 48 + future phases can consume.
 export type TriggerKey = keyof typeof TRIGGERS;
 export type SystemActionKey = keyof typeof SYSTEM_ACTIONS;
+
+const BOOLEAN_INPUT_PREFIX = "boolean - ";
+
+/**
+ * The on/off inputs of a system action: its fields described as boolean. The
+ * save validator checks these, so a new one is covered once it is listed here.
+ */
+export function systemActionToggleKeys(actionType: string): string[] {
+  const action = Object.values(SYSTEM_ACTIONS).find(
+    (entry) => entry.actionType === actionType
+  );
+  if (!action) {
+    return [];
+  }
+  const inputs: Record<string, string> = {
+    ...action.requiredFields,
+    ...("optionalFields" in action ? action.optionalFields : {}),
+  };
+  return Object.entries(inputs)
+    .filter(([, description]) => description.startsWith(BOOLEAN_INPUT_PREFIX))
+    .map(([key]) => key);
+}
