@@ -2419,7 +2419,7 @@ describe("batch-read-contract - second review, round 2", () => {
     expect(
       await failure({ ...argsList([[1, 2, { c: 1 }]], "g"), abi: middle })
     ).toBe(
-      'Argument Sets entry 1 has 3 values for g (t, u, x), which takes 3 when u is an object, or 4 when u is given flat as its 2 members. Make each entry an array like [{"a": 1}, {"a": 1, "b": 1}, 1].'
+      'Argument Sets entry 1: x must be a whole number, got {"c":1}. Only a tuple takes an object.'
     );
     const late = abiWith("h", [uint("x"), single, { name: "u", ...pair }]);
     expect(
@@ -2463,12 +2463,12 @@ describe("batch-read-contract - second review, round 2", () => {
     );
   });
 
-  it("offers no flat count when an object lands on a plain input", async () => {
+  it("counts the tuples read flat before an object on a plain input", async () => {
     const blocked = abiWith("h", [{ name: "t", ...pair }, uint("x")]);
     expect(
       await failure({ ...argsList([[1, 2, { z: 1 }, 4]], "h"), abi: blocked })
     ).toBe(
-      'Argument Sets entry 1 has 4 values, but h takes 2 (t, x). Make each entry an array like [{"a": 1, "b": 1}, 1].'
+      'Argument Sets entry 1 has 4 values for h (t, x), which takes 2 when t is an object, or 3 when t is given flat as its 2 members. Make each entry an array like [{"a": 1, "b": 1}, 1].'
     );
     // The object need not be on the last input.
     const middle = abiWith("g", [{ name: "t", ...pair }, uint("x"), uint("y")]);
@@ -2480,7 +2480,7 @@ describe("batch-read-contract - second review, round 2", () => {
         })
       )
       .toBe(
-        'Argument Sets entry 1 has 5 values, but g takes 3 (t, x, y). Make each entry an array like [{"a": 1, "b": 1}, 1, 1].'
+        'Argument Sets entry 1 has 5 values for g (t, x, y), which takes 3 when t is an object, or 4 when t is given flat as its 2 members. Make each entry an array like [{"a": 1, "b": 1}, 1, 1].'
       );
   });
 
@@ -2599,7 +2599,7 @@ describe("batch-read-contract - second review, round 2", () => {
     );
   });
 
-  it("gives the count when a value may be missing after a tuple given flat", async () => {
+  it("names the plain input an object lands on when no tuple can take it", async () => {
     const abi = abiWith("mid", [
       { name: "who", type: "address" },
       { name: "p", ...pair },
@@ -2611,7 +2611,7 @@ describe("batch-read-contract - second review, round 2", () => {
         abi,
       })
     ).toBe(
-      'Argument Sets entry 1 has 3 values for mid (who, p, k), which takes 3 when p is an object, or 4 when p is given flat as its 2 members. Make each entry an array like ["0x...", {"a": 1, "b": 1}, 1].'
+      'Argument Sets entry 1: k must be a whole number, got {"a":1,"b":2}. Only a tuple takes an object.'
     );
   });
 
@@ -2632,12 +2632,12 @@ describe("batch-read-contract - second review, round 2", () => {
       .toBe(
         'Argument Sets entry 1 has 3 values for f (t, x, u), which takes 3 when t is an object, or 4 when t is given flat as its 2 members. Make each entry an array like [{"a": 1, "b": 1}, 1, {"a": 1, "b": 1}].'
       );
-    // An object after t's span on a plain input gets the count too.
+    // No tuple can take an object after t's span: the input is named.
     const plain = abiWith("g", [{ name: "t", ...pair }, uint("x"), uint("y")]);
     expect
       .soft(await failure({ ...argsList([[1, 2, { a: 1 }]], "g"), abi: plain }))
       .toBe(
-        'Argument Sets entry 1 has 3 values for g (t, x, y), which takes 3 when t is an object, or 4 when t is given flat as its 2 members. Make each entry an array like [{"a": 1, "b": 1}, 1, 1].'
+        'Argument Sets entry 1: x must be a whole number, got {"a":1}. Only a tuple takes an object.'
       );
   });
 

@@ -788,7 +788,7 @@ function membersFit(args: unknown[], input: AbiParam, start: number): boolean {
 }
 
 // The values read with every tuple holding a plain value given flat where its
-// members fit. No flat reading is listed when an object lands on a plain input.
+// members fit. Tuples after an object on a plain input are not listed.
 function readFlat(args: unknown[], fn: ListFunction): Reading {
   const flat: FlatTuple[] = [];
   let cursor = 0;
@@ -800,7 +800,7 @@ function readFlat(args: unknown[], fn: ListFunction): Reading {
       blocked ||= isPlainObject(value);
       cursor += 1;
     } else if (!isPlainObject(value) && membersFit(args, input, cursor)) {
-      if (members > 1) {
+      if (members > 1 && !blocked) {
         flat.push({ label: input.name || `arg${index}`, members });
       }
       cursor += members;
@@ -808,7 +808,69 @@ function readFlat(args: unknown[], fn: ListFunction): Reading {
       cursor += 1;
     }
   }
-  return { flat: blocked ? [] : flat, end: cursor };
+  return { flat, end: cursor };
+}
+
+// The last place an object can go: a tuple's own place or a tuple member's,
+// with every tuple before it given flat.
+function lastObjectPlace(fn: ListFunction): number {
+  let last = -1;
+  let start = 0;
+  for (const input of fn.inputs) {
+    if (input.type.startsWith("tuple")) {
+      last = start;
+    }
+    if (canGoFlat(input)) {
+      for (const [k, member] of (input.components ?? []).entries()) {
+        if (member.type.startsWith("tuple")) {
+          last = start + k;
+        }
+      }
+      start += input.components?.length ?? 1;
+    } else {
+      start += 1;
+    }
+  }
+  return last;
+}
+
+/** An object no tuple can take, named on the plain input it lands on. */
+function objectOnPlainInput(
+  entry: unknown[],
+  fn: ListFunction,
+  at: string
+): Error | undefined {
+  // Each value past the input count may be an extra one before a tuple.
+  const last =
+    lastObjectPlace(fn) + Math.max(0, entry.length - fn.inputs.length);
+  const place = entry.findIndex(
+    (value, i) => i > last && isPlainObject(value)
+  );
+  if (place === -1) {
+    return;
+  }
+  let cursor = 0;
+  for (const [index, input] of fn.inputs.entries()) {
+    if (cursor > place) {
+      return;
+    }
+    const value = entry[cursor];
+    if (cursor === place && !input.type.startsWith("tuple")) {
+      const name = input.name || `arg${index}`;
+      const error =
+        checkListLeaf(value, input.type, name) ??
+        `${name} takes a ${input.type}, got ${showValue(value)}`;
+      return new Error(
+        `${at}: ${sentence(error)} Only a tuple takes an object.`
+      );
+    }
+    const plain = input.type === "tuple" && !isPlainObject(value);
+    cursor +=
+      plain && membersFit(entry, input, cursor)
+        ? (input.components?.length ?? 1)
+        : 1;
+  }
+  return;
 }
 
 /** A count message; tuples the values read as flat are named with both counts. */
@@ -1010,7 +1072,7 @@ function nestedTupleError(
     return;
   }
   if (entry.length < fn.inputs.length || entry.length > cursor) {
-    return countMismatch(at, entry, fn, hint());
+    return objectOnPlainInput(entry, fn, at) ?? countMismatch(at, entry, fn, hint());
   }
   const { input, index, value } = found;
   const components = input.components ?? [];
@@ -1053,6 +1115,7 @@ function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
   if (entry.length !== reshaped.consumed) {
     throw (
       positionalTupleError(entry, fn, at) ??
+      objectOnPlainInput(entry, fn, at) ??
       tupleSlotError(entry, fn, at) ??
       countMismatch(at, entry, fn, hint())
     );
