@@ -7,12 +7,7 @@ import type {
 import { isConditionGroup } from "./builder-types";
 import { visualConditionToExpression } from "./expression";
 import { isRegexOperator, OPERATOR_METADATA } from "./operator-metadata";
-import {
-  maskedStructure,
-  mentionsRegexIn,
-  REGEX_OBJECT_RE,
-  regexCallsIn,
-} from "./regex-calls";
+import { maskedStructure, regexCallsIn } from "./regex-calls";
 import { MAX_REGEX_CALLS } from "./regex-match";
 import { scanString } from "./string-literal";
 
@@ -59,7 +54,7 @@ const IS_NOT_NULL_PATTERN = /^(.+?) !== null$/;
 const IS_UNDEFINED_PATTERN = /^(.+?) === undefined$/;
 const IS_NOT_UNDEFINED_PATTERN = /^(.+?) !== undefined$/;
 const LINE_BREAK = /[\n\r\u2028\u2029]/;
-const MAX_PARSED_MULTILINE = 10_000;
+const MAX_PARSED_MULTILINE = 4000;
 // The spaces before the operator start only where a run of spaces does: the
 // same matches, without rescanning a long run at every position.
 const COMPARISON_PATTERN = /^(.+?)(?<!\s)\s+(===|!==|==|!=|>=|<=|>|<)\s+(.+)$/;
@@ -381,10 +376,6 @@ export function countRegexRules(group: ConditionGroup): number {
   return count;
 }
 
-function groupUsesRegex(group: ConditionGroup): boolean {
-  return countRegexRules(group) > 0;
-}
-
 type EditorConditionState = {
   /** Rules parsed from the condition text, to save with the node. */
   parsedGroup: ConditionGroup | null;
@@ -414,21 +405,17 @@ export function editorConditionState(
   const masked = maskedStructure(condition);
   const scan: Scanned = { text: condition, structure: masked ?? condition };
   const parsed = masked === undefined ? null : groupFromScanned(scan);
-  // The text is checked too: a garbled parse can swallow a regex call, or the
-  // old new RegExp form, whole.
-  const involvesRegex =
-    mentionsRegexIn(scan.structure) ||
-    REGEX_OBJECT_RE.test(scan.structure) ||
-    (parsed !== null && groupUsesRegex(parsed));
   // More regex tests than a run allows stays text: the run refuses it, and
   // thousands of rule rows would freeze the editor.
   const tooManyRegex =
     masked !== undefined &&
     regexCallsIn(masked, MAX_REGEX_CALLS + 1).length > MAX_REGEX_CALLS;
+  // The editor saves parsed rules and the rules are what runs, so they are
+  // used only when they rebuild the exact text; a lossy parse opens as text.
   const usable =
     parsed !== null &&
     !tooManyRegex &&
-    (!involvesRegex || visualConditionToExpression(parsed) === condition);
+    visualConditionToExpression(parsed) === condition;
   return usable
     ? { parsedGroup: parsed, initialMode: "visual" }
     : { parsedGroup: null, initialMode: "expression" };

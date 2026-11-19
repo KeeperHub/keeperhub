@@ -384,17 +384,17 @@ describe("matchesRegex", () => {
       }
     });
 
-    it("says a pattern built without a reference Put the regex pattern in quotes", () => {
+    it("asks for the pattern in quotes when it is built without a reference", () => {
       for (const expression of [
         `matchesRegex(${FIELD}, "a" + "b")`,
         `matchesRegex(${FIELD}, !"a")`,
       ]) {
         expect(() => run(expression, "ab"), expression).toThrow(
-          "Put the regex pattern in quotes"
+          "Write the regex pattern as one"
         );
         expect(validateConditionExpressionUI(expression), expression).toEqual({
           valid: false,
-          error: expect.stringContaining("Put the regex pattern in quotes"),
+          error: expect.stringContaining("Write the regex pattern as one"),
         });
       }
     });
@@ -536,6 +536,9 @@ describe("matchesRegex", () => {
       );
       expect(regexPatternError("a{2}*")).toContain("to match * as text");
       expect(regexPatternError("a*+")).not.toContain("For any text");
+      // A lazy first repeat: the refused one comes after its "?".
+      expect(regexPatternError("a+?*")).toContain("to match * as text");
+      expect(regexPatternError("a{2}?+")).toContain("to match + as text");
     });
 
     it("gives repeat-count advice that fits the refused count", () => {

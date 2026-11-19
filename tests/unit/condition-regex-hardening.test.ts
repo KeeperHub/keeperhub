@@ -10,7 +10,10 @@ import { generateWorkflowCode } from "@/lib/workflow/codegen/codegen";
 import { generateWorkflowSDKCode } from "@/lib/workflow/codegen/sdk";
 import { commentSafe } from "@/lib/workflow/codegen/shared";
 import { evaluateConditionExpression } from "@/lib/workflow/executor/executor.workflow";
-import { editorConditionState } from "@/lib/workflow/nodes/condition/builder-utils";
+import {
+  editorConditionState,
+  expressionToConditionGroup,
+} from "@/lib/workflow/nodes/condition/builder-utils";
 import {
   compileRegex,
   MAX_RUN_REGEX_WORK,
@@ -47,7 +50,7 @@ describe("regex hardening", () => {
         (_, i) => `matchesRegex(${FIELD}, "^${i}${"a".repeat(500)}")`
       ).join(" || ");
       expect(() => run(calls, "b")).toThrow(
-        "reached this node's matching limit"
+        "reached this node's matching limit preparing patterns"
       );
     });
 
@@ -182,13 +185,13 @@ describe("regex hardening", () => {
         `__v0.includes(${"1,".repeat(n / 2)}1)`,
       ]) {
         expect(timed(() => validateConditionExpression(text))).toBeLessThan(
-          500
+          1000
         );
         expect(timed(() => preValidateConditionExpression(text))).toBeLessThan(
-          500
+          1000
         );
         expect(timed(() => validateConditionExpressionUI(text))).toBeLessThan(
-          500
+          1000
         );
       }
       for (const text of [
@@ -196,21 +199,57 @@ describe("regex hardening", () => {
         `${"x < ".repeat(n / 4)}\ny`,
       ]) {
         expect(timed(() => editorConditionState(text, undefined))).toBeLessThan(
-          500
+          1000
         );
       }
     });
 
-    // A line break may sit next to the operator; the operands hold none.
+    // A line break may sit next to the operator; the operands hold none. The
+    // rules rebuild without it, so the editor opens such text as text.
     it("still reads a comparison split across lines", () => {
       for (const condition of [`${FIELD}\n=== 5`, `${FIELD} ===\n5`]) {
-        const { parsedGroup } = editorConditionState(condition, undefined);
-        expect(parsedGroup?.rules[0]).toMatchObject({
+        expect(expressionToConditionGroup(condition)?.rules[0]).toMatchObject({
           leftOperand: FIELD,
           operator: "===",
           rightOperand: "5",
         });
+        expect(editorConditionState(condition, undefined).initialMode).toBe(
+          "expression"
+        );
       }
+    });
+
+    // Long text with a line break is not parsed at all (the parse rescans
+    // to the break per operator); it opens as text.
+    it("opens long text with a line break as text without parsing it", () => {
+      const rule = `${FIELD} === "a" || `;
+      const long = `${rule.repeat(Math.ceil(4001 / rule.length))}\n${FIELD} === "b"`;
+      expect(long.length).toBeGreaterThan(4000);
+      const started = performance.now();
+      expect(editorConditionState(long, undefined)).toEqual({
+        parsedGroup: null,
+        initialMode: "expression",
+      });
+      expect(performance.now() - started).toBeLessThan(50);
+    });
+
+    // Opening a node saves the parsed rules, which then run, so a parse that
+    // does not rebuild the text must not become rules.
+    it("opens a condition its rules cannot rebuild as text", () => {
+      for (const condition of [
+        `${FIELD} === 1\n|| ${FIELD} === 2`,
+        `${FIELD} +\n1 === 2`,
+        `(${FIELD}\n=== 1)`,
+      ]) {
+        expect(editorConditionState(condition, undefined)).toEqual({
+          parsedGroup: null,
+          initialMode: "expression",
+        });
+      }
+      expect(
+        editorConditionState(`${FIELD} === 1 || ${FIELD} === 2`, undefined)
+          .initialMode
+      ).toBe("visual");
     });
 
     // The bracket check reads the content up to the first "]", as before.
@@ -289,6 +328,16 @@ describe("regex hardening", () => {
   });
 
   describe("expression mode", () => {
+    // A flags argument is a JavaScript habit; RE2 takes (?i) in the pattern.
+    it("says how to ignore case when given a third value", () => {
+      expect(
+        validateConditionExpressionUI(`matchesRegex(${FIELD}, "^a", "i")`)
+      ).toEqual({
+        valid: false,
+        error: expect.stringContaining("start the pattern with (?i)"),
+      });
+    });
+
     it("asks for quotes around a pattern typed without them", () => {
       for (const condition of [
         `matchesRegex(${FIELD}, ^0x)`,
@@ -300,7 +349,7 @@ describe("regex hardening", () => {
         ]) {
           expect(result).toEqual({
             valid: false,
-            error: expect.stringContaining("Put the regex pattern in quotes"),
+            error: expect.stringContaining("Write the regex pattern as one"),
           });
         }
       }

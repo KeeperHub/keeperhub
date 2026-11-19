@@ -23,7 +23,7 @@ const COMPILE_WORK_PER_CHAR = 2000;
 const COMPILE_WORK_PER_STEP = 400;
 
 export const REGEX_ARITY_ERROR =
-  'matchesRegex takes two values: the text and a quoted pattern, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
+  'matchesRegex takes two values: the text and a quoted pattern, e.g. matchesRegex({{@node:Label.field}}, "^0x"). To ignore case, start the pattern with (?i)';
 export const REGEX_SOURCE_ERROR =
   "Type the regex pattern itself; it can't come from another node or be built from other values. To look for text from another node, use contains or starts with";
 // A {{...}} typed inside a pattern: a reference, or braces meant literally.
@@ -38,7 +38,7 @@ export const REGEX_NON_TEXT_ERROR =
 export const REGEX_UNDEFINED_ERROR =
   "The regex test got no value (a missing field, or a node that did not run). Add an exists rule before it";
 export const REGEX_LITERAL_ERROR =
-  'Put the regex pattern in quotes, as one piece of text, e.g. "^0x"';
+  'Write the regex pattern as one "..." or \'...\' string, e.g. "^0x"';
 export const REGEX_DIRECT_ERROR =
   'Write matchesRegex( exactly: no space before "(" and nothing around the name, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
 export const REGEX_CALLS_ERROR = `A Condition can use matchesRegex at most ${MAX_REGEX_CALLS} times. Split the tests across two Condition nodes`;
@@ -60,6 +60,7 @@ const REPEAT_RANGE_RE = /\{(\d+),(\d+)\}/;
 const TRAILING_BACKSLASH_RE = /trailing backslash/;
 const REPETITION_RE = /repetition operator/;
 const NESTED_REPETITION_RE = /nested repetition/;
+const FIRST_REPEAT_RE = /^(?:\{[^}]*\}|[*+?])\??(?=.)/;
 const REPEAT_COUNT_RE = /invalid repeat count/;
 
 const BACKTICK_RE = /`/g;
@@ -85,9 +86,9 @@ function syntaxHint(detail: string): string {
     const operator = REPETITION_OPERATOR_RE.exec(detail)?.[1] ?? "";
     // "*+": the first repeat is fine; RE2 refuses the one after it.
     if (NESTED_REPETITION_RE.test(detail)) {
-      const refused = operator.startsWith("{")
-        ? operator.slice(operator.indexOf("}") + 1)
-        : operator.slice(1);
+      // The first repeat may be lazy ("*?"); the refused one follows it.
+      const first = FIRST_REPEAT_RE.exec(operator)?.[0] ?? "";
+      const refused = operator.slice(first.length);
       return `. Two repeats in a row: to match ${refused[0] ?? "the second"} as text, put a backslash before it`;
     }
     const anyText = operator.startsWith("*")
@@ -100,7 +101,7 @@ function syntaxHint(detail: string): string {
     const range = REPEAT_RANGE_RE.exec(detail);
     return range && Number(range[1]) > Number(range[2])
       ? ". Write the smaller number first, e.g. {2,5}"
-      : `. Use smaller counts. Nested counts multiply: (a{100}){20} repeats 2,000 times. The whole pattern must compile to at most ${formatCount(MAX_REGEX_PROGRAM_SIZE)} steps, about one per repeated character`;
+      : `. Use smaller counts. Nested counts multiply: (a{100}){20} repeats 2,000 times. The whole pattern must compile to at most ${formatCount(MAX_REGEX_PROGRAM_SIZE)} steps, about one per repeated character; ranges and groups cost more`;
   }
   return "";
 }
@@ -268,16 +269,15 @@ type RegexBudgetScope = "node" | "run";
 /** Raised when a node or a whole run has spent its matching budget. */
 export class RegexBudgetError extends Error {
   constructor(limit: number, scope: RegexBudgetScope, steps?: number) {
-    const pattern =
-      steps === undefined
-        ? ""
-        : `this pattern has ${formatCount(steps)} steps, and `;
     const where =
       scope === "run"
         ? "The regex tests in this workflow run reached the run's matching limit"
         : "The regex test reached this node's matching limit";
+    // Without steps, the charge was compiling patterns, not testing text.
     super(
-      `${where}: ${pattern}steps x characters tested may total ${formatCount(limit)}. Test fewer or shorter values, or use a simpler pattern`
+      steps === undefined
+        ? `${where} preparing patterns: each costs 2,000 per character and 400 per step of a ${formatCount(limit)} budget. Use fewer or shorter patterns`
+        : `${where}: this pattern has ${formatCount(steps)} steps, and steps x characters tested may total ${formatCount(limit)}. Test fewer or shorter values, or use a simpler pattern`
     );
     this.name = "RegexBudgetError";
   }
