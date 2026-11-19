@@ -862,13 +862,7 @@ function objectOnPlainInput(
     }
     const value = entry[cursor];
     if (cursor === place && !input.type.startsWith("tuple")) {
-      const name = input.name || `arg${index}`;
-      const error =
-        checkListLeaf(value, input.type, name) ??
-        `${name} must be a value of type ${input.type}, got ${showValue(value)}`;
-      return new Error(
-        `${at}: ${sentence(error)} Only a tuple takes an object.`
-      );
+      return plainInputError(at, input, index, value);
     }
     const plain = input.type === "tuple" && !isPlainObject(value);
     cursor +=
@@ -877,6 +871,20 @@ function objectOnPlainInput(
         : 1;
   }
   return;
+}
+
+/** A plain input holding an object, named with its own type's wording. */
+function plainInputError(
+  at: string,
+  input: AbiParam,
+  index: number,
+  value: unknown
+): Error {
+  const name = input.name || `arg${index}`;
+  const error =
+    checkListLeaf(value, input.type, name) ??
+    `${name} must be a value of type ${input.type}, got ${showValue(value)}`;
+  return new Error(`${at}: ${sentence(error)} Only a tuple takes an object.`);
 }
 
 /** A count message; tuples the values read as flat are named with both counts. */
@@ -891,20 +899,18 @@ function countMismatch(
   const given = plural(args.length, "value");
   let flat = readFlat(args, fn);
   let flatCount = flat.reduce((total, t) => total + t.members - 1, takes);
-  // As many values as inputs: a plain count would match, so a tuple that can
-  // go flat (first one holding a plain value) is offered flat. A one-member
-  // tuple given flat doesn't change the count, so it is skipped.
-  const multi = (input: AbiParam): boolean =>
-    canGoFlat(input) && (input.components?.length ?? 0) > 1;
-  let index = -1;
-  if (flat.length === 0 && args.length === takes) {
-    index = fn.inputs.findIndex(
-      (input, i) => multi(input) && !isPlainObject(args[i])
-    );
-    if (index === -1) {
-      index = fn.inputs.findIndex(multi);
-    }
-  }
+  // As many values as inputs: a plain count would match, so the first tuple
+  // that can go flat and doesn't hold its own object is offered flat. A
+  // one-member tuple given flat doesn't change the count, so it is skipped.
+  const index =
+    flat.length === 0 && args.length === takes
+      ? fn.inputs.findIndex(
+          (input, i) =>
+            canGoFlat(input) &&
+            (input.components?.length ?? 0) > 1 &&
+            !(isPlainObject(args[i]) && objectFits(args[i], input))
+        )
+      : -1;
   if (index !== -1) {
     const input = fn.inputs[index];
     const members = input.components?.length ?? 0;
@@ -1065,10 +1071,20 @@ function slotError(
   );
 }
 
+// A tuple's place holds one value: an object, the whole tuple as text or an
+// array, or anything for a tuple starting with a tuple.
+function takesOneValue(value: unknown, input: AbiParam): boolean {
+  const first = input.components?.[0];
+  return (
+    isPlainObject(value) ||
+    !canGoFlat(input) ||
+    (first !== undefined && isWholeTupleShape(value, first))
+  );
+}
+
 // Every value has a place: each tuple is an object or its members given flat
-// (one starting with a tuple takes one value), no plain input holds an object,
-// and nothing is left over. With blankTail, values missing at the end are
-// trimmed blanks.
+// (one value when takesOneValue), no plain input holds an object, and nothing
+// is left over. With blankTail, values missing at the end are trimmed blanks.
 function linesUp(entry: unknown[], fn: ListFunction, blankTail = false): boolean {
   let cursor = 0;
   for (const input of fn.inputs) {
@@ -1080,7 +1096,7 @@ function linesUp(entry: unknown[], fn: ListFunction, blankTail = false): boolean
     if (members > 0 && isPlainObject(value) && !objectFits(value, input)) {
       return false;
     }
-    if (members > 0 && (isPlainObject(value) || !canGoFlat(input))) {
+    if (members > 0 && takesOneValue(value, input)) {
       if (cursor >= entry.length) {
         return false;
       }
@@ -1103,19 +1119,45 @@ function linesUp(entry: unknown[], fn: ListFunction, blankTail = false): boolean
 function objectFits(value: unknown, input: AbiParam): boolean {
   const keys = Object.keys(value as object);
   const names = new Set((input.components ?? []).map((member) => member.name));
-  return keys.length === 0 || names.has("") || keys.some((k) => names.has(k));
+  return keys.length === 0 || keys.some((k) => names.has(k));
 }
 
-// The entry lines up with the value at place given as an object.
+// The entry lines up with the value at place given as an object (or, for a
+// plain input, as a plain value).
 function linesUpFixed(
   entry: unknown[],
   fn: ListFunction,
   place: number,
-  blankTail = false
+  blankTail = false,
+  value: unknown = {}
 ): boolean {
   const fixed = [...entry];
-  fixed[place] = {};
+  fixed[place] = value;
   return linesUp(fixed, fn, blankTail);
+}
+
+// The first plain input holding an object, named only when the entry lines up
+// end to end with a plain value in its place.
+function plainObjectError(
+  entry: unknown[],
+  fn: ListFunction,
+  at: string
+): Error | undefined {
+  let cursor = 0;
+  for (const [index, input] of fn.inputs.entries()) {
+    if (cursor >= entry.length) {
+      return;
+    }
+    const value = entry[cursor];
+    const members = input.type === "tuple" ? (input.components?.length ?? 0) : 0;
+    if (members === 0 && isPlainObject(value)) {
+      return linesUpFixed(entry, fn, cursor, false, 0)
+        ? plainInputError(at, input, index, value)
+        : undefined;
+    }
+    cursor += members > 0 && !takesOneValue(value, input) ? members : 1;
+  }
+  return;
 }
 
 type NestedSlot = { input: AbiParam; index: number; place: number };
@@ -1181,6 +1223,7 @@ function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
       positionalTupleError(entry, fn, at) ??
       nestedTupleError(entry, fn, at) ??
       objectOnPlainInput(entry, fn, at) ??
+      plainObjectError(entry, fn, at) ??
       tupleSlotError(entry, fn, at) ??
       countMismatch(at, entry, fn, hint())
     );

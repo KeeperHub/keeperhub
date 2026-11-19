@@ -3165,7 +3165,7 @@ describe("batch-read-contract - fourth review", () => {
       );
   });
 
-  it("does not give a count that matches when the values are out of place", async () => {
+  it("names a plain input holding an object when the entry lines up without it", async () => {
     const abi = abiWith("f", [
       uint("x"),
       tupleOf("t", [tupleOf("i", [uint("p")])]),
@@ -3173,7 +3173,23 @@ describe("batch-read-contract - fourth review", () => {
     expect
       .soft(await failure({ ...argsList([[{ i: { p: 1 } }, 1]], "f"), abi }))
       .toBe(
-        'Argument Sets entry 1 has 2 values for f (x, t), the right number, but not in the right places. Make each entry an array like [1, {"i": {"p": 1}}].'
+        'Argument Sets entry 1: x must be a whole number, got {"i":{"p":1}}. Only a tuple takes an object.'
+      );
+    // Nothing lines up with one value fixed, and no tuple can change the count.
+    const two = abiWith("g", [
+      uint("x"),
+      uint("y"),
+      tupleOf("t", [tupleOf("i", [uint("p")])]),
+    ]);
+    expect
+      .soft(
+        await failure({
+          ...argsList([[{ i: { p: 1 } }, { i: { p: 1 } }, 1]], "g"),
+          abi: two,
+        })
+      )
+      .toBe(
+        'Argument Sets entry 1 has 3 values for g (x, y, t), the right number, but not in the right places. Make each entry an array like [1, 1, {"i": {"p": 1}}].'
       );
   });
 
@@ -3215,7 +3231,9 @@ describe("batch-read-contract - fourth review", () => {
           abi: pair,
         })
       )
-      .not.toContain("give t");
+      .toBe(
+        'Argument Sets entry 1 has 2 values, but g takes 3 (x, t, ids). Make each entry an array like [1, {"a": 1, "b": 1}, [1, 1]].'
+      );
     const memo = abiWith("h", [
       uint("x"),
       tupleOf("t", [uint("a"), uint("b")]),
@@ -3228,7 +3246,9 @@ describe("batch-read-contract - fourth review", () => {
           abi: memo,
         })
       )
-      .not.toContain("give t");
+      .toBe(
+        'Argument Sets entry 1 has 2 values, but h takes 3 (x, t, memo). Make each entry an array like [1, {"a": 1, "b": 1}, "..."].'
+      );
     expect
       .soft(
         await failure(
@@ -3239,7 +3259,7 @@ describe("batch-read-contract - fourth review", () => {
           })
         )
       )
-      .not.toContain("give t");
+      .toBe('Function Arguments: x must be a whole number, got {"a":1,"b":2}.');
   });
 
   it("does not name a tuple that can go flat when fixing it leaves an object on a plain input", async () => {
@@ -3253,7 +3273,9 @@ describe("batch-read-contract - fourth review", () => {
         ...argsList([[{ a: 1, b: 2 }, 5, { c: 1, d: 2 }]], "f"),
         abi,
       })
-    ).not.toContain("t must be an object");
+    ).toBe(
+      'Argument Sets entry 1 has 3 values for f (x, t, s), which takes 3 when t is an object, or 4 when t is given flat as its 2 members. Make each entry an array like [1, {"a": 1, "b": 1}, {"c": 1, "d": 1}].'
+    );
     const two = abiWith("g", [uint("x"), tupleOf("s", [uint("a"), uint("b")])]);
     expect(
       await failure({ ...argsList([[{ a: 1, b: 2 }, 5]], "g"), abi: two })
@@ -3273,7 +3295,9 @@ describe("batch-read-contract - fourth review", () => {
         ...argsList([[{ i: { p: 1 }, c: 1 }, 1, { p: 1 }]], "f"),
         abi,
       })
-    ).not.toContain("nb must be an object");
+    ).toBe(
+      'Argument Sets entry 1 has 3 values for f (pa, nb, lc), which takes 3 when pa is an object, or 4 when pa is given flat as its 2 members. Make each entry an array like [{"a": 1, "b": 1}, {"i": {"p": 1}, "c": 1}, {"a": 1, "b": {"p": 1}}].'
+    );
     // An object missing a member still lines up, so the later tuple is named.
     const partial = abiWith("g", [
       tupleOf("t", [uint("a"), uint("b")]),
@@ -3284,5 +3308,125 @@ describe("batch-read-contract - fourth review", () => {
     ).toBe(
       'Argument Sets entry 1: s must be an object with its member names, like {"i": {"p": 1}, "c": 1}, got 5.'
     );
+  });
+
+  it("does not offer flat a tuple that holds its own object", async () => {
+    const abi = abiWith("f", [
+      uint("x"),
+      tupleOf("t", [uint("a"), uint("b")]),
+      tupleOf("n", [tupleOf("i", [uint("p")])]),
+    ]);
+    expect(
+      await failure({
+        ...argsList([[{ i: { p: 1 } }, { a: 1, b: 2 }, 5]], "f"),
+        abi,
+      })
+    ).toBe(
+      'Argument Sets entry 1: x must be a whole number, got {"i":{"p":1}}. Only a tuple takes an object.'
+    );
+  });
+
+  it("keeps blanks at the end of Function Arguments out of the line-up", async () => {
+    const abi = abiWith("g", [tupleOf("t", [uint("a"), uint("b")]), uint("y")]);
+    expect
+      .soft(
+        await failure(
+          addressList([addr(1)], {
+            abi,
+            abiFunction: "g",
+            functionArgs: JSON.stringify([[1, 2], ""]),
+          })
+        )
+      )
+      .toBe(
+        'Function Arguments: give t as an object with its member names, like {"a": 1, "b": 1}, not as an array.'
+      );
+    // In Argument Sets a missing value is not a blank, so the count is given.
+    expect
+      .soft(await failure({ ...argsList([[[1, 2]]], "g"), abi }))
+      .toBe(
+        'Argument Sets entry 1 has 1 value for g (t, y), which takes 2 when t is an object, or 3 when t is given flat as its 2 members. Make each entry an array like [{"a": 1, "b": 1}, 1].'
+      );
+  });
+
+  it("offers flat the first tuple holding a plain value, not one holding its object", async () => {
+    const abi = abiWith("f", [
+      uint("x"),
+      tupleOf("t", [uint("a"), uint("b")]),
+      tupleOf("s", [uint("c"), uint("d")]),
+    ]);
+    expect(
+      await failure({
+        ...argsList([[{ a: 1, b: 2 }, { a: 1, b: 2 }, 5]], "f"),
+        abi,
+      })
+    ).toBe(
+      'Argument Sets entry 1 has 3 values for f (x, t, s), which takes 3 when s is an object, or 4 when s is given flat as its 2 members. Make each entry an array like [1, {"a": 1, "b": 1}, {"c": 1, "d": 1}].'
+    );
+  });
+
+  it("names the plain input an object sits on when the entry lines up without it", async () => {
+    const abi = abiWith("h", [
+      uint("x"),
+      tupleOf("t", [tupleOf("i", [uint("p")])]),
+      tupleOf("s", [uint("a"), uint("b")]),
+    ]);
+    const named =
+      'Argument Sets entry 1: x must be a whole number, got {"i":{"p":1}}. Only a tuple takes an object.';
+    // Both s as an object and s flat name x, so the user is not sent back and forth.
+    expect
+      .soft(
+        await failure({
+          ...argsList([[{ i: { p: 1 } }, 1, { a: 1, b: 1 }]], "h"),
+          abi,
+        })
+      )
+      .toBe(named);
+    expect
+      .soft(
+        await failure({ ...argsList([[{ i: { p: 1 } }, 1, 1, 2]], "h"), abi })
+      )
+      .toBe(named);
+  });
+
+  it("names the first of two tuples given as text or arrays", async () => {
+    const abi = abiWith("two", [
+      tupleOf("a", [uint("x"), uint("y")]),
+      tupleOf("b", [
+        { name: "who", type: "address" },
+        { name: "on", type: "bool" },
+      ]),
+    ]);
+    expect
+      .soft(
+        await failure({
+          ...argsList(
+            [
+              [
+                ["1", "2"],
+                [addr(1), true],
+              ],
+            ],
+            "two"
+          ),
+          abi,
+        })
+      )
+      .toBe(
+        'Argument Sets entry 1: give a as an object with its member names, like {"x": 1, "y": 1}, not as an array.'
+      );
+    expect
+      .soft(
+        await failure({
+          ...argsList(
+            [['{"x":"1","y":"2"}', `{"who":"${addr(1)}","on":true}`]],
+            "two"
+          ),
+          abi,
+        })
+      )
+      .toBe(
+        'Argument Sets entry 1: give a as an object with its member names, like {"x": 1, "y": 1}, not as text.'
+      );
   });
 });
