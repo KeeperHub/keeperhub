@@ -911,11 +911,7 @@ function renderField(
   disabled?: boolean,
   nodeId?: string
 ) {
-  // Check conditional rendering
-  if (field.hidden) {
-    return null;
-  }
-
+  // Check conditional rendering (`hidden` included)
   if (!isFieldShown(field, config)) {
     return null;
   }
@@ -1000,7 +996,7 @@ function renderField(
   );
 }
 
-// A shown toggle holding neither on nor off blocks the save, so its group
+// A shown toggle holding neither on nor off needs a fix, so its group
 // opens to show it.
 function holdsStrayToggle(
   fields: ActionConfigFieldBase[],
@@ -1008,7 +1004,6 @@ function holdsStrayToggle(
 ): boolean {
   return fields.some(
     (field) =>
-      !field.hidden &&
       isToggleField(field.type) &&
       !isToggleValue(config[field.key]) &&
       isFieldShown(field, config)
@@ -1035,9 +1030,16 @@ function FieldGroup({
   defaultExpanded?: boolean;
   nodeId?: string;
 }) {
+  const holdsStray = holdsStrayToggle(fields, config);
   const [isExpanded, setIsExpanded] = useState(
-    () => defaultExpanded || holdsStrayToggle(fields, config)
+    () => defaultExpanded || holdsStray
   );
+  // Also when a stray value arrives later (AI edit, undo, version restore).
+  useEffect(() => {
+    if (holdsStray) {
+      setIsExpanded(true);
+    }
+  }, [holdsStray]);
   // Only worth computing for the collapsed state: expanded, the fields speak
   // for themselves.
   const summary = isExpanded ? null : summariseGroup(fields, config);

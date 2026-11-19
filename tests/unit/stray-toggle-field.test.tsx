@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// Save refuses a toggle holding anything but on or off, even when the form
-// hides it, so the form has to show it with a way to fix it.
+// Save refuses a new toggle value that is neither on nor off, even when the
+// form hides the toggle, so the form has to show it with a way to fix it.
 import { act, type ReactElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,11 +14,17 @@ import { SponsorGasField } from "@/components/workflow/config/sponsor-gas-field"
 import { registerFieldRenderer } from "@/lib/workflow/editor/extension-registry";
 import { fieldIsSet } from "@/lib/workflow/editor/group-summary";
 import { sponsorGasField } from "@/plugins/field-fragments";
-import { type ActionConfigField, isFieldShown } from "@/plugins/registry";
+import {
+  type ActionConfigField,
+  isFieldShown,
+  isShownOnlyToFix,
+} from "@/plugins/registry";
 
 const TEMPLATE = "{{@webhook:Webhook.flag}}";
 const HINT =
-  "Holds a template or other value, not on or off, so this workflow won't save.";
+  "Holds a template or other value, not on or off. A save refuses a new value like this.";
+const LOCKED_HINT =
+  "This setting is hidden for the current choices, so reset it.";
 const RESET = "Reset to default";
 // A network sponsorship does not cover, so Sponsor gas is hidden.
 const UNCOVERED_NETWORK = "999999999";
@@ -34,8 +40,8 @@ registerFieldRenderer(
       id={field.key}
       key={field.key}
       label={field.label}
-      onChange={(checked) => onUpdateConfig(field.key, checked)}
-      onReset={() => onUpdateConfig(field.key, undefined)}
+      onChange={(next) => onUpdateConfig(field.key, next)}
+      resetOnly={isShownOnlyToFix(field, config)}
       value={config[field.key]}
     />
   )
@@ -60,6 +66,8 @@ afterEach(() => {
 
 // Holds the config the way the node panel does, so a click's end state shows.
 let saved: Record<string, unknown> = {};
+// Writes the config from outside the form, as an AI edit or undo does.
+let replaceConfig: (config: Record<string, unknown>) => void = () => undefined;
 
 function Harness({
   initial,
@@ -70,6 +78,7 @@ function Harness({
 }) {
   const [config, setConfig] = useState(initial);
   saved = config;
+  replaceConfig = setConfig;
   return (
     <ActionConfigRenderer
       config={config}
@@ -227,8 +236,7 @@ describe("the stray-value hint on every toggle", () => {
           disabled={disabled}
           id="t"
           label="Sponsor gas"
-          onChange={vi.fn()}
-          onReset={onReset}
+          onChange={(next) => next === undefined && onReset()}
           value={value}
         />
       ),
@@ -240,8 +248,7 @@ describe("the stray-value hint on every toggle", () => {
           disabled={disabled}
           id="t"
           label="Fail workflow on error"
-          onChange={vi.fn()}
-          onReset={onReset}
+          onChange={(next) => next === undefined && onReset()}
           value={value}
         />
       ),
@@ -291,5 +298,58 @@ describe("the stray-value hint on every toggle", () => {
       expect(container.textContent).toContain(HINT);
       expect(resetButton()).toBeUndefined();
     }
+  });
+});
+
+describe("a stray Sponsor gas shown only to be fixed", () => {
+  it("locks the switch, so a click cannot save off and hide it for good", () => {
+    renderFields({ network: UNCOVERED_NETWORK, sponsorGas: TEMPLATE });
+    const toggle = sponsorToggle();
+    expect(toggle?.disabled).toBe(true);
+    expect(container.textContent).toContain(LOCKED_HINT);
+    act(() => toggle?.click());
+    expect(saved.sponsorGas).toBe(TEMPLATE);
+    act(() => resetButton()?.click());
+    expect(saved.sponsorGas).toBeUndefined();
+  });
+
+  it("leaves the switch usable where the network shows it", () => {
+    renderFields({ network: COVERED_NETWORK, sponsorGas: TEMPLATE });
+    const toggle = sponsorToggle();
+    expect(toggle?.disabled).toBe(false);
+    expect(container.textContent).not.toContain(LOCKED_HINT);
+    act(() => toggle?.click());
+    expect(saved.sponsorGas).toBe(false);
+    expect(sponsorToggle()).not.toBeNull();
+  });
+});
+
+describe("a stray value that arrives after the panel opened", () => {
+  it("opens the collapsed group", () => {
+    renderFields(
+      { network: UNCOVERED_NETWORK, sponsorGas: false },
+      { defaultExpanded: false }
+    );
+    expect(sponsorToggle()).toBeNull();
+    act(() =>
+      replaceConfig({ network: UNCOVERED_NETWORK, sponsorGas: TEMPLATE })
+    );
+    expect(sponsorToggle()).not.toBeNull();
+    expect(container.textContent).toContain(HINT);
+  });
+});
+
+describe("a hidden toggle", () => {
+  const field = { ...sponsorGasField(), hidden: true };
+  const config = { network: COVERED_NETWORK, sponsorGas: TEMPLATE };
+
+  it("is never shown, counted or offered to fix", () => {
+    expect(isFieldShown(field, config)).toBe(false);
+    expect(isShownOnlyToFix(field, config)).toBe(false);
+    expect(fieldIsSet(field, config)).toBe(false);
+    act(() => {
+      root.render(<Harness fields={[field]} initial={config} />);
+    });
+    expect(sponsorToggle()).toBeNull();
   });
 });

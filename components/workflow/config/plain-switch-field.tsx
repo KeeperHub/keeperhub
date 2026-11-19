@@ -26,14 +26,13 @@ export function PlainSwitchField({
 }: PlainSwitchFieldProps): React.ReactElement {
   return (
     <SwitchField
-      checked={isSwitchOn(config[field.key], field.defaultValue)}
       description={field.helpText ?? field.helpTip}
       disabled={disabled}
       id={field.key}
+      isOn={(value) => isSwitchOn(value, field.defaultValue)}
       label={field.label}
-      onChange={(checked) => onUpdateConfig(field.key, checked)}
-      onReset={() => onUpdateConfig(field.key, undefined)}
-      storedValue={config[field.key]}
+      onChange={(next) => onUpdateConfig(field.key, next)}
+      value={config[field.key]}
     />
   );
 }

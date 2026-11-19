@@ -58,6 +58,7 @@ import {
   registerIntegrationFormHandler,
 } from "@/lib/workflow/editor/extension-registry";
 import { nodesAtom } from "@/lib/workflow/store";
+import { isShownOnlyToFix } from "@/plugins/registry";
 
 // ============================================================================
 // Register Custom Field Renderers
@@ -696,8 +697,8 @@ registerFieldRenderer(
       id={field.key}
       key={field.key}
       label={field.label}
-      onChange={(checked) => onUpdateConfig(field.key, checked)}
-      onReset={() => onUpdateConfig(field.key, undefined)}
+      onChange={(next) => onUpdateConfig(field.key, next)}
+      resetOnly={isShownOnlyToFix(field, config)}
       value={config[field.key]}
     />
   )
@@ -736,8 +737,8 @@ registerFieldRenderer(
       id={field.key}
       key={field.key}
       label={field.label}
-      onChange={(checked) => onUpdateConfig(field.key, checked)}
-      onReset={() => onUpdateConfig(field.key, undefined)}
+      onChange={(next) => onUpdateConfig(field.key, next)}
+      resetOnly={isShownOnlyToFix(field, config)}
       value={config[field.key]}
     />
   )

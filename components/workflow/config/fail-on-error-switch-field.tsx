@@ -8,9 +8,9 @@ type FailOnErrorSwitchFieldProps = {
   label: string;
   description?: string;
   value: unknown;
-  onChange: (checked: boolean) => void;
-  onReset?: () => void;
+  onChange: (value: boolean | undefined) => void;
   disabled?: boolean;
+  resetOnly?: boolean;
 };
 
 /**
@@ -25,19 +25,19 @@ export function FailOnErrorSwitchField({
   description,
   value,
   onChange,
-  onReset,
   disabled,
+  resetOnly,
 }: FailOnErrorSwitchFieldProps) {
   return (
     <SwitchField
-      checked={resolveFailOnError(value)}
       description={description}
       disabled={disabled}
       id={id}
+      isOn={resolveFailOnError}
       label={label}
       onChange={onChange}
-      onReset={onReset}
-      storedValue={value}
+      resetOnly={resetOnly}
+      value={value}
     />
   );
 }

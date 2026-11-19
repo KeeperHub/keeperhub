@@ -702,16 +702,31 @@ export function isDefaultOnToggleField(type: string | undefined): boolean {
 }
 
 /**
- * Whether the config form shows a field. A default-on toggle holding neither
- * on nor off is shown even when its condition fails, as save refuses it.
+ * Whether the form shows a field only so a value save refuses can be cleared:
+ * a default-on toggle holding neither on nor off whose own condition fails.
+ * Its switch is then locked, leaving Reset as the only action.
  */
+export function isShownOnlyToFix(
+  field: ActionConfigFieldBase,
+  config: Record<string, unknown>
+): boolean {
+  return (
+    !field.hidden &&
+    isDefaultOnToggleField(field.type) &&
+    !isToggleValue(config[field.key]) &&
+    !evaluateShowWhen(field.showWhen, config)
+  );
+}
+
+/** Whether the config form shows a field. A `hidden` field is never shown. */
 export function isFieldShown(
   field: ActionConfigFieldBase,
   config: Record<string, unknown>
 ): boolean {
   return (
-    evaluateShowWhen(field.showWhen, config) ||
-    (isDefaultOnToggleField(field.type) && !isToggleValue(config[field.key]))
+    !field.hidden &&
+    (evaluateShowWhen(field.showWhen, config) ||
+      isShownOnlyToFix(field, config))
   );
 }
 
