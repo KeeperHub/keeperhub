@@ -29,7 +29,7 @@ const TEMPLATE = "{{@webhook:Webhook.flag}}";
 const HINT = "which is neither on nor off. When the step runs, it";
 const LOCKED_HINT = "Hidden with these settings; reset it here.";
 const SAVE_KEEPS =
-  "A save keeps it only while the saved workflow holds this same value and the steps it reads are unchanged.";
+  "A save keeps it only while the saved workflow holds this same value and the steps it reads are not replaced.";
 const RESET = "Reset to default";
 // A network sponsorship does not cover, so Sponsor gas is hidden.
 const UNCOVERED_NETWORK = "999999999";

@@ -619,7 +619,7 @@ type KeptStray = (
 
 type NodeIndex = {
   configs: Map<string, Record<string, unknown>>;
-  // Output key -> the kinds of every node whose output is stored under it.
+  // Output key -> "id=kind" of every node whose output is stored under it.
   kinds: Map<string, Set<string>>;
 };
 
@@ -627,7 +627,7 @@ function indexNodes(nodes: readonly unknown[]): NodeIndex {
   const kinds = new Map<string, Set<string>>();
   for (const [id, kind] of nodesById(nodes, nodeKind)) {
     const key = outputKeyOf(id);
-    kinds.set(key, (kinds.get(key) ?? new Set()).add(kind));
+    kinds.set(key, (kinds.get(key) ?? new Set()).add(`${id}=${kind}`));
   }
   return {
     configs: nodesById(nodes, (data) =>
@@ -637,13 +637,13 @@ function indexNodes(nodes: readonly unknown[]): NodeIndex {
   };
 }
 
-// The kinds of the nodes a reference reads, as one comparable string.
+// The nodes a reference reads (id and kind), as one comparable string.
 function kindsRead(index: NodeIndex, key: string): string {
   return [...(index.kinds.get(key) ?? [])].sort().join("|");
 }
 
-// Same text and references; each reference read a node when saved, and now
-// reads the same kind of node or, once it is deleted, nothing.
+// Same text and references; each reference now reads the same nodes (id and
+// kind) as when saved, or nothing.
 function sameStrayText(
   was: string,
   value: string,
@@ -663,7 +663,7 @@ function sameStrayText(
     }
     const before = kindsRead(saved, part.reads);
     const now = kindsRead(current, part.reads);
-    return before !== "" && (now === "" || now === before);
+    return now === "" || now === before;
   });
 }
 

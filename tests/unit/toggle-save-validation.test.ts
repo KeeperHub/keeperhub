@@ -637,9 +637,23 @@ describe("references a kept value reads", () => {
       { savedNodes }
     ).issues.filter((issue) => issue.field === "sponsorGas");
 
-  it("are never kept when they read nothing when saved", () => {
+  it("are kept while they read nothing, as when saved", () => {
     const value = "{{@gone:G.flag}}";
-    expect(issues([write(value)], [write(value)])).toHaveLength(1);
+    expect(issues([write(value)], [write(value)])).toEqual([]);
+    // A step deleted in an earlier save does not lock later saves.
+    expect(
+      issues([write(value)], [step("gone", "HTTP Request"), write(value)])
+    ).toEqual([]);
+  });
+
+  it("are refused once another step stands in for a deleted one", () => {
+    const value = "{{@a-b:S.flag}}";
+    expect(
+      issues(
+        [step("a_b", "HTTP Request"), write(value)],
+        [step("a-b", "HTTP Request"), write(value)]
+      )
+    ).toHaveLength(1);
   });
 
   it("cover every node stored under the same output key", () => {

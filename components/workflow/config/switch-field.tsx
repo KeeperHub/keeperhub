@@ -46,7 +46,7 @@ function shownValue(value: unknown): string {
 // Whether a save can keep the value (lib/workflow/validation/stray-toggle-value).
 function saveSentence(value: unknown): string {
   return canKeepStrayValue(value)
-    ? " A save keeps it only while the saved workflow holds this same value and the steps it reads are unchanged."
+    ? " A save keeps it only while the saved workflow holds this same value and the steps it reads are not replaced."
     : " A save refuses it, so reset it to save.";
 }
 
