@@ -55,6 +55,8 @@ export type SavedWorkflow = WorkflowData & {
   createdAt: string;
   updatedAt: string;
   isOwner?: boolean;
+  // Full read access (org member), true for viewers who cannot edit.
+  canRead?: boolean;
   featured?: boolean;
   projectId?: string | null;
   tagId?: string | null;
@@ -135,6 +137,8 @@ export type ExecutionSummary = {
   // The workflow_history version this run executed, resolved from the
   // run's content hash. Null when no matching version exists yet.
   ranVersion: number | null;
+  /** Refusals folded into a skipped run's hourly row; null otherwise. */
+  refusals: number | null;
 };
 
 export type ExecutionSummaryPage = {

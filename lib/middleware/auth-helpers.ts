@@ -12,6 +12,12 @@ import {
 } from "@/lib/errors/api-envelope";
 import { authenticateOAuthToken } from "@/lib/mcp/oauth-auth";
 import { getOrgContext } from "@/lib/middleware/org-context";
+import { isViewerRole } from "@/lib/organization/role-label";
+import {
+  isStateChangingMethod,
+  isViewerExemptMutation,
+  VIEWER_READ_ONLY_ERROR,
+} from "@/lib/security/viewer-policy";
 import {
   hasSessionCookie,
   isTrustedOrigin,
@@ -31,11 +37,9 @@ export type AuthFailure = {
   // `mfa_required` sits outside the documented set on purpose: the dialog
   // branches on it to route into step-up rather than showing a dead error, and
   // the docs already allow a route to raise a more specific code.
-  code: ApiErrorCode | "mfa_required";
+  code: ApiErrorCode | "mfa_required" | typeof VIEWER_READ_ONLY_ERROR.code;
   status: number;
 };
-
-const STATE_CHANGING_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
 
 /**
  * Defence-in-depth CSRF check for session-authed routes. The root proxy
@@ -48,7 +52,7 @@ const STATE_CHANGING_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
  */
 function checkSessionOrigin(request: Request): AuthFailure | null {
   const method = request.method.toUpperCase();
-  if (!STATE_CHANGING_METHODS.has(method)) {
+  if (!isStateChangingMethod(method)) {
     return null;
   }
   // Only enforce when the request actually carries the better-auth session
@@ -93,7 +97,7 @@ function checkSessionOrigin(request: Request): AuthFailure | null {
 
 export type AuthMethod = "oauth" | "api-key" | "session";
 
-const ORG_HEADER = "x-organization-id";
+export const ORG_HEADER = "x-organization-id";
 
 /**
  * KEEP-563: resolve the session-auth caller's effective organization, taking
@@ -107,12 +111,17 @@ const ORG_HEADER = "x-organization-id";
  * Hard org-scoping for API keys and OAuth tokens is unchanged: those callers
  * never read this header. Only session auth honors it, because only session
  * auth carries a multi-org identity.
+ *
+ * Also returns the caller's role in the resolved org from the same query, so
+ * the proxy's viewer gate and the routes agree on both the org and the role.
  */
-async function resolveSessionOrg(
+export async function resolveSessionOrg(
   request: Request,
   userId: string,
   defaultOrgId: string | null
-): Promise<{ organizationId: string | null } | AuthFailure> {
+): Promise<
+  { organizationId: string | null; role: string | null } | AuthFailure
+> {
   const raw = request.headers.get(ORG_HEADER)?.trim();
   if (!raw) {
     if (!defaultOrgId) {
@@ -122,22 +131,32 @@ async function resolveSessionOrg(
       // rejected with a spurious "no active organization". This only ever
       // resolves an org the user already belongs to.
       const [membership] = await db
-        .select({ organizationId: member.organizationId })
+        .select({ organizationId: member.organizationId, role: member.role })
         .from(member)
         .innerJoin(organization, eq(organization.id, member.organizationId))
         .where(
           and(eq(member.userId, userId), isNull(organization.deactivatedAt))
         )
         .limit(1);
-      return { organizationId: membership?.organizationId ?? null };
+      return {
+        organizationId: membership?.organizationId ?? null,
+        role: membership?.role ?? null,
+      };
     }
     // A deactivated org (its owner was deactivated and the cascade fired) is
     // inaccessible to its members even though their session still points at
     // it. Surface it as not-found, matching the header path's enumeration-safe
     // response, so members lose access without leaking the deactivated state.
     const [defaultOrg] = await db
-      .select({ deactivatedAt: organization.deactivatedAt })
+      .select({ deactivatedAt: organization.deactivatedAt, role: member.role })
       .from(organization)
+      .leftJoin(
+        member,
+        and(
+          eq(member.organizationId, organization.id),
+          eq(member.userId, userId)
+        )
+      )
       .where(eq(organization.id, defaultOrgId))
       .limit(1);
     if (!defaultOrg || defaultOrg.deactivatedAt) {
@@ -147,7 +166,7 @@ async function resolveSessionOrg(
         status: 404,
       };
     }
-    return { organizationId: defaultOrgId };
+    return { organizationId: defaultOrgId, role: defaultOrg.role ?? null };
   }
 
   // Single query joining organization to the caller's membership row. We can't
@@ -156,7 +175,7 @@ async function resolveSessionOrg(
   // authenticated user enumerate org ids and slugs. A deactivated org is
   // excluded here too, so it reads as not-found rather than accessible.
   const match = await db
-    .select({ id: organization.id })
+    .select({ id: organization.id, role: member.role })
     .from(organization)
     .innerJoin(
       member,
@@ -179,7 +198,30 @@ async function resolveSessionOrg(
     };
   }
 
-  return { organizationId: targetOrgId };
+  return { organizationId: targetOrgId, role: match[0]?.role ?? null };
+}
+
+/**
+ * Refuses a viewer's state-changing session request in the route itself, so a
+ * write never depends on the proxy gate (or its cache) alone. Paths a viewer
+ * may write to use the same allowlist as the proxy.
+ */
+function viewerSessionRefusal(
+  request: Request,
+  role: string | null
+): AuthFailure | null {
+  if (
+    isViewerRole(role) &&
+    isStateChangingMethod(request.method) &&
+    !isViewerExemptMutation(new URL(request.url).pathname)
+  ) {
+    return {
+      error: VIEWER_READ_ONLY_ERROR.error,
+      code: VIEWER_READ_ONLY_ERROR.code,
+      status: 403,
+    };
+  }
+  return null;
 }
 
 export type DualAuthContext =
@@ -372,6 +414,10 @@ export async function getDualAuthContext(
   if ("error" in orgResult) {
     return orgResult;
   }
+  const viewerRefusal = viewerSessionRefusal(request, orgResult.role);
+  if (viewerRefusal) {
+    return viewerRefusal;
+  }
   return {
     userId: session.user.id,
     organizationId: orgResult.organizationId,
@@ -405,7 +451,7 @@ export type OrganizationAuthContext =
       apiKeyId: string | null;
       // OAuth token scope (mcp:read|write|admin). Also set for scoped API keys.
       // Undefined for session callers and unscoped keys, which scopeSatisfies()
-      // treats as full access.
+      // treats as full access. A viewer's session is mcp:read on writes.
       scope?: string;
     }
   | AuthFailure;
@@ -477,6 +523,10 @@ export async function resolveOrganizationId(
       status: 400,
     };
   }
+  const viewerRefusal = viewerSessionRefusal(request, orgResult.role);
+  if (viewerRefusal) {
+    return viewerRefusal;
+  }
   return {
     organizationId: orgResult.organizationId,
     authMethod: "session",
@@ -496,7 +546,8 @@ export async function resolveCreatorContext(request: Request): Promise<
       apiKeyId: string | null;
       // OAuth token scope (mcp:read|write|admin). Also set for scoped API keys.
       // Undefined for session callers and unscoped keys, which scopeSatisfies()
-      // treats as full access for backwards compatibility.
+      // treats as full access for backwards compatibility. A viewer's session
+      // is mcp:read on writes.
       scope?: string;
     }
   | AuthFailure
@@ -552,6 +603,10 @@ export async function resolveCreatorContext(request: Request): Promise<
       code: ApiErrorCodes.INVALID_INPUT,
       status: 400,
     };
+  }
+  const viewerRefusal = viewerSessionRefusal(request, orgResult.role);
+  if (viewerRefusal) {
+    return viewerRefusal;
   }
   return {
     organizationId: orgResult.organizationId,

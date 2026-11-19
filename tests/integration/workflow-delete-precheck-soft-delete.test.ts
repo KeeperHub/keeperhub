@@ -39,6 +39,7 @@ vi.mock("@/lib/workflow/access", () => ({
     isCreatorWithCurrentAccess: true,
     isSameOrg: true,
     hasFullAccess: true,
+    canEdit: true,
     isDeleted: false,
   }),
 }));

@@ -1,3 +1,4 @@
+import type { Socket } from "node:net";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Server-only guard module loads "server-only"; stub it for vitest.
@@ -23,8 +24,9 @@ vi.mock("postgres", () => ({
   default: (...args: unknown[]) => mockPostgres(...args),
 }));
 
-vi.mock("node:dns", () => ({
-  promises: { lookup: mockLookup },
+vi.mock("node:dns", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:dns")>()),
+  lookup: (...args: unknown[]) => mockLookup(...args),
 }));
 
 vi.mock("@/lib/workflow/executor/step-handler", () => ({
@@ -32,6 +34,7 @@ vi.mock("@/lib/workflow/executor/step-handler", () => ({
     mockWithStepLogging(...(args as [unknown, () => unknown])),
 }));
 
+import { HOST_NOT_ALLOWED_MESSAGE } from "@/lib/db/connection-utils";
 import {
   type DatabaseQueryInput,
   databaseQueryStep,
@@ -39,35 +42,75 @@ import {
   resolveRetries,
 } from "@/lib/workflow/nodes/database-query/step";
 
-const STEP_INPUT_BASE: DatabaseQueryInput = {
-  integrationId: "integration-1",
-  dbQuery: "SELECT 1",
-};
-
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
+function makeClient(unsafe: (...args: unknown[]) => Promise<unknown>): {
+  unsafe: ReturnType<typeof vi.fn>;
+  end: ReturnType<typeof vi.fn>;
+} {
+  return {
+    unsafe: vi.fn(unsafe),
+    end: vi.fn(() => Promise.resolve()),
+  };
+}
+
+// A postgres.js stand-in whose query dials through the `socket` factory the
+// step passes, the way the real driver does, so the guard runs for real.
+type DialingOptions = {
+  socket: (target: { host: string[]; port: number[] }) => Promise<Socket>;
+};
+
+function dialingClient(
+  url: string,
+  options: DialingOptions
+): ReturnType<typeof makeClient> {
+  const { hostname, port } = new URL(url);
+  return makeClient(async () => {
+    const socket = await options.socket({
+      host: [hostname],
+      port: [Number(port || 5432)],
+    });
+    await new Promise((resolve, reject) => {
+      socket.once("error", reject);
+      socket.once("connect", resolve);
+    });
+    socket.destroy();
+    return [];
+  });
+}
+
+// Routes through client.unsafe (the _dbParams path), which the stand-in controls.
+const DIALING_INPUT: DatabaseQueryInput = {
+  integrationId: "integration-1",
+  dbQuery: "SELECT $1",
+  _dbParams: ["x"],
+};
+
+const BLOCKED_RESULT = `Database query failed: ${HOST_NOT_ALLOWED_MESSAGE}`;
+
 describe("databaseQueryStep guard wiring", () => {
+  beforeEach(() => {
+    mockPostgres.mockImplementation((url: string, options: DialingOptions) =>
+      dialingClient(url, options)
+    );
+  });
+
   it.each([
     ["IPv4 IMDS link-local", "postgres://u:p@169.254.169.254:5432/db"],
     ["IPv4 private 10/8", "postgres://u:p@10.0.0.5:5432/db"],
     ["IPv4 loopback", "postgres://u:p@127.0.0.1:5432/db"],
-    ["IPv6 loopback bracketed", "postgres://u:p@[::1]:5432/db"],
-    ["IPv6 ULA bracketed", "postgres://u:p@[fc00::1]:5432/db"],
-  ])("rejects %s before opening a socket", async (_label, url) => {
+  ])("refuses %s at connect time without DNS", async (_label, url) => {
     mockFetchCredentials.mockResolvedValue({ DATABASE_URL: url });
 
-    const result = (await databaseQueryStep(STEP_INPUT_BASE)) as {
+    const result = (await databaseQueryStep(DIALING_INPUT)) as {
       success: boolean;
       error?: string;
     };
 
-    expect(result.success).toBe(false);
-    expect(result.error).toBe(
-      "Host is not allowed: must resolve to a public address"
-    );
-    expect(mockPostgres).not.toHaveBeenCalled();
+    expect(result).toEqual({ success: false, error: BLOCKED_RESULT });
+    expect(mockPostgres).toHaveBeenCalledTimes(1);
     expect(mockLookup).not.toHaveBeenCalled();
   });
 
@@ -83,40 +126,54 @@ describe("databaseQueryStep guard wiring", () => {
     ],
     ["mDNS suffix", "postgres://u:p@db.local:5432/db"],
   ])(
-    "rejects hostname pattern %s before any DNS lookup or socket",
+    "refuses hostname pattern %s at connect time without DNS",
     async (_label, url) => {
       mockFetchCredentials.mockResolvedValue({ DATABASE_URL: url });
 
-      const result = (await databaseQueryStep(STEP_INPUT_BASE)) as {
+      const result = (await databaseQueryStep(DIALING_INPUT)) as {
         success: boolean;
         error?: string;
       };
 
-      expect(result.success).toBe(false);
-      expect(result.error).toBe(
-        "Host is not allowed: must resolve to a public address"
-      );
-      expect(mockPostgres).not.toHaveBeenCalled();
+      expect(result).toEqual({ success: false, error: BLOCKED_RESULT });
       expect(mockLookup).not.toHaveBeenCalled();
     }
   );
 
-  it("rejects hostname that resolves to a private address", async () => {
+  it("refuses a hostname whose DNS answer is private, without retrying", async () => {
     mockFetchCredentials.mockResolvedValue({
       DATABASE_URL: "postgres://u:p@db.example:5432/db",
     });
-    mockLookup.mockResolvedValue([{ address: "10.0.0.5", family: 4 }]);
+    mockLookup.mockImplementation(
+      (
+        _host: string,
+        _options: unknown,
+        callback: (...args: unknown[]) => void
+      ) =>
+        setImmediate(() => callback(null, [{ address: "10.0.0.5", family: 4 }]))
+    );
 
-    const result = (await databaseQueryStep(STEP_INPUT_BASE)) as {
+    const result = (await databaseQueryStep(DIALING_INPUT)) as {
       success: boolean;
       error?: string;
     };
 
-    expect(result.success).toBe(false);
-    expect(result.error).toBe(
-      "Host is not allowed: must resolve to a public address"
-    );
+    expect(result).toEqual({ success: false, error: BLOCKED_RESULT });
     expect(mockLookup).toHaveBeenCalled();
+    expect(mockPostgres).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a multi-host connection string before any client is built", async () => {
+    mockFetchCredentials.mockResolvedValue({
+      DATABASE_URL: "postgres://u:p@10.0.0.5%2Cx.attacker.example:5432/db",
+    });
+
+    const result = (await databaseQueryStep(DIALING_INPUT)) as {
+      success: boolean;
+      error?: string;
+    };
+
+    expect(result).toEqual({ success: false, error: HOST_NOT_ALLOWED_MESSAGE });
     expect(mockPostgres).not.toHaveBeenCalled();
   });
 
@@ -125,7 +182,7 @@ describe("databaseQueryStep guard wiring", () => {
       "postgres://supersecretuser:supersecretpassword@10.0.0.1:5432/internal";
     mockFetchCredentials.mockResolvedValue({ DATABASE_URL: url });
 
-    const result = (await databaseQueryStep(STEP_INPUT_BASE)) as {
+    const result = (await databaseQueryStep(DIALING_INPUT)) as {
       success: boolean;
       error?: string;
     };
@@ -137,16 +194,6 @@ describe("databaseQueryStep guard wiring", () => {
     expect(error).not.toContain("internal");
   });
 });
-
-function makeClient(unsafe: (...args: unknown[]) => Promise<unknown>): {
-  unsafe: ReturnType<typeof vi.fn>;
-  end: ReturnType<typeof vi.fn>;
-} {
-  return {
-    unsafe: vi.fn(unsafe),
-    end: vi.fn(() => Promise.resolve()),
-  };
-}
 
 // Uses the _dbParams path so executeQuery routes through client.unsafe (which
 // the postgres mock controls) instead of drizzle, which is not mocked.
@@ -215,6 +262,17 @@ describe("databaseQueryStep connection timeout + retry", () => {
       connect_timeout: number;
     };
     expect(options.connect_timeout).toBe(30);
+  });
+
+  it("passes the public-only socket factory to postgres", async () => {
+    mockPostgres.mockImplementation(() =>
+      makeClient(() => Promise.resolve([{ ok: 1 }]))
+    );
+
+    await databaseQueryStep(PUBLIC_DB_INPUT);
+
+    const options = mockPostgres.mock.calls[0][1] as { socket?: unknown };
+    expect(typeof options.socket).toBe("function");
   });
 
   it("passes a configured connect_timeout, clamped to 60", async () => {

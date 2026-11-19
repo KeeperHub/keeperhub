@@ -14,6 +14,7 @@ import {
   recordAuditEvent,
 } from "@/lib/security/audit-log";
 import { getWorkflowAccess } from "@/lib/workflow/access";
+import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 
 export async function PUT(
   request: Request,
@@ -70,6 +71,9 @@ export async function PUT(
         { error: "Workflow not found" },
         { status: 404 }
       );
+    }
+    if (!access.canEdit) {
+      return viewerReadOnlyResponse();
     }
 
     const body = await request.json().catch(() => ({}));

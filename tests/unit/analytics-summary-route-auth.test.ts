@@ -39,6 +39,11 @@ vi.mock("@/lib/db", () => ({
             limit: vi.fn(async () => []),
           })),
         })),
+        leftJoin: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn(async () => [mockOrgRow]),
+          })),
+        })),
         where: vi.fn(() => ({
           limit: vi.fn(async () => [mockOrgRow]),
         })),

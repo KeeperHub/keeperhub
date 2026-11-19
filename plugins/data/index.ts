@@ -2,6 +2,7 @@ import type { ShowWhen } from "@/lib/workflow/editor/show-when";
 import type { IntegrationPlugin } from "@/plugins/registry";
 import { registerIntegration } from "@/plugins/registry-core";
 import { DataIcon } from "./icon";
+import { checkCompareArraysConfig } from "./steps/compare-arrays-core";
 import { checkFilterConfig, IGNORE_CASE_DEFAULT } from "./filter-config";
 import {
   DEFAULT_FILTER_OPERATOR,
@@ -42,6 +43,89 @@ const dataPlugin: IntegrationPlugin = {
   },
 
   actions: [
+    {
+      slug: "compare-arrays",
+      label: "Compare Arrays",
+      description:
+        "Compare two arrays, typically the value a previous run stored (State Get) against this run's value, and report which items were added, removed or changed. Match items by value, or by a key field such as id. Pure comparison: chain State Get, this node and State Set to alert on changes and store the new list.",
+      category: "Data",
+      stepFunction: "compareArraysStep",
+      stepImportPath: "compare-arrays",
+      requiresCredentials: false,
+      validateConfig: checkCompareArraysConfig,
+      outputFields: [
+        { field: "success", description: "Whether the comparison succeeded" },
+        {
+          field: "added",
+          description: "Items in Current that are not in Previous",
+        },
+        {
+          field: "removed",
+          description: "Items in Previous that are not in Current",
+        },
+        {
+          field: "changed",
+          description:
+            "With a Key field: the Current version of each item whose key is on both sides but whose content differs. Always empty without one",
+        },
+        {
+          field: "previousChanged",
+          description:
+            "The Previous version of each changed item, in the same order as changed",
+        },
+        {
+          field: "unchanged",
+          description: "Items present and identical on both sides",
+        },
+        {
+          field: "merged",
+          description:
+            "Previous with changed items replaced by their Current version and added items appended. Removed items are kept, so once it is stored they show as removed on every later run: check addedCount rather than hasChanges, or store Current to drop them",
+        },
+        { field: "addedCount", description: "Number of added items" },
+        { field: "removedCount", description: "Number of removed items" },
+        { field: "changedCount", description: "Number of changed items" },
+        {
+          field: "hasChanges",
+          description:
+            "True when anything was added, removed or changed. Use it when you store Current; when you store merged, removed items stay in it, so check addedCount instead",
+        },
+        { field: "error", description: "Error message if the comparison failed" },
+      ],
+      configFields: [
+        {
+          key: "previous",
+          label: "Previous",
+          type: "template-textarea",
+          rows: 2,
+          placeholder: "{{@node1:Get State.value}}",
+          helpTip:
+            "A JSON array, usually State Get's value. Empty, null or missing counts as an empty array, so the first run, where nothing is stored yet, works. Up to 10,000 items.",
+          example: '["0xabc...", "0xdef..."]',
+        },
+        {
+          key: "current",
+          label: "Current",
+          type: "template-textarea",
+          required: true,
+          rows: 2,
+          placeholder: "{{@node2:Find Addresses.items}}",
+          helpTip: "A JSON array, this run's value. Up to 10,000 items.",
+          example: '["0xabc...", "0x123..."]',
+        },
+        {
+          key: "keyField",
+          label: "Key field",
+          type: "template-input",
+          placeholder: "id or meta.id",
+          defaultValue: "",
+          helpText:
+            "Optional. Match items of objects by this field instead of by whole value.",
+          helpTip:
+            "Dotted path inside each item, e.g. id or meta.id. Items with the same key on both sides are compared by content: a difference puts the Current item in changed. Key order inside objects does not matter. An item with no value at this path fails the step. If a key repeats within one array, the first item wins.\n\nLeave blank to match items by whole value; then nothing is ever changed, only added or removed.",
+        },
+      ],
+    },
     {
       slug: "encode",
       label: "Encode / Decode",

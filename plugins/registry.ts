@@ -1,4 +1,5 @@
 import type { IntegrationType } from "@/lib/types/integration";
+import { resolveDefaultOnFlag, resolveSwitch } from "@/lib/utils";
 import {
   evaluateShowWhen,
   type ShowWhen,
@@ -44,7 +45,7 @@ export type ActionConfigFieldBase = {
     | "template-textarea" // TemplateBadgeTextarea - supports {{variable}}
     | "text" // Regular text input
     | "number" // Number input
-    | "switch" // Generic boolean toggle; on only when the value is true or "true", or defaultValue is "true" while unset
+    | "switch" // Generic boolean toggle; read by resolveSwitch (editor, step and pin schema): unset or blank takes defaultValue
     | "fail-on-error-switch" // "Fail workflow on error" toggle, shares HTTP Request's default-on resolution; not a generic boolean switch, ignores defaultValue in the renderer
     | "gas-sponsorship-switch" // "Sponsor gas" toggle on a write action; default-on, skips the sponsored route entirely when off
     | "datetime" // Native date + time picker (stores an ISO 8601 string)
@@ -674,6 +675,30 @@ const DISPLAY_ONLY_FIELD_SUFFIXES = [
   "-test-node",
   "-notice",
 ] as const;
+
+// These resolve through resolveDefaultOnFlag, which ignores defaultValue.
+const DEFAULT_ON_TOGGLE_TYPES: ReadonlySet<string> = new Set([
+  "fail-on-error-switch",
+  "gas-sponsorship-switch",
+]);
+
+// Field types that hold a true/false toggle. The action schema and the MCP
+// pin schema both read this, so they agree on which toggle fields are booleans.
+const TOGGLE_FIELD_TYPES: ReadonlySet<string> = new Set([
+  "switch",
+  ...DEFAULT_ON_TOGGLE_TYPES,
+]);
+
+export function isToggleField(type: string | undefined): boolean {
+  return type !== undefined && TOGGLE_FIELD_TYPES.has(type);
+}
+
+/** What a toggle does when it is left unset, by the rule its step applies. */
+export function toggleDefault(field: ActionConfigFieldBase): boolean {
+  return DEFAULT_ON_TOGGLE_TYPES.has(field.type)
+    ? resolveDefaultOnFlag(undefined)
+    : resolveSwitch(undefined, field.defaultValue) === true;
+}
 
 export function isDisplayOnlyField(type: string | undefined): boolean {
   return (

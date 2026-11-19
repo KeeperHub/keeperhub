@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Pager } from "@/components/activity/pager";
 import { DualFactorInput } from "@/components/auth/dual-factor-input";
 import { DualFactorSteps } from "@/components/auth/dual-factor-steps";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,6 +20,7 @@ import {
   signStepUpChallenge,
 } from "@/lib/wallet/step-up-client";
 import { usePaginatedResource } from "@/lib/hooks/use-paginated-resource";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { useActiveMember } from "@/lib/hooks/use-organization";
 import type { Page, PageMeta } from "@/lib/pagination";
 import { useDualFactorState } from "@/lib/mfa/use-dual-factor-state";
@@ -842,6 +844,7 @@ export function ApiKeysPanel({
 }: ApiKeysPanelProps) {
   const { push } = useOverlay();
   const { isAdmin, role } = useActiveMember();
+  const { canEdit, isViewer } = useOrgAccess();
   const { data: session } = useSession();
   // Webhook keys are personal, so their creator is the current user.
   const currentUser = {
@@ -891,13 +894,17 @@ export function ApiKeysPanel({
   return (
     <div className="space-y-4">
       <div className="flex justify-end">
-        <Button
-          disabled={activeTab === "organisation" && !canManageOrgKeys}
-          onClick={createKey}
-          variant="outline"
-        >
-          New API Key
-        </Button>
+        <ViewOnlyTooltip isViewer={isViewer}>
+          <Button
+            disabled={
+              !canEdit || (activeTab === "organisation" && !canManageOrgKeys)
+            }
+            onClick={createKey}
+            variant="outline"
+          >
+            New API Key
+          </Button>
+        </ViewOnlyTooltip>
       </div>
       <McpEndpointCard />
       <Tabs className="-mt-2" onValueChange={setActiveTab} value={activeTab}>

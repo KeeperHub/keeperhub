@@ -10,10 +10,14 @@ import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { fetchCredentials } from "@/lib/credential-fetcher";
-import { assertConnectionUrlIsPublic } from "@/lib/db/connection-host-guard";
+import {
+  assertSinglePostgresHost,
+  withPublicOnlySocket,
+} from "@/lib/db/connection-host-guard";
 import {
   getDatabaseErrorMessage,
   getPostgresConnectionOptions,
+  HOST_NOT_ALLOWED_MESSAGE,
   type PostgresSslOption,
 } from "@/lib/db/connection-utils";
 import { MAX_CAUSE_DEPTH } from "@/lib/errors/cause-chain";
@@ -78,12 +82,18 @@ function createDatabaseClient(
   ssl: PostgresSslOption,
   connectTimeoutSeconds: number = DEFAULT_CONNECT_TIMEOUT_SECONDS
 ): postgres.Sql {
-  return postgres(normalizedUrl, {
-    max: 1,
-    connect_timeout: connectTimeoutSeconds,
-    idle_timeout: 20,
-    ssl: ssl as false | "require" | "prefer",
-  });
+  return postgres(
+    normalizedUrl,
+    withPublicOnlySocket(
+      {
+        max: 1,
+        connect_timeout: connectTimeoutSeconds,
+        idle_timeout: 20,
+        ssl: ssl as false | "require" | "prefer",
+      },
+      "database-query"
+    )
+  );
 }
 
 /** Serialize template-resolved values into types postgres.js can bind directly */
@@ -253,14 +263,14 @@ async function databaseQuery(
   );
 
   try {
-    await assertConnectionUrlIsPublic(normalizedUrl);
+    assertSinglePostgresHost(normalizedUrl);
   } catch (guardError) {
     return {
       success: false,
       error:
         guardError instanceof Error
           ? guardError.message
-          : "Host is not allowed: must resolve to a public address",
+          : HOST_NOT_ALLOWED_MESSAGE,
     };
   }
 

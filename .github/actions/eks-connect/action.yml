@@ -63,7 +63,13 @@ runs:
         # stays the real hostname.
         echo "127.0.0.1 ${HOST}" | sudo tee -a /etc/hosts >/dev/null
 
-        sudo -E env "PATH=$PATH" aws ssm start-session \
+        # The session listens on local port 443, which only root may open by
+        # default. Running it under sudo strips the AWS credentials from its
+        # environment, so let unprivileged users open 443 and run it as the
+        # runner user instead. The runner VM is discarded after the job.
+        sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443
+
+        aws ssm start-session \
           --region "$REGION" \
           --target "$INSTANCE_ID" \
           --document-name AWS-StartPortForwardingSessionToRemoteHost \

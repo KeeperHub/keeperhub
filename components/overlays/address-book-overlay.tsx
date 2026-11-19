@@ -25,7 +25,9 @@ import type { AddressBookEntry } from "@/lib/api-client";
 import { addressBookApi } from "@/lib/api-client";
 import { useSession } from "@/lib/auth-client";
 import { useDebounce } from "@/lib/hooks/use-debounce";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { usePagination } from "@/lib/hooks/use-pagination";
+import { VIEWER_DISABLED_REASON } from "@/lib/organization/role-label";
 
 type AddressBookOverlayProps = {
   overlayId: string;
@@ -163,6 +165,7 @@ function AddressBookSearchAndControls({
 }
 
 type AddressBookTableProps = {
+  canEdit: boolean;
   entries: AddressBookEntry[];
   deleting: string | null;
   onDelete: (entry: AddressBookEntry) => void;
@@ -171,6 +174,7 @@ type AddressBookTableProps = {
 };
 
 function AddressBookTable({
+  canEdit,
   entries,
   deleting,
   onDelete,
@@ -190,6 +194,7 @@ function AddressBookTable({
         <TableBody>
           {entries.map((entry) => (
             <AddressBookRow
+              canEdit={canEdit}
               deleting={deleting}
               entry={entry}
               key={entry.id}
@@ -290,6 +295,7 @@ function AddressBookPagination({
 export function AddressBookOverlay({ overlayId }: AddressBookOverlayProps) {
   const { push, closeAll } = useOverlay();
   const { data: session } = useSession();
+  const { canEdit, isViewer } = useOrgAccess();
   const [loading, setLoading] = useState(true);
   const [entries, setEntries] = useState<AddressBookEntry[]>([]);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -417,6 +423,8 @@ export function AddressBookOverlay({ overlayId }: AddressBookOverlayProps) {
                 label: "Add New Address",
                 variant: "outline" as const,
                 onClick: handleOpenAddForm,
+                disabled: !canEdit,
+                disabledReason: isViewer ? VIEWER_DISABLED_REASON : undefined,
               },
             ]),
         { label: "Done", onClick: closeAll },
@@ -457,6 +465,7 @@ export function AddressBookOverlay({ overlayId }: AddressBookOverlayProps) {
             ) : (
               <>
                 <AddressBookTable
+                  canEdit={canEdit}
                   deleting={deleting}
                   entries={paginatedEntries}
                   onDelete={handleDelete}
