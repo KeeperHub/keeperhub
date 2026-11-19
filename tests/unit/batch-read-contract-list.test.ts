@@ -2429,6 +2429,60 @@ describe("batch-read-contract - second review, round 2", () => {
     );
   });
 
+  it("pins the flat readings the count and the slot check rule out", async () => {
+    // u as an object after t's span: x missing, t flat lines up, so no t blame.
+    const after = abiWith("f", [
+      uint("x"),
+      { name: "t", ...pair },
+      { name: "u", ...pair },
+    ]);
+    expect(
+      await failure({ ...argsList([[1, 2, { c: 1, d: 2 }]], "f"), abi: after })
+    ).toBe(
+      'Argument Sets entry 1 has 3 values for f (x, t, u), which takes 3 when t is an object, or 4 when t is given flat as its 2 members. Make each entry an array like [1, {"a": 1, "b": 1}, {"a": 1, "b": 1}].'
+    );
+    // An object may land on a tuple member when t is read flat.
+    const inner = abiWith("g", [
+      {
+        name: "t",
+        type: "tuple",
+        components: [
+          uint("a"),
+          { name: "b", type: "tuple", components: [uint("c")] },
+        ],
+      },
+      uint("x"),
+      uint("y"),
+    ]);
+    expect(
+      await failure({ ...argsList([[1, { c: 1 }, 2, 3, 4]], "g"), abi: inner })
+    ).toBe(
+      'Argument Sets entry 1 has 5 values for g (t, x, y), which takes 3 when t is an object, or 4 when t is given flat as its 2 members. Make each entry an array like [{"a": 1, "b": {"c": 1}}, 1, 1].'
+    );
+    // An object on a plain input rules out every flat reading.
+    const blocked = abiWith("h", [{ name: "t", ...pair }, uint("x")]);
+    expect(
+      await failure({ ...argsList([[1, 2, { z: 1 }, 4]], "h"), abi: blocked })
+    ).toBe(
+      'Argument Sets entry 1 has 4 values, but h takes 2 (t, x). Make each entry an array like [{"a": 1, "b": 1}, 1].'
+    );
+    // Two tuples starting with a tuple: the first one is named.
+    const nested = {
+      type: "tuple",
+      components: [
+        { name: "i", type: "tuple", components: [uint("p")] },
+        uint("c"),
+      ],
+    };
+    const twoNested = abiWith("k", [
+      { name: "o", ...nested },
+      { name: "n", ...nested },
+    ]);
+    expect(await failure({ ...argsList([[1, 2]], "k"), abi: twoNested })).toBe(
+      'Argument Sets entry 1: o must be an object with its member names, like {"i": {"p": 1}, "c": 1}, got 1.'
+    );
+  });
+
   it("names two flat tuples and a three-member one", async () => {
     const two = abiWith("f", [
       { name: "t", ...pair },

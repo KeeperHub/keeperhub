@@ -833,11 +833,7 @@ function countMismatch(
       !isPlainObject(args[i]) &&
       !(canGoFlat(input) && input.components?.length === 1)
   );
-  if (
-    (flat.length === 0 || flatCount === args.length) &&
-    args.length === takes &&
-    index !== -1
-  ) {
+  if (flat.length === 0 && args.length === takes && index !== -1) {
     const input = fn.inputs[index];
     const members = input.components?.length ?? 0;
     if (!canGoFlat(input)) {
