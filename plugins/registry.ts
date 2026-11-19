@@ -693,6 +693,11 @@ const TOGGLE_FIELD_TYPES: ReadonlySet<string> = new Set([
   ...DEFAULT_ON_TOGGLE_TYPES,
 ]);
 
+/** Every on/off toggle field type, for checks that must cover each one. */
+export function toggleFieldTypes(): string[] {
+  return [...TOGGLE_FIELD_TYPES];
+}
+
 export function isToggleField(type: string | undefined): boolean {
   return type !== undefined && TOGGLE_FIELD_TYPES.has(type);
 }

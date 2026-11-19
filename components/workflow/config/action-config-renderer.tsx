@@ -996,17 +996,21 @@ function renderField(
   );
 }
 
-// A shown toggle holding neither on nor off needs a fix, so its group
-// opens to show it.
-function holdsStrayToggle(
+// The shown toggles holding neither on nor off, as one comparable string.
+// Each needs a fix, so its group opens to show it.
+function strayToggles(
   fields: ActionConfigFieldBase[],
   config: Record<string, unknown>
-): boolean {
-  return fields.some(
-    (field) =>
-      isToggleField(field.type) &&
-      !isToggleValue(config[field.key]) &&
-      isFieldShown(field, config)
+): string {
+  return JSON.stringify(
+    fields
+      .filter(
+        (field) =>
+          isToggleField(field.type) &&
+          !isToggleValue(config[field.key]) &&
+          isFieldShown(field, config)
+      )
+      .map((field) => [field.key, config[field.key]])
   );
 }
 
@@ -1030,22 +1034,24 @@ function FieldGroup({
   defaultExpanded?: boolean;
   nodeId?: string;
 }) {
-  const holdsStray = holdsStrayToggle(fields, config);
+  const stray = strayToggles(fields, config);
+  const holdsStray = stray !== "[]";
   const [isExpanded, setIsExpanded] = useState(
     () => defaultExpanded || holdsStray
   );
-  // Also when a stray value arrives later (AI edit, undo, version restore).
+  // Also when a stray value arrives later (AI edit, undo, version restore),
+  // including a second one while the user has the group shut.
   useEffect(() => {
-    if (holdsStray) {
+    if (stray !== "[]") {
       setIsExpanded(true);
     }
-  }, [holdsStray]);
+  }, [stray]);
   // Only worth computing for the collapsed state: expanded, the fields speak
   // for themselves.
   const summary = isExpanded ? null : summariseGroup(fields, config);
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2" data-field-group="">
       <div className="flex items-center gap-1">
         <button
           className="ml-1 flex items-center gap-1 text-left"

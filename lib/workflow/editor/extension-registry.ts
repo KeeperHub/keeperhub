@@ -14,14 +14,16 @@ import type { ActionConfigFieldBase } from "@/plugins/registry";
 // Custom Field Renderers (for action-config-renderer.tsx)
 // ============================================================================
 
-type FieldRendererContext = {
+export type FieldRendererContext = {
   field: ActionConfigFieldBase;
   config: Record<string, unknown>;
   onUpdateConfig: (key: string, value: unknown) => void;
   disabled?: boolean;
 };
 
-type CustomFieldRenderer = (context: FieldRendererContext) => ReactNode | null;
+export type CustomFieldRenderer = (
+  context: FieldRendererContext
+) => ReactNode | null;
 
 const customFieldRenderers: Map<string, CustomFieldRenderer> = new Map();
 

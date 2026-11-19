@@ -28,6 +28,7 @@ function render(value: unknown): void {
         id="sponsorGas"
         label="Sponsor gas"
         onChange={vi.fn()}
+        resetOnly={false}
         value={value}
       />
     );

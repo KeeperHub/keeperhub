@@ -11,7 +11,7 @@ type SponsorGasFieldProps = {
   value: unknown;
   onChange: (value: boolean | undefined) => void;
   disabled?: boolean;
-  resetOnly?: boolean;
+  resetOnly: boolean;
 };
 
 /**

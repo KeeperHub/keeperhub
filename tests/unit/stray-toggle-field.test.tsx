@@ -11,41 +11,34 @@ import { ActionConfigRenderer } from "@/components/workflow/config/action-config
 import { FailOnErrorSwitchField } from "@/components/workflow/config/fail-on-error-switch-field";
 import { PlainSwitchField } from "@/components/workflow/config/plain-switch-field";
 import { SponsorGasField } from "@/components/workflow/config/sponsor-gas-field";
+import { TOGGLE_FIELD_RENDERERS } from "@/components/workflow/config/toggle-field-renderers";
 import { registerFieldRenderer } from "@/lib/workflow/editor/extension-registry";
 import { fieldIsSet } from "@/lib/workflow/editor/group-summary";
 import { sponsorGasField } from "@/plugins/field-fragments";
 import {
   type ActionConfigField,
+  type ActionConfigFieldBase,
+  isDefaultOnToggleField,
   isFieldShown,
   isShownOnlyToFix,
+  toggleFieldTypes,
 } from "@/plugins/registry";
 
 const TEMPLATE = "{{@webhook:Webhook.flag}}";
 const HINT =
-  "Holds a template or other value, not on or off. A save refuses a new value like this.";
+  "Holds a template or other value, not on or off. It runs as saved, but a save refuses a new value like this.";
 const LOCKED_HINT =
-  "This setting is hidden for the current choices, so reset it.";
+  "It is normally hidden with these settings, so it can only be reset here.";
 const RESET = "Reset to default";
 // A network sponsorship does not cover, so Sponsor gas is hidden.
 const UNCOVERED_NETWORK = "999999999";
 const COVERED_NETWORK = "1";
 
-// Same wiring as the real renderer in lib/workflow/editor/extensions.tsx,
-// which pulls in the whole editor.
-registerFieldRenderer(
-  "gas-sponsorship-switch",
-  ({ field, config, onUpdateConfig, disabled }) => (
-    <SponsorGasField
-      disabled={disabled}
-      id={field.key}
-      key={field.key}
-      label={field.label}
-      onChange={(next) => onUpdateConfig(field.key, next)}
-      resetOnly={isShownOnlyToFix(field, config)}
-      value={config[field.key]}
-    />
-  )
-);
+// The real toggle renderers, as lib/workflow/editor/extensions.tsx registers
+// them (that file pulls in the whole editor).
+for (const [type, renderer] of Object.entries(TOGGLE_FIELD_RENDERERS)) {
+  registerFieldRenderer(type, renderer);
+}
 
 let container: HTMLDivElement;
 let root: Root;
@@ -237,6 +230,7 @@ describe("the stray-value hint on every toggle", () => {
           id="t"
           label="Sponsor gas"
           onChange={(next) => next === undefined && onReset()}
+          resetOnly={false}
           value={value}
         />
       ),
@@ -249,6 +243,7 @@ describe("the stray-value hint on every toggle", () => {
           id="t"
           label="Fail workflow on error"
           onChange={(next) => next === undefined && onReset()}
+          resetOnly={false}
           value={value}
         />
       ),
@@ -280,7 +275,10 @@ describe("the stray-value hint on every toggle", () => {
         const button = resetButton();
         expect(button?.getAttribute("type")).toBe("button");
         // The accessible name keeps the visible text and adds the field.
-        expect(button?.textContent).toBe(`${RESET} (${label})`);
+        expect(button?.textContent).toBe(
+          `${RESET} (${label === "Ignore case" ? "off" : "on"}), ${label}`
+        );
+        expect(button?.getAttribute("aria-describedby")).toMatch(/-stray$/);
         act(() => button?.click());
         expect(onReset).toHaveBeenCalledTimes(1);
       }
@@ -341,7 +339,7 @@ describe("a stray value that arrives after the panel opened", () => {
 
 describe("a hidden toggle", () => {
   const field = { ...sponsorGasField(), hidden: true };
-  const config = { network: COVERED_NETWORK, sponsorGas: TEMPLATE };
+  const config = { network: UNCOVERED_NETWORK, sponsorGas: TEMPLATE };
 
   it("is never shown, counted or offered to fix", () => {
     expect(isFieldShown(field, config)).toBe(false);
@@ -351,5 +349,130 @@ describe("a hidden toggle", () => {
       root.render(<Harness fields={[field]} initial={config} />);
     });
     expect(sponsorToggle()).toBeNull();
+  });
+});
+
+describe("every toggle field type", () => {
+  it("has a real renderer, and a default-on one locks when shown only to fix", () => {
+    for (const type of toggleFieldTypes()) {
+      expect(Object.hasOwn(TOGGLE_FIELD_RENDERERS, type), type).toBe(true);
+      if (!isDefaultOnToggleField(type)) {
+        continue;
+      }
+      const field: ActionConfigFieldBase = {
+        key: "t",
+        label: "T",
+        type: type as ActionConfigFieldBase["type"],
+        showWhen: { field: "mode", equals: "shown" },
+      };
+      const config = { mode: "hidden", t: TEMPLATE };
+      expect(isShownOnlyToFix(field, config), type).toBe(true);
+      const element = TOGGLE_FIELD_RENDERERS[type]({
+        field,
+        config,
+        onUpdateConfig: vi.fn(),
+      });
+      act(() => root.render(element));
+      expect(
+        container.querySelector<HTMLButtonElement>("#t")?.disabled,
+        type
+      ).toBe(true);
+      expect(resetButton(), type).toBeDefined();
+    }
+  });
+});
+
+describe("a read-only form with a stray Sponsor gas shown only to fix", () => {
+  it("shows the first sentence only, with no Reset", () => {
+    act(() => {
+      root.render(
+        <ActionConfigRenderer
+          config={{ network: UNCOVERED_NETWORK, sponsorGas: TEMPLATE }}
+          disabled
+          fields={[sponsorGasField()]}
+          onUpdateConfig={vi.fn()}
+        />
+      );
+    });
+    expect(container.textContent).toContain(HINT);
+    expect(container.textContent).not.toContain(LOCKED_HINT);
+    expect(resetButton()).toBeUndefined();
+  });
+});
+
+describe("focus after Reset", () => {
+  it("moves to the switch while the field stays", () => {
+    renderFields({ network: COVERED_NETWORK, sponsorGas: TEMPLATE });
+    act(() => resetButton()?.click());
+    expect(document.activeElement).toBe(sponsorToggle());
+  });
+
+  it("moves to the group header when the field hides", () => {
+    renderFields({ network: UNCOVERED_NETWORK, sponsorGas: TEMPLATE });
+    act(() => resetButton()?.click());
+    expect(sponsorToggle()).toBeNull();
+    expect(document.activeElement?.tagName).toBe("BUTTON");
+    expect(document.activeElement?.textContent).toContain("Advanced");
+  });
+});
+
+describe("the collapsed group and stray values", () => {
+  const failOnError: ActionConfigFieldBase = {
+    key: "failOnError",
+    label: "Fail workflow on error",
+    type: "fail-on-error-switch",
+  };
+
+  it("opens again for a second stray value after the user shut it", () => {
+    const fields: ActionConfigField[] = [
+      {
+        type: "group",
+        label: "Advanced",
+        fields: [sponsorGasField(), failOnError],
+      },
+    ];
+    act(() => {
+      root.render(
+        <Harness
+          fields={fields}
+          initial={{ network: COVERED_NETWORK, sponsorGas: TEMPLATE }}
+        />
+      );
+    });
+    const header = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Advanced")
+    );
+    act(() => header?.click());
+    expect(sponsorToggle()).toBeNull();
+    act(() => replaceConfig({ ...saved, failOnError: TEMPLATE }));
+    expect(sponsorToggle()).not.toBeNull();
+  });
+
+  it("stays shut for a stray plain switch its condition hides", () => {
+    const fields: ActionConfigField[] = [
+      {
+        type: "group",
+        label: "Advanced",
+        fields: [
+          {
+            key: "ignoreCase",
+            label: "Ignore case",
+            type: "switch",
+            showWhen: { field: "operator", equals: "contains" },
+          },
+        ],
+      },
+    ];
+    act(() => {
+      root.render(
+        <Harness
+          fields={fields}
+          initial={{ operator: "isEmpty", ignoreCase: TEMPLATE }}
+        />
+      );
+    });
+    expect(container.textContent).not.toContain(HINT);
+    // The header chevron turns sideways while the group is shut.
+    expect(container.querySelector(".-rotate-90")).not.toBeNull();
   });
 });

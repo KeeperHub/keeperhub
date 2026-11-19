@@ -4,7 +4,7 @@ import type * as React from "react";
 
 import { SwitchField } from "@/components/workflow/config/switch-field";
 import { resolveSwitch } from "@/lib/utils";
-import type { ActionConfigFieldBase } from "@/plugins/registry";
+import { type ActionConfigFieldBase, isShownOnlyToFix } from "@/plugins/registry";
 
 type PlainSwitchFieldProps = {
   field: ActionConfigFieldBase;
@@ -32,6 +32,7 @@ export function PlainSwitchField({
       isOn={(value) => isSwitchOn(value, field.defaultValue)}
       label={field.label}
       onChange={(next) => onUpdateConfig(field.key, next)}
+      resetOnly={isShownOnlyToFix(field, config)}
       value={config[field.key]}
     />
   );

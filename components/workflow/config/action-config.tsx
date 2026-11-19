@@ -315,6 +315,7 @@ function HttpRequestFields({
         id="failOnError"
         label="Fail workflow on error"
         onChange={(next) => onUpdateConfig("failOnError", next)}
+        resetOnly={false}
         value={config?.failOnError}
       />
     </>
