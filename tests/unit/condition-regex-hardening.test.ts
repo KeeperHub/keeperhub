@@ -50,7 +50,7 @@ describe("regex hardening", () => {
         (_, i) => `matchesRegex(${FIELD}, "^${i}${"a".repeat(500)}")`
       ).join(" || ");
       expect(() => run(calls, "b")).toThrow(
-        "reached this node's matching limit of 5,000,000 while preparing its patterns. Preparing a pattern costs 2,000 per character plus 400 per step"
+        "reached this node's matching limit of 5,000,000 while preparing the patterns. Each pattern costs 2,000 per character plus 400 per step"
       );
     });
 
@@ -831,6 +831,63 @@ describe("regex hardening", () => {
       ).toContain(
         "const conditionValue_c = false; // not supported in exported code"
       );
+    });
+
+    // The run uses saved rules before the condition text; so does export.
+    it("exports a regex rule saved only as rules", () => {
+      const code = generateWorkflowSDKCode(
+        "wf",
+        [
+          {
+            id: "t",
+            type: "trigger",
+            position: { x: 0, y: 0 },
+            data: { label: "Trigger", type: "trigger", config: {} },
+          },
+          {
+            id: "c",
+            type: "action",
+            position: { x: 0, y: 0 },
+            data: {
+              label: "Check",
+              type: "action",
+              config: {
+                actionType: "Condition",
+                condition: "true",
+                conditionConfig: {
+                  group: {
+                    id: "g",
+                    logic: "AND",
+                    rules: [
+                      {
+                        id: "r",
+                        leftOperand: FIELD,
+                        operator: "matchesRegex",
+                        rightOperand: "^0x",
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+          {
+            id: "n",
+            type: "action",
+            position: { x: 0, y: 0 },
+            data: {
+              label: "Next",
+              type: "action",
+              config: { actionType: "HTTP Request" },
+            },
+          },
+        ] as WorkflowNode[],
+        [
+          { id: "e1", source: "t", target: "c" },
+          { id: "e2", source: "c", target: "n" },
+        ] as never
+      );
+      expect(code).toContain("This condition uses matchesRegex");
     });
 
     it("writes a label into a string literal as data", () => {

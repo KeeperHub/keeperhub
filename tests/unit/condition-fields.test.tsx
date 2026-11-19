@@ -33,6 +33,20 @@ const EDITED: ConditionGroup = {
   ],
 };
 
+// A rule being filled in: a field picked, no value yet. It writes "true".
+const PARTIAL: ConditionGroup = {
+  id: "p",
+  logic: "AND",
+  rules: [
+    {
+      id: "r",
+      leftOperand: "{{@n1:Webhook.value}}",
+      operator: "===",
+      rightOperand: "",
+    },
+  ],
+};
+
 vi.mock("@/components/workflow/condition-query-builder", () => ({
   ConditionQueryBuilder: ({
     group,
@@ -42,9 +56,19 @@ vi.mock("@/components/workflow/condition-query-builder", () => ({
     onChange: (group: ConditionGroup) => void;
   }) => (
     <div>
-      <div data-testid="builder">{group.rules.length}</div>
+      <div data-group-id={group.id} data-testid="builder">
+        {group.rules.length}
+      </div>
+      <div data-testid="first-left">
+        {"leftOperand" in (group.rules[0] ?? {})
+          ? (group.rules[0] as { leftOperand: string }).leftOperand
+          : ""}
+      </div>
       <button onClick={() => onChange(EDITED)} type="button">
         Edit rule
+      </button>
+      <button onClick={() => onChange(PARTIAL)} type="button">
+        Pick a field
       </button>
     </div>
   ),
@@ -147,6 +171,17 @@ describe("Condition fields", () => {
     expect(updates).toEqual([]);
   });
 
+  // An unfinished rule runs nothing, but must stay in the builder while it
+  // is filled in.
+  it("keeps a rule being filled in on a new node", () => {
+    render({ actionType: "Condition" });
+    click("Pick a field");
+    expect(
+      container.querySelector('[data-testid="first-left"]')?.textContent
+    ).toBe(FIELD);
+    expect(container.textContent).not.toContain("can't be shown as rules");
+  });
+
   // The notice's warning: a rule edit replaces the text with the rules.
   it("writes the rules and their text when a rule is edited", () => {
     render({ actionType: "Condition", condition: `${FIELD} === 1\n|| x` });
@@ -186,9 +221,14 @@ describe("Condition fields", () => {
   it("says when the text can't be shown as rules", () => {
     render({ actionType: "Condition", condition: `${FIELD} === 1\n|| x` });
     click("Visual");
-    expect(container.textContent).toContain(
-      "This expression can't be shown as rules."
+    const notice = [...container.querySelectorAll("p")].find((p) =>
+      p.textContent?.startsWith("This expression")
     );
+    expect(notice?.textContent?.replace(/\s+/g, " ")).toBe(
+      "This expression can't be shown as rules. Any change below replaces it. To keep it, edit it in Expression mode."
+    );
+    // Announced: it appears in a region that was already on the page.
+    expect(notice?.closest('[aria-live="polite"]')).not.toBeNull();
     expect(container.textContent).toContain("Current expression");
   });
 
@@ -230,5 +270,11 @@ describe("Condition fields", () => {
       "This expression can't be shown as rules."
     );
     expect(container.textContent).toContain("Current expression");
+    // The builder starts empty rather than showing the stale blank rules.
+    expect(
+      container
+        .querySelector('[data-testid="builder"]')
+        ?.getAttribute("data-group-id")
+    ).not.toBe("g");
   });
 });

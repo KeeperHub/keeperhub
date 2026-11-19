@@ -20,6 +20,7 @@ const SYSTEM_CODEGEN_TEMPLATES: Record<string, string> = {
 };
 
 import { mentionsRegex } from "@/lib/workflow/nodes/condition/regex-calls";
+import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
 import { isSafeConditionExpression } from "@/lib/workflow/nodes/condition/safe-eval";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import {
@@ -382,7 +383,8 @@ export function generateWorkflowSDKCode(
   }
 
   function buildConditionParams(config: Record<string, unknown>): string[] {
-    const condition = (config.condition as string) || "true";
+    // The condition the run uses: saved rules first, as codegen does.
+    const condition = resolveConditionExpression(config) || "true";
     if (mentionsRegex(condition)) {
       return [`condition: ${REGEX_NOT_EXPORTED}`];
     }
@@ -620,7 +622,8 @@ ${stepBody}
     indent: string,
     visitedLocal: Set<string>
   ): string[] {
-    const condition = (node.data.config?.condition as string) || "true";
+    const condition =
+      resolveConditionExpression(node.data.config ?? {}) || "true";
     // Written as template text: only the text between references is escaped,
     // and references become ${...} with paths written as data.
     const convertedCondition = isExportableCondition(condition, sdkResolves)

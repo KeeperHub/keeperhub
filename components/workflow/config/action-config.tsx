@@ -339,13 +339,18 @@ export function ConditionFields({
   const existingConditionConfig = config?.conditionConfig as
     | { group: ConditionGroup }
     | undefined;
-  // Saved rules count only when they write the text that runs; blank rules
-  // write "true", and the run then uses the saved text instead.
+  // Saved rules count when they write the text that runs. Unfinished rules
+  // write "true", which runs nothing; they count only if no text runs either,
+  // so a rule being filled in stays in the builder.
   const savedGroup = useMemo(() => {
     const group = existingConditionConfig?.group;
-    return group && visualConditionToExpression(group) === conditionValue
-      ? group
-      : undefined;
+    if (!group) {
+      return;
+    }
+    const written = visualConditionToExpression(group);
+    const matches =
+      written === conditionValue || (written === "true" && !conditionValue);
+    return matches ? group : undefined;
   }, [existingConditionConfig, conditionValue]);
 
   // Rules for the condition text, when they rebuild it exactly, and the mode
@@ -394,18 +399,14 @@ export function ConditionFields({
     onUpdateConfig("condition", expression);
   };
 
-  // Switching modes keeps the saved rules, so switching back shows them; an
-  // edit to the text clears them, since the text is then what runs.
-  const handleModeSwitch = (newMode: "visual" | "expression"): void => {
-    setMode(newMode);
-  };
-
-  // Rules cleared by an edit come back if the text returns to what they
-  // write, so a typed-then-deleted character doesn't lose them.
+  // Switching modes keeps the saved rules; editing the text clears them, since
+  // the text then runs. They come back if the text returns to what they write.
   const rulesBeforeEdit = useRef<ConditionGroup | undefined>(undefined);
   const handleExpressionChange = (value: string): void => {
     const rules = savedGroup ?? rulesBeforeEdit.current;
-    if (rules && visualConditionToExpression(rules) === value) {
+    const written = rules && visualConditionToExpression(rules);
+    // Unfinished rules write "true"; a typed "true" stays the text.
+    if (rules && written !== "true" && written === value) {
       if (!savedGroup) {
         onUpdateConfig("conditionConfig", { group: rules });
       }
@@ -413,7 +414,9 @@ export function ConditionFields({
       return;
     }
     if (existingConditionConfig) {
-      rulesBeforeEdit.current = savedGroup;
+      if (savedGroup && visualConditionToExpression(savedGroup) !== "true") {
+        rulesBeforeEdit.current = savedGroup;
+      }
       onUpdateConfig("conditionConfig", undefined);
     }
     onUpdateConfig("condition", value);
@@ -449,7 +452,7 @@ export function ConditionFields({
                 : "text-muted-foreground hover:text-foreground"
             }`}
             disabled={disabled}
-            onClick={() => handleModeSwitch("visual")}
+            onClick={() => setMode("visual")}
             type="button"
           >
             Visual
@@ -461,7 +464,7 @@ export function ConditionFields({
                 : "text-muted-foreground hover:text-foreground"
             }`}
             disabled={disabled}
-            onClick={() => handleModeSwitch("expression")}
+            onClick={() => setMode("expression")}
             type="button"
           >
             Expression
@@ -469,17 +472,18 @@ export function ConditionFields({
         </div>
       </div>
 
+      {/* Mounted in both modes, so switching to Visual announces it. */}
+      <div aria-live="polite">
+        {mode === "visual" && !shownAsRules && conditionValue.trim() && (
+          <p className="text-muted-foreground text-xs">
+            This expression can't be shown as rules. Any change below replaces
+            it. To keep it, edit it in Expression mode.
+          </p>
+        )}
+      </div>
+
       {mode === "visual" ? (
         <div className="space-y-3">
-          {/* Always mounted, so screen readers announce it when it appears. */}
-          <div aria-live="polite">
-            {!shownAsRules && conditionValue.trim() && (
-              <p className="text-muted-foreground text-xs">
-                This expression can't be shown as rules. Adding a rule here
-                replaces it; to keep it, edit it in Expression mode.
-              </p>
-            )}
-          </div>
           <ConditionQueryBuilder
             disabled={disabled}
             group={currentGroup}

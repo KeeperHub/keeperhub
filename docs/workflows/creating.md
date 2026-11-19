@@ -229,7 +229,7 @@ prefix is enough - since the string operators read text but none of them is an e
 
 #### Expression Mode
 
-Expression mode allows you to write raw JavaScript condition expressions for advanced logic. A condition opens as rules only when the rules write exactly its text; otherwise, for example when it spans several lines or is spaced differently, it opens in Expression mode, so opening it never changes what it does. In addition to the comparison and logical operators in the Visual Builder, you can use arithmetic operators for calculations:
+Expression mode allows you to write raw JavaScript condition expressions for advanced logic. In addition to the comparison and logical operators in the Visual Builder, you can use arithmetic operators for calculations:
 
 | Operator | Description |
 | -------- | ----------- |
@@ -248,6 +248,8 @@ Expression mode allows you to write raw JavaScript condition expressions for adv
 - `{{@GetRewards:Rewards.amount}} % 10 === 0` - Check if rewards are divisible by 10
 
 Expression mode also supports JavaScript methods, array indexing, and property access for complex logic.
+
+A condition opens in the Visual Builder only if the builder would write exactly the same text. Otherwise (for example, an expression on several lines or with different spacing) it opens in Expression mode, so opening it never changes what it does. Switching it to Visual shows an empty builder, and any change there replaces the expression.
 
 #### Dual Output Paths
 
