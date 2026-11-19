@@ -10,12 +10,12 @@ vi.mock("@/lib/metrics/instrumentation/plugin", async () =>
   (await import("../mocks/step-mocks")).pluginMetricsPassthrough()
 );
 
+import { MAX_FILTER_ITEMS } from "@/plugins/data/filter-config";
 import {
   type FilterCoreInput,
   type FilterInput,
   filterStep,
 } from "@/plugins/data/steps/filter";
-import { MAX_FILTER_ITEMS } from "@/plugins/data/steps/filter-core";
 
 type FilterSuccess = {
   success: true;
@@ -120,7 +120,7 @@ describe("data/filter", () => {
         operator: "matchesRegex",
         value: "",
       });
-      expect(result.error).toContain("Enter a pattern, e.g. ^EMSP_");
+      expect(result.error).toContain("Enter a pattern, e.g. ^VAULT_");
     });
 
     it("keeps the rest with does not match regex", async () => {
@@ -1317,6 +1317,276 @@ describe("data/filter", () => {
         labels: '["a"]',
       });
       expect(result.error).toContain("Labels has 1 entry but Source has 2");
+    });
+  });
+
+  describe("Value read as a number or kept as text", () => {
+    it("keeps an 18-decimal token amount exact under equals and not equals", async () => {
+      const items = '["1", "1.000000000000000001", "1.000000000000000002"]';
+      const value = "1.000000000000000001";
+      const equal = await ok({ source: items, operator: "===", value });
+      expect(equal.indexes).toEqual([1]);
+      const notEqual = await ok({ source: items, operator: "!==", value });
+      expect(notEqual.indexes).toEqual([0, 2]);
+      const greater = await ok({ source: items, operator: ">", value });
+      expect(greater.indexes).toEqual([2]);
+    });
+
+    it("compares a long decimal Value exactly, without rounding it", async () => {
+      const value = "0.1000000000000000000001";
+      const equal = await ok({
+        source: '["0.1", "0.1000000000000000000001"]',
+        operator: "===",
+        value,
+      });
+      expect(equal.indexes).toEqual([1]);
+      const notEqual = await ok({
+        source: '["0.1", "0.1000000000000000000001"]',
+        operator: "!==",
+        value,
+      });
+      expect(notEqual.indexes).toEqual([0]);
+    });
+
+    it("reads an exact decimal written any way as a number", async () => {
+      for (const value of ["1.50", "+1.5", "001.5"]) {
+        const result = await ok({
+          source: '[[1.5], ["1.50"]]',
+          operator: "arrayContains",
+          value,
+        });
+        expect(result.indexes, value).toEqual([0]);
+      }
+    });
+
+    it("keeps a Value a double would print with an exponent as exact text", async () => {
+      const big = "1000000000000000000000";
+      const bigItems = source([
+        big,
+        "1000000000000000000001",
+        "999999999999999999999",
+      ]);
+      expect(
+        (await ok({ source: bigItems, operator: "===", value: big })).indexes
+      ).toEqual([0]);
+      expect(
+        (await ok({ source: bigItems, operator: "!==", value: big })).indexes
+      ).toEqual([1, 2]);
+      const tinyItems = source(["0.0000001", "0.00000010", "0.0000002"]);
+      expect(
+        (await ok({ source: tinyItems, operator: "===", value: "0.0000001" }))
+          .indexes
+      ).toEqual([0, 1]);
+      expect(
+        (await ok({ source: tinyItems, operator: "!==", value: "0.0000001" }))
+          .indexes
+      ).toEqual([2]);
+      const contains = await ok({
+        source: source([[big], [1e21], ["1"]]),
+        operator: "arrayContains",
+        value: `"${big}"`,
+      });
+      expect(contains.indexes).toEqual([0]);
+    });
+
+    it("matches a typed number whether an item holds it as text or as a number", async () => {
+      const big = "1000000000000000000000";
+      const items = source([big, 1e21, "1000000000000000000001", 1e20]);
+      expect(
+        (await ok({ source: items, operator: "===", value: big })).indexes
+      ).toEqual([0, 1]);
+      expect(
+        (await ok({ source: items, operator: "!==", value: big })).indexes
+      ).toEqual([2, 3]);
+      const tiny = source(["0.0000001", 1e-7, 2e-7]);
+      expect(
+        (await ok({ source: tiny, operator: "===", value: "0.0000001" }))
+          .indexes
+      ).toEqual([0, 1]);
+      const arrays = source([[1e-7], ["0.0000001"], [2e-7]]);
+      expect(
+        (
+          await ok({
+            source: arrays,
+            operator: "arrayContains",
+            value: "0.0000001",
+          })
+        ).indexes
+      ).toEqual([0]);
+      expect(
+        (
+          await ok({
+            source: arrays,
+            operator: "arrayContains",
+            value: '"0.0000001"',
+          })
+        ).indexes
+      ).toEqual([1]);
+      const small = source([[5], ["5"]]);
+      expect(
+        (await ok({ source: small, operator: "arrayContains", value: "5" }))
+          .indexes
+      ).toEqual([0]);
+      expect(
+        (await ok({ source: small, operator: "arrayContains", value: '"5"' }))
+          .indexes
+      ).toEqual([1]);
+      expect(
+        (await ok({ source: items, operator: "==", value: big })).indexes
+      ).toEqual([0, 1]);
+      // A decimal a double would round is not a number: only exact text matches.
+      const rounded = source([0.1, "0.1000000000000000000001"]);
+      expect(
+        (
+          await ok({
+            source: rounded,
+            operator: "===",
+            value: "0.1000000000000000000001",
+          })
+        ).indexes
+      ).toEqual([1]);
+    });
+
+    it("refuses a Value that reads as a number longer than 100 characters", async () => {
+      const long = `0.${"0".repeat(100)}1`;
+      for (const value of [long, `"${long}"`]) {
+        const result = await fails({ source: "[1]", operator: "===", value });
+        expect(result.error, value).toContain(
+          'Value for "General: equals" is longer than 100 characters, the limit for a number.'
+        );
+      }
+    });
+
+    it("refuses a Value longer than 10,000 characters", async () => {
+      const result = await fails({
+        source: '["a"]',
+        operator: "contains",
+        value: "x".repeat(10_001),
+      });
+      expect(result.error).toContain(
+        'Value for "Text: contains" is longer than 10,000 characters.'
+      );
+    });
+
+    it("says a half-typed array is not valid JSON", async () => {
+      const result = await fails({ source: "[1, 2", operator: "keepAll" });
+      expect(result.error).toContain(
+        "Source is not valid JSON: check its brackets and quotes, e.g. a missing ] or closing quote."
+      );
+    });
+
+    it("still reads a plain number Value as a number", async () => {
+      const result = await ok({
+        source: '[5, "5", 6]',
+        operator: "===",
+        value: "5",
+      });
+      expect(result.indexes).toEqual([0, 1]);
+    });
+
+    it("leaves labels and skippedLabels empty without Labels", async () => {
+      const result = await ok({
+        source: "[true, null, false]",
+        operator: "isTrue",
+      });
+      expect(result).toMatchObject({
+        labels: [],
+        skippedLabels: [],
+        skipped: 1,
+      });
+    });
+  });
+
+  describe("second review fixes", () => {
+    it("reads unset Ignore case as the field's declared default", async () => {
+      const unset = await ok({
+        source: '["ABC", "abc"]',
+        operator: "===",
+        value: "abc",
+      });
+      expect(unset.indexes).toEqual([1]);
+      const blank = await ok({
+        source: '["ABC", "abc"]',
+        operator: "===",
+        value: "abc",
+        ignoreCase: "",
+      });
+      expect(blank.indexes).toEqual([1]);
+    });
+
+    it("still refuses an Ignore case that is not true or false", async () => {
+      const result = await fails({
+        source: '["abc"]',
+        operator: "===",
+        value: "abc",
+        ignoreCase: "True",
+      });
+      expect(result.error).toContain(
+        "Ignore case must be true or false, in lowercase."
+      );
+    });
+
+    it("adds the lowercase hint only for a miscased true or false", async () => {
+      const result = await fails({
+        source: '["abc"]',
+        operator: "===",
+        value: "abc",
+        ignoreCase: 1,
+      });
+      expect(result.error).toBe(
+        "Filter failed: Ignore case must be true or false."
+      );
+      const spaced = await fails({
+        source: '["abc"]',
+        operator: "===",
+        value: "abc",
+        ignoreCase: " TRUE ",
+      });
+      expect(spaced.error).toBe(
+        "Filter failed: Ignore case must be true or false, with no spaces around it and in lowercase."
+      );
+    });
+
+    it("says how to skip an item that can't be tested", async () => {
+      const result = await runDefault({
+        source: "[null]",
+        operator: ">",
+        value: "1",
+      });
+      expect(result.success).toBe(false);
+      expect((result as FilterFailure).error).toBe(
+        `Filter failed: Item at index 0 can't be tested with "Number: greater than": its value is null. To keep the run going past such items, set "If an item can't be tested" to "Skip it and count it in skipped" (skip).`
+      );
+    });
+
+    it("gives each test kind the same untestable reasons as before", async () => {
+      const items = source([
+        { v: null },
+        { v: [1] },
+        { v: { a: 1 } },
+        {},
+        { v: "x" },
+      ]);
+      const cases: [string, number[]][] = [
+        [">", [0, 1, 2, 3, 4]],
+        ["isTrue", [0, 1, 2, 3, 4]],
+        ["contains", [0, 1, 2, 3]],
+        ["arrayIsEmpty", [0, 2, 3, 4]],
+        ["objectHasKey", [0, 1, 3, 4]],
+        ["==", [1, 2, 3]],
+        ["===", [3]],
+        ["exists", []],
+        ["isEmpty", []],
+      ];
+      for (const [operator, skipped] of cases) {
+        const result = await ok({
+          source: items,
+          field: "v",
+          operator,
+          value: "1",
+        });
+        expect(result.skippedIndexes, operator).toEqual(skipped);
+      }
     });
   });
 });

@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildConfigForActionTypeChange } from "@/lib/workflow/editor/action-type-transition";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
@@ -7,15 +9,18 @@ import {
   OPERATOR_METADATA,
   operatorsForCategory,
 } from "@/lib/workflow/nodes/condition/operator-metadata";
-import { validateWorkflowActionConfigs } from "@/lib/workflow/validation/action-config";
-import { filterArray } from "@/plugins/data/steps/filter-core";
+import {
+  formatActionConfigValidationResponse,
+  validateWorkflowActionConfigs,
+} from "@/lib/workflow/validation/action-config";
+import { IGNORE_CASE_DEFAULT } from "@/plugins/data/filter-config";
 import {
   FILTER_OPERATOR_OPTIONS,
+  filterOperatorRule,
+  filterOperatorsWhere,
   KEEP_ALL_OPERATOR,
-  PRESENCE_FILTER_OPERATORS,
-  VALUE_FILTER_OPERATORS,
-  VALUELESS_FILTER_OPERATORS,
-} from "@/plugins/data/steps/filter-operators";
+} from "@/plugins/data/filter-operators";
+import { filterArray } from "@/plugins/data/steps/filter-core";
 import {
   findActionById,
   flattenConfigFields,
@@ -23,6 +28,18 @@ import {
 } from "@/plugins/registry";
 
 const ACTION_TYPE = "data/filter";
+const ROOT = join(import.meta.dirname, "..", "..");
+// `import x from "y"`, `export ... from "y"` and `import "y"`, with either
+// quote and with or without a semicolon; not `import type`.
+const IMPORT_RE =
+  /^(?:(?:import|export)\s+(?!type\b)[^;]*?\sfrom\s+|import\s+)["']([^"']+)["']/gm;
+
+const VALUELESS_FILTER_OPERATORS = filterOperatorsWhere(
+  (rule) => !rule.readsValue
+);
+const PRESENCE_FILTER_OPERATORS = filterOperatorsWhere(
+  (rule) => rule.test === "presence"
+);
 
 const CONDITION_OPERATORS = Object.keys(
   OPERATOR_METADATA
@@ -143,26 +160,20 @@ describe("data/filter definition", () => {
       }
     });
 
-    it("puts every operator in exactly one handling group", () => {
+    it("shows Value exactly for the operators that are not valueless", () => {
+      const value = field("value");
       for (const option of FILTER_OPERATOR_OPTIONS) {
-        const groups = [
-          VALUELESS_FILTER_OPERATORS,
-          VALUE_FILTER_OPERATORS,
-        ].filter((list) => list.includes(option.value));
-        expect(groups, option.value).toHaveLength(1);
+        const takesValue = !VALUELESS_FILTER_OPERATORS.includes(option.value);
+        expect(
+          evaluateShowWhen(value.showWhen, { operator: option.value }),
+          option.value
+        ).toBe(takesValue);
       }
     });
 
     it("puts the grouped options on the select, defaulting to equals", () => {
       const operator = field("operator");
-      expect(operator.options).toEqual(
-        FILTER_OPERATOR_OPTIONS.map(({ value, label, group, description }) => ({
-          value,
-          label,
-          group,
-          description,
-        }))
-      );
+      expect(operator.options).toEqual([...FILTER_OPERATOR_OPTIONS]);
       expect(operator.defaultValue).toBe("===");
       expect(operator.required).toBe(true);
     });
@@ -494,4 +505,380 @@ describe("data/filter definition", () => {
       expect(issues).toEqual([]);
     });
   });
+
+  describe("save errors and what the definition loads", () => {
+    it("puts the cross-field reason in the 422 summary the editor shows", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({ source: "[1]", operator: ">", value: "abc" })
+        ),
+      ]);
+      expect(formatActionConfigValidationResponse(validation).message).toBe(
+        "Workflow contains invalid action configuration. Invalid node(s): \"Filter\": Value for 'Number: greater than' must be a number, e.g. 100 or 0x64. Fix the listed fields and save again."
+      );
+    });
+
+    it("parts entries on a semicolon when one quotes a reason", () => {
+      const bad = (id: string, label: string) => ({
+        ...actionNode(
+          editorConfig({ source: "[1]", operator: ">", value: "abc" })
+        ),
+        id,
+        data: {
+          ...actionNode(
+            editorConfig({ source: "[1]", operator: ">", value: "abc" })
+          ).data,
+          label,
+        },
+      });
+      const validation = validateWorkflowActionConfigs([
+        bad("n1", "A"),
+        bad("n2", "B"),
+        {
+          id: "n3",
+          type: "action",
+          data: {
+            label: "C",
+            type: "action",
+            config: {
+              actionType: "data/filter",
+              source: "[1]",
+              operator: "nope",
+            },
+          },
+        },
+      ]);
+      const reason =
+        "Value for 'Number: greater than' must be a number, e.g. 100 or 0x64";
+      expect(formatActionConfigValidationResponse(validation).message).toBe(
+        `Workflow contains invalid action configuration. Invalid node(s): "A": ${reason}; "B": ${reason}; "C" (operator, value). Fix the listed fields and save again.`
+      );
+    });
+
+    it("parts entries on a comma when no shown entry quotes a reason", () => {
+      const node = (id: string, config: Record<string, unknown>) => ({
+        id,
+        type: "action",
+        data: {
+          label: id,
+          type: "action",
+          config: { actionType: "data/filter", source: "[1]", ...config },
+        },
+      });
+      const validation = validateWorkflowActionConfigs([
+        node("A", { operator: "nope" }),
+        node("B", { operator: "nope" }),
+        node("C", { operator: "nope" }),
+        node("D", {
+          ...editorConfig(),
+          source: "[1]",
+          operator: ">",
+          value: "abc",
+        }),
+      ]);
+      expect(formatActionConfigValidationResponse(validation).message).toBe(
+        'Workflow contains invalid action configuration. Invalid node(s): "A" (operator, value), "B" (operator, value), "C" (operator, value), and 1 more. Fix the listed fields and save again.'
+      );
+    });
+
+    it("names a node with a blank label by its id in the summary", () => {
+      const node = actionNode(
+        editorConfig({ source: "[1]", operator: ">", value: "abc" })
+      );
+      node.data.label = "   ";
+      const validation = validateWorkflowActionConfigs([node]);
+      expect(
+        formatActionConfigValidationResponse(validation).message
+      ).toContain('Invalid node(s): "node-1": Value for');
+    });
+
+    it("keeps the condition evaluator out of what the plugin definition loads", () => {
+      const loaded = runtimeImports("plugins/data/index.ts");
+      for (const heavy of [
+        "plugins/data/steps/filter-core.ts",
+        "lib/workflow/nodes/condition/safe-eval.ts",
+        "lib/workflow/nodes/condition/expression.ts",
+      ]) {
+        expect(loaded, heavy).not.toContain(heavy);
+      }
+      expect(loaded).toContain("plugins/data/filter-config.ts");
+    });
+  });
+  describe("second review fixes", () => {
+    const RULE_FIELDS = {
+      field: "readsField",
+      value: "readsValue",
+      ignoreCase: "readsIgnoreCase",
+      untestable: "canSkip",
+    } as const;
+    type RuleField = keyof typeof RULE_FIELDS;
+
+    it("shows each operator-dependent field exactly where the step reads it", () => {
+      for (const option of FILTER_OPERATOR_OPTIONS) {
+        const rule = filterOperatorRule(option.value);
+        const shown = visibleKeys({ operator: option.value });
+        for (const key of Object.keys(RULE_FIELDS) as RuleField[]) {
+          expect(shown.includes(key), `${option.value} ${key}`).toBe(
+            rule[RULE_FIELDS[key]]
+          );
+        }
+      }
+    });
+
+    it("checks at save only the settings the operator reads", () => {
+      for (const option of FILTER_OPERATOR_OPTIONS) {
+        const rule = filterOperatorRule(option.value);
+        const read = (Object.keys(RULE_FIELDS) as RuleField[]).filter(
+          (key) => rule[RULE_FIELDS[key]]
+        );
+        // Each bad setting alone: refused exactly when the operator reads it.
+        const bad: Record<RuleField, unknown> = {
+          field: "a..b",
+          value: "",
+          ignoreCase: "maybe",
+          untestable: "maybe",
+        };
+        for (const key of Object.keys(bad) as RuleField[]) {
+          const { issues } = validateWorkflowActionConfigs([
+            actionNode(
+              editorConfig({
+                source: "[1]",
+                operator: option.value,
+                value: "1",
+                [key]: bad[key],
+              })
+            ),
+          ]);
+          expect(
+            issues.map((issue) => issue.field),
+            `${option.value} ${key}`
+          ).toEqual(read.includes(key) ? [key] : []);
+        }
+      }
+    });
+
+    it("refuses a template in Ignore case at save", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "[1]",
+            value: "1",
+            ignoreCase: "{{@cfg:Cfg.result.ignoreCase}}",
+          })
+        ),
+      ]);
+      expect(validation.valid).toBe(false);
+      expect(validation.issues.map((issue) => issue.field)).toEqual([
+        "ignoreCase",
+      ]);
+      expect(formatActionConfigValidationResponse(validation).message).toBe(
+        'Workflow contains invalid action configuration. Invalid node(s): "Filter": Ignore case does not take a template, only true or false. Fix the listed fields and save again.'
+      );
+    });
+
+    it("says why any other Ignore case value is refused", () => {
+      const cases: [unknown, string][] = [
+        ["True", "Ignore case must be true or false, in lowercase."],
+        [
+          " true",
+          "Ignore case must be true or false, with no spaces around it.",
+        ],
+        [
+          " TRUE ",
+          "Ignore case must be true or false, with no spaces around it and in lowercase.",
+        ],
+        [1, "Ignore case must be true or false."],
+        ["yes", "Ignore case must be true or false."],
+      ];
+      for (const [ignoreCase, reason] of cases) {
+        const validation = validateWorkflowActionConfigs([
+          actionNode(editorConfig({ source: "[1]", value: "1", ignoreCase })),
+        ]);
+        expect(
+          formatActionConfigValidationResponse(validation).message,
+          String(ignoreCase)
+        ).toContain(`"Filter": ${reason}`);
+      }
+    });
+
+    it("lists every field when the switch is not the node's only problem", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode({
+          operator: "===",
+          value: "a",
+          ignoreCase: "True",
+          bogus: 1,
+        }),
+      ]);
+      expect(formatActionConfigValidationResponse(validation).message).toBe(
+        'Workflow contains invalid action configuration. Invalid node(s): "Filter" (source, ignoreCase, bogus). Fix the listed fields and save again.'
+      );
+    });
+
+    it("describes a large list or object it echoes back instead of sending it", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "[1]",
+            value: "1",
+            ignoreCase: Array.from({ length: 500 }, (_, i) => i),
+            bogus: { text: "y".repeat(500) },
+          })
+        ),
+      ]);
+      const received = Object.fromEntries(
+        validation.issues.map((issue) => [issue.field, issue.received])
+      );
+      expect(received).toEqual({
+        bogus: "[an object]",
+        ignoreCase: "[a list of 500]",
+      });
+      const small = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({ source: "[1]", value: "1", ignoreCase: ["true"] })
+        ),
+      ]);
+      expect(small.issues[0]?.received).toEqual(["true"]);
+    });
+
+    it("never cuts an emoji in half when it shortens a value", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "[1]",
+            value: "1",
+            ignoreCase: `${"x".repeat(199)}${"\u{1F600}".repeat(5)}`,
+          })
+        ),
+      ]);
+      expect(validation.issues[0]?.received).toBe(`${"x".repeat(199)}...`);
+      const emojis = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "[1]",
+            value: "1",
+            ignoreCase: "\u{1F600}".repeat(150),
+          })
+        ),
+      ]);
+      expect(emojis.issues[0]?.received).toBe(`${"\u{1F600}".repeat(100)}...`);
+    });
+
+    it("never cuts an emoji in half in the summary", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "[1]",
+            value: "1",
+            ["\u{1F600}".repeat(50)]: 1,
+          })
+        ),
+      ]);
+      const { message } = formatActionConfigValidationResponse(validation);
+      expect(message.isWellFormed()).toBe(true);
+      expect(message).toContain("...");
+    });
+
+    it("echoes a small list or object as sent", () => {
+      for (const ignoreCase of [[1, 2], { a: { b: [1] } }]) {
+        const validation = validateWorkflowActionConfigs([
+          actionNode(editorConfig({ source: "[1]", value: "1", ignoreCase })),
+        ]);
+        expect(validation.issues[0]?.received).toEqual(ignoreCase);
+      }
+    });
+
+    it("parts entries on a comma when no reason is quoted", () => {
+      const node = (id: string, config: Record<string, unknown>) => ({
+        id,
+        type: "action",
+        data: {
+          label: id,
+          type: "action",
+          config: { actionType: ACTION_TYPE, ...config },
+        },
+      });
+      const validation = validateWorkflowActionConfigs([
+        node("A", { operator: "===", value: "a", ignoreCase: "True" }),
+        node("B", { operator: "nope" }),
+      ]);
+      expect(formatActionConfigValidationResponse(validation).message).toBe(
+        'Workflow contains invalid action configuration. Invalid node(s): "A" (source, ignoreCase), "B" (source, operator, value). Fix the listed fields and save again.'
+      );
+    });
+
+    it("cuts a long refused value it echoes back", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "[1]",
+            value: "1",
+            ignoreCase: "x".repeat(5000),
+          })
+        ),
+      ]);
+      const [issue] = validation.issues;
+      expect(issue?.received).toBe(`${"x".repeat(200)}...`);
+    });
+
+    it("does not echo a typed Source back in a cross-field issue", () => {
+      const validation = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: JSON.stringify([0, 1, 2, 3, 4]),
+            value: "1",
+            labels: '["a", "b", "c"]',
+          })
+        ),
+      ]);
+      expect(validation.issues).toHaveLength(1);
+      expect(validation.issues[0]).not.toHaveProperty("received");
+      expect(validation.issues[0].message).toContain(
+        "Labels has 3 entries but Source has 5"
+      );
+    });
+
+    it("declares Ignore case with the default the step applies", () => {
+      expect(field("ignoreCase").defaultValue).toBe(IGNORE_CASE_DEFAULT);
+    });
+  });
 });
+
+// Every module a file loads at run time, following value imports only (type
+// imports are erased), resolved to repo-relative paths.
+function runtimeImports(entry: string): string[] {
+  const seen = new Set<string>();
+  const pending = [entry];
+  while (pending.length > 0) {
+    const file = pending.pop() as string;
+    if (seen.has(file)) {
+      continue;
+    }
+    seen.add(file);
+    const text = readFileSync(join(ROOT, file), "utf8");
+    for (const match of text.matchAll(IMPORT_RE)) {
+      const resolved = resolveImport(file, match[1]);
+      if (resolved) {
+        pending.push(resolved);
+      }
+    }
+  }
+  return [...seen];
+}
+
+function resolveImport(from: string, spec: string): string | undefined {
+  let base: string;
+  if (spec.startsWith("@/")) {
+    base = spec.slice(2);
+  } else if (spec.startsWith(".")) {
+    base = join(dirname(from), spec);
+  } else {
+    return;
+  }
+  for (const candidate of [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`]) {
+    if (existsSync(join(ROOT, candidate))) {
+      return candidate;
+    }
+  }
+  return;
+}

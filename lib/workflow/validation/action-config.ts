@@ -4,6 +4,7 @@ import {
   normalizeProtocolArrayValue,
   solidityArrayItemType,
 } from "@/lib/protocol-array-value";
+import { resolveSwitch, switchRefusal } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
@@ -54,6 +55,9 @@ const NODE_LABEL_MAX_CHARS = 100;
 // An UNKNOWN_FIELD issue carries a config key the caller chose, so field names
 // are sanitised on the same path as labels, with a tighter cap.
 const FIELD_NAME_MAX_CHARS = 40;
+// How much of an action's cross-field message the summary quotes.
+const DETAIL_MAX_CHARS = 200;
+const TRAILING_PERIOD = /\.$/;
 
 // Per-node field names rendered into the message before it elides the rest.
 const SUMMARY_FIELDS_PER_NODE = 3;
@@ -85,9 +89,18 @@ function sanitiseSummaryText(text: string, maxChars: number): string {
     .replace(/\)/g, "]");
   stripped = stripped.trim();
   if (stripped.length > maxChars) {
-    return `${stripped.slice(0, maxChars - 3)}...`;
+    return `${cutText(stripped, maxChars - 3)}...`;
   }
   return stripped;
+}
+
+// The first `length` UTF-16 units, one fewer when that would end on the
+// first half of a surrogate pair (an emoji, for one).
+function cutText(text: string, length: number): string {
+  const last = text.charCodeAt(length - 1);
+  return last >= HIGH_SURROGATE_MIN && last <= HIGH_SURROGATE_MAX
+    ? text.slice(0, length - 1)
+    : text.slice(0, length);
 }
 
 function fixedArrayLength(
@@ -205,9 +218,10 @@ export type WorkflowNodeForValidation = {
   };
 };
 
+// `reason`, when given, is the message shown to the builder.
 type FieldCheckResult =
   | { valid: true }
-  | { valid: false; expected: string; received: unknown };
+  | { valid: false; expected: string; received: unknown; reason?: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -481,6 +495,42 @@ export function isKnownConfigKeyForAction(
   return isLegacyIgnoredField(actionType, key);
 }
 
+// A field value echoed in `received` is the caller's own input; long text is
+// cut and a large list or object is described rather than sent back whole.
+const RECEIVED_MAX_CHARS = 200;
+// 100 entries already serialise past 200 characters ("[0,0,...]").
+const RECEIVED_MAX_ENTRIES = 100;
+const HIGH_SURROGATE_MIN = 0xd8_00;
+const HIGH_SURROGATE_MAX = 0xdb_ff;
+
+function capReceived(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value.length > RECEIVED_MAX_CHARS
+      ? `${cutText(value, RECEIVED_MAX_CHARS)}...`
+      : value;
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  const description = Array.isArray(value)
+    ? `[a list of ${value.length}]`
+    : "[an object]";
+  // Top-level entry count first, so a list with many entries is not
+  // serialised just to measure it; a short one is, once.
+  const entries = Array.isArray(value)
+    ? value.length
+    : Object.keys(value).length;
+  if (entries >= RECEIVED_MAX_ENTRIES) {
+    return description;
+  }
+  try {
+    const size = JSON.stringify(value)?.length ?? 0;
+    return size > RECEIVED_MAX_CHARS ? description : value;
+  } catch {
+    return description;
+  }
+}
+
 function validateStringLike(value: unknown): boolean {
   return typeof value === "string" || typeof value === "number";
 }
@@ -560,7 +610,19 @@ function validateFieldValue(
             expected: field.solidityType ?? "int",
             received: value,
           };
+    // A plain switch has no template mode in the editor, and its step takes
+    // only true or false.
     case "switch":
+      return resolveSwitch(value, undefined) === undefined
+        ? {
+            valid: false,
+            expected: "boolean",
+            received: value,
+            reason: valueContainsTemplate(value)
+              ? `${field.label} does not take a template, only true or false.`
+              : switchRefusal(field.label, value),
+          }
+        : { valid: true };
     case "protocol-bool":
       if (valueContainsTemplate(value)) {
         return { valid: true };
@@ -790,7 +852,7 @@ export function validateWorkflowActionConfigs(
         field: key,
         nodeId: identity.nodeId,
         nodeLabel: identity.nodeLabel,
-        received: value,
+        received: capReceived(value),
         message: `Unknown field "${key}" for action "${actionType}".`,
       });
     }
@@ -848,16 +910,22 @@ export function validateWorkflowActionConfigs(
 
       const fieldCheck = validateFieldValue(field, value);
       if (!fieldCheck.valid) {
+        // A check that explains itself is quoted in the summary, as a
+        // cross-field issue is.
         issues.push({
-          code: "INVALID_FIELD_TYPE",
+          code: fieldCheck.reason
+            ? "INVALID_FIELD_VALUE"
+            : "INVALID_FIELD_TYPE",
           path: `nodes[${nodeIndex}].data.config.${field.key}`,
           actionType,
           field: field.key,
           nodeId: identity.nodeId,
           nodeLabel: identity.nodeLabel,
           expected: fieldCheck.expected,
-          received: fieldCheck.received,
-          message: `Invalid value for field "${field.key}" on action "${actionType}".`,
+          received: capReceived(fieldCheck.received),
+          message:
+            fieldCheck.reason ??
+            `Invalid value for field "${field.key}" on action "${actionType}".`,
         });
       }
     }
@@ -876,7 +944,7 @@ export function validateWorkflowActionConfigs(
         field: crossFieldIssue.field,
         nodeId: identity.nodeId,
         nodeLabel: identity.nodeLabel,
-        received: config[crossFieldIssue.field],
+        // No `received`: the field can hold a whole typed array.
         message: crossFieldIssue.message,
       });
     }
@@ -980,6 +1048,7 @@ export function formatActionConfigValidationResponse(
               display: string;
               fallback: string;
               fields: Map<string, number>;
+              detail?: string;
             }
           >();
           for (const issue of validation.issues) {
@@ -992,6 +1061,11 @@ export function formatActionConfigValidationResponse(
               fields: new Map<string, number>(),
             };
             entry.count++;
+            // A check that explains itself stands in for the field list when
+            // it is the node's only issue (see below).
+            if (issue.code === "INVALID_FIELD_VALUE" && !entry.detail) {
+              entry.detail = issue.message;
+            }
             const field = issueFieldName(issue);
             if (field) {
               // One name can come from several issues; keep the most blocking
@@ -1008,7 +1082,14 @@ export function formatActionConfigValidationResponse(
           }
           const entries: string[] = [];
           let shown = 0;
-          for (const { count, display, fallback, fields } of labels.values()) {
+          let quotesReason = false;
+          for (const {
+            count,
+            display,
+            fallback,
+            fields,
+            detail,
+          } of labels.values()) {
             if (shown >= 3) {
               entries.push(`and ${labels.size - 3} more`);
               break;
@@ -1022,10 +1103,23 @@ export function formatActionConfigValidationResponse(
             const ordered = [...fields.entries()]
               .sort(([, a], [, b]) => a - b)
               .map(([name]) => name);
-            entries.push(`"${label}"${formatNodeFields(ordered, count)}`);
+            // A reason is quoted only for a node's sole issue; with others,
+            // its fields are listed instead.
+            const reason = count === 1 ? detail : undefined;
+            if (reason) {
+              quotesReason = true;
+            }
+            entries.push(
+              reason
+                ? `"${label}": ${sanitiseSummaryText(reason, DETAIL_MAX_CHARS).replace(TRAILING_PERIOD, "")}`
+                : `"${label}"${formatNodeFields(ordered, count)}`
+            );
             shown++;
           }
-          return `Invalid node(s): ${entries.join(", ")}. `;
+          // A quoted reason has commas of its own, so the shown entries then
+          // part on "; ".
+          const separator = quotesReason ? "; " : ", ";
+          return `Invalid node(s): ${entries.join(separator)}. `;
         })()
       : "";
   return {

@@ -26,12 +26,11 @@ import {
   createEmptyRule,
   isUnaryOperator,
 } from "@/lib/workflow/nodes/condition/builder-utils";
-import { isRegexOperator } from "@/lib/workflow/nodes/condition/expression";
+import { groupSelectOptions } from "@/lib/workflow/editor/select-option-groups";
 import {
+  CONDITION_OPERATOR_OPTIONS,
   closedOperatorLabel,
-  OPERATOR_GROUPS,
-  OPERATOR_METADATA,
-  operatorsForCategory,
+  isRegexOperator,
 } from "@/lib/workflow/nodes/condition/operator-metadata";
 import {
   REGEX_SOURCE_ERROR,
@@ -49,10 +48,7 @@ type ConditionQueryBuilderProps = {
 // Operators grouped by value type so the dropdown shows section headers
 // (General / Text / Number / Boolean / Array / Object) with their operators
 // beneath, making clear which comparisons apply to which kind of value.
-const OPERATOR_OPTION_GROUPS = OPERATOR_GROUPS.map((groupMeta) => ({
-  label: groupMeta.label,
-  operators: operatorsForCategory(groupMeta.category),
-}));
+const OPERATOR_OPTION_GROUPS = groupSelectOptions(CONDITION_OPERATOR_OPTIONS);
 
 // Shown under a regex rule until its pattern has an error to show instead.
 const REGEX_RULE_HINT =
@@ -133,13 +129,13 @@ function RuleRow({
             {OPERATOR_OPTION_GROUPS.map((optionGroup) => (
               <SelectGroup key={optionGroup.label}>
                 <SelectLabel>{optionGroup.label}</SelectLabel>
-                {optionGroup.operators.map((op) => (
+                {optionGroup.options.map((option) => (
                   <SelectItem
-                    description={OPERATOR_METADATA[op].description}
-                    key={op}
-                    value={op}
+                    description={option.description}
+                    key={option.value}
+                    value={option.value}
                   >
-                    {OPERATOR_METADATA[op].label}
+                    {option.label}
                   </SelectItem>
                 ))}
               </SelectGroup>
@@ -169,7 +165,7 @@ function RuleRow({
               onChange={(event) =>
                 onChange({ ...rule, rightOperand: event.target.value })
               }
-              placeholder="Pattern, e.g. ^EMSP_"
+              placeholder="Pattern, e.g. ^VAULT_"
               spellCheck={false}
               value={rule.rightOperand}
             />

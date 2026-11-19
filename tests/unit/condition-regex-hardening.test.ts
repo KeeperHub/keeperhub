@@ -181,7 +181,7 @@ describe("regex hardening", () => {
       for (const [config, text] of [
         [
           { operator: "matchesRegex", value: "^a", ignoreCase: "{{@n1:W.ic}}" },
-          "Ignore case must be set here",
+          "Ignore case does not take a template",
         ],
         // The select check refuses it first; either way it never saves.
         [{ operator: "{{@n1:W.op}}", value: "a" }, "operator"],

@@ -13,7 +13,7 @@ import type {
   ConditionRule,
 } from "./builder-types";
 import { isConditionGroup } from "./builder-types";
-import { OPERATOR_METADATA } from "./operator-metadata";
+import { isRegexOperator, OPERATOR_METADATA } from "./operator-metadata";
 import { readRegexPattern } from "./regex-match";
 
 // Decimal grammar the safe-eval tokenizer accepts (integer or fixed-point, optional sign).
@@ -57,10 +57,6 @@ function wrapOperand(operand: string): string {
   }
 
   return quoteText(trimmed);
-}
-
-export function isRegexOperator(operator: ConditionOperator): boolean {
-  return operator === "matchesRegex" || operator === "notMatchesRegex";
 }
 
 function quoteText(text: string): string {

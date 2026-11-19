@@ -1,16 +1,28 @@
+import type { ShowWhen } from "@/lib/workflow/editor/show-when";
 import type { IntegrationPlugin } from "@/plugins/registry";
 import { registerIntegration } from "@/plugins/registry-core";
 import { DataIcon } from "./icon";
-import { checkFilterConfig } from "./steps/filter-core";
+import { checkFilterConfig, IGNORE_CASE_DEFAULT } from "./filter-config";
 import {
-  CASE_FOLDING_FILTER_OPERATORS,
   DEFAULT_FILTER_OPERATOR,
   FILTER_OPERATOR_OPTIONS,
+  type FilterOperatorRule,
   filterOperatorLabel,
-  KEEP_ALL_OPERATOR,
-  PRESENCE_FILTER_OPERATORS,
-  VALUELESS_FILTER_OPERATORS,
-} from "./steps/filter-operators";
+  filterOperatorsWhere,
+} from "./filter-operators";
+
+// Shown for the operators whose rule reads this setting. It lists the ones to
+// hide, so with no operator stored (the default, equals) the field shows.
+function shownWhenOperatorReads(
+  reads: (rule: FilterOperatorRule) => boolean
+): ShowWhen {
+  return {
+    all: filterOperatorsWhere((rule) => !reads(rule)).map((operator) => ({
+      field: "operator",
+      notEquals: operator,
+    })),
+  };
+}
 
 const dataPlugin: IntegrationPlugin = {
   type: "data",
@@ -245,7 +257,7 @@ const dataPlugin: IntegrationPlugin = {
         {
           field: "labels",
           description:
-            "The Labels entry of each matching item (empty when Labels is not set), e.g. the clipper names a batch read was given",
+            "The Labels entry of each matching item (empty when Labels is not set), e.g. the contract names a batch read was given",
         },
         { field: "count", description: "Number of matching items" },
         {
@@ -255,7 +267,7 @@ const dataPlugin: IntegrationPlugin = {
         {
           field: "skippedLabels",
           description:
-            "The Labels entry of each skipped item (empty when Labels is not set), e.g. the spell whose read failed",
+            "The Labels entry of each skipped item (empty when Labels is not set), e.g. the contract whose read failed",
         },
         {
           field: "missingReturn",
@@ -289,23 +301,18 @@ const dataPlugin: IntegrationPlugin = {
           placeholder: "success or meta.name",
           helpText:
             "Leave blank to test each item itself, e.g. an array of names.",
-          helpTip: `Dotted path inside each item, e.g. success, meta.name or topics.1 (a number picks a list entry).\n\nAn item without this field counts as skipped, except under the tests that check for a missing value: ${PRESENCE_FILTER_OPERATORS.map(
-            (operator) => filterOperatorLabel(operator)
-          ).join(", ")}.`,
+          helpTip: `Dotted path inside each item, e.g. success, meta.name or topics.1 (a number picks a list entry).\n\nAn item without this field can't be tested: it fails the step or, when "If an item can't be tested" is set to Skip, is counted in skipped. The tests that check for a missing value test it as usual: ${filterOperatorsWhere((rule) => rule.test === "presence")
+            .map((operator) => filterOperatorLabel(operator))
+            .join(", ")}.`,
           example: "success",
-          showWhen: { field: "operator", notEquals: KEEP_ALL_OPERATOR },
+          showWhen: shownWhenOperatorReads((rule) => rule.readsField),
         },
         {
           key: "operator",
           label: "Operator",
           type: "select",
           required: true,
-          options: FILTER_OPERATOR_OPTIONS.map((option) => ({
-            value: option.value,
-            label: option.label,
-            group: option.group,
-            description: option.description,
-          })),
+          options: [...FILTER_OPERATOR_OPTIONS],
           defaultValue: DEFAULT_FILTER_OPERATOR,
           helpTip:
             "The Condition tests, plus does not contain, does not start with and does not end with.\n\nEach test only looks at items it applies to: number tests at numbers, numeric text and hex; boolean tests at true and false; text tests at text and numbers; array and object tests at lists and objects. By default any other item fails the step; see If an item can't be tested.",
@@ -316,28 +323,21 @@ const dataPlugin: IntegrationPlugin = {
           label: "Value",
           type: "template-input",
           required: true,
-          placeholder: "e.g. EMSP_, true or 100",
+          placeholder: "e.g. VAULT_, true or 100",
           helpTip:
-            'What each item is compared with. Spaces around it are trimmed; quote it to keep them (except under regex).\n\nMatches regex and does not match regex: the regular expression exactly as it should run, e.g. ^EMSP_, without quotes or slashes; no lookahead or back-references. To match a space at either end, write [ ] or \\x20.\nOther text tests and has key: the text as typed, quotes removed.\nNumber tests: a number, e.g. 100, 1.5 or 0x64.\nArray length: a whole number.\nOther tests: 5 is a number, true and false are booleans, null is null, anything else is text. Quote to force text, e.g. "true" matches the text, not the boolean. Quoting a number changes nothing under equals, which compares numbers by value.',
-          showWhen: {
-            all: VALUELESS_FILTER_OPERATORS.map((operator) => ({
-              field: "operator",
-              notEquals: operator,
-            })),
-          },
+            'What each item is compared with. Spaces around it are trimmed; quote it to keep them (except under regex).\n\nMatches regex and does not match regex: the regular expression exactly as it should run, e.g. ^VAULT_, without quotes or slashes; no lookahead or back-references. To match a space at either end, write [ ] or \\x20.\nOther text tests and has key: the text as typed, quotes removed.\nNumber tests: a number, e.g. 100, 1.5 or 0x64.\nArray length: a whole number.\nOther tests: 5 is a number, true and false are booleans, null is null, anything else is text. Quote to force text, e.g. "true" matches the text, not the boolean. Quoting a number changes nothing under equals, which compares numbers by value.',
+          showWhen: shownWhenOperatorReads((rule) => rule.readsValue),
         },
         {
           key: "ignoreCase",
           label: "Ignore case",
           type: "switch",
-          defaultValue: "false",
+          defaultValue: IGNORE_CASE_DEFAULT,
           helpText:
             "Match text whatever its letter case, e.g. a checksummed address against a lowercase one.",
-          showWhen: {
-            all: FILTER_OPERATOR_OPTIONS.map((option) => option.value)
-              .filter((value) => !CASE_FOLDING_FILTER_OPERATORS.includes(value))
-              .map((operator) => ({ field: "operator", notEquals: operator })),
-          },
+          helpTip:
+            "Off by default, also when left blank. Applies to equals, not equals, soft equals, soft not equals, Text: contains, starts with, ends with, matches regex and their does not forms, and Array: contains. From the API or MCP: true or false (a JSON boolean or lowercase text), not a template.",
+          showWhen: shownWhenOperatorReads((rule) => rule.readsIgnoreCase),
         },
         {
           key: "returnField",
@@ -368,7 +368,7 @@ const dataPlugin: IntegrationPlugin = {
           // Blank, so the AI prompt example does not seed placeholder text.
           defaultValue: "",
           placeholder:
-            '{{@node1:Spell names.result}} or ["MCD_CLIP_ETH_A", "MCD_CLIP_WBTC_A"]',
+            '{{@node1:Contract names.result}} or ["VAULT_A", "VAULT_B"]',
           helpText:
             "Optional. A list as long as Source, so an alert can name what matched.",
           helpTip:
@@ -385,11 +385,7 @@ const dataPlugin: IntegrationPlugin = {
           defaultValue: "fail",
           helpTip:
             "An item can't be tested when the field is missing, or its value is the wrong kind for the test: null under a number or boolean test, an object under a text test. A reverted batch read has result null, so it counts here.\n\nFail the step is the default, so a read an attacker can make revert cannot pass quietly. Skip keeps the run going: branch on skipped > 0 to alert on it, and use skippedLabels to name the items.",
-          showWhen: {
-            all: [KEEP_ALL_OPERATOR, ...PRESENCE_FILTER_OPERATORS].map(
-              (operator) => ({ field: "operator", notEquals: operator })
-            ),
-          },
+          showWhen: shownWhenOperatorReads((rule) => rule.canSkip),
         },
       ],
     },

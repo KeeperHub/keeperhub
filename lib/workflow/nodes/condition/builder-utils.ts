@@ -5,8 +5,8 @@ import type {
   ConditionRule,
 } from "./builder-types";
 import { isConditionGroup } from "./builder-types";
-import { isRegexOperator, visualConditionToExpression } from "./expression";
-import { OPERATOR_METADATA } from "./operator-metadata";
+import { visualConditionToExpression } from "./expression";
+import { isRegexOperator, OPERATOR_METADATA } from "./operator-metadata";
 import {
   codeStructure,
   findRegexCalls,
