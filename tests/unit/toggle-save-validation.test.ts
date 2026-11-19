@@ -265,10 +265,7 @@ describe("a stray toggle value already saved", () => {
       data: { label, type: "trigger", config: {} },
     });
     const ref = (label: string) => `{{@hook:${label}.body.flag}}`;
-    const stored = [
-      trigger("Old.name"),
-      ...savedAs({ sponsorGas: ref("Old.name") }),
-    ];
+    const stored = [trigger("Old"), ...savedAs({ sponsorGas: ref("Old") })];
     const renamed = (value: string, label = "New") =>
       validateWorkflowActionConfigs(
         [
@@ -278,7 +275,10 @@ describe("a stray toggle value already saved", () => {
         { savedNodes: stored }
       ).issues;
     expect(renamed(ref("New"))).toEqual([]);
-    expect(renamed(ref("New.x"), "New.x")).toEqual([]);
+    // The step reads the path after the first dot, so this reads "x.body.flag".
+    expect(renamed(ref("New.x"), "New.x")).toMatchObject([
+      { field: "sponsorGas" },
+    ]);
     expect(renamed("{{@hook:New.body.other}}")).toMatchObject([
       { field: "sponsorGas" },
     ]);
@@ -306,6 +306,8 @@ describe("a stray toggle value already saved", () => {
       [TEMPLATE, savedAs({})],
       [TEMPLATE, []],
       [2, savedAs({ sponsorGas: 1 })],
+      ["5", savedAs({ sponsorGas: 5 })],
+      [`y${TEMPLATE}`, savedAs({ sponsorGas: `x${TEMPLATE}` })],
       ["{{Other.x}}", savedAs({ sponsorGas: "{{Webhook.flag}}" })],
     ];
     for (const [value, savedNodes] of cases) {
@@ -486,5 +488,118 @@ describe("which stored stray value counts as kept", () => {
       }).issues.filter((issue) => issue.field === "ignoreCase");
     expect(ignoreCase("===")).toEqual([]);
     expect(ignoreCase("isEmpty")).toHaveLength(1);
+  });
+});
+
+describe("a kept value matches what the step resolves", () => {
+  const node = (id: string, kind: "trigger" | "action", label = "N") => ({
+    id,
+    type: kind,
+    data: {
+      label,
+      type: kind,
+      config:
+        kind === "trigger"
+          ? { triggerType: "Webhook" }
+          : { actionType: "HTTP Request" },
+    },
+  });
+  const write = (sponsorGas: string) =>
+    actionNode(WRITE_CONTRACT, { ...WRITE_CONFIG, sponsorGas });
+  const issues = (nodes: unknown[], savedNodes: unknown[]) =>
+    validateWorkflowActionConfigs(
+      nodes as Parameters<typeof validateWorkflowActionConfigs>[0],
+      { savedNodes }
+    ).issues.filter((issue) => issue.field === "sponsorGas");
+
+  it("never keeps a reference by label, which the step resolves by name", () => {
+    const value = "{{Check.flag}}";
+    expect(issues([write(value)], [write(value)])).toHaveLength(1);
+    expect(
+      issues([write("{{ @hook:H.flag }}")], [write("{{ @hook:H.flag }}")])
+    ).toHaveLength(1);
+  });
+
+  it("reads node ids as the step does, trimmed with symbols as _", () => {
+    const value = "{{@a-b:R.flag}}";
+    expect(
+      issues(
+        [node("a_b", "trigger"), write(value)],
+        [node("a-b", "action"), write(value)]
+      )
+    ).toHaveLength(1);
+    const spaced = "{{@ t:T.flag}}";
+    expect(
+      issues(
+        [node("t", "trigger"), write(spaced)],
+        [node("t", "action"), write(spaced)]
+      )
+    ).toHaveLength(1);
+  });
+
+  it("tells a trigger by its trigger type", () => {
+    const value = "{{@t:T.flag}}";
+    const asTrigger = (triggerType: string) => ({
+      id: "t",
+      type: "trigger",
+      data: {
+        label: "T",
+        type: "trigger",
+        config: { triggerType, actionType: "x" },
+      },
+    });
+    expect(
+      issues(
+        [asTrigger("Webhook"), write(value)],
+        [asTrigger("Manual"), write(value)]
+      )
+    ).toHaveLength(1);
+  });
+
+  it("never keeps a very long value", () => {
+    const value = `{{@hook:H.flag}}${"x".repeat(2000)}`;
+    expect(
+      issues(
+        [node("hook", "trigger"), write(value)],
+        [node("hook", "trigger"), write(value)]
+      )
+    ).toHaveLength(1);
+  });
+});
+
+describe("a kept value and the nodes it reads", () => {
+  const step = (actionType: string) => ({
+    id: "step1",
+    type: "action",
+    data: { label: "S", type: "action", config: { actionType } },
+  });
+  const value = "{{@step1:S.result}}";
+  const write = actionNode(WRITE_CONTRACT, {
+    ...WRITE_CONFIG,
+    sponsorGas: value,
+  });
+
+  it("is refused once the step it reads runs another action", () => {
+    expect(
+      validateWorkflowActionConfigs([step("Database Query"), write], {
+        savedNodes: [step("HTTP Request"), write],
+      }).issues
+    ).toMatchObject([{ field: "sponsorGas" }]);
+    expect(
+      validateWorkflowActionConfigs([step("HTTP Request"), write], {
+        savedNodes: [step("HTTP Request"), write],
+      }).issues
+    ).toEqual([]);
+  });
+
+  it("keeps a default-on toggle saved while its condition hid it", () => {
+    const hidden = actionNode(WRITE_CONTRACT, {
+      ...WRITE_CONFIG,
+      network: "999999999",
+      sponsorGas: TEMPLATE,
+    });
+    expect(
+      validateWorkflowActionConfigs([hidden], { savedNodes: [hidden] }).issues
+    ).toEqual([]);
   });
 });

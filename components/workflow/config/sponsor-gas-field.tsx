@@ -41,10 +41,9 @@ export function SponsorGasField({
         description={description}
         disabled={disabled}
         id={id}
-        isOn={resolveSponsorGas}
+        rule="default-on"
         label={label}
         onChange={onChange}
-        strayAtRun="When the step runs, it is on unless this resolves to false."
         resetOnly={resetOnly}
         value={value}
       />

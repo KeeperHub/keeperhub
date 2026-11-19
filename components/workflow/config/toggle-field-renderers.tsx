@@ -15,7 +15,7 @@ export const TOGGLE_FIELD_RENDERERS: Readonly<
   Record<ToggleFieldType, CustomFieldRenderer>
 > = {
   // Write Contract's "Fail workflow on error". Shares FailOnErrorSwitchField
-  // with HTTP Request, so both resolve default-on through resolveFailOnError.
+  // with HTTP Request, so both read it by the same default-on rule.
   "fail-on-error-switch": ({ field, config, onUpdateConfig, disabled }) => (
     <FailOnErrorSwitchField
       description={field.helpTip ?? field.helpText}

@@ -30,7 +30,6 @@ import {
 import {
   findTemplateTokens,
   parseStoredRef,
-  splitTemplateRef,
   valueContainsTemplate,
 } from "@/lib/workflow/template-ref";
 import {
@@ -62,6 +61,9 @@ const RESERVED_CONFIG_KEYS = new Set([
 ]);
 
 const DECIMAL_PATTERN = /^\d+(?:\.\d+)?$/;
+const NON_ALPHANUMERIC_PATTERN = /[^a-zA-Z0-9]/g;
+// A stored stray value longer than this is never kept, which bounds the compare.
+const KEPT_VALUE_MAX_CHARS = 2000;
 const FIXED_ARRAY_LENGTH_PATTERN = /\[(\d+)]$/;
 // The `nodes[N]` prefix the validator writes into every issue path, used to
 // tell two nodes apart when neither carries an id.
@@ -607,26 +609,35 @@ function nodesById<T>(
 // What a node is and runs, e.g. "action:HTTP Request" or "trigger:Webhook".
 function nodeKind(data: Record<string, unknown>): string {
   const config = isRecord(data.config) ? data.config : {};
-  return `${String(data.type)}:${String(config.actionType ?? config.triggerType)}`;
+  return data.type === "trigger"
+    ? `trigger:${String(config.triggerType)}`
+    : `action:${String(config.actionType)}`;
 }
 
-type ValuePart = { text: string } | { nodeId: string; fieldPath: string };
+// The key the executor stores and reads a node's output under.
+function outputKey(nodeId: string): string {
+  return nodeId.trim().replace(NON_ALPHANUMERIC_PATTERN, "_");
+}
 
-// A value as its literal text and its references. A reference is kept as node
-// id and field path, as a rename rewrites the label inside it; the two shapes
-// never compare equal, so literal text cannot pass for a reference.
-function valueParts(text: string, labels: Map<string, string>): ValuePart[] {
+type ValuePart = { text: string } | { node: string; path: string };
+
+// The value as the executor resolves it: literal text, and references by
+// output key and the path after the first dot. Undefined if one reads by label.
+function valueParts(text: string): ValuePart[] | undefined {
   const parts: ValuePart[] = [];
   let last = 0;
   for (const token of findTemplateTokens(text)) {
+    if (!token.body.startsWith("@")) {
+      return;
+    }
     parts.push({ text: text.slice(last, token.start) });
     const ref = parseStoredRef(token.body);
+    const dot = ref?.rest.indexOf(".") ?? -1;
     parts.push(
       ref
         ? {
-            nodeId: ref.nodeId,
-            fieldPath: splitTemplateRef(ref.rest, labels.get(ref.nodeId))
-              .fieldPath,
+            node: outputKey(ref.nodeId),
+            path: dot === -1 ? "" : ref.rest.slice(dot + 1).trim(),
           }
         : { text: `{{${token.body}}}` }
     );
@@ -644,19 +655,23 @@ type KeptStray = (
 
 type NodeIndex = {
   configs: Map<string, Record<string, unknown>>;
-  labels: Map<string, string>;
+  // Output key -> the kinds of every node stored under it.
   kinds: Map<string, string>;
 };
 
 function indexNodes(nodes: readonly unknown[]): NodeIndex {
+  const kinds = new Map<string, Set<string>>();
+  for (const [id, kind] of nodesById(nodes, nodeKind)) {
+    const key = outputKey(id);
+    kinds.set(key, (kinds.get(key) ?? new Set()).add(kind));
+  }
   return {
     configs: nodesById(nodes, (data) =>
       isRecord(data.config) ? data.config : undefined
     ),
-    labels: nodesById(nodes, (data) =>
-      typeof data.label === "string" ? data.label : undefined
+    kinds: new Map(
+      [...kinds].map(([key, set]) => [key, [...set].sort().join("|")])
     ),
-    kinds: nodesById(nodes, nodeKind),
   };
 }
 
@@ -668,25 +683,26 @@ function sameStrayText(
   saved: NodeIndex,
   current: NodeIndex
 ): boolean {
-  const parts = valueParts(value, current.labels);
-  if (JSON.stringify(valueParts(was, saved.labels)) !== JSON.stringify(parts)) {
+  const parts = valueParts(value);
+  if (
+    !parts ||
+    value.length > KEPT_VALUE_MAX_CHARS ||
+    JSON.stringify(valueParts(was)) !== JSON.stringify(parts)
+  ) {
     return false;
   }
   return parts.every((part) => {
-    if (!("nodeId" in part)) {
+    if (!("node" in part)) {
       return true;
     }
     // A node gone since the save leaves the reference reading nothing.
-    const now = current.kinds.get(part.nodeId);
-    return now === undefined || now === saved.kinds.get(part.nodeId);
+    const now = current.kinds.get(part.node);
+    return now === undefined || now === saved.kinds.get(part.node);
   });
 }
 
-// A toggle that still holds the stray value it was saved with is let through,
-// so a workflow saved before the toggle rule keeps saving and running as it
-// did; a new or changed value is refused. It must be the same node (one id in
-// the request) on the same action, and the value text or a number. A plain
-// switch is checked only while shown, so it must have been shown when saved.
+// Lets a toggle keep the stray value it was saved with, so older workflows
+// keep saving; same node and action, text or a number, plain switch shown.
 function keptStrayMatcher(
   nodes: readonly unknown[],
   savedNodes: readonly unknown[] | undefined
@@ -953,10 +969,8 @@ function toggleKeysOf(actionType: string): string[] {
 }
 
 /**
- * Unsets every toggle holding neither on nor off, so each takes its default.
- * For a copy into another organization, which must not inherit a stray value
- * the way a save of the same workflow does. Wider than save on purpose: it also
- * clears hidden toggles, so a copy never holds one.
+ * Unsets every stray toggle, hidden ones too, for a copy into another
+ * organization, which must not keep one the way a save of the same workflow does.
  */
 export function clearStrayToggles(
   nodes: Record<string, unknown>[]

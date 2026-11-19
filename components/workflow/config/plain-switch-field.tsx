@@ -29,11 +29,10 @@ export function PlainSwitchField({
       description={field.helpText ?? field.helpTip}
       disabled={disabled}
       id={field.key}
-      isOn={(value) => isSwitchOn(value, field.defaultValue)}
       label={field.label}
       onChange={(next) => onUpdateConfig(field.key, next)}
-      strayAtRun="When the step runs, it fails unless this resolves to true or false."
       resetOnly={isShownOnlyToFix(field, config)}
+      rule={{ switchDefault: field.defaultValue }}
       value={config[field.key]}
     />
   );

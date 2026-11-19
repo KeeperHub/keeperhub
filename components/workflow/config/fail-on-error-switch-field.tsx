@@ -1,7 +1,6 @@
 "use client";
 
 import { SwitchField } from "@/components/workflow/config/switch-field";
-import { resolveFailOnError } from "@/lib/utils";
 
 type FailOnErrorSwitchFieldProps = {
   id: string;
@@ -16,8 +15,8 @@ type FailOnErrorSwitchFieldProps = {
 /**
  * Shared "Fail workflow on error" toggle, used by both the HTTP Request
  * node (hardcoded system action) and the Write Contract node (declarative
- * plugin "fail-on-error-switch" field) so the default-on resolution logic
- * (resolveFailOnError) lives in exactly one place.
+ * plugin "fail-on-error-switch" field), so both read it by the default-on rule
+ * (resolveDefaultOnFlag) in SwitchField.
  */
 export function FailOnErrorSwitchField({
   id,
@@ -33,10 +32,9 @@ export function FailOnErrorSwitchField({
       description={description}
       disabled={disabled}
       id={id}
-      isOn={resolveFailOnError}
+      rule="default-on"
       label={label}
       onChange={onChange}
-      strayAtRun="When the step runs, it is on unless this resolves to false."
       resetOnly={resetOnly}
       value={value}
     />

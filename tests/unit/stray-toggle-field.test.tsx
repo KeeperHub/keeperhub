@@ -26,9 +26,10 @@ import {
 
 const TEMPLATE = "{{@webhook:Webhook.flag}}";
 // The part of the hint every stray value gets; the start quotes the value.
-const HINT = "which this switch cannot read. When the step runs, it";
-const LOCKED_HINT =
-  "It is normally hidden with these settings, so it can only be reset here.";
+const HINT = "which is neither on nor off. When the step runs, it";
+const LOCKED_HINT = "Hidden with these settings; reset it here.";
+const SAVE_KEEPS =
+  "A save keeps it only while the saved workflow holds this exact value.";
 const RESET = "Reset to default";
 // A network sponsorship does not cover, so Sponsor gas is hidden.
 const UNCOVERED_NETWORK = "999999999";
@@ -516,8 +517,45 @@ describe("the stray-value hint text", () => {
     expect(container.textContent).toContain(
       "When the step runs, it is on unless this resolves to false."
     );
+    expect(container.textContent).toContain(SAVE_KEEPS);
     renderFields({ network: COVERED_NETWORK, sponsorGas: { a: 1 } });
     expect(container.textContent).toContain("Holds a list or object");
+    expect(container.textContent).toContain(
+      "A save refuses it, so reset it to save."
+    );
+    renderFields({ network: COVERED_NETWORK, sponsorGas: 2 });
+    expect(container.textContent).toContain("Holds 2, which");
+  });
+
+  it("words a plain switch by its own rule", () => {
+    act(() =>
+      root.render(
+        TOGGLE_FIELD_RENDERERS.switch({
+          field: { key: "t", label: "T", type: "switch" },
+          config: { t: TEMPLATE },
+          onUpdateConfig: vi.fn(),
+        })
+      )
+    );
+    expect(container.textContent).toContain(
+      "it fails unless this resolves to true, false or nothing."
+    );
+    expect(resetButton()?.textContent).toContain("(off)");
+  });
+
+  it("leaves out what a save does on a read-only form", () => {
+    act(() => {
+      root.render(
+        <ActionConfigRenderer
+          config={{ network: COVERED_NETWORK, sponsorGas: TEMPLATE }}
+          disabled
+          fields={[sponsorGasField()]}
+          onUpdateConfig={vi.fn()}
+        />
+      );
+    });
+    expect(container.textContent).toContain(HINT);
+    expect(container.textContent).not.toContain(SAVE_KEEPS);
   });
 
   it("marks the group header open or shut", () => {
@@ -529,5 +567,36 @@ describe("the stray-value hint text", () => {
     expect(header?.getAttribute("aria-expanded")).toBe("false");
     act(() => (header as HTMLButtonElement | null)?.click());
     expect(header?.getAttribute("aria-expanded")).toBe("true");
+  });
+});
+
+describe("each toggle renderer", () => {
+  it("renders its own control, Sponsor gas with its gas warning", () => {
+    const render = (type: ToggleFieldType) =>
+      act(() =>
+        root.render(
+          TOGGLE_FIELD_RENDERERS[type]({
+            field: { key: "t", label: "T", type },
+            config: { t: false },
+            onUpdateConfig: vi.fn(),
+          })
+        )
+      );
+    render("gas-sponsorship-switch");
+    expect(container.textContent).toContain("pays its own gas");
+    render("fail-on-error-switch");
+    expect(container.textContent).not.toContain("pays its own gas");
+  });
+});
+
+describe("the quoted value in the hint", () => {
+  it("drops hidden characters and keeps exactly 60 whole", () => {
+    const sixty = `{{@a:B.${"c".repeat(51)}}}`;
+    expect(Array.from(sixty)).toHaveLength(60);
+    renderFields({ network: COVERED_NETWORK, sponsorGas: sixty });
+    expect(container.textContent).toContain(`"${sixty}", which`);
+    const hidden = `{{@a:B.${String.fromCodePoint(0x20_2e)}flag}}`;
+    renderFields({ network: COVERED_NETWORK, sponsorGas: hidden });
+    expect(container.textContent).toContain('"{{@a:B.flag}}"');
   });
 });

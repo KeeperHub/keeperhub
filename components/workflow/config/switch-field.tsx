@@ -4,22 +4,49 @@ import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { isToggleValue } from "@/lib/utils";
+import { isToggleValue, resolveDefaultOnFlag, resolveSwitch } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
 
 const SHOWN_VALUE_MAX_CHARS = 60;
 
+// How a toggle reads its value, as its step does: Sponsor gas and Fail
+// workflow on error through resolveDefaultOnFlag, a plain switch resolveSwitch.
+export type ToggleRule = "default-on" | { switchDefault: unknown };
+
+function readToggle(rule: ToggleRule, value: unknown): boolean {
+  return rule === "default-on"
+    ? resolveDefaultOnFlag(value)
+    : resolveSwitch(value, rule.switchDefault) === true;
+}
+
+// What the step does with a value that is neither on nor off.
+function strayAtRun(rule: ToggleRule): string {
+  return rule === "default-on"
+    ? "When the step runs, it is on unless this resolves to false."
+    : "When the step runs, it fails unless this resolves to true, false or nothing.";
+}
+
 // The stored value as the hint quotes it: visible characters, shortened.
 function shownValue(value: unknown): string {
-  if (typeof value !== "string" && typeof value !== "number") {
+  if (typeof value === "number") {
+    return String(value);
+  }
+  if (typeof value !== "string") {
     return "a list or object";
   }
-  const chars = Array.from(stripControlChars(String(value)));
+  const chars = Array.from(stripControlChars(value));
   const text =
     chars.length > SHOWN_VALUE_MAX_CHARS
       ? `${chars.slice(0, SHOWN_VALUE_MAX_CHARS).join("")}...`
       : chars.join("");
   return `"${text}"`;
+}
+
+// Whether a save can keep the value: only text or a number already saved.
+function saveSentence(value: unknown): string {
+  return typeof value === "string" || typeof value === "number"
+    ? " A save keeps it only while the saved workflow holds this exact value."
+    : " A save refuses it, so reset it to save.";
 }
 
 type SwitchFieldProps = {
@@ -28,12 +55,10 @@ type SwitchFieldProps = {
   description?: string;
   // The raw saved value; checked and the stray state both come from it.
   value: unknown;
-  // The toggle's own rule for what a value means, the one its step applies.
-  isOn: (value: unknown) => boolean;
+  // The rule its step reads the value by; the hint is worded from it too.
+  rule: ToggleRule;
   // undefined clears the saved value, so the toggle falls back to its default.
   onChange: (value: boolean | undefined) => void;
-  // What the step does with a value that is neither on nor off.
-  strayAtRun: string;
   disabled?: boolean;
   // Shown only so a stray value can be cleared (isShownOnlyToFix): the switch
   // is locked and Reset is the only action. Required so no caller forgets it.
@@ -41,18 +66,16 @@ type SwitchFieldProps = {
 };
 
 /**
- * Layout for every labelled on/off toggle in a node's config form. Each
- * toggle passes its own `isOn`: the ones that default on cannot be told apart
- * from the ones that default off by looking at an absent stored value.
+ * Layout for every labelled on/off toggle in a node's config form. Each passes
+ * its rule: an absent value reads as on for some toggles and off for others.
  */
 export function SwitchField({
   id,
   label,
   description,
   value,
-  isOn,
+  rule,
   onChange,
-  strayAtRun,
   disabled,
   resetOnly,
 }: SwitchFieldProps) {
@@ -94,7 +117,7 @@ export function SwitchField({
 
   return (
     <div className="flex items-center justify-between gap-3">
-      <div className="space-y-0.5">
+      <div className="min-w-0 flex-1 space-y-0.5">
         <Label htmlFor={id}>{label}</Label>
         {description && (
           <p className="text-muted-foreground text-xs" id={`${id}-description`}>
@@ -103,13 +126,13 @@ export function SwitchField({
         )}
         {stray && (
           <div className="space-y-1">
-            <p className="text-destructive text-xs" id={strayId}>
-              Holds {shownValue(value)}, which this switch cannot read.{" "}
-              {strayAtRun} A save keeps it only if this step was already saved
-              with it, and refuses it otherwise.
+            <p className="break-words text-destructive text-xs" id={strayId}>
+              Holds {shownValue(value)}, which is neither on nor off.{" "}
+              {strayAtRun(rule)}
+              {!disabled && saveSentence(value)}
               {locked &&
                 !disabled &&
-                " It is normally hidden with these settings, so it can only be reset here."}
+                " Hidden with these settings; reset it here."}
             </p>
             {!disabled && (
               <Button
@@ -120,7 +143,7 @@ export function SwitchField({
                 type="button"
                 variant="link"
               >
-                Reset to default ({isOn(undefined) ? "on" : "off"})
+                Reset to default ({readToggle(rule, undefined) ? "on" : "off"})
                 <span className="sr-only">, {label}</span>
               </Button>
             )}
@@ -129,7 +152,7 @@ export function SwitchField({
       </div>
       <Switch
         aria-describedby={describedBy || undefined}
-        checked={isOn(value)}
+        checked={readToggle(rule, value)}
         disabled={disabled || locked}
         id={id}
         onCheckedChange={onChange}
