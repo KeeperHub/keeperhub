@@ -116,9 +116,8 @@ const CANONICAL_INDEX = /^(?:0|[1-9]\d{0,14})$/;
 // key[index], read the way the run reads a path part (resolveStrictPath).
 const INDEXED_PART = /^([^[]+)\[(\d+)\]$/;
 
-// Exporters escape some output again after conversion; a key with no
-// backslash or backtick passes through that unchanged. Code written as is
-// (a Condition's test) keeps the plain quoted key.
+// Exporters escape some output again after conversion, which a key without
+// backslash or backtick survives; code written as is keeps the plain key.
 function quotedKey(key: string, writtenAsIs: boolean): string {
   const json = JSON.stringify(key);
   if (writtenAsIs || !(json.includes("\\") || key.includes("`"))) {
@@ -142,10 +141,8 @@ function keyAccess(key: string, options: AccessPathOptions): string {
 }
 
 /**
- * A field path as code, read the way the run reads it: parts trimmed, empty
- * parts skipped, key[n] as an index. Any key that is not a plain name or
- * index is written as data, so no saved path can become code. `optional`
- * writes ?. and ?.[ instead.
+ * A field path as code, read as the run reads it (trimmed parts, key[n]),
+ * with any key that is not a plain name or index written as data.
  */
 export function buildAccessPath(
   fieldPath: string,
@@ -220,9 +217,8 @@ function escapeTemplateText(text: string): string {
 }
 
 /**
- * For a condition written inside a template literal: the run's grammar, with
- * each reference the exporter resolves read as a variable. A token it cannot
- * resolve stays as typed and fails the check. Callers handle matchesRegex.
+ * The run's grammar, each resolved reference read as a variable; a token the
+ * exporter cannot resolve stays as typed and fails. Callers handle regex.
  */
 export function isExportableCondition(
   condition: string,
@@ -251,10 +247,8 @@ export function escapeTextAroundTokens(
   return result + escapeTemplateText(text.slice(last));
 }
 
-// Tokens the condition grammar reads one way and JavaScript another: ++ and
-// -- (two signs, or an increment), 010 (10, or a module syntax error) and
-// 1.e3 (a member of 1, or 1000). Other differences go with the export
-// rework; none of them runs code.
+// Read one way by the condition grammar and another by JavaScript: ++, --,
+// 010 (10, or a module syntax error) and 1.e3 (a member of 1, or 1000).
 const JS_ONLY_TOKENS = /\+\+|--|(?<![\w$.])(?:0\d|\d+\.[A-Za-z_$])/;
 
 /** False when JavaScript would read one of JS_ONLY_TOKENS differently. */

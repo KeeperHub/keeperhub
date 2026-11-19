@@ -598,7 +598,6 @@ export function evaluateConditionExpression(
         );
         // matchesRegex sees what it would outside this mode: values as
         // resolved ("01234", not 1234n) and typed integers as numbers.
-        // A cheap name check; a false match only builds an unused context.
         if (converted.expression.includes("matchesRegex")) {
           regexTextContext = { ...evalContext };
           for (const [name, value] of Object.entries(converted.evalContext)) {

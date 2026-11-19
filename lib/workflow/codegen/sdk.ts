@@ -621,9 +621,8 @@ ${stepBody}
     visitedLocal: Set<string>
   ): string[] {
     const condition = (node.data.config?.condition as string) || "true";
-    // Written as template text, so nothing in it runs: only the text between
-    // references is escaped, and references become ${...} with inert paths.
-    // The grammar check keeps the export's meaning that of the run.
+    // Written as template text: only the text between references is escaped,
+    // and references become ${...} with paths written as data.
     const convertedCondition = isExportableCondition(condition, sdkResolves)
       ? escapeTextAroundTokens(condition, convertTemplateToJS)
       : undefined;

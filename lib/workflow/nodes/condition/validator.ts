@@ -52,11 +52,11 @@ import {
 import { BLOCKED_PROPS } from "./safe-eval";
 import { maskStringLiterals, scanString } from "./string-literal";
 
-// Dangerous patterns that should never appear in conditions
-// A comma not inside call parentheses. Checked by strayComma, in one pass:
+// A comma not inside call parentheses. Checked by hasStrayComma in one pass:
 // as a regex, the lookahead rescanned to the end for every comma.
 const COMMA_OUTSIDE_CALL = /,(?![^(]*\))/g;
 
+// Dangerous patterns that should never appear in conditions
 const DANGEROUS_PATTERNS = [
   // Assignment operators
   /(?<![=!<>])=(?!=)/g, // = but not ==, ===, !=, !==, <=, >=
@@ -128,9 +128,8 @@ function blockedKeyError(
   return;
 }
 
-// The regex checks read a condition's text several times; this caps the
-// conditions that use matchesRegex. Each reference counts as the short name
-// the run gives it (__v0), so long node labels and ids do not count.
+// Caps conditions that use matchesRegex, whose checks read the text several
+// times; each reference counts as the run's short name (__v0).
 const MAX_CONDITION_LENGTH = 10_000;
 
 function conditionLength(expression: string): number {
@@ -299,9 +298,6 @@ export type ValidationResult =
   | { valid: true }
   | { valid: false; error: string };
 
-/**
- * Check for dangerous patterns in the expression
- */
 // True when a comma's next parenthesis is not ")", as COMMA_OUTSIDE_CALL
 // reads it, found in one pass from the end.
 function hasStrayComma(expression: string): boolean {
@@ -317,6 +313,9 @@ function hasStrayComma(expression: string): boolean {
   return false;
 }
 
+/**
+ * Check for dangerous patterns in the expression
+ */
 function checkDangerousPatterns(expression: string): ValidationResult {
   for (const pattern of DANGEROUS_PATTERNS) {
     let found: string | undefined;
@@ -336,11 +335,6 @@ function checkDangerousPatterns(expression: string): ValidationResult {
   return { valid: true };
 }
 
-/**
- * Check bracket expressions to distinguish between:
- * - Allowed: Variable property access like __v0[0], __v0["key"], __v0['key']
- * - Blocked: Array literals like [1,2,3], or dangerous expressions like __v0[eval('x')]
- */
 // For each index, where the next "]" at or after it is, or -1.
 function nextCloseTable(expression: string): Int32Array {
   const next = new Int32Array(expression.length + 1).fill(-1);
@@ -350,6 +344,11 @@ function nextCloseTable(expression: string): Int32Array {
   return next;
 }
 
+/**
+ * Check bracket expressions to distinguish between:
+ * - Allowed: Variable property access like __v0[0], __v0["key"], __v0['key']
+ * - Blocked: Array literals like [1,2,3], or dangerous expressions like __v0[eval('x')]
+ */
 function checkBracketExpressions(expression: string): ValidationResult {
   const nextClose = nextCloseTable(expression);
   for (const match of expression.matchAll(BRACKET_OPEN_PATTERN)) {
@@ -834,11 +833,8 @@ function isValidOperand(token: Token): boolean {
 }
 
 /**
- * Marks each index inside a string literal or a template variable, as the
- * tokenizer found them, so the operator scan below skips text that is a value
- * (a quoted "-" or "/", a "-" in a regex class) or a node label ("My-Node").
- * Reading the tokenizer's spans keeps one definition of each; counting quotes
- * or "{{" again in the raw text drifted from it before.
+ * Marks each index inside a string or template variable, from the tokenizer's
+ * spans, so the operator scan skips values ("-", "/") and labels ("My-Node").
  */
 function textSpans(tokens: Token[], length: number): Uint8Array {
   // One pass; looking each operator up in the tokens was quadratic.

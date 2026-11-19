@@ -384,17 +384,17 @@ describe("matchesRegex", () => {
       }
     });
 
-    it("says a pattern built without a reference must be a single quoted string", () => {
+    it("says a pattern built without a reference Put the regex pattern in quotes", () => {
       for (const expression of [
         `matchesRegex(${FIELD}, "a" + "b")`,
         `matchesRegex(${FIELD}, !"a")`,
       ]) {
         expect(() => run(expression, "ab"), expression).toThrow(
-          "must be a single quoted string"
+          "Put the regex pattern in quotes"
         );
         expect(validateConditionExpressionUI(expression), expression).toEqual({
           valid: false,
-          error: expect.stringContaining("must be a single quoted string"),
+          error: expect.stringContaining("Put the regex pattern in quotes"),
         });
       }
     });
@@ -530,13 +530,21 @@ describe("matchesRegex", () => {
   });
 
   describe("pattern rules", () => {
+    it("names the refused one of two repeats in a row", () => {
+      expect(regexPatternError("a*+")).toContain(
+        "Two repeats in a row: to match + as text, put a backslash before it"
+      );
+      expect(regexPatternError("a{2}*")).toContain("to match * as text");
+      expect(regexPatternError("a*+")).not.toContain("For any text");
+    });
+
     it("gives repeat-count advice that fits the refused count", () => {
       expect(regexPatternError("a{5,2}")).toContain(
         "Write the smaller number first"
       );
       // Nested counts multiply past 1,000; the order is not the problem.
       const nested = regexPatternError("(a{100}){20}");
-      expect(nested).toContain("nested counts multiply");
+      expect(nested).toContain("Nested counts multiply");
       expect(nested).not.toContain("smaller number first");
     });
 
@@ -581,9 +589,7 @@ describe("matchesRegex", () => {
       expect(regexPatternError("a{2,1}")).toContain("smaller number first");
       expect(regexPatternError("?abc")).toContain("To match ? itself");
       expect(regexPatternError("?abc")).not.toContain(".*");
-      expect(regexPatternError("a{2000}")).toContain(
-        "Use smaller counts"
-      );
+      expect(regexPatternError("a{2000}")).toContain("Use smaller counts");
       // The last quote is escaped, so this is not one quoted string.
       expect(regexPatternError('"a\\"')).toBeUndefined();
       expect(regexPatternError("/^api/")).toContain("Leave out the /.../");

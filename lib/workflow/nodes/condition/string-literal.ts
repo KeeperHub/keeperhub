@@ -1,7 +1,6 @@
 /**
- * String literals in condition expressions: one scanner, shared by the
- * interpreter, the validators and the builder's parse-back, so all of them
- * agree on where a string starts and ends.
+ * One string-literal scanner for the interpreter, the validators and the
+ * builder's parse-back, so all agree on where a string starts and ends.
  */
 
 const HEX_RE = /^[0-9a-fA-F]+$/;
@@ -110,9 +109,8 @@ export function scanString(src: string, start: number): ScannedString {
 }
 
 /**
- * The expression with every string literal's contents replaced by "_", quotes
- * and length kept, so text checks skip what the interpreter reads as data.
- * Throws on an unterminated string, which the interpreter rejects too.
+ * String contents replaced by "_", quotes and length kept, so text checks skip
+ * data. Throws on an unterminated string, as the interpreter does.
  */
 export function maskStringLiterals(expression: string): string {
   let out = "";

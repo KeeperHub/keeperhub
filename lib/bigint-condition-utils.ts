@@ -35,9 +35,8 @@ import { maskStringLiterals } from "@/lib/workflow/nodes/condition/string-litera
 const INTEGER_RE = /^\d+$/;
 
 /**
- * Matches a decimal number (digits.digits) to skip, or a bare integer literal
- * at a word boundary. Run on `codeView`, where quoted strings are blanked, so
- * digits inside a string (a regex such as "\\d{25}") are never replaced.
+ * A decimal (digits.digits, skipped) or a bare integer at a word boundary,
+ * read on `codeView` so digits inside quoted strings are never replaced.
  *
  * Order matters - decimal patterns are checked before bare integers so that
  * "3.14" is consumed as one match (and skipped) rather than splitting into

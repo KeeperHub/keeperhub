@@ -182,13 +182,13 @@ describe("regex hardening", () => {
         `__v0.includes(${"1,".repeat(n / 2)}1)`,
       ]) {
         expect(timed(() => validateConditionExpression(text))).toBeLessThan(
-          1000
+          500
         );
         expect(timed(() => preValidateConditionExpression(text))).toBeLessThan(
-          1000
+          500
         );
         expect(timed(() => validateConditionExpressionUI(text))).toBeLessThan(
-          1000
+          500
         );
       }
       for (const text of [
@@ -196,8 +196,20 @@ describe("regex hardening", () => {
         `${"x < ".repeat(n / 4)}\ny`,
       ]) {
         expect(timed(() => editorConditionState(text, undefined))).toBeLessThan(
-          1000
+          500
         );
+      }
+    });
+
+    // A line break may sit next to the operator; the operands hold none.
+    it("still reads a comparison split across lines", () => {
+      for (const condition of [`${FIELD}\n=== 5`, `${FIELD} ===\n5`]) {
+        const { parsedGroup } = editorConditionState(condition, undefined);
+        expect(parsedGroup?.rules[0]).toMatchObject({
+          leftOperand: FIELD,
+          operator: "===",
+          rightOperand: "5",
+        });
       }
     });
 
@@ -228,6 +240,10 @@ describe("regex hardening", () => {
         expect(check(sized(10_000))).toEqual({ valid: true });
         expect(check(sized(10_001)).valid).toBe(false);
       }
+      // The editor measures the saved text, spaces included, as the run does.
+      expect(validateConditionExpressionUI(`  ${sized(10_000)}  `).valid).toBe(
+        false
+      );
       // The name only inside quotes is not a regex test.
       const quoted = `__v0 === "matchesRegex(${"a".repeat(10_000)}"`;
       expect(validateConditionExpression(quoted)).toEqual({ valid: true });
@@ -254,6 +270,7 @@ describe("regex hardening", () => {
       expect(visualConditionLimitError(long, 1)).toContain(
         "These rules are too long to run with a regex test"
       );
+      expect(visualConditionLimitError(long, 1)).toContain("Split them across");
       expect(
         visualConditionLimitError(`${FIELD} === "${"a".repeat(10_000)}"`, 0)
       ).toBeUndefined();
@@ -283,7 +300,7 @@ describe("regex hardening", () => {
         ]) {
           expect(result).toEqual({
             valid: false,
-            error: expect.stringContaining("must be a single quoted string"),
+            error: expect.stringContaining("Put the regex pattern in quotes"),
           });
         }
       }
@@ -709,6 +726,13 @@ describe("regex hardening", () => {
       expect(workflowCode("{{@n1:Webhook.a}} == 0.5")).toContain(
         "if (webhookResult.a == 0.5) {"
       );
+      // $01 is a name, not a number.
+      expect(workflowCode("{{@n1:Webhook.a}}.$01 === 1")).toContain(
+        "if (webhookResult.a.$01 === 1) {"
+      );
+      expect(exported("1.e3 == 1")).toContain(
+        "condition: false /* not supported"
+      );
     });
 
     it("writes long and odd keys as the run reads them", () => {
@@ -723,6 +747,10 @@ describe("regex hardening", () => {
     // Condition step input is written as code, so it gets the same check.
     it("writes a Condition step's input only when it is condition grammar", () => {
       expect(exported("1 == 1")).toContain("condition: 1 == 1");
+      // JavaScript reads 010 differently from the run.
+      expect(exported("1 == 010")).toContain(
+        "condition: false /* not supported"
+      );
       const code = exported("process.exit(1)");
       expect(code).toContain("condition: false /* not supported");
       expect(code).not.toContain("condition: process.exit");

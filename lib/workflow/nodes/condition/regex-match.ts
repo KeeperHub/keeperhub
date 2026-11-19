@@ -1,9 +1,6 @@
 /**
- * Regex matching for the `matches regex` operator (Condition and Filter Array).
- *
- * Patterns run on RE2 (re2js): no backtracking, so a match costs about
- * (compiled program size) x (text length). Both factors are capped, and a run
- * has a budget of their product, so no pattern or input can stall the executor.
+ * Regex for `matches regex` (Condition and Filter Array), on RE2 (re2js): a match
+ * costs about steps x text length, both capped and budgeted per node and run.
  */
 
 import { RE2JS, RE2JSSyntaxException } from "re2js";
@@ -20,9 +17,8 @@ export const MAX_FILTER_REGEX_WORK = 25_000_000;
 // All Condition evaluations of one pass of a workflow run, For Each
 // included: about 1 s. The body replays on resume, so keep each pass small.
 export const MAX_RUN_REGEX_WORK = 10_000_000;
-// A compile is charged by pattern length and compiled steps, once per run and
-// to the run's own budget (the root keeps what it compiled), so whether a
-// condition fits depends neither on the shared cache nor on earlier nodes.
+// A compile is charged by length and steps, once per run, to the run's budget,
+// so whether a condition fits depends on neither the cache nor earlier nodes.
 const COMPILE_WORK_PER_CHAR = 2000;
 const COMPILE_WORK_PER_STEP = 400;
 
@@ -42,7 +38,7 @@ export const REGEX_NON_TEXT_ERROR =
 export const REGEX_UNDEFINED_ERROR =
   "The regex test got no value (a missing field, or a node that did not run). Add an exists rule before it";
 export const REGEX_LITERAL_ERROR =
-  'The regex pattern must be a single quoted string, e.g. "^0x"';
+  'Put the regex pattern in quotes, as one piece of text, e.g. "^0x"';
 export const REGEX_DIRECT_ERROR =
   'Write matchesRegex( exactly: no space before "(" and nothing around the name, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
 export const REGEX_CALLS_ERROR = `A Condition can use matchesRegex at most ${MAX_REGEX_CALLS} times. Split the tests across two Condition nodes`;
@@ -63,6 +59,7 @@ const REPETITION_OPERATOR_RE = /operator: `([^`]*)`/;
 const REPEAT_RANGE_RE = /\{(\d+),(\d+)\}/;
 const TRAILING_BACKSLASH_RE = /trailing backslash/;
 const REPETITION_RE = /repetition operator/;
+const NESTED_REPETITION_RE = /nested repetition/;
 const REPEAT_COUNT_RE = /invalid repeat count/;
 
 const BACKTICK_RE = /`/g;
@@ -86,18 +83,24 @@ function syntaxHint(detail: string): string {
   }
   if (REPETITION_RE.test(detail)) {
     const operator = REPETITION_OPERATOR_RE.exec(detail)?.[1] ?? "";
+    // "*+": the first repeat is fine; RE2 refuses the one after it.
+    if (NESTED_REPETITION_RE.test(detail)) {
+      const refused = operator.startsWith("{")
+        ? operator.slice(operator.indexOf("}") + 1)
+        : operator.slice(1);
+      return `. Two repeats in a row: to match ${refused[0] ?? "the second"} as text, put a backslash before it`;
+    }
     const anyText = operator.startsWith("*")
       ? ". For any text, use .* (dot, then star)"
       : "";
     return `${anyText}. To match ${operator[0] ?? "it"} itself, put a backslash before it`;
   }
   if (REPEAT_COUNT_RE.test(detail)) {
-    // Refused for a reversed range, or for counts over 1,000 (nested ones
-    // multiply: (a{100}){20} is 2,000).
+    // A reversed range, or counts over 1,000 (nested ones multiply).
     const range = REPEAT_RANGE_RE.exec(detail);
     return range && Number(range[1]) > Number(range[2])
       ? ". Write the smaller number first, e.g. {2,5}"
-      : `. Use smaller counts: nested counts multiply ((a{100}){20} counts as 2,000), and the whole pattern must compile to at most ${formatCount(MAX_REGEX_PROGRAM_SIZE)} steps`;
+      : `. Use smaller counts. Nested counts multiply: (a{100}){20} repeats 2,000 times. The whole pattern must compile to at most ${formatCount(MAX_REGEX_PROGRAM_SIZE)} steps, about one per repeated character`;
   }
   return "";
 }

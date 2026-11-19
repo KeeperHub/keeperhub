@@ -116,9 +116,8 @@ export function hasIndirectRegexUseIn(structure: string | undefined): boolean {
 }
 
 /**
- * The matchesRegex calls in masked text, with their value spans, up to
- * `limit` of them: more than the cap is refused anyway, and stopping there
- * keeps the scan linear.
+ * The matchesRegex calls in masked text with their value spans, at most
+ * `limit` (over the cap is refused anyway), so the scan stays linear.
  */
 export function regexCallsIn(
   structure: string,

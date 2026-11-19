@@ -58,9 +58,10 @@ const IS_NULL_PATTERN = /^(.+?) === null$/;
 const IS_NOT_NULL_PATTERN = /^(.+?) !== null$/;
 const IS_UNDEFINED_PATTERN = /^(.+?) === undefined$/;
 const IS_NOT_UNDEFINED_PATTERN = /^(.+?) !== undefined$/;
+const LINE_BREAK = /[\n\r\u2028\u2029]/;
+const MAX_PARSED_MULTILINE = 10_000;
 // The spaces before the operator start only where a run of spaces does: the
 // same matches, without rescanning a long run at every position.
-const LINE_BREAK = /[\n\r\u2028\u2029]/;
 const COMPARISON_PATTERN = /^(.+?)(?<!\s)\s+(===|!==|==|!=|>=|<=|>|<)\s+(.+)$/;
 // What String#trim removes.
 const WHITESPACE = /\s/;
@@ -313,11 +314,7 @@ function parseAtomicExpression(expr: Scanned): ConditionRule | null {
   }
 
   // Comparison operators: left op right
-  // "." stops at a line break, so the pattern never matches across one;
-  // skipping such text keeps it from rescanning up to the break per operator.
-  const comparisonMatch = LINE_BREAK.test(s)
-    ? null
-    : s.match(COMPARISON_PATTERN);
+  const comparisonMatch = s.match(COMPARISON_PATTERN);
   if (comparisonMatch) {
     return makeRule(
       unwrapOperand(comparisonMatch[1]),
@@ -395,9 +392,8 @@ type EditorConditionState = {
 };
 
 /**
- * How the editor opens a condition: from its saved rules, from rules parsed
- * out of its text, or as text. The saved rules are what runs, so when regex
- * is involved the text only becomes rules if they rebuild that exact text.
+ * How the editor opens a condition: saved rules, rules parsed from its text,
+ * or text. With regex involved, parsed rules must rebuild the exact text.
  */
 export function editorConditionState(
   condition: string,
@@ -408,6 +404,11 @@ export function editorConditionState(
   }
   if (savedGroup && visualConditionToExpression(savedGroup) === condition) {
     return { parsedGroup: null, initialMode: "visual" };
+  }
+  // The comparison parse rescans to a line break per operator; long text
+  // with one opens as text, which the editor shows as typed.
+  if (condition.length > MAX_PARSED_MULTILINE && LINE_BREAK.test(condition)) {
+    return { parsedGroup: null, initialMode: "expression" };
   }
   // Masked once; every check and the parse-back read this.
   const masked = maskedStructure(condition);
