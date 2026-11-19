@@ -19,9 +19,34 @@ vi.mock("@/components/ui/template-badge-input", () => ({
     />
   ),
 }));
+// One rule the mocked builder writes when its button is pressed.
+const EDITED: ConditionGroup = {
+  id: "e",
+  logic: "AND",
+  rules: [
+    {
+      id: "r",
+      leftOperand: "{{@n1:Webhook.value}}",
+      operator: "===",
+      rightOperand: "9",
+    },
+  ],
+};
+
 vi.mock("@/components/workflow/condition-query-builder", () => ({
-  ConditionQueryBuilder: ({ group }: { group: ConditionGroup }) => (
-    <div data-testid="builder">{group.rules.length}</div>
+  ConditionQueryBuilder: ({
+    group,
+    onChange,
+  }: {
+    group: ConditionGroup;
+    onChange: (group: ConditionGroup) => void;
+  }) => (
+    <div>
+      <div data-testid="builder">{group.rules.length}</div>
+      <button onClick={() => onChange(EDITED)} type="button">
+        Edit rule
+      </button>
+    </div>
   ),
 }));
 
@@ -117,7 +142,21 @@ describe("Condition fields", () => {
     expect(
       container.querySelector('[data-testid="builder"]')?.textContent
     ).toBe("2");
+    expect(container.textContent).not.toContain("can't be shown as rules");
+    expect(container.textContent).toContain("Generated expression");
     expect(updates).toEqual([]);
+  });
+
+  // The notice's warning: a rule edit replaces the text with the rules.
+  it("writes the rules and their text when a rule is edited", () => {
+    render({ actionType: "Condition", condition: `${FIELD} === 1\n|| x` });
+    click("Visual");
+    click("Edit rule");
+    expect(updates).toEqual([
+      ["conditionConfig", { group: EDITED }],
+      ["condition", visualConditionToExpression(EDITED)],
+    ]);
+    expect(container.textContent).not.toContain("can't be shown as rules");
   });
 
   it("clears the saved rules when the text is edited, so the text runs", () => {
