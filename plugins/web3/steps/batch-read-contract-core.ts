@@ -773,40 +773,42 @@ function canGoFlat(input: AbiParam): boolean {
 }
 
 type FlatTuple = { label: string; members: number };
+type Reading = { flat: FlatTuple[]; end: number };
 
-// Tuples with more than one member that the values read as given flat,
-// walked as reshapeArgsCounted does; the list stops where a flat reading
-// would put an object on a member that is not a tuple.
-function flatTuples(args: unknown[], fn: ListFunction): FlatTuple[] {
+// A tuple's members, read flat from start, can hold the values there: only a
+// member that is a tuple can take an object.
+function membersFit(args: unknown[], input: AbiParam, start: number): boolean {
+  return (
+    canGoFlat(input) &&
+    start < args.length &&
+    (input.components ?? []).every(
+      (member, k) => member.type === "tuple" || !isPlainObject(args[start + k])
+    )
+  );
+}
+
+// The values read with every tuple holding a plain value given flat where its
+// members fit. No flat reading is listed when an object lands on a plain input.
+function readFlat(args: unknown[], fn: ListFunction): Reading {
   const flat: FlatTuple[] = [];
   let cursor = 0;
+  let blocked = false;
   for (const [index, input] of fn.inputs.entries()) {
-    const components = input.components ?? [];
-    if (
-      input.type !== "tuple" ||
-      components.length === 0 ||
-      isPlainObject(args[cursor])
-    ) {
+    const value = args[cursor];
+    const members = input.components?.length ?? 0;
+    if (input.type !== "tuple" || members === 0) {
+      blocked ||= isPlainObject(value);
       cursor += 1;
-      continue;
+    } else if (!isPlainObject(value) && membersFit(args, input, cursor)) {
+      if (members > 1) {
+        flat.push({ label: input.name || `arg${index}`, members });
+      }
+      cursor += members;
+    } else {
+      cursor += 1;
     }
-    const start = cursor;
-    cursor += components.length;
-    if (start >= args.length || components.length < 2) {
-      continue;
-    }
-    const fits = components.every(
-      (member, k) => member.type === "tuple" || !isPlainObject(args[start + k])
-    );
-    if (!(fits && canGoFlat(input))) {
-      break;
-    }
-    flat.push({
-      label: input.name || `arg${index}`,
-      members: components.length,
-    });
   }
-  return flat;
+  return { flat: blocked ? [] : flat, end: cursor };
 }
 
 /** A count message; tuples the values read as flat are named with both counts. */
@@ -819,8 +821,29 @@ function countMismatch(
   const takes = fn.inputs.length;
   const names = inputNames(fn);
   const given = plural(args.length, "value");
-  const flat = flatTuples(args, fn);
-  const flatCount = flat.reduce((total, t) => total + t.members - 1, takes);
+  let { flat } = readFlat(args, fn);
+  let flatCount = flat.reduce((total, t) => total + t.members - 1, takes);
+  // As many values as inputs: a plain count would match, so the first tuple
+  // holding a plain value is offered flat, or named when it can't go flat.
+  const index = fn.inputs.findIndex(
+    (input, i) =>
+      input.type === "tuple" &&
+      Boolean(input.components?.length) &&
+      !isPlainObject(args[i])
+  );
+  if (
+    (flat.length === 0 || flatCount === args.length) &&
+    args.length === takes &&
+    index !== -1
+  ) {
+    const input = fn.inputs[index];
+    const members = input.components?.length ?? 0;
+    if (!canGoFlat(input) || members < 2) {
+      return slotError(at, input, index, args[index]);
+    }
+    flat = [{ label: input.name || `arg${index}`, members }];
+    flatCount = takes + members - 1;
+  }
   if (flat.length === 0 || flatCount === args.length) {
     return new Error(
       `${at} has ${given}, but ${fn.name} takes ${count(takes)} (${names}). ${hint}`
@@ -930,13 +953,20 @@ function tupleSlotError(
   const input = fn.inputs[index];
   const components = input.components ?? [];
   const members = components.length;
-  // Read flat from start, only a tuple member can take an object.
+  // Read flat from start, only a tuple member can take an object, and the
+  // values after it go to the inputs after it.
   const fits = (start: number): boolean =>
     start >= 0 &&
     start + members <= entry.length &&
     components.every(
       (member, k) => member.type === "tuple" || !isPlainObject(entry[start + k])
-    );
+    ) &&
+    entry
+      .slice(start + members)
+      .every(
+        (value, k) =>
+          fn.inputs[index + 1 + k]?.type === "tuple" || !isPlainObject(value)
+      );
   const flat = canGoFlat(input);
   if (flat && components.some((_, k) => fits(index - k))) {
     return;
@@ -960,48 +990,26 @@ function slotError(
   );
 }
 
-// As many values as inputs, yet no flat reading lines up: the first tuple
-// holding a plain value is named rather than a count that matches.
-function equalCountSlotError(
-  entry: unknown[],
-  fn: ListFunction,
-  at: string
-): Error | undefined {
-  if (entry.length !== fn.inputs.length || flatTuples(entry, fn).length > 0) {
-    return;
-  }
-  const index = fn.inputs.findIndex(
-    (input, i) =>
-      input.type === "tuple" &&
-      Boolean(input.components?.length) &&
-      !isPlainObject(entry[i])
-  );
-  return index === -1
-    ? undefined
-    : slotError(at, fn.inputs[index], index, entry[index]);
-}
-
 // A tuple whose first member is a tuple can't be given flat, so one holding
-// a plain value is named when the entry lines up with it as an object, and
-// the count is given when it doesn't.
+// a plain value is named when some reading lines up (each tuple one value, up
+// to every tuple that fits given flat); otherwise the count is given.
 function nestedTupleError(
   entry: unknown[],
   fn: ListFunction,
   at: string,
-  hint: string
+  hint: () => string
 ): Error | undefined {
-  let found: { input: AbiParam; index: number; value: unknown } | undefined;
   let cursor = 0;
+  let found: { input: AbiParam; index: number; value: unknown } | undefined;
   for (const [index, input] of fn.inputs.entries()) {
-    const components = input.components ?? [];
     const value = entry[cursor];
-    const plain =
-      input.type === "tuple" && components.length > 0 && !isPlainObject(value);
-    if (plain && canGoFlat(input)) {
-      cursor += components.length;
+    const members = input.components?.length ?? 0;
+    const plain = input.type === "tuple" && members > 0 && !isPlainObject(value);
+    if (plain && membersFit(entry, input, cursor)) {
+      cursor += members;
       continue;
     }
-    if (plain && !found && cursor < entry.length) {
+    if (plain && !canGoFlat(input) && !found && cursor < entry.length) {
       found = { input, index, value };
     }
     cursor += 1;
@@ -1009,8 +1017,8 @@ function nestedTupleError(
   if (!found) {
     return;
   }
-  if (cursor !== entry.length) {
-    return countMismatch(at, entry, fn, hint);
+  if (entry.length < fn.inputs.length || entry.length > cursor) {
+    return countMismatch(at, entry, fn, hint());
   }
   const { input, index, value } = found;
   const components = input.components ?? [];
@@ -1042,8 +1050,9 @@ function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
       `${at} must be an array of ${plural(takes, "value")} for ${fn.name} (${names}), got ${describeKind(entry)}. Make each entry an array like ${exampleEntry(fn)}.`
     );
   }
-  const bare = scalar ? ", or the bare value" : "";
-  const hint = `Make each entry an array like ${exampleEntry(fn)}${bare}.`;
+  // Built only when an entry fails: the example walks the whole ABI.
+  const hint = (): string =>
+    `Make each entry an array like ${exampleEntry(fn)}${scalar ? ", or the bare value" : ""}.`;
   const nested = nestedTupleError(entry, fn, at, hint);
   if (nested) {
     throw nested;
@@ -1053,8 +1062,7 @@ function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
     throw (
       positionalTupleError(entry, fn, at) ??
       tupleSlotError(entry, fn, at) ??
-      equalCountSlotError(entry, fn, at) ??
-      countMismatch(at, entry, fn, hint)
+      countMismatch(at, entry, fn, hint())
     );
   }
   return reshaped.args;

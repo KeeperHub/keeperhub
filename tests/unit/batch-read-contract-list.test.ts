@@ -2506,6 +2506,35 @@ describe("batch-read-contract - second review, round 2", () => {
     );
   });
 
+  it("names the tuple when every flat reading puts an object on a plain input", async () => {
+    // Read flat, t takes 5 and 2 and x gets u's object.
+    const later = abiWith("f", [
+      { name: "t", ...pair },
+      uint("x"),
+      { name: "u", ...pair },
+    ]);
+    expect(
+      await failure({ ...argsList([[5, 2, { a: 1, b: 2 }]], "f"), abi: later })
+    ).toBe(
+      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got 5. Or give its 2 members flat in its place.'
+    );
+    // o's object would land on t.b if t were read flat.
+    const before = abiWith("g", [{ name: "t", ...pair }, nestedO, uint("x")]);
+    expect(
+      await failure({
+        ...argsList([[1, { inner: { a: 1, b: 2 }, id: 3 }, 5]], "g"),
+        abi: before,
+      })
+    ).toBe(
+      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got 1. Or give its 2 members flat in its place.'
+    );
+    // o holds 5 and t given flat as (1, missing) lines up: o is named.
+    const first = abiWith("h", [nestedO, { name: "t", ...pair }]);
+    expect(await failure({ ...argsList([[5, 1]], "h"), abi: first })).toBe(
+      'Argument Sets entry 1: o must be an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, got 5.'
+    );
+  });
+
   it("counts a second tuple after the first one's members", async () => {
     const abi = abiWith("f", [
       { name: "t", ...pair },
@@ -2515,7 +2544,7 @@ describe("batch-read-contract - second review, round 2", () => {
     expect(await failure({ ...argsList([[1, 2, 3]], "f"), abi })).toBe(
       'Argument Sets entry 1 has 3 values for f (t, x, u), which takes 3 when t is an object, or 4 when t is given flat as its 2 members. Make each entry an array like [{"a": 1, "b": 1}, 1, {"a": 1, "b": 1}].'
     );
-    // The flat reading of t stops at u's object, so no flat count is offered.
+    // Reading u flat would put the object on a plain member: no flat count.
     const stop = abiWith("g", [
       { name: "t", ...pair },
       { name: "u", ...pair },
