@@ -16,9 +16,12 @@ import {
 } from "@/lib/workflow/nodes/condition/builder-utils";
 import {
   compileRegex,
+  MAX_CONDITION_COMPILE_WORK,
+  MAX_CONDITION_REGEX_WORK,
   MAX_RUN_REGEX_WORK,
   RegexBudget,
   RegexBudgetError,
+  regexCompileWork,
   regexPatternError,
 } from "@/lib/workflow/nodes/condition/regex-match";
 import { safeEvaluateCondition } from "@/lib/workflow/nodes/condition/safe-eval";
@@ -32,6 +35,11 @@ import type { WorkflowNode } from "@/lib/workflow/store";
 import { validateWorkflowActionConfigs } from "@/lib/workflow/validation/action-config";
 
 const FIELD = "{{@n1:Webhook.value}}";
+const PATTERN_ARG_RE = /, "([^"]*)"\)/g;
+
+function patternsOf(expression: string): string[] {
+  return [...expression.matchAll(PATTERN_ARG_RE)].map((match) => match[1]);
+}
 
 function run(expression: string, value: unknown): boolean {
   return evaluateConditionExpression(
@@ -45,13 +53,76 @@ function run(expression: string, value: unknown): boolean {
 describe("regex hardening", () => {
   describe("compile cost", () => {
     it("charges compiles to the budget, so long distinct patterns cannot pile up", () => {
-      const calls = Array.from(
-        { length: 6 },
-        (_, i) => `matchesRegex(${FIELD}, "^${i}${"a".repeat(500)}")`
-      ).join(" || ");
-      expect(() => run(calls, "b")).toThrow(
+      const budget = new RegexBudget(5_000_000);
+      expect(() => {
+        for (let i = 0; i < 6; i++) {
+          compileRegex(`^${i}${"a".repeat(500)}`, false, budget);
+        }
+      }).toThrow(
         "reached this node's matching limit of 5,000,000 while preparing the patterns. Each pattern costs 2,000 per character plus 400 per step"
       );
+    });
+
+    describe("a Condition's patterns must fit the run's budget", () => {
+      // 140 characters: 280,000 + 400 per step, so 16 distinct ones cost
+      // over 5,000,000 while 8 cost about half.
+      const call = (i: number) =>
+        `matchesRegex(${FIELD}, "^${String(i).padStart(2, "0")}${"a".repeat(137)}")`;
+      const calls = (count: number) =>
+        Array.from({ length: count }, (_, i) => call(i)).join(" || ");
+      const refused =
+        "These regex patterns are too large to prepare in one run";
+
+      it("refuses it in the editor, the run pre-check and the run", () => {
+        const expression = calls(16);
+        expect(regexCompileWork(patternsOf(expression))).toBeGreaterThan(
+          MAX_CONDITION_COMPILE_WORK
+        );
+        expect(validateConditionExpressionUI(expression).error).toContain(
+          refused
+        );
+        expect(visualConditionLimitError(expression, 16)).toContain(refused);
+        expect(preValidateConditionExpression(expression).error).toContain(
+          refused
+        );
+        expect(() =>
+          safeEvaluateCondition(
+            expression.replaceAll(FIELD, "__v0"),
+            { __v0: "b" },
+            new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" })
+          )
+        ).toThrow(refused);
+      });
+
+      it("runs one that fits, and counts a repeated pattern once", () => {
+        const fits = calls(8);
+        expect(validateConditionExpressionUI(fits)).toEqual({ valid: true });
+        expect(visualConditionLimitError(fits, 8)).toBeUndefined();
+        expect(run(fits, "b")).toBe(false);
+        const repeated = Array.from({ length: 16 }, () => call(0)).join(" || ");
+        expect(validateConditionExpressionUI(repeated)).toEqual({
+          valid: true,
+        });
+        expect(run(repeated, "b")).toBe(false);
+      });
+
+      // Whatever the save-time sum allows, the run can pay for with a full
+      // Condition's matching budget left.
+      it("sums the same cost the run charges", () => {
+        const patterns = patternsOf(calls(8));
+        const runBudget = new RegexBudget(regexCompileWork(patterns), {
+          scope: "run",
+        });
+        for (const pattern of patterns) {
+          compileRegex(pattern, false, runBudget);
+        }
+        expect(() => compileRegex("^x", false, runBudget)).toThrow(
+          RegexBudgetError
+        );
+        expect(MAX_CONDITION_COMPILE_WORK + MAX_CONDITION_REGEX_WORK).toBe(
+          MAX_RUN_REGEX_WORK
+        );
+      });
     });
 
     it("remembers a refused pattern instead of compiling it again", () => {

@@ -21,6 +21,9 @@ export const MAX_RUN_REGEX_WORK = 10_000_000;
 // so whether a condition fits depends on neither the cache nor earlier nodes.
 const COMPILE_WORK_PER_CHAR = 2000;
 const COMPILE_WORK_PER_STEP = 400;
+// One Condition's compiles: a fresh run keeps a full Condition's matching budget.
+export const MAX_CONDITION_COMPILE_WORK =
+  MAX_RUN_REGEX_WORK - MAX_CONDITION_REGEX_WORK;
 
 export const REGEX_ARITY_ERROR =
   'matchesRegex takes two values: the text and a quoted pattern, e.g. matchesRegex({{@node:Label.field}}, "^0x"). To ignore case, start the pattern with (?i)';
@@ -262,6 +265,38 @@ export function regexPatternError(
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
+}
+
+/**
+ * What compiling these patterns charges a run, each distinct one once, as
+ * `compileRegex` charges it. Refused patterns are skipped: their own check
+ * reports them.
+ */
+export function regexCompileWork(patterns: Iterable<string>): number {
+  let total = 0;
+  for (const pattern of new Set(patterns)) {
+    let regex: CompiledRegex;
+    try {
+      regex = compileRegex(pattern);
+    } catch {
+      continue;
+    }
+    total +=
+      pattern.length * COMPILE_WORK_PER_CHAR +
+      regex.programSize() * COMPILE_WORK_PER_STEP;
+  }
+  return total;
+}
+
+/** Refuses a Condition whose patterns alone would use up a run's budget. */
+export function regexCompileWorkError(
+  patterns: Iterable<string>
+): string | undefined {
+  const work = regexCompileWork(patterns);
+  if (work <= MAX_CONDITION_COMPILE_WORK) {
+    return;
+  }
+  return `These regex patterns are too large to prepare in one run: they cost ${formatCount(work)}; the limit is ${formatCount(MAX_CONDITION_COMPILE_WORK)} per Condition. Each pattern costs ${formatCount(COMPILE_WORK_PER_CHAR)} per character plus ${formatCount(COMPILE_WORK_PER_STEP)} per step of the compiled pattern, and a repeated pattern counts once. Use fewer or shorter patterns, or split the tests across two Condition nodes`;
 }
 
 type RegexBudgetScope = "node" | "run";

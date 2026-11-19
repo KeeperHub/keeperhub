@@ -164,7 +164,9 @@ same rules.
   budget of steps x characters tested: 5,000,000 per Condition check and 10,000,000 per workflow
   run, loops included, so it cannot hold up a run for more than a few seconds. Each pattern also
   costs a one-off amount the first time a run uses it (2,000 per pattern character plus 400 per
-  step), not again in a loop. The run's budget is shared by every regex test in it: a For Each can
+  step), not again in a loop. One Condition's patterns may cost at most 5,000,000 together (a
+  repeated pattern counts once), so a run always has room left to test them; the editor refuses
+  more. The run's budget is shared by every regex test in it: a For Each can
   test about 5,100 addresses against `^0x[0-9a-fA-F]{40}$` (about 56,000 once, then 46 steps x 42
   characters each), or about 2,150 transaction hashes against `^0x[0-9a-f]{64}$` (70 x 66 each). For
   more, use Filter Array, which has its own budget per node. A value that is missing, or comes from

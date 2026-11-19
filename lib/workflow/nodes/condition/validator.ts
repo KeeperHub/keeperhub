@@ -35,6 +35,7 @@ import {
   maskedStructure,
   mentionsRegexIn,
   REGEX_OBJECT_RE,
+  type RegexCall,
   regexCallsIn,
 } from "./regex-calls";
 import {
@@ -47,6 +48,7 @@ import {
   REGEX_NEGATED_ERROR,
   REGEX_SOURCE_ERROR,
   REGEX_TEMPLATE_ERROR,
+  regexCompileWorkError,
   regexPatternError,
 } from "./regex-match";
 import { BLOCKED_PROPS } from "./safe-eval";
@@ -174,9 +176,13 @@ export function visualConditionLimitError(
     return;
   }
   const length = conditionLength(expression);
-  return length > MAX_CONDITION_LENGTH
-    ? lengthMessage(length, true)
-    : undefined;
+  if (length > MAX_CONDITION_LENGTH) {
+    return lengthMessage(length, true);
+  }
+  const { masked } = scanForRegex(expression);
+  return masked === undefined
+    ? undefined
+    : compileWorkError(expression, regexCallsIn(masked));
 }
 
 // The scanner's own reason: an unclosed quote, or an escape it cannot read.
@@ -233,7 +239,40 @@ function rawRegexError(
       return { valid: false, error: REGEX_LITERAL_ERROR };
     }
   }
-  return;
+  const compileWork = compileWorkError(expression, calls);
+  return compileWork ? { valid: false, error: compileWork } : undefined;
+}
+
+// What the calls' typed patterns cost to prepare, refused over the cap.
+function compileWorkError(
+  expression: string,
+  calls: RegexCall[]
+): string | undefined {
+  const patterns: string[] = [];
+  for (const call of calls) {
+    const pattern = call.args[1];
+    const typed = pattern && quotedPattern(expression.slice(...pattern).trim());
+    if (typed !== undefined) {
+      patterns.push(typed);
+    }
+  }
+  return regexCompileWorkError(patterns);
+}
+
+// A pattern typed as one exact quoted string, as the run reads it; anything
+// else is refused by the other checks.
+function quotedPattern(text: string): string | undefined {
+  if (!(text.startsWith('"') || text.startsWith("'"))) {
+    return;
+  }
+  try {
+    const scanned = scanString(text, 0);
+    return scanned.next === text.length && !scanned.lossy
+      ? scanned.value
+      : undefined;
+  } catch {
+    return;
+  }
 }
 
 function regexObjectError(code: string): ValidationResult | undefined {
