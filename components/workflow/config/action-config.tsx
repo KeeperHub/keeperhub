@@ -483,7 +483,7 @@ export function ConditionFields({
       return;
     }
     const limit = workflowRegexLimit(workflowConditions(checkedNodes));
-    if (!limit || limit.kind === "condition") {
+    if (!limit) {
       return;
     }
     const largest = checkedNodes[limit.index];

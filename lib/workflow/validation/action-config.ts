@@ -6,6 +6,7 @@ import {
 } from "@/lib/protocol-array-value";
 import { resolveSwitch, switchRefusal } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
+import { cutText } from "@/lib/utils/cut-text";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
   checkSolidityValue,
@@ -101,15 +102,6 @@ function sanitiseSummaryText(
     return `${cutText(stripped, maxChars - 3)}...`;
   }
   return stripped;
-}
-
-// The first `length` UTF-16 units, one fewer when that would end on the
-// first half of a surrogate pair (an emoji, for one).
-function cutText(text: string, length: number): string {
-  const last = text.charCodeAt(length - 1);
-  return last >= HIGH_SURROGATE_MIN && last <= HIGH_SURROGATE_MAX
-    ? text.slice(0, length - 1)
-    : text.slice(0, length);
 }
 
 function fixedArrayLength(
@@ -509,8 +501,6 @@ export function isKnownConfigKeyForAction(
 const RECEIVED_MAX_CHARS = 200;
 // 100 entries already serialise past 200 characters ("[0,0,...]").
 const RECEIVED_MAX_ENTRIES = 100;
-const HIGH_SURROGATE_MIN = 0xd8_00;
-const HIGH_SURROGATE_MAX = 0xdb_ff;
 
 function capReceived(value: unknown): unknown {
   if (typeof value === "string") {

@@ -481,6 +481,7 @@ describe("Condition fields", () => {
     expect(red.map((p) => p.textContent).join(" ")).toContain(
       "too long to run with matchesRegex"
     );
+    expect(container.textContent).not.toContain("Together");
     expect(container.textContent).toContain("won't save until this is fixed");
   });
 

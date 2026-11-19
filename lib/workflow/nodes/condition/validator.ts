@@ -26,6 +26,7 @@
  */
 
 import { stripControlChars } from "@/lib/utils/control-chars";
+import { cutText } from "@/lib/utils/cut-text";
 import {
   hasTemplateToken,
   parseStoredRef,
@@ -267,7 +268,7 @@ export function conditionUsesRegex(expression: string): boolean {
 }
 
 /** The typed patterns of a raw condition's matchesRegex calls, as a run reads them. */
-export function conditionRegexPatterns(expression: string): string[] {
+function conditionRegexPatterns(expression: string): string[] {
   // Too long ones are refused before any pattern is read.
   if (
     !usesRegex(scanForRegex(expression)) ||
@@ -299,12 +300,14 @@ const MAX_WORKFLOW_REGEX_TEXT = 100_000;
 /**
  * A regex problem that refuses a save: one Condition's own, or the workflow's
  * regex Conditions together (too many, too much text, patterns over the cap).
- * For "text" and "patterns", `index` is the Condition with the most.
+ * For "text" and "patterns", `index` is the Condition with the most, unless
+ * `unmeasured` (some patterns past the cap were not measured).
  */
 export type RegexIssue = {
   index: number;
   message: string;
   kind: "condition" | "count" | "text" | "patterns";
+  unmeasured?: boolean;
 };
 
 type IndexedCondition = { index: number; condition: string };
@@ -332,6 +335,10 @@ function workflowSizeIssue(
   let largest = { index: -1, length: -1 };
   for (const { index, condition } of withRegex) {
     const length = conditionLength(condition);
+    // Over its own limit it is never read, and its own check reports it.
+    if (length > MAX_CONDITION_LENGTH) {
+      continue;
+    }
     total += length;
     if (length > largest.length) {
       largest = { index, length };
@@ -398,8 +405,8 @@ export function limitMessage(issue: RegexIssue, where: string): string {
   if (issue.kind === "condition") {
     return issue.message;
   }
-  const parts =
-    issue.kind === "count" ? [issue.message] : [issue.message, where];
+  const named = issue.kind !== "count" && !issue.unmeasured;
+  const parts = named ? [issue.message, where] : [issue.message];
   return [...parts, LIMIT_HINTS[issue.kind]].join(". ");
 }
 
@@ -414,7 +421,7 @@ export function mostIn(label: unknown): string {
   if (!text) {
     return "Most are in a Condition with no name";
   }
-  return `Most are in "${text.length > 60 ? `${text.slice(0, 57)}...` : text}"`;
+  return `Most are in "${text.length > 60 ? `${cutText(text, 57)}...` : text}"`;
 }
 
 /**
@@ -500,6 +507,7 @@ function compileConditions(
     index: conditions[result.largest].index,
     message: workflowCompileError(result.work, result.atLeast),
     kind: "patterns",
+    unmeasured: result.atLeast,
   };
 }
 

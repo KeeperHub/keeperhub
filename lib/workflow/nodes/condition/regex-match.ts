@@ -273,10 +273,9 @@ export const REGEX_WORKFLOW_COMPILE_ERROR =
 
 /** Past the workflow cap: how far past, given the patterns' total cost. */
 export function workflowCompileError(work: number, atLeast = false): string {
-  const share = Math.max(
-    101,
-    Math.round((work / MAX_WORKFLOW_COMPILE_WORK) * 100)
-  );
+  // A lower bound is rounded down, so "more than" stays true.
+  const round = atLeast ? Math.floor : Math.round;
+  const share = Math.max(101, round((work / MAX_WORKFLOW_COMPILE_WORK) * 100));
   const amount = atLeast ? "more than" : "about";
   return `${REGEX_WORKFLOW_COMPILE_ERROR}: ${amount} ${formatCount(share)}% of the limit`;
 }
@@ -303,18 +302,19 @@ export function prepareWorkflowPatterns(
   { reportRefused }: { reportRefused: boolean }
 ): WorkflowPatternsResult | undefined {
   const seen = new Set<string>();
-  const measure = new RegexBudget(MEASURE_PAST_CAP_WORK, { scope: "run" });
+  let measure: RegexBudget | undefined;
   let over = false;
   let atLeast = false;
   let largest = { at: -1, cost: -1 };
   for (const [at, patterns] of conditions.entries()) {
-    const before = budget.used() + measure.used();
+    const before = budget.used() + (measure?.used() ?? 0);
     for (const pattern of patterns) {
       if (seen.has(pattern)) {
         continue;
       }
       seen.add(pattern);
       if (over) {
+        measure ??= new RegexBudget(MEASURE_PAST_CAP_WORK, { scope: "run" });
         atLeast ||= measuredPastCap(pattern, measure);
         continue;
       }
@@ -330,13 +330,17 @@ export function prepareWorkflowPatterns(
       }
       over = budget.used() > MAX_WORKFLOW_COMPILE_WORK;
     }
-    const cost = budget.used() + measure.used() - before;
+    const cost = budget.used() + (measure?.used() ?? 0) - before;
     if (cost > largest.cost) {
       largest = { at, cost };
     }
   }
   return over
-    ? { work: budget.used() + measure.used(), largest: largest.at, atLeast }
+    ? {
+        work: budget.used() + (measure?.used() ?? 0),
+        largest: largest.at,
+        atLeast,
+      }
     : undefined;
 }
 

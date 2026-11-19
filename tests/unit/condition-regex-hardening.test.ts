@@ -2,7 +2,7 @@
 // case is an attack an audit of this feature tried.
 
 import { RE2JS } from "re2js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
@@ -57,6 +57,10 @@ function run(expression: string, value: unknown): boolean {
 }
 
 describe("regex hardening", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe("compile cost", () => {
     it("charges compiles to the budget, so long distinct patterns cannot pile up", () => {
       const budget = new RegexBudget(5_000_000);
@@ -408,8 +412,13 @@ describe("regex hardening", () => {
         const nodes = Array.from({ length: 5 }, (_, i) =>
           textNode(`c${i}`, calls(i * 16, 16))
         );
-        expect(runStart(nodes)).toMatch(/more than \d{3}% of the limit/);
-        expect(saveIssues(nodes)[0]?.message).toMatch(/more than \d{3}%/);
+        const started = runStart(nodes) ?? "";
+        expect(started).toMatch(/more than \d{3}% of the limit/);
+        // Not all were measured, so no Condition is named as having the most.
+        expect(started).not.toContain("Most are in");
+        const saved = saveIssues(nodes)[0]?.message ?? "";
+        expect(saved).toMatch(/more than \d{3}%/);
+        expect(saved).not.toContain("has the most");
       });
 
       // One Condition over every total is told its own limit, not the total's.
@@ -421,6 +430,8 @@ describe("regex hardening", () => {
         expect(saveIssues([huge])[0]?.message).toContain(
           "This condition is too long to run with matchesRegex"
         );
+        // It is never read, so it is not in the total; it fails when reached.
+        expect(runStart([huge])).toBeUndefined();
       });
 
       it("says what to do, and names a label as one safe line", () => {
@@ -431,6 +442,11 @@ describe("regex hardening", () => {
         nodes[1].data.label = 'Big "list"\nnext line';
         const started = runStart(nodes) ?? "";
         expect(started).toContain("Most are in \"Big 'list' next line\"");
+        // A long label is cut whole characters at a time.
+        nodes[1].data.label = "\u{1F600}".repeat(40);
+        expect(runStart(nodes)).not.toMatch(
+          /[\ud800-\udbff](?![\udc00-\udfff])/
+        );
         expect(started).toContain("reuse one pattern");
         expect(saveIssues(nodes)[0]?.message).toContain(
           "This Condition has the most. Shorten them"
@@ -458,7 +474,6 @@ describe("regex hardening", () => {
       expect(regexPatternError(heavy)).toContain("too complex");
       expect(regexPatternError(heavy)).toContain("too complex");
       expect(compile).toHaveBeenCalledTimes(1);
-      compile.mockRestore();
     });
 
     it("charges a compile once per run, the same whether or not it is cached", () => {
