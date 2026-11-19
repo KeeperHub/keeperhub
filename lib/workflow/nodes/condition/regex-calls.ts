@@ -19,7 +19,7 @@ export const REGEX_OBJECT_RE =
  * References and quoted text blanked, same length, so parens, commas and &&
  * inside a value or a node label are not read as structure.
  */
-export function codeStructure(expression: string): string {
+function codeStructure(expression: string): string {
   return maskedStructure(expression) ?? expression;
 }
 
@@ -92,6 +92,14 @@ export function mentionsRegex(expression: string): boolean {
 export function mentionsRegexIn(structure: string): boolean {
   REGEX_NAME_RE.lastIndex = 0;
   return REGEX_NAME_RE.test(structure);
+}
+
+// The visual rule's operator name, which is not a function in an expression.
+const NEGATED_CALL_RE = /(?<![\w$.])notMatchesRegex\s*\(/;
+
+/** True when notMatchesRegex(...) is called outside quoted text. */
+export function hasNegatedRegexCall(expression: string): boolean {
+  return NEGATED_CALL_RE.test(codeStructure(expression));
 }
 
 /**

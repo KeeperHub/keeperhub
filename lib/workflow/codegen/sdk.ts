@@ -19,16 +19,18 @@ const SYSTEM_CODEGEN_TEMPLATES: Record<string, string> = {
   Condition: conditionTemplate,
 };
 
+import { mentionsRegex } from "@/lib/workflow/nodes/condition/regex-calls";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import {
-  ARRAY_INDEX_PATTERN,
   analyzeNodeUsage,
+  buildAccessPath,
   buildEdgeMap,
   commentSafe,
   escapeForTemplateLiteral,
   escapeTemplateText,
   findTriggerNodes,
   isExportableCondition,
+  REGEX_NOT_EXPORTED,
   sanitizeFunctionName,
   sanitizeStepName,
   sanitizeVarName,
@@ -96,16 +98,7 @@ function processNewFormatID(
     return `\${outputs?.['${sanitizedNodeId}']?.data}`;
   }
 
-  const accessPath = fieldPath
-    .split(".")
-    .map((part: string) => {
-      const arrayMatch = part.match(ARRAY_INDEX_PATTERN);
-      if (arrayMatch) {
-        return `?.${arrayMatch[1]}?.[${arrayMatch[2]}]`;
-      }
-      return `?.${part}`;
-    })
-    .join("");
+  const accessPath = buildAccessPath(fieldPath, true);
 
   return `\${outputs?.['${sanitizedNodeId}']?.data${accessPath}}`;
 }
@@ -130,18 +123,33 @@ function processLegacyDollarRef(trimmed: string): string {
     return `\${outputs?.['${sanitizedNodeId}']?.data}`;
   }
 
-  const accessPath = fieldPath
-    .split(".")
-    .map((part: string) => {
-      const arrayMatch = part.match(ARRAY_INDEX_PATTERN);
-      if (arrayMatch) {
-        return `?.${arrayMatch[1]}?.[${arrayMatch[2]}]`;
-      }
-      return `?.${part}`;
-    })
-    .join("");
+  const accessPath = buildAccessPath(fieldPath, true);
 
   return `\${outputs?.['${sanitizedNodeId}']?.data${accessPath}}`;
+}
+
+// The tokens convertTemplateToJSWithLabels turns into code; any other is
+// written as typed.
+function sdkResolves(tokenBody: string): boolean {
+  const trimmed = tokenBody.trim();
+  return (
+    (trimmed.startsWith("@") && trimmed.includes(":")) ||
+    trimmed.startsWith("$")
+  );
+}
+
+function conditionValueLine(
+  condition: string,
+  converted: string | undefined,
+  varName: string,
+  indent: string
+): string {
+  if (mentionsRegex(condition)) {
+    return `${indent}const ${varName} = ${REGEX_NOT_EXPORTED};`;
+  }
+  return converted === undefined
+    ? `${indent}const ${varName} = false; // not supported in exported code`
+    : `${indent}const ${varName} = \`${converted}\`;`;
 }
 
 /**
@@ -374,7 +382,10 @@ export function generateWorkflowSDKCode(
   function buildConditionParams(config: Record<string, unknown>): string[] {
     const condition = (config.condition as string) || "true";
     // Written as code, so only the run's grammar goes in.
-    return isExportableCondition(condition)
+    if (mentionsRegex(condition)) {
+      return [`condition: ${REGEX_NOT_EXPORTED}`];
+    }
+    return isExportableCondition(condition, sdkResolves)
       ? [`condition: ${convertTemplateToJS(condition)}`]
       : ["condition: false /* not supported in exported code */"];
   }
@@ -562,7 +573,7 @@ ${stepBody}
     return [
       `${indent}// Triggered`,
       `${indent}let ${varName} = input;`,
-      `${indent}outputs['${sanitizeVarName(nodeId)}'] = { label: '${label}', data: ${varName} };`,
+      `${indent}outputs['${sanitizeVarName(nodeId)}'] = { label: ${JSON.stringify(label)}, data: ${varName} };`,
     ];
   }
 
@@ -589,7 +600,7 @@ ${stepBody}
         `${indent}const ${varName} = await ${stepFnName}({ ...input, outputs });`
       );
       lines.push(
-        `${indent}outputs['${sanitizeVarName(nodeId)}'] = { label: '${nodeLabel}', data: ${varName} };`
+        `${indent}outputs['${sanitizeVarName(nodeId)}'] = { label: ${JSON.stringify(nodeLabel)}, data: ${varName} };`
       );
     } else {
       // If output not used, don't store the result in a variable
@@ -608,7 +619,7 @@ ${stepBody}
   ): string[] {
     const condition = (node.data.config?.condition as string) || "true";
     // The condition's own text is escaped before references become ${...}.
-    const convertedCondition = isExportableCondition(condition)
+    const convertedCondition = isExportableCondition(condition, sdkResolves)
       ? convertTemplateToJS(escapeTemplateText(condition))
       : undefined;
     const nextNodes = edgesBySource.get(nodeId) || [];
@@ -618,9 +629,12 @@ ${stepBody}
     if (nextNodes.length > 0) {
       lines.push(`${indent}// ${commentSafe(node.data.label ?? "")}`);
       lines.push(
-        convertedCondition === undefined
-          ? `${indent}const ${conditionVarName} = false; // not supported in exported code`
-          : `${indent}const ${conditionVarName} = \`${convertedCondition}\`;`
+        conditionValueLine(
+          condition,
+          convertedCondition,
+          conditionVarName,
+          indent
+        )
       );
       lines.push(`${indent}if (${conditionVarName}) {`);
 

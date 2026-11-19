@@ -36,6 +36,7 @@ import {
   REGEX_SOURCE_ERROR,
   readRegexPattern,
   regexPatternError,
+  withoutExpressionNote,
 } from "@/lib/workflow/nodes/condition/regex-match";
 import { hasTemplateToken } from "@/lib/workflow/template-ref";
 
@@ -52,7 +53,7 @@ const OPERATOR_OPTION_GROUPS = groupSelectOptions(CONDITION_OPERATOR_OPTIONS);
 
 // Shown under a regex rule until its pattern has an error to show instead.
 const REGEX_RULE_HINT =
-  "The pattern can be anywhere in the text. ^ start, $ end, (?i) ignore case. No quotes or /.../.";
+  "Matches anywhere in the text unless anchored: ^ start, $ end. (?i) ignores case. No quotes or /.../.";
 
 // The run-time pattern rules, shown while the pattern is typed.
 function regexRuleError(operand: string): string | undefined {
@@ -62,7 +63,9 @@ function regexRuleError(operand: string): string | undefined {
   if (hasTemplateToken(operand)) {
     return REGEX_SOURCE_ERROR;
   }
-  return regexPatternError(readRegexPattern(operand));
+  const problem = regexPatternError(readRegexPattern(operand));
+  // The rule takes the pattern as typed, so Expression mode notes do not apply.
+  return problem && withoutExpressionNote(problem);
 }
 
 const VALUE_CELL =
@@ -174,6 +177,7 @@ function RuleRow({
 
         {canRemove && (
           <Button
+            aria-label="Remove rule"
             className="size-6 shrink-0"
             disabled={disabled}
             onClick={onRemove}

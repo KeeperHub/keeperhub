@@ -99,6 +99,7 @@ import {
   isMissingReference,
   makeMissingReference,
 } from "@/lib/workflow/nodes/condition/missing-reference";
+import { mentionsRegex } from "@/lib/workflow/nodes/condition/regex-calls";
 import {
   MAX_RUN_REGEX_WORK,
   RegexBudget,
@@ -596,9 +597,17 @@ export function evaluateConditionExpression(
           transformedExpression,
           evalContext
         );
+        // matchesRegex sees what it would outside this mode: values as
+        // resolved ("01234", not 1234n) and typed integers as numbers.
+        if (mentionsRegex(converted.expression)) {
+          regexTextContext = { ...evalContext };
+          for (const [name, value] of Object.entries(converted.evalContext)) {
+            if (!Object.hasOwn(evalContext, name)) {
+              regexTextContext[name] = Number(value);
+            }
+          }
+        }
         transformedExpression = converted.expression;
-        // matchesRegex tests the values as resolved: "01234", not 1234n.
-        regexTextContext = { ...converted.evalContext, ...evalContext };
         evalContext = converted.evalContext;
       }
 

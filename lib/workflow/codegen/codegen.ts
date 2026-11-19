@@ -1,4 +1,5 @@
 import { buildEdgesBySourceHandle } from "@/lib/workflow/editor/edge-handle-utils";
+import { mentionsRegex } from "@/lib/workflow/nodes/condition/regex-calls";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
 import { DEFAULT_HTTP_METHOD } from "@/lib/workflow/nodes/http-request/constants";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
@@ -13,6 +14,7 @@ import {
   commentSafe,
   getStepInfo,
   isExportableCondition,
+  REGEX_NOT_EXPORTED,
   removeInvisibleChars,
   toFriendlyVarName,
   toTypeScriptLiteral,
@@ -174,6 +176,44 @@ export function generateWorkflowCode(
 
     const accessPath = buildAccessPath(fieldPath);
     return `\${${varName}${accessPath}}`;
+  }
+
+  // Whether convertConditionToJS turns a token into code; others stay as typed.
+  function resolvesToCode(tokenBody: string): boolean {
+    const trimmed = tokenBody.trim();
+    if (trimmed.startsWith("@")) {
+      const colon = trimmed.indexOf(":");
+      return colon > 0 && nodeIdToVarName.has(trimmed.slice(1, colon));
+    }
+    return (
+      trimmed.startsWith("$") &&
+      nodeIdToVarName.has(trimmed.slice(1).split(".")[0])
+    );
+  }
+
+  // The if (...) test for a Condition node, or an error in its place.
+  function exportedCondition(
+    condition: string | undefined,
+    nodeName: string
+  ): string {
+    const name = commentSafe(nodeName);
+    if (!condition) {
+      const errorMsg = `Condition node "${name}" has no condition expression configured`;
+      validationErrors.push(errorMsg);
+      return `false /* ERROR: ${errorMsg} */`;
+    }
+    if (mentionsRegex(condition)) {
+      validationErrors.push(
+        `Condition node "${name}" uses matchesRegex, which exported code does not support`
+      );
+      return REGEX_NOT_EXPORTED;
+    }
+    if (!isExportableCondition(condition, resolvesToCode)) {
+      const errorMsg = `Condition node "${name}" contains unsupported syntax`;
+      validationErrors.push(errorMsg);
+      return `false /* ERROR: ${errorMsg} */`;
+    }
+    return convertConditionToJS(condition);
   }
 
   // Helper to process @nodeId:DisplayName.field format for JavaScript expressions (not template strings)
@@ -858,14 +898,14 @@ export function generateWorkflowCode(
           `${indent}// TODO: Implement action type "${commentSafe(actionType)}"`
         );
         lines.push(
-          `${indent}const ${varName} = { status: 'pending', actionType: "${actionType}" };`
+          `${indent}const ${varName} = { status: 'pending', actionType: ${JSON.stringify(actionType)} };`
         );
       } else {
         lines.push(
           `${indent}// TODO: Implement action type "${commentSafe(actionType)}"`
         );
         lines.push(
-          `${indent}void ({ status: 'pending', actionType: "${actionType}" });`
+          `${indent}void ({ status: 'pending', actionType: ${JSON.stringify(actionType)} });`
         );
       }
     }
@@ -920,20 +960,10 @@ export function generateWorkflowCode(
     } = resolveConditionTargets(nodeId);
 
     if (effectiveTrueTargets.length > 0 || effectiveFalseTargets.length > 0) {
-      let convertedCondition: string;
-      if (condition) {
-        convertedCondition = convertConditionToJS(condition);
-        const isDisplayableCondition = isExportableCondition(condition);
-        if (!isDisplayableCondition) {
-          const errorMsg = `Condition node "${commentSafe(node.data.label || node.id)}" contains unsupported syntax`;
-          validationErrors.push(errorMsg);
-          convertedCondition = `false /* ERROR: ${errorMsg} */`;
-        }
-      } else {
-        const errorMsg = `Condition node "${commentSafe(node.data.label || node.id)}" has no condition expression configured`;
-        validationErrors.push(errorMsg);
-        convertedCondition = `false /* ERROR: ${errorMsg} */`;
-      }
+      const convertedCondition = exportedCondition(
+        condition,
+        node.data.label || node.id
+      );
 
       lines.push(`${indent}if (${convertedCondition}) {`);
       if (effectiveTrueTargets.length > 0) {
@@ -1049,20 +1079,10 @@ export function generateWorkflowCode(
     } = resolveConditionTargets(nodeId);
 
     if (effectiveTrueTargets.length > 0 || effectiveFalseTargets.length > 0) {
-      let convertedCondition: string;
-      if (condition) {
-        convertedCondition = convertConditionToJS(condition);
-        const isDisplayableCondition = isExportableCondition(condition);
-        if (!isDisplayableCondition) {
-          const errorMsg = `Condition node "${commentSafe(node.data.label || nodeId)}" contains unsupported syntax`;
-          validationErrors.push(errorMsg);
-          convertedCondition = `false /* ERROR: ${errorMsg} */`;
-        }
-      } else {
-        const errorMsg = `Condition node "${commentSafe(node.data.label || nodeId)}" has no condition expression configured`;
-        validationErrors.push(errorMsg);
-        convertedCondition = `false /* ERROR: ${errorMsg} */`;
-      }
+      const convertedCondition = exportedCondition(
+        condition,
+        node.data.label || nodeId
+      );
 
       lines.push(`${indent}if (${convertedCondition}) {`);
       for (const targetId of effectiveTrueTargets) {

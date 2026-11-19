@@ -63,7 +63,7 @@ const COMPARISON_PATTERN = /^(.+?)\s+(===|!==|==|!=|>=|<=|>|<)\s+(.+)$/;
 const WHITESPACE = /\s/;
 
 /**
- * Condition text with its codeStructure, same length, so the parse-back masks
+ * Condition text with its masked structure, same length, so the parse-back masks
  * the text once and slices both together.
  */
 type Scanned = { text: string; structure: string };

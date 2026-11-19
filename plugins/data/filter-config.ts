@@ -463,9 +463,9 @@ export function readValue(raw: unknown, operator: FilterOperator): unknown {
   return typeof value === "string" ? toTypedValue(value, label) : value;
 }
 
-// A template Value is resolved at run time, except a regex pattern, which
-// must be typed so outside data cannot choose the test.
-function isRunTimeValue(raw: unknown, operator: FilterOperator): boolean {
+// True for a template Value, which the run resolves and checks. A regex
+// pattern must be typed, so outside data cannot choose the test: it throws.
+function deferTemplateValue(raw: unknown, operator: FilterOperator): boolean {
   if (!valueContainsTemplate(raw)) {
     return false;
   }
@@ -484,13 +484,6 @@ function isRunTimeValue(raw: unknown, operator: FilterOperator): boolean {
 export function checkFilterConfig(
   config: Record<string, unknown>
 ): { field: string; message: string } | undefined {
-  // The test itself never comes from another node; only its inputs may.
-  if (valueContainsTemplate(config.operator)) {
-    return {
-      field: "operator",
-      message: "Pick the operator itself; it can't come from another node.",
-    };
-  }
   const typed = (key: string): unknown =>
     valueContainsTemplate(config[key]) ? undefined : config[key];
   let operator: FilterOperator;
@@ -515,7 +508,7 @@ export function checkFilterConfig(
       () =>
         !rule.readsValue ||
         // Read raw, not through typed(): readValue needs the original type.
-        isRunTimeValue(config.value, operator) ||
+        deferTemplateValue(config.value, operator) ||
         readValue(config.value, operator),
     ],
     [

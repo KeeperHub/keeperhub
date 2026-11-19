@@ -20,16 +20,16 @@ export const MAX_FILTER_REGEX_WORK = 25_000_000;
 // All Condition evaluations of one pass of a workflow run, For Each
 // included: about 1 s. The body replays on resume, so keep each pass small.
 export const MAX_RUN_REGEX_WORK = 10_000_000;
-// A compile is charged by pattern length and compiled steps, once per run
-// (the root budget keeps what it compiled), so whether a condition fits
-// never depends on the shared cache.
+// A compile is charged by pattern length and compiled steps, once per run and
+// to the run's own budget (the root keeps what it compiled), so whether a
+// condition fits depends neither on the shared cache nor on earlier nodes.
 const COMPILE_WORK_PER_CHAR = 2000;
 const COMPILE_WORK_PER_STEP = 400;
 
 export const REGEX_ARITY_ERROR =
   'matchesRegex takes two values: the text and a quoted pattern, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
 export const REGEX_SOURCE_ERROR =
-  "Type the regex pattern itself; it can't come from another node or be built from other values. To look for text from another node, use contains or starts with";
+  "Type the regex pattern itself; it can't come from another node or be built from other values. To look for text from another node, use contains or starts with. To match a brace, put a backslash before it, e.g. \\{\\{";
 export const REGEX_BACKSLASH_ERROR =
   'In Expression mode, type each backslash in the regex pattern twice, e.g. "^\\\\d+$" for ^\\d+$';
 export const REGEX_EMPTY_ERROR =
@@ -39,10 +39,12 @@ export const REGEX_NON_TEXT_ERROR =
 export const REGEX_UNDEFINED_ERROR =
   "The regex test got no value (a missing field, or a node that did not run). Add an exists rule before it";
 export const REGEX_LITERAL_ERROR =
-  'The regex pattern must be one quoted text, e.g. "^0x"';
+  'The regex pattern must be a single quoted string, e.g. "^0x"';
 export const REGEX_DIRECT_ERROR =
   'Write matchesRegex( exactly: no space before "(" and nothing around the name, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
-export const REGEX_CALLS_ERROR = `A condition can use matchesRegex at most ${MAX_REGEX_CALLS} times`;
+export const REGEX_CALLS_ERROR = `A condition can use matchesRegex at most ${MAX_REGEX_CALLS} times. Split the tests across two Condition nodes`;
+export const REGEX_NEGATED_ERROR =
+  'Write !matchesRegex(...) for "does not match regex"; notMatchesRegex names the visual rule and is not a function';
 
 const MAX_CACHED_PATTERNS = 256;
 const SYNTAX_ERROR_PREFIX = "error parsing regexp: ";
@@ -86,7 +88,7 @@ function syntaxHint(detail: string): string {
   }
   if (REPEAT_COUNT_RE.test(detail)) {
     return LARGE_COUNT_RE.test(detail)
-      ? ". Repeat counts go up to 1,000"
+      ? `. A pattern compiles to at most ${formatCount(MAX_REGEX_PROGRAM_SIZE)} steps, so keep a repeat count under about 990`
       : ". Write the smaller number first, e.g. {2,5}";
   }
   return "";
@@ -119,7 +121,7 @@ export function withoutExpressionNote(message: string): string {
 // One message for both modes: Expression mode needs three backslashes, since
 // the condition's own quotes take one level of escaping.
 function quoteWrappedError(quote: string): string {
-  return `Leave out the quotes around the regex pattern; they would be matched as part of the text. To match a quote, put a backslash before it (in Expression mode, type \\\\\\${quote}: three backslashes, then the quote)`;
+  return `The regex pattern starts and ends with a quote, which would be matched as part of the text. Remove them, or to match a quote, put a backslash before it (in Expression mode, type \\\\\\${quote}: three backslashes, then the quote)`;
 }
 
 // One quoted string, e.g. "ok" or "a\"b"; not 'yes'|'no', which only starts
@@ -194,7 +196,7 @@ export function compileRegex(
   }
   if (pattern.length > MAX_REGEX_PATTERN_LENGTH) {
     throw new Error(
-      `Regex pattern is ${formatCount(pattern.length)} characters; the limit is ${MAX_REGEX_PATTERN_LENGTH}`
+      `Regex pattern is ${formatCount(pattern.length)} characters; the limit is ${MAX_REGEX_PATTERN_LENGTH}. Shorten it, or split it across two rules`
     );
   }
   const key = `${ignoreCase ? "i" : "-"}${pattern}`;
@@ -264,7 +266,7 @@ export class RegexBudgetError extends Error {
         ? "The regex tests in this workflow run reached the run's matching limit"
         : "The regex test reached this node's matching limit";
     super(
-      `${where}: ${pattern}steps x characters tested may total ${formatCount(limit)}. Test fewer or shorter values or use a simpler pattern`
+      `${where}: ${pattern}steps x characters tested may total ${formatCount(limit)}. Test fewer or shorter values, or use a simpler pattern`
     );
     this.name = "RegexBudgetError";
   }
@@ -300,7 +302,7 @@ export class RegexBudget {
   }
 
   chargeCompile(units: number): void {
-    this.spend(units);
+    this.root().spend(units);
   }
 
   private root(): RegexBudget {

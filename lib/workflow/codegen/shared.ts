@@ -10,7 +10,6 @@ import { findActionById } from "@/plugins/registry";
 // Regex patterns at top level for performance
 export const WHITESPACE_PATTERN = /\s+/;
 export const NON_ALPHANUMERIC_PATTERN = /[^a-zA-Z0-9]/g;
-export const ARRAY_INDEX_PATTERN = /^([^[]+)\[(\d+)\]$/;
 export const VALID_IDENTIFIER_PATTERN = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
 export const NUMBER_START_PATTERN = /^[0-9]/;
 
@@ -111,18 +110,33 @@ export function findTriggerNodes(
   );
 }
 
+// A field path part: a name, a name with indexes (items[0][1]), or an index.
+const NAME_WITH_INDEXES = /^([A-Za-z_$][\w$]*)((?:\[\d+\])*)$/;
+const INDEX_PART = /^\d+$/;
+const INDEX_RE = /\d+/g;
+
 /**
- * Helper to build access path from field path
+ * A field path written as code: .name and [index] where the part is one,
+ * and a quoted key for anything else, so no saved path can become code.
+ * `optional` writes ?. and ?.[ instead.
  */
-export function buildAccessPath(fieldPath: string): string {
+export function buildAccessPath(fieldPath: string, optional = false): string {
+  const dot = optional ? "?." : ".";
+  const open = optional ? "?.[" : "[";
   return fieldPath
     .split(".")
     .map((part: string) => {
-      const arrayMatch = ARRAY_INDEX_PATTERN.exec(part);
-      if (arrayMatch) {
-        return `.${arrayMatch[1]}[${arrayMatch[2]}]`;
+      if (INDEX_PART.test(part)) {
+        return `${open}${part}]`;
       }
-      return `.${part}`;
+      const named = NAME_WITH_INDEXES.exec(part);
+      if (!named) {
+        return `${open}${JSON.stringify(part)}]`;
+      }
+      const indexes = (named[2].match(INDEX_RE) ?? [])
+        .map((index) => `${open}${index}]`)
+        .join("");
+      return `${dot}${named[1]}${indexes}`;
     })
     .join("");
 }
@@ -177,42 +191,29 @@ export function escapeTemplateText(text: string): string {
     .replace(/\$\{/g, "\\${");
 }
 
-// One part of a reference's field path as export writes it: a name, a name
-// with an index (items[0]) or an index (topics.1).
-const PLAIN_PATH_PART = /^(?:[A-Za-z_$][\w$]*(?:\[\d+\])?|\d+)$/;
-
 /**
- * The parts export may write as a field path: everything after the label's
- * first dot (@id:Label.a.b) or the node id ($id.a.b). A label with dots only
- * shortens this, so checking it covers every way export splits the reference.
+ * A condition that may be written into exported code: the run's grammar, with
+ * each reference the exporter resolves read as a variable (buildAccessPath
+ * keeps its path inert). A token it cannot resolve is written as typed, so it
+ * stays raw here and fails the check. matchesRegex has no exported helper.
  */
-function referencePathParts(body: string): string[] {
-  const trimmed = body.trim();
-  const rest = trimmed.startsWith("@")
-    ? trimmed.slice(trimmed.indexOf(":") + 1)
-    : trimmed;
-  const dot = rest.indexOf(".");
-  return dot === -1 ? [] : rest.slice(dot + 1).split(".");
-}
-
-/**
- * A condition that may be written into exported code: the run's grammar with
- * references as variables, each reference's field path a plain property or
- * index path (export writes it as code), and no matchesRegex (exported code
- * has no helper).
- */
-export function isExportableCondition(condition: string): boolean {
-  if (mentionsRegex(condition)) {
-    return false;
-  }
-  const plainPaths = findTemplateTokens(condition).every(({ body }) =>
-    referencePathParts(body).every((part) => PLAIN_PATH_PART.test(part))
-  );
+export function isExportableCondition(
+  condition: string,
+  resolves: (tokenBody: string) => boolean
+): boolean {
   return (
-    plainPaths &&
-    isSafeConditionExpression(replaceTemplateTokens(condition, () => "__v0"))
+    !mentionsRegex(condition) &&
+    isSafeConditionExpression(
+      replaceTemplateTokens(condition, ({ body }) =>
+        resolves(body) ? "__v0" : `{{${body}}}`
+      )
+    )
   );
 }
+
+/** Exported code for a condition that uses matchesRegex: it fails loudly. */
+export const REGEX_NOT_EXPORTED =
+  '(() => { throw new Error("This condition uses matchesRegex, which exported code does not support. Rewrite it by hand."); })()';
 
 /**
  * Escape a string for safe use in template literals

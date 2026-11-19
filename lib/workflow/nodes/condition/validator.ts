@@ -32,7 +32,7 @@ import {
 import {
   findRegexCalls,
   hasIndirectRegexUse,
-  mentionsRegex,
+  hasNegatedRegexCall,
   REGEX_OBJECT_RE,
 } from "./regex-calls";
 import {
@@ -42,6 +42,7 @@ import {
   REGEX_CALLS_ERROR,
   REGEX_DIRECT_ERROR,
   REGEX_LITERAL_ERROR,
+  REGEX_NEGATED_ERROR,
   REGEX_SOURCE_ERROR,
   regexPatternError,
 } from "./regex-match";
@@ -119,17 +120,43 @@ function blockedKeyError(
   return;
 }
 
-// Caps conditions that use matchesRegex, whose checks read the text several
-// times; others are not limited, so existing long conditions keep running.
+// Several checks here scale worse than linearly; a cap keeps each one fast.
+// It counts each reference as the short name the run gives it (__v0), so a
+// long node label or id does not count against it.
 export const MAX_CONDITION_LENGTH = 10_000;
 
+function conditionLength(expression: string): number {
+  let index = 0;
+  return replaceTemplateTokens(expression, () => `__v${index++}`).length;
+}
+
+function lengthMessage(length: number, rules: boolean): string {
+  const counted = rules ? "Together the rules are" : "Condition is";
+  return `${counted} ${length.toLocaleString("en-US")} characters, each reference counted as a short name; the limit is ${MAX_CONDITION_LENGTH.toLocaleString("en-US")}. Split the test across two Condition nodes`;
+}
+
 function lengthError(expression: string): ValidationResult | undefined {
-  return expression.length > MAX_CONDITION_LENGTH && mentionsRegex(expression)
-    ? {
-        valid: false,
-        error: `A condition that uses matchesRegex is ${expression.length.toLocaleString("en-US")} characters; the limit is ${MAX_CONDITION_LENGTH.toLocaleString("en-US")}`,
-      }
+  const length = conditionLength(expression);
+  return length > MAX_CONDITION_LENGTH
+    ? { valid: false, error: lengthMessage(length, false) }
     : undefined;
+}
+
+/**
+ * The limits a visual condition can reach without a typo: its length and how
+ * many regex rules it has. Shown under the rules, before any run.
+ */
+export function visualConditionLimitError(
+  expression: string
+): string | undefined {
+  const length = conditionLength(expression);
+  if (length > MAX_CONDITION_LENGTH) {
+    return lengthMessage(length, true);
+  }
+  if (findRegexCalls(expression).length > MAX_REGEX_CALLS) {
+    return `A Condition can have at most ${MAX_REGEX_CALLS} regex rules. Split them across two Condition nodes`;
+  }
+  return;
 }
 
 // The scanner's own reason: an unclosed quote, or an escape it cannot read.
@@ -148,6 +175,9 @@ function stringError(error: unknown, expression: string): string {
 // Only the raw condition (references not yet filled in) shows this: a
 // reference inside a regex pattern would be filled in as the name __v0.
 function rawRegexError(expression: string): ValidationResult | undefined {
+  if (hasNegatedRegexCall(expression)) {
+    return { valid: false, error: REGEX_NEGATED_ERROR };
+  }
   if (hasIndirectRegexUse(expression)) {
     return { valid: false, error: REGEX_DIRECT_ERROR };
   }
@@ -1160,6 +1190,9 @@ export function validateConditionExpressionUI(
     }
   } catch {
     // Unterminated quote: the tokenizer below reports it.
+  }
+  if (hasNegatedRegexCall(trimmed)) {
+    return { valid: false, error: REGEX_NEGATED_ERROR };
   }
   if (hasIndirectRegexUse(trimmed)) {
     return { valid: false, error: REGEX_DIRECT_ERROR };

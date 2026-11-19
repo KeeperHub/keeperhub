@@ -100,7 +100,7 @@ describe("matchesRegex", () => {
     it("refuses a pattern wrapped in quotes, or in /.../ with flags or regex syntax", () => {
       for (const pattern of ['"ok"', "'ok'"]) {
         expect(() => runRule(pattern, '"ok"'), pattern).toThrow(
-          "Leave out the quotes"
+          "starts and ends with a quote"
         );
       }
       for (const pattern of ["/^0x/", "/^0x/i", "/api/i", "/a+/"]) {
@@ -382,17 +382,17 @@ describe("matchesRegex", () => {
       }
     });
 
-    it("says a pattern built without a reference must be one quoted text", () => {
+    it("says a pattern built without a reference must be a single quoted string", () => {
       for (const expression of [
         `matchesRegex(${FIELD}, "a" + "b")`,
         `matchesRegex(${FIELD}, !"a")`,
       ]) {
         expect(() => run(expression, "ab"), expression).toThrow(
-          "must be one quoted text"
+          "must be a single quoted string"
         );
         expect(validateConditionExpressionUI(expression), expression).toEqual({
           valid: false,
-          error: expect.stringContaining("must be one quoted text"),
+          error: expect.stringContaining("must be a single quoted string"),
         });
       }
     });
@@ -543,7 +543,9 @@ describe("matchesRegex", () => {
       expect(regexPatternError("/users/id")).toBeUndefined();
       expect(regexPatternError("/api/ids")).toBeUndefined();
       expect(regexPatternError("/x/g")).toContain("Leave out the /.../");
-      expect(regexPatternError('"a\\"b"')).toContain("Leave out the quotes");
+      expect(regexPatternError('"a\\"b"')).toContain(
+        "starts and ends with a quote"
+      );
       // An escaped backslash leaves the inner quote bare: not one quoted string.
       expect(regexPatternError('"a\\\\"b"')).toBeUndefined();
       expect(regexPatternError("*.eth")).toContain("For any text, write .*");
@@ -551,7 +553,9 @@ describe("matchesRegex", () => {
       expect(regexPatternError("a{2,1}")).toContain("smaller number first");
       expect(regexPatternError("?abc")).toContain("To match ? itself");
       expect(regexPatternError("?abc")).not.toContain(".*");
-      expect(regexPatternError("a{2000}")).toContain("go up to 1,000");
+      expect(regexPatternError("a{2000}")).toContain(
+        "keep a repeat count under about 990"
+      );
       // The last quote is escaped, so this is not one quoted string.
       expect(regexPatternError('"a\\"')).toBeUndefined();
       expect(regexPatternError("/^api/")).toContain("Leave out the /.../");

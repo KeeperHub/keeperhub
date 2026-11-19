@@ -44,7 +44,10 @@ import {
   visualConditionToExpression,
 } from "@/lib/workflow/nodes/condition/builder-utils";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
-import { validateConditionExpressionUI } from "@/lib/workflow/nodes/condition/validator";
+import {
+  validateConditionExpressionUI,
+  visualConditionLimitError,
+} from "@/lib/workflow/nodes/condition/validator";
 import { stateValueToEditorText } from "@/lib/workflow/nodes/workflow-state/utils";
 import { useFeatures } from "@/hooks/use-features";
 import type { FeatureDefinition } from "@/lib/features";
@@ -375,6 +378,13 @@ function ConditionFields({
     return () => clearTimeout(timeoutId);
   }, [conditionValue, mode]);
 
+  // Limits the rules can reach that would fail every run.
+  const visualLimitError = useMemo(
+    () =>
+      mode === "visual" ? visualConditionLimitError(conditionValue) : undefined,
+    [mode, conditionValue]
+  );
+
   const handleVisualChange = (group: ConditionGroup): void => {
     const expression = visualConditionToExpression(group);
     onUpdateConfig("conditionConfig", { group });
@@ -432,6 +442,13 @@ function ConditionFields({
             group={currentGroup}
             onChange={handleVisualChange}
           />
+          {visualLimitError && (
+            <p className="text-destructive text-xs">{visualLimitError}</p>
+          )}
+          {/* Always mounted, so screen readers announce it as it appears. */}
+          <span aria-live="polite" className="sr-only">
+            {visualLimitError}
+          </span>
           {conditionValue.trim() && (
             <div className="space-y-1">
               <Label className="text-muted-foreground text-xs">
@@ -453,7 +470,7 @@ function ConditionFields({
             value={conditionValue}
           />
           {validationError && (
-            <p className="text-destructive text-xs">{validationError}</p>
+            <p className="text-xs text-yellow-600">{validationError}</p>
           )}
           {/* Always mounted, so screen readers announce an error as it appears. */}
           <span aria-live="polite" className="sr-only">

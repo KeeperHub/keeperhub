@@ -246,10 +246,10 @@ function testItem(
   try {
     return matches(resolveSegments(item, settings.testPath));
   } catch (error) {
-    // The run's budget, not this item: report it with this node's way out.
+    // The node's budget, not this item: report it with this node's way out.
     if (error instanceof RegexBudgetError) {
       throw new Error(
-        `${error.message}, or split the list across two Filter Array nodes`
+        `${error.message}. You can also split the list across two Filter Array nodes`
       );
     }
     throw new Error(

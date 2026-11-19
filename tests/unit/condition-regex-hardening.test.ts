@@ -23,6 +23,7 @@ import {
   preValidateConditionExpression,
   validateConditionExpression,
   validateConditionExpressionUI,
+  visualConditionLimitError,
 } from "@/lib/workflow/nodes/condition/validator";
 import type { WorkflowNode } from "@/lib/workflow/store";
 import { validateWorkflowActionConfigs } from "@/lib/workflow/validation/action-config";
@@ -76,6 +77,15 @@ describe("regex hardening", () => {
       }
     });
 
+    // A Condition's own budget is for matching, so whether it fits does not
+    // depend on which earlier Conditions compiled the same pattern.
+    it("charges compiles to the run, not the Condition", () => {
+      const pattern = `^${"r".repeat(400)}`;
+      const runBudget = new RegexBudget(2_000_000, { scope: "run" });
+      const node = new RegexBudget(10, { parent: runBudget });
+      expect(() => compileRegex(pattern, false, node)).not.toThrow();
+    });
+
     // About 56,000 to compile once, then 46 steps x 42 characters per test.
     it("lets a For Each test 5,000 addresses against one pattern", () => {
       const runBudget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
@@ -125,8 +135,9 @@ describe("regex hardening", () => {
   });
 
   describe("condition size", () => {
-    it("refuses a regex condition over 10,000 characters in every check", () => {
-      const long = `matchesRegex(${FIELD}, "a") || ${FIELD} === "${"a".repeat(10_000)}"`;
+    // Every condition: several checks scale worse than linearly.
+    it("refuses a condition over 10,000 characters in every check", () => {
+      const long = `${FIELD} === "${"a".repeat(10_000)}"`;
       for (const result of [
         preValidateConditionExpression(long),
         validateConditionExpression(long),
@@ -139,8 +150,9 @@ describe("regex hardening", () => {
       }
     });
 
-    // A saved allow-list of address rules, with no regex.
-    it("leaves long conditions without matchesRegex as they were", () => {
+    // The maintainer's case: about 95 address rules, 10,000 characters with
+    // their references, about 5,000 once each is a short name.
+    it("counts each reference as a short name, so a long allow-list fits", () => {
       const rule = (i: number): string =>
         `{{@node_${String(i).padStart(16, "0")}:Label.from}} === "0x${String(i).padStart(40, "0")}"`;
       const long = Array.from({ length: 120 }, (_, i) => rule(i)).join(" || ");
@@ -153,11 +165,24 @@ describe("regex hardening", () => {
       }
       // As the run checks it, references already replaced.
       const resolved = Array.from(
-        { length: 200 },
+        { length: 120 },
         (_, i) => `__v${i} === "0x${String(i).padStart(40, "0")}"`
       ).join(" || ");
-      expect(resolved.length).toBeGreaterThan(10_000);
       expect(validateConditionExpression(resolved)).toEqual({ valid: true });
+    });
+
+    it("shows the visual limits before a run", () => {
+      const rules = Array.from(
+        { length: 17 },
+        () => `matchesRegex(${FIELD}, "a")`
+      ).join(" || ");
+      expect(visualConditionLimitError(rules)).toBe(
+        "A Condition can have at most 16 regex rules. Split them across two Condition nodes"
+      );
+      expect(
+        visualConditionLimitError(`${FIELD} === "${"a".repeat(10_000)}"`)
+      ).toContain("Together the rules are");
+      expect(visualConditionLimitError(`${FIELD} === "a"`)).toBeUndefined();
     });
 
     it("opens a condition with more regex tests than allowed as text", () => {
@@ -166,6 +191,31 @@ describe("regex hardening", () => {
         () => `matchesRegex(${FIELD}, "a")`
       ).join(" || ");
       expect(editorConditionState(calls, undefined)).toEqual({
+        parsedGroup: null,
+        initialMode: "expression",
+      });
+    });
+  });
+
+  describe("expression mode", () => {
+    it("refuses notMatchesRegex(...) as a function, before any run", () => {
+      const condition = `notMatchesRegex(${FIELD}, "a")`;
+      for (const result of [
+        preValidateConditionExpression(condition),
+        validateConditionExpressionUI(condition),
+      ]) {
+        expect(result).toEqual({
+          valid: false,
+          error: expect.stringContaining("Write !matchesRegex(...)"),
+        });
+      }
+      expect(
+        preValidateConditionExpression(`${FIELD} === "notMatchesRegex(x)"`)
+      ).toEqual({ valid: true });
+    });
+
+    it("reads no rules from a condition whose quote is never closed", () => {
+      expect(editorConditionState(`${FIELD} === "open`, undefined)).toEqual({
         parsedGroup: null,
         initialMode: "expression",
       });
@@ -237,6 +287,19 @@ describe("regex hardening", () => {
       ).toBe(true);
       expect(
         evaluate(`${big} && !matchesRegex({{@n1:Webhook.zip}}, "^1234$")`)
+      ).toBe(true);
+    });
+
+    // Typed numbers are numbers there too, so arithmetic works as outside the mode.
+    it("computes the tested value as it would outside large-integer mode", () => {
+      const data = { balance: "2000000000000000000000", n: "5" };
+      expect(
+        evaluateConditionExpression(
+          '{{@n1:Webhook.balance}} > 1000000000000000000000 && matchesRegex(String({{@n1:Webhook.n}} * 2), "^10$")',
+          { n1: { label: "Webhook", data } },
+          new Map([["n1", {}]]),
+          { n1: { success: true, data } }
+        ).result
       ).toBe(true);
     });
 
@@ -326,7 +389,10 @@ describe("regex hardening", () => {
     it("never writes a pattern or value as live template code", () => {
       const code = exported(`matchesRegex(${FIELD}, "${payload(7)}")`);
       expect(code).not.toContain(payload(7));
-      expect(code).toContain("not supported in exported code");
+      // Fails loudly where it is reached, rather than taking the false branch.
+      expect(code).toContain(
+        'const conditionValue_c = (() => { throw new Error("This condition uses matchesRegex'
+      );
       // Inside the condition's template literal, ${ must stay escaped.
       const plain = exported(`String(${FIELD}).includes("${payload(8)}")`);
       const literalLine = plain
@@ -340,7 +406,7 @@ describe("regex hardening", () => {
       expect(code).not.toMatch(/^\s*process\.exit\(9\)/m);
     });
 
-    function workflowCode(condition: string): string {
+    function workflowCode(condition: string, sourceLabel = "Webhook"): string {
       const nodes = [
         {
           id: "t",
@@ -353,7 +419,7 @@ describe("regex hardening", () => {
           type: "action",
           position: { x: 0, y: 0 },
           data: {
-            label: "Webhook",
+            label: sourceLabel,
             type: "action",
             config: { actionType: "HTTP Request" },
           },
@@ -387,15 +453,76 @@ describe("regex hardening", () => {
       return generateWorkflowCode(nodes, edges).code;
     }
 
-    // A field path is written as code, so only a plain path may go in.
-    it("refuses a reference whose field path is code", () => {
-      const injected = `{{@n1:Webhook.a || ${payload(5)} || b}} == 1`;
-      for (const code of [exported(injected), workflowCode(injected)]) {
-        expect(code).not.toContain(payload(5));
-        expect(code).not.toMatch(/\|\| process\.exit/);
+    // The maintainer's example: the path is kept as a quoted key, not code.
+    it("writes any field path as a key, never as code", () => {
+      const injected = `{{@n1:Webhook.a || fetch(atob("aHR0cDovL2V2aWw")) || b}} == 1`;
+      expect(workflowCode(injected)).toContain(
+        'if (webhookResult["a || fetch(atob(\\"aHR0cDovL2V2aWw\\")) || b"] == 1) {'
+      );
+      expect(exported(injected)).toContain(
+        `?.data?.["a || fetch(atob(\\"aHR0cDovL2V2aWw\\")) || b"]} == 1`
+      );
+      expect(workflowCode("{{@n1:Webhook.items[0][1].value}} == 1")).toContain(
+        "if (webhookResult.items[0][1].value == 1) {"
+      );
+      expect(workflowCode("{{@n1:Webhook.topics.1}} == 1")).toContain(
+        "if (webhookResult.topics[1] == 1) {"
+      );
+    });
+
+    it("exports a reference to a node whose label has dots", () => {
+      expect(
+        workflowCode(
+          "{{@n1:Price v1.2 (beta).amount}} > 5",
+          "Price v1.2 (beta)"
+        )
+      ).toContain("if (priceV12BetaResult.amount > 5) {");
+    });
+
+    // A token the exporter cannot resolve is written as typed.
+    it("refuses a token it cannot resolve, so its text stays out of code", () => {
+      for (const condition of [
+        '"{{a" + fetch(atob("aHR0cDovL2V2aWw")) + "b}}" == 1',
+        '"{{@nope:x" + fetch(atob("aHR0cDovL2V2aWw")) + "y}}" == 1',
+        '"{{$nope" + fetch(atob("aHR0cDovL2V2aWw")) + "y}}" == 1',
+      ]) {
+        const code = workflowCode(condition);
+        expect(code).toContain("if (false /* ERROR:");
+        expect(code).not.toContain("+ fetch(atob");
       }
-      const plain = workflowCode("{{@n1:Webhook.items[0].value}} == 1");
-      expect(plain).toContain("items[0].value == 1");
+      expect(
+        exported('"{{a" + fetch(atob("aHR0cDovL2V2aWw")) + "b}}" == 1')
+      ).toContain(
+        "const conditionValue_c = false; // not supported in exported code"
+      );
+    });
+
+    it("writes a label into a string literal as data", () => {
+      const label = "L'+fetch('evil')+'";
+      const code = generateWorkflowSDKCode(
+        "wf",
+        [
+          {
+            id: "t",
+            type: "trigger",
+            position: { x: 0, y: 0 },
+            data: { label: "Trigger", type: "trigger", config: {} },
+          },
+          {
+            id: "n",
+            type: "action",
+            position: { x: 0, y: 0 },
+            data: {
+              label,
+              type: "action",
+              config: { actionType: "HTTP Request" },
+            },
+          },
+        ] as WorkflowNode[],
+        [{ id: "e1", source: "t", target: "n" }] as never
+      );
+      expect(code).toContain(`label: ${JSON.stringify(label)}, data:`);
+      expect(code).not.toContain(`label: '${label}'`);
     });
 
     // Labels, descriptions, node ids and action types all go through it.
