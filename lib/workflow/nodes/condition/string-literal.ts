@@ -10,7 +10,7 @@ const HEX_RE = /^[0-9a-fA-F]+$/;
 // drops or changes a backslash, which silently changes a regex pattern.
 const EXACT_ESCAPES = new Set(["\\", '"', "'", "n", "r", "t"]);
 
-export type ScannedString = {
+type ScannedString = {
   value: string;
   /** Index just past the closing quote. */
   next: number;

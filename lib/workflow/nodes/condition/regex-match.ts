@@ -8,8 +8,8 @@
 
 import { RE2JS, RE2JSSyntaxException } from "re2js";
 
-export const MAX_REGEX_PATTERN_LENGTH = 512;
-export const MAX_REGEX_PROGRAM_SIZE = 1000;
+const MAX_REGEX_PATTERN_LENGTH = 512;
+const MAX_REGEX_PROGRAM_SIZE = 1000;
 export const MAX_REGEX_TEXT_LENGTH = 4096;
 export const MAX_REGEX_CALLS = 16;
 // Budgets of pattern steps x characters tested, at about 100 ns each at worst.
@@ -70,7 +70,7 @@ const BACKTICK_RE = /`/g;
 // Compiled patterns, and the message for refused ones.
 const compiled = new Map<string, RE2JS | string>();
 
-export type CompiledRegex = RE2JS;
+type CompiledRegex = RE2JS;
 
 function formatCount(count: number): string {
   return count.toLocaleString("en-US");
@@ -87,9 +87,9 @@ function syntaxHint(detail: string): string {
   if (REPETITION_RE.test(detail)) {
     const operator = REPETITION_OPERATOR_RE.exec(detail)?.[1] ?? "";
     const anyText = operator.startsWith("*")
-      ? " For any text, use .* (dot, then star)."
+      ? ". For any text, use .* (dot, then star)"
       : "";
-    return `. To match ${operator[0] ?? "it"} itself, put a backslash before it.${anyText}`;
+    return `${anyText}. To match ${operator[0] ?? "it"} itself, put a backslash before it`;
   }
   if (REPEAT_COUNT_RE.test(detail)) {
     // Refused for a reversed range, or for counts over 1,000 (nested ones
@@ -97,7 +97,7 @@ function syntaxHint(detail: string): string {
     const range = REPEAT_RANGE_RE.exec(detail);
     return range && Number(range[1]) > Number(range[2])
       ? ". Write the smaller number first, e.g. {2,5}"
-      : `. Repeat counts go up to 1,000, nested ones multiplied, and the whole pattern must compile to at most ${formatCount(MAX_REGEX_PROGRAM_SIZE)} steps (a range or a repeated group costs more), so use smaller counts`;
+      : `. Use smaller counts: nested counts multiply ((a{100}){20} counts as 2,000), and the whole pattern must compile to at most ${formatCount(MAX_REGEX_PROGRAM_SIZE)} steps`;
   }
   return "";
 }
@@ -260,7 +260,7 @@ export function regexPatternError(
   }
 }
 
-export type RegexBudgetScope = "node" | "run";
+type RegexBudgetScope = "node" | "run";
 
 /** Raised when a node or a whole run has spent its matching budget. */
 export class RegexBudgetError extends Error {

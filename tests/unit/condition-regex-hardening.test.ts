@@ -178,6 +178,8 @@ describe("regex hardening", () => {
         `__v0 ==${" ".repeat(n)}1`,
         "a[".repeat(n / 2),
         Array.from({ length: n / 6 }, () => '"a"').join(" || "),
+        "1,".repeat(n / 2),
+        `__v0.includes(${"1,".repeat(n / 2)}1)`,
       ]) {
         expect(timed(() => validateConditionExpression(text))).toBeLessThan(
           1000
@@ -189,9 +191,14 @@ describe("regex hardening", () => {
           1000
         );
       }
-      expect(
-        timed(() => editorConditionState(`__v0${" ".repeat(n)}x`, undefined))
-      ).toBeLessThan(1000);
+      for (const text of [
+        `__v0${" ".repeat(n)}x`,
+        `${"x < ".repeat(n / 4)}\ny`,
+      ]) {
+        expect(timed(() => editorConditionState(text, undefined))).toBeLessThan(
+          1000
+        );
+      }
     });
 
     // The bracket check reads the content up to the first "]", as before.
@@ -265,6 +272,34 @@ describe("regex hardening", () => {
   });
 
   describe("expression mode", () => {
+    it("asks for quotes around a pattern typed without them", () => {
+      for (const condition of [
+        `matchesRegex(${FIELD}, ^0x)`,
+        `matchesRegex(${FIELD}, /^0x/i)`,
+      ]) {
+        for (const result of [
+          preValidateConditionExpression(condition),
+          validateConditionExpressionUI(condition),
+        ]) {
+          expect(result).toEqual({
+            valid: false,
+            error: expect.stringContaining("must be a single quoted string"),
+          });
+        }
+      }
+    });
+
+    it("refuses a comma outside call parentheses", () => {
+      expect(validateConditionExpressionUI(`${FIELD}, 1`).valid).toBe(false);
+      expect(validateConditionExpression("__v0, 1")).toEqual({
+        valid: false,
+        error: 'Condition contains disallowed syntax: ","',
+      });
+      expect(validateConditionExpression('__v0.includes("a", 1)')).toEqual({
+        valid: true,
+      });
+    });
+
     it("refuses notMatchesRegex(...) as a function, before any run", () => {
       const condition = `notMatchesRegex(${FIELD}, "a")`;
       for (const result of [
@@ -662,11 +697,12 @@ describe("regex hardening", () => {
 
     // JavaScript reads these differently from the run: an increment, and a
     // leading-zero number that a module refuses.
-    it("refuses ++, -- and leading-zero numbers in exported conditions", () => {
+    it("refuses ++, --, leading-zero numbers and 1.e3 in exported conditions", () => {
       for (const condition of [
         "{{@n1:Webhook.a}} ++ > 0",
         "-- {{@n1:Webhook.a}} > 0",
         "{{@n1:Webhook.a}} == 010",
+        "1.e3 === {{@n1:Webhook.a}}",
       ]) {
         expect(workflowCode(condition)).toContain("if (false /* ERROR:");
       }

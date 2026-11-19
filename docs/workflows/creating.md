@@ -139,8 +139,8 @@ same rules.
 - **Values:** numbers and `true`/`false` are tested as their text, and so is `null`: `^n` matches a
   null field. If the field can be null, add an **is not null** rule. A number is written the way
   JavaScript prints it, so a very large or very small one is tested in exponent form (`1e21` as
-  `1e+21`), and one past 2^53 is already rounded (2^60 is tested as `1152921504606847000`); send
-  such amounts as text. That holds when the condition also compares large integers exactly: the
+  `1e+21`), and one past 2^53 may not keep its digits (2^60 is tested as `1152921504606847000`);
+  send such amounts as text. That holds when the condition also compares large integers exactly: the
   regex test still sees ordinary numbers. A list or object fails the run. (Filter Array differs:
   `null` and booleans are items it can't test, which fail the step unless it is set to skip them.)
 - **Syntax:** patterns use [RE2 syntax](https://github.com/google/re2/wiki/Syntax), which is

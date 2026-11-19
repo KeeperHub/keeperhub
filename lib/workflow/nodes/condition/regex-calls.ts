@@ -53,7 +53,7 @@ function pairParens(structure: string): Map<number, number> {
   return pairs;
 }
 
-export type RegexCall = {
+type RegexCall = {
   /** Index of the call's "(" and its matching ")". */
   open: number;
   close: number;
@@ -88,7 +88,7 @@ export function mentionsRegex(expression: string): boolean {
   return mentionsRegexIn(codeStructure(expression));
 }
 
-/** mentionsRegex on a codeStructure already computed. */
+/** mentionsRegex on text already masked (maskedStructure). */
 export function mentionsRegexIn(structure: string): boolean {
   REGEX_NAME_RE.lastIndex = 0;
   return REGEX_NAME_RE.test(structure);
@@ -97,25 +97,15 @@ export function mentionsRegexIn(structure: string): boolean {
 // The visual rule's operator name, which is not a function in an expression.
 const NEGATED_CALL_RE = /(?<![\w$.])notMatchesRegex\s*\(/;
 
-/** True when notMatchesRegex(...) is called outside quoted text. */
-export function hasNegatedRegexCall(expression: string): boolean {
-  return hasNegatedRegexCallIn(codeStructure(expression));
-}
-
-/** hasNegatedRegexCall on a codeStructure already computed. */
+/** True when masked text calls notMatchesRegex(...), which is not a function. */
 export function hasNegatedRegexCallIn(structure: string): boolean {
   return NEGATED_CALL_RE.test(structure);
 }
 
 /**
- * True when matchesRegex appears outside quoted text other than as a direct
- * call, e.g. (matchesRegex)(...): the call checks below would miss it.
+ * True when masked text names matchesRegex other than as a direct call, e.g.
+ * (matchesRegex)(...), which the call checks would miss.
  */
-export function hasIndirectRegexUse(expression: string): boolean {
-  return hasIndirectRegexUseIn(maskedStructure(expression));
-}
-
-/** hasIndirectRegexUse on a maskedStructure already computed. */
 export function hasIndirectRegexUseIn(structure: string | undefined): boolean {
   if (structure === undefined) {
     return false;
@@ -126,19 +116,10 @@ export function hasIndirectRegexUseIn(structure: string | undefined): boolean {
 }
 
 /**
- * The matchesRegex calls outside quoted text, with their value spans, up to
+ * The matchesRegex calls in masked text, with their value spans, up to
  * `limit` of them: more than the cap is refused anyway, and stopping there
- * keeps the scan linear in the text.
+ * keeps the scan linear.
  */
-export function findRegexCalls(
-  expression: string,
-  limit = MAX_REGEX_CALLS + 1
-): RegexCall[] {
-  const structure = maskedStructure(expression);
-  return structure === undefined ? [] : regexCallsIn(structure, limit);
-}
-
-/** findRegexCalls on a maskedStructure already computed. */
 export function regexCallsIn(
   structure: string,
   limit = MAX_REGEX_CALLS + 1

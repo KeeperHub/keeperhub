@@ -251,12 +251,13 @@ export function escapeTextAroundTokens(
   return result + escapeTemplateText(text.slice(last));
 }
 
-// Read one way by the condition grammar and another by JavaScript: ++ and --
-// (two signs to the grammar, increment to JS) and 010 (10, or a syntax error
-// in a module).
-const JS_ONLY_TOKENS = /\+\+|--|(?<![\w.])0\d/;
+// Tokens the condition grammar reads one way and JavaScript another: ++ and
+// -- (two signs, or an increment), 010 (10, or a module syntax error) and
+// 1.e3 (a member of 1, or 1000). Other differences go with the export
+// rework; none of them runs code.
+const JS_ONLY_TOKENS = /\+\+|--|(?<![\w$.])(?:0\d|\d+\.[A-Za-z_$])/;
 
-/** True when JavaScript reads this condition code as the run does. */
+/** False when JavaScript would read one of JS_ONLY_TOKENS differently. */
 export function readsTheSameInJs(code: string): boolean {
   try {
     return !JS_ONLY_TOKENS.test(maskStringLiterals(code));

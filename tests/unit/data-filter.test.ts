@@ -97,7 +97,7 @@ describe("data/filter", () => {
         operator: "matchesRegex",
         value: "*.eth",
       });
-      expect(star.error).toMatch(/\(dot, then star\)\.$/);
+      expect(star.error).toMatch(/put a backslash before it\.$/);
       expect(star.error).not.toContain("..");
     });
 

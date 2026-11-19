@@ -53,6 +53,10 @@ import { BLOCKED_PROPS } from "./safe-eval";
 import { maskStringLiterals, scanString } from "./string-literal";
 
 // Dangerous patterns that should never appear in conditions
+// A comma not inside call parentheses. Checked by strayComma, in one pass:
+// as a regex, the lookahead rescanned to the end for every comma.
+const COMMA_OUTSIDE_CALL = /,(?![^(]*\))/g;
+
 const DANGEROUS_PATTERNS = [
   // Assignment operators
   /(?<![=!<>])=(?!=)/g, // = but not ==, ===, !=, !==, <=, >=
@@ -89,8 +93,8 @@ const DANGEROUS_PATTERNS = [
   /\+\+|--/g,
   // Bitwise operators (rarely needed, often used in exploits)
   /<<|>>|>>>/g,
-  // Comma operator (can chain expressions)
-  /,(?![^(]*\))/g, // Comma not inside function call parentheses
+  // Comma operator (can chain expressions); checked by strayComma below
+  COMMA_OUTSIDE_CALL,
   // Semicolons (statement separator)
   /;/g,
 ];
@@ -127,7 +131,7 @@ function blockedKeyError(
 // The regex checks read a condition's text several times; this caps the
 // conditions that use matchesRegex. Each reference counts as the short name
 // the run gives it (__v0), so long node labels and ids do not count.
-export const MAX_CONDITION_LENGTH = 10_000;
+const MAX_CONDITION_LENGTH = 10_000;
 
 function conditionLength(expression: string): number {
   let index = 0;
@@ -217,13 +221,17 @@ function rawRegexError(
   for (const call of calls) {
     const pattern = call.args[1];
     const text = pattern ? expression.slice(...pattern).trim() : "";
+    const quoted = text.startsWith('"') || text.startsWith("'");
     if (hasTemplateToken(text)) {
       // Typed inside quotes it may be braces meant literally.
-      const quoted = text.startsWith('"') || text.startsWith("'");
       return {
         valid: false,
         error: quoted ? REGEX_TEMPLATE_ERROR : REGEX_SOURCE_ERROR,
       };
+    }
+    // e.g. ^0x typed without its quotes, before the tokenizer trips on "^".
+    if (text && !quoted) {
+      return { valid: false, error: REGEX_LITERAL_ERROR };
     }
   }
   return;
@@ -294,16 +302,34 @@ export type ValidationResult =
 /**
  * Check for dangerous patterns in the expression
  */
+// True when a comma's next parenthesis is not ")", as COMMA_OUTSIDE_CALL
+// reads it, found in one pass from the end.
+function hasStrayComma(expression: string): boolean {
+  let nextParen = "";
+  for (let i = expression.length - 1; i >= 0; i--) {
+    const ch = expression[i];
+    if (ch === "(" || ch === ")") {
+      nextParen = ch;
+    } else if (ch === "," && nextParen !== ")") {
+      return true;
+    }
+  }
+  return false;
+}
+
 function checkDangerousPatterns(expression: string): ValidationResult {
   for (const pattern of DANGEROUS_PATTERNS) {
-    // Reset regex state
-    pattern.lastIndex = 0;
-    if (pattern.test(expression)) {
+    let found: string | undefined;
+    if (pattern === COMMA_OUTSIDE_CALL) {
+      found = hasStrayComma(expression) ? "," : undefined;
+    } else {
       pattern.lastIndex = 0;
-      const match = expression.match(pattern);
+      found = pattern.exec(expression)?.[0];
+    }
+    if (found !== undefined) {
       return {
         valid: false,
-        error: `Condition contains disallowed syntax: "${match?.[0] || "unknown"}"`,
+        error: `Condition contains disallowed syntax: "${found || "unknown"}"`,
       };
     }
   }
@@ -1201,11 +1227,9 @@ export function validateConditionExpressionUI(
   if (regexObject) {
     return regexObject;
   }
-  if (hasNegatedRegexCallIn(scan.structure)) {
-    return { valid: false, error: REGEX_NEGATED_ERROR };
-  }
-  if (hasIndirectRegexUseIn(scan.masked)) {
-    return { valid: false, error: REGEX_DIRECT_ERROR };
+  const rawRegex = rawRegexError(trimmed, scan);
+  if (rawRegex) {
+    return rawRegex;
   }
 
   // Check for extra spaces (2+ consecutive spaces) and identify the operator

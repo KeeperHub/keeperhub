@@ -60,6 +60,7 @@ const IS_UNDEFINED_PATTERN = /^(.+?) === undefined$/;
 const IS_NOT_UNDEFINED_PATTERN = /^(.+?) !== undefined$/;
 // The spaces before the operator start only where a run of spaces does: the
 // same matches, without rescanning a long run at every position.
+const LINE_BREAK = /[\n\r\u2028\u2029]/;
 const COMPARISON_PATTERN = /^(.+?)(?<!\s)\s+(===|!==|==|!=|>=|<=|>|<)\s+(.+)$/;
 // What String#trim removes.
 const WHITESPACE = /\s/;
@@ -312,7 +313,11 @@ function parseAtomicExpression(expr: Scanned): ConditionRule | null {
   }
 
   // Comparison operators: left op right
-  const comparisonMatch = s.match(COMPARISON_PATTERN);
+  // "." stops at a line break, so the pattern never matches across one;
+  // skipping such text keeps it from rescanning up to the break per operator.
+  const comparisonMatch = LINE_BREAK.test(s)
+    ? null
+    : s.match(COMPARISON_PATTERN);
   if (comparisonMatch) {
     return makeRule(
       unwrapOperand(comparisonMatch[1]),
@@ -383,7 +388,7 @@ function groupUsesRegex(group: ConditionGroup): boolean {
   return countRegexRules(group) > 0;
 }
 
-export type EditorConditionState = {
+type EditorConditionState = {
   /** Rules parsed from the condition text, to save with the node. */
   parsedGroup: ConditionGroup | null;
   initialMode: "visual" | "expression";

@@ -536,7 +536,7 @@ describe("matchesRegex", () => {
       );
       // Nested counts multiply past 1,000; the order is not the problem.
       const nested = regexPatternError("(a{100}){20}");
-      expect(nested).toContain("nested ones multiplied");
+      expect(nested).toContain("nested counts multiply");
       expect(nested).not.toContain("smaller number first");
     });
 
@@ -552,7 +552,7 @@ describe("matchesRegex", () => {
       );
       expect(result.valid).toBe(false);
       expect((result as { error: string }).error).toContain(
-        "use .* (dot, then star) (in Expression mode, type each backslash twice)"
+        "put a backslash before it (in Expression mode, type each backslash twice)"
       );
     });
 
@@ -582,7 +582,7 @@ describe("matchesRegex", () => {
       expect(regexPatternError("?abc")).toContain("To match ? itself");
       expect(regexPatternError("?abc")).not.toContain(".*");
       expect(regexPatternError("a{2000}")).toContain(
-        "Repeat counts go up to 1,000"
+        "Use smaller counts"
       );
       // The last quote is escaped, so this is not one quoted string.
       expect(regexPatternError('"a\\"')).toBeUndefined();
