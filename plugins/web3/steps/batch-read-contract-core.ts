@@ -834,17 +834,21 @@ function lastObjectPlace(fn: ListFunction): number {
 }
 
 /**
- * An object no tuple can take, named on the plain input it lands on. A value
- * both missing and extra can still shift it onto a tuple; the input is named.
+ * An object no tuple can take, named on the plain input it lands on. A missing
+ * value plus an extra one could still put it on a tuple; the input is named.
  */
 function objectOnPlainInput(
   entry: unknown[],
   fn: ListFunction,
   at: string
 ): Error | undefined {
+  const lastPlace = lastObjectPlace(fn);
+  // No tuple input: the count message stays.
+  if (lastPlace === -1) {
+    return;
+  }
   // Each value past the input count may be an extra one before a tuple.
-  const last =
-    lastObjectPlace(fn) + Math.max(0, entry.length - fn.inputs.length);
+  const last = lastPlace + Math.max(0, entry.length - fn.inputs.length);
   const place = entry.findIndex(
     (value, i) => i > last && isPlainObject(value)
   );

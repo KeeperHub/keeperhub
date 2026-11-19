@@ -2704,6 +2704,24 @@ describe("batch-read-contract - second review, round 2", () => {
       );
   });
 
+  it("keeps the count for a function with no tuple input", async () => {
+    const abi = abiWith("f", [uint("x"), uint("y")]);
+    expect
+      .soft(await failure({ ...argsList([[0, { z: 1 }, 4]], "f"), abi }))
+      .toBe(
+        "Argument Sets entry 1 has 3 values, but f takes 2 (x, y). Make each entry an array like [1, 1]."
+      );
+  });
+
+  it("keeps a later tuple out of the count after an object and a plain value", async () => {
+    const abi = abiWith("f", [uint("x"), uint("y"), { name: "u", ...pair }]);
+    expect
+      .soft(await failure({ ...argsList([[{ z: 1 }, 1, 2, 3, 4]], "f"), abi }))
+      .toBe(
+        'Argument Sets entry 1 has 5 values, but f takes 3 (x, y, u). Make each entry an array like [1, 1, {"a": 1, "b": 1}].'
+      );
+  });
+
   it("names a string input an object lands on", async () => {
     const abi = abiWith("f", [
       { name: "t", ...pair },
