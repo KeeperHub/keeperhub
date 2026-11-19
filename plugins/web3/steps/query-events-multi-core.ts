@@ -16,6 +16,7 @@ import {
 } from "./query-events-core";
 import {
   badAddressEntryError,
+  isHexAddress,
   readAddressListValue,
 } from "../address-list-config";
 
@@ -233,7 +234,7 @@ function normalizeAddressList(
   const seen = new Set<string>();
   for (const [index, entry] of entries.entries()) {
     const text = typeof entry === "string" ? entry.trim() : "";
-    if (!ethers.isAddress(text)) {
+    if (!(isHexAddress(text) && ethers.isAddress(text))) {
       return noDestination(badAddressEntryError(index, entry));
     }
     const address = ethers.getAddress(text);

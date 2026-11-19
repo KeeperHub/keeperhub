@@ -645,3 +645,25 @@ describe("checkQueryEventsConfig", () => {
     ).toContain("entry 2");
   });
 });
+
+describe("address list save and run agree on the address form", () => {
+  it("rejects 40 hex characters without 0x both at save and at run time", () => {
+    const bare = "ab".repeat(20);
+    const typed = JSON.stringify([MIXED_A, bare]);
+    expect(
+      checkQueryEventsConfig({
+        queryMode: "address-list",
+        contractAddresses: typed,
+      })?.message
+    ).toContain("entry 2");
+    const run = parseAddressListQuery({
+      abi: PAUSABLE_ABI,
+      eventName: "Paused",
+      contractAddresses: typed,
+    });
+    expect(run.success).toBe(false);
+    if (!run.success) {
+      expect(run.error).toContain("entry 2");
+    }
+  });
+});

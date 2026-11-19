@@ -5,7 +5,6 @@ import { valueContainsTemplate } from "@/lib/workflow/template-ref";
 
 export const MAX_LIST_ADDRESSES = 5000;
 
-const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const ADDRESS_LIST_FIELD = "contractAddresses";
 const ADDRESS_LIST_SHAPE_ERROR =
   "Contract Addresses must be a list of addresses (a JSON array), not a single value or text. Check the node that produces it.";
@@ -46,6 +45,13 @@ export function readAddressListValue(raw: unknown): AddressListValue {
   return { success: true, entries: value };
 }
 
+const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+
+/** The address form the list takes: 0x and 40 hex characters, in any case. */
+export function isHexAddress(text: string): boolean {
+  return EVM_ADDRESS_RE.test(text);
+}
+
 export function badAddressEntryError(index: number, entry: unknown): string {
   return `Contract Addresses entry ${index + 1} is not a valid address: ${JSON.stringify(entry)}. Use a 0x address with 40 hex characters.`;
 }
@@ -69,7 +75,7 @@ export function checkQueryEventsConfig(
   }
   for (const [index, entry] of list.entries.entries()) {
     const text = typeof entry === "string" ? entry.trim() : "";
-    if (!EVM_ADDRESS_RE.test(text)) {
+    if (!isHexAddress(text)) {
       return {
         field: ADDRESS_LIST_FIELD,
         message: badAddressEntryError(index, entry),
