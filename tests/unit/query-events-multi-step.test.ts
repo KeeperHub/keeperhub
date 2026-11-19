@@ -394,9 +394,7 @@ describe("queryEventsStep - one event on an address list", () => {
   });
 
   it("accepts the list as a native array and returns each event once when addresses repeat", async () => {
-    const mixed = ethers.getAddress(
-      "0xabcdef0123456789abcdef0123456789abcdef01"
-    );
+    const mixed = ethers.getAddress(`0x${"abcd".repeat(10)}`);
     node = new FakeLogNode(HEAD, [
       emitted(mixed, PAUSABLE, "Paused", [ALICE], 150, 1),
     ]);

@@ -22,8 +22,8 @@ const ORACLE = "0x3333333333333333333333333333333333333333";
 const ALICE = "0x4444444444444444444444444444444444444444";
 const BOB = "0x5555555555555555555555555555555555555555";
 // Checksummed with mixed case, so case and checksum handling is exercised.
-const MIXED_A = ethers.getAddress("0xabcdef0123456789abcdef0123456789abcdef01");
-const MIXED_B = ethers.getAddress("0xfedcba9876543210fedcba9876543210fedcba98");
+const MIXED_A = ethers.getAddress(`0x${"abcd".repeat(10)}`);
+const MIXED_B = ethers.getAddress(`0x${"fe12".repeat(10)}`);
 const CAROL = "0x6666666666666666666666666666666666666666";
 
 const PAUSABLE = new ethers.Interface([
