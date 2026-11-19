@@ -349,6 +349,38 @@ describe("regex hardening", () => {
         ).toEqual([]);
       });
 
+      // Past the cap the rest are measured, not guessed from their length:
+      // 11 characters of [a-z]x{990} compile to 993 steps.
+      it("measures patterns past the cap by their steps, in any order", () => {
+        const literal = Array.from(
+          { length: 5 },
+          (_, i) => `matchesRegex(${FIELD}, "^${i}${"a".repeat(448)}")`
+        ).join(" || ");
+        const repeats = Array.from(
+          { length: 16 },
+          (_, i) => `matchesRegex(${FIELD}, "[a-z]${"abcdefghijklmnop"[i]}{990}")`
+        ).join(" || ");
+        for (const nodes of [
+          [textNode("literal", literal), textNode("repeats", repeats)],
+          [textNode("repeats", repeats), textNode("literal", literal)],
+        ]) {
+          const started = runStart(nodes) ?? "";
+          expect(started).toContain('Most are in "repeats"');
+          const share = Number(/about (\d+)% of the limit/.exec(started)?.[1]);
+          expect(share).toBeGreaterThan(230);
+          expect(saveIssues(nodes)[0]?.nodeId).toBe("repeats");
+        }
+      });
+
+      // Measuring past the cap is bounded too: past 400% it says "more than".
+      it("says more than 400% rather than measure without end", () => {
+        const nodes = Array.from({ length: 5 }, (_, i) =>
+          textNode(`c${i}`, calls(i * 16, 16))
+        );
+        expect(runStart(nodes)).toMatch(/more than \d{3}% of the limit/);
+        expect(saveIssues(nodes)[0]?.message).toMatch(/more than \d{3}%/);
+      });
+
       it("counts a pattern once whichever quotes it is written in", () => {
         const single = (from: number, count: number) =>
           Array.from(

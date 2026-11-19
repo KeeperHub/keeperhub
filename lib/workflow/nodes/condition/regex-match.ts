@@ -272,28 +272,30 @@ export const REGEX_WORKFLOW_COMPILE_ERROR =
   "Together, the regex patterns in this workflow's Conditions are too long";
 
 /** Past the workflow cap: how far past, given the patterns' total cost. */
-export function workflowCompileError(work: number): string {
+export function workflowCompileError(work: number, atLeast = false): string {
   const share = Math.max(
     101,
     Math.round((work / MAX_WORKFLOW_COMPILE_WORK) * 100)
   );
-  return `${REGEX_WORKFLOW_COMPILE_ERROR}: about ${formatCount(share)}% of the limit, which is about 2,000 characters in all (fewer with {n} repeats)`;
+  const amount = atLeast ? "more than" : "about";
+  return `${REGEX_WORKFLOW_COMPILE_ERROR}: ${amount} ${formatCount(share)}% of the limit, which is about 2,000 characters in all (fewer with {n} repeats)`;
 }
 
-// Past the cap the rest are estimated, not compiled: about a step per character.
-function estimatedCompileWork(pattern: string): number {
-  return pattern.length * (COMPILE_WORK_PER_CHAR + COMPILE_WORK_PER_STEP);
-}
+// Past the cap the rest are still compiled, to name the costliest Condition
+// and say how far over, within three more caps: exact up to 400%.
+const MEASURE_PAST_CAP_WORK = 3 * MAX_WORKFLOW_COMPILE_WORK;
 
-export type WorkflowPatternsResult =
+type WorkflowPatternsResult =
   | { refused: string; at: number }
-  | { work: number; largest: number };
+  | { work: number; largest: number; atLeast: boolean };
 
 /**
- * Compiles each Condition's patterns into `budget`, each distinct one once,
- * up to the workflow cap; past it, the rest are only estimated. Returns why a
- * pattern is refused (with `reportRefused`), or, past the cap, the total cost
- * and the Condition (by position) whose patterns cost the most.
+ * Compiles each Condition's patterns into `budget` (a fresh run budget, with
+ * room for the cap and one more pattern), each distinct one once, up to the
+ * workflow cap; past it, the rest are measured in a budget of their own.
+ * Returns why a pattern is refused (with `reportRefused`), or, past the cap,
+ * the total cost (`atLeast` when measuring ran out) and the Condition (by
+ * position) whose patterns cost the most.
  */
 export function prepareWorkflowPatterns(
   conditions: readonly (readonly string[])[],
@@ -301,28 +303,24 @@ export function prepareWorkflowPatterns(
   { reportRefused }: { reportRefused: boolean }
 ): WorkflowPatternsResult | undefined {
   const seen = new Set<string>();
-  let estimated = 0;
+  const measure = new RegexBudget(MEASURE_PAST_CAP_WORK, { scope: "run" });
   let over = false;
+  let atLeast = false;
   let largest = { at: -1, cost: -1 };
   for (const [at, patterns] of conditions.entries()) {
-    const before = budget.used() + estimated;
+    const before = budget.used() + measure.used();
     for (const pattern of patterns) {
       if (seen.has(pattern)) {
         continue;
       }
       seen.add(pattern);
       if (over) {
-        estimated += estimatedCompileWork(pattern);
+        atLeast ||= measuredPastCap(pattern, measure);
         continue;
       }
       try {
         compileRegex(pattern, false, budget);
       } catch (error) {
-        if (error instanceof RegexBudgetError) {
-          over = true;
-          estimated += estimatedCompileWork(pattern);
-          continue;
-        }
         if (reportRefused) {
           return {
             refused: error instanceof Error ? error.message : String(error),
@@ -332,14 +330,25 @@ export function prepareWorkflowPatterns(
       }
       over = budget.used() > MAX_WORKFLOW_COMPILE_WORK;
     }
-    const cost = budget.used() + estimated - before;
+    const cost = budget.used() + measure.used() - before;
     if (cost > largest.cost) {
       largest = { at, cost };
     }
   }
   return over
-    ? { work: budget.used() + estimated, largest: largest.at }
+    ? { work: budget.used() + measure.used(), largest: largest.at, atLeast }
     : undefined;
+}
+
+// Compiles a pattern past the cap into `measure`; true once it runs out.
+function measuredPastCap(pattern: string, measure: RegexBudget): boolean {
+  try {
+    compileRegex(pattern, false, measure);
+  } catch (error) {
+    // A refused pattern is charged for its length only, as at run start.
+    return error instanceof RegexBudgetError;
+  }
+  return false;
 }
 
 type RegexBudgetScope = "node" | "run";

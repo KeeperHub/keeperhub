@@ -451,7 +451,7 @@ function compileConditions(
   }
   return {
     index: conditions[result.largest].index,
-    message: workflowCompileError(result.work),
+    message: workflowCompileError(result.work, result.atLeast),
     kind: "patterns",
   };
 }
