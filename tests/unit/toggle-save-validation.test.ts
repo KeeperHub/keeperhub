@@ -659,13 +659,21 @@ describe("references a kept value reads", () => {
   it("cover every node stored under the same output key", () => {
     const value = "{{@a_b:S.flag}}";
     const saved = [step("a-b", "HTTP Request"), step("a_b", "HTTP Request")];
-    const now = [step("a-b", "HTTP Request"), step("a_b", "Database Query")];
-    expect(
-      issues([...now, write(value)], [...saved, write(value)])
-    ).toHaveLength(1);
+    for (const now of [
+      [step("a-b", "HTTP Request"), step("a_b", "Database Query")],
+      [step("a-b", "Database Query"), step("a_b", "HTTP Request")],
+    ]) {
+      expect(
+        issues([...now, write(value)], [...saved, write(value)])
+      ).toHaveLength(1);
+    }
     expect(issues([...saved, write(value)], [...saved, write(value)])).toEqual(
       []
     );
+    // The order the nodes are listed in does not matter.
+    expect(
+      issues([...[...saved].reverse(), write(value)], [...saved, write(value)])
+    ).toEqual([]);
   });
 
   it("read the path after the dot trimmed, as the step does", () => {
@@ -680,5 +688,23 @@ describe("references a kept value reads", () => {
     const saved = [step("_x", "HTTP Request"), write(value)];
     const spaced = { ...step(" x", "trigger-ish"), type: "trigger" };
     expect(issues([spaced, write(value)], saved)).toHaveLength(1);
+  });
+});
+
+describe("the edges of a kept value", () => {
+  const write = (sponsorGas: string) =>
+    actionNode(WRITE_CONTRACT, { ...WRITE_CONFIG, sponsorGas });
+  const kept = (was: string, value: string) =>
+    validateWorkflowActionConfigs([write(value)], { savedNodes: [write(was)] })
+      .issues.length === 0;
+
+  it("keeps up to 2000 characters", () => {
+    expect(kept("x".repeat(2000), "x".repeat(2000))).toBe(true);
+    expect(kept("x".repeat(2001), "x".repeat(2001))).toBe(false);
+  });
+
+  it("compares an @ token that is not a reference as text", () => {
+    expect(kept("{{@a}}", "{{@a}}")).toBe(true);
+    expect(kept("{{@a}}", "{{@b}}")).toBe(false);
   });
 });
