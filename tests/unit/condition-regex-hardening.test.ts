@@ -50,7 +50,7 @@ describe("regex hardening", () => {
         (_, i) => `matchesRegex(${FIELD}, "^${i}${"a".repeat(500)}")`
       ).join(" || ");
       expect(() => run(calls, "b")).toThrow(
-        "reached this node's matching limit preparing patterns"
+        "reached this node's matching limit of 5,000,000 while preparing a pattern (each costs 2,000 per pattern character plus 400 per step"
       );
     });
 
@@ -219,18 +219,19 @@ describe("regex hardening", () => {
       }
     });
 
-    // Long text with a line break is not parsed at all (the parse rescans
-    // to the break per operator); it opens as text.
-    it("opens long text with a line break as text without parsing it", () => {
+    // The parse never reads across a line break, so such text is not parsed.
+    it("opens text with a line break as text, unparsed", () => {
       const rule = `${FIELD} === "a" || `;
-      const long = `${rule.repeat(Math.ceil(4001 / rule.length))}\n${FIELD} === "b"`;
-      expect(long.length).toBeGreaterThan(4000);
+      const long = `${rule.repeat(2500)}\n${FIELD} === "b"`;
       const started = performance.now();
       expect(editorConditionState(long, undefined)).toEqual({
         parsedGroup: null,
         initialMode: "expression",
       });
       expect(performance.now() - started).toBeLessThan(50);
+      expect(
+        editorConditionState(`${FIELD} === "a\nb"`, undefined).initialMode
+      ).toBe("expression");
     });
 
     // Opening a node saves the parsed rules, which then run, so a parse that

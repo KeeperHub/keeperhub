@@ -159,16 +159,16 @@ same rules.
   Inside the quotes, double each backslash: `"^\\d+$"` for `^\d+$`. A single backslash before
   anything but a quote, `n`, `r` or `t` is refused rather than silently changing the pattern.
 - **Limits:** a pattern of up to 512 characters and 1,000 steps (RE2's size for the compiled
-  pattern; long `{n}` repeats add up fastest), text of up to 4,096 characters (longer text fails
-  the run), and at most 16 regex tests in one Condition. Matching never backtracks and has a fixed
+  pattern; long `{n}` repeats add up fastest), text of up to 4,096 characters (longer text fails the
+  run), and at most 16 regex tests in one Condition. Matching never backtracks and has a fixed
   budget of steps x characters tested: 5,000,000 per Condition check and 10,000,000 per workflow
   run, loops included, so it cannot hold up a run for more than a few seconds. Each pattern also
-  costs a one-off amount the first time a run uses it (2,000 per pattern character plus 400 per step), not
-  again in a loop. The run's budget is shared by every regex test in it: a For Each can test about
-  5,100 addresses against `^0x[0-9a-fA-F]{40}$` (about 56,000 once, then 46 steps x 42 characters
-  each), or about 2,150 transaction hashes against `^0x[0-9a-f]{64}$` (70 x 66 each). For more, use
-  Filter Array, which has its own budget per node. A value that is missing, or comes from a node
-  that did not run, fails the run; add an **exists** rule before it.
+  costs a one-off amount the first time a run uses it (2,000 per pattern character plus 400 per
+  step), not again in a loop. The run's budget is shared by every regex test in it: a For Each can
+  test about 5,100 addresses against `^0x[0-9a-fA-F]{40}$` (about 56,000 once, then 46 steps x 42
+  characters each), or about 2,150 transaction hashes against `^0x[0-9a-f]{64}$` (70 x 66 each). For
+  more, use Filter Array, which has its own budget per node. A value that is missing, or comes from
+  a node that did not run, fails the run; add an **exists** rule before it.
 - **Exported code:** code export does not include regex tests. A Condition that uses one is
   exported as code that throws an error when it is reached, so port that test by hand.
 - **Condition length:** a Condition with a regex test may be up to 10,000 characters, each

@@ -54,7 +54,6 @@ const IS_NOT_NULL_PATTERN = /^(.+?) !== null$/;
 const IS_UNDEFINED_PATTERN = /^(.+?) === undefined$/;
 const IS_NOT_UNDEFINED_PATTERN = /^(.+?) !== undefined$/;
 const LINE_BREAK = /[\n\r\u2028\u2029]/;
-const MAX_PARSED_MULTILINE = 4000;
 // The spaces before the operator start only where a run of spaces does: the
 // same matches, without rescanning a long run at every position.
 const COMPARISON_PATTERN = /^(.+?)(?<!\s)\s+(===|!==|==|!=|>=|<=|>|<)\s+(.+)$/;
@@ -384,7 +383,7 @@ type EditorConditionState = {
 
 /**
  * How the editor opens a condition: saved rules, rules parsed from its text,
- * or text. With regex involved, parsed rules must rebuild the exact text.
+ * or text. Parsed rules are used only when they rebuild the exact text.
  */
 export function editorConditionState(
   condition: string,
@@ -396,19 +395,20 @@ export function editorConditionState(
   if (savedGroup && visualConditionToExpression(savedGroup) === condition) {
     return { parsedGroup: null, initialMode: "visual" };
   }
-  // The comparison parse rescans to a line break per operator; long text
-  // with one opens as text, which the editor shows as typed.
-  if (condition.length > MAX_PARSED_MULTILINE && LINE_BREAK.test(condition)) {
+  // The parse never reads across a line break (its "." stops there), so
+  // such text opens as text unparsed; so does an unclosed quote.
+  if (LINE_BREAK.test(condition)) {
     return { parsedGroup: null, initialMode: "expression" };
   }
   // Masked once; every check and the parse-back read this.
   const masked = maskedStructure(condition);
-  const scan: Scanned = { text: condition, structure: masked ?? condition };
-  const parsed = masked === undefined ? null : groupFromScanned(scan);
+  if (masked === undefined) {
+    return { parsedGroup: null, initialMode: "expression" };
+  }
+  const parsed = groupFromScanned({ text: condition, structure: masked });
   // More regex tests than a run allows stays text: the run refuses it, and
   // thousands of rule rows would freeze the editor.
   const tooManyRegex =
-    masked !== undefined &&
     regexCallsIn(masked, MAX_REGEX_CALLS + 1).length > MAX_REGEX_CALLS;
   // The editor saves parsed rules and the rules are what runs, so they are
   // used only when they rebuild the exact text; a lossy parse opens as text.
