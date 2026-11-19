@@ -485,6 +485,39 @@ describe("Condition fields", () => {
     expect(container.textContent).toContain("won't save until this is fixed");
   });
 
+  // Saved rules shown as text are still named as rules, as the save does.
+  it("words over-long saved rules as rules in Expression mode", () => {
+    vi.useFakeTimers();
+    render({
+      actionType: "Condition",
+      conditionConfig: {
+        group: {
+          id: "g",
+          logic: "OR",
+          rules: [
+            {
+              id: "a",
+              leftOperand: FIELD,
+              operator: "matchesRegex",
+              rightOperand: "^a",
+            },
+            {
+              id: "b",
+              leftOperand: FIELD,
+              operator: "===",
+              rightOperand: "x".repeat(12_000),
+            },
+          ],
+        },
+      },
+    });
+    click("Expression");
+    pause();
+    expect(container.textContent).toContain(
+      "These rules are too long to run with a regex test"
+    );
+  });
+
   // A warning that does not stop the save must not hide one that does.
   it("shows what stops the save next to a warning that does not", () => {
     vi.useFakeTimers();

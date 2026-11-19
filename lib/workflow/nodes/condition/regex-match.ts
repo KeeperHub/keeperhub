@@ -211,7 +211,7 @@ export function compileRegex(
   }
   if (pattern.length > MAX_REGEX_PATTERN_LENGTH) {
     throw new Error(
-      `Regex pattern is ${formatCount(pattern.length)} characters; the limit is ${MAX_REGEX_PATTERN_LENGTH}. Shorten it, or split the test in two`
+      `Regex pattern is ${formatCount(pattern.length)} characters; the limit is ${MAX_REGEX_PATTERN_LENGTH}. Shorten it; for a long list of values, use equals rules joined with OR, or Filter Array`
     );
   }
   const key = `${ignoreCase ? "i" : "-"}${pattern}`;

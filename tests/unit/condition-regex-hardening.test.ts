@@ -524,6 +524,13 @@ describe("regex hardening", () => {
       });
     });
 
+    // Splitting a long list would only meet the workflow total.
+    it("points a long pattern at equals rules or Filter Array", () => {
+      expect(regexPatternError("a".repeat(600))).toContain(
+        "use equals rules joined with OR, or Filter Array"
+      );
+    });
+
     it("remembers a refused pattern instead of compiling it again", () => {
       const heavy = "(?:a{1000})".repeat(46);
       const compile = vi.spyOn(RE2JS, "compile");

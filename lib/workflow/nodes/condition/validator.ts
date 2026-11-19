@@ -155,12 +155,16 @@ function lengthMessage(
   rules: boolean,
   subject?: string
 ): string {
-  const test = rules ? "a regex test" : "matchesRegex";
-  let what = subject ? `${subject} is` : "This condition is";
-  if (rules && !subject) {
+  let what = "This condition is";
+  let them = "it";
+  if (subject) {
+    what = `${subject} is`;
+  } else if (rules) {
     what = "These rules are";
+    them = "them";
   }
-  return `${what} too long to run with ${test}: ${length.toLocaleString("en-US")} characters, each {{...}} reference counted as about 4; the limit is ${MAX_CONDITION_LENGTH.toLocaleString("en-US")}. Split ${rules && !subject ? "them" : "it"} across two Condition nodes`;
+  const test = rules ? "a regex test" : "matchesRegex";
+  return `${what} too long to run with ${test}: ${length.toLocaleString("en-US")} characters, each {{...}} reference counted as about 4; the limit is ${MAX_CONDITION_LENGTH.toLocaleString("en-US")}. Split ${them} across two Condition nodes`;
 }
 
 // Applied only to conditions that use matchesRegex, so no saved condition
@@ -296,6 +300,9 @@ type NodeWithConfig = {
   };
 };
 
+const NO_NAME = "Condition with no name";
+const WHITESPACE_RUN_RE = /\s+/g;
+
 // Cheap caps on a workflow's regex Conditions, checked before any is parsed.
 const MAX_WORKFLOW_REGEX_CONDITIONS = 32;
 const MAX_WORKFLOW_REGEX_TEXT = 100_000;
@@ -316,7 +323,7 @@ export type RegexIssue = {
 type IndexedCondition = {
   index: number;
   condition: string;
-  fromRules?: boolean;
+  fromRules: boolean;
 };
 type RegexCondition = IndexedCondition & { length: number };
 
@@ -403,7 +410,8 @@ export function workflowConditions(
 
 /**
  * At a run's start: compiles every enabled Condition's patterns into the run's
- * budget, and refuses the run past the workflow's caps.
+ * budget, and refuses the run past the workflow's caps or for an over-long
+ * Condition. A pattern RE2 refuses is not: it fails where the run reaches it.
  */
 export function prepareRunRegex(
   nodes: readonly NodeWithConfig[],
@@ -414,8 +422,8 @@ export function prepareRunRegex(
   const long = tooLong(withRegex);
   if (long) {
     const name = labelText(nodes[long.index]?.data?.label);
-    const subject = name ? `The Condition "${name}"` : NO_NAME;
-    return lengthMessage(long.length, long.fromRules === true, subject);
+    const subject = name ? `The Condition "${name}"` : `A ${NO_NAME}`;
+    return lengthMessage(long.length, long.fromRules, subject);
   }
   const issue = workflowLimitIssue(withRegex, budget);
   if (!issue) {
@@ -445,12 +453,8 @@ export function limitMessage(issue: RegexIssue, where: string): string {
 /** Names the Condition with the most, by its label as one safe line. */
 export function mostIn(label: unknown): string {
   const text = labelText(label);
-  return text
-    ? `Most are in "${text}"`
-    : "Most are in a Condition with no name";
+  return text ? `Most are in "${text}"` : `Most are in a ${NO_NAME}`;
 }
-
-const NO_NAME = "A Condition with no name";
 
 // A node label as one safe line of at most 60 characters, or "" for none.
 function labelText(label: unknown): string {
@@ -458,6 +462,7 @@ function labelText(label: unknown): string {
     typeof label === "string"
       ? stripControlChars(label, { replacement: " " })
           .replaceAll('"', "'")
+          .replace(WHITESPACE_RUN_RE, " ")
           .trim()
       : "";
   return text.length > 60 ? `${cutText(text, 57)}...` : text;
@@ -479,7 +484,7 @@ export function workflowRegexIssue(
   if (long) {
     return {
       index: long.index,
-      message: lengthMessage(long.length, long.fromRules === true),
+      message: lengthMessage(long.length, long.fromRules),
       kind: "condition",
     };
   }

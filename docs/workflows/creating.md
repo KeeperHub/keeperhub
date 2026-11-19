@@ -191,7 +191,9 @@ ranges and groups, and `{n}` copies its piece n times.
   rules joined with OR also work.
 - **Saving:** an enabled Condition with a regex test that would fail any run reaching it (a
   pattern that cannot run, more than 16 tests, too long), or the workflow over one of its totals
-  above, stops the workflow saving until it is fixed; the editor shows why. Conditions without a
+  above, stops the workflow saving until it is fixed; the editor shows why, a total on every
+  regex Condition. A save through the API reports the first problem on one node. Conditions
+  without a
   regex test save as before. A workflow that runs anyway (one saved before these limits, or a
   copy) with a regex Condition over 10,000 characters, or over one of the totals, fails at its
   start, before any step runs.

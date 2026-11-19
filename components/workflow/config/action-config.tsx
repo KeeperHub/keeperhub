@@ -45,7 +45,10 @@ import {
   editorConditionState,
   visualConditionToExpression,
 } from "@/lib/workflow/nodes/condition/builder-utils";
-import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
+import {
+  resolveCondition,
+  resolveConditionExpression,
+} from "@/lib/workflow/nodes/condition/resolver";
 import {
   conditionUsesRegex,
   limitMessage,
@@ -473,9 +476,12 @@ export function ConditionFields({
     if (!enabled) {
       return;
     }
-    const issue = workflowRegexIssue([{ index: 0, condition: checkedValue }]);
+    const fromRules = resolveCondition(config)?.fromRules ?? false;
+    const issue = workflowRegexIssue([
+      { index: 0, condition: checkedValue, fromRules },
+    ]);
     return issue?.kind === "condition" ? issue.message : undefined;
-  }, [checkedValue, enabled]);
+  }, [checkedValue, config, enabled]);
 
   // The workflow's regex Conditions together, shown on each one.
   const workflowLimitError = useMemo(() => {
