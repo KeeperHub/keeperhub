@@ -15,6 +15,7 @@ import {
   commentSafe,
   getStepInfo,
   REGEX_NOT_EXPORTED,
+  readsTheSameInJs,
   removeInvisibleChars,
   toFriendlyVarName,
   toTypeScriptLiteral,
@@ -198,7 +199,9 @@ export function generateWorkflowCode(
     // The code as written is checked, so nothing in it can run but the
     // condition's own grammar.
     const converted = convertConditionToJS(condition);
-    if (!isSafeConditionExpression(converted)) {
+    if (
+      !(isSafeConditionExpression(converted) && readsTheSameInJs(converted))
+    ) {
       const errorMsg = `Condition node "${name}" contains unsupported syntax`;
       validationErrors.push(errorMsg);
       return `false /* ERROR: ${errorMsg} */`;
@@ -230,7 +233,7 @@ export function generateWorkflowCode(
       return varName;
     }
 
-    const accessPath = buildAccessPath(fieldPath);
+    const accessPath = buildAccessPath(fieldPath, { writtenAsIs: true });
     return `${varName}${accessPath}`;
   }
 
@@ -253,7 +256,7 @@ export function generateWorkflowCode(
       return varName;
     }
 
-    const accessPath = buildAccessPath(fieldPath);
+    const accessPath = buildAccessPath(fieldPath, { writtenAsIs: true });
     return `${varName}${accessPath}`;
   }
 

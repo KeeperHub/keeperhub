@@ -32,6 +32,7 @@ import {
   findTriggerNodes,
   isExportableCondition,
   REGEX_NOT_EXPORTED,
+  readsTheSameInJs,
   sanitizeFunctionName,
   sanitizeStepName,
   sanitizeVarName,
@@ -99,7 +100,7 @@ function processNewFormatID(
     return `\${outputs?.['${sanitizedNodeId}']?.data}`;
   }
 
-  const accessPath = buildAccessPath(fieldPath, true);
+  const accessPath = buildAccessPath(fieldPath, { optional: true });
 
   return `\${outputs?.['${sanitizedNodeId}']?.data${accessPath}}`;
 }
@@ -124,7 +125,7 @@ function processLegacyDollarRef(trimmed: string): string {
     return `\${outputs?.['${sanitizedNodeId}']?.data}`;
   }
 
-  const accessPath = buildAccessPath(fieldPath, true);
+  const accessPath = buildAccessPath(fieldPath, { optional: true });
 
   return `\${outputs?.['${sanitizedNodeId}']?.data${accessPath}}`;
 }
@@ -387,7 +388,7 @@ export function generateWorkflowSDKCode(
     }
     // Written as code, so the code as written must be the run's grammar.
     const converted = convertTemplateToJS(condition);
-    return isSafeConditionExpression(converted)
+    return isSafeConditionExpression(converted) && readsTheSameInJs(converted)
       ? [`condition: ${converted}`]
       : ["condition: false /* not supported in exported code */"];
   }
@@ -620,7 +621,9 @@ ${stepBody}
     visitedLocal: Set<string>
   ): string[] {
     const condition = (node.data.config?.condition as string) || "true";
-    // Only the text between references is escaped; references become ${...}.
+    // Written as template text, so nothing in it runs: only the text between
+    // references is escaped, and references become ${...} with inert paths.
+    // The grammar check keeps the export's meaning that of the run.
     const convertedCondition = isExportableCondition(condition, sdkResolves)
       ? escapeTextAroundTokens(condition, convertTemplateToJS)
       : undefined;

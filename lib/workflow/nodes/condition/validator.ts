@@ -99,6 +99,7 @@ const REGEX_OBJECT_ERROR =
   'Regex objects (new RegExp(...) or /.../) are not supported in conditions. Use matchesRegex(value, "pattern") or the "matches regex" operator';
 const REGEX_CALL_TEXT_RE = /\bmatchesRegex\s*\(/;
 const BACKSLASH_ADVICE_RE = /backslash/;
+const TRAILING_PERIOD_RE = /\.$/;
 const REGEX_UNCLOSED_ERROR = "matchesRegex( is missing its closing )";
 const UNTERMINATED_STRING_ERROR =
   "Condition has an unterminated string: a quote is never closed";
@@ -137,7 +138,7 @@ function lengthMessage(length: number, rules: boolean): string {
   const what = rules
     ? "These rules are too long to run with a regex test"
     : "This condition is too long to run with matchesRegex";
-  return `${what}: ${length.toLocaleString("en-US")} characters, each {{...}} reference counted as about 4; the limit is ${MAX_CONDITION_LENGTH.toLocaleString("en-US")}. Split it across two Condition nodes`;
+  return `${what}: ${length.toLocaleString("en-US")} characters, each {{...}} reference counted as about 4; the limit is ${MAX_CONDITION_LENGTH.toLocaleString("en-US")}. Split ${rules ? "them" : "it"} across two Condition nodes`;
 }
 
 // Applied only to conditions that use matchesRegex, so no saved condition
@@ -254,10 +255,9 @@ const ALLOWED_METHODS = new Set([
 // Pattern to match method calls
 const METHOD_CALL_PATTERN = /\.(\w+)\s*\(/g;
 
-// Pattern to match bracket expressions: captures what's before and inside the brackets
-// Starts only at a word's start and stops at the next bracket, so a long word
-// or a run of "a[" is scanned once, not once per position.
-const BRACKET_EXPRESSION_PATTERN = /(?<!\w)(\w+)\s*\[([^\][]+)\]/g;
+// A word and the "[" after it. The content runs to the next "]", found in a
+// table built once, as /(\w+)\s*\[([^\]]+)\]/ read it without rescanning.
+const BRACKET_OPEN_PATTERN = /(?<!\w)(\w+)\s*\[/g;
 
 // Pattern for valid variable property access: __v0[0], __v0["key"], __v0['key']
 const VALID_BRACKET_ACCESS_PATTERN = /^__v\d+$/;
@@ -276,20 +276,9 @@ const IDENTIFIER_TOKEN_PATTERN = /^[a-zA-Z_]\w*$/;
 // Regex patterns for UI validation
 const EXTRA_SPACES_PATTERN = /\s{2,}/;
 const WHITESPACE_CHAR_PATTERN = /\s/;
-// Sticky: matched in place at lastIndex, so tokenizing never copies the rest
-// of the text (that made long conditions quadratic).
-const TEMPLATE_VAR_PATTERN = /\{\{@[^}]+\}\}/y;
-const NUMBER_PATTERN = /\d+(\.\d+)?/y;
-const IDENTIFIER_PATTERN = /[a-zA-Z_][a-zA-Z0-9_]*/y;
-
-function matchAt(
-  pattern: RegExp,
-  text: string,
-  at: number
-): string | undefined {
-  pattern.lastIndex = at;
-  return pattern.exec(text)?.[0];
-}
+const TEMPLATE_VAR_PATTERN = /^\{\{@[^}]+\}\}/;
+const NUMBER_PATTERN = /^\d+(\.\d+)?/;
+const IDENTIFIER_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*/;
 const OPERATOR_BEFORE_PATTERN =
   /(===|!==|==|!=|>=|<=|>|<|&&|\|\||\*\*|\+|-|\*|\/|%|!)$/;
 const OPERATOR_AFTER_PATTERN =
@@ -326,19 +315,27 @@ function checkDangerousPatterns(expression: string): ValidationResult {
  * - Allowed: Variable property access like __v0[0], __v0["key"], __v0['key']
  * - Blocked: Array literals like [1,2,3], or dangerous expressions like __v0[eval('x')]
  */
-function checkBracketExpressions(expression: string): ValidationResult {
-  BRACKET_EXPRESSION_PATTERN.lastIndex = 0;
+// For each index, where the next "]" at or after it is, or -1.
+function nextCloseTable(expression: string): Int32Array {
+  const next = new Int32Array(expression.length + 1).fill(-1);
+  for (let i = expression.length - 1; i >= 0; i--) {
+    next[i] = expression[i] === "]" ? i : next[i + 1];
+  }
+  return next;
+}
 
-  // Use exec loop for compatibility
-  let match: RegExpExecArray | null = null;
-  while (true) {
-    match = BRACKET_EXPRESSION_PATTERN.exec(expression);
-    if (match === null) {
-      break;
+function checkBracketExpressions(expression: string): ValidationResult {
+  const nextClose = nextCloseTable(expression);
+  for (const match of expression.matchAll(BRACKET_OPEN_PATTERN)) {
+    const open = match.index + match[0].length;
+    const close = nextClose[open];
+    // No "]" after it, or none before the content ends: not a bracket access.
+    if (close <= open) {
+      continue;
     }
 
     const beforeBracket = match[1];
-    const insideBracket = match[2].trim();
+    const insideBracket = expression.slice(open, close).trim();
 
     // Check if the part before the bracket is a valid variable (__v0, __v1, etc.).
     // Bare references like `step2[1]` reach here when an author uses an
@@ -679,14 +676,14 @@ function tokenizeExpression(
     }
 
     // Template variable: {{@nodeId:Label.field}}
-    const templateMatch = matchAt(TEMPLATE_VAR_PATTERN, expression, i);
+    const templateMatch = expression.slice(i).match(TEMPLATE_VAR_PATTERN);
     if (templateMatch) {
       tokens.push({
         type: "template",
-        value: templateMatch,
+        value: templateMatch[0],
         start: i,
       });
-      i += templateMatch.length;
+      i += templateMatch[0].length;
       continue;
     }
 
@@ -721,7 +718,7 @@ function tokenizeExpression(
     ];
     let matched = false;
     for (const op of multiCharOps) {
-      if (expression.startsWith(op, i)) {
+      if (expression.slice(i).startsWith(op)) {
         tokens.push({
           type: "operator",
           value: op,
@@ -752,20 +749,21 @@ function tokenizeExpression(
     }
 
     // Number: digits with optional decimal
-    const numberMatch = matchAt(NUMBER_PATTERN, expression, i);
+    const numberMatch = expression.slice(i).match(NUMBER_PATTERN);
     if (numberMatch) {
       tokens.push({
         type: "number",
-        value: numberMatch,
+        value: numberMatch[0],
         start: i,
       });
-      i += numberMatch.length;
+      i += numberMatch[0].length;
       continue;
     }
 
     // Identifier (boolean/null literals or property access)
-    const value = matchAt(IDENTIFIER_PATTERN, expression, i);
-    if (value) {
+    const identifierMatch = expression.slice(i).match(IDENTIFIER_PATTERN);
+    if (identifierMatch) {
+      const value = identifierMatch[0];
       if (["true", "false", "null", "undefined"].includes(value)) {
         tokens.push({
           type: "literal",
@@ -1192,7 +1190,8 @@ export function validateConditionExpressionUI(
   }
   const trimmed = expression.trim();
   const scan = scanForRegex(trimmed);
-  const tooLong = lengthError(trimmed, mentionsRegexIn(scan.structure));
+  // Measured as saved, untrimmed, as the run measures it.
+  const tooLong = lengthError(expression, mentionsRegexIn(scan.structure));
   if (tooLong) {
     return tooLong;
   }
@@ -1327,10 +1326,9 @@ function regexCallError(args: Token[][]): string | undefined {
   }
   const [pattern, ...rest] = args[1];
   if (rest.length > 0 || pattern.type !== "string") {
-    // A reference or name means taken from another node; else not quoted text.
-    const fromNode = args[1].some(
-      (token) => token.type === "template" || token.type === "identifier"
-    );
+    // A reference means taken from another node; a bare word is a pattern
+    // typed without its quotes.
+    const fromNode = args[1].some((token) => token.type === "template");
     return fromNode ? REGEX_SOURCE_ERROR : REGEX_LITERAL_ERROR;
   }
   const scanned = scanString(pattern.value, 0);
@@ -1345,7 +1343,7 @@ function regexCallError(args: Token[][]): string | undefined {
   return problem &&
     BACKSLASH_ADVICE_RE.test(problem) &&
     !problem.includes("Expression mode")
-    ? `${problem} (in Expression mode, type each backslash twice)`
+    ? `${problem.replace(TRAILING_PERIOD_RE, "")} (in Expression mode, type each backslash twice)`
     : problem;
 }
 

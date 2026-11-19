@@ -58,7 +58,9 @@ const IS_NULL_PATTERN = /^(.+?) === null$/;
 const IS_NOT_NULL_PATTERN = /^(.+?) !== null$/;
 const IS_UNDEFINED_PATTERN = /^(.+?) === undefined$/;
 const IS_NOT_UNDEFINED_PATTERN = /^(.+?) !== undefined$/;
-const COMPARISON_PATTERN = /^(.+?)\s+(===|!==|==|!=|>=|<=|>|<)\s+(.+)$/;
+// The spaces before the operator start only where a run of spaces does: the
+// same matches, without rescanning a long run at every position.
+const COMPARISON_PATTERN = /^(.+?)(?<!\s)\s+(===|!==|==|!=|>=|<=|>|<)\s+(.+)$/;
 // What String#trim removes.
 const WHITESPACE = /\s/;
 

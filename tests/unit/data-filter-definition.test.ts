@@ -282,7 +282,7 @@ describe("data/filter definition", () => {
         ]);
         expect(result.valid, operator).toBe(false);
         expect(JSON.stringify(result.issues), operator).toContain(
-          "can't come from another node"
+          "not taken from another node"
         );
       }
       const compared = validateWorkflowActionConfigs([

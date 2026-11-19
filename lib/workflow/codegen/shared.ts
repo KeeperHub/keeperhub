@@ -1,4 +1,5 @@
 import { isSafeConditionExpression } from "@/lib/workflow/nodes/condition/safe-eval";
+import { maskStringLiterals } from "@/lib/workflow/nodes/condition/string-literal";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import {
   findTemplateTokens,
@@ -116,24 +117,28 @@ const CANONICAL_INDEX = /^(?:0|[1-9]\d{0,14})$/;
 const INDEXED_PART = /^([^[]+)\[(\d+)\]$/;
 
 // Exporters escape some output again after conversion; a key with no
-// backslash or backtick passes through that unchanged.
-function quotedKey(key: string): string {
+// backslash or backtick passes through that unchanged. Code written as is
+// (a Condition's test) keeps the plain quoted key.
+function quotedKey(key: string, writtenAsIs: boolean): string {
   const json = JSON.stringify(key);
-  if (!(json.includes("\\") || key.includes("`"))) {
+  if (writtenAsIs || !(json.includes("\\") || key.includes("`"))) {
     return json;
   }
   const codes = Array.from({ length: key.length }, (_, i) => key.charCodeAt(i));
   return `String.fromCharCode(${codes.join(",")})`;
 }
 
-function keyAccess(key: string, optional: boolean): string {
+type AccessPathOptions = { optional?: boolean; writtenAsIs?: boolean };
+
+function keyAccess(key: string, options: AccessPathOptions): string {
+  const optional = options.optional ?? false;
   if (IDENTIFIER_PART.test(key)) {
     return `${optional ? "?." : "."}${key}`;
   }
   const open = optional ? "?.[" : "[";
   return CANONICAL_INDEX.test(key)
     ? `${open}${key}]`
-    : `${open}${quotedKey(key)}]`;
+    : `${open}${quotedKey(key, options.writtenAsIs ?? false)}]`;
 }
 
 /**
@@ -142,7 +147,11 @@ function keyAccess(key: string, optional: boolean): string {
  * index is written as data, so no saved path can become code. `optional`
  * writes ?. and ?.[ instead.
  */
-export function buildAccessPath(fieldPath: string, optional = false): string {
+export function buildAccessPath(
+  fieldPath: string,
+  options: AccessPathOptions = {}
+): string {
+  const open = options.optional ? "?.[" : "[";
   let path = "";
   for (const raw of fieldPath.split(".")) {
     const part = raw.trim();
@@ -152,9 +161,9 @@ export function buildAccessPath(fieldPath: string, optional = false): string {
     const indexed = INDEXED_PART.exec(part);
     if (indexed) {
       const index = String(Number.parseInt(indexed[2], 10));
-      path += `${keyAccess(indexed[1], optional)}${optional ? "?.[" : "["}${index}]`;
+      path += `${keyAccess(indexed[1], options)}${open}${index}]`;
     } else {
-      path += keyAccess(part, optional);
+      path += keyAccess(part, options);
     }
   }
   return path;
@@ -240,6 +249,20 @@ export function escapeTextAroundTokens(
     last = token.end;
   }
   return result + escapeTemplateText(text.slice(last));
+}
+
+// Read one way by the condition grammar and another by JavaScript: ++ and --
+// (two signs to the grammar, increment to JS) and 010 (10, or a syntax error
+// in a module).
+const JS_ONLY_TOKENS = /\+\+|--|(?<![\w.])0\d/;
+
+/** True when JavaScript reads this condition code as the run does. */
+export function readsTheSameInJs(code: string): boolean {
+  try {
+    return !JS_ONLY_TOKENS.test(maskStringLiterals(code));
+  } catch {
+    return false;
+  }
 }
 
 /** Exported code for a condition that uses matchesRegex: it fails loudly. */

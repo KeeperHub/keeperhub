@@ -136,12 +136,13 @@ anchor it: `^` marks the start and `$` the end. Start the pattern with `(?i)` to
 **Does not match regex** is the opposite test (`!matchesRegex(...)` in Expression mode), with the
 same rules.
 
-- **Values:** numbers and `true`/`false` are tested as their text, and so is `null`: `^n`
-  matches a null field. If the field can be null, add an **is not null** rule. A number is written
-  the way JavaScript prints it, so a very large or very small one is tested in exponent form
-  (`1e21` as `1e+21`); send such amounts as text. That holds when the condition also compares large
-  integers exactly: the regex test still sees ordinary numbers. A list or object fails the run. (Filter Array differs: `null` and booleans are items it can't test, which fail the
-  step unless it is set to skip them.)
+- **Values:** numbers and `true`/`false` are tested as their text, and so is `null`: `^n` matches a
+  null field. If the field can be null, add an **is not null** rule. A number is written the way
+  JavaScript prints it, so a very large or very small one is tested in exponent form (`1e21` as
+  `1e+21`), and one past 2^53 is already rounded (2^60 is tested as `1152921504606847000`); send
+  such amounts as text. That holds when the condition also compares large integers exactly: the
+  regex test still sees ordinary numbers. A list or object fails the run. (Filter Array differs:
+  `null` and booleans are items it can't test, which fail the step unless it is set to skip them.)
 - **Syntax:** patterns use [RE2 syntax](https://github.com/google/re2/wiki/Syntax), which is
   close to JavaScript's. Lookahead and lookbehind, back-references such as `\1`, and `\u` escapes
   (write `\x{00e9}` for `é`) are not supported and get a message naming them; other refused
@@ -169,7 +170,6 @@ same rules.
   that did not run, fails the run; add an **exists** rule before it.
 - **Exported code:** code export does not include regex tests. A Condition that uses one is
   exported as code that throws an error when it is reached, so port that test by hand.
-
 - **Condition length:** a Condition with a regex test may be up to 10,000 characters, each
   `{{...}}` reference counting as about 4, so long node names and ids do not count against it.
   Conditions without a regex test have no length limit.

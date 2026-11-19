@@ -10,7 +10,10 @@ vi.mock("@/lib/metrics/instrumentation/plugin", async () =>
   (await import("../mocks/step-mocks")).pluginMetricsPassthrough()
 );
 
-import { MAX_FILTER_ITEMS } from "@/plugins/data/filter-config";
+import {
+  checkFilterConfig,
+  MAX_FILTER_ITEMS,
+} from "@/plugins/data/filter-config";
 import {
   type FilterCoreInput,
   type FilterInput,
@@ -88,6 +91,28 @@ function source(value: unknown): string {
 
 describe("data/filter", () => {
   describe("matches regex", () => {
+    it("ends each pattern message with exactly one period", async () => {
+      const star = await fails({
+        source: source(["a"]),
+        operator: "matchesRegex",
+        value: "*.eth",
+      });
+      expect(star.error).toMatch(/\(dot, then star\)\.$/);
+      expect(star.error).not.toContain("..");
+    });
+
+    it("says how to match braces in a Value, without Expression-mode notes", () => {
+      const issue = checkFilterConfig({
+        source: "[]",
+        operator: "matchesRegex",
+        value: "^{{@n1:W.p}}$",
+      });
+      expect(issue?.field).toBe("value");
+      expect(issue?.message).toContain("as in \\{\\{; to look for text");
+      expect(issue?.message).not.toContain("Expression mode");
+      expect(issue?.message.endsWith(".")).toBe(true);
+    });
+
     it("keeps the names the pattern matches", async () => {
       const result = await ok({
         source: source(CHAINLOG_NAMES),
@@ -120,7 +145,7 @@ describe("data/filter", () => {
         operator: "matchesRegex",
         value: "",
       });
-      expect(result.error).toContain("Enter a pattern, e.g. ^VAULT_");
+      expect(result.error).toContain("Enter a regex pattern, e.g. ^VAULT_");
     });
 
     it("keeps the rest with does not match regex", async () => {

@@ -32,7 +32,7 @@ export const REGEX_SOURCE_ERROR =
   "Type the regex pattern itself; it can't come from another node or be built from other values. To look for text from another node, use contains or starts with";
 // A {{...}} typed inside a pattern: a reference, or braces meant literally.
 export const REGEX_TEMPLATE_ERROR =
-  "The regex pattern can't hold a {{...}} reference: it can't come from another node. To look for text from another node, use contains or starts with. To match braces, put a backslash before each one: \\{\\{ (in Expression mode, type each backslash twice: \\\\{\\\\{)";
+  "A {{...}} in a regex pattern reads as a reference, and the pattern must be typed, not taken from another node. To match braces, put a backslash before each one, as in \\{\\{ (in Expression mode, type each backslash twice: \\\\{\\\\{); to look for text from another node, use contains or starts with";
 export const REGEX_BACKSLASH_ERROR =
   'In Expression mode, type each backslash in the regex pattern twice, e.g. "^\\\\d+$" for ^\\d+$';
 export const REGEX_EMPTY_ERROR =
@@ -45,7 +45,7 @@ export const REGEX_LITERAL_ERROR =
   'The regex pattern must be a single quoted string, e.g. "^0x"';
 export const REGEX_DIRECT_ERROR =
   'Write matchesRegex( exactly: no space before "(" and nothing around the name, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
-export const REGEX_CALLS_ERROR = `A condition can use matchesRegex at most ${MAX_REGEX_CALLS} times. Split the tests across two Condition nodes`;
+export const REGEX_CALLS_ERROR = `A Condition can use matchesRegex at most ${MAX_REGEX_CALLS} times. Split the tests across two Condition nodes`;
 export const REGEX_NEGATED_ERROR =
   'notMatchesRegex is not a function. For "does not match regex", write !matchesRegex(...)';
 
@@ -60,7 +60,7 @@ const SLASH_DELIMITED_RE = /^\/([\s\S]*)\/([gimsuy]*)$/;
 const REGEX_SYNTAX_RE = /[\^$\\[(*+?{|]/;
 const BAD_ESCAPE_RE = /invalid escape sequence/;
 const REPETITION_OPERATOR_RE = /operator: `([^`]*)`/;
-const LARGE_COUNT_RE = /\d{4,}/;
+const REPEAT_RANGE_RE = /\{(\d+),(\d+)\}/;
 const TRAILING_BACKSLASH_RE = /trailing backslash/;
 const REPETITION_RE = /repetition operator/;
 const REPEAT_COUNT_RE = /invalid repeat count/;
@@ -92,9 +92,12 @@ function syntaxHint(detail: string): string {
     return `. To match ${operator[0] ?? "it"} itself, put a backslash before it.${anyText}`;
   }
   if (REPEAT_COUNT_RE.test(detail)) {
-    return LARGE_COUNT_RE.test(detail)
-      ? `. Repeat counts go up to 1,000, and the whole pattern must compile to at most ${formatCount(MAX_REGEX_PROGRAM_SIZE)} steps (a range or a repeated group costs more), so use smaller counts`
-      : ". Write the smaller number first, e.g. {2,5}";
+    // Refused for a reversed range, or for counts over 1,000 (nested ones
+    // multiply: (a{100}){20} is 2,000).
+    const range = REPEAT_RANGE_RE.exec(detail);
+    return range && Number(range[1]) > Number(range[2])
+      ? ". Write the smaller number first, e.g. {2,5}"
+      : `. Repeat counts go up to 1,000, nested ones multiplied, and the whole pattern must compile to at most ${formatCount(MAX_REGEX_PROGRAM_SIZE)} steps (a range or a repeated group costs more), so use smaller counts`;
   }
   return "";
 }

@@ -76,7 +76,7 @@ describe("matches regex rule in the visual builder", () => {
 
   it("flags a pattern taken from another node", () => {
     render("{{@n2:Webhook.pattern}}");
-    expect(container.textContent).toContain("can't come from another node");
+    expect(container.textContent).toContain("not taken from another node");
   });
 
   it("gives does not match regex the same pattern field", () => {
@@ -134,7 +134,7 @@ describe("matches regex rule in the visual builder", () => {
   it("says how to match braces typed in the pattern", () => {
     render("^{{name}}$");
     expect(container.textContent).toContain(
-      "To match braces, put a backslash before each one: \\{\\{"
+      "To match braces, put a backslash before each one, as in \\{\\{;"
     );
     expect(container.textContent).not.toContain("Expression mode");
   });

@@ -399,7 +399,7 @@ function rejectUnusableNumber(value: unknown, label: string): void {
 
 function valueTip(operator: FilterOperator): string {
   if (isRegexOperator(operator)) {
-    return " Enter a pattern, e.g. ^VAULT_; ^$ matches empty text.";
+    return " Enter a regex pattern, e.g. ^VAULT_. To match empty text, use ^$.";
   }
   if (filterOperatorRule(operator).test === "number") {
     return " Enter a number, e.g. 100 or 0x64.";
@@ -475,7 +475,7 @@ function deferTemplateValue(raw: unknown, operator: FilterOperator): boolean {
     return false;
   }
   if (isRegexOperator(operator)) {
-    throw new Error(`${withoutExpressionNote(REGEX_TEMPLATE_ERROR)}.`);
+    throw new Error(sentence(withoutExpressionNote(REGEX_TEMPLATE_ERROR)));
   }
   return true;
 }

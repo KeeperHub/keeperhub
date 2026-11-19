@@ -20,6 +20,7 @@ import {
   MAX_REGEX_TEXT_LENGTH,
   REGEX_BACKSLASH_ERROR,
   REGEX_EMPTY_ERROR,
+  REGEX_LITERAL_ERROR,
   REGEX_NON_TEXT_ERROR,
   REGEX_SOURCE_ERROR,
   REGEX_TEMPLATE_ERROR,
@@ -529,6 +530,32 @@ describe("matchesRegex", () => {
   });
 
   describe("pattern rules", () => {
+    it("gives repeat-count advice that fits the refused count", () => {
+      expect(regexPatternError("a{5,2}")).toContain(
+        "Write the smaller number first"
+      );
+      // Nested counts multiply past 1,000; the order is not the problem.
+      const nested = regexPatternError("(a{100}){20}");
+      expect(nested).toContain("nested ones multiplied");
+      expect(nested).not.toContain("smaller number first");
+    });
+
+    it("asks for quotes around a pattern typed bare in an expression", () => {
+      expect(
+        validateConditionExpressionUI(`matchesRegex(${FIELD}, VAULT_)`)
+      ).toEqual({ valid: false, error: REGEX_LITERAL_ERROR });
+    });
+
+    it("adds the Expression-mode note without doubling punctuation", () => {
+      const result = validateConditionExpressionUI(
+        `matchesRegex(${FIELD}, "*.eth")`
+      );
+      expect(result.valid).toBe(false);
+      expect((result as { error: string }).error).toContain(
+        "use .* (dot, then star) (in Expression mode, type each backslash twice)"
+      );
+    });
+
     it("names what RE2 does not run and what to do instead", () => {
       expect(regexPatternError("^(?=EMSP)")).toContain(
         "Test that part separately"
@@ -555,7 +582,7 @@ describe("matchesRegex", () => {
       expect(regexPatternError("?abc")).toContain("To match ? itself");
       expect(regexPatternError("?abc")).not.toContain(".*");
       expect(regexPatternError("a{2000}")).toContain(
-        "Repeat counts go up to 1,000, and the whole pattern"
+        "Repeat counts go up to 1,000"
       );
       // The last quote is escaped, so this is not one quoted string.
       expect(regexPatternError('"a\\"')).toBeUndefined();
