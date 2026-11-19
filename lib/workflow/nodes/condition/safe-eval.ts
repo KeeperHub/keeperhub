@@ -1059,7 +1059,8 @@ function walkCall(node: CallNode): void {
   const callee = node.callee;
   if (callee.type === "Identifier") {
     if (callee.name === REGEX_FUNCTION) {
-      compileRegex(regexPattern(node));
+      // Read, not compiled: compiling here would cost CPU no budget charges.
+      regexPattern(node);
     } else if (!Object.hasOwn(ALLOWED_GLOBALS, callee.name)) {
       throw new Error(`Function "${callee.name}" is not allowed`);
     }
@@ -1142,6 +1143,36 @@ function countRegexCalls(node: AstNode): number {
   );
 }
 
+function regexCallNodes(node: AstNode, found: CallNode[] = []): CallNode[] {
+  if (
+    node.type === "CallExpression" &&
+    node.callee.type === "Identifier" &&
+    node.callee.name === REGEX_FUNCTION
+  ) {
+    found.push(node);
+  }
+  for (const child of childNodes(node)) {
+    regexCallNodes(child, found);
+  }
+  return found;
+}
+
+/**
+ * The patterns of a run-ready condition's matchesRegex calls, read as a run
+ * reads them, without compiling; throws what the run would.
+ */
+export function regexCallPatterns(expression: string): string[] {
+  let ast: AstNode;
+  try {
+    ast = parse(expression);
+  } catch (error) {
+    throw new Error(
+      `Condition parse error: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  return regexCallNodes(ast).map(regexPattern);
+}
+
 type CompiledCondition = (
   context: Record<string, unknown>,
   runBudget?: RegexBudget,
@@ -1189,10 +1220,15 @@ export function compileSafeCondition(expression: string): CompiledCondition {
  * expressions in displayed/exported source.
  */
 export function isSafeConditionExpression(expression: string): boolean {
+  return runnableConditionError(expression) === undefined;
+}
+
+/** Why a run-ready condition would fail every run's checks, without compiling. */
+export function runnableConditionError(expression: string): string | undefined {
   try {
     walkAllowlist(parse(expression));
-    return true;
-  } catch {
-    return false;
+    return;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
   }
 }

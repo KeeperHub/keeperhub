@@ -267,7 +267,8 @@ export function regexPatternError(
   }
 }
 
-export const REGEX_WORKFLOW_COMPILE_ERROR = `The regex patterns in this workflow's Conditions are too long to use together: ${formatCount(MAX_WORKFLOW_COMPILE_WORK)} to prepare, roughly 2,000 pattern characters in all (less with {n} repeats). Shorten or remove some; a pattern used in several places counts once`;
+export const REGEX_WORKFLOW_COMPILE_ERROR =
+  "Together, the regex patterns in this workflow's Conditions are too long: the limit is about 2,000 characters in all, fewer with {n} repeats. A pattern used twice counts once";
 
 /**
  * Compiles a workflow's Condition patterns into a fresh run budget, each

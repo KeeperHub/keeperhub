@@ -355,4 +355,45 @@ describe("Condition fields", () => {
     );
     expect(container.textContent).toContain(REGEX_WORKFLOW_COMPILE_ERROR);
   });
+
+  // Text with line breaks opens in Expression mode, which has its own branch.
+  it("shows in Expression mode what stops the workflow saving", () => {
+    const calls = (from: number) =>
+      Array.from(
+        { length: 8 },
+        (_, i) => `matchesRegex(${FIELD}, "^${from + i}${"a".repeat(150)}")`
+      ).join(" ||\n");
+    const node = (id: string, condition: string) =>
+      ({
+        id,
+        type: "action",
+        position: { x: 0, y: 0 },
+        data: {
+          type: "action",
+          label: id,
+          config: { actionType: "Condition", condition },
+        },
+      }) as WorkflowNode;
+    getDefaultStore().set(nodesAtom, [
+      node("first", calls(0)),
+      node("second", calls(10)),
+    ]);
+    render({ actionType: "Condition", condition: calls(0) });
+    expect(container.querySelector('input[aria-label="expression"]')).not.toBe(
+      null
+    );
+    expect(container.textContent).toContain(REGEX_WORKFLOW_COMPILE_ERROR);
+    expect(container.textContent).toContain("won't save until this is fixed");
+
+    act(() => getDefaultStore().set(nodesAtom, []));
+    act(() => root.unmount());
+    root = createRoot(container);
+    render({
+      actionType: "Condition",
+      condition: `matchesRegex(${FIELD}, "(?=a)") ||\n${FIELD} === 1`,
+    });
+    const blocking = [...container.querySelectorAll("p.text-destructive")];
+    expect(blocking.map((p) => p.textContent).join(" ")).toContain("Lookahead");
+    expect(container.textContent).toContain("won't save until this is fixed");
+  });
 });

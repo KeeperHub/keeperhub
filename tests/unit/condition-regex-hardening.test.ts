@@ -21,22 +21,28 @@ import {
   REGEX_ARITY_ERROR,
   REGEX_BACKSLASH_ERROR,
   REGEX_CALLS_ERROR,
+  REGEX_NEGATED_ERROR,
   REGEX_WORKFLOW_COMPILE_ERROR,
   RegexBudget,
   RegexBudgetError,
   regexPatternError,
 } from "@/lib/workflow/nodes/condition/regex-match";
-import { safeEvaluateCondition } from "@/lib/workflow/nodes/condition/safe-eval";
 import {
+  isSafeConditionExpression,
+  safeEvaluateCondition,
+} from "@/lib/workflow/nodes/condition/safe-eval";
+import {
+  prepareRunRegex,
   preValidateConditionExpression,
   validateConditionExpression,
   validateConditionExpressionUI,
   visualConditionLimitError,
-  workflowConditions,
-  workflowRegexError,
 } from "@/lib/workflow/nodes/condition/validator";
 import type { WorkflowNode } from "@/lib/workflow/store";
-import { validateWorkflowActionConfigs } from "@/lib/workflow/validation/action-config";
+import {
+  formatActionConfigValidationResponse,
+  validateWorkflowActionConfigs,
+} from "@/lib/workflow/validation/action-config";
 
 const FIELD = "{{@n1:Webhook.value}}";
 
@@ -65,67 +71,124 @@ describe("regex hardening", () => {
     describe("a workflow's patterns must fit one run's budget", () => {
       // 140 characters each: 280,000 + 400 per step, so 16 distinct ones
       // cost over 5,000,000 and 8 about half.
-      const call = (i: number) =>
-        `matchesRegex(${FIELD}, "^${String(i).padStart(2, "0")}${"a".repeat(137)}")`;
+      const pattern = (i: number) =>
+        `^${String(i).padStart(2, "0")}${"a".repeat(137)}`;
+      const call = (i: number) => `matchesRegex(${FIELD}, "${pattern(i)}")`;
       const calls = (from: number, count: number) =>
         Array.from({ length: count }, (_, i) => call(from + i)).join(" || ");
-      const conditionNode = (id: string, condition: string) => ({
+      const conditionNode = (
+        id: string,
+        config: Record<string, unknown>,
+        enabled?: boolean
+      ) => ({
         id,
         type: "action",
         data: {
           type: "action",
           label: id,
-          config: { actionType: "Condition", condition },
+          enabled,
+          config: { actionType: "Condition", ...config },
         },
       });
-
-      it("refuses one Condition over the cap at save, in the editor and at run start", () => {
-        const nodes = [conditionNode("c1", calls(0, 16))];
-        const conditions = workflowConditions(nodes).map((c) => c.condition);
-        expect(workflowRegexError(conditions)).toBe(
-          REGEX_WORKFLOW_COMPILE_ERROR
+      const textNode = (id: string, condition: string) =>
+        conditionNode(id, { condition });
+      const runStart = (nodes: ReturnType<typeof conditionNode>[]) =>
+        prepareRunRegex(
+          nodes,
+          new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" })
         );
-        expect(validateWorkflowActionConfigs(nodes).issues).toEqual([
+      const saveIssues = (nodes: ReturnType<typeof conditionNode>[]) =>
+        validateWorkflowActionConfigs(nodes).issues;
+
+      it("refuses one Condition over the cap at save and at run start", () => {
+        const nodes = [textNode("c1", calls(0, 16))];
+        expect(runStart(nodes)).toBe(REGEX_WORKFLOW_COMPILE_ERROR);
+        expect(saveIssues(nodes)).toEqual([
           expect.objectContaining({
             path: "nodes[0].data.config.condition",
             nodeId: "c1",
             message: REGEX_WORKFLOW_COMPILE_ERROR,
           }),
         ]);
-        const runBudget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
-        expect(workflowRegexError(conditions, runBudget)).toBe(
-          REGEX_WORKFLOW_COMPILE_ERROR
-        );
       });
 
       // Each passes alone; together they would starve the run.
-      it("adds up the patterns of every Condition in the workflow", () => {
+      it("adds up the patterns of every Condition, naming the costliest", () => {
         const nodes = [
-          conditionNode("c1", calls(0, 6)),
-          conditionNode("c2", calls(6, 6)),
-          conditionNode("c3", calls(12, 6)),
+          textNode("small", calls(0, 1)),
+          textNode("c2", calls(1, 6)),
+          textNode("big", calls(7, 8)),
         ];
         for (const node of nodes) {
-          expect(validateWorkflowActionConfigs([node]).valid).toBe(true);
+          expect(saveIssues([node])).toEqual([]);
         }
-        expect(validateWorkflowActionConfigs(nodes.slice(0, 2)).valid).toBe(
-          true
-        );
-        expect(validateWorkflowActionConfigs(nodes).issues).toEqual([
+        expect(saveIssues(nodes.slice(0, 2))).toEqual([]);
+        expect(runStart(nodes)).toBe(REGEX_WORKFLOW_COMPILE_ERROR);
+        expect(saveIssues(nodes)).toEqual([
           expect.objectContaining({
-            nodeId: "c3",
+            nodeId: "big",
             message: REGEX_WORKFLOW_COMPILE_ERROR,
           }),
         ]);
       });
 
       it("counts a pattern used in several Conditions once", () => {
-        const nodes = [
-          conditionNode("c1", calls(0, 12)),
-          conditionNode("c2", calls(0, 12)),
-          conditionNode("c3", calls(0, 12)),
+        const nodes = ["c1", "c2", "c3"].map((id) =>
+          textNode(id, calls(0, 12))
+        );
+        expect(saveIssues(nodes)).toEqual([]);
+        expect(runStart(nodes)).toBeUndefined();
+      });
+
+      // The run evaluates the rules when there are any, whatever the text says.
+      it("reads what the run evaluates: rules first, and not disabled nodes", () => {
+        const rules = (from: number, count: number) => ({
+          condition: "true",
+          conditionConfig: {
+            group: {
+              id: "g",
+              logic: "OR",
+              rules: Array.from({ length: count }, (_, i) => ({
+                id: `r${i}`,
+                leftOperand: FIELD,
+                operator: "matchesRegex",
+                rightOperand: pattern(from + i),
+              })),
+            },
+          },
+        });
+        const ruled = [conditionNode("c1", rules(0, 16))];
+        expect(runStart(ruled)).toBe(REGEX_WORKFLOW_COMPILE_ERROR);
+        expect(saveIssues(ruled)).toHaveLength(1);
+        const badRule = conditionNode("c1", {
+          conditionConfig: {
+            group: {
+              id: "g",
+              logic: "AND",
+              rules: [
+                {
+                  id: "r",
+                  leftOperand: FIELD,
+                  operator: "matchesRegex",
+                  rightOperand: "(?=a)",
+                },
+              ],
+            },
+          },
+        });
+        expect(saveIssues([badRule])[0]?.message).toContain("Lookahead");
+        // Stale text under rules that run is not counted.
+        const stale = conditionNode("c1", {
+          ...rules(0, 1),
+          condition: calls(0, 16),
+        });
+        expect(saveIssues([stale])).toEqual([]);
+        const off = [
+          textNode("c1", calls(0, 8)),
+          conditionNode("c2", { condition: calls(8, 8) }, false),
         ];
-        expect(validateWorkflowActionConfigs(nodes).valid).toBe(true);
+        expect(saveIssues(off)).toEqual([]);
+        expect(runStart(off)).toBeUndefined();
       });
 
       // Compiled at run start, so no Condition pays again, and the run keeps
@@ -133,7 +196,12 @@ describe("regex hardening", () => {
       it("leaves a run that passed room to test values", () => {
         const conditions = [calls(0, 8), calls(8, 6)];
         const runBudget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
-        expect(workflowRegexError(conditions, runBudget)).toBeUndefined();
+        expect(
+          prepareRunRegex(
+            conditions.map((c, i) => textNode(`c${i}`, c)),
+            runBudget
+          )
+        ).toBeUndefined();
         const prepared = runBudget.used();
         expect(prepared).toBeLessThanOrEqual(
           MAX_RUN_REGEX_WORK - MAX_CONDITION_REGEX_WORK
@@ -153,10 +221,9 @@ describe("regex hardening", () => {
         ).not.toThrow();
       });
 
-      it("refuses broken regex Conditions at save, and leaves other conditions alone", () => {
+      it("refuses at save what fails every run, and leaves other conditions alone", () => {
         const refused = (condition: string) =>
-          validateWorkflowActionConfigs([conditionNode("c1", condition)])
-            .issues[0]?.message;
+          saveIssues([textNode("c1", condition)])[0]?.message;
         expect(refused(`matchesRegex(${FIELD}, "(?=a)")`)).toContain(
           "Lookahead"
         );
@@ -170,10 +237,28 @@ describe("regex hardening", () => {
         expect(
           refused(Array.from({ length: 17 }, () => call(0)).join(" || "))
         ).toBe(REGEX_CALLS_ERROR);
+        expect(refused(`${call(0)} &&`)).toBeDefined();
+        expect(refused(`${call(0)} && foo(1)`)).toBeDefined();
+        expect(refused(`notMatchesRegex(${FIELD}, "^a")`)).toBe(
+          REGEX_NEGATED_ERROR
+        );
         // Saved conditions without matchesRegex are not checked.
         expect(refused(`${FIELD}  ===  "${"a".repeat(20_000)}"`)).toBe(
           undefined
         );
+        expect(refused(`${FIELD} === "matchesRegex("`)).toBeUndefined();
+      });
+
+      // The summary escapes quotes against forged entries, but regex advice
+      // needs its parentheses.
+      it("keeps a pattern's parentheses in the save message", () => {
+        const response = formatActionConfigValidationResponse(
+          validateWorkflowActionConfigs([
+            textNode("c1", `matchesRegex(${FIELD}, "a(")`),
+          ])
+        );
+        expect(response.message).toContain("missing closing )");
+        expect(response.message).toContain("'a('");
       });
 
       // Every compile is charged before it runs, so refused or uncached
@@ -181,14 +266,16 @@ describe("regex hardening", () => {
       it("stays fast with many slow refused patterns", () => {
         const slow = (i: number) =>
           `matchesRegex(${FIELD}, "${"(?:a{1000})".repeat(45)}${i}")`;
-        const conditions = Array.from({ length: 40 }, (_, i) => slow(i));
-        const started = performance.now();
-        expect(workflowRegexError(conditions)).toBe(
-          REGEX_WORKFLOW_COMPILE_ERROR
+        const nodes = Array.from({ length: 40 }, (_, i) =>
+          textNode(`c${i}`, slow(i))
         );
-        const nodes = conditions.map((c, i) => conditionNode(`c${i}`, c));
-        expect(validateWorkflowActionConfigs(nodes).issues).toHaveLength(1);
-        expect(performance.now() - started).toBeLessThan(3000);
+        const started = performance.now();
+        expect(runStart(nodes)).toBe(REGEX_WORKFLOW_COMPILE_ERROR);
+        expect(saveIssues(nodes)).toHaveLength(1);
+        expect(isSafeConditionExpression(slow(99).replace(FIELD, "x"))).toBe(
+          true
+        );
+        expect(performance.now() - started).toBeLessThan(5000);
       });
     });
 

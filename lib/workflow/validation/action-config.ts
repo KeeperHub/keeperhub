@@ -80,17 +80,22 @@ const SUMMARY_NAME_PRIORITY: Record<ActionConfigValidationIssueCode, number> = {
   UNKNOWN_FIELD: 2,
 };
 
-function sanitiseSummaryText(text: string, maxChars: number): string {
+function sanitiseSummaryText(
+  text: string,
+  maxChars: number,
+  { keepParens = false } = {}
+): string {
   // The text is interpolated into a single-line summary, so nothing
   // whitespace-like survives, and a removed character leaves a space rather
   // than joining the words either side of it into one.
   let stripped = stripControlChars(text, { replacement: " " });
   // Escape format delimiters to prevent malicious text from rendering a
-  // convincing fake entry in the summary.
-  stripped = stripped
-    .replace(/"/g, "'")
-    .replace(/\(/g, "[")
-    .replace(/\)/g, "]");
+  // convincing fake entry in the summary. Every entry starts with a double
+  // quote, so a reason may keep its parentheses (regex advice needs them).
+  stripped = stripped.replace(/"/g, "'");
+  if (!keepParens) {
+    stripped = stripped.replace(/\(/g, "[").replace(/\)/g, "]");
+  }
   stripped = stripped.trim();
   if (stripped.length > maxChars) {
     return `${cutText(stripped, maxChars - 3)}...`;
@@ -1133,7 +1138,7 @@ export function formatActionConfigValidationResponse(
             }
             entries.push(
               reason
-                ? `"${label}": ${sanitiseSummaryText(reason, DETAIL_MAX_CHARS).replace(TRAILING_PERIOD, "")}`
+                ? `"${label}": ${sanitiseSummaryText(reason, DETAIL_MAX_CHARS, { keepParens: true }).replace(TRAILING_PERIOD, "")}`
                 : `"${label}"${formatNodeFields(ordered, count)}`
             );
             shown++;

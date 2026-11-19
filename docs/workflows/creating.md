@@ -158,26 +158,40 @@ same rules.
 - **Expression mode:** write `matchesRegex({{@nodeId:Label.field}}, "^0x[0-9a-fA-F]{40}$")`.
   Inside the quotes, double each backslash: `"^\\d+$"` for `^\d+$`. A single backslash before
   anything but a quote, `n`, `r` or `t` is refused rather than silently changing the pattern.
-- **Limits:** a pattern of up to 512 characters and 1,000 steps (RE2's size for the compiled
-  pattern; long `{n}` repeats add up fastest), text of up to 4,096 characters (longer text fails the
-  run), and at most 16 regex tests in one Condition. Matching never backtracks and has a fixed
-  budget of steps x characters tested: 5,000,000 per Condition check and 10,000,000 per workflow
-  run, loops included, so it cannot hold up a run for more than a few seconds. Each pattern also
-  costs a one-off amount the first time a run uses it (2,000 per pattern character plus 400 per
-  step), not again in a loop. That cost comes from the run's 10,000,000, not from a Condition
-  check's 5,000,000. All the patterns of all the workflow's Conditions may cost at most 5,000,000
-  together, roughly 2,000 pattern characters in all (less with `{n}` repeats; a pattern used in
-  several places counts once), so a run keeps room to test values. The editor shows an error above
-  that, and saving refuses it. The run's budget is shared by every regex test in it: a For Each can
-  test about 5,100 addresses against `^0x[0-9a-fA-F]{40}$` (about 56,000 once, then 46 steps x 42
-  characters each), or about 2,150 transaction hashes against `^0x[0-9a-f]{64}$` (70 x 66 each). For
-  more, use Filter Array, which has its own budget per node. A value that is missing, or comes from
-  a node that did not run, fails the run; add an **exists** rule before it.
+- **Limits:** see the table below. Matching never backtracks, so a regex test cannot hold up a
+  run for more than a few seconds.
 - **Exported code:** code export does not include regex tests. A Condition that uses one is
   exported as code that throws an error when it is reached, so port that test by hand.
-- **Condition length:** a Condition with a regex test may be up to 10,000 characters, each
-  `{{...}}` reference counting as about 4, so long node names and ids do not count against it.
-  Conditions without a regex test have no length limit.
+
+**Regex limits.** "Steps" is the size of the compiled pattern: about one per character, more for
+ranges and groups, and `{n}` copies its piece n times.
+
+| Limit | Applies to | Value | Past it |
+|---|---|---|---|
+| Pattern size | each pattern | 512 characters, 1,000 steps | error under the rule; the workflow won't save |
+| Regex tests | each Condition | 16 | the workflow won't save |
+| Condition length | each Condition with a regex test | 10,000 characters, each `{{...}}` reference counting as about 4 | the workflow won't save |
+| Total pattern size | all Conditions of the workflow | about 2,000 pattern characters, fewer with `{n}` repeats | error on each regex Condition; the workflow won't save |
+| Text tested | each value | 4,096 characters | the run fails |
+| Matching | each Condition check | 5,000,000 steps x characters tested | the run fails |
+| Matching | each run, loops included | 10,000,000 | the run fails |
+
+- **Total pattern size:** each distinct pattern costs 2,000 per character plus 400 per step to
+  prepare, and a workflow's Conditions may cost 5,000,000 together. Only patterns that run count:
+  a Condition's rules when it has them (otherwise its text), and not disabled Conditions. A
+  pattern used in several places counts once, when its text is identical (`(?i)^0x` and `^0x` are
+  two). Filter Array patterns do not count. Each run prepares them all once, at its start, from
+  its 10,000,000, so it keeps at least 5,000,000 to test values.
+- **Run budget:** shared by every regex test in a run. A For Each can test about 5,100 addresses
+  against `^0x[0-9a-fA-F]{40}$` (46 steps x 42 characters each), or about 2,150 transaction hashes
+  against `^0x[0-9a-f]{64}$` (70 x 66 each), less what the run's patterns cost to prepare. For
+  more, use Filter Array, which has its own budget per node. For a long allow-list, a few `equals`
+  rules joined with OR also work.
+- **Saving:** a Condition with a regex test that would fail every run (a pattern that cannot run,
+  more than 16 tests, too long, or the workflow's patterns over their total) stops the workflow
+  saving until it is fixed; the editor shows why. Conditions without a regex test save as before.
+- A value that is missing, or comes from a node that did not run, fails the run; add an **exists**
+  rule before it.
 
 **What counts as a number:** an operand is compared by magnitude only when it is a
 plain decimal - an optional sign, digits, and at most one point, such as `42`, `-0.50` or

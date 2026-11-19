@@ -50,8 +50,10 @@ import {
   validateConditionExpressionUI,
   visualConditionLimitError,
   workflowConditions,
-  workflowRegexError,
+  workflowRegexIssue,
+  workflowRegexLimit,
 } from "@/lib/workflow/nodes/condition/validator";
+import { REGEX_WORKFLOW_COMPILE_ERROR } from "@/lib/workflow/nodes/condition/regex-match";
 import { stateValueToEditorText } from "@/lib/workflow/nodes/workflow-state/utils";
 import { useFeatures } from "@/hooks/use-features";
 import type { FeatureDefinition } from "@/lib/features";
@@ -436,19 +438,37 @@ export function ConditionFields({
   // Text with no rules that write it: the builder starts empty.
   const shownAsRules = shownGroup !== undefined;
 
+  // This Condition's own problems that refuse a save, other than the cap.
+  const ownSaveError = useMemo(() => {
+    const message = workflowRegexIssue([
+      { index: 0, condition: conditionValue },
+    ])?.message;
+    return message === REGEX_WORKFLOW_COMPILE_ERROR ? undefined : message;
+  }, [conditionValue]);
+
   // Every Condition's text as one key, so dragging nodes doesn't recheck.
   const nodes = useAtomValue(nodesAtom);
-  const conditionsKey = JSON.stringify(
-    workflowConditions(nodes).map(({ condition }) => condition)
-  );
-  // All the workflow's patterns together, shown on each Condition that has one.
-  const workflowLimitError = useMemo(
+  const conditionsKey = JSON.stringify(workflowConditions(nodes));
+  const largestIndex = useMemo(
     () =>
       conditionRegexPatterns(conditionValue).length > 0
-        ? workflowRegexError(JSON.parse(conditionsKey) as string[])
+        ? workflowRegexLimit(
+            JSON.parse(conditionsKey) as { index: number; condition: string }[]
+          )
         : undefined,
     [conditionsKey, conditionValue]
   );
+  // All the workflow's patterns together, shown on each Condition that has one.
+  let workflowLimitError: string | undefined;
+  if (largestIndex !== undefined) {
+    const largest = nodes[largestIndex]?.data;
+    const where =
+      largest?.config === config || !largest?.label
+        ? "this Condition"
+        : `"${largest.label}"`;
+    workflowLimitError = `${REGEX_WORKFLOW_COMPILE_ERROR}. Most of it is in ${where}.`;
+  }
+  const savingBlocked = Boolean(ownSaveError ?? workflowLimitError);
 
   // Limits the rules can reach that would fail every run.
   const visualLimitError = useMemo(
@@ -518,6 +538,11 @@ export function ConditionFields({
                 {visualLimitError ?? workflowLimitError}
               </p>
             )}
+            {(savingBlocked || visualLimitError) && (
+              <p className="text-muted-foreground text-xs">
+                Changes to this workflow won't save until this is fixed.
+              </p>
+            )}
           </div>
           {conditionValue.trim() && (
             <div className="space-y-1">
@@ -541,11 +566,27 @@ export function ConditionFields({
           />
           {/* Always mounted, so screen readers announce an error once. */}
           <div aria-live="polite">
-            {validationError && (
-              <p className="text-xs text-yellow-600">{validationError}</p>
+            {validationError ? (
+              <p
+                className={
+                  ownSaveError
+                    ? "text-destructive text-xs"
+                    : "text-xs text-yellow-600"
+                }
+              >
+                {validationError}
+              </p>
+            ) : (
+              savingBlocked && (
+                <p className="text-destructive text-xs">
+                  {ownSaveError ?? workflowLimitError}
+                </p>
+              )
             )}
-            {!validationError && workflowLimitError && (
-              <p className="text-destructive text-xs">{workflowLimitError}</p>
+            {savingBlocked && (
+              <p className="text-muted-foreground text-xs">
+                Changes to this workflow won't save until this is fixed.
+              </p>
             )}
           </div>
           <p className="text-muted-foreground text-xs">

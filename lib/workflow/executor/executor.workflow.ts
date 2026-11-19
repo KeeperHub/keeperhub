@@ -110,10 +110,9 @@ import {
   collectSkippedTargets,
 } from "@/lib/workflow/nodes/condition/skipped-branch";
 import {
+  prepareRunRegex,
   preValidateConditionExpression,
   validateConditionExpression,
-  workflowConditions,
-  workflowRegexError,
 } from "@/lib/workflow/nodes/condition/validator";
 import {
   FOR_EACH_BODY_FAILURE_MARKER,
@@ -4304,10 +4303,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     }
 
     // Every Condition's regex patterns, compiled once into this pass's budget.
-    const regexCompileError = workflowRegexError(
-      workflowConditions(nodes).map(({ condition }) => condition),
-      regexRunBudget
-    );
+    const regexCompileError = prepareRunRegex(nodes, regexRunBudget);
     if (regexCompileError) {
       throw new Error(regexCompileError);
     }

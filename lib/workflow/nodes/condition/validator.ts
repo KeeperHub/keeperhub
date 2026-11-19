@@ -27,6 +27,7 @@
 
 import {
   hasTemplateToken,
+  parseStoredRef,
   replaceTemplateTokens,
 } from "@/lib/workflow/template-ref";
 import {
@@ -35,7 +36,6 @@ import {
   maskedStructure,
   mentionsRegexIn,
   REGEX_OBJECT_RE,
-  type RegexCall,
   regexCallsIn,
 } from "./regex-calls";
 import {
@@ -50,15 +50,17 @@ import {
   REGEX_NEGATED_ERROR,
   REGEX_SOURCE_ERROR,
   REGEX_TEMPLATE_ERROR,
+  REGEX_WORKFLOW_COMPILE_ERROR,
   RegexBudget,
   regexPatternError,
 } from "./regex-match";
-import { BLOCKED_PROPS } from "./safe-eval";
+import { resolveConditionExpression } from "./resolver";
 import {
-  exactStringLiteral,
-  maskStringLiterals,
-  scanString,
-} from "./string-literal";
+  BLOCKED_PROPS,
+  regexCallPatterns,
+  runnableConditionError,
+} from "./safe-eval";
+import { maskStringLiterals, scanString } from "./string-literal";
 
 // A comma not inside call parentheses. Checked by hasStrayComma in one pass:
 // as a regex, the lookahead rescanned to the end for every comma.
@@ -244,28 +246,46 @@ function rawRegexError(
   return;
 }
 
+// References become __vN as a run turns them; others stay and fail as they would.
+function runText(expression: string): string {
+  let index = 0;
+  return replaceTemplateTokens(expression, ({ body }) =>
+    parseStoredRef(body) ? `__v${index++}` : `{{${body}}}`
+  );
+}
+
+function usesRegex(scan: RegexScan): boolean {
+  return (
+    mentionsRegexIn(scan.structure) || hasNegatedRegexCallIn(scan.structure)
+  );
+}
+
 /** The typed patterns of a raw condition's matchesRegex calls, as a run reads them. */
 export function conditionRegexPatterns(expression: string): string[] {
-  const { masked } = scanForRegex(expression);
-  const patterns: string[] = [];
-  for (const call of masked === undefined ? [] : regexCallsIn(masked)) {
-    const pattern =
-      call.args.length === 2
-        ? exactStringLiteral(expression.slice(...call.args[1]))
-        : undefined;
-    if (pattern !== undefined) {
-      patterns.push(pattern);
-    }
+  // Too long ones are refused before any pattern is read.
+  if (
+    !usesRegex(scanForRegex(expression)) ||
+    conditionLength(expression) > MAX_CONDITION_LENGTH
+  ) {
+    return [];
   }
-  return patterns;
+  try {
+    return regexCallPatterns(runText(expression));
+  } catch {
+    return [];
+  }
 }
 
 type NodeWithConfig = {
   type?: unknown;
-  data?: { type?: unknown; config?: Record<string, unknown> };
+  data?: {
+    type?: unknown;
+    enabled?: unknown;
+    config?: Record<string, unknown>;
+  };
 };
 
-/** Each Condition node's condition text, with the node's index. */
+/** What each enabled Condition node runs (its rules or its text), with its index. */
 export function workflowConditions(
   nodes: readonly NodeWithConfig[]
 ): { index: number; condition: string }[] {
@@ -274,89 +294,100 @@ export function workflowConditions(
     const config = node.data?.config;
     const isAction = node.type === "action" || node.data?.type === "action";
     if (
-      isAction &&
-      config?.actionType === "Condition" &&
-      typeof config.condition === "string"
+      !isAction ||
+      node.data?.enabled === false ||
+      config?.actionType !== "Condition"
     ) {
-      conditions.push({ index, condition: config.condition });
+      continue;
+    }
+    const condition = resolveConditionExpression(config);
+    if (typeof condition === "string") {
+      conditions.push({ index, condition });
     }
   }
   return conditions;
 }
 
 /**
- * Compiles every Condition's patterns into `budget` (a run's, or a fresh one)
- * and refuses them past the workflow cap.
+ * At a run's start: compiles every enabled Condition's patterns into the run's
+ * budget, and refuses the run past the workflow cap.
  */
-export function workflowRegexError(
-  conditions: readonly string[],
-  budget?: RegexBudget
+export function prepareRunRegex(
+  nodes: readonly NodeWithConfig[],
+  budget: RegexBudget
 ): string | undefined {
-  return prepareRegexPatterns(
-    conditions.flatMap(conditionRegexPatterns),
-    budget
+  const patterns = workflowConditions(nodes).flatMap(({ condition }) =>
+    conditionRegexPatterns(condition)
   );
-}
-
-// A matchesRegex call that would fail every run, read without compiling.
-function savedCallError(
-  expression: string,
-  call: RegexCall
-): string | undefined {
-  if (call.args.length !== 2) {
-    return REGEX_ARITY_ERROR;
-  }
-  const text = expression.slice(...call.args[1]).trim();
-  if (exactStringLiteral(text) !== undefined) {
-    return;
-  }
-  try {
-    return scanString(text, 0).lossy
-      ? REGEX_BACKSLASH_ERROR
-      : REGEX_LITERAL_ERROR;
-  } catch {
-    return REGEX_LITERAL_ERROR;
-  }
+  return prepareRegexPatterns(patterns, budget);
 }
 
 /**
  * The first problem that would fail every run of a workflow's regex
- * Conditions, for saves. Conditions without matchesRegex are not checked, so
- * no saved workflow stops saving. Compiles share one budget, so a save stays
- * cheap however many patterns it has.
+ * Conditions, for saves: the run's own checks, then the patterns compiled
+ * through one budget, so a save stays cheap. Conditions without matchesRegex
+ * are not checked, so no saved workflow stops saving.
  */
 export function workflowRegexIssue(
   conditions: readonly { index: number; condition: string }[]
 ): { index: number; message: string } | undefined {
   const withRegex = conditions.filter(({ condition }) =>
-    mentionsRegexIn(scanForRegex(condition).structure)
+    usesRegex(scanForRegex(condition))
   );
   for (const { index, condition } of withRegex) {
     const pre = preValidateConditionExpression(condition);
     if (!pre.valid) {
       return { index, message: pre.error };
     }
-    const { masked } = scanForRegex(condition);
-    if (masked === undefined) {
-      return { index, message: UNTERMINATED_STRING_ERROR };
+    const text = runText(condition);
+    const checked = validateConditionExpression(text);
+    if (!checked.valid) {
+      return { index, message: checked.error };
     }
-    for (const call of regexCallsIn(masked)) {
-      const message = savedCallError(condition, call);
-      if (message) {
-        return { index, message };
-      }
+    const runError = runnableConditionError(text);
+    if (runError) {
+      return { index, message: inExpressionTerms(runError) ?? runError };
     }
   }
+  return compileConditions(withRegex, true);
+}
+
+/**
+ * Compiles each Condition's patterns into one budget. Past the workflow cap it
+ * names the Condition whose patterns cost the most so far.
+ */
+function compileConditions(
+  conditions: readonly { index: number; condition: string }[],
+  reportRefused: boolean
+): { index: number; message: string } | undefined {
   const budget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
-  for (const { index, condition } of withRegex) {
-    const problem = inExpressionTerms(
-      prepareRegexPatterns(conditionRegexPatterns(condition), budget, true)
+  let largest = { index: -1, cost: -1 };
+  for (const { index, condition } of conditions) {
+    const before = budget.used();
+    const problem = prepareRegexPatterns(
+      conditionRegexPatterns(condition),
+      budget,
+      reportRefused
     );
+    const cost = budget.used() - before;
+    if (cost > largest.cost) {
+      largest = { index, cost };
+    }
+    if (problem === REGEX_WORKFLOW_COMPILE_ERROR) {
+      return { index: largest.index, message: problem };
+    }
     if (problem) {
-      return { index, message: problem };
+      return { index, message: inExpressionTerms(problem) ?? problem };
     }
   }
   return;
+}
+
+/** Past the workflow cap, the index of the Condition whose patterns cost most. */
+export function workflowRegexLimit(
+  conditions: readonly { index: number; condition: string }[]
+): number | undefined {
+  return compileConditions(conditions, false)?.index;
 }
 
 function regexObjectError(code: string): ValidationResult | undefined {
