@@ -3,10 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Select, SelectContent, SelectItem } from "@/components/ui/select";
-import {
-  isSwitchOn,
-  PlainSwitchField,
-} from "@/components/workflow/config/plain-switch-field";
+import { PlainSwitchField } from "@/components/workflow/config/plain-switch-field";
+import { resolveSwitch } from "@/lib/utils";
 import {
   groupedSelectLabel,
   groupSelectOptions,
@@ -36,7 +34,11 @@ describe("groupSelectOptions", () => {
   });
 });
 
-describe("isSwitchOn", () => {
+// The rule a plain switch reads its value by, the one its step applies.
+const isSwitchOn = (value: unknown, defaultValue: unknown): boolean =>
+  resolveSwitch(value, defaultValue) === true;
+
+describe("a plain switch reads its value", () => {
   it('reads true or "true", falling back to the default while unset', () => {
     expect(isSwitchOn(true, undefined)).toBe(true);
     expect(isSwitchOn("true", undefined)).toBe(true);

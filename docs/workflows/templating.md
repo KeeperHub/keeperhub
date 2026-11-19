@@ -106,7 +106,18 @@ Templates work in any string-valued config field. Common places:
 - Database Query parameters (parameterized as `$1`, `$2`, ... at execution time)
 - Run Code source (string-valued upstream data is JSON-stringified into the code so it remains valid JavaScript when inlined)
 
-On/off toggles such as **Sponsor gas**, **Fail workflow on error** and **Ignore case** take only `true` or `false` (or the strings `"true"` and `"false"`). A save with a template in one is refused (a switch the current settings hide, such as **Ignore case** for an operator that ignores it, is checked once it shows). A step already saved with a template or other text in one keeps it, and still saves, until it is changed. Importing a workflow that holds one is refused, and so is restoring a version that holds one where the current workflow does not. A copy of another organization's workflow starts with such a toggle unset, so it takes its default.
+### On/off toggles
+
+On/off toggles such as **Sponsor gas**, **Fail workflow on error** and **Ignore case** take only `true` or `false` (or the strings `"true"` and `"false"`). Leaving one unset uses its default. A save with a template or any other value in one is refused; a switch the current settings hide, such as **Ignore case** for an operator that ignores it, is checked once it shows.
+
+A step that already holds another value keeps it, and the workflow still saves, while all of these hold:
+
+- the value is unchanged, and is text of up to 2,000 characters or a number;
+- its references use the stored format (`{{@nodeId:Label.field}}`), not the display or `$` format;
+- each step it references existed when it was saved, and is still the same kind of step or has been deleted;
+- for a switch the settings can hide, it was showing when saved.
+
+Anything else is refused at the next save; reset the toggle to its default in the editor. Importing a workflow that holds such a value is refused, and so is restoring a version that holds one the current workflow does not. A copy of another organization's workflow starts with such a toggle unset, so it takes its default.
 
 Templates do **not** work inside binary fields (images, file uploads) or inside the workflow's structural metadata (node ids, edge ids, position).
 

@@ -27,11 +27,11 @@ import {
   SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST,
   type SystemActionType,
 } from "@/lib/workflow/executor/system-action-types";
+import { valueContainsTemplate } from "@/lib/workflow/template-ref";
 import {
-  findTemplateTokens,
-  parseStoredRef,
-  valueContainsTemplate,
-} from "@/lib/workflow/template-ref";
+  outputKeyOf,
+  strayValueParts,
+} from "@/lib/workflow/validation/stray-toggle-value";
 import {
   type ActionConfigField,
   type ActionConfigFieldBase,
@@ -61,9 +61,6 @@ const RESERVED_CONFIG_KEYS = new Set([
 ]);
 
 const DECIMAL_PATTERN = /^\d+(?:\.\d+)?$/;
-const NON_ALPHANUMERIC_PATTERN = /[^a-zA-Z0-9]/g;
-// A stored stray value longer than this is never kept, which bounds the compare.
-const KEPT_VALUE_MAX_CHARS = 2000;
 const FIXED_ARRAY_LENGTH_PATTERN = /\[(\d+)]$/;
 // The `nodes[N]` prefix the validator writes into every issue path, used to
 // tell two nodes apart when neither carries an id.
@@ -614,39 +611,6 @@ function nodeKind(data: Record<string, unknown>): string {
     : `action:${String(config.actionType)}`;
 }
 
-// The key the executor stores and reads a node's output under.
-function outputKey(nodeId: string): string {
-  return nodeId.trim().replace(NON_ALPHANUMERIC_PATTERN, "_");
-}
-
-type ValuePart = { text: string } | { node: string; path: string };
-
-// The value as the executor resolves it: literal text, and references by
-// output key and the path after the first dot. Undefined if one reads by label.
-function valueParts(text: string): ValuePart[] | undefined {
-  const parts: ValuePart[] = [];
-  let last = 0;
-  for (const token of findTemplateTokens(text)) {
-    if (!token.body.startsWith("@")) {
-      return;
-    }
-    parts.push({ text: text.slice(last, token.start) });
-    const ref = parseStoredRef(token.body);
-    const dot = ref?.rest.indexOf(".") ?? -1;
-    parts.push(
-      ref
-        ? {
-            node: outputKey(ref.nodeId),
-            path: dot === -1 ? "" : ref.rest.slice(dot + 1).trim(),
-          }
-        : { text: `{{${token.body}}}` }
-    );
-    last = token.end;
-  }
-  parts.push({ text: text.slice(last) });
-  return parts;
-}
-
 type KeptStray = (
   node: { id?: unknown },
   config: Record<string, unknown>,
@@ -655,49 +619,51 @@ type KeptStray = (
 
 type NodeIndex = {
   configs: Map<string, Record<string, unknown>>;
-  // Output key -> the kinds of every node stored under it.
-  kinds: Map<string, string>;
+  // Output key -> the kinds of every node whose output is stored under it.
+  kinds: Map<string, Set<string>>;
 };
 
 function indexNodes(nodes: readonly unknown[]): NodeIndex {
   const kinds = new Map<string, Set<string>>();
   for (const [id, kind] of nodesById(nodes, nodeKind)) {
-    const key = outputKey(id);
+    const key = outputKeyOf(id);
     kinds.set(key, (kinds.get(key) ?? new Set()).add(kind));
   }
   return {
     configs: nodesById(nodes, (data) =>
       isRecord(data.config) ? data.config : undefined
     ),
-    kinds: new Map(
-      [...kinds].map(([key, set]) => [key, [...set].sort().join("|")])
-    ),
+    kinds,
   };
 }
 
-// Same text and same references, none now reading a node that was not saved
-// or has become a different kind of node.
+// The kinds of the nodes a reference reads, as one comparable string.
+function kindsRead(index: NodeIndex, key: string): string {
+  return [...(index.kinds.get(key) ?? [])].sort().join("|");
+}
+
+// Same text and references; each reference read a node when saved, and now
+// reads the same kind of node or, once it is deleted, nothing.
 function sameStrayText(
   was: string,
   value: string,
   saved: NodeIndex,
   current: NodeIndex
 ): boolean {
-  const parts = valueParts(value);
+  const parts = strayValueParts(value);
   if (
     !parts ||
-    value.length > KEPT_VALUE_MAX_CHARS ||
-    JSON.stringify(valueParts(was)) !== JSON.stringify(parts)
+    JSON.stringify(strayValueParts(was)) !== JSON.stringify(parts)
   ) {
     return false;
   }
   return parts.every((part) => {
-    if (!("node" in part)) {
+    if (!("reads" in part)) {
       return true;
     }
-    // A node gone since the save leaves the reference reading nothing.
-    const now = current.kinds.get(part.node);
-    return now === undefined || now === saved.kinds.get(part.node);
+    const before = kindsRead(saved, part.reads);
+    const now = kindsRead(current, part.reads);
+    return before !== "" && (now === "" || now === before);
   });
 }
 

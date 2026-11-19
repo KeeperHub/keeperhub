@@ -128,6 +128,18 @@ const params = Promise.resolve({ workflowId: "wf-1" });
 
 const TEMPLATE = "{{@webhook:Webhook.flag}}";
 
+// The trigger TEMPLATE reads.
+const WEBHOOK = {
+  id: "webhook",
+  type: "trigger",
+  position: { x: 0, y: 0 },
+  data: {
+    label: "Webhook",
+    type: "trigger",
+    config: { triggerType: "Webhook" },
+  },
+};
+
 function httpNode(failOnError: unknown): Record<string, unknown> {
   return {
     id: "http-1",
@@ -173,7 +185,7 @@ function existingWorkflow(nodes: unknown[]): Record<string, unknown> {
 
 describe("PATCH /api/workflows/[workflowId] with a stray toggle value", () => {
   function storedWith(failOnError: unknown): void {
-    const stored = existingWorkflow([httpNode(failOnError)]);
+    const stored = existingWorkflow([WEBHOOK, httpNode(failOnError)]);
     mockWorkflowsFindFirst.mockResolvedValue(stored);
     mockUpdateReturning.mockResolvedValue([stored]);
   }
@@ -193,9 +205,12 @@ describe("PATCH /api/workflows/[workflowId] with a stray toggle value", () => {
 
   it("saves while the stored value is unchanged", async () => {
     storedWith(TEMPLATE);
-    const response = await PATCH(makeRequest({ nodes: [httpNode(TEMPLATE)] }), {
-      params,
-    });
+    const response = await PATCH(
+      makeRequest({ nodes: [WEBHOOK, httpNode(TEMPLATE)] }),
+      {
+        params,
+      }
+    );
     expect(response.status).toBe(200);
   });
 
@@ -205,20 +220,24 @@ describe("PATCH /api/workflows/[workflowId] with a stray toggle value", () => {
     };
     const { failOnError, ...config } = node.data.config;
     const stored = existingWorkflow([
+      WEBHOOK,
       { ...node, data: { ...node.data, config, failOnError } },
     ]);
     mockWorkflowsFindFirst.mockResolvedValue(stored);
     mockUpdateReturning.mockResolvedValue([stored]);
-    const response = await PATCH(makeRequest({ nodes: [httpNode(TEMPLATE)] }), {
-      params,
-    });
+    const response = await PATCH(
+      makeRequest({ nodes: [WEBHOOK, httpNode(TEMPLATE)] }),
+      {
+        params,
+      }
+    );
     expect(response.status).toBe(200);
   });
 
   it("refuses a changed value", async () => {
     storedWith(TEMPLATE);
     const response = await PATCH(
-      makeRequest({ nodes: [httpNode("{{@webhook:Webhook.other}}")] }),
+      makeRequest({ nodes: [WEBHOOK, httpNode("{{@webhook:Webhook.other}}")] }),
       { params }
     );
     expect(response.status).toBe(422);
@@ -228,9 +247,12 @@ describe("PATCH /api/workflows/[workflowId] with a stray toggle value", () => {
 
   it("refuses a new value", async () => {
     storedWith(true);
-    const response = await PATCH(makeRequest({ nodes: [httpNode(TEMPLATE)] }), {
-      params,
-    });
+    const response = await PATCH(
+      makeRequest({ nodes: [WEBHOOK, httpNode(TEMPLATE)] }),
+      {
+        params,
+      }
+    );
     expect(response.status).toBe(422);
   });
 });

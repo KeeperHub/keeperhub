@@ -29,7 +29,7 @@ const TEMPLATE = "{{@webhook:Webhook.flag}}";
 const HINT = "which is neither on nor off. When the step runs, it";
 const LOCKED_HINT = "Hidden with these settings; reset it here.";
 const SAVE_KEEPS =
-  "A save keeps it only while the saved workflow holds this exact value.";
+  "A save keeps it only while the saved workflow holds this same value and the steps it reads are unchanged.";
 const RESET = "Reset to default";
 // A network sponsorship does not cover, so Sponsor gas is hidden.
 const UNCOVERED_NETWORK = "999999999";
@@ -525,6 +525,11 @@ describe("the stray-value hint text", () => {
     );
     renderFields({ network: COVERED_NETWORK, sponsorGas: 2 });
     expect(container.textContent).toContain("Holds 2, which");
+    expect(container.textContent).toContain(SAVE_KEEPS);
+    renderFields({ network: COVERED_NETWORK, sponsorGas: "{{Webhook.flag}}" });
+    expect(container.textContent).toContain(
+      "A save refuses it, so reset it to save."
+    );
   });
 
   it("words a plain switch by its own rule", () => {

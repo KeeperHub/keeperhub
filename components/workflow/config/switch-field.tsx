@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { isToggleValue, resolveDefaultOnFlag, resolveSwitch } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
+import { canKeepStrayValue } from "@/lib/workflow/validation/stray-toggle-value";
 
 const SHOWN_VALUE_MAX_CHARS = 60;
 
@@ -42,10 +43,10 @@ function shownValue(value: unknown): string {
   return `"${text}"`;
 }
 
-// Whether a save can keep the value: only text or a number already saved.
+// Whether a save can keep the value (lib/workflow/validation/stray-toggle-value).
 function saveSentence(value: unknown): string {
-  return typeof value === "string" || typeof value === "number"
-    ? " A save keeps it only while the saved workflow holds this exact value."
+  return canKeepStrayValue(value)
+    ? " A save keeps it only while the saved workflow holds this same value and the steps it reads are unchanged."
     : " A save refuses it, so reset it to save.";
 }
 

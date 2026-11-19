@@ -21,6 +21,16 @@ import {
 } from "@/plugins/registry";
 
 const TEMPLATE = "{{@webhook:Webhook.flag}}";
+// The trigger TEMPLATE reads, for saves that keep a stored value.
+const WEBHOOK = {
+  id: "webhook",
+  type: "trigger",
+  data: {
+    label: "Webhook",
+    type: "trigger",
+    config: { triggerType: "Webhook" },
+  },
+};
 const ACCEPTED: unknown[] = [true, false, "true", "false", undefined, null, ""];
 const REFUSED: unknown[] = [
   TEMPLATE,
@@ -223,7 +233,10 @@ describe("a stray toggle value already saved", () => {
   const FILTER_CONFIG = { source: "[1]", operator: "===", value: "1" };
 
   function savedAs(config: Record<string, unknown>) {
-    return [actionNode(WRITE_CONTRACT, { ...WRITE_CONFIG, ...config })];
+    return [
+      WEBHOOK,
+      actionNode(WRITE_CONTRACT, { ...WRITE_CONFIG, ...config }),
+    ];
   }
 
   function save(
@@ -233,7 +246,7 @@ describe("a stray toggle value already saved", () => {
     base: Record<string, unknown> = WRITE_CONFIG
   ) {
     return validateWorkflowActionConfigs(
-      [actionNode(actionType, { ...base, ...config })],
+      [WEBHOOK, actionNode(actionType, { ...base, ...config })],
       { savedNodes }
     );
   }
@@ -318,14 +331,17 @@ describe("a stray toggle value already saved", () => {
   });
 
   it("is matched by node id, not by position", () => {
-    const other = { ...savedAs({ sponsorGas: TEMPLATE })[0], id: "node-2" };
-    expect(save({ sponsorGas: TEMPLATE }, [other]).issues).toMatchObject([
-      { field: "sponsorGas" },
-    ]);
+    const other = { ...savedAs({ sponsorGas: TEMPLATE })[1], id: "node-2" };
+    expect(
+      save({ sponsorGas: TEMPLATE }, [WEBHOOK, other]).issues
+    ).toMatchObject([{ field: "sponsorGas" }]);
   });
 
   it("covers HTTP Request's failOnError and a plain switch", () => {
-    const http = [actionNode("HTTP Request", { failOnError: TEMPLATE })];
+    const http = [
+      WEBHOOK,
+      actionNode("HTTP Request", { failOnError: TEMPLATE }),
+    ];
     expect(
       issuesAt("HTTP Request", "failOnError", TEMPLATE).length
     ).toBeGreaterThan(0);
@@ -336,6 +352,7 @@ describe("a stray toggle value already saved", () => {
     ).toEqual([]);
 
     const filter = [
+      WEBHOOK,
       actionNode("data/filter", { ...FILTER_CONFIG, ignoreCase: TEMPLATE }),
     ];
     const ignoreCase = (savedNodes: unknown[]) =>
@@ -599,7 +616,55 @@ describe("a kept value and the nodes it reads", () => {
       sponsorGas: TEMPLATE,
     });
     expect(
-      validateWorkflowActionConfigs([hidden], { savedNodes: [hidden] }).issues
+      validateWorkflowActionConfigs([WEBHOOK, hidden], {
+        savedNodes: [WEBHOOK, hidden],
+      }).issues
     ).toEqual([]);
+  });
+});
+
+describe("references a kept value reads", () => {
+  const step = (id: string, actionType: string) => ({
+    id,
+    type: "action",
+    data: { label: "S", type: "action", config: { actionType } },
+  });
+  const write = (sponsorGas: string) =>
+    actionNode(WRITE_CONTRACT, { ...WRITE_CONFIG, sponsorGas });
+  const issues = (nodes: unknown[], savedNodes: unknown[]) =>
+    validateWorkflowActionConfigs(
+      nodes as Parameters<typeof validateWorkflowActionConfigs>[0],
+      { savedNodes }
+    ).issues.filter((issue) => issue.field === "sponsorGas");
+
+  it("are never kept when they read nothing when saved", () => {
+    const value = "{{@gone:G.flag}}";
+    expect(issues([write(value)], [write(value)])).toHaveLength(1);
+  });
+
+  it("cover every node stored under the same output key", () => {
+    const value = "{{@a_b:S.flag}}";
+    const saved = [step("a-b", "HTTP Request"), step("a_b", "HTTP Request")];
+    const now = [step("a-b", "HTTP Request"), step("a_b", "Database Query")];
+    expect(
+      issues([...now, write(value)], [...saved, write(value)])
+    ).toHaveLength(1);
+    expect(issues([...saved, write(value)], [...saved, write(value)])).toEqual(
+      []
+    );
+  });
+
+  it("read the path after the dot trimmed, as the step does", () => {
+    const saved = [step("n1", "HTTP Request"), write("{{@n1:S.body.flag}}")];
+    expect(
+      issues([step("n1", "HTTP Request"), write("{{@n1:S. body.flag}}")], saved)
+    ).toEqual([]);
+  });
+
+  it("match a node whose id has spaces the way the step stores it", () => {
+    const value = "{{@_x:S.flag}}";
+    const saved = [step("_x", "HTTP Request"), write(value)];
+    const spaced = { ...step(" x", "trigger-ish"), type: "trigger" };
+    expect(issues([spaced, write(value)], saved)).toHaveLength(1);
   });
 });
