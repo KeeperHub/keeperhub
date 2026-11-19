@@ -16,6 +16,9 @@ import {
 } from "./query-events-core";
 
 export const MAX_EVENT_QUERIES = 20;
+export const MAX_LIST_ADDRESSES = 5000;
+// Addresses per eth_getLogs call, to stay inside provider request limits.
+const ADDRESSES_PER_LOG_QUERY = 100;
 
 export type TaggedEvent = DecodedEvent & {
   contractAddress: string;
@@ -30,7 +33,7 @@ export type ResolvedEventQuery = {
   topics: (string | null)[] | null;
 };
 
-type LogQueryPlan = LogQueryFilter & {
+export type LogQueryPlan = LogQueryFilter & {
   // The entries this call serves, keyed by logKey(address, topic0).
   queries: Map<string, ResolvedEventQuery>;
 };
@@ -206,6 +209,133 @@ export function parseEventQueries(raw: unknown): ParseEventQueriesResult {
     queries.push(result.query);
   }
   return { success: true, queries };
+}
+
+const ADDRESS_LIST_SHAPE_ERROR =
+  "Contract Addresses must be a list of addresses (a JSON array), not a single value or text. Check the node that produces it.";
+const ADDRESS_LIST_EMPTY_ERROR =
+  "Contract Addresses is empty. Check the node that produces it.";
+
+function readAddressList(
+  raw: unknown
+): { success: true; entries: unknown[] } | Failure {
+  let value = raw;
+  if (typeof raw === "string") {
+    if (raw.trim() === "") {
+      return noDestination(ADDRESS_LIST_EMPTY_ERROR);
+    }
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      return noDestination(ADDRESS_LIST_SHAPE_ERROR);
+    }
+  }
+  if (value === undefined || value === null) {
+    return noDestination(ADDRESS_LIST_EMPTY_ERROR);
+  }
+  if (!Array.isArray(value)) {
+    return noDestination(ADDRESS_LIST_SHAPE_ERROR);
+  }
+  if (value.length === 0) {
+    return noDestination(ADDRESS_LIST_EMPTY_ERROR);
+  }
+  if (value.length > MAX_LIST_ADDRESSES) {
+    return noDestination(
+      `Contract Addresses has ${value.length} entries, more than the ${MAX_LIST_ADDRESSES} one node can query. Split the list across several nodes.`
+    );
+  }
+  return { success: true, entries: value };
+}
+
+/** Valid checksummed addresses in list order, each once however often it is listed. */
+function normalizeAddressList(
+  entries: unknown[]
+): { success: true; addresses: string[] } | Failure {
+  const addresses: string[] = [];
+  const seen = new Set<string>();
+  for (const [index, entry] of entries.entries()) {
+    const text = typeof entry === "string" ? entry.trim() : "";
+    if (!ethers.isAddress(text)) {
+      return noDestination(
+        `Contract Addresses entry ${index + 1} is not a valid address: ${JSON.stringify(entry)}. Use a 0x address with 40 hex characters.`
+      );
+    }
+    const address = ethers.getAddress(text);
+    if (!seen.has(address)) {
+      seen.add(address);
+      addresses.push(address);
+    }
+  }
+  return { success: true, addresses };
+}
+
+type AddressListInput = {
+  contractAddresses?: unknown;
+  abi?: unknown;
+  eventName?: unknown;
+  eventArgs?: unknown;
+};
+
+/** One event on a run-time list of contracts, resolved into one query per distinct address. */
+export function parseAddressListQuery(
+  input: AddressListInput
+): ParseEventQueriesResult {
+  const list = readAddressList(input.contractAddresses);
+  if (!list.success) {
+    return list;
+  }
+  const normalized = normalizeAddressList(list.entries);
+  if (!normalized.success) {
+    return normalized;
+  }
+  if (typeof input.eventName !== "string" || input.eventName === "") {
+    return fail("Event Name is required.");
+  }
+  if (typeof input.abi !== "string" || input.abi.trim() === "") {
+    return fail("Contract ABI is required. Paste it or fetch it first.");
+  }
+  const resolved = resolveEventFragment(input.abi, input.eventName);
+  if (!resolved.success) {
+    return resolved;
+  }
+  const topicResult = buildEventArgTopics(
+    filterInput(input.eventArgs),
+    resolved.fragment
+  );
+  if (!topicResult.success) {
+    return fail(topicResult.error);
+  }
+  return {
+    success: true,
+    queries: normalized.addresses.map((contractAddress) => ({
+      contractAddress,
+      fragment: resolved.fragment,
+      iface: resolved.iface,
+      topics: topicResult.topics,
+    })),
+  };
+}
+
+/** Queries that share one event and filter, grouped into calls of bounded address count. */
+export function planAddressListQueries(
+  queries: ResolvedEventQuery[]
+): LogQueryPlan[] {
+  const plans: LogQueryPlan[] = [];
+  for (let i = 0; i < queries.length; i += ADDRESSES_PER_LOG_QUERY) {
+    const chunk = queries.slice(i, i + ADDRESSES_PER_LOG_QUERY);
+    const first = chunk[0];
+    plans.push({
+      addresses: chunk.map((query) => query.contractAddress),
+      topics: first.topics ?? [first.fragment.topicHash],
+      queries: new Map(
+        chunk.map((query) => [
+          logKey(query.contractAddress, query.fragment.topicHash),
+          query,
+        ])
+      ),
+    });
+  }
+  return plans;
 }
 
 /** Unfiltered entries share one call per set of events; a filtered one gets its own. */

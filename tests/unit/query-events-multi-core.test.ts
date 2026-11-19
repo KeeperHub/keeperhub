@@ -2,7 +2,10 @@ import { ethers } from "ethers";
 import { describe, expect, it } from "vitest";
 import {
   MAX_EVENT_QUERIES,
+  MAX_LIST_ADDRESSES,
+  parseAddressListQuery,
   parseEventQueries,
+  planAddressListQueries,
   planLogQueries,
   queryPlannedEvents,
   type ResolvedEventQuery,
@@ -406,3 +409,202 @@ describe("queryPlannedEvents", () => {
     expect(events.map((e) => e.blockNumber)).toEqual([151]);
   });
 });
+
+describe("parseAddressListQuery", () => {
+  const base = { abi: PAUSABLE_ABI, eventName: "Paused" };
+
+  function listed(
+    contractAddresses: unknown,
+    extra = {}
+  ): ResolvedEventQuery[] {
+    const result = parseAddressListQuery({
+      ...base,
+      contractAddresses,
+      ...extra,
+    });
+    if (!result.success) {
+      throw new Error(`expected the list to parse, got: ${result.error}`);
+    }
+    return result.queries;
+  }
+
+  function listError(contractAddresses: unknown): {
+    error: string;
+    destinationError?: true;
+  } {
+    const result = parseAddressListQuery({ ...base, contractAddresses });
+    if (result.success) {
+      throw new Error("expected the list to be rejected");
+    }
+    return result;
+  }
+
+  it("resolves one query per address, sharing the event", () => {
+    const queries = listed([VAULT, TOKEN]);
+
+    expect(queries.map((query) => query.contractAddress)).toEqual([
+      VAULT,
+      TOKEN,
+    ]);
+    for (const query of queries) {
+      expect(query.fragment.name).toBe("Paused");
+      expect(query.topics).toBeNull();
+    }
+  });
+
+  it("reads a string holding a JSON array, as a template resolves to", () => {
+    const queries = listed(JSON.stringify([VAULT, TOKEN]));
+
+    expect(queries).toHaveLength(2);
+  });
+
+  it("trims entries and checksums them", () => {
+    const [query] = listed([`  ${VAULT.toUpperCase().replace("0X", "0x")} `]);
+
+    expect(query.contractAddress).toBe(ethers.getAddress(VAULT));
+  });
+
+  it("queries a repeated address once, whatever its case", () => {
+    const queries = listed([
+      VAULT,
+      TOKEN,
+      VAULT.toUpperCase().replace("0X", "0x"),
+    ]);
+
+    expect(queries.map((query) => query.contractAddress)).toEqual([
+      ethers.getAddress(VAULT),
+      ethers.getAddress(TOKEN),
+    ]);
+  });
+
+  it("rejects a single value or text that is not an array", () => {
+    for (const raw of [VAULT, JSON.stringify(VAULT), '{"a":1}', 5, {}]) {
+      const failure = listError(raw);
+      expect(failure.error).toContain("must be a list of addresses");
+      expect(failure.destinationError).toBe(true);
+    }
+  });
+
+  it("rejects a blank, missing or empty list", () => {
+    for (const raw of ["", "   ", undefined, null, [], "[]"]) {
+      expect(listError(raw).error).toContain("Contract Addresses is empty");
+    }
+  });
+
+  it("names a bad entry counted from 1", () => {
+    const failure = listError([VAULT, "0x1234", TOKEN]);
+
+    expect(failure.error).toContain("entry 2");
+    expect(failure.error).toContain("0x1234");
+    expect(failure.error).toContain("Use a 0x address");
+    expect(failure.destinationError).toBe(true);
+  });
+
+  it("rejects a non-string entry and a bad mixed-case checksum", () => {
+    expect(listError([VAULT, 7]).error).toContain("entry 2");
+    const badChecksum = ethers
+      .getAddress(VAULT)
+      .replace(/[a-f]/, (c) => c.toUpperCase());
+    const flipped = ethers
+      .getAddress(TOKEN)
+      .replace(/[A-F]/, (c) => c.toLowerCase());
+    const failures = [badChecksum, flipped]
+      .filter((address) => !ethers.isAddress(address))
+      .map((address) => listError([address]).error);
+    for (const message of failures) {
+      expect(message).toContain("entry 1");
+    }
+  });
+
+  it("accepts the largest list and rejects one entry more", () => {
+    const address = (i: number): string =>
+      ethers.getAddress(`0x${i.toString(16).padStart(40, "0")}`);
+    const full = Array.from({ length: MAX_LIST_ADDRESSES }, (_, i) =>
+      address(i + 1)
+    );
+
+    expect(listed(full)).toHaveLength(MAX_LIST_ADDRESSES);
+    const failure = listError([...full, address(MAX_LIST_ADDRESSES + 1)]);
+    expect(failure.error).toContain("5001 entries");
+    expect(failure.error).toContain("Split the list");
+  });
+
+  it("fails on an event missing from the ABI or an unusable filter", () => {
+    const missing = parseAddressListQuery({
+      ...base,
+      contractAddresses: [VAULT],
+      eventName: "Nope",
+    });
+    expect(missing.success).toBe(false);
+    const unindexed = parseAddressListQuery({
+      ...base,
+      contractAddresses: [VAULT],
+      eventArgs: { account: ALICE },
+    });
+    expect(unindexed.success).toBe(false);
+    if (!unindexed.success) {
+      expect(unindexed.destinationError).toBeUndefined();
+    }
+  });
+
+  it("compiles the indexed filter once for every address", () => {
+    const queries = listed([VAULT, TOKEN], {
+      abi: TOKEN_ABI,
+      eventName: "Transfer",
+      eventArgs: { from: ALICE },
+    });
+
+    expect(queries[0].topics).not.toBeNull();
+    expect(queries[1].topics).toEqual(queries[0].topics);
+  });
+});
+
+describe("planAddressListQueries", () => {
+  it("serves a short list with one call over its addresses", () => {
+    const queries = resolvedList([VAULT, TOKEN]);
+    const plans = planAddressListQueries(queries);
+
+    expect(plans).toHaveLength(1);
+    expect(plans[0].addresses).toEqual([VAULT, TOKEN].map(ethers.getAddress));
+    expect(plans[0].topics).toEqual([topicOf(PAUSABLE, "Paused")]);
+  });
+
+  it("splits a long list into bounded calls, losing no address", () => {
+    const addresses = Array.from({ length: 250 }, (_, i) =>
+      ethers.getAddress(`0x${(i + 1).toString(16).padStart(40, "0")}`)
+    );
+    const plans = planAddressListQueries(resolvedList(addresses));
+
+    expect(plans.map((plan) => plan.addresses.length)).toEqual([100, 100, 50]);
+    expect(plans.flatMap((plan) => plan.addresses)).toEqual(addresses);
+  });
+
+  it("carries the compiled filter into every call", () => {
+    const plans = planAddressListQueries(
+      resolvedList([VAULT, TOKEN], {
+        abi: TOKEN_ABI,
+        eventName: "Transfer",
+        eventArgs: { from: ALICE },
+      })
+    );
+
+    expect(plans[0].topics[0]).toBe(topicOf(TOKEN_EVENTS, "Transfer"));
+    expect(plans[0].topics).toHaveLength(2);
+  });
+});
+
+function resolvedList(
+  contractAddresses: string[],
+  extra: Record<string, unknown> = {}
+): ResolvedEventQuery[] {
+  const result = parseAddressListQuery({
+    abi: PAUSABLE_ABI,
+    eventName: "Paused",
+    contractAddresses,
+    ...extra,
+  });
+  if (!result.success) {
+    throw new Error(`expected the list to parse, got: ${result.error}`);
+  }
+  return result.queries;
+}
