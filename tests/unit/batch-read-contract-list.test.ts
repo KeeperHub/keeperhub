@@ -1912,8 +1912,9 @@ describe("batch-read-contract - review fixes, round 3", () => {
       },
       { name: "x", type: "uint256" },
     ]);
+    // t may be given flat with x missing, so the count names both readings.
     expect(await failure({ ...argsList([[1, 2]], "flat"), abi })).toBe(
-      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got 1. Or give its 2 members flat in its place.'
+      'Argument Sets entry 1 has 2 values, but flat takes 2 (t, x) with each tuple as an object, or 3 with its members given flat. Make each entry an array like [{"a": 1, "b": 1}, 1].'
     );
   });
 });
@@ -2086,7 +2087,7 @@ describe("batch-read-contract - second review", () => {
       { name: "x", type: "uint256" },
     ]);
     expect(await failure({ ...argsList([["1", "2"]], "flat"), abi })).toBe(
-      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got "1". Or give its 2 members flat in its place.'
+      'Argument Sets entry 1 has 2 values, but flat takes 2 (t, x) with each tuple as an object, or 3 with its members given flat. Make each entry an array like [{"a": 1, "b": 1}, 1].'
     );
     mockStaticCall.mockClear();
     expect(
@@ -2262,15 +2263,14 @@ describe("batch-read-contract - second review, round 2", () => {
     );
   });
 
-  it("names a tuple slot only when one tuple holds a plain value", async () => {
+  it("names a tuple slot only when its members could not be given flat", async () => {
+    // v may be given flat with y missing: the count names both readings.
     expect(
       await failure({
         ...argsList([[{ a: 1, b: 2 }, "1", 3, 4]], "two"),
         abi: pairs,
       })
-    ).toBe(
-      'Argument Sets entry 1: v must be an object with its member names, like {"c": 1, "d": 1}, got "1". Or give its 2 members flat in its place.'
-    );
+    ).toMatch(/^Argument Sets entry 1 has 4 values, but two takes 4 /);
     // t flat and y missing: both tuple places hold plain values.
     expect(
       await failure({
@@ -2285,6 +2285,57 @@ describe("batch-read-contract - second review, round 2", () => {
         abi: pairs,
       })
     ).toMatch(/^Argument Sets entry 1 has 3 values, but two takes 4 /);
+  });
+
+  // The review's example: t given flat and y missing reads the same as t
+  // holding a plain value, so the message must not blame t.
+  it("does not blame a tuple given flat when a later value is missing", async () => {
+    const abi = JSON.stringify([
+      {
+        name: "f",
+        type: "function",
+        stateMutability: "view",
+        inputs: [
+          {
+            name: "t",
+            type: "tuple",
+            components: [
+              { name: "a", type: "uint256" },
+              { name: "b", type: "uint256" },
+            ],
+          },
+          { name: "x", type: "uint256" },
+          { name: "y", type: "uint256" },
+        ],
+        outputs: [{ name: "", type: "uint256" }],
+      },
+    ]);
+    expect(await failure({ ...argsList([[1, 2, 3]], "f"), abi })).toBe(
+      'Argument Sets entry 1 has 3 values, but f takes 3 (t, x, y) with each tuple as an object, or 4 with its members given flat. Make each entry an array like [{"a": 1, "b": 1}, 1, 1].'
+    );
+    // A tuple last, with no room for its members flat, is still named.
+    const last = JSON.stringify([
+      {
+        name: "g",
+        type: "function",
+        stateMutability: "view",
+        inputs: [
+          { name: "x", type: "uint256" },
+          {
+            name: "t",
+            type: "tuple",
+            components: [
+              { name: "a", type: "uint256" },
+              { name: "b", type: "uint256" },
+            ],
+          },
+        ],
+        outputs: [{ name: "", type: "uint256" }],
+      },
+    ]);
+    expect(await failure({ ...argsList([[1, 5]], "g"), abi: last })).toBe(
+      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got 5. Or give its 2 members flat in its place.'
+    );
   });
 
   it("names a bad integer by its path before encoding", async () => {

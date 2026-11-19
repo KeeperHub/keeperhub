@@ -839,8 +839,9 @@ function positionalTupleError(
   return;
 }
 
-// With as many values as inputs and one tuple holding a plain value, that
-// tuple is the mistake: name it, rather than report two counts.
+// With as many values as inputs and one tuple holding a plain value, name
+// that tuple only when its members could not be given flat from there; if
+// they could, a later value may be missing instead, so the count says both.
 function tupleSlotError(
   entry: unknown[],
   fn: ListFunction,
@@ -862,6 +863,9 @@ function tupleSlotError(
   const index = slots[0];
   const input = fn.inputs[index];
   const members = input.components?.length ?? 0;
+  if (index + members <= entry.length) {
+    return;
+  }
   return new Error(
     `${at}: ${input.name || `arg${index}`} must be an object with its member names, like ${echo(exampleValue(input.type, input.components), MAX_REASON_LENGTH)}, got ${showValue(entry[index])}. Or give its ${count(members)} members flat in its place.`
   );
