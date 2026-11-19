@@ -17,7 +17,9 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -51,9 +53,14 @@ import { toChecksumAddress } from "@/lib/address-utils";
 import { parseSchemaFields } from "@/lib/schema-fields";
 import { getCustomFieldRenderer } from "@/lib/workflow/editor/extension-registry";
 import {
+  groupedSelectLabel,
+  groupSelectOptions,
+} from "@/lib/workflow/editor/select-option-groups";
+import {
   type ActionConfigField,
   type ActionConfigFieldBase,
   isFieldGroup,
+  type SelectOption,
 } from "@/plugins/registry";
 import { SchemaBuilder } from "./schema-builder";
 
@@ -485,22 +492,40 @@ function DateTimeField({
   );
 }
 
+function renderSelectOption(option: SelectOption): React.ReactElement {
+  return (
+    <SelectItem
+      description={option.description}
+      key={option.value}
+      value={option.value}
+    >
+      {option.label}
+    </SelectItem>
+  );
+}
+
 function SelectField({ field, value, onChange, disabled }: FieldProps) {
   if (!field.options) {
     return null;
   }
+  const grouped = field.options.some((option) => option.group);
 
   return (
     <Select disabled={disabled} onValueChange={onChange} value={value}>
       <SelectTrigger className="w-full" id={field.key}>
-        <SelectValue placeholder={field.placeholder} />
+        <SelectValue placeholder={field.placeholder}>
+          {grouped ? groupedSelectLabel(field.options, value) : undefined}
+        </SelectValue>
       </SelectTrigger>
-      <SelectContent>
-        {field.options.map((option) => (
-          <SelectItem key={option.value} value={option.value}>
-            {option.label}
-          </SelectItem>
-        ))}
+      <SelectContent className={grouped ? "max-w-xs" : undefined}>
+        {grouped
+          ? groupSelectOptions(field.options).map((group) => (
+              <SelectGroup key={group.options[0]?.value ?? group.label}>
+                {group.label && <SelectLabel>{group.label}</SelectLabel>}
+                {group.options.map(renderSelectOption)}
+              </SelectGroup>
+            ))
+          : field.options.map(renderSelectOption)}
       </SelectContent>
     </Select>
   );

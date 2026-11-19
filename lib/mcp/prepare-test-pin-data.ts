@@ -158,7 +158,7 @@ function buildPropertyForField(
     return { type: "number", description };
   }
 
-  if (field.type === "protocol-bool") {
+  if (field.type === "protocol-bool" || field.type === "switch") {
     return { type: "boolean", description };
   }
 

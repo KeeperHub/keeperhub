@@ -144,4 +144,13 @@ describe("data/extract-fields", () => {
     expect(result.success).toBe(false);
     expect((result as ExtractFailure).error).toContain("Fields is required");
   });
+
+  it("does not read inherited properties such as constructor", async () => {
+    const result = (await run({
+      source: JSON.stringify({ a: 1 }),
+      paths: "ctor = constructor\nproto = __proto__\na",
+    })) as ExtractSuccess;
+    expect(result.fields).toEqual({ ctor: null, proto: null, a: 1 });
+    expect(result.missing).toEqual(["ctor", "proto"]);
+  });
 });

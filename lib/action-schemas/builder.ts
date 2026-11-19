@@ -128,6 +128,8 @@ function mapFieldType(field: ActionConfigFieldBase): string {
         ? `string (${options}, or a {{@nodeId:Label.field}} template)`
         : `string (${options})`;
     }
+    case "switch":
+      return "boolean (true or false, not a template)";
     case "fail-on-error-switch":
     case "gas-sponsorship-switch":
       return "boolean";

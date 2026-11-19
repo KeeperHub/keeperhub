@@ -100,6 +100,29 @@ describe("preparePinDataForWorkflow", () => {
     expect(result[0].required).toBe(true);
   });
 
+  it("types a generic switch field as boolean", () => {
+    mockRegistry([
+      {
+        pluginType: "data",
+        slug: "filter",
+        configFields: [
+          { key: "ignoreCase", label: "Ignore case", type: "switch" },
+        ],
+      },
+    ]);
+    const result = preparePinDataForWorkflow([
+      {
+        id: "n1",
+        type: "action",
+        data: { label: "Filter", config: { actionType: "data/filter" } },
+      },
+    ]);
+    expect(result[0].pinSchema.properties.ignoreCase).toEqual({
+      type: "boolean",
+      description: "Ignore case",
+    });
+  });
+
   it("unresolved action returns fallback schema with additionalProperties:true", () => {
     mockRegistry([]);
     const result = preparePinDataForWorkflow([

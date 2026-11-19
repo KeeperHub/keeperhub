@@ -2,7 +2,11 @@ import type { Edge, EdgeChange, Node, NodeChange } from "@xyflow/react";
 import { applyEdgeChanges, applyNodeChanges } from "@xyflow/react";
 import { atom } from "jotai";
 import { toast } from "sonner";
-import { api } from "@/lib/api-client";
+import {
+  api,
+  WORKFLOW_SAVE_ERROR_TOAST,
+  workflowSaveErrorMessage,
+} from "@/lib/api-client";
 import type { NodeExecutionStatus } from "@/lib/errors/execution-status";
 import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import { computeAutoLayout } from "@/lib/workflow/editor/auto-layout";
@@ -280,7 +284,13 @@ export const autosaveAtom = atom(
           "[Workflow] Autosave failed",
           error
         );
-        toast.error("Couldn't save workflow changes. Please try again.");
+        toast.error(
+          workflowSaveErrorMessage(
+            error,
+            "Couldn't save workflow changes. Please try again."
+          ),
+          WORKFLOW_SAVE_ERROR_TOAST
+        );
       } finally {
         await new Promise((resolve) => setTimeout(resolve, 800));
         set(isSavingAtom, false);
