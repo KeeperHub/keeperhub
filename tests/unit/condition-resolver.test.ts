@@ -131,8 +131,8 @@ describe("resolveConditionExpression", () => {
     expect(result).toBe("{{@n:L.a}} === 1");
   });
 
-  // handleModeSwitch clears conditionConfig when the author moves to expression mode, so a
-  // bare "true" with no group beside it was typed on purpose and still counts.
+  // Editing the text in expression mode clears conditionConfig, so a bare "true" with no
+  // group beside it was typed on purpose and still counts.
   it("should keep an authored 'true' that has no group beside it", () => {
     const config: Record<string, unknown> = {
       condition: "true",

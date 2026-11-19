@@ -276,7 +276,7 @@ export class RegexBudgetError extends Error {
     // Without steps, the charge was compiling patterns, not testing text.
     super(
       steps === undefined
-        ? `${where} of ${formatCount(limit)} while preparing a pattern (each costs ${formatCount(COMPILE_WORK_PER_CHAR)} per pattern character plus ${formatCount(COMPILE_WORK_PER_STEP)} per step; tests cost steps x characters). Use fewer or shorter patterns, or test fewer values`
+        ? `${where} of ${formatCount(limit)} while preparing its patterns. Preparing a pattern costs ${formatCount(COMPILE_WORK_PER_CHAR)} per character plus ${formatCount(COMPILE_WORK_PER_STEP)} per step; each test costs steps x characters tested. Use fewer or shorter patterns, or test fewer values`
         : `${where}: this pattern has ${formatCount(steps)} steps, and steps x characters tested may total ${formatCount(limit)}. Test fewer or shorter values, or use a simpler pattern`
     );
     this.name = "RegexBudgetError";

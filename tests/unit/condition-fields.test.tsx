@@ -25,7 +25,7 @@ vi.mock("@/components/workflow/condition-query-builder", () => ({
   ),
 }));
 
-import { ConditionFields } from "@/components/workflow/config/condition-fields";
+import { ConditionFields } from "@/components/workflow/config/action-config";
 import { visualConditionToExpression } from "@/lib/workflow/nodes/condition/builder-utils";
 
 const FIELD = "{{@n1:Webhook.value}}";
@@ -148,7 +148,47 @@ describe("Condition fields", () => {
     render({ actionType: "Condition", condition: `${FIELD} === 1\n|| x` });
     click("Visual");
     expect(container.textContent).toContain(
-      "This condition can't be shown as rules without changing it."
+      "This expression can't be shown as rules."
+    );
+    expect(container.textContent).toContain("Current expression");
+  });
+
+  // A typed-then-deleted character leaves the text as the rules wrote it.
+  it("brings the rules back when the text returns to what they write", () => {
+    const text = visualConditionToExpression(SAVED);
+    render({
+      actionType: "Condition",
+      condition: text,
+      conditionConfig: { group: SAVED },
+    });
+    click("Expression");
+    type(`${text} `);
+    type(text);
+    click("Visual");
+    expect(
+      container.querySelector('[data-testid="builder"]')?.textContent
+    ).toBe("2");
+    expect(updates.at(-2)).toEqual(["conditionConfig", { group: SAVED }]);
+  });
+
+  // Blank saved rules write "true"; the run uses the saved text instead.
+  it("does not show blank saved rules as the rules of the text that runs", () => {
+    render({
+      actionType: "Condition",
+      condition: `${FIELD} === 1\n|| x`,
+      conditionConfig: {
+        group: {
+          id: "g",
+          logic: "AND",
+          rules: [
+            { id: "r", leftOperand: "", operator: "===", rightOperand: "" },
+          ],
+        },
+      },
+    });
+    click("Visual");
+    expect(container.textContent).toContain(
+      "This expression can't be shown as rules."
     );
     expect(container.textContent).toContain("Current expression");
   });

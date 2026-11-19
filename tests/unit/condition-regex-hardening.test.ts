@@ -50,7 +50,7 @@ describe("regex hardening", () => {
         (_, i) => `matchesRegex(${FIELD}, "^${i}${"a".repeat(500)}")`
       ).join(" || ");
       expect(() => run(calls, "b")).toThrow(
-        "reached this node's matching limit of 5,000,000 while preparing a pattern (each costs 2,000 per pattern character plus 400 per step"
+        "reached this node's matching limit of 5,000,000 while preparing its patterns. Preparing a pattern costs 2,000 per character plus 400 per step"
       );
     });
 

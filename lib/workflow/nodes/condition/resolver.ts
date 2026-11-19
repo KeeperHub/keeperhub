@@ -17,9 +17,8 @@ const ALWAYS_TRUE = "true";
  * shape of every empty builder and every autosave taken mid-edit. The group stays on disk;
  * it just does not become a gate. The editor writes `condition` from the group it is
  * showing, so an always-true string beside a group is derived from it, not authored, and
- * cannot stand in for it either. handleModeSwitch clears `conditionConfig` when the author
- * deliberately moves to expression mode, so a bare "true" with no group is authored and is
- * still honoured.
+ * cannot stand in for it either. Editing the text in expression mode clears `conditionConfig`,
+ * so a bare "true" with no group is authored and is still honoured.
  */
 export function resolveConditionExpression(
   config: Record<string, unknown> | undefined
