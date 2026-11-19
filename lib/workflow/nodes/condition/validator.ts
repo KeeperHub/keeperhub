@@ -268,14 +268,8 @@ export function conditionUsesRegex(expression: string): boolean {
 }
 
 /** The typed patterns of a raw condition's matchesRegex calls, as a run reads them. */
+// For a Condition already known to use matchesRegex and fit its own limit.
 function conditionRegexPatterns(expression: string): string[] {
-  // Too long ones are refused before any pattern is read.
-  if (
-    !usesRegex(scanForRegex(expression)) ||
-    conditionLength(expression) > MAX_CONDITION_LENGTH
-  ) {
-    return [];
-  }
   try {
     return regexCallPatterns(runText(expression));
   } catch {
@@ -311,18 +305,29 @@ export type RegexIssue = {
 };
 
 type IndexedCondition = { index: number; condition: string };
+type RegexCondition = IndexedCondition & { length: number };
 
+// Each regex Condition with its length, scanned and measured once.
 function regexConditionsOf(
   conditions: readonly IndexedCondition[]
-): IndexedCondition[] {
-  return conditions.filter(({ condition }) =>
-    usesRegex(scanForRegex(condition))
-  );
+): RegexCondition[] {
+  const withRegex: RegexCondition[] = [];
+  for (const { index, condition } of conditions) {
+    if (usesRegex(scanForRegex(condition))) {
+      withRegex.push({ index, condition, length: conditionLength(condition) });
+    }
+  }
+  return withRegex;
+}
+
+// Over its own limit a Condition is never read; its own check reports it.
+function withinLength(withRegex: readonly RegexCondition[]): RegexCondition[] {
+  return withRegex.filter(({ length }) => length <= MAX_CONDITION_LENGTH);
 }
 
 /** Too many regex Conditions, or too much text in them, before any is parsed. */
 function workflowSizeIssue(
-  withRegex: readonly IndexedCondition[]
+  withRegex: readonly RegexCondition[]
 ): RegexIssue | undefined {
   if (withRegex.length > MAX_WORKFLOW_REGEX_CONDITIONS) {
     return {
@@ -333,12 +338,7 @@ function workflowSizeIssue(
   }
   let total = 0;
   let largest = { index: -1, length: -1 };
-  for (const { index, condition } of withRegex) {
-    const length = conditionLength(condition);
-    // Over its own limit it is never read, and its own check reports it.
-    if (length > MAX_CONDITION_LENGTH) {
-      continue;
-    }
+  for (const { index, length } of withinLength(withRegex)) {
     total += length;
     if (length > largest.length) {
       largest = { index, length };
@@ -385,7 +385,14 @@ export function prepareRunRegex(
   nodes: readonly NodeWithConfig[],
   budget: RegexBudget
 ): string | undefined {
-  const issue = workflowLimitIssue(workflowConditions(nodes), budget);
+  const withRegex = regexConditionsOf(workflowConditions(nodes));
+  // Refused before any step runs, rather than when the run reaches it.
+  const long = withRegex.find(({ length }) => length > MAX_CONDITION_LENGTH);
+  if (long) {
+    const name = labelText(nodes[long.index]?.data?.label);
+    return `${name ? `"${name}"` : "A Condition with no name"}: ${lengthMessage(long.length, false)}`;
+  }
+  const issue = workflowLimitIssue(withRegex, budget);
   if (!issue) {
     return;
   }
@@ -397,7 +404,7 @@ const LIMIT_HINTS: Record<Exclude<RegexIssue["kind"], "condition">, string> = {
     "Combine some tests into one Condition, or test a list with Filter Array",
   text: "Shorten them, or move tests without a regex into their own Condition",
   patterns:
-    "Shorten them, reuse one pattern, or test lists with Filter Array (about 2,000 pattern characters fit in all, fewer with {n} repeats)",
+    "Shorten them, reuse one pattern, or test lists with Filter Array (about 2,000 pattern characters fit in all, fewer with repeats like {40})",
 };
 
 /** A regex issue's message; for the workflow's limits, where most is and what to do. */
@@ -412,16 +419,21 @@ export function limitMessage(issue: RegexIssue, where: string): string {
 
 /** Names the Condition with the most, by its label as one safe line. */
 export function mostIn(label: unknown): string {
+  const text = labelText(label);
+  return text
+    ? `Most are in "${text}"`
+    : "Most are in a Condition with no name";
+}
+
+// A node label as one safe line of at most 60 characters, or "" for none.
+function labelText(label: unknown): string {
   const text =
     typeof label === "string"
       ? stripControlChars(label, { replacement: " " })
           .replaceAll('"', "'")
           .trim()
       : "";
-  if (!text) {
-    return "Most are in a Condition with no name";
-  }
-  return `Most are in "${text.length > 60 ? `${cutText(text, 57)}...` : text}"`;
+  return text.length > 60 ? `${cutText(text, 57)}...` : text;
 }
 
 /**
@@ -436,8 +448,7 @@ export function workflowRegexIssue(
 ): RegexIssue | undefined {
   const withRegex = regexConditionsOf(conditions);
   // One Condition's own length is the more useful message than the total's.
-  for (const { index, condition } of withRegex) {
-    const length = conditionLength(condition);
+  for (const { index, length } of withRegex) {
     if (length > MAX_CONDITION_LENGTH) {
       return {
         index,
@@ -513,12 +524,12 @@ function compileConditions(
 
 /** The workflow's caps on its regex Conditions together, cheapest first. */
 function workflowLimitIssue(
-  conditions: readonly IndexedCondition[],
+  withRegex: readonly RegexCondition[],
   budget: RegexBudget
 ): RegexIssue | undefined {
-  const withRegex = regexConditionsOf(conditions);
   return (
-    workflowSizeIssue(withRegex) ?? compileConditions(withRegex, budget, false)
+    workflowSizeIssue(withRegex) ??
+    compileConditions(withinLength(withRegex), budget, false)
   );
 }
 
@@ -527,7 +538,7 @@ export function workflowRegexLimit(
   conditions: readonly IndexedCondition[]
 ): RegexIssue | undefined {
   const budget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
-  return workflowLimitIssue(conditions, budget);
+  return workflowLimitIssue(regexConditionsOf(conditions), budget);
 }
 
 function regexObjectError(code: string): ValidationResult | undefined {

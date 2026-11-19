@@ -27,6 +27,7 @@ import {
   RegexBudget,
   RegexBudgetError,
   regexPatternError,
+  workflowCompileError,
 } from "@/lib/workflow/nodes/condition/regex-match";
 import {
   isSafeConditionExpression,
@@ -430,8 +431,13 @@ describe("regex hardening", () => {
         expect(saveIssues([huge])[0]?.message).toContain(
           "This condition is too long to run with matchesRegex"
         );
-        // It is never read, so it is not in the total; it fails when reached.
-        expect(runStart([huge])).toBeUndefined();
+        // Not in the total, but refused at run start, before any step runs.
+        expect(runStart([huge])).toContain(
+          '"huge": This condition is too long to run with matchesRegex'
+        );
+        expect(runStart([huge, textNode("small", call(0))])).toContain(
+          '"huge": This condition is too long'
+        );
       });
 
       it("says what to do, and names a label as one safe line", () => {
@@ -450,6 +456,16 @@ describe("regex hardening", () => {
         expect(started).toContain("reuse one pattern");
         expect(saveIssues(nodes)[0]?.message).toContain(
           "This Condition has the most. Shorten them"
+        );
+      });
+
+      // A lower bound rounds down, so "more than" stays true.
+      it("rounds a share it could not fully measure down", () => {
+        expect(workflowCompileError(19_980_000, true)).toContain(
+          "more than 399% of the limit"
+        );
+        expect(workflowCompileError(19_980_000)).toContain(
+          "about 400% of the limit"
         );
       });
 
