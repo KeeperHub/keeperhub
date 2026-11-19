@@ -2429,19 +2429,21 @@ describe("batch-read-contract - second review, round 2", () => {
     );
   });
 
-  it("pins the flat readings the count and the slot check rule out", async () => {
-    // u as an object after t's span: x missing, t flat lines up, so no t blame.
+  it("gives the count when a value is missing before a tuple given flat", async () => {
+    // x missing, t flat as (1, 2), then u's object: no t blame.
     const after = abiWith("f", [
       uint("x"),
       { name: "t", ...pair },
       { name: "u", ...pair },
     ]);
     expect(
-      await failure({ ...argsList([[1, 2, { c: 1, d: 2 }]], "f"), abi: after })
+      await failure({ ...argsList([[1, 2, { a: 1, b: 2 }]], "f"), abi: after })
     ).toBe(
       'Argument Sets entry 1 has 3 values for f (x, t, u), which takes 3 when t is an object, or 4 when t is given flat as its 2 members. Make each entry an array like [1, {"a": 1, "b": 1}, {"a": 1, "b": 1}].'
     );
-    // An object may land on a tuple member when t is read flat.
+  });
+
+  it("counts a tuple read flat when an object lands on its tuple member", async () => {
     const inner = abiWith("g", [
       {
         name: "t",
@@ -2459,14 +2461,44 @@ describe("batch-read-contract - second review, round 2", () => {
     ).toBe(
       'Argument Sets entry 1 has 5 values for g (t, x, y), which takes 3 when t is an object, or 4 when t is given flat as its 2 members. Make each entry an array like [{"a": 1, "b": {"c": 1}}, 1, 1].'
     );
-    // An object on a plain input rules out every flat reading.
+  });
+
+  it("offers no flat count when an object lands on a plain input", async () => {
     const blocked = abiWith("h", [{ name: "t", ...pair }, uint("x")]);
     expect(
       await failure({ ...argsList([[1, 2, { z: 1 }, 4]], "h"), abi: blocked })
     ).toBe(
       'Argument Sets entry 1 has 4 values, but h takes 2 (t, x). Make each entry an array like [{"a": 1, "b": 1}, 1].'
     );
-    // Two tuples starting with a tuple: the first one is named.
+    // The object need not be on the last input.
+    const middle = abiWith("g", [{ name: "t", ...pair }, uint("x"), uint("y")]);
+    expect
+      .soft(
+        await failure({
+          ...argsList([[1, 2, { z: 1 }, 4, 5]], "g"),
+          abi: middle,
+        })
+      )
+      .toBe(
+        'Argument Sets entry 1 has 5 values, but g takes 3 (t, x, y). Make each entry an array like [{"a": 1, "b": 1}, 1, 1].'
+      );
+  });
+
+  it("lists every tuple read flat when the values match the inputs", async () => {
+    const abi = abiWith("f", [
+      { name: "t", ...pair },
+      { name: "u", ...pair },
+      uint("x"),
+      uint("y"),
+    ]);
+    expect
+      .soft(await failure({ ...argsList([[1, 2, 3, 4]], "f"), abi }))
+      .toBe(
+        'Argument Sets entry 1 has 4 values for f (t, u, x, y), which takes 4 when t and u are objects, or 6 when they are given flat as their members. Make each entry an array like [{"a": 1, "b": 1}, {"a": 1, "b": 1}, 1, 1].'
+      );
+  });
+
+  it("names the first of two tuples starting with a tuple", async () => {
     const nested = {
       type: "tuple",
       components: [
@@ -2567,7 +2599,7 @@ describe("batch-read-contract - second review, round 2", () => {
     );
   });
 
-  it("names a tuple when the values match the inputs but no reading fits", async () => {
+  it("gives the count when a value may be missing after a tuple given flat", async () => {
     const abi = abiWith("mid", [
       { name: "who", type: "address" },
       { name: "p", ...pair },
@@ -2579,22 +2611,37 @@ describe("batch-read-contract - second review, round 2", () => {
         abi,
       })
     ).toBe(
-      'Argument Sets entry 1: p must be an object with its member names, like {"a": 1, "b": 1}, got 1. Or give its 2 members flat in its place.'
+      'Argument Sets entry 1 has 3 values for mid (who, p, k), which takes 3 when p is an object, or 4 when p is given flat as its 2 members. Make each entry an array like ["0x...", {"a": 1, "b": 1}, 1].'
     );
   });
 
-  it("names the tuple when every flat reading puts an object on a plain input", async () => {
-    // Read flat, t takes 5 and 2 and x gets u's object.
+  it("does not blame a tuple given flat when a later value is missing", async () => {
+    // t flat as (5, 2), x missing, u's object: the count, not a t blame.
     const later = abiWith("f", [
       { name: "t", ...pair },
       uint("x"),
       { name: "u", ...pair },
     ]);
-    expect(
-      await failure({ ...argsList([[5, 2, { a: 1, b: 2 }]], "f"), abi: later })
-    ).toBe(
-      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got 5. Or give its 2 members flat in its place.'
-    );
+    expect
+      .soft(
+        await failure({
+          ...argsList([[5, 2, { a: 1, b: 2 }]], "f"),
+          abi: later,
+        })
+      )
+      .toBe(
+        'Argument Sets entry 1 has 3 values for f (t, x, u), which takes 3 when t is an object, or 4 when t is given flat as its 2 members. Make each entry an array like [{"a": 1, "b": 1}, 1, {"a": 1, "b": 1}].'
+      );
+    // An object after t's span on a plain input gets the count too.
+    const plain = abiWith("g", [{ name: "t", ...pair }, uint("x"), uint("y")]);
+    expect
+      .soft(await failure({ ...argsList([[1, 2, { a: 1 }]], "g"), abi: plain }))
+      .toBe(
+        'Argument Sets entry 1 has 3 values for g (t, x, y), which takes 3 when t is an object, or 4 when t is given flat as its 2 members. Make each entry an array like [{"a": 1, "b": 1}, 1, 1].'
+      );
+  });
+
+  it("names the tuple when reading it flat puts an object on its member", async () => {
     // o's object would land on t.b if t were read flat.
     const before = abiWith("g", [{ name: "t", ...pair }, nestedO, uint("x")]);
     expect(

@@ -951,20 +951,14 @@ function tupleSlotError(
   const input = fn.inputs[index];
   const components = input.components ?? [];
   const members = components.length;
-  // Read flat from start, only a tuple member can take an object, and the
-  // values after it go to the inputs after it.
+  // Read flat from start, only a tuple member can take an object. Values after
+  // it are not checked: a value missing there shifts them.
   const fits = (start: number): boolean =>
     start >= 0 &&
     start + members <= entry.length &&
     components.every(
       (member, k) => member.type === "tuple" || !isPlainObject(entry[start + k])
-    ) &&
-    entry
-      .slice(start + members)
-      .every(
-        (value, k) =>
-          fn.inputs[index + 1 + k]?.type === "tuple" || !isPlainObject(value)
-      );
+    );
   const flat = canGoFlat(input);
   if (flat && components.some((_, k) => fits(index - k))) {
     return;
