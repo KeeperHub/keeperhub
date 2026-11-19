@@ -44,7 +44,6 @@ import {
   REGEX_SOURCE_ERROR,
   REGEX_UNDEFINED_ERROR,
   RegexBudget,
-  regexCompileWorkError,
   regexMatches,
 } from "./regex-match";
 import { scanString } from "./string-literal";
@@ -1130,31 +1129,17 @@ function mentionsIdentifier(node: AstNode): boolean {
   );
 }
 
-function regexCallNodes(node: AstNode, found: CallNode[] = []): CallNode[] {
-  if (
+function countRegexCalls(node: AstNode): number {
+  const own =
     node.type === "CallExpression" &&
     node.callee.type === "Identifier" &&
     node.callee.name === REGEX_FUNCTION
-  ) {
-    found.push(node);
-  }
-  for (const child of childNodes(node)) {
-    regexCallNodes(child, found);
-  }
-  return found;
-}
-
-// The typed patterns; a call without one fails on its own when it runs.
-function typedPatterns(calls: CallNode[]): string[] {
-  const patterns: string[] = [];
-  for (const call of calls) {
-    try {
-      patterns.push(regexPattern(call));
-    } catch {
-      // Reported by the call itself.
-    }
-  }
-  return patterns;
+      ? 1
+      : 0;
+  return childNodes(node).reduce(
+    (total, child) => total + countRegexCalls(child),
+    own
+  );
 }
 
 type CompiledCondition = (
@@ -1174,15 +1159,11 @@ export function compileSafeCondition(expression: string): CompiledCondition {
       `Condition parse error: ${error instanceof Error ? error.message : String(error)}`
     );
   }
-  const regexCalls = regexCallNodes(ast);
-  if (regexCalls.length > MAX_REGEX_CALLS) {
+  const regexCalls = countRegexCalls(ast);
+  if (regexCalls > MAX_REGEX_CALLS) {
     throw new Error(REGEX_CALLS_ERROR);
   }
-  const compileWork = regexCompileWorkError(typedPatterns(regexCalls));
-  if (compileWork) {
-    throw new Error(compileWork);
-  }
-  if (regexCalls.length === 0) {
+  if (regexCalls === 0) {
     return (context: Record<string, unknown>): unknown =>
       evalNode(ast, context);
   }

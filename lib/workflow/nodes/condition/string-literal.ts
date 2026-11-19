@@ -128,3 +128,19 @@ export function maskStringLiterals(expression: string): string {
   }
   return out;
 }
+
+/** The value of text that is exactly one quoted literal read back unchanged. */
+export function exactStringLiteral(raw: string): string | undefined {
+  const s = raw.trim();
+  if (!(s.startsWith('"') || s.startsWith("'"))) {
+    return;
+  }
+  try {
+    const scanned = scanString(s, 0);
+    return scanned.next === s.length && !scanned.lossy
+      ? scanned.value
+      : undefined;
+  } catch {
+    return;
+  }
+}

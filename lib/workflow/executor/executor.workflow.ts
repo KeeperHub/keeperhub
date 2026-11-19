@@ -112,6 +112,8 @@ import {
 import {
   preValidateConditionExpression,
   validateConditionExpression,
+  workflowConditions,
+  workflowRegexError,
 } from "@/lib/workflow/nodes/condition/validator";
 import {
   FOR_EACH_BODY_FAILURE_MARKER,
@@ -4299,6 +4301,15 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           "Looping back into or out of a For Each body is not supported. Move the " +
           "connection outside the For Each, or use the For Each iteration itself to repeat the work."
       );
+    }
+
+    // Every Condition's regex patterns, compiled once into this pass's budget.
+    const regexCompileError = workflowRegexError(
+      workflowConditions(nodes).map(({ condition }) => condition),
+      regexRunBudget
+    );
+    if (regexCompileError) {
+      throw new Error(regexCompileError);
     }
 
     const triggerType = detectTriggerType(nodes);

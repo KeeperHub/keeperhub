@@ -18,12 +18,12 @@ export const MAX_FILTER_REGEX_WORK = 25_000_000;
 // included: about 1 s. The body replays on resume, so keep each pass small.
 export const MAX_RUN_REGEX_WORK = 10_000_000;
 // A compile is charged by length and steps, once per run, to the run's budget,
-// so whether a condition fits depends on neither the cache nor earlier nodes.
+// whether or not the pattern is cached.
 const COMPILE_WORK_PER_CHAR = 2000;
 const COMPILE_WORK_PER_STEP = 400;
-// One Condition's compiles: a fresh run keeps a full Condition's matching budget.
-export const MAX_CONDITION_COMPILE_WORK =
-  MAX_RUN_REGEX_WORK - MAX_CONDITION_REGEX_WORK;
+// All of a workflow's Condition patterns, compiled at the start of each run,
+// so the run keeps at least one Condition's full matching budget.
+const MAX_WORKFLOW_COMPILE_WORK = MAX_RUN_REGEX_WORK - MAX_CONDITION_REGEX_WORK;
 
 export const REGEX_ARITY_ERROR =
   'matchesRegex takes two values: the text and a quoted pattern, e.g. matchesRegex({{@node:Label.field}}, "^0x"). To ignore case, start the pattern with (?i)';
@@ -267,36 +267,34 @@ export function regexPatternError(
   }
 }
 
-/**
- * What compiling these patterns charges a run, each distinct one once, as
- * `compileRegex` charges it. Refused patterns are skipped: their own check
- * reports them.
- */
-export function regexCompileWork(patterns: Iterable<string>): number {
-  let total = 0;
-  for (const pattern of new Set(patterns)) {
-    let regex: CompiledRegex;
-    try {
-      regex = compileRegex(pattern);
-    } catch {
-      continue;
-    }
-    total +=
-      pattern.length * COMPILE_WORK_PER_CHAR +
-      regex.programSize() * COMPILE_WORK_PER_STEP;
-  }
-  return total;
-}
+export const REGEX_WORKFLOW_COMPILE_ERROR = `The regex patterns in this workflow's Conditions are too long to use together: ${formatCount(MAX_WORKFLOW_COMPILE_WORK)} to prepare, roughly 2,000 pattern characters in all (less with {n} repeats). Shorten or remove some; a pattern used in several places counts once`;
 
-/** Refuses a Condition whose patterns alone would use up a run's budget. */
-export function regexCompileWorkError(
-  patterns: Iterable<string>
+/**
+ * Compiles a workflow's Condition patterns into a fresh run budget, each
+ * distinct one once, and refuses them past the workflow cap. A refused pattern
+ * is reported only with `reportRefused`; otherwise its own check reports it.
+ */
+export function prepareRegexPatterns(
+  patterns: Iterable<string>,
+  budget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" }),
+  reportRefused = false
 ): string | undefined {
-  const work = regexCompileWork(patterns);
-  if (work <= MAX_CONDITION_COMPILE_WORK) {
-    return;
+  for (const pattern of patterns) {
+    try {
+      compileRegex(pattern, false, budget);
+    } catch (error) {
+      if (error instanceof RegexBudgetError) {
+        return REGEX_WORKFLOW_COMPILE_ERROR;
+      }
+      if (reportRefused) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    }
+    if (budget.used() > MAX_WORKFLOW_COMPILE_WORK) {
+      return REGEX_WORKFLOW_COMPILE_ERROR;
+    }
   }
-  return `These regex patterns are too large to prepare in one run: they cost ${formatCount(work)}; the limit is ${formatCount(MAX_CONDITION_COMPILE_WORK)} per Condition. Each pattern costs ${formatCount(COMPILE_WORK_PER_CHAR)} per character plus ${formatCount(COMPILE_WORK_PER_STEP)} per step of the compiled pattern, and a repeated pattern counts once. Use fewer or shorter patterns, or split the tests across two Condition nodes`;
+  return;
 }
 
 type RegexBudgetScope = "node" | "run";
@@ -350,6 +348,12 @@ export class RegexBudget {
 
   chargeCompile(units: number): void {
     this.root().spend(units);
+  }
+
+  /** What the run (the root budget) has spent so far. */
+  used(): number {
+    const root = this.root();
+    return root.limit - root.remaining;
   }
 
   private root(): RegexBudget {

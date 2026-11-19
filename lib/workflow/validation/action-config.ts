@@ -15,6 +15,10 @@ import {
 } from "@/lib/web3/solidity-values";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST } from "@/lib/workflow/executor/system-action-types";
+import {
+  workflowConditions,
+  workflowRegexIssue,
+} from "@/lib/workflow/nodes/condition/validator";
 import { valueContainsTemplate } from "@/lib/workflow/template-ref";
 import {
   type ActionConfigField,
@@ -948,6 +952,24 @@ export function validateWorkflowActionConfigs(
         message: crossFieldIssue.message,
       });
     }
+  }
+
+  // Regex Conditions that would fail every run, the workflow's patterns together.
+  const regexIssue = workflowRegexIssue(workflowConditions(nodes));
+  if (regexIssue) {
+    const identity = nodeIdentity(
+      nodes[regexIssue.index],
+      `nodes[${regexIssue.index}]`
+    );
+    issues.push({
+      code: "INVALID_FIELD_VALUE",
+      path: `nodes[${regexIssue.index}].data.config.condition`,
+      actionType: "Condition",
+      field: "condition",
+      nodeId: identity.nodeId,
+      nodeLabel: identity.nodeLabel,
+      message: regexIssue.message,
+    });
   }
 
   return { valid: issues.length === 0, issues };

@@ -9,7 +9,7 @@ import { visualConditionToExpression } from "./expression";
 import { isRegexOperator, OPERATOR_METADATA } from "./operator-metadata";
 import { maskedStructure, regexCallsIn } from "./regex-calls";
 import { MAX_REGEX_CALLS } from "./regex-match";
-import { scanString } from "./string-literal";
+import { exactStringLiteral } from "./string-literal";
 
 export function isUnaryOperator(operator: ConditionOperator): boolean {
   return OPERATOR_METADATA[operator].unary;
@@ -110,18 +110,7 @@ function unwrapOperand(raw: string): string {
 // A regex pattern only reopens as a rule when it is one complete literal that
 // decodes exactly; anything else stays a typed expression.
 function unwrapRegexOperand(raw: string): string | undefined {
-  const s = raw.trim();
-  if (!s.startsWith('"')) {
-    return;
-  }
-  try {
-    const scanned = scanString(s, 0);
-    return scanned.next === s.length && !scanned.lossy
-      ? scanned.value
-      : undefined;
-  } catch {
-    return;
-  }
+  return raw.trim().startsWith('"') ? exactStringLiteral(raw) : undefined;
 }
 
 // The whole expression is one matchesRegex(left, "pattern") call.

@@ -46,8 +46,11 @@ import {
 } from "@/lib/workflow/nodes/condition/builder-utils";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
 import {
+  conditionRegexPatterns,
   validateConditionExpressionUI,
   visualConditionLimitError,
+  workflowConditions,
+  workflowRegexError,
 } from "@/lib/workflow/nodes/condition/validator";
 import { stateValueToEditorText } from "@/lib/workflow/nodes/workflow-state/utils";
 import { useFeatures } from "@/hooks/use-features";
@@ -433,6 +436,20 @@ export function ConditionFields({
   // Text with no rules that write it: the builder starts empty.
   const shownAsRules = shownGroup !== undefined;
 
+  // Every Condition's text as one key, so dragging nodes doesn't recheck.
+  const nodes = useAtomValue(nodesAtom);
+  const conditionsKey = JSON.stringify(
+    workflowConditions(nodes).map(({ condition }) => condition)
+  );
+  // All the workflow's patterns together, shown on each Condition that has one.
+  const workflowLimitError = useMemo(
+    () =>
+      conditionRegexPatterns(conditionValue).length > 0
+        ? workflowRegexError(JSON.parse(conditionsKey) as string[])
+        : undefined,
+    [conditionsKey, conditionValue]
+  );
+
   // Limits the rules can reach that would fail every run.
   const visualLimitError = useMemo(
     () =>
@@ -496,8 +513,10 @@ export function ConditionFields({
           />
           {/* Always mounted, so screen readers announce it once. */}
           <div aria-live="polite">
-            {visualLimitError && (
-              <p className="text-destructive text-xs">{visualLimitError}</p>
+            {(visualLimitError ?? workflowLimitError) && (
+              <p className="text-destructive text-xs">
+                {visualLimitError ?? workflowLimitError}
+              </p>
             )}
           </div>
           {conditionValue.trim() && (
@@ -524,6 +543,9 @@ export function ConditionFields({
           <div aria-live="polite">
             {validationError && (
               <p className="text-xs text-yellow-600">{validationError}</p>
+            )}
+            {!validationError && workflowLimitError && (
+              <p className="text-destructive text-xs">{workflowLimitError}</p>
             )}
           </div>
           <p className="text-muted-foreground text-xs">

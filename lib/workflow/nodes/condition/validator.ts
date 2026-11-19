@@ -40,6 +40,8 @@ import {
 } from "./regex-calls";
 import {
   MAX_REGEX_CALLS,
+  MAX_RUN_REGEX_WORK,
+  prepareRegexPatterns,
   REGEX_ARITY_ERROR,
   REGEX_BACKSLASH_ERROR,
   REGEX_CALLS_ERROR,
@@ -48,11 +50,15 @@ import {
   REGEX_NEGATED_ERROR,
   REGEX_SOURCE_ERROR,
   REGEX_TEMPLATE_ERROR,
-  regexCompileWorkError,
+  RegexBudget,
   regexPatternError,
 } from "./regex-match";
 import { BLOCKED_PROPS } from "./safe-eval";
-import { maskStringLiterals, scanString } from "./string-literal";
+import {
+  exactStringLiteral,
+  maskStringLiterals,
+  scanString,
+} from "./string-literal";
 
 // A comma not inside call parentheses. Checked by hasStrayComma in one pass:
 // as a regex, the lookahead rescanned to the end for every comma.
@@ -176,13 +182,9 @@ export function visualConditionLimitError(
     return;
   }
   const length = conditionLength(expression);
-  if (length > MAX_CONDITION_LENGTH) {
-    return lengthMessage(length, true);
-  }
-  const { masked } = scanForRegex(expression);
-  return masked === undefined
-    ? undefined
-    : compileWorkError(expression, regexCallsIn(masked));
+  return length > MAX_CONDITION_LENGTH
+    ? lengthMessage(length, true)
+    : undefined;
 }
 
 // The scanner's own reason: an unclosed quote, or an escape it cannot read.
@@ -239,40 +241,122 @@ function rawRegexError(
       return { valid: false, error: REGEX_LITERAL_ERROR };
     }
   }
-  const compileWork = compileWorkError(expression, calls);
-  return compileWork ? { valid: false, error: compileWork } : undefined;
+  return;
 }
 
-// What the calls' typed patterns cost to prepare, refused over the cap.
-function compileWorkError(
-  expression: string,
-  calls: RegexCall[]
-): string | undefined {
+/** The typed patterns of a raw condition's matchesRegex calls, as a run reads them. */
+export function conditionRegexPatterns(expression: string): string[] {
+  const { masked } = scanForRegex(expression);
   const patterns: string[] = [];
-  for (const call of calls) {
-    const pattern = call.args[1];
-    const typed = pattern && quotedPattern(expression.slice(...pattern).trim());
-    if (typed !== undefined) {
-      patterns.push(typed);
+  for (const call of masked === undefined ? [] : regexCallsIn(masked)) {
+    const pattern =
+      call.args.length === 2
+        ? exactStringLiteral(expression.slice(...call.args[1]))
+        : undefined;
+    if (pattern !== undefined) {
+      patterns.push(pattern);
     }
   }
-  return regexCompileWorkError(patterns);
+  return patterns;
 }
 
-// A pattern typed as one exact quoted string, as the run reads it; anything
-// else is refused by the other checks.
-function quotedPattern(text: string): string | undefined {
-  if (!(text.startsWith('"') || text.startsWith("'"))) {
+type NodeWithConfig = {
+  type?: unknown;
+  data?: { type?: unknown; config?: Record<string, unknown> };
+};
+
+/** Each Condition node's condition text, with the node's index. */
+export function workflowConditions(
+  nodes: readonly NodeWithConfig[]
+): { index: number; condition: string }[] {
+  const conditions: { index: number; condition: string }[] = [];
+  for (const [index, node] of nodes.entries()) {
+    const config = node.data?.config;
+    const isAction = node.type === "action" || node.data?.type === "action";
+    if (
+      isAction &&
+      config?.actionType === "Condition" &&
+      typeof config.condition === "string"
+    ) {
+      conditions.push({ index, condition: config.condition });
+    }
+  }
+  return conditions;
+}
+
+/**
+ * Compiles every Condition's patterns into `budget` (a run's, or a fresh one)
+ * and refuses them past the workflow cap.
+ */
+export function workflowRegexError(
+  conditions: readonly string[],
+  budget?: RegexBudget
+): string | undefined {
+  return prepareRegexPatterns(
+    conditions.flatMap(conditionRegexPatterns),
+    budget
+  );
+}
+
+// A matchesRegex call that would fail every run, read without compiling.
+function savedCallError(
+  expression: string,
+  call: RegexCall
+): string | undefined {
+  if (call.args.length !== 2) {
+    return REGEX_ARITY_ERROR;
+  }
+  const text = expression.slice(...call.args[1]).trim();
+  if (exactStringLiteral(text) !== undefined) {
     return;
   }
   try {
-    const scanned = scanString(text, 0);
-    return scanned.next === text.length && !scanned.lossy
-      ? scanned.value
-      : undefined;
+    return scanString(text, 0).lossy
+      ? REGEX_BACKSLASH_ERROR
+      : REGEX_LITERAL_ERROR;
   } catch {
-    return;
+    return REGEX_LITERAL_ERROR;
   }
+}
+
+/**
+ * The first problem that would fail every run of a workflow's regex
+ * Conditions, for saves. Conditions without matchesRegex are not checked, so
+ * no saved workflow stops saving. Compiles share one budget, so a save stays
+ * cheap however many patterns it has.
+ */
+export function workflowRegexIssue(
+  conditions: readonly { index: number; condition: string }[]
+): { index: number; message: string } | undefined {
+  const withRegex = conditions.filter(({ condition }) =>
+    mentionsRegexIn(scanForRegex(condition).structure)
+  );
+  for (const { index, condition } of withRegex) {
+    const pre = preValidateConditionExpression(condition);
+    if (!pre.valid) {
+      return { index, message: pre.error };
+    }
+    const { masked } = scanForRegex(condition);
+    if (masked === undefined) {
+      return { index, message: UNTERMINATED_STRING_ERROR };
+    }
+    for (const call of regexCallsIn(masked)) {
+      const message = savedCallError(condition, call);
+      if (message) {
+        return { index, message };
+      }
+    }
+  }
+  const budget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
+  for (const { index, condition } of withRegex) {
+    const problem = inExpressionTerms(
+      prepareRegexPatterns(conditionRegexPatterns(condition), budget, true)
+    );
+    if (problem) {
+      return { index, message: problem };
+    }
+  }
+  return;
 }
 
 function regexObjectError(code: string): ValidationResult | undefined {
@@ -1397,8 +1481,11 @@ function regexCallError(args: Token[][]): string | undefined {
   if (hasTemplateToken(scanned.value)) {
     return REGEX_TEMPLATE_ERROR;
   }
-  // Advice given in pattern terms needs its backslashes doubled when typed here.
-  const problem = regexPatternError(scanned.value);
+  return inExpressionTerms(regexPatternError(scanned.value));
+}
+
+// Advice given in pattern terms needs its backslashes doubled when typed here.
+function inExpressionTerms(problem: string | undefined): string | undefined {
   return problem &&
     BACKSLASH_ADVICE_RE.test(problem) &&
     !problem.includes("Expression mode")

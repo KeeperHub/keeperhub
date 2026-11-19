@@ -74,8 +74,11 @@ vi.mock("@/components/workflow/condition-query-builder", () => ({
   ),
 }));
 
+import { getDefaultStore } from "jotai";
 import { ConditionFields } from "@/components/workflow/config/action-config";
 import { visualConditionToExpression } from "@/lib/workflow/nodes/condition/builder-utils";
+import { REGEX_WORKFLOW_COMPILE_ERROR } from "@/lib/workflow/nodes/condition/regex-match";
+import { nodesAtom, type WorkflowNode } from "@/lib/workflow/store";
 
 const FIELD = "{{@n1:Webhook.value}}";
 
@@ -158,6 +161,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  getDefaultStore().set(nodesAtom, []);
 });
 
 describe("Condition fields", () => {
@@ -319,5 +323,36 @@ describe("Condition fields", () => {
         .querySelector('[data-testid="builder"]')
         ?.getAttribute("data-group-id")
     ).not.toBe("g");
+  });
+
+  // The cap is on the whole workflow, so each regex Condition shows it.
+  it("shows when the workflow's regex patterns together are too long", () => {
+    const calls = (from: number) =>
+      Array.from(
+        { length: 8 },
+        (_, i) => `matchesRegex(${FIELD}, "^${from + i}${"a".repeat(150)}")`
+      ).join(" || ");
+    const conditionNode = (id: string, condition: string) =>
+      ({
+        id,
+        type: "action",
+        position: { x: 0, y: 0 },
+        data: {
+          type: "action",
+          label: id,
+          config: { actionType: "Condition", condition },
+        },
+      }) as WorkflowNode;
+    const first = { actionType: "Condition", condition: calls(0) };
+    getDefaultStore().set(nodesAtom, [conditionNode("c1", calls(0))]);
+    render(first);
+    expect(container.textContent).not.toContain(REGEX_WORKFLOW_COMPILE_ERROR);
+    act(() =>
+      getDefaultStore().set(nodesAtom, [
+        conditionNode("c1", calls(0)),
+        conditionNode("c2", calls(10)),
+      ])
+    );
+    expect(container.textContent).toContain(REGEX_WORKFLOW_COMPILE_ERROR);
   });
 });
