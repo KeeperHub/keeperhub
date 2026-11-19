@@ -56,7 +56,7 @@ import {
   regexPatternError,
   workflowCompileError,
 } from "./regex-match";
-import { resolveConditionExpression } from "./resolver";
+import { resolveCondition } from "./resolver";
 import {
   BLOCKED_PROPS,
   regexCallPatterns,
@@ -149,11 +149,18 @@ function conditionLength(expression: string): number {
   return replaceTemplateTokens(expression, () => `__v${index++}`).length;
 }
 
-function lengthMessage(length: number, rules: boolean): string {
-  const what = rules
-    ? "These rules are too long to run with a regex test"
-    : "This condition is too long to run with matchesRegex";
-  return `${what}: ${length.toLocaleString("en-US")} characters, each {{...}} reference counted as about 4; the limit is ${MAX_CONDITION_LENGTH.toLocaleString("en-US")}. Split ${rules ? "them" : "it"} across two Condition nodes`;
+// `subject` names the Condition when the message is read away from it.
+function lengthMessage(
+  length: number,
+  rules: boolean,
+  subject?: string
+): string {
+  const test = rules ? "a regex test" : "matchesRegex";
+  let what = subject ? `${subject} is` : "This condition is";
+  if (rules && !subject) {
+    what = "These rules are";
+  }
+  return `${what} too long to run with ${test}: ${length.toLocaleString("en-US")} characters, each {{...}} reference counted as about 4; the limit is ${MAX_CONDITION_LENGTH.toLocaleString("en-US")}. Split ${rules && !subject ? "them" : "it"} across two Condition nodes`;
 }
 
 // Applied only to conditions that use matchesRegex, so no saved condition
@@ -267,8 +274,10 @@ export function conditionUsesRegex(expression: string): boolean {
   return usesRegex(scanForRegex(expression));
 }
 
-/** The typed patterns of a raw condition's matchesRegex calls, as a run reads them. */
-// For a Condition already known to use matchesRegex and fit its own limit.
+/**
+ * The typed patterns of a condition's matchesRegex calls, as a run reads them;
+ * only for one known to use matchesRegex and to fit its own limit.
+ */
 function conditionRegexPatterns(expression: string): string[] {
   try {
     return regexCallPatterns(runText(expression));
@@ -304,7 +313,11 @@ export type RegexIssue = {
   unmeasured?: boolean;
 };
 
-type IndexedCondition = { index: number; condition: string };
+type IndexedCondition = {
+  index: number;
+  condition: string;
+  fromRules?: boolean;
+};
 type RegexCondition = IndexedCondition & { length: number };
 
 // Each regex Condition with its length, scanned and measured once.
@@ -312,12 +325,22 @@ function regexConditionsOf(
   conditions: readonly IndexedCondition[]
 ): RegexCondition[] {
   const withRegex: RegexCondition[] = [];
-  for (const { index, condition } of conditions) {
-    if (usesRegex(scanForRegex(condition))) {
-      withRegex.push({ index, condition, length: conditionLength(condition) });
+  for (const indexed of conditions) {
+    if (usesRegex(scanForRegex(indexed.condition))) {
+      withRegex.push({
+        ...indexed,
+        length: conditionLength(indexed.condition),
+      });
     }
   }
   return withRegex;
+}
+
+// The first Condition over its own length limit; save and run start refuse it.
+function tooLong(
+  withRegex: readonly RegexCondition[]
+): RegexCondition | undefined {
+  return withRegex.find(({ length }) => length > MAX_CONDITION_LENGTH);
 }
 
 // Over its own limit a Condition is never read; its own check reports it.
@@ -357,8 +380,8 @@ function workflowSizeIssue(
 /** What each enabled Condition node runs (its rules or its text), with its index. */
 export function workflowConditions(
   nodes: readonly NodeWithConfig[]
-): { index: number; condition: string }[] {
-  const conditions: { index: number; condition: string }[] = [];
+): IndexedCondition[] {
+  const conditions: IndexedCondition[] = [];
   for (const [index, node] of nodes.entries()) {
     const config = node.data?.config;
     const isAction = node.type === "action" || node.data?.type === "action";
@@ -369,9 +392,10 @@ export function workflowConditions(
     ) {
       continue;
     }
-    const condition = resolveConditionExpression(config);
-    if (typeof condition === "string") {
-      conditions.push({ index, condition });
+    const resolved = resolveCondition(config);
+    if (resolved) {
+      const { expression, fromRules } = resolved;
+      conditions.push({ index, condition: expression, fromRules });
     }
   }
   return conditions;
@@ -387,10 +411,11 @@ export function prepareRunRegex(
 ): string | undefined {
   const withRegex = regexConditionsOf(workflowConditions(nodes));
   // Refused before any step runs, rather than when the run reaches it.
-  const long = withRegex.find(({ length }) => length > MAX_CONDITION_LENGTH);
+  const long = tooLong(withRegex);
   if (long) {
     const name = labelText(nodes[long.index]?.data?.label);
-    return `${name ? `"${name}"` : "A Condition with no name"}: ${lengthMessage(long.length, false)}`;
+    const subject = name ? `The Condition "${name}"` : NO_NAME;
+    return lengthMessage(long.length, long.fromRules === true, subject);
   }
   const issue = workflowLimitIssue(withRegex, budget);
   if (!issue) {
@@ -425,6 +450,8 @@ export function mostIn(label: unknown): string {
     : "Most are in a Condition with no name";
 }
 
+const NO_NAME = "A Condition with no name";
+
 // A node label as one safe line of at most 60 characters, or "" for none.
 function labelText(label: unknown): string {
   const text =
@@ -448,14 +475,13 @@ export function workflowRegexIssue(
 ): RegexIssue | undefined {
   const withRegex = regexConditionsOf(conditions);
   // One Condition's own length is the more useful message than the total's.
-  for (const { index, length } of withRegex) {
-    if (length > MAX_CONDITION_LENGTH) {
-      return {
-        index,
-        message: lengthMessage(length, false),
-        kind: "condition",
-      };
-    }
+  const long = tooLong(withRegex);
+  if (long) {
+    return {
+      index: long.index,
+      message: lengthMessage(long.length, long.fromRules === true),
+      kind: "condition",
+    };
   }
   const size = workflowSizeIssue(withRegex);
   if (size) {

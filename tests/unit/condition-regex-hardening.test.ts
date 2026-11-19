@@ -433,10 +433,50 @@ describe("regex hardening", () => {
         );
         // Not in the total, but refused at run start, before any step runs.
         expect(runStart([huge])).toContain(
-          '"huge": This condition is too long to run with matchesRegex'
+          'The Condition "huge" is too long to run with matchesRegex'
         );
-        expect(runStart([huge, textNode("small", call(0))])).toContain(
-          '"huge": This condition is too long'
+        const small = textNode("small", call(0));
+        for (const nodes of [
+          [huge, small],
+          [small, huge],
+        ]) {
+          expect(runStart(nodes)).toContain('The Condition "huge" is too long');
+        }
+        const unnamed = { ...huge, data: { ...huge.data, label: "" } };
+        expect(runStart([unnamed])).toContain(
+          "A Condition with no name is too long"
+        );
+      });
+
+      // Rules are named as rules, wherever the message is read.
+      it("words a Condition built from rules as rules", () => {
+        const ruled = conditionNode("ruled", {
+          conditionConfig: {
+            group: {
+              id: "g",
+              logic: "OR",
+              rules: [
+                {
+                  id: "a",
+                  leftOperand: FIELD,
+                  operator: "matchesRegex",
+                  rightOperand: "^a",
+                },
+                {
+                  id: "b",
+                  leftOperand: FIELD,
+                  operator: "===",
+                  rightOperand: "x".repeat(12_000),
+                },
+              ],
+            },
+          },
+        });
+        expect(saveIssues([ruled])[0]?.message).toContain(
+          "These rules are too long to run with a regex test"
+        );
+        expect(runStart([ruled])).toContain(
+          'The Condition "ruled" is too long to run with a regex test'
         );
       });
 

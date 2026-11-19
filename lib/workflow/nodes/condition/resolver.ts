@@ -23,6 +23,13 @@ const ALWAYS_TRUE = "true";
 export function resolveConditionExpression(
   config: Record<string, unknown> | undefined
 ): string | undefined {
+  return resolveCondition(config)?.expression;
+}
+
+/** The expression that runs, and whether it came from the saved rules. */
+export function resolveCondition(
+  config: Record<string, unknown> | undefined
+): { expression: string; fromRules: boolean } | undefined {
   if (!config) {
     return undefined;
   }
@@ -38,10 +45,14 @@ export function resolveConditionExpression(
   if (conditionConfig?.group) {
     const expression = visualConditionToExpression(conditionConfig.group);
     if (expression !== ALWAYS_TRUE) {
-      return expression;
+      return { expression, fromRules: true };
     }
-    return authored?.trim() === ALWAYS_TRUE ? undefined : authored;
+    if (authored?.trim() === ALWAYS_TRUE) {
+      return undefined;
+    }
   }
 
-  return authored;
+  return authored === undefined
+    ? undefined
+    : { expression: authored, fromRules: false };
 }
