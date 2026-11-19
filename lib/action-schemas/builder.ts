@@ -23,6 +23,7 @@ import {
   getAllIntegrations,
   type IntegrationPlugin,
   isDisplayOnlyField,
+  isToggleField,
   type PluginAction,
 } from "@/plugins/registry";
 
@@ -100,6 +101,12 @@ export type BuildActionSchemasOptions = {
 };
 
 function mapFieldType(field: ActionConfigFieldBase): string {
+  if (isToggleField(field.type)) {
+    // A plain switch refuses a template at save; the other toggles do not yet.
+    return field.type === "switch"
+      ? "boolean (true or false, not a template)"
+      : "boolean";
+  }
   switch (field.type) {
     case "number":
       return "number";
@@ -133,9 +140,6 @@ function mapFieldType(field: ActionConfigFieldBase): string {
         ? `string (${options}, or a {{@nodeId:Label.field}} template)`
         : `string (${options})`;
     }
-    case "fail-on-error-switch":
-    case "gas-sponsorship-switch":
-      return "boolean";
     case "template-input":
     case "template-textarea":
       return field.acceptsJsonArray
@@ -489,7 +493,7 @@ export async function buildActionSchemasResponse(
       "integrationId is required for actions that need credentials (discord, sendgrid, database)",
       "web3 read actions (check-balance, read-contract) don't require wallet integration",
       "web3 write actions (transfer-funds, write-contract) require wallet integration",
-      'web3/query-events queries one contract event by default, and eventQueries is only read when queryMode is "multiple". To watch several events or contracts in one node, set queryMode to "multiple" and pass eventQueries instead of the top-level contractAddress, abi, eventName and eventArgs. Each returned event then carries contractAddress and eventName, ordered by block then log index.',
+      'web3/query-events queries one contract event by default, and eventQueries is only read when queryMode is "multiple". To watch several events or contracts in one node, set queryMode to "multiple" and pass eventQueries instead of the top-level contractAddress, abi, eventName and eventArgs. Each returned event then carries contractAddress and eventName, ordered by block then log index. To watch one event on a list of contracts known only at run time, set queryMode to "address-list" and pass contractAddresses (a string holding a JSON array, or a {{@nodeId:Label.field}} template resolving to one; up to 5,000 addresses, each a valid address, repeats queried once) with one abi, one eventName and an optional eventArgs; contractAddress and eventQueries are not used, and abiFetchAddress is only where the editor fetches the ABI from. Returned events carry contractAddress and eventName the same way, and a missing, non-array or invalid contractAddresses fails the step even with failOnError false, while an empty array is softened like any query error.',
       'web3/batch-read-contract with inputMode "uniform" (Same function, multiple args; an absent inputMode is uniform too) reads its calls from callsFrom: "rows" (default) uses contractAddress and the argsList rows; "args-list" uses contractAddress and argsFromList, one call per entry, each entry the call\'s arguments in order or the bare value for a function with one plain argument; "address-list" calls abiFunction with the same functionArgs (every argument the function takes; only a string may be left blank) on every address in contractAddresses, and contractAddress is not used; abi is still required, and abiFetchAddress is only where the editor fetches it from and what workflow validation compares the ABI against. argsFromList is required only for "args-list" and contractAddresses only for "address-list". Arguments are read as in web3/read-contract: a tuple is an object keyed by its member names, or its members given flat (not a tuple whose first member is a tuple); an array of its members is refused. A list is a JSON array, a string holding one, or a {{@nodeId:Label.field}} template resolving to one. Only the fields of the chosen source are read. Results keep the list\'s order, up to 5,000 calls per run; an empty list or a bad entry fails the step before any call. Even with failOnError false, these fail the run: a missing network, a missing or invalid contractAddress, a contractAddresses that is blank, not an array or has a bad entry, and in inputMode "mixed" a call that is not an object or has no valid network or contractAddress. An empty contractAddresses array, a bad argsFromList entry and bad arguments are softened like other read errors. Tuples whose members have no names are not supported in the lists.',
       "web3/query-transactions queries historical transactions by function call using block explorer APIs. Use it when the contract does not emit events for the operations you need to monitor. Provide functionArgs as a JSON array where empty strings are wildcards.",
       'tokenConfig must be a JSON string with format: {"mode":"custom","customToken":{"address":"0x...","symbol":"USDC"}}. On Solana actions (get-spl-token-balance, transfer-spl-token) customToken.address is the base58 mint address. Do NOT use a flat {address, symbol, decimals} object',

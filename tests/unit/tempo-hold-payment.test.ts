@@ -170,6 +170,23 @@ describe("holdPaymentStep - manual mode", () => {
     expect(createArgs.workflowId).toBe("wf1");
   });
 
+  it("records the run's user when their RPC preferences are dropped", async () => {
+    mockResolveOrganizationContext.mockResolvedValue({
+      success: true,
+      organizationId: "org1",
+      userId: undefined,
+      executionUserId: "viewer-creator",
+    });
+    const res = await holdPaymentStep(baseInput());
+    expect(res.success).toBe(true);
+    expect(mockGetRpcProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: undefined })
+    );
+    expect(mockCreateHeldPayment.mock.calls[0][0].createdByUserId).toBe(
+      "viewer-creator"
+    );
+  });
+
   it("honors an explicit validBefore", async () => {
     const res = await holdPaymentStep(
       baseInput({ validBefore: String(NOW_SEC + 3 * HOUR) })

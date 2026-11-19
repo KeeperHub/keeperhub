@@ -103,6 +103,7 @@ describe("execute route - per-integration authorization", () => {
       isCreatorWithCurrentAccess: false,
       isSameOrg: true,
       hasFullAccess: true,
+      canEdit: true,
       isDeleted: false,
     });
   });
@@ -165,6 +166,7 @@ describe("execute route - lifecycle executability gate", () => {
       isCreatorWithCurrentAccess: false,
       isSameOrg: true,
       hasFullAccess: true,
+      canEdit: true,
       isDeleted: false,
     });
     mockGetDualAuthContext.mockResolvedValue({

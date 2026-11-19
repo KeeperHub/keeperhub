@@ -22,7 +22,9 @@ import {
   transferErrorOutput,
   transferSuccessOutput,
 } from "@/plugins/field-fragments";
+import type { ShowWhen } from "@/lib/workflow/editor/show-when";
 import { registerIntegration } from "@/plugins/registry-core";
+import { checkQueryEventsConfig } from "./address-list-config";
 import {
   CALLS_FROM_ADDRESS_LIST,
   CALLS_FROM_ARGS_LIST,
@@ -36,6 +38,14 @@ import {
   SHOW_WHEN_UNIFORM,
 } from "./batch-read-modes";
 import { Web3Icon } from "./icon";
+
+// Single-event mode, including workflows saved before queryMode existed.
+const SINGLE_EVENT_SHOW_WHEN: ShowWhen = {
+  all: [
+    { field: "queryMode", notEquals: "multiple" },
+    { field: "queryMode", notEquals: "address-list" },
+  ],
+};
 
 const web3Plugin: IntegrationPlugin = {
   type: "web3",
@@ -1257,6 +1267,7 @@ const web3Plugin: IntegrationPlugin = {
       category: "Web3",
       stepFunction: "queryEventsStep",
       stepImportPath: "query-events",
+      validateConfig: checkQueryEventsConfig,
       outputFields: [
         {
           field: "success",
@@ -1266,7 +1277,7 @@ const web3Plugin: IntegrationPlugin = {
         {
           field: "events",
           description:
-            "Array of decoded event objects with blockNumber, transactionHash, logIndex, and args. With multiple events, each object also carries contractAddress and eventName, and the list is ordered by blockNumber then logIndex across every entry.",
+            "Array of decoded event objects with blockNumber, transactionHash, logIndex, and args. With multiple events or a contract address list, each object also carries contractAddress and eventName, and the list is ordered by blockNumber then logIndex across every entry.",
         },
         {
           field: "fromBlock",
@@ -1275,12 +1286,12 @@ const web3Plugin: IntegrationPlugin = {
         {
           field: "toBlock",
           description:
-            "Actual end block used (resolved from latest). With multiple events, a latest end stops a few blocks behind the head so every entry is scanned through the same block.",
+            "Actual end block used (resolved from latest). With multiple events or a contract address list, a latest end stops a few blocks behind the head so every entry is scanned through the same block.",
         },
         {
           field: "eventCount",
           description:
-            "Number of events returned. Counts events matching the indexed argument filter when one is set, not every occurrence of the event. With multiple events, counts the merged list.",
+            "Number of events returned. Counts events matching the indexed argument filter when one is set, not every occurrence of the event. With multiple events or a contract address list, counts the merged list.",
         },
         {
           field: "error",
@@ -1296,15 +1307,16 @@ const web3Plugin: IntegrationPlugin = {
           options: [
             { value: "single", label: "Single event" },
             { value: "multiple", label: "Multiple events or contracts" },
+            { value: "address-list", label: "One event, many contracts" },
           ],
           defaultValue: "single",
           helpTip:
-            "Single event: one contract and one event. Multiple: a list of contract and event pairs on the selected network, each with its own ABI and optional filter, returned as one merged event list.",
+            "Single event: one contract and one event. Multiple: a list of contract and event pairs on the selected network, each with its own ABI and optional filter, returned as one merged event list. One event, many contracts: one event on a list of contract addresses known at run time, for example from an earlier node.",
         },
         evmNetworkField(),
         {
           ...contractAddressField(),
-          showWhen: { field: "queryMode", notEquals: "multiple" },
+          showWhen: SINGLE_EVENT_SHOW_WHEN,
         },
         {
           key: "abi",
@@ -1315,7 +1327,38 @@ const web3Plugin: IntegrationPlugin = {
           networkField: "network",
           rows: 6,
           required: true,
-          showWhen: { field: "queryMode", notEquals: "multiple" },
+          showWhen: SINGLE_EVENT_SHOW_WHEN,
+        },
+        {
+          key: "contractAddresses",
+          label: "Contract Addresses",
+          type: "template-textarea",
+          rows: 3,
+          required: true,
+          placeholder: "{{@nodeId:Label.values}} or [\"0x...\", \"0x...\"]",
+          helpTip:
+            "A JSON array of contract addresses, usually a reference to an array from an earlier node. Up to 5,000 addresses; each is checked before any query runs and a repeated address is queried once.",
+          showWhen: { field: "queryMode", equals: "address-list" },
+        },
+        {
+          key: "abiFetchAddress",
+          label: "Fetch ABI From",
+          type: "template-input",
+          placeholder: "0x... (one contract with the same ABI)",
+          helpTip:
+            "Optional. Only used to fetch the ABI; this contract is not queried unless it is in Contract Addresses.",
+          showWhen: { field: "queryMode", equals: "address-list" },
+        },
+        {
+          key: "abi",
+          label: "Contract ABI",
+          type: "abi-with-auto-fetch",
+          contractAddressField: "abiFetchAddress",
+          contractInteractionType: "read",
+          networkField: "network",
+          rows: 6,
+          required: true,
+          showWhen: { field: "queryMode", equals: "address-list" },
         },
         {
           key: "eventName",

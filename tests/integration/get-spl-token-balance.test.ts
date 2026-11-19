@@ -114,10 +114,22 @@ vi.mock("@/lib/rpc/provider-factory", () => ({
 // supportedTokens address lookup (selects tokenAddress) resolves the mint for
 // supported-token configs; the supportedTokens display-info lookup (selects
 // symbol/name) finds no row, so the Metaplex fallback is reachable.
+vi.mock("@/lib/security/org-role", () => ({
+  getOrgRole: () => Promise.resolve("member"),
+}));
+
 vi.mock("@/lib/db", () => ({
   db: {
     select: (shape: Record<string, unknown>) => ({
       from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            limit: () =>
+              Promise.resolve([
+                { userId: "user_1", executionOrganizationId: "org_1" },
+              ]),
+          }),
+        }),
         where: () => ({
           limit: () => {
             if ("userId" in shape) {
@@ -147,6 +159,7 @@ vi.mock("@/lib/db/schema", () => ({
     name: "name",
   },
   workflowExecutions: { id: "id", userId: "userId" },
+  workflows: { id: "id", organizationId: "organizationId" },
 }));
 
 vi.mock("drizzle-orm", () => ({

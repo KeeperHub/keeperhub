@@ -74,6 +74,9 @@ const {
   mockEnforceExecutionLimit,
   mockCheckConcurrency,
   mockChargePaygIfBillable,
+  mockEnforceFeatures,
+  mockRecordRefusedRun,
+  mockMarkRunRefused,
 } = vi.hoisted(() => ({
   mockWorkflowsFindFirst: vi.fn(),
   mockApiKeysFindFirst: vi.fn(),
@@ -84,6 +87,14 @@ const {
   mockEnforceExecutionLimit: vi.fn(),
   mockCheckConcurrency: vi.fn(),
   mockChargePaygIfBillable: vi.fn(),
+  mockEnforceFeatures: vi.fn(),
+  mockRecordRefusedRun: vi.fn(),
+  mockMarkRunRefused: vi.fn(),
+}));
+
+vi.mock("@/lib/workflow/refused-runs", () => ({
+  recordRefusedRun: mockRecordRefusedRun,
+  markRunRefused: mockMarkRunRefused,
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -146,7 +157,7 @@ vi.mock("@/lib/billing/payg/charge", () => ({
 }));
 
 vi.mock("@/lib/features/route-guard", () => ({
-  enforceWorkflowFeatures: vi.fn().mockResolvedValue({ blocked: false }),
+  enforceWorkflowFeatures: mockEnforceFeatures,
   FEATURE_UPGRADE_REQUIRED_ERROR:
     "This workflow uses features that require a paid plan.",
 }));
@@ -170,7 +181,7 @@ vi.mock("@/lib/metrics/instrumentation/api", () => ({
 }));
 
 vi.mock("@/lib/logging", () => ({
-  ErrorCategory: { WORKFLOW_ENGINE: "WORKFLOW_ENGINE" },
+  ErrorCategory: { WORKFLOW_ENGINE: "WORKFLOW_ENGINE", BILLING: "billing" },
   logSystemError: vi.fn(),
 }));
 
@@ -233,6 +244,7 @@ function setupHappyPath(): void {
 describe("POST /api/workflows/:workflowId/webhook", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockEnforceFeatures.mockResolvedValue({ blocked: false });
     // loadWorkflowForExecution now returns the workflow + org data in a single
     // left-join query (db.select().from(workflows).leftJoin(organization)).
     // The mock for that chain is mockOrgGateLimit; it must include the workflow
@@ -422,6 +434,41 @@ describe("POST /api/workflows/:workflowId/webhook", () => {
     });
   });
 
+  describe("viewer role", () => {
+    it("returns 403 with the viewer error and starts no run for a viewer key holder", async () => {
+      setupHappyPath();
+      mockMemberLimit.mockResolvedValue([{ id: "member-1", role: "viewer" }]);
+
+      const response = await POST(
+        createWebhookRequest(VALID_API_KEY, { event: "test" }),
+        createContext(WORKFLOW_ID)
+      );
+
+      expect(response.status).toBe(403);
+      const data = await response.json();
+      expect(data.error).toBe(
+        "Viewers have read-only access to this organization"
+      );
+      expect(data.code).toBe("viewer_read_only");
+      expect(mockValidateIntegrations).not.toHaveBeenCalled();
+      expect(mockEnforceExecutionLimit).not.toHaveBeenCalled();
+      expect(mockInsertReturning).not.toHaveBeenCalled();
+    });
+
+    it("runs the workflow for a member key holder", async () => {
+      setupHappyPath();
+      mockMemberLimit.mockResolvedValue([{ id: "member-1", role: "member" }]);
+
+      const response = await POST(
+        createWebhookRequest(VALID_API_KEY, { event: "test" }),
+        createContext(WORKFLOW_ID)
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockInsertReturning).toHaveBeenCalled();
+    });
+  });
+
   describe("webhook trigger validation", () => {
     it("should return 400 when workflow is not webhook-triggered", async () => {
       mockOrgGateLimit.mockResolvedValue([
@@ -501,6 +548,65 @@ describe("POST /api/workflows/:workflowId/webhook", () => {
       expect(response.headers.get("Retry-After")).toBe("30");
       expect(response.headers.get("X-RateLimit-Limit")).toBe("100");
       expect(response.headers.get("X-RateLimit-Remaining")).toBe("0");
+      // The refusal is recorded in its hourly row; no run is created.
+      expect(mockRecordRefusedRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workflowId: WORKFLOW_ID,
+          reasonCode: "execution_limit",
+          category: "billing",
+          triggerSource: "webhook",
+          credential: expect.objectContaining({
+            userApiKeyId: "key-1",
+            credentialType: "webhook_key",
+          }),
+        }),
+        expect.anything()
+      );
+      expect(mockInsertReturning).not.toHaveBeenCalled();
+    });
+
+    it("records a paid-feature 402 as a refused run", async () => {
+      mockWorkflowsFindFirst.mockResolvedValue(webhookWorkflow);
+      mockApiKeysFindFirst.mockResolvedValue({
+        id: "key-1",
+        userId: OWNER_USER_ID,
+        keyHash: VALID_KEY_HASH,
+      });
+      mockValidateIntegrations.mockResolvedValue({ valid: true });
+      mockEnforceFeatures.mockResolvedValue({
+        blocked: true,
+        response: new Response(
+          JSON.stringify({
+            error: "This workflow uses features that require a paid plan.",
+            code: "upgrade_required",
+            violations: [{ featureName: "Safe Wallet" }],
+          }),
+          { status: 402 }
+        ),
+        violations: [{ feature: { name: "Safe Wallet" } }],
+      });
+
+      const response = await POST(
+        createWebhookRequest(VALID_API_KEY),
+        createContext(WORKFLOW_ID)
+      );
+      expect(response.status).toBe(402);
+      expect((await response.json()).code).toBe("upgrade_required");
+      expect(mockRecordRefusedRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workflowId: WORKFLOW_ID,
+          reason:
+            "Workflow uses features that require a paid plan: Safe Wallet",
+          reasonCode: "plan_feature",
+          category: "billing",
+          triggerSource: "webhook",
+          credential: expect.objectContaining({
+            userApiKeyId: "key-1",
+            credentialType: "webhook_key",
+          }),
+        }),
+        expect.anything()
+      );
     });
 
     it("should return 429 when concurrency limit reached", async () => {
@@ -579,6 +685,16 @@ describe("POST /api/workflows/:workflowId/webhook", () => {
       const data = await response.json();
       expect(data.error).toBe(message);
       expect(data.status).toBe("error");
+      // The pending row becomes a refused run, same shape as every refusal.
+      expect(mockMarkRunRefused).toHaveBeenCalledWith(
+        expect.objectContaining({
+          executionId: "exec-001",
+          fromStatuses: ["pending"],
+          reason: message,
+          category: "billing",
+        }),
+        expect.anything()
+      );
     });
   });
 

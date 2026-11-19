@@ -3,6 +3,8 @@ import {
   flattenConfigFields,
   getAllIntegrations,
   isDisplayOnlyField,
+  isToggleField,
+  toggleDefault,
 } from "@/plugins/registry";
 
 /**
@@ -133,7 +135,8 @@ function buildPinSchemaForAction(action: PluginAction): {
       continue;
     }
     properties[field.key] = buildPropertyForField(field);
-    if (field.required === true) {
+    // A key can be declared once per mode; JSON Schema rejects repeats in required.
+    if (field.required === true && !required.includes(field.key)) {
       required.push(field.key);
     }
   }
@@ -156,6 +159,14 @@ function buildPropertyForField(
 
   if (field.type === "number") {
     return { type: "number", description };
+  }
+
+  if (isToggleField(field.type)) {
+    return {
+      type: "boolean",
+      description,
+      default: toggleDefault(field),
+    };
   }
 
   if (field.type === "protocol-bool") {

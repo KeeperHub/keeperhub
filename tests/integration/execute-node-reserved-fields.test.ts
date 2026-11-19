@@ -22,6 +22,11 @@ const mocks = vi.hoisted(() => ({
   ownershipResult: [] as unknown[],
   capturedInput: undefined as Record<string, unknown> | undefined,
   recordIdempotentResponse: vi.fn(),
+  enforceWorkflowFeatures: vi.fn(),
+}));
+
+vi.mock("@/lib/features/route-guard", () => ({
+  enforceWorkflowFeatures: mocks.enforceWorkflowFeatures,
 }));
 
 vi.mock("server-only", () => ({}));
@@ -137,6 +142,7 @@ beforeEach(() => {
   mocks.capturedInput = undefined;
 
   mocks.validateApiKey.mockResolvedValue(AUTH_CONTEXT);
+  mocks.enforceWorkflowFeatures.mockResolvedValue({ blocked: false });
   mocks.checkRateLimit.mockReturnValue({ allowed: true });
   mocks.enforceExecutionLimit.mockResolvedValue({ blocked: false });
   mocks.enterApiExecuteErrorContext.mockResolvedValue(undefined);
@@ -192,6 +198,29 @@ afterEach(() => {
 // send takes wei - the reservation has to run that transform, or the cap is
 // charged the raw wei figure read as ether (10^18 times the broadcast) while
 // the step's correct charge is skipped.
+describe("POST /api/execute/node plan gate", () => {
+  it("checks the resolved action against the org plan and stops when it is gated", async () => {
+    mocks.enforceWorkflowFeatures.mockResolvedValue({
+      blocked: true,
+      response: new Response(JSON.stringify({ error: "upgrade" }), {
+        status: 403,
+      }),
+    });
+
+    const response = await nodePOST(
+      postRequest({ actionType: "code/run-code", config: { code: "1" } })
+    );
+
+    expect(response.status).toBe(403);
+    expect(mocks.enforceWorkflowFeatures).toHaveBeenCalledWith(
+      [{ id: "code/run-code", actionType: "code/run-code" }],
+      "org_a"
+    );
+    expect(mocks.stepFn).not.toHaveBeenCalled();
+    expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
+  });
+});
+
 describe("POST /api/execute/node value reservation for a protocol write", () => {
   const WALLET = "0x1111111111111111111111111111111111111111";
   const FEE_WEI = "218756042576226";

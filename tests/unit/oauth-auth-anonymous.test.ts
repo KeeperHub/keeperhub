@@ -47,6 +47,10 @@ vi.mock("@/lib/workflow/access", () => ({
   isUserMemberOfOrganization: vi.fn().mockResolvedValue(true),
 }));
 
+vi.mock("@/lib/security/org-role", () => ({
+  getOrgRole: vi.fn().mockResolvedValue("member"),
+}));
+
 vi.mock("@sentry/nextjs", () => ({
   captureMessage: (message: string, context: unknown): void => {
     mockCaptureMessage(message, context);

@@ -8,9 +8,12 @@ import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { parseScopeInput } from "@/lib/mcp/oauth-scopes";
 import { STEP_UP_ACTIONS } from "@/lib/mfa/step-up-policy";
 import { authorizeAction } from "@/lib/middleware/authorize-action";
+import { getActiveOrgId } from "@/lib/middleware/org-context";
 import { buildPage, parsePageRequest } from "@/lib/pagination";
 import { notifyApiKeyChange } from "@/lib/security/api-key-notification";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
+import { isOrgViewer } from "@/lib/security/org-role";
+import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 
 // Generate a secure API key
 function generateApiKey(): { key: string; hash: string; prefix: string } {
@@ -94,6 +97,9 @@ export async function POST(request: Request) {
     });
     if (!authorized.ok) {
       return authorized.response;
+    }
+    if (await isOrgViewer(session.user.id, getActiveOrgId(session))) {
+      return viewerReadOnlyResponse();
     }
 
     const name = body.name || null;

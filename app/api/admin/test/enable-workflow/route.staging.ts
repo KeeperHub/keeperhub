@@ -68,7 +68,8 @@ export async function POST(request: Request): Promise<NextResponse> {
     // Sync schedule (creates workflow_schedules record for Schedule triggers)
     const syncResult = await syncWorkflowSchedule(
       workflowId,
-      workflow.nodes as Parameters<typeof syncWorkflowSchedule>[1]
+      workflow.nodes as Parameters<typeof syncWorkflowSchedule>[1],
+      { restart: !workflow.enabled }
     );
 
     if (!syncResult.synced && syncResult.kind === "hard") {

@@ -1078,6 +1078,13 @@ export function safeEvaluateCondition(
   expression: string,
   context: Record<string, unknown>
 ): unknown {
+  return compileSafeCondition(expression)(context);
+}
+
+// Parses once, for callers that evaluate one expression against many contexts.
+export function compileSafeCondition(
+  expression: string
+): (context: Record<string, unknown>) => unknown {
   let ast: AstNode;
   try {
     ast = parse(expression);
@@ -1086,7 +1093,7 @@ export function safeEvaluateCondition(
       `Condition parse error: ${error instanceof Error ? error.message : String(error)}`
     );
   }
-  return evalNode(ast, context);
+  return (context: Record<string, unknown>): unknown => evalNode(ast, context);
 }
 
 /**

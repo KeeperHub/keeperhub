@@ -17,6 +17,7 @@ const {
   mockInsertReturning,
   mockDeleteReturning,
   mockAuthorizeAction,
+  mockIsOrgViewer,
 } = vi.hoisted(() => ({
   mockGetSession: vi.fn(),
   mockFindMany: vi.fn(),
@@ -24,7 +25,10 @@ const {
   mockInsertReturning: vi.fn(),
   mockDeleteReturning: vi.fn(),
   mockAuthorizeAction: vi.fn(),
+  mockIsOrgViewer: vi.fn(),
 }));
+
+vi.mock("@/lib/security/org-role", () => ({ isOrgViewer: mockIsOrgViewer }));
 
 vi.mock("@/lib/auth", () => ({
   auth: {
@@ -172,6 +176,28 @@ describe("GET /api/api-keys", () => {
 describe("POST /api/api-keys", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsOrgViewer.mockResolvedValue(false);
+  });
+
+  it("refuses a viewer in the active org and creates no key", async () => {
+    const viewerSession = {
+      ...mockSession,
+      session: { requiresMfa: false, activeOrganizationId: "org-1" },
+    };
+    mockGetSession.mockResolvedValue(viewerSession);
+    mockAuthorizeAction.mockResolvedValue({
+      ok: true,
+      session: viewerSession,
+      accountKind: "email",
+    });
+    mockIsOrgViewer.mockResolvedValue(true);
+    const response = await POST(
+      createRequest("POST", { name: "My Key", code: "123456" })
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: "viewer_read_only" });
+    expect(mockIsOrgViewer).toHaveBeenCalledWith("user-123", "org-1");
+    expect(mockInsertReturning).not.toHaveBeenCalled();
   });
 
   it("should return 401 when no session", async () => {

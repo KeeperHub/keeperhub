@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight, Eye } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -19,6 +20,7 @@ import {
 } from "@/components/ui/tooltip";
 import { api, type SavedWorkflow } from "@/lib/api-client";
 import { authClient, useSession } from "@/lib/auth-client";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { WorkflowMiniMap } from "./workflow-mini-map";
 import { WorkflowNodeIcons } from "./workflow-node-icons";
@@ -30,6 +32,8 @@ type FeaturedCarouselProps = {
 export function FeaturedCarousel({ workflows }: FeaturedCarouselProps) {
   const router = useRouter();
   const { data: session } = useSession();
+  // Signed-out visitors have no role yet may still use templates, so gate on viewer only.
+  const { isViewer } = useOrgAccess();
   const [duplicatingIds, setDuplicatingIds] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -157,14 +161,16 @@ export function FeaturedCarousel({ workflows }: FeaturedCarouselProps) {
                 </CardHeader>
                 <div className="flex-1" />
                 <CardFooter className="gap-2 pb-3">
-                  <Button
-                    className="flex-1"
-                    disabled={isDuplicating}
-                    onClick={() => handleDuplicate(workflow.id)}
-                    variant="default"
-                  >
-                    {isDuplicating ? "Duplicating..." : "Use Template"}
-                  </Button>
+                  <ViewOnlyTooltip className="flex-1" isViewer={isViewer}>
+                    <Button
+                      className={isViewer ? "w-full" : "flex-1"}
+                      disabled={isViewer || isDuplicating}
+                      onClick={() => handleDuplicate(workflow.id)}
+                      variant="default"
+                    >
+                      {isDuplicating ? "Duplicating..." : "Use Template"}
+                    </Button>
+                  </ViewOnlyTooltip>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button

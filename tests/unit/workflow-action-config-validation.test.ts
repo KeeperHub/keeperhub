@@ -860,6 +860,40 @@ describe("validateWorkflowActionConfigs", () => {
       ]);
     });
 
+    it("requires the address list, ABI and event in address-list mode and nothing else", () => {
+      const result = validateWorkflowActionConfigs([
+        actionNode("web3/query-events", {
+          network: "1",
+          queryMode: "address-list",
+        }),
+      ]);
+
+      expect(result.issues.map((issue) => issue.field)).toEqual([
+        "contractAddresses",
+        "abi",
+        "eventName",
+      ]);
+    });
+
+    it("accepts a complete address-list config, with a template or typed JSON list", () => {
+      for (const contractAddresses of [
+        "{{@node:Registry.values}}",
+        JSON.stringify([ENTRY.contractAddress]),
+      ]) {
+        expect(
+          validateWorkflowActionConfigs([
+            actionNode("web3/query-events", {
+              network: "1",
+              queryMode: "address-list",
+              contractAddresses,
+              abi: PAUSED_ABI,
+              eventName: "Paused",
+            }),
+          ])
+        ).toEqual({ valid: true, issues: [] });
+      }
+    });
+
     it("rejects a query mode that is not one of its options", () => {
       const result = validateWorkflowActionConfigs([
         actionNode("web3/query-events", { ...SINGLE, queryMode: "several" }),
