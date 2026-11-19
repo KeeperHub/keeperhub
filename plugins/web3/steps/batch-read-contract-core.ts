@@ -291,7 +291,13 @@ export function addressesFromList(entries: unknown[]): string[] {
 
 function inputNames(fn: ListFunction): string {
   return fn.inputs
-    .map((input, index) => input.name || input.type || `arg${index}`)
+    // An unnamed tuple goes by its place, as the tuple messages name it.
+    .map(
+      (input, index) =>
+        input.name ||
+        (input.type === "tuple" ? `arg${index}` : input.type) ||
+        `arg${index}`
+    )
     .join(", ");
 }
 
@@ -766,18 +772,24 @@ function canGoFlat(input: AbiParam): boolean {
   );
 }
 
-/** Tuples the values read as given flat, walked as reshapeArgsCounted does. */
-function flatTuples(args: unknown[], fn: ListFunction): AbiParam[] {
-  const flat: AbiParam[] = [];
+type FlatTuple = { label: string; members: number };
+
+// Tuples with more than one member that the values read as given flat; a
+// tuple that can't go flat is passed over as one value.
+function flatTuples(args: unknown[], fn: ListFunction): FlatTuple[] {
+  const flat: FlatTuple[] = [];
   let cursor = 0;
-  for (const input of fn.inputs) {
+  for (const [index, input] of fn.inputs.entries()) {
+    const members = input.components?.length ?? 0;
     if (
       cursor < args.length &&
       canGoFlat(input) &&
       !isPlainObject(args[cursor])
     ) {
-      flat.push(input);
-      cursor += input.components?.length ?? 1;
+      if (members > 1) {
+        flat.push({ label: input.name || `arg${index}`, members });
+      }
+      cursor += members;
     } else {
       cursor += 1;
     }
@@ -793,24 +805,29 @@ function countMismatch(
   hint: string
 ): Error {
   const takes = fn.inputs.length;
-  const call = `${fn.name} takes ${count(takes)} (${inputNames(fn)})`;
-  const flat = flatTuples(args, fn);
+  const names = inputNames(fn);
   const given = plural(args.length, "value");
+  const flat = flatTuples(args, fn);
   if (flat.length === 0) {
-    return new Error(`${at} has ${given}, but ${call}. ${hint}`);
+    return new Error(
+      `${at} has ${given}, but ${fn.name} takes ${count(takes)} (${names}). ${hint}`
+    );
   }
-  const all = flat.map((input) => input.name || input.type);
-  const names =
-    all.length > 1 ? `${all.slice(0, -1).join(", ")} and ${all.at(-1)}` : all[0];
-  const members = flat.reduce(
-    (total, input) => total + (input.components?.length ?? 1) - 1,
-    takes
+  const labels = flat.map((tuple) => tuple.label);
+  const listed = echo(
+    labels.length > 1
+      ? `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`
+      : labels[0],
+    MAX_REASON_LENGTH
   );
+  const flatCount = flat.reduce((total, t) => total + t.members - 1, takes);
   const shape =
     flat.length === 1
-      ? `${names} as an object, or ${count(members)} with ${names}'s members given flat`
-      : `${names} as objects, or ${count(members)} with their members given flat`;
-  return new Error(`${at} has ${given}. ${call} with ${shape}. ${hint}`);
+      ? `when ${listed} is an object, or ${count(flatCount)} when ${listed} is given flat as its ${count(flat[0].members)} members`
+      : `when ${listed} are objects, or ${count(flatCount)} when they are given flat as their members`;
+  return new Error(
+    `${at} has ${given} for ${fn.name} (${names}), which takes ${count(takes)} ${shape}. ${hint}`
+  );
 }
 
 /** A JSON object or array held as text, parsed; undefined for anything else. */
@@ -899,20 +916,17 @@ function tupleSlotError(
   }
   const index = slots[0];
   const input = fn.inputs[index];
-  const members = input.components?.length ?? 0;
-  // Its members can't hold an object, so they lie between the nearest
-  // objects on either side; missing values make up the rest.
-  let start = index;
-  while (start > 0 && index - start < members - 1) {
-    if (isPlainObject(entry[start - 1])) {
-      break;
-    }
-    start -= 1;
-  }
-  const later = entry.findIndex((v, i) => i > index && isPlainObject(v));
-  const end = later === -1 ? entry.length : later;
+  const components = input.components ?? [];
+  const members = components.length;
+  // Read flat from start, only a tuple member can take an object.
+  const fits = (start: number): boolean =>
+    start >= 0 &&
+    start + members <= entry.length &&
+    components.every(
+      (member, k) => member.type === "tuple" || !isPlainObject(entry[start + k])
+    );
   const flat = canGoFlat(input);
-  if (flat && start + members <= end) {
+  if (flat && components.some((_, k) => fits(index - k))) {
     return;
   }
   const orFlat = flat
@@ -983,6 +997,24 @@ export function argSetsFromList(
   });
 }
 
+/** True when padding the values with blanks leaves one on a non-string. */
+function blankNonString(args: unknown[], fn: ListFunction): boolean {
+  let cursor = 0;
+  for (const input of fn.inputs) {
+    const flat =
+      input.type === "tuple" &&
+      Boolean(input.components?.length) &&
+      !isPlainObject(args[cursor]);
+    for (const leaf of flat ? (input.components ?? []) : [input]) {
+      if (cursor >= args.length && leaf.type !== "string") {
+        return true;
+      }
+      cursor += 1;
+    }
+  }
+  return false;
+}
+
 /**
  * Function Arguments, reshaped, read as the editor stores it: an input left
  * blank is "" and one never touched may be missing, so trailing blanks are
@@ -1012,6 +1044,16 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
   }
   if (given.length === consumed) {
     return reshaped.args;
+  }
+  // A tuple read flat may have taken a later argument's value; when the
+  // blanks would then fail, the count names both readings instead.
+  if (flatTuples(given, fn).length > 0 && blankNonString(given, fn)) {
+    throw countMismatch(
+      SHARED_ARGS_LABEL,
+      given,
+      fn,
+      `Fill in the arguments like ${exampleEntry(fn)}.`
+    );
   }
   const blanks = new Array<string>(consumed - given.length).fill("");
   const padded = [...given, ...blanks];
