@@ -754,13 +754,15 @@ describe("matchesRegex", () => {
       }
     });
 
-    it("checks the pattern when the expression is checked for export", () => {
+    // Compiling here would cost CPU no budget charges; exporters refuse
+    // matchesRegex first, and saving refuses a pattern no run can compile.
+    it("reads the pattern for export without compiling it", () => {
       expect(
         isSafeConditionExpression('matchesRegex(String(__v0), "(?=a)")')
-      ).toBe(false);
-      expect(
-        isSafeConditionExpression('matchesRegex(String(__v0), "^a$")')
       ).toBe(true);
+      expect(
+        isSafeConditionExpression("matchesRegex(String(__v0), __v1)")
+      ).toBe(false);
     });
   });
 });

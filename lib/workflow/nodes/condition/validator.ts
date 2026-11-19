@@ -41,7 +41,7 @@ import {
 import {
   MAX_REGEX_CALLS,
   MAX_RUN_REGEX_WORK,
-  prepareRegexPatterns,
+  prepareWorkflowPatterns,
   REGEX_ARITY_ERROR,
   REGEX_BACKSLASH_ERROR,
   REGEX_CALLS_ERROR,
@@ -50,9 +50,9 @@ import {
   REGEX_NEGATED_ERROR,
   REGEX_SOURCE_ERROR,
   REGEX_TEMPLATE_ERROR,
-  REGEX_WORKFLOW_COMPILE_ERROR,
   RegexBudget,
   regexPatternError,
+  workflowCompileError,
 } from "./regex-match";
 import { resolveConditionExpression } from "./resolver";
 import {
@@ -280,9 +280,17 @@ type NodeWithConfig = {
   type?: unknown;
   data?: {
     type?: unknown;
+    label?: unknown;
     enabled?: unknown;
     config?: Record<string, unknown>;
   };
+};
+
+/** A regex problem that refuses a save; `workflowWide` for the patterns together. */
+export type RegexIssue = {
+  index: number;
+  message: string;
+  workflowWide: boolean;
 };
 
 /** What each enabled Condition node runs (its rules or its text), with its index. */
@@ -316,78 +324,88 @@ export function prepareRunRegex(
   nodes: readonly NodeWithConfig[],
   budget: RegexBudget
 ): string | undefined {
-  const patterns = workflowConditions(nodes).flatMap(({ condition }) =>
-    conditionRegexPatterns(condition)
-  );
-  return prepareRegexPatterns(patterns, budget);
+  const issue = compileConditions(workflowConditions(nodes), budget, false);
+  if (!issue) {
+    return;
+  }
+  const label = nodes[issue.index]?.data?.label;
+  return typeof label === "string" && label.trim()
+    ? `${issue.message}. Most are in "${label.trim()}"`
+    : issue.message;
 }
 
 /**
- * The first problem that would fail every run of a workflow's regex
- * Conditions, for saves: the run's own checks, then the patterns compiled
- * through one budget, so a save stays cheap. Conditions without matchesRegex
- * are not checked, so no saved workflow stops saving.
+ * The first problem that refuses saving a workflow's regex Conditions: what
+ * fails any run reaching the Condition (the run's own checks, a pattern no run
+ * can compile), then the patterns together past the cap. Conditions without
+ * matchesRegex are not checked, so no saved workflow stops saving.
  */
 export function workflowRegexIssue(
   conditions: readonly { index: number; condition: string }[]
-): { index: number; message: string } | undefined {
+): RegexIssue | undefined {
   const withRegex = conditions.filter(({ condition }) =>
     usesRegex(scanForRegex(condition))
   );
   for (const { index, condition } of withRegex) {
-    const pre = preValidateConditionExpression(condition);
-    if (!pre.valid) {
-      return { index, message: pre.error };
-    }
-    const text = runText(condition);
-    const checked = validateConditionExpression(text);
-    if (!checked.valid) {
-      return { index, message: checked.error };
-    }
-    const runError = runnableConditionError(text);
-    if (runError) {
-      return { index, message: inExpressionTerms(runError) ?? runError };
+    const message = conditionRunError(condition);
+    if (message) {
+      return { index, message, workflowWide: false };
     }
   }
-  return compileConditions(withRegex, true);
+  const budget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
+  const issue = compileConditions(withRegex, budget, true);
+  return issue?.workflowWide
+    ? { ...issue, message: `${issue.message}. This Condition has the most` }
+    : issue;
 }
 
-/**
- * Compiles each Condition's patterns into one budget. Past the workflow cap it
- * names the Condition whose patterns cost the most so far.
- */
+function conditionRunError(condition: string): string | undefined {
+  const pre = preValidateConditionExpression(condition);
+  if (!pre.valid) {
+    return pre.error;
+  }
+  const text = runText(condition);
+  const checked = validateConditionExpression(text);
+  if (!checked.valid) {
+    return checked.error;
+  }
+  const runError = runnableConditionError(text);
+  return runError && (inExpressionTerms(runError) ?? runError);
+}
+
 function compileConditions(
   conditions: readonly { index: number; condition: string }[],
+  budget: RegexBudget,
   reportRefused: boolean
-): { index: number; message: string } | undefined {
-  const budget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
-  let largest = { index: -1, cost: -1 };
-  for (const { index, condition } of conditions) {
-    const before = budget.used();
-    const problem = prepareRegexPatterns(
-      conditionRegexPatterns(condition),
-      budget,
-      reportRefused
-    );
-    const cost = budget.used() - before;
-    if (cost > largest.cost) {
-      largest = { index, cost };
-    }
-    if (problem === REGEX_WORKFLOW_COMPILE_ERROR) {
-      return { index: largest.index, message: problem };
-    }
-    if (problem) {
-      return { index, message: inExpressionTerms(problem) ?? problem };
-    }
+): RegexIssue | undefined {
+  const result = prepareWorkflowPatterns(
+    conditions.map(({ condition }) => conditionRegexPatterns(condition)),
+    budget,
+    { reportRefused }
+  );
+  if (!result) {
+    return;
   }
-  return;
+  if ("refused" in result) {
+    return {
+      index: conditions[result.at].index,
+      message: inExpressionTerms(result.refused) ?? result.refused,
+      workflowWide: false,
+    };
+  }
+  return {
+    index: conditions[result.largest].index,
+    message: workflowCompileError(result.work),
+    workflowWide: true,
+  };
 }
 
-/** Past the workflow cap, the index of the Condition whose patterns cost most. */
+/** Past the workflow cap: the costliest Condition's index and the message. */
 export function workflowRegexLimit(
   conditions: readonly { index: number; condition: string }[]
-): number | undefined {
-  return compileConditions(conditions, false)?.index;
+): RegexIssue | undefined {
+  const budget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
+  return compileConditions(conditions, budget, false);
 }
 
 function regexObjectError(code: string): ValidationResult | undefined {

@@ -959,7 +959,7 @@ export function validateWorkflowActionConfigs(
     }
   }
 
-  // Regex Conditions that would fail every run, the workflow's patterns together.
+  // Regex Conditions that fail any run reaching them, then their patterns together.
   const regexIssue = workflowRegexIssue(workflowConditions(nodes));
   if (regexIssue) {
     const identity = nodeIdentity(

@@ -102,12 +102,12 @@ describe("regex hardening", () => {
 
       it("refuses one Condition over the cap at save and at run start", () => {
         const nodes = [textNode("c1", calls(0, 16))];
-        expect(runStart(nodes)).toBe(REGEX_WORKFLOW_COMPILE_ERROR);
+        expect(runStart(nodes)).toContain(REGEX_WORKFLOW_COMPILE_ERROR);
         expect(saveIssues(nodes)).toEqual([
           expect.objectContaining({
             path: "nodes[0].data.config.condition",
             nodeId: "c1",
-            message: REGEX_WORKFLOW_COMPILE_ERROR,
+            message: expect.stringContaining(REGEX_WORKFLOW_COMPILE_ERROR),
           }),
         ]);
       });
@@ -123,11 +123,11 @@ describe("regex hardening", () => {
           expect(saveIssues([node])).toEqual([]);
         }
         expect(saveIssues(nodes.slice(0, 2))).toEqual([]);
-        expect(runStart(nodes)).toBe(REGEX_WORKFLOW_COMPILE_ERROR);
+        expect(runStart(nodes)).toContain(REGEX_WORKFLOW_COMPILE_ERROR);
         expect(saveIssues(nodes)).toEqual([
           expect.objectContaining({
             nodeId: "big",
-            message: REGEX_WORKFLOW_COMPILE_ERROR,
+            message: expect.stringContaining(REGEX_WORKFLOW_COMPILE_ERROR),
           }),
         ]);
       });
@@ -158,7 +158,7 @@ describe("regex hardening", () => {
           },
         });
         const ruled = [conditionNode("c1", rules(0, 16))];
-        expect(runStart(ruled)).toBe(REGEX_WORKFLOW_COMPILE_ERROR);
+        expect(runStart(ruled)).toContain(REGEX_WORKFLOW_COMPILE_ERROR);
         expect(saveIssues(ruled)).toHaveLength(1);
         const badRule = conditionNode("c1", {
           conditionConfig: {
@@ -263,19 +263,55 @@ describe("regex hardening", () => {
 
       // Every compile is charged before it runs, so refused or uncached
       // patterns cannot make a check slow.
-      it("stays fast with many slow refused patterns", () => {
+      it("stops compiling at the cap, so slow refused patterns cannot pile up", () => {
         const slow = (i: number) =>
           `matchesRegex(${FIELD}, "${"(?:a{1000})".repeat(45)}${i}")`;
         const nodes = Array.from({ length: 40 }, (_, i) =>
           textNode(`c${i}`, slow(i))
         );
-        const started = performance.now();
-        expect(runStart(nodes)).toBe(REGEX_WORKFLOW_COMPILE_ERROR);
+        const budget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
+        const charge = vi.spyOn(budget, "chargeCompile");
+        expect(prepareRunRegex(nodes, budget)).toContain(
+          REGEX_WORKFLOW_COMPILE_ERROR
+        );
+        // A refused pattern is charged its length only (990,000), then skipped.
+        expect(charge.mock.calls.length).toBeLessThanOrEqual(6);
         expect(saveIssues(nodes)).toHaveLength(1);
         expect(isSafeConditionExpression(slow(99).replace(FIELD, "x"))).toBe(
           true
         );
-        expect(performance.now() - started).toBeLessThan(5000);
+      });
+
+      it("says how far over the cap, and names the costliest Condition", () => {
+        // The cap is crossed in "ten"; "sixteen", after it, costs the most.
+        const nodes = [
+          textNode("six", calls(0, 6)),
+          textNode("ten", calls(10, 10)),
+          textNode("sixteen", calls(30, 16)),
+        ];
+        const started = runStart(nodes);
+        expect(started).toMatch(/about \d{3}% of the limit/);
+        expect(started).toContain('Most are in "sixteen"');
+        expect(saveIssues(nodes)).toEqual([
+          expect.objectContaining({
+            nodeId: "sixteen",
+            message: expect.stringContaining("This Condition has the most"),
+          }),
+        ]);
+      });
+
+      it("counts a pattern once whichever quotes it is written in", () => {
+        const single = (from: number, count: number) =>
+          Array.from(
+            { length: count },
+            (_, i) => `matchesRegex(${FIELD}, '${pattern(from + i)}')`
+          ).join(" || ");
+        const nodes = [
+          textNode("c1", calls(0, 8)),
+          textNode("c2", single(0, 8)),
+        ];
+        expect(saveIssues(nodes)).toEqual([]);
+        expect(runStart(nodes)).toBeUndefined();
       });
     });
 

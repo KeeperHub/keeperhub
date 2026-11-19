@@ -103,15 +103,18 @@ let updates: Update[];
 function Harness({
   initial,
   disabled = false,
+  nodeId,
 }: {
   initial: Config;
   disabled?: boolean;
+  nodeId?: string;
 }): React.ReactElement {
   const [config, setConfig] = useState<Config>(initial);
   return (
     <ConditionFields
       config={config}
       disabled={disabled}
+      nodeId={nodeId}
       onUpdateConfig={(key, value) => {
         updates.push([key, value]);
         setConfig((current) => ({ ...current, [key]: value }));
@@ -120,8 +123,17 @@ function Harness({
   );
 }
 
-function render(initial: Config, disabled = false): void {
-  act(() => root.render(<Harness disabled={disabled} initial={initial} />));
+function render(initial: Config, disabled = false, nodeId?: string): void {
+  act(() =>
+    root.render(
+      <Harness disabled={disabled} initial={initial} nodeId={nodeId} />
+    )
+  );
+}
+
+// Save checks wait for a pause in typing.
+function pause(): void {
+  act(() => vi.advanceTimersByTime(400));
 }
 
 function click(label: string): void {
@@ -159,6 +171,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   act(() => root.unmount());
   container.remove();
   getDefaultStore().set(nodesAtom, []);
@@ -332,28 +345,60 @@ describe("Condition fields", () => {
         { length: 8 },
         (_, i) => `matchesRegex(${FIELD}, "^${from + i}${"a".repeat(150)}")`
       ).join(" || ");
-    const conditionNode = (id: string, condition: string) =>
+    const conditionNode = (
+      id: string,
+      condition: string,
+      { label = id, enabled }: { label?: string; enabled?: boolean } = {}
+    ) =>
       ({
         id,
         type: "action",
         position: { x: 0, y: 0 },
         data: {
           type: "action",
-          label: id,
+          label,
+          enabled,
           config: { actionType: "Condition", condition },
         },
       }) as WorkflowNode;
+    const heavy = `${calls(10)} || ${calls(20)}`;
+    vi.useFakeTimers();
     const first = { actionType: "Condition", condition: calls(0) };
     getDefaultStore().set(nodesAtom, [conditionNode("c1", calls(0))]);
-    render(first);
+    render(first, false, "c1");
     expect(container.textContent).not.toContain(REGEX_WORKFLOW_COMPILE_ERROR);
     act(() =>
       getDefaultStore().set(nodesAtom, [
         conditionNode("c1", calls(0)),
-        conditionNode("c2", calls(10)),
+        conditionNode("c2", heavy),
       ])
     );
+    pause();
     expect(container.textContent).toContain(REGEX_WORKFLOW_COMPILE_ERROR);
+    expect(container.textContent).toContain('Most are in "c2"');
+
+    // Matched by node, not by label: an unnamed costliest node is not this one.
+    act(() =>
+      getDefaultStore().set(nodesAtom, [
+        conditionNode("c1", calls(0)),
+        conditionNode("c2", heavy, { label: "" }),
+      ])
+    );
+    pause();
+    expect(container.textContent).toContain(
+      "Most are in a Condition with no name"
+    );
+
+    // A disabled Condition never runs, so it never stops a save.
+    act(() =>
+      getDefaultStore().set(nodesAtom, [
+        conditionNode("c1", calls(0), { enabled: false }),
+        conditionNode("c2", heavy),
+      ])
+    );
+    pause();
+    expect(container.textContent).not.toContain(REGEX_WORKFLOW_COMPILE_ERROR);
+    expect(container.textContent).not.toContain("won't save");
   });
 
   // Text with line breaks opens in Expression mode, which has its own branch.
@@ -395,5 +440,21 @@ describe("Condition fields", () => {
     const blocking = [...container.querySelectorAll("p.text-destructive")];
     expect(blocking.map((p) => p.textContent).join(" ")).toContain("Lookahead");
     expect(container.textContent).toContain("won't save until this is fixed");
+  });
+
+  // A warning that does not stop the save must not hide one that does.
+  it("shows what stops the save next to a warning that does not", () => {
+    vi.useFakeTimers();
+    render({
+      actionType: "Condition",
+      condition: `${FIELD}  === "a" ||\nmatchesRegex(${FIELD}, "(?=a)")`,
+    });
+    pause();
+    const red = [...container.querySelectorAll("p.text-destructive")];
+    const yellow = [...container.querySelectorAll("p.text-yellow-600")];
+    expect(red.map((p) => p.textContent).join(" ")).toContain("Lookahead");
+    expect(yellow.map((p) => p.textContent).join(" ")).toContain(
+      "Extra spaces"
+    );
   });
 });

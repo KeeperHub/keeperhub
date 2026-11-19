@@ -53,7 +53,7 @@ function pairParens(structure: string): Map<number, number> {
   return pairs;
 }
 
-export type RegexCall = {
+type RegexCall = {
   /** Index of the call's "(" and its matching ")". */
   open: number;
   close: number;

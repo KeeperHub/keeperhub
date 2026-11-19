@@ -1,6 +1,7 @@
 "use client";
 
 import { useAtomValue, useSetAtom } from "jotai";
+import { selectAtom } from "jotai/utils";
 import { Gem, HelpCircle, Plus, Settings } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FeatureUpgradeDialog } from "@/components/billing/feature-upgrade-dialog";
@@ -53,7 +54,7 @@ import {
   workflowRegexIssue,
   workflowRegexLimit,
 } from "@/lib/workflow/nodes/condition/validator";
-import { REGEX_WORKFLOW_COMPILE_ERROR } from "@/lib/workflow/nodes/condition/regex-match";
+import { useDebounce } from "@/lib/hooks/use-debounce";
 import { stateValueToEditorText } from "@/lib/workflow/nodes/workflow-state/utils";
 import { useFeatures } from "@/hooks/use-features";
 import type { FeatureDefinition } from "@/lib/features";
@@ -74,6 +75,7 @@ import {
   executionLogsAtom,
   lastExecutionLogsAtom,
   nodesAtom,
+  type WorkflowNode,
 } from "@/lib/workflow/store";
 import {
   findActionById,
@@ -333,15 +335,34 @@ function HttpRequestFields({
   );
 }
 
+type NodeSlice = Pick<WorkflowNode, "id" | "type" | "data">;
+
+// Nodes without positions: unchanged while nodes are dragged.
+const nodeSlicesAtom = selectAtom(
+  nodesAtom,
+  (nodes): NodeSlice[] =>
+    nodes.map(({ id, type, data }) => ({ id, type, data })),
+  (a, b) =>
+    a.length === b.length &&
+    a.every(
+      (node, i) =>
+        node.id === b[i].id &&
+        node.type === b[i].type &&
+        node.data === b[i].data
+    )
+);
+
 // Condition fields component with visual builder + expression mode toggle
 export function ConditionFields({
   config,
   onUpdateConfig,
   disabled,
+  nodeId,
 }: {
   config: Record<string, unknown>;
   onUpdateConfig: (key: string, value: ConfigValue) => void;
   disabled: boolean;
+  nodeId?: string;
 }): React.ReactElement {
   const conditionValue = resolveConditionExpression(config ?? {}) ?? "";
   const existingConditionConfig = config?.conditionConfig as
@@ -438,37 +459,41 @@ export function ConditionFields({
   // Text with no rules that write it: the builder starts empty.
   const shownAsRules = shownGroup !== undefined;
 
-  // This Condition's own problems that refuse a save, other than the cap.
-  const ownSaveError = useMemo(() => {
-    const message = workflowRegexIssue([
-      { index: 0, condition: conditionValue },
-    ])?.message;
-    return message === REGEX_WORKFLOW_COMPILE_ERROR ? undefined : message;
-  }, [conditionValue]);
+  // Save checks compile patterns, so they wait for a pause in typing.
+  const checkedValue = useDebounce(conditionValue, 400);
+  const checkedNodes = useDebounce(useAtomValue(nodeSlicesAtom), 400);
+  // A disabled Condition never runs, so it never stops a save.
+  const enabled =
+    checkedNodes.find((node) => node.id === nodeId)?.data?.enabled !== false;
 
-  // Every Condition's text as one key, so dragging nodes doesn't recheck.
-  const nodes = useAtomValue(nodesAtom);
-  const conditionsKey = JSON.stringify(workflowConditions(nodes));
-  const largestIndex = useMemo(
-    () =>
-      conditionRegexPatterns(conditionValue).length > 0
-        ? workflowRegexLimit(
-            JSON.parse(conditionsKey) as { index: number; condition: string }[]
-          )
-        : undefined,
-    [conditionsKey, conditionValue]
-  );
+  // This Condition's own problem that refuses a save, other than the cap.
+  const ownSaveError = useMemo(() => {
+    if (!enabled) {
+      return;
+    }
+    const issue = workflowRegexIssue([{ index: 0, condition: checkedValue }]);
+    return issue && !issue.workflowWide ? issue.message : undefined;
+  }, [checkedValue, enabled]);
+
   // All the workflow's patterns together, shown on each Condition that has one.
-  let workflowLimitError: string | undefined;
-  if (largestIndex !== undefined) {
-    const largest = nodes[largestIndex]?.data;
-    const where =
-      largest?.config === config || !largest?.label
-        ? "this Condition"
-        : `"${largest.label}"`;
-    workflowLimitError = `${REGEX_WORKFLOW_COMPILE_ERROR}. Most of it is in ${where}.`;
-  }
-  const savingBlocked = Boolean(ownSaveError ?? workflowLimitError);
+  const workflowLimitError = useMemo(() => {
+    if (!enabled || conditionRegexPatterns(checkedValue).length === 0) {
+      return;
+    }
+    const limit = workflowRegexLimit(workflowConditions(checkedNodes));
+    if (!limit?.workflowWide) {
+      return;
+    }
+    const largest = checkedNodes[limit.index];
+    const label = largest?.data?.label?.trim();
+    let where = "This Condition has the most";
+    if (largest?.id !== nodeId) {
+      where = label
+        ? `Most are in "${label}"`
+        : "Most are in a Condition with no name";
+    }
+    return `${limit.message}. ${where}. A pattern used twice counts once.`;
+  }, [checkedNodes, checkedValue, enabled, nodeId]);
 
   // Limits the rules can reach that would fail every run.
   const visualLimitError = useMemo(
@@ -480,6 +505,22 @@ export function ConditionFields({
           )
         : undefined,
     [mode, conditionValue, currentGroup]
+  );
+  const firstError =
+    (mode === "visual" ? visualLimitError : undefined) ?? ownSaveError;
+  const savingBlocked = enabled && Boolean(firstError ?? workflowLimitError);
+  const blockingErrors = (
+    <>
+      {firstError && <p className="text-destructive text-xs">{firstError}</p>}
+      {workflowLimitError && (
+        <p className="text-destructive text-xs">{workflowLimitError}</p>
+      )}
+    </>
+  );
+  const wontSave = savingBlocked && (
+    <p className="text-muted-foreground text-xs">
+      Changes to this workflow won't save until this is fixed.
+    </p>
   );
 
   return (
@@ -533,16 +574,8 @@ export function ConditionFields({
           />
           {/* Always mounted, so screen readers announce it once. */}
           <div aria-live="polite">
-            {(visualLimitError ?? workflowLimitError) && (
-              <p className="text-destructive text-xs">
-                {visualLimitError ?? workflowLimitError}
-              </p>
-            )}
-            {(savingBlocked || visualLimitError) && (
-              <p className="text-muted-foreground text-xs">
-                Changes to this workflow won't save until this is fixed.
-              </p>
-            )}
+            {blockingErrors}
+            {wontSave}
           </div>
           {conditionValue.trim() && (
             <div className="space-y-1">
@@ -566,28 +599,11 @@ export function ConditionFields({
           />
           {/* Always mounted, so screen readers announce an error once. */}
           <div aria-live="polite">
-            {validationError ? (
-              <p
-                className={
-                  ownSaveError
-                    ? "text-destructive text-xs"
-                    : "text-xs text-yellow-600"
-                }
-              >
-                {validationError}
-              </p>
-            ) : (
-              savingBlocked && (
-                <p className="text-destructive text-xs">
-                  {ownSaveError ?? workflowLimitError}
-                </p>
-              )
+            {blockingErrors}
+            {validationError && validationError !== ownSaveError && (
+              <p className="text-xs text-yellow-600">{validationError}</p>
             )}
-            {savingBlocked && (
-              <p className="text-muted-foreground text-xs">
-                Changes to this workflow won't save until this is fixed.
-              </p>
-            )}
+            {wontSave}
           </div>
           <p className="text-muted-foreground text-xs">
             Enter a JavaScript expression that evaluates to true or false. Use @
@@ -934,11 +950,13 @@ function SystemActionFields({
   config,
   onUpdateConfig,
   disabled,
+  nodeId,
 }: {
   actionType: string;
   config: Record<string, unknown>;
   onUpdateConfig: (key: string, value: ConfigValue) => void;
   disabled: boolean;
+  nodeId?: string;
 }) {
   switch (actionType) {
     case "HTTP Request":
@@ -962,6 +980,7 @@ function SystemActionFields({
         <ConditionFields
           config={config}
           disabled={disabled}
+          nodeId={nodeId}
           onUpdateConfig={onUpdateConfig}
         />
       );
@@ -1414,6 +1433,7 @@ export function ActionConfig({
         actionType={(config?.actionType as string) || ""}
         config={config}
         disabled={disabled}
+        nodeId={nodeId}
         onUpdateConfig={onUpdateConfig}
       />
 

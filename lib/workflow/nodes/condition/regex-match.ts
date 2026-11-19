@@ -267,35 +267,79 @@ export function regexPatternError(
   }
 }
 
+// Leads every message about a workflow's patterns together.
 export const REGEX_WORKFLOW_COMPILE_ERROR =
-  "Together, the regex patterns in this workflow's Conditions are too long: the limit is about 2,000 characters in all, fewer with {n} repeats. A pattern used twice counts once";
+  "Together, the regex patterns in this workflow's Conditions are too long";
+
+/** Past the workflow cap: how far past, given the patterns' total cost. */
+export function workflowCompileError(work: number): string {
+  const share = Math.max(
+    101,
+    Math.round((work / MAX_WORKFLOW_COMPILE_WORK) * 100)
+  );
+  return `${REGEX_WORKFLOW_COMPILE_ERROR}: about ${formatCount(share)}% of the limit, which is about 2,000 characters in all (fewer with {n} repeats)`;
+}
+
+// Past the cap the rest are estimated, not compiled: about a step per character.
+function estimatedCompileWork(pattern: string): number {
+  return pattern.length * (COMPILE_WORK_PER_CHAR + COMPILE_WORK_PER_STEP);
+}
+
+export type WorkflowPatternsResult =
+  | { refused: string; at: number }
+  | { work: number; largest: number };
 
 /**
- * Compiles a workflow's Condition patterns into a fresh run budget, each
- * distinct one once, and refuses them past the workflow cap. A refused pattern
- * is reported only with `reportRefused`; otherwise its own check reports it.
+ * Compiles each Condition's patterns into `budget`, each distinct one once,
+ * up to the workflow cap; past it, the rest are only estimated. Returns why a
+ * pattern is refused (with `reportRefused`), or, past the cap, the total cost
+ * and the Condition (by position) whose patterns cost the most.
  */
-export function prepareRegexPatterns(
-  patterns: Iterable<string>,
-  budget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" }),
-  reportRefused = false
-): string | undefined {
-  for (const pattern of patterns) {
-    try {
-      compileRegex(pattern, false, budget);
-    } catch (error) {
-      if (error instanceof RegexBudgetError) {
-        return REGEX_WORKFLOW_COMPILE_ERROR;
+export function prepareWorkflowPatterns(
+  conditions: readonly (readonly string[])[],
+  budget: RegexBudget,
+  { reportRefused }: { reportRefused: boolean }
+): WorkflowPatternsResult | undefined {
+  const seen = new Set<string>();
+  let estimated = 0;
+  let over = false;
+  let largest = { at: -1, cost: -1 };
+  for (const [at, patterns] of conditions.entries()) {
+    const before = budget.used() + estimated;
+    for (const pattern of patterns) {
+      if (seen.has(pattern)) {
+        continue;
       }
-      if (reportRefused) {
-        return error instanceof Error ? error.message : String(error);
+      seen.add(pattern);
+      if (over) {
+        estimated += estimatedCompileWork(pattern);
+        continue;
       }
+      try {
+        compileRegex(pattern, false, budget);
+      } catch (error) {
+        if (error instanceof RegexBudgetError) {
+          over = true;
+          estimated += estimatedCompileWork(pattern);
+          continue;
+        }
+        if (reportRefused) {
+          return {
+            refused: error instanceof Error ? error.message : String(error),
+            at,
+          };
+        }
+      }
+      over = budget.used() > MAX_WORKFLOW_COMPILE_WORK;
     }
-    if (budget.used() > MAX_WORKFLOW_COMPILE_WORK) {
-      return REGEX_WORKFLOW_COMPILE_ERROR;
+    const cost = budget.used() + estimated - before;
+    if (cost > largest.cost) {
+      largest = { at, cost };
     }
   }
-  return;
+  return over
+    ? { work: budget.used() + estimated, largest: largest.at }
+    : undefined;
 }
 
 type RegexBudgetScope = "node" | "run";

@@ -187,9 +187,11 @@ ranges and groups, and `{n}` copies its piece n times.
   against `^0x[0-9a-f]{64}$` (70 x 66 each), less what the run's patterns cost to prepare. For
   more, use Filter Array, which has its own budget per node. For a long allow-list, a few `equals`
   rules joined with OR also work.
-- **Saving:** a Condition with a regex test that would fail every run (a pattern that cannot run,
-  more than 16 tests, too long, or the workflow's patterns over their total) stops the workflow
-  saving until it is fixed; the editor shows why. Conditions without a regex test save as before.
+- **Saving:** an enabled Condition with a regex test that would fail any run reaching it (a
+  pattern that cannot run, more than 16 tests, too long), or the workflow's patterns over their
+  total, stops the workflow saving until it is fixed; the editor shows why. Conditions without a
+  regex test save as before. A workflow saved before these limits that is over the total fails
+  each run at its start, before any step runs.
 - A value that is missing, or comes from a node that did not run, fails the run; add an **exists**
   rule before it.
 

@@ -129,10 +129,10 @@ export function maskStringLiterals(expression: string): string {
   return out;
 }
 
-/** The value of text that is exactly one quoted literal read back unchanged. */
+/** The value of text that is exactly one double-quoted literal, read back unchanged. */
 export function exactStringLiteral(raw: string): string | undefined {
   const s = raw.trim();
-  if (!(s.startsWith('"') || s.startsWith("'"))) {
+  if (!s.startsWith('"')) {
     return;
   }
   try {

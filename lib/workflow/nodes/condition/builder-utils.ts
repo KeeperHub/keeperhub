@@ -110,7 +110,7 @@ function unwrapOperand(raw: string): string {
 // A regex pattern only reopens as a rule when it is one complete literal that
 // decodes exactly; anything else stays a typed expression.
 function unwrapRegexOperand(raw: string): string | undefined {
-  return raw.trim().startsWith('"') ? exactStringLiteral(raw) : undefined;
+  return exactStringLiteral(raw);
 }
 
 // The whole expression is one matchesRegex(left, "pattern") call.
