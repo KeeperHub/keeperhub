@@ -1,22 +1,74 @@
 ---
 title: "Data Plugin"
-description: "Reshape workflow data without writing a script: encode and decode strings, convert numbers between decimal and hex, hash values, extract named fields, filter arrays, flatten findings, and hold static config."
+description: "Reshape workflow data without writing a script: encode and decode strings, convert numbers between decimal and hex, hash values, extract named fields, compare arrays, filter arrays, flatten findings, and hold static config."
 ---
 
 # Data Plugin
 
-Six nodes that cover the data-shaping work that would otherwise go into a Code node. No credentials or setup required -- these are pure computation nodes.
+Seven nodes that cover the data-shaping work that would otherwise go into a Code node. No credentials or setup required -- these are pure computation nodes.
 
 ## Actions
 
 | Action | Description |
 | ------ | ----------- |
+| Compare Arrays | Compare two arrays, e.g. the list stored by the last run against this run's, and report what was added, removed or changed |
 | Encode / Decode | Convert text to padded hex (bytes8/16/32), raw hex or base64, and back; convert numbers between decimal and hex |
 | Extract Fields | Pick named values out of upstream node output by dotted path |
 | Filter Array | Keep the items of an array that pass a test, pull one field out of every match, and report each match's position and the items that could not be tested |
 | Flatten Findings | Merge several monitoring results into one labelled findings list |
 | Hash | Hash a value one way with keccak256, SHA-2, SHA3-256, RIPEMD-160 or BLAKE2b; optionally truncate and pad to a selector or an event topic |
 | Static Config | Hold static JSON configuration on the canvas |
+
+---
+
+## Compare Arrays
+
+Compares two arrays and reports which items were added, removed or changed. It only compares: it reads and writes no workflow state. To alert on changes between runs, chain State Get, Compare Arrays and State Set.
+
+### Inputs
+
+| Input | Required | Description |
+| ----- | -------- | ----------- |
+| Previous | No | A JSON array, usually the State Get value. Empty, null or missing counts as an empty array, so the first run works. |
+| Current | Yes | A JSON array, this run's value. |
+| Key field | No | Dotted path inside each item, e.g. `id` or `meta.id`. Without it, items are matched by whole value. |
+
+Each array holds up to 10,000 items.
+
+### Outputs
+
+| Output | Description |
+| ------ | ----------- |
+| `added` | Items in Current that are not in Previous |
+| `removed` | Items in Previous that are not in Current |
+| `changed` | With a Key field, the Current version of each item whose key is on both sides but whose content differs |
+| `previousChanged` | The Previous version of each changed item, in the same order as `changed` |
+| `unchanged` | Items present and identical on both sides |
+| `merged` | Previous with changed items replaced by their Current version and added items appended |
+| `addedCount`, `removedCount`, `changedCount` | Number of items in each list |
+| `hasChanges` | True when anything was added, removed or changed |
+
+### Notes
+
+- Without a Key field, items are matched by value: primitives by strict equality (`1` and `"1"` differ) and objects by deep equality. Key order inside objects does not matter. Nothing is ever `changed`; a modified object shows up as one removed and one added item.
+- With a Key field, an item with no value at that path fails the step, naming the item's 1-based position.
+- If a value or key repeats within one array, the first item wins and later repeats are ignored.
+- `merged` keeps removed items, which suits a list that only grows. When removals should drop out, store Current instead.
+
+### Example
+
+Alert on addresses that were not seen on the previous run, and store the grown list:
+
+```
+-> State Get:       Key: known-addresses
+-> Compare Arrays:  Previous: {{@get:State Get.value}}
+                    Current:  {{@find:Find Addresses.items}}
+-> Condition:       {{@compare:Compare Arrays.addedCount}} > 0
+-> Send alert with {{@compare:Compare Arrays.added}}
+-> State Set:       Key: known-addresses
+                    Value: {{@compare:Compare Arrays.merged}}
+                    Expected version: {{@get:State Get.version}}
+```
 
 ---
 

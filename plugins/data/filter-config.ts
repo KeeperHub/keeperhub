@@ -62,7 +62,7 @@ export type FilterSettings = {
   ignoreCase: boolean;
 };
 
-function readPath(raw: unknown, name: string): string {
+export function readPath(raw: unknown, name: string): string {
   if (raw === undefined || raw === null) {
     return "";
   }
@@ -159,7 +159,7 @@ function notAnArray(name: string): Error {
   );
 }
 
-function parseArrayInput(raw: unknown, name: string): unknown[] {
+export function parseArrayInput(raw: unknown, name: string): unknown[] {
   let parsed: unknown;
   try {
     parsed = parseJsonValue(raw, name);
@@ -191,7 +191,7 @@ export function toSourceArray(raw: unknown): unknown[] {
   return source;
 }
 
-function isBlank(raw: unknown): boolean {
+export function isBlank(raw: unknown): boolean {
   return (
     raw === undefined ||
     raw === null ||
