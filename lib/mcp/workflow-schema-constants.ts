@@ -11,6 +11,14 @@ import {
   BUILTIN_NODE_ID,
   BUILTIN_NODE_LABEL,
 } from "@/lib/workflow/editor/builtin-variables";
+import { OPERATOR_METADATA } from "@/lib/workflow/nodes/condition/operator-metadata";
+
+const CONDITION_OPERATOR_DOCS = Object.entries(OPERATOR_METADATA)
+  .map(
+    ([operator, meta]) =>
+      `"${operator}"${meta.unary ? " (unary, leave rightOperand empty)" : ""}: ${meta.description}`
+  )
+  .join("; ");
 
 // =============================================================================
 // SYSTEM ACTIONS (inline - these rarely change)
@@ -25,11 +33,10 @@ export const SYSTEM_ACTIONS = {
     category: "System",
     requiredFields: {
       condition:
-        'string - JavaScript expression using {{@nodeId:Label.field}} syntax. Supported operators: == (soft equals), === (equals), != (soft not equals), !== (not equals), >, >=, <, <=, contains, startsWith, endsWith, matchesRegex, isEmpty, isNotEmpty, exists (not null and not undefined), doesNotExist (null or undefined), isNull (=== null), isNotNull (!== null), isUndefined (=== undefined), isNotUndefined (!== undefined). Use == for cross-type comparisons (e.g., string "0" vs number 0). Example: "{{@check-balance:Check Balance.balance}} == 0"',
+        'string - JavaScript expression using {{@nodeId:Label.field}} syntax. Allowed: literals, === !== == != > >= < <=, + - * / % **, && || !, typeof, ternary, member access (a.b, a[0], .length), String(x), Array.isArray(x), Object.keys(x), and the methods .includes() .startsWith() .endsWith() .toString() .toLowerCase() .toUpperCase() .trim(). Named operators such as contains or isEmpty are not expression syntax: write String(a).includes(b), or use conditionConfig. Use == for cross-type comparisons (e.g., string "0" vs number 0). Examples: "{{@check-balance:Check Balance.balance}} == 0", "Array.isArray({{@read:Read.items}}) && {{@read:Read.items}}.includes(true)"',
     },
     optionalFields: {
-      conditionConfig:
-        'object - Visual condition builder config. Structure: { group: { id: "nanoid", logic: "AND" | "OR", rules: [{ id: "nanoid", leftOperand: "{{@nodeId:Label.field}}", operator: "===" | "==" | "!==" | "!=" | ">" | ">=" | "<" | "<=" | "contains" | "startsWith" | "endsWith" | "isEmpty" | "isNotEmpty" | "exists" | "doesNotExist" | "isNull" | "isNotNull" | "isUndefined" | "isNotUndefined" | "matchesRegex", rightOperand: "value" }] } }. Every group and rule MUST have a unique id. Operator must be the exact symbol (e.g. "===" not "equals", "<" not "less_than"). When provided, the condition expression is auto-generated from this visual config.',
+      conditionConfig: `object - Visual condition builder config. Structure: { group: { id: "nanoid", logic: "AND" | "OR", rules: [{ id: "nanoid", leftOperand: "{{@nodeId:Label.field}}", operator: "<operator>", rightOperand: "value" }] } }. Every group and rule MUST have a unique id. Operator must be the exact key listed here (e.g. "===" not "equals", "arrayContains" not "array_contains"). Operators: ${CONDITION_OPERATOR_DOCS}. arrayContains matches primitive items only; to test a field inside an array of objects, run Filter Array (data/filter) first and check its count or values. When provided, the condition expression is auto-generated from this visual config.`,
     },
     outputFields: {
       result: "boolean - Whether the condition evaluated to true",

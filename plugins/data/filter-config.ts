@@ -62,7 +62,7 @@ export type FilterSettings = {
   ignoreCase: boolean;
 };
 
-function readPath(raw: unknown, name: string): string {
+export function readPath(raw: unknown, name: string): string {
   if (raw === undefined || raw === null) {
     return "";
   }
@@ -181,17 +181,17 @@ function parseArrayInput(raw: unknown, name: string): unknown[] {
   return parsed;
 }
 
-export function toSourceArray(raw: unknown): unknown[] {
-  const source = parseArrayInput(raw, "Source");
+export function toSourceArray(raw: unknown, name = "Source"): unknown[] {
+  const source = parseArrayInput(raw, name);
   if (source.length > MAX_FILTER_ITEMS) {
     throw new Error(
-      `Source has ${source.length.toLocaleString(EN_US)} items; the limit is ${MAX_FILTER_ITEMS.toLocaleString(EN_US)}.`
+      `${name} has ${source.length.toLocaleString(EN_US)} items; the limit is ${MAX_FILTER_ITEMS.toLocaleString(EN_US)}.`
     );
   }
   return source;
 }
 
-function isBlank(raw: unknown): boolean {
+export function isBlank(raw: unknown): boolean {
   return (
     raw === undefined ||
     raw === null ||
