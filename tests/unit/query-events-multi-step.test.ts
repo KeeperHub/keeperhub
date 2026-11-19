@@ -394,24 +394,28 @@ describe("queryEventsStep - one event on an address list", () => {
   });
 
   it("accepts the list as a native array and returns each event once when addresses repeat", async () => {
+    const mixed = ethers.getAddress(
+      "0xabcdef0123456789abcdef0123456789abcdef01"
+    );
     node = new FakeLogNode(HEAD, [
-      emitted(VAULT, PAUSABLE, "Paused", [ALICE], 150, 1),
+      emitted(mixed, PAUSABLE, "Paused", [ALICE], 150, 1),
     ]);
     mockGetRpcProvider.mockResolvedValue(singleNodeRpc(node));
 
     const result = await queryEventsStep({
       ...listInput,
-      contractAddresses: [
-        VAULT,
-        VAULT,
-        VAULT.toUpperCase().replace("0X", "0x"),
-      ],
+      contractAddresses: [mixed, mixed.toLowerCase(), mixed],
     });
 
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.eventCount).toBe(1);
     }
+    for (const call of node.getLogsCalls) {
+      const sent = [call.address ?? []].flat().map((a) => a.toLowerCase());
+      expect(sent).toEqual([mixed.toLowerCase()]);
+    }
+    expect(node.getLogsCalls.length).toBeGreaterThan(0);
   });
 
   it("fails before any RPC call on a list that is not an array, even with failOnError off", async () => {

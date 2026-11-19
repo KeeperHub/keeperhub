@@ -14,11 +14,14 @@ import {
   QUERY_BATCH_SIZE,
   queryLogsWithRetry,
 } from "./query-events-core";
+import {
+  badAddressEntryError,
+  readAddressListValue,
+} from "../address-list-config";
 
 export const MAX_EVENT_QUERIES = 20;
-export const MAX_LIST_ADDRESSES = 5000;
-// Addresses per eth_getLogs call, to stay inside provider request limits.
-const ADDRESSES_PER_LOG_QUERY = 100;
+// Addresses per eth_getLogs call: the bound Multiple mode puts on a whole node.
+const ADDRESSES_PER_LOG_QUERY = MAX_EVENT_QUERIES;
 
 export type TaggedEvent = DecodedEvent & {
   contractAddress: string;
@@ -211,40 +214,15 @@ export function parseEventQueries(raw: unknown): ParseEventQueriesResult {
   return { success: true, queries };
 }
 
-const ADDRESS_LIST_SHAPE_ERROR =
-  "Contract Addresses must be a list of addresses (a JSON array), not a single value or text. Check the node that produces it.";
-const ADDRESS_LIST_EMPTY_ERROR =
-  "Contract Addresses is empty. Check the node that produces it.";
-
 function readAddressList(
   raw: unknown
 ): { success: true; entries: unknown[] } | Failure {
-  let value = raw;
-  if (typeof raw === "string") {
-    if (raw.trim() === "") {
-      return noDestination(ADDRESS_LIST_EMPTY_ERROR);
-    }
-    try {
-      value = JSON.parse(raw);
-    } catch {
-      return noDestination(ADDRESS_LIST_SHAPE_ERROR);
-    }
+  const list = readAddressListValue(raw);
+  if (list.success) {
+    return list;
   }
-  if (value === undefined || value === null) {
-    return noDestination(ADDRESS_LIST_EMPTY_ERROR);
-  }
-  if (!Array.isArray(value)) {
-    return noDestination(ADDRESS_LIST_SHAPE_ERROR);
-  }
-  if (value.length === 0) {
-    return noDestination(ADDRESS_LIST_EMPTY_ERROR);
-  }
-  if (value.length > MAX_LIST_ADDRESSES) {
-    return noDestination(
-      `Contract Addresses has ${value.length} entries, more than the ${MAX_LIST_ADDRESSES} one node can query. Split the list across several nodes.`
-    );
-  }
-  return { success: true, entries: value };
+  // An empty list has nothing to watch, so failOnError may soften it.
+  return list.emptyList ? fail(list.error) : noDestination(list.error);
 }
 
 /** Valid checksummed addresses in list order, each once however often it is listed. */
@@ -256,9 +234,7 @@ function normalizeAddressList(
   for (const [index, entry] of entries.entries()) {
     const text = typeof entry === "string" ? entry.trim() : "";
     if (!ethers.isAddress(text)) {
-      return noDestination(
-        `Contract Addresses entry ${index + 1} is not a valid address: ${JSON.stringify(entry)}. Use a 0x address with 40 hex characters.`
-      );
+      return noDestination(badAddressEntryError(index, entry));
     }
     const address = ethers.getAddress(text);
     if (!seen.has(address)) {

@@ -1,8 +1,11 @@
 import { ethers } from "ethers";
 import { describe, expect, it } from "vitest";
 import {
-  MAX_EVENT_QUERIES,
+  checkQueryEventsConfig,
   MAX_LIST_ADDRESSES,
+} from "@/plugins/web3/address-list-config";
+import {
+  MAX_EVENT_QUERIES,
   parseAddressListQuery,
   parseEventQueries,
   planAddressListQueries,
@@ -18,6 +21,9 @@ const TOKEN = "0x2222222222222222222222222222222222222222";
 const ORACLE = "0x3333333333333333333333333333333333333333";
 const ALICE = "0x4444444444444444444444444444444444444444";
 const BOB = "0x5555555555555555555555555555555555555555";
+// Checksummed with mixed case, so case and checksum handling is exercised.
+const MIXED_A = ethers.getAddress("0xabcdef0123456789abcdef0123456789abcdef01");
+const MIXED_B = ethers.getAddress("0xfedcba9876543210fedcba9876543210fedcba98");
 const CAROL = "0x6666666666666666666666666666666666666666";
 
 const PAUSABLE = new ethers.Interface([
@@ -459,21 +465,17 @@ describe("parseAddressListQuery", () => {
   });
 
   it("trims entries and checksums them", () => {
-    const [query] = listed([`  ${VAULT.toUpperCase().replace("0X", "0x")} `]);
+    const [query] = listed([`  ${MIXED_A.toLowerCase()} `]);
 
-    expect(query.contractAddress).toBe(ethers.getAddress(VAULT));
+    expect(query.contractAddress).toBe(MIXED_A);
   });
 
   it("queries a repeated address once, whatever its case", () => {
-    const queries = listed([
-      VAULT,
-      TOKEN,
-      VAULT.toUpperCase().replace("0X", "0x"),
-    ]);
+    const queries = listed([MIXED_A, MIXED_B, MIXED_A.toLowerCase()]);
 
     expect(queries.map((query) => query.contractAddress)).toEqual([
-      ethers.getAddress(VAULT),
-      ethers.getAddress(TOKEN),
+      MIXED_A,
+      MIXED_B,
     ]);
   });
 
@@ -485,9 +487,19 @@ describe("parseAddressListQuery", () => {
     }
   });
 
-  it("rejects a blank, missing or empty list", () => {
-    for (const raw of ["", "   ", undefined, null, [], "[]"]) {
-      expect(listError(raw).error).toContain("Contract Addresses is empty");
+  it("rejects a blank or missing list as having no contract to query", () => {
+    for (const raw of ["", "   ", undefined, null]) {
+      const failure = listError(raw);
+      expect(failure.error).toContain("Contract Addresses is empty");
+      expect(failure.destinationError).toBe(true);
+    }
+  });
+
+  it("rejects an empty list as an error failOnError may soften", () => {
+    for (const raw of [[], "[]"]) {
+      const failure = listError(raw);
+      expect(failure.error).toContain("Contract Addresses is empty");
+      expect(failure.destinationError).toBeUndefined();
     }
   });
 
@@ -502,18 +514,9 @@ describe("parseAddressListQuery", () => {
 
   it("rejects a non-string entry and a bad mixed-case checksum", () => {
     expect(listError([VAULT, 7]).error).toContain("entry 2");
-    const badChecksum = ethers
-      .getAddress(VAULT)
-      .replace(/[a-f]/, (c) => c.toUpperCase());
-    const flipped = ethers
-      .getAddress(TOKEN)
-      .replace(/[A-F]/, (c) => c.toLowerCase());
-    const failures = [badChecksum, flipped]
-      .filter((address) => !ethers.isAddress(address))
-      .map((address) => listError([address]).error);
-    for (const message of failures) {
-      expect(message).toContain("entry 1");
-    }
+    const badChecksum = MIXED_A.replace(/[A-F]/, (c) => c.toLowerCase());
+    expect(badChecksum).not.toBe(MIXED_A);
+    expect(listError([MIXED_B, badChecksum]).error).toContain("entry 2");
   });
 
   it("accepts the largest list and rejects one entry more", () => {
@@ -575,7 +578,10 @@ describe("planAddressListQueries", () => {
     );
     const plans = planAddressListQueries(resolvedList(addresses));
 
-    expect(plans.map((plan) => plan.addresses.length)).toEqual([100, 100, 50]);
+    expect(plans.map((plan) => plan.addresses.length)).toEqual([
+      ...new Array(12).fill(MAX_EVENT_QUERIES),
+      10,
+    ]);
     expect(plans.flatMap((plan) => plan.addresses)).toEqual(addresses);
   });
 
@@ -608,3 +614,34 @@ function resolvedList(
   }
   return result.queries;
 }
+
+describe("checkQueryEventsConfig", () => {
+  const listConfig = (contractAddresses: unknown): Record<string, unknown> => ({
+    queryMode: "address-list",
+    contractAddresses,
+  });
+
+  it("accepts a typed list, a template, and other modes untouched", () => {
+    expect(
+      checkQueryEventsConfig(listConfig(JSON.stringify([MIXED_A, VAULT])))
+    ).toBeUndefined();
+    expect(
+      checkQueryEventsConfig(listConfig("{{@reg:Read Contract.result}}"))
+    ).toBeUndefined();
+    expect(
+      checkQueryEventsConfig({ queryMode: "multiple", contractAddresses: "x" })
+    ).toBeUndefined();
+  });
+
+  it("rejects typed text that can never run", () => {
+    for (const raw of [VAULT, `${VAULT},${TOKEN}`, "not json", "[]"]) {
+      expect(checkQueryEventsConfig(listConfig(raw))?.field).toBe(
+        "contractAddresses"
+      );
+    }
+    expect(
+      checkQueryEventsConfig(listConfig(JSON.stringify([VAULT, "0x12"])))
+        ?.message
+    ).toContain("entry 2");
+  });
+});

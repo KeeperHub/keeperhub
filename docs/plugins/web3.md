@@ -24,7 +24,7 @@ Interact with EVM-compatible blockchain networks and Solana. Read-only actions w
 | Transfer SPL Token | Web3 | Wallet | Send SPL tokens on Solana to a recipient |
 | Approve ERC20 Token | Web3 | Wallet | Approve a spender contract to spend tokens on your behalf |
 | Check ERC20 Allowance | Web3 | No | Check the current token spending allowance granted to a spender |
-| Query Contract Events | Web3 | No | Query historical smart contract events across a block range, for one event for several events across several contracts, or for one event across a list of contracts known at run time, optionally filtered by indexed argument values |
+| Query Contract Events | Web3 | No | Query historical smart contract events across a block range, for one event, for several events across several contracts, or for one event across a list of contracts known at run time, optionally filtered by indexed argument values |
 | Query Transaction History | Web3 | No | Query historical transactions by function call with optional argument filtering |
 | Sign Typed Data (EIP-712) | Web3 | Wallet | Produce an EIP-712 signature over a typed-data payload for off-chain signed intents |
 | Decode Calldata | Security | No | Decode raw calldata into human-readable function calls |
@@ -407,7 +407,7 @@ One node can watch a single event on one contract, several events across several
 - Event Name (required, selected from ABI)
 - Filter by Indexed Arguments (optional) -- a value for any indexed parameter of the event. Omit a parameter to match any value for it; a parameter given an empty value fails the step. One value per parameter: `eth_getLogs` also accepts a list of alternatives per topic, but that OR form is not supported here
 - Events (required in Multiple mode): up to 20 entries, each with its own Contract Address, Contract ABI (auto-fetched from block explorer), Event and optional Filter by Indexed Arguments. In Multiple mode these replace the single Contract Address, Contract ABI, Event Name and filter fields above.
-- Contract Addresses (required in One event, many contracts mode): a JSON array of addresses, or a reference to an array from an earlier node such as `{{@registry:Read Contract.result}}`. Up to 5,000 addresses. Contract ABI, Event Name and Filter by Indexed Arguments apply to every address in the list, and Contract Address is not used
+- Contract Addresses (required in One event, many contracts mode): a JSON array of addresses, or a reference to an array from an earlier node such as `{{@filter:Filter Array.values}}`. Up to 5,000 addresses. Contract ABI, Event Name and Filter by Indexed Arguments apply to every address in the list, and Contract Address is not used
 - Fetch ABI From (optional, One event, many contracts mode): one contract with the same ABI, used only to fetch the ABI; it is not queried unless it is in the list. Alternatively tick Use manual ABI and paste the ABI
 - Block Lookback -- number of blocks to scan back from To Block (default: 6500, ~1 day on Ethereum). Ignored if From Block is set
 - From Block -- explicit start block (overrides Block Lookback)
@@ -440,7 +440,7 @@ A filter naming a parameter that is not indexed, or a value that does not fit it
 
 **Querying one event on a list of contracts**
 
-Set Query Mode to One event, many contracts and set Contract Addresses to the list. The list is checked before any query runs, and the step fails when it is blank or empty, is a single value or text rather than a JSON array, has more than 5,000 entries, or has an entry that is not a valid address (the message names the entry, counted from 1; an address in mixed case must have a valid checksum). An address listed more than once is queried once, so no event is returned twice. The addresses are queried in groups over one shared block range, and a latest To Block ends 5 blocks behind the latest block as in Multiple mode.
+Set Query Mode to One event, many contracts and set Contract Addresses to the list. The list is checked before any query runs, and the step fails when it is blank, is a single value or text rather than a JSON array, has more than 5,000 entries, or has an entry that is not a valid address (the message names the entry, counted from 1; an address in mixed case must have a valid checksum). These failures stop the run even with Fail workflow on error off. An empty list, `[]`, fails the step like any other query error, so with Fail workflow on error off the run continues with no events. A list typed into the field is checked when the workflow is saved. An address listed more than once is queried once, so no event is returned twice. The addresses are queried in groups over one shared block range, and a latest To Block ends 5 blocks behind the latest block as in Multiple mode.
 
 **Querying multiple events or contracts**
 

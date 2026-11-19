@@ -24,6 +24,7 @@ import {
 } from "@/plugins/field-fragments";
 import type { ShowWhen } from "@/lib/workflow/editor/show-when";
 import { registerIntegration } from "@/plugins/registry-core";
+import { checkQueryEventsConfig } from "./address-list-config";
 import { Web3Icon } from "./icon";
 
 // Single-event mode, including workflows saved before queryMode existed.
@@ -1254,6 +1255,7 @@ const web3Plugin: IntegrationPlugin = {
       category: "Web3",
       stepFunction: "queryEventsStep",
       stepImportPath: "query-events",
+      validateConfig: checkQueryEventsConfig,
       outputFields: [
         {
           field: "success",
