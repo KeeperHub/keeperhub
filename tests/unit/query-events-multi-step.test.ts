@@ -344,3 +344,119 @@ describe("queryEventsStep - multiple events and failOnError", () => {
     expect(result.error).toContain("Event 1 has an invalid contract address");
   });
 });
+
+describe("queryEventsStep - one event on an address list", () => {
+  const listInput = {
+    network: "mainnet",
+    queryMode: "address-list",
+    contractAddresses: JSON.stringify([VAULT, TOKEN]),
+    abi: PAUSABLE.formatJson(),
+    eventName: "Paused",
+    fromBlock: "100",
+  };
+
+  it("returns the event from every listed contract, tagged with its address", async () => {
+    const other = new ethers.Wallet(ethers.id("other")).address;
+    node = new FakeLogNode(HEAD, [
+      emitted(VAULT, PAUSABLE, "Paused", [ALICE], 150, 1),
+      emitted(other, PAUSABLE, "Paused", [BOB], 151, 0),
+      emitted(TOKEN, PAUSABLE, "Paused", [BOB], 160, 0),
+      emitted(VAULT, PAUSABLE, "Unpaused", [BOB], 170, 0),
+    ]);
+    mockGetRpcProvider.mockResolvedValue(singleNodeRpc(node));
+
+    const result = await queryEventsStep(listInput);
+
+    expect(result).toEqual({
+      success: true,
+      events: [
+        {
+          contractAddress: VAULT,
+          eventName: "Paused",
+          blockNumber: 150,
+          transactionHash: TX_HASH,
+          logIndex: 1,
+          args: { account: ALICE },
+        },
+        {
+          contractAddress: TOKEN,
+          eventName: "Paused",
+          blockNumber: 160,
+          transactionHash: TX_HASH,
+          logIndex: 0,
+          args: { account: BOB },
+        },
+      ],
+      fromBlock: 100,
+      toBlock: HEAD - TIP_SAFETY_MARGIN_BLOCKS,
+      eventCount: 2,
+    });
+  });
+
+  it("accepts the list as a native array and returns each event once when addresses repeat", async () => {
+    const mixed = ethers.getAddress(`0x${"abcd".repeat(10)}`);
+    node = new FakeLogNode(HEAD, [
+      emitted(mixed, PAUSABLE, "Paused", [ALICE], 150, 1),
+    ]);
+    mockGetRpcProvider.mockResolvedValue(singleNodeRpc(node));
+
+    const result = await queryEventsStep({
+      ...listInput,
+      contractAddresses: [mixed, mixed.toLowerCase(), mixed],
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.eventCount).toBe(1);
+    }
+    for (const call of node.getLogsCalls) {
+      const sent = [call.address ?? []].flat().map((a) => a.toLowerCase());
+      expect(sent).toEqual([mixed.toLowerCase()]);
+    }
+    expect(node.getLogsCalls.length).toBeGreaterThan(0);
+  });
+
+  it("fails before any RPC call on a list that is not an array, even with failOnError off", async () => {
+    const result = await queryEventsStep({
+      ...listInput,
+      contractAddresses: VAULT,
+      failOnError: false,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("must be a list of addresses");
+    }
+    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+  });
+
+  it("names the bad entry from 1", async () => {
+    const result = await queryEventsStep({
+      ...listInput,
+      contractAddresses: [VAULT, "nope"],
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("entry 2");
+    }
+  });
+
+  it("leaves the legacy modes reading their own fields", async () => {
+    const single = await queryEventsStep({
+      network: "mainnet",
+      contractAddress: VAULT,
+      contractAddresses: JSON.stringify(["nope"]),
+      abi: PAUSABLE.formatJson(),
+      eventName: "Paused",
+      fromBlock: "100",
+    });
+    const multiple = await queryEventsStep({
+      ...multipleInput,
+      contractAddresses: JSON.stringify(["nope"]),
+    });
+
+    expect(single.success).toBe(true);
+    expect(multiple.success).toBe(true);
+  });
+});
