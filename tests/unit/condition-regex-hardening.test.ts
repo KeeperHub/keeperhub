@@ -6,7 +6,9 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import { applyBigIntConversion } from "@/lib/bigint-condition-utils";
+import { generateWorkflowCode } from "@/lib/workflow/codegen/codegen";
 import { generateWorkflowSDKCode } from "@/lib/workflow/codegen/sdk";
+import { commentSafe } from "@/lib/workflow/codegen/shared";
 import { evaluateConditionExpression } from "@/lib/workflow/executor/executor.workflow";
 import { editorConditionState } from "@/lib/workflow/nodes/condition/builder-utils";
 import {
@@ -58,16 +60,41 @@ describe("regex hardening", () => {
       expect(performance.now() - again).toBeLessThan(Math.max(5, firstMs / 4));
     });
 
-    it("charges a compile the same whether or not it is cached", () => {
+    it("charges a compile once per run, the same whether or not it is cached", () => {
       const pattern = `^${"q".repeat(400)}`;
-      // Warm the cache, then charge a cached compile: 400 x 2,000 for the
-      // length plus the compiled steps x 400.
+      // A cached compile is still charged: 401 x 2,000 for the length plus
+      // the compiled steps x 400, more than 900,000.
       compileRegex(pattern, false);
-      const budget = new RegexBudget(1_000_000);
-      expect(() => compileRegex(pattern, false, budget)).not.toThrow();
-      expect(() => compileRegex(pattern, false, budget)).toThrow(
-        RegexBudgetError
-      );
+      expect(() =>
+        compileRegex(pattern, false, new RegexBudget(900_000))
+      ).toThrow(RegexBudgetError);
+      // Within one run it is paid once, whichever node budget asks.
+      const runBudget = new RegexBudget(1_000_000, { scope: "run" });
+      for (let i = 0; i < 3; i++) {
+        const node = new RegexBudget(1_000_000, { parent: runBudget });
+        expect(() => compileRegex(pattern, false, node)).not.toThrow();
+      }
+    });
+
+    // About 56,000 to compile once, then 46 steps x 42 characters per test.
+    it("lets a For Each test 5,000 addresses against one pattern", () => {
+      const runBudget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
+      const condition = `matchesRegex(${FIELD}, "^0x[0-9a-fA-F]{40}$")`;
+      const value = `0x${"ab".repeat(20)}`;
+      const outputs = { n1: { label: "Webhook", data: { value } } };
+      const results = { n1: { success: true, data: { value } } };
+      const nodes = new Map([["n1", {}]]);
+      for (let i = 0; i < 5000; i++) {
+        expect(
+          evaluateConditionExpression(
+            condition,
+            outputs,
+            nodes,
+            results,
+            runBudget
+          ).result
+        ).toBe(true);
+      }
     });
 
     it("charges by compiled steps, so a short expanding pattern is not cheap", () => {
@@ -98,8 +125,8 @@ describe("regex hardening", () => {
   });
 
   describe("condition size", () => {
-    it("refuses a condition over 10,000 characters in every check", () => {
-      const long = `${FIELD} === "${"a".repeat(10_000)}"`;
+    it("refuses a regex condition over 10,000 characters in every check", () => {
+      const long = `matchesRegex(${FIELD}, "a") || ${FIELD} === "${"a".repeat(10_000)}"`;
       for (const result of [
         preValidateConditionExpression(long),
         validateConditionExpression(long),
@@ -110,6 +137,27 @@ describe("regex hardening", () => {
           error: expect.stringContaining("the limit is 10,000"),
         });
       }
+    });
+
+    // A saved allow-list of address rules, with no regex.
+    it("leaves long conditions without matchesRegex as they were", () => {
+      const rule = (i: number): string =>
+        `{{@node_${String(i).padStart(16, "0")}:Label.from}} === "0x${String(i).padStart(40, "0")}"`;
+      const long = Array.from({ length: 120 }, (_, i) => rule(i)).join(" || ");
+      expect(long.length).toBeGreaterThan(10_000);
+      for (const result of [
+        preValidateConditionExpression(long),
+        validateConditionExpressionUI(long),
+      ]) {
+        expect(result).toEqual({ valid: true });
+      }
+      // As the run checks it, references already replaced.
+      const resolved = Array.from(
+        { length: 200 },
+        (_, i) => `__v${i} === "0x${String(i).padStart(40, "0")}"`
+      ).join(" || ");
+      expect(resolved.length).toBeGreaterThan(10_000);
+      expect(validateConditionExpression(resolved)).toEqual({ valid: true });
     });
 
     it("opens a condition with more regex tests than allowed as text", () => {
@@ -150,6 +198,46 @@ describe("regex hardening", () => {
       expect(run(`${FIELD} === "x" && 2 ** 64 > 9007199254740993`, "x")).toBe(
         true
       );
+    });
+
+    it("raises 0, 1 and -1 to any power", () => {
+      for (const [base, power] of [
+        [BigInt(1), BigInt(1)],
+        [BigInt(0), BigInt(0)],
+        [BigInt(-1), BigInt(1)],
+      ]) {
+        expect(
+          safeEvaluateCondition("__v0 ** __v1", {
+            __v0: base,
+            __v1: BigInt(100_000),
+          })
+        ).toBe(power);
+      }
+      expect(() =>
+        safeEvaluateCondition("__v0 ** __v1", {
+          __v0: BigInt(2),
+          __v1: BigInt(100_000),
+        })
+      ).toThrow("too large");
+    });
+
+    it("tests the value as resolved, leading zeros included", () => {
+      const data = { balance: "2000000000000000000000", zip: "01234" };
+      const evaluate = (condition: string): boolean =>
+        evaluateConditionExpression(
+          condition,
+          { n1: { label: "Webhook", data } },
+          new Map([["n1", {}]]),
+          { n1: { success: true, data } }
+        ).result;
+      const big = "{{@n1:Webhook.balance}} > 1000000000000000000000";
+      const zip = '"^0\\\\d{4}$"';
+      expect(
+        evaluate(`${big} && matchesRegex({{@n1:Webhook.zip}}, ${zip})`)
+      ).toBe(true);
+      expect(
+        evaluate(`${big} && !matchesRegex({{@n1:Webhook.zip}}, "^1234$")`)
+      ).toBe(true);
     });
 
     it("leaves a number after a dot, $ or [ alone", () => {
@@ -250,6 +338,74 @@ describe("regex hardening", () => {
     it("keeps a label inside its comment", () => {
       const code = exported(`${FIELD} === 1`, "Lbl\nprocess.exit(9);//");
       expect(code).not.toMatch(/^\s*process\.exit\(9\)/m);
+    });
+
+    function workflowCode(condition: string): string {
+      const nodes = [
+        {
+          id: "t",
+          type: "trigger",
+          position: { x: 0, y: 0 },
+          data: { label: "Trigger", type: "trigger", config: {} },
+        },
+        {
+          id: "n1",
+          type: "action",
+          position: { x: 0, y: 0 },
+          data: {
+            label: "Webhook",
+            type: "action",
+            config: { actionType: "HTTP Request" },
+          },
+        },
+        {
+          id: "c",
+          type: "action",
+          position: { x: 0, y: 0 },
+          data: {
+            label: "Check",
+            type: "action",
+            config: { actionType: "Condition", condition },
+          },
+        },
+        {
+          id: "n",
+          type: "action",
+          position: { x: 0, y: 0 },
+          data: {
+            label: "Next",
+            type: "action",
+            config: { actionType: "HTTP Request" },
+          },
+        },
+      ] as WorkflowNode[];
+      const edges = [
+        { id: "e0", source: "t", target: "n1" },
+        { id: "e1", source: "n1", target: "c" },
+        { id: "e2", source: "c", target: "n", sourceHandle: "true" },
+      ] as never;
+      return generateWorkflowCode(nodes, edges).code;
+    }
+
+    // A field path is written as code, so only a plain path may go in.
+    it("refuses a reference whose field path is code", () => {
+      const injected = `{{@n1:Webhook.a || ${payload(5)} || b}} == 1`;
+      for (const code of [exported(injected), workflowCode(injected)]) {
+        expect(code).not.toContain(payload(5));
+        expect(code).not.toMatch(/\|\| process\.exit/);
+      }
+      const plain = workflowCode("{{@n1:Webhook.items[0].value}} == 1");
+      expect(plain).toContain("items[0].value == 1");
+    });
+
+    // Labels, descriptions, node ids and action types all go through it.
+    it("keeps text inside a // or /* comment", () => {
+      for (const breaker of ["\n", "\r", "\u2028", "\u2029"]) {
+        expect(commentSafe(`note${breaker}process.exit(6);//`)).toBe(
+          "note process.exit(6);//"
+        );
+      }
+      expect(commentSafe("a */ process.exit(6); /* b")).not.toContain("*/");
     });
   });
 });

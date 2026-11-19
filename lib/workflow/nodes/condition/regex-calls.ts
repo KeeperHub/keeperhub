@@ -24,7 +24,7 @@ export function codeStructure(expression: string): string {
 }
 
 // Undefined when a quote is never closed: no reliable structure to read.
-function maskedStructure(expression: string): string | undefined {
+export function maskedStructure(expression: string): string | undefined {
   const withoutReferences = replaceTemplateTokens(expression, ({ body }) =>
     "_".repeat(body.length + 4)
   );
@@ -85,8 +85,13 @@ function argumentSpans(
 
 /** True when matchesRegex appears outside quoted text, in any form. */
 export function mentionsRegex(expression: string): boolean {
+  return mentionsRegexIn(codeStructure(expression));
+}
+
+/** mentionsRegex on a codeStructure already computed. */
+export function mentionsRegexIn(structure: string): boolean {
   REGEX_NAME_RE.lastIndex = 0;
-  return REGEX_NAME_RE.test(codeStructure(expression));
+  return REGEX_NAME_RE.test(structure);
 }
 
 /**
@@ -113,10 +118,15 @@ export function findRegexCalls(
   limit = MAX_REGEX_CALLS + 1
 ): RegexCall[] {
   const structure = maskedStructure(expression);
+  return structure === undefined ? [] : regexCallsIn(structure, limit);
+}
+
+/** findRegexCalls on a maskedStructure already computed. */
+export function regexCallsIn(
+  structure: string,
+  limit = MAX_REGEX_CALLS + 1
+): RegexCall[] {
   const calls: RegexCall[] = [];
-  if (structure === undefined) {
-    return calls;
-  }
   const pairs = pairParens(structure);
   for (const match of structure.matchAll(REGEX_CALL_RE)) {
     const open = match.index + match[0].length - 1;

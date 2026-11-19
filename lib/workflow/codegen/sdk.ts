@@ -578,7 +578,7 @@ ${stepBody}
     const stepFnName =
       nodeToStepName.get(nodeId) || sanitizeStepName(nodeLabel);
 
-    const lines: string[] = [`${indent}// ${nodeLabel}`];
+    const lines: string[] = [`${indent}// ${commentSafe(nodeLabel)}`];
 
     // Check if this node's output is used by any downstream node
     const outputIsUsed = usedNodeOutputs.has(nodeId);
@@ -688,7 +688,9 @@ ${stepBody}
       }
 
       default:
-        lines.push(`${indent}// Unknown node type: ${node.data.type}`);
+        lines.push(
+          `${indent}// Unknown node type: ${commentSafe(String(node.data.type))}`
+        );
         break;
     }
 

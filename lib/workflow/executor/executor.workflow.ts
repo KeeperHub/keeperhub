@@ -590,12 +590,15 @@ export function evaluateConditionExpression(
       }
 
       // BigInt-safe conversion for large Web3 values (e.g. token balances in wei)
+      let regexTextContext: Record<string, unknown> | undefined;
       if (needsBigIntMode(transformedExpression, evalContext)) {
         const converted = applyBigIntConversion(
           transformedExpression,
           evalContext
         );
         transformedExpression = converted.expression;
+        // matchesRegex tests the values as resolved: "01234", not 1234n.
+        regexTextContext = { ...converted.evalContext, ...evalContext };
         evalContext = converted.evalContext;
       }
 
@@ -605,7 +608,8 @@ export function evaluateConditionExpression(
       const result = safeEvaluateCondition(
         transformedExpression,
         evalContext,
-        regexRunBudget
+        regexRunBudget,
+        regexTextContext
       );
       if (unresolvedFields.length > 0) {
         logWarn("[Condition] Reference(s) resolved to undefined", {

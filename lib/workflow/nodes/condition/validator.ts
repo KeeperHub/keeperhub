@@ -32,6 +32,7 @@ import {
 import {
   findRegexCalls,
   hasIndirectRegexUse,
+  mentionsRegex,
   REGEX_OBJECT_RE,
 } from "./regex-calls";
 import {
@@ -118,14 +119,15 @@ function blockedKeyError(
   return;
 }
 
-// Several checks here scale worse than linearly; a cap keeps each one fast.
+// Caps conditions that use matchesRegex, whose checks read the text several
+// times; others are not limited, so existing long conditions keep running.
 export const MAX_CONDITION_LENGTH = 10_000;
 
 function lengthError(expression: string): ValidationResult | undefined {
-  return expression.length > MAX_CONDITION_LENGTH
+  return expression.length > MAX_CONDITION_LENGTH && mentionsRegex(expression)
     ? {
         valid: false,
-        error: `Condition is ${expression.length.toLocaleString("en-US")} characters; the limit is ${MAX_CONDITION_LENGTH.toLocaleString("en-US")}`,
+        error: `A condition that uses matchesRegex is ${expression.length.toLocaleString("en-US")} characters; the limit is ${MAX_CONDITION_LENGTH.toLocaleString("en-US")}`,
       }
     : undefined;
 }

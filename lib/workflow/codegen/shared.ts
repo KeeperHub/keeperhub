@@ -164,10 +164,6 @@ export function removeInvisibleChars(str: string): string {
     .replace(/[\u2000-\u200B\u2028\u2029]/g, " "); // Various invisible space characters
 }
 
-/**
- * Escape a string for safe use in template literals
- * Only escapes backslashes and backticks
- */
 /** Text that cannot end or break out of a // or /* comment. */
 export function commentSafe(text: string): string {
   return text.replace(/[\r\n\u2028\u2029]+/g, " ").replace(/\*\//g, "*\\/");
@@ -181,19 +177,47 @@ export function escapeTemplateText(text: string): string {
     .replace(/\$\{/g, "\\${");
 }
 
+// One part of a reference's field path as export writes it: a name, a name
+// with an index (items[0]) or an index (topics.1).
+const PLAIN_PATH_PART = /^(?:[A-Za-z_$][\w$]*(?:\[\d+\])?|\d+)$/;
+
+/**
+ * The parts export may write as a field path: everything after the label's
+ * first dot (@id:Label.a.b) or the node id ($id.a.b). A label with dots only
+ * shortens this, so checking it covers every way export splits the reference.
+ */
+function referencePathParts(body: string): string[] {
+  const trimmed = body.trim();
+  const rest = trimmed.startsWith("@")
+    ? trimmed.slice(trimmed.indexOf(":") + 1)
+    : trimmed;
+  const dot = rest.indexOf(".");
+  return dot === -1 ? [] : rest.slice(dot + 1).split(".");
+}
+
 /**
  * A condition that may be written into exported code: the run's grammar with
- * references as variables, and no matchesRegex (exported code has no helper).
+ * references as variables, each reference's field path a plain property or
+ * index path (export writes it as code), and no matchesRegex (exported code
+ * has no helper).
  */
 export function isExportableCondition(condition: string): boolean {
   if (mentionsRegex(condition)) {
     return false;
   }
-  return isSafeConditionExpression(
-    replaceTemplateTokens(condition, () => "__v0")
+  const plainPaths = findTemplateTokens(condition).every(({ body }) =>
+    referencePathParts(body).every((part) => PLAIN_PATH_PART.test(part))
+  );
+  return (
+    plainPaths &&
+    isSafeConditionExpression(replaceTemplateTokens(condition, () => "__v0"))
   );
 }
 
+/**
+ * Escape a string for safe use in template literals
+ * Only escapes backslashes and backticks
+ */
 export function escapeForTemplateLiteral(str: string): string {
   if (!str) {
     return "";

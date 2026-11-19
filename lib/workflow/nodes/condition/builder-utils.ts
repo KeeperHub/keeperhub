@@ -8,10 +8,10 @@ import { isConditionGroup } from "./builder-types";
 import { visualConditionToExpression } from "./expression";
 import { isRegexOperator, OPERATOR_METADATA } from "./operator-metadata";
 import {
-  codeStructure,
-  findRegexCalls,
-  mentionsRegex,
+  maskedStructure,
+  mentionsRegexIn,
   REGEX_OBJECT_RE,
+  regexCallsIn,
 } from "./regex-calls";
 import { MAX_REGEX_CALLS } from "./regex-match";
 import { scanString } from "./string-literal";
@@ -59,6 +59,34 @@ const IS_NOT_NULL_PATTERN = /^(.+?) !== null$/;
 const IS_UNDEFINED_PATTERN = /^(.+?) === undefined$/;
 const IS_NOT_UNDEFINED_PATTERN = /^(.+?) !== undefined$/;
 const COMPARISON_PATTERN = /^(.+?)\s+(===|!==|==|!=|>=|<=|>|<)\s+(.+)$/;
+// What String#trim removes.
+const WHITESPACE = /\s/;
+
+/**
+ * Condition text with its codeStructure, same length, so the parse-back masks
+ * the text once and slices both together.
+ */
+type Scanned = { text: string; structure: string };
+
+function sliceOf(s: Scanned, start: number, end = s.text.length): Scanned {
+  return {
+    text: s.text.slice(start, end),
+    structure: s.structure.slice(start, end),
+  };
+}
+
+// Ends are never inside quotes, so trimming both alike keeps them aligned.
+function trimmed(s: Scanned): Scanned {
+  let start = 0;
+  let end = s.text.length;
+  while (start < end && WHITESPACE.test(s.text[start])) {
+    start++;
+  }
+  while (end > start && WHITESPACE.test(s.text[end - 1])) {
+    end--;
+  }
+  return sliceOf(s, start, end);
+}
 
 function unwrapOperand(raw: string): string {
   const s = raw.trim();
@@ -99,8 +127,8 @@ function unwrapRegexOperand(raw: string): string | undefined {
 }
 
 // The whole expression is one matchesRegex(left, "pattern") call.
-function parseRegexCall(s: string): ConditionRule | null {
-  const [call] = findRegexCalls(s);
+function parseRegexCall({ text: s, structure }: Scanned): ConditionRule | null {
+  const [call] = regexCallsIn(structure, 1);
   if (call?.open !== "matchesRegex".length || call.close !== s.length - 1) {
     return null;
   }
@@ -124,49 +152,40 @@ function parseRegexCall(s: string): ConditionRule | null {
  * neither `&&` nor `||` appears at depth 0.
  */
 function splitTopLevel(
-  expr: string
-): { parts: string[]; logic: "AND" | "OR" } | null {
+  expr: Scanned
+): { parts: Scanned[]; logic: "AND" | "OR" } | null {
+  const { structure } = expr;
   let depth = 0;
-  const parts: string[] = [];
-  let current = "";
+  const parts: Scanned[] = [];
+  let partStart = 0;
   let detectedLogic: "AND" | "OR" | null = null;
-  const structure = codeStructure(expr);
 
-  for (let i = 0; i < expr.length; i++) {
-    const ch = expr[i];
+  for (let i = 0; i < structure.length; i++) {
     if (structure[i] === "(") {
       depth++;
-      current += ch;
     } else if (structure[i] === ")") {
       depth--;
-      current += ch;
     } else if (depth === 0) {
-      if (structure.slice(i, i + 4) === " && ") {
-        if (detectedLogic === "OR") {
+      const separator = structure.slice(i, i + 4);
+      const logic =
+        (separator === " && " && "AND") ||
+        (separator === " || " && "OR") ||
+        null;
+      if (logic) {
+        if (detectedLogic && detectedLogic !== logic) {
           return null; // mixed operators at same level — can't parse
         }
-        detectedLogic = "AND";
-        parts.push(current.trim());
-        current = "";
-        i += 3; // skip " && "
-      } else if (structure.slice(i, i + 4) === " || ") {
-        if (detectedLogic === "AND") {
-          return null;
-        }
-        detectedLogic = "OR";
-        parts.push(current.trim());
-        current = "";
-        i += 3;
-      } else {
-        current += ch;
+        detectedLogic = logic;
+        parts.push(trimmed(sliceOf(expr, partStart, i)));
+        partStart = i + 4;
+        i += 3; // skip the separator
       }
-    } else {
-      current += ch;
     }
   }
 
-  if (current.trim()) {
-    parts.push(current.trim());
+  const last = trimmed(sliceOf(expr, partStart));
+  if (last.text) {
+    parts.push(last);
   }
 
   if (detectedLogic === null || parts.length === 0) {
@@ -177,24 +196,24 @@ function splitTopLevel(
 }
 
 /** Strip one layer of balanced outer parentheses if present. */
-function stripOuterParens(s: string): string {
-  const trimmed = s.trim();
-  if (!(trimmed.startsWith("(") && trimmed.endsWith(")"))) {
-    return trimmed;
+function stripOuterParens(s: Scanned): Scanned {
+  const whole = trimmed(s);
+  const { text, structure } = whole;
+  if (!(text.startsWith("(") && text.endsWith(")"))) {
+    return whole;
   }
-  const structure = codeStructure(trimmed);
   let depth = 0;
-  for (let i = 0; i < trimmed.length - 1; i++) {
+  for (let i = 0; i < text.length - 1; i++) {
     if (structure[i] === "(") {
       depth++;
     } else if (structure[i] === ")") {
       depth--;
     }
     if (depth === 0) {
-      return trimmed; // closing paren matched before end — not wrapping
+      return whole; // closing paren matched before end — not wrapping
     }
   }
-  return trimmed.slice(1, -1).trim();
+  return trimmed(sliceOf(whole, 1, text.length - 1));
 }
 
 function makeRule(
@@ -211,14 +230,15 @@ function makeRule(
 }
 
 /** Try to parse a single atomic expression into a ConditionRule. */
-function parseAtomicExpression(expr: string): ConditionRule | null {
-  const s = expr.trim();
+function parseAtomicExpression(expr: Scanned): ConditionRule | null {
+  const whole = trimmed(expr);
+  const s = whole.text;
 
   if (s.startsWith("matchesRegex(")) {
-    return parseRegexCall(s);
+    return parseRegexCall(whole);
   }
   if (s.startsWith("!matchesRegex(")) {
-    const rule = parseRegexCall(s.slice(1));
+    const rule = parseRegexCall(sliceOf(whole, 1));
     return rule && { ...rule, operator: "notMatchesRegex" };
   }
 
@@ -241,7 +261,7 @@ function parseAtomicExpression(expr: string): ConditionRule | null {
   }
 
   // Unary existence patterns (wrapped in parens, already stripped by caller or not)
-  const stripped = stripOuterParens(s);
+  const stripped = stripOuterParens(whole).text;
 
   // isEmpty: left === null || left === undefined || left === ""
   const isEmptyMatch = stripped.match(IS_EMPTY_PATTERN);
@@ -308,9 +328,9 @@ function parseAtomicExpression(expr: string): ConditionRule | null {
   return null;
 }
 
-function parseExpression(expr: string): ConditionGroup | ConditionRule | null {
-  const s = expr.trim();
-  if (!s || s === "true") {
+function parseExpression(expr: Scanned): ConditionGroup | ConditionRule | null {
+  const s = trimmed(expr);
+  if (!s.text || s.text === "true") {
     return null;
   }
 
@@ -337,7 +357,7 @@ function parseExpression(expr: string): ConditionGroup | ConditionRule | null {
 
   // Try stripping outer parens and re-parsing (for parenthesized single expressions)
   const stripped = stripOuterParens(s);
-  if (stripped !== s) {
+  if (stripped.text !== s.text) {
     return parseExpression(stripped);
   }
 
@@ -374,17 +394,21 @@ export function editorConditionState(
   if (savedGroup && visualConditionToExpression(savedGroup) === condition) {
     return { parsedGroup: null, initialMode: "visual" };
   }
-  const parsed = expressionToConditionGroup(condition);
+  // Masked once; every check and the parse-back read this.
+  const masked = maskedStructure(condition);
+  const scan: Scanned = { text: condition, structure: masked ?? condition };
+  const parsed = masked === undefined ? null : groupFromScanned(scan);
   // The text is checked too: a garbled parse can swallow a regex call, or the
   // old new RegExp form, whole.
   const involvesRegex =
-    mentionsRegex(condition) ||
-    REGEX_OBJECT_RE.test(codeStructure(condition)) ||
+    mentionsRegexIn(scan.structure) ||
+    REGEX_OBJECT_RE.test(scan.structure) ||
     (parsed !== null && groupUsesRegex(parsed));
   // More regex tests than a run allows stays text: the run refuses it, and
   // thousands of rule rows would freeze the editor.
   const tooManyRegex =
-    findRegexCalls(condition, MAX_REGEX_CALLS + 1).length > MAX_REGEX_CALLS;
+    masked !== undefined &&
+    regexCallsIn(masked, MAX_REGEX_CALLS + 1).length > MAX_REGEX_CALLS;
   const usable =
     parsed !== null &&
     !tooManyRegex &&
@@ -401,12 +425,20 @@ export function editorConditionState(
 export function expressionToConditionGroup(
   expression: string
 ): ConditionGroup | null {
-  const trimmed = expression.trim();
-  if (!trimmed) {
+  const structure = maskedStructure(expression);
+  // A quote that is never closed leaves no structure to read rules from.
+  return structure === undefined
+    ? null
+    : groupFromScanned({ text: expression, structure });
+}
+
+function groupFromScanned(expression: Scanned): ConditionGroup | null {
+  const whole = trimmed(expression);
+  if (!whole.text) {
     return null;
   }
 
-  const result = parseExpression(trimmed);
+  const result = parseExpression(whole);
   if (result === null) {
     return null;
   }

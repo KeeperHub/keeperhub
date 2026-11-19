@@ -20,8 +20,9 @@ export const MAX_FILTER_REGEX_WORK = 25_000_000;
 // All Condition evaluations of one pass of a workflow run, For Each
 // included: about 1 s. The body replays on resume, so keep each pass small.
 export const MAX_RUN_REGEX_WORK = 10_000_000;
-// A compile is charged by pattern length and compiled steps, on every call,
-// cached or not, so whether a condition fits never depends on the cache.
+// A compile is charged by pattern length and compiled steps, once per run
+// (the root budget keeps what it compiled), so whether a condition fits
+// never depends on the shared cache.
 const COMPILE_WORK_PER_CHAR = 2000;
 const COMPILE_WORK_PER_STEP = 400;
 
@@ -197,6 +198,10 @@ export function compileRegex(
     );
   }
   const key = `${ignoreCase ? "i" : "-"}${pattern}`;
+  const own = budget?.compiledFor(key);
+  if (own) {
+    return own;
+  }
   budget?.chargeCompile(pattern.length * COMPILE_WORK_PER_CHAR);
   const cached = compiled.get(key);
   if (cached) {
@@ -207,6 +212,7 @@ export function compileRegex(
       throw new Error(cached);
     }
     budget?.chargeCompile(cached.programSize() * COMPILE_WORK_PER_STEP);
+    budget?.keepCompiled(key, cached);
     return cached;
   }
   let entry: RE2JS | string;
@@ -227,6 +233,7 @@ export function compileRegex(
     throw new Error(entry);
   }
   budget?.chargeCompile(entry.programSize() * COMPILE_WORK_PER_STEP);
+  budget?.keepCompiled(key, entry);
   return entry;
 }
 
@@ -270,6 +277,9 @@ export class RegexBudget {
   private readonly scope: RegexBudgetScope;
   // A node's budget also draws on its run's, when there is one.
   private readonly parent: RegexBudget | undefined;
+  // Patterns this budget paid to compile; only the root's is used. The
+  // budget bounds how many, and a run keeps them even if the cache evicts.
+  private readonly compiledHere = new Map<string, CompiledRegex>();
 
   constructor(
     limit: number,
@@ -291,6 +301,19 @@ export class RegexBudget {
 
   chargeCompile(units: number): void {
     this.spend(units);
+  }
+
+  private root(): RegexBudget {
+    return this.parent ? this.parent.root() : this;
+  }
+
+  /** A pattern this budget's run already paid to compile. */
+  compiledFor(key: string): CompiledRegex | undefined {
+    return this.root().compiledHere.get(key);
+  }
+
+  keepCompiled(key: string, regex: CompiledRegex): void {
+    this.root().compiledHere.set(key, regex);
   }
 
   charge(regex: CompiledRegex, textLength: number): void {

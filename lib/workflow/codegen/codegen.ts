@@ -745,10 +745,10 @@ export function generateWorkflowCode(
 
     // Use label if available, otherwise fall back to action type
     const actionLabel = node.data.label || actionType || "Unknown Action";
-    const lines: string[] = [`${indent}// Action: ${actionLabel}`];
+    const lines: string[] = [`${indent}// Action: ${commentSafe(actionLabel)}`];
 
     if (node.data.description) {
-      lines.push(`${indent}// ${node.data.description}`);
+      lines.push(`${indent}// ${commentSafe(node.data.description)}`);
     }
 
     // Check if this node's output is used
@@ -854,12 +854,16 @@ export function generateWorkflowCode(
         lines.push(...wrapActionCall(pluginCode));
       } else if (outputIsUsed) {
         // Unknown action type - generate placeholder
-        lines.push(`${indent}// TODO: Implement action type "${actionType}"`);
+        lines.push(
+          `${indent}// TODO: Implement action type "${commentSafe(actionType)}"`
+        );
         lines.push(
           `${indent}const ${varName} = { status: 'pending', actionType: "${actionType}" };`
         );
       } else {
-        lines.push(`${indent}// TODO: Implement action type "${actionType}"`);
+        lines.push(
+          `${indent}// TODO: Implement action type "${commentSafe(actionType)}"`
+        );
         lines.push(
           `${indent}void ({ status: 'pending', actionType: "${actionType}" });`
         );
@@ -905,7 +909,7 @@ export function generateWorkflowCode(
     ];
 
     if (node.data.description) {
-      lines.push(`${indent}// ${node.data.description}`);
+      lines.push(`${indent}// ${commentSafe(node.data.description)}`);
     }
 
     const condition = resolveConditionExpression(node.data.config);
@@ -1096,7 +1100,7 @@ export function generateWorkflowCode(
       `import { ${stepInfo.functionName} } from '${stepInfo.importPath}';`
     );
 
-    const lines: string[] = [`${indent}// ${actionLabel}`];
+    const lines: string[] = [`${indent}// ${commentSafe(actionLabel)}`];
     if (configParams.length > 0) {
       lines.push(`${indent}await ${stepInfo.functionName}({`);
       lines.push(...configParams);
@@ -1318,7 +1322,7 @@ export function generateWorkflowCode(
   // Generate code for each node in the workflow
   function generateNodeCode(nodeId: string, indent = "  "): string[] {
     if (visited.has(nodeId)) {
-      return [`${indent}// Already processed: ${nodeId}`];
+      return [`${indent}// Already processed: ${commentSafe(nodeId)}`];
     }
 
     visited.add(nodeId);
@@ -1359,7 +1363,9 @@ export function generateWorkflowCode(
       }
 
       default:
-        lines.push(`${indent}// Unknown node type: ${node.data.type}`);
+        lines.push(
+          `${indent}// Unknown node type: ${commentSafe(String(node.data.type))}`
+        );
         break;
     }
 

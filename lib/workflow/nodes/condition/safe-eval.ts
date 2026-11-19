@@ -876,6 +876,8 @@ function regexPattern(node: CallNode): string {
 
 // One budget per evaluation; evaluation is synchronous, so a module slot is safe.
 let activeRegexBudget: RegexBudget | undefined;
+// The values as resolved, before large-integer mode: the regex tests them.
+let activeTextContext: Record<string, unknown> | undefined;
 
 function evalRegexCall(node: CallNode, ctx: Record<string, unknown>): boolean {
   if (!activeRegexBudget) {
@@ -884,7 +886,7 @@ function evalRegexCall(node: CallNode, ctx: Record<string, unknown>): boolean {
   // A reference typed inside the pattern is refused on the raw text, before
   // references become __vN (preValidateConditionExpression).
   const regex = compileRegex(regexPattern(node), false, activeRegexBudget);
-  const text = evalNode(node.arguments[0], ctx);
+  const text = evalNode(node.arguments[0], activeTextContext ?? ctx);
   if (isMissingReference(text)) {
     throw missingReferenceError(text);
   }
@@ -901,10 +903,15 @@ function evalRegexCall(node: CallNode, ctx: Record<string, unknown>): boolean {
 // Exact BigInt powers grow without bound; cap the size of the result.
 const MAX_POWER_BITS = BigInt(65_536);
 const ZERO = BigInt(0);
+const ONE = BigInt(1);
 
 function power(left: unknown, right: unknown): unknown {
   if (typeof left === "bigint" && typeof right === "bigint" && right > ZERO) {
     const magnitude = left < ZERO ? -left : left;
+    // 0, 1 and -1 stay that small at any power.
+    if (magnitude <= ONE) {
+      return left ** right;
+    }
     const bits = BigInt(magnitude.toString(2).length);
     if (bits * right > MAX_POWER_BITS) {
       throw new Error("Power result is too large for a condition");
@@ -1085,9 +1092,10 @@ function walkCall(node: CallNode): void {
 export function safeEvaluateCondition(
   expression: string,
   context: Record<string, unknown>,
-  runBudget?: RegexBudget
+  runBudget?: RegexBudget,
+  textContext?: Record<string, unknown>
 ): unknown {
-  return compileSafeCondition(expression)(context, runBudget);
+  return compileSafeCondition(expression)(context, runBudget, textContext);
 }
 
 function childNodes(node: AstNode): AstNode[] {
@@ -1134,10 +1142,15 @@ function countRegexCalls(node: AstNode): number {
   );
 }
 
+type CompiledCondition = (
+  context: Record<string, unknown>,
+  runBudget?: RegexBudget,
+  // What matchesRegex reads when context holds large-integer mode's BigInts.
+  textContext?: Record<string, unknown>
+) => unknown;
+
 // Parses once, for callers that evaluate one expression against many contexts.
-export function compileSafeCondition(
-  expression: string
-): (context: Record<string, unknown>, runBudget?: RegexBudget) => unknown {
+export function compileSafeCondition(expression: string): CompiledCondition {
   let ast: AstNode;
   try {
     ast = parse(expression);
@@ -1146,21 +1159,26 @@ export function compileSafeCondition(
       `Condition parse error: ${error instanceof Error ? error.message : String(error)}`
     );
   }
-  if (countRegexCalls(ast) > MAX_REGEX_CALLS) {
+  const regexCalls = countRegexCalls(ast);
+  if (regexCalls > MAX_REGEX_CALLS) {
     throw new Error(REGEX_CALLS_ERROR);
   }
-  return (
-    context: Record<string, unknown>,
-    runBudget?: RegexBudget
-  ): unknown => {
-    const outer = activeRegexBudget;
+  if (regexCalls === 0) {
+    return (context: Record<string, unknown>): unknown =>
+      evalNode(ast, context);
+  }
+  return (context, runBudget, textContext) => {
+    const outerBudget = activeRegexBudget;
+    const outerText = activeTextContext;
     activeRegexBudget = new RegexBudget(MAX_CONDITION_REGEX_WORK, {
       parent: runBudget,
     });
+    activeTextContext = textContext;
     try {
       return evalNode(ast, context);
     } finally {
-      activeRegexBudget = outer;
+      activeRegexBudget = outerBudget;
+      activeTextContext = outerText;
     }
   };
 }

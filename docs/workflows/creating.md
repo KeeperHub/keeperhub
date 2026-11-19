@@ -159,9 +159,13 @@ same rules.
   fastest), text of up to 4,096 characters (longer text fails the
   run), and at most 16 regex tests in one Condition. Matching never backtracks and has a fixed
   budget per Condition and per workflow run, loops included (5,000,000 and 10,000,000 steps x
-  characters tested), so it cannot hold up a run for more than a few seconds. A value that is
-  missing, or comes from a node that did not run, fails the test; add an **exists** rule before it.
-- **Condition length:** a condition of any kind may be up to 10,000 characters.
+  characters tested), so it cannot hold up a run for more than a few seconds. Each pattern also
+  costs a one-off amount the first time a run uses it (2,000 per character plus 400 per step), not
+  again in a loop: a For Each that tests 5,000 addresses against `^0x[0-9a-fA-F]{40}$` (about
+  56,000 once, then 46 steps x 42 characters each) fits. A value that is missing, or comes from a
+  node that did not run, fails the test; add an **exists** rule before it.
+- **Condition length:** a condition that uses a regex test may be up to 10,000 characters, references
+  included. Other conditions have no length limit.
 
 **What counts as a number:** an operand is compared by magnitude only when it is a
 plain decimal - an optional sign, digits, and at most one point, such as `42`, `-0.50` or
