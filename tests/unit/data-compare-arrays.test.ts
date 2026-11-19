@@ -92,6 +92,12 @@ describe("compareArrays first run", () => {
     expect(result.removedCount).toBe(0);
   });
 
+  it('keeps a real array holding "null" as an item', () => {
+    const result = ok({ previous: ["null"], current: ["b"] });
+    expect(result.removed).toEqual(["null"]);
+    expect(result.merged).toEqual(["null", "b"]);
+  });
+
   it("accepts an empty current", () => {
     const result = ok({ previous: ["a"], current: [] });
     expect(result.removed).toEqual(["a"]);
@@ -213,16 +219,8 @@ describe("compare-arrays definition", () => {
     const action = findActionById("data/compare-arrays");
     expect(action?.label).toBe("Compare Arrays");
     const outputs = action?.outputFields?.map((f) => f.field) ?? [];
-    for (const name of [
-      "added",
-      "removed",
-      "changed",
-      "unchanged",
-      "merged",
-      "hasChanges",
-    ]) {
-      expect(outputs).toContain(name);
-    }
+    const returned = Object.keys(ok({ previous: [], current: [] }));
+    expect([...outputs].sort()).toEqual([...returned, "error"].sort());
   });
 
   it("checks typed config and skips templates", () => {

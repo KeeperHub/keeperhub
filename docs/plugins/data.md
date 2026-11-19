@@ -51,9 +51,10 @@ Each array holds up to 10,000 items.
 ### Notes
 
 - Without a Key field, items are matched by value: primitives by strict equality (`1` and `"1"` differ) and objects by deep equality. Key order inside objects does not matter. Nothing is ever `changed`; a modified object shows up as one removed and one added item.
-- With a Key field, an item with no value at that path fails the step, naming the item's 1-based position.
+- With a Key field, keys are matched the same way, so an `id` of `1` and an `id` of `"1"` are different items. An item with no value at that path fails the step, naming the item's 1-based position.
 - If a value or key repeats within one array, the first item wins and later repeats are ignored.
-- `merged` keeps removed items, which suits a list that only grows. When removals should drop out, store Current instead.
+- `merged` keeps removed items, which suits a list that only grows. Once you store it, those items show as removed on every later run, so check `addedCount` rather than `hasChanges`. When removals should drop out, store Current instead and use `hasChanges`.
+- A stored value is limited to 8 KB as JSON (see [Workflow State](/workflows/state)), about 180 addresses. A list that only grows reaches that limit; past it, State Set fails and the same items are reported as added on every run.
 
 ### Example
 

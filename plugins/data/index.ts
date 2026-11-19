@@ -80,7 +80,7 @@ const dataPlugin: IntegrationPlugin = {
         {
           field: "merged",
           description:
-            "Previous with changed items replaced by their Current version and added items appended. Removed items are kept; to drop them, store Current instead",
+            "Previous with changed items replaced by their Current version and added items appended. Removed items are kept, so once it is stored they show as removed on every later run: check addedCount rather than hasChanges, or store Current to drop them",
         },
         { field: "addedCount", description: "Number of added items" },
         { field: "removedCount", description: "Number of removed items" },
@@ -88,7 +88,7 @@ const dataPlugin: IntegrationPlugin = {
         {
           field: "hasChanges",
           description:
-            "True when anything was added, removed or changed; use it in a Condition",
+            "True when anything was added, removed or changed. Use it when you store Current; when you store merged, removed items stay in it, so check addedCount instead",
         },
         { field: "error", description: "Error message if the comparison failed" },
       ],

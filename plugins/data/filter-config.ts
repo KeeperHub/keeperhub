@@ -159,7 +159,7 @@ function notAnArray(name: string): Error {
   );
 }
 
-export function parseArrayInput(raw: unknown, name: string): unknown[] {
+function parseArrayInput(raw: unknown, name: string): unknown[] {
   let parsed: unknown;
   try {
     parsed = parseJsonValue(raw, name);
@@ -181,11 +181,11 @@ export function parseArrayInput(raw: unknown, name: string): unknown[] {
   return parsed;
 }
 
-export function toSourceArray(raw: unknown): unknown[] {
-  const source = parseArrayInput(raw, "Source");
+export function toSourceArray(raw: unknown, name = "Source"): unknown[] {
+  const source = parseArrayInput(raw, name);
   if (source.length > MAX_FILTER_ITEMS) {
     throw new Error(
-      `Source has ${source.length.toLocaleString(EN_US)} items; the limit is ${MAX_FILTER_ITEMS.toLocaleString(EN_US)}.`
+      `${name} has ${source.length.toLocaleString(EN_US)} items; the limit is ${MAX_FILTER_ITEMS.toLocaleString(EN_US)}.`
     );
   }
   return source;

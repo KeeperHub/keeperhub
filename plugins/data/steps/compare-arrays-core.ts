@@ -10,16 +10,11 @@
 
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getErrorMessage } from "@/lib/utils";
+import { stableStringify } from "@/lib/stable-json";
 import { valueContainsTemplate } from "@/lib/workflow/template-ref";
-import {
-  isBlank,
-  MAX_FILTER_ITEMS,
-  parseArrayInput,
-  readPath,
-} from "../filter-config";
-import { isPlainObject, resolveSegments, splitPath } from "./resolve-path-core";
+import { isBlank, readPath, toSourceArray } from "../filter-config";
+import { resolveSegments, splitPath } from "./resolve-path-core";
 
-const EN_US = "en-US";
 const NULL_TEXT = "null";
 
 export type CompareArraysCoreInput = {
@@ -48,31 +43,14 @@ export type CompareArraysResult =
 
 type Entry = { key: string; item: unknown; content: string };
 
-// JSON text with object keys sorted, so key order never makes two items differ.
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => canonical(entry)).join(",")}]`;
-  }
-  if (isPlainObject(value)) {
-    const parts = Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`);
-    return `{${parts.join(",")}}`;
-  }
-  return JSON.stringify(value) ?? NULL_TEXT;
-}
-
+// State Get renders a missing value as "" (or "null"); either is a first run.
 function readArray(raw: unknown, name: string, blankIsEmpty: boolean): unknown[] {
-  if (blankIsEmpty && (isBlank(raw) || String(raw).trim() === NULL_TEXT)) {
+  const noValue =
+    isBlank(raw) || (typeof raw === "string" && raw.trim() === NULL_TEXT);
+  if (blankIsEmpty && noValue) {
     return [];
   }
-  const items = parseArrayInput(raw, name);
-  if (items.length > MAX_FILTER_ITEMS) {
-    throw new Error(
-      `${name} has ${items.length.toLocaleString(EN_US)} items; the limit is ${MAX_FILTER_ITEMS.toLocaleString(EN_US)}.`
-    );
-  }
-  return items;
+  return toSourceArray(raw, name);
 }
 
 // Items by identity, first occurrence winning, in source order.
@@ -83,7 +61,7 @@ function toEntries(
 ): Map<string, Entry> {
   const entries = new Map<string, Entry>();
   for (const [index, item] of items.entries()) {
-    const content = canonical(item);
+    const content = stableStringify(item);
     let key = content;
     if (segments.length > 0) {
       const keyValue = resolveSegments(item, segments);
@@ -92,7 +70,7 @@ function toEntries(
           `${name} item ${index + 1} has no value at Key field "${segments.join(".")}".`
         );
       }
-      key = canonical(keyValue);
+      key = stableStringify(keyValue);
     }
     if (!entries.has(key)) {
       entries.set(key, { key, item, content });
