@@ -1,0 +1,171 @@
+// The MCP pin schema and the action schema describe the same config fields to
+// agents. Two hand-written mappings drifted once (#2777: two toggles were
+// boolean in one and string in the other), so this sweeps every registered
+// action and holds them to one answer on which fields are booleans.
+
+import { describe, expect, it } from "vitest";
+import { transformPluginAction } from "@/lib/action-schemas/builder";
+import { preparePinDataForWorkflow } from "@/lib/mcp/prepare-test-pin-data";
+import { resolveFailOnError } from "@/lib/utils";
+import { resolveSponsorGas } from "@/lib/web3/sponsorship-feature-flag";
+import { readSettings } from "@/plugins/data/filter-config";
+import {
+  computeActionId,
+  flattenConfigFields,
+  getAllIntegrations,
+  isDisplayOnlyField,
+  isToggleField,
+  toggleDefault,
+} from "@/plugins/registry";
+
+type FieldCase = {
+  actionType: string;
+  key: string;
+  type: string;
+  actionSchemaType: string;
+  pinType: string | undefined;
+  pinDefault: unknown;
+  defaultValue: string | undefined;
+};
+
+// What each plain switch's step does with the field unset, read through the
+// step's own settings parser. A new plain switch needs an entry here.
+const PLAIN_SWITCH_STEP_READERS: Record<string, () => boolean> = {
+  "data/filter.ignoreCase": () =>
+    readSettings({ source: "[]", operator: "===", value: "a" }).ignoreCase,
+};
+
+// What an unset toggle means: the default-on resolvers the steps call, and
+// for a plain switch the step's own reader above.
+const UNSET_RESOLVERS: Record<
+  string,
+  (field: FieldCase) => boolean | undefined
+> = {
+  "fail-on-error-switch": () => resolveFailOnError(undefined),
+  "gas-sponsorship-switch": () => resolveSponsorGas(undefined),
+  switch: (field) =>
+    PLAIN_SWITCH_STEP_READERS[`${field.actionType}.${field.key}`]?.(),
+};
+
+// Toggle fields the action schema leaves out, so they cannot be compared.
+const skippedToggles: string[] = [];
+
+function collectFields(): FieldCase[] {
+  const cases: FieldCase[] = [];
+  for (const plugin of getAllIntegrations()) {
+    for (const action of plugin.actions) {
+      const actionType = computeActionId(plugin.type, action.slug);
+      const schema = transformPluginAction(plugin, action);
+      const described = {
+        ...schema.optionalFields,
+        ...schema.requiredFields,
+      };
+      const [pin] = preparePinDataForWorkflow([
+        { id: "n", data: { config: { actionType } } },
+      ]);
+      for (const field of flattenConfigFields(action.configFields ?? [])) {
+        if (isDisplayOnlyField(field.type)) {
+          continue;
+        }
+        if (!(field.key in described)) {
+          if (isToggleField(field.type)) {
+            skippedToggles.push(`${actionType}.${field.key}`);
+          }
+          continue;
+        }
+        cases.push({
+          actionType,
+          key: field.key,
+          type: field.type,
+          actionSchemaType: described[field.key] ?? "",
+          pinType: pin?.pinSchema.properties[field.key]?.type,
+          pinDefault: pin?.pinSchema.properties[field.key]?.default,
+          defaultValue: field.defaultValue,
+        });
+      }
+    }
+  }
+  return cases;
+}
+
+describe("pin schema and action schema agree on booleans", () => {
+  const cases = collectFields();
+
+  it("finds the toggle fields it is meant to check", () => {
+    const toggles = cases.filter((field) => isToggleField(field.type));
+    expect(toggles.length).toBeGreaterThan(0);
+    expect(skippedToggles).toEqual([]);
+    // Written out on purpose: a new toggle type with no registered field, or
+    // no runtime resolver below, fails here instead of going unchecked.
+    expect(new Set(toggles.map((field) => field.type))).toEqual(
+      new Set(["fail-on-error-switch", "gas-sponsorship-switch", "switch"])
+    );
+  });
+
+  it("types every toggle as boolean in both schemas", () => {
+    const wrong = cases
+      .filter((field) => isToggleField(field.type))
+      .filter(
+        (field) =>
+          !field.actionSchemaType.startsWith("boolean") ||
+          field.pinType !== "boolean"
+      )
+      .map((field) => `${field.actionType}.${field.key}`);
+    expect(wrong).toEqual([]);
+  });
+
+  it("types a field boolean in the pin schema wherever the action schema does", () => {
+    const wrong = cases
+      .filter((field) => field.actionSchemaType.startsWith("boolean"))
+      .filter((field) => field.pinType !== "boolean")
+      .map((field) => `${field.actionType}.${field.key}`);
+    expect(wrong).toEqual([]);
+  });
+
+  it("advertises the default each toggle's step applies when unset", () => {
+    const wrong = cases
+      .filter((field) => isToggleField(field.type))
+      .filter((field) => {
+        const unset = UNSET_RESOLVERS[field.type]?.(field);
+        return unset === undefined || field.pinDefault !== unset;
+      })
+      .map((field) => `${field.actionType}.${field.key}`);
+    expect(wrong).toEqual([]);
+  });
+
+  it("has a step reader for every plain switch, and no stale ones", () => {
+    const plain = cases
+      .filter((field) => field.type === "switch")
+      .map((field) => `${field.actionType}.${field.key}`);
+    expect(plain.sort()).toEqual(Object.keys(PLAIN_SWITCH_STEP_READERS).sort());
+  });
+
+  // Unit check of toggleDefault alone; the sweep above ties it to the step.
+  it("reads a plain switch's declared default in toggleDefault", () => {
+    for (const defaultValue of ["true", "false", undefined]) {
+      const field = {
+        key: "s",
+        label: "S",
+        type: "switch" as const,
+        defaultValue,
+      };
+      expect(toggleDefault(field), String(defaultValue)).toBe(
+        defaultValue === "true"
+      );
+    }
+  });
+
+  // Every registered default-on toggle declares defaultValue "true", so the
+  // sweep above cannot tell the runtime rule from reading defaultValue.
+  it("follows the runtime rule even when a default-on toggle declares false or nothing", () => {
+    for (const [type, resolve] of [
+      ["fail-on-error-switch", () => resolveFailOnError(undefined)],
+      ["gas-sponsorship-switch", () => resolveSponsorGas(undefined)],
+    ] as const) {
+      for (const defaultValue of ["false", undefined]) {
+        const field = { key: "toggle", label: "Toggle", type, defaultValue };
+        expect(toggleDefault(field), `${type} ${defaultValue}`).toBe(resolve());
+      }
+    }
+  });
+});

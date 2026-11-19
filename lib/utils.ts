@@ -148,8 +148,9 @@ export function resolveDefaultOnFlag(value: unknown): boolean {
 
 /**
  * Read a plain on/off switch: unset (undefined, null or "") takes its declared
- * default, which is off when none is declared. The editor, save validation
- * and the step all read a switch through this. Undefined for any other value.
+ * default, which is off when none is declared. The editor, save validation,
+ * the step and the MCP pin schema all read a switch through this. Undefined
+ * for any other value.
  */
 export function resolveSwitch(
   value: unknown,

@@ -23,6 +23,7 @@ import {
   getAllIntegrations,
   type IntegrationPlugin,
   isDisplayOnlyField,
+  isToggleField,
   type PluginAction,
 } from "@/plugins/registry";
 
@@ -100,6 +101,12 @@ export type BuildActionSchemasOptions = {
 };
 
 function mapFieldType(field: ActionConfigFieldBase): string {
+  if (isToggleField(field.type)) {
+    // A plain switch refuses a template at save; the other toggles do not yet.
+    return field.type === "switch"
+      ? "boolean (true or false, not a template)"
+      : "boolean";
+  }
   switch (field.type) {
     case "number":
       return "number";
@@ -128,11 +135,6 @@ function mapFieldType(field: ActionConfigFieldBase): string {
         ? `string (${options}, or a {{@nodeId:Label.field}} template)`
         : `string (${options})`;
     }
-    case "switch":
-      return "boolean (true or false, not a template)";
-    case "fail-on-error-switch":
-    case "gas-sponsorship-switch":
-      return "boolean";
     case "template-input":
     case "template-textarea":
       return "string (supports {{@nodeId:Label.field}} templates)";
