@@ -4,11 +4,11 @@
 // action and holds them to one answer on which fields are booleans.
 
 import { describe, expect, it } from "vitest";
-import { isSwitchOn } from "@/components/workflow/config/plain-switch-field";
 import { transformPluginAction } from "@/lib/action-schemas/builder";
 import { preparePinDataForWorkflow } from "@/lib/mcp/prepare-test-pin-data";
 import { resolveFailOnError } from "@/lib/utils";
 import { resolveSponsorGas } from "@/lib/web3/sponsorship-feature-flag";
+import { readSettings } from "@/plugins/data/filter-config";
 import {
   computeActionId,
   flattenConfigFields,
@@ -28,12 +28,23 @@ type FieldCase = {
   defaultValue: string | undefined;
 };
 
+// What each plain switch's step does with the field unset, read through the
+// step's own settings parser. A new plain switch needs an entry here.
+const PLAIN_SWITCH_STEP_READERS: Record<string, () => boolean> = {
+  "data/filter.ignoreCase": () =>
+    readSettings({ source: "[]", operator: "===", value: "a" }).ignoreCase,
+};
+
 // What an unset toggle means: the default-on resolvers the steps call, and
-// for a plain switch the editor's rule, which seeds defaultValue into config.
-const UNSET_RESOLVERS: Record<string, (field: FieldCase) => boolean> = {
+// for a plain switch the step's own reader above.
+const UNSET_RESOLVERS: Record<
+  string,
+  (field: FieldCase) => boolean | undefined
+> = {
   "fail-on-error-switch": () => resolveFailOnError(undefined),
   "gas-sponsorship-switch": () => resolveSponsorGas(undefined),
-  switch: (field) => isSwitchOn(undefined, field.defaultValue),
+  switch: (field) =>
+    PLAIN_SWITCH_STEP_READERS[`${field.actionType}.${field.key}`]?.(),
 };
 
 // Toggle fields the action schema leaves out, so they cannot be compared.
@@ -115,11 +126,33 @@ describe("pin schema and action schema agree on booleans", () => {
     const wrong = cases
       .filter((field) => isToggleField(field.type))
       .filter((field) => {
-        const resolve = UNSET_RESOLVERS[field.type];
-        return resolve === undefined || field.pinDefault !== resolve(field);
+        const unset = UNSET_RESOLVERS[field.type]?.(field);
+        return unset === undefined || field.pinDefault !== unset;
       })
       .map((field) => `${field.actionType}.${field.key}`);
     expect(wrong).toEqual([]);
+  });
+
+  it("has a step reader for every plain switch, and no stale ones", () => {
+    const plain = cases
+      .filter((field) => field.type === "switch")
+      .map((field) => `${field.actionType}.${field.key}`);
+    expect(plain.sort()).toEqual(Object.keys(PLAIN_SWITCH_STEP_READERS).sort());
+  });
+
+  // Unit check of toggleDefault alone; the sweep above ties it to the step.
+  it("reads a plain switch's declared default in toggleDefault", () => {
+    for (const defaultValue of ["true", "false", undefined]) {
+      const field = {
+        key: "s",
+        label: "S",
+        type: "switch" as const,
+        defaultValue,
+      };
+      expect(toggleDefault(field), String(defaultValue)).toBe(
+        defaultValue === "true"
+      );
+    }
   });
 
   // Every registered default-on toggle declares defaultValue "true", so the

@@ -102,7 +102,10 @@ export type BuildActionSchemasOptions = {
 
 function mapFieldType(field: ActionConfigFieldBase): string {
   if (isToggleField(field.type)) {
-    return "boolean";
+    // A plain switch refuses a template at save; the other toggles do not yet.
+    return field.type === "switch"
+      ? "boolean (true or false, not a template)"
+      : "boolean";
   }
   switch (field.type) {
     case "number":

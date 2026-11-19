@@ -16,7 +16,11 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { api } from "@/lib/api-client";
+import {
+  api,
+  WORKFLOW_SAVE_ERROR_TOAST,
+  workflowSaveErrorMessage,
+} from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import {
   type WorkflowExportV1,
@@ -152,9 +156,12 @@ export function WorkflowIOOverlay({
       }
     } catch (e) {
       setSubmitting(false);
-      const msg = e instanceof Error ? e.message : "Failed to import workflow";
+      const msg = workflowSaveErrorMessage(
+        e,
+        e instanceof Error ? e.message : "Failed to import workflow"
+      );
       setError(msg);
-      toast.error(msg);
+      toast.error(msg, WORKFLOW_SAVE_ERROR_TOAST);
     }
   }, [parsedFile, onImported, onOpenChange, resetImportState, router]);
 

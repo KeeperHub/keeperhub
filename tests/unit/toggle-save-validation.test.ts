@@ -175,6 +175,6 @@ describe("plain switch at save", () => {
         ignoreCase: TEMPLATE,
       }),
     ]).issues.filter((issue) => issue.field === "ignoreCase");
-    expect(issues).toMatchObject([{ code: "INVALID_FIELD_TYPE" }]);
+    expect(issues).toMatchObject([{ code: "INVALID_FIELD_VALUE" }]);
   });
 });

@@ -3,6 +3,7 @@
 import type * as React from "react";
 
 import { SwitchField } from "@/components/workflow/config/switch-field";
+import { resolveSwitch } from "@/lib/utils";
 import type { ActionConfigFieldBase } from "@/plugins/registry";
 
 type PlainSwitchFieldProps = {
@@ -12,10 +13,9 @@ type PlainSwitchFieldProps = {
   disabled?: boolean;
 };
 
-// Unset falls back to defaultValue, so the form shows what the step will do.
+// The step's own rule, so the form shows what the step will do.
 export function isSwitchOn(value: unknown, defaultValue: unknown): boolean {
-  const raw = value ?? defaultValue;
-  return raw === true || raw === "true";
+  return resolveSwitch(value, defaultValue) === true;
 }
 
 export function PlainSwitchField({
