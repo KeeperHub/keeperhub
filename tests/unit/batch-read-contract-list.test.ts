@@ -3468,4 +3468,20 @@ describe("batch-read-contract - fourth review", () => {
       'Argument Sets entry 1 has 4 values, but f takes 3 (na, ub, lc). Make each entry an array like [{"i": {"p": 1}, "c": 1}, 1, {"a": 1, "b": {"p": 1}}].'
     );
   });
+
+  it("names a plain input when the earlier tuple holding a fitting object holds its own", async () => {
+    const abi = abiWith("f", [
+      tupleOf("t", [uint("a"), uint("b")]),
+      uint("x"),
+      tupleOf("n", [tupleOf("i", [uint("p")])]),
+    ]);
+    expect(
+      await failure({
+        ...argsList([[{ a: 1, b: 2 }, { a: 1, b: 2 }, 5]], "f"),
+        abi,
+      })
+    ).toBe(
+      'Argument Sets entry 1: x must be a whole number, got {"a":1,"b":2}. Only a tuple takes an object.'
+    );
+  });
 });

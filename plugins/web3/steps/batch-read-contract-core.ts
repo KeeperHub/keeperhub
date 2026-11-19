@@ -1117,9 +1117,17 @@ function linesUp(entry: unknown[], fn: ListFunction, blankTail = false): boolean
 
 // An object can be this tuple's: empty, or sharing a member name with it.
 function objectFits(value: unknown, input: AbiParam): boolean {
-  const keys = Object.keys(value as object);
-  const names = new Set((input.components ?? []).map((member) => member.name));
-  return keys.length === 0 || keys.some((k) => names.has(k));
+  const object = value as object;
+  if ((input.components ?? []).some((m) => Object.hasOwn(object, m.name))) {
+    return true;
+  }
+  // Empty, checked without listing every key of a large object.
+  for (const key in object) {
+    if (Object.hasOwn(object, key)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // The entry lines up with the value at place given as an object (or, for a
