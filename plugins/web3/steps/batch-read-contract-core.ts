@@ -774,25 +774,37 @@ function canGoFlat(input: AbiParam): boolean {
 
 type FlatTuple = { label: string; members: number };
 
-// Tuples with more than one member that the values read as given flat; a
-// tuple that can't go flat is passed over as one value.
+// Tuples with more than one member that the values read as given flat,
+// walked as reshapeArgsCounted does; the list stops where a flat reading
+// would put an object on a member that is not a tuple.
 function flatTuples(args: unknown[], fn: ListFunction): FlatTuple[] {
   const flat: FlatTuple[] = [];
   let cursor = 0;
   for (const [index, input] of fn.inputs.entries()) {
-    const members = input.components?.length ?? 0;
+    const components = input.components ?? [];
     if (
-      cursor < args.length &&
-      canGoFlat(input) &&
-      !isPlainObject(args[cursor])
+      input.type !== "tuple" ||
+      components.length === 0 ||
+      isPlainObject(args[cursor])
     ) {
-      if (members > 1) {
-        flat.push({ label: input.name || `arg${index}`, members });
-      }
-      cursor += members;
-    } else {
       cursor += 1;
+      continue;
     }
+    const start = cursor;
+    cursor += components.length;
+    if (start >= args.length || components.length < 2) {
+      continue;
+    }
+    const fits = components.every(
+      (member, k) => member.type === "tuple" || !isPlainObject(args[start + k])
+    );
+    if (!(fits && canGoFlat(input))) {
+      break;
+    }
+    flat.push({
+      label: input.name || `arg${index}`,
+      members: components.length,
+    });
   }
   return flat;
 }
@@ -808,7 +820,8 @@ function countMismatch(
   const names = inputNames(fn);
   const given = plural(args.length, "value");
   const flat = flatTuples(args, fn);
-  if (flat.length === 0) {
+  const flatCount = flat.reduce((total, t) => total + t.members - 1, takes);
+  if (flat.length === 0 || flatCount === args.length) {
     return new Error(
       `${at} has ${given}, but ${fn.name} takes ${count(takes)} (${names}). ${hint}`
     );
@@ -820,7 +833,6 @@ function countMismatch(
       : labels[0],
     MAX_REASON_LENGTH
   );
-  const flatCount = flat.reduce((total, t) => total + t.members - 1, takes);
   const shape =
     flat.length === 1
       ? `when ${listed} is an object, or ${count(flatCount)} when ${listed} is given flat as its ${count(flat[0].members)} members`
@@ -937,6 +949,39 @@ function tupleSlotError(
   );
 }
 
+// A tuple whose first member is a tuple, holding a plain value: read flat,
+// that value would land on the inner tuple, so the tuple itself is named.
+function nestedTupleError(
+  entry: unknown[],
+  fn: ListFunction,
+  at: string
+): Error | undefined {
+  let cursor = 0;
+  for (const [index, input] of fn.inputs.entries()) {
+    const components = input.components ?? [];
+    const value = entry[cursor];
+    if (input.type !== "tuple" || components.length === 0 || isPlainObject(value)) {
+      cursor += 1;
+      continue;
+    }
+    if (!canGoFlat(input) && cursor < entry.length) {
+      const name = input.name || `arg${index}`;
+      const like = echo(exampleValue(input.type, components), MAX_REASON_LENGTH);
+      if (isWholeTupleShape(value, components[0])) {
+        const given = typeof value === "string" ? "text" : "an array";
+        return new Error(
+          `${at}: give ${name} as an object with its member names, like ${like}, not as ${given}.`
+        );
+      }
+      return new Error(
+        `${at}: ${name} must be an object with its member names, like ${like}, got ${showValue(value)}.`
+      );
+    }
+    cursor += components.length;
+  }
+  return;
+}
+
 /** One entry as reshaped arguments, one value per input. */
 function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
   const takes = fn.inputs.length;
@@ -954,6 +999,10 @@ function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
     throw new Error(
       `${at} must be an array of ${plural(takes, "value")} for ${fn.name} (${names}), got ${describeKind(entry)}. Make each entry an array like ${exampleEntry(fn)}.`
     );
+  }
+  const nested = nestedTupleError(entry, fn, at);
+  if (nested) {
+    throw nested;
   }
   const reshaped = reshapeArgsCounted(entry, fn);
   if (entry.length !== reshaped.consumed) {
@@ -997,24 +1046,6 @@ export function argSetsFromList(
   });
 }
 
-/** True when padding the values with blanks leaves one on a non-string. */
-function blankNonString(args: unknown[], fn: ListFunction): boolean {
-  let cursor = 0;
-  for (const input of fn.inputs) {
-    const flat =
-      input.type === "tuple" &&
-      Boolean(input.components?.length) &&
-      !isPlainObject(args[cursor]);
-    for (const leaf of flat ? (input.components ?? []) : [input]) {
-      if (cursor >= args.length && leaf.type !== "string") {
-        return true;
-      }
-      cursor += 1;
-    }
-  }
-  return false;
-}
-
 /**
  * Function Arguments, reshaped, read as the editor stores it: an input left
  * blank is "" and one never touched may be missing, so trailing blanks are
@@ -1044,16 +1075,6 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
   }
   if (given.length === consumed) {
     return reshaped.args;
-  }
-  // A tuple read flat may have taken a later argument's value; when the
-  // blanks would then fail, the count names both readings instead.
-  if (flatTuples(given, fn).length > 0 && blankNonString(given, fn)) {
-    throw countMismatch(
-      SHARED_ARGS_LABEL,
-      given,
-      fn,
-      `Fill in the arguments like ${exampleEntry(fn)}.`
-    );
   }
   const blanks = new Array<string>(consumed - given.length).fill("");
   const padded = [...given, ...blanks];

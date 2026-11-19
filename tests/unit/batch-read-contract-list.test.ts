@@ -2439,38 +2439,23 @@ describe("batch-read-contract - second review, round 2", () => {
     );
   });
 
-  // Padding the editor's blanks after a tuple read flat would blame an
-  // argument that was filled in.
-  it("gives Function Arguments the count when a flat tuple leaves a blank", async () => {
-    const abi = abiWith("mid", [
-      { name: "who", type: "address" },
-      { name: "p", ...pair },
-      uint("k"),
-    ]);
-    expect(
-      await failure(
-        addressList([addr(1)], {
-          abiFunction: "mid",
-          abi,
-          functionArgs: JSON.stringify([addr(2), addr(3), 1]),
-        })
-      )
-    ).toBe(
-      'Function Arguments has 3 values for mid (who, p, k), which takes 3 when p is an object, or 4 when p is given flat as its 2 members. Fill in the arguments like ["0x...", {"a": 1, "b": 1}, 1].'
+  // Function Arguments pads missing values with blanks, so a tuple given flat
+  // reads as a later argument left empty there.
+  it("keeps Function Arguments padding and counts extra values", async () => {
+    const abi = abiWith("f", [{ name: "t", ...pair }, uint("x"), uint("y")]);
+    const shared = (values: unknown[]): Partial<BatchReadContractCoreInput> =>
+      addressList([addr(1)], {
+        abiFunction: "f",
+        abi,
+        functionArgs: JSON.stringify(values),
+      });
+    expect(await failure(shared([1, 2, 3]))).toBe(
+      "Function Arguments: y: uint256 cannot be empty. Fill in every argument; only a string may be left blank."
     );
-    // Too many values: the same count.
-    expect(
-      await failure(
-        addressList([addr(1)], {
-          abiFunction: "mid",
-          abi,
-          functionArgs: JSON.stringify([addr(2), 1, 2, 3, 4]),
-        })
-      )
-    ).toBe(
-      "Function Arguments has 5 values for mid (who, p, k), which takes 3 when p is an object, or 4 when p is given flat as its 2 members. The same arguments go to every contract in the list."
+    expect(await failure(shared([1, 2, 3, 4, 5]))).toBe(
+      "Function Arguments has 5 values for f (t, x, y), which takes 3 when t is an object, or 4 when t is given flat as its 2 members. The same arguments go to every contract in the list."
     );
-    // A blank left only for a string is still sent as "".
+    // A blank left only for a string is sent as "".
     const str = abiWith("named", [
       { name: "p", ...pair },
       { name: "s", type: "string" },
@@ -2482,7 +2467,28 @@ describe("batch-read-contract - second review, round 2", () => {
         functionArgs: JSON.stringify([1, 2]),
       })
     );
-    expect(outcome.error).toBeUndefined();
+    expect(outcome.success).toBe(true);
+    const [call] = mockStaticCall.mock.calls[0][0] as Call[];
+    expect(
+      new ethers.Interface(str)
+        .decodeFunctionData("named", call.callData)
+        .toArray()
+    ).toEqual([[BigInt(1), BigInt(2)], ""]);
+  });
+
+  // A flat reading that would put an object on a plain member isn't offered.
+  it("counts no flat reading that puts an object on a plain member", async () => {
+    const abi = abiWith("f", [
+      { name: "t", ...pair },
+      { name: "u", ...pair },
+      uint("x"),
+      uint("y"),
+    ]);
+    expect(
+      await failure({ ...argsList([[1, { a: 1, b: 2 }, 2]], "f"), abi })
+    ).toBe(
+      'Argument Sets entry 1 has 3 values, but f takes 4 (t, u, x, y). Make each entry an array like [{"a": 1, "b": 1}, {"a": 1, "b": 1}, 1, 1].'
+    );
   });
 
   // An object in a tuple's place is the whole tuple, so one whose first member
@@ -2500,7 +2506,27 @@ describe("batch-read-contract - second review, round 2", () => {
       'Argument Sets entry 1: o must be an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, got 1.'
     );
     expect(await failure({ ...argsList([[1, 2, 3]], "f"), abi: nested })).toBe(
-      'Argument Sets entry 1: o.inner: expected object for tuple. An entry for f looks like [{"inner": {"a": 1, "b": 1}, "id": 1}, 1].'
+      'Argument Sets entry 1: o must be an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, got 1.'
+    );
+    // Named before any count, whatever follows it.
+    const before = abiWith("h", [
+      {
+        name: "o",
+        type: "tuple",
+        components: [{ name: "inner", ...pair }, uint("id")],
+      },
+      { name: "t", ...pair },
+      uint("x"),
+    ]);
+    expect(
+      await failure({ ...argsList([[1, 2, 3, 4]], "h"), abi: before })
+    ).toBe(
+      'Argument Sets entry 1: o must be an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, got 1.'
+    );
+    expect(
+      await failure({ ...argsList([[[1, 2], 3, 4, 5]], "h"), abi: before })
+    ).toBe(
+      'Argument Sets entry 1: give o as an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, not as an array.'
     );
     const only = abiWith("g", [
       {
@@ -2510,7 +2536,7 @@ describe("batch-read-contract - second review, round 2", () => {
       },
     ]);
     expect(await failure({ ...argsList([[1, 2, 3]], "g"), abi: only })).toBe(
-      'Argument Sets entry 1 has 3 values, but g takes 1 (o). Make each entry an array like [{"inner": {"a": 1, "b": 1}, "id": 1}].'
+      'Argument Sets entry 1: o must be an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, got 1.'
     );
   });
 
