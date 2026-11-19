@@ -171,7 +171,7 @@ ranges and groups, and `{n}` copies its piece n times.
 | Pattern size | each pattern | 512 characters, 1,000 steps | error under the rule; the workflow won't save |
 | Regex tests | each Condition | 16 | the workflow won't save |
 | Condition length | each Condition with a regex test | 10,000 characters, each `{{...}}` reference counting as about 4 | the workflow won't save |
-| Conditions with a regex test | the workflow | 32 | error on each regex Condition; the workflow won't save |
+| Enabled Conditions with a regex test | the workflow | 32 | error on each regex Condition; the workflow won't save |
 | Their total length | the workflow | 100,000 characters, counted as above | error on each regex Condition; the workflow won't save |
 | Total pattern size | all Conditions of the workflow | about 2,000 pattern characters, fewer with `{n}` repeats | error on each regex Condition; the workflow won't save |
 | Text tested | each value | 4,096 characters | the run fails |
@@ -179,8 +179,8 @@ ranges and groups, and `{n}` copies its piece n times.
 | Matching | each run, loops included | 10,000,000 | the run fails |
 
 - **Total pattern size:** each distinct pattern costs 2,000 per character plus 400 per step to
-  prepare, and a workflow's Conditions may cost 5,000,000 together. Only patterns that run count:
-  a Condition's rules when it has them (otherwise its text), and not disabled Conditions. A
+  prepare, and a workflow's Conditions may cost 5,000,000 together. Every enabled Condition
+  counts, even on a branch a run does not take: its rules when it has them, otherwise its text. A
   pattern used in several places counts once, when its text is identical (`(?i)^0x` and `^0x` are
   two). Filter Array patterns do not count. Each run prepares them all once, at its start, from
   its 10,000,000, so it keeps at least 5,000,000 to test values.
@@ -192,8 +192,8 @@ ranges and groups, and `{n}` copies its piece n times.
 - **Saving:** an enabled Condition with a regex test that would fail any run reaching it (a
   pattern that cannot run, more than 16 tests, too long), or the workflow over one of its totals
   above, stops the workflow saving until it is fixed; the editor shows why. Conditions without a
-  regex test save as before. A workflow saved before these limits that is over the total fails
-  each run at its start, before any step runs.
+  regex test save as before. A workflow over one of the totals that runs anyway (for example a
+  copy) fails at its start, before any step runs.
 - A value that is missing, or comes from a node that did not run, fails the run; add an **exists**
   rule before it.
 

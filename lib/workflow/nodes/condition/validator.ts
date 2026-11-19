@@ -25,6 +25,7 @@
  * - Comments
  */
 
+import { stripControlChars } from "@/lib/utils/control-chars";
 import {
   hasTemplateToken,
   parseStoredRef,
@@ -260,6 +261,11 @@ function usesRegex(scan: RegexScan): boolean {
   );
 }
 
+/** Whether a raw condition uses matchesRegex (the negated form included). */
+export function conditionUsesRegex(expression: string): boolean {
+  return usesRegex(scanForRegex(expression));
+}
+
 /** The typed patterns of a raw condition's matchesRegex calls, as a run reads them. */
 export function conditionRegexPatterns(expression: string): string[] {
   // Too long ones are refused before any pattern is read.
@@ -318,7 +324,7 @@ function workflowSizeIssue(
   if (withRegex.length > MAX_WORKFLOW_REGEX_CONDITIONS) {
     return {
       index: withRegex[MAX_WORKFLOW_REGEX_CONDITIONS].index,
-      message: `This workflow has ${withRegex.length} Conditions with a regex test; the limit is ${MAX_WORKFLOW_REGEX_CONDITIONS}. Combine some tests into one Condition, or test a list with Filter Array`,
+      message: `This workflow has ${withRegex.length} Conditions with a regex test; the limit is ${MAX_WORKFLOW_REGEX_CONDITIONS}`,
       kind: "count",
     };
   }
@@ -336,7 +342,7 @@ function workflowSizeIssue(
   }
   return {
     index: largest.index,
-    message: `Together, this workflow's Conditions with a regex test are ${total.toLocaleString("en-US")} characters, each {{...}} reference counted as about 4; the limit is ${MAX_WORKFLOW_REGEX_TEXT.toLocaleString("en-US")}`,
+    message: `Together, this workflow's Conditions with a regex test are ${total.toLocaleString("en-US")} characters; the limit is ${MAX_WORKFLOW_REGEX_TEXT.toLocaleString("en-US")}`,
     kind: "text",
   };
 }
@@ -376,10 +382,39 @@ export function prepareRunRegex(
   if (!issue) {
     return;
   }
-  const label = nodes[issue.index]?.data?.label;
-  return issue.kind !== "count" && typeof label === "string" && label.trim()
-    ? `${issue.message}. Most are in "${label.trim()}"`
-    : issue.message;
+  return limitMessage(issue, mostIn(nodes[issue.index]?.data?.label));
+}
+
+const LIMIT_HINTS: Record<Exclude<RegexIssue["kind"], "condition">, string> = {
+  count:
+    "Combine some tests into one Condition, or test a list with Filter Array",
+  text: "Shorten them, or move tests without a regex into their own Condition",
+  patterns:
+    "Shorten them, reuse one pattern, or test lists with Filter Array (about 2,000 pattern characters fit in all, fewer with {n} repeats)",
+};
+
+/** A regex issue's message; for the workflow's limits, where most is and what to do. */
+export function limitMessage(issue: RegexIssue, where: string): string {
+  if (issue.kind === "condition") {
+    return issue.message;
+  }
+  const parts =
+    issue.kind === "count" ? [issue.message] : [issue.message, where];
+  return [...parts, LIMIT_HINTS[issue.kind]].join(". ");
+}
+
+/** Names the Condition with the most, by its label as one safe line. */
+export function mostIn(label: unknown): string {
+  const text =
+    typeof label === "string"
+      ? stripControlChars(label, { replacement: " " })
+          .replaceAll('"', "'")
+          .trim()
+      : "";
+  if (!text) {
+    return "Most are in a Condition with no name";
+  }
+  return `Most are in "${text.length > 60 ? `${text.slice(0, 57)}...` : text}"`;
 }
 
 /**
@@ -393,6 +428,17 @@ export function workflowRegexIssue(
   conditions: readonly IndexedCondition[]
 ): RegexIssue | undefined {
   const withRegex = regexConditionsOf(conditions);
+  // One Condition's own length is the more useful message than the total's.
+  for (const { index, condition } of withRegex) {
+    const length = conditionLength(condition);
+    if (length > MAX_CONDITION_LENGTH) {
+      return {
+        index,
+        message: lengthMessage(length, false),
+        kind: "condition",
+      };
+    }
+  }
   const size = workflowSizeIssue(withRegex);
   if (size) {
     return withMost(size);
@@ -410,9 +456,10 @@ export function workflowRegexIssue(
 
 // A save names the Condition it reports, so say why it was picked.
 function withMost(issue: RegexIssue): RegexIssue {
-  return issue.kind === "text" || issue.kind === "patterns"
-    ? { ...issue, message: `${issue.message}. This Condition has the most` }
-    : issue;
+  return {
+    ...issue,
+    message: limitMessage(issue, "This Condition has the most"),
+  };
 }
 
 function conditionRunError(condition: string): string | undefined {

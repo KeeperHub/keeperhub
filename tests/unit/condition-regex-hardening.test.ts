@@ -1,6 +1,7 @@
 // Security hardening for matches regex and the condition path around it: each
 // case is an attack an audit of this feature tried.
 
+import { RE2JS } from "re2js";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -340,6 +341,35 @@ describe("regex hardening", () => {
             message: expect.stringContaining("This Condition has the most"),
           }),
         ]);
+        // Exactly at the limit, then one character over it.
+        const exact = (extra: number) => [
+          ...Array.from({ length: 10 }, (_, i) =>
+            textNode(
+              `e${i}`,
+              `${FIELD} === "${"x".repeat(9700)}" || ${call(0)}`
+            )
+          ),
+          textNode("last", `${call(0)} || ${FIELD} === "${"y".repeat(extra)}"`),
+        ];
+        const lengthOf = (nodes: ReturnType<typeof textNode>[]) =>
+          nodes.reduce(
+            (sum, node) =>
+              sum +
+              String(
+                (node.data.config as Record<string, unknown>).condition
+              ).replaceAll(FIELD, "__v0").length,
+            0
+          );
+        const at = exact(0);
+        const pad = 100_000 - lengthOf(at);
+        expect(lengthOf(exact(pad))).toBe(100_000);
+        expect(saveIssues(exact(pad))).toEqual([]);
+        expect(runStart(exact(pad))).toBeUndefined();
+        expect(saveIssues(exact(pad + 1))[0]?.message).toContain(
+          "the limit is 100,000"
+        );
+        expect(runStart(exact(pad + 1))).toContain("the limit is 100,000");
+
         // Conditions without matchesRegex are not counted.
         expect(
           saveIssues([
@@ -382,6 +412,31 @@ describe("regex hardening", () => {
         expect(saveIssues(nodes)[0]?.message).toMatch(/more than \d{3}%/);
       });
 
+      // One Condition over every total is told its own limit, not the total's.
+      it("names one Condition's own length before the workflow's total", () => {
+        const huge = textNode(
+          "huge",
+          `${call(0)} || ${FIELD} === "${"x".repeat(100_100)}"`
+        );
+        expect(saveIssues([huge])[0]?.message).toContain(
+          "This condition is too long to run with matchesRegex"
+        );
+      });
+
+      it("says what to do, and names a label as one safe line", () => {
+        const nodes = [
+          textNode("six", calls(0, 6)),
+          conditionNode("x", { condition: calls(10, 10) }),
+        ];
+        nodes[1].data.label = 'Big "list"\nnext line';
+        const started = runStart(nodes) ?? "";
+        expect(started).toContain("Most are in \"Big 'list' next line\"");
+        expect(started).toContain("reuse one pattern");
+        expect(saveIssues(nodes)[0]?.message).toContain(
+          "This Condition has the most. Shorten them"
+        );
+      });
+
       it("counts a pattern once whichever quotes it is written in", () => {
         const single = (from: number, count: number) =>
           Array.from(
@@ -399,12 +454,11 @@ describe("regex hardening", () => {
 
     it("remembers a refused pattern instead of compiling it again", () => {
       const heavy = "(?:a{1000})".repeat(46);
-      const first = performance.now();
+      const compile = vi.spyOn(RE2JS, "compile");
       expect(regexPatternError(heavy)).toContain("too complex");
-      const firstMs = performance.now() - first;
-      const again = performance.now();
       expect(regexPatternError(heavy)).toContain("too complex");
-      expect(performance.now() - again).toBeLessThan(Math.max(5, firstMs / 4));
+      expect(compile).toHaveBeenCalledTimes(1);
+      compile.mockRestore();
     });
 
     it("charges a compile once per run, the same whether or not it is cached", () => {

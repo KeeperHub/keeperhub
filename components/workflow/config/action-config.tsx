@@ -47,7 +47,9 @@ import {
 } from "@/lib/workflow/nodes/condition/builder-utils";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
 import {
-  conditionRegexPatterns,
+  conditionUsesRegex,
+  limitMessage,
+  mostIn,
   validateConditionExpressionUI,
   visualConditionLimitError,
   workflowConditions,
@@ -477,27 +479,19 @@ export function ConditionFields({
 
   // The workflow's regex Conditions together, shown on each one.
   const workflowLimitError = useMemo(() => {
-    if (!enabled || conditionRegexPatterns(checkedValue).length === 0) {
+    if (!enabled || !conditionUsesRegex(checkedValue)) {
       return;
     }
     const limit = workflowRegexLimit(workflowConditions(checkedNodes));
-    if (!limit) {
+    if (!limit || limit.kind === "condition") {
       return;
     }
-    if (limit.kind === "count") {
-      return `${limit.message}.`;
-    }
     const largest = checkedNodes[limit.index];
-    const label = largest?.data?.label?.trim();
-    let where = "This Condition has the most";
-    if (largest?.id !== nodeId) {
-      where = label
-        ? `Most are in "${label}"`
-        : "Most are in a Condition with no name";
-    }
-    const counting =
-      limit.kind === "patterns" ? " A pattern used twice counts once." : "";
-    return `${limit.message}. ${where}.${counting}`;
+    const where =
+      largest?.id === nodeId
+        ? "This Condition has the most"
+        : mostIn(largest?.data?.label);
+    return `${limitMessage(limit, where)}.`;
   }, [checkedNodes, checkedValue, enabled, nodeId]);
 
   // Limits the rules can reach that would fail every run.

@@ -442,6 +442,48 @@ describe("Condition fields", () => {
     expect(container.textContent).toContain("won't save until this is fixed");
   });
 
+  it("shows the workflow's regex Condition count without naming one", () => {
+    vi.useFakeTimers();
+    const condition = `matchesRegex(${FIELD}, "^a")`;
+    getDefaultStore().set(
+      nodesAtom,
+      Array.from(
+        { length: 33 },
+        (_, i) =>
+          ({
+            id: `c${i}`,
+            type: "action",
+            position: { x: 0, y: 0 },
+            data: {
+              type: "action",
+              label: `c${i}`,
+              config: { actionType: "Condition", condition },
+            },
+          }) as WorkflowNode
+      )
+    );
+    render({ actionType: "Condition", condition }, false, "c0");
+    pause();
+    expect(container.textContent).toContain("the limit is 32");
+    expect(container.textContent).not.toContain("Most are in");
+    expect(container.textContent).toContain("won't save until this is fixed");
+  });
+
+  // Too long on its own: shown as this Condition's own blocking error.
+  it("shows one Condition over every length limit as blocking", () => {
+    vi.useFakeTimers();
+    render({
+      actionType: "Condition",
+      condition: `matchesRegex(${FIELD}, "a") ||\n${FIELD} === "${"x".repeat(100_100)}"`,
+    });
+    pause();
+    const red = [...container.querySelectorAll("p.text-destructive")];
+    expect(red.map((p) => p.textContent).join(" ")).toContain(
+      "too long to run with matchesRegex"
+    );
+    expect(container.textContent).toContain("won't save until this is fixed");
+  });
+
   // A warning that does not stop the save must not hide one that does.
   it("shows what stops the save next to a warning that does not", () => {
     vi.useFakeTimers();

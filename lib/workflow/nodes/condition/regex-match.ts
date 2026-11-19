@@ -278,7 +278,7 @@ export function workflowCompileError(work: number, atLeast = false): string {
     Math.round((work / MAX_WORKFLOW_COMPILE_WORK) * 100)
   );
   const amount = atLeast ? "more than" : "about";
-  return `${REGEX_WORKFLOW_COMPILE_ERROR}: ${amount} ${formatCount(share)}% of the limit, which is about 2,000 characters in all (fewer with {n} repeats)`;
+  return `${REGEX_WORKFLOW_COMPILE_ERROR}: ${amount} ${formatCount(share)}% of the limit`;
 }
 
 // Past the cap the rest are still compiled, to name the costliest Condition
