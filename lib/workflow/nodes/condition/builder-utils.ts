@@ -364,13 +364,21 @@ function parseExpression(expr: Scanned): ConditionGroup | ConditionRule | null {
   return null;
 }
 
-/** True when any rule in the group, nested groups included, tests a regex. */
+/** How many rules in the group, nested groups included, test a regex. */
+export function countRegexRules(group: ConditionGroup): number {
+  let count = 0;
+  for (const item of group.rules) {
+    if (isConditionGroup(item)) {
+      count += countRegexRules(item);
+    } else if (isRegexOperator(item.operator)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 function groupUsesRegex(group: ConditionGroup): boolean {
-  return group.rules.some((item) =>
-    isConditionGroup(item)
-      ? groupUsesRegex(item)
-      : isRegexOperator(item.operator)
-  );
+  return countRegexRules(group) > 0;
 }
 
 export type EditorConditionState = {

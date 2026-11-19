@@ -29,7 +29,10 @@ const COMPILE_WORK_PER_STEP = 400;
 export const REGEX_ARITY_ERROR =
   'matchesRegex takes two values: the text and a quoted pattern, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
 export const REGEX_SOURCE_ERROR =
-  "Type the regex pattern itself; it can't come from another node or be built from other values. To look for text from another node, use contains or starts with. To match a brace, put a backslash before it, e.g. \\{\\{";
+  "Type the regex pattern itself; it can't come from another node or be built from other values. To look for text from another node, use contains or starts with";
+// A {{...}} typed inside a pattern: a reference, or braces meant literally.
+export const REGEX_TEMPLATE_ERROR =
+  "The regex pattern can't hold a {{...}} reference: it can't come from another node. To look for text from another node, use contains or starts with. To match braces, put a backslash before each one: \\{\\{ (in Expression mode, type each backslash twice: \\\\{\\\\{)";
 export const REGEX_BACKSLASH_ERROR =
   'In Expression mode, type each backslash in the regex pattern twice, e.g. "^\\\\d+$" for ^\\d+$';
 export const REGEX_EMPTY_ERROR =
@@ -44,7 +47,7 @@ export const REGEX_DIRECT_ERROR =
   'Write matchesRegex( exactly: no space before "(" and nothing around the name, e.g. matchesRegex({{@node:Label.field}}, "^0x")';
 export const REGEX_CALLS_ERROR = `A condition can use matchesRegex at most ${MAX_REGEX_CALLS} times. Split the tests across two Condition nodes`;
 export const REGEX_NEGATED_ERROR =
-  'Write !matchesRegex(...) for "does not match regex"; notMatchesRegex names the visual rule and is not a function';
+  'notMatchesRegex is not a function. For "does not match regex", write !matchesRegex(...)';
 
 const MAX_CACHED_PATTERNS = 256;
 const SYNTAX_ERROR_PREFIX = "error parsing regexp: ";
@@ -83,12 +86,14 @@ function syntaxHint(detail: string): string {
   }
   if (REPETITION_RE.test(detail)) {
     const operator = REPETITION_OPERATOR_RE.exec(detail)?.[1] ?? "";
-    const anyText = operator.startsWith("*") ? " For any text, write .*." : "";
+    const anyText = operator.startsWith("*")
+      ? " For any text, use .* (dot, then star)."
+      : "";
     return `. To match ${operator[0] ?? "it"} itself, put a backslash before it.${anyText}`;
   }
   if (REPEAT_COUNT_RE.test(detail)) {
     return LARGE_COUNT_RE.test(detail)
-      ? `. A pattern compiles to at most ${formatCount(MAX_REGEX_PROGRAM_SIZE)} steps, so keep a repeat count under about 990`
+      ? `. Repeat counts go up to 1,000, and the whole pattern must compile to at most ${formatCount(MAX_REGEX_PROGRAM_SIZE)} steps (a range or a repeated group costs more), so use smaller counts`
       : ". Write the smaller number first, e.g. {2,5}";
   }
   return "";
@@ -121,7 +126,7 @@ export function withoutExpressionNote(message: string): string {
 // One message for both modes: Expression mode needs three backslashes, since
 // the condition's own quotes take one level of escaping.
 function quoteWrappedError(quote: string): string {
-  return `The regex pattern starts and ends with a quote, which would be matched as part of the text. Remove them, or to match a quote, put a backslash before it (in Expression mode, type \\\\\\${quote}: three backslashes, then the quote)`;
+  return `The regex pattern is wrapped in quotes, which would be matched as part of the text. Remove them. To match a quote, put a backslash before it (in Expression mode, type \\\\\\${quote}: three backslashes, then the quote)`;
 }
 
 // One quoted string, e.g. "ok" or "a\"b"; not 'yes'|'no', which only starts
@@ -196,7 +201,7 @@ export function compileRegex(
   }
   if (pattern.length > MAX_REGEX_PATTERN_LENGTH) {
     throw new Error(
-      `Regex pattern is ${formatCount(pattern.length)} characters; the limit is ${MAX_REGEX_PATTERN_LENGTH}. Shorten it, or split it across two rules`
+      `Regex pattern is ${formatCount(pattern.length)} characters; the limit is ${MAX_REGEX_PATTERN_LENGTH}. Shorten it, or split the test in two`
     );
   }
   const key = `${ignoreCase ? "i" : "-"}${pattern}`;
@@ -279,9 +284,9 @@ export class RegexBudget {
   private readonly scope: RegexBudgetScope;
   // A node's budget also draws on its run's, when there is one.
   private readonly parent: RegexBudget | undefined;
-  // Patterns this budget paid to compile; only the root's is used. The
-  // budget bounds how many, and a run keeps them even if the cache evicts.
-  private readonly compiledHere = new Map<string, CompiledRegex>();
+  // Patterns this budget paid to compile, kept on the root only. The budget
+  // bounds how many, and a run keeps them even if the cache evicts.
+  private readonly compiledHere: Map<string, CompiledRegex> | undefined;
 
   constructor(
     limit: number,
@@ -291,6 +296,7 @@ export class RegexBudget {
     this.remaining = limit;
     this.scope = options.scope ?? "node";
     this.parent = options.parent;
+    this.compiledHere = options.parent ? undefined : new Map();
   }
 
   private spend(units: number, steps?: number): void {
@@ -311,11 +317,11 @@ export class RegexBudget {
 
   /** A pattern this budget's run already paid to compile. */
   compiledFor(key: string): CompiledRegex | undefined {
-    return this.root().compiledHere.get(key);
+    return this.root().compiledHere?.get(key);
   }
 
   keepCompiled(key: string, regex: CompiledRegex): void {
-    this.root().compiledHere.set(key, regex);
+    this.root().compiledHere?.set(key, regex);
   }
 
   charge(regex: CompiledRegex, textLength: number): void {

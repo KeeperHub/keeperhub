@@ -20,6 +20,7 @@ const SYSTEM_CODEGEN_TEMPLATES: Record<string, string> = {
 };
 
 import { mentionsRegex } from "@/lib/workflow/nodes/condition/regex-calls";
+import { isSafeConditionExpression } from "@/lib/workflow/nodes/condition/safe-eval";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import {
   analyzeNodeUsage,
@@ -27,7 +28,7 @@ import {
   buildEdgeMap,
   commentSafe,
   escapeForTemplateLiteral,
-  escapeTemplateText,
+  escapeTextAroundTokens,
   findTriggerNodes,
   isExportableCondition,
   REGEX_NOT_EXPORTED,
@@ -381,12 +382,13 @@ export function generateWorkflowSDKCode(
 
   function buildConditionParams(config: Record<string, unknown>): string[] {
     const condition = (config.condition as string) || "true";
-    // Written as code, so only the run's grammar goes in.
     if (mentionsRegex(condition)) {
       return [`condition: ${REGEX_NOT_EXPORTED}`];
     }
-    return isExportableCondition(condition, sdkResolves)
-      ? [`condition: ${convertTemplateToJS(condition)}`]
+    // Written as code, so the code as written must be the run's grammar.
+    const converted = convertTemplateToJS(condition);
+    return isSafeConditionExpression(converted)
+      ? [`condition: ${converted}`]
       : ["condition: false /* not supported in exported code */"];
   }
 
@@ -618,9 +620,9 @@ ${stepBody}
     visitedLocal: Set<string>
   ): string[] {
     const condition = (node.data.config?.condition as string) || "true";
-    // The condition's own text is escaped before references become ${...}.
+    // Only the text between references is escaped; references become ${...}.
     const convertedCondition = isExportableCondition(condition, sdkResolves)
-      ? convertTemplateToJS(escapeTemplateText(condition))
+      ? escapeTextAroundTokens(condition, convertTemplateToJS)
       : undefined;
     const nextNodes = edgesBySource.get(nodeId) || [];
     const conditionVarName = `conditionValue_${sanitizeVarName(nodeId)}`;

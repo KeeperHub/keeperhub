@@ -1,4 +1,3 @@
-import { mentionsRegex } from "@/lib/workflow/nodes/condition/regex-calls";
 import { isSafeConditionExpression } from "@/lib/workflow/nodes/condition/safe-eval";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import {
@@ -110,35 +109,55 @@ export function findTriggerNodes(
   );
 }
 
-// A field path part: a name, a name with indexes (items[0][1]), or an index.
-const NAME_WITH_INDEXES = /^([A-Za-z_$][\w$]*)((?:\[\d+\])*)$/;
-const INDEX_PART = /^\d+$/;
-const INDEX_RE = /\d+/g;
+const IDENTIFIER_PART = /^[A-Za-z_$][\w$]*$/;
+// An index written as a number literal: no leading zero, exact as a double.
+const CANONICAL_INDEX = /^(?:0|[1-9]\d{0,14})$/;
+// key[index], read the way the run reads a path part (resolveStrictPath).
+const INDEXED_PART = /^([^[]+)\[(\d+)\]$/;
+
+// Exporters escape some output again after conversion; a key with no
+// backslash or backtick passes through that unchanged.
+function quotedKey(key: string): string {
+  const json = JSON.stringify(key);
+  if (!(json.includes("\\") || key.includes("`"))) {
+    return json;
+  }
+  const codes = Array.from({ length: key.length }, (_, i) => key.charCodeAt(i));
+  return `String.fromCharCode(${codes.join(",")})`;
+}
+
+function keyAccess(key: string, optional: boolean): string {
+  if (IDENTIFIER_PART.test(key)) {
+    return `${optional ? "?." : "."}${key}`;
+  }
+  const open = optional ? "?.[" : "[";
+  return CANONICAL_INDEX.test(key)
+    ? `${open}${key}]`
+    : `${open}${quotedKey(key)}]`;
+}
 
 /**
- * A field path written as code: .name and [index] where the part is one,
- * and a quoted key for anything else, so no saved path can become code.
- * `optional` writes ?. and ?.[ instead.
+ * A field path as code, read the way the run reads it: parts trimmed, empty
+ * parts skipped, key[n] as an index. Any key that is not a plain name or
+ * index is written as data, so no saved path can become code. `optional`
+ * writes ?. and ?.[ instead.
  */
 export function buildAccessPath(fieldPath: string, optional = false): string {
-  const dot = optional ? "?." : ".";
-  const open = optional ? "?.[" : "[";
-  return fieldPath
-    .split(".")
-    .map((part: string) => {
-      if (INDEX_PART.test(part)) {
-        return `${open}${part}]`;
-      }
-      const named = NAME_WITH_INDEXES.exec(part);
-      if (!named) {
-        return `${open}${JSON.stringify(part)}]`;
-      }
-      const indexes = (named[2].match(INDEX_RE) ?? [])
-        .map((index) => `${open}${index}]`)
-        .join("");
-      return `${dot}${named[1]}${indexes}`;
-    })
-    .join("");
+  let path = "";
+  for (const raw of fieldPath.split(".")) {
+    const part = raw.trim();
+    if (!part) {
+      continue;
+    }
+    const indexed = INDEXED_PART.exec(part);
+    if (indexed) {
+      const index = String(Number.parseInt(indexed[2], 10));
+      path += `${keyAccess(indexed[1], optional)}${optional ? "?.[" : "["}${index}]`;
+    } else {
+      path += keyAccess(part, optional);
+    }
+  }
+  return path;
 }
 
 /**
@@ -184,7 +203,7 @@ export function commentSafe(text: string): string {
 }
 
 /** Literal text for a template literal, escaped before references become ${...}. */
-export function escapeTemplateText(text: string): string {
+function escapeTemplateText(text: string): string {
   return text
     .replace(/\\/g, "\\\\")
     .replace(/`/g, "\\`")
@@ -192,23 +211,35 @@ export function escapeTemplateText(text: string): string {
 }
 
 /**
- * A condition that may be written into exported code: the run's grammar, with
- * each reference the exporter resolves read as a variable (buildAccessPath
- * keeps its path inert). A token it cannot resolve is written as typed, so it
- * stays raw here and fails the check. matchesRegex has no exported helper.
+ * For a condition written inside a template literal: the run's grammar, with
+ * each reference the exporter resolves read as a variable. A token it cannot
+ * resolve stays as typed and fails the check. Callers handle matchesRegex.
  */
 export function isExportableCondition(
   condition: string,
   resolves: (tokenBody: string) => boolean
 ): boolean {
-  return (
-    !mentionsRegex(condition) &&
-    isSafeConditionExpression(
-      replaceTemplateTokens(condition, ({ body }) =>
-        resolves(body) ? "__v0" : `{{${body}}}`
-      )
+  return isSafeConditionExpression(
+    replaceTemplateTokens(condition, ({ body }) =>
+      resolves(body) ? "__v0" : `{{${body}}}`
     )
   );
+}
+
+/** Template-literal text with only the text between references escaped. */
+export function escapeTextAroundTokens(
+  text: string,
+  convertToken: (token: string) => string
+): string {
+  let result = "";
+  let last = 0;
+  for (const token of findTemplateTokens(text)) {
+    result +=
+      escapeTemplateText(text.slice(last, token.start)) +
+      convertToken(text.slice(token.start, token.end));
+    last = token.end;
+  }
+  return result + escapeTemplateText(text.slice(last));
 }
 
 /** Exported code for a condition that uses matchesRegex: it fails loudly. */

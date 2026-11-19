@@ -109,7 +109,7 @@ describe("data/filter", () => {
         operator: "matchesRegex",
         value: '"ok"',
       });
-      expect(wrapped.error).toContain("starts and ends with a quote");
+      expect(wrapped.error).toContain("wrapped in quotes");
       // Filter Array has no Expression mode, so its message has no such note.
       expect(wrapped.error).not.toContain("Expression mode");
     });

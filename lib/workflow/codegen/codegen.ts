@@ -1,6 +1,7 @@
 import { buildEdgesBySourceHandle } from "@/lib/workflow/editor/edge-handle-utils";
 import { mentionsRegex } from "@/lib/workflow/nodes/condition/regex-calls";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
+import { isSafeConditionExpression } from "@/lib/workflow/nodes/condition/safe-eval";
 import { DEFAULT_HTTP_METHOD } from "@/lib/workflow/nodes/http-request/constants";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import {
@@ -13,7 +14,6 @@ import {
   buildAccessPath,
   commentSafe,
   getStepInfo,
-  isExportableCondition,
   REGEX_NOT_EXPORTED,
   removeInvisibleChars,
   toFriendlyVarName,
@@ -178,19 +178,6 @@ export function generateWorkflowCode(
     return `\${${varName}${accessPath}}`;
   }
 
-  // Whether convertConditionToJS turns a token into code; others stay as typed.
-  function resolvesToCode(tokenBody: string): boolean {
-    const trimmed = tokenBody.trim();
-    if (trimmed.startsWith("@")) {
-      const colon = trimmed.indexOf(":");
-      return colon > 0 && nodeIdToVarName.has(trimmed.slice(1, colon));
-    }
-    return (
-      trimmed.startsWith("$") &&
-      nodeIdToVarName.has(trimmed.slice(1).split(".")[0])
-    );
-  }
-
   // The if (...) test for a Condition node, or an error in its place.
   function exportedCondition(
     condition: string | undefined,
@@ -208,12 +195,15 @@ export function generateWorkflowCode(
       );
       return REGEX_NOT_EXPORTED;
     }
-    if (!isExportableCondition(condition, resolvesToCode)) {
+    // The code as written is checked, so nothing in it can run but the
+    // condition's own grammar.
+    const converted = convertConditionToJS(condition);
+    if (!isSafeConditionExpression(converted)) {
       const errorMsg = `Condition node "${name}" contains unsupported syntax`;
       validationErrors.push(errorMsg);
       return `false /* ERROR: ${errorMsg} */`;
     }
-    return convertConditionToJS(condition);
+    return converted;
   }
 
   // Helper to process @nodeId:DisplayName.field format for JavaScript expressions (not template strings)

@@ -137,9 +137,10 @@ anchor it: `^` marks the start and `$` the end. Start the pattern with `(?i)` to
 same rules.
 
 - **Values:** numbers and `true`/`false` are tested as their text, and so is `null`: `^n`
-  matches a null field. A number is written the way JavaScript prints it, so a very large or very
-  small one is tested in exponent form (`1e21` as `1e+21`); send such amounts as text. If the field can be null, add an **is not null** rule. A list or object
-  fails the run. (Filter Array differs: `null` and booleans are items it can't test, which fail the
+  matches a null field. If the field can be null, add an **is not null** rule. A number is written
+  the way JavaScript prints it, so a very large or very small one is tested in exponent form
+  (`1e21` as `1e+21`); send such amounts as text. That holds when the condition also compares large
+  integers exactly: the regex test still sees ordinary numbers. A list or object fails the run. (Filter Array differs: `null` and booleans are items it can't test, which fail the
   step unless it is set to skip them.)
 - **Syntax:** patterns use [RE2 syntax](https://github.com/google/re2/wiki/Syntax), which is
   close to JavaScript's. Lookahead and lookbehind, back-references such as `\1`, and `\u` escapes
@@ -149,18 +150,17 @@ same rules.
   spaces at either end are trimmed (write `[ ]` or `\x20` to match one). Leave out quotes and
   JavaScript's `/.../i` around it: a pattern that is one quoted string, or slashes with flags or
   regex syntax inside, is refused. A plain path such as `/api/` is fine. To match a quote, put a
-  backslash before it, and the same for a brace (`\{`). A pattern that cannot run shows an error
-  under the rule. The pattern cannot come from another node; to look for text from another node,
+  backslash before it; to match `{{`, write `\{\{`. A pattern that cannot run shows an error under
+  the rule. The pattern cannot come from another node; to look for text from another node,
   use **contains** or **starts with**.
 - **Expression mode:** write `matchesRegex({{@nodeId:Label.field}}, "^0x[0-9a-fA-F]{40}$")`.
   Inside the quotes, double each backslash: `"^\\d+$"` for `^\d+$`. A single backslash before
   anything but a quote, `n`, `r` or `t` is refused rather than silently changing the pattern.
 - **Limits:** a pattern of up to 512 characters and 1,000 steps (RE2's size for the compiled
-  pattern, which the error states, so there is nothing to work out; long `{n}` repeats add up
-  fastest), text of up to 4,096 characters (longer text fails the
-  run), and at most 16 regex tests in one Condition. Matching never backtracks and has a fixed
-  budget per Condition and per workflow run, loops included (5,000,000 and 10,000,000 steps x
-  characters tested), so it cannot hold up a run for more than a few seconds. Each pattern also
+  pattern; long `{n}` repeats add up fastest), text of up to 4,096 characters (longer text fails
+  the run), and at most 16 regex tests in one Condition. Matching never backtracks and has a fixed
+  budget of steps x characters tested: 5,000,000 per Condition check and 10,000,000 per workflow
+  run, loops included, so it cannot hold up a run for more than a few seconds. Each pattern also
   costs a one-off amount the first time a run uses it (2,000 per character plus 400 per step), not
   again in a loop. The run's budget is shared by every regex test in it: a For Each can test about
   5,100 addresses against `^0x[0-9a-fA-F]{40}$` (about 56,000 once, then 46 steps x 42 characters
@@ -170,8 +170,9 @@ same rules.
 - **Exported code:** code export does not include regex tests. A Condition that uses one is
   exported as code that throws an error when it is reached, so port that test by hand.
 
-**Condition length:** any condition may be up to 10,000 characters, with each `{{...}}` reference
-counted as a short name (`__v0`), so long node names and ids do not count against it.
+- **Condition length:** a Condition with a regex test may be up to 10,000 characters, each
+  `{{...}}` reference counting as about 4, so long node names and ids do not count against it.
+  Conditions without a regex test have no length limit.
 
 **What counts as a number:** an operand is compared by magnitude only when it is a
 plain decimal - an optional sign, digits, and at most one point, such as `42`, `-0.50` or

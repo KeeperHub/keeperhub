@@ -33,7 +33,7 @@ import {
   isRegexOperator,
 } from "@/lib/workflow/nodes/condition/operator-metadata";
 import {
-  REGEX_SOURCE_ERROR,
+  REGEX_TEMPLATE_ERROR,
   readRegexPattern,
   regexPatternError,
   withoutExpressionNote,
@@ -61,7 +61,7 @@ function regexRuleError(operand: string): string | undefined {
     return;
   }
   if (hasTemplateToken(operand)) {
-    return REGEX_SOURCE_ERROR;
+    return withoutExpressionNote(REGEX_TEMPLATE_ERROR);
   }
   const problem = regexPatternError(readRegexPattern(operand));
   // The rule takes the pattern as typed, so Expression mode notes do not apply.
@@ -188,21 +188,20 @@ function RuleRow({
           </Button>
         )}
       </div>
-      {regex &&
-        (patternError ? (
-          <p className="text-destructive text-xs" id={errorId}>
-            {patternError}
-          </p>
-        ) : (
-          <p className="text-muted-foreground text-xs" id={hintId}>
-            {REGEX_RULE_HINT}
-          </p>
-        ))}
-      {/* Always mounted, so screen readers announce an error as it appears. */}
+      {/* Mounted with the rule, so screen readers announce an error once. */}
       {regex && (
-        <span aria-live="polite" className="sr-only">
-          {patternError}
-        </span>
+        <div aria-live="polite">
+          {patternError && (
+            <p className="text-destructive text-xs" id={errorId}>
+              {patternError}
+            </p>
+          )}
+        </div>
+      )}
+      {regex && !patternError && (
+        <p className="text-muted-foreground text-xs" id={hintId}>
+          {REGEX_RULE_HINT}
+        </p>
       )}
     </div>
   );

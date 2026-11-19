@@ -7,7 +7,7 @@
 import { getErrorMessage, resolveSwitch, switchRefusal } from "@/lib/utils";
 import { isRegexOperator } from "@/lib/workflow/nodes/condition/operator-metadata";
 import {
-  REGEX_SOURCE_ERROR,
+  REGEX_TEMPLATE_ERROR,
   readRegexPattern,
   regexPatternError,
   withoutExpressionNote,
@@ -446,7 +446,7 @@ export function readValue(raw: unknown, operator: FilterOperator): unknown {
     const pattern = readRegexPattern(String(value));
     const patternProblem = regexPatternError(pattern);
     if (patternProblem) {
-      throw new Error(`${withoutExpressionNote(patternProblem)}.`);
+      throw new Error(sentence(withoutExpressionNote(patternProblem)));
     }
     return pattern;
   }
@@ -463,6 +463,11 @@ export function readValue(raw: unknown, operator: FilterOperator): unknown {
   return typeof value === "string" ? toTypedValue(value, label) : value;
 }
 
+// Messages end with one period, whether or not the reason already has one.
+function sentence(text: string): string {
+  return text.endsWith(".") ? text : `${text}.`;
+}
+
 // True for a template Value, which the run resolves and checks. A regex
 // pattern must be typed, so outside data cannot choose the test: it throws.
 function deferTemplateValue(raw: unknown, operator: FilterOperator): boolean {
@@ -470,7 +475,7 @@ function deferTemplateValue(raw: unknown, operator: FilterOperator): boolean {
     return false;
   }
   if (isRegexOperator(operator)) {
-    throw new Error(`${REGEX_SOURCE_ERROR}.`);
+    throw new Error(`${withoutExpressionNote(REGEX_TEMPLATE_ERROR)}.`);
   }
   return true;
 }

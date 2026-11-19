@@ -99,7 +99,12 @@ const NEGATED_CALL_RE = /(?<![\w$.])notMatchesRegex\s*\(/;
 
 /** True when notMatchesRegex(...) is called outside quoted text. */
 export function hasNegatedRegexCall(expression: string): boolean {
-  return NEGATED_CALL_RE.test(codeStructure(expression));
+  return hasNegatedRegexCallIn(codeStructure(expression));
+}
+
+/** hasNegatedRegexCall on a codeStructure already computed. */
+export function hasNegatedRegexCallIn(structure: string): boolean {
+  return NEGATED_CALL_RE.test(structure);
 }
 
 /**
@@ -107,7 +112,11 @@ export function hasNegatedRegexCall(expression: string): boolean {
  * call, e.g. (matchesRegex)(...): the call checks below would miss it.
  */
 export function hasIndirectRegexUse(expression: string): boolean {
-  const structure = maskedStructure(expression);
+  return hasIndirectRegexUseIn(maskedStructure(expression));
+}
+
+/** hasIndirectRegexUse on a maskedStructure already computed. */
+export function hasIndirectRegexUseIn(structure: string | undefined): boolean {
   if (structure === undefined) {
     return false;
   }

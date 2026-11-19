@@ -30,10 +30,12 @@ import {
   replaceTemplateTokens,
 } from "@/lib/workflow/template-ref";
 import {
-  findRegexCalls,
-  hasIndirectRegexUse,
-  hasNegatedRegexCall,
+  hasIndirectRegexUseIn,
+  hasNegatedRegexCallIn,
+  maskedStructure,
+  mentionsRegexIn,
   REGEX_OBJECT_RE,
+  regexCallsIn,
 } from "./regex-calls";
 import {
   MAX_REGEX_CALLS,
@@ -44,6 +46,7 @@ import {
   REGEX_LITERAL_ERROR,
   REGEX_NEGATED_ERROR,
   REGEX_SOURCE_ERROR,
+  REGEX_TEMPLATE_ERROR,
   regexPatternError,
 } from "./regex-match";
 import { BLOCKED_PROPS } from "./safe-eval";
@@ -120,9 +123,9 @@ function blockedKeyError(
   return;
 }
 
-// Several checks here scale worse than linearly; a cap keeps each one fast.
-// It counts each reference as the short name the run gives it (__v0), so a
-// long node label or id does not count against it.
+// The regex checks read a condition's text several times; this caps the
+// conditions that use matchesRegex. Each reference counts as the short name
+// the run gives it (__v0), so long node labels and ids do not count.
 export const MAX_CONDITION_LENGTH = 10_000;
 
 function conditionLength(expression: string): number {
@@ -131,11 +134,21 @@ function conditionLength(expression: string): number {
 }
 
 function lengthMessage(length: number, rules: boolean): string {
-  const counted = rules ? "Together the rules are" : "Condition is";
-  return `${counted} ${length.toLocaleString("en-US")} characters, each reference counted as a short name; the limit is ${MAX_CONDITION_LENGTH.toLocaleString("en-US")}. Split the test across two Condition nodes`;
+  const what = rules
+    ? "These rules are too long to run with a regex test"
+    : "This condition is too long to run with matchesRegex";
+  return `${what}: ${length.toLocaleString("en-US")} characters, each {{...}} reference counted as about 4; the limit is ${MAX_CONDITION_LENGTH.toLocaleString("en-US")}. Split it across two Condition nodes`;
 }
 
-function lengthError(expression: string): ValidationResult | undefined {
+// Applied only to conditions that use matchesRegex, so no saved condition
+// without one stops running.
+function lengthError(
+  expression: string,
+  usesRegex: boolean
+): ValidationResult | undefined {
+  if (!usesRegex) {
+    return;
+  }
   const length = conditionLength(expression);
   return length > MAX_CONDITION_LENGTH
     ? { valid: false, error: lengthMessage(length, false) }
@@ -147,16 +160,19 @@ function lengthError(expression: string): ValidationResult | undefined {
  * many regex rules it has. Shown under the rules, before any run.
  */
 export function visualConditionLimitError(
-  expression: string
+  expression: string,
+  regexRules: number
 ): string | undefined {
+  if (regexRules > MAX_REGEX_CALLS) {
+    return `A Condition can have at most ${MAX_REGEX_CALLS} regex tests. Split them across two Condition nodes`;
+  }
+  if (regexRules === 0) {
+    return;
+  }
   const length = conditionLength(expression);
-  if (length > MAX_CONDITION_LENGTH) {
-    return lengthMessage(length, true);
-  }
-  if (findRegexCalls(expression).length > MAX_REGEX_CALLS) {
-    return `A Condition can have at most ${MAX_REGEX_CALLS} regex rules. Split them across two Condition nodes`;
-  }
-  return;
+  return length > MAX_CONDITION_LENGTH
+    ? lengthMessage(length, true)
+    : undefined;
 }
 
 // The scanner's own reason: an unclosed quote, or an escape it cannot read.
@@ -172,23 +188,41 @@ function stringError(error: unknown, expression: string): string {
   return `Condition has an ${reason}${hint}`;
 }
 
+// The text masked once (references and quoted text blanked) for every regex
+// check; `masked` is undefined when a quote is never closed.
+type RegexScan = { masked: string | undefined; structure: string };
+
+function scanForRegex(expression: string): RegexScan {
+  const masked = maskedStructure(expression);
+  return { masked, structure: masked ?? expression };
+}
+
 // Only the raw condition (references not yet filled in) shows this: a
 // reference inside a regex pattern would be filled in as the name __v0.
-function rawRegexError(expression: string): ValidationResult | undefined {
-  if (hasNegatedRegexCall(expression)) {
+function rawRegexError(
+  expression: string,
+  scan: RegexScan
+): ValidationResult | undefined {
+  if (hasNegatedRegexCallIn(scan.structure)) {
     return { valid: false, error: REGEX_NEGATED_ERROR };
   }
-  if (hasIndirectRegexUse(expression)) {
+  if (hasIndirectRegexUseIn(scan.masked)) {
     return { valid: false, error: REGEX_DIRECT_ERROR };
   }
-  const calls = findRegexCalls(expression);
+  const calls = scan.masked === undefined ? [] : regexCallsIn(scan.masked);
   if (calls.length > MAX_REGEX_CALLS) {
     return { valid: false, error: REGEX_CALLS_ERROR };
   }
   for (const call of calls) {
     const pattern = call.args[1];
-    if (pattern && hasTemplateToken(expression.slice(...pattern))) {
-      return { valid: false, error: REGEX_SOURCE_ERROR };
+    const text = pattern ? expression.slice(...pattern).trim() : "";
+    if (hasTemplateToken(text)) {
+      // Typed inside quotes it may be braces meant literally.
+      const quoted = text.startsWith('"') || text.startsWith("'");
+      return {
+        valid: false,
+        error: quoted ? REGEX_TEMPLATE_ERROR : REGEX_SOURCE_ERROR,
+      };
     }
   }
   return;
@@ -221,7 +255,9 @@ const ALLOWED_METHODS = new Set([
 const METHOD_CALL_PATTERN = /\.(\w+)\s*\(/g;
 
 // Pattern to match bracket expressions: captures what's before and inside the brackets
-const BRACKET_EXPRESSION_PATTERN = /(\w+)\s*\[([^\]]+)\]/g;
+// Starts only at a word's start and stops at the next bracket, so a long word
+// or a run of "a[" is scanned once, not once per position.
+const BRACKET_EXPRESSION_PATTERN = /(?<!\w)(\w+)\s*\[([^\][]+)\]/g;
 
 // Pattern for valid variable property access: __v0[0], __v0["key"], __v0['key']
 const VALID_BRACKET_ACCESS_PATTERN = /^__v\d+$/;
@@ -240,9 +276,20 @@ const IDENTIFIER_TOKEN_PATTERN = /^[a-zA-Z_]\w*$/;
 // Regex patterns for UI validation
 const EXTRA_SPACES_PATTERN = /\s{2,}/;
 const WHITESPACE_CHAR_PATTERN = /\s/;
-const TEMPLATE_VAR_PATTERN = /^\{\{@[^}]+\}\}/;
-const NUMBER_PATTERN = /^\d+(\.\d+)?/;
-const IDENTIFIER_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*/;
+// Sticky: matched in place at lastIndex, so tokenizing never copies the rest
+// of the text (that made long conditions quadratic).
+const TEMPLATE_VAR_PATTERN = /\{\{@[^}]+\}\}/y;
+const NUMBER_PATTERN = /\d+(\.\d+)?/y;
+const IDENTIFIER_PATTERN = /[a-zA-Z_][a-zA-Z0-9_]*/y;
+
+function matchAt(
+  pattern: RegExp,
+  text: string,
+  at: number
+): string | undefined {
+  pattern.lastIndex = at;
+  return pattern.exec(text)?.[0];
+}
 const OPERATOR_BEFORE_PATTERN =
   /(===|!==|==|!=|>=|<=|>|<|&&|\|\||\*\*|\+|-|\*|\/|%|!)$/;
 const OPERATOR_AFTER_PATTERN =
@@ -314,7 +361,9 @@ function checkBracketExpressions(expression: string): ValidationResult {
 
   // Check for standalone array literals (brackets not preceded by a variable)
   // This catches cases like "[1, 2, 3]" at the start of expression or after operators
-  const standaloneArrayPattern = /(?:^|[=!<>&|(\s])\s*\[/g;
+  // A "[" at the start or right after an operator or a space; the same
+  // matches as (?:^|[=!<>&|(\s])\s*\[ without rescanning runs of spaces.
+  const standaloneArrayPattern = /(?:^|[=!<>&|(\s])\[/g;
   standaloneArrayPattern.lastIndex = 0;
   if (standaloneArrayPattern.test(expression)) {
     return {
@@ -437,10 +486,6 @@ export function validateConditionExpression(
   if (!expression || expression.trim() === "") {
     return { valid: false, error: "Condition expression cannot be empty" };
   }
-  const tooLong = lengthError(expression);
-  if (tooLong) {
-    return tooLong;
-  }
 
   // These checks read code, so quoted values are blanked first: "a b", "x=1"
   // or a regex like "^0x[0-9a-f]+$" is data, not syntax.
@@ -448,7 +493,17 @@ export function validateConditionExpression(
   try {
     code = maskStringLiterals(expression);
   } catch (error) {
-    return { valid: false, error: stringError(error, expression) };
+    return (
+      lengthError(expression, mentionsRegexIn(expression)) ?? {
+        valid: false,
+        error: stringError(error, expression),
+      }
+    );
+  }
+  // References are already __vN here, so this is the masked structure.
+  const tooLong = lengthError(expression, mentionsRegexIn(code));
+  if (tooLong) {
+    return tooLong;
   }
 
   const blockedKey = blockedKeyError(expression, code);
@@ -504,7 +559,8 @@ export function preValidateConditionExpression(
   if (!expression || typeof expression !== "string") {
     return { valid: false, error: "Condition must be a non-empty string" };
   }
-  const tooLong = lengthError(expression);
+  const scan = scanForRegex(expression);
+  const tooLong = lengthError(expression, mentionsRegexIn(scan.structure));
   if (tooLong) {
     return tooLong;
   }
@@ -548,7 +604,7 @@ export function preValidateConditionExpression(
     }
   }
 
-  return rawRegexError(expression) ?? { valid: true };
+  return rawRegexError(expression, scan) ?? { valid: true };
 }
 
 /**
@@ -623,14 +679,14 @@ function tokenizeExpression(
     }
 
     // Template variable: {{@nodeId:Label.field}}
-    const templateMatch = expression.slice(i).match(TEMPLATE_VAR_PATTERN);
+    const templateMatch = matchAt(TEMPLATE_VAR_PATTERN, expression, i);
     if (templateMatch) {
       tokens.push({
         type: "template",
-        value: templateMatch[0],
+        value: templateMatch,
         start: i,
       });
-      i += templateMatch[0].length;
+      i += templateMatch.length;
       continue;
     }
 
@@ -665,7 +721,7 @@ function tokenizeExpression(
     ];
     let matched = false;
     for (const op of multiCharOps) {
-      if (expression.slice(i).startsWith(op)) {
+      if (expression.startsWith(op, i)) {
         tokens.push({
           type: "operator",
           value: op,
@@ -696,21 +752,20 @@ function tokenizeExpression(
     }
 
     // Number: digits with optional decimal
-    const numberMatch = expression.slice(i).match(NUMBER_PATTERN);
+    const numberMatch = matchAt(NUMBER_PATTERN, expression, i);
     if (numberMatch) {
       tokens.push({
         type: "number",
-        value: numberMatch[0],
+        value: numberMatch,
         start: i,
       });
-      i += numberMatch[0].length;
+      i += numberMatch.length;
       continue;
     }
 
     // Identifier (boolean/null literals or property access)
-    const identifierMatch = expression.slice(i).match(IDENTIFIER_PATTERN);
-    if (identifierMatch) {
-      const value = identifierMatch[0];
+    const value = matchAt(IDENTIFIER_PATTERN, expression, i);
+    if (value) {
       if (["true", "false", "null", "undefined"].includes(value)) {
         tokens.push({
           type: "literal",
@@ -755,58 +810,21 @@ function isValidOperand(token: Token): boolean {
 }
 
 /**
- * True when `index` falls inside a string literal's span.
- *
- * A quoted operand is a value, not syntax: a `contains` rule compiles to
- * `String(...).includes("...")`, so the `/` and `-` in
- * `Contract call failed: Error(Splitter/kicked-too-soon)` are characters the
- * author is matching, and the `-` in a pattern's `[0-9a-fA-F]` is a character
- * class. The scan below reads the raw expression, so without this it reports
- * `Operator "-" must have exactly one space before it` for both.
- *
- * The tokens come from `tokenizeExpression`, which already knows where a literal
- * begins and ends, so this reads that answer rather than re-deriving it: a
- * second definition of what counts as a literal is free to drift from the
- * tokenizer's, and the tokenizer is also what rejects an unterminated quote,
- * before this scan runs.
+ * Marks each index inside a string literal or a template variable, as the
+ * tokenizer found them, so the operator scan below skips text that is a value
+ * (a quoted "-" or "/", a "-" in a regex class) or a node label ("My-Node").
+ * Reading the tokenizer's spans keeps one definition of each; counting quotes
+ * or "{{" again in the raw text drifted from it before.
  */
-function isInsideStringLiteral(tokens: Token[], index: number): boolean {
-  return tokens.some(
-    (token) => token.type === "string" && tokenSpanContains(token, index)
-  );
-}
-
-/** True when `index` falls inside this token's span. */
-function tokenSpanContains(token: Token, index: number): boolean {
-  return index >= token.start && index < token.start + token.value.length;
-}
-
-/**
- * True when `index` falls inside a template variable's span.
- *
- * The scan below leaves an operator inside `{{@nodeId:Label.field}}` alone,
- * because a hyphenated node label is ordinary text rather than syntax. It used to
- * answer that by counting `{{` and `}}` in the raw text before the match, which is
- * a second definition of a template and disagrees with this one:
- * `TEMPLATE_VAR_PATTERN` requires `{{@`, while the tally counted any `{{`. Two
- * things followed. A literal containing `{{` left the running count open for the
- * rest of the expression, so every operator after it was skipped and validation
- * switched off silently rather than firing wrongly: `{{@a:A.x}} === "z" &&
- * {{@b:B.y}}==="w"` reports the missing space, and the same expression with
- * `"{{"` in place of `"z"` reports nothing. A literal containing `}}`
- * under-counts instead, so an operator inside a real template variable is
- * validated as code: `String({{@a:A.x}}).includes("}}") && {{@b:My-Node.field}}
- * === "z"` reports `Operator "-" must have exactly one space before it` for the
- * hyphen in the label.
- *
- * `tokenizeExpression` already marks where a template starts and how long it is,
- * so this reads that answer the way `isInsideStringLiteral` reads the literal's,
- * rather than deriving a third definition that can drift from it.
- */
-function isInsideTemplateToken(tokens: Token[], index: number): boolean {
-  return tokens.some(
-    (token) => token.type === "template" && tokenSpanContains(token, index)
-  );
+function textSpans(tokens: Token[], length: number): Uint8Array {
+  // One pass; looking each operator up in the tokens was quadratic.
+  const inside = new Uint8Array(length);
+  for (const token of tokens) {
+    if (token.type === "string" || token.type === "template") {
+      inside.fill(1, token.start, token.start + token.value.length);
+    }
+  }
+  return inside;
 }
 
 /**
@@ -821,6 +839,7 @@ function validateOperatorSpacing(
   const operatorMatches: Array<{ value: string; index: number }> = [];
   // Reset regex and find all matches
   const pattern = new RegExp(OPERATOR_PATTERN.source, OPERATOR_PATTERN.flags);
+  const inside = textSpans(tokens, expression.length);
   let match: RegExpExecArray | null = null;
   // biome-ignore lint/suspicious/noAssignInExpressions: Standard pattern for regex.exec in loop
   while ((match = pattern.exec(expression)) !== null) {
@@ -828,12 +847,7 @@ function validateOperatorSpacing(
     // author's own text rather than syntax, and both spans come from the
     // tokenizer: a quoted operand is a value, and a hyphen in a node label is
     // part of the label.
-    if (
-      !(
-        isInsideTemplateToken(tokens, match.index) ||
-        isInsideStringLiteral(tokens, match.index)
-      )
-    ) {
+    if (inside[match.index] !== 1) {
       operatorMatches.push({
         value: match[1],
         index: match.index,
@@ -1176,25 +1190,22 @@ export function validateConditionExpressionUI(
   if (!expression || expression.trim() === "") {
     return { valid: true };
   }
-  const tooLong = lengthError(expression);
+  const trimmed = expression.trim();
+  const scan = scanForRegex(trimmed);
+  const tooLong = lengthError(trimmed, mentionsRegexIn(scan.structure));
   if (tooLong) {
     return tooLong;
   }
 
-  const trimmed = expression.trim();
-
-  try {
-    const regexObject = regexObjectError(maskStringLiterals(trimmed));
-    if (regexObject) {
-      return regexObject;
-    }
-  } catch {
-    // Unterminated quote: the tokenizer below reports it.
+  // With a quote never closed, the tokenizer below reports it.
+  const regexObject = scan.masked && regexObjectError(scan.masked);
+  if (regexObject) {
+    return regexObject;
   }
-  if (hasNegatedRegexCall(trimmed)) {
+  if (hasNegatedRegexCallIn(scan.structure)) {
     return { valid: false, error: REGEX_NEGATED_ERROR };
   }
-  if (hasIndirectRegexUse(trimmed)) {
+  if (hasIndirectRegexUseIn(scan.masked)) {
     return { valid: false, error: REGEX_DIRECT_ERROR };
   }
 
@@ -1327,7 +1338,7 @@ function regexCallError(args: Token[][]): string | undefined {
     return REGEX_BACKSLASH_ERROR;
   }
   if (hasTemplateToken(scanned.value)) {
-    return REGEX_SOURCE_ERROR;
+    return REGEX_TEMPLATE_ERROR;
   }
   // Advice given in pattern terms needs its backslashes doubled when typed here.
   const problem = regexPatternError(scanned.value);

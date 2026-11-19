@@ -124,6 +124,29 @@ describe("matches regex rule in the visual builder", () => {
     }
   });
 
+  // The rule takes the pattern as typed, so no Expression-mode advice.
+  it("words the quote error for the rule, not Expression mode", () => {
+    render('"ok"');
+    expect(container.textContent).toContain("wrapped in quotes");
+    expect(container.textContent).not.toContain("Expression mode");
+  });
+
+  it("says how to match braces typed in the pattern", () => {
+    render("^{{name}}$");
+    expect(container.textContent).toContain(
+      "To match braces, put a backslash before each one: \\{\\{"
+    );
+    expect(container.textContent).not.toContain("Expression mode");
+  });
+
+  it("puts the error in the live region once, not twice", () => {
+    render("^(?=EMSP)");
+    const occurrences = container.textContent?.split(
+      "Lookahead and lookbehind"
+    ).length;
+    expect(occurrences).toBe(2);
+  });
+
   it("stays quiet while the pattern is empty", () => {
     const input = render("");
     expect(input.getAttribute("aria-invalid")).toBeNull();

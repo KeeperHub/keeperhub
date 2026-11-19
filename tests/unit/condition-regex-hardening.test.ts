@@ -135,9 +135,8 @@ describe("regex hardening", () => {
   });
 
   describe("condition size", () => {
-    // Every condition: several checks scale worse than linearly.
-    it("refuses a condition over 10,000 characters in every check", () => {
-      const long = `${FIELD} === "${"a".repeat(10_000)}"`;
+    it("refuses a regex condition over 10,000 characters in every check", () => {
+      const long = `matchesRegex(${FIELD}, "a") || ${FIELD} === "${"a".repeat(10_000)}"`;
       for (const result of [
         preValidateConditionExpression(long),
         validateConditionExpression(long),
@@ -150,39 +149,55 @@ describe("regex hardening", () => {
       }
     });
 
-    // The maintainer's case: about 95 address rules, 10,000 characters with
-    // their references, about 5,000 once each is a short name.
-    it("counts each reference as a short name, so a long allow-list fits", () => {
+    // The maintainer's case, made larger: a saved allow-list of 300 address
+    // rules with no regex keeps running.
+    it("leaves long conditions without matchesRegex running", () => {
       const rule = (i: number): string =>
         `{{@node_${String(i).padStart(16, "0")}:Label.from}} === "0x${String(i).padStart(40, "0")}"`;
-      const long = Array.from({ length: 120 }, (_, i) => rule(i)).join(" || ");
-      expect(long.length).toBeGreaterThan(10_000);
-      for (const result of [
-        preValidateConditionExpression(long),
-        validateConditionExpressionUI(long),
-      ]) {
-        expect(result).toEqual({ valid: true });
-      }
-      // As the run checks it, references already replaced.
+      const long = Array.from({ length: 300 }, (_, i) => rule(i)).join(" || ");
       const resolved = Array.from(
-        { length: 120 },
+        { length: 300 },
         (_, i) => `__v${i} === "0x${String(i).padStart(40, "0")}"`
       ).join(" || ");
+      expect(resolved.length).toBeGreaterThan(10_000);
+      expect(preValidateConditionExpression(long)).toEqual({ valid: true });
+      expect(validateConditionExpressionUI(long)).toEqual({ valid: true });
       expect(validateConditionExpression(resolved)).toEqual({ valid: true });
     });
 
+    // Shapes that used to take seconds: a long word, a run of spaces inside
+    // quotes, a run of "a[", and a long || chain. Quadratic would be minutes.
+    it("checks a 200,000-character condition in linear time", () => {
+      const n = 200_000;
+      for (const text of [
+        `${"a".repeat(n)} == 1`,
+        `"${" ".repeat(n)}" == __v0`,
+        "a[".repeat(n / 2),
+        Array.from({ length: n / 6 }, () => '"a"').join(" || "),
+      ]) {
+        const started = performance.now();
+        validateConditionExpression(text);
+        preValidateConditionExpression(text);
+        validateConditionExpressionUI(text);
+        expect(performance.now() - started).toBeLessThan(2000);
+      }
+    });
+
     it("shows the visual limits before a run", () => {
-      const rules = Array.from(
-        { length: 17 },
-        () => `matchesRegex(${FIELD}, "a")`
-      ).join(" || ");
-      expect(visualConditionLimitError(rules)).toBe(
-        "A Condition can have at most 16 regex rules. Split them across two Condition nodes"
+      const rules = (count: number): string =>
+        Array.from({ length: count }, () => `matchesRegex(${FIELD}, "a")`).join(
+          " || "
+        );
+      expect(visualConditionLimitError(rules(17), 17)).toBe(
+        "A Condition can have at most 16 regex tests. Split them across two Condition nodes"
+      );
+      const long = `${rules(1)} || ${FIELD} === "${"a".repeat(10_000)}"`;
+      expect(visualConditionLimitError(long, 1)).toContain(
+        "These rules are too long to run with a regex test"
       );
       expect(
-        visualConditionLimitError(`${FIELD} === "${"a".repeat(10_000)}"`)
-      ).toContain("Together the rules are");
-      expect(visualConditionLimitError(`${FIELD} === "a"`)).toBeUndefined();
+        visualConditionLimitError(`${FIELD} === "${"a".repeat(10_000)}"`, 0)
+      ).toBeUndefined();
     });
 
     it("opens a condition with more regex tests than allowed as text", () => {
@@ -206,7 +221,7 @@ describe("regex hardening", () => {
       ]) {
         expect(result).toEqual({
           valid: false,
-          error: expect.stringContaining("Write !matchesRegex(...)"),
+          error: expect.stringContaining("write !matchesRegex(...)"),
         });
       }
       expect(
@@ -453,21 +468,139 @@ describe("regex hardening", () => {
       return generateWorkflowCode(nodes, edges).code;
     }
 
-    // The maintainer's example: the path is kept as a quoted key, not code.
-    it("writes any field path as a key, never as code", () => {
+    // The maintainer's example. A key needing escapes is written without
+    // quotes or backslashes, so escaping done later cannot reopen it; the
+    // Condition exporter then refuses it, since it is not condition grammar.
+    it("writes any field path as data, never as code", () => {
       const injected = `{{@n1:Webhook.a || fetch(atob("aHR0cDovL2V2aWw")) || b}} == 1`;
-      expect(workflowCode(injected)).toContain(
-        'if (webhookResult["a || fetch(atob(\\"aHR0cDovL2V2aWw\\")) || b"] == 1) {'
+      const code = workflowCode(injected);
+      expect(code).toContain("if (false /* ERROR:");
+      expect(code).not.toContain("fetch(atob");
+      const sdk = exported(injected);
+      expect(sdk).toContain("?.data?.[String.fromCharCode(");
+      expect(sdk).not.toContain("fetch(atob");
+      expect(workflowCode("{{@n1:Webhook.my field}} == 1")).toContain(
+        'if (webhookResult["my field"] == 1) {'
       );
-      expect(exported(injected)).toContain(
-        `?.data?.["a || fetch(atob(\\"aHR0cDovL2V2aWw\\")) || b"]} == 1`
+    });
+
+    // Paths are read the way the run reads them (resolveStrictPath).
+    it("writes indexes and odd parts the way the run reads them", () => {
+      for (const [path, written] of [
+        ["items[0].value", "webhookResult.items[0].value"],
+        ["topics.1", "webhookResult[1]".replace("[1]", ".topics[1]")],
+        ["codes.007", 'webhookResult.codes["007"]'],
+        ["items[007]", "webhookResult.items[7]"],
+        ["a..b", "webhookResult.a.b"],
+        [" a . b ", "webhookResult.a.b"],
+        ["my-list[0]", 'webhookResult["my-list"][0]'],
+        ["n.99999999999999999999", 'webhookResult.n["99999999999999999999"]'],
+      ] as const) {
+        expect(workflowCode(`{{@n1:Webhook.${path}}} == 1`)).toContain(
+          `if (${written} == 1) {`
+        );
+      }
+    });
+
+    // A reference inside quotes is part of the text; it must not close them.
+    it("keeps a reference inside a quoted string from closing it", () => {
+      const single = `"{{@n1:Webhook. + fetch(atob('aHR0cDovL2V2aWw')) + }}" == "x"`;
+      const double = `'{{@n1:Webhook. + fetch(atob("aHR0cDovL2V2aWw")) + }}' == "x"`;
+      for (const condition of [single, double]) {
+        expect(workflowCode(condition)).not.toMatch(/\+ fetch\(atob/);
+      }
+      // The SDK writes the condition as template text; the key stays one
+      // string inside its ${...}.
+      expect(exported(single)).toContain(
+        `\`"\${outputs?.['n1']?.data?.["+ fetch(atob('aHR0cDovL2V2aWw')) +"]}" == "x"\``
       );
-      expect(workflowCode("{{@n1:Webhook.items[0][1].value}} == 1")).toContain(
-        "if (webhookResult.items[0][1].value == 1) {"
+      expect(exported(double)).toContain(
+        "`'${outputs?.['n1']?.data?.[String.fromCharCode("
       );
-      expect(workflowCode("{{@n1:Webhook.topics.1}} == 1")).toContain(
-        "if (webhookResult.topics[1] == 1) {"
+    });
+
+    it("exports a regex condition as code that throws where it is reached", () => {
+      const nodes = [
+        {
+          id: "t",
+          type: "trigger",
+          position: { x: 0, y: 0 },
+          data: { label: "Trigger", type: "trigger", config: {} },
+        },
+        {
+          id: "c",
+          type: "action",
+          position: { x: 0, y: 0 },
+          data: {
+            label: "Check",
+            type: "action",
+            config: {
+              actionType: "Condition",
+              condition: `matchesRegex(${FIELD}, "^0x")`,
+            },
+          },
+        },
+        {
+          id: "n",
+          type: "action",
+          position: { x: 0, y: 0 },
+          data: {
+            label: "Next",
+            type: "action",
+            config: { actionType: "HTTP Request" },
+          },
+        },
+      ] as WorkflowNode[];
+      const edges = [
+        { id: "e1", source: "t", target: "c" },
+        { id: "e2", source: "c", target: "n", sourceHandle: "true" },
+      ] as never;
+      const result = generateWorkflowCode(nodes, edges);
+      expect(result.code).toContain(
+        'if ((() => { throw new Error("This condition uses matchesRegex'
       );
+      expect(result.validationErrors).toEqual([
+        'Condition node "Check" uses matchesRegex, which exported code does not support',
+      ]);
+    });
+
+    // Reached only when save validation was skipped (an unknown type).
+    it("writes an unknown action type as a string", () => {
+      const actionType = 'x", evil: process.exit(1), y: "';
+      const code = generateWorkflowCode(
+        [
+          {
+            id: "t",
+            type: "trigger",
+            position: { x: 0, y: 0 },
+            data: { label: "Trigger", type: "trigger", config: {} },
+          },
+          {
+            id: "u",
+            type: "action",
+            position: { x: 0, y: 0 },
+            data: { label: "Odd", type: "action", config: { actionType } },
+          },
+          {
+            id: "n",
+            type: "action",
+            position: { x: 0, y: 0 },
+            data: {
+              label: "Next",
+              type: "action",
+              config: {
+                actionType: "HTTP Request",
+                endpoint: "{{@u:Odd.x}}",
+              },
+            },
+          },
+        ] as WorkflowNode[],
+        [
+          { id: "e1", source: "t", target: "u" },
+          { id: "e2", source: "u", target: "n" },
+        ] as never
+      ).code;
+      expect(code).not.toContain("evil: process.exit(1)");
     });
 
     it("exports a reference to a node whose label has dots", () => {

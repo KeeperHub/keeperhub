@@ -22,6 +22,7 @@ import {
   REGEX_EMPTY_ERROR,
   REGEX_NON_TEXT_ERROR,
   REGEX_SOURCE_ERROR,
+  REGEX_TEMPLATE_ERROR,
   regexPatternError,
 } from "@/lib/workflow/nodes/condition/regex-match";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
@@ -100,7 +101,7 @@ describe("matchesRegex", () => {
     it("refuses a pattern wrapped in quotes, or in /.../ with flags or regex syntax", () => {
       for (const pattern of ['"ok"', "'ok'"]) {
         expect(() => runRule(pattern, '"ok"'), pattern).toThrow(
-          "starts and ends with a quote"
+          "wrapped in quotes"
         );
       }
       for (const pattern of ["/^0x/", "/^0x/i", "/api/i", "/a+/"]) {
@@ -121,7 +122,7 @@ describe("matchesRegex", () => {
         "^{{@n1:Webhook.value}}0$",
       ]) {
         expect(() => runRule(pattern, "a"), pattern).toThrow(
-          REGEX_SOURCE_ERROR
+          REGEX_TEMPLATE_ERROR
         );
       }
     });
@@ -185,7 +186,7 @@ describe("matchesRegex", () => {
       expect(runNotRule("^EMSP_", "EMSP_X")).toBe(false);
       expect(() => runNotRule("(?=a)", "a")).toThrow("Lookahead");
       expect(() => runNotRule("^{{@n1:Webhook.value}}", "a")).toThrow(
-        REGEX_SOURCE_ERROR
+        REGEX_TEMPLATE_ERROR
       );
     });
 
@@ -289,7 +290,7 @@ describe("matchesRegex", () => {
         `matchesRegex(${FIELD}, "{{@n1:Webhook.other}}")`,
       ]) {
         expect(() => run(expression, "__v10"), expression).toThrow(
-          REGEX_SOURCE_ERROR
+          REGEX_TEMPLATE_ERROR
         );
       }
     });
@@ -456,14 +457,16 @@ describe("matchesRegex", () => {
     });
 
     it("refuses a pattern that is not one quoted literal", () => {
-      for (const expression of [
-        `matchesRegex(String(${FIELD}), ${FIELD})`,
-        `matchesRegex(${FIELD}, "^${FIELD}$")`,
+      // A reference as the pattern, or typed inside its quotes (which may
+      // be braces meant literally, so that message says how to match them).
+      for (const [expression, error] of [
+        [`matchesRegex(String(${FIELD}), ${FIELD})`, REGEX_SOURCE_ERROR],
+        [`matchesRegex(${FIELD}, "^${FIELD}$")`, REGEX_TEMPLATE_ERROR],
       ]) {
-        expect(() => run(expression, "a")).toThrow(REGEX_SOURCE_ERROR);
+        expect(() => run(expression, "a")).toThrow(error);
         expect(validateConditionExpressionUI(expression)).toEqual({
           valid: false,
-          error: REGEX_SOURCE_ERROR,
+          error,
         });
       }
     });
@@ -543,18 +546,16 @@ describe("matchesRegex", () => {
       expect(regexPatternError("/users/id")).toBeUndefined();
       expect(regexPatternError("/api/ids")).toBeUndefined();
       expect(regexPatternError("/x/g")).toContain("Leave out the /.../");
-      expect(regexPatternError('"a\\"b"')).toContain(
-        "starts and ends with a quote"
-      );
+      expect(regexPatternError('"a\\"b"')).toContain("wrapped in quotes");
       // An escaped backslash leaves the inner quote bare: not one quoted string.
       expect(regexPatternError('"a\\\\"b"')).toBeUndefined();
-      expect(regexPatternError("*.eth")).toContain("For any text, write .*");
+      expect(regexPatternError("*.eth")).toContain("For any text, use .*");
       expect(regexPatternError("\\q")).toContain("Remove that backslash");
       expect(regexPatternError("a{2,1}")).toContain("smaller number first");
       expect(regexPatternError("?abc")).toContain("To match ? itself");
       expect(regexPatternError("?abc")).not.toContain(".*");
       expect(regexPatternError("a{2000}")).toContain(
-        "keep a repeat count under about 990"
+        "Repeat counts go up to 1,000, and the whole pattern"
       );
       // The last quote is escaped, so this is not one quoted string.
       expect(regexPatternError('"a\\"')).toBeUndefined();

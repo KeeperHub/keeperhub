@@ -39,6 +39,7 @@ import {
   MAX_RETRY_DELAY_SECONDS,
 } from "@/lib/workflow/nodes/http-request/constants";
 import {
+  countRegexRules,
   createEmptyGroup,
   editorConditionState,
   visualConditionToExpression,
@@ -378,13 +379,6 @@ function ConditionFields({
     return () => clearTimeout(timeoutId);
   }, [conditionValue, mode]);
 
-  // Limits the rules can reach that would fail every run.
-  const visualLimitError = useMemo(
-    () =>
-      mode === "visual" ? visualConditionLimitError(conditionValue) : undefined,
-    [mode, conditionValue]
-  );
-
   const handleVisualChange = (group: ConditionGroup): void => {
     const expression = visualConditionToExpression(group);
     onUpdateConfig("conditionConfig", { group });
@@ -402,6 +396,18 @@ function ConditionFields({
   const emptyGroup = useMemo(() => createEmptyGroup(), []);
   const currentGroup =
     existingConditionConfig?.group ?? parsedGroup ?? emptyGroup;
+
+  // Limits the rules can reach that would fail every run.
+  const visualLimitError = useMemo(
+    () =>
+      mode === "visual"
+        ? visualConditionLimitError(
+            conditionValue,
+            countRegexRules(currentGroup)
+          )
+        : undefined,
+    [mode, conditionValue, currentGroup]
+  );
 
   return (
     <div className="space-y-3">
@@ -442,13 +448,12 @@ function ConditionFields({
             group={currentGroup}
             onChange={handleVisualChange}
           />
-          {visualLimitError && (
-            <p className="text-destructive text-xs">{visualLimitError}</p>
-          )}
-          {/* Always mounted, so screen readers announce it as it appears. */}
-          <span aria-live="polite" className="sr-only">
-            {visualLimitError}
-          </span>
+          {/* Always mounted, so screen readers announce it once. */}
+          <div aria-live="polite">
+            {visualLimitError && (
+              <p className="text-destructive text-xs">{visualLimitError}</p>
+            )}
+          </div>
           {conditionValue.trim() && (
             <div className="space-y-1">
               <Label className="text-muted-foreground text-xs">
@@ -469,13 +474,12 @@ function ConditionFields({
             placeholder="e.g., 5 > 3, status === 200, {{PreviousNode.value}} > 100"
             value={conditionValue}
           />
-          {validationError && (
-            <p className="text-xs text-yellow-600">{validationError}</p>
-          )}
-          {/* Always mounted, so screen readers announce an error as it appears. */}
-          <span aria-live="polite" className="sr-only">
-            {validationError}
-          </span>
+          {/* Always mounted, so screen readers announce an error once. */}
+          <div aria-live="polite">
+            {validationError && (
+              <p className="text-xs text-yellow-600">{validationError}</p>
+            )}
+          </div>
           <p className="text-muted-foreground text-xs">
             Enter a JavaScript expression that evaluates to true or false. Use @
             to reference previous node outputs.
