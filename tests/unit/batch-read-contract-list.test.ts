@@ -2406,6 +2406,29 @@ describe("batch-read-contract - second review, round 2", () => {
     );
   });
 
+  it("does not blame a one-member tuple when an object lands on a plain input", async () => {
+    // A one-member tuple given flat already lines up; the two-member u is offered.
+    const single = { name: "t", type: "tuple", components: [uint("a")] };
+    const first = abiWith("f", [single, uint("x"), { name: "u", ...pair }]);
+    expect(
+      await failure({ ...argsList([[1, { c: 1 }, 3]], "f"), abi: first })
+    ).toBe(
+      'Argument Sets entry 1 has 3 values for f (t, x, u), which takes 3 when u is an object, or 4 when u is given flat as its 2 members. Make each entry an array like [{"a": 1}, 1, {"a": 1, "b": 1}].'
+    );
+    const middle = abiWith("g", [single, { name: "u", ...pair }, uint("x")]);
+    expect(
+      await failure({ ...argsList([[1, 2, { c: 1 }]], "g"), abi: middle })
+    ).toBe(
+      'Argument Sets entry 1 has 3 values for g (t, u, x), which takes 3 when u is an object, or 4 when u is given flat as its 2 members. Make each entry an array like [{"a": 1}, {"a": 1, "b": 1}, 1].'
+    );
+    const late = abiWith("h", [uint("x"), single, { name: "u", ...pair }]);
+    expect(
+      await failure({ ...argsList([[{ c: 1 }, 2, 3]], "h"), abi: late })
+    ).toBe(
+      'Argument Sets entry 1 has 3 values for h (x, t, u), which takes 3 when u is an object, or 4 when u is given flat as its 2 members. Make each entry an array like [1, {"a": 1}, {"a": 1, "b": 1}].'
+    );
+  });
+
   it("names two flat tuples and a three-member one", async () => {
     const two = abiWith("f", [
       { name: "t", ...pair },

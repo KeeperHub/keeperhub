@@ -825,11 +825,13 @@ function countMismatch(
   let flatCount = flat.reduce((total, t) => total + t.members - 1, takes);
   // As many values as inputs: a plain count would match, so the first tuple
   // holding a plain value is offered flat, or named when it can't go flat.
+  // A one-member tuple given flat already lines up, so it is skipped.
   const index = fn.inputs.findIndex(
     (input, i) =>
       input.type === "tuple" &&
       Boolean(input.components?.length) &&
-      !isPlainObject(args[i])
+      !isPlainObject(args[i]) &&
+      !(canGoFlat(input) && input.components?.length === 1)
   );
   if (
     (flat.length === 0 || flatCount === args.length) &&
@@ -838,7 +840,7 @@ function countMismatch(
   ) {
     const input = fn.inputs[index];
     const members = input.components?.length ?? 0;
-    if (!canGoFlat(input) || members < 2) {
+    if (!canGoFlat(input)) {
       return slotError(at, input, index, args[index]);
     }
     flat = [{ label: input.name || `arg${index}`, members }];
