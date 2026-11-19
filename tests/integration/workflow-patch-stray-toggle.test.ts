@@ -199,6 +199,22 @@ describe("PATCH /api/workflows/[workflowId] with a stray toggle value", () => {
     expect(response.status).toBe(200);
   });
 
+  it("compares with a stored node in the old shape, toggle at the data root", async () => {
+    const node = httpNode(TEMPLATE) as {
+      data: { config: Record<string, unknown> } & Record<string, unknown>;
+    };
+    const { failOnError, ...config } = node.data.config;
+    const stored = existingWorkflow([
+      { ...node, data: { ...node.data, config, failOnError } },
+    ]);
+    mockWorkflowsFindFirst.mockResolvedValue(stored);
+    mockUpdateReturning.mockResolvedValue([stored]);
+    const response = await PATCH(makeRequest({ nodes: [httpNode(TEMPLATE)] }), {
+      params,
+    });
+    expect(response.status).toBe(200);
+  });
+
   it("refuses a changed value", async () => {
     storedWith(TEMPLATE);
     const response = await PATCH(

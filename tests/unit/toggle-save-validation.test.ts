@@ -8,6 +8,7 @@ import {
   systemActionToggleKeys,
 } from "@/lib/mcp/workflow-schema-constants";
 import {
+  clearStrayToggles,
   formatActionConfigValidationResponse,
   validateWorkflowActionConfigs,
 } from "@/lib/workflow/validation/action-config";
@@ -227,16 +228,63 @@ describe("a stray toggle value already saved", () => {
   }
 
   it("still saves while it is unchanged", () => {
-    for (const value of [TEMPLATE, "on", 1, { flag: true }, [1]]) {
+    for (const value of [TEMPLATE, "on", 1]) {
       expect(
-        // A copy, as a stored workflow is parsed from JSON.
-        save(
-          { sponsorGas: value },
-          savedAs({ sponsorGas: structuredClone(value) })
-        ),
+        save({ sponsorGas: value }, savedAs({ sponsorGas: value })),
         String(value)
       ).toEqual({ valid: true, issues: [] });
     }
+  });
+
+  it("never keeps a list or object, even an equal one", () => {
+    for (const value of [{ flag: true }, [1]]) {
+      expect(
+        save(
+          { sponsorGas: value },
+          savedAs({ sponsorGas: structuredClone(value) })
+        ).issues
+      ).toMatchObject([{ field: "sponsorGas" }]);
+    }
+  });
+
+  it("is kept when the node it reads from was renamed", () => {
+    const trigger = (label: string) => ({
+      id: "hook",
+      type: "trigger",
+      data: { label, type: "trigger", config: {} },
+    });
+    const ref = (label: string) => `{{@hook:${label}.body.flag}}`;
+    const stored = [
+      trigger("Old.name"),
+      ...savedAs({ sponsorGas: ref("Old.name") }),
+    ];
+    const renamed = (value: string) =>
+      validateWorkflowActionConfigs(
+        [
+          trigger("New"),
+          actionNode(WRITE_CONTRACT, { ...WRITE_CONFIG, sponsorGas: value }),
+        ],
+        { savedNodes: stored }
+      ).issues;
+    expect(renamed(ref("New"))).toEqual([]);
+    expect(renamed("{{@hook:New.body.other}}")).toMatchObject([
+      { field: "sponsorGas" },
+    ]);
+    expect(renamed("{{@other:New.body.flag}}")).toMatchObject([
+      { field: "sponsorGas" },
+    ]);
+  });
+
+  it("is not kept when the node changes action or its id is sent twice", () => {
+    const http = [actionNode("HTTP Request", { failOnError: TEMPLATE })];
+    const asCondition = [actionNode("Condition", { failOnError: TEMPLATE })];
+    expect(
+      validateWorkflowActionConfigs(http, { savedNodes: asCondition }).issues
+    ).toMatchObject([{ field: "failOnError" }]);
+    expect(
+      validateWorkflowActionConfigs([...http, ...http], { savedNodes: http })
+        .issues
+    ).toMatchObject([{ field: "failOnError" }, { field: "failOnError" }]);
   });
 
   it("is refused once it changes, or when it is new", () => {
@@ -245,7 +293,6 @@ describe("a stray toggle value already saved", () => {
       [TEMPLATE, savedAs({ sponsorGas: true })],
       [TEMPLATE, savedAs({})],
       [TEMPLATE, []],
-      [{ flag: true }, savedAs({ sponsorGas: { flag: false } })],
     ];
     for (const [value, savedNodes] of cases) {
       expect(save({ sponsorGas: value }, savedNodes).issues).toMatchObject([
@@ -314,5 +361,55 @@ describe("which toggles are checked", () => {
       field.hidden = undefined;
     }
     expect(issuesAt(WRITE_CONTRACT, "sponsorGas", TEMPLATE)).toHaveLength(1);
+  });
+});
+
+describe("clearStrayToggles", () => {
+  it("unsets only toggles holding neither on nor off", () => {
+    const [write, http, filter] = clearStrayToggles([
+      actionNode(WRITE_CONTRACT, {
+        ...WRITE_CONFIG,
+        sponsorGas: TEMPLATE,
+        failOnError: false,
+      }),
+      actionNode("HTTP Request", { failOnError: "on", endpoint: "x" }),
+      actionNode("data/filter", { ignoreCase: TEMPLATE, value: TEMPLATE }),
+    ]).map((node) => (node.data as { config: Record<string, unknown> }).config);
+    expect(write).not.toHaveProperty("sponsorGas");
+    expect(write.failOnError).toBe(false);
+    expect(write.abiFunction).toBe("poke");
+    expect(http).not.toHaveProperty("failOnError");
+    expect(http.endpoint).toBe("x");
+    expect(filter).not.toHaveProperty("ignoreCase");
+    expect(filter.value).toBe(TEMPLATE);
+  });
+});
+
+describe("toggle declarations", () => {
+  it("has no hidden default-on toggle, which save would not check", () => {
+    const hidden = getAllIntegrations().flatMap((integration) =>
+      integration.actions.flatMap((action) =>
+        flattenConfigFields(action.configFields).filter(
+          (field) => isDefaultOnToggleField(field.type) && field.hidden
+        )
+      )
+    );
+    expect(hidden).toEqual([]);
+  });
+
+  it("finds every system action input described as a boolean", () => {
+    for (const action of Object.values(SYSTEM_ACTIONS)) {
+      const inputs: Record<string, string> = {
+        ...action.requiredFields,
+        ...("optionalFields" in action ? action.optionalFields : {}),
+      };
+      const looksBoolean = Object.entries(inputs)
+        .filter(([, description]) => /^\s*boolean\b/i.test(description))
+        .map(([key]) => key);
+      expect(
+        systemActionToggleKeys(action.actionType),
+        action.actionType
+      ).toEqual(looksBoolean);
+    }
   });
 });

@@ -605,10 +605,14 @@ export async function PATCH(
         return featureGuard.response;
       }
 
-      // Stray toggle values already stored are let through; see strayKeptAsSaved.
+      // Stray toggle values already stored are let through (keptStrayMatcher),
+      // compared in the same sanitized shape as the incoming nodes.
       const actionConfigValidation = validateWorkflowActionConfigs(
         updateData.nodes,
-        { savedNodes: existingWorkflow.nodes }
+        {
+          savedNodes: sanitizeWorkflowData(existingWorkflow.nodes ?? [], [])
+            .nodes,
+        }
       );
       if (!actionConfigValidation.valid) {
         return NextResponse.json(

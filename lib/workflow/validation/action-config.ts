@@ -24,7 +24,12 @@ import {
   SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST,
   type SystemActionType,
 } from "@/lib/workflow/executor/system-action-types";
-import { valueContainsTemplate } from "@/lib/workflow/template-ref";
+import {
+  parseStoredRef,
+  replaceTemplateTokens,
+  splitTemplateRef,
+  valueContainsTemplate,
+} from "@/lib/workflow/template-ref";
 import {
   type ActionConfigField,
   type ActionConfigFieldBase,
@@ -572,47 +577,88 @@ function toggleIssue(
   };
 }
 
-// The workflow's last saved config per node id.
-function savedConfigsById(
-  savedNodes: readonly unknown[] | undefined
-): Map<string, Record<string, unknown>> {
-  const byId = new Map<string, Record<string, unknown>>();
-  for (const node of savedNodes ?? []) {
-    if (
-      isRecord(node) &&
-      typeof node.id === "string" &&
-      isRecord(node.data) &&
-      isRecord(node.data.config)
-    ) {
-      byId.set(node.id, node.data.config);
+// Node id -> a field read from each node: its config or its label.
+function nodesById<T>(
+  nodes: readonly unknown[],
+  read: (data: Record<string, unknown>) => T | undefined
+): Map<string, T> {
+  const byId = new Map<string, T>();
+  for (const node of nodes) {
+    if (isRecord(node) && typeof node.id === "string" && isRecord(node.data)) {
+      const value = read(node.data);
+      if (value !== undefined) {
+        byId.set(node.id, value);
+      }
     }
   }
   return byId;
 }
 
-function sameSavedValue(saved: unknown, value: unknown): boolean {
-  if (Object.is(saved, value)) {
-    return true;
-  }
-  return isRecord(saved) || Array.isArray(saved)
-    ? JSON.stringify(saved) === JSON.stringify(value)
-    : false;
+// Renaming a node rewrites the label inside references to it, so references
+// are compared by node id and field path only.
+function withoutRefLabels(text: string, labels: Map<string, string>): string {
+  return replaceTemplateTokens(text, (token) => {
+    const ref = parseStoredRef(token.body);
+    if (!ref) {
+      return `{{${token.body}}}`;
+    }
+    const { fieldPath } = splitTemplateRef(ref.rest, labels.get(ref.nodeId));
+    return `{{@${ref.nodeId}.${fieldPath}}}`;
+  });
 }
+
+type KeptStray = (
+  nodeId: unknown,
+  config: Record<string, unknown>,
+  key: string
+) => boolean;
 
 // A toggle that still holds the stray value it was saved with is let through,
 // so a workflow saved before the toggle rule keeps saving and running as it
-// did. Only a new or changed value is refused.
-function strayKeptAsSaved(
-  saved: Record<string, unknown> | undefined,
-  config: Record<string, unknown>,
-  key: string
-): boolean {
-  return (
-    !isToggleValue(config[key]) &&
-    saved !== undefined &&
-    Object.hasOwn(saved, key) &&
-    sameSavedValue(saved[key], config[key])
+// did; a new or changed value is refused. It must be the same node (one id in
+// the request) on the same action, and the value text or a number.
+function keptStrayMatcher(
+  nodes: readonly unknown[],
+  savedNodes: readonly unknown[] | undefined
+): KeptStray {
+  if (!savedNodes) {
+    return () => false;
+  }
+  const saved = nodesById(savedNodes, (data) =>
+    isRecord(data.config) ? data.config : undefined
   );
+  const readLabel = (data: Record<string, unknown>) =>
+    typeof data.label === "string" ? data.label : undefined;
+  const savedLabels = nodesById(savedNodes, readLabel);
+  const labels = nodesById(nodes, readLabel);
+  const idCounts = new Map<string, number>();
+  for (const node of nodes) {
+    if (isRecord(node) && typeof node.id === "string") {
+      idCounts.set(node.id, (idCounts.get(node.id) ?? 0) + 1);
+    }
+  }
+  return (nodeId, config, key) => {
+    const value = config[key];
+    const before =
+      typeof nodeId === "string" && idCounts.get(nodeId) === 1
+        ? saved.get(nodeId)
+        : undefined;
+    if (
+      before === undefined ||
+      isToggleValue(value) ||
+      before.actionType !== config.actionType ||
+      !Object.hasOwn(before, key)
+    ) {
+      return false;
+    }
+    const was = before[key];
+    if (typeof was === "string" && typeof value === "string") {
+      return (
+        withoutRefLabels(was, savedLabels) === withoutRefLabels(value, labels)
+      );
+    }
+    return typeof was === "number" && Object.is(was, value);
+  };
 }
 
 // "refuse" a default-on toggle holding neither on nor off, even when its
@@ -831,6 +877,51 @@ function validateFieldValue(
   }
 }
 
+/** The on/off toggle keys of an action, plugin or system. */
+function toggleKeysOf(actionType: string): string[] {
+  if (isSystemActionType(actionType)) {
+    return systemActionToggleKeys(actionType);
+  }
+  const action = findActionById(actionType);
+  return action
+    ? flattenConfigFields(action.configFields)
+        .filter((field) => isToggleField(field.type))
+        .map((field) => field.key)
+    : [];
+}
+
+/**
+ * Unsets every toggle holding neither on nor off, so each takes its default.
+ * For a copy into another organization, which must not inherit a stray value
+ * the way a save of the same workflow does.
+ */
+export function clearStrayToggles(
+  nodes: Record<string, unknown>[]
+): Record<string, unknown>[] {
+  return nodes.map((node) => {
+    const data = node.data;
+    if (!(isRecord(data) && isRecord(data.config))) {
+      return node;
+    }
+    const config = data.config;
+    const actionType = config.actionType;
+    if (typeof actionType !== "string") {
+      return node;
+    }
+    const stray = toggleKeysOf(actionType).filter(
+      (key) => !isToggleValue(config[key])
+    );
+    if (stray.length === 0) {
+      return node;
+    }
+    const cleared = { ...config };
+    for (const key of stray) {
+      delete cleared[key];
+    }
+    return { ...node, data: { ...data, config: cleared } };
+  });
+}
+
 export type ActionConfigValidationOptions = {
   // The workflow's nodes as stored, when an existing workflow is saved.
   savedNodes?: readonly unknown[];
@@ -841,7 +932,7 @@ export function validateWorkflowActionConfigs(
   options: ActionConfigValidationOptions = {}
 ): ActionConfigValidationResult {
   const issues: ActionConfigValidationIssue[] = [];
-  const savedById = savedConfigsById(options.savedNodes);
+  const keptStray = keptStrayMatcher(nodes, options.savedNodes);
 
   for (const [nodeIndex, node] of nodes.entries()) {
     if (node.id !== undefined && typeof node.id !== "string") {
@@ -885,14 +976,9 @@ export function validateWorkflowActionConfigs(
       continue;
     }
 
-    const saved =
-      typeof node.id === "string" ? savedById.get(node.id) : undefined;
-
     if (isSystemActionType(actionType)) {
       for (const key of systemActionToggleKeys(actionType)) {
-        if (
-          !(isToggleValue(config[key]) || strayKeptAsSaved(saved, config, key))
-        ) {
+        if (!(isToggleValue(config[key]) || keptStray(node.id, config, key))) {
           issues.push(
             toggleIssue(
               `nodes[${nodeIndex}].data.config.${key}`,
@@ -987,7 +1073,7 @@ export function validateWorkflowActionConfigs(
         const verdict = toggleVerdict(
           field,
           config[field.key],
-          strayKeptAsSaved(saved, config, field.key)
+          keptStray(node.id, config, field.key)
         );
         if (verdict === "refuse") {
           issues.push(
