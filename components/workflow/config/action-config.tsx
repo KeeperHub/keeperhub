@@ -472,17 +472,20 @@ export function ConditionFields({
       return;
     }
     const issue = workflowRegexIssue([{ index: 0, condition: checkedValue }]);
-    return issue && !issue.workflowWide ? issue.message : undefined;
+    return issue?.kind === "condition" ? issue.message : undefined;
   }, [checkedValue, enabled]);
 
-  // All the workflow's patterns together, shown on each Condition that has one.
+  // The workflow's regex Conditions together, shown on each one.
   const workflowLimitError = useMemo(() => {
     if (!enabled || conditionRegexPatterns(checkedValue).length === 0) {
       return;
     }
     const limit = workflowRegexLimit(workflowConditions(checkedNodes));
-    if (!limit?.workflowWide) {
+    if (!limit) {
       return;
+    }
+    if (limit.kind === "count") {
+      return `${limit.message}.`;
     }
     const largest = checkedNodes[limit.index];
     const label = largest?.data?.label?.trim();
@@ -492,7 +495,9 @@ export function ConditionFields({
         ? `Most are in "${label}"`
         : "Most are in a Condition with no name";
     }
-    return `${limit.message}. ${where}. A pattern used twice counts once.`;
+    const counting =
+      limit.kind === "patterns" ? " A pattern used twice counts once." : "";
+    return `${limit.message}. ${where}.${counting}`;
   }, [checkedNodes, checkedValue, enabled, nodeId]);
 
   // Limits the rules can reach that would fail every run.

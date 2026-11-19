@@ -286,12 +286,60 @@ type NodeWithConfig = {
   };
 };
 
-/** A regex problem that refuses a save; `workflowWide` for the patterns together. */
+// Cheap caps on a workflow's regex Conditions, checked before any is parsed.
+const MAX_WORKFLOW_REGEX_CONDITIONS = 32;
+const MAX_WORKFLOW_REGEX_TEXT = 100_000;
+
+/**
+ * A regex problem that refuses a save: one Condition's own, or the workflow's
+ * regex Conditions together (too many, too much text, patterns over the cap).
+ * For "text" and "patterns", `index` is the Condition with the most.
+ */
 export type RegexIssue = {
   index: number;
   message: string;
-  workflowWide: boolean;
+  kind: "condition" | "count" | "text" | "patterns";
 };
+
+type IndexedCondition = { index: number; condition: string };
+
+function regexConditionsOf(
+  conditions: readonly IndexedCondition[]
+): IndexedCondition[] {
+  return conditions.filter(({ condition }) =>
+    usesRegex(scanForRegex(condition))
+  );
+}
+
+/** Too many regex Conditions, or too much text in them, before any is parsed. */
+function workflowSizeIssue(
+  withRegex: readonly IndexedCondition[]
+): RegexIssue | undefined {
+  if (withRegex.length > MAX_WORKFLOW_REGEX_CONDITIONS) {
+    return {
+      index: withRegex[MAX_WORKFLOW_REGEX_CONDITIONS].index,
+      message: `This workflow has ${withRegex.length} Conditions with a regex test; the limit is ${MAX_WORKFLOW_REGEX_CONDITIONS}. Combine some tests into one Condition, or test a list with Filter Array`,
+      kind: "count",
+    };
+  }
+  let total = 0;
+  let largest = { index: -1, length: -1 };
+  for (const { index, condition } of withRegex) {
+    const length = conditionLength(condition);
+    total += length;
+    if (length > largest.length) {
+      largest = { index, length };
+    }
+  }
+  if (total <= MAX_WORKFLOW_REGEX_TEXT) {
+    return;
+  }
+  return {
+    index: largest.index,
+    message: `Together, this workflow's Conditions with a regex test are ${total.toLocaleString("en-US")} characters, each {{...}} reference counted as about 4; the limit is ${MAX_WORKFLOW_REGEX_TEXT.toLocaleString("en-US")}`,
+    kind: "text",
+  };
+}
 
 /** What each enabled Condition node runs (its rules or its text), with its index. */
 export function workflowConditions(
@@ -318,43 +366,51 @@ export function workflowConditions(
 
 /**
  * At a run's start: compiles every enabled Condition's patterns into the run's
- * budget, and refuses the run past the workflow cap.
+ * budget, and refuses the run past the workflow's caps.
  */
 export function prepareRunRegex(
   nodes: readonly NodeWithConfig[],
   budget: RegexBudget
 ): string | undefined {
-  const issue = compileConditions(workflowConditions(nodes), budget, false);
+  const issue = workflowLimitIssue(workflowConditions(nodes), budget);
   if (!issue) {
     return;
   }
   const label = nodes[issue.index]?.data?.label;
-  return typeof label === "string" && label.trim()
+  return issue.kind !== "count" && typeof label === "string" && label.trim()
     ? `${issue.message}. Most are in "${label.trim()}"`
     : issue.message;
 }
 
 /**
- * The first problem that refuses saving a workflow's regex Conditions: what
- * fails any run reaching the Condition (the run's own checks, a pattern no run
- * can compile), then the patterns together past the cap. Conditions without
- * matchesRegex are not checked, so no saved workflow stops saving.
+ * The first problem that refuses saving a workflow's regex Conditions: too
+ * many or too long together, then what fails any run reaching a Condition
+ * (the run's own checks, a pattern no run can compile), then the patterns
+ * together past the cap. Conditions without matchesRegex are not checked, so
+ * no saved workflow stops saving.
  */
 export function workflowRegexIssue(
-  conditions: readonly { index: number; condition: string }[]
+  conditions: readonly IndexedCondition[]
 ): RegexIssue | undefined {
-  const withRegex = conditions.filter(({ condition }) =>
-    usesRegex(scanForRegex(condition))
-  );
+  const withRegex = regexConditionsOf(conditions);
+  const size = workflowSizeIssue(withRegex);
+  if (size) {
+    return withMost(size);
+  }
   for (const { index, condition } of withRegex) {
     const message = conditionRunError(condition);
     if (message) {
-      return { index, message, workflowWide: false };
+      return { index, message, kind: "condition" };
     }
   }
   const budget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
   const issue = compileConditions(withRegex, budget, true);
-  return issue?.workflowWide
+  return issue && withMost(issue);
+}
+
+// A save names the Condition it reports, so say why it was picked.
+function withMost(issue: RegexIssue): RegexIssue {
+  return issue.kind === "text" || issue.kind === "patterns"
     ? { ...issue, message: `${issue.message}. This Condition has the most` }
     : issue;
 }
@@ -374,7 +430,7 @@ function conditionRunError(condition: string): string | undefined {
 }
 
 function compileConditions(
-  conditions: readonly { index: number; condition: string }[],
+  conditions: readonly IndexedCondition[],
   budget: RegexBudget,
   reportRefused: boolean
 ): RegexIssue | undefined {
@@ -390,22 +446,33 @@ function compileConditions(
     return {
       index: conditions[result.at].index,
       message: inExpressionTerms(result.refused) ?? result.refused,
-      workflowWide: false,
+      kind: "condition",
     };
   }
   return {
     index: conditions[result.largest].index,
     message: workflowCompileError(result.work),
-    workflowWide: true,
+    kind: "patterns",
   };
 }
 
-/** Past the workflow cap: the costliest Condition's index and the message. */
+/** The workflow's caps on its regex Conditions together, cheapest first. */
+function workflowLimitIssue(
+  conditions: readonly IndexedCondition[],
+  budget: RegexBudget
+): RegexIssue | undefined {
+  const withRegex = regexConditionsOf(conditions);
+  return (
+    workflowSizeIssue(withRegex) ?? compileConditions(withRegex, budget, false)
+  );
+}
+
+/** For the editor: the workflow's regex Conditions together past a cap. */
 export function workflowRegexLimit(
-  conditions: readonly { index: number; condition: string }[]
+  conditions: readonly IndexedCondition[]
 ): RegexIssue | undefined {
   const budget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
-  return compileConditions(conditions, budget, false);
+  return workflowLimitIssue(conditions, budget);
 }
 
 function regexObjectError(code: string): ValidationResult | undefined {

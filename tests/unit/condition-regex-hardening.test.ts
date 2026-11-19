@@ -266,7 +266,7 @@ describe("regex hardening", () => {
       it("stops compiling at the cap, so slow refused patterns cannot pile up", () => {
         const slow = (i: number) =>
           `matchesRegex(${FIELD}, "${"(?:a{1000})".repeat(45)}${i}")`;
-        const nodes = Array.from({ length: 40 }, (_, i) =>
+        const nodes = Array.from({ length: 30 }, (_, i) =>
           textNode(`c${i}`, slow(i))
         );
         const budget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
@@ -298,6 +298,55 @@ describe("regex hardening", () => {
             message: expect.stringContaining("This Condition has the most"),
           }),
         ]);
+      });
+
+      // Checked on the raw text, before any Condition is parsed or compiled.
+      it("caps how many regex Conditions a workflow has, and their text", () => {
+        const many = Array.from({ length: 33 }, (_, i) =>
+          textNode(`c${i}`, call(0))
+        );
+        expect(saveIssues(many.slice(0, 32))).toEqual([]);
+        expect(saveIssues(many)).toEqual([
+          expect.objectContaining({
+            nodeId: "c32",
+            message: expect.stringContaining(
+              "This workflow has 33 Conditions with a regex test; the limit is 32"
+            ),
+          }),
+        ]);
+        expect(runStart(many)).toContain("the limit is 32");
+
+        // One pattern called 16 times and a long literal: about 9,900 each.
+        const sixteen = Array.from({ length: 16 }, () => call(0)).join(" || ");
+        const padded = (id: string, extra = 0) =>
+          textNode(
+            id,
+            `${sixteen} || ${FIELD} === "${"x".repeat(7200 + extra)}"`
+          );
+        const long = [
+          ...Array.from({ length: 10 }, (_, i) => padded(`p${i}`)),
+          padded("longest", 50),
+        ];
+        expect(saveIssues(long.slice(0, 10))).toEqual([]);
+        const budget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
+        const charge = vi.spyOn(budget, "chargeCompile");
+        const started = prepareRunRegex(long, budget);
+        expect(started).toContain("the limit is 100,000");
+        expect(started).toContain('Most are in "longest"');
+        expect(charge).not.toHaveBeenCalled();
+        expect(saveIssues(long)).toEqual([
+          expect.objectContaining({
+            nodeId: "longest",
+            message: expect.stringContaining("This Condition has the most"),
+          }),
+        ]);
+        // Conditions without matchesRegex are not counted.
+        expect(
+          saveIssues([
+            ...long.slice(0, 10),
+            textNode("plain", `${FIELD} === "${"x".repeat(50_000)}"`),
+          ])
+        ).toEqual([]);
       });
 
       it("counts a pattern once whichever quotes it is written in", () => {
