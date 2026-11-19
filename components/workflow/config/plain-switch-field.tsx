@@ -32,6 +32,7 @@ export function PlainSwitchField({
       isOn={(value) => isSwitchOn(value, field.defaultValue)}
       label={field.label}
       onChange={(next) => onUpdateConfig(field.key, next)}
+      strayAtRun="When the step runs, it fails unless this resolves to true or false."
       resetOnly={isShownOnlyToFix(field, config)}
       value={config[field.key]}
     />

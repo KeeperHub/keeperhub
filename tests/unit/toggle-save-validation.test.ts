@@ -100,7 +100,7 @@ describe("toggle fields at save", () => {
           `${actionType}.${key} = ${String(value)}`
         ).toMatchObject([
           {
-            code: "INVALID_FIELD_TYPE",
+            code: "INVALID_FIELD_VALUE",
             field: key,
             expected: "boolean",
             received: value,
@@ -126,11 +126,11 @@ describe("toggle fields at save", () => {
     ]);
     expect(result.issues).toMatchObject([
       {
-        message: `Field "sponsorGas" on action "${WRITE_CONTRACT}" is an on/off toggle: set it to true or false, or remove it for the default; anything else, a template included, is refused.`,
+        message: "Sponsor gas does not take a template, only true or false.",
       },
     ]);
     expect(formatActionConfigValidationResponse(result).message).toBe(
-      'Workflow contains invalid action configuration. Invalid node(s): "My step" (sponsorGas). Fix the listed fields and save again.'
+      'Workflow contains invalid action configuration. Invalid node(s): "My step": Sponsor gas does not take a template, only true or false. Fix the listed fields and save again.'
     );
   });
 
@@ -160,7 +160,7 @@ describe("HTTP Request failOnError at save", () => {
         String(value)
       ).toMatchObject([
         {
-          code: "INVALID_FIELD_TYPE",
+          code: "INVALID_FIELD_VALUE",
           field: "failOnError",
           nodeId: "node-1",
           nodeLabel: "My step",
@@ -185,6 +185,17 @@ describe("plain switch at save", () => {
   });
 });
 
+describe("a near miss in a default-on toggle", () => {
+  it("says what to change, as a plain switch does", () => {
+    expect(issuesAt("HTTP Request", "failOnError", " TRUE")).toMatchObject([
+      {
+        message:
+          "failOnError must be true or false, with no spaces around it and in lowercase.",
+      },
+    ]);
+  });
+});
+
 describe("system action toggles at save", () => {
   it("takes them from the boolean inputs in SYSTEM_ACTIONS", () => {
     expect(systemActionToggleKeys("HTTP Request")).toEqual(["failOnError"]);
@@ -202,7 +213,7 @@ describe("system action toggles at save", () => {
     expect(keys.length).toBeGreaterThan(0);
     for (const { actionType, key } of keys) {
       expect(issuesAt(actionType, key, TEMPLATE)).toMatchObject([
-        { code: "INVALID_FIELD_TYPE", field: key },
+        { code: "INVALID_FIELD_VALUE", field: key },
       ]);
     }
   });
@@ -258,15 +269,16 @@ describe("a stray toggle value already saved", () => {
       trigger("Old.name"),
       ...savedAs({ sponsorGas: ref("Old.name") }),
     ];
-    const renamed = (value: string) =>
+    const renamed = (value: string, label = "New") =>
       validateWorkflowActionConfigs(
         [
-          trigger("New"),
+          trigger(label),
           actionNode(WRITE_CONTRACT, { ...WRITE_CONFIG, sponsorGas: value }),
         ],
         { savedNodes: stored }
       ).issues;
     expect(renamed(ref("New"))).toEqual([]);
+    expect(renamed(ref("New.x"), "New.x")).toEqual([]);
     expect(renamed("{{@hook:New.body.other}}")).toMatchObject([
       { field: "sponsorGas" },
     ]);
@@ -293,6 +305,8 @@ describe("a stray toggle value already saved", () => {
       [TEMPLATE, savedAs({ sponsorGas: true })],
       [TEMPLATE, savedAs({})],
       [TEMPLATE, []],
+      [2, savedAs({ sponsorGas: 1 })],
+      ["{{Other.x}}", savedAs({ sponsorGas: "{{Webhook.flag}}" })],
     ];
     for (const [value, savedNodes] of cases) {
       expect(save({ sponsorGas: value }, savedNodes).issues).toMatchObject([
@@ -411,5 +425,66 @@ describe("toggle declarations", () => {
         action.actionType
       ).toEqual(looksBoolean);
     }
+  });
+});
+
+describe("which stored stray value counts as kept", () => {
+  const trigger = (id: string, label: string) => ({
+    id,
+    type: "trigger",
+    data: { label, type: "trigger", config: { triggerType: "Webhook" } },
+  });
+  const hook = trigger("hook", "Webhook");
+  const write = (sponsorGas: unknown) =>
+    actionNode(WRITE_CONTRACT, { ...WRITE_CONFIG, sponsorGas });
+  const issues = (nodes: unknown[], savedNodes: unknown[]) =>
+    validateWorkflowActionConfigs(
+      nodes as Parameters<typeof validateWorkflowActionConfigs>[0],
+      { savedNodes }
+    ).issues.filter((issue) => issue.field === "sponsorGas");
+  const REF = "{{@hook:Webhook.body.flag}}";
+
+  it("never takes literal text for a reference", () => {
+    // No colon, so the step reads it as text, not as webhook data.
+    expect(
+      issues([hook, write(REF)], [hook, write("{{@hook.body.flag}}")])
+    ).toHaveLength(1);
+  });
+
+  it("tells a dotted node id from a field path", () => {
+    const nodes = [trigger("a", "L"), trigger("a.b", "L")];
+    expect(
+      issues(
+        [...nodes, write("{{@a:L.b.flag}}")],
+        [...nodes, write("{{@a.b:L.flag}}")]
+      )
+    ).toHaveLength(1);
+  });
+
+  it("refuses it once a node it reads is added or replaced", () => {
+    expect(issues([hook, write(REF)], [write(REF)])).toHaveLength(1);
+    const asStep = actionNode(WRITE_CONTRACT, WRITE_CONFIG);
+    const replaced = { ...asStep, id: "hook" };
+    expect(issues([hook, write(REF)], [replaced, write(REF)])).toHaveLength(1);
+  });
+
+  it("keeps it when a node it reads was deleted", () => {
+    expect(issues([write(REF)], [hook, write(REF)])).toEqual([]);
+  });
+
+  it("keeps a plain switch only if it was shown when saved", () => {
+    const filter = (operator: string) =>
+      actionNode("data/filter", {
+        source: "[1]",
+        operator,
+        value: "1",
+        ignoreCase: REF,
+      });
+    const ignoreCase = (savedOperator: string) =>
+      validateWorkflowActionConfigs([hook, filter("===")], {
+        savedNodes: [hook, filter(savedOperator)],
+      }).issues.filter((issue) => issue.field === "ignoreCase");
+    expect(ignoreCase("===")).toEqual([]);
+    expect(ignoreCase("isEmpty")).toHaveLength(1);
   });
 });

@@ -1055,6 +1055,7 @@ function FieldGroup({
       <div className="flex items-center gap-1">
         <button
           className="ml-1 flex items-center gap-1 text-left"
+          aria-expanded={isExpanded}
           onClick={() => setIsExpanded(!isExpanded)}
           type="button"
         >

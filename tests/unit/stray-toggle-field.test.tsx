@@ -21,12 +21,12 @@ import {
   isDefaultOnToggleField,
   isFieldShown,
   isShownOnlyToFix,
-  toggleFieldTypes,
+  type ToggleFieldType,
 } from "@/plugins/registry";
 
 const TEMPLATE = "{{@webhook:Webhook.flag}}";
-const HINT =
-  "Holds a template or other value, not on or off. It runs as saved, but a save refuses a new value like this.";
+// The part of the hint every stray value gets; the start quotes the value.
+const HINT = "which this switch cannot read. When the step runs, it";
 const LOCKED_HINT =
   "It is normally hidden with these settings, so it can only be reset here.";
 const RESET = "Reset to default";
@@ -353,31 +353,57 @@ describe("a hidden toggle", () => {
 });
 
 describe("every toggle field type", () => {
-  it("has a real renderer, and a default-on one locks when shown only to fix", () => {
-    for (const type of toggleFieldTypes()) {
-      expect(Object.hasOwn(TOGGLE_FIELD_RENDERERS, type), type).toBe(true);
+  it("locks a default-on one when shown only to fix", () => {
+    // TOGGLE_FIELD_RENDERERS is typed to hold every toggle field type.
+    for (const type of Object.keys(
+      TOGGLE_FIELD_RENDERERS
+    ) as ToggleFieldType[]) {
       if (!isDefaultOnToggleField(type)) {
         continue;
       }
       const field: ActionConfigFieldBase = {
         key: "t",
         label: "T",
-        type: type as ActionConfigFieldBase["type"],
+        type,
         showWhen: { field: "mode", equals: "shown" },
       };
       const config = { mode: "hidden", t: TEMPLATE };
       expect(isShownOnlyToFix(field, config), type).toBe(true);
-      const element = TOGGLE_FIELD_RENDERERS[type]({
-        field,
-        config,
-        onUpdateConfig: vi.fn(),
-      });
-      act(() => root.render(element));
+      const onUpdateConfig = vi.fn();
+      act(() =>
+        root.render(
+          TOGGLE_FIELD_RENDERERS[type]({ field, config, onUpdateConfig })
+        )
+      );
       expect(
         container.querySelector<HTMLButtonElement>("#t")?.disabled,
         type
       ).toBe(true);
-      expect(resetButton(), type).toBeDefined();
+      act(() => resetButton()?.click());
+      expect(onUpdateConfig, type).toHaveBeenCalledWith("t", undefined);
+    }
+  });
+
+  it("is read-only, with no Reset, on a read-only form", () => {
+    for (const type of Object.keys(
+      TOGGLE_FIELD_RENDERERS
+    ) as ToggleFieldType[]) {
+      const field: ActionConfigFieldBase = { key: "t", label: "T", type };
+      act(() =>
+        root.render(
+          TOGGLE_FIELD_RENDERERS[type]({
+            field,
+            config: { t: TEMPLATE },
+            onUpdateConfig: vi.fn(),
+            disabled: true,
+          })
+        )
+      );
+      expect(
+        container.querySelector<HTMLButtonElement>("#t")?.disabled,
+        type
+      ).toBe(true);
+      expect(resetButton(), type).toBeUndefined();
     }
   });
 });
@@ -446,6 +472,11 @@ describe("the collapsed group and stray values", () => {
     expect(sponsorToggle()).toBeNull();
     act(() => replaceConfig({ ...saved, failOnError: TEMPLATE }));
     expect(sponsorToggle()).not.toBeNull();
+    // Shut again, then the same key takes a different stray value.
+    act(() => header?.click());
+    expect(sponsorToggle()).toBeNull();
+    act(() => replaceConfig({ ...saved, failOnError: "maybe" }));
+    expect(sponsorToggle()).not.toBeNull();
   });
 
   it("stays shut for a stray plain switch its condition hides", () => {
@@ -474,5 +505,29 @@ describe("the collapsed group and stray values", () => {
     expect(container.textContent).not.toContain(HINT);
     // The header chevron turns sideways while the group is shut.
     expect(container.querySelector(".-rotate-90")).not.toBeNull();
+  });
+});
+
+describe("the stray-value hint text", () => {
+  it("quotes the value, shortened, and says what the step does with it", () => {
+    const long = `{{@webhook:Webhook.${"x".repeat(80)}}}`;
+    renderFields({ network: COVERED_NETWORK, sponsorGas: long });
+    expect(container.textContent).toContain(`"${long.slice(0, 60)}..."`);
+    expect(container.textContent).toContain(
+      "When the step runs, it is on unless this resolves to false."
+    );
+    renderFields({ network: COVERED_NETWORK, sponsorGas: { a: 1 } });
+    expect(container.textContent).toContain("Holds a list or object");
+  });
+
+  it("marks the group header open or shut", () => {
+    renderFields(
+      { network: COVERED_NETWORK, sponsorGas: true },
+      { defaultExpanded: false }
+    );
+    const header = container.querySelector("[aria-expanded]");
+    expect(header?.getAttribute("aria-expanded")).toBe("false");
+    act(() => (header as HTMLButtonElement | null)?.click());
+    expect(header?.getAttribute("aria-expanded")).toBe("true");
   });
 });

@@ -44,6 +44,7 @@ export function SponsorGasField({
         isOn={resolveSponsorGas}
         label={label}
         onChange={onChange}
+        strayAtRun="When the step runs, it is on unless this resolves to false."
         resetOnly={resetOnly}
         value={value}
       />

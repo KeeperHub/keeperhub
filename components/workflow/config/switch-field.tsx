@@ -5,6 +5,22 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { isToggleValue } from "@/lib/utils";
+import { stripControlChars } from "@/lib/utils/control-chars";
+
+const SHOWN_VALUE_MAX_CHARS = 60;
+
+// The stored value as the hint quotes it: visible characters, shortened.
+function shownValue(value: unknown): string {
+  if (typeof value !== "string" && typeof value !== "number") {
+    return "a list or object";
+  }
+  const chars = Array.from(stripControlChars(String(value)));
+  const text =
+    chars.length > SHOWN_VALUE_MAX_CHARS
+      ? `${chars.slice(0, SHOWN_VALUE_MAX_CHARS).join("")}...`
+      : chars.join("");
+  return `"${text}"`;
+}
 
 type SwitchFieldProps = {
   id: string;
@@ -16,6 +32,8 @@ type SwitchFieldProps = {
   isOn: (value: unknown) => boolean;
   // undefined clears the saved value, so the toggle falls back to its default.
   onChange: (value: boolean | undefined) => void;
+  // What the step does with a value that is neither on nor off.
+  strayAtRun: string;
   disabled?: boolean;
   // Shown only so a stray value can be cleared (isShownOnlyToFix): the switch
   // is locked and Reset is the only action. Required so no caller forgets it.
@@ -34,6 +52,7 @@ export function SwitchField({
   value,
   isOn,
   onChange,
+  strayAtRun,
   disabled,
   resetOnly,
 }: SwitchFieldProps) {
@@ -59,12 +78,14 @@ export function SwitchField({
   }, [stray]);
 
   const reset = () => {
-    if (locked) {
-      // The whole field hides once reset, so focus its group's header.
-      resetButtonRef.current
-        ?.closest<HTMLElement>("[data-field-group]")
-        ?.querySelector<HTMLButtonElement>("button")
-        ?.focus();
+    // A locked field hides once reset, so focus its group's header instead.
+    const header = locked
+      ? resetButtonRef.current
+          ?.closest<HTMLElement>("[data-field-group]")
+          ?.querySelector<HTMLButtonElement>("button")
+      : undefined;
+    if (header) {
+      header.focus();
     } else {
       focusAfterReset.current = true;
     }
@@ -83,8 +104,9 @@ export function SwitchField({
         {stray && (
           <div className="space-y-1">
             <p className="text-destructive text-xs" id={strayId}>
-              Holds a template or other value, not on or off. It runs as saved,
-              but a save refuses a new value like this.
+              Holds {shownValue(value)}, which this switch cannot read.{" "}
+              {strayAtRun} A save keeps it only if this step was already saved
+              with it, and refuses it otherwise.
               {locked &&
                 !disabled &&
                 " It is normally hidden with these settings, so it can only be reset here."}

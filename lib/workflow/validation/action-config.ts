@@ -19,14 +19,17 @@ import {
   INTEGER_PATTERN,
   UNSIGNED_INTEGER_PATTERN,
 } from "@/lib/web3/solidity-values";
-import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
+import {
+  evaluateShowWhen,
+  type ShowWhen,
+} from "@/lib/workflow/editor/show-when";
 import {
   SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST,
   type SystemActionType,
 } from "@/lib/workflow/executor/system-action-types";
 import {
+  findTemplateTokens,
   parseStoredRef,
-  replaceTemplateTokens,
   splitTemplateRef,
   valueContainsTemplate,
 } from "@/lib/workflow/template-ref";
@@ -555,25 +558,32 @@ function validateStringLike(value: unknown): boolean {
   return typeof value === "string" || typeof value === "number";
 }
 
+// Why a toggle refuses a value, the same words for every toggle.
+function toggleRefusal(label: string, value: unknown): string {
+  return valueContainsTemplate(value)
+    ? `${label} does not take a template, only true or false.`
+    : switchRefusal(label, value);
+}
+
 // A toggle has no template mode in the editor, and a template could let the
 // data it reads switch gas sponsorship or fail-on-error off.
 function toggleIssue(
   path: string,
   actionType: string,
-  key: string,
+  field: { key: string; label?: string },
   value: unknown,
   identity: { nodeId?: string; nodeLabel?: string }
 ): ActionConfigValidationIssue {
   return {
-    code: "INVALID_FIELD_TYPE",
+    code: "INVALID_FIELD_VALUE",
     path,
     actionType,
-    field: key,
+    field: field.key,
     nodeId: identity.nodeId,
     nodeLabel: identity.nodeLabel,
     expected: "boolean",
-    received: value,
-    message: `Field "${key}" on action "${actionType}" is an on/off toggle: set it to true or false, or remove it for the default; anything else, a template included, is refused.`,
+    received: capReceived(value),
+    message: toggleRefusal(field.label ?? field.key, value),
   };
 }
 
@@ -594,29 +604,89 @@ function nodesById<T>(
   return byId;
 }
 
-// Renaming a node rewrites the label inside references to it, so references
-// are compared by node id and field path only.
-function withoutRefLabels(text: string, labels: Map<string, string>): string {
-  return replaceTemplateTokens(text, (token) => {
+// What a node is and runs, e.g. "action:HTTP Request" or "trigger:Webhook".
+function nodeKind(data: Record<string, unknown>): string {
+  const config = isRecord(data.config) ? data.config : {};
+  return `${String(data.type)}:${String(config.actionType ?? config.triggerType)}`;
+}
+
+type ValuePart = { text: string } | { nodeId: string; fieldPath: string };
+
+// A value as its literal text and its references. A reference is kept as node
+// id and field path, as a rename rewrites the label inside it; the two shapes
+// never compare equal, so literal text cannot pass for a reference.
+function valueParts(text: string, labels: Map<string, string>): ValuePart[] {
+  const parts: ValuePart[] = [];
+  let last = 0;
+  for (const token of findTemplateTokens(text)) {
+    parts.push({ text: text.slice(last, token.start) });
     const ref = parseStoredRef(token.body);
-    if (!ref) {
-      return `{{${token.body}}}`;
-    }
-    const { fieldPath } = splitTemplateRef(ref.rest, labels.get(ref.nodeId));
-    return `{{@${ref.nodeId}.${fieldPath}}}`;
-  });
+    parts.push(
+      ref
+        ? {
+            nodeId: ref.nodeId,
+            fieldPath: splitTemplateRef(ref.rest, labels.get(ref.nodeId))
+              .fieldPath,
+          }
+        : { text: `{{${token.body}}}` }
+    );
+    last = token.end;
+  }
+  parts.push({ text: text.slice(last) });
+  return parts;
 }
 
 type KeptStray = (
-  nodeId: unknown,
+  node: { id?: unknown },
   config: Record<string, unknown>,
-  key: string
+  field: { key: string; type?: string; showWhen?: ShowWhen }
 ) => boolean;
+
+type NodeIndex = {
+  configs: Map<string, Record<string, unknown>>;
+  labels: Map<string, string>;
+  kinds: Map<string, string>;
+};
+
+function indexNodes(nodes: readonly unknown[]): NodeIndex {
+  return {
+    configs: nodesById(nodes, (data) =>
+      isRecord(data.config) ? data.config : undefined
+    ),
+    labels: nodesById(nodes, (data) =>
+      typeof data.label === "string" ? data.label : undefined
+    ),
+    kinds: nodesById(nodes, nodeKind),
+  };
+}
+
+// Same text and same references, none now reading a node that was not saved
+// or has become a different kind of node.
+function sameStrayText(
+  was: string,
+  value: string,
+  saved: NodeIndex,
+  current: NodeIndex
+): boolean {
+  const parts = valueParts(value, current.labels);
+  if (JSON.stringify(valueParts(was, saved.labels)) !== JSON.stringify(parts)) {
+    return false;
+  }
+  return parts.every((part) => {
+    if (!("nodeId" in part)) {
+      return true;
+    }
+    // A node gone since the save leaves the reference reading nothing.
+    const now = current.kinds.get(part.nodeId);
+    return now === undefined || now === saved.kinds.get(part.nodeId);
+  });
+}
 
 // A toggle that still holds the stray value it was saved with is let through,
 // so a workflow saved before the toggle rule keeps saving and running as it
 // did; a new or changed value is refused. It must be the same node (one id in
-// the request) on the same action, and the value text or a number.
+// the request) on the same action, and the value text or a number. A plain
+// switch is checked only while shown, so it must have been shown when saved.
 function keptStrayMatcher(
   nodes: readonly unknown[],
   savedNodes: readonly unknown[] | undefined
@@ -624,38 +694,32 @@ function keptStrayMatcher(
   if (!savedNodes) {
     return () => false;
   }
-  const saved = nodesById(savedNodes, (data) =>
-    isRecord(data.config) ? data.config : undefined
-  );
-  const readLabel = (data: Record<string, unknown>) =>
-    typeof data.label === "string" ? data.label : undefined;
-  const savedLabels = nodesById(savedNodes, readLabel);
-  const labels = nodesById(nodes, readLabel);
+  const saved = indexNodes(savedNodes);
+  const current = indexNodes(nodes);
   const idCounts = new Map<string, number>();
   for (const node of nodes) {
     if (isRecord(node) && typeof node.id === "string") {
       idCounts.set(node.id, (idCounts.get(node.id) ?? 0) + 1);
     }
   }
-  return (nodeId, config, key) => {
-    const value = config[key];
+  return (node, config, field) => {
+    const value = config[field.key];
     const before =
-      typeof nodeId === "string" && idCounts.get(nodeId) === 1
-        ? saved.get(nodeId)
+      typeof node.id === "string" && idCounts.get(node.id) === 1
+        ? saved.configs.get(node.id)
         : undefined;
     if (
       before === undefined ||
       isToggleValue(value) ||
       before.actionType !== config.actionType ||
-      !Object.hasOwn(before, key)
+      !Object.hasOwn(before, field.key) ||
+      (field.type === "switch" && !evaluateShowWhen(field.showWhen, before))
     ) {
       return false;
     }
-    const was = before[key];
+    const was = before[field.key];
     if (typeof was === "string" && typeof value === "string") {
-      return (
-        withoutRefLabels(was, savedLabels) === withoutRefLabels(value, labels)
-      );
+      return sameStrayText(was, value, saved, current);
     }
     return typeof was === "number" && Object.is(was, value);
   };
@@ -762,9 +826,7 @@ function validateFieldValue(
             valid: false,
             expected: "boolean",
             received: value,
-            reason: valueContainsTemplate(value)
-              ? `${field.label} does not take a template, only true or false.`
-              : switchRefusal(field.label, value),
+            reason: toggleRefusal(field.label, value),
           }
         : { valid: true };
     case "protocol-bool":
@@ -893,7 +955,8 @@ function toggleKeysOf(actionType: string): string[] {
 /**
  * Unsets every toggle holding neither on nor off, so each takes its default.
  * For a copy into another organization, which must not inherit a stray value
- * the way a save of the same workflow does.
+ * the way a save of the same workflow does. Wider than save on purpose: it also
+ * clears hidden toggles, so a copy never holds one.
  */
 export function clearStrayToggles(
   nodes: Record<string, unknown>[]
@@ -978,12 +1041,12 @@ export function validateWorkflowActionConfigs(
 
     if (isSystemActionType(actionType)) {
       for (const key of systemActionToggleKeys(actionType)) {
-        if (!(isToggleValue(config[key]) || keptStray(node.id, config, key))) {
+        if (!(isToggleValue(config[key]) || keptStray(node, config, { key }))) {
           issues.push(
             toggleIssue(
               `nodes[${nodeIndex}].data.config.${key}`,
               actionType,
-              key,
+              { key },
               config[key],
               nodeIdentity(node, `nodes[${nodeIndex}]`)
             )
@@ -1073,14 +1136,14 @@ export function validateWorkflowActionConfigs(
         const verdict = toggleVerdict(
           field,
           config[field.key],
-          keptStray(node.id, config, field.key)
+          keptStray(node, config, field)
         );
         if (verdict === "refuse") {
           issues.push(
             toggleIssue(
               `nodes[${nodeIndex}].data.config.${field.key}`,
               actionType,
-              field.key,
+              field,
               config[field.key],
               identity
             )

@@ -4,7 +4,7 @@ import { FailOnErrorSwitchField } from "@/components/workflow/config/fail-on-err
 import { PlainSwitchField } from "@/components/workflow/config/plain-switch-field";
 import { SponsorGasField } from "@/components/workflow/config/sponsor-gas-field";
 import type { CustomFieldRenderer } from "@/lib/workflow/editor/extension-registry";
-import { isShownOnlyToFix } from "@/plugins/registry";
+import { isShownOnlyToFix, type ToggleFieldType } from "@/plugins/registry";
 
 /**
  * The form renderer of every on/off toggle field type, kept together so a
@@ -12,7 +12,7 @@ import { isShownOnlyToFix } from "@/plugins/registry";
  * locked. Registered in lib/workflow/editor/extensions.tsx.
  */
 export const TOGGLE_FIELD_RENDERERS: Readonly<
-  Record<string, CustomFieldRenderer>
+  Record<ToggleFieldType, CustomFieldRenderer>
 > = {
   // Write Contract's "Fail workflow on error". Shares FailOnErrorSwitchField
   // with HTTP Request, so both resolve default-on through resolveFailOnError.
