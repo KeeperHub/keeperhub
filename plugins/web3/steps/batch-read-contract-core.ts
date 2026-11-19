@@ -756,23 +756,61 @@ export function requireArguments(fn: ListFunction): void {
   }
 }
 
-/** A count message; with a tuple given flat, both counts are named. */
+// A tuple whose first member is a tuple can't be given flat: an object in
+// its place is read as the whole tuple.
+function canGoFlat(input: AbiParam): boolean {
+  return (
+    input.type === "tuple" &&
+    Boolean(input.components?.length) &&
+    input.components?.[0].type !== "tuple"
+  );
+}
+
+/** Tuples the values read as given flat, walked as reshapeArgsCounted does. */
+function flatTuples(args: unknown[], fn: ListFunction): AbiParam[] {
+  const flat: AbiParam[] = [];
+  let cursor = 0;
+  for (const input of fn.inputs) {
+    if (
+      cursor < args.length &&
+      canGoFlat(input) &&
+      !isPlainObject(args[cursor])
+    ) {
+      flat.push(input);
+      cursor += input.components?.length ?? 1;
+    } else {
+      cursor += 1;
+    }
+  }
+  return flat;
+}
+
+/** A count message; tuples the values read as flat are named with both counts. */
 function countMismatch(
   at: string,
-  given: number,
+  args: unknown[],
   fn: ListFunction,
-  consumed: number,
   hint: string
 ): Error {
   const takes = fn.inputs.length;
-  const names = inputNames(fn);
-  const expected =
-    consumed === takes
-      ? `${fn.name} takes ${count(takes)} (${names})`
-      : `${fn.name} takes ${count(takes)} (${names}) with each tuple as an object, or ${count(consumed)} with its members given flat`;
-  return new Error(
-    `${at} has ${plural(given, "value")}, but ${expected}. ${hint}`
+  const call = `${fn.name} takes ${count(takes)} (${inputNames(fn)})`;
+  const flat = flatTuples(args, fn);
+  const given = plural(args.length, "value");
+  if (flat.length === 0) {
+    return new Error(`${at} has ${given}, but ${call}. ${hint}`);
+  }
+  const all = flat.map((input) => input.name || input.type);
+  const names =
+    all.length > 1 ? `${all.slice(0, -1).join(", ")} and ${all.at(-1)}` : all[0];
+  const members = flat.reduce(
+    (total, input) => total + (input.components?.length ?? 1) - 1,
+    takes
   );
+  const shape =
+    flat.length === 1
+      ? `${names} as an object, or ${count(members)} with ${names}'s members given flat`
+      : `${names} as objects, or ${count(members)} with their members given flat`;
+  return new Error(`${at} has ${given}. ${call} with ${shape}. ${hint}`);
 }
 
 /** A JSON object or array held as text, parsed; undefined for anything else. */
@@ -839,9 +877,8 @@ function positionalTupleError(
   return;
 }
 
-// With as many values as inputs and one tuple holding a plain value, name
-// that tuple only when its members could not be given flat from there; if
-// they could, a later value may be missing instead, so the count says both.
+// One tuple holding a plain value is named only when no flat reading of it
+// lines up: one with values missing before it, after it, or both.
 function tupleSlotError(
   entry: unknown[],
   fn: ListFunction,
@@ -863,11 +900,26 @@ function tupleSlotError(
   const index = slots[0];
   const input = fn.inputs[index];
   const members = input.components?.length ?? 0;
-  if (index + members <= entry.length) {
+  // Its members can't hold an object, so they lie between the nearest
+  // objects on either side; missing values make up the rest.
+  let start = index;
+  while (start > 0 && index - start < members - 1) {
+    if (isPlainObject(entry[start - 1])) {
+      break;
+    }
+    start -= 1;
+  }
+  const later = entry.findIndex((v, i) => i > index && isPlainObject(v));
+  const end = later === -1 ? entry.length : later;
+  const flat = canGoFlat(input);
+  if (flat && start + members <= end) {
     return;
   }
+  const orFlat = flat
+    ? ` Or give its ${count(members)} members flat in its place.`
+    : "";
   return new Error(
-    `${at}: ${input.name || `arg${index}`} must be an object with its member names, like ${echo(exampleValue(input.type, input.components), MAX_REASON_LENGTH)}, got ${showValue(entry[index])}. Or give its ${count(members)} members flat in its place.`
+    `${at}: ${input.name || `arg${index}`} must be an object with its member names, like ${echo(exampleValue(input.type, input.components), MAX_REASON_LENGTH)}, got ${showValue(entry[index])}.${orFlat}`
   );
 }
 
@@ -899,9 +951,8 @@ function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
     const bare = scalar ? ", or the bare value" : "";
     throw countMismatch(
       at,
-      entry.length,
+      entry,
       fn,
-      reshaped.consumed,
       `Make each entry an array like ${exampleEntry(fn)}${bare}.`
     );
   }
@@ -954,9 +1005,8 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
   if (given.length > consumed) {
     throw countMismatch(
       SHARED_ARGS_LABEL,
-      given.length,
+      given,
       fn,
-      consumed,
       "The same arguments go to every contract in the list."
     );
   }

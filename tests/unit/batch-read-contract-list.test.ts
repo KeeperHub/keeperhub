@@ -1914,7 +1914,7 @@ describe("batch-read-contract - review fixes, round 3", () => {
     ]);
     // t may be given flat with x missing, so the count names both readings.
     expect(await failure({ ...argsList([[1, 2]], "flat"), abi })).toBe(
-      'Argument Sets entry 1 has 2 values, but flat takes 2 (t, x) with each tuple as an object, or 3 with its members given flat. Make each entry an array like [{"a": 1, "b": 1}, 1].'
+      'Argument Sets entry 1 has 2 values. flat takes 2 (t, x) with t as an object, or 3 with t\'s members given flat. Make each entry an array like [{"a": 1, "b": 1}, 1].'
     );
   });
 });
@@ -2087,7 +2087,7 @@ describe("batch-read-contract - second review", () => {
       { name: "x", type: "uint256" },
     ]);
     expect(await failure({ ...argsList([["1", "2"]], "flat"), abi })).toBe(
-      'Argument Sets entry 1 has 2 values, but flat takes 2 (t, x) with each tuple as an object, or 3 with its members given flat. Make each entry an array like [{"a": 1, "b": 1}, 1].'
+      'Argument Sets entry 1 has 2 values. flat takes 2 (t, x) with t as an object, or 3 with t\'s members given flat. Make each entry an array like [{"a": 1, "b": 1}, 1].'
     );
     mockStaticCall.mockClear();
     expect(
@@ -2270,71 +2270,120 @@ describe("batch-read-contract - second review, round 2", () => {
         ...argsList([[{ a: 1, b: 2 }, "1", 3, 4]], "two"),
         abi: pairs,
       })
-    ).toMatch(/^Argument Sets entry 1 has 4 values, but two takes 4 /);
-    // t flat and y missing: both tuple places hold plain values.
+    ).toBe(
+      'Argument Sets entry 1 has 4 values. two takes 4 (t, v, x, y) with v as an object, or 5 with v\'s members given flat. Make each entry an array like [{"a": 1, "b": 1}, {"c": 1, "d": 1}, 1, 1].'
+    );
+    // Both tuple places hold plain values.
     expect(
       await failure({
         ...argsList([[1, 2, { c: 1, d: 2 }, 3]], "two"),
         abi: pairs,
       })
-    ).toMatch(/^Argument Sets entry 1 has 4 values, but two takes 4 /);
+    ).toBe(
+      'Argument Sets entry 1 has 4 values. two takes 4 (t, v, x, y) with t as an object, or 5 with t\'s members given flat. Make each entry an array like [{"a": 1, "b": 1}, {"c": 1, "d": 1}, 1, 1].'
+    );
     // Fewer values than inputs: the count message, not the slot.
     expect(
       await failure({
         ...argsList([[{ a: 1, b: 2 }, "1", 3]], "two"),
         abi: pairs,
       })
-    ).toMatch(/^Argument Sets entry 1 has 3 values, but two takes 4 /);
+    ).toBe(
+      'Argument Sets entry 1 has 3 values. two takes 4 (t, v, x, y) with v as an object, or 5 with v\'s members given flat. Make each entry an array like [{"a": 1, "b": 1}, {"c": 1, "d": 1}, 1, 1].'
+    );
+  });
+
+  const pair = {
+    type: "tuple",
+    components: [
+      { name: "a", type: "uint256" },
+      { name: "b", type: "uint256" },
+    ],
+  };
+  const uint = (name: string): { name: string; type: string } => ({
+    name,
+    type: "uint256",
   });
 
   // The review's example: t given flat and y missing reads the same as t
   // holding a plain value, so the message must not blame t.
-  it("does not blame a tuple given flat when a later value is missing", async () => {
-    const abi = JSON.stringify([
-      {
-        name: "f",
-        type: "function",
-        stateMutability: "view",
-        inputs: [
-          {
-            name: "t",
-            type: "tuple",
-            components: [
-              { name: "a", type: "uint256" },
-              { name: "b", type: "uint256" },
-            ],
-          },
-          { name: "x", type: "uint256" },
-          { name: "y", type: "uint256" },
-        ],
-        outputs: [{ name: "", type: "uint256" }],
-      },
-    ]);
-    expect(await failure({ ...argsList([[1, 2, 3]], "f"), abi })).toBe(
-      'Argument Sets entry 1 has 3 values, but f takes 3 (t, x, y) with each tuple as an object, or 4 with its members given flat. Make each entry an array like [{"a": 1, "b": 1}, 1, 1].'
+  it("does not blame a tuple given flat when a value is missing", async () => {
+    const after = abiWith("f", [{ name: "t", ...pair }, uint("x"), uint("y")]);
+    expect(await failure({ ...argsList([[1, 2, 3]], "f"), abi: after })).toBe(
+      'Argument Sets entry 1 has 3 values. f takes 3 (t, x, y) with t as an object, or 4 with t\'s members given flat. Make each entry an array like [{"a": 1, "b": 1}, 1, 1].'
     );
-    // A tuple last, with no room for its members flat, is still named.
-    const last = JSON.stringify([
+    // The value missing may come before the tuple too.
+    const before = abiWith("g", [uint("x"), uint("y"), { name: "t", ...pair }]);
+    expect(await failure({ ...argsList([[1, 5, 6]], "g"), abi: before })).toBe(
+      'Argument Sets entry 1 has 3 values. g takes 3 (x, y, t) with t as an object, or 4 with t\'s members given flat. Make each entry an array like [1, 1, {"a": 1, "b": 1}].'
+    );
+    const last = abiWith("h", [uint("x"), { name: "t", ...pair }]);
+    expect(await failure({ ...argsList([[1, 5]], "h"), abi: last })).toBe(
+      'Argument Sets entry 1 has 2 values. h takes 2 (x, t) with t as an object, or 3 with t\'s members given flat. Make each entry an array like [1, {"a": 1, "b": 1}].'
+    );
+  });
+
+  it("names a tuple slot when no flat reading of it lines up", async () => {
+    const alone = abiWith("f", [{ name: "t", ...pair }]);
+    expect(await failure({ ...argsList([[5]], "f"), abi: alone })).toBe(
+      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got 5. Or give its 2 members flat in its place.'
+    );
+    // An object next to it is another tuple's value, not one of its members.
+    const both = abiWith("g", [
+      { name: "t", ...pair },
+      { name: "u", ...pair },
+    ]);
+    expect(
+      await failure({ ...argsList([[1, { a: 1, b: 2 }]], "g"), abi: both })
+    ).toBe(
+      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got 1. Or give its 2 members flat in its place.'
+    );
+    expect(
+      await failure({ ...argsList([[{ a: 1, b: 2 }, 5]], "g"), abi: both })
+    ).toBe(
+      'Argument Sets entry 1: u must be an object with its member names, like {"a": 1, "b": 1}, got 5. Or give its 2 members flat in its place.'
+    );
+  });
+
+  it("names every tuple the values read as flat in the count", async () => {
+    const three = abiWith("f", [
+      { name: "t", ...pair },
+      { name: "u", ...pair },
+      { name: "w", ...pair },
+    ]);
+    expect(
+      await failure({ ...argsList([[1, 2, 3, 4, 5]], "f"), abi: three })
+    ).toBe(
+      'Argument Sets entry 1 has 5 values. f takes 3 (t, u, w) with t, u and w as objects, or 6 with their members given flat. Make each entry an array like [{"a": 1, "b": 1}, {"a": 1, "b": 1}, {"a": 1, "b": 1}].'
+    );
+  });
+
+  // An object in a tuple's place is the whole tuple, so one whose first member
+  // is a tuple can't be given flat, and no message offers that.
+  it("does not offer flat members for a tuple that starts with a tuple", async () => {
+    const nested = abiWith("f", [
       {
-        name: "g",
-        type: "function",
-        stateMutability: "view",
-        inputs: [
-          { name: "x", type: "uint256" },
-          {
-            name: "t",
-            type: "tuple",
-            components: [
-              { name: "a", type: "uint256" },
-              { name: "b", type: "uint256" },
-            ],
-          },
-        ],
-        outputs: [{ name: "", type: "uint256" }],
+        name: "o",
+        type: "tuple",
+        components: [{ name: "inner", ...pair }, uint("id")],
+      },
+      uint("x"),
+    ]);
+    expect(await failure({ ...argsList([[1, 2]], "f"), abi: nested })).toBe(
+      'Argument Sets entry 1: o must be an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, got 1.'
+    );
+    expect(await failure({ ...argsList([[1, 2, 3]], "f"), abi: nested })).toBe(
+      'Argument Sets entry 1: o.inner: expected object for tuple. An entry for f looks like [{"inner": {"a": 1, "b": 1}, "id": 1}, 1].'
+    );
+    const only = abiWith("g", [
+      {
+        name: "o",
+        type: "tuple",
+        components: [{ name: "inner", ...pair }, uint("id")],
       },
     ]);
-    expect(await failure({ ...argsList([[1, 5]], "g"), abi: last })).toBe(
-      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": 1}, got 5. Or give its 2 members flat in its place.'
+    expect(await failure({ ...argsList([[1, 2, 3]], "g"), abi: only })).toBe(
+      'Argument Sets entry 1 has 3 values, but g takes 1 (o). Make each entry an array like [{"inner": {"a": 1, "b": 1}, "id": 1}].'
     );
   });
 
