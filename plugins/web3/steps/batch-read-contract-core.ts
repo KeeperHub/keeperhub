@@ -891,31 +891,30 @@ function countMismatch(
   const given = plural(args.length, "value");
   let flat = readFlat(args, fn);
   let flatCount = flat.reduce((total, t) => total + t.members - 1, takes);
-  // As many values as inputs: a plain count would match, so the first tuple
-  // holding a plain value is offered flat, or named when it can't go flat and
-  // the entry lines up with it fixed. A one-member tuple given flat already
-  // lines up, so it is skipped.
-  const index = fn.inputs.findIndex(
-    (input, i) =>
-      input.type === "tuple" &&
-      Boolean(input.components?.length) &&
-      !isPlainObject(args[i]) &&
-      (canGoFlat(input)
-        ? input.components?.length !== 1
-        : linesUpFixed(args, fn, i))
-  );
-  if (flat.length === 0 && args.length === takes && index !== -1) {
+  // As many values as inputs: a plain count would match, so a tuple that can
+  // go flat (first one holding a plain value) is offered flat. A one-member
+  // tuple given flat doesn't change the count, so it is skipped.
+  const multi = (input: AbiParam): boolean =>
+    canGoFlat(input) && (input.components?.length ?? 0) > 1;
+  let index = -1;
+  if (flat.length === 0 && args.length === takes) {
+    index = fn.inputs.findIndex(
+      (input, i) => multi(input) && !isPlainObject(args[i])
+    );
+    if (index === -1) {
+      index = fn.inputs.findIndex(multi);
+    }
+  }
+  if (index !== -1) {
     const input = fn.inputs[index];
     const members = input.components?.length ?? 0;
-    if (!canGoFlat(input)) {
-      return slotError(at, input, index, args[index]);
-    }
     flat = [{ label: input.name || `arg${index}`, members }];
     flatCount = takes + members - 1;
   }
+  // No tuple can change the count, so the count is right.
   if (flat.length === 0 && args.length === takes) {
     return new Error(
-      `${at} has ${given} for ${fn.name} (${names}), as many as it takes, but they don't line up with its inputs. ${hint}`
+      `${at} has ${given} for ${fn.name} (${names}), the right number, but not in the right places. ${hint}`
     );
   }
   if (flat.length === 0 || flatCount === args.length) {
@@ -975,14 +974,15 @@ function isWholeTupleShape(value: unknown, first: AbiParam): boolean {
 }
 
 /**
- * A tuple given as an array of its members or as JSON text. Values are walked
- * the way reshapeArgsCounted takes them, so a tuple given flat moves past all
- * its members; anything else gets the count message.
+ * A tuple given as an array of its members or as JSON text, named only when
+ * the values line up with it given as an object. Values are walked the way
+ * reshapeArgsCounted takes them; anything else gets the count message.
  */
 function positionalTupleError(
   args: unknown[],
   fn: ListFunction,
-  at: string
+  at: string,
+  blankTail = false
 ): Error | undefined {
   let cursor = 0;
   for (const [index, input] of fn.inputs.entries()) {
@@ -993,6 +993,9 @@ function positionalTupleError(
       continue;
     }
     if (isWholeTupleShape(value, components[0])) {
+      if (!linesUpFixed(args, fn, cursor, blankTail)) {
+        return;
+      }
       const given = typeof value === "string" ? "text" : "an array";
       return new Error(
         `${at}: give ${input.name || `arg${index}`} as an object with its member names, like ${echo(exampleValue(input.type, components), MAX_REASON_LENGTH)}, not as ${given}.`
@@ -1004,7 +1007,8 @@ function positionalTupleError(
 }
 
 // One tuple holding a plain value is named only when no flat reading of it
-// lines up: one with values missing before it, after it, or both.
+// lines up (values missing before it, after it, or both) and the entry lines
+// up end to end with it given as an object.
 function tupleSlotError(
   entry: unknown[],
   fn: ListFunction,
@@ -1039,7 +1043,7 @@ function tupleSlotError(
   if (flat && components.some((_, k) => fits(index - k))) {
     return;
   }
-  if (!(flat || linesUpFixed(entry, fn, index))) {
+  if (!linesUpFixed(entry, fn, index)) {
     return;
   }
   return slotError(at, input, index, entry[index]);
@@ -1063,12 +1067,19 @@ function slotError(
 
 // Every value has a place: each tuple is an object or its members given flat
 // (one starting with a tuple takes one value), no plain input holds an object,
-// and nothing is left over.
-function linesUp(entry: unknown[], fn: ListFunction): boolean {
+// and nothing is left over. With blankTail, values missing at the end are
+// trimmed blanks.
+function linesUp(entry: unknown[], fn: ListFunction, blankTail = false): boolean {
   let cursor = 0;
   for (const input of fn.inputs) {
+    if (blankTail && cursor >= entry.length) {
+      return true;
+    }
     const value = entry[cursor];
     const members = input.type === "tuple" ? (input.components?.length ?? 0) : 0;
+    if (members > 0 && isPlainObject(value) && !objectFits(value, input)) {
+      return false;
+    }
     if (members > 0 && (isPlainObject(value) || !canGoFlat(input))) {
       if (cursor >= entry.length) {
         return false;
@@ -1085,18 +1096,26 @@ function linesUp(entry: unknown[], fn: ListFunction): boolean {
       cursor += 1;
     }
   }
-  return cursor === entry.length;
+  return blankTail ? cursor >= entry.length : cursor === entry.length;
+}
+
+// An object can be this tuple's: empty, or sharing a member name with it.
+function objectFits(value: unknown, input: AbiParam): boolean {
+  const keys = Object.keys(value as object);
+  const names = new Set((input.components ?? []).map((member) => member.name));
+  return keys.length === 0 || names.has("") || keys.some((k) => names.has(k));
 }
 
 // The entry lines up with the value at place given as an object.
 function linesUpFixed(
   entry: unknown[],
   fn: ListFunction,
-  place: number
+  place: number,
+  blankTail = false
 ): boolean {
   const fixed = [...entry];
   fixed[place] = {};
-  return linesUp(fixed, fn);
+  return linesUp(fixed, fn, blankTail);
 }
 
 type NestedSlot = { input: AbiParam; index: number; place: number };
@@ -1207,7 +1226,12 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
   const reshaped = reshapeArgsCounted(given, fn);
   const { consumed } = reshaped;
   if (given.length !== consumed) {
-    const positional = positionalTupleError(given, fn, SHARED_ARGS_LABEL);
+    const positional = positionalTupleError(
+      given,
+      fn,
+      SHARED_ARGS_LABEL,
+      given.length < consumed
+    );
     if (positional) {
       throw positional;
     }

@@ -3153,6 +3153,10 @@ describe("batch-read-contract - fourth review", () => {
       abi,
     });
     expect(ok.success).toBe(true);
+    const [call] = mockStaticCall.mock.calls[0][0] as Call[];
+    expect(
+      new ethers.Interface(abi).decodeFunctionData("f", call.callData).toArray()
+    ).toEqual([BigInt(1), [[BigInt(1)]], [BigInt(1), BigInt(2)]]);
     mockStaticCall.mockClear();
     expect
       .soft(await failure({ ...argsList([[{ i: { p: 1 } }, 1, 2]], "f"), abi }))
@@ -3169,7 +3173,116 @@ describe("batch-read-contract - fourth review", () => {
     expect
       .soft(await failure({ ...argsList([[{ i: { p: 1 } }, 1]], "f"), abi }))
       .toBe(
-        'Argument Sets entry 1 has 2 values for f (x, t), as many as it takes, but they don\'t line up with its inputs. Make each entry an array like [1, {"i": {"p": 1}}].'
+        'Argument Sets entry 1 has 2 values for f (x, t), the right number, but not in the right places. Make each entry an array like [1, {"i": {"p": 1}}].'
       );
+  });
+
+  it("names a tuple starting with a tuple when each value has one place", async () => {
+    const nested = (name: string): ReturnType<typeof tupleOf> =>
+      tupleOf(name, [tupleOf("inner", [uint("a"), uint("b")]), uint("id")]);
+    const abi = abiWith("f", [nested("o"), nested("p")]);
+    expect(await failure({ ...argsList([[5, 6]], "f"), abi })).toBe(
+      'Argument Sets entry 1: o must be an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, got 5.'
+    );
+  });
+
+  it("does not call a tuple text or an array when a value before it is missing", async () => {
+    const ids = { name: "ids", type: "uint256[]" };
+    const nested = abiWith("f", [
+      uint("x"),
+      tupleOf("t", [tupleOf("i", [uint("p")])]),
+      ids,
+    ]);
+    expect
+      .soft(
+        await failure({
+          ...argsList([[{ i: { p: 1 } }, [1]]], "f"),
+          abi: nested,
+        })
+      )
+      .toBe(
+        'Argument Sets entry 1 has 2 values, but f takes 3 (x, t, ids). Make each entry an array like [1, {"i": {"p": 1}}, [1, 1]].'
+      );
+    const pair = abiWith("g", [
+      uint("x"),
+      tupleOf("t", [uint("a"), uint("b")]),
+      ids,
+    ]);
+    expect
+      .soft(
+        await failure({
+          ...argsList([[{ a: 1, b: 2 }, [1, 2]]], "g"),
+          abi: pair,
+        })
+      )
+      .not.toContain("give t");
+    const memo = abiWith("h", [
+      uint("x"),
+      tupleOf("t", [uint("a"), uint("b")]),
+      { name: "memo", type: "string" },
+    ]);
+    expect
+      .soft(
+        await failure({
+          ...argsList([[{ a: 1, b: 2 }, "[1]"]], "h"),
+          abi: memo,
+        })
+      )
+      .not.toContain("give t");
+    expect
+      .soft(
+        await failure(
+          addressList([addr(1)], {
+            abi: pair,
+            abiFunction: "g",
+            functionArgs: JSON.stringify([{ a: 1, b: 2 }, [1, 2]]),
+          })
+        )
+      )
+      .not.toContain("give t");
+  });
+
+  it("does not name a tuple that can go flat when fixing it leaves an object on a plain input", async () => {
+    const abi = abiWith("f", [
+      uint("x"),
+      tupleOf("t", [uint("a"), uint("b")]),
+      tupleOf("s", [uint("c"), uint("d")]),
+    ]);
+    expect(
+      await failure({
+        ...argsList([[{ a: 1, b: 2 }, 5, { c: 1, d: 2 }]], "f"),
+        abi,
+      })
+    ).not.toContain("t must be an object");
+    const two = abiWith("g", [uint("x"), tupleOf("s", [uint("a"), uint("b")])]);
+    expect(
+      await failure({ ...argsList([[{ a: 1, b: 2 }, 5]], "g"), abi: two })
+    ).toBe(
+      'Argument Sets entry 1 has 2 values for g (x, s), which takes 2 when s is an object, or 3 when s is given flat as its 2 members. Make each entry an array like [1, {"a": 1, "b": 1}].'
+    );
+  });
+
+  it("does not name a tuple when an object before it belongs to no tuple there", async () => {
+    const abi = abiWith("f", [
+      tupleOf("pa", [uint("a"), uint("b")]),
+      tupleOf("nb", [tupleOf("i", [uint("p")]), uint("c")]),
+      tupleOf("lc", [uint("a"), tupleOf("b", [uint("p")])]),
+    ]);
+    expect(
+      await failure({
+        ...argsList([[{ i: { p: 1 }, c: 1 }, 1, { p: 1 }]], "f"),
+        abi,
+      })
+    ).not.toContain("nb must be an object");
+    // An object missing a member still lines up, so the later tuple is named.
+    const partial = abiWith("g", [
+      tupleOf("t", [uint("a"), uint("b")]),
+      tupleOf("s", [tupleOf("i", [uint("p")]), uint("c")]),
+    ]);
+    expect(
+      await failure({ ...argsList([[{ a: 1 }, 5]], "g"), abi: partial })
+    ).toBe(
+      'Argument Sets entry 1: s must be an object with its member names, like {"i": {"p": 1}, "c": 1}, got 5.'
+    );
   });
 });
