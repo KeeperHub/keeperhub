@@ -2116,11 +2116,11 @@ function RunButtonGroup({
   return button;
 }
 
-const READ_ONLY_BADGE_CLASS =
+const VIEW_ONLY_BADGE_CLASS =
   "border-2 border-[var(--color-text-accent)]/60 bg-[var(--color-bg-accent)]/10 font-semibold text-[var(--color-text-accent)] text-xs uppercase tracking-wider backdrop-blur-sm dark:border-[var(--color-text-accent)]/50 dark:bg-transparent";
 
-// Preview badge: a neutral pill, so the green Use template stays the one accent.
-function ReadOnlyBadge({
+// Preview badge: neutral (unlike the viewer's), so the green Use template stays the one accent.
+function PreviewBadge({
   className,
 }: {
   className?: string;
@@ -2142,7 +2142,7 @@ function ReadOnlyBadge({
 function ViewOnlyBadge() {
   return (
     <Badge
-      className={cn(READ_ONLY_BADGE_CLASS, "shrink-0")}
+      className={cn(VIEW_ONLY_BADGE_CLASS, "shrink-0")}
       data-testid="workflow-read-only-badge"
       title={VIEWER_DISABLED_REASON}
       variant="outline"
@@ -2203,7 +2203,8 @@ function UseTemplateButton({
         aria-busy={isUsingTemplate}
         aria-label={USE_TEMPLATE_LABEL}
         className={cn(
-          GREEN_BUTTON_CLASSES,
+          // A viewer's button is muted, not a dimmed call to action.
+          viewOnly ? "bg-muted text-muted-foreground" : GREEN_BUTTON_CLASSES,
           "shrink-0 focus-visible:hub-focus-ring focus-visible:ring-offset-background",
           !viewOnly && className
         )}
@@ -2233,11 +2234,14 @@ function UseTemplateBar({
   button,
   fit,
   onFitChange,
+  viewOnly,
 }: {
   badge: React.ReactNode;
   button: React.ReactNode;
   fit: BarFit;
   onFitChange: (fit: BarFit) => void;
+  // An org viewer cannot copy into the org: the hint says why, also on touch.
+  viewOnly: boolean;
 }): React.ReactElement {
   const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
   const [track, setTrack] = useState<HTMLDivElement | null>(null);
@@ -2338,9 +2342,13 @@ function UseTemplateBar({
           >
             {badge}
             <p className="hidden min-w-0 flex-1 truncate text-foreground/80 text-sm leading-4 @min-[24.5rem]:block md:flex-none">
-              <span className="@min-[36rem]:hidden">Copy to edit and run</span>
+              <span className="@min-[36rem]:hidden">
+                {viewOnly ? "View-only access" : "Copy to edit and run"}
+              </span>
               <span className="hidden @min-[36rem]:inline">
-                Read-only. Make your own copy to edit and run it.
+                {viewOnly
+                  ? VIEWER_DISABLED_REASON
+                  : "Read-only. Make your own copy to edit and run it."}
               </span>
             </p>
             {button}
@@ -2415,6 +2423,9 @@ export const WorkflowToolbar = ({
     !state.isOwner &&
     !isWorkflowViewer &&
     state.workflowVisibility === "public";
+  // A read-only member of the workflow's org: a badge, never Use template.
+  const showsViewOnlyBadge =
+    isWorkflowRoute && Boolean(effectiveWorkflowId) && isWorkflowViewer;
   // One Use template button and one read-only badge, each in the bar's card
   // or, where the free canvas has no room for it, in the header.
   const [barFit, setBarFit] = useState<BarFit>("full");
@@ -2456,16 +2467,17 @@ export const WorkflowToolbar = ({
   );
   const useTemplateBar = offersTemplate && (
     <UseTemplateBar
-      badge={badgeInBar && <ReadOnlyBadge className="shrink-0" />}
+      badge={badgeInBar && <PreviewBadge className="shrink-0" />}
       button={buttonInBar && useTemplateButton}
       fit={barFit}
       onFitChange={onBarFitChange}
+      viewOnly={isViewer}
     />
   );
   // Phones (below md) never had the badge in their crowded header.
   const headerUseTemplate = offersTemplate && !badgeInBar && (
     <>
-      <ReadOnlyBadge className="shrink-0 max-md:hidden" />
+      <PreviewBadge className="shrink-0 max-md:hidden" />
       {!buttonInBar && useTemplateButton}
     </>
   );
@@ -2512,10 +2524,7 @@ export const WorkflowToolbar = ({
               {state.workflowName}
             </span>
           )}
-          {isWorkflowRoute &&
-            effectiveWorkflowId &&
-            !state.isOwner &&
-            isWorkflowViewer && <ViewOnlyBadge />}
+          {showsViewOnlyBadge && <ViewOnlyBadge />}
         </div>
 
         {/* Right side: Actions + User Menu */}
@@ -2561,10 +2570,7 @@ export const WorkflowToolbar = ({
               <OrgSwitcher />
             </div>
           )}
-          {isWorkflowRoute &&
-            effectiveWorkflowId &&
-            !state.isOwner &&
-            isWorkflowViewer && <ViewOnlyBadge />}
+          {showsViewOnlyBadge && <ViewOnlyBadge />}
         </div>
       </Panel>
 

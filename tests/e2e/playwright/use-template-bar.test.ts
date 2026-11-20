@@ -1,11 +1,17 @@
+import { randomUUID } from "node:crypto";
 import type { Locator, Page } from "@playwright/test";
 import { createWebhookTriggerNode } from "../../fixtures/workflows";
 import { expect, test } from "./fixtures";
+import { getDbConnection } from "./utils/connection";
 import {
+  addTestOrganization,
   createTestWorkflow,
   deleteTestWorkflow,
+  getUserIdByEmail,
+  PERSISTENT_BYSTANDER_EMAIL,
   PERSISTENT_INVITER_EMAIL,
   PERSISTENT_TEST_USER_EMAIL,
+  removeTestOrganization,
 } from "./utils/db";
 import {
   type Box,
@@ -49,6 +55,61 @@ function headerButton(page: Page): Locator {
 
 function card(page: Page): Locator {
   return page.getByTestId("use-template-card");
+}
+
+const VIEWER_REASON =
+  "View-only access: you cannot make changes in this organization";
+const MENU_ITEMS = ["Add Step", "New Workflow from JSON"] as const;
+
+function menuItem(page: Page, name: string): Locator {
+  return page.getByRole("button", { name, exact: true });
+}
+
+// The nearest empty-canvas point up and left of (x, y), so a right-click
+// there reaches the pane and not a node, control or toast.
+async function paneNear(
+  page: Page,
+  x: number,
+  y: number
+): Promise<{ x: number; y: number }> {
+  const found = await page.evaluate(
+    ([px, py]) => {
+      for (let d = 0; d <= 80; d += 4) {
+        for (const [cx, cy] of [
+          [px - d, py],
+          [px, py - d],
+        ]) {
+          if (
+            document
+              .elementFromPoint(cx, cy)
+              ?.classList.contains("react-flow__pane")
+          ) {
+            return { x: cx, y: cy };
+          }
+        }
+      }
+      return null;
+    },
+    [x, y]
+  );
+  expect(found, `empty canvas near ${x},${y}`).not.toBeNull();
+  return found as { x: number; y: number };
+}
+
+// Your own workflow; returns its actions, a bottom bar below 768px (from
+// 768px they sit in the header with no box of their own).
+async function openOwn(
+  page: Page,
+  width: number,
+  height: number,
+  id: string
+): Promise<Locator> {
+  await dismissPhoneOverlays(page);
+  await page.setViewportSize({ width, height });
+  await page.goto(`/workflows/${id}`, { waitUntil: "domcontentloaded" });
+  const bar = page.getByTestId("workflow-actions");
+  await expect(bar).toBeVisible({ timeout: 15_000 });
+  return bar;
 }
 
 // panel: the right panel's saved width (%) or collapsed state.
@@ -198,6 +259,7 @@ test.describe("Use template bar, signed in", () => {
   const ids: string[] = [];
   let foreignId = "";
   let ownId = "";
+  let ownTriggerId = "";
   let copyableId = "";
 
   test.beforeAll(async () => {
@@ -222,7 +284,15 @@ test.describe("Use template bar, signed in", () => {
         edges: [],
       })
     ).id;
-    ids.push(foreignId, ownId, copyableId);
+    // No paid step, so no paid-features toast near the bottom.
+    ownTriggerId = (
+      await createTestWorkflow(PERSISTENT_TEST_USER_EMAIL, {
+        name: "Use template bar own trigger",
+        nodes: [createWebhookTriggerNode()],
+        edges: [],
+      })
+    ).id;
+    ids.push(foreignId, ownId, ownTriggerId, copyableId);
   });
 
   test.afterAll(async () => {
@@ -500,41 +570,139 @@ test.describe("Use template bar, signed in", () => {
     }
   });
 
-  test("right-clicking just above the card opens no menu under it", async ({
-    page,
-  }) => {
+  test("no canvas menu on a workflow you cannot edit", async ({ page }) => {
     await open(page, 1280, foreignId);
     const cardBox = await box(card(page));
-    await page.mouse.click(cardBox.x + cardBox.width / 2, cardBox.y - 12, {
-      button: "right",
-    });
-    await expect(
-      page.getByRole("button", { name: "Add Step", exact: true })
-    ).toHaveCount(0);
+    const spot = await paneNear(
+      page,
+      cardBox.x + cardBox.width / 2,
+      cardBox.y - 12
+    );
+    await page.mouse.click(spot.x, spot.y, { button: "right" });
+    await expect(menuItem(page, "Add Step")).toHaveCount(0);
     await expect(templateButton(page)).toBeVisible();
   });
 
-  test("the right-click menu is drawn over a bar at the bottom", async ({
+  for (const width of [390, 700]) {
+    test(`${width}px: the right-click menu is drawn over the owner's bottom bar`, async ({
+      page,
+    }) => {
+      const bar = await box(await openOwn(page, width, HEIGHT, ownTriggerId));
+      // Low enough to reach the bar, high enough not to flip up.
+      const spot = await paneNear(page, bar.x + 8, bar.y - 40);
+      await page.mouse.click(spot.x, spot.y, { button: "right" });
+      const items = MENU_ITEMS.map((name) => menuItem(page, name));
+      await expect(items[1]).toBeVisible();
+      expect(await overlaps(items[1], bar)).toBe(true);
+      for (const item of items) {
+        expect(await isOnTop(item, { corners: true })).toBe(true);
+      }
+    });
+  }
+
+  test("the right-click menu stays in the window at the bottom and right edges", async ({
     page,
   }) => {
-    // Below 768px the owner's actions are a bar at the bottom, like the card.
-    await page.setViewportSize({ width: 700, height: HEIGHT });
-    await page.goto(`/workflows/${ownId}`, { waitUntil: "domcontentloaded" });
-    const bar = page.getByTestId("workflow-actions");
-    await expect(bar).toBeVisible({ timeout: 15_000 });
-    const barBox = await box(bar);
-    // Near the left edge, clear of the nodes; the menu opens down over the bar.
-    await page.mouse.click(barBox.x + 24, barBox.y - 12, { button: "right" });
-    const items = [
-      page.getByRole("button", { name: "Add Step", exact: true }),
-      page.getByRole("button", { name: "New Workflow from JSON" }),
-    ];
-    for (const item of items) {
-      await expect(item).toBeVisible();
+    for (const [width, height, x, y] of [
+      [1280, 800, 640, 790],
+      [390, HEIGHT, 384, 600],
+    ] as const) {
+      await test.step(`${width}px at ${x},${y}`, async () => {
+        await openOwn(page, width, height, ownTriggerId);
+        const spot = await paneNear(page, x, y);
+        await page.mouse.click(spot.x, spot.y, { button: "right" });
+        const items = MENU_ITEMS.map((name) => menuItem(page, name));
+        await expect(items[1]).toBeVisible();
+        for (const item of items) {
+          const b = await box(item);
+          expect(b.x).toBeGreaterThanOrEqual(0);
+          expect(b.y).toBeGreaterThanOrEqual(0);
+          expect(right(b)).toBeLessThanOrEqual(width);
+          expect(bottom(b)).toBeLessThanOrEqual(height);
+          expect(await isOnTop(item, { corners: true })).toBe(true);
+          expect(await textFits(item)).toBe(true);
+        }
+        await page.keyboard.press("Escape");
+      });
     }
-    expect(await overlaps(items[1], barBox)).toBe(true);
-    for (const item of items) {
-      expect(await isOnTop(item, { corners: true })).toBe(true);
+  });
+});
+
+// The signed-in user reads an org as a viewer: it may not copy into it.
+test.describe("Use template bar, org viewer", () => {
+  test.describe.configure({ mode: "serial" });
+  let orgId = "";
+  let foreignId = "";
+  let inOrgId = "";
+
+  test.beforeAll(async () => {
+    orgId = await addTestOrganization(
+      PERSISTENT_BYSTANDER_EMAIL,
+      "Use template viewer org"
+    );
+    foreignId = (
+      await createTestWorkflow(PERSISTENT_INVITER_EMAIL, {
+        name: "Use template viewer source",
+        hub: {},
+      })
+    ).id;
+    inOrgId = (
+      await createTestWorkflow(PERSISTENT_BYSTANDER_EMAIL, {
+        name: "Use template viewer in org",
+        hub: {},
+      })
+    ).id;
+    const viewerId = await getUserIdByEmail(PERSISTENT_TEST_USER_EMAIL);
+    const sql = getDbConnection();
+    try {
+      await sql`UPDATE workflows SET organization_id = ${orgId} WHERE id = ${inOrgId}`;
+      await sql`
+        INSERT INTO member (id, organization_id, user_id, role, created_at)
+        VALUES (${randomUUID()}, ${orgId}, ${viewerId}, 'viewer', ${new Date()})
+      `;
+    } finally {
+      await sql.end();
+    }
+  });
+
+  // Also moves the shared session back to an org the user is still in.
+  test.afterAll(async () => {
+    await deleteTestWorkflow(foreignId);
+    await deleteTestWorkflow(inOrgId);
+    await removeTestOrganization(orgId);
+  });
+
+  test.beforeEach(async ({ apiRequest }) => {
+    const res = await apiRequest.post("/api/auth/organization/set-active", {
+      data: { organizationId: orgId },
+    });
+    expect(res.ok()).toBe(true);
+  });
+
+  test("someone else's public workflow: Use template disabled, the card says why", async ({
+    page,
+  }) => {
+    await open(page, 1280, foreignId);
+    await expect(templateButton(page)).toBeDisabled();
+    await expect(card(page)).toContainText(VIEWER_REASON);
+    await expect(card(page)).not.toContainText("Make your own copy");
+    await card(page).locator("span.inline-block").hover();
+    await expect(page.getByRole("tooltip")).toContainText(VIEWER_REASON);
+  });
+
+  test("a public workflow in that org: View only badge, no Use template", async ({
+    page,
+  }) => {
+    for (const width of [390, 1280]) {
+      await page.setViewportSize({ width, height: HEIGHT });
+      await page.goto(`/workflows/${inOrgId}`, {
+        waitUntil: "domcontentloaded",
+      });
+      await expect(page.getByTestId("workflow-read-only-badge")).toBeVisible({
+        timeout: 15_000,
+      });
+      await expect(card(page)).toHaveCount(0);
+      await expect(templateButton(page)).toHaveCount(0);
     }
   });
 });

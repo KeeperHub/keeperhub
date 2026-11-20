@@ -5,7 +5,13 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { Link2Off, Plus, Trash2, Upload } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { ConfirmOverlay } from "@/components/overlays/confirm-overlay";
@@ -26,6 +32,9 @@ import {
 import { useShowStepSettings } from "./use-show-step-settings";
 
 export type ContextMenuType = "node" | "edge" | "pane" | null;
+
+// The menu keeps this far inside the window.
+const MENU_EDGE_GAP_PX = 8;
 
 export type ContextMenuState = {
   type: ContextMenuType;
@@ -57,6 +66,27 @@ export function WorkflowContextMenu({
   const isAnonymous = isAnonymousUser(session?.user);
   const menuRef = useRef<HTMLDivElement>(null);
   const [ioOpen, setIoOpen] = useState(false);
+  const [placed, setPlaced] = useState<{ x: number; y: number } | null>(null);
+
+  // Before paint: open upward near the bottom edge, shift left near the right.
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!(menuState && menu)) {
+      setPlaced(null);
+      return;
+    }
+    const { width, height } = menu.getBoundingClientRect();
+    const { x, y } = menuState.position;
+    const room = (size: number, max: number): number =>
+      Math.max(MENU_EDGE_GAP_PX, max - size - MENU_EDGE_GAP_PX);
+    setPlaced({
+      x: Math.min(x, room(width, window.innerWidth)),
+      y:
+        y + height > window.innerHeight - MENU_EDGE_GAP_PX
+          ? Math.min(Math.max(MENU_EDGE_GAP_PX, y - height), room(height, window.innerHeight))
+          : y,
+    });
+  }, [menuState]);
 
   const handleIoImported = useCallback(
     (workflowId: string) => {
@@ -188,11 +218,11 @@ export function WorkflowContextMenu({
       {menuState &&
         createPortal(
           <div
-            className="fade-in-0 zoom-in-95 fixed z-50 min-w-[8rem] animate-in overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+            className="fade-in-0 zoom-in-95 fixed z-50 min-w-[8rem] animate-in overflow-hidden whitespace-nowrap rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
             ref={menuRef}
             style={{
-              left: menuState.position.x,
-              top: menuState.position.y,
+              left: (placed ?? menuState.position).x,
+              top: (placed ?? menuState.position).y,
             }}
           >
             {menuState.type === "node" && (

@@ -111,7 +111,6 @@ export function WorkflowCanvas() {
   const [edges, setEdges] = useAtom(edgesAtom);
   const [isGenerating] = useAtom(isGeneratingAtom);
   const currentWorkflowId = useAtomValue(currentWorkflowIdAtom);
-  const isOwner = useAtomValue(isWorkflowOwnerAtom);
   const [showMinimap] = useAtom(showMinimapAtom);
   const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
   const previewRequests = useAtomValue(previewRequestsAtom);
@@ -126,6 +125,8 @@ export function WorkflowCanvas() {
   // to read their config but cannot move, connect, delete or add anything.
   const canEditWorkflow = useAtomValue(isWorkflowOwnerAtom);
   const isReadOnly = isWorkflowRoute && !canEditWorkflow;
+  // Right-click menus only in the editor: the scan preview on / is read-only.
+  const noCanvasMenu = isGenerating || isReadOnly || !isWorkflowRoute;
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
       applyNodesChange(
@@ -173,6 +174,11 @@ export function WorkflowCanvas() {
   const closeContextMenu = useCallback(() => {
     setContextMenuState(null);
   }, []);
+
+  // The canvas outlives route changes: a menu from the last workflow must not.
+  useEffect(() => {
+    setContextMenuState(null);
+  }, [currentWorkflowId, isReadOnly, pathname]);
 
   // Suppress sidebar auto-open briefly after workflow switch
   useEffect(() => {
@@ -833,23 +839,14 @@ export function WorkflowCanvas() {
         onConnect={isGenerating || isReadOnly ? undefined : onConnect}
         onConnectEnd={isGenerating || isReadOnly ? undefined : onConnectEnd}
         onConnectStart={isGenerating || isReadOnly ? undefined : onConnectStart}
-        onEdgeContextMenu={
-          isGenerating || isReadOnly ? undefined : onEdgeContextMenu
-        }
+        onEdgeContextMenu={noCanvasMenu ? undefined : onEdgeContextMenu}
         onEdgesChange={isGenerating ? undefined : onEdgesChange}
         onNodeClick={isGenerating ? undefined : onNodeClick}
-        onNodeContextMenu={
-          isGenerating || isReadOnly ? undefined : onNodeContextMenu
-        }
+        onNodeContextMenu={noCanvasMenu ? undefined : onNodeContextMenu}
         onNodeDoubleClick={isGenerating ? undefined : onNodeDoubleClick}
         onNodesChange={isGenerating ? undefined : onNodesChange}
         onPaneClick={onPaneClick}
-        onPaneContextMenu={
-          // Add Step is the pane menu's only action; gate by route since the canvas is shared with /
-          isGenerating || isReadOnly || !isWorkflowRoute
-            ? undefined
-            : onPaneContextMenu
-        }
+        onPaneContextMenu={noCanvasMenu ? undefined : onPaneContextMenu}
         onSelectionChange={isGenerating ? undefined : onSelectionChange}
         {...(isReadOnly ? { deleteKeyCode: null } : {})}
       >
@@ -876,7 +873,6 @@ export function WorkflowCanvas() {
       {/* AI Prompt - gated by NEXT_PUBLIC_AI_PROMPT_ENABLED feature flag; only
           for a workflow you can edit (Use template takes its place). */}
       {currentWorkflowId &&
-        isOwner &&
         !isReadOnly &&
         process.env.NEXT_PUBLIC_AI_PROMPT_ENABLED === "true" && (
           <AIPrompt workflowId={currentWorkflowId} />
