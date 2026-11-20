@@ -42,6 +42,11 @@ import {
   PagerDutyTestNodeButton,
   PagerDutyTriggerNodeField,
 } from "@/components/workflow/config/pagerduty-resource-field";
+// Imported statically: client-only like this file, and a jsdom test renders it.
+import {
+  ProtocolBoolField,
+  protocolBoolFieldValue,
+} from "@/components/workflow/config/protocol-fields/protocol-bool-field";
 import { TOGGLE_FIELD_RENDERERS } from "@/components/workflow/config/toggle-field-renderers";
 import { TokenSelectField } from "@/components/workflow/config/token-select-field";
 import { integrationsAtom } from "@/lib/integrations-store";
@@ -561,10 +566,10 @@ registerFieldRenderer(
 registerFieldRenderer(
   "protocol-bool",
   ({ field, config, onUpdateConfig, disabled }) => {
-    const { ProtocolBoolField } =
-      require("@/components/workflow/config/protocol-fields/protocol-bool-field") as typeof import("@/components/workflow/config/protocol-fields/protocol-bool-field");
-    const value =
-      (config[field.key] as string | undefined) || field.defaultValue || "";
+    const { value, unrecognized } = protocolBoolFieldValue(
+      config[field.key],
+      field.defaultValue
+    );
 
     return (
       <div className="space-y-2" key={field.key}>
@@ -573,6 +578,7 @@ registerFieldRenderer(
           disabled={disabled}
           fieldKey={field.key}
           onChange={(val: unknown) => onUpdateConfig(field.key, val)}
+          unrecognized={unrecognized}
           value={value}
         />
       </div>

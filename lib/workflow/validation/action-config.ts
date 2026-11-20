@@ -514,6 +514,11 @@ export function isKnownConfigKeyForAction(
   return isLegacyIgnoredField(actionType, key);
 }
 
+/** A bool field value save accepts; the editor's bool field uses it too. */
+export function isSavableBoolValue(value: unknown): boolean {
+  return isBoolLiteral(value) || valueContainsTemplate(value);
+}
+
 // A field value echoed in `received` is the caller's own input; long text is
 // cut and a large list or object is described rather than sent back whole.
 const RECEIVED_MAX_CHARS = 200;
@@ -812,7 +817,7 @@ function validateFieldValue(
             reason: toggleRefusal(field.label, value),
           };
     case "protocol-bool":
-      return valueContainsTemplate(value) || isBoolLiteral(value)
+      return isSavableBoolValue(value)
         ? { valid: true }
         : { valid: false, expected: "boolean", received: value };
     case "protocol-bytes":

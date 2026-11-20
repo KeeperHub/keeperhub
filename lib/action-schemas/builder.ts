@@ -19,11 +19,12 @@ import { isDirectExecutionSupported } from "@/plugins/protocol/steps/resolve-pro
 import {
   type ActionConfigFieldBase,
   computeActionId,
+  fieldEnumValues,
+  fieldJsonType,
   flattenConfigFields,
   getAllIntegrations,
   type IntegrationPlugin,
   isDisplayOnlyField,
-  isToggleField,
   type PluginAction,
 } from "@/plugins/registry";
 
@@ -100,16 +101,31 @@ export type BuildActionSchemasOptions = {
   type?: string;
 };
 
+// Steps and direct execution also take the two strings; only a workflow step
+// resolves a template.
+const PROTOCOL_BOOL_TYPE_TEXT =
+  'boolean (true or false, or the lowercase strings "true" and "false"; a {{@nodeId:Label.field}} template resolving to one of these works in a workflow step but not in execute_protocol_action)';
+
+function quoteOptions(values: string[]): string {
+  return values.map((value) => `"${value}"`).join(" | ") || "select";
+}
+
 function mapFieldType(field: ActionConfigFieldBase): string {
-  if (isToggleField(field.type)) {
+  // The JSON type comes from the same function the pin schema uses.
+  const jsonType = fieldJsonType(field.type);
+  if (jsonType === "boolean") {
+    if (field.type === "protocol-bool") {
+      return PROTOCOL_BOOL_TYPE_TEXT;
+    }
     // A plain switch refuses a template at save; the other toggles do not yet.
     return field.type === "switch"
       ? "boolean (true or false, not a template)"
       : "boolean";
   }
+  if (jsonType === "number") {
+    return "number";
+  }
   switch (field.type) {
-    case "number":
-      return "number";
     case "chain-select":
       return "string (chain ID)";
     case "token-select":
@@ -127,10 +143,15 @@ function mapFieldType(field: ActionConfigFieldBase): string {
     case "event-list-builder":
       return 'string (JSON array of up to 20 entries, each {"contractAddress":"0x...","abi":"<JSON ABI string>","eventName":"Transfer","eventArgs":{"from":"0x..."}}) - eventArgs is optional and takes the same indexed-argument filter as a single event';
     case "select": {
-      const options =
-        field.options?.map((o) => `"${o.value}"`).join(" | ") || "select";
-      // A field that takes a template says so, or an agent reads a closed
-      // enum and never offers the capability the field's help text does.
+      // A closed list here is the pin schema's enum: both use fieldEnumValues.
+      const closed = fieldEnumValues(field);
+      if (closed !== undefined) {
+        return `string (${quoteOptions(closed)})`;
+      }
+      // Only a template-taking select, or one with no options, gets here. A
+      // field that takes a template says so, or an agent reads a closed enum
+      // and never offers the capability the field's help text does.
+      const options = quoteOptions(field.options?.map((o) => o.value) ?? []);
       return field.allowTemplate
         ? `string (${options}, or a {{@nodeId:Label.field}} template)`
         : `string (${options})`;

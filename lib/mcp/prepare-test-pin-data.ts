@@ -1,5 +1,7 @@
 import type { ActionConfigFieldBase, PluginAction } from "@/plugins/registry";
 import {
+  fieldEnumValues,
+  fieldJsonType,
   flattenConfigFields,
   getAllIntegrations,
   isDisplayOnlyField,
@@ -157,39 +159,38 @@ function buildPropertyForField(
 ): PinDataPropertySchema {
   const description = field.helpTip ?? field.label;
 
-  if (field.type === "number") {
+  // The JSON type comes from the same function the action schema uses.
+  const jsonType = fieldJsonType(field.type);
+  if (jsonType === "number") {
     return { type: "number", description };
   }
 
-  if (isToggleField(field.type)) {
-    return {
-      type: "boolean",
-      description,
-      default: toggleDefault(field),
-    };
+  if (jsonType === "boolean") {
+    return isToggleField(field.type)
+      ? { type: "boolean", description, default: toggleDefault(field) }
+      : { type: "boolean", description };
   }
 
-  if (field.type === "protocol-bool") {
-    return { type: "boolean", description };
+  // The action schema's closed list comes from the same fieldEnumValues.
+  const enumValues = fieldEnumValues(field);
+  if (enumValues !== undefined) {
+    return { type: "string", description, enum: enumValues };
   }
 
-  if (field.type === "select" && field.options !== undefined) {
-    // A field that accepts a template cannot be a closed enum here: the
-    // schema is `additionalProperties: false`, so an agent deriving the value
-    // from an earlier step would have its pin data rejected for a value the
-    // step resolves perfectly well.
-    if (field.allowTemplate) {
-      return {
-        type: "string",
-        description: `${description} Accepts one of ${field.options
-          .map((option) => option.value)
-          .join(", ")}, or a template.`,
-      };
-    }
+  // A field that accepts a template cannot be a closed enum here: the
+  // schema is `additionalProperties: false`, so an agent deriving the value
+  // from an earlier step would have its pin data rejected for a value the
+  // step resolves perfectly well.
+  if (
+    field.type === "select" &&
+    field.allowTemplate &&
+    field.options !== undefined
+  ) {
     return {
       type: "string",
-      description,
-      enum: field.options.map((o) => o.value),
+      description: `${description} Accepts one of ${field.options
+        .map((option) => option.value)
+        .join(", ")}, or a template.`,
     };
   }
 

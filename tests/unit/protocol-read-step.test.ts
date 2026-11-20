@@ -452,6 +452,43 @@ describe("protocolReadStep", () => {
       expect(JSON.parse(coreCall.functionArgs)).toEqual([["12", "34"]]);
     });
 
+    it.each([
+      [true, "true"],
+      ["true", "true"],
+      [false, "false"],
+      ["false", "false"],
+    ])(
+      "passes a bool input saved as %j to the core as %j",
+      async (saved, sent) => {
+        mockResolveProtocolMeta.mockReturnValue({
+          protocolSlug: "compound",
+          contractKey: "comet",
+          functionName: "isAllowed",
+          actionType: "read",
+        } satisfies ProtocolMeta);
+        mockGetProtocol.mockReturnValue({
+          ...COMPOUND_PROTOCOL,
+          actions: [
+            {
+              slug: "is-allowed",
+              label: "Is Allowed",
+              type: "read" as const,
+              contract: "comet",
+              function: "isAllowed",
+              inputs: [{ name: "flag", type: "bool", label: "Flag" }],
+            },
+          ],
+        });
+        mockResolveAbi.mockResolvedValue({ abi: "[]" });
+        mockReadContractCore.mockResolvedValue({ success: true, result: [] });
+
+        await protocolReadStep(makeInput({ flag: saved }));
+
+        const coreCall = (mockReadContractCore as Mock).mock.calls[0][0];
+        expect(JSON.parse(coreCall.functionArgs)).toEqual([sent]);
+      }
+    );
+
     it("normalizes JSON array defaults before read ABI encoding", async () => {
       const metaWithArray: ProtocolMeta = {
         protocolSlug: "compound",

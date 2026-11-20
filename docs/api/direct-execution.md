@@ -634,7 +634,8 @@ available actions and their parameters.
 
 Pass action parameters as a JSON object. `chainId` is required for every action
 (the legacy `network` field is accepted as a deprecated alias). Required fields
-for each action are defined in the protocol registry.
+for each action are defined in the protocol registry. A Solidity `bool` parameter
+takes JSON `true` or `false`; the lowercase strings `"true"` and `"false"` also work.
 
 Protocol actions have no dry run. A `simulate` field is rejected with `400` and
 code `unsupported_param` before anything is reserved or signed, except

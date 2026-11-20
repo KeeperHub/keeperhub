@@ -441,6 +441,43 @@ describe("protocolWriteStep", () => {
       expect(JSON.parse(coreCall.functionArgs)).toEqual([["12", "34"]]);
     });
 
+    it.each([
+      [true, "true"],
+      ["true", "true"],
+      [false, "false"],
+      ["false", "false"],
+    ])(
+      "passes a bool input saved as %j to the core as %j",
+      async (saved, sent) => {
+        mockResolveProtocolMeta.mockReturnValue({
+          protocolSlug: "compound",
+          contractKey: "comet",
+          functionName: "allow",
+          actionType: "write",
+        } satisfies ProtocolMeta);
+        mockGetProtocol.mockReturnValue({
+          ...COMPOUND_PROTOCOL,
+          actions: [
+            {
+              slug: "allow",
+              label: "Allow",
+              type: "write" as const,
+              contract: "comet",
+              function: "allow",
+              inputs: [{ name: "isAllowed", type: "bool", label: "Allow" }],
+            },
+          ],
+        });
+        mockResolveAbi.mockResolvedValue({ abi: "[]" });
+        mockWriteContractCore.mockResolvedValue({ success: true });
+
+        await protocolWriteStep(makeInput({ isAllowed: saved }));
+
+        const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+        expect(JSON.parse(coreCall.functionArgs)).toEqual([sent]);
+      }
+    );
+
     it("normalizes JSON array defaults before write ABI encoding", async () => {
       const queueMeta: ProtocolMeta = {
         protocolSlug: "compound",
