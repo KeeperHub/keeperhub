@@ -122,6 +122,7 @@ import {
   findTemplateTokens,
   parseStoredRef,
   replaceTemplateTokens,
+  sanitizeNodeId,
   splitTemplateRef,
   type TemplateToken,
 } from "@/lib/workflow/template-ref";
@@ -361,7 +362,7 @@ function replaceTemplateVariable(
   executionResults?: Record<string, ExecutionResult>,
   unresolvedFields?: string[]
 ): string {
-  const sanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+  const sanitizedNodeId = sanitizeNodeId(nodeId);
   const output = outputs[sanitizedNodeId];
 
   // KEEP-1284: Throw error when referenced node output doesn't exist
@@ -926,7 +927,7 @@ function replaceConfigTemplate(
   path?: string
 ): string {
   const trimmedNodeId = nodeId.trim();
-  const sanitizedNodeId = trimmedNodeId.replace(/[^a-zA-Z0-9]/g, "_");
+  const sanitizedNodeId = sanitizeNodeId(trimmedNodeId);
   const output = outputs[sanitizedNodeId] ?? outputs[trimmedNodeId];
   const fieldPath = rest.includes(".")
     ? rest.substring(rest.indexOf(".") + 1).trim()
@@ -1366,7 +1367,7 @@ function resolveStoredCodeRef(
   line: number
 ): string {
   const trimmedNodeId = nodeId.trim();
-  const sanitizedNodeId = trimmedNodeId.replace(/[^a-zA-Z0-9]/g, "_");
+  const sanitizedNodeId = sanitizeNodeId(trimmedNodeId);
   const output = outputs[sanitizedNodeId] ?? outputs[trimmedNodeId];
   if (!output) {
     recordUnresolved(tracker, {
@@ -1755,7 +1756,7 @@ export function resolveTemplateToRawValueChecked(
   outputs: NodeOutputs
 ): RawValueResolution {
   const trimmedNodeId = nodeId.trim();
-  const sanitizedNodeId = trimmedNodeId.replace(/[^a-zA-Z0-9]/g, "_");
+  const sanitizedNodeId = sanitizeNodeId(trimmedNodeId);
   const output = outputs[sanitizedNodeId] ?? outputs[trimmedNodeId];
   const fieldPath = rest.includes(".")
     ? rest.substring(rest.indexOf(".") + 1).trim()
@@ -2407,10 +2408,7 @@ export function markCollectSkippedOnForEachFailure(params: {
     count: params.iterationResults.length,
     skipped: true as const,
   };
-  const sanitizedCollectId = params.aggregateCollectNodeId.replace(
-    /[^a-zA-Z0-9]/g,
-    "_"
-  );
+  const sanitizedCollectId = sanitizeNodeId(params.aggregateCollectNodeId);
   params.currentVisited.add(params.aggregateCollectNodeId);
   params.attemptedNodes.add(params.aggregateCollectNodeId);
   params.currentResults[params.aggregateCollectNodeId] = {
@@ -2429,7 +2427,7 @@ export function markCollectSkippedOnForEachFailure(params: {
     params.collectNodeId !== params.doneCollectNodeId
   ) {
     const legacyCollectNodeId = params.collectNodeId;
-    const sanitizedLegacyId = legacyCollectNodeId.replace(/[^a-zA-Z0-9]/g, "_");
+    const sanitizedLegacyId = sanitizeNodeId(legacyCollectNodeId);
     params.currentVisited.add(legacyCollectNodeId);
     params.attemptedNodes.add(legacyCollectNodeId);
     params.currentResults[legacyCollectNodeId] = {
@@ -2562,7 +2560,7 @@ export function resolveArraySource(
   const raw = resolveTemplateToRawValue(nodeId, rest, outputs);
 
   if (raw === null || raw === undefined) {
-    const sanitizedId = nodeId.trim().replace(/[^a-zA-Z0-9]/g, "_");
+    const sanitizedId = sanitizeNodeId(nodeId.trim());
     const nodeExists =
       outputs[sanitizedId] !== undefined ||
       outputs[nodeId.trim()] !== undefined;
@@ -3011,7 +3009,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       getNodeName,
       getErrorMessageAsync,
       injectBuiltinVariables: (outputs) => {
-        const builtinSanitized = BUILTIN_NODE_ID.replace(/[^a-zA-Z0-9]/g, "_");
+        const builtinSanitized = sanitizeNodeId(BUILTIN_NODE_ID);
         outputs[builtinSanitized] = {
           label: BUILTIN_NODE_LABEL,
           data: getBuiltinVariables(),
@@ -3211,7 +3209,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     // body chain (handled by the existing fallback).
     const captureCollectNodeId = collectNodeId;
 
-    const sanitizedForEachId = forEachNodeId.replace(/[^a-zA-Z0-9]/g, "_");
+    const sanitizedForEachId = sanitizeNodeId(forEachNodeId);
 
     // 3. Single iteration executor
     const mapExpression = processedConfig.mapExpression as string | undefined;
@@ -3299,7 +3297,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
         for (const bodyNodeId of bodyNodeIds) {
           const targets = bodyEdgesBySource.get(bodyNodeId) ?? [];
           if (targets.includes(captureCollectNodeId)) {
-            const sanitizedBodyId = bodyNodeId.replace(/[^a-zA-Z0-9]/g, "_");
+            const sanitizedBodyId = sanitizeNodeId(bodyNodeId);
             const output = scopedOutputs[sanitizedBodyId];
             if (output?.data !== undefined) {
               iterationOutput = output.data;
@@ -3312,7 +3310,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       // and the canonical done-handle pattern with no in-body Collect).
       if (iterationOutput === undefined) {
         for (const bodyNodeId of bodyNodeIds) {
-          const sanitizedBodyId = bodyNodeId.replace(/[^a-zA-Z0-9]/g, "_");
+          const sanitizedBodyId = sanitizeNodeId(bodyNodeId);
           const output = scopedOutputs[sanitizedBodyId];
           if (output?.data !== undefined) {
             iterationOutput = output.data;
@@ -3391,10 +3389,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           results: iterationResults,
           count: iterationResults.length,
         };
-        const sanitizedCollectId = aggregateCollectNodeId.replace(
-          /[^a-zA-Z0-9]/g,
-          "_"
-        );
+        const sanitizedCollectId = sanitizeNodeId(aggregateCollectNodeId);
         const collectLabel = skipCollectLabel;
 
         const collectAction = SYSTEM_ACTIONS.Collect;
@@ -3678,7 +3673,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       console.log("[Workflow Executor] Skipping disabled node:", nodeId);
 
       // Store null output for disabled nodes so downstream templates don't fail
-      const sanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+      const sanitizedNodeId = sanitizeNodeId(nodeId);
       outputs[sanitizedNodeId] = {
         label: getNodeName(node),
         data: null,
@@ -3692,7 +3687,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     // Inject fresh built-in system variables before each node executes.
     // Intentionally per-node (not per-workflow) so long-running sequential
     // workflows get an up-to-date timestamp at each step.
-    const builtinSanitizedId = BUILTIN_NODE_ID.replace(/[^a-zA-Z0-9]/g, "_");
+    const builtinSanitizedId = sanitizeNodeId(BUILTIN_NODE_ID);
     outputs[builtinSanitizedId] = {
       label: BUILTIN_NODE_LABEL,
       data: getBuiltinVariables(),
@@ -3957,7 +3952,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       results[nodeId] = result;
 
       // Store outputs with sanitized nodeId for template variable lookup
-      const sanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+      const sanitizedNodeId = sanitizeNodeId(nodeId);
       outputs[sanitizedNodeId] = {
         label: getNodeName(node),
         data: result.data,
@@ -4013,7 +4008,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           });
 
           // Update the For Each node's output with resolved iteration metadata
-          const sanitizedFEId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+          const sanitizedFEId = sanitizeNodeId(nodeId);
           outputs[sanitizedFEId] = {
             label: getNodeName(node),
             data: iterationSummary,
@@ -4140,7 +4135,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           data: recordedOutput,
         };
         results[nodeId] = reconciledResult;
-        const reconciledSanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+        const reconciledSanitizedNodeId = sanitizeNodeId(nodeId);
         outputs[reconciledSanitizedNodeId] = {
           label: getNodeName(node),
           data: recordedOutput,
@@ -4219,7 +4214,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       // resolve to a sentinel instead of `undefined`. The previous
       // unconditional overwrite discarded replay-survivor output and caused
       // downstream resolvers to throw `Node "X" produced no data.`
-      const sanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+      const sanitizedNodeId = sanitizeNodeId(nodeId);
       recordCatchOutput(outputs, sanitizedNodeId, getNodeName(node));
 
       // Signal arrival at downstream convergence nodes to prevent deadlocks.

@@ -3,6 +3,7 @@ import "server-only";
 import { DEFAULT_HTTP_METHOD } from "@/lib/workflow/nodes/http-request/constants";
 import {
   replaceTemplateTokens,
+  sanitizeNodeId,
   splitTemplateRef,
 } from "@/lib/workflow/template-ref";
 import { findActionById } from "@/plugins/registry";
@@ -87,7 +88,7 @@ function processNewFormatID(
   const rest = withoutAt.substring(colonIndex + 1);
   const { fieldPath } = splitTemplateRef(rest, nodeLabels?.get(nodeId));
 
-  const sanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+  const sanitizedNodeId = sanitizeNodeId(nodeId);
 
   if (!fieldPath) {
     return `\${outputs?.['${sanitizedNodeId}']?.data}`;
@@ -114,13 +115,13 @@ function processLegacyDollarRef(trimmed: string): string {
   const withoutDollar = trimmed.substring(1);
 
   if (!(withoutDollar.includes(".") || withoutDollar.includes("["))) {
-    const sanitizedNodeId = withoutDollar.replace(/[^a-zA-Z0-9]/g, "_");
+    const sanitizedNodeId = sanitizeNodeId(withoutDollar);
     return `\${outputs?.['${sanitizedNodeId}']?.data}`;
   }
 
   const parts = withoutDollar.split(".");
   const nodeId = parts[0];
-  const sanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+  const sanitizedNodeId = sanitizeNodeId(nodeId);
   const fieldPath = parts.slice(1).join(".");
 
   if (!fieldPath) {
