@@ -39,10 +39,29 @@ vi.mock("@/lib/logging", () => ({
 // directExecutions id - what /api/execute/node passes - finds nothing there,
 // which is what puts that read on the chain default. A mock answering every id
 // would hide that.
+vi.mock("@/lib/security/org-role", () => ({
+  getOrgRole: () => Promise.resolve("member"),
+}));
+
 vi.mock("@/lib/db", () => ({
   db: {
     select: () => ({
       from: (table: { tableName?: string }) => ({
+        innerJoin: () => ({
+          where: (condition: { value?: unknown }) => ({
+            limit: () =>
+              Promise.resolve(
+                condition.value === WORKFLOW_EXECUTION_ID
+                  ? [
+                      {
+                        userId: EXECUTION_USER,
+                        executionOrganizationId: "org-1",
+                      },
+                    ]
+                  : []
+              ),
+          }),
+        }),
         where: (condition: { value?: unknown }) => ({
           limit: () =>
             Promise.resolve(
@@ -63,6 +82,7 @@ vi.mock("@/lib/db/schema", () => ({
     id: "id",
     userId: "userId",
   },
+  workflows: { id: "id", organizationId: "organizationId" },
 }));
 
 vi.mock("drizzle-orm", () => ({

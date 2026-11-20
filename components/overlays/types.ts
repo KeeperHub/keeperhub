@@ -19,6 +19,8 @@ export type OverlayAction = {
   onClick: () => void;
   variant?: OverlayActionVariant;
   disabled?: boolean;
+  /** Tooltip on a disabled action explaining why it cannot be used */
+  disabledReason?: string;
   loading?: boolean;
 };
 

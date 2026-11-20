@@ -261,3 +261,64 @@ export async function fabricateElapsedCooldown(
       "The contract's cooldowns storage is not the StakedUSDeV2 packed layout (uint104 cooldownEnd | uint152 underlyingAmount)."
   );
 }
+
+const ST_USDS_VIEW_ABI = [
+  "function ilk() view returns (bytes32)",
+  "function vat() view returns (address)",
+];
+
+const VAT_ILKS_ABI = [
+  "function ilks(bytes32) view returns (uint256 Art, uint256 rate, uint256 spot, uint256 line, uint256 dust)",
+];
+
+/** Root slot of Vat's `mapping(bytes32 => Ilk) ilks`; Art is the struct's
+ *  first word. Verified against vat.ilks(ilk) on mainnet, 2026-11-17. */
+const VAT_ILKS_SLOT = BigInt(2);
+
+/**
+ * Give stUSDS exit liquidity on a fork. stUSDS only lets shares burn while
+ * `Art * rate + clip.Due() + assets <= totalSupply * chi`; borrowers can
+ * draw up to the vault line, above total assets, so on a live fork the
+ * unused funds swing with borrow demand. Zeroing the ilk's normalised debt
+ * makes withdraw and redeem depend only on the caller's own position. The
+ * slot is checked against vat.ilks(ilk) before and after the write.
+ */
+export async function fabricateStUsdsExitLiquidity(
+  provider: ethers.JsonRpcProvider,
+  stUsdsAddress: string
+): Promise<void> {
+  const stUsds = new ethers.Contract(stUsdsAddress, ST_USDS_VIEW_ABI, provider);
+  const ilk = (await stUsds.ilk()) as string;
+  const vatAddress = (await stUsds.vat()) as string;
+  const vat = new ethers.Contract(vatAddress, VAT_ILKS_ABI, provider);
+  const [art] = (await vat.ilks(ilk)) as [bigint];
+  if (art === BigInt(0)) {
+    return;
+  }
+  const slot = ethers.keccak256(
+    abiCoder.encode(["bytes32", "uint256"], [ilk, VAT_ILKS_SLOT])
+  );
+  const stored = BigInt(
+    (await provider.send("eth_getStorageAt", [
+      vatAddress,
+      slot,
+      "latest",
+    ])) as string
+  );
+  if (stored !== art) {
+    throw new Error(
+      `fabricateStUsdsExitLiquidity: Vat ilks slot for ${ilk} on ${vatAddress} does not hold Art; the Vat storage layout differs from the expected one.`
+    );
+  }
+  await provider.send("anvil_setStorageAt", [
+    vatAddress,
+    slot,
+    ethers.toBeHex(BigInt(0), 32),
+  ]);
+  const [after] = (await vat.ilks(ilk)) as [bigint];
+  if (after !== BigInt(0)) {
+    throw new Error(
+      `fabricateStUsdsExitLiquidity: Vat ilks[${ilk}].Art still reads ${after} after the write.`
+    );
+  }
+}

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isMissingReference,
+  makeMissingReference,
+} from "@/lib/workflow/nodes/condition/missing-reference";
+import {
+  compileSafeCondition,
   isSafeConditionExpression,
   safeEvaluateCondition,
 } from "@/lib/workflow/nodes/condition/safe-eval";
@@ -605,6 +610,57 @@ describe("isSafeConditionExpression", () => {
     expect(isSafeConditionExpression("result.toFixed(2)")).toBe(false);
     expect(isSafeConditionExpression("{{@unresolved:Label.field}}")).toBe(
       false
+    );
+  });
+});
+
+describe("compileSafeCondition", () => {
+  it("parses once and answers like safeEvaluateCondition for each context", () => {
+    const expression = "String(__v0).startsWith(__v1) && __v2 > 5";
+    const evaluate = compileSafeCondition(expression);
+    const contexts = [
+      { __v0: "EMSP_X", __v1: "EMSP_", __v2: "10" },
+      { __v0: "MCD", __v1: "EMSP_", __v2: "10" },
+      { __v0: "EMSP_X", __v1: "EMSP_", __v2: 2 },
+    ];
+    for (const context of contexts) {
+      expect(evaluate(context)).toBe(
+        safeEvaluateCondition(expression, context)
+      );
+    }
+  });
+
+  it("reports a parse error the way safeEvaluateCondition does", () => {
+    expect(() => compileSafeCondition('new RegExp("a")')).toThrow(
+      "Condition parse error"
+    );
+  });
+});
+
+describe("missing-reference marker", () => {
+  it("cannot be forged by data parsed from JSON", () => {
+    const forged = JSON.parse(
+      '{"__keeperhubMissingReference":true,"detail":"ATTACKER TEXT"}'
+    ) as unknown;
+    expect(isMissingReference(forged)).toBe(false);
+    expect(safeEvaluateCondition("__v0 === 1", { __v0: forged })).toBe(false);
+    expect(safeEvaluateCondition("!__v0", { __v0: forged })).toBe(false);
+  });
+
+  it("knows a marker made by another copy of the module", () => {
+    const fromOtherBundle = {
+      [Symbol.for("keeperhub.missingReference")]: true,
+      detail: "x",
+    };
+    expect(isMissingReference(fromOtherBundle)).toBe(true);
+    expect(isMissingReference(makeMissingReference("x"))).toBe(true);
+  });
+
+  it("still marks a real missing reference", () => {
+    const marker = makeMissingReference("x was not found.");
+    expect(isMissingReference(marker)).toBe(true);
+    expect(() => safeEvaluateCondition("__v0 === 1", { __v0: marker })).toThrow(
+      "x was not found."
     );
   });
 });

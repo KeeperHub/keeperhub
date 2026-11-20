@@ -43,6 +43,11 @@ vi.mock("@/lib/workflow/access", () => ({
   isUserMemberOfOrganization: mockIsMember,
 }));
 
+vi.mock("@/lib/security/org-role", () => ({
+  getOrgRole: async (...args: unknown[]) =>
+    (await mockIsMember(...args)) ? "member" : null,
+}));
+
 const TEST_SECRET = "test-secret-32-bytes-long-enough-for-hs256";
 process.env.OAUTH_JWT_SECRET = TEST_SECRET;
 

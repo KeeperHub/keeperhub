@@ -52,6 +52,10 @@ vi.mock("@/app/api/execute/_lib/concurrency-limit", () => ({
 vi.mock("@/lib/billing/payg/charge", () => ({
   chargePaygIfBillable: mockChargePaygIfBillable,
 }));
+const mockMarkRunRefused = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/workflow/refused-runs", () => ({
+  markRunRefused: mockMarkRunRefused,
+}));
 vi.mock("@/lib/workflow/execute-in-background", () => ({
   executeWorkflowInBackground: mockExecuteWorkflowInBackground,
 }));
@@ -133,6 +137,9 @@ vi.mock("@/lib/db", () => ({
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         leftJoin: vi.fn(() => ({
+          leftJoin: vi.fn(() => ({
+            where: vi.fn(() => ({ limit: mockOwnerLimit })),
+          })),
           where: vi.fn(() => ({ limit: mockOwnerLimit })),
         })),
       })),
@@ -157,6 +164,7 @@ vi.mock("@/lib/logging", () => ({
   ErrorCategory: {
     WORKFLOW_ENGINE: "workflow_engine",
     VALIDATION: "validation",
+    BILLING: "billing",
   },
   logSecurityEvent: mockLogSecurityEvent,
   logSystemError: vi.fn(),
@@ -215,6 +223,7 @@ describe("execute route - input binding", {
       isCreatorWithCurrentAccess: false,
       isSameOrg: true,
       hasFullAccess: true,
+      canEdit: true,
       isDeleted: false,
     });
     mockGetDualAuthContext.mockResolvedValue({
@@ -456,6 +465,15 @@ describe("execute route - input binding", {
       expect(response.headers.get("Deprecation")).toMatch(/^@\d+$/);
       expect(response.headers.get("Sunset")).toBeTruthy();
       expect(response.headers.get("Link")).toContain('rel="deprecation"');
+      // Recorded as a refused run, like every other refusal.
+      expect(mockMarkRunRefused).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: "Payment required",
+          category: "billing",
+          fromStatuses: ["phantom", "pending", "running"],
+        }),
+        expect.anything()
+      );
     });
 
     it("sends no notice on the nested shape's 402", async () => {

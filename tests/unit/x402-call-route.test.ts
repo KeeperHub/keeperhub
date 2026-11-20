@@ -98,6 +98,13 @@ vi.mock("@/lib/db/schema", () => ({
   workflowExecutions: { id: "id" },
   tags: { id: "id", name: "name" },
   organization: { id: "id", deactivatedAt: "deactivated_at" },
+  users: {
+    id: "id",
+    isAnonymous: "is_anonymous",
+    email: "email",
+    name: "name",
+    deactivatedAt: "deactivated_at",
+  },
 }));
 
 vi.mock("@/lib/payments/x402/payment-gate", () => ({
@@ -153,8 +160,13 @@ vi.mock("@/app/api/execute/_lib/concurrency-limit", () => ({
   checkConcurrencyLimit: mockCheckConcurrencyLimit,
 }));
 
+const mockMarkRunRefused = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/workflow/refused-runs", () => ({
+  markRunRefused: mockMarkRunRefused,
+}));
+
 vi.mock("@/lib/logging", () => ({
-  ErrorCategory: { WORKFLOW_ENGINE: "workflow_engine" },
+  ErrorCategory: { WORKFLOW_ENGINE: "workflow_engine", BILLING: "billing" },
   logSystemError: mockLogSystemError,
 }));
 
@@ -234,6 +246,11 @@ function setupDbSelectWorkflow(row: unknown) {
     from: vi.fn().mockReturnValue({
       leftJoin: vi.fn().mockReturnValue({
         innerJoin: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(row ? [row] : []),
+            }),
+          }),
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue(row ? [row] : []),
           }),
@@ -411,6 +428,36 @@ describe("POST /api/mcp/workflows/[slug]/call", () => {
     expect(response.status).toBe(404);
   });
 
+  it("returns 404 for a listing owned by an anonymous account", async () => {
+    setupDbSelectWorkflow({
+      ...LISTED_WORKFLOW,
+      ownerIsAnonymous: true,
+      ownerEmail: "abc@anonymous.placeholder.invalid",
+      ownerName: "Anonymous",
+      ownerDeactivatedAt: null,
+    });
+    const { POST } = await import("@/app/api/mcp/workflows/[slug]/call/route");
+    const response = await POST(makeRequest("anon-wf"), {
+      params: Promise.resolve({ slug: "anon-wf" }),
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("returns 404 for a listing whose owner is deactivated", async () => {
+    setupDbSelectWorkflow({
+      ...LISTED_WORKFLOW,
+      ownerIsAnonymous: false,
+      ownerEmail: "owner@example.com",
+      ownerName: "Owner",
+      ownerDeactivatedAt: new Date(),
+    });
+    const { POST } = await import("@/app/api/mcp/workflows/[slug]/call/route");
+    const response = await POST(makeRequest("deactivated-wf"), {
+      params: Promise.resolve({ slug: "deactivated-wf" }),
+    });
+    expect(response.status).toBe(404);
+  });
+
   it("Test 2b: returns 503 (not 404) for a listed-but-disabled workflow", async () => {
     // The lookup's SQL no longer filters `enabled`, so a disabled-but-listed
     // row loads and is gated in-memory as temporarily unavailable. 404 would
@@ -498,9 +545,14 @@ describe("POST /api/mcp/workflows/[slug]/call", () => {
     expect(body.status).toBe("error");
     // The workflow must NOT start when the charge is blocked.
     expect(mockStart).not.toHaveBeenCalled();
-    // The reserved row is resolved to a billing error.
-    expect(mockDbUpdateSet).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "error", errorCategory: "billing" })
+    // The reserved row becomes a refused run, same shape as every refusal.
+    expect(mockMarkRunRefused).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionId: "exec-payg-blocked",
+        fromStatuses: ["running"],
+        category: "billing",
+      }),
+      expect.anything()
     );
   });
 

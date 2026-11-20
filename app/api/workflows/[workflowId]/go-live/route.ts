@@ -1,6 +1,7 @@
 import { eq, inArray } from "drizzle-orm";
 import { revalidateTag } from "next/cache";
 import { NextResponse } from "next/server";
+import { logAnonymousExecutionBlock } from "@/lib/auth-anonymous-guard";
 import { db } from "@/lib/db";
 import { publicTags, workflowPublicTags, workflows } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
@@ -13,6 +14,7 @@ import {
   recordAuditEvent,
 } from "@/lib/security/audit-log";
 import { getWorkflowAccess } from "@/lib/workflow/access";
+import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 
 export async function PUT(
   request: Request,
@@ -27,6 +29,16 @@ export async function PUT(
     const authContext = await getDualAuthContext(request);
     if ("error" in authContext) {
       return authFailureResponse(authContext, request.headers);
+    }
+
+    if (authContext.isAnonymous) {
+      logAnonymousExecutionBlock("workflow_go_live", authContext.userId, {
+        workflowId,
+      });
+      return NextResponse.json(
+        { error: "Sign up to share workflows" },
+        { status: 403 }
+      );
     }
 
     const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE, {
@@ -59,6 +71,9 @@ export async function PUT(
         { error: "Workflow not found" },
         { status: 404 }
       );
+    }
+    if (!access.canEdit) {
+      return viewerReadOnlyResponse();
     }
 
     const body = await request.json().catch(() => ({}));

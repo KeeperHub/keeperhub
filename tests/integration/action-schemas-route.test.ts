@@ -71,7 +71,10 @@ const mockPlugins = [
   },
 ];
 
-vi.mock("@/plugins/registry", () => ({
+vi.mock("@/plugins/registry", async (importOriginal) => ({
+  // The real toggle list, so the schema types toggles as the app does.
+  isToggleField: (await importOriginal<typeof import("@/plugins/registry")>())
+    .isToggleField,
   getAllIntegrations: () => mockPlugins,
   computeActionId: (pluginType: string, slug: string) =>
     `${pluginType}.${slug}`,

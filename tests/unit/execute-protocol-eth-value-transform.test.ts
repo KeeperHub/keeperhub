@@ -22,6 +22,10 @@ import {
 } from "@/lib/abi/struct-args";
 import { PAYER_PLACEHOLDER } from "@/lib/execute/protocol-payer";
 
+vi.mock("@/lib/features/route-guard", () => ({
+  enforceWorkflowFeatures: vi.fn().mockResolvedValue({ blocked: false }),
+}));
+
 vi.mock("server-only", () => ({}));
 vi.mock("@/protocols", () => ({}));
 

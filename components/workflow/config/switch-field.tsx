@@ -32,10 +32,13 @@ export function SwitchField({
       <div className="space-y-0.5">
         <Label htmlFor={id}>{label}</Label>
         {description && (
-          <p className="text-muted-foreground text-xs">{description}</p>
+          <p className="text-muted-foreground text-xs" id={`${id}-description`}>
+            {description}
+          </p>
         )}
       </div>
       <Switch
+        aria-describedby={description ? `${id}-description` : undefined}
         checked={checked}
         disabled={disabled}
         id={id}

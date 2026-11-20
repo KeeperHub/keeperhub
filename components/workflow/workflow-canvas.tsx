@@ -12,7 +12,9 @@ import {
   useReactFlow,
   useUpdateNodeInternals,
   type Connection as XYFlowConnection,
+  type EdgeChange,
   type Edge as XYFlowEdge,
+  type NodeChange,
 } from "@xyflow/react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -118,8 +120,30 @@ export function WorkflowCanvas() {
   const [isTransitioningFromHomepage, setIsTransitioningFromHomepage] = useAtom(
     isTransitioningFromHomepageAtom
   );
-  const onNodesChange = useSetAtom(onNodesChangeAtom);
-  const onEdgesChange = useSetAtom(onEdgesChangeAtom);
+  const applyNodesChange = useSetAtom(onNodesChangeAtom);
+  const applyEdgesChange = useSetAtom(onEdgesChangeAtom);
+  // Anyone who cannot edit this workflow (viewers included) can select nodes
+  // to read their config but cannot move, connect, delete or add anything.
+  const canEditWorkflow = useAtomValue(isWorkflowOwnerAtom);
+  const isReadOnly = isWorkflowRoute && !canEditWorkflow;
+  const onNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      applyNodesChange(
+        isReadOnly
+          ? changes.filter((c) => c.type === "select" || c.type === "dimensions")
+          : changes
+      );
+    },
+    [applyNodesChange, isReadOnly]
+  );
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange[]) => {
+      applyEdgesChange(
+        isReadOnly ? changes.filter((c) => c.type === "select") : changes
+      );
+    },
+    [applyEdgesChange, isReadOnly]
+  );
   const setSelectedNode = useSetAtom(selectedNodeAtom);
   const setSelectedEdge = useSetAtom(selectedEdgeAtom);
   const addNode = useSetAtom(addNodeAtom);
@@ -803,24 +827,31 @@ export function WorkflowCanvas() {
         elementsSelectable={!isGenerating}
         isValidConnection={isValidConnection}
         nodes={nodes}
-        nodesConnectable={!isGenerating}
-        nodesDraggable={!isGenerating}
+        nodesConnectable={!(isGenerating || isReadOnly)}
+        nodesDraggable={!(isGenerating || isReadOnly)}
         nodeTypes={nodeTypes}
-        onConnect={isGenerating ? undefined : onConnect}
-        onConnectEnd={isGenerating ? undefined : onConnectEnd}
-        onConnectStart={isGenerating ? undefined : onConnectStart}
-        onEdgeContextMenu={isGenerating ? undefined : onEdgeContextMenu}
+        onConnect={isGenerating || isReadOnly ? undefined : onConnect}
+        onConnectEnd={isGenerating || isReadOnly ? undefined : onConnectEnd}
+        onConnectStart={isGenerating || isReadOnly ? undefined : onConnectStart}
+        onEdgeContextMenu={
+          isGenerating || isReadOnly ? undefined : onEdgeContextMenu
+        }
         onEdgesChange={isGenerating ? undefined : onEdgesChange}
         onNodeClick={isGenerating ? undefined : onNodeClick}
-        onNodeContextMenu={isGenerating ? undefined : onNodeContextMenu}
+        onNodeContextMenu={
+          isGenerating || isReadOnly ? undefined : onNodeContextMenu
+        }
         onNodeDoubleClick={isGenerating ? undefined : onNodeDoubleClick}
         onNodesChange={isGenerating ? undefined : onNodesChange}
         onPaneClick={onPaneClick}
         onPaneContextMenu={
           // Add Step is the pane menu's only action; gate by route since the canvas is shared with /
-          isGenerating || !isWorkflowRoute ? undefined : onPaneContextMenu
+          isGenerating || isReadOnly || !isWorkflowRoute
+            ? undefined
+            : onPaneContextMenu
         }
         onSelectionChange={isGenerating ? undefined : onSelectionChange}
+        {...(isReadOnly ? { deleteKeyCode: null } : {})}
       >
         {isWorkflowRoute && (
           <Panel
@@ -837,7 +868,7 @@ export function WorkflowCanvas() {
                 />
               </div>
             )}
-            <Controls onFitView={() => fitViewSidebarAware({ duration: 300 })} onAutoLayout={handleAutoLayout} />
+            <Controls onFitView={() => fitViewSidebarAware({ duration: 300 })} onAutoLayout={isReadOnly ? undefined : handleAutoLayout} />
           </Panel>
         )}
       </Canvas>
@@ -846,6 +877,7 @@ export function WorkflowCanvas() {
           for a workflow you can edit (Use template takes its place). */}
       {currentWorkflowId &&
         isOwner &&
+        !isReadOnly &&
         process.env.NEXT_PUBLIC_AI_PROMPT_ENABLED === "true" && (
           <AIPrompt workflowId={currentWorkflowId} />
         )}

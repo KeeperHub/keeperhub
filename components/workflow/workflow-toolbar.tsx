@@ -6,6 +6,7 @@ import {
   Check,
   Copy,
   Download,
+  Eye,
   Globe,
   Link2,
   Loader2,
@@ -35,6 +36,7 @@ import { Button } from "@/components/ui/button";
 import { MobileNav } from "@/components/mobile-nav";
 import { useSwitcherOffering } from "@/components/organization/org-switch-runner";
 import { OrgSwitcher } from "@/components/organization/org-switcher";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { GoLiveOverlay } from "@/components/overlays/go-live-overlay";
 import { ListingOverlay } from "@/components/overlays/listing-overlay";
 import { ManualRunInputOverlay } from "@/components/overlays/manual-run-input-overlay";
@@ -42,8 +44,17 @@ import { WalletToolbarButton } from "@/components/workflow/wallet-toolbar-button
 import { BUILTIN_NODE_ID } from "@/lib/workflow/editor/builtin-variables";
 import { useAuthPrompt } from "@/components/auth/provider";
 import { isAnonymousUser } from "@/lib/is-anonymous";
-import { api, ApiError, type Project, type Tag } from "@/lib/api-client";
+import {
+  ApiError,
+  api,
+  type Project,
+  type Tag,
+  WORKFLOW_SAVE_ERROR_TOAST,
+  workflowSaveErrorMessage,
+} from "@/lib/api-client";
 import { useProjects, useTags } from "@/lib/hooks/use-org-data";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
+import { VIEWER_DISABLED_REASON } from "@/lib/organization/role-label";
 import { VersionPreviewBanner } from "./version-preview-banner";
 import { useSession } from "@/lib/auth-client";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
@@ -90,6 +101,7 @@ import {
   isSavingAtom,
   isWorkflowEnabled,
   isWorkflowOwnerAtom,
+  isWorkflowViewerAtom,
   nodesAtom,
   previewVersionAtom,
   propertiesPanelActiveTabAtom,
@@ -109,6 +121,7 @@ import {
   WorkflowTriggerEnum,
   type WorkflowVisibility,
 } from "@/lib/workflow/store";
+import { extraUnsavedAtom, flushExtraSaves } from "@/lib/workflow/extra-saves";
 import { findStoredRefTokens } from "@/lib/workflow/template-ref";
 import {
   findActionById,
@@ -691,12 +704,20 @@ function useWorkflowHandlers({
     // this save supersedes should be dropped.
     cancelPendingAutosave();
     try {
+      // Settings saved beside the canvas (alerts) go too; they keep their own flag.
+      await flushExtraSaves();
       await api.workflow.update(currentWorkflowId, { nodes, edges });
       setHasUnsavedChanges(false);
       return true;
     } catch (error) {
       console.error("Failed to save workflow:", error);
-      toast.error("Failed to save workflow. Please try again.");
+      toast.error(
+        workflowSaveErrorMessage(
+          error,
+          "Failed to save workflow. Please try again."
+        ),
+        WORKFLOW_SAVE_ERROR_TOAST
+      );
       return false;
     } finally {
       setIsSaving(false);
@@ -1785,6 +1806,7 @@ function SaveButton({
   handleSave: () => Promise<void>;
 }) {
   const isAnonymous = isAnonymousUser(state.session?.user);
+  const extraUnsaved = useAtomValue(extraUnsavedAtom);
   const disabled =
     isAnonymous ||
     !state.currentWorkflowId ||
@@ -1807,9 +1829,14 @@ function SaveButton({
       variant="secondary"
     >
       <Save className="size-4" />
-      {state.hasUnsavedChanges && !state.isSaving && !isAnonymous && (
-        <div className="absolute top-1.5 right-1.5 size-2 rounded-full bg-primary" />
-      )}
+      {(state.hasUnsavedChanges || extraUnsaved) &&
+        !state.isSaving &&
+        !isAnonymous && (
+          <div
+            className="absolute top-1.5 right-1.5 size-2 rounded-full bg-primary"
+            data-testid="workflow-unsaved-dot"
+          />
+        )}
     </Button>
   );
 
@@ -2089,7 +2116,10 @@ function RunButtonGroup({
   return button;
 }
 
-// Read-only badge: a neutral pill, so the green button stays the one accent.
+const READ_ONLY_BADGE_CLASS =
+  "border-2 border-[var(--color-text-accent)]/60 bg-[var(--color-bg-accent)]/10 font-semibold text-[var(--color-text-accent)] text-xs uppercase tracking-wider backdrop-blur-sm dark:border-[var(--color-text-accent)]/50 dark:bg-transparent";
+
+// Preview badge: a neutral pill, so the green Use template stays the one accent.
 function ReadOnlyBadge({
   className,
 }: {
@@ -2104,6 +2134,21 @@ function ReadOnlyBadge({
       variant="outline"
     >
       Preview
+    </Badge>
+  );
+}
+
+// A viewer's badge shows at every width: the icon alone below lg, with its label from lg.
+function ViewOnlyBadge() {
+  return (
+    <Badge
+      className={cn(READ_ONLY_BADGE_CLASS, "shrink-0")}
+      data-testid="workflow-read-only-badge"
+      title={VIEWER_DISABLED_REASON}
+      variant="outline"
+    >
+      <Eye aria-hidden="true" />
+      <span className="max-lg:sr-only">Read only</span>
     </Badge>
   );
 }
@@ -2140,33 +2185,41 @@ function UseTemplateButton({
   isUsingTemplate,
   onUseTemplate,
   ref,
+  viewOnly,
 }: {
   className?: string;
   isUsingTemplate: boolean;
   onUseTemplate: () => void;
   ref: Ref<HTMLButtonElement>;
+  // True for org viewers: a template lands in the active org, which they cannot change.
+  viewOnly: boolean;
 }): React.ReactElement {
   return (
-    <Button
-      aria-busy={isUsingTemplate}
-      aria-label={USE_TEMPLATE_LABEL}
-      className={cn(
-        GREEN_BUTTON_CLASSES,
-        "shrink-0 focus-visible:hub-focus-ring focus-visible:ring-offset-background",
-        className
-      )}
-      data-analytics="template_use_clicked"
-      disabled={isUsingTemplate}
-      onClick={onUseTemplate}
-      ref={ref}
+    <ViewOnlyTooltip
+      className={cn("shrink-0", className)}
+      isViewer={viewOnly}
     >
-      {isUsingTemplate ? (
-        <Loader2 className="size-4 animate-spin" />
-      ) : (
-        <Copy className="size-4" />
-      )}
-      {isUsingTemplate ? "Importing…" : "Use template"}
-    </Button>
+      <Button
+        aria-busy={isUsingTemplate}
+        aria-label={USE_TEMPLATE_LABEL}
+        className={cn(
+          GREEN_BUTTON_CLASSES,
+          "shrink-0 focus-visible:hub-focus-ring focus-visible:ring-offset-background",
+          !viewOnly && className
+        )}
+        data-analytics="template_use_clicked"
+        disabled={viewOnly || isUsingTemplate}
+        onClick={onUseTemplate}
+        ref={ref}
+      >
+        {isUsingTemplate ? (
+          <Loader2 className="size-4 animate-spin" />
+        ) : (
+          <Copy className="size-4" />
+        )}
+        {isUsingTemplate ? "Importing…" : "Use template"}
+      </Button>
+    </ViewOnlyTooltip>
   );
 }
 
@@ -2304,6 +2357,10 @@ export const WorkflowToolbar = ({
 }: WorkflowToolbarProps) => {
   const state = useWorkflowState();
   const actions = useWorkflowActions(state);
+  // Template use creates a workflow in the active org, which a viewer cannot.
+  // Signed-out visitors have no role yet may still use one, so gate on viewer only.
+  const { isViewer } = useOrgAccess();
+  const isWorkflowViewer = useAtomValue(isWorkflowViewerAtom);
   // The phone menu's button, where the org switcher hands focus when it is
   // hidden (below xs).
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -2356,6 +2413,7 @@ export const WorkflowToolbar = ({
     isWorkflowRoute &&
     Boolean(effectiveWorkflowId) &&
     !state.isOwner &&
+    !isWorkflowViewer &&
     state.workflowVisibility === "public";
   // One Use template button and one read-only badge, each in the bar's card
   // or, where the free canvas has no room for it, in the header.
@@ -2393,6 +2451,7 @@ export const WorkflowToolbar = ({
       isUsingTemplate={state.isDuplicating}
       onUseTemplate={actions.handleUseTemplate}
       ref={setUseTemplateButton}
+      viewOnly={isViewer}
     />
   );
   const useTemplateBar = offersTemplate && (
@@ -2453,6 +2512,10 @@ export const WorkflowToolbar = ({
               {state.workflowName}
             </span>
           )}
+          {isWorkflowRoute &&
+            effectiveWorkflowId &&
+            !state.isOwner &&
+            isWorkflowViewer && <ViewOnlyBadge />}
         </div>
 
         {/* Right side: Actions + User Menu */}
@@ -2498,6 +2561,10 @@ export const WorkflowToolbar = ({
               <OrgSwitcher />
             </div>
           )}
+          {isWorkflowRoute &&
+            effectiveWorkflowId &&
+            !state.isOwner &&
+            isWorkflowViewer && <ViewOnlyBadge />}
         </div>
       </Panel>
 

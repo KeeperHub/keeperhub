@@ -1,6 +1,5 @@
 import { isAddress } from "viem";
 import { isWalletEmail } from "@/lib/auth/wallet-constants";
-import { isDisposableEmailDomain } from "@/lib/auth-disposable-emails";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -11,8 +10,8 @@ export function inviteKey(value: string): string {
 
 /**
  * A valid invite target: either a checksum-strict wallet address, or a
- * well-formed email that is not disposable/blacklisted or a synthetic wallet
- * address (matching the signup email rules).
+ * well-formed email that is not a synthetic wallet address. Disposable domains
+ * are rejected server-side when the invitation is created.
  */
 export function isValidInvite(value: string): boolean {
   const v = value.trim();
@@ -22,7 +21,7 @@ export function isValidInvite(value: string): boolean {
   if (v.startsWith("0x")) {
     return isAddress(v);
   }
-  return EMAIL_RE.test(v) && !(isWalletEmail(v) || isDisposableEmailDomain(v));
+  return EMAIL_RE.test(v) && !isWalletEmail(v);
 }
 
 /**

@@ -26,7 +26,7 @@ import { getOrgSubscription, resolveOrgPlan } from "./subscription-read";
 
 // Kept on this module so every existing importer, and the tests that mock
 // this module, keep working after the reader moved.
-export { getOrgSubscription } from "./subscription-read";
+export { getOrgPlan, getOrgSubscription } from "./subscription-read";
 
 // -- Price ID mapping (server-only, env vars not available in client bundles) --
 
@@ -139,14 +139,6 @@ export function resolveSubscriptionPlan(
     resolveFromMetadata(metadata?.subscription) ??
     resolveFromMetadata(metadata?.price)
   );
-}
-
-export async function getOrgPlan(organizationId: string): Promise<PlanName> {
-  const sub = await getOrgSubscription(organizationId);
-  if (!sub) {
-    return "free";
-  }
-  return parsePlanName(sub.plan);
 }
 
 export async function checkFeatureAccess(

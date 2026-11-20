@@ -12,6 +12,17 @@
 const CONNECTION_STRING_PREFIX = /^(postgres(?:ql)?:\/\/)/;
 const SSLMODE_PATTERN = /([?&])sslmode=[^&]*/;
 
+/** User-facing message for a connection host that is not public. */
+export const HOST_NOT_ALLOWED_MESSAGE =
+  "Host is not allowed: must resolve to a public address";
+
+/**
+ * Code of the error `lib/safe-fetch.ts` raises when it refuses a connection
+ * (`SsrfBlockedError`). Matched by value because this module must not import
+ * the server-only safe-fetch module.
+ */
+const SSRF_BLOCKED_CODE = "SSRF_BLOCKED";
+
 function safeDecodeUriComponent(s: string): string {
   try {
     return decodeURIComponent(s);
@@ -152,6 +163,9 @@ export function getDatabaseErrorMessage(error: unknown): string {
   // can't trigger a false match. Only canned strings are returned, never raw text.
   const { codes, text } = collectErrorChain(error);
 
+  if (codes.has(SSRF_BLOCKED_CODE)) {
+    return HOST_NOT_ALLOWED_MESSAGE;
+  }
   if (codes.has("ECONNREFUSED") || text.includes("ECONNREFUSED")) {
     return "Connection refused. Please check your database URL and ensure the database is running.";
   }

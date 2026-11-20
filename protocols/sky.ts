@@ -246,11 +246,11 @@ export default defineAbiProtocol({
         // USDS and MKR arrive via balances-slot fabrication (no live
         // whale: the PSM USDS whale drained by 2026-07-08; MKR never had
         // one). DAI comes from the MCD_JOIN_DAI whale. Budgets: the
-        // sUSDS/stUSDS deposit+mint fixtures consume ~232 USDS combined
+        // sUSDS/stUSDS deposit+mint fixtures consume ~100,132 USDS combined
         // (mint pulls previewMint assets at ~1.06-1.10 USDS/share,
         // observed 2026-07-08), converters take 10 DAI and 0.5 MKR.
         requiredTokens: [
-          { symbol: "USDS", human: "500" },
+          { symbol: "USDS", human: "100500" },
           { symbol: "DAI", human: "25" },
           { symbol: "MKR", human: "1" },
         ],
@@ -261,7 +261,7 @@ export default defineAbiProtocol({
         // fork, would blow the 300s setup timeout.
         fabricatedApprovals: [
           { token: "USDS", spender: contract("sUsds"), human: "200" },
-          { token: "USDS", spender: contract("stUsds"), human: "200" },
+          { token: "USDS", spender: contract("stUsds"), human: "100200" },
           { token: "USDS", spender: contract("daiUsdsConverter"), human: "50" },
           { token: "DAI", spender: contract("daiUsdsConverter"), human: "25" },
           { token: "MKR", spender: contract("mkrSkyConverter"), human: "1" },
@@ -325,7 +325,7 @@ export default defineAbiProtocol({
           owner: wallet(),
         },
         "st-usds-vault-deposit": {
-          assets: amount("USDS", "100"),
+          assets: amount("USDS", "100000"),
           receiver: wallet(),
         },
         "st-usds-vault-mint": {
@@ -342,6 +342,16 @@ export default defineAbiProtocol({
           receiver: wallet(),
           owner: wallet(),
         },
+      },
+      // stUSDS exits need unused funds, which live borrow utilisation can
+      // exhaust; the fabrication clears the ilk's debt on the fork first.
+      fabrications: {
+        "st-usds-vault-withdraw": [
+          { kind: "stusds-exit-liquidity", contract: contract("stUsds") },
+        ],
+        "st-usds-vault-redeem": [
+          { kind: "stusds-exit-liquidity", contract: contract("stUsds") },
+        ],
       },
       skipped: {
         "get-susds-balance-l2":

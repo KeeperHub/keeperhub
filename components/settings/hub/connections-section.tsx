@@ -2,6 +2,7 @@
 
 import { Plus } from "lucide-react";
 import { useState } from "react";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { EditConnectionForm } from "@/components/overlays/edit-connection-overlay";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,7 +17,7 @@ import { useSettingsContext } from "./settings-context";
 import { TableSkeleton } from "./skeletons";
 
 export function ConnectionsSection(): React.ReactElement {
-  const { refreshAll } = useSettingsContext();
+  const { canEdit, isViewer, refreshAll } = useSettingsContext();
   const [filter, setFilter] = useState("");
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<Integration | null>(null);
@@ -27,16 +28,18 @@ export function ConnectionsSection(): React.ReactElement {
     <>
       <SectionHeader
         action={
-          <Button onClick={() => setAdding((v) => !v)}>
-            <Plus className="size-4" />
-            Add connection
-          </Button>
+          <ViewOnlyTooltip isViewer={isViewer}>
+            <Button disabled={!canEdit} onClick={() => setAdding((v) => !v)}>
+              <Plus className="size-4" />
+              Add connection
+            </Button>
+          </ViewOnlyTooltip>
         }
         description="Credentials your workflows reuse: PagerDuty, Discord, Slack, Telegram, Safe and databases."
         title="Connections"
       />
 
-      {adding && (
+      {canEdit && adding && (
         <AddConnectionPanel
           onDone={() => {
             setAdding(false);
@@ -45,7 +48,7 @@ export function ConnectionsSection(): React.ReactElement {
         />
       )}
 
-      {editing && (
+      {canEdit && editing && (
         <SettingsCard
           description="Update the credentials KeeperHub uses for this service."
           title={`Edit ${editing.name}`}
@@ -89,7 +92,7 @@ export function ConnectionsSection(): React.ReactElement {
         )}
         {!loading && connections.length > 0 && (
           <ConnectionsTable
-            canManage
+            canManage={canEdit}
             connections={connections}
             onEdit={setEditing}
             onRemove={remove}

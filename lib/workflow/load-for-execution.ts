@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
+import { isAnonymousUserShape } from "@/lib/auth-anonymous-guard";
 import { db } from "@/lib/db";
-import { organization, workflows } from "@/lib/db/schema";
+import { organization, users, workflows } from "@/lib/db/schema";
 import { getWorkflowExecutability } from "@/lib/workflow/executable";
 
 export type LoadWorkflowForExecutionResult =
@@ -12,7 +13,8 @@ export type LoadWorkflowForExecutionResult =
         | "deactivated"
         | "org_deactivated"
         | "halted"
-        | "disabled";
+        | "disabled"
+        | "anonymous_owner";
     }
   | {
       status: "ok";
@@ -43,14 +45,29 @@ export async function loadWorkflowForExecution(
       orgDeactivatedAt: organization.deactivatedAt,
       orgHaltedAt: organization.haltedAt,
       organizationName: organization.name,
+      ownerIsAnonymous: users.isAnonymous,
+      ownerEmail: users.email,
+      ownerName: users.name,
     })
     .from(workflows)
     .leftJoin(organization, eq(organization.id, workflows.organizationId))
+    .leftJoin(users, eq(users.id, workflows.userId))
     .where(eq(workflows.id, id))
     .limit(1);
 
   if (!row?.workflow) {
     return { status: "not_found" };
+  }
+
+  // Anonymous accounts may build but never run, whatever the trigger.
+  if (
+    isAnonymousUserShape({
+      isAnonymous: row.ownerIsAnonymous,
+      email: row.ownerEmail,
+      name: row.ownerName,
+    })
+  ) {
+    return { status: "not_executable", reason: "anonymous_owner" };
   }
 
   const executability = getWorkflowExecutability({

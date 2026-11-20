@@ -44,12 +44,51 @@ const CURATED_HEADLINE_DOMAINS: readonly string[] = [
   "duck.com",
   "burnermail.io",
   "ironvest.com",
+  // Catch-all burner domains that mint a random subdomain per address
+  "marchslurp.com",
+  "roomsranked.com",
+  "arcadehearth.com",
+  "9k3r.com",
 ];
 
-const BLOCKED_DOMAINS: ReadonlySet<string> = new Set<string>([
-  ...CURATED_HEADLINE_DOMAINS.map((d) => d.toLowerCase()),
-  ...(bundledDomains as readonly string[]).map((d) => d.toLowerCase()),
-]);
+// Mainstream providers are never blocked, whatever the vendored list says, so
+// a bad upstream refresh cannot lock real users out of sign-up.
+export const NEVER_BLOCKED_DOMAINS: readonly string[] = [
+  "gmail.com",
+  "googlemail.com",
+  "outlook.com",
+  "hotmail.com",
+  "live.com",
+  "msn.com",
+  "yahoo.com",
+  "icloud.com",
+  "me.com",
+  "mac.com",
+  "aol.com",
+  "proton.me",
+  "protonmail.com",
+  "pm.me",
+  "gmx.com",
+  "gmx.de",
+  "zoho.com",
+  "yandex.com",
+  "yandex.ru",
+  "mail.ru",
+  "qq.com",
+  "163.com",
+  "fastmail.com",
+  "tutanota.com",
+  "hey.com",
+];
+
+const NEVER_BLOCKED: ReadonlySet<string> = new Set(NEVER_BLOCKED_DOMAINS);
+
+const BLOCKED_DOMAINS: ReadonlySet<string> = new Set<string>(
+  [
+    ...CURATED_HEADLINE_DOMAINS.map((d) => d.toLowerCase()),
+    ...(bundledDomains as readonly string[]).map((d) => d.toLowerCase()),
+  ].filter((d) => !NEVER_BLOCKED.has(d))
+);
 
 function extractDomain(email: string): string | null {
   const at = email.lastIndexOf("@");
@@ -67,7 +106,13 @@ export function isDisposableEmailDomain(email: string): boolean {
   if (!domain) {
     return false;
   }
-  return BLOCKED_DOMAINS.has(domain);
+  const labels = domain.split(".");
+  for (let i = 0; i < labels.length - 1; i++) {
+    if (BLOCKED_DOMAINS.has(labels.slice(i).join("."))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function disposableEmailBlocklistSize(): number {

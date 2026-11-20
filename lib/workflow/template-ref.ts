@@ -67,6 +67,11 @@ export function hasTemplateToken(text: string): boolean {
   return nextTemplateToken(text) !== null;
 }
 
+/** hasTemplateToken for a config value of any type. */
+export function valueContainsTemplate(value: unknown): boolean {
+  return typeof value === "string" && hasTemplateToken(value);
+}
+
 /**
  * Replace each token with the callback's result, like `String.replace` with
  * `/\{\{([^}]+)\}\}/g`.

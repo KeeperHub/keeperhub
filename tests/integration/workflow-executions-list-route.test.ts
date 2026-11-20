@@ -187,6 +187,7 @@ describe("GET /api/workflows/[workflowId]/executions", () => {
     mockFindFirst.mockResolvedValue({ id: WORKFLOW_ID, deletedAt: null });
     mockGetWorkflowAccess.mockResolvedValue({
       hasFullAccess: true,
+      canEdit: true,
       isDeleted: false,
     });
     mockSelect.mockImplementation(selectChain);
@@ -292,6 +293,17 @@ describe("GET /api/workflows/[workflowId]/executions", () => {
       );
     });
 
+    it("reads the refusal count of skipped rows only, so no step output is loaded", async () => {
+      await call("?view=summary");
+      const [args] = mockFindMany.mock.calls[0] as [
+        { extras: { refusals: { sql: SQL } } },
+      ];
+      const { sql } = new PgDialect().sqlToQuery(args.extras.refusals.sql);
+      expect(sql).toBe(
+        'CASE WHEN "workflow_executions"."status" = \'skipped\' THEN ("workflow_executions"."output"->>\'refusals\')::int END'
+      );
+    });
+
     it("counts over a bounded subquery and reports the total as exact up to the bound", async () => {
       await call("?view=summary");
       expect(countLimit).toBe(MAX_COUNTED_RUNS + 1);
@@ -383,6 +395,7 @@ describe("GET /api/workflows/[workflowId]/executions", () => {
     it("applies the same 404 as the full view when access is refused", async () => {
       mockGetWorkflowAccess.mockResolvedValue({
         hasFullAccess: false,
+        canEdit: false,
         isDeleted: false,
       });
       const response = await call("?view=summary");
@@ -393,6 +406,7 @@ describe("GET /api/workflows/[workflowId]/executions", () => {
     it("applies the same 404 as the full view when the workflow is soft-deleted", async () => {
       mockGetWorkflowAccess.mockResolvedValue({
         hasFullAccess: true,
+        canEdit: true,
         isDeleted: true,
       });
       const response = await call("?view=summary");

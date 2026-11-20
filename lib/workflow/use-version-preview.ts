@@ -4,7 +4,11 @@ import { useAtomValue, useSetAtom, useStore } from "jotai";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef } from "react";
 import { toast } from "sonner";
-import { api } from "@/lib/api-client";
+import {
+  api,
+  WORKFLOW_SAVE_ERROR_TOAST,
+  workflowSaveErrorMessage,
+} from "@/lib/api-client";
 import {
   currentWorkflowIdAtom,
   edgesAtom,
@@ -176,8 +180,11 @@ export function useVersionPreview() {
         setPreviewVersion(null);
         setHasUnsavedChanges(false);
         setVersionParam(null);
-      } catch {
-        toast.error("Failed to restore version");
+      } catch (error) {
+        toast.error(
+          workflowSaveErrorMessage(error, "Failed to restore version"),
+          WORKFLOW_SAVE_ERROR_TOAST
+        );
       }
     },
     [

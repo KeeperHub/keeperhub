@@ -1,0 +1,62 @@
+-- @requires-db-prep
+-- KEEP-1042: drop two indexes on workflow_execution_logs that no query can use.
+--
+-- Both came from 0095, which did not design them. Its GROUP A header says so:
+-- they were created by hand during the KEEP-669 incident and 0095 only wrote the
+-- live prod definitions back into the chain so the schema matched reality. They
+-- have been carried ever since without anyone checking whether the queries they
+-- were meant for can reach them. They cannot.
+--
+-- 1. idx_exec_logs_stats_covering  (node_type, status) INCLUDE (duration)
+--    Built for the step-type aggregate in getStepStatsFromDb
+--    (lib/metrics/db-metrics.ts). That query is bounded on
+--    `started_at >= now() - interval '1 hour'`, and this index neither leads with
+--    started_at nor includes it, so using it would mean reading every entry for
+--    the whole table to answer a one-hour question. The planner correctly refuses:
+--
+--      HashAggregate
+--        ->  Index Scan using idx_exec_logs_started_at
+--              Index Cond: (started_at >= (now() - '01:00:00'::interval))
+--              Filter: (status = ANY ('{success,error}'::text[]))
+--
+--    2 scans in the 154 days since the last postmaster start, against 232k on
+--    idx_exec_logs_started_at. Size on prod: 2147 MB.
+--
+-- 2. idx_exec_logs_status_duration  (status, duration)
+--                                   WHERE status IN ('success','error')
+--                                     AND duration IS NOT NULL
+--    Built for the duration histogram in the same function, which carries the
+--    same one-hour bound. Same problem, and worse: status has two values, so a
+--    scan of this index is a scan of most of the table. The planner takes
+--    idx_exec_logs_started_at here too and filters status and duration on the
+--    heap. 0 scans in 154 days. Size on prod: 1461 MB.
+--
+-- Dropping both returns 3608 MB on prod and removes two B-tree entries per
+-- insert on the hottest table we have. status and duration are still indexed on
+-- workflow_executions by idx_workflow_executions_status,
+-- idx_workflow_executions_status_duration and
+-- idx_workflow_executions_stats_covering, so nothing loses its only cover.
+--
+-- The sibling idx_workflow_executions_status_duration is NOT dropped here. It
+-- has 126 scans over the same window, so something still reaches it, and at
+-- 242 MB it is not worth bundling into a change whose evidence is this clean.
+--
+-- On large environments apply out-of-band as DROP INDEX CONCURRENTLY, which
+-- takes no ACCESS EXCLUSIVE lock on the table. The plain form below would block
+-- every reader and writer of workflow_execution_logs for the length of the drop.
+-- The transaction-safe form then no-ops on deploy.
+--
+--   DROP INDEX CONCURRENTLY IF EXISTS idx_exec_logs_stats_covering;
+--   DROP INDEX CONCURRENTLY IF EXISTS idx_exec_logs_status_duration;
+--
+-- Confirm both are gone before setting the db-prepped label:
+--   SELECT indexrelid::regclass::text FROM pg_index
+--   WHERE indexrelid::regclass::text IN ('idx_exec_logs_stats_covering',
+--                                        'idx_exec_logs_status_duration');
+--
+-- No meta snapshot, matching 0150 and 0154: these indexes live in raw SQL only
+-- and were never declared on the pgTable in lib/db/schema.ts.
+
+DROP INDEX IF EXISTS "idx_exec_logs_stats_covering";
+--> statement-breakpoint
+DROP INDEX IF EXISTS "idx_exec_logs_status_duration";

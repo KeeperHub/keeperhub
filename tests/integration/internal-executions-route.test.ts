@@ -148,11 +148,17 @@ vi.mock("drizzle-orm/pg-core", async (importOriginal) => {
   };
 });
 
+// Row shape and hourly folding are covered against Postgres in refused-runs.db.test.ts.
+const recordRefusedRun = vi.hoisted(() => vi.fn(async () => true));
+const recordWorkflowExecutionSkipped = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/workflow/refused-runs", () => ({ recordRefusedRun }));
+
 vi.mock("@/lib/errors/finalize-error", () => ({
   recordExecutionErrorFinalized: vi.fn(),
 }));
 vi.mock("@/lib/metrics/collectors/prometheus", () => ({
   recordWorkflowExecutionFinished: vi.fn(),
+  recordWorkflowExecutionSkipped,
 }));
 vi.mock("@/lib/metrics/org-slug.server", () => ({
   resolveOrgSlugForCounter: vi.fn(async () => "acme"),
@@ -259,9 +265,9 @@ describe("POST /api/internal/executions", () => {
       error: "limit reached",
     });
     expect(data.executionId).toBeUndefined();
-    // 'skipped', not 'error': the run never executed, so it stays out of the
-    // error count and the success-rate denominator.
-    expect(insertedValues?.status).toBe("skipped");
+    // No phantom row: the refusal goes to its hourly refused row instead.
+    expect(insertedValues).toBeNull();
+    expect(recordRefusedRun).toHaveBeenCalledTimes(1);
   });
 
   it("records one visible row per workflow, reason and hour for refusals", async () => {
@@ -274,17 +280,42 @@ describe("POST /api/internal/executions", () => {
       postRequest({ workflowId: "wf_1", userId: "user_1", status: "phantom" })
     );
 
-    // The hour-bucketed key is what the unique index collapses, so a fast
-    // trigger writes one row an hour instead of one per occurrence.
-    expect(insertedValues?.dispatchKey).toMatch(
-      /^refused:wf_1:plan_feature:\d{4}-\d{2}-\d{2}T\d{2}$/
+    // The shared helper keys the row by workflow, reason code and hour.
+    expect(recordRefusedRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflowId: "wf_1",
+        userId: "user_1",
+        reason: "gated action",
+        reasonCode: "plan_feature",
+        category: "billing",
+        triggerSource: "internal",
+      }),
+      expect.anything()
     );
-    expect(insertedValues?.status).toBe("skipped");
-    expect(insertedValues?.error).toBe("gated action");
-    expect(insertedValues?.errorCategory).toBe("billing");
-    expect(insertedValues?.errorType).toBe("user");
-    // Refused before it started, so it consumes no quota.
-    expect(insertedValues?.billable).toBe(false);
+  });
+
+  it("counts a refusal only after its row was written", async () => {
+    checkDispatchAdmission.mockResolvedValue({
+      reason: "execution_limit",
+      message: "limit reached",
+    });
+    recordWorkflowExecutionSkipped.mockClear();
+
+    recordRefusedRun.mockResolvedValueOnce(false);
+    const failed = await POST(
+      postRequest({ workflowId: "wf_1", userId: "user_1", status: "phantom" })
+    );
+    // Still a 200: a failed response would make the dispatcher enqueue it.
+    expect(failed.status).toBe(200);
+    expect(recordWorkflowExecutionSkipped).not.toHaveBeenCalled();
+
+    await POST(
+      postRequest({ workflowId: "wf_1", userId: "user_1", status: "phantom" })
+    );
+    expect(recordWorkflowExecutionSkipped).toHaveBeenCalledWith({
+      orgSlug: "acme",
+      reason: "execution_limit",
+    });
   });
 
   it("attributes the row to the supplied trigger source", async () => {

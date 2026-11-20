@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { checkFailureAlertsRunning } from "@/lib/notifications/failure-alerts/watchdog";
 import { reapStaleExecutions } from "@/lib/reaper/reap-stale-executions";
 
 /**
@@ -22,9 +23,22 @@ export async function GET(request: Request): Promise<NextResponse> {
 
   try {
     const reapedIds = await reapStaleExecutions();
+    // Watches the failure-alerts job from a different cron; never blocks reaping.
+    const failureAlerts = await checkFailureAlertsRunning().catch(
+      (error: unknown) => {
+        logSystemError(
+          ErrorCategory.DATABASE,
+          "[FailureAlerts] Watchdog check failed",
+          error,
+          { endpoint: "/api/internal/reaper" }
+        );
+        return null;
+      }
+    );
     return NextResponse.json({
       reapedCount: reapedIds.length,
       reapedIds,
+      failureAlerts,
     });
   } catch (error) {
     logSystemError(
