@@ -4218,16 +4218,27 @@ describe("batch-read-contract - sixth review", () => {
     );
   });
 
-  it("refuses an untouched tuple of strings that also reads as its first member", async () => {
+  it("reads an untouched tuple of strings one value per input, as the editor stores it", async () => {
     const abi = abiWith([
       uint("n"),
       tupleOf("x", [str("a"), str("b")]),
       uint("m"),
       str("z"),
     ]);
-    // x blank with m = 8, or x = ("", "8") with m = 9: both are valid calls.
-    const [, shared] = await both(abi, ["7", "", "8", "9"]);
-    expect(shared).toMatch(/^Function Arguments: the "" in x's place can mean/);
+    const outcome = await run({
+      ...addressList([CONTRACT], {
+        functionArgs: JSON.stringify(["7", "", "8", "9"]),
+      }),
+      abiFunction: "f",
+      abi,
+    });
+    expect(outcome.success).toBe(true);
+    const [call] = mockStaticCall.mock.calls[0][0] as Call[];
+    expect(
+      new ethers.Interface(abi)
+        .decodeFunctionData("f", call.callData)
+        .toArray(true)
+    ).toEqual([BigInt(7), ["", ""], BigInt(8), "9"]);
   });
 
   it("gives the count for an array that lands on a string while a value is missing", async () => {
@@ -4601,14 +4612,16 @@ describe("batch-read-contract - seventh review", () => {
     ).toEqual({ args: [[], ["", " [x] ", "[1]", "hi"], "", [""], ""] });
   });
 
-  it("refuses an untouched tuple of strings before values that also read flat", async () => {
+  it("reads an untouched tuple of strings before other values one value per input", async () => {
     const abi = abiWith([
       typed("n", "uint256"),
       tupleOf("x", [str("a"), str("b")]),
       typed("m", "uint256"),
       str("z"),
     ]);
-    expect((await sent(abi, ["7", "", "8", "9"])).error).toMatch(AMBIGUOUS);
+    expect(await sent(abi, ["7", "", "8", "9"])).toEqual({
+      args: [BigInt(7), ["", ""], BigInt(8), "9"],
+    });
     // A number is no string, so x.b = 8 makes no valid call: only blank fits.
     expect(await sent(abi, [7, "", 8, "9"])).toEqual({
       args: [BigInt(7), ["", ""], BigInt(8), "9"],
@@ -4715,14 +4728,17 @@ describe("batch-read-contract - seventh review, readings by call", () => {
     });
   });
 
-  it("reads extra blanks at the end the same as none", async () => {
+  it("reads one value per input as the editor stores it, and a longer list by its readings", async () => {
     const lone = [t("t", [p("a"), p("b", "uint256")])];
     expect(await sent(lone, json(["", "2", ""]))).toEqual({
       args: [["", BigInt(2)]],
     });
     const pair = [t("t", [p("a"), p("b")]), p("s")];
+    // One value per input is the editor's shape; a longer list is read flat.
+    expect(await sent(pair, json(["", "x"]))).toEqual({
+      args: [["", ""], "x"],
+    });
     for (const entry of [
-      ["", "x"],
       ["", "x", ""],
       ["", "x", "", ""],
     ]) {
@@ -4732,14 +4748,13 @@ describe("batch-read-contract - seventh review, readings by call", () => {
     }
   });
 
-  it("refuses an untouched string tuple before a filled field, with an editor hint", async () => {
-    const { error } = await sent(
-      [t("meta", [p("name"), p("symbol")]), p("key")],
-      json(["", "hi"])
-    );
-    expect(error).toBe(
-      'Function Arguments: the "" in meta\'s place can mean meta left blank or its first member given flat, and the two make different calls. Give meta as an object with its member names, like {"name": "...", "symbol": "..."}. In the editor, type in any field of meta (you can clear it again).'
-    );
+  it("reads an untouched string tuple before a filled field as the editor stores it", async () => {
+    expect(
+      await sent(
+        [t("meta", [p("name"), p("symbol")]), p("key")],
+        json(["", "hi"])
+      )
+    ).toEqual({ args: [["", ""], "hi"] });
     expect(
       await sent(
         [t("meta", [p("name"), p("symbol")]), p("key")],
@@ -4759,8 +4774,8 @@ describe("batch-read-contract - seventh review, readings by call", () => {
 
   it("names only the tuple whose reading changes the call", async () => {
     const { error } = await sent(
-      [t("p", [p("a")]), t("q", [p("b"), p("c")]), p("s")],
-      json(["", "", "x"])
+      [t("p", [p("a")]), t("q", [p("b"), p("c")]), t("u", [p("d"), p("e")])],
+      json(["", "", "x", "y"])
     );
     expect(error).toMatch(/^Function Arguments: the "" in q's place/);
   });
@@ -4833,7 +4848,11 @@ describe("batch-read-contract - seventh review, readings by call", () => {
 
   it("names every tuple whose reading changes the call", async () => {
     const { error } = await sent(
-      [t("p", [p("a"), p("b")]), t("q", [p("c"), p("d")]), p("z"), p("w")],
+      [
+        t("p", [p("a"), p("b")]),
+        t("q", [p("c"), p("d")]),
+        t("r", [p("e"), p("f")]),
+      ],
       json(["", "", "x", "y"])
     );
     expect(error).toBe(
@@ -4844,7 +4863,8 @@ describe("batch-read-contract - seventh review, readings by call", () => {
   it("does not let the size cap pick a reading", async () => {
     const inputs = [t("t", [p("a"), p("b")]), p("s", "bytes"), p("z")];
     const big = `0x${"ab".repeat(40_000)}`;
-    const { error } = await sent(inputs, json(["", big, "0x"]));
+    // Longer than the inputs, so not the editor's shape: readings are compared.
+    const { error } = await sent(inputs, json(["", big, "0x", "y"]));
     expect(error).toMatch(/^Function Arguments/);
     expect(error).not.toMatch(AMBIGUOUS);
     expect(mockStaticCall).not.toHaveBeenCalled();
@@ -4910,19 +4930,17 @@ describe("batch-read-contract - seventh review, readings by call", () => {
         json(["", ["p", "q"]])
       )
     ).toEqual({ args: [["", ["p", "q"]], ""] });
-    // A tuple[] before it: x blank with s = "q", or x = ("", "q").
+    // A tuple[] before it, in the editor's shape: x blank with s = "q".
     expect(
-      (
-        await sent(
-          [
-            { name: "xs", type: "tuple[]", components: [p("a")] },
-            t("x", [p("a"), p("b")]),
-            p("s"),
-          ],
-          json([[], "", "q"])
-        )
-      ).error
-    ).toMatch(AMBIGUOUS);
+      await sent(
+        [
+          { name: "xs", type: "tuple[]", components: [p("a")] },
+          t("x", [p("a"), p("b")]),
+          p("s"),
+        ],
+        json([[], "", "q"])
+      )
+    ).toEqual({ args: [[], ["", ""], "q"] });
   });
 
   it("checks member values, not only their count, when choosing a reading", async () => {
@@ -4932,13 +4950,14 @@ describe("batch-read-contract - seventh review, readings by call", () => {
     ).toEqual({ args: [["", true], ""] });
   });
 
-  it("refuses six ambiguous tuples instead of calling them too many", async () => {
+  it("reads six untouched tuples one value per input, and flat when the list is longer", async () => {
     const inputs = [
       ...Array.from({ length: 6 }, (_, i) => t(`t${i}`, [p("a"), p("b")])),
       p("s"),
     ];
-    const { error } = await sent(inputs, json([...new Array(6).fill(""), "x"]));
-    expect(error).toMatch(AMBIGUOUS);
+    expect(await sent(inputs, json([...new Array(6).fill(""), "x"]))).toEqual({
+      args: [...new Array(6).fill(["", ""]), "x"],
+    });
     // Exactly 64 readings, only the flat one valid: sent, not "too many".
     expect(await sent(inputs, json([...new Array(12).fill(""), "x"]))).toEqual({
       args: [...new Array(6).fill(["", ""]), "x"],
@@ -4970,11 +4989,29 @@ describe("batch-read-contract - seventh review, readings by call", () => {
     expect(error).toMatch(/more than 64 KB of call data/);
   });
 
+  it("reads many untouched tuples in the editor's shape without trying every reading", async () => {
+    const pairs = Array.from({ length: 8 }, (_, i) =>
+      t(`t${i}`, [p(`t${i}m0`), p(`t${i}m1`)])
+    );
+    expect(
+      await sent(
+        pairs,
+        json([...new Array(7).fill(""), { t7m0: "a", t7m1: "b" }])
+      )
+    ).toEqual({ args: [...new Array(7).fill(["", ""]), ["a", "b"]] });
+    const many = Array.from({ length: 300 }, (_, i) =>
+      t(`u${i}`, [p("a"), p("b")])
+    );
+    expect(await sent(many, json([]))).toEqual({
+      args: new Array(300).fill(["", ""]),
+    });
+  });
+
   it("names only tuples whose place holds a blank, not ones missing at the end", async () => {
     const pair = (name: string): Param => t(name, [p("a"), p("b")]);
     const { error } = await sent(
       [pair("t0"), pair("t1"), p("s"), pair("t7"), pair("t8")],
-      json(["", "", "1"])
+      json(["", "", "1", "2"])
     );
     expect(error).toMatch(AMBIGUOUS);
     expect(error).not.toMatch(/t7|t8/);
@@ -5202,12 +5239,46 @@ describe("batch-read-contract - seventh review, readings by call", () => {
       const [flat] = calls;
       const base = flat ?? calls.find(Boolean);
       const differs = calls.some((call) => call && call !== base);
+      // The editor's shape (one value per input, "" for an untouched tuple)
+      // is read one value per input when that makes a valid call.
+      let filled = entry.length;
+      while (filled > 0 && entry[filled - 1] === "") {
+        filled -= 1;
+      }
+      const valueAt = (k: number): unknown => (k < filled ? entry[k] : "");
+      const isObject = (v: unknown): boolean =>
+        typeof v === "object" && v !== null && !Array.isArray(v);
+      const editorShape =
+        entry.length <= inputs.length &&
+        inputs.every((input, k) =>
+          input.type === "tuple"
+            ? valueAt(k) === "" || isObject(valueAt(k))
+            : !isObject(valueAt(k))
+        ) &&
+        inputs.some(
+          (input, k) =>
+            input.type === "tuple" &&
+            (input.components ?? []).length > 1 &&
+            valueAt(k) === ""
+        );
+      const perInput = inputs.map((input, k) =>
+        input.type === "tuple" && valueAt(k) === ""
+          ? blankOf(input)
+          : valueAt(k)
+      );
+      const editorCall =
+        editorShape && inputs.every((input, k) => fits(input, perInput[k]))
+          ? encode(perInput)
+          : undefined;
       const outcome = await sent(inputs, json(entry));
       const actual = outcome.args
         ? iface.encodeFunctionData("f", outcome.args)
         : undefined;
       let ok: boolean;
-      if (base && differs) {
+      if (editorCall) {
+        ok = actual === editorCall;
+        tally.sent += 1;
+      } else if (base && differs) {
         ok = AMBIGUOUS.test(outcome.error ?? "");
         tally.refused += 1;
       } else if (base) {
@@ -5223,7 +5294,7 @@ describe("batch-read-contract - seventh review, readings by call", () => {
     }
     expect(wrong).toEqual([]);
     expect(tally.sent).toBeGreaterThan(500);
-    expect(tally.refused).toBeGreaterThan(2);
+    expect(tally.refused).toBeGreaterThan(0);
     expect(tally.failed).toBeGreaterThan(500);
   }, 120_000);
 
@@ -5341,10 +5412,41 @@ describe("batch-read-contract - seventh review, readings by call", () => {
       const [flat] = calls;
       const base = flat ?? calls.find(Boolean);
       const differs = calls.some((call) => call && call !== base);
+      // The editor's shape (one value per input, "" for an untouched tuple)
+      // is read one value per input when that makes a valid call.
+      let filled = entry.length;
+      while (filled > 0 && entry[filled - 1] === "") {
+        filled -= 1;
+      }
+      const valueAt = (k: number): unknown => (k < filled ? entry[k] : "");
+      const isObject = (v: unknown): boolean =>
+        typeof v === "object" && v !== null && !Array.isArray(v);
+      const editorShape =
+        entry.length <= inputs.length &&
+        inputs.every((input, k) =>
+          input.components
+            ? valueAt(k) === "" || isObject(valueAt(k))
+            : !isObject(valueAt(k))
+        ) &&
+        inputs.some(
+          (input, k) => (input.components ?? []).length > 1 && valueAt(k) === ""
+        );
+      const perInput = inputs.map((input, k) => {
+        const v = valueAt(k);
+        if (!input.components) {
+          return v;
+        }
+        const o = (isObject(v) ? v : {}) as Record<string, unknown>;
+        return input.components.map((c) => o[c.name] ?? "");
+      });
+      const editorCall = editorShape ? encode(perInput) : undefined;
       const outcome = await sent(inputs, json(entry));
       const actual = outcome.args ? encode(outcome.args) : undefined;
       let ok: boolean;
-      if (base && differs) {
+      if (editorCall) {
+        ok = actual === editorCall;
+        tally.sent += 1;
+      } else if (base && differs) {
         ok = AMBIGUOUS.test(outcome.error ?? "");
         tally.refused += 1;
       } else if (base) {
@@ -5360,7 +5462,7 @@ describe("batch-read-contract - seventh review, readings by call", () => {
     }
     expect(wrong).toEqual([]);
     expect(tally.sent).toBeGreaterThan(1500);
-    expect(tally.refused).toBeGreaterThan(40);
+    expect(tally.refused).toBeGreaterThan(20);
     expect(tally.failed).toBeGreaterThan(500);
   }, 120_000);
 });

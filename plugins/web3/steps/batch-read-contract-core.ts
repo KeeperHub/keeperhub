@@ -1506,13 +1506,33 @@ const TOO_BIG = "too big";
  * different valid calls are refused.
  */
 function editorReading(stored: unknown[], fn: ListFunction): unknown[] {
+  const callOf = callData(fn);
+  let filled = stored.length;
+  while (filled > 0 && stored[filled - 1] === "") {
+    filled -= 1;
+  }
+  // The editor never stores more values than inputs; a longer list is flat.
+  if (
+    stored.length <= fn.inputs.length &&
+    isEditorShape(stored.slice(0, filled), fn)
+  ) {
+    const perInput = fn.inputs.map((input, index) => {
+      const value = index < filled ? stored[index] : "";
+      return value === "" && tupleMembers(input) > 0
+        ? blankObject(input)
+        : value;
+    });
+    const call = callOf(perInput);
+    if (call !== undefined && call !== TOO_BIG) {
+      return perInput;
+    }
+  }
   let end = stored.length;
   while (end > 0 && stored[end - 1] === "") {
     end -= 1;
   }
   const given = stored.slice(0, end);
   let readings = readingsOf(given, fn, "both");
-  const callOf = callData(fn);
   if (readings.length === 1 && readings[0].values === given) {
     // A tuple's "" trimmed off the end may still need reading blank.
     return end === stored.length || callOf(given)
@@ -1553,6 +1573,38 @@ function editorReading(stored: unknown[], fn: ListFunction): unknown[] {
     throw ambiguousBlankError(base, others, fn);
   }
   return sent(base);
+}
+
+function tupleMembers(input: AbiParam): number {
+  return input.type === "tuple" ? (input.components?.length ?? 0) : 0;
+}
+
+/**
+ * The shape the editor stores: one value per input, "" for a field left
+ * untouched, untouched fields at the end left out, a tuple only as an object.
+ * Read one value per input; a tuple given flat holds more values than inputs.
+ */
+function isEditorShape(stored: unknown[], fn: ListFunction): boolean {
+  if (stored.length > fn.inputs.length) {
+    return false;
+  }
+  let blankTuple = false;
+  for (const [index, input] of fn.inputs.entries()) {
+    const missing = index >= stored.length;
+    const value = missing ? "" : stored[index];
+    if (tupleMembers(input) === 0) {
+      if (isPlainObject(value)) {
+        return false;
+      }
+      continue;
+    }
+    if (value === "") {
+      blankTuple ||= tupleMembers(input) > 1;
+    } else if (!isPlainObject(value)) {
+      return false;
+    }
+  }
+  return blankTuple;
 }
 
 // No reading makes a valid call: flat when it lines up with missing values
@@ -1625,7 +1677,19 @@ function readingsOf(
  * encoded once per input, so readings sharing it pay for it once.
  */
 function callData(fn: ListFunction): (values: unknown[]) => string | undefined {
+  // Keyed by value: a tuple read flat is a new object in every reading.
   const byInput = fn.inputs.map(() => new Map<unknown, string | undefined>());
+  const keyOf = (arg: unknown): unknown => {
+    if (typeof arg !== "object" || arg === null) {
+      return arg;
+    }
+    try {
+      return `object:${JSON.stringify(arg, (_key, v) => (typeof v === "bigint" ? `${v}n` : v))}`;
+    } catch {
+      // Too deep to serialize: cache by identity.
+      return arg;
+    }
+  };
   const encodeOne = (index: number, arg: unknown): string | undefined => {
     const one = { ...fn, inputs: [fn.inputs[index]] };
     try {
@@ -1657,8 +1721,9 @@ function callData(fn: ListFunction): (values: unknown[]) => string | undefined {
     let bytes = 4;
     for (const [index, arg] of args.entries()) {
       const cache = byInput[index];
-      const part = cache.has(arg) ? cache.get(arg) : encodeOne(index, arg);
-      cache.set(arg, part);
+      const key = keyOf(arg);
+      const part = cache.has(key) ? cache.get(key) : encodeOne(index, arg);
+      cache.set(key, part);
       if (part === undefined) {
         return;
       }
