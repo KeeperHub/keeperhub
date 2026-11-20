@@ -417,6 +417,22 @@ function prepareArgs(
 ): { args: unknown[]; bytes: number; values: number } {
   const estimate = estimateCalldata(reshaped, fn, where, valuesBefore);
   const shaped = coerceArgsForAbi(reshaped, fn);
+  const validation = validateListArgs(shaped, fn);
+  if (validation) {
+    // The list's own checks name their next step; the shared ones do not.
+    const step = validation.leafError
+      ? ""
+      : ` ${nextStep(validation.error)}`;
+    throw new Error(`${where}: ${sentence(validation.error)}${step}`);
+  }
+  return { args: shaped, ...estimate };
+}
+
+/** The first failure of coerced arguments, or undefined when they are valid. */
+function validateListArgs(
+  shaped: unknown[],
+  fn: ListFunction
+): { error: string; leafError: boolean } | undefined {
   // Validation stops at the first failure, so this tells whose message it is.
   let leafError = false;
   // List values are resolved at run time, so a {{...}} string is plain text.
@@ -429,12 +445,7 @@ function prepareArgs(
       return error;
     },
   });
-  if (!validation.ok) {
-    // The list's own checks name their next step; the shared ones do not.
-    const step = leafError ? "" : ` ${nextStep(validation.error)}`;
-    throw new Error(`${where}: ${sentence(validation.error)}${step}`);
-  }
-  return { args: shaped, ...estimate };
+  return validation.ok ? undefined : { error: validation.error, leafError };
 }
 
 /** Running totals for one call's estimate, stopped as soon as a cap is passed. */
@@ -704,8 +715,8 @@ function canGoFlat(input: AbiParam): boolean {
 type FlatTuple = { label: string; members: number };
 
 // A value can sit in an input's or member's place: a tuple takes its object
-// or the whole tuple as text or an array, an array an array or JSON array
-// text, a string any value but an object or array, and any other type a plain
+// or the whole tuple as text or an array, an array an array, JSON array text
+// or "", a string any value but an object or array, and any other type a plain
 // value (no object or array, as such or as JSON text).
 function fitsPlace(value: unknown, param: AbiParam): boolean {
   if (param.type === "tuple") {
@@ -714,7 +725,10 @@ function fitsPlace(value: unknown, param: AbiParam): boolean {
       : takesOneValue(value, param);
   }
   if (param.type.endsWith("]")) {
-    return Array.isArray(value) || containerText(value) === "array";
+    // "" is a field the editor left blank, named as such later.
+    return (
+      value === "" || Array.isArray(value) || containerText(value) === "array"
+    );
   }
   if (isPlainObject(value) || Array.isArray(value)) {
     return false;
@@ -1192,55 +1206,23 @@ function linesUp(entry: unknown[], fn: ListFunction, blankTail = false): boolean
 }
 
 // Where each input starts when the entry lines up, or undefined when it does
-// not. With blankTail, only a string may be missing at the end: the naming
-// checks must not line up on a blank that fails anyway.
+// not. With blankTail, inputs or flat members missing at the end are blanks,
+// which only a string may be: a blank anywhere else fails anyway.
 function lineUpStarts(
   entry: unknown[],
   fn: ListFunction,
   blankTail = false
 ): number[] | undefined {
-  const starts = lineUpReading(entry, fn, blankTail);
-  return starts && (!blankTail || blanksAreStrings(entry, fn, starts))
-    ? starts
-    : undefined;
-}
-
-// Each input missing at the end, or a flat tuple's members missing there,
-// is a string.
-function blanksAreStrings(
-  entry: unknown[],
-  fn: ListFunction,
-  starts: number[]
-): boolean {
-  return fn.inputs.every((input, index) => {
-    const start = starts[index];
-    if (start >= entry.length) {
-      return canBeBlank(input);
-    }
-    if (input.type !== "tuple" || takesOneValue(entry[start], input)) {
-      return true;
-    }
-    return (input.components ?? [])
-      .slice(entry.length - start)
-      .every((member) => member.type === "string");
-  });
-}
-
-// lineUpStarts with any input left blank at the end, as padding reads it.
-function lineUpReading(
-  entry: unknown[],
-  fn: ListFunction,
-  blankTail: boolean
-): number[] | undefined {
   const starts: number[] = [];
   let cursor = 0;
-  for (const input of fn.inputs) {
+  for (const [index, input] of fn.inputs.entries()) {
     starts.push(cursor);
     if (blankTail && cursor >= entry.length) {
-      return starts;
+      return fn.inputs.slice(index).every(canBeBlank) ? starts : undefined;
     }
     const value = entry[cursor];
-    const members = input.type === "tuple" ? (input.components?.length ?? 0) : 0;
+    const components = input.type === "tuple" ? (input.components ?? []) : [];
+    const members = components.length;
     if (members > 0 && isPlainObject(value) && !objectFits(value, input)) {
       return;
     }
@@ -1250,7 +1232,11 @@ function lineUpReading(
       }
       cursor += 1;
     } else if (members > 0) {
-      if (!membersFit(entry, input, cursor)) {
+      const missing = components.slice(entry.length - cursor);
+      if (
+        !membersFit(entry, input, cursor) ||
+        missing.some((member) => member.type !== "string")
+      ) {
         return;
       }
       cursor += members;
@@ -1417,6 +1403,9 @@ function entryToArgs(entry: unknown, fn: ListFunction, at: string): unknown[] {
   if (entry.length !== reshaped.consumed || nestedSlot(entry, fn)) {
     throw namedProblem(entry, fn, at) ?? countMismatch(at, entry, fn, hint());
   }
+  if (misplacedObject(entry, fn)) {
+    throw countMismatch(at, entry, fn, hint());
+  }
   return reshaped.args;
 }
 
@@ -1457,7 +1446,14 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
   const given = parsed.slice(0, end);
   const reshaped = reshapeArgsCounted(given, fn);
   const { consumed } = reshaped;
-  // Named as in Argument Sets, with blanks missing at the end allowed.
+  const countError = (): Error =>
+    countMismatch(
+      SHARED_ARGS_LABEL,
+      given,
+      fn,
+      "The same arguments go to every contract in the list."
+    );
+  // Named as in Argument Sets, with strings missing at the end allowed.
   const offShape = given.length !== consumed || nestedSlot(given, fn);
   if (offShape) {
     const named = namedProblem(
@@ -1470,46 +1466,127 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
       throw named;
     }
   }
-  // Too few values are blanks, padded and named by the checks below, but with
-  // a tuple input only when the values given line up; otherwise padding could
-  // shift a value onto the wrong input.
-  const padOk =
-    given.length < consumed &&
-    !nestedSlot(given, fn) &&
-    (fn.inputs.every((input) => input.type !== "tuple") ||
-      padsAsLinedUp(given, fn));
-  if (offShape && !padOk) {
-    throw countMismatch(
-      SHARED_ARGS_LABEL,
-      given,
-      fn,
-      "The same arguments go to every contract in the list."
-    );
+  if (given.length < consumed) {
+    return paddedArgs(given, consumed, fn, countError);
   }
-  if (given.length === consumed) {
-    return reshaped.args;
+  if (offShape || misplacedObject(given, fn)) {
+    throw countError();
   }
-  const blanks = new Array<string>(consumed - given.length).fill("");
-  const padded = [...given, ...blanks];
-  return reshapeArgsCounted(padded, fn).args;
+  return reshaped.args;
 }
 
-// The values line up with blanks at the end, read as padding reads them:
-// reshapeArgsCounted reads a tuple holding an array or text flat, so a line-up
-// that took one whole does not count.
-function padsAsLinedUp(given: unknown[], fn: ListFunction): boolean {
-  const starts = lineUpReading(given, fn, true);
-  return (
-    starts !== undefined &&
-    fn.inputs.every((input, index) => {
-      const start = starts[index];
-      if (input.type !== "tuple" || start === undefined) {
-        return true;
-      }
-      const value = given[start];
-      return isPlainObject(value) || !takesOneValue(value, input);
-    })
+/**
+ * Too few values: the rest are blanks the editor left out. Padded only when
+ * every value given passes with a valid stand-in in each blank, so a failure
+ * names a blank, never a value that may have moved; otherwise the count.
+ */
+function paddedArgs(
+  given: unknown[],
+  consumed: number,
+  fn: ListFunction,
+  countError: () => Error
+): unknown[] {
+  const blanks = new Array<string>(consumed - given.length).fill("");
+  const args = reshapeArgsCounted([...given, ...blanks], fn).args;
+  const standIns = fn.inputs.map((input, index) =>
+    withStandIns(args[index], input)
   );
+  if (standIns.some((value) => value === NOT_PLAIN)) {
+    throw countError();
+  }
+  estimateCalldata(standIns, fn, SHARED_ARGS_LABEL, 0);
+  if (validateListArgs(coerceArgsForAbi(standIns, fn), fn)) {
+    throw countError();
+  }
+  return args;
+}
+
+const NOT_PLAIN = Symbol("object on a plain place");
+
+// The value with each blank ("") replaced by a valid stand-in, or NOT_PLAIN
+// when an object sits on a plain place (validation would let a string take it).
+function withStandIns(value: unknown, param: AbiParam): unknown {
+  if (value === "") {
+    return validSample(param);
+  }
+  const array = ARRAY_TYPE_RE.exec(param.type);
+  if (array && Array.isArray(value)) {
+    const item = { ...param, type: array[1] };
+    const items = value.map((entry) => withStandIns(entry, item));
+    return items.includes(NOT_PLAIN) ? NOT_PLAIN : items;
+  }
+  if (param.type === "tuple" && isPlainObject(value)) {
+    const object = value as Record<string, unknown>;
+    const members = (param.components ?? []).map(
+      (member) => [member.name, withStandIns(object[member.name], member)] as const
+    );
+    return members.some(([, member]) => member === NOT_PLAIN)
+      ? NOT_PLAIN
+      : { ...object, ...Object.fromEntries(members) };
+  }
+  return !array && param.type !== "tuple" && isPlainObject(value)
+    ? NOT_PLAIN
+    : value;
+}
+
+// Whether any tuple was read from its members, and the member each such
+// value lands on (plain inputs map to themselves), as reshapeArgsCounted reads.
+function flatReading(
+  args: unknown[],
+  fn: ListFunction
+): { params: AbiParam[]; members: boolean[] } {
+  const params: AbiParam[] = [];
+  const members: boolean[] = [];
+  for (const input of fn.inputs) {
+    const components = input.type === "tuple" ? (input.components ?? []) : [];
+    if (components.length > 0 && !isPlainObject(args[params.length])) {
+      params.push(...components);
+      members.push(...components.map(() => true));
+    } else {
+      params.push(input);
+      members.push(false);
+    }
+  }
+  return { params, members };
+}
+
+// An object no input there can take: on a plain member of a tuple read from
+// its members, or in a tuple's place sharing none of its member names. A value
+// was likely added or left out before it, so no single input can be named.
+function misplacedObject(args: unknown[], fn: ListFunction): boolean {
+  const { params, members } = flatReading(args, fn);
+  return params.some((param, k) => {
+    const value = args[k];
+    if (!isPlainObject(value)) {
+      return false;
+    }
+    return param.type === "tuple" ? !objectFits(value, param) : members[k];
+  });
+}
+
+// A value that passes every check for its type, put where a blank is.
+function validSample(param: AbiParam): unknown {
+  const array = ARRAY_TYPE_RE.exec(param.type);
+  if (array) {
+    const item = { ...param, type: array[1] };
+    return array[2] ? Array.from({ length: Number(array[2]) }, () => validSample(item)) : [];
+  }
+  if (param.type === "tuple") {
+    return Object.fromEntries(
+      (param.components ?? []).map((member) => [member.name, validSample(member)])
+    );
+  }
+  const bytes = BYTES_N_RE.exec(param.type);
+  if (bytes) {
+    return `0x${"00".repeat(Number(bytes[1]))}`;
+  }
+  const samples: Record<string, unknown> = {
+    address: `0x${"0".repeat(40)}`,
+    bool: false,
+    bytes: "0x",
+    string: "",
+  };
+  return param.type in samples ? samples[param.type] : "0";
 }
 
 /**

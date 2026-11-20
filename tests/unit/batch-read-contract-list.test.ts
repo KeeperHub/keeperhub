@@ -4030,16 +4030,18 @@ describe("batch-read-contract - fifth review", () => {
   it("reads broken JSON text as a member's bad value, not a whole tuple", async () => {
     const abi = abiWith("f", [tupleOf("t", [uint("a"), uint("b")]), uint("x")]);
     const [, shared] = await both(abi, ["[1", "3", ""]);
+    // x is missing and a given value fails, so it may have moved: the count.
     expect(shared).toBe(
-      'Function Arguments: t.a must be a whole number in digits, got "[1".'
+      "Function Arguments has 2 values for f (t, x), which takes 2 when t is an object, or 3 when t is given flat as its 2 members. The same arguments go to every contract in the list."
     );
   });
 
-  it("pads a short Function Arguments entry when no tuple is read flat", async () => {
+  it("gives the count when a value given fails and another is missing", async () => {
     const abi = abiWith("f", [uint("x"), { name: "s", type: "string" }]);
     const [, shared] = await both(abi, [[1], ""]);
+    // s is missing and x fails, so the count is given, not x.
     expect(shared).toBe(
-      "Function Arguments: x must be a whole number, got [1]."
+      "Function Arguments has 1 value, but f takes 2 (x, s). The same arguments go to every contract in the list."
     );
   });
 
@@ -4151,29 +4153,71 @@ describe("batch-read-contract - sixth review", () => {
 
   it("reads a flat tuple of strings missing at the end as left blank", async () => {
     const abi = abiWith([uint("n"), tupleOf("t", [str("a"), str("b")])]);
-    const [, shared] = await both(abi, ["x1"]);
-    expect(shared).toBe(
-      'Function Arguments: n must be a whole number in digits, got "x1".'
+    const shared = (entry: unknown[]): Promise<Outcome> =>
+      run({
+        ...addressList([CONTRACT], { functionArgs: JSON.stringify(entry) }),
+        abiFunction: "f",
+        abi,
+      });
+    expect((await shared(["7"])).success).toBe(true);
+    // A value given fails while blanks are padded: the count, not n.
+    expect((await shared(["x1"])).error).toBe(
+      "Function Arguments has 1 value, but f takes 2 (n, t). The same arguments go to every contract in the list."
     );
   });
 
   it("still reads a missing string at the end as left blank", async () => {
     const abi = abiWith([tupleOf("t", [uint("x"), uint("y")]), str("s")]);
+    const outcome = await run({
+      ...addressList([CONTRACT], { functionArgs: JSON.stringify([1, 2]) }),
+      abiFunction: "f",
+      abi,
+    });
+    expect(outcome.success).toBe(true);
+    mockStaticCall.mockClear();
     const [, shared] = await both(abi, [1, "2x"]);
     expect(shared).toBe(
-      'Function Arguments: t.y must be a whole number in digits, got "2x".'
+      "Function Arguments has 2 values for f (t, s), which takes 2 when t is an object, or 3 when t is given flat as its 2 members. The same arguments go to every contract in the list."
     );
   });
 
-  // A correct entry with one value dropped, or two neighbours swapped: a
-  // message may name only an input the change touched; anything else gets
-  // the count. "cannot be empty" is left out: it names an input left blank
-  // in the editor, where every input has its own field.
+  it("pads an untouched array field in the middle of Function Arguments", async () => {
+    const abi = abiWith([
+      { name: "ids", type: "uint256[]" },
+      tupleOf("t", [uint("a"), uint("b")]),
+      uint("y"),
+    ]);
+    // The editor stores an untouched middle field as "" and drops one at the end.
+    const [, shared] = await both(abi, ["", { a: "1", b: "2" }]);
+    expect(shared).toBe(
+      "Function Arguments: ids: expected array for uint256[]. Check the arguments for f (ids, t, y)."
+    );
+  });
+
+  it("names an untouched tuple starting with a tuple in Function Arguments", async () => {
+    const abi = abiWith([
+      tupleOf("t", [tupleOf("i", [uint("p")])]),
+      uint("x"),
+      uint("y"),
+    ]);
+    // Every value given passes, so the blank t is named (lib/abi's wording).
+    const [, shared] = await both(abi, ["", "7"]);
+    expect(shared).toBe(
+      "Function Arguments: t.i: expected object for tuple. Check the arguments for f (t, x, y)."
+    );
+  });
+
+  // A correct entry with one value dropped, two neighbours swapped, or a
+  // tuple's object given twice: a message may name only an input the change
+  // touched; anything else gets the count. With a value dropped, "cannot be
+  // empty" may name a later input: the editor leaves untouched fields out.
   it("names only an input the mistake touched, over many shapes", async () => {
     type Param = { name: string; type: string; components?: Param[] };
     const addr = (name: string): Param => ({ name, type: "address" });
     const arr = (name: string): Param => ({ name, type: "uint256[]" });
     const bool = (name: string): Param => ({ name, type: "bool" });
+    const b32 = (name: string): Param => ({ name, type: "bytes32" });
+    const bytes = (name: string): Param => ({ name, type: "bytes" });
     const tup = (name: string, components: Param[]): Param => ({
       name,
       type: "tuple",
@@ -4198,6 +4242,28 @@ describe("batch-read-contract - sixth review", () => {
         uint("y"),
       ],
       [str("a"), str("b"), tup("t", [uint("x"), uint("y")])],
+      [uint("a"), addr("c"), uint("b")],
+      [uint("a"), uint("b"), b32("h"), str("s")],
+      [bytes("d"), uint("n"), tup("t", [b32("h"), uint("v")])],
+      [
+        str("memo"),
+        tup("t", [addr("owner"), uint("amount")]),
+        uint("deadline"),
+      ],
+      [bytes("b"), tup("t", [b32("h"), uint("n")]), bytes("c")],
+      [
+        uint("a"),
+        uint("b"),
+        tup("t", [uint("x"), uint("y")]),
+        str("s"),
+        uint("n"),
+      ],
+      [uint("n"), tup("t", [uint("x"), str("q")])],
+      [
+        uint("z"),
+        tup("t", [uint("a"), tup("i", [uint("p"), uint("q")])]),
+        uint("w"),
+      ],
     ];
     const sample = (param: Param): unknown => {
       if (param.components) {
@@ -4210,6 +4276,8 @@ describe("batch-read-contract - sixth review", () => {
         address: CONTRACT,
         bool: true,
         "uint256[]": [1, 2],
+        bytes32: `0x${"11".repeat(32)}`,
+        bytes: "0x1234",
       };
       return samples[param.type] ?? 7;
     };
@@ -4244,19 +4312,39 @@ describe("batch-read-contract - sixth review", () => {
     for (const inputs of shapes) {
       const abi = abiWith(inputs);
       for (const { values, owner } of entries(inputs)) {
-        const mistakes: { entry: unknown[]; touched: string[] }[] = [];
+        const mistakes: {
+          entry: unknown[];
+          touched: string[];
+          dropped?: true;
+        }[] = [];
         for (const [k, name] of owner.entries()) {
           mistakes.push({
             entry: values.filter((_, i) => i !== k),
             touched: [name],
+            dropped: true,
           });
+          // A tuple's object given twice.
+          if (
+            inputs.some((p) => p.name === name && p.components) &&
+            owner[k - 1] !== name &&
+            owner[k + 1] !== name
+          ) {
+            mistakes.push({
+              entry: [
+                ...values.slice(0, k + 1),
+                values[k],
+                ...values.slice(k + 1),
+              ],
+              touched: [name, owner[k + 1] ?? name],
+            });
+          }
           if (k + 1 < owner.length && owner[k + 1] !== name) {
             const swapped = [...values];
             [swapped[k], swapped[k + 1]] = [swapped[k + 1], swapped[k]];
             mistakes.push({ entry: swapped, touched: [name, owner[k + 1]] });
           }
         }
-        for (const { entry, touched } of mistakes) {
+        for (const { entry, touched, dropped } of mistakes) {
           // Some mistakes still make a valid call (two numbers swapped).
           const outcomes = [
             await run({ ...argsList([entry], "f"), abi }),
@@ -4273,7 +4361,7 @@ describe("batch-read-contract - sixth review", () => {
             if (
               input &&
               !touched.includes(input) &&
-              !message.includes("cannot be empty")
+              !(dropped && message.includes("cannot be empty"))
             ) {
               wrong.push(`${JSON.stringify(entry)} -> ${message}`);
             }
