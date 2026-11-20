@@ -425,7 +425,9 @@ describe("queryEventsStep - one event on an address list", () => {
 
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error).toContain("must be a list of addresses");
+      expect(result.error).toBe(
+        "Contract Addresses got a single value, not a list. If it comes from Encode / Decode, a one-entry array comes back as a plain value; see the docs."
+      );
     }
     expect(mockGetRpcProvider).not.toHaveBeenCalled();
   });
