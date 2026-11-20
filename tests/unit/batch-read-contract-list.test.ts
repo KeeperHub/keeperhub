@@ -1309,7 +1309,7 @@ describe("batch-read-contract - review round 3", () => {
         })
       )
     ).toBe(
-      "Function Arguments: t.a: expected array for uint256[]. Check the arguments for wrap (t)."
+      'Function Arguments: give t as an object with its member names, like {"a": [1, 1]}, not as text.'
     );
   });
 
@@ -4314,6 +4314,14 @@ describe("batch-read-contract - sixth review", () => {
         .soft(shared, type)
         .toMatch(/^Function Arguments has 1 value, but f takes 2 /);
     }
+  });
+
+  it("names a lone tuple given as an array before a blank", async () => {
+    const abi = abiWith([tupleOf("t", [uint("a"), uint("b")])]);
+    const [, shared] = await both(abi, [[1, 2], ""]);
+    expect(shared).toBe(
+      'Function Arguments: give t as an object with its member names, like {"a": 1, "b": 1}, not as an array.'
+    );
   });
 
   it("names a tuple whose object has mistyped member names", async () => {

@@ -1442,6 +1442,20 @@ function editorArgs(stored: unknown[], fn: ListFunction): unknown[] {
     asStored === stored.length && !nestedSlot(stored, fn)
       ? stored
       : blankTuples(stored, fn);
+  // A tuple given as an array or text is named before the list is read flat.
+  let filled = parsed.length;
+  while (filled > 0 && parsed[filled - 1] === "") {
+    filled -= 1;
+  }
+  const positional = positionalTupleError(
+    parsed.slice(0, filled),
+    fn,
+    SHARED_ARGS_LABEL,
+    true
+  );
+  if (positional) {
+    throw positional;
+  }
   // Blanks past what the inputs take are dropped; the rest are checked as stored.
   const takes = reshapeArgsCounted(parsed, fn).consumed;
   let end = parsed.length;
@@ -1451,10 +1465,11 @@ function editorArgs(stored: unknown[], fn: ListFunction): unknown[] {
   const given = parsed.slice(0, end);
   const reshaped = reshapeArgsCounted(given, fn);
   const { consumed } = reshaped;
+  // Counted as stored, as Argument Sets counts an entry.
   const countError = (): Error =>
     countMismatch(
       SHARED_ARGS_LABEL,
-      given,
+      parsed,
       fn,
       "The same arguments go to every contract in the list."
     );
