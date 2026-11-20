@@ -83,6 +83,9 @@ describe("a toggle's rule", () => {
       ["true", true],
       [false, false],
       ["false", false],
+      [null, true],
+      ["{{@a:A.on}}", true],
+      ["False", true],
     ];
     for (const [value, on] of reads) {
       expect(readToggle("default-on", value), JSON.stringify(value)).toBe(on);
