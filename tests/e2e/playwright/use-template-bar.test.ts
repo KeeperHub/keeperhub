@@ -4,7 +4,10 @@ import {
   VIEWER_DISABLED_REASON,
 } from "@/lib/organization/role-label";
 import { VIEWER_READ_ONLY_ERROR } from "@/lib/security/viewer-policy";
-import { USE_TEMPLATE_LABEL } from "@/lib/workflow/use-template-label";
+import {
+  PREVIEW_LABEL,
+  USE_TEMPLATE_LABEL,
+} from "@/lib/workflow/use-template-copy";
 import { createWebhookTriggerNode } from "../../fixtures/workflows";
 import { expect, test } from "./fixtures";
 import {
@@ -196,7 +199,7 @@ async function expectCardSound(page: Page): Promise<Box> {
     box(page.getByTestId("header-right")),
   ]);
   expect(inside(buttonBox, cardBox)).toBe(true);
-  const badge = card(page).getByText("Preview", { exact: true });
+  const badge = card(page).getByText(PREVIEW_LABEL, { exact: true });
   if (await badge.isVisible()) {
     expect(inside(await box(badge), cardBox)).toBe(true);
   }
@@ -230,7 +233,7 @@ async function expectWideBar(
     await expect(templateButton(page)).toHaveCount(1);
     const badge = page
       .getByTestId("header-right")
-      .getByText("Preview", { exact: true });
+      .getByText(PREVIEW_LABEL, { exact: true });
     await expect(badge).toBeVisible();
     // The badge is a pill (its rounded corners miss hit tests): its centre only.
     expect(await isOnTop(badge)).toBe(true);
@@ -427,7 +430,7 @@ test.describe("Use template bar, signed in", () => {
       for (const width of [768, 1024, 1280]) {
         await atWidth(page, width, async () => {
           const badges = page
-            .getByText("Preview", { exact: true })
+            .getByText(PREVIEW_LABEL, { exact: true })
             .filter({ visible: true });
           await expect(badges).toHaveCount(1);
           expect(await isOnTop(badges)).toBe(true);
@@ -440,7 +443,7 @@ test.describe("Use template bar, signed in", () => {
             (await card(page).isVisible()) &&
             (await page
               .getByTestId("header-right")
-              .getByText("Preview", { exact: true })
+              .getByText(PREVIEW_LABEL, { exact: true })
               .isVisible());
         });
       }

@@ -58,7 +58,12 @@ import {
   READ_ONLY_LABEL,
   VIEWER_DISABLED_REASON,
 } from "@/lib/organization/role-label";
-import { USE_TEMPLATE_LABEL } from "@/lib/workflow/use-template-label";
+import {
+  PREVIEW_LABEL,
+  USE_TEMPLATE_IMPORTING,
+  USE_TEMPLATE_LABEL,
+  USE_TEMPLATE_TEXT,
+} from "@/lib/workflow/use-template-copy";
 import { VersionPreviewBanner } from "./version-preview-banner";
 import { useSession } from "@/lib/auth-client";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
@@ -2142,7 +2147,7 @@ function PreviewBadge({
       variant="outline"
     >
       {viewOnly && <Eye aria-hidden="true" />}
-      {viewOnly ? READ_ONLY_LABEL : "Preview"}
+      {viewOnly ? READ_ONLY_LABEL : PREVIEW_LABEL}
     </Badge>
   );
 }
@@ -2222,7 +2227,7 @@ function UseTemplateButton({
         ) : (
           <Copy className="size-4" />
         )}
-        {isUsingTemplate ? "Importing…" : "Use template"}
+        {isUsingTemplate ? USE_TEMPLATE_IMPORTING : USE_TEMPLATE_TEXT}
       </Button>
     </ViewOnlyTooltip>
   );
