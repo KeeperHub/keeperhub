@@ -931,18 +931,33 @@ function countMismatch(
 }
 
 /**
- * Text that holds a JSON object or array, by its first character; undefined
- * for anything else. Not parsed: line-up checks run it in loops.
+ * Text that holds a JSON object or array, by its first and last characters
+ * ("{...}" or "[...]"); undefined for anything else, "[1" included. Not
+ * parsed: line-up checks run it in loops.
  */
 function containerText(value: unknown): "object" | "array" | undefined {
   if (typeof value !== "string") {
     return;
   }
-  const first = value.trimStart()[0];
-  if (first === "{") {
+  // Read in place, without copying: line-up checks call this in loops.
+  let start = 0;
+  while (start < value.length && isSpace(value.charCodeAt(start))) {
+    start += 1;
+  }
+  let end = value.length - 1;
+  while (end > start && isSpace(value.charCodeAt(end))) {
+    end -= 1;
+  }
+  const pair = `${value[start] ?? ""}${value[end] ?? ""}`;
+  if (end > start && pair === "{}") {
     return "object";
   }
-  return first === "[" ? "array" : undefined;
+  return end > start && pair === "[]" ? "array" : undefined;
+}
+
+// JSON's whitespace: space, tab, line feed, carriage return.
+function isSpace(code: number): boolean {
+  return code === 32 || code === 9 || code === 10 || code === 13;
 }
 
 function parsesAsJson(text: string): boolean {
@@ -1051,6 +1066,9 @@ function tupleSlotError(
 
 type TupleSlot = { input: AbiParam; index: number; place: number };
 
+// Longest entry whose places are each tried as the one tuple left plain.
+const MAX_SLOT_SEARCH = 64;
+
 // One value per input: the only tuple not holding an object.
 function slotByIndex(entry: unknown[], fn: ListFunction): TupleSlot | undefined {
   const slots = fn.inputs.flatMap((input, index) =>
@@ -1081,8 +1099,9 @@ function soleTupleSlot(
       total + (canGoFlat(input) ? (input.components?.length ?? 1) : 1),
     0
   );
-  // No reading of the inputs takes this many values.
-  if (entry.length > width) {
+  // No reading of the inputs takes this many values, or too many places to
+  // try one by one: the count message is given instead.
+  if (entry.length > Math.min(width, MAX_SLOT_SEARCH)) {
     return;
   }
   let found: TupleSlot | undefined;
@@ -1394,11 +1413,12 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
     }
   }
   // Too few values are blanks, padded and named by the checks below, but only
-  // when the values given line up; otherwise padding would shift them.
+  // when no tuple was read flat or the values given line up; otherwise padding
+  // could shift a value onto the wrong input.
   const padOk =
     given.length < consumed &&
     !nestedSlot(given, fn) &&
-    linesUp(given, fn, true);
+    (consumed === fn.inputs.length || linesUp(given, fn, true));
   if (offShape && !padOk) {
     throw countMismatch(
       SHARED_ARGS_LABEL,

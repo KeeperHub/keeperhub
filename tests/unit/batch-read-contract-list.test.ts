@@ -4019,4 +4019,32 @@ describe("batch-read-contract - fifth review", () => {
       expect.soft(gotShared, JSON.stringify(entry)).toBe(shared);
     }
   });
+
+  it("reads broken JSON text as a member's bad value, not a whole tuple", async () => {
+    const abi = abiWith("f", [tupleOf("t", [uint("a"), uint("b")]), uint("x")]);
+    const [, shared] = await both(abi, ["[1", "3", ""]);
+    expect(shared).toBe(
+      'Function Arguments: t.a must be a whole number in digits, got "[1".'
+    );
+  });
+
+  it("pads a short Function Arguments entry when no tuple is read flat", async () => {
+    const abi = abiWith("f", [uint("x"), { name: "s", type: "string" }]);
+    const [, shared] = await both(abi, [[1], ""]);
+    expect(shared).toBe(
+      "Function Arguments: x must be a whole number, got [1]."
+    );
+  });
+
+  it("reads a member missing at the end of Function Arguments as left blank", async () => {
+    const abi = abiWith("f", [
+      uint("x"),
+      tupleOf("t", [uint("a"), { name: "b", type: "uint256[]" }]),
+    ]);
+    const [, shared] = await both(abi, [1, 2]);
+    // t is read flat with b left blank; the wording is lib/abi's.
+    expect(shared).toBe(
+      "Function Arguments: t.b: expected array for uint256[]. Check the arguments for f (x, t)."
+    );
+  });
 });
