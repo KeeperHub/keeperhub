@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 import { enterAsGuest, openSignupView } from "./utils/auth";
+import { horizontalOverflow } from "./utils/layout";
 
 // Logged-out visitors are routed to the welcome landing; the guest link drops
 // them into the app without an account. Runs with a fresh anonymous context.
@@ -140,10 +141,7 @@ test.describe("welcome landing on a phone", () => {
       buttons.map((button) => Math.round(button.getBoundingClientRect().top))
     );
     expect(new Set(tops).size).toBe(1);
-    const overflow = await page.evaluate(
-      () => document.documentElement.scrollWidth - window.innerWidth
-    );
-    expect(overflow).toBeLessThanOrEqual(0);
+    expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
   });
 
   test("keeps the Google icon at full size", async ({ page }) => {

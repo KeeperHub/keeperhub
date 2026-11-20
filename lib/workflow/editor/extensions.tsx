@@ -31,7 +31,6 @@ import {
 } from "@/components/workflow/config/chain-select-field";
 import { CodeEditorField } from "@/components/workflow/config/code-editor-field";
 import { EventListField } from "@/components/workflow/config/event-list-field";
-import { FailOnErrorSwitchField } from "@/components/workflow/config/fail-on-error-switch-field";
 import { GasLimitMultiplierField } from "@/components/workflow/config/gas-limit-multiplier-field";
 import { PagerDutyPreviewField } from "@/components/workflow/config/pagerduty-preview-field";
 import {
@@ -43,13 +42,12 @@ import {
   PagerDutyTestNodeButton,
   PagerDutyTriggerNodeField,
 } from "@/components/workflow/config/pagerduty-resource-field";
-import { PlainSwitchField } from "@/components/workflow/config/plain-switch-field";
 // Imported statically: client-only like this file, and a jsdom test renders it.
 import {
   ProtocolBoolField,
   protocolBoolFieldValue,
 } from "@/components/workflow/config/protocol-fields/protocol-bool-field";
-import { SponsorGasField } from "@/components/workflow/config/sponsor-gas-field";
+import { TOGGLE_FIELD_RENDERERS } from "@/components/workflow/config/toggle-field-renderers";
 import { TokenSelectField } from "@/components/workflow/config/token-select-field";
 import { integrationsAtom } from "@/lib/integrations-store";
 import {
@@ -684,68 +682,10 @@ registerFieldRenderer(
   }
 );
 
-/**
- * Fail-On-Error Switch Field
- * Write Contract's declarative "Fail workflow on error" toggle. Shares
- * FailOnErrorSwitchField with the HTTP Request node's hardcoded failOnError
- * toggle so both nodes render and resolve it identically. This renderer is
- * specific to that field: it resolves default-on through resolveFailOnError
- * rather than reading field.defaultValue, so it is not a general-purpose
- * boolean switch renderer.
- */
-registerFieldRenderer(
-  "fail-on-error-switch",
-  ({ field, config, onUpdateConfig, disabled }) => (
-    <FailOnErrorSwitchField
-      description={field.helpTip ?? field.helpText}
-      disabled={disabled}
-      id={field.key}
-      key={field.key}
-      label={field.label}
-      onChange={(checked) => onUpdateConfig(field.key, checked)}
-      value={config[field.key]}
-    />
-  )
-);
-
-/**
- * Generic Switch Field
- * A plain boolean toggle, read by resolveSwitch as its step reads it.
- */
-registerFieldRenderer(
-  "switch",
-  ({ field, config, onUpdateConfig, disabled }) => (
-    <PlainSwitchField
-      config={config}
-      disabled={disabled}
-      field={field}
-      key={field.key}
-      onUpdateConfig={onUpdateConfig}
-    />
-  )
-);
-
-/**
- * Gas Sponsorship Switch Field
- * The "Sponsor gas" toggle on a web3 write action. Like the fail-on-error
- * switch it is default-on and resolves through its own helper
- * (resolveSponsorGas) rather than field.defaultValue, so the form and the
- * step can never disagree about what an unset value means.
- */
-registerFieldRenderer(
-  "gas-sponsorship-switch",
-  ({ field, config, onUpdateConfig, disabled }) => (
-    <SponsorGasField
-      description={field.helpTip ?? field.helpText}
-      disabled={disabled}
-      id={field.key}
-      key={field.key}
-      label={field.label}
-      onChange={(checked) => onUpdateConfig(field.key, checked)}
-      value={config[field.key]}
-    />
-  )
-);
+// On/off toggles: Fail workflow on error, plain switches and Sponsor gas.
+for (const [type, renderer] of Object.entries(TOGGLE_FIELD_RENDERERS)) {
+  registerFieldRenderer(type, renderer);
+}
 
 // ============================================================================
 // Register Custom Integration Form Handlers
