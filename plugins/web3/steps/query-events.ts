@@ -368,14 +368,9 @@ async function stepHandler(
 
   // Event querying decodes EVM ABI logs, which have no Solana equivalent
   // (Solana program logs are untyped and unindexed) - not yet supported.
-  // Nowhere to query, so Fail workflow on error does not soften it.
   const evmOnlyResult = evmOnlyGuard(chainId);
   if (evmOnlyResult) {
-    return {
-      success: false,
-      destinationError: true,
-      error: `${evmOnlyResult.error}. Pick an EVM network in Network.`,
-    };
+    return evmOnlyResult;
   }
 
   return isMultipleEventQuery(input) || isAddressListQuery(input)

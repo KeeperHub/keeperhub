@@ -419,21 +419,19 @@ describe("queryEventsStep - one event on an address list", () => {
     expect(node.getLogsCalls.length).toBeGreaterThan(0);
   });
 
-  it("refuses a Solana network before the list, even with failOnError off", async () => {
+  it("refuses a Solana network before the list, as in every Query Events mode", async () => {
     const result = await queryEventsStep({
       ...listInput,
       network: "solana",
       contractAddresses: JSON.stringify([
         "So11111111111111111111111111111111111111112",
       ]),
-      failOnError: false,
     });
 
+    // The shared evmOnlyGuard result, not a 0x message about the list.
     expect(result).toEqual({
       success: false,
-      destinationError: true,
-      error:
-        "Solana is not supported for this action yet. Pick an EVM network in Network.",
+      error: "Solana is not supported for this action yet",
     });
     expect(mockGetRpcProvider).not.toHaveBeenCalled();
   });
