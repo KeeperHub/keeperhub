@@ -46,6 +46,7 @@ vi.mock("@/lib/rpc/network-utils", () => ({
 
 vi.mock("@/lib/rpc/provider-factory", () => ({
   getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
+  isSolanaChain: (chainId: number) => chainId === 101 || chainId === 103,
 }));
 
 vi.mock("@/lib/contracts/multicall3", () => ({
@@ -538,7 +539,7 @@ describe("batch-read-contract - contract addresses from a list", () => {
   it("caps the list at 5,000 entries", async () => {
     const list = Array.from({ length: 5001 }, (_, i) => addr(i + 1));
     expect(await failure(addressList(list))).toBe(
-      "Contract Addresses has 5,001 entries; the limit is 5,000 calls per run. Filter the list first or split it across two Batch Read nodes."
+      "Contract Addresses has 5,001 entries; the limit is 5,000 addresses per node. Filter the list first or split it across several nodes."
     );
   });
 
@@ -551,7 +552,7 @@ describe("batch-read-contract - contract addresses from a list", () => {
   it("caps the list text at 1 MB", async () => {
     const padded = `[${" ".repeat(2_400_000)}"${addr(1)}"]`;
     expect(await failure(addressList(padded))).toBe(
-      "Contract Addresses is 2.3 MB; the limit is 1 MB. Filter the list first or split it across two Batch Read nodes."
+      "Contract Addresses is 2.3 MB; the limit is 1 MB. Filter the list first or split it across several nodes."
     );
   });
 
@@ -988,7 +989,7 @@ describe("batch-read-contract - list limits and shapes", () => {
         contractAddresses: big,
       })
     ).toBe(
-      "Contract Addresses is 1.1 MB; the limit is 1 MB. Filter the list first or split it across two Batch Read nodes."
+      "Contract Addresses is 1.1 MB; the limit is 1 MB. Filter the list first or split it across several nodes."
     );
   });
 
@@ -1004,7 +1005,7 @@ describe("batch-read-contract - list limits and shapes", () => {
     mockStaticCall.mockClear();
     const over = fill(1_048_577);
     expect(await failure(addressList(over))).toBe(
-      "Contract Addresses is 1.1 MB; the limit is 1 MB. Filter the list first or split it across two Batch Read nodes."
+      "Contract Addresses is 1.1 MB; the limit is 1 MB. Filter the list first or split it across several nodes."
     );
   });
 
@@ -1562,6 +1563,21 @@ describe("batch-read-contract - review fixes", () => {
         'Call 1: Contract Address is not a valid address: "0x12". Use a 0x address with 40 hex characters.',
       ],
       [
+        "a Contract Addresses entry without 0x",
+        addressList([addr(1), addr(2).slice(2)]),
+        `Contract Addresses entry 2 has no 0x in front: "${addr(2).slice(2)}". Write it as 0x followed by the 40 hex characters.`,
+      ],
+      [
+        "a Contract Addresses over 5,000 entries",
+        addressList(Array.from({ length: 5001 }, (_, i) => addr(i + 1))),
+        "Contract Addresses has 5,001 entries; the limit is 5,000 addresses per node. Filter the list first or split it across several nodes.",
+      ],
+      [
+        "a Contract Addresses over 1 MB",
+        addressList(`[${" ".repeat(1_100_000)}"${addr(1)}"]`),
+        "Contract Addresses is 1.1 MB; the limit is 1 MB. Filter the list first or split it across several nodes.",
+      ],
+      [
         "a missing network in a Different contracts call",
         {
           inputMode: "mixed",
@@ -1588,6 +1604,52 @@ describe("batch-read-contract - review fixes", () => {
         expect(mockStaticCall).not.toHaveBeenCalled();
       });
     }
+
+    it("a Solana network, named before its addresses are read", async () => {
+      mockGetChainIdFromNetwork.mockReturnValue(101);
+      const outcome = await run({
+        ...addressList(["So11111111111111111111111111111111111111112"]),
+        failOnError: false,
+      });
+      expect(outcome).toEqual({
+        success: false,
+        destinationError: true,
+        error: "Solana is not supported for this action yet",
+      });
+      expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    });
+
+    it("a Solana network in a Different contracts call", async () => {
+      mockGetChainIdFromNetwork.mockImplementation((network: string) =>
+        network === "solana" ? 101 : 1
+      );
+      const outcome = await run({
+        inputMode: "mixed",
+        failOnError: false,
+        calls: JSON.stringify([
+          {
+            network: "ethereum",
+            contractAddress: CONTRACT,
+            abi: ABI,
+            abiFunction: "echo",
+            args: ["1"],
+          },
+          {
+            network: "solana",
+            contractAddress: CONTRACT,
+            abi: ABI,
+            abiFunction: "echo",
+            args: ["1"],
+          },
+        ]),
+      });
+      expect(outcome).toEqual({
+        success: false,
+        destinationError: true,
+        error: "Call 2: Solana is not supported for this action yet",
+      });
+      expect(mockStaticCall).not.toHaveBeenCalled();
+    });
 
     it("but an empty Contract Addresses list is passed on as a soft error", async () => {
       const outcome = await run(addressList([], { failOnError: false }));
@@ -1768,7 +1830,7 @@ describe("batch-read-contract - review fixes, round 2", () => {
     );
   });
 
-  it("accepts an address without 0x where Read Contract does", async () => {
+  it("accepts a Contract Address without 0x where Read Contract does", async () => {
     const bare = CONTRACT.slice(2);
     expect(
       (
@@ -1779,8 +1841,6 @@ describe("batch-read-contract - review fixes, round 2", () => {
         })
       ).totalCalls
     ).toBe(1);
-    mockStaticCall.mockClear();
-    expect((await run(addressList([addr(1).slice(2)]))).totalCalls).toBe(1);
     mockStaticCall.mockClear();
     const mixed = await run({
       inputMode: "mixed",

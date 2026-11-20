@@ -9,13 +9,24 @@ import { type AbiItem, resolveAbiFunction } from "@/lib/abi/utils";
 import { validateArgsForAbi } from "@/lib/abi/validate-args";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
+  badChecksumError,
+  describeKind,
+  echo,
+  jsonText,
+  megabytes,
+  notAnAddressError,
+  readAddressList,
+  readJsonList,
+  spacedAddressError,
+  textSizeError,
+} from "@/plugins/web3/address-list-config";
+import {
   CALLS_FROM_ADDRESS_LIST,
   CALLS_FROM_ARGS_LIST,
   CALLS_FROM_ROWS,
 } from "@/plugins/web3/batch-read-modes";
 
 export const MAX_TOTAL_CALLS = 5000;
-const MAX_LIST_TEXT_BYTES = 1_048_576;
 const MAX_RUN_CALLDATA_BYTES = 10 * 1_048_576;
 // Encoding time grows faster than size, so one call and one run are bounded.
 const MAX_CALL_CALLDATA_BYTES = 64 * 1024;
@@ -24,10 +35,8 @@ const MAX_RUN_VALUES = 50_000;
 const MAX_ABI_PARAMS = 1000;
 
 export const ARGS_LIST_LABEL = "Argument Sets";
-export const ADDRESS_LIST_LABEL = "Contract Addresses";
 export const SHARED_ARGS_LABEL = "Function Arguments";
 
-const MAX_ECHOED_LENGTH = 60;
 export const MAX_REASON_LENGTH = 200;
 const EN_US = "en-US";
 const SCALAR_TYPE_RE = /^(address|bool|string|bytes\d*|u?int\d*)$/;
@@ -88,23 +97,6 @@ export function resolveCallsFrom(value: unknown): CallsFrom {
   );
 }
 
-export function echo(text: string, max = MAX_ECHOED_LENGTH): string {
-  return text.length > max ? `${text.slice(0, max)}...` : text;
-}
-
-function describeKind(value: unknown): string {
-  if (value === null) {
-    return "null";
-  }
-  if (Array.isArray(value)) {
-    return "an array";
-  }
-  if (typeof value === "object") {
-    return "an object";
-  }
-  return `a ${typeof value}`;
-}
-
 function count(n: number): string {
   return n.toLocaleString(EN_US);
 }
@@ -113,40 +105,18 @@ function plural(n: number, word: string): string {
   return `${count(n)} ${word}${n === 1 ? "" : "s"}`;
 }
 
-// A list passed as a value may hold a bigint, which JSON.stringify refuses.
-function jsonText(value: unknown): string | undefined {
-  return JSON.stringify(value, (_key, item: unknown) =>
-    typeof item === "bigint" ? item.toString() : item
-  );
-}
-
 function showValue(value: unknown): string {
   return echo(jsonText(value) ?? String(value));
 }
 
-// Rounded up, so a value just over a limit never reads as the limit itself.
-function megabytes(bytes: number): string {
-  return (Math.ceil((bytes / 1_048_576) * 10) / 10).toFixed(1);
-}
-
-function textBytes(value: unknown): number {
-  const text = typeof value === "string" ? value : jsonText(value);
-  return Buffer.byteLength(text ?? "", "utf8");
-}
-
-function checkTextSize(value: unknown, label: string, nextStep: string): void {
-  const bytes = textBytes(value);
-  if (bytes > MAX_LIST_TEXT_BYTES) {
-    throw new Error(
-      `${label} is ${megabytes(bytes)} MB; the limit is 1 MB. ${nextStep}`
-    );
-  }
+function looksLikeAddress(text: string): boolean {
+  return EVM_ADDRESS_RE.test(text.startsWith("0x") ? text : `0x${text}`);
 }
 
 /**
  * Why `value` is not an address, or undefined when it is. Accepts what Read
- * Contract and the encoder accept (ethers.isAddress); mixed case must carry a
- * valid checksum. Callers trim first where a template may add spaces.
+ * Contract and the encoder accept (ethers.isAddress), so 0x may be left off;
+ * mixed case must carry a valid checksum. An address argument is not trimmed.
  */
 export function addressError(
   value: unknown,
@@ -156,19 +126,16 @@ export function addressError(
   if (text !== "" && ethers.isAddress(text)) {
     return;
   }
-  const hex = text.startsWith("0x") ? text : `0x${text}`;
-  if (EVM_ADDRESS_RE.test(hex)) {
-    return `${label} has a bad checksum: "${text}". Use the address exactly as published, or in all lower case.`;
+  if (looksLikeAddress(text)) {
+    return badChecksumError(label, text);
   }
-  const shown =
-    typeof value === "string" ? `"${echo(text)}"` : showValue(value);
-  const trimmed = text.trim();
-  const spaced =
-    text !== trimmed &&
-    EVM_ADDRESS_RE.test(trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`)
-      ? " Remove the spaces around it."
-      : " Use a 0x address with 40 hex characters.";
-  return `${label} is not a valid address: ${shown}.${spaced}`;
+  if (text !== text.trim() && looksLikeAddress(text.trim())) {
+    return spacedAddressError(label, text);
+  }
+  return notAnAddressError(
+    label,
+    typeof value === "string" ? `"${echo(text)}"` : showValue(value)
+  );
 }
 
 /** Contract Address, trimmed and checked; throws DestinationError otherwise. */
@@ -210,83 +177,31 @@ export function resolveListFunction(
   };
 }
 
-/**
- * Parse a list input (resolved template text or a native array) into its
- * entries, enforcing the size and length caps before anything is called.
- * For a destination list, a blank field or one that is not a list throws
- * DestinationError; an empty list and the size caps stay ordinary errors.
- */
-export function parseListInput(
-  raw: unknown,
-  label: string,
-  typedExample: string,
-  destination = false
-): unknown[] {
-  const Shape = destination ? DestinationError : Error;
-  let parsed: unknown = raw ?? "";
-  const singleValue = `${label} got a single value, not a list. If it comes from Encode / Decode, a one-entry array comes back as a plain value; see the docs.`;
-  if (typeof parsed === "string") {
-    const text = parsed.trim();
-    if (text === "") {
-      throw new Shape(
-        `${label} is missing: the field is blank or its reference resolved to nothing. Check the reference and the node that produces it.`
-      );
-    }
-    checkTextSize(text, label, LIST_SIZE_STEP);
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      const looksLikeList = text.startsWith("[") || text.includes(",");
-      throw new Shape(
-        looksLikeList
-          ? `${label} is not a JSON array. Reference an array from an earlier node, e.g. {{@node1:Label.result}}, or type one like ${typedExample}.`
-          : singleValue
-      );
-    }
-  } else if (Array.isArray(parsed)) {
-    checkTextSize(parsed, label, LIST_SIZE_STEP);
+/** Argument Sets read into its entries; any failure is an ordinary error. */
+export function parseListInput(raw: unknown, typedExample: string): unknown[] {
+  const list = readJsonList(raw, {
+    label: ARGS_LIST_LABEL,
+    example: typedExample,
+    maxEntries: MAX_TOTAL_CALLS,
+    limitUnit: "calls per run",
+    nextStep: LIST_SIZE_STEP,
+  });
+  if (!list.success) {
+    throw new Error(list.error);
   }
-  if (
-    typeof parsed === "string" ||
-    typeof parsed === "number" ||
-    typeof parsed === "boolean"
-  ) {
-    throw new Shape(singleValue);
-  }
-  if (!Array.isArray(parsed)) {
-    throw new Shape(
-      `${label} must be an array, got ${describeKind(parsed)}. Point it at the array itself, e.g. {{@node1:Label.result.items}}.`
-    );
-  }
-  if (parsed.length === 0) {
-    throw new Error(`${label} is empty. Check the node that produces it.`);
-  }
-  if (parsed.length > MAX_TOTAL_CALLS) {
-    throw new Error(
-      `${label} has ${count(parsed.length)} entries; the limit is ${count(MAX_TOTAL_CALLS)} calls per run. ${LIST_SIZE_STEP}`
-    );
-  }
-  return parsed;
+  return list.entries;
 }
 
-/** Every entry must be a contract address; a bad one throws DestinationError. */
-export function addressesFromList(entries: unknown[]): string[] {
-  const addresses: string[] = [];
-  for (const [index, entry] of entries.entries()) {
-    const at = `${ADDRESS_LIST_LABEL} entry ${index + 1}`;
-    if (typeof entry !== "string") {
-      throw new DestinationError(
-        `${at} must be an address string, got ${describeKind(entry)}. Point the list at the addresses themselves, e.g. ["0xabc..."].`
-      );
-    }
-    const address = entry.trim();
-    const error = addressError(address, at);
-    if (error) {
-      throw new DestinationError(error);
-    }
-    addresses.push(address);
+/**
+ * Contract Addresses read and checked before any call. A failure throws
+ * DestinationError, except an empty list, which may be softened.
+ */
+export function addressesFromList(raw: unknown): string[] {
+  const list = readAddressList(raw, ethers.isAddress);
+  if (list.success) {
+    return list.addresses;
   }
-  return addresses;
+  throw list.emptyList ? new Error(list.error) : new DestinationError(list.error);
 }
 
 function inputNames(fn: ListFunction): string {
@@ -1322,7 +1237,10 @@ export function sharedArgsForList(
     return [];
   }
   checkListFunction(fn);
-  checkTextSize(raw ?? "", SHARED_ARGS_LABEL, "Use smaller arguments.");
+  const tooBig = textSizeError(raw ?? "", SHARED_ARGS_LABEL, "Use smaller arguments.");
+  if (tooBig) {
+    throw new Error(tooBig);
+  }
   let parsed: unknown = raw ?? [];
   if (typeof parsed === "string") {
     const text = parsed.trim();

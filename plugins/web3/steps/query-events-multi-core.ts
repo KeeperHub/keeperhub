@@ -15,9 +15,7 @@ import {
   queryLogsWithRetry,
 } from "./query-events-core";
 import {
-  badAddressEntryError,
-  isHexAddress,
-  readAddressListValue,
+  readAddressList,
 } from "../address-list-config";
 
 export const MAX_EVENT_QUERIES = 20;
@@ -215,35 +213,19 @@ export function parseEventQueries(raw: unknown): ParseEventQueriesResult {
   return { success: true, queries };
 }
 
-function readAddressList(
+/** Valid addresses in list order, checksummed, each once however often it is listed. */
+function readDistinctAddresses(
   raw: unknown
-): { success: true; entries: unknown[] } | Failure {
-  const list = readAddressListValue(raw);
-  if (list.success) {
-    return list;
-  }
-  // An empty list has nothing to watch, so failOnError may soften it.
-  return list.emptyList ? fail(list.error) : noDestination(list.error);
-}
-
-/** Valid checksummed addresses in list order, each once however often it is listed. */
-function normalizeAddressList(
-  entries: unknown[]
 ): { success: true; addresses: string[] } | Failure {
-  const addresses: string[] = [];
-  const seen = new Set<string>();
-  for (const [index, entry] of entries.entries()) {
-    const text = typeof entry === "string" ? entry.trim() : "";
-    if (!(isHexAddress(text) && ethers.isAddress(text))) {
-      return noDestination(badAddressEntryError(index, entry));
-    }
-    const address = ethers.getAddress(text);
-    if (!seen.has(address)) {
-      seen.add(address);
-      addresses.push(address);
-    }
+  const list = readAddressList(raw, ethers.isAddress);
+  if (!list.success) {
+    // An empty list has nothing to watch, so failOnError may soften it.
+    return list.emptyList ? fail(list.error) : noDestination(list.error);
   }
-  return { success: true, addresses };
+  return {
+    success: true,
+    addresses: [...new Set(list.addresses.map((a) => ethers.getAddress(a)))],
+  };
 }
 
 type AddressListInput = {
@@ -257,11 +239,7 @@ type AddressListInput = {
 export function parseAddressListQuery(
   input: AddressListInput
 ): ParseEventQueriesResult {
-  const list = readAddressList(input.contractAddresses);
-  if (!list.success) {
-    return list;
-  }
-  const normalized = normalizeAddressList(list.entries);
+  const normalized = readDistinctAddresses(input.contractAddresses);
   if (!normalized.success) {
     return normalized;
   }

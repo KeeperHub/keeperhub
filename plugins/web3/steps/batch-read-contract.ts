@@ -14,8 +14,9 @@ import {
   CALLS_FROM_ARGS_LIST,
   isUniformInputMode,
 } from "@/plugins/web3/batch-read-modes";
+import { evmOnlyGuard } from "@/lib/web3/validate-chain-address";
+import { echo } from "@/plugins/web3/address-list-config";
 import {
-  ADDRESS_LIST_LABEL,
   ARGS_LIST_LABEL,
   addressError,
   addressesFromList,
@@ -24,7 +25,6 @@ import {
   checkRunCalldata,
   contractAddressFrom,
   DestinationError,
-  echo,
   encodeReason,
   type ListFunction,
   MAX_REASON_LENGTH,
@@ -176,6 +176,20 @@ function buildUniformCalls(
 }
 
 /**
+ * Why the step cannot read on this network (Solana has no ABI calls), or
+ * undefined. An unknown network is left to resolveChainRpc to report.
+ */
+function unsupportedNetworkError(network: string): string | undefined {
+  let chainId: number;
+  try {
+    chainId = getChainIdFromNetwork(network);
+  } catch {
+    return;
+  }
+  return evmOnlyGuard(chainId)?.error;
+}
+
+/**
  * A mixed call's destination (network and contract address), or why it has
  * none. Checked for every call before anything else, so a bad destination
  * fails the run whatever comes first in the list.
@@ -189,6 +203,10 @@ function mixedCallDestination(
     return {
       error: `Call ${index + 1} has no network. Pick one for this call.`,
     };
+  }
+  const unsupported = unsupportedNetworkError(network);
+  if (unsupported) {
+    return { error: `Call ${index + 1}: ${unsupported}` };
   }
   const address =
     typeof contractAddress === "string" ? contractAddress.trim() : "";
@@ -761,11 +779,7 @@ function encodeArgsList(
   contractAddress: string
 ): EncodedCallWithMeta[] {
   requireArguments(ctx.fn);
-  const entries = parseListInput(
-    input.argsFromList,
-    ARGS_LIST_LABEL,
-    '[["0xabc..."]]'
-  );
+  const entries = parseListInput(input.argsFromList, '[["0xabc..."]]');
   let total = 0;
   return argSetsFromList(entries, ctx.fn).map((args, index) => {
     const callData = encodeForList(
@@ -822,18 +836,16 @@ function prepareUniformCalls(input: BatchReadContractInput): PreparedCalls {
     if (!input.network) {
       throw new DestinationError("Network is required. Pick one in Network.");
     }
+    // Before the addresses, so a non-EVM network is named, not its address form.
+    const unsupported = unsupportedNetworkError(input.network);
+    if (unsupported) {
+      throw new DestinationError(unsupported);
+    }
     const callsFrom = resolveCallsFrom(input.callsFrom);
     const destination: Destination =
       callsFrom === CALLS_FROM_ADDRESS_LIST
         ? {
-            addresses: addressesFromList(
-              parseListInput(
-                input.contractAddresses,
-                ADDRESS_LIST_LABEL,
-                '["0xabc..."]',
-                true
-              )
-            ),
+            addresses: addressesFromList(input.contractAddresses),
           }
         : {
             contractAddress: contractAddressFrom(

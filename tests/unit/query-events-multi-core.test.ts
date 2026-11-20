@@ -1,6 +1,7 @@
 import { ethers } from "ethers";
 import { describe, expect, it } from "vitest";
 import {
+  checkBatchReadConfig,
   checkQueryEventsConfig,
   MAX_LIST_ADDRESSES,
 } from "@/plugins/web3/address-list-config";
@@ -480,9 +481,20 @@ describe("parseAddressListQuery", () => {
   });
 
   it("rejects a single value or text that is not an array", () => {
-    for (const raw of [VAULT, JSON.stringify(VAULT), '{"a":1}', 5, {}]) {
+    const single =
+      "Contract Addresses got a single value, not a list. If it comes from Encode / Decode, a one-entry array comes back as a plain value; see the docs.";
+    const object =
+      "Contract Addresses must be an array, got an object. Point it at the array itself, e.g. {{@node1:Label.result.items}}.";
+    const cases: [unknown, string][] = [
+      [VAULT, single],
+      [JSON.stringify(VAULT), single],
+      [5, single],
+      ['{"a":1}', object],
+      [{}, object],
+    ];
+    for (const [raw, message] of cases) {
       const failure = listError(raw);
-      expect(failure.error).toContain("must be a list of addresses");
+      expect(failure.error).toBe(message);
       expect(failure.destinationError).toBe(true);
     }
   });
@@ -490,9 +502,27 @@ describe("parseAddressListQuery", () => {
   it("rejects a blank or missing list as having no contract to query", () => {
     for (const raw of ["", "   ", undefined, null]) {
       const failure = listError(raw);
-      expect(failure.error).toContain("Contract Addresses is empty");
+      expect(failure.error).toBe(
+        "Contract Addresses is missing: the field is blank or its reference resolved to nothing. Check the reference and the node that produces it."
+      );
       expect(failure.destinationError).toBe(true);
     }
+  });
+
+  it("rejects an address without 0x, as Batch Read Contract does", () => {
+    const failure = listError([VAULT, VAULT.slice(2)]);
+    expect(failure.error).toBe(
+      `Contract Addresses entry 2 has no 0x in front: "${VAULT.slice(2)}". Write it as 0x followed by the 40 hex characters.`
+    );
+    expect(failure.destinationError).toBe(true);
+  });
+
+  it("caps the list text at 1 MB", () => {
+    const failure = listError(`[${" ".repeat(1_100_000)}"${VAULT}"]`);
+    expect(failure.error).toBe(
+      "Contract Addresses is 1.1 MB; the limit is 1 MB. Filter the list first or split it across several nodes."
+    );
+    expect(failure.destinationError).toBe(true);
   });
 
   it("rejects an empty list as an error failOnError may soften", () => {
@@ -516,7 +546,9 @@ describe("parseAddressListQuery", () => {
     expect(listError([VAULT, 7]).error).toContain("entry 2");
     const badChecksum = MIXED_A.replace(/[A-F]/, (c) => c.toLowerCase());
     expect(badChecksum).not.toBe(MIXED_A);
-    expect(listError([MIXED_B, badChecksum]).error).toContain("entry 2");
+    expect(listError([MIXED_B, badChecksum]).error).toBe(
+      `Contract Addresses entry 2 has a bad checksum: "${badChecksum}". Use the address exactly as published, or in all lower case.`
+    );
   });
 
   it("accepts the largest list and rejects one entry more", () => {
@@ -528,8 +560,10 @@ describe("parseAddressListQuery", () => {
 
     expect(listed(full)).toHaveLength(MAX_LIST_ADDRESSES);
     const failure = listError([...full, address(MAX_LIST_ADDRESSES + 1)]);
-    expect(failure.error).toContain("5001 entries");
-    expect(failure.error).toContain("Split the list");
+    expect(failure.error).toBe(
+      "Contract Addresses has 5,001 entries; the limit is 5,000 addresses per node. Filter the list first or split it across several nodes."
+    );
+    expect(failure.destinationError).toBe(true);
   });
 
   it("fails on an event missing from the ABI or an unusable filter", () => {
@@ -665,5 +699,41 @@ describe("address list save and run agree on the address form", () => {
     if (!run.success) {
       expect(run.error).toContain("entry 2");
     }
+  });
+});
+
+describe("checkBatchReadConfig", () => {
+  const listConfig = (contractAddresses: unknown): Record<string, unknown> => ({
+    callsFrom: "address-list",
+    contractAddresses,
+  });
+
+  it("checks a typed list as Query Contract Events does", () => {
+    const raw = JSON.stringify([VAULT, VAULT.slice(2)]);
+    expect(checkBatchReadConfig(listConfig(raw))).toEqual(
+      checkQueryEventsConfig({
+        queryMode: "address-list",
+        contractAddresses: raw,
+      })
+    );
+    expect(checkBatchReadConfig(listConfig(raw))?.message).toContain(
+      "entry 2 has no 0x in front"
+    );
+  });
+
+  it("leaves a template, a checksum, other modes and mixed mode to the run", () => {
+    const badChecksum = MIXED_A.replace(/[A-F]/, (c) => c.toLowerCase());
+    expect(
+      checkBatchReadConfig(listConfig(JSON.stringify([badChecksum])))
+    ).toBeUndefined();
+    expect(
+      checkBatchReadConfig(listConfig("{{@reg:Read Contract.result}}"))
+    ).toBeUndefined();
+    expect(
+      checkBatchReadConfig({ callsFrom: "args-list", contractAddresses: "x" })
+    ).toBeUndefined();
+    expect(
+      checkBatchReadConfig({ ...listConfig("x"), inputMode: "mixed" })
+    ).toBeUndefined();
   });
 });

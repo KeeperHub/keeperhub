@@ -24,7 +24,10 @@ import {
 } from "@/plugins/field-fragments";
 import type { ShowWhen } from "@/lib/workflow/editor/show-when";
 import { registerIntegration } from "@/plugins/registry-core";
-import { checkQueryEventsConfig } from "./address-list-config";
+import {
+  checkBatchReadConfig,
+  checkQueryEventsConfig,
+} from "./address-list-config";
 import {
   CALLS_FROM_ADDRESS_LIST,
   CALLS_FROM_ARGS_LIST,
@@ -1543,6 +1546,7 @@ const web3Plugin: IntegrationPlugin = {
       category: "Web3",
       stepFunction: "batchReadContractStep",
       stepImportPath: "batch-read-contract",
+      validateConfig: checkBatchReadConfig,
       outputFields: [
         {
           field: "success",

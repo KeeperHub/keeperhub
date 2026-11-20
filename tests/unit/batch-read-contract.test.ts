@@ -46,6 +46,7 @@ vi.mock("@/lib/rpc/network-utils", () => ({
 
 vi.mock("@/lib/rpc/provider-factory", () => ({
   getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
+  isSolanaChain: (chainId: number) => chainId === 101 || chainId === 103,
 }));
 
 // Mock ethers with enough fidelity for encoding/decoding tests
