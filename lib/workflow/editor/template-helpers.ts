@@ -335,10 +335,6 @@ export function getCommonFields(
   return [{ field: "data", description: "Output data" }];
 }
 
-export function sanitizeNodeId(nodeId: string): string {
-  return nodeId.replace(/[^a-zA-Z0-9]/g, "_");
-}
-
 export function findActiveAtIndex(text: string): number {
   const tokens = findTemplateTokens(text);
   // Tokens are sorted and disjoint, so walking backwards only ever needs the

@@ -1,20 +1,14 @@
 import {
   findTemplateTokens,
   parseStoredRef,
+  sanitizeNodeId,
   splitTemplateRef,
 } from "@/lib/workflow/template-ref";
 
 // A stored stray value longer than this is never kept, which bounds the compare.
 const KEPT_VALUE_MAX_CHARS = 2000;
-const NON_ALPHANUMERIC_PATTERN = /[^a-zA-Z0-9]/g;
 
 type StrayValuePart = { text: string } | { reads: string; path: string };
-
-// The key the executor stores a node's output under, and reads a reference
-// by after trimming its id (its fallback to the bare id can never differ).
-export function outputKeyOf(nodeId: string): string {
-  return nodeId.replace(NON_ALPHANUMERIC_PATTERN, "_");
-}
 
 /**
  * A stray toggle value as the executor resolves it: literal text, and each
@@ -36,7 +30,8 @@ export function strayValueParts(text: string): StrayValuePart[] | undefined {
     parts.push(
       ref
         ? {
-            reads: outputKeyOf(ref.nodeId.trim()),
+            // The executor reads a reference by its trimmed id's output key.
+            reads: sanitizeNodeId(ref.nodeId.trim()),
             path: splitTemplateRef(ref.rest).fieldPath.trim(),
           }
         : { text: `{{${token.body}}}` }

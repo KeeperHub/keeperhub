@@ -27,11 +27,11 @@ import {
   SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST,
   type SystemActionType,
 } from "@/lib/workflow/executor/system-action-types";
-import { valueContainsTemplate } from "@/lib/workflow/template-ref";
 import {
-  outputKeyOf,
-  strayValueParts,
-} from "@/lib/workflow/validation/stray-toggle-value";
+  sanitizeNodeId,
+  valueContainsTemplate,
+} from "@/lib/workflow/template-ref";
+import { strayValueParts } from "@/lib/workflow/validation/stray-toggle-value";
 import {
   type ActionConfigField,
   type ActionConfigFieldBase,
@@ -626,7 +626,7 @@ type NodeIndex = {
 function indexNodes(nodes: readonly unknown[]): NodeIndex {
   const kinds = new Map<string, Set<string>>();
   for (const [id, kind] of nodesById(nodes, nodeKind)) {
-    const key = outputKeyOf(id);
+    const key = sanitizeNodeId(id);
     kinds.set(key, (kinds.get(key) ?? new Set()).add(`${id}=${kind}`));
   }
   return {
