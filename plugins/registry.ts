@@ -734,11 +734,29 @@ export function isFieldShown(
   );
 }
 
+// How a toggle reads its value, as its step does: Sponsor gas and Fail
+// workflow on error through resolveDefaultOnFlag, a plain switch resolveSwitch.
+export type ToggleRule = "default-on" | { switchDefault: unknown };
+
+/** The rule a toggle field reads its value by, decided by its type. */
+export function toggleRuleOf(
+  field: Pick<ActionConfigFieldBase, "type" | "defaultValue">
+): ToggleRule {
+  return isDefaultOnToggleField(field.type)
+    ? "default-on"
+    : { switchDefault: field.defaultValue };
+}
+
+/** Whether a toggle is on for a stored value, by its rule. */
+export function readToggle(rule: ToggleRule, value: unknown): boolean {
+  return rule === "default-on"
+    ? resolveDefaultOnFlag(value)
+    : resolveSwitch(value, rule.switchDefault) === true;
+}
+
 /** What a toggle does when it is left unset, by the rule its step applies. */
 export function toggleDefault(field: ActionConfigFieldBase): boolean {
-  return isDefaultOnToggleField(field.type)
-    ? resolveDefaultOnFlag(undefined)
-    : resolveSwitch(undefined, field.defaultValue) === true;
+  return readToggle(toggleRuleOf(field), undefined);
 }
 
 export function isDisplayOnlyField(type: string | undefined): boolean {

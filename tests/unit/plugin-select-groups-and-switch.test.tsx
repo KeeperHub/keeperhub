@@ -4,13 +4,18 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Select, SelectContent, SelectItem } from "@/components/ui/select";
 import { PlainSwitchField } from "@/components/workflow/config/plain-switch-field";
-import { readToggle } from "@/components/workflow/config/switch-field";
+
 import {
   groupedSelectLabel,
   groupSelectOptions,
   qualifiedOptionLabel,
 } from "@/lib/workflow/editor/select-option-groups";
-import type { ActionConfigFieldBase } from "@/plugins/registry";
+import {
+  type ActionConfigFieldBase,
+  readToggle,
+  toggleDefault,
+  toggleRuleOf,
+} from "@/plugins/registry";
 
 describe("groupSelectOptions", () => {
   it("puts consecutive options of one group under one header, in order", () => {
@@ -57,6 +62,46 @@ describe("a plain switch reads its value", () => {
         readToggle({ switchDefault }, value),
         JSON.stringify([value, switchDefault])
       ).toBe(on);
+    }
+  });
+});
+
+describe("a toggle's rule", () => {
+  it("is decided by the field type, in one place", () => {
+    expect(toggleRuleOf({ type: "fail-on-error-switch" })).toBe("default-on");
+    expect(toggleRuleOf({ type: "gas-sponsorship-switch" })).toBe("default-on");
+    expect(toggleRuleOf({ type: "switch", defaultValue: "true" })).toEqual({
+      switchDefault: "true",
+    });
+  });
+
+  it("reads a default-on toggle as on unless it resolves to false", () => {
+    const reads: [unknown, boolean][] = [
+      [undefined, true],
+      ["", true],
+      [true, true],
+      ["true", true],
+      [false, false],
+      ["false", false],
+    ];
+    for (const [value, on] of reads) {
+      expect(readToggle("default-on", value), JSON.stringify(value)).toBe(on);
+    }
+  });
+
+  it("gives an unset toggle's default through the same reading", () => {
+    const fields: Pick<ActionConfigFieldBase, "type" | "defaultValue">[] = [
+      { type: "fail-on-error-switch" },
+      { type: "gas-sponsorship-switch" },
+      { type: "switch", defaultValue: "true" },
+      { type: "switch", defaultValue: "false" },
+      { type: "switch" },
+    ];
+    for (const field of fields) {
+      expect(
+        toggleDefault({ key: "k", label: "K", ...field }),
+        JSON.stringify(field)
+      ).toBe(readToggle(toggleRuleOf(field), undefined));
     }
   });
 });

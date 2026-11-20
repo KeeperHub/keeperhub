@@ -3,7 +3,11 @@
 import type * as React from "react";
 
 import { SwitchField } from "@/components/workflow/config/switch-field";
-import { type ActionConfigFieldBase, isShownOnlyToFix } from "@/plugins/registry";
+import {
+  type ActionConfigFieldBase,
+  isShownOnlyToFix,
+  toggleRuleOf,
+} from "@/plugins/registry";
 
 type PlainSwitchFieldProps = {
   field: ActionConfigFieldBase;
@@ -26,7 +30,7 @@ export function PlainSwitchField({
       label={field.label}
       onChange={(next) => onUpdateConfig(field.key, next)}
       resetOnly={isShownOnlyToFix(field, config)}
-      rule={{ switchDefault: field.defaultValue }}
+      rule={toggleRuleOf(field)}
       value={config[field.key]}
     />
   );

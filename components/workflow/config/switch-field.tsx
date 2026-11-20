@@ -4,21 +4,13 @@ import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { isToggleValue, resolveDefaultOnFlag, resolveSwitch } from "@/lib/utils";
+import { isToggleValue } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
 import { canKeepStrayValue } from "@/lib/workflow/validation/stray-toggle-value";
+import { readToggle, type ToggleRule } from "@/plugins/registry";
 
 const SHOWN_VALUE_MAX_CHARS = 60;
 
-// How a toggle reads its value, as its step does: Sponsor gas and Fail
-// workflow on error through resolveDefaultOnFlag, a plain switch resolveSwitch.
-export type ToggleRule = "default-on" | { switchDefault: unknown };
-
-export function readToggle(rule: ToggleRule, value: unknown): boolean {
-  return rule === "default-on"
-    ? resolveDefaultOnFlag(value)
-    : resolveSwitch(value, rule.switchDefault) === true;
-}
 
 // What the step does with a value that is neither on nor off.
 function strayAtRun(rule: ToggleRule): string {
