@@ -558,7 +558,7 @@ ${stepBody}
     return [
       `${indent}// Triggered`,
       `${indent}let ${varName} = input;`,
-      `${indent}outputs['${sanitizeVarName(nodeId)}'] = { label: '${label}', data: ${varName} };`,
+      `${indent}outputs['${sanitizeNodeId(nodeId)}'] = { label: '${label}', data: ${varName} };`,
     ];
   }
 
@@ -585,7 +585,7 @@ ${stepBody}
         `${indent}const ${varName} = await ${stepFnName}({ ...input, outputs });`
       );
       lines.push(
-        `${indent}outputs['${sanitizeVarName(nodeId)}'] = { label: '${nodeLabel}', data: ${varName} };`
+        `${indent}outputs['${sanitizeNodeId(nodeId)}'] = { label: '${nodeLabel}', data: ${varName} };`
       );
     } else {
       // If output not used, don't store the result in a variable

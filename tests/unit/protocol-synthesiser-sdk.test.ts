@@ -211,3 +211,27 @@ describe("generateWorkflowSDKCode (payer-owned input)", () => {
     expect(code).toContain("account.address");
   });
 });
+
+describe("generateWorkflowSDKCode output keys", () => {
+  it("writes and reads a node's output under one key", () => {
+    const first = ccipBalanceNode("a-b");
+    const base = ccipBalanceNode("c.d");
+    const second: WorkflowNode = {
+      ...base,
+      data: {
+        ...base.data,
+        config: {
+          ...base.data.config,
+          account: "{{@a-b:Check CCIP Balance.balance}}",
+        },
+      },
+    };
+    const code = generateWorkflowSDKCode(
+      "Keys",
+      [triggerNode, first, second],
+      [edge("trigger-1", "a-b"), edge("a-b", "c.d")]
+    );
+    expect(code).toContain("outputs['a_b'] = {");
+    expect(code).toContain("outputs?.['a_b']?.data?.balance");
+  });
+});
