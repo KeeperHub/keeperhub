@@ -569,11 +569,7 @@ test.describe("Use template bar, signed in", () => {
 
   test("not shown on your own workflow", async ({ page }) => {
     for (const width of [390, 1280]) {
-      await page.setViewportSize({ width, height: HEIGHT });
-      await page.goto(`/workflows/${ownId}`, { waitUntil: "domcontentloaded" });
-      await expect(page.getByTestId("workflow-actions")).toBeVisible({
-        timeout: 15_000,
-      });
+      await openOwn(page, width, HEIGHT, ownId);
       await expect(card(page)).toHaveCount(0);
       if (width >= 768) {
         // No bar, so the zoom controls keep their place at the bottom.
@@ -692,10 +688,7 @@ test.describe("Use template bar, org viewer", () => {
     page,
   }) => {
     for (const width of [390, 1280]) {
-      await page.setViewportSize({ width, height: HEIGHT });
-      await page.goto(`/workflows/${inOrgId}`, {
-        waitUntil: "domcontentloaded",
-      });
+      await visit(page, width, HEIGHT, inOrgId);
       const badge = page.getByTestId("workflow-read-only-badge");
       await expect(badge).toBeVisible({ timeout: 15_000 });
       await expect(badge).toContainText(READ_ONLY_LABEL);
