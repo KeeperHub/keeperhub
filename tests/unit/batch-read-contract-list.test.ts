@@ -3441,9 +3441,9 @@ describe("batch-read-contract - fourth review", () => {
           })
         )
       )
-      // Two values stored, t as an array: the count, as stored.
+      // y is stored blank, so t given as an array is named, as in Argument Sets.
       .toBe(
-        "Function Arguments has 2 values for g (t, y), which takes 2 when t is an object, or 3 when t is given flat as its 2 members. The same arguments go to every contract in the list."
+        'Function Arguments: give t as an object with its member names, like {"a": 1, "b": 1}, not as an array.'
       );
     // In Argument Sets a missing value is not a blank, so the count is given.
     expect
@@ -4258,6 +4258,62 @@ describe("batch-read-contract - sixth review", () => {
     expect(shared).toBe(
       "Function Arguments has 1 value, but f takes 2 (a, b). The same arguments go to every contract in the list."
     );
+  });
+
+  it("names a tuple given as text in a full stored list with a blank at the end", async () => {
+    const abi = abiWith([
+      uint("x"),
+      tupleOf("t", [uint("a"), uint("b")]),
+      uint("y"),
+    ]);
+    const [, shared] = await both(abi, ["7", "[1,2]", ""]);
+    expect(shared).toBe(
+      'Function Arguments: give t as an object with its member names, like {"a": 1, "b": 1}, not as text.'
+    );
+  });
+
+  it("gives the count, fast, when many blank fixed arrays add up past one call's data", async () => {
+    const abi = abiWith([
+      str("s"),
+      ...Array.from({ length: 300 }, (_, i) => ({
+        name: `a${i}`,
+        type: "uint256[2040]",
+      })),
+    ]);
+    const started = Date.now();
+    const [, shared] = await both(abi, ["x"]);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(shared).toMatch(/^Function Arguments has 1 value, but f takes 301 /);
+  });
+
+  it("keeps a flat tuple whose first string member is blank", async () => {
+    const abi = abiWith([tupleOf("t", [str("a"), uint("b")]), uint("n")]);
+    const outcome = await run({
+      ...addressList([CONTRACT], { functionArgs: JSON.stringify(["", 5, 7]) }),
+      abiFunction: "f",
+      abi,
+    });
+    expect(outcome.success).toBe(true);
+  });
+
+  it("names a blank fixed array padded after values that pass", async () => {
+    const abi = abiWith([uint("a"), { name: "b", type: "uint256[2]" }]);
+    const [, shared] = await both(abi, [7]);
+    expect(shared).toBe(
+      "Function Arguments: b: expected array for uint256[2]. Check the arguments for f (a, b)."
+    );
+  });
+
+  it("gives the count, fast, for a big blank fixed array of empty elements", async () => {
+    for (const type of ["uint256[][1000000]", "uint256[0][1000000]"]) {
+      const abi = abiWith([uint("a"), { name: "b", type }]);
+      const started = Date.now();
+      const [, shared] = await both(abi, [7]);
+      expect.soft(Date.now() - started, type).toBeLessThan(1000);
+      expect
+        .soft(shared, type)
+        .toMatch(/^Function Arguments has 1 value, but f takes 2 /);
+    }
   });
 
   it("names a tuple whose object has mistyped member names", async () => {

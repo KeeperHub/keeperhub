@@ -1432,33 +1432,32 @@ export function argSetsFromList(
 
 /**
  * Function Arguments, reshaped, read as the editor stores it: an input left
- * blank is "" and one never touched may be missing, so trailing blanks are
- * trimmed or padded to the inputs. An empty final `string` is sent as "".
+ * blank is "" and one never touched at the end is left out, so missing values
+ * are padded as blanks. An empty final `string` is sent as "".
  */
 function editorArgs(stored: unknown[], fn: ListFunction): unknown[] {
-  const parsed = blankTuples(stored, fn);
-  const countError = (): Error =>
-    countMismatch(
-      SHARED_ARGS_LABEL,
-      parsed,
-      fn,
-      "The same arguments go to every contract in the list."
-    );
-  const full = reshapeArgsCounted(parsed, fn);
-  // A value for every input, some maybe blank: nothing is missing.
-  if (full.consumed === parsed.length && !nestedSlot(parsed, fn)) {
-    if (misplacedObject(parsed, fn)) {
-      throw countError();
-    }
-    return full.args;
-  }
+  const asStored = reshapeArgsCounted(stored, fn).consumed;
+  // A list that lines up as stored keeps a flat tuple's blank first member.
+  const parsed =
+    asStored === stored.length && !nestedSlot(stored, fn)
+      ? stored
+      : blankTuples(stored, fn);
+  // Blanks past what the inputs take are dropped; the rest are checked as stored.
+  const takes = reshapeArgsCounted(parsed, fn).consumed;
   let end = parsed.length;
-  while (end > 0 && parsed[end - 1] === "") {
+  while (end > takes && parsed[end - 1] === "") {
     end -= 1;
   }
   const given = parsed.slice(0, end);
   const reshaped = reshapeArgsCounted(given, fn);
   const { consumed } = reshaped;
+  const countError = (): Error =>
+    countMismatch(
+      SHARED_ARGS_LABEL,
+      given,
+      fn,
+      "The same arguments go to every contract in the list."
+    );
   // Named as in Argument Sets, with strings missing at the end allowed.
   const offShape = given.length !== consumed || nestedSlot(given, fn);
   if (offShape) {
@@ -1520,8 +1519,10 @@ function paddedArgs(
   const args = reshapeArgsCounted([...given, ...blanks], fn).args;
   // Size caps first, on the values as given, before any dry run.
   estimateCalldata(args, fn, SHARED_ARGS_LABEL, 0);
+  // One budget for every stand-in, the call data a single call may carry.
+  const budget = { words: MAX_CALL_CALLDATA_BYTES / 32 };
   const standIns = fn.inputs.map((input, index) =>
-    withStandIns(args[index], input)
+    withStandIns(args[index], input, budget)
   );
   if (standIns.some((value) => value === NO_FIT)) {
     throw countError();
@@ -1550,17 +1551,21 @@ const NO_FIT = Symbol("value that cannot sit in its place");
 
 // The value with each blank ("") replaced by a valid stand-in, or NO_FIT when
 // a value does not fit its place (validation lets a string take an object or
-// an array) or a blank is too big to stand in for.
-function withStandIns(value: unknown, param: AbiParam): unknown {
+// an array) or the blanks are too big to stand in for.
+function withStandIns(
+  value: unknown,
+  param: AbiParam,
+  budget: { words: number }
+): unknown {
   if (value === "") {
-    return sampleWords(param) > MAX_CALL_CALLDATA_BYTES / 32
-      ? NO_FIT
-      : validSample(param);
+    budget.words -= sampleWords(param);
+    // NaN or Infinity from an absurd type is too big as well.
+    return budget.words >= 0 ? validSample(param) : NO_FIT;
   }
   const array = ARRAY_TYPE_RE.exec(param.type);
   if (array && Array.isArray(value)) {
     const item = { ...param, type: array[1] };
-    const items = value.map((entry) => withStandIns(entry, item));
+    const items = value.map((entry) => withStandIns(entry, item, budget));
     return items.includes(NO_FIT) ? NO_FIT : items;
   }
   if (param.type === "tuple" && isPlainObject(value)) {
@@ -1571,7 +1576,8 @@ function withStandIns(value: unknown, param: AbiParam): unknown {
           member.name,
           withStandIns(
             Object.hasOwn(object, member.name) ? object[member.name] : undefined,
-            member
+            member,
+            budget
           ),
         ] as const
     );
@@ -1584,18 +1590,22 @@ function withStandIns(value: unknown, param: AbiParam): unknown {
     : value;
 }
 
-// 32-byte words a fixed-size value of this type takes; dynamic arrays count 0.
+// 32-byte words a stand-in of this type takes, at least one per element.
 function sampleWords(param: AbiParam): number {
   const array = ARRAY_TYPE_RE.exec(param.type);
   if (array) {
     return array[2]
-      ? Number(array[2]) * sampleWords({ ...param, type: array[1] })
-      : 0;
+      ? Number(array[2]) *
+          Math.max(1, sampleWords({ ...param, type: array[1] }))
+      : 1;
   }
   if (param.type === "tuple") {
-    return (param.components ?? []).reduce(
-      (total, member) => total + sampleWords(member),
-      0
+    return Math.max(
+      1,
+      (param.components ?? []).reduce(
+        (total, member) => total + sampleWords(member),
+        0
+      )
     );
   }
   return 1;
