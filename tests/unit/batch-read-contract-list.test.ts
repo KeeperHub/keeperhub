@@ -4884,6 +4884,304 @@ describe("batch-read-contract - seventh review, readings by call", () => {
     expect(Date.now() - started).toBeLessThan(3000);
   });
 
+  it("reads an untouched last tuple holding a tuple as blank", async () => {
+    const pair = [p("a"), p("b")];
+    expect(await sent([t("t0", [t("m1", pair)])], json([""]))).toEqual({
+      args: [[["", ""]]],
+    });
+    expect(
+      await sent([p("m0"), t("t1", [t("m2", pair)])], json(["y", ""]))
+    ).toEqual({ args: ["y", [["", ""]]] });
+    expect(
+      await sent([t("t", [p("a"), t("i", pair), p("d")])], json([""]))
+    ).toEqual({ args: [["", ["", ""], ""]] });
+  });
+
+  it("sends the one valid reading with array members around a blank tuple", async () => {
+    expect(
+      await sent(
+        [t("t", [p("a"), p("b", "uint256[]"), p("c")]), t("u", [p("d")])],
+        json(["", ["7"]])
+      )
+    ).toEqual({ args: [["", [BigInt(7)], ""], [""]] });
+    expect(
+      await sent(
+        [t("x", [p("a"), p("b", "string[2]")]), p("s")],
+        json(["", ["p", "q"]])
+      )
+    ).toEqual({ args: [["", ["p", "q"]], ""] });
+    // A tuple[] before it: x blank with s = "q", or x = ("", "q").
+    expect(
+      (
+        await sent(
+          [
+            { name: "xs", type: "tuple[]", components: [p("a")] },
+            t("x", [p("a"), p("b")]),
+            p("s"),
+          ],
+          json([[], "", "q"])
+        )
+      ).error
+    ).toMatch(AMBIGUOUS);
+  });
+
+  it("checks member values, not only their count, when choosing a reading", async () => {
+    // Blank, b would be "" for a bool: only the flat reading is valid.
+    expect(
+      await sent([t("t", [p("a"), p("b", "bool")]), p("s")], json(["", "true"]))
+    ).toEqual({ args: [["", true], ""] });
+  });
+
+  it("refuses six ambiguous tuples instead of calling them too many", async () => {
+    const inputs = [
+      ...Array.from({ length: 6 }, (_, i) => t(`t${i}`, [p("a"), p("b")])),
+      p("s"),
+    ];
+    const { error } = await sent(inputs, json([...new Array(6).fill(""), "x"]));
+    expect(error).toMatch(AMBIGUOUS);
+    // Exactly 64 readings, only the flat one valid: sent, not "too many".
+    expect(await sent(inputs, json([...new Array(12).fill(""), "x"]))).toEqual({
+      args: [...new Array(6).fill(["", ""]), "x"],
+    });
+  });
+
+  // The same oracle over wider types, with each type's rule written out:
+  // "" only fits a string, a bool is true or false, an address or bytes32 is
+  // hex of its size, a nested tuple is an object.
+  it("matches an oracle of every reading over wider types", async () => {
+    let seed = 11;
+    const rnd = (): number => {
+      seed = (Math.imul(seed, 1_103_515_245) + 12_345) & 0x7f_ff_ff_ff;
+      return seed / 0x7f_ff_ff_ff;
+    };
+    const pick = <X>(xs: X[]): X => xs[Math.floor(rnd() * xs.length)];
+    const B32 = `0x${"11".repeat(32)}`;
+    const LEAF = [
+      "string",
+      "string",
+      "string",
+      "uint256",
+      "bool",
+      "address",
+      "bytes32",
+      "uint256[2]",
+      "string[]",
+    ];
+    const leafSample = (type: string): unknown => {
+      const r = rnd();
+      switch (type) {
+        case "uint256":
+          return r < 0.2 ? "" : String(Math.floor(r * 3));
+        case "bool":
+          return r < 0.2 ? "" : r < 0.6;
+        case "address":
+          return r < 0.3 ? "" : ADDRESS;
+        case "bytes32":
+          return r < 0.3 ? "" : B32;
+        case "uint256[2]":
+          if (r < 0.2) {
+            return "";
+          }
+          return r < 0.4 ? [] : ["1", "2"];
+        case "string[]":
+          return r < 0.3 ? [] : ["w"];
+        default:
+          return r < 0.3 ? "" : pick(["x", "[1]"]);
+      }
+    };
+    const sample = (param: Param): unknown =>
+      param.type === "tuple"
+        ? Object.fromEntries(
+            (param.components ?? []).map((c) => [c.name, sample(c)])
+          )
+        : leafSample(param.type);
+    const fits = (param: Param, value: unknown): boolean => {
+      switch (param.type) {
+        case "string":
+          return typeof value === "string";
+        case "uint256":
+          return typeof value === "string" && /^\d+$/.test(value);
+        case "bool":
+          return typeof value === "boolean";
+        case "address":
+          return value === ADDRESS;
+        case "bytes32":
+          return value === B32;
+        case "uint256[2]":
+          return (
+            Array.isArray(value) &&
+            value.length === 2 &&
+            value.every((v) => fits(p("", "uint256"), v))
+          );
+        case "string[]":
+          return (
+            Array.isArray(value) && value.every((v) => typeof v === "string")
+          );
+        case "tuple": {
+          const comps = param.components ?? [];
+          return Array.isArray(value)
+            ? value.length === comps.length &&
+                comps.every((c, k) => fits(c, value[k]))
+            : typeof value === "object" &&
+                value !== null &&
+                comps.every((c) =>
+                  fits(c, (value as Record<string, unknown>)[c.name])
+                );
+        }
+        default:
+          return false;
+      }
+    };
+    const toEthers = (param: Param, value: unknown): unknown => {
+      if (param.type !== "tuple") {
+        return value;
+      }
+      const comps = param.components ?? [];
+      return comps.map((c, k) =>
+        toEthers(
+          c,
+          Array.isArray(value)
+            ? value[k]
+            : (value as Record<string, unknown>)[c.name]
+        )
+      );
+    };
+    // Each top-level tuple's "" read flat (one value per member) or blank
+    // (every leaf ""; a nested tuple's leaves too); missing values are "".
+    const blankOf = (param: Param): unknown =>
+      param.type === "tuple"
+        ? Object.fromEntries(
+            (param.components ?? []).map((c) => [c.name, blankOf(c)])
+          )
+        : "";
+    const readings = (s: unknown[], inputs: Param[]): unknown[][] => {
+      const out: unknown[][] = [];
+      const at = (k: number): unknown => (k < s.length ? s[k] : "");
+      const walk = (i: number, cur: number, args: unknown[]): void => {
+        if (i === inputs.length) {
+          if (s.slice(cur).every((v) => v === "")) {
+            out.push(args);
+          }
+          return;
+        }
+        const input = inputs[i];
+        const v = at(cur);
+        if (input.type !== "tuple") {
+          walk(i + 1, cur + 1, [...args, v]);
+          return;
+        }
+        const comps = input.components ?? [];
+        if (typeof v === "object" && v !== null && !Array.isArray(v)) {
+          walk(i + 1, cur + 1, [...args, v]);
+          return;
+        }
+        walk(i + 1, cur + comps.length, [
+          ...args,
+          comps.map((_, k) => at(cur + k)),
+        ]);
+        if (v === "") {
+          walk(i + 1, cur + 1, [...args, blankOf(input)]);
+        }
+      };
+      walk(0, 0, []);
+      return out;
+    };
+    const seen = new Set<string>();
+    const wrong: string[] = [];
+    const tally = { sent: 0, refused: 0, failed: 0 };
+    while (seen.size < 3000) {
+      const inputs: Param[] = [];
+      let id = 0;
+      const leaf = (): Param => p(`m${id++}`, pick(LEAF));
+      for (let i = 0, n = 1 + Math.floor(rnd() * 3); i < n; i++) {
+        const r = rnd();
+        if (r < 0.5) {
+          const members = Array.from(
+            { length: 1 + Math.floor(rnd() * 3) },
+            () => (rnd() < 0.15 ? t(`n${id++}`, [leaf(), leaf()]) : leaf())
+          );
+          inputs.push(t(`t${id++}`, members));
+        } else {
+          inputs.push(p(`p${id++}`, pick(LEAF)));
+        }
+      }
+      const stored: unknown[] = [];
+      for (const input of inputs) {
+        const r = rnd();
+        if (input.type !== "tuple") {
+          stored.push(leafSample(input.type));
+        } else if (r < 0.4) {
+          stored.push("");
+        } else if (r < 0.5) {
+          stored.push(sample(input));
+        } else {
+          stored.push(...(input.components ?? []).map((c) => sample(c)));
+        }
+      }
+      if (rnd() < 0.1) {
+        stored.splice(
+          Math.floor(rnd() * (stored.length + 1)),
+          0,
+          pick(["", "x"])
+        );
+      }
+      let end = stored.length;
+      while (end > 0 && stored[end - 1] === "") {
+        end -= 1;
+      }
+      const entry = [
+        ...stored.slice(0, end),
+        ...new Array(Math.floor(rnd() * 2)).fill(""),
+      ];
+      const key = json([inputs, entry]);
+      if (!entry.includes("") || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      const iface = new ethers.Interface(abiWith(inputs));
+      const encode = (args: unknown[]): string | undefined => {
+        try {
+          return iface.encodeFunctionData(
+            "f",
+            args.map((arg, k) => toEthers(inputs[k], arg))
+          );
+        } catch {
+          return;
+        }
+      };
+      const calls = readings(entry, inputs).map((args) =>
+        inputs.every((input, k) => fits(input, args[k]))
+          ? encode(args)
+          : undefined
+      );
+      const [flat] = calls;
+      const base = flat ?? calls.find(Boolean);
+      const differs = calls.some((call) => call && call !== base);
+      const outcome = await sent(inputs, json(entry));
+      const actual = outcome.args
+        ? iface.encodeFunctionData("f", outcome.args)
+        : undefined;
+      let ok: boolean;
+      if (base && differs) {
+        ok = AMBIGUOUS.test(outcome.error ?? "");
+        tally.refused += 1;
+      } else if (base) {
+        ok = actual === base;
+        tally.sent += 1;
+      } else {
+        ok = outcome.error !== undefined && !AMBIGUOUS.test(outcome.error);
+        tally.failed += 1;
+      }
+      if (!ok && wrong.length < 5) {
+        wrong.push(`${key} -> ${outcome.error ?? json(outcome.args ?? [])}`);
+      }
+    }
+    expect(wrong).toEqual([]);
+    expect(tally.sent).toBeGreaterThan(500);
+    expect(tally.refused).toBeGreaterThan(2);
+    expect(tally.failed).toBeGreaterThan(500);
+  }, 120_000);
+
   // Oracle: list every reading (each "" in a tuple's place blank or flat,
   // missing values blank), encode each with ethers, and expect the flat call
   // when it encodes and no other call differs, the one call when only other

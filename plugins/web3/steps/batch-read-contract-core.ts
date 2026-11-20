@@ -1511,26 +1511,25 @@ function editorReading(stored: unknown[], fn: ListFunction): unknown[] {
     end -= 1;
   }
   const given = stored.slice(0, end);
-  const tail = stored.slice(end);
   let readings = readingsOf(given, fn, "both");
+  const calls = new CallCache(fn);
   if (readings.length === 1 && readings[0].values === given) {
-    return stored;
+    // A tuple's "" trimmed off the end may still need reading blank.
+    return end === stored.length || calls.of(given)
+      ? stored
+      : fallbackReading(stored, fn);
   }
   const tooMany = readings.length > 2 ** MAX_BLANK_CHOICES;
   if (tooMany) {
     readings = [readings[0], readingsOf(given, fn, "blank")[0]];
   }
-  const calls = new CallCache(fn);
   for (const reading of readings) {
     reading.call = calls.of(reading.values);
   }
   const [flat] = readings;
   const base = flat.call ? flat : readings.find((r) => r.call);
   if (!base) {
-    const exact =
-      reshapeArgsCounted(stored, fn).consumed === stored.length &&
-      !nestedSlot(stored, fn);
-    return exact ? stored : [...(readings.at(-1)?.values ?? []), ...tail];
+    return fallbackReading(stored, fn);
   }
   if (tooMany) {
     throw new Error(
@@ -1540,25 +1539,36 @@ function editorReading(stored: unknown[], fn: ListFunction): unknown[] {
   // A reading over the size caps is sent as is, so the cap names it.
   const tooBig = readings.find((r) => r.call === TOO_BIG);
   if (tooBig) {
-    return tooBig === flat ? stored : [...tooBig.values, ...tail];
+    return tooBig.values === given ? stored : tooBig.values;
   }
   const others = readings.filter((r) => r.call && r.call !== base.call);
   if (others.length > 0) {
     throw ambiguousBlankError(base, others, fn);
   }
-  return base === flat ? stored : [...base.values, ...tail];
+  return base.values === given ? stored : base.values;
+}
+
+// No reading makes a valid call: as stored when it fits, else every "" in a
+// tuple's place blank, so the usual checks name the problem.
+function fallbackReading(stored: unknown[], fn: ListFunction): unknown[] {
+  const exact =
+    reshapeArgsCounted(stored, fn).consumed === stored.length &&
+    !nestedSlot(stored, fn);
+  return exact ? stored : readingsOf(stored, fn, "blank", false)[0].values;
 }
 
 /**
  * The readings of the values, the flat one first: "both" tries each "" in a
  * tuple's place flat and blank, "blank" reads every such "" blank. A one-member
- * tuple is always read blank: flat, its member would be the same "". Stops
- * past 2^MAX_BLANK_CHOICES readings.
+ * tuple is always read blank: flat, its member would be the same "". With
+ * pastEnd, a tuple missing at the end is read like "". Stops past
+ * 2^MAX_BLANK_CHOICES readings.
  */
 function readingsOf(
   values: unknown[],
   fn: ListFunction,
-  mode: "both" | "blank"
+  mode: "both" | "blank",
+  pastEnd = true
 ): Reading[] {
   const out: Reading[] = [];
   const limit = 2 ** MAX_BLANK_CHOICES;
@@ -1572,7 +1582,11 @@ function readingsOf(
       return;
     }
     const members = input.type === "tuple" ? (input.components?.length ?? 0) : 0;
-    const value = reading.values[cursor];
+    // A tuple starting just past the end is missing, so blank like "".
+    const value =
+      pastEnd && cursor === reading.values.length
+        ? ""
+        : reading.values[cursor];
     if (members === 0 || value !== "") {
       walk(index + 1, cursor + (isPlainObject(value) ? 1 : members || 1), reading);
       return;
