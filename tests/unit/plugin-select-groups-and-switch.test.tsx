@@ -92,19 +92,22 @@ describe("a toggle's rule", () => {
     }
   });
 
-  it("gives an unset toggle's default through the same reading", () => {
-    const fields: Pick<ActionConfigFieldBase, "type" | "defaultValue">[] = [
-      { type: "fail-on-error-switch" },
-      { type: "gas-sponsorship-switch" },
-      { type: "switch", defaultValue: "true" },
-      { type: "switch", defaultValue: "false" },
-      { type: "switch" },
+  it("gives an unset toggle's default by its rule", () => {
+    const defaults: [
+      Pick<ActionConfigFieldBase, "type" | "defaultValue">,
+      boolean,
+    ][] = [
+      [{ type: "fail-on-error-switch" }, true],
+      [{ type: "gas-sponsorship-switch" }, true],
+      [{ type: "switch", defaultValue: "true" }, true],
+      [{ type: "switch", defaultValue: "false" }, false],
+      [{ type: "switch" }, false],
     ];
-    for (const field of fields) {
+    for (const [field, on] of defaults) {
       expect(
         toggleDefault({ key: "k", label: "K", ...field }),
         JSON.stringify(field)
-      ).toBe(readToggle(toggleRuleOf(field), undefined));
+      ).toBe(on);
     }
   });
 });

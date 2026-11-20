@@ -11,7 +11,6 @@ import { readToggle, type ToggleRule } from "@/plugins/registry";
 
 const SHOWN_VALUE_MAX_CHARS = 60;
 
-
 // What the step does with a value that is neither on nor off.
 function strayAtRun(rule: ToggleRule): string {
   return rule === "default-on"

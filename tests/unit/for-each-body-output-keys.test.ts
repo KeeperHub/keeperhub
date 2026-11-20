@@ -39,10 +39,10 @@ describe("For Each body output keys", () => {
   it("stores each body step's output under sanitizeNodeId(id)", async () => {
     const nodes = [
       action("for-each", "For Each"),
-      action("a-b.c", "HTTP Request"),
+      action("a-b.c é", "HTTP Request"),
       action("d-x", "HTTP Request", false),
     ];
-    const edges = [edge("for-each", "a-b.c", "loop"), edge("a-b.c", "d-x")];
+    const edges = [edge("for-each", "a-b.c é", "loop"), edge("a-b.c é", "d-x")];
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
     const { collectNodeId, bodyEdgesBySource, bodyEdgesBySourceHandle } =
       identifyLoopBody(
@@ -78,6 +78,6 @@ describe("For Each body output keys", () => {
     for (const id of bodyEdgesBySource.get("for-each") ?? []) {
       await runBodyNode(id, ctx);
     }
-    expect(Object.keys(scopedOutputs).sort()).toEqual(["a_b_c", "d_x"]);
+    expect(Object.keys(scopedOutputs).sort()).toEqual(["a_b_c__", "d_x"]);
   });
 });

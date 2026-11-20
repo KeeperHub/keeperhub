@@ -5,12 +5,7 @@ import {
   normalizeProtocolArrayValue,
   solidityArrayItemType,
 } from "@/lib/protocol-array-value";
-import {
-  isBoolLiteral,
-  isToggleValue,
-  resolveSwitch,
-  switchRefusal,
-} from "@/lib/utils";
+import { isBoolLiteral, isToggleValue, switchRefusal } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
@@ -809,14 +804,14 @@ function validateFieldValue(
     // A plain switch has no template mode in the editor, and its step takes
     // only true or false.
     case "switch":
-      return resolveSwitch(value, undefined) === undefined
-        ? {
+      return isToggleValue(value)
+        ? { valid: true }
+        : {
             valid: false,
             expected: "boolean",
             received: value,
             reason: toggleRefusal(field.label, value),
-          }
-        : { valid: true };
+          };
     case "protocol-bool":
       return valueContainsTemplate(value) || isBoolLiteral(value)
         ? { valid: true }
