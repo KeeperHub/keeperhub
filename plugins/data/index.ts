@@ -409,7 +409,7 @@ const dataPlugin: IntegrationPlugin = {
           required: true,
           placeholder: "e.g. VAULT_, true or 100",
           helpTip:
-            'What each item is compared with. Spaces around it are trimmed; quote it to keep them.\n\nText tests and has key: the text as typed, quotes removed.\nNumber tests: a number, e.g. 100, 1.5 or 0x64.\nArray length: a whole number.\nOther tests: 5 is a number, true and false are booleans, null is null, anything else is text. Quote to force text, e.g. "true" matches the text, not the boolean. Quoting a number changes nothing under equals, which compares numbers by value.',
+            'What each item is compared with. Spaces around it are trimmed; quote it to keep them (except under regex).\n\nMatches regex and does not match regex: the regular expression exactly as it should run, e.g. ^VAULT_, without quotes or /.../ around it; no lookahead or back-references. To match a space at either end, write [ ] or \\x20.\nOther text tests and has key: the text as typed, quotes removed.\nNumber tests: a number, e.g. 100, 1.5 or 0x64.\nArray length: a whole number.\nOther tests: 5 is a number, true and false are booleans, null is null, anything else is text. Quote to force text, e.g. "true" matches the text, not the boolean. Quoting a number changes nothing under equals, which compares numbers by value.',
           showWhen: shownWhenOperatorReads((rule) => rule.readsValue),
         },
         {
@@ -420,7 +420,7 @@ const dataPlugin: IntegrationPlugin = {
           helpText:
             "Match text whatever its letter case, e.g. a checksummed address against a lowercase one.",
           helpTip:
-            "Off by default, also when left blank. Applies to equals, not equals, soft equals, soft not equals, Text: contains, starts with, ends with and their does not forms, and Array: contains. From the API or MCP: true or false (a JSON boolean or lowercase text), not a template.",
+            "Off by default, also when left blank. Applies to equals, not equals, soft equals, soft not equals, Text: contains, starts with, ends with, matches regex and their does not forms, and Array: contains. From the API or MCP: true or false (a JSON boolean or lowercase text), not a template.",
           showWhen: shownWhenOperatorReads((rule) => rule.readsIgnoreCase),
         },
         {

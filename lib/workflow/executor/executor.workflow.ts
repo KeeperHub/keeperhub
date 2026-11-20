@@ -100,6 +100,10 @@ import {
   isMissingReference,
   makeMissingReference,
 } from "@/lib/workflow/nodes/condition/missing-reference";
+import {
+  MAX_RUN_REGEX_WORK,
+  RegexBudget,
+} from "@/lib/workflow/nodes/condition/regex-match";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
 import { safeEvaluateCondition } from "@/lib/workflow/nodes/condition/safe-eval";
 import {
@@ -107,6 +111,7 @@ import {
   collectSkippedTargets,
 } from "@/lib/workflow/nodes/condition/skipped-branch";
 import {
+  prepareRunRegex,
   preValidateConditionExpression,
   validateConditionExpression,
 } from "@/lib/workflow/nodes/condition/validator";
@@ -490,7 +495,8 @@ export function evaluateConditionExpression(
   conditionExpression: unknown,
   outputs: NodeOutputs,
   nodeMap?: ReadonlyMap<string, unknown>,
-  executionResults?: Record<string, ExecutionResult>
+  executionResults?: Record<string, ExecutionResult>,
+  regexRunBudget?: RegexBudget
 ): ConditionEvalResult {
   console.log("[Condition] Original expression:", conditionExpression);
 
@@ -587,11 +593,22 @@ export function evaluateConditionExpression(
       }
 
       // BigInt-safe conversion for large Web3 values (e.g. token balances in wei)
+      let regexTextContext: Record<string, unknown> | undefined;
       if (needsBigIntMode(transformedExpression, evalContext)) {
         const converted = applyBigIntConversion(
           transformedExpression,
           evalContext
         );
+        // matchesRegex sees what it would outside this mode: values as
+        // resolved ("01234", not 1234n) and typed integers as numbers.
+        if (converted.expression.includes("matchesRegex")) {
+          regexTextContext = { ...evalContext };
+          for (const [name, value] of Object.entries(converted.evalContext)) {
+            if (!Object.hasOwn(evalContext, name)) {
+              regexTextContext[name] = Number(value);
+            }
+          }
+        }
         transformedExpression = converted.expression;
         evalContext = converted.evalContext;
       }
@@ -599,7 +616,12 @@ export function evaluateConditionExpression(
       // Safe AST interpreter (no new Function / no host access) for A-01.
       // Only reads the resolved __v/__b values and applies allowlisted
       // operators and methods.
-      const result = safeEvaluateCondition(transformedExpression, evalContext);
+      const result = safeEvaluateCondition(
+        transformedExpression,
+        evalContext,
+        regexRunBudget,
+        regexTextContext
+      );
       if (unresolvedFields.length > 0) {
         logWarn("[Condition] Reference(s) resolved to undefined", {
           unresolved: unresolvedFields.join(" | "),
@@ -735,6 +757,7 @@ async function executeActionStep(input: {
   stepFunctions: StepFunctionTable;
   nodeMap?: ReadonlyMap<string, unknown>;
   executionResults?: Record<string, ExecutionResult>;
+  regexRunBudget?: RegexBudget;
 }) {
   const { actionType, config, outputs, context, stepFunctions } = input;
 
@@ -774,7 +797,8 @@ async function executeActionStep(input: {
         originalExpression,
         outputs,
         input.nodeMap,
-        input.executionResults
+        input.executionResults,
+        input.regexRunBudget
       );
       evaluatedCondition = result.result;
       resolvedValues = result.resolvedValues;
@@ -2812,6 +2836,9 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
   // once it has, every step call downstream is reached synchronously, so the
   // order they are invoked in follows the graph rather than module-load timing.
   const stepFunctions = await preloadStepFunctions(nodes);
+  // Regex work of every Condition in this run, loops included. The body runs
+  // again on each resume, and each pass rebuilds this from zero.
+  const regexRunBudget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
 
   // Find trigger nodes
   const nodesWithIncoming = new Set(edges.map((e) => e.target));
@@ -3043,6 +3070,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           stepFunctions,
           nodeMap,
           executionResults: results,
+          regexRunBudget,
         }),
       // KEEP-543: Same KEEP-398/431 spurious-max-retries recovery pattern as
       // the top-level node executor, scoped to the current iteration.
@@ -3907,6 +3935,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           stepFunctions,
           nodeMap,
           executionResults: results,
+          regexRunBudget,
         });
 
         console.log("[Workflow Executor] Step result received:", {
@@ -4266,6 +4295,12 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           "Looping back into or out of a For Each body is not supported. Move the " +
           "connection outside the For Each, or use the For Each iteration itself to repeat the work."
       );
+    }
+
+    // Every Condition's regex patterns, compiled once into this pass's budget.
+    const regexCompileError = prepareRunRegex(nodes, regexRunBudget);
+    if (regexCompileError) {
+      throw new Error(regexCompileError);
     }
 
     const triggerType = detectTriggerType(nodes);
