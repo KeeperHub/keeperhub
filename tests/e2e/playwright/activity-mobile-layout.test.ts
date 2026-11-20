@@ -1,10 +1,11 @@
 import type { Locator, Page, Route } from "@playwright/test";
 import { expect, test } from "./fixtures";
 import {
-  type Box,
+  bottom,
   box,
   dismissPhoneOverlays,
   overlaps,
+  right,
   textFits,
 } from "./utils/layout";
 
@@ -27,9 +28,6 @@ const LONG_NAME = "Alexandria Konstantinopoulou-Whitfield";
 const LONG_BADGE = "via API Key - production-deployment-runner-west-coast-2";
 // A user without a name is shown by email, which has nowhere to break.
 const LONG_EMAIL = "averyveryverylongemailaddress.name@subdomain.example.com";
-
-const bottom = (b: Box): number => b.y + b.height;
-const right = (b: Box): number => b.x + b.width;
 
 function stubEvent(id: number): Record<string, unknown> {
   const base = {

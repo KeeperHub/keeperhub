@@ -679,6 +679,8 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
                   config={selectedNode.data.config || {}}
                   disabled={isGenerating || !isOwner}
                   isOwner={isOwner}
+                  // A fresh editor per node, as the side panel does.
+                  key={selectedNode.id}
                   nodeId={selectedNode.id}
                   onUpdateConfig={handleUpdateConfig}
                 />

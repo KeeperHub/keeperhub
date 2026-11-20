@@ -146,25 +146,34 @@ export function resolveDefaultOnFlag(value: unknown): boolean {
   return value !== false && value !== "false";
 }
 
+export function isBoolLiteral(value: unknown): boolean {
+  return (
+    value === true || value === false || value === "true" || value === "false"
+  );
+}
+
+/** A toggle left unset, which takes its default: undefined, null or "". */
+function isUnsetToggle(value: unknown): boolean {
+  return value === undefined || value === null || value === "";
+}
+
+/** What an on/off toggle may hold: a boolean literal, or unset for its default. */
+export function isToggleValue(value: unknown): boolean {
+  return isUnsetToggle(value) || isBoolLiteral(value);
+}
+
 /**
- * Read a plain on/off switch: unset (undefined, null or "") takes its declared
- * default, which is off when none is declared. The editor, save validation,
- * the step and the MCP pin schema all read a switch through this. Undefined
- * for any other value.
+ * Read a plain on/off switch: unset takes its declared default, which is off
+ * when none is declared. The editor, the step and the MCP pin schema read a
+ * switch through this; save accepts what isToggleValue accepts, built on the
+ * same checks. Undefined for any other value.
  */
 export function resolveSwitch(
   value: unknown,
   defaultValue: unknown
 ): boolean | undefined {
-  const unset = value === undefined || value === null || value === "";
-  const raw = unset ? (defaultValue ?? false) : value;
-  if (raw === true || raw === "true") {
-    return true;
-  }
-  if (raw === false || raw === "false") {
-    return false;
-  }
-  return;
+  const raw = isUnsetToggle(value) ? (defaultValue ?? false) : value;
+  return isBoolLiteral(raw) ? raw === true || raw === "true" : undefined;
 }
 
 /**

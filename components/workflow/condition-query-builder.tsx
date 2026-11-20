@@ -1,7 +1,9 @@
 "use client";
 
 import { Plus, Trash2, X } from "lucide-react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -12,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TemplateBadgeInput } from "@/components/ui/template-badge-input";
+import { cn } from "@/lib/utils";
 import type {
   ConditionGroup,
   ConditionOperator,
@@ -27,8 +30,15 @@ import { groupSelectOptions } from "@/lib/workflow/editor/select-option-groups";
 import {
   CONDITION_OPERATOR_OPTIONS,
   closedOperatorLabel,
+  isRegexOperator,
 } from "@/lib/workflow/nodes/condition/operator-metadata";
-import { cn } from "@/lib/utils";
+import {
+  REGEX_TEMPLATE_ERROR,
+  readRegexPattern,
+  regexPatternError,
+  withoutExpressionNote,
+} from "@/lib/workflow/nodes/condition/regex-match";
+import { hasTemplateToken } from "@/lib/workflow/template-ref";
 
 type ConditionQueryBuilderProps = {
   group: ConditionGroup;
@@ -40,6 +50,26 @@ type ConditionQueryBuilderProps = {
 // (General / Text / Number / Boolean / Array / Object) with their operators
 // beneath, making clear which comparisons apply to which kind of value.
 const OPERATOR_OPTION_GROUPS = groupSelectOptions(CONDITION_OPERATOR_OPTIONS);
+
+// Shown under a regex rule until its pattern has an error to show instead.
+const REGEX_RULE_HINT =
+  "Matches anywhere in the text unless anchored: ^ start, $ end. (?i) ignores case. No quotes or /.../.";
+
+// The run-time pattern rules, shown while the pattern is typed.
+function regexRuleError(operand: string): string | undefined {
+  if (operand.trim() === "") {
+    return;
+  }
+  if (hasTemplateToken(operand)) {
+    return withoutExpressionNote(REGEX_TEMPLATE_ERROR);
+  }
+  const problem = regexPatternError(readRegexPattern(operand));
+  // The rule takes the pattern as typed, so Expression mode notes do not apply.
+  return problem && withoutExpressionNote(problem);
+}
+
+const VALUE_CELL =
+  "min-w-0 flex-1 [&_[contenteditable]]:max-h-9 [&_[contenteditable]]:overflow-x-auto [&_[contenteditable]]:whitespace-nowrap [&_[contenteditable]]:[scrollbar-width:none]";
 
 function RuleRow({
   rule,
@@ -55,70 +85,123 @@ function RuleRow({
   canRemove: boolean;
 }): React.ReactElement {
   const unary = isUnaryOperator(rule.operator);
+  const regex = isRegexOperator(rule.operator);
+  // Checked after a pause in typing, like expression mode, so "^(0x" does not
+  // flash an error mid-word.
+  const [checkedPattern, setCheckedPattern] = useState(rule.rightOperand);
+  useEffect(() => {
+    const timeoutId = setTimeout(
+      () => setCheckedPattern(rule.rightOperand),
+      400
+    );
+    return () => clearTimeout(timeoutId);
+  }, [rule.rightOperand]);
+  const patternError = useMemo(
+    () => (regex ? regexRuleError(checkedPattern) : undefined),
+    [regex, checkedPattern]
+  );
+  const errorId = useId();
+  const hintId = useId();
 
   return (
-    <div className="flex items-center gap-2">
-      <div className="min-w-0 flex-1 [&_[contenteditable]]:max-h-9 [&_[contenteditable]]:overflow-x-auto [&_[contenteditable]]:whitespace-nowrap [&_[contenteditable]]:[scrollbar-width:none]">
-        <TemplateBadgeInput
-          disabled={disabled}
-          onChange={(value) => onChange({ ...rule, leftOperand: value })}
-          placeholder="Value or @ref"
-          value={rule.leftOperand}
-        />
-      </div>
-
-      <Select
-        disabled={disabled}
-        onValueChange={(value) =>
-          onChange({ ...rule, operator: value as ConditionOperator })
-        }
-        value={rule.operator}
-      >
-        <SelectTrigger
-          className="h-9 w-36 shrink-0 text-xs"
-          title={closedOperatorLabel(rule.operator)}
-        >
-          <SelectValue>{closedOperatorLabel(rule.operator)}</SelectValue>
-        </SelectTrigger>
-        <SelectContent className="max-w-xs">
-          {OPERATOR_OPTION_GROUPS.map((optionGroup) => (
-            <SelectGroup key={optionGroup.label}>
-              <SelectLabel>{optionGroup.label}</SelectLabel>
-              {optionGroup.options.map((option) => (
-                <SelectItem
-                  description={option.description}
-                  key={option.value}
-                  value={option.value}
-                >
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          ))}
-        </SelectContent>
-      </Select>
-
-      {!unary && (
-        <div className="min-w-0 flex-1 [&_[contenteditable]]:max-h-9 [&_[contenteditable]]:overflow-x-auto [&_[contenteditable]]:whitespace-nowrap [&_[contenteditable]]:[scrollbar-width:none]">
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-2">
+        <div className={VALUE_CELL}>
           <TemplateBadgeInput
             disabled={disabled}
-            onChange={(value) => onChange({ ...rule, rightOperand: value })}
+            onChange={(value) => onChange({ ...rule, leftOperand: value })}
             placeholder="Value or @ref"
-            value={rule.rightOperand}
+            value={rule.leftOperand}
           />
         </div>
-      )}
 
-      {canRemove && (
-        <Button
-          className="size-6 shrink-0"
+        <Select
           disabled={disabled}
-          onClick={onRemove}
-          size="icon"
-          variant="ghost"
+          onValueChange={(value) =>
+            onChange({ ...rule, operator: value as ConditionOperator })
+          }
+          value={rule.operator}
         >
-          <X className="size-3" />
-        </Button>
+          <SelectTrigger
+            className="h-9 w-36 shrink-0 text-xs"
+            title={closedOperatorLabel(rule.operator)}
+          >
+            <SelectValue>{closedOperatorLabel(rule.operator)}</SelectValue>
+          </SelectTrigger>
+          <SelectContent className="max-w-xs">
+            {OPERATOR_OPTION_GROUPS.map((optionGroup) => (
+              <SelectGroup key={optionGroup.label}>
+                <SelectLabel>{optionGroup.label}</SelectLabel>
+                {optionGroup.options.map((option) => (
+                  <SelectItem
+                    description={option.description}
+                    key={option.value}
+                    value={option.value}
+                  >
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {!(unary || regex) && (
+          <div className={VALUE_CELL}>
+            <TemplateBadgeInput
+              disabled={disabled}
+              onChange={(value) => onChange({ ...rule, rightOperand: value })}
+              placeholder="Value or @ref"
+              value={rule.rightOperand}
+            />
+          </div>
+        )}
+
+        {regex && (
+          <div className={VALUE_CELL}>
+            <Input
+              aria-describedby={patternError ? errorId : hintId}
+              aria-invalid={patternError ? true : undefined}
+              aria-label="Regex pattern"
+              className="font-mono text-xs md:text-xs"
+              disabled={disabled}
+              onChange={(event) =>
+                onChange({ ...rule, rightOperand: event.target.value })
+              }
+              placeholder="Pattern, e.g. ^VAULT_"
+              spellCheck={false}
+              value={rule.rightOperand}
+            />
+          </div>
+        )}
+
+        {canRemove && (
+          <Button
+            aria-label="Remove rule"
+            className="size-6 shrink-0"
+            disabled={disabled}
+            onClick={onRemove}
+            size="icon"
+            variant="ghost"
+          >
+            <X className="size-3" />
+          </Button>
+        )}
+      </div>
+      {/* Mounted with the rule, so screen readers announce an error once. */}
+      {regex && (
+        <div aria-live="polite">
+          {patternError && (
+            <p className="text-destructive text-xs" id={errorId}>
+              {patternError}
+            </p>
+          )}
+        </div>
+      )}
+      {regex && !patternError && (
+        <p className="text-muted-foreground text-xs" id={hintId}>
+          {REGEX_RULE_HINT}
+        </p>
       )}
     </div>
   );
@@ -164,7 +247,7 @@ function GroupBuilder({
 
   const logicToggle = (
     <div className="flex items-center gap-2 py-1">
-      <div className="min-w-0 flex-1 [&_[contenteditable]]:max-h-9 [&_[contenteditable]]:overflow-x-auto [&_[contenteditable]]:whitespace-nowrap [&_[contenteditable]]:[scrollbar-width:none]">
+      <div className={VALUE_CELL}>
         <div className="h-px w-full bg-border" />
       </div>
       <Select
@@ -182,7 +265,7 @@ function GroupBuilder({
           <SelectItem value="OR">OR</SelectItem>
         </SelectContent>
       </Select>
-      <div className="min-w-0 flex-1 [&_[contenteditable]]:max-h-9 [&_[contenteditable]]:overflow-x-auto [&_[contenteditable]]:whitespace-nowrap [&_[contenteditable]]:[scrollbar-width:none]">
+      <div className={VALUE_CELL}>
         <div className="h-px w-full bg-border" />
       </div>
       <div className="size-6 shrink-0" />

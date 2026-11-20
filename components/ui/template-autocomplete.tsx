@@ -36,9 +36,9 @@ import {
   buildExecutionLogsMap,
   getNodeDisplayName,
   isActionType,
-  sanitizeNodeId,
   schemaToFields,
 } from "@/lib/workflow/editor/template-helpers";
+import { sanitizeNodeId } from "@/lib/workflow/template-ref";
 import {
   type IndexedAutocompleteOption,
   buildHaystack,

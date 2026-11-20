@@ -310,3 +310,70 @@ describe("Workflow duplicate API", () => {
     expect(nested.refs[0]).not.toContain("trigger-1");
   });
 });
+
+describe("Workflow duplicate API with a stray toggle value", () => {
+  const TEMPLATE = "{{@trigger-1:Manual Trigger.flag}}";
+  const withStray = (organizationId: string) => ({
+    ...sourceWorkflow,
+    organizationId,
+    nodes: [
+      sourceWorkflow.nodes[0],
+      {
+        id: "http-1",
+        type: "action",
+        position: { x: 0, y: 100 },
+        data: {
+          label: "Fetch",
+          type: "action",
+          config: {
+            actionType: "HTTP Request",
+            endpoint: "https://example.com",
+            httpMethod: "GET",
+            failOnError: TEMPLATE,
+          },
+          status: "idle",
+        },
+      },
+    ],
+  });
+
+  async function duplicate(): Promise<Record<string, unknown>> {
+    const { POST } = await import(
+      "@/app/api/workflows/[workflowId]/duplicate/route"
+    );
+    const response = await POST(
+      new Request("http://localhost/api/workflows/source-wf-1/duplicate", {
+        method: "POST",
+      }),
+      { params: Promise.resolve({ workflowId: "source-wf-1" }) }
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    const http = body.nodes.find(
+      (node: { data?: { config?: { actionType?: string } } }) =>
+        node.data?.config?.actionType === "HTTP Request"
+    );
+    return http.data.config;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDbQuery.workflows.findMany.mockResolvedValue([]);
+    mockMemberLimit.mockResolvedValue([{ id: "member-1" }]);
+  });
+
+  it("unsets it in a copy of another organization's workflow", async () => {
+    mockDbQuery.workflows.findFirst.mockResolvedValue(withStray("org-other"));
+    const config = await duplicate();
+    expect(config).not.toHaveProperty("failOnError");
+    expect(config.endpoint).toBe("https://example.com");
+  });
+
+  it("keeps it in a copy within the same organization", async () => {
+    mockDbQuery.workflows.findFirst.mockResolvedValue(withStray("org-1"));
+    // Kept, with the reference remapped to the copy's node ids.
+    const kept = (await duplicate()).failOnError;
+    expect(kept).toMatch(/^\{\{@.+:Manual Trigger\.flag\}\}$/);
+    expect(kept).not.toBe(TEMPLATE);
+  });
+});

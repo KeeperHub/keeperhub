@@ -112,7 +112,15 @@ export const OPERATOR_METADATA: Record<ConditionOperator, OperatorMeta> = {
     label: "matches regex",
     unary: false,
     category: "text",
-    description: "Matches the regular expression (new RegExp(b).test(a))",
+    description:
+      'Text matches the regular expression anywhere; ^ start, $ end, (?i) ignore case. null is tested as "null"',
+  },
+  notMatchesRegex: {
+    label: "does not match regex",
+    unary: false,
+    category: "text",
+    description:
+      'Text does not match the regular expression anywhere; ^ start, $ end, (?i) ignore case. null is tested as "null": add is not null to leave it out',
   },
   isEmpty: {
     label: "is empty",
@@ -235,6 +243,11 @@ export const CONDITION_OPERATOR_OPTIONS: readonly SelectOption[] =
       description: OPERATOR_METADATA[op].description,
     }))
   );
+
+// Takes any operator name, so Filter Array's own operators can ask too.
+export function isRegexOperator(operator: string): boolean {
+  return operator === "matchesRegex" || operator === "notMatchesRegex";
+}
 
 // The closed dropdown names the group only where the label repeats
 // ("Text: contains" vs "Array: contains"), so it fits Condition's narrow select.

@@ -106,6 +106,10 @@ The toggle is on by default, which is the behavior every existing workflow alrea
 
 Turn it off to keep the action on your own wallet. Sponsorship is then not attempted at all, so the action spends no gas credits and the sending wallet must hold enough native token for both the gas fee and any value the transaction sends. Use it when you want a predictable sender and fee source for one action, for example a transaction whose gas you want billed to the wallet rather than your gas credit allowance.
 
+Through the API or MCP the field is `sponsorGas`, and it takes `true` or `false` (or the strings `"true"` and `"false"`). A save with a template or any other value in it is refused, unless the step already held it (see [On/off toggles](/workflows/templating#onoff-toggles) for when such a value is kept). Leave it out to use the default (on).
+
+To decide per run, branch with a Condition node to two write nodes, one with **Sponsor gas** on and one with it off.
+
 The toggle only removes sponsorship. Turning it on does not override the conditions above: an unsupported network, a Safe sender, a private mempool route, or an exhausted credit allowance still pays gas from the wallet.
 
 ### Safe wallets

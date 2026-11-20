@@ -3,16 +3,19 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Select, SelectContent, SelectItem } from "@/components/ui/select";
-import {
-  isSwitchOn,
-  PlainSwitchField,
-} from "@/components/workflow/config/plain-switch-field";
+import { PlainSwitchField } from "@/components/workflow/config/plain-switch-field";
+
 import {
   groupedSelectLabel,
   groupSelectOptions,
   qualifiedOptionLabel,
 } from "@/lib/workflow/editor/select-option-groups";
-import type { ActionConfigFieldBase } from "@/plugins/registry";
+import {
+  type ActionConfigFieldBase,
+  readToggle,
+  toggleDefault,
+  toggleRuleOf,
+} from "@/plugins/registry";
 
 describe("groupSelectOptions", () => {
   it("puts consecutive options of one group under one header, in order", () => {
@@ -36,21 +39,76 @@ describe("groupSelectOptions", () => {
   });
 });
 
-describe("isSwitchOn", () => {
-  it('reads true or "true", falling back to the default while unset', () => {
-    expect(isSwitchOn(true, undefined)).toBe(true);
-    expect(isSwitchOn("true", undefined)).toBe(true);
-    expect(isSwitchOn(undefined, "true")).toBe(true);
-    expect(isSwitchOn(false, "true")).toBe(false);
-    expect(isSwitchOn(undefined, "false")).toBe(false);
-    expect(isSwitchOn(undefined, undefined)).toBe(false);
+// [stored value, field default, on]: how a plain switch reads its value, the
+// rule its step applies.
+const SWITCH_READS: [unknown, string | undefined, boolean][] = [
+  [true, undefined, true],
+  ["true", undefined, true],
+  [undefined, "true", true],
+  [false, "true", false],
+  [undefined, "false", false],
+  [undefined, undefined, false],
+  // Blank reads as unset; anything else is off.
+  ["", "true", true],
+  [null, "true", true],
+  ["{{@a:A.on}}", "true", false],
+  ["True", undefined, false],
+];
+
+describe("a plain switch reads its value", () => {
+  it('reads true or "true", the default while unset, and anything else as off', () => {
+    for (const [value, switchDefault, on] of SWITCH_READS) {
+      expect(
+        readToggle({ switchDefault }, value),
+        JSON.stringify([value, switchDefault])
+      ).toBe(on);
+    }
+  });
+});
+
+describe("a toggle's rule", () => {
+  it("is decided by the field type, in one place", () => {
+    expect(toggleRuleOf({ type: "fail-on-error-switch" })).toBe("default-on");
+    expect(toggleRuleOf({ type: "gas-sponsorship-switch" })).toBe("default-on");
+    expect(toggleRuleOf({ type: "switch", defaultValue: "true" })).toEqual({
+      switchDefault: "true",
+    });
   });
 
-  it("reads blank as unset and anything else as off, as the step does", () => {
-    expect(isSwitchOn("", "true")).toBe(true);
-    expect(isSwitchOn(null, "true")).toBe(true);
-    expect(isSwitchOn("{{@a:A.on}}", "true")).toBe(false);
-    expect(isSwitchOn("True", undefined)).toBe(false);
+  it("reads a default-on toggle as on unless it resolves to false", () => {
+    const reads: [unknown, boolean][] = [
+      [undefined, true],
+      ["", true],
+      [true, true],
+      ["true", true],
+      [false, false],
+      ["false", false],
+      [null, true],
+      ["{{@a:A.on}}", true],
+      ["False", true],
+    ];
+    for (const [value, on] of reads) {
+      expect(readToggle("default-on", value), JSON.stringify(value)).toBe(on);
+    }
+  });
+
+  it("gives an unset toggle's default by its rule", () => {
+    const defaults: [
+      Pick<ActionConfigFieldBase, "type" | "defaultValue">,
+      boolean,
+    ][] = [
+      [{ type: "fail-on-error-switch" }, true],
+      [{ type: "gas-sponsorship-switch" }, true],
+      [{ type: "switch", defaultValue: "true" }, true],
+      [{ type: "switch", defaultValue: "false" }, false],
+      [{ type: "switch" }, false],
+    ];
+    for (const [field, on] of defaults) {
+      expect(
+        toggleDefault({ key: "k", label: "K", ...field }),
+        JSON.stringify(field)
+      ).toBe(on);
+    }
   });
 });
 
@@ -115,6 +173,25 @@ describe("PlainSwitchField", () => {
   it("shows a stored true as on", async () => {
     const toggle = await render({ ignoreCase: true });
     expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("shows each stored value as the step reads it", async () => {
+    for (const [value, switchDefault, on] of SWITCH_READS) {
+      await act(async () =>
+        root.render(
+          <PlainSwitchField
+            config={value === undefined ? {} : { ignoreCase: value }}
+            field={{ ...field, defaultValue: switchDefault }}
+            onUpdateConfig={vi.fn()}
+          />
+        )
+      );
+      const toggle = container.querySelector('[role="switch"]');
+      expect(
+        toggle?.getAttribute("aria-checked"),
+        JSON.stringify([value, switchDefault])
+      ).toBe(String(on));
+    }
   });
 });
 

@@ -47,9 +47,9 @@ import {
   resolveAbiFunction,
 } from "@/lib/abi/utils";
 import { summariseGroup } from "@/lib/workflow/editor/group-summary";
-import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { parseAddressBookSelection } from "@/lib/address-book-selection";
 import { toChecksumAddress } from "@/lib/address-utils";
+import { isToggleValue } from "@/lib/utils";
 import { parseSchemaFields } from "@/lib/schema-fields";
 import { getCustomFieldRenderer } from "@/lib/workflow/editor/extension-registry";
 import {
@@ -60,6 +60,8 @@ import {
   type ActionConfigField,
   type ActionConfigFieldBase,
   isFieldGroup,
+  isFieldShown,
+  isToggleField,
   type SelectOption,
 } from "@/plugins/registry";
 import { SchemaBuilder } from "./schema-builder";
@@ -913,12 +915,8 @@ function renderField(
   disabled?: boolean,
   nodeId?: string
 ) {
-  // Check conditional rendering
-  if (field.hidden) {
-    return null;
-  }
-
-  if (!evaluateShowWhen(field.showWhen, config)) {
+  // Check conditional rendering (`hidden` included)
+  if (!isFieldShown(field, config)) {
     return null;
   }
 
@@ -1006,6 +1004,24 @@ function renderField(
   );
 }
 
+// The shown toggles holding neither on nor off, as one comparable string.
+// Each needs a fix, so its group opens to show it.
+function strayToggles(
+  fields: ActionConfigFieldBase[],
+  config: Record<string, unknown>
+): string {
+  return JSON.stringify(
+    fields
+      .filter(
+        (field) =>
+          isToggleField(field.type) &&
+          !isToggleValue(config[field.key]) &&
+          isFieldShown(field, config)
+      )
+      .map((field) => [field.key, config[field.key]])
+  );
+}
+
 /**
  * Collapsible field group component
  */
@@ -1026,16 +1042,28 @@ function FieldGroup({
   defaultExpanded?: boolean;
   nodeId?: string;
 }) {
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  const stray = strayToggles(fields, config);
+  const holdsStray = stray !== "[]";
+  const [isExpanded, setIsExpanded] = useState(
+    () => defaultExpanded || holdsStray
+  );
+  // Also when a stray value arrives later (AI edit, undo, version restore),
+  // including a second one while the user has the group shut.
+  useEffect(() => {
+    if (stray !== "[]") {
+      setIsExpanded(true);
+    }
+  }, [stray]);
   // Only worth computing for the collapsed state: expanded, the fields speak
   // for themselves.
   const summary = isExpanded ? null : summariseGroup(fields, config);
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2" data-field-group="">
       <div className="flex items-center gap-1">
         <button
           className="ml-1 flex items-center gap-1 text-left"
+          aria-expanded={isExpanded}
           onClick={() => setIsExpanded(!isExpanded)}
           type="button"
         >

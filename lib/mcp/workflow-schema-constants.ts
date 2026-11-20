@@ -33,10 +33,10 @@ export const SYSTEM_ACTIONS = {
     category: "System",
     requiredFields: {
       condition:
-        'string - JavaScript expression using {{@nodeId:Label.field}} syntax. Allowed: literals, === !== == != > >= < <=, + - * / % **, && || !, typeof, ternary, member access (a.b, a[0], .length), String(x), Array.isArray(x), Object.keys(x), and the methods .includes() .startsWith() .endsWith() .toString() .toLowerCase() .toUpperCase() .trim(). Named operators such as contains or isEmpty are not expression syntax: write String(a).includes(b), or use conditionConfig. Use == for cross-type comparisons (e.g., string "0" vs number 0). Examples: "{{@check-balance:Check Balance.balance}} == 0", "Array.isArray({{@read:Read.items}}) && {{@read:Read.items}}.includes(true)"',
+        'string - JavaScript expression using {{@nodeId:Label.field}} syntax. Allowed: literals, === !== == != > >= < <=, + - * / % **, && || !, typeof, ternary, member access (a.b, a[0], .length), String(x), Array.isArray(x), Object.keys(x), matchesRegex(x, "pattern"), and the methods .includes() .startsWith() .endsWith() .toString() .toLowerCase() .toUpperCase() .trim(). Named operators such as contains or isEmpty are not expression syntax: write String(a).includes(b), or use conditionConfig. Use == for cross-type comparisons (e.g., string "0" vs number 0). matchesRegex takes a quoted RE2 pattern (no lookahead, lookbehind, back-references or \\u escapes; (?i) ignores case); double each backslash inside the quotes, e.g. "^\\\\d+$". For "does not match", write !matchesRegex(...): notMatchesRegex is a conditionConfig operator, not a function. A condition that uses matchesRegex may use it at most 16 times and be at most 10,000 characters long, each {{...}} reference counting as about 4; a workflow may have at most 32 such Conditions, 100,000 characters of them, and about 2,000 pattern characters in all. Examples: "{{@check-balance:Check Balance.balance}} == 0", "Array.isArray({{@read:Read.items}}) && {{@read:Read.items}}.includes(true)"',
     },
     optionalFields: {
-      conditionConfig: `object - Visual condition builder config. Structure: { group: { id: "nanoid", logic: "AND" | "OR", rules: [{ id: "nanoid", leftOperand: "{{@nodeId:Label.field}}", operator: "<operator>", rightOperand: "value" }] } }. Every group and rule MUST have a unique id. Operator must be the exact key listed here (e.g. "===" not "equals", "arrayContains" not "array_contains"). Operators: ${CONDITION_OPERATOR_DOCS}. arrayContains matches primitive items only; to test a field inside an array of objects, run Filter Array (data/filter) first and check its count or values. When provided, the condition expression is auto-generated from this visual config.`,
+      conditionConfig: `object - Visual condition builder config. Structure: { group: { id: "nanoid", logic: "AND" | "OR", rules: [{ id: "nanoid", leftOperand: "{{@nodeId:Label.field}}", operator: "<operator>", rightOperand: "value" }] } }. Every group and rule MUST have a unique id. Operator must be the exact key listed here (e.g. "===" not "equals", "arrayContains" not "array_contains"). Operators: ${CONDITION_OPERATOR_DOCS}. For matchesRegex and notMatchesRegex, rightOperand is the RE2 pattern exactly as it should run, without surrounding quotes or slashes (single backslashes, e.g. ^\\d+$), not a template reference; at most 16 per condition. arrayContains matches primitive items only; to test a field inside an array of objects, run Filter Array (data/filter) first and check its count or values. When provided, the condition expression is auto-generated from this visual config.`,
     },
     outputFields: {
       result: "boolean - Whether the condition evaluated to true",
@@ -58,6 +58,7 @@ export const SYSTEM_ACTIONS = {
       httpHeaders: "string - JSON object of headers",
       httpBody: "string - JSON request body (ignored for GET)",
       timeout: "number - Request timeout in seconds (default 5, min 1, max 30)",
+      // A "boolean - " input is an on/off toggle: save takes only true or false.
       failOnError:
         "boolean - Default true. When false, a non-2xx response or timeout does not fail the step; instead the next node receives { status, data: null, error }. Use for aggregator workflows where one source being down should not fail the whole run.",
       retryAttempts:
@@ -440,3 +441,25 @@ export const TEMPLATE_SYNTAX = {
 // Helper types Phase 48 + future phases can consume.
 export type TriggerKey = keyof typeof TRIGGERS;
 export type SystemActionKey = keyof typeof SYSTEM_ACTIONS;
+
+const BOOLEAN_INPUT_PREFIX = "boolean - ";
+
+/**
+ * The on/off inputs of a system action: its fields described as boolean. The
+ * save validator checks these, so a new one is covered once it is listed here.
+ */
+export function systemActionToggleKeys(actionType: string): string[] {
+  const action = Object.values(SYSTEM_ACTIONS).find(
+    (entry) => entry.actionType === actionType
+  );
+  if (!action) {
+    return [];
+  }
+  const inputs: Record<string, string> = {
+    ...action.requiredFields,
+    ...("optionalFields" in action ? action.optionalFields : {}),
+  };
+  return Object.entries(inputs)
+    .filter(([, description]) => description.startsWith(BOOLEAN_INPUT_PREFIX))
+    .map(([key]) => key);
+}

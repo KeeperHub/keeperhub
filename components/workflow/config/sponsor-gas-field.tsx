@@ -2,15 +2,18 @@
 
 import { AlertTriangle } from "lucide-react";
 import { SwitchField } from "@/components/workflow/config/switch-field";
-import { resolveSponsorGas } from "@/lib/web3/sponsorship-feature-flag";
+import { readToggle, toggleRuleOf } from "@/plugins/registry";
+
+const SPONSOR_GAS_RULE = toggleRuleOf({ type: "gas-sponsorship-switch" });
 
 type SponsorGasFieldProps = {
   id: string;
   label: string;
   description?: string;
   value: unknown;
-  onChange: (checked: boolean) => void;
+  onChange: (value: boolean | undefined) => void;
   disabled?: boolean;
+  resetOnly: boolean;
 };
 
 /**
@@ -30,18 +33,22 @@ export function SponsorGasField({
   value,
   onChange,
   disabled,
+  resetOnly,
 }: SponsorGasFieldProps) {
-  const sponsored = resolveSponsorGas(value);
+  // The switch and the warning read the value by one rule.
+  const sponsored = readToggle(SPONSOR_GAS_RULE, value);
 
   return (
     <div className="space-y-2">
       <SwitchField
-        checked={sponsored}
         description={description}
         disabled={disabled}
         id={id}
+        rule={SPONSOR_GAS_RULE}
         label={label}
         onChange={onChange}
+        resetOnly={resetOnly}
+        value={value}
       />
       {!sponsored && (
         <div className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-amber-700 text-xs dark:text-amber-300">

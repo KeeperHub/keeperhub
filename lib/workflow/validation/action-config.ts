@@ -1,11 +1,13 @@
 import { ADDRESS_BOOK_SELECTION_KEY } from "@/lib/address-book-selection";
+import { systemActionToggleKeys } from "@/lib/mcp/workflow-schema-constants";
 import {
   isSolidityArrayType,
   normalizeProtocolArrayValue,
   solidityArrayItemType,
 } from "@/lib/protocol-array-value";
-import { resolveSwitch, switchRefusal } from "@/lib/utils";
+import { isBoolLiteral, isToggleValue, switchRefusal } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
+import { cutText } from "@/lib/utils/cut-text";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
   checkSolidityValue,
@@ -13,15 +15,32 @@ import {
   INTEGER_PATTERN,
   UNSIGNED_INTEGER_PATTERN,
 } from "@/lib/web3/solidity-values";
-import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
-import { SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST } from "@/lib/workflow/executor/system-action-types";
-import { valueContainsTemplate } from "@/lib/workflow/template-ref";
+import { BUILTIN_NODE_ID } from "@/lib/workflow/editor/builtin-variables";
+import {
+  evaluateShowWhen,
+  type ShowWhen,
+} from "@/lib/workflow/editor/show-when";
+import {
+  SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST,
+  type SystemActionType,
+} from "@/lib/workflow/executor/system-action-types";
+import {
+  workflowConditions,
+  workflowRegexIssue,
+} from "@/lib/workflow/nodes/condition/validator";
+import {
+  sanitizeNodeId,
+  valueContainsTemplate,
+} from "@/lib/workflow/template-ref";
+import { strayValueParts } from "@/lib/workflow/validation/stray-toggle-value";
 import {
   type ActionConfigField,
   type ActionConfigFieldBase,
   findActionById,
   getAllActions,
+  isDefaultOnToggleField,
   isDisplayOnlyField,
+  isToggleField,
 } from "@/plugins/registry";
 
 // Built from the shared union so this validator, the executor dispatch table,
@@ -76,31 +95,27 @@ const SUMMARY_NAME_PRIORITY: Record<ActionConfigValidationIssueCode, number> = {
   UNKNOWN_FIELD: 2,
 };
 
-function sanitiseSummaryText(text: string, maxChars: number): string {
+function sanitiseSummaryText(
+  text: string,
+  maxChars: number,
+  { keepParens = false } = {}
+): string {
   // The text is interpolated into a single-line summary, so nothing
   // whitespace-like survives, and a removed character leaves a space rather
   // than joining the words either side of it into one.
   let stripped = stripControlChars(text, { replacement: " " });
   // Escape format delimiters to prevent malicious text from rendering a
-  // convincing fake entry in the summary.
-  stripped = stripped
-    .replace(/"/g, "'")
-    .replace(/\(/g, "[")
-    .replace(/\)/g, "]");
+  // convincing fake entry in the summary. Every entry starts with a double
+  // quote, so a reason may keep its parentheses (regex advice needs them).
+  stripped = stripped.replace(/"/g, "'");
+  if (!keepParens) {
+    stripped = stripped.replace(/\(/g, "[").replace(/\)/g, "]");
+  }
   stripped = stripped.trim();
   if (stripped.length > maxChars) {
     return `${cutText(stripped, maxChars - 3)}...`;
   }
   return stripped;
-}
-
-// The first `length` UTF-16 units, one fewer when that would end on the
-// first half of a surrogate pair (an emoji, for one).
-function cutText(text: string, length: number): string {
-  const last = text.charCodeAt(length - 1);
-  return last >= HIGH_SURROGATE_MIN && last <= HIGH_SURROGATE_MAX
-    ? text.slice(0, length - 1)
-    : text.slice(0, length);
 }
 
 function fixedArrayLength(
@@ -222,6 +237,10 @@ export type WorkflowNodeForValidation = {
 type FieldCheckResult =
   | { valid: true }
   | { valid: false; expected: string; received: unknown; reason?: string };
+
+function isSystemActionType(value: string): value is SystemActionType {
+  return SYSTEM_ACTION_TYPES.has(value);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -495,13 +514,16 @@ export function isKnownConfigKeyForAction(
   return isLegacyIgnoredField(actionType, key);
 }
 
+/** A bool field value save accepts; the editor's bool field uses it too. */
+export function isSavableBoolValue(value: unknown): boolean {
+  return isBoolLiteral(value) || valueContainsTemplate(value);
+}
+
 // A field value echoed in `received` is the caller's own input; long text is
 // cut and a large list or object is described rather than sent back whole.
 const RECEIVED_MAX_CHARS = 200;
 // 100 entries already serialise past 200 characters ("[0,0,...]").
 const RECEIVED_MAX_ENTRIES = 100;
-const HIGH_SURROGATE_MIN = 0xd8_00;
-const HIGH_SURROGATE_MAX = 0xdb_ff;
 
 function capReceived(value: unknown): unknown {
   if (typeof value === "string") {
@@ -533,6 +555,179 @@ function capReceived(value: unknown): unknown {
 
 function validateStringLike(value: unknown): boolean {
   return typeof value === "string" || typeof value === "number";
+}
+
+// Why a toggle refuses a value, the same words for every toggle.
+function toggleRefusal(label: string, value: unknown): string {
+  return valueContainsTemplate(value)
+    ? `${label} does not take a template, only true or false.`
+    : switchRefusal(label, value);
+}
+
+// A toggle has no template mode in the editor, and a template could let the
+// data it reads switch gas sponsorship or fail-on-error off.
+function toggleIssue(
+  path: string,
+  actionType: string,
+  field: { key: string; label?: string },
+  value: unknown,
+  identity: { nodeId?: string; nodeLabel?: string }
+): ActionConfigValidationIssue {
+  return {
+    code: "INVALID_FIELD_VALUE",
+    path,
+    actionType,
+    field: field.key,
+    nodeId: identity.nodeId,
+    nodeLabel: identity.nodeLabel,
+    expected: "boolean",
+    received: capReceived(value),
+    message: toggleRefusal(field.label ?? field.key, value),
+  };
+}
+
+// Node id -> a field read from each node: its config or its label.
+function nodesById<T>(
+  nodes: readonly unknown[],
+  read: (data: Record<string, unknown>) => T | undefined
+): Map<string, T> {
+  const byId = new Map<string, T>();
+  for (const node of nodes) {
+    if (isRecord(node) && typeof node.id === "string" && isRecord(node.data)) {
+      const value = read(node.data);
+      if (value !== undefined) {
+        byId.set(node.id, value);
+      }
+    }
+  }
+  return byId;
+}
+
+// What a node is and runs, e.g. "action:HTTP Request" or "trigger:Webhook".
+function nodeKind(data: Record<string, unknown>): string {
+  const config = isRecord(data.config) ? data.config : {};
+  return data.type === "trigger"
+    ? `trigger:${String(config.triggerType)}`
+    : `action:${String(config.actionType)}`;
+}
+
+type KeptStray = (
+  node: { id?: unknown },
+  config: Record<string, unknown>,
+  field: { key: string; type?: string; showWhen?: ShowWhen }
+) => boolean;
+
+type NodeIndex = {
+  configs: Map<string, Record<string, unknown>>;
+  // Output key -> "id=kind" of every node whose output is stored under it.
+  kinds: Map<string, Set<string>>;
+};
+
+function indexNodes(nodes: readonly unknown[]): NodeIndex {
+  const kinds = new Map<string, Set<string>>();
+  // The run stores the built-in variables under their own key before any node.
+  const entries: [string, string][] = [
+    [BUILTIN_NODE_ID, "system"],
+    ...nodesById(nodes, nodeKind),
+  ];
+  for (const [id, kind] of entries) {
+    const key = sanitizeNodeId(id);
+    kinds.set(key, (kinds.get(key) ?? new Set()).add(`${id}=${kind}`));
+  }
+  return {
+    configs: nodesById(nodes, (data) =>
+      isRecord(data.config) ? data.config : undefined
+    ),
+    kinds,
+  };
+}
+
+// The nodes a reference reads (id and kind), as one comparable string.
+function kindsRead(index: NodeIndex, key: string): string {
+  return [...(index.kinds.get(key) ?? [])].sort().join("|");
+}
+
+// Same text and references; each reference now reads the same nodes (id and
+// kind) as when saved, or nothing.
+function sameStrayText(
+  was: string,
+  value: string,
+  saved: NodeIndex,
+  current: NodeIndex
+): boolean {
+  const parts = strayValueParts(value);
+  if (
+    !parts ||
+    JSON.stringify(strayValueParts(was)) !== JSON.stringify(parts)
+  ) {
+    return false;
+  }
+  return parts.every((part) => {
+    if (!("reads" in part)) {
+      return true;
+    }
+    const before = kindsRead(saved, part.reads);
+    const now = kindsRead(current, part.reads);
+    return now === "" || now === before;
+  });
+}
+
+// Lets a toggle keep the stray value it was saved with, so older workflows
+// keep saving; same node and action, text or a number, plain switch shown.
+function keptStrayMatcher(
+  nodes: readonly unknown[],
+  savedNodes: readonly unknown[] | undefined
+): KeptStray {
+  if (!savedNodes) {
+    return () => false;
+  }
+  const saved = indexNodes(savedNodes);
+  const current = indexNodes(nodes);
+  const idCounts = new Map<string, number>();
+  for (const node of nodes) {
+    if (isRecord(node) && typeof node.id === "string") {
+      idCounts.set(node.id, (idCounts.get(node.id) ?? 0) + 1);
+    }
+  }
+  return (node, config, field) => {
+    const value = config[field.key];
+    const before =
+      typeof node.id === "string" && idCounts.get(node.id) === 1
+        ? saved.configs.get(node.id)
+        : undefined;
+    if (
+      before === undefined ||
+      isToggleValue(value) ||
+      before.actionType !== config.actionType ||
+      !Object.hasOwn(before, field.key) ||
+      (field.type === "switch" && !evaluateShowWhen(field.showWhen, before))
+    ) {
+      return false;
+    }
+    const was = before[field.key];
+    if (typeof was === "string" && typeof value === "string") {
+      return sameStrayText(was, value, saved, current);
+    }
+    return typeof was === "number" && Object.is(was, value);
+  };
+}
+
+// "refuse" a default-on toggle holding neither on nor off, even when its
+// condition fails, as the step still reads it. A plain switch goes through
+// the usual "check", shown fields only. A `hidden` field is skipped: the form
+// never shows it, so a value there could not be fixed.
+function toggleVerdict(
+  field: ActionConfigFieldBase,
+  value: unknown,
+  keptAsSaved: boolean
+): "refuse" | "skip" | "check" {
+  if (field.hidden || keptAsSaved) {
+    return "skip";
+  }
+  if (isDefaultOnToggleField(field.type)) {
+    return isToggleValue(value) ? "skip" : "refuse";
+  }
+  return "check";
 }
 
 function validateFieldValue(
@@ -613,24 +808,16 @@ function validateFieldValue(
     // A plain switch has no template mode in the editor, and its step takes
     // only true or false.
     case "switch":
-      return resolveSwitch(value, undefined) === undefined
-        ? {
+      return isToggleValue(value)
+        ? { valid: true }
+        : {
             valid: false,
             expected: "boolean",
             received: value,
-            reason: valueContainsTemplate(value)
-              ? `${field.label} does not take a template, only true or false.`
-              : switchRefusal(field.label, value),
-          }
-        : { valid: true };
+            reason: toggleRefusal(field.label, value),
+          };
     case "protocol-bool":
-      if (valueContainsTemplate(value)) {
-        return { valid: true };
-      }
-      return value === true ||
-        value === false ||
-        value === "true" ||
-        value === "false"
+      return isSavableBoolValue(value)
         ? { valid: true }
         : { valid: false, expected: "boolean", received: value };
     case "protocol-bytes":
@@ -742,10 +929,61 @@ function validateFieldValue(
   }
 }
 
+/** The on/off toggle keys of an action, plugin or system. */
+function toggleKeysOf(actionType: string): string[] {
+  if (isSystemActionType(actionType)) {
+    return systemActionToggleKeys(actionType);
+  }
+  const action = findActionById(actionType);
+  return action
+    ? flattenConfigFields(action.configFields)
+        .filter((field) => isToggleField(field.type))
+        .map((field) => field.key)
+    : [];
+}
+
+/**
+ * Unsets every stray toggle, hidden ones too, for a copy into another
+ * organization, which must not keep one the way a save of the same workflow does.
+ */
+export function clearStrayToggles(
+  nodes: Record<string, unknown>[]
+): Record<string, unknown>[] {
+  return nodes.map((node) => {
+    const data = node.data;
+    if (!(isRecord(data) && isRecord(data.config))) {
+      return node;
+    }
+    const config = data.config;
+    const actionType = config.actionType;
+    if (typeof actionType !== "string") {
+      return node;
+    }
+    const stray = toggleKeysOf(actionType).filter(
+      (key) => !isToggleValue(config[key])
+    );
+    if (stray.length === 0) {
+      return node;
+    }
+    const cleared = { ...config };
+    for (const key of stray) {
+      delete cleared[key];
+    }
+    return { ...node, data: { ...data, config: cleared } };
+  });
+}
+
+export type ActionConfigValidationOptions = {
+  // The workflow's nodes as stored, when an existing workflow is saved.
+  savedNodes?: readonly unknown[];
+};
+
 export function validateWorkflowActionConfigs(
-  nodes: WorkflowNodeForValidation[]
+  nodes: WorkflowNodeForValidation[],
+  options: ActionConfigValidationOptions = {}
 ): ActionConfigValidationResult {
   const issues: ActionConfigValidationIssue[] = [];
+  const keptStray = keptStrayMatcher(nodes, options.savedNodes);
 
   for (const [nodeIndex, node] of nodes.entries()) {
     if (node.id !== undefined && typeof node.id !== "string") {
@@ -789,7 +1027,20 @@ export function validateWorkflowActionConfigs(
       continue;
     }
 
-    if (SYSTEM_ACTION_TYPES.has(actionType)) {
+    if (isSystemActionType(actionType)) {
+      for (const key of systemActionToggleKeys(actionType)) {
+        if (!(isToggleValue(config[key]) || keptStray(node, config, { key }))) {
+          issues.push(
+            toggleIssue(
+              `nodes[${nodeIndex}].data.config.${key}`,
+              actionType,
+              { key },
+              config[key],
+              nodeIdentity(node, `nodes[${nodeIndex}]`)
+            )
+          );
+        }
+      }
       continue;
     }
 
@@ -868,6 +1119,27 @@ export function validateWorkflowActionConfigs(
       // persisted anything would otherwise start blocking saves.
       if (isDisplayOnlyField(field.type)) {
         continue;
+      }
+      if (isToggleField(field.type)) {
+        const verdict = toggleVerdict(
+          field,
+          config[field.key],
+          keptStray(node, config, field)
+        );
+        if (verdict === "refuse") {
+          issues.push(
+            toggleIssue(
+              `nodes[${nodeIndex}].data.config.${field.key}`,
+              actionType,
+              field,
+              config[field.key],
+              identity
+            )
+          );
+        }
+        if (verdict !== "check") {
+          continue;
+        }
       }
       if (!evaluateShowWhen(field.showWhen, config)) {
         continue;
@@ -951,6 +1223,24 @@ export function validateWorkflowActionConfigs(
         message: crossFieldIssue.message,
       });
     }
+  }
+
+  // Regex Conditions that fail any run reaching them, then their patterns together.
+  const regexIssue = workflowRegexIssue(workflowConditions(nodes));
+  if (regexIssue) {
+    const identity = nodeIdentity(
+      nodes[regexIssue.index],
+      `nodes[${regexIssue.index}]`
+    );
+    issues.push({
+      code: "INVALID_FIELD_VALUE",
+      path: `nodes[${regexIssue.index}].data.config.condition`,
+      actionType: "Condition",
+      field: "condition",
+      nodeId: identity.nodeId,
+      nodeLabel: identity.nodeLabel,
+      message: regexIssue.message,
+    });
   }
 
   return { valid: issues.length === 0, issues };
@@ -1114,7 +1404,7 @@ export function formatActionConfigValidationResponse(
             }
             entries.push(
               reason
-                ? `"${label}": ${sanitiseSummaryText(reason, DETAIL_MAX_CHARS).replace(TRAILING_PERIOD, "")}`
+                ? `"${label}": ${sanitiseSummaryText(reason, DETAIL_MAX_CHARS, { keepParens: true }).replace(TRAILING_PERIOD, "")}`
                 : `"${label}"${formatNodeFields(ordered, count)}`
             );
             shown++;

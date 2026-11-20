@@ -13,6 +13,7 @@ export type {
 } from "../../../utils/db";
 export {
   addTestOrganization,
+  addTestOrganizationViewer,
   createApiKey,
   createTestPublicTag,
   createTestWorkflow,

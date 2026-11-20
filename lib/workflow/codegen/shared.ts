@@ -1,11 +1,15 @@
+import { isSafeConditionExpression } from "@/lib/workflow/nodes/condition/safe-eval";
+import { maskStringLiterals } from "@/lib/workflow/nodes/condition/string-literal";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
-import { findTemplateTokens } from "@/lib/workflow/template-ref";
+import {
+  findTemplateTokens,
+  replaceTemplateTokens,
+} from "@/lib/workflow/template-ref";
 import { findActionById } from "@/plugins/registry";
 
 // Regex patterns at top level for performance
 export const WHITESPACE_PATTERN = /\s+/;
 export const NON_ALPHANUMERIC_PATTERN = /[^a-zA-Z0-9]/g;
-export const ARRAY_INDEX_PATTERN = /^([^[]+)\[(\d+)\]$/;
 export const VALID_IDENTIFIER_PATTERN = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
 export const NUMBER_START_PATTERN = /^[0-9]/;
 
@@ -106,20 +110,60 @@ export function findTriggerNodes(
   );
 }
 
+const IDENTIFIER_PART = /^[A-Za-z_$][\w$]*$/;
+// An index written as a number literal: no leading zero, exact as a double.
+const CANONICAL_INDEX = /^(?:0|[1-9]\d{0,14})$/;
+// key[index], read the way the run reads a path part (resolveStrictPath).
+const INDEXED_PART = /^([^[]+)\[(\d+)\]$/;
+
+// Exporters escape some output again after conversion, which a key without
+// backslash or backtick survives; code written as is keeps the plain key.
+function quotedKey(key: string, writtenAsIs: boolean): string {
+  const json = JSON.stringify(key);
+  if (writtenAsIs || !(json.includes("\\") || key.includes("`"))) {
+    return json;
+  }
+  const codes = Array.from({ length: key.length }, (_, i) => key.charCodeAt(i));
+  return `String.fromCharCode(${codes.join(",")})`;
+}
+
+type AccessPathOptions = { optional?: boolean; writtenAsIs?: boolean };
+
+function keyAccess(key: string, options: AccessPathOptions): string {
+  const optional = options.optional ?? false;
+  if (IDENTIFIER_PART.test(key)) {
+    return `${optional ? "?." : "."}${key}`;
+  }
+  const open = optional ? "?.[" : "[";
+  return CANONICAL_INDEX.test(key)
+    ? `${open}${key}]`
+    : `${open}${quotedKey(key, options.writtenAsIs ?? false)}]`;
+}
+
 /**
- * Helper to build access path from field path
+ * A field path as code, read as the run reads it (trimmed parts, key[n]),
+ * with any key that is not a plain name or index written as data.
  */
-export function buildAccessPath(fieldPath: string): string {
-  return fieldPath
-    .split(".")
-    .map((part: string) => {
-      const arrayMatch = ARRAY_INDEX_PATTERN.exec(part);
-      if (arrayMatch) {
-        return `.${arrayMatch[1]}[${arrayMatch[2]}]`;
-      }
-      return `.${part}`;
-    })
-    .join("");
+export function buildAccessPath(
+  fieldPath: string,
+  options: AccessPathOptions = {}
+): string {
+  const open = options.optional ? "?.[" : "[";
+  let path = "";
+  for (const raw of fieldPath.split(".")) {
+    const part = raw.trim();
+    if (!part) {
+      continue;
+    }
+    const indexed = INDEXED_PART.exec(part);
+    if (indexed) {
+      const index = String(Number.parseInt(indexed[2], 10));
+      path += `${keyAccess(indexed[1], options)}${open}${index}]`;
+    } else {
+      path += keyAccess(part, options);
+    }
+  }
+  return path;
 }
 
 /**
@@ -158,6 +202,67 @@ export function removeInvisibleChars(str: string): string {
     .replace(/\u00a0/g, " ") // Non-breaking space
     .replace(/[\u2000-\u200B\u2028\u2029]/g, " "); // Various invisible space characters
 }
+
+/** Text that cannot end or break out of a // or /* comment. */
+export function commentSafe(text: string): string {
+  return text.replace(/[\r\n\u2028\u2029]+/g, " ").replace(/\*\//g, "*\\/");
+}
+
+/** Literal text for a template literal, escaped before references become ${...}. */
+function escapeTemplateText(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/`/g, "\\`")
+    .replace(/\$\{/g, "\\${");
+}
+
+/**
+ * The run's grammar, each resolved reference read as a variable; a token the
+ * exporter cannot resolve stays as typed and fails. Callers handle regex.
+ */
+export function isExportableCondition(
+  condition: string,
+  resolves: (tokenBody: string) => boolean
+): boolean {
+  return isSafeConditionExpression(
+    replaceTemplateTokens(condition, ({ body }) =>
+      resolves(body) ? "__v0" : `{{${body}}}`
+    )
+  );
+}
+
+/** Template-literal text with only the text between references escaped. */
+export function escapeTextAroundTokens(
+  text: string,
+  convertToken: (token: string) => string
+): string {
+  let result = "";
+  let last = 0;
+  for (const token of findTemplateTokens(text)) {
+    result +=
+      escapeTemplateText(text.slice(last, token.start)) +
+      convertToken(text.slice(token.start, token.end));
+    last = token.end;
+  }
+  return result + escapeTemplateText(text.slice(last));
+}
+
+// Read one way by the condition grammar and another by JavaScript: ++, --,
+// 010 (10, or a module syntax error) and 1.e3 (a member of 1, or 1000).
+const JS_ONLY_TOKENS = /\+\+|--|(?<![\w$.])(?:0\d|\d+\.[A-Za-z_$])/;
+
+/** False when JavaScript would read one of JS_ONLY_TOKENS differently. */
+export function readsTheSameInJs(code: string): boolean {
+  try {
+    return !JS_ONLY_TOKENS.test(maskStringLiterals(code));
+  } catch {
+    return false;
+  }
+}
+
+/** Exported code for a condition that uses matchesRegex: it fails loudly. */
+export const REGEX_NOT_EXPORTED =
+  '(() => { throw new Error("This condition uses matchesRegex, which exported code does not support. Rewrite it by hand."); })()';
 
 /**
  * Escape a string for safe use in template literals

@@ -13,7 +13,8 @@ import type {
   ConditionRule,
 } from "./builder-types";
 import { isConditionGroup } from "./builder-types";
-import { OPERATOR_METADATA } from "./operator-metadata";
+import { isRegexOperator, OPERATOR_METADATA } from "./operator-metadata";
+import { readRegexPattern } from "./regex-match";
 
 // Decimal grammar the safe-eval tokenizer accepts (integer or fixed-point, optional sign).
 // Excludes hex like 0x... and exponents like 1e5, which Number() treats as numeric but the
@@ -55,8 +56,17 @@ function wrapOperand(operand: string): string {
     return trimmed;
   }
 
-  const escaped = trimmed.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  return `"${escaped}"`;
+  return quoteText(trimmed);
+}
+
+function quoteText(text: string): string {
+  return `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+// The pattern exactly as typed, always one quoted literal (42, true and
+// "a"|"b" included). A reference inside it is refused when the rule runs.
+function regexOperand(operand: string): string {
+  return quoteText(readRegexPattern(operand));
 }
 
 // Both sides arrive as expressions: wrapped operands, or variables such as __v0.
@@ -109,8 +119,13 @@ export function operatorToExpression(
     case "isNotUndefined":
       return `(${left} !== undefined)`;
 
+    // No String(): the call refuses a list or object instead of testing
+    // "[object Object]".
     case "matchesRegex":
-      return `new RegExp(${right}).test(String(${left}))`;
+      return `matchesRegex(${left}, ${right})`;
+
+    case "notMatchesRegex":
+      return `!matchesRegex(${left}, ${right})`;
 
     case "isTrue":
       return `${left} === true`;
@@ -151,7 +166,9 @@ function ruleToExpression(rule: ConditionRule): string {
   return operatorToExpression(
     rule.operator,
     wrapOperand(rule.leftOperand),
-    wrapOperand(rule.rightOperand)
+    isRegexOperator(rule.operator)
+      ? regexOperand(rule.rightOperand)
+      : wrapOperand(rule.rightOperand)
   );
 }
 

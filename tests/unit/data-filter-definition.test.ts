@@ -87,10 +87,10 @@ function actionNode(config: Record<string, unknown>) {
 
 describe("data/filter definition", () => {
   describe("operator options", () => {
-    it("offers every Condition operator except matches regex, the three negations and keep every item", () => {
+    it("offers every Condition operator, the three negations and keep every item", () => {
       const offered = FILTER_OPERATOR_OPTIONS.map((option) => option.value);
       const expected = [
-        ...CONDITION_OPERATORS.filter((op) => op !== "matchesRegex"),
+        ...CONDITION_OPERATORS,
         "notContains",
         "notStartsWith",
         "notEndsWith",
@@ -121,7 +121,7 @@ describe("data/filter definition", () => {
     it("uses Condition's labels, groups and order, each negation after its test", () => {
       const conditionOrder = OPERATOR_GROUPS.flatMap((group) =>
         operatorsForCategory(group.category)
-      ).filter((op) => op !== "matchesRegex");
+      );
       const conditionOptions = FILTER_OPERATOR_OPTIONS.filter(
         (option) => option.value in OPERATOR_METADATA
       );
@@ -142,6 +142,7 @@ describe("data/filter definition", () => {
         ["notContains", "contains"],
         ["notStartsWith", "startsWith"],
         ["notEndsWith", "endsWith"],
+        ["notMatchesRegex", "matchesRegex"],
       ]) {
         expect(values.indexOf(negation as never)).toBe(
           values.indexOf(base as never) + 1
@@ -266,6 +267,49 @@ describe("data/filter definition", () => {
         actionNode(editorConfig({ operator: "isTrue" })),
       ]);
       expect(result.valid).toBe(false);
+    });
+
+    it("refuses a regex pattern from another node, but not a compared value", () => {
+      for (const operator of ["matchesRegex", "notMatchesRegex"]) {
+        const result = validateWorkflowActionConfigs([
+          actionNode(
+            editorConfig({
+              source: "{{@node1:Chainlog.result}}",
+              operator,
+              value: "{{@node2:Webhook.pattern}}",
+            })
+          ),
+        ]);
+        expect(result.valid, operator).toBe(false);
+        expect(JSON.stringify(result.issues), operator).toContain(
+          "not taken from another node"
+        );
+      }
+      const compared = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "{{@node1:Chainlog.result}}",
+            operator: "startsWith",
+            value: "{{@node2:Webhook.prefix}}",
+          })
+        ),
+      ]);
+      expect(compared).toEqual({ valid: true, issues: [] });
+    });
+
+    it("refuses a regex pattern that cannot run when saved", () => {
+      const result = validateWorkflowActionConfigs([
+        actionNode(
+          editorConfig({
+            source: "{{@node1:Chainlog.result}}",
+            operator: "matchesRegex",
+            value: "^(?=EMSP)",
+          })
+        ),
+      ]);
+      expect(JSON.stringify(result.issues)).toContain(
+        "Lookahead and lookbehind"
+      );
     });
   });
 

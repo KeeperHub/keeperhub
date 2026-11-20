@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { splitTemplateRef } from "@/lib/workflow/template-ref";
+import { sanitizeNodeId, splitTemplateRef } from "@/lib/workflow/template-ref";
 
 describe("splitTemplateRef", () => {
   it("keeps a dotted label intact and takes the field after it", () => {
@@ -56,5 +56,13 @@ describe("splitTemplateRef", () => {
       label: "HTTP Request",
       fieldPath: "status",
     });
+  });
+});
+
+describe("sanitizeNodeId", () => {
+  it("keeps letters and digits and turns every other character into _", () => {
+    expect(sanitizeNodeId("Ab9-x.y_z w-")).toBe("Ab9_x_y_z_w_");
+    expect(sanitizeNodeId("__system")).toBe("__system");
+    expect(sanitizeNodeId("")).toBe("");
   });
 });
