@@ -21,8 +21,16 @@ import {
 } from "lucide-react";
 import { nanoid } from "nanoid";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import {
+  type CSSProperties,
+  type Ref,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { toast, useSonner } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MobileNav } from "@/components/mobile-nav";
@@ -46,7 +54,16 @@ import {
 } from "@/lib/api-client";
 import { useProjects, useTags } from "@/lib/hooks/use-org-data";
 import { useOrgAccess } from "@/lib/hooks/use-org-access";
-import { VIEWER_DISABLED_REASON } from "@/lib/organization/role-label";
+import {
+  READ_ONLY_LABEL,
+  VIEWER_DISABLED_REASON,
+} from "@/lib/organization/role-label";
+import {
+  PREVIEW_LABEL,
+  USE_TEMPLATE_IMPORTING,
+  USE_TEMPLATE_LABEL,
+  USE_TEMPLATE_TEXT,
+} from "@/lib/workflow/use-template-copy";
 import { VersionPreviewBanner } from "./version-preview-banner";
 import { useSession } from "@/lib/auth-client";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
@@ -98,6 +115,7 @@ import {
   previewVersionAtom,
   propertiesPanelActiveTabAtom,
   redoAtom,
+  rightPanelWidthAtom,
   runsRefreshTriggerAtom,
   selectedEdgeAtom,
   selectedExecutionIdAtom,
@@ -1993,6 +2011,10 @@ function runIconOnlyBelow(
   return hasSelection ? "withSwitchAndDelete" : "withSwitch";
 }
 
+// The editor's filled green buttons (Run, Use template).
+const GREEN_BUTTON_CLASSES =
+  "bg-keeperhub-green hover:bg-keeperhub-green-dark disabled:opacity-70";
+
 function RunButtonGroup({
   state,
   actions,
@@ -2041,7 +2063,8 @@ function RunButtonGroup({
   const button = (
     <Button
       className={cn(
-        "min-w-20 bg-keeperhub-green hover:bg-keeperhub-green-dark disabled:opacity-70 disabled:[&>svg]:text-muted-foreground",
+        GREEN_BUTTON_CLASSES,
+        "min-w-20 disabled:[&>svg]:text-muted-foreground",
         iconOnly.button
       )}
       data-tour="workflow-run"
@@ -2105,11 +2128,26 @@ function RunButtonGroup({
 const READ_ONLY_BADGE_CLASS =
   "border-2 border-[var(--color-text-accent)]/60 bg-[var(--color-bg-accent)]/10 font-semibold text-[var(--color-text-accent)] text-xs uppercase tracking-wider backdrop-blur-sm dark:border-[var(--color-text-accent)]/50 dark:bg-transparent";
 
-// Read-only badge - pill with a strong accent outline on the toolbar
-function ReadOnlyBadge({ className }: { className?: string }) {
+// Neutral (unlike the viewer's badge), so the green button stays the one
+// accent. An org viewer sees Read only instead, with the reason on hover.
+function PreviewBadge({
+  className,
+  viewOnly,
+}: {
+  className?: string;
+  viewOnly: boolean;
+}): React.ReactElement {
   return (
-    <Badge className={cn(READ_ONLY_BADGE_CLASS, className)} variant="outline">
-      Preview
+    <Badge
+      className={cn(
+        "border-border bg-transparent font-semibold text-foreground/80 text-xs uppercase tracking-wider",
+        className
+      )}
+      title={viewOnly ? VIEWER_DISABLED_REASON : undefined}
+      variant="outline"
+    >
+      {viewOnly && <Eye aria-hidden="true" />}
+      {viewOnly ? READ_ONLY_LABEL : PREVIEW_LABEL}
     </Badge>
   );
 }
@@ -2124,50 +2162,220 @@ function ViewOnlyBadge() {
       variant="outline"
     >
       <Eye aria-hidden="true" />
-      <span className="max-lg:sr-only">Read only</span>
+      <span className="max-lg:sr-only">{READ_ONLY_LABEL}</span>
     </Badge>
   );
 }
 
-// Use-template Button — placed next to Sign In for non-owners (HUB-01, HUB-02).
+// What the free canvas has room for: nothing (the header takes the button
+// and the read-only badge), the button alone (the header takes the badge),
+// or both. The widths: the card's button, then its badge too, with padding.
+type BarFit = "none" | "button" | "full";
+const BUTTON_FITS_REM = 9.5;
+const BADGE_FITS_REM = 15.5;
+// The card lifts the zoom controls and toasts that come this close to it.
+const LIFT_GAP_PX = 16;
+
+type BarLifts = { controls: boolean; toasts: boolean };
+const NO_LIFTS: BarLifts = { controls: false, toasts: false };
+
+// Whether the element's horizontal span comes within LIFT_GAP_PX of rect's.
+function nearSideways(rect: DOMRect, element: Element | null): boolean {
+  if (!element) {
+    return false;
+  }
+  const other = element.getBoundingClientRect();
+  return (
+    rect.left < other.right + LIFT_GAP_PX &&
+    other.left < rect.right + LIFT_GAP_PX
+  );
+}
+
 function UseTemplateButton({
   className,
   isUsingTemplate,
   onUseTemplate,
+  ref,
   viewOnly,
 }: {
   className?: string;
   isUsingTemplate: boolean;
   onUseTemplate: () => void;
-  // True for viewers: a template lands in the active org, which they cannot change.
+  ref: Ref<HTMLButtonElement>;
+  // True for org viewers: a template lands in the active org, which they cannot change.
   viewOnly: boolean;
-}) {
+}): React.ReactElement {
   return (
-    <ViewOnlyTooltip className={className} isViewer={viewOnly}>
-      <button
-        aria-label="Use this workflow as a template"
+    <ViewOnlyTooltip className={cn("shrink-0", className)} isViewer={viewOnly}>
+      <Button
+        aria-busy={isUsingTemplate}
+        aria-label={USE_TEMPLATE_LABEL}
         className={cn(
-          "inline-flex h-8 items-center rounded-md border px-2.5 font-normal text-xs transition-colors duration-150 hover:bg-[var(--color-bg-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50 motion-reduce:transition-none phone-ui:shrink-0 phone-ui:whitespace-nowrap",
+          GREEN_BUTTON_CLASSES,
+          // Dimmed like the app's other view-only controls.
+          viewOnly && "disabled:opacity-50",
+          "shrink-0 focus-visible:hub-focus-ring focus-visible:ring-offset-background",
           !viewOnly && className
         )}
         data-analytics="template_use_clicked"
         disabled={viewOnly || isUsingTemplate}
         onClick={onUseTemplate}
-        style={{
-          borderColor: "color-mix(in oklab, var(--color-text-accent) 50%, transparent)",
-          color: "var(--color-text-accent)",
-        }}
-        title="Use this workflow as a template in your account"
-        type="button"
+        ref={ref}
       >
         {isUsingTemplate ? (
-          <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+          <Loader2 className="size-4 animate-spin" />
         ) : (
-          <Copy className="mr-1.5 size-3.5" />
+          <Copy className="size-4" />
         )}
-        {isUsingTemplate ? "Importing…" : "Use template"}
-      </button>
+        {isUsingTemplate ? USE_TEMPLATE_IMPORTING : USE_TEMPLATE_TEXT}
+      </Button>
     </ViewOnlyTooltip>
+  );
+}
+
+// Use template for a public workflow you do not own (HUB-01, HUB-02), across
+// the bottom of the free canvas. It measures that canvas and tells the
+// toolbar what fits (the toolbar puts the rest in the header); its card
+// steps its text down as the canvas narrows, and it lifts the zoom controls
+// and toasts only where they come near the card.
+function UseTemplateBar({
+  badge,
+  button,
+  fit,
+  onFitChange,
+  viewOnly,
+}: {
+  badge: React.ReactNode;
+  button: React.ReactNode;
+  fit: BarFit;
+  onFitChange: (fit: BarFit) => void;
+  // An org viewer cannot copy into the org: the wide hint says why.
+  viewOnly: boolean;
+}): React.ReactElement {
+  const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
+  const [track, setTrack] = useState<HTMLDivElement | null>(null);
+  const [card, setCard] = useState<HTMLDivElement | null>(null);
+  const [lifts, setLifts] = useState<BarLifts>(NO_LIFTS);
+  // Measured again when toasts first show: the toaster mounts with them.
+  // The lift outlives the last toast, so its exit stays clear of the card.
+  const toastsUp = useSonner().toasts.length > 0;
+  // Before paint, so the first frame is right; then on every resize, acting
+  // only on a change.
+  useLayoutEffect(() => {
+    const bar = track;
+    if (!bar) {
+      return;
+    }
+    let reported = fit;
+    let controls: HTMLElement | null = null;
+    let watched: Element[] = [];
+    const update = (): void => {
+      // The bar's rem offsets and padding resize it when the root font
+      // changes, so a fresh read here sees that too.
+      const remPx =
+        Number.parseFloat(
+          getComputedStyle(document.documentElement).fontSize
+        ) || 16;
+      const width = bar.clientWidth;
+      let fits: BarFit = "none";
+      if (width >= BADGE_FITS_REM * remPx) {
+        fits = "full";
+      } else if (width >= BUTTON_FITS_REM * remPx) {
+        fits = "button";
+      }
+      if (fits !== fit) {
+        if (fits !== reported) {
+          reported = fits;
+          onFitChange(fits);
+        }
+        return;
+      }
+      // The zoom controls mount with the canvas, maybe after the bar. Also
+      // watch the box they sit in: the right panel resizes it over 300ms,
+      // moving them without resizing them.
+      const found = document.querySelector<HTMLElement>(
+        ".workflow-controls-panel"
+      );
+      if (found !== controls) {
+        for (const element of watched) {
+          observer.unobserve(element);
+        }
+        watched = [found, found?.offsetParent].filter(
+          (element): element is Element => element instanceof Element
+        );
+        for (const element of watched) {
+          observer.observe(element);
+        }
+        controls = found;
+      }
+      const rect = card?.getBoundingClientRect();
+      const next: BarLifts = rect
+        ? {
+            controls: nearSideways(rect, controls),
+            toasts: nearSideways(
+              rect,
+              document.querySelector("[data-sonner-toaster]")
+            ),
+          }
+        : NO_LIFTS;
+      // Same lifts: React bails out without rendering.
+      setLifts((now) =>
+        now.controls === next.controls && now.toasts === next.toasts
+          ? now
+          : next
+      );
+    };
+    const observer = new ResizeObserver(update);
+    update();
+    observer.observe(bar);
+    if (card) {
+      observer.observe(card);
+    }
+    return () => observer.disconnect();
+  }, [track, card, fit, onFitChange, toastsUp]);
+  return (
+    <div
+      className="pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))] left-[max(1rem,env(safe-area-inset-left))] flex max-xs:right-3 max-xs:left-3 md:right-(--use-template-right) md:left-(--nav-content-offset,var(--nav-sidebar-width,60px)) md:px-4 md:motion-safe:transition-[left,right] md:motion-safe:duration-200 md:motion-safe:ease-out"
+      data-lifts-controls={lifts.controls || undefined}
+      data-lifts-toasts={lifts.toasts || undefined}
+      data-testid="use-template-bar"
+      style={
+        { "--use-template-right": rightPanelWidth ?? "0px" } as CSSProperties
+      }
+    >
+      <div
+        className="@container flex w-full min-w-0 justify-center"
+        ref={setTrack}
+      >
+        {fit !== "none" && (
+          <div
+            className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2.5 rounded-lg border bg-background py-2 pr-2 pl-3 shadow-lg max-md:w-full"
+            data-testid="use-template-card"
+            ref={setCard}
+          >
+            {badge}
+            <p
+              className={cn(
+                "hidden min-w-0 flex-1 truncate text-foreground/80 text-sm leading-4 md:flex-none",
+                viewOnly ? "@min-[36rem]:block" : "@min-[24.5rem]:block"
+              )}
+            >
+              {!viewOnly && (
+                <span className="@min-[36rem]:hidden">
+                  Copy to edit and run
+                </span>
+              )}
+              <span className="hidden @min-[36rem]:inline">
+                {viewOnly
+                  ? VIEWER_DISABLED_REASON
+                  : "Read-only. Make your own copy to edit and run it."}
+              </span>
+            </p>
+            {button}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -2229,6 +2437,73 @@ export const WorkflowToolbar = ({
     ? "flex items-center gap-2"
     : "flex flex-col-reverse items-end gap-2 lg:flex-row lg:items-center";
 
+  const offersTemplate =
+    isWorkflowRoute &&
+    Boolean(effectiveWorkflowId) &&
+    !state.isOwner &&
+    !isWorkflowViewer &&
+    state.workflowVisibility === "public";
+  // A read-only member of the workflow's org: a badge, never Use template.
+  const showsViewOnlyBadge =
+    isWorkflowRoute && Boolean(effectiveWorkflowId) && isWorkflowViewer;
+  // One Use template button and one read-only badge, each in the bar's card
+  // or, where the free canvas has no room for it, in the header.
+  const [barFit, setBarFit] = useState<BarFit>("full");
+  const useTemplateRef = useRef<HTMLButtonElement | null>(null);
+  const refocusUseTemplate = useRef(false);
+  const onBarFitChange = useCallback(
+    (fit: BarFit): void => {
+      // Moving between bar and header remounts the button: focus goes with
+      // it if it had it.
+      const moves = (fit === "none") !== (barFit === "none");
+      refocusUseTemplate.current =
+        moves &&
+        useTemplateRef.current !== null &&
+        useTemplateRef.current === document.activeElement;
+      setBarFit(fit);
+    },
+    [barFit]
+  );
+  const setUseTemplateButton = useCallback(
+    (button: HTMLButtonElement | null): void => {
+      useTemplateRef.current = button;
+      if (button && refocusUseTemplate.current) {
+        refocusUseTemplate.current = false;
+        button.focus();
+      }
+    },
+    []
+  );
+  const buttonInBar = barFit !== "none";
+  const badgeInBar = barFit === "full";
+  const useTemplateButton = offersTemplate && (
+    <UseTemplateButton
+      className={buttonInBar ? "ml-auto" : undefined}
+      isUsingTemplate={state.isDuplicating}
+      onUseTemplate={actions.handleUseTemplate}
+      ref={setUseTemplateButton}
+      viewOnly={isViewer}
+    />
+  );
+  const useTemplateBar = offersTemplate && (
+    <UseTemplateBar
+      badge={
+        badgeInBar && <PreviewBadge className="shrink-0" viewOnly={isViewer} />
+      }
+      button={buttonInBar && useTemplateButton}
+      fit={barFit}
+      onFitChange={onBarFitChange}
+      viewOnly={isViewer}
+    />
+  );
+  // Phones (below md) never had the badge in their crowded header.
+  const headerUseTemplate = offersTemplate && !badgeInBar && (
+    <>
+      <PreviewBadge className="shrink-0 max-md:hidden" viewOnly={isViewer} />
+      {!buttonInBar && useTemplateButton}
+    </>
+  );
+
   if (persistent) {
     return (
       <div className={containerClassName}>
@@ -2264,33 +2539,14 @@ export const WorkflowToolbar = ({
               <OrgSwitcher focusFallback={menuButtonRef} />
             </div>
           )}
-          {/* 16px (the gap and an ml-2) before what follows the logo and
-              switcher: the workflow's name from lg, and Use template in a
-              768-1023px window with a mouse (where name and badge hide). */}
+          {/* The workflow's name from lg, 16px (the gap and an ml-2) after
+              the logo and switcher. */}
           {isWorkflowRoute && state.currentWorkflowId && (
             <span className="hidden max-w-48 truncate font-medium text-foreground text-sm lg:ml-2 lg:inline-block">
               {state.workflowName}
             </span>
           )}
-          {isWorkflowRoute &&
-            effectiveWorkflowId &&
-            !state.isOwner &&
-            isWorkflowViewer && <ViewOnlyBadge />}
-          {isWorkflowRoute &&
-            effectiveWorkflowId &&
-            !state.isOwner &&
-            !isWorkflowViewer &&
-            state.workflowVisibility === "public" && (
-              <>
-                <ReadOnlyBadge className="hidden lg:inline-flex" />
-                <UseTemplateButton
-                  className="mouse-tablet:ml-2"
-                  isUsingTemplate={state.isDuplicating}
-                  onUseTemplate={actions.handleUseTemplate}
-                  viewOnly={isViewer}
-                />
-              </>
-            )}
+          {showsViewOnlyBadge && <ViewOnlyBadge />}
         </div>
 
         {/* Right side: Actions + User Menu */}
@@ -2303,12 +2559,14 @@ export const WorkflowToolbar = ({
                 workflowId={effectiveWorkflowId}
               />
             )}
+            {headerUseTemplate}
             <div className="flex items-center gap-2">
               <WalletToolbarButton />
               <UserMenu />
             </div>
           </div>
         </div>
+        {useTemplateBar}
       </div>
     );
   }
@@ -2334,24 +2592,7 @@ export const WorkflowToolbar = ({
               <OrgSwitcher />
             </div>
           )}
-          {isWorkflowRoute &&
-            effectiveWorkflowId &&
-            !state.isOwner &&
-            isWorkflowViewer && <ViewOnlyBadge />}
-          {isWorkflowRoute &&
-            effectiveWorkflowId &&
-            !state.isOwner &&
-            !isWorkflowViewer &&
-            state.workflowVisibility === "public" && (
-              <>
-                <ReadOnlyBadge className="hidden lg:inline-flex" />
-                <UseTemplateButton
-                  isUsingTemplate={state.isDuplicating}
-                  onUseTemplate={actions.handleUseTemplate}
-                  viewOnly={isViewer}
-                />
-              </>
-            )}
+          {showsViewOnlyBadge && <ViewOnlyBadge />}
         </div>
       </Panel>
 
@@ -2364,11 +2605,13 @@ export const WorkflowToolbar = ({
               workflowId={effectiveWorkflowId}
             />
           )}
+          {headerUseTemplate}
           <div className="flex items-center gap-2">
             <UserMenu />
           </div>
         </div>
       </div>
+      {useTemplateBar}
     </>
   );
 };

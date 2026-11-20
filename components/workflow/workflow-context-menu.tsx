@@ -6,6 +6,7 @@ import { Link2Off, Plus, Trash2, Upload } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { ConfirmOverlay } from "@/components/overlays/confirm-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
@@ -183,56 +184,59 @@ export function WorkflowContextMenu({
 
   return (
     <>
-      {menuState && (
-        <div
-          className="fade-in-0 zoom-in-95 fixed z-50 min-w-[8rem] animate-in overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
-          ref={menuRef}
-          style={{
-            left: menuState.position.x,
-            top: menuState.position.y,
-          }}
-        >
-          {menuState.type === "node" && (
-            <MenuItem
-              icon={<Trash2 className="size-4" />}
-              label={`Delete ${getNodeLabel()}`}
-              onClick={handleDeleteNode}
-              variant="destructive"
-            />
-          )}
-
-          {menuState.type === "edge" && (
-            <MenuItem
-              icon={<Link2Off className="size-4" />}
-              label="Delete Connection"
-              onClick={handleDeleteEdge}
-              variant="destructive"
-            />
-          )}
-
-          {menuState.type === "pane" && (
-            <>
+      {/* On body: inside the canvas's z-0 layer, fixed bars would cover it. */}
+      {menuState &&
+        createPortal(
+          <div
+            className="fade-in-0 zoom-in-95 fixed z-50 min-w-[8rem] animate-in overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+            ref={menuRef}
+            style={{
+              left: menuState.position.x,
+              top: menuState.position.y,
+            }}
+          >
+            {menuState.type === "node" && (
               <MenuItem
-                icon={<Plus className="size-4" />}
-                label="Add Step"
-                onClick={handleAddStep}
+                icon={<Trash2 className="size-4" />}
+                label={`Delete ${getNodeLabel()}`}
+                onClick={handleDeleteNode}
+                variant="destructive"
               />
+            )}
+
+            {menuState.type === "edge" && (
               <MenuItem
-                icon={<Upload className="size-4" />}
-                label="New Workflow from JSON"
-                onClick={() => {
-                  onClose();
-                  if (isAnonymous) {
-                    toast.info("Sign in to import workflows.");
-                    return;
-                  }
-                  setIoOpen(true);
-                }}
+                icon={<Link2Off className="size-4" />}
+                label="Delete Connection"
+                onClick={handleDeleteEdge}
+                variant="destructive"
               />
-            </>
-          )}
-        </div>
-      )}
+            )}
+
+            {menuState.type === "pane" && (
+              <>
+                <MenuItem
+                  icon={<Plus className="size-4" />}
+                  label="Add Step"
+                  onClick={handleAddStep}
+                />
+                <MenuItem
+                  icon={<Upload className="size-4" />}
+                  label="New Workflow from JSON"
+                  onClick={() => {
+                    onClose();
+                    if (isAnonymous) {
+                      toast.info("Sign in to import workflows.");
+                      return;
+                    }
+                    setIoOpen(true);
+                  }}
+                />
+              </>
+            )}
+          </div>,
+          document.body
+        )}
       <WorkflowIOOverlay
         onExport={handleNoopExport}
         onImported={handleIoImported}

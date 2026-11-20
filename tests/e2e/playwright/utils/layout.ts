@@ -14,12 +14,20 @@ export async function dismissPhoneOverlays(page: Page): Promise<void> {
   });
 }
 
+export const right = (b: Box): number => b.x + b.width;
+export const bottom = (b: Box): number => b.y + b.height;
+
 function measured(target: Locator | Box): Promise<Box> | Box {
   return "boundingBox" in target ? box(target) : target;
 }
 
-export async function box(locator: Locator): Promise<Box> {
-  const found = await locator.boundingBox();
+// Pass a short timeout inside toPass, so a vanished element fails the
+// attempt instead of waiting out the whole retry window.
+export async function box(
+  locator: Locator,
+  options?: { timeout?: number }
+): Promise<Box> {
+  const found = await locator.boundingBox(options);
   if (!found) {
     throw new Error("element is not rendered");
   }
@@ -41,15 +49,37 @@ export async function overlaps(
 }
 
 // Whether the centre of an element is drawn on top, so a tap there reaches it.
-export async function isOnTop(locator: Locator): Promise<boolean> {
-  return await locator.evaluate((element) => {
-    const rect = element.getBoundingClientRect();
-    const hit = document.elementFromPoint(
-      rect.left + rect.width / 2,
-      rect.top + rect.height / 2
-    );
-    return hit !== null && element.contains(hit);
-  });
+// corners: its corners too, 3px in (past the rounding, which hit testing follows).
+export async function isOnTop(
+  locator: Locator,
+  options?: { corners?: boolean }
+): Promise<boolean> {
+  return await locator.evaluate((element, corners) => {
+    const r = element.getBoundingClientRect();
+    const points = [[r.left + r.width / 2, r.top + r.height / 2]];
+    if (corners) {
+      points.push(
+        [r.left + 3, r.top + 3],
+        [r.right - 3, r.top + 3],
+        [r.left + 3, r.bottom - 3],
+        [r.right - 3, r.bottom - 3]
+      );
+    }
+    return points.every(([x, y]) => {
+      const hit = document.elementFromPoint(x, y);
+      return hit !== null && element.contains(hit);
+    });
+  }, options?.corners === true);
+}
+
+// How far the page scrolls sideways; 0 or less when it does not. clientWidth
+// leaves out a vertical scrollbar, which innerWidth would count as room.
+export async function horizontalOverflow(page: Page): Promise<number> {
+  return await page.evaluate(
+    () =>
+      document.documentElement.scrollWidth -
+      document.documentElement.clientWidth
+  );
 }
 
 // Its text is all inside its box. A squeezed box can still look fine to a
