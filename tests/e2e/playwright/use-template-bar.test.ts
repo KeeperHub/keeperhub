@@ -4,6 +4,7 @@ import {
   VIEWER_DISABLED_REASON,
 } from "@/lib/organization/role-label";
 import { VIEWER_READ_ONLY_ERROR } from "@/lib/security/viewer-policy";
+import { USE_TEMPLATE_LABEL } from "@/lib/workflow/use-template-label";
 import { createWebhookTriggerNode } from "../../fixtures/workflows";
 import { expect, test } from "./fixtures";
 import {
@@ -33,8 +34,6 @@ import {
 const PHONE_WIDTHS = [320, 375, 390, 430] as const;
 const WIDE_WIDTHS = [768, 1024, 1280, 1920] as const;
 const HEIGHT = 844;
-// The button's name, the same while it imports.
-const NAME = "Use template: copy this workflow to your account";
 
 // Short timeout: these run inside toPass.
 const box = (locator: Locator): Promise<Box> =>
@@ -47,13 +46,13 @@ const inside = (inner: Box, outer: Box): boolean =>
   bottom(inner) <= bottom(outer) + 0.5;
 
 function templateButton(page: Page): Locator {
-  return page.getByRole("button", { name: NAME, exact: true });
+  return page.getByRole("button", { name: USE_TEMPLATE_LABEL, exact: true });
 }
 
 function headerButton(page: Page): Locator {
   return page
     .getByTestId("header-right")
-    .getByRole("button", { name: NAME, exact: true });
+    .getByRole("button", { name: USE_TEMPLATE_LABEL, exact: true });
 }
 
 function card(page: Page): Locator {
@@ -186,7 +185,7 @@ async function expectCardSound(page: Page): Promise<Box> {
   const button = templateButton(page);
   await expect(
     page.getByTestId("header-left").getByRole("button", {
-      name: NAME,
+      name: USE_TEMPLATE_LABEL,
       exact: true,
     })
   ).toHaveCount(0);
@@ -233,7 +232,7 @@ async function expectWideBar(
       .getByTestId("header-right")
       .getByText("Preview", { exact: true });
     await expect(badge).toBeVisible();
-    // A pill: its rounded corners are not hit, so its centre.
+    // The badge is a pill (its rounded corners miss hit tests): its centre only.
     expect(await isOnTop(badge)).toBe(true);
     expect(await textFits(badge)).toBe(true);
     expect(await isOnTop(fallback, { corners: true })).toBe(true);
@@ -433,7 +432,9 @@ test.describe("Use template bar, signed in", () => {
           await expect(badges).toHaveCount(1);
           expect(await isOnTop(badges)).toBe(true);
           await expect(
-            page.getByRole("button", { name: NAME }).filter({ visible: true })
+            page
+              .getByRole("button", { name: USE_TEMPLATE_LABEL })
+              .filter({ visible: true })
           ).toHaveCount(1);
           badgeBesideCard ||=
             (await card(page).isVisible()) &&
@@ -476,7 +477,10 @@ test.describe("Use template bar, signed in", () => {
       await page.getByTestId("nav-workflows").click();
     }
     await expect(flyout).toBeVisible();
-    const inBar = card(page).getByRole("button", { name: NAME, exact: true });
+    const inBar = card(page).getByRole("button", {
+      name: USE_TEMPLATE_LABEL,
+      exact: true,
+    });
     await expect(inBar).toBeVisible();
     await inBar.focus();
     await page.setViewportSize({ width: 768, height: HEIGHT });
@@ -661,9 +665,9 @@ test.describe("Use template bar, org viewer", () => {
     // Phones: no room for the hint, so the badge says it.
     await open(page, 390, foreignId);
     await expect(templateButton(page)).toBeDisabled();
-    await expect(
-      card(page).getByText(READ_ONLY_LABEL, { exact: true })
-    ).toBeVisible();
+    const cardBadge = card(page).getByText(READ_ONLY_LABEL, { exact: true });
+    await expect(cardBadge).toBeVisible();
+    await expect(cardBadge).toHaveAttribute("title", VIEWER_DISABLED_REASON);
     await open(page, 1280, foreignId);
     await expect(templateButton(page)).toBeDisabled();
     await expect(card(page)).toContainText(VIEWER_DISABLED_REASON);
@@ -689,9 +693,10 @@ test.describe("Use template bar, org viewer", () => {
       await page.goto(`/workflows/${inOrgId}`, {
         waitUntil: "domcontentloaded",
       });
-      await expect(page.getByTestId("workflow-read-only-badge")).toBeVisible({
-        timeout: 15_000,
-      });
+      const badge = page.getByTestId("workflow-read-only-badge");
+      await expect(badge).toBeVisible({ timeout: 15_000 });
+      await expect(badge).toContainText(READ_ONLY_LABEL);
+      await expect(badge).toHaveAttribute("title", VIEWER_DISABLED_REASON);
       await expect(card(page)).toHaveCount(0);
       await expect(templateButton(page)).toHaveCount(0);
     }

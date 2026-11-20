@@ -177,7 +177,7 @@ export function WorkflowCanvas() {
   }, []);
 
   // The canvas outlives route changes: a menu from the last workflow must not.
-  // The prop below hides it in the same frame; this keeps it from coming back.
+  // When menus turn off, the prop below also hides it in the same frame.
   useEffect(() => {
     setContextMenuState(null);
   }, [currentWorkflowId, noCanvasMenu]);

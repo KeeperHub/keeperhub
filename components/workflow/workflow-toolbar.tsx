@@ -58,6 +58,7 @@ import {
   READ_ONLY_LABEL,
   VIEWER_DISABLED_REASON,
 } from "@/lib/organization/role-label";
+import { USE_TEMPLATE_LABEL } from "@/lib/workflow/use-template-label";
 import { VersionPreviewBanner } from "./version-preview-banner";
 import { useSession } from "@/lib/auth-client";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
@@ -2119,11 +2120,11 @@ function RunButtonGroup({
   return button;
 }
 
-const VIEW_ONLY_BADGE_CLASS =
+const READ_ONLY_BADGE_CLASS =
   "border-2 border-[var(--color-text-accent)]/60 bg-[var(--color-bg-accent)]/10 font-semibold text-[var(--color-text-accent)] text-xs uppercase tracking-wider backdrop-blur-sm dark:border-[var(--color-text-accent)]/50 dark:bg-transparent";
 
 // Neutral (unlike the viewer's badge), so the green button stays the one
-// accent. An org viewer's reads Read only: it shows at every width.
+// accent. An org viewer sees Read only instead, with the reason on hover.
 function PreviewBadge({
   className,
   viewOnly,
@@ -2150,7 +2151,7 @@ function PreviewBadge({
 function ViewOnlyBadge() {
   return (
     <Badge
-      className={cn(VIEW_ONLY_BADGE_CLASS, "shrink-0")}
+      className={cn(READ_ONLY_BADGE_CLASS, "shrink-0")}
       data-testid="workflow-read-only-badge"
       title={VIEWER_DISABLED_REASON}
       variant="outline"
@@ -2161,9 +2162,6 @@ function ViewOnlyBadge() {
   );
 }
 
-// Use template's name, the same while it imports (aria-busy says so); it
-// starts with the words on the button.
-const USE_TEMPLATE_LABEL = "Use template: copy this workflow to your account";
 // What the free canvas has room for: nothing (the header takes the button
 // and the read-only badge), the button alone (the header takes the badge),
 // or both. The widths: the card's button, then its badge too, with padding.

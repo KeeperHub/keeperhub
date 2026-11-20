@@ -206,7 +206,11 @@ export async function addTestOrganizationViewer(
       throw new Error(`User not found: ${viewerEmail}`);
     }
     await sql.begin(async (tx) => {
-      await tx`UPDATE workflows SET organization_id = ${orgId} WHERE id = ${workflowId}`;
+      const moved =
+        await tx`UPDATE workflows SET organization_id = ${orgId} WHERE id = ${workflowId}`;
+      if (moved.count !== 1) {
+        throw new Error(`Workflow not found: ${workflowId}`);
+      }
       await tx`
         INSERT INTO member (id, organization_id, user_id, role, created_at)
         VALUES (${generateId()}, ${orgId}, ${users[0].id as string}, 'viewer', ${new Date()})
