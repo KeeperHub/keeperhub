@@ -62,6 +62,9 @@ vi.mock("@/lib/db", () => ({
         innerJoin: vi.fn(() => ({
           where: vi.fn(() => ({ limit: mockMemberLimit })),
         })),
+        leftJoin: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: mockMemberLimit })),
+        })),
         where: vi.fn(() => ({
           limit: mockMemberLimit,
         })),
@@ -205,6 +208,7 @@ describe("Workflow duplicate API", () => {
     vi.mocked(enforceWorkflowFeatures).mockResolvedValueOnce({
       blocked: true,
       response: blockedResponse as never,
+      violations: [],
     });
     mockDbQuery.workflows.findFirst.mockResolvedValue({
       ...sourceWorkflow,

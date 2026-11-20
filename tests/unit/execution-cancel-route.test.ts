@@ -70,6 +70,7 @@ describe("POST cancel-execution route", () => {
     });
     mockGetWorkflowAccess.mockResolvedValue({
       hasFullAccess: true,
+      canEdit: true,
       isDeleted: false,
     });
     mockFindFirst.mockResolvedValue({
@@ -96,6 +97,7 @@ describe("POST cancel-execution route", () => {
   it("rejects a caller without full access to the workflow", async () => {
     mockGetWorkflowAccess.mockResolvedValue({
       hasFullAccess: false,
+      canEdit: false,
       isDeleted: false,
     });
 
@@ -109,6 +111,7 @@ describe("POST cancel-execution route", () => {
   it("hides executions belonging to a soft-deleted workflow", async () => {
     mockGetWorkflowAccess.mockResolvedValue({
       hasFullAccess: true,
+      canEdit: true,
       isDeleted: true,
     });
 

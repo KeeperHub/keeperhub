@@ -169,3 +169,22 @@ describe("pin schema and action schema agree on booleans", () => {
     }
   });
 });
+
+describe("pin schema required list", () => {
+  it("names each required field once, even when a key is declared per mode", () => {
+    const repeated: string[] = [];
+    for (const plugin of getAllIntegrations()) {
+      for (const action of plugin.actions) {
+        const actionType = computeActionId(plugin.type, action.slug);
+        const [pin] = preparePinDataForWorkflow([
+          { id: "n", data: { config: { actionType } } },
+        ]);
+        const required = pin?.pinSchema.required ?? [];
+        if (new Set(required).size !== required.length) {
+          repeated.push(actionType);
+        }
+      }
+    }
+    expect(repeated).toEqual([]);
+  });
+});

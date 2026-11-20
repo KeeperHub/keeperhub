@@ -54,9 +54,12 @@ vi.mock("@/lib/db", () => ({
             limit: () => mockOrgLookup(),
           }),
         }),
-        // Default path: lookup the session's default org (deactivation check).
-        where: () => ({
-          limit: () => mockDefaultOrgLookup(),
+        // Default path: the session's default org (deactivation check) with
+        // the caller's membership role left-joined in.
+        leftJoin: () => ({
+          where: () => ({
+            limit: () => mockDefaultOrgLookup(),
+          }),
         }),
       }),
     }),
@@ -725,5 +728,98 @@ describe("resolveCreatorContext — origin check wiring", () => {
       authMethod: "session",
       apiKeyId: null,
     });
+  });
+});
+
+describe("viewer sessions in the auth helpers", () => {
+  const cookieHeaders = {
+    cookie: "better-auth.session_token=abc",
+    origin: "http://localhost:3000",
+  };
+  const WRITE_URL = "http://localhost/api/projects";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAuthenticateOAuthToken.mockResolvedValue({ authenticated: false });
+    mockAuthenticateApiKey.mockResolvedValue({ authenticated: false });
+    mockGetSession.mockResolvedValue({ user: { id: "user_session" } });
+    mockGetOrgContext.mockResolvedValue({
+      organization: { id: "org_session" },
+    });
+    mockDefaultOrgLookup.mockResolvedValue([{ deactivatedAt: null }]);
+  });
+
+  it("refuses a viewer's write in getDualAuthContext", async () => {
+    mockDefaultOrgLookup.mockResolvedValue([
+      { deactivatedAt: null, role: "viewer" },
+    ]);
+    const result = await getDualAuthContext(
+      makeRequest(cookieHeaders, { method: "POST", url: WRITE_URL })
+    );
+    expect(result).toEqual({
+      error: "Viewers have read-only access to this organization",
+      code: "viewer_read_only",
+      status: 403,
+    });
+  });
+
+  it("refuses a viewer's write in resolveOrganizationId", async () => {
+    mockDefaultOrgLookup.mockResolvedValue([
+      { deactivatedAt: null, role: "viewer" },
+    ]);
+    const result = await resolveOrganizationId(
+      makeRequest(cookieHeaders, { method: "DELETE", url: WRITE_URL })
+    );
+    expect(result).toMatchObject({ code: "viewer_read_only", status: 403 });
+  });
+
+  it("refuses a viewer in the org named in X-Organization-Id", async () => {
+    mockOrgLookup.mockResolvedValue([{ id: "org_target", role: "viewer" }]);
+    const result = await resolveCreatorContext(
+      makeRequest(
+        { ...cookieHeaders, "x-organization-id": "org_target" },
+        { method: "POST", url: WRITE_URL }
+      )
+    );
+    expect(result).toMatchObject({ code: "viewer_read_only", status: 403 });
+  });
+
+  it("lets a viewer make a write the policy allows", async () => {
+    mockDefaultOrgLookup.mockResolvedValue([
+      { deactivatedAt: null, role: "viewer" },
+    ]);
+    const result = await getDualAuthContext(
+      makeRequest(cookieHeaders, {
+        method: "POST",
+        url: "http://localhost/api/gas/estimate",
+      })
+    );
+    expect(result).toMatchObject({
+      authMethod: "session",
+      organizationId: "org_session",
+    });
+  });
+
+  it("lets a member write", async () => {
+    mockDefaultOrgLookup.mockResolvedValue([
+      { deactivatedAt: null, role: "member" },
+    ]);
+    const result = await resolveOrganizationId(
+      makeRequest(cookieHeaders, { method: "PATCH", url: WRITE_URL })
+    );
+    expect(result).toMatchObject({
+      authMethod: "session",
+      organizationId: "org_session",
+    });
+  });
+
+  it("lets a viewer read", async () => {
+    mockDefaultOrgLookup.mockResolvedValue([
+      { deactivatedAt: null, role: "viewer" },
+    ]);
+    const result = await resolveCreatorContext(
+      makeRequest(cookieHeaders, { method: "GET", url: WRITE_URL })
+    );
+    expect(result).toMatchObject({ authMethod: "session" });
   });
 });

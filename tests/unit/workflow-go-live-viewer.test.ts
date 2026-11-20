@@ -1,0 +1,134 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("server-only", () => ({}));
+
+const {
+  mockGetDualAuthContext,
+  mockGetWorkflowAccess,
+  mockWorkflowsFindFirst,
+  mockTransaction,
+  mockRecordAuditEvent,
+} = vi.hoisted(() => ({
+  mockGetDualAuthContext: vi.fn(),
+  mockGetWorkflowAccess: vi.fn(),
+  mockWorkflowsFindFirst: vi.fn(),
+  mockTransaction: vi.fn(),
+  mockRecordAuditEvent: vi.fn(),
+}));
+
+vi.mock("@/lib/db", () => ({
+  db: {
+    query: { workflows: { findFirst: mockWorkflowsFindFirst } },
+    transaction: mockTransaction,
+  },
+}));
+
+vi.mock("@/lib/middleware/auth-helpers", () => ({
+  getDualAuthContext: mockGetDualAuthContext,
+  authFailureResponse: vi.fn(),
+}));
+
+vi.mock("@/lib/middleware/require-scope", () => ({
+  requireScope: vi.fn().mockReturnValue(null),
+}));
+
+vi.mock("@/lib/workflow/access", () => ({
+  getWorkflowAccess: mockGetWorkflowAccess,
+}));
+
+vi.mock("@/lib/security/audit-log", () => ({
+  buildActor: vi.fn().mockReturnValue({}),
+  buildAuditMetadata: vi.fn().mockReturnValue({}),
+  recordAuditEvent: mockRecordAuditEvent,
+}));
+
+vi.mock("@/lib/logging", () => ({
+  ErrorCategory: { DATABASE: "DATABASE" },
+  logSystemError: vi.fn(),
+}));
+
+vi.mock("next/cache", () => ({
+  revalidateTag: vi.fn(),
+}));
+
+import { PUT } from "@/app/api/workflows/[workflowId]/go-live/route";
+
+const WORKFLOW = {
+  id: "wf_1",
+  userId: "user_1",
+  organizationId: "org_1",
+  name: "Workflow",
+  visibility: "private",
+  isListed: false,
+  createdAt: new Date("2026-01-01T00:00:00Z"),
+  updatedAt: new Date("2026-01-01T00:00:00Z"),
+};
+
+function callGoLive(): Promise<Response> {
+  const request = new Request("http://localhost/api/workflows/wf_1/go-live", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "Listed", mode: "public" }),
+  });
+  return PUT(request, { params: Promise.resolve({ workflowId: "wf_1" }) });
+}
+
+describe("PUT /api/workflows/[workflowId]/go-live viewer check", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user_2",
+      organizationId: "org_1",
+      authMethod: "session",
+      scope: undefined,
+      apiKeyId: null,
+    });
+    mockWorkflowsFindFirst.mockResolvedValue(WORKFLOW);
+    mockTransaction.mockImplementation(
+      async (
+        callback: (tx: Record<string, unknown>) => Promise<void>
+      ): Promise<void> => {
+        await callback({
+          update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn() })) })),
+          delete: vi.fn(() => ({ where: vi.fn() })),
+          insert: vi.fn(() => ({ values: vi.fn() })),
+        });
+      }
+    );
+    mockRecordAuditEvent.mockResolvedValue(undefined);
+  });
+
+  it("returns 403 viewer_read_only and lists nothing for a same-org viewer", async () => {
+    mockGetWorkflowAccess.mockResolvedValue({
+      hasFullAccess: true,
+      canEdit: false,
+      isDeleted: false,
+    });
+
+    const response = await callGoLive();
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: "Viewers have read-only access to this organization",
+      code: "viewer_read_only",
+    });
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(mockRecordAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it("lists the workflow for a same-org editor", async () => {
+    mockGetWorkflowAccess.mockResolvedValue({
+      hasFullAccess: true,
+      canEdit: true,
+      isDeleted: false,
+    });
+
+    const response = await callGoLive();
+
+    expect(response.status).toBe(200);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(mockRecordAuditEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "workflow.listed" })
+    );
+  });
+});

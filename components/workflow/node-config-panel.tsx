@@ -21,6 +21,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ProjectSelect } from "@/components/projects/project-select";
 import { TagSelect } from "@/components/tags/tag-select";
+import { WorkflowFailureAlerts } from "@/components/failure-alerts/workflow-failure-alerts";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import {
   api,
@@ -44,8 +45,10 @@ import {
   deleteNodeAtom,
   deleteSelectedItemsAtom,
   edgesAtom,
+  getTriggerTypeFromConfig,
   isGeneratingAtom,
   isWorkflowOwnerAtom,
+  isWorkflowViewerAtom,
   newlyCreatedNodeIdAtom,
   nodesAtom,
   pendingIntegrationNodesAtom,
@@ -74,7 +77,7 @@ const MultiSelectionPanel = ({
 }: {
   selectedNodes: { id: string; selected?: boolean }[];
   selectedEdges: { id: string; selected?: boolean }[];
-  onDelete: () => void;
+  onDelete?: () => void;
 }) => {
   const [showDeleteAlert, setShowDeleteAlert] = useState(false);
 
@@ -92,7 +95,7 @@ const MultiSelectionPanel = ({
   const selectionText = selectionParts.join(" and ");
 
   const handleDelete = () => {
-    onDelete();
+    onDelete?.();
     setShowDeleteAlert(false);
   };
 
@@ -110,17 +113,19 @@ const MultiSelectionPanel = ({
             </p>
           </div>
 
-          <div className="flex items-center gap-2 pt-4">
-            <Button
-              className="text-muted-foreground"
-              onClick={() => setShowDeleteAlert(true)}
-              size="sm"
-              variant="ghost"
-            >
-              <Trash2 className="mr-2 size-4" />
-              Delete
-            </Button>
-          </div>
+          {onDelete && (
+            <div className="flex items-center gap-2 pt-4">
+              <Button
+                className="text-muted-foreground"
+                onClick={() => setShowDeleteAlert(true)}
+                size="sm"
+                variant="ghost"
+              >
+                <Trash2 className="mr-2 size-4" />
+                Delete
+              </Button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -164,6 +169,10 @@ export const PanelInner = () => {
     currentWorkflowTagIdAtom
   );
   const isOwner = useAtomValue(isWorkflowOwnerAtom);
+  // Viewers of the workflow's org cannot edit but may read its run and
+  // version history.
+  const isViewer = useAtomValue(isWorkflowViewerAtom);
+  const canReadHistory = isOwner || isViewer;
   const workflowNotFound = useAtomValue(workflowNotFoundAtom);
   const updateNodeData = useSetAtom(updateNodeDataAtom);
   const deleteNode = useSetAtom(deleteNodeAtom);
@@ -660,7 +669,7 @@ export const PanelInner = () => {
   if (hasMultipleSelections) {
     return (
       <MultiSelectionPanel
-        onDelete={deleteSelectedItems}
+        onDelete={isOwner ? deleteSelectedItems : undefined}
         selectedEdges={selectedEdges}
         selectedNodes={selectedNodes}
       />
@@ -751,7 +760,7 @@ export const PanelInner = () => {
         onValueChange={setActiveTab}
         value={
           activeTab === "properties" ||
-          ((activeTab === "runs" || activeTab === "history") && isOwner)
+          ((activeTab === "runs" || activeTab === "history") && canReadHistory)
             ? activeTab
             : "properties"
         }
@@ -763,7 +772,7 @@ export const PanelInner = () => {
           >
             Properties
           </TabsTrigger>
-          {isOwner && (
+          {canReadHistory && (
             <TabsTrigger
               className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
               value="runs"
@@ -771,7 +780,7 @@ export const PanelInner = () => {
               Runs
             </TabsTrigger>
           )}
-          {isOwner && (
+          {canReadHistory && (
             <TabsTrigger
               className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
               value="history"
@@ -786,7 +795,7 @@ export const PanelInner = () => {
         >
           {propertiesContent}
         </TabsContent>
-        {isOwner && (
+        {canReadHistory && (
           <TabsContent className="flex flex-col overflow-hidden" value="runs">
             {/* Actions in content header */}
             <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
@@ -802,16 +811,18 @@ export const PanelInner = () => {
                 />
                 Refresh
               </Button>
-              <Button
-                className="text-muted-foreground"
-                disabled={workflowNotFound}
-                onClick={() => setShowDeleteRunsAlert(true)}
-                size="sm"
-                variant="ghost"
-              >
-                <Eraser className="mr-2 size-4" />
-                Clear All
-              </Button>
+              {isOwner && (
+                <Button
+                  className="text-muted-foreground"
+                  disabled={workflowNotFound}
+                  onClick={() => setShowDeleteRunsAlert(true)}
+                  size="sm"
+                  variant="ghost"
+                >
+                  <Eraser className="mr-2 size-4" />
+                  Clear All
+                </Button>
+              )}
             </div>
             <div className="flex-1 space-y-4 overflow-y-auto p-4">
               <WorkflowRuns
@@ -821,7 +832,7 @@ export const PanelInner = () => {
             </div>
           </TabsContent>
         )}
-        {isOwner && (
+        {canReadHistory && (
           <TabsContent
             className="flex flex-col overflow-y-auto p-3"
             value="history"
@@ -912,6 +923,15 @@ export const PanelInner = () => {
                 value={currentWorkflowTagId}
               />
             </div>
+            {isOwner && currentWorkflowId && !workflowNotFound && (
+              <WorkflowFailureAlerts
+                triggerType={getTriggerTypeFromConfig(
+                  nodes.find((node) => node.data.type === "trigger")?.data
+                    .config
+                )}
+                workflowId={currentWorkflowId}
+              />
+            )}
             <div className="space-y-2">
               <Label className="ml-1" htmlFor="workflow-id">
                 Workflow ID
@@ -925,8 +945,9 @@ export const PanelInner = () => {
             {!isOwner && (
               <div className="rounded-lg border border-muted bg-muted/30 p-3">
                 <p className="text-muted-foreground text-sm">
-                  You're viewing this workflow in read-only mode.
-                  Use it as a template to create your own editable copy.
+                  {isViewer
+                    ? "You have view-only access to this organization."
+                    : "You're viewing this workflow in read-only mode. Use it as a template to create your own editable copy."}
                 </p>
               </div>
             )}
@@ -1063,8 +1084,9 @@ export const PanelInner = () => {
               {!isOwner && (
                 <div className="rounded-lg border border-muted bg-muted/30 p-3">
                   <p className="text-muted-foreground text-sm">
-                    You're viewing this workflow in read-only mode.
-                    Use it as a template to create your own editable copy.
+                    {isViewer
+                      ? "You have view-only access to this organization."
+                      : "You're viewing this workflow in read-only mode. Use it as a template to create your own editable copy."}
                   </p>
                 </div>
               )}

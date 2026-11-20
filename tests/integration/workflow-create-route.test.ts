@@ -313,6 +313,7 @@ describe("POST /api/workflows/create plan-gating precedence", () => {
         },
         { status: 402 }
       ),
+      violations: [],
     });
 
     const response = await POST(

@@ -1,7 +1,14 @@
 "use client";
 
 import { useAtomValue, useSetAtom } from "jotai";
-import { Copy, LogOut, Rocket, Settings, Users } from "lucide-react";
+import {
+  AlertTriangle,
+  Copy,
+  LogOut,
+  Rocket,
+  Settings,
+  Users,
+} from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
@@ -39,6 +46,7 @@ import {
   hasNotificationType,
   useNotificationStatus,
 } from "@/lib/hooks/use-notifications";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { useActiveMember, useOrganization } from "@/lib/hooks/use-organization";
 import { getPersonInitials } from "@/lib/initials";
 import { isAnonymousUser } from "@/lib/is-anonymous";
@@ -120,7 +128,8 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
   };
   const [orgModalOpen, setOrgModalOpen] = useState(false);
   const { organization } = useOrganization();
-  const { isOwner } = useActiveMember();
+  const { isAdmin } = useActiveMember();
+  const { isViewer } = useOrgAccess();
   const router = useRouter();
   const expandLauncher = useSetAtom(gettingStartedOpenAtom);
   const launcherDocked = useAtomValue(gettingStartedDockedAtom);
@@ -146,12 +155,15 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
     }
   };
   const { status: notificationStatus, refresh: refreshNotifications } =
-    useNotificationStatus(isOwner ? organization?.id : null);
+    useNotificationStatus(isAdmin ? organization?.id : null);
   const showAvatarDot = notificationStatus.unreadCount > 0;
   const showBillingDot = hasNotificationType(
     notificationStatus,
     "billing_limit_reached"
   );
+  const showFailingItem =
+    hasNotificationType(notificationStatus, "workflows_failing") ||
+    hasNotificationType(notificationStatus, "failure_alerts_unreachable");
 
   const handleDropdownOpenChange = (open: boolean): void => {
     if (open) {
@@ -271,7 +283,25 @@ const AuthenticatedUserMenu = (): React.ReactElement => {
             </DropdownMenuItem>
             <DropdownMenuSeparator />
           </div>
-          {showGettingStarted && (
+          {showFailingItem && organization?.id && (
+            <>
+              <DropdownMenuItem
+                data-testid="failure-alerts-menu-item"
+                onClick={() =>
+                  router.push(`/settings/${organization.id}/alerts`)
+                }
+              >
+                <AlertTriangle className="size-4 text-destructive" />
+                <span className="truncate">
+                  {hasNotificationType(notificationStatus, "workflows_failing")
+                    ? "Workflows failing"
+                    : "Nobody gets alerts"}
+                </span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          )}
+          {showGettingStarted && !isViewer && (
             <>
               <DropdownMenuItem onClick={openGettingStarted}>
                 <Rocket className="size-4" />

@@ -98,6 +98,7 @@ async function stepHandler(
   return executeHoldPayment({
     organizationId: orgCtx.organizationId,
     userId: orgCtx.userId,
+    createdByUserId: orgCtx.executionUserId,
     network: input.network,
     tokenConfig: input.tokenConfig,
     amount: input.amount,

@@ -14,8 +14,15 @@ import {
   QUERY_BATCH_SIZE,
   queryLogsWithRetry,
 } from "./query-events-core";
+import {
+  badAddressEntryError,
+  isHexAddress,
+  readAddressListValue,
+} from "../address-list-config";
 
 export const MAX_EVENT_QUERIES = 20;
+// Addresses per eth_getLogs call: the bound Multiple mode puts on a whole node.
+const ADDRESSES_PER_LOG_QUERY = MAX_EVENT_QUERIES;
 
 export type TaggedEvent = DecodedEvent & {
   contractAddress: string;
@@ -30,7 +37,7 @@ export type ResolvedEventQuery = {
   topics: (string | null)[] | null;
 };
 
-type LogQueryPlan = LogQueryFilter & {
+export type LogQueryPlan = LogQueryFilter & {
   // The entries this call serves, keyed by logKey(address, topic0).
   queries: Map<string, ResolvedEventQuery>;
 };
@@ -206,6 +213,106 @@ export function parseEventQueries(raw: unknown): ParseEventQueriesResult {
     queries.push(result.query);
   }
   return { success: true, queries };
+}
+
+function readAddressList(
+  raw: unknown
+): { success: true; entries: unknown[] } | Failure {
+  const list = readAddressListValue(raw);
+  if (list.success) {
+    return list;
+  }
+  // An empty list has nothing to watch, so failOnError may soften it.
+  return list.emptyList ? fail(list.error) : noDestination(list.error);
+}
+
+/** Valid checksummed addresses in list order, each once however often it is listed. */
+function normalizeAddressList(
+  entries: unknown[]
+): { success: true; addresses: string[] } | Failure {
+  const addresses: string[] = [];
+  const seen = new Set<string>();
+  for (const [index, entry] of entries.entries()) {
+    const text = typeof entry === "string" ? entry.trim() : "";
+    if (!(isHexAddress(text) && ethers.isAddress(text))) {
+      return noDestination(badAddressEntryError(index, entry));
+    }
+    const address = ethers.getAddress(text);
+    if (!seen.has(address)) {
+      seen.add(address);
+      addresses.push(address);
+    }
+  }
+  return { success: true, addresses };
+}
+
+type AddressListInput = {
+  contractAddresses?: unknown;
+  abi?: unknown;
+  eventName?: unknown;
+  eventArgs?: unknown;
+};
+
+/** One event on a run-time list of contracts, resolved into one query per distinct address. */
+export function parseAddressListQuery(
+  input: AddressListInput
+): ParseEventQueriesResult {
+  const list = readAddressList(input.contractAddresses);
+  if (!list.success) {
+    return list;
+  }
+  const normalized = normalizeAddressList(list.entries);
+  if (!normalized.success) {
+    return normalized;
+  }
+  if (typeof input.eventName !== "string" || input.eventName === "") {
+    return fail("Event Name is required.");
+  }
+  if (typeof input.abi !== "string" || input.abi.trim() === "") {
+    return fail("Contract ABI is required. Paste it or fetch it first.");
+  }
+  const resolved = resolveEventFragment(input.abi, input.eventName);
+  if (!resolved.success) {
+    return resolved;
+  }
+  const topicResult = buildEventArgTopics(
+    filterInput(input.eventArgs),
+    resolved.fragment
+  );
+  if (!topicResult.success) {
+    return fail(topicResult.error);
+  }
+  return {
+    success: true,
+    queries: normalized.addresses.map((contractAddress) => ({
+      contractAddress,
+      fragment: resolved.fragment,
+      iface: resolved.iface,
+      topics: topicResult.topics,
+    })),
+  };
+}
+
+/** Queries that share one event and filter, grouped into calls of bounded address count. */
+export function planAddressListQueries(
+  queries: ResolvedEventQuery[]
+): LogQueryPlan[] {
+  const plans: LogQueryPlan[] = [];
+  for (let i = 0; i < queries.length; i += ADDRESSES_PER_LOG_QUERY) {
+    const chunk = queries.slice(i, i + ADDRESSES_PER_LOG_QUERY);
+    const first = chunk[0];
+    plans.push({
+      addresses: chunk.map((query) => query.contractAddress),
+      topics: first.topics ?? [first.fragment.topicHash],
+      queries: new Map(
+        chunk.map((query) => [
+          logKey(query.contractAddress, query.fragment.topicHash),
+          query,
+        ])
+      ),
+    });
+  }
+  return plans;
 }
 
 /** Unfiltered entries share one call per set of events; a filtered one gets its own. */

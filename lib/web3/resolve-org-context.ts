@@ -5,7 +5,10 @@ import { db } from "@/lib/db";
 import { workflowExecutions } from "@/lib/db/schema";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getErrorMessage } from "@/lib/utils";
-import { getOrganizationIdFromExecution } from "@/lib/workflow/executor/helpers";
+import {
+  getOrganizationIdFromExecution,
+  rpcPreferenceUserId,
+} from "@/lib/workflow/executor/helpers";
 
 type WorkflowContext = {
   executionId?: string;
@@ -16,13 +19,20 @@ type WorkflowContext = {
  * Resolve organizationId and userId from context.
  * When _context.organizationId is provided (direct execution), skip workflowExecutions lookup.
  * When _context.executionId is provided (workflow execution), derive org and user from execution.
+ * userId is the RPC preference user (see rpcPreferenceUserId); executionUserId
+ * is the run's user for attribution.
  */
 export async function resolveOrganizationContext(
   _context: WorkflowContext,
   logTag: string,
   actionName: string
 ): Promise<
-  | { success: true; organizationId: string; userId: string | undefined }
+  | {
+      success: true;
+      organizationId: string;
+      userId: string | undefined;
+      executionUserId?: string;
+    }
   | { success: false; error: string }
 > {
   let organizationId: string;
@@ -77,7 +87,12 @@ export async function resolveOrganizationContext(
     if (!execution) {
       throw new Error("Execution not found");
     }
-    return { success: true, organizationId, userId: execution.userId };
+    return {
+      success: true,
+      organizationId,
+      userId: await rpcPreferenceUserId(execution.userId, organizationId),
+      executionUserId: execution.userId,
+    };
   } catch (error) {
     logUserError(
       ErrorCategory.VALIDATION,

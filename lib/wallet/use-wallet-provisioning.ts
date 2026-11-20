@@ -4,6 +4,7 @@ import { atom, useAtomValue, useSetAtom } from "jotai";
 import { useEffect } from "react";
 import { isWalletEmail } from "@/lib/auth/wallet-constants";
 import { authClient, useSession } from "@/lib/auth-client";
+import { useActiveMember } from "@/lib/hooks/use-organization";
 import {
   useInvalidateWalletInfo,
   useWalletInfo,
@@ -116,9 +117,11 @@ export function useWalletProvisioning(): { isProvisioning: boolean } {
     !email.startsWith("temp-") &&
     (session?.user?.emailVerified === true || isWalletEmail(email));
   const activeOrgId = activeOrg?.id ?? null;
+  // A viewer cannot provision the org wallet; the endpoint refuses them.
+  const { isViewer } = useActiveMember();
 
   useEffect(() => {
-    if (!activeOrgId) {
+    if (!activeOrgId || isViewer) {
       return;
     }
     const open = shouldOpenProvisionStream({
@@ -143,6 +146,7 @@ export function useWalletProvisioning(): { isProvisioning: boolean } {
       });
   }, [
     isAuthed,
+    isViewer,
     activeOrgId,
     isLoading,
     hasWallet,

@@ -19,6 +19,7 @@ import {
   executionLogNotDeleted,
   executionLogSoftDeleteValues,
 } from "@/lib/workflow/soft-delete";
+import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 
 const SUMMARY_DEFAULT_LIMIT = 20;
 const SUMMARY_MAX_LIMIT = 100;
@@ -177,6 +178,11 @@ async function summaryResponse(
         startedAtKey:
           sql<string>`to_char(${workflowExecutions.startedAt}, 'YYYY-MM-DD HH24:MI:SS.US')`.as(
             "started_at_key"
+          ),
+        // Only skipped rows are read, so no large step output is detoasted.
+        refusals:
+          sql<number | null>`CASE WHEN ${workflowExecutions.status} = 'skipped' THEN (${workflowExecutions.output}->>'refusals')::int END`.as(
+            "refusals"
           ),
       },
       orderBy: [desc(workflowExecutions.startedAt), desc(workflowExecutions.id)],
@@ -375,6 +381,9 @@ export async function DELETE(
         { error: "Workflow not found" },
         { status: 404 }
       );
+    }
+    if (!access.canEdit) {
+      return viewerReadOnlyResponse();
     }
 
     // Only the runs not already purged; keeps deletedCount accurate on re-runs.
