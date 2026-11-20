@@ -25,8 +25,9 @@ describe("executor reads a node's output by sanitizeNodeId", () => {
   });
 
   it("resolves a raw value", () => {
+    // A label the output no longer has, so only the key can find it.
     expect(
-      resolveTemplateToRawValueChecked("node-1.a", "HTTP.status", OUTPUTS)
+      resolveTemplateToRawValueChecked("node-1.a", "Renamed.status", OUTPUTS)
     ).toEqual({ found: true, value: 200 });
   });
 

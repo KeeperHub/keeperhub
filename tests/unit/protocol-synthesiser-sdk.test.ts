@@ -234,4 +234,25 @@ describe("generateWorkflowSDKCode output keys", () => {
     expect(code).toContain("outputs['a_b'] = {");
     expect(code).toContain("outputs?.['a_b']?.data?.balance");
   });
+
+  it("writes and reads a trigger's output under one key", () => {
+    const base = ccipBalanceNode("step");
+    const step: WorkflowNode = {
+      ...base,
+      data: {
+        ...base.data,
+        config: {
+          ...base.data.config,
+          account: "{{@trigger-1:Manual Trigger.addr}}",
+        },
+      },
+    };
+    const code = generateWorkflowSDKCode(
+      "Trigger keys",
+      [triggerNode, step],
+      [edge("trigger-1", "step")]
+    );
+    expect(code).toContain("outputs['trigger_1'] = {");
+    expect(code).toContain("outputs?.['trigger_1']");
+  });
 });
