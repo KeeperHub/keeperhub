@@ -19,6 +19,7 @@ import {
   INTEGER_PATTERN,
   UNSIGNED_INTEGER_PATTERN,
 } from "@/lib/web3/solidity-values";
+import { BUILTIN_NODE_ID } from "@/lib/workflow/editor/builtin-variables";
 import {
   evaluateShowWhen,
   type ShowWhen,
@@ -625,7 +626,12 @@ type NodeIndex = {
 
 function indexNodes(nodes: readonly unknown[]): NodeIndex {
   const kinds = new Map<string, Set<string>>();
-  for (const [id, kind] of nodesById(nodes, nodeKind)) {
+  // The run stores the built-in variables under their own key before any node.
+  const entries: [string, string][] = [
+    [BUILTIN_NODE_ID, "system"],
+    ...nodesById(nodes, nodeKind),
+  ];
+  for (const [id, kind] of entries) {
     const key = sanitizeNodeId(id);
     kinds.set(key, (kinds.get(key) ?? new Set()).add(`${id}=${kind}`));
   }

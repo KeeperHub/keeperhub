@@ -260,6 +260,25 @@ describe("a stray toggle value already saved", () => {
     }
   });
 
+  it("reads the built-in variables' key as always in use", () => {
+    // "--system" and the built-in "__system" share the output key "__system".
+    const system = {
+      id: "--system",
+      type: "trigger",
+      data: { label: "N", type: "trigger", config: {} },
+    };
+    const ref = "{{@--system:N.isoTimestamp}}";
+    const stored = [system, ...savedAs({ sponsorGas: ref })];
+    // With the node gone, the reference reads the built-in variables instead.
+    expect(save({ sponsorGas: ref }, stored).issues).toMatchObject([
+      { field: "sponsorGas" },
+    ]);
+    const builtin = "{{@__system:System.isoTimestamp}}";
+    expect(
+      save({ sponsorGas: builtin }, savedAs({ sponsorGas: builtin }))
+    ).toEqual({ valid: true, issues: [] });
+  });
+
   it("never keeps a list or object, even an equal one", () => {
     for (const value of [{ flag: true }, [1]]) {
       expect(
