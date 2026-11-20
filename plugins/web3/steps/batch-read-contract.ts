@@ -781,7 +781,7 @@ function encodeArgsList(
   contractAddress: string
 ): EncodedCallWithMeta[] {
   requireArguments(ctx.fn);
-  const entries = parseListInput(input.argsFromList, '[["0xabc..."]]');
+  const entries = parseListInput(input.argsFromList, ctx.fn);
   let total = 0;
   return argSetsFromList(entries, ctx.fn).map((args, index) => {
     const callData = encodeForList(

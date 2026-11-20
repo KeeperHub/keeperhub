@@ -15,6 +15,7 @@ const ADDRESS_LIST_FIELD = "contractAddresses";
 const MAX_SHOWN_LENGTH = 60;
 const BARE_HEX_ADDRESS_RE = /^[0-9a-fA-F]{40}$/;
 const WHITESPACE_RE = /\s/;
+const LINE_BREAK_RE = /[\t\n\r]/g;
 const EN_US = "en-US";
 
 /** A list read from a field; only an empty list may be softened by Fail workflow on error. */
@@ -45,7 +46,10 @@ const REPLACEMENT_CHAR = String.fromCodePoint(0xff_fd);
 
 /** User text shortened for a message, hidden and control characters shown as U+FFFD. */
 export function echo(text: string, max = MAX_SHOWN_LENGTH): string {
-  const shown = stripControlChars(text, { replacement: REPLACEMENT_CHAR });
+  // Line breaks and tabs read as spaces; other hidden characters are marked.
+  const shown = stripControlChars(text.replace(LINE_BREAK_RE, " "), {
+    replacement: REPLACEMENT_CHAR,
+  });
   if (shown.length <= max) {
     return shown;
   }
@@ -100,7 +104,7 @@ export function textSizeError(
     bytes = textBytes(value);
   } catch {
     // JSON.stringify gives up on a value nested too deeply to measure.
-    return `${label} is nested too deeply to read. Point it at a flat list.`;
+    return `${label} is nested too deeply to read. Check the node that produces it.`;
   }
   return bytes > MAX_LIST_TEXT_BYTES
     ? `${label} is ${megabytes(bytes)} MB; the limit is 1 MB. ${nextStep}`

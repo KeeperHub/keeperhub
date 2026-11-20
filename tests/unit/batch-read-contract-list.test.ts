@@ -512,7 +512,7 @@ describe("batch-read-contract - contract addresses from a list", () => {
     expect(await failure(argsList("7"))).toBe(
       single
         .replace("Contract Addresses", "Argument Sets")
-        .replace('["0xabc..."]', '[["0xabc..."]]')
+        .replace('["0xabc..."]', "[[1]]")
     );
   });
 
@@ -686,7 +686,7 @@ describe("batch-read-contract - argument sets from a list", () => {
 
   it("fails when the list is not JSON", async () => {
     expect(await failure(argsList("1, 2"))).toBe(
-      'Argument Sets is not a JSON array. Reference an array from an earlier node, e.g. {{@node1:Label.result}}, or type one like [["0xabc..."]].'
+      "Argument Sets is not a JSON array. Reference an array from an earlier node, e.g. {{@node1:Label.result}}, or type one like [[1]]."
     );
   });
 
@@ -3443,7 +3443,7 @@ describe("batch-read-contract - fourth review", () => {
     expect
       .soft(await failure({ ...argsList([[[1, 2]]], "g"), abi }))
       .toBe(
-        'Argument Sets entry 1 has 1 value for g (t, y), which takes 2 when t is an object, or 3 when t is given flat as its 2 members. Make each entry an array like [{"a": 1, "b": 1}, 1].'
+        'Argument Sets entry 1 has 1 value, but g takes 2 (t, y). Make each entry an array like [{"a": 1, "b": 1}, 1].'
       );
   });
 
@@ -3744,5 +3744,134 @@ describe("batch-read-contract - fifth review", () => {
     ).toBe(
       'Function Arguments: t must be an object with its member names, like {"i": {"p": 1}}, got 1.'
     );
+  });
+
+  const both = async (
+    abi: string,
+    entry: unknown[]
+  ): Promise<[string, string]> => [
+    await failure({ ...argsList([entry], "f"), abi }),
+    await failure({
+      ...addressList([CONTRACT], { functionArgs: JSON.stringify(entry) }),
+      abiFunction: "f",
+      abi,
+    }),
+  ];
+
+  it("names a tuple holding a plain value before a correct array, in both fields", async () => {
+    const abi = abiWith("f", [
+      tupleOf("t", [uint("a"), uint("b")]),
+      { name: "xs", type: "uint256[]" },
+    ]);
+    // xs is given correctly; a plain member takes no array.
+    const [args, shared] = await both(abi, [1, [1, 2]]);
+    const named =
+      't must be an object with its member names, like {"a": 1, "b": 1}, got 1. Or give its 2 members flat in its place.';
+    expect.soft(args).toBe(`Argument Sets entry 1: ${named}`);
+    expect.soft(shared).toBe(`Function Arguments: ${named}`);
+  });
+
+  it("gives a swapped entry the same message in both fields", async () => {
+    const abi = abiWith("f", [
+      uint("x"),
+      nestedT,
+      tupleOf("s", [uint("a"), uint("b")]),
+    ]);
+    const [args, shared] = await both(abi, [{ i: { p: 1 } }, 1, 1, 2]);
+    const counted =
+      "has 4 values for f (x, t, s), the number it takes when s is given flat as its 2 members, but not in the right places.";
+    expect
+      .soft(args)
+      .toBe(
+        `Argument Sets entry 1 ${counted} Make each entry an array like [1, {"i": {"p": 1}}, {"a": 1, "b": 1}].`
+      );
+    expect
+      .soft(shared)
+      .toBe(
+        `Function Arguments ${counted} The same arguments go to every contract in the list.`
+      );
+  });
+
+  it("asks to fill in a tuple the editor left blank", async () => {
+    const abi = abiWith("f", [nestedT, uint("x")]);
+    const [, shared] = await both(abi, ["", "5"]);
+    expect(shared).toBe(
+      "Function Arguments: t cannot be empty. Fill in every argument; only a string may be left blank."
+    );
+  });
+
+  it("names a tuple starting with a tuple with the count right, and with blanks at the end", async () => {
+    const [, equal] = await both(abiWith("f", [nestedT, uint("x")]), [1, 2]);
+    expect
+      .soft(equal)
+      .toBe(
+        'Function Arguments: t must be an object with its member names, like {"i": {"p": 1}}, got 1.'
+      );
+    const [, short] = await both(
+      abiWith("f", [nestedT, uint("x"), uint("y")]),
+      [1, 2]
+    );
+    expect
+      .soft(short)
+      .toBe(
+        'Function Arguments: t must be an object with its member names, like {"i": {"p": 1}}, got 1.'
+      );
+  });
+
+  it("does not take an object that fits no member as a tuple member", async () => {
+    const abi = abiWith("f", [
+      tupleOf("s", [uint("a"), nestedT]),
+      tupleOf("u", [uint("c"), { name: "d", type: "uint256[]" }]),
+    ]);
+    const [args] = await both(abi, [1, { zz: 1 }, [1, 2]]);
+    // {zz} fits no member of t, so u is not named.
+    expect(args).toBe(
+      'Argument Sets entry 1 has 3 values for f (s, u), a number it takes when tuples are given flat, but not in the right places. Make each entry an array like [{"a": 1, "t": {"i": {...}}}, {"c": 1, "d": [1, 1]}].'
+    );
+  });
+
+  it("lines up an array member on JSON array text", async () => {
+    const abi = abiWith("f", [
+      tupleOf("t", [{ name: "b", type: "uint256[]" }, uint("q")]),
+      tupleOf("s", [uint("a"), { name: "c", type: "uint256[]" }]),
+    ]);
+    const [args, shared] = await both(abi, ["[1,2]", 2, [1, 2]]);
+    const named =
+      'give s as an object with its member names, like {"a": 1, "c": [1, 1]}, not as an array.';
+    expect.soft(args).toBe(`Argument Sets entry 1: ${named}`);
+    expect.soft(shared).toBe(`Function Arguments: ${named}`);
+  });
+
+  it("names a tuple whose flat reading would put a plain value on an array member", async () => {
+    const abi = abiWith("f", [
+      uint("x"),
+      tupleOf("t", [uint("a"), { name: "b", type: "uint256[]" }]),
+      uint("y"),
+    ]);
+    expect(await failure({ ...argsList([[1, 2, 3]], "f"), abi })).toBe(
+      'Argument Sets entry 1: t must be an object with its member names, like {"a": 1, "b": [1, 1]}, got 2. Or give its 2 members flat in its place.'
+    );
+  });
+
+  it("names the one flat tuple next to a one-member tuple", async () => {
+    const abi = abiWith("f", [
+      tupleOf("w", [uint("p")]),
+      tupleOf("s", [uint("a"), uint("b")]),
+      uint("x"),
+    ]);
+    expect(
+      await failure({
+        ...argsList([[{ a: 1, b: 2 }, { p: 1 }, 1, 2]], "f"),
+        abi,
+      })
+    ).toContain("the number it takes when s is given flat as its 2 members");
+  });
+
+  it("names a value nested too deeply to show by its kind", async () => {
+    const deep = `${"[".repeat(4000)}1${"]".repeat(4000)}`;
+    const message = await failure({
+      ...argsList(`[[${deep}]]`),
+    });
+    expect(message).not.toContain("Maximum call stack");
   });
 });

@@ -148,7 +148,7 @@ The list is checked before any call is made, and the step fails when:
 - Function Arguments is larger than 1 MB, or leaves an argument blank that is not a `string`
 - an entry is not a valid address (an address in Contract Addresses is 0x and 40 hex characters), has the wrong number of arguments, or is not a plain value where one is expected (the message names the entry, counted from 1)
 - an address argument has spaces around it (an address in Contract Address or Contract Addresses is trimmed; one passed as an argument is not)
-- a tuple is given as an array of its members or a plain value instead of an object keyed by member name, or the function takes a tuple whose members have no names (such a function cannot be called from a list)
+- a tuple is given as an array of its members, as text or as a plain value instead of an object keyed by member name, or the function takes a tuple whose members have no names (such a function cannot be called from a list)
 - an argument cannot be encoded for the function: a `bool` that is not `true` or `false`, a `bytes32` that is not 0x hex of that length (turn text into `bytes32` with the Encode / Decode node first), a number that is not a whole number written in digits (no commas or `1e18` notation) or does not fit its type (a `uint` cannot be negative), or a fixed-size array such as `uint256[3]` with the wrong number of items
 - a number above 9,007,199,254,740,991 (or below its negative) is given without quotes: it may have lost digits on the way, so write it in quotes or have the earlier node send it as text
 - the function declares more than 1,000 parameters and tuple members in all

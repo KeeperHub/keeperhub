@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   checkBatchReadConfig,
   checkQueryEventsConfig,
+  echo,
   MAX_LIST_ADDRESSES,
 } from "@/plugins/web3/address-list-config";
 import {
@@ -772,7 +773,7 @@ describe("shared Contract Addresses reading", () => {
     ).toEqual({
       field: "contractAddresses",
       message:
-        "Contract Addresses is nested too deeply to read. Point it at a flat list.",
+        "Contract Addresses is nested too deeply to read. Check the node that produces it.",
     });
   });
 
@@ -783,5 +784,13 @@ describe("shared Contract Addresses reading", () => {
         contractAddresses: ["{{@n:Label.address}}", "0x12"],
       })
     ).toBeUndefined();
+  });
+});
+
+describe("echo", () => {
+  it("never cuts a surrogate pair and reads line breaks as spaces", () => {
+    const emoji = String.fromCodePoint(0x1_f6_00);
+    expect(echo(`${"x".repeat(59)}${emoji}yy`)).toBe(`${"x".repeat(59)}...`);
+    expect(echo("a\nb\tc")).toBe("a b c");
   });
 });
