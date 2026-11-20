@@ -1689,6 +1689,12 @@ function ambiguousBlankError(
   const names = indexes.map(
     (index) => echo(fn.inputs[index].name) || `arg${index}`
   );
+  // Not expected (differing readings flip a named tuple); kept over a crash.
+  if (names.length === 0) {
+    return new Error(
+      `${SHARED_ARGS_LABEL}: the tuples given as "" can be read more than one way. Give each tuple as an object with its member names. In the editor, type in any field of each (you can clear it again).`
+    );
+  }
   const first = fn.inputs[indexes[0]];
   const example = echo(
     exampleValue(first.type, first.components),
