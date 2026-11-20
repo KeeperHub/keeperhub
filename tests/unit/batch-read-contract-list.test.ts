@@ -4218,21 +4218,16 @@ describe("batch-read-contract - sixth review", () => {
     );
   });
 
-  it("reads an untouched tuple of strings as left blank, not as taking the next field", async () => {
+  it("refuses an untouched tuple of strings that also reads as its first member", async () => {
     const abi = abiWith([
       uint("n"),
       tupleOf("x", [str("a"), str("b")]),
       uint("m"),
       str("z"),
     ]);
-    const outcome = await run({
-      ...addressList([CONTRACT], {
-        functionArgs: JSON.stringify([7, "", 8, "9"]),
-      }),
-      abiFunction: "f",
-      abi,
-    });
-    expect(outcome.success).toBe(true);
+    // x blank with m = 8, or x = ("", "8") with m = 9: both are valid calls.
+    const [, shared] = await both(abi, [7, "", 8, "9"]);
+    expect(shared).toMatch(/^Function Arguments: the "" in x's place can be/);
   });
 
   it("gives the count for an array that lands on a string while a value is missing", async () => {
@@ -4526,5 +4521,228 @@ describe("batch-read-contract - sixth review", () => {
       }
     }
     expect(wrong).toEqual([]);
+  });
+});
+
+describe("batch-read-contract - seventh review", () => {
+  const abiWith = (inputs: unknown[]): string =>
+    JSON.stringify([
+      {
+        name: "f",
+        type: "function",
+        stateMutability: "view",
+        inputs,
+        outputs: [{ name: "", type: "uint256" }],
+      },
+    ]);
+  const str = (name: string): { name: string; type: string } => ({
+    name,
+    type: "string",
+  });
+  const typed = (
+    name: string,
+    type: string
+  ): { name: string; type: string } => ({ name, type });
+  const tupleOf = (
+    name: string,
+    components: { name: string; type: string }[]
+  ): {
+    name: string;
+    type: string;
+    components: { name: string; type: string }[];
+  } => ({ name, type: "tuple", components });
+  const AMBIGUOUS = /can be it left blank or its first member/;
+
+  // The arguments the one call sent, or undefined when nothing was sent.
+  const sent = async (
+    abi: string,
+    functionArgs: unknown[]
+  ): Promise<{ args?: unknown[]; error?: string }> => {
+    mockStaticCall.mockClear();
+    const outcome = await run({
+      ...addressList([CONTRACT], {
+        functionArgs: JSON.stringify(functionArgs),
+      }),
+      abiFunction: "f",
+      abi,
+    });
+    if (!outcome.success) {
+      return { error: outcome.error };
+    }
+    const [call] = mockStaticCall.mock.calls[0][0] as Call[];
+    return {
+      args: new ethers.Interface(abi)
+        .decodeFunctionData("f", call.callData)
+        .toArray(true),
+    };
+  };
+
+  it("reads a lone flat tuple with a blank first member and a trimmed blank", async () => {
+    const abi = abiWith([tupleOf("n0", [str("a"), str("b"), str("c")])]);
+    expect(await sent(abi, ["", "x"])).toEqual({ args: [["", "x", ""]] });
+    expect(await sent(abi, ["", "x", ""])).toEqual({ args: [["", "x", ""]] });
+  });
+
+  it("refuses when the flat and the blank-tuple readings both line up and differ", async () => {
+    const abi = abiWith([
+      typed("n0", "uint256[]"),
+      tupleOf("n1", [str("n2"), str("n3"), str("n4"), str("n5")]),
+      str("n6"),
+      tupleOf("n7", [str("n8")]),
+      str("n9"),
+    ]);
+    const { error } = await sent(abi, [[], "", " [x] ", "[1]", "hi"]);
+    expect(error).toBe(
+      'Function Arguments: the "" in n1\'s place can be it left blank or its first member, and the values after it are read differently. Give n1 as an object with its member names, like {"n2": "...", "n3": "...", "n4": "...", "n5": "..."}.'
+    );
+    // Given as an object, it is sent as written.
+    expect(
+      await sent(abi, [[], { n2: "", n3: " [x] ", n4: "[1]", n5: "hi" }])
+    ).toEqual({ args: [[], ["", " [x] ", "[1]", "hi"], "", [""], ""] });
+  });
+
+  it("refuses an untouched tuple of strings before values that also read flat", async () => {
+    const abi = abiWith([
+      typed("n", "uint256"),
+      tupleOf("x", [str("a"), str("b")]),
+      typed("m", "uint256"),
+      str("z"),
+    ]);
+    expect((await sent(abi, [7, "", 8, "9"])).error).toMatch(AMBIGUOUS);
+    expect(await sent(abi, [7, { a: "", b: "" }, 8, "9"])).toEqual({
+      args: [BigInt(7), ["", ""], BigInt(8), "9"],
+    });
+  });
+
+  it("accepts a blank tuple when both readings send the same values", async () => {
+    const abi = abiWith([tupleOf("t", [str("a"), str("b")]), str("s")]);
+    for (const entry of [[""], ["", ""], ["", "", ""]]) {
+      expect.soft(await sent(abi, entry), JSON.stringify(entry)).toEqual({
+        args: [["", ""], ""],
+      });
+    }
+  });
+
+  it("reads an untouched tuple as blank when only that reading lines up", async () => {
+    const abi = abiWith([
+      tupleOf("t", [str("a"), typed("b", "uint256[]")]),
+      typed("n", "uint256"),
+    ]);
+    // Flat, 7 would land on t.b, an array: only the blank reading fits.
+    const { error } = await sent(abi, ["", "7"]);
+    expect(error).not.toMatch(AMBIGUOUS);
+    expect(error).toMatch(/^Function Arguments: t\.b/);
+  });
+
+  // Correct flat entries whose tuple starts with a blank string, with the
+  // untouched strings at the end left out: each is sent as read flat, or
+  // refused as ambiguous, never sent any other way.
+  it("sends a flat tuple with a blank first member as given, or refuses, over many shapes", async () => {
+    const pool: { name: string; type: string }[] = [
+      typed("u", "uint256"),
+      str("s"),
+      typed("ss", "string[]"),
+      typed("us", "uint256[]"),
+      typed("ok", "bool"),
+    ];
+    const tuples = [
+      [str("a"), str("b")],
+      [str("a"), typed("b", "uint256")],
+      [str("a"), str("b"), str("c")],
+      [str("a")],
+    ];
+    const sample = (type: string, k: number): unknown => {
+      switch (type) {
+        case "uint256":
+          return String(k + 1);
+        case "string":
+          return `v${k}`;
+        case "string[]":
+          return [`w${k}`];
+        case "uint256[]":
+          return [String(k + 2)];
+        default:
+          return true;
+      }
+    };
+    const decoded = (type: string, value: unknown): unknown => {
+      if (type === "uint256") {
+        return BigInt(value as string);
+      }
+      if (type === "uint256[]") {
+        return (value as string[]).map((v) => BigInt(v));
+      }
+      return value;
+    };
+    let flat = 0;
+    let refused = 0;
+    for (const before of [[], ...pool.map((p) => [p])]) {
+      for (const components of tuples) {
+        for (const after of [
+          [],
+          ...pool.map((p) => [p]),
+          ...pool.map((p) => [p, str("z")]),
+          [str("y"), tupleOf("q", [str("q1")])],
+        ]) {
+          const inputs = [
+            ...before,
+            tupleOf(
+              "t",
+              components.map((c) => ({ ...c }))
+            ),
+            ...after,
+          ];
+          // The last blankLast inputs, plain strings, are left blank too.
+          for (const blankLast of [0, 1, 2]) {
+            const tail = inputs.slice(inputs.length - blankLast);
+            if (
+              blankLast > after.length ||
+              tail.some((input) => input.type !== "string")
+            ) {
+              continue;
+            }
+            const abi = abiWith(inputs);
+            const values: unknown[] = [];
+            const expected: unknown[] = [];
+            let k = 0;
+            for (const [index, input] of inputs.entries()) {
+              const members: { name: string; type: string }[] =
+                "components" in input
+                  ? (input.components as { name: string; type: string }[])
+                  : [input];
+              const blank = index >= inputs.length - blankLast;
+              const decodedMembers = members.map((member, m) => {
+                const value =
+                  blank || (input.name === "t" && m === 0)
+                    ? ""
+                    : sample(member.type, k);
+                k += 1;
+                values.push(value);
+                return decoded(member.type, value);
+              });
+              expected.push(
+                "components" in input ? decodedMembers : decodedMembers[0]
+              );
+            }
+            // The editor leaves untouched strings at the end out.
+            let end = values.length;
+            while (end > 0 && values[end - 1] === "") {
+              end -= 1;
+            }
+            const label = `${JSON.stringify(inputs)} ${JSON.stringify(values)}`;
+            const outcome = await sent(abi, values.slice(0, end));
+            if (outcome.error) {
+              refused += 1;
+              expect.soft(outcome.error, label).toMatch(AMBIGUOUS);
+            } else {
+              flat += 1;
+              expect.soft(outcome.args, label).toEqual(expected);
+            }
+          }
+        }
+      }
+    }
+    expect(flat).toBeGreaterThan(20);
+    expect(refused).toBeGreaterThan(5);
   });
 });

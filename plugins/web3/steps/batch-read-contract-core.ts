@@ -1436,12 +1436,7 @@ export function argSetsFromList(
  * are padded as blanks. An empty final `string` is sent as "".
  */
 function editorArgs(stored: unknown[], fn: ListFunction): unknown[] {
-  const asStored = reshapeArgsCounted(stored, fn).consumed;
-  // A list that lines up as stored keeps a flat tuple's blank first member.
-  const parsed =
-    asStored === stored.length && !nestedSlot(stored, fn)
-      ? stored
-      : blankTuples(stored, fn);
+  const parsed = editorReading(stored, fn);
   // A tuple given as an array or text is named before the list is read flat.
   let filled = parsed.length;
   while (filled > 0 && parsed[filled - 1] === "") {
@@ -1495,19 +1490,64 @@ function editorArgs(stored: unknown[], fn: ListFunction): unknown[] {
   return reshaped.args;
 }
 
-// The editor stores a tuple field left untouched as "": read it as the tuple
-// with every member blank, not as its first member given flat.
-function blankTuples(values: unknown[], fn: ListFunction): unknown[] {
+/**
+ * The editor stores a tuple field left untouched as "", which can also be a
+ * flat tuple's blank first member. Read as the tuple left blank only when the
+ * flat reading does not line up; when both do and differ, refuse.
+ */
+function editorReading(stored: unknown[], fn: ListFunction): unknown[] {
+  const blanked = blankTuples(stored, fn);
+  if (!(blanked.first && readsWhole(stored, fn))) {
+    return blanked.values;
+  }
+  if (
+    readsWhole(blanked.values, fn) &&
+    paddedReading(stored, fn) !== paddedReading(blanked.values, fn)
+  ) {
+    const { input, index } = blanked.first;
+    throw new Error(
+      `${SHARED_ARGS_LABEL}: the "" in ${input.name || `arg${index}`}'s place can be it left blank or its first member, and the values after it are read differently. Give ${input.name || `arg${index}`} as an object with its member names, like ${echo(exampleValue(input.type, input.components), MAX_REASON_LENGTH)}.`
+    );
+  }
+  return stored;
+}
+
+// Every value has a place, as stored or with missing strings at the end blank.
+function readsWhole(values: unknown[], fn: ListFunction): boolean {
+  return (
+    (reshapeArgsCounted(values, fn).consumed === values.length ||
+      linesUp(values, fn, true)) &&
+    !nestedSlot(values, fn)
+  );
+}
+
+// The arguments the values give with every missing value blank, as text.
+function paddedReading(values: unknown[], fn: ListFunction): string {
+  const { consumed } = reshapeArgsCounted(values, fn);
+  const blanks = new Array<string>(Math.max(consumed - values.length, 0));
+  return JSON.stringify(
+    reshapeArgsCounted([...values, ...blanks.fill("")], fn).args
+  );
+}
+
+// Each "" in a tuple's place read as the tuple with every member blank, and
+// the first tuple read that way.
+function blankTuples(
+  values: unknown[],
+  fn: ListFunction
+): { values: unknown[]; first?: { input: AbiParam; index: number } } {
   const out = [...values];
+  let first: { input: AbiParam; index: number } | undefined;
   let cursor = 0;
-  for (const input of fn.inputs) {
+  for (const [index, input] of fn.inputs.entries()) {
     const members = input.type === "tuple" ? (input.components?.length ?? 0) : 0;
     if (members > 0 && out[cursor] === "") {
       out[cursor] = blankObject(input);
+      first ??= { input, index };
     }
     cursor += members > 0 && !isPlainObject(out[cursor]) ? members : 1;
   }
-  return out;
+  return { values: out, first };
 }
 
 function blankObject(param: AbiParam): Record<string, unknown> {
