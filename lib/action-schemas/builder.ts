@@ -164,7 +164,7 @@ function mapFieldType(field: ActionConfigFieldBase): string {
     case "template-input":
     case "template-textarea":
       return field.acceptsJsonArray
-        ? "JSON array, or a string holding one (supports {{@nodeId:Label.field}} templates)"
+        ? "string holding a JSON array, or the array itself (supports {{@nodeId:Label.field}} templates)"
         : "string (supports {{@nodeId:Label.field}} templates)";
     case "protocol-array":
     case "protocol-tuple-array":

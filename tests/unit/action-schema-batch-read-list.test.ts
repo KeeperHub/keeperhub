@@ -30,10 +30,10 @@ describe("ActionSchema - Batch Read Contract list inputs", () => {
 
   it("gives each list a shape an agent can follow", () => {
     expect(fields.argsFromList).toBe(
-      'JSON array, or a string holding one (supports {{@nodeId:Label.field}} templates) - Argument Sets - {{@node1:Label.result}} or [["0xabc...", 5], ["0xdef...", 6]]'
+      'string holding a JSON array, or the array itself (supports {{@nodeId:Label.field}} templates) - Argument Sets - {{@node1:Label.result}} or [["0xabc...", 5], ["0xdef...", 6]]'
     );
     expect(fields.contractAddresses).toBe(
-      'JSON array, or a string holding one (supports {{@nodeId:Label.field}} templates) - Contract Addresses - {{@node1:Label.result}} or ["0xabc...", "0xdef..."]'
+      'string holding a JSON array, or the array itself (supports {{@nodeId:Label.field}} templates) - Contract Addresses - {{@node1:Label.result}} or ["0xabc...", "0xdef..."]'
     );
     expect(fields.abiFetchAddress).toContain("Fetch ABI From");
     expect(fields.functionArgs).toBe(
