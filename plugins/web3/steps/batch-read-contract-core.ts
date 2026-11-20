@@ -1512,10 +1512,10 @@ function editorReading(stored: unknown[], fn: ListFunction): unknown[] {
   }
   const given = stored.slice(0, end);
   let readings = readingsOf(given, fn, "both");
-  const calls = new CallCache(fn);
+  const callOf = callData(fn);
   if (readings.length === 1 && readings[0].values === given) {
     // A tuple's "" trimmed off the end may still need reading blank.
-    return end === stored.length || calls.of(given)
+    return end === stored.length || callOf(given)
       ? stored
       : fallbackReading(stored, fn);
   }
@@ -1524,37 +1524,48 @@ function editorReading(stored: unknown[], fn: ListFunction): unknown[] {
     readings = [readings[0], readingsOf(given, fn, "blank")[0]];
   }
   for (const reading of readings) {
-    reading.call = calls.of(reading.values);
+    reading.call = callOf(reading.values);
   }
+  const sent = (reading: Reading): unknown[] =>
+    reading.values === given ? stored : reading.values;
+  const valid = (reading: Reading): boolean =>
+    reading.call !== undefined && reading.call !== TOO_BIG;
+  // Over the size caps, the flat reading is sent so the cap names it.
   const [flat] = readings;
-  const base = flat.call ? flat : readings.find((r) => r.call);
+  if (flat.call === TOO_BIG) {
+    return sent(flat);
+  }
+  const base = valid(flat) ? flat : readings.find(valid);
   if (!base) {
-    return fallbackReading(stored, fn);
+    const tooBig = readings.find((r) => r.call === TOO_BIG);
+    return tooBig ? sent(tooBig) : fallbackReading(stored, fn);
   }
   if (tooMany) {
     throw new Error(
       `${SHARED_ARGS_LABEL}: too many tuples are given as "" to tell how each is meant. Give each tuple as an object with its member names. In the editor, type in any field of each (you can clear it again).`
     );
   }
-  // A reading over the size caps is sent as is, so the cap names it.
-  const tooBig = readings.find((r) => r.call === TOO_BIG);
-  if (tooBig) {
-    return tooBig.values === given ? stored : tooBig.values;
-  }
-  const others = readings.filter((r) => r.call && r.call !== base.call);
+  // A reading over the caps differs from base unless base is the flat one.
+  const others = readings.filter((r) =>
+    valid(r) ? r.call !== base.call : r.call === TOO_BIG && base !== flat
+  );
   if (others.length > 0) {
     throw ambiguousBlankError(base, others, fn);
   }
-  return base.values === given ? stored : base.values;
+  return sent(base);
 }
 
-// No reading makes a valid call: as stored when it fits, else every "" in a
-// tuple's place blank, so the usual checks name the problem.
+// No reading makes a valid call: flat when it lines up with missing values
+// blank, else every "" in a tuple's place blank, so the usual checks name the
+// problem.
 function fallbackReading(stored: unknown[], fn: ListFunction): unknown[] {
-  const exact =
-    reshapeArgsCounted(stored, fn).consumed === stored.length &&
-    !nestedSlot(stored, fn);
-  return exact ? stored : readingsOf(stored, fn, "blank", false)[0].values;
+  const { consumed } = reshapeArgsCounted(stored, fn);
+  const padded = [
+    ...stored,
+    ...new Array<string>(Math.max(consumed - stored.length, 0)).fill(""),
+  ];
+  const flat = linesUp(padded, fn) && !nestedSlot(stored, fn);
+  return flat ? stored : readingsOf(stored, fn, "blank", false)[0].values;
 }
 
 /**
@@ -1583,10 +1594,8 @@ function readingsOf(
     }
     const members = input.type === "tuple" ? (input.components?.length ?? 0) : 0;
     // A tuple starting just past the end is missing, so blank like "".
-    const value =
-      pastEnd && cursor === reading.values.length
-        ? ""
-        : reading.values[cursor];
+    const missing = pastEnd && cursor === reading.values.length;
+    const value = missing ? "" : reading.values[cursor];
     if (members === 0 || value !== "") {
       walk(index + 1, cursor + (isPlainObject(value) ? 1 : members || 1), reading);
       return;
@@ -1600,9 +1609,10 @@ function readingsOf(
     if (mode === "both") {
       walk(index + 1, cursor + members, reading);
     }
+    // Only a "" the list holds is named; a missing tuple never is.
     walk(index + 1, cursor + 1, {
       values: blank,
-      blanked: [...reading.blanked, index],
+      blanked: missing ? reading.blanked : [...reading.blanked, index],
     });
   };
   walk(0, 0, { values, blanked: [] });
@@ -1610,43 +1620,14 @@ function readingsOf(
 }
 
 /**
- * The call data each reading makes with missing values blank, or undefined
- * when it leaves a value over or makes no valid call. Each argument is
- * checked and encoded once, so readings sharing it pay for it once.
+ * The call data a reading makes with missing values blank, or undefined when
+ * it leaves a value over or makes no valid call. Each argument is checked and
+ * encoded once per input, so readings sharing it pay for it once.
  */
-class CallCache {
-  private readonly fn: ListFunction;
-  private readonly byInput: Map<unknown, string | undefined>[];
-
-  constructor(fn: ListFunction) {
-    this.fn = fn;
-    this.byInput = fn.inputs.map(() => new Map());
-  }
-
-  of(values: unknown[]): string | undefined {
-    const { consumed } = reshapeArgsCounted(values, this.fn);
-    if (consumed < values.length || nestedSlot(values, this.fn)) {
-      return;
-    }
-    const blanks = new Array<string>(consumed - values.length).fill("");
-    const { args } = reshapeArgsCounted([...values, ...blanks], this.fn);
-    const parts: string[] = [];
-    let bytes = 4;
-    for (const [index, arg] of args.entries()) {
-      const cache = this.byInput[index];
-      const part = cache.has(arg) ? cache.get(arg) : this.encode(index, arg);
-      cache.set(arg, part);
-      if (part === undefined || part === TOO_BIG) {
-        return part;
-      }
-      parts.push(part);
-      bytes += (part.length - 2) / 2;
-    }
-    return bytes > MAX_CALL_CALLDATA_BYTES ? TOO_BIG : parts.join("|");
-  }
-
-  private encode(index: number, arg: unknown): string | undefined {
-    const one = { ...this.fn, inputs: [this.fn.inputs[index]] };
+function callData(fn: ListFunction): (values: unknown[]) => string | undefined {
+  const byInput = fn.inputs.map(() => new Map<unknown, string | undefined>());
+  const encodeOne = (index: number, arg: unknown): string | undefined => {
+    const one = { ...fn, inputs: [fn.inputs[index]] };
     try {
       estimateCalldata([arg], one, SHARED_ARGS_LABEL, 0);
     } catch {
@@ -1658,13 +1639,35 @@ class CallCache {
         return;
       }
       return ethers.AbiCoder.defaultAbiCoder().encode(
-        [ethers.ParamType.from(this.fn.inputs[index])],
+        [ethers.ParamType.from(fn.inputs[index])],
         shaped
       );
     } catch {
       return;
     }
-  }
+  };
+  return (values) => {
+    const { consumed } = reshapeArgsCounted(values, fn);
+    if (consumed < values.length || nestedSlot(values, fn)) {
+      return;
+    }
+    const blanks = new Array<string>(consumed - values.length).fill("");
+    const { args } = reshapeArgsCounted([...values, ...blanks], fn);
+    const parts: string[] = [];
+    let bytes = 4;
+    for (const [index, arg] of args.entries()) {
+      const cache = byInput[index];
+      const part = cache.has(arg) ? cache.get(arg) : encodeOne(index, arg);
+      cache.set(arg, part);
+      if (part === undefined) {
+        return;
+      }
+      parts.push(part);
+      bytes += part === TOO_BIG ? MAX_CALL_CALLDATA_BYTES : (part.length - 2) / 2;
+    }
+    // Too big only when no argument is invalid.
+    return bytes > MAX_CALL_CALLDATA_BYTES ? TOO_BIG : parts.join("|");
+  };
 }
 
 // Names every tuple read the other way in a reading that makes another call.

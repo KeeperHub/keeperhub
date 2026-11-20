@@ -4945,6 +4945,51 @@ describe("batch-read-contract - seventh review, readings by call", () => {
     });
   });
 
+  it("sends a valid flat reading when only another reading is over the size cap", async () => {
+    const inputs = [t("t", [p("a"), p("b")]), p("u", "uint256[]"), p("s")];
+    const text = `[${new Array(9000).fill("0").join(",")}]`;
+    expect(await sent(inputs, json(["", text, "[]"]))).toEqual({
+      args: [["", text], [], ""],
+    });
+  });
+
+  it("lets an invalid reading lose, not win, by being over the size cap", async () => {
+    const inputs = [t("t", [p("a"), p("b")]), p("arr", "uint256[]"), p("s")];
+    const words = json(new Array(5000).fill("x"));
+    expect(await sent(inputs, json(["", words, "[1]"]))).toEqual({
+      args: [["", words], [BigInt(1)], ""],
+    });
+  });
+
+  it("checks the whole call against the size cap, not each argument", async () => {
+    const big = "y".repeat(40_000);
+    const { error } = await sent(
+      [t("t", [p("a"), p("b")]), p("x"), p("y")],
+      json(["", big, big])
+    );
+    expect(error).toMatch(/more than 64 KB of call data/);
+  });
+
+  it("names only tuples whose place holds a blank, not ones missing at the end", async () => {
+    const pair = (name: string): Param => t(name, [p("a"), p("b")]);
+    const { error } = await sent(
+      [pair("t0"), pair("t1"), p("s"), pair("t7"), pair("t8")],
+      json(["", "", "1"])
+    );
+    expect(error).toMatch(AMBIGUOUS);
+    expect(error).not.toMatch(/t7|t8/);
+  });
+
+  it("names the empty member of the flat reading when no reading can be sent", async () => {
+    const pq = (name: string, x: string, y: string): Param =>
+      t(name, [p(x), p(y, "uint256")]);
+    const { error } = await sent(
+      [pq("p", "a", "b"), p("n", "uint256"), pq("q", "c", "d")],
+      json(["", "1", "2", ""])
+    );
+    expect(error).toMatch(/^Function Arguments: q\.d: uint256 cannot be empty/);
+  });
+
   // The same oracle over wider types, with each type's rule written out:
   // "" only fits a string, a bool is true or false, an address or bytes32 is
   // hex of its size, a nested tuple is an object.
