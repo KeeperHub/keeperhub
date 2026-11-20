@@ -153,7 +153,7 @@ export function isBoolLiteral(value: unknown): boolean {
 }
 
 /** A toggle left unset, which takes its default: undefined, null or "". */
-export function isUnsetToggle(value: unknown): boolean {
+function isUnsetToggle(value: unknown): boolean {
   return value === undefined || value === null || value === "";
 }
 
