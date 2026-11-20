@@ -5,6 +5,13 @@
  */
 
 import { getErrorMessage, resolveSwitch, switchRefusal } from "@/lib/utils";
+import { isRegexOperator } from "@/lib/workflow/nodes/condition/operator-metadata";
+import {
+  REGEX_TEMPLATE_ERROR,
+  readRegexPattern,
+  regexPatternError,
+  withoutExpressionNote,
+} from "@/lib/workflow/nodes/condition/regex-match";
 import { valueContainsTemplate } from "@/lib/workflow/template-ref";
 import {
   DEFAULT_FILTER_OPERATOR,
@@ -87,11 +94,6 @@ function resolveOperator(raw: unknown): FilterOperator {
     throw new Error("Operator must be text, e.g. startsWith.");
   }
   const operator = (raw ?? "").trim() || DEFAULT_FILTER_OPERATOR;
-  if (operator === "matchesRegex") {
-    throw new Error(
-      "Matches regex is not supported in Filter Array yet. Use contains, starts with or ends with."
-    );
-  }
   if (!KNOWN_OPERATORS.has(operator)) {
     const shown =
       operator.length > MAX_ECHOED_LENGTH
@@ -396,6 +398,9 @@ function rejectUnusableNumber(value: unknown, label: string): void {
 }
 
 function valueTip(operator: FilterOperator): string {
+  if (isRegexOperator(operator)) {
+    return " Enter a regex pattern, e.g. ^VAULT_. To match empty text, use ^$.";
+  }
   if (filterOperatorRule(operator).test === "number") {
     return " Enter a number, e.g. 100 or 0x64.";
   }
@@ -435,6 +440,16 @@ export function readValue(raw: unknown, operator: FilterOperator): unknown {
   if (value === undefined || value === null || value === "") {
     throw new Error(`Value is required for "${label}".${valueTip(operator)}`);
   }
+  // A regex pattern is read exactly as typed, as in a Condition: quotes and
+  // backslashes are part of the pattern.
+  if (isRegexOperator(operator)) {
+    const pattern = readRegexPattern(String(value));
+    const patternProblem = regexPatternError(pattern);
+    if (patternProblem) {
+      throw new Error(sentence(withoutExpressionNote(patternProblem)));
+    }
+    return pattern;
+  }
   const text = typeof value === "string" ? (unquote(value) ?? value) : value;
   if (test === "text" || operator === "objectHasKey") {
     return String(text);
@@ -446,6 +461,23 @@ export function readValue(raw: unknown, operator: FilterOperator): unknown {
     return requireWholeNumber(text, label);
   }
   return typeof value === "string" ? toTypedValue(value, label) : value;
+}
+
+// Messages end with one period, whether or not the reason already has one.
+function sentence(text: string): string {
+  return text.endsWith(".") ? text : `${text}.`;
+}
+
+// True for a template Value, which the run resolves and checks. A regex
+// pattern must be typed, so outside data cannot choose the test: it throws.
+function deferTemplateValue(raw: unknown, operator: FilterOperator): boolean {
+  if (!valueContainsTemplate(raw)) {
+    return false;
+  }
+  if (isRegexOperator(operator)) {
+    throw new Error(sentence(withoutExpressionNote(REGEX_TEMPLATE_ERROR)));
+  }
+  return true;
 }
 
 /**
@@ -481,7 +513,7 @@ export function checkFilterConfig(
       () =>
         !rule.readsValue ||
         // Read raw, not through typed(): readValue needs the original type.
-        valueContainsTemplate(config.value) ||
+        deferTemplateValue(config.value, operator) ||
         readValue(config.value, operator),
     ],
     [

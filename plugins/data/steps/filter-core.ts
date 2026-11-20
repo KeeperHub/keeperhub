@@ -11,6 +11,16 @@
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getErrorMessage } from "@/lib/utils";
 import { operatorToExpression } from "@/lib/workflow/nodes/condition/expression";
+import { isRegexOperator } from "@/lib/workflow/nodes/condition/operator-metadata";
+import {
+  compileRegex,
+  MAX_FILTER_REGEX_WORK,
+  MAX_REGEX_TEXT_LENGTH,
+  RegexBudget,
+  RegexBudgetError,
+  regexMatches,
+  regexTextTooLong,
+} from "@/lib/workflow/nodes/condition/regex-match";
 import { compileSafeCondition } from "@/lib/workflow/nodes/condition/safe-eval";
 import {
   exactNumberOf,
@@ -152,6 +162,32 @@ function itemReaderFor(test: FilterTestKind): ItemReader {
 
 type Matcher = (fieldValue: unknown) => boolean | Untestable;
 
+// Ignore case uses RE2's flag: lowercasing the pattern would turn \D into \d.
+function makeRegexMatcher(
+  operator: FilterOperator,
+  pattern: string,
+  ignoreCase: boolean
+): Matcher {
+  const budget = new RegexBudget(MAX_FILTER_REGEX_WORK);
+  const regex = compileRegex(pattern, ignoreCase, budget);
+  const negate = operator === "notMatchesRegex";
+  const readItem = itemReaderFor(filterOperatorRule(operator).test);
+  return (fieldValue: unknown): boolean | Untestable => {
+    const tested = readItem(fieldValue);
+    if ("reason" in tested) {
+      return tested;
+    }
+    const text = String(tested.value);
+    if (regexTextTooLong(text)) {
+      return {
+        reason: `its text is longer than ${MAX_REGEX_TEXT_LENGTH.toLocaleString("en-US")} characters`,
+      };
+    }
+    const passed = regexMatches(regex, text, budget);
+    return negate ? !passed : passed;
+  };
+}
+
 function makeMatcher(
   operator: FilterOperator,
   rawValue: unknown,
@@ -162,6 +198,9 @@ function makeMatcher(
   }
   const rule = filterOperatorRule(operator);
   const value = rule.readsValue ? readValue(rawValue, operator) : undefined;
+  if (isRegexOperator(operator)) {
+    return makeRegexMatcher(operator, String(value), ignoreCase);
+  }
   const comparison = ignoreCase ? foldCase(value) : value;
   // A Value kept as exact text that is also exactly a number. Under equals
   // and soft equals, number items are compared with the number, as a
@@ -207,6 +246,12 @@ function testItem(
   try {
     return matches(resolveSegments(item, settings.testPath));
   } catch (error) {
+    // The node's budget, not this item: report it with this node's way out.
+    if (error instanceof RegexBudgetError) {
+      throw new Error(
+        `${error.message}. You can also split the list across two Filter Array nodes`
+      );
+    }
     throw new Error(
       `Item at index ${index} could not be tested: ${getErrorMessage(error)}`
     );

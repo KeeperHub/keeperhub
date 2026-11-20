@@ -6,6 +6,7 @@ import {
 } from "@/lib/protocol-array-value";
 import { resolveSwitch, switchRefusal } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
+import { cutText } from "@/lib/utils/cut-text";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
   checkSolidityValue,
@@ -15,6 +16,10 @@ import {
 } from "@/lib/web3/solidity-values";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST } from "@/lib/workflow/executor/system-action-types";
+import {
+  workflowConditions,
+  workflowRegexIssue,
+} from "@/lib/workflow/nodes/condition/validator";
 import { valueContainsTemplate } from "@/lib/workflow/template-ref";
 import {
   type ActionConfigField,
@@ -76,31 +81,27 @@ const SUMMARY_NAME_PRIORITY: Record<ActionConfigValidationIssueCode, number> = {
   UNKNOWN_FIELD: 2,
 };
 
-function sanitiseSummaryText(text: string, maxChars: number): string {
+function sanitiseSummaryText(
+  text: string,
+  maxChars: number,
+  { keepParens = false } = {}
+): string {
   // The text is interpolated into a single-line summary, so nothing
   // whitespace-like survives, and a removed character leaves a space rather
   // than joining the words either side of it into one.
   let stripped = stripControlChars(text, { replacement: " " });
   // Escape format delimiters to prevent malicious text from rendering a
-  // convincing fake entry in the summary.
-  stripped = stripped
-    .replace(/"/g, "'")
-    .replace(/\(/g, "[")
-    .replace(/\)/g, "]");
+  // convincing fake entry in the summary. Every entry starts with a double
+  // quote, so a reason may keep its parentheses (regex advice needs them).
+  stripped = stripped.replace(/"/g, "'");
+  if (!keepParens) {
+    stripped = stripped.replace(/\(/g, "[").replace(/\)/g, "]");
+  }
   stripped = stripped.trim();
   if (stripped.length > maxChars) {
     return `${cutText(stripped, maxChars - 3)}...`;
   }
   return stripped;
-}
-
-// The first `length` UTF-16 units, one fewer when that would end on the
-// first half of a surrogate pair (an emoji, for one).
-function cutText(text: string, length: number): string {
-  const last = text.charCodeAt(length - 1);
-  return last >= HIGH_SURROGATE_MIN && last <= HIGH_SURROGATE_MAX
-    ? text.slice(0, length - 1)
-    : text.slice(0, length);
 }
 
 function fixedArrayLength(
@@ -500,8 +501,6 @@ export function isKnownConfigKeyForAction(
 const RECEIVED_MAX_CHARS = 200;
 // 100 entries already serialise past 200 characters ("[0,0,...]").
 const RECEIVED_MAX_ENTRIES = 100;
-const HIGH_SURROGATE_MIN = 0xd8_00;
-const HIGH_SURROGATE_MAX = 0xdb_ff;
 
 function capReceived(value: unknown): unknown {
   if (typeof value === "string") {
@@ -950,6 +949,24 @@ export function validateWorkflowActionConfigs(
     }
   }
 
+  // Regex Conditions that fail any run reaching them, then their patterns together.
+  const regexIssue = workflowRegexIssue(workflowConditions(nodes));
+  if (regexIssue) {
+    const identity = nodeIdentity(
+      nodes[regexIssue.index],
+      `nodes[${regexIssue.index}]`
+    );
+    issues.push({
+      code: "INVALID_FIELD_VALUE",
+      path: `nodes[${regexIssue.index}].data.config.condition`,
+      actionType: "Condition",
+      field: "condition",
+      nodeId: identity.nodeId,
+      nodeLabel: identity.nodeLabel,
+      message: regexIssue.message,
+    });
+  }
+
   return { valid: issues.length === 0, issues };
 }
 
@@ -1111,7 +1128,7 @@ export function formatActionConfigValidationResponse(
             }
             entries.push(
               reason
-                ? `"${label}": ${sanitiseSummaryText(reason, DETAIL_MAX_CHARS).replace(TRAILING_PERIOD, "")}`
+                ? `"${label}": ${sanitiseSummaryText(reason, DETAIL_MAX_CHARS, { keepParens: true }).replace(TRAILING_PERIOD, "")}`
                 : `"${label}"${formatNodeFields(ordered, count)}`
             );
             shown++;

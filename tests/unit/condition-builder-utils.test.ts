@@ -210,7 +210,7 @@ describe("condition-builder-utils", () => {
       it("should generate matchesRegex expression", () => {
         const g = group("AND", [rule("email", "matchesRegex", "^[a-z]+@")]);
         expect(visualConditionToExpression(g)).toBe(
-          'new RegExp("^[a-z]+@").test(String("email"))'
+          'matchesRegex("email", "^[a-z]+@")'
         );
       });
 
@@ -218,9 +218,9 @@ describe("condition-builder-utils", () => {
         const g = group("AND", [
           rule("phone", "matchesRegex", "\\d{3}-\\d{4}"),
         ]);
-        const expr = visualConditionToExpression(g);
-        expect(expr).toContain("new RegExp");
-        expect(expr).toContain(".test(");
+        expect(visualConditionToExpression(g)).toBe(
+          'matchesRegex("phone", "\\\\d{3}-\\\\d{4}")'
+        );
       });
     });
 
@@ -579,9 +579,7 @@ describe("condition-builder-utils", () => {
 
     describe("regex operator", () => {
       it("should parse matchesRegex", () => {
-        const r = parseFirstRule(
-          'new RegExp("^[a-z]+@").test(String("email"))'
-        );
+        const r = parseFirstRule('matchesRegex("email", "^[a-z]+@")');
         expect(r.leftOperand).toBe("email");
         expect(r.operator).toBe("matchesRegex");
         expect(r.rightOperand).toBe("^[a-z]+@");

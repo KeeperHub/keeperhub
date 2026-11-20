@@ -197,7 +197,7 @@ Keeps only the items of an array that pass a test, and pulls one field out of ev
 | Field to test | No | Dotted path inside each item, e.g. `success`, `meta.name` or `topics.1` (a number picks a list entry). A path with an empty part such as `a..b` is refused. Blank tests each item itself, for an array of names or numbers. Hidden for **No test: keep every item** |
 | Operator | Yes | The test, chosen from the groups below. Default **General: equals** |
 | Value | For tests that compare | What each item is compared with. See How Value is read |
-| Ignore case | No | Off by default, also when left blank. From the API or MCP: `true` or `false` (a JSON boolean or lowercase text), not a template. When on, text is matched whatever its letter case. Applies to equals, not equals, soft equals, soft not equals, contains, starts with, ends with, their **does not** forms and **Array: contains** |
+| Ignore case | No | Off by default, also when left blank. From the API or MCP: `true` or `false` (a JSON boolean or lowercase text), not a template. When on, text is matched whatever its letter case. Applies to equals, not equals, soft equals, soft not equals, contains, starts with, ends with, matches regex, their **does not** forms and **Array: contains** |
 | Return field | No | Dotted path pulled from each match into **values**. Blank uses Field to test. With Return field blank and either Field to test blank or **keep every item**, **values** holds the matching items themselves |
 | If a match has no Return field | No | **Keep it, with null in values** (default) or **Fail the step**. Either way the match is counted in **missingReturn**, so a mistyped Return field shows up |
 | Labels | No | A JSON array as long as Source, in the same order, e.g. the names of the contracts a batch read was given. The entry at each position comes out in **labels** for matches and **skippedLabels** for skipped items. A different length fails the step, and is refused at save when both are typed |
@@ -208,7 +208,7 @@ Keeps only the items of an array that pass a test, and pulls one field out of ev
 | Group | Operators |
 | ----- | --------- |
 | General | equals, not equals, soft equals, soft not equals, exists, does not exist, is null, is not null, is undefined, is not undefined |
-| Text | contains, does not contain, starts with, does not start with, ends with, does not end with, is empty, is not empty |
+| Text | contains, does not contain, starts with, does not start with, ends with, does not end with, matches regex, does not match regex, is empty, is not empty |
 | Number | greater than, greater than or equal, less than, less than or equal |
 | Boolean | is true, is false |
 | Array | is empty, is not empty, contains, length |
@@ -220,12 +220,18 @@ Each operator in the list shows a one-line hint under its name. Once chosen, an 
 - **equals** compares by value: `"1.0"` equals `1`, and numbers of any length written as text compare exactly. `"true"` does not equal `true`.
 - **soft equals** compares loosely, as JavaScript `==` does: `"0"` soft equals `0`, and hex text such as `"0x01"` soft equals `1`. Pick it only when items mix numbers, text and booleans on purpose.
 - The **does not** tests keep the text and number items that fail the matching test. Starts with `VAULT_` followed by a second Filter Array with does not start with `VAULT_OLD_` keeps the vaults without the retired ones.
+- **matches regex** and **does not match regex** test the text against a regular expression, anywhere in it unless anchored: `^` marks the start and `$` the end. `^VAULT_` keeps names that start with `VAULT_`, and `^VAULT_(ETH|BTC)_` keeps two families. From the API the operators are `matchesRegex` and `notMatchesRegex`.
+  - **Value** is the pattern exactly as it should run, with backslashes as typed; only spaces at either end are trimmed (write `[ ]` or `\x20` to match one). Leave out quotes and JavaScript's `/.../i` around it: a pattern that is one quoted string, or slashes with flags or regex syntax inside, is refused. A plain path such as `/api/` is fine. To match a quote, put a backslash before it. The pattern must be typed into Value, not taken from another node; to look for text from another node, use **contains** or **starts with**. Both rules are checked when the workflow is saved.
+  - Only text and numbers are tested; `null`, `true`/`false`, lists and objects are items the test can't apply to (a Condition tests `null` and booleans as their text). A number is written the way JavaScript prints it, so a very large or very small one is tested in exponent form (`1e21` as `1e+21`); send such amounts as text.
+  - **Ignore case**, or a leading `(?i)`, ignores letter case.
+  - **Syntax:** [RE2](https://github.com/google/re2/wiki/Syntax), close to JavaScript's. Lookahead, lookbehind, back-references and `\u` escapes are not supported and get a message naming them; other refused syntax quotes RE2's own message. `\s` does not match a non-breaking space.
+  - **Limits:** a pattern of up to 512 characters and 1,000 steps (RE2's size for the compiled pattern; long `{n}` repeats add up fastest), and 4,096 characters of text per item. Each Filter Array node has a matching budget of 25,000,000: the pattern's steps times the characters tested, added up over the items, plus a one-off charge to compile the pattern (2,000 per character plus 400 per step). That keeps it from holding up a run for more than a few seconds; a node that reaches it fails, even in skip mode, and the message gives the pattern's steps. What fits: 10,000 addresses with `^0x[0-9a-fA-F]{40}$` (46 steps x 42 characters each, about 19 million), or all 10,000 items with `^VAULT_` (9 steps) for names up to 277 characters. What does not: 10,000 transaction hashes with `^0x[0-9a-f]{64}$` (70 x 66 each, about 46 million). Up to 5,398 of those fit, so split the list across two Filter Array nodes, or test with **starts with** `0x`.
 
 ### How Value is read
 
-- Spaces around Value are trimmed; quote it to keep them, e.g. `" VAULT_"`.
-- **Text tests and has key**: the text as typed, so `007` stays `007`. Surrounding quotes are removed, and inside double quotes escapes such as `\n` and `\"` work as in a Condition.
-- When Value is only spaces, or a template resolves to nothing, the error says what this test needs: a number, a whole number, a key, or `""` for empty text. Left blank, saving is refused as a missing field.
+- Spaces around Value are trimmed; quote it to keep them, e.g. `" VAULT_"` (under matches regex, write `[ ]` instead: quotes would be part of the pattern).
+- **Text tests and has key**: the text as typed, so `007` stays `007`. Except under matches regex, which keeps quotes as part of the pattern, surrounding quotes are removed, and inside double quotes escapes such as `\n` and `\"` work as in a Condition.
+- When Value is only spaces, or a template resolves to nothing, the error says what this test needs: a number, a whole number, a key, a pattern, or `""` for empty text. Left blank, saving is refused as a missing field.
 - **Number tests**: a decimal number such as `100`, `-5` or `1.5`, or hex written with a lowercase `0x` such as `0x64`, up to 100 characters. Exponents (`1e3`), `0X64` and negative hex are not numbers. Anything else fails the step, and is refused when the workflow is saved. Long numbers compare exactly, so a wei amount such as `1000000000000000000` can be typed in full.
 - **Array: length**: a whole number such as `3`, small enough to count exactly. Anything else is refused when the workflow is saved.
 - A Value, Source or Labels built from a template (`{{...}}`) is checked when the step runs, since its content is only known then; one typed by hand is checked when the workflow is saved.
@@ -241,7 +247,7 @@ Each operator in the list shows a one-line hint under its name. Once chosen, an 
 Each test only looks at items it applies to:
 
 - number tests at numbers, numeric text and hex
-- text tests, including the **does not** forms, at text and numbers
+- text tests, including the **does not** forms, at text and numbers; matches regex also needs the text to be at most 4,096 characters
 - boolean tests (is true, is false) at `true` and `false` only
 - array tests at lists, object tests at objects
 - soft equals and soft not equals at single values, not lists or objects
@@ -273,8 +279,7 @@ Set **If an item can't be tested** to **Skip it and count it in skipped** to kee
 - **is true** matches only the boolean `true`, not the text `"true"` or `1`.
 - One node runs one test. For two tests, such as success is true and result is true, chain two Filter Array nodes.
 - Source must be an array. A single value, such as Encode / Decode's result for one input, fails with a message saying so.
-- Matches regex is not available in this node yet. Use contains, starts with or ends with and their **does not** forms.
-- Value is always compared as data. A value resolved from an upstream node cannot change the test.
+- Value is always compared as data. A value resolved from an upstream node cannot change the test. For matches regex, Value is the test itself, so it must be typed.
 - Settings the form hides for the chosen operator are ignored, so a leftover value cannot change or fail the step.
 - Settings typed by hand are checked when the workflow is saved with the same rules the step uses; a setting that comes from another node is checked when the run resolves it. Ignore case cannot come from another node: a template there is refused at save.
 

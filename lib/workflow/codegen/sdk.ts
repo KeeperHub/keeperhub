@@ -19,13 +19,21 @@ const SYSTEM_CODEGEN_TEMPLATES: Record<string, string> = {
   Condition: conditionTemplate,
 };
 
+import { mentionsRegex } from "@/lib/workflow/nodes/condition/regex-calls";
+import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
+import { isSafeConditionExpression } from "@/lib/workflow/nodes/condition/safe-eval";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import {
-  ARRAY_INDEX_PATTERN,
   analyzeNodeUsage,
+  buildAccessPath,
   buildEdgeMap,
+  commentSafe,
   escapeForTemplateLiteral,
+  escapeTextAroundTokens,
   findTriggerNodes,
+  isExportableCondition,
+  REGEX_NOT_EXPORTED,
+  readsTheSameInJs,
   sanitizeFunctionName,
   sanitizeStepName,
   sanitizeVarName,
@@ -93,16 +101,7 @@ function processNewFormatID(
     return `\${outputs?.['${sanitizedNodeId}']?.data}`;
   }
 
-  const accessPath = fieldPath
-    .split(".")
-    .map((part: string) => {
-      const arrayMatch = part.match(ARRAY_INDEX_PATTERN);
-      if (arrayMatch) {
-        return `?.${arrayMatch[1]}?.[${arrayMatch[2]}]`;
-      }
-      return `?.${part}`;
-    })
-    .join("");
+  const accessPath = buildAccessPath(fieldPath, { optional: true });
 
   return `\${outputs?.['${sanitizedNodeId}']?.data${accessPath}}`;
 }
@@ -127,18 +126,33 @@ function processLegacyDollarRef(trimmed: string): string {
     return `\${outputs?.['${sanitizedNodeId}']?.data}`;
   }
 
-  const accessPath = fieldPath
-    .split(".")
-    .map((part: string) => {
-      const arrayMatch = part.match(ARRAY_INDEX_PATTERN);
-      if (arrayMatch) {
-        return `?.${arrayMatch[1]}?.[${arrayMatch[2]}]`;
-      }
-      return `?.${part}`;
-    })
-    .join("");
+  const accessPath = buildAccessPath(fieldPath, { optional: true });
 
   return `\${outputs?.['${sanitizedNodeId}']?.data${accessPath}}`;
+}
+
+// The tokens convertTemplateToJSWithLabels turns into code; any other is
+// written as typed.
+function sdkResolves(tokenBody: string): boolean {
+  const trimmed = tokenBody.trim();
+  return (
+    (trimmed.startsWith("@") && trimmed.includes(":")) ||
+    trimmed.startsWith("$")
+  );
+}
+
+function conditionValueLine(
+  condition: string,
+  converted: string | undefined,
+  varName: string,
+  indent: string
+): string {
+  if (mentionsRegex(condition)) {
+    return `${indent}const ${varName} = ${REGEX_NOT_EXPORTED};`;
+  }
+  return converted === undefined
+    ? `${indent}const ${varName} = false; // not supported in exported code`
+    : `${indent}const ${varName} = \`${converted}\`;`;
 }
 
 /**
@@ -369,9 +383,16 @@ export function generateWorkflowSDKCode(
   }
 
   function buildConditionParams(config: Record<string, unknown>): string[] {
-    return [
-      `condition: ${convertTemplateToJS((config.condition as string) || "true")}`,
-    ];
+    // The condition the run uses: saved rules first, as codegen does.
+    const condition = resolveConditionExpression(config) || "true";
+    if (mentionsRegex(condition)) {
+      return [`condition: ${REGEX_NOT_EXPORTED}`];
+    }
+    // Written as code, so the code as written must be the run's grammar.
+    const converted = convertTemplateToJS(condition);
+    return isSafeConditionExpression(converted) && readsTheSameInJs(converted)
+      ? [`condition: ${converted}`]
+      : ["condition: false /* not supported in exported code */"];
   }
 
   function buildFirecrawlParams(
@@ -557,7 +578,7 @@ ${stepBody}
     return [
       `${indent}// Triggered`,
       `${indent}let ${varName} = input;`,
-      `${indent}outputs['${sanitizeVarName(nodeId)}'] = { label: '${label}', data: ${varName} };`,
+      `${indent}outputs['${sanitizeVarName(nodeId)}'] = { label: ${JSON.stringify(label)}, data: ${varName} };`,
     ];
   }
 
@@ -573,7 +594,7 @@ ${stepBody}
     const stepFnName =
       nodeToStepName.get(nodeId) || sanitizeStepName(nodeLabel);
 
-    const lines: string[] = [`${indent}// ${nodeLabel}`];
+    const lines: string[] = [`${indent}// ${commentSafe(nodeLabel)}`];
 
     // Check if this node's output is used by any downstream node
     const outputIsUsed = usedNodeOutputs.has(nodeId);
@@ -584,7 +605,7 @@ ${stepBody}
         `${indent}const ${varName} = await ${stepFnName}({ ...input, outputs });`
       );
       lines.push(
-        `${indent}outputs['${sanitizeVarName(nodeId)}'] = { label: '${nodeLabel}', data: ${varName} };`
+        `${indent}outputs['${sanitizeVarName(nodeId)}'] = { label: ${JSON.stringify(nodeLabel)}, data: ${varName} };`
       );
     } else {
       // If output not used, don't store the result in a variable
@@ -601,16 +622,26 @@ ${stepBody}
     indent: string,
     visitedLocal: Set<string>
   ): string[] {
-    const condition = (node.data.config?.condition as string) || "true";
-    const convertedCondition = convertTemplateToJS(condition);
+    const condition =
+      resolveConditionExpression(node.data.config ?? {}) || "true";
+    // Written as template text: only the text between references is escaped,
+    // and references become ${...} with paths written as data.
+    const convertedCondition = isExportableCondition(condition, sdkResolves)
+      ? escapeTextAroundTokens(condition, convertTemplateToJS)
+      : undefined;
     const nextNodes = edgesBySource.get(nodeId) || [];
     const conditionVarName = `conditionValue_${sanitizeVarName(nodeId)}`;
     const lines: string[] = [];
 
     if (nextNodes.length > 0) {
-      lines.push(`${indent}// ${node.data.label}`);
+      lines.push(`${indent}// ${commentSafe(node.data.label ?? "")}`);
       lines.push(
-        `${indent}const ${conditionVarName} = \`${escapeForTemplateLiteral(convertedCondition)}\`;`
+        conditionValueLine(
+          condition,
+          convertedCondition,
+          conditionVarName,
+          indent
+        )
       );
       lines.push(`${indent}if (${conditionVarName}) {`);
 
@@ -678,7 +709,9 @@ ${stepBody}
       }
 
       default:
-        lines.push(`${indent}// Unknown node type: ${node.data.type}`);
+        lines.push(
+          `${indent}// Unknown node type: ${commentSafe(String(node.data.type))}`
+        );
         break;
     }
 
