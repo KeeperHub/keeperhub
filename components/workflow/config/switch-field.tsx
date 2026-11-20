@@ -14,7 +14,7 @@ const SHOWN_VALUE_MAX_CHARS = 60;
 // workflow on error through resolveDefaultOnFlag, a plain switch resolveSwitch.
 export type ToggleRule = "default-on" | { switchDefault: unknown };
 
-function readToggle(rule: ToggleRule, value: unknown): boolean {
+export function readToggle(rule: ToggleRule, value: unknown): boolean {
   return rule === "default-on"
     ? resolveDefaultOnFlag(value)
     : resolveSwitch(value, rule.switchDefault) === true;
