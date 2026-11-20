@@ -962,13 +962,26 @@ function isSpace(code: number): boolean {
   return code === 32 || code === 9 || code === 10 || code === 13;
 }
 
-function parsesAsJson(text: string): boolean {
-  try {
-    JSON.parse(text);
-    return true;
-  } catch {
-    return false;
+// Text that is not JSON is a member's bad value. An array, as such or as
+// text, is the whole tuple only with one fitting item per member; otherwise a
+// value before it may be missing.
+function readsAsWholeTuple(value: unknown, components: AbiParam[]): boolean {
+  let parsed: unknown = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return false;
+    }
   }
+  if (!Array.isArray(parsed)) {
+    return true;
+  }
+  const items: unknown[] = parsed;
+  return (
+    items.length === components.length &&
+    components.every((member, k) => fitsPlace(items[k], member))
+  );
 }
 
 function isPlainObject(value: unknown): boolean {
@@ -1008,10 +1021,9 @@ function positionalTupleError(
       cursor += 1;
       continue;
     }
-    // Text that is not JSON is a member's bad value, not the whole tuple.
     const whole =
       isWholeTupleShape(value, components[0]) &&
-      (typeof value !== "string" || parsesAsJson(value));
+      readsAsWholeTuple(value, components);
     if (whole) {
       if (!linesUpFixed(args, fn, cursor, blankTail)) {
         return;
@@ -1458,14 +1470,14 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
       throw named;
     }
   }
-  // Too few values are blanks, padded and named by the checks below, but only
-  // when no tuple was read flat or the values given line up; otherwise padding
-  // could shift a value onto the wrong input.
+  // Too few values are blanks, padded and named by the checks below, but with
+  // a tuple input only when the values given line up; otherwise padding could
+  // shift a value onto the wrong input.
   const padOk =
     given.length < consumed &&
     !nestedSlot(given, fn) &&
-    (consumed === fn.inputs.length ||
-      lineUpReading(given, fn, true) !== undefined);
+    (fn.inputs.every((input) => input.type !== "tuple") ||
+      padsAsLinedUp(given, fn));
   if (offShape && !padOk) {
     throw countMismatch(
       SHARED_ARGS_LABEL,
@@ -1480,6 +1492,24 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
   const blanks = new Array<string>(consumed - given.length).fill("");
   const padded = [...given, ...blanks];
   return reshapeArgsCounted(padded, fn).args;
+}
+
+// The values line up with blanks at the end, read as padding reads them:
+// reshapeArgsCounted reads a tuple holding an array or text flat, so a line-up
+// that took one whole does not count.
+function padsAsLinedUp(given: unknown[], fn: ListFunction): boolean {
+  const starts = lineUpReading(given, fn, true);
+  return (
+    starts !== undefined &&
+    fn.inputs.every((input, index) => {
+      const start = starts[index];
+      if (input.type !== "tuple" || start === undefined) {
+        return true;
+      }
+      const value = given[start];
+      return isPlainObject(value) || !takesOneValue(value, input);
+    })
+  );
 }
 
 /**

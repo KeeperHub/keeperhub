@@ -2138,7 +2138,8 @@ describe("batch-read-contract - positional tuple hint length", () => {
       },
     ]);
     const message = await failure({
-      ...argsList([[["1", "2"], "3"]], "broad"),
+      // One item per member: the array is read as the whole tuple.
+      ...argsList([[Array.from({ length: 50 }, () => "1"), "3"]], "broad"),
       abi,
     });
     const prefix =
@@ -3010,7 +3011,10 @@ describe("batch-read-contract - second review, round 2", () => {
       'Argument Sets entry 1: o must be an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, got 1.'
     );
     expect(
-      await failure({ ...argsList([[[1, 2], 3, 4, 5]], "h"), abi: before })
+      await failure({
+        ...argsList([[[{ a: 1, b: 2 }, 3], 3, 4, 5]], "h"),
+        abi: before,
+      })
     ).toBe(
       'Argument Sets entry 1: give o as an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, not as an array.'
     );
@@ -3437,8 +3441,11 @@ describe("batch-read-contract - fourth review", () => {
           })
         )
       )
-      // y is a number, so its blank is not lined up: the padded call names t.a.
-      .toBe("Function Arguments: t.a must be a whole number, got [1,2].");
+      // y is a number, so its blank is not lined up, and t taken whole from an
+      // array is not how padding reads it: the count is given.
+      .toBe(
+        "Function Arguments has 1 value, but g takes 2 (t, y). The same arguments go to every contract in the list."
+      );
     // In Argument Sets a missing value is not a blank, so the count is given.
     expect
       .soft(await failure({ ...argsList([[[1, 2]]], "g"), abi }))
@@ -3710,7 +3717,8 @@ describe("batch-read-contract - fifth review", () => {
         })
       )
       .toBe(
-        'Argument Sets entry 1: give u as an object with its member names, like {"c": 1, "d": [1, 1]}, not as an array.'
+        // [1,2] has no array for d, so it is not read as the whole of u.
+        'Argument Sets entry 1: u must be an object with its member names, like {"c": 1, "d": [1, 1]}, got [1,2]. Or give its 2 members flat in its place.'
       );
   });
 
@@ -3836,7 +3844,7 @@ describe("batch-read-contract - fifth review", () => {
       tupleOf("t", [{ name: "b", type: "uint256[]" }, uint("q")]),
       tupleOf("s", [uint("a"), { name: "c", type: "uint256[]" }]),
     ]);
-    const [args, shared] = await both(abi, ["[1,2]", 2, [1, 2]]);
+    const [args, shared] = await both(abi, ["[1,2]", 2, [1, [1, 2]]]);
     const named =
       'give s as an object with its member names, like {"a": 1, "c": [1, 1]}, not as an array.';
     expect.soft(args).toBe(`Argument Sets entry 1: ${named}`);
@@ -4128,7 +4136,6 @@ describe("batch-read-contract - sixth review", () => {
 
   it("does not read a missing number or tuple at the end as left blank", async () => {
     const abi = abiWith([str("s"), uint("n"), tupleOf("t", [uint("x")])]);
-    // n is missing in every reading of the object, so it is named.
     const [args, shared] = await both(abi, [{ x: 1 }]);
     expect
       .soft(args)
@@ -4138,7 +4145,7 @@ describe("batch-read-contract - sixth review", () => {
     expect
       .soft(shared)
       .toBe(
-        "Function Arguments: n: uint256 cannot be empty. Fill in every argument; only a string may be left blank."
+        "Function Arguments has 1 value, but f takes 3 (s, n, t). The same arguments go to every contract in the list."
       );
   });
 
@@ -4156,5 +4163,124 @@ describe("batch-read-contract - sixth review", () => {
     expect(shared).toBe(
       'Function Arguments: t.y must be a whole number in digits, got "2x".'
     );
+  });
+
+  // A correct entry with one value dropped, or two neighbours swapped: a
+  // message may name only an input the change touched; anything else gets
+  // the count. "cannot be empty" is left out: it names an input left blank
+  // in the editor, where every input has its own field.
+  it("names only an input the mistake touched, over many shapes", async () => {
+    type Param = { name: string; type: string; components?: Param[] };
+    const addr = (name: string): Param => ({ name, type: "address" });
+    const arr = (name: string): Param => ({ name, type: "uint256[]" });
+    const bool = (name: string): Param => ({ name, type: "bool" });
+    const tup = (name: string, components: Param[]): Param => ({
+      name,
+      type: "tuple",
+      components,
+    });
+    const shapes: Param[][] = [
+      [uint("a"), str("s"), tup("t", [uint("x"), uint("y")])],
+      [str("s"), uint("n"), tup("t", [uint("x")])],
+      [uint("a"), uint("b"), addr("c")],
+      [uint("x"), tup("t", [uint("a"), arr("b")]), uint("y")],
+      [tup("t", [uint("a"), uint("b")]), uint("x"), uint("y")],
+      [tup("t", [tup("i", [uint("p")])]), uint("x"), uint("y")],
+      [str("o"), tup("s", [uint("a"), arr("b")])],
+      [uint("x"), tup("t", [uint("a"), uint("b")]), arr("ids")],
+      [tup("t", [uint("a"), uint("b")]), tup("u", [uint("a"), uint("b")])],
+      [addr("o"), tup("t", [str("a"), uint("b")]), str("m")],
+      [bool("f"), tup("t", [uint("a"), str("b")]), uint("z")],
+      [uint("x"), tup("t", [tup("i", [uint("p")])]), arr("ids")],
+      [
+        tup("t", [tup("i", [uint("p")])]),
+        tup("s", [uint("a"), uint("b")]),
+        uint("y"),
+      ],
+      [str("a"), str("b"), tup("t", [uint("x"), uint("y")])],
+    ];
+    const sample = (param: Param): unknown => {
+      if (param.components) {
+        return Object.fromEntries(
+          param.components.map((member) => [member.name, sample(member)])
+        );
+      }
+      const samples: Record<string, unknown> = {
+        string: "txt",
+        address: CONTRACT,
+        bool: true,
+        "uint256[]": [1, 2],
+      };
+      return samples[param.type] ?? 7;
+    };
+    // Every correct entry: each tuple as an object or, where it can, flat.
+    const entries = (
+      inputs: Param[]
+    ): { values: unknown[]; owner: string[] }[] =>
+      inputs.reduce<{ values: unknown[]; owner: string[] }[]>(
+        (done, input) =>
+          done.flatMap(({ values, owner }) => {
+            const whole = {
+              values: [...values, sample(input)],
+              owner: [...owner, input.name],
+            };
+            const members = input.components ?? [];
+            if (members.length === 0 || members[0].components) {
+              return [whole];
+            }
+            return [
+              whole,
+              {
+                values: [...values, ...members.map(sample)],
+                owner: [...owner, ...members.map(() => input.name)],
+              },
+            ];
+          }),
+        [{ values: [], owner: [] }]
+      );
+    const named =
+      /^(?:Argument Sets entry 1|Function Arguments): (?:give )?(\w+)/;
+    const wrong: string[] = [];
+    for (const inputs of shapes) {
+      const abi = abiWith(inputs);
+      for (const { values, owner } of entries(inputs)) {
+        const mistakes: { entry: unknown[]; touched: string[] }[] = [];
+        for (const [k, name] of owner.entries()) {
+          mistakes.push({
+            entry: values.filter((_, i) => i !== k),
+            touched: [name],
+          });
+          if (k + 1 < owner.length && owner[k + 1] !== name) {
+            const swapped = [...values];
+            [swapped[k], swapped[k + 1]] = [swapped[k + 1], swapped[k]];
+            mistakes.push({ entry: swapped, touched: [name, owner[k + 1]] });
+          }
+        }
+        for (const { entry, touched } of mistakes) {
+          // Some mistakes still make a valid call (two numbers swapped).
+          const outcomes = [
+            await run({ ...argsList([entry], "f"), abi }),
+            await run({
+              ...addressList([CONTRACT], {
+                functionArgs: JSON.stringify(entry),
+              }),
+              abiFunction: "f",
+              abi,
+            }),
+          ];
+          for (const message of outcomes.map((o) => o.error ?? "")) {
+            const input = named.exec(message)?.[1];
+            if (
+              input &&
+              !touched.includes(input) &&
+              !message.includes("cannot be empty")
+            ) {
+              wrong.push(`${JSON.stringify(entry)} -> ${message}`);
+            }
+          }
+        }
+      }
+    }
+    expect(wrong).toEqual([]);
   });
 });
