@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { Locator, Page } from "@playwright/test";
-import { createWebhookTriggerNode } from "../../fixtures/workflows";
+import { VIEWER_DISABLED_REASON } from "@/lib/organization/role-label";
+import {
+  createActionNode,
+  createWebhookTriggerNode,
+} from "../../fixtures/workflows";
 import { expect, test } from "./fixtures";
 import { getDbConnection } from "./utils/connection";
 import {
@@ -15,10 +19,12 @@ import {
 } from "./utils/db";
 import {
   type Box,
+  bottom,
   dismissPhoneOverlays,
   horizontalOverflow,
   isOnTop,
   overlaps,
+  right,
   box as sharedBox,
   textFits,
 } from "./utils/layout";
@@ -35,8 +41,6 @@ const NAME = "Use template: copy this workflow to your account";
 const box = (locator: Locator): Promise<Box> =>
   sharedBox(locator, { timeout: 1000 });
 
-const right = (b: Box): number => b.x + b.width;
-const bottom = (b: Box): number => b.y + b.height;
 const inside = (inner: Box, outer: Box): boolean =>
   inner.x >= outer.x - 0.5 &&
   inner.y >= outer.y - 0.5 &&
@@ -57,9 +61,22 @@ function card(page: Page): Locator {
   return page.getByTestId("use-template-card");
 }
 
-const VIEWER_REASON =
-  "View-only access: you cannot make changes in this organization";
 const MENU_ITEMS = ["Add Step", "New Workflow from JSON"] as const;
+const LONG_STEP =
+  "Notify the on-call operations team about every failed liquidation";
+// The menu's own gap from the window edges.
+const MENU_GAP = 8;
+
+function menuOf(item: Locator): Locator {
+  return item.locator("..");
+}
+
+function expectInWindow(menu: Box, width: number, height: number): void {
+  expect(menu.x).toBeGreaterThanOrEqual(MENU_GAP - 0.5);
+  expect(menu.y).toBeGreaterThanOrEqual(MENU_GAP - 0.5);
+  expect(right(menu)).toBeLessThanOrEqual(width - MENU_GAP + 0.5);
+  expect(bottom(menu)).toBeLessThanOrEqual(height - MENU_GAP + 0.5);
+}
 
 function menuItem(page: Page, name: string): Locator {
   return page.getByRole("button", { name, exact: true });
@@ -104,12 +121,21 @@ async function openOwn(
   height: number,
   id: string
 ): Promise<Locator> {
-  await dismissPhoneOverlays(page);
-  await page.setViewportSize({ width, height });
-  await page.goto(`/workflows/${id}`, { waitUntil: "domcontentloaded" });
+  await visit(page, width, height, id);
   const bar = page.getByTestId("workflow-actions");
   await expect(bar).toBeVisible({ timeout: 15_000 });
   return bar;
+}
+
+async function visit(
+  page: Page,
+  width: number,
+  height: number,
+  id: string
+): Promise<void> {
+  await dismissPhoneOverlays(page);
+  await page.setViewportSize({ width, height });
+  await page.goto(`/workflows/${id}`, { waitUntil: "domcontentloaded" });
 }
 
 // panel: the right panel's saved width (%) or collapsed state.
@@ -119,7 +145,6 @@ async function open(
   id: string,
   panel?: { width?: number; collapsed?: boolean }
 ): Promise<void> {
-  await dismissPhoneOverlays(page);
   // The page writes these back, so drop the last open()'s panel first.
   await page.context().clearCookies({ name: /^sidebar-(width|collapsed)$/ });
   const url = process.env.BASE_URL || "http://localhost:3000";
@@ -134,8 +159,7 @@ async function open(
   if (cookies.length > 0) {
     await page.context().addCookies(cookies);
   }
-  await page.setViewportSize({ width, height: HEIGHT });
-  await page.goto(`/workflows/${id}`, { waitUntil: "domcontentloaded" });
+  await visit(page, width, HEIGHT, id);
   await expect(templateButton(page)).toBeVisible({ timeout: 15_000 });
 }
 
@@ -260,6 +284,7 @@ test.describe("Use template bar, signed in", () => {
   let foreignId = "";
   let ownId = "";
   let ownTriggerId = "";
+  let ownLongId = "";
   let copyableId = "";
 
   test.beforeAll(async () => {
@@ -292,7 +317,20 @@ test.describe("Use template bar, signed in", () => {
         edges: [],
       })
     ).id;
-    ids.push(foreignId, ownId, ownTriggerId, copyableId);
+    ownLongId = (
+      await createTestWorkflow(PERSISTENT_TEST_USER_EMAIL, {
+        name: "Use template bar own long step",
+        nodes: [
+          createWebhookTriggerNode(),
+          {
+            ...createActionNode(),
+            data: { ...createActionNode().data, label: LONG_STEP },
+          },
+        ],
+        edges: [],
+      })
+    ).id;
+    ids.push(foreignId, ownId, ownTriggerId, ownLongId, copyableId);
   });
 
   test.afterAll(async () => {
@@ -579,8 +617,13 @@ test.describe("Use template bar, signed in", () => {
       cardBox.y - 12
     );
     await page.mouse.click(spot.x, spot.y, { button: "right" });
-    await expect(menuItem(page, "Add Step")).toHaveCount(0);
     await expect(templateButton(page)).toBeVisible();
+    await expect(menuItem(page, "Add Step")).toHaveCount(0);
+    // The same right-click on your own workflow does open it.
+    await openOwn(page, 1280, HEIGHT, ownTriggerId);
+    const own = await paneNear(page, spot.x, spot.y);
+    await page.mouse.click(own.x, own.y, { button: "right" });
+    await expect(menuItem(page, "Add Step")).toBeVisible();
   });
 
   for (const width of [390, 700]) {
@@ -613,18 +656,28 @@ test.describe("Use template bar, signed in", () => {
         await page.mouse.click(spot.x, spot.y, { button: "right" });
         const items = MENU_ITEMS.map((name) => menuItem(page, name));
         await expect(items[1]).toBeVisible();
+        expectInWindow(await box(menuOf(items[0])), width, height);
         for (const item of items) {
-          const b = await box(item);
-          expect(b.x).toBeGreaterThanOrEqual(0);
-          expect(b.y).toBeGreaterThanOrEqual(0);
-          expect(right(b)).toBeLessThanOrEqual(width);
-          expect(bottom(b)).toBeLessThanOrEqual(height);
           expect(await isOnTop(item, { corners: true })).toBe(true);
           expect(await textFits(item)).toBe(true);
         }
         await page.keyboard.press("Escape");
       });
     }
+  });
+
+  test("a long step name truncates in its menu, which stays in the window", async ({
+    page,
+  }) => {
+    await openOwn(page, 320, 640, ownLongId);
+    const node = page.getByTestId("action-node-action-1");
+    await expect(node).toBeVisible();
+    await node.click({ button: "right" });
+    const item = menuItem(page, `Delete ${LONG_STEP}`);
+    await expect(item).toBeVisible();
+    await expect(item).toHaveAttribute("title", `Delete ${LONG_STEP}`);
+    expectInWindow(await box(menuOf(item)), 320, 640);
+    expect(await textFits(item.locator("span"))).toBe(false);
   });
 });
 
@@ -681,13 +734,27 @@ test.describe("Use template bar, org viewer", () => {
 
   test("someone else's public workflow: Use template disabled, the card says why", async ({
     page,
+    apiRequest,
   }) => {
+    // Phones: no room for the hint, so the badge says it.
+    await open(page, 390, foreignId);
+    await expect(templateButton(page)).toBeDisabled();
+    await expect(
+      card(page).getByText("View only", { exact: true })
+    ).toBeVisible();
     await open(page, 1280, foreignId);
     await expect(templateButton(page)).toBeDisabled();
-    await expect(card(page)).toContainText(VIEWER_REASON);
+    await expect(card(page)).toContainText(VIEWER_DISABLED_REASON);
     await expect(card(page)).not.toContainText("Make your own copy");
-    await card(page).locator("span.inline-block").hover();
-    await expect(page.getByRole("tooltip")).toContainText(VIEWER_REASON);
+    await templateButton(page).locator("..").hover();
+    await expect(page.getByRole("tooltip")).toContainText(
+      VIEWER_DISABLED_REASON
+    );
+    // The server is the gate, not the disabled button.
+    const res = await apiRequest.post(`/api/workflows/${foreignId}/duplicate`, {
+      data: {},
+    });
+    expect(res.status()).toBe(403);
   });
 
   test("a public workflow in that org: View only badge, no Use template", async ({

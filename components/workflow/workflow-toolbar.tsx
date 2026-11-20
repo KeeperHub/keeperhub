@@ -2119,11 +2119,14 @@ function RunButtonGroup({
 const VIEW_ONLY_BADGE_CLASS =
   "border-2 border-[var(--color-text-accent)]/60 bg-[var(--color-bg-accent)]/10 font-semibold text-[var(--color-text-accent)] text-xs uppercase tracking-wider backdrop-blur-sm dark:border-[var(--color-text-accent)]/50 dark:bg-transparent";
 
-// Preview badge: neutral (unlike the viewer's), so the green Use template stays the one accent.
+// Neutral (unlike the viewer's badge), so the green button stays the one
+// accent. An org viewer's says "View only": it shows at every width.
 function PreviewBadge({
   className,
+  viewOnly,
 }: {
   className?: string;
+  viewOnly: boolean;
 }): React.ReactElement {
   return (
     <Badge
@@ -2133,7 +2136,7 @@ function PreviewBadge({
       )}
       variant="outline"
     >
-      Preview
+      {viewOnly ? "View only" : "Preview"}
     </Badge>
   );
 }
@@ -2195,16 +2198,14 @@ function UseTemplateButton({
   viewOnly: boolean;
 }): React.ReactElement {
   return (
-    <ViewOnlyTooltip
-      className={cn("shrink-0", className)}
-      isViewer={viewOnly}
-    >
+    <ViewOnlyTooltip className={cn("shrink-0", className)} isViewer={viewOnly}>
       <Button
         aria-busy={isUsingTemplate}
         aria-label={USE_TEMPLATE_LABEL}
         className={cn(
-          // A viewer's button is muted, not a dimmed call to action.
-          viewOnly ? "bg-muted text-muted-foreground" : GREEN_BUTTON_CLASSES,
+          GREEN_BUTTON_CLASSES,
+          // Dimmed like the app's other view-only controls.
+          viewOnly && "disabled:opacity-50",
           "shrink-0 focus-visible:hub-focus-ring focus-visible:ring-offset-background",
           !viewOnly && className
         )}
@@ -2240,7 +2241,7 @@ function UseTemplateBar({
   button: React.ReactNode;
   fit: BarFit;
   onFitChange: (fit: BarFit) => void;
-  // An org viewer cannot copy into the org: the hint says why, also on touch.
+  // An org viewer cannot copy into the org: the wide hint says why.
   viewOnly: boolean;
 }): React.ReactElement {
   const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
@@ -2264,8 +2265,9 @@ function UseTemplateBar({
       // The bar's rem offsets and padding resize it when the root font
       // changes, so a fresh read here sees that too.
       const remPx =
-        Number.parseFloat(getComputedStyle(document.documentElement).fontSize) ||
-        16;
+        Number.parseFloat(
+          getComputedStyle(document.documentElement).fontSize
+        ) || 16;
       const width = bar.clientWidth;
       let fits: BarFit = "none";
       if (width >= BADGE_FITS_REM * remPx) {
@@ -2333,7 +2335,10 @@ function UseTemplateBar({
         { "--use-template-right": rightPanelWidth ?? "0px" } as CSSProperties
       }
     >
-      <div className="@container flex w-full min-w-0 justify-center" ref={setTrack}>
+      <div
+        className="@container flex w-full min-w-0 justify-center"
+        ref={setTrack}
+      >
         {fit !== "none" && (
           <div
             className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2.5 rounded-lg border bg-background py-2 pr-2 pl-3 shadow-lg max-md:w-full"
@@ -2341,10 +2346,17 @@ function UseTemplateBar({
             ref={setCard}
           >
             {badge}
-            <p className="hidden min-w-0 flex-1 truncate text-foreground/80 text-sm leading-4 @min-[24.5rem]:block md:flex-none">
-              <span className="@min-[36rem]:hidden">
-                {viewOnly ? "View-only access" : "Copy to edit and run"}
-              </span>
+            <p
+              className={cn(
+                "hidden min-w-0 flex-1 truncate text-foreground/80 text-sm leading-4 md:flex-none",
+                viewOnly ? "@min-[36rem]:block" : "@min-[24.5rem]:block"
+              )}
+            >
+              {!viewOnly && (
+                <span className="@min-[36rem]:hidden">
+                  Copy to edit and run
+                </span>
+              )}
               <span className="hidden @min-[36rem]:inline">
                 {viewOnly
                   ? VIEWER_DISABLED_REASON
@@ -2467,7 +2479,9 @@ export const WorkflowToolbar = ({
   );
   const useTemplateBar = offersTemplate && (
     <UseTemplateBar
-      badge={badgeInBar && <PreviewBadge className="shrink-0" />}
+      badge={
+        badgeInBar && <PreviewBadge className="shrink-0" viewOnly={isViewer} />
+      }
       button={buttonInBar && useTemplateButton}
       fit={barFit}
       onFitChange={onBarFitChange}
@@ -2477,7 +2491,7 @@ export const WorkflowToolbar = ({
   // Phones (below md) never had the badge in their crowded header.
   const headerUseTemplate = offersTemplate && !badgeInBar && (
     <>
-      <PreviewBadge className="shrink-0 max-md:hidden" />
+      <PreviewBadge className="shrink-0 max-md:hidden" viewOnly={isViewer} />
       {!buttonInBar && useTemplateButton}
     </>
   );

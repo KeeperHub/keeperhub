@@ -125,7 +125,8 @@ export function WorkflowCanvas() {
   // to read their config but cannot move, connect, delete or add anything.
   const canEditWorkflow = useAtomValue(isWorkflowOwnerAtom);
   const isReadOnly = isWorkflowRoute && !canEditWorkflow;
-  // Right-click menus only in the editor: the scan preview on / is read-only.
+  // Right-click menus only in the editor: the scan preview on / is a modal
+  // sheet, and the menu (on document.body) would sit outside it, unclickable.
   const noCanvasMenu = isGenerating || isReadOnly || !isWorkflowRoute;
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -178,7 +179,7 @@ export function WorkflowCanvas() {
   // The canvas outlives route changes: a menu from the last workflow must not.
   useEffect(() => {
     setContextMenuState(null);
-  }, [currentWorkflowId, isReadOnly, pathname]);
+  }, [currentWorkflowId, noCanvasMenu]);
 
   // Suppress sidebar auto-open briefly after workflow switch
   useEffect(() => {
@@ -880,7 +881,7 @@ export function WorkflowCanvas() {
 
       {/* Context Menu */}
       <WorkflowContextMenu
-        menuState={contextMenuState}
+        menuState={noCanvasMenu ? null : contextMenuState}
         onClose={closeContextMenu}
       />
     </div>

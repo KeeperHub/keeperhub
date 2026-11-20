@@ -14,6 +14,9 @@ export async function dismissPhoneOverlays(page: Page): Promise<void> {
   });
 }
 
+export const right = (b: Box): number => b.x + b.width;
+export const bottom = (b: Box): number => b.y + b.height;
+
 function measured(target: Locator | Box): Promise<Box> | Box {
   return "boundingBox" in target ? box(target) : target;
 }
