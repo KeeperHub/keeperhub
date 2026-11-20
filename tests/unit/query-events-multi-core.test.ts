@@ -482,7 +482,7 @@ describe("parseAddressListQuery", () => {
 
   it("rejects a single value or text that is not an array", () => {
     const single =
-      "Contract Addresses got a single value, not a list. If it comes from Encode / Decode, a one-entry array comes back as a plain value; see the docs.";
+      'Contract Addresses got a single value, not a list. To give one, put it in brackets, like ["0xabc..."]. If it comes from Encode / Decode, a one-entry array comes back as a plain value; see the docs.';
     const object =
       "Contract Addresses must be an array, got an object. Point it at the array itself, e.g. {{@node1:Label.result.items}}.";
     const cases: [unknown, string][] = [
@@ -512,7 +512,7 @@ describe("parseAddressListQuery", () => {
   it("rejects an address without 0x, as Batch Read Contract does", () => {
     const failure = listError([VAULT, VAULT.slice(2)]);
     expect(failure.error).toBe(
-      `Contract Addresses entry 2 has no 0x in front: "${VAULT.slice(2)}". Write it as 0x followed by the 40 hex characters.`
+      `Contract Addresses entry 2 has no 0x in front: "${VAULT.slice(2)}". Write it as 0x followed by the 40 hex characters; if the source leaves 0x off every address, add it in an earlier node.`
     );
     expect(failure.destinationError).toBe(true);
   });
@@ -734,6 +734,54 @@ describe("checkBatchReadConfig", () => {
     ).toBeUndefined();
     expect(
       checkBatchReadConfig({ ...listConfig("x"), inputMode: "mixed" })
+    ).toBeUndefined();
+  });
+});
+
+describe("shared Contract Addresses reading", () => {
+  const listError = (raw: unknown): { error?: string } =>
+    parseAddressListQuery({
+      contractAddresses: raw,
+      abi: "[]",
+      eventName: "Paused",
+    }) as { error?: string };
+
+  it("calls addresses on separate lines text, not a single value", () => {
+    expect(listError(`${VAULT}\n${TOKEN}`).error).toBe(
+      'Contract Addresses is not a JSON array. Reference an array from an earlier node, e.g. {{@node1:Label.result}}, or type one like ["0xabc..."].'
+    );
+  });
+
+  it("shows hidden characters in an entry as a visible mark", () => {
+    const hidden = `0x${String.fromCodePoint(0x20_2e)}12\n`;
+    expect(listError([hidden]).error).toBe(
+      `Contract Addresses entry 1 is not a valid address: "0x${String.fromCodePoint(0xff_fd)}12". Use a 0x address with 40 hex characters.`
+    );
+  });
+
+  it("reports a list nested too deeply to measure instead of throwing at save", () => {
+    let deep: unknown = [];
+    for (let i = 0; i < 20_000; i += 1) {
+      deep = [deep];
+    }
+    expect(
+      checkBatchReadConfig({
+        callsFrom: "address-list",
+        contractAddresses: deep,
+      })
+    ).toEqual({
+      field: "contractAddresses",
+      message:
+        "Contract Addresses is nested too deeply to read. Point it at a flat list.",
+    });
+  });
+
+  it("leaves a typed array holding a reference to the run", () => {
+    expect(
+      checkBatchReadConfig({
+        callsFrom: "address-list",
+        contractAddresses: ["{{@n:Label.address}}", "0x12"],
+      })
     ).toBeUndefined();
   });
 });

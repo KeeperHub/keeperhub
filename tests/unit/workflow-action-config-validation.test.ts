@@ -2444,6 +2444,48 @@ describe("validateWorkflowActionConfigs - Batch Read Contract calls from a list"
     ).toEqual({ valid: true, issues: [] });
   });
 
+  it("checks a typed Contract Addresses list when saved, in both steps", () => {
+    const vault = "0x0000000000000000000000000000000000000001";
+    const bad = JSON.stringify([vault, vault.slice(2)]);
+    const batch = (contractAddresses: string): Record<string, unknown> => ({
+      ...uniform,
+      callsFrom: "address-list",
+      abiFetchAddress: vault,
+      functionArgs: '["1"]',
+      contractAddresses,
+    });
+    const events = (contractAddresses: string): Record<string, unknown> => ({
+      network: "1",
+      queryMode: "address-list",
+      abi: ABI,
+      eventName: "Paused",
+      contractAddresses,
+    });
+    for (const [actionType, config] of [
+      ["web3/batch-read-contract", batch],
+      ["web3/query-events", events],
+    ] as const) {
+      const failed = validateWorkflowActionConfigs([
+        actionNode(actionType, config(bad)),
+      ]);
+      expect.soft(failed.issues).toHaveLength(1);
+      expect.soft(failed.issues[0]).toMatchObject({
+        code: "INVALID_FIELD_VALUE",
+        field: "contractAddresses",
+      });
+      expect
+        .soft(failed.issues[0]?.message)
+        .toContain("entry 2 has no 0x in front");
+      expect
+        .soft(
+          validateWorkflowActionConfigs([
+            actionNode(actionType, config(JSON.stringify([vault]))),
+          ])
+        )
+        .toEqual({ valid: true, issues: [] });
+    }
+  });
+
   it("checks Fetch ABI From as an address", () => {
     const result = validateWorkflowActionConfigs([
       actionNode("web3/batch-read-contract", {

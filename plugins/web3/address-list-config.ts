@@ -2,6 +2,7 @@
 // Events. Free of ethers so the plugin definitions can run it at save time; the
 // steps pass ethers' checksum check when they run.
 
+import { stripControlChars } from "@/lib/utils/control-chars";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import { valueContainsTemplate } from "@/lib/workflow/template-ref";
 import { readsFromAddressList } from "./batch-read-modes";
@@ -13,14 +14,15 @@ const MAX_LIST_TEXT_BYTES = 1_048_576;
 const ADDRESS_LIST_FIELD = "contractAddresses";
 const MAX_SHOWN_LENGTH = 60;
 const BARE_HEX_ADDRESS_RE = /^[0-9a-fA-F]{40}$/;
+const WHITESPACE_RE = /\s/;
 const EN_US = "en-US";
 
 /** A list read from a field; only an empty list may be softened by Fail workflow on error. */
-export type ListRead =
+type ListRead =
   | { success: true; entries: unknown[] }
   | { success: false; error: string; emptyList?: true };
 
-export type ListSpec = {
+type ListSpec = {
   label: string;
   // A typed list the message offers as an example, e.g. ["0xabc..."].
   example: string;
@@ -39,8 +41,18 @@ const ADDRESS_LIST_SPEC: ListSpec = {
   nextStep: "Filter the list first or split it across several nodes.",
 };
 
+const REPLACEMENT_CHAR = String.fromCodePoint(0xff_fd);
+
+/** User text shortened for a message, hidden and control characters shown as U+FFFD. */
 export function echo(text: string, max = MAX_SHOWN_LENGTH): string {
-  return text.length > max ? `${text.slice(0, max)}...` : text;
+  const shown = stripControlChars(text, { replacement: REPLACEMENT_CHAR });
+  if (shown.length <= max) {
+    return shown;
+  }
+  // Not between the two halves of a surrogate pair.
+  const code = shown.charCodeAt(max - 1);
+  const end = code >= 0xd8_00 && code <= 0xdb_ff ? max - 1 : max;
+  return `${shown.slice(0, end)}...`;
 }
 
 export function describeKind(value: unknown): string {
@@ -56,7 +68,7 @@ export function describeKind(value: unknown): string {
   return `a ${typeof value}`;
 }
 
-function count(n: number): string {
+export function count(n: number): string {
   return n.toLocaleString(EN_US);
 }
 
@@ -83,7 +95,13 @@ export function textSizeError(
   label: string,
   nextStep: string
 ): string | undefined {
-  const bytes = textBytes(value);
+  let bytes: number;
+  try {
+    bytes = textBytes(value);
+  } catch {
+    // JSON.stringify gives up on a value nested too deeply to measure.
+    return `${label} is nested too deeply to read. Point it at a flat list.`;
+  }
   return bytes > MAX_LIST_TEXT_BYTES
     ? `${label} is ${megabytes(bytes)} MB; the limit is 1 MB. ${nextStep}`
     : undefined;
@@ -100,7 +118,7 @@ function failed(error: string): ListRead {
 export function readJsonList(raw: unknown, spec: ListSpec): ListRead {
   const { label } = spec;
   let parsed: unknown = raw ?? "";
-  const singleValue = `${label} got a single value, not a list. If it comes from Encode / Decode, a one-entry array comes back as a plain value; see the docs.`;
+  const singleValue = `${label} got a single value, not a list. To give one, put it in brackets, like ${spec.example}. If it comes from Encode / Decode, a one-entry array comes back as a plain value; see the docs.`;
   if (typeof parsed === "string") {
     const text = parsed.trim();
     if (text === "") {
@@ -115,7 +133,9 @@ export function readJsonList(raw: unknown, spec: ListSpec): ListRead {
     try {
       parsed = JSON.parse(text);
     } catch {
-      const looksLikeList = text.startsWith("[") || text.includes(",");
+      // Several values in text: commas, or spaces or lines between them.
+      const looksLikeList =
+        text.startsWith("[") || text.includes(",") || WHITESPACE_RE.test(text);
       return failed(
         looksLikeList
           ? `${label} is not a JSON array. Reference an array from an earlier node, e.g. {{@node1:Label.result}}, or type one like ${spec.example}.`
@@ -155,10 +175,6 @@ export function readJsonList(raw: unknown, spec: ListSpec): ListRead {
   return { success: true, entries: parsed };
 }
 
-function readAddressListValue(raw: unknown): ListRead {
-  return readJsonList(raw, ADDRESS_LIST_SPEC);
-}
-
 /**
  * Why a Contract Addresses entry is not an address, or undefined when it is.
  * The list takes 0x and 40 hex characters only, as every network these steps
@@ -177,7 +193,7 @@ function addressEntryError(
   const text = entry.trim();
   const shown = `"${echo(text)}"`;
   if (BARE_HEX_ADDRESS_RE.test(text)) {
-    return `${at} has no 0x in front: ${shown}. Write it as 0x followed by the 40 hex characters.`;
+    return `${at} has no 0x in front: ${shown}. Write it as 0x followed by the 40 hex characters; if the source leaves 0x off every address, add it in an earlier node.`;
   }
   if (!EVM_ADDRESS_RE.test(text)) {
     return notAnAddressError(at, shown);
@@ -205,7 +221,7 @@ export function readAddressList(
   raw: unknown,
   checksumOk: (address: string) => boolean
 ): { success: true; addresses: string[] } | Exclude<ListRead, { success: true }> {
-  const list = readAddressListValue(raw);
+  const list = readJsonList(raw, ADDRESS_LIST_SPEC);
   if (!list.success) {
     return list;
   }
@@ -224,7 +240,11 @@ export function readAddressList(
 function checkTypedAddressList(
   raw: unknown
 ): { field: string; message: string } | undefined {
-  if (raw === undefined || raw === "" || valueContainsTemplate(raw)) {
+  // A reference, or a typed array holding one, is resolved and checked at run time.
+  const referenced = Array.isArray(raw)
+    ? raw.some(valueContainsTemplate)
+    : valueContainsTemplate(raw);
+  if (raw === undefined || raw === "" || referenced) {
     return;
   }
   const list = readAddressList(raw, () => true);

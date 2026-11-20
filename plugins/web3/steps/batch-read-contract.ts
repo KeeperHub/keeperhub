@@ -206,7 +206,9 @@ function mixedCallDestination(
   }
   const unsupported = unsupportedNetworkError(network);
   if (unsupported) {
-    return { error: `Call ${index + 1}: ${unsupported}` };
+    return {
+      error: `Call ${index + 1}: ${unsupported}. Pick an EVM network for this call.`,
+    };
   }
   const address =
     typeof contractAddress === "string" ? contractAddress.trim() : "";
@@ -839,7 +841,9 @@ function prepareUniformCalls(input: BatchReadContractInput): PreparedCalls {
     // Before the addresses, so a non-EVM network is named, not its address form.
     const unsupported = unsupportedNetworkError(input.network);
     if (unsupported) {
-      throw new DestinationError(unsupported);
+      throw new DestinationError(
+        `${unsupported}. Pick an EVM network in Network.`
+      );
     }
     const callsFrom = resolveCallsFrom(input.callsFrom);
     const destination: Destination =

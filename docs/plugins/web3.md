@@ -154,7 +154,7 @@ The list is checked before any call is made, and the step fails when:
 - the function declares more than 1,000 parameters and tuple members in all
 - one call's arguments would encode to more than about 64 KB, the calls hold more than 50,000 values in all (Function Arguments, sent to every address, counts once), or the encoded calls add up to more than 10 MB
 
-With Fail workflow on error off, these failures, like a failed batch, are passed to the next node as `success: true` with `results` null and `error` set. Only problems that leave the step with nowhere to call still fail the run, as in Read Contract: a missing or unknown network, an RPC configuration that cannot be resolved, a network the step cannot read on (Solana), a missing or invalid Contract Address, or a Contract Addresses that is blank, not a list, has more than 5,000 entries, is larger than 1 MB or has an entry that is not a valid address. A list typed into Contract Addresses is checked for shape when the workflow is saved; checksums are checked when the step runs. In Different contracts/functions mode, so does a call that is not an object or has no valid network or address. An empty Contract Addresses list (`[]`) is passed on like the failures above.
+With Fail workflow on error off, these failures, like a failed batch, are passed to the next node as `success: true` with `results` null and `error` set. Only problems that leave the step with nowhere to call still fail the run, as in Read Contract: a missing or unknown network, an RPC configuration that cannot be resolved, a network the step cannot read on (Solana), a missing or invalid Contract Address, or a Contract Addresses that is blank, not a list, has more than 5,000 entries, is larger than 1 MB or has an entry that is not a valid address. In Different contracts/functions mode, so does a call that is not an object or has no valid network or address. An empty Contract Addresses list (`[]`) is passed on like the failures above. A list typed into Contract Addresses is checked when the workflow is saved, except for checksums, which are checked when the step runs.
 
 Encode / Decode returns a one-entry array as a plain string, not a list. If the list may hold a single entry, take it from a source that always returns an array.
 
@@ -457,7 +457,7 @@ One node can watch a single event on one contract, several events across several
 
 **Inputs:**
 - Query Mode (default: Single event)
-- Network (required)
+- Network (required) -- an EVM network. A Solana network fails the step, and stops the run even with Fail workflow on error off
 - Contract Address (required)
 - Contract ABI (required, auto-fetched from block explorer)
 - Event Name (required, selected from ABI)
@@ -496,7 +496,7 @@ A filter naming a parameter that is not indexed, or a value that does not fit it
 
 **Querying one event on a list of contracts**
 
-Set Query Mode to One event, many contracts and set Contract Addresses to the list. The list is checked before any query runs, and the step fails when it is blank, is a single value or text rather than a JSON array, has more than 5,000 entries, is larger than 1 MB, or has an entry that is not a valid address (the message names the entry, counted from 1; an address is 0x and 40 hex characters, and one in mixed case must have a valid checksum). Contract Addresses is read the same way as in Batch Read Contract. These failures stop the run even with Fail workflow on error off. An empty list, `[]`, fails the step like any other query error: with Fail workflow on error off the run continues, and the node's `events` is null with `error` set, so an empty list is never mistaken for a range with no events. A list typed into the field is checked for shape when the workflow is saved; checksums are checked when the step runs. An address listed more than once is queried once, so no event is returned twice. The addresses are queried in groups over one shared block range, and a latest To Block ends 5 blocks behind the latest block as in Multiple mode.
+Set Query Mode to One event, many contracts and set Contract Addresses to the list. The list is checked before any query runs, and the step fails when it is blank, is a single value or text rather than a JSON array, has more than 5,000 entries, is larger than 1 MB, or has an entry that is not a valid address (the message names the entry, counted from 1; an address is 0x and 40 hex characters, and one in mixed case must have a valid checksum). Contract Addresses is checked the same way as in Batch Read Contract. These failures stop the run even with Fail workflow on error off. An empty list, `[]`, fails the step like any other query error: with Fail workflow on error off the run continues, and the node's `events` is null with `error` set, so an empty list is never mistaken for a range with no events. A list typed into the field is checked when the workflow is saved, except for checksums, which are checked when the step runs. An address listed more than once is queried once, so no event is returned twice. The addresses are queried in groups over one shared block range, and a latest To Block ends 5 blocks behind the latest block as in Multiple mode.
 
 **Querying multiple events or contracts**
 

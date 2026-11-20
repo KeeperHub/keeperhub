@@ -506,11 +506,13 @@ describe("batch-read-contract - contract addresses from a list", () => {
 
   it("explains a single value where a list was expected", async () => {
     const single =
-      "Contract Addresses got a single value, not a list. If it comes from Encode / Decode, a one-entry array comes back as a plain value; see the docs.";
+      'Contract Addresses got a single value, not a list. To give one, put it in brackets, like ["0xabc..."]. If it comes from Encode / Decode, a one-entry array comes back as a plain value; see the docs.';
     expect(await failure(addressList(addr(1)))).toBe(single);
     expect(await failure(addressList(JSON.stringify(addr(1))))).toBe(single);
     expect(await failure(argsList("7"))).toBe(
-      single.replace("Contract Addresses", "Argument Sets")
+      single
+        .replace("Contract Addresses", "Argument Sets")
+        .replace('["0xabc..."]', '[["0xabc..."]]')
     );
   });
 
@@ -691,7 +693,7 @@ describe("batch-read-contract - argument sets from a list", () => {
   it("caps the list at 5,000 entries", async () => {
     const list = Array.from({ length: 6200 }, (_, i) => String(i));
     expect(await failure(argsList(list))).toBe(
-      "Argument Sets has 6,200 entries; the limit is 5,000 calls per run. Filter the list first or split it across two Batch Read nodes."
+      "Argument Sets has 6,200 entries; the limit is 5,000 calls per run. Filter the list first or split it across several nodes."
     );
   });
 
@@ -1565,7 +1567,7 @@ describe("batch-read-contract - review fixes", () => {
       [
         "a Contract Addresses entry without 0x",
         addressList([addr(1), addr(2).slice(2)]),
-        `Contract Addresses entry 2 has no 0x in front: "${addr(2).slice(2)}". Write it as 0x followed by the 40 hex characters.`,
+        `Contract Addresses entry 2 has no 0x in front: "${addr(2).slice(2)}". Write it as 0x followed by the 40 hex characters; if the source leaves 0x off every address, add it in an earlier node.`,
       ],
       [
         "a Contract Addresses over 5,000 entries",
@@ -1614,8 +1616,33 @@ describe("batch-read-contract - review fixes", () => {
       expect(outcome).toEqual({
         success: false,
         destinationError: true,
-        error: "Solana is not supported for this action yet",
+        error:
+          "Solana is not supported for this action yet. Pick an EVM network in Network.",
       });
+      expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    });
+
+    it("a Solana network with a list of argument sets or rows", async () => {
+      mockGetChainIdFromNetwork.mockReturnValue(103);
+      const refused = {
+        success: false,
+        destinationError: true,
+        error:
+          "Solana is not supported for this action yet. Pick an EVM network in Network.",
+      };
+      expect
+        .soft(await run({ ...argsList([["1"]]), failOnError: false }))
+        .toEqual(refused);
+      expect
+        .soft(
+          await run({
+            contractAddress: CONTRACT,
+            abiFunction: "echo",
+            calls: JSON.stringify([{ args: ["1"] }]),
+            failOnError: false,
+          })
+        )
+        .toEqual(refused);
       expect(mockGetRpcProvider).not.toHaveBeenCalled();
     });
 
@@ -1646,7 +1673,8 @@ describe("batch-read-contract - review fixes", () => {
       expect(outcome).toEqual({
         success: false,
         destinationError: true,
-        error: "Call 2: Solana is not supported for this action yet",
+        error:
+          "Call 2: Solana is not supported for this action yet. Pick an EVM network for this call.",
       });
       expect(mockStaticCall).not.toHaveBeenCalled();
     });
@@ -3541,7 +3569,7 @@ describe("batch-read-contract - fourth review", () => {
         abi,
       })
     ).toBe(
-      'Argument Sets entry 1 has 4 values for f (na, ub, lc), a number it takes when tuples are given flat, but not in the right places. Make each entry an array like [{"i": {"p": 1}, "c": 1}, 1, {"a": 1, "b": {"p": 1}}].'
+      'Argument Sets entry 1 has 4 values for f (na, ub, lc), the number it takes when lc is given flat as its 2 members, but not in the right places. Make each entry an array like [{"i": {"p": 1}, "c": 1}, 1, {"a": 1, "b": {"p": 1}}].'
     );
   });
 
@@ -3637,7 +3665,7 @@ describe("batch-read-contract - fifth review", () => {
         await failure({ ...argsList([[{ i: { p: 1 } }, 1, 1, 2]], "h"), abi })
       )
       .toBe(
-        'Argument Sets entry 1 has 4 values for h (x, t, s), a number it takes when tuples are given flat, but not in the right places. Make each entry an array like [1, {"i": {"p": 1}}, {"a": 1, "b": 1}].'
+        'Argument Sets entry 1 has 4 values for h (x, t, s), the number it takes when s is given flat as its 2 members, but not in the right places. Make each entry an array like [1, {"i": {"p": 1}}, {"a": 1, "b": 1}].'
       );
   });
 
@@ -3647,6 +3675,74 @@ describe("batch-read-contract - fifth review", () => {
       await failure({ ...argsList([[1, { i: { p: 1 } }, 3]], "f"), abi })
     ).toBe(
       'Argument Sets entry 1 has 3 values, but f takes 2 (x, t). Make each entry an array like [1, {"i": {"p": 1}}].'
+    );
+  });
+
+  it("lines up a tuple member that is a tuple only on its object, text or an array", async () => {
+    const abi = abiWith("f", [
+      tupleOf("s", [uint("a"), nestedT]),
+      tupleOf("u", [uint("c"), { name: "d", type: "uint256[]" }]),
+    ]);
+    // u is given flat and is fine; s.t holds 1, so u is not named.
+    const entry = [1, 1, [1, 2]];
+    expect
+      .soft(await failure({ ...argsList([entry], "f"), abi }))
+      .toBe(
+        'Argument Sets entry 1 has 3 values for f (s, u), a number it takes when tuples are given flat, but not in the right places. Make each entry an array like [{"a": 1, "t": {"i": {...}}}, {"c": 1, "d": [1, 1]}].'
+      );
+    expect
+      .soft(
+        await failure({
+          ...addressList([CONTRACT], { functionArgs: JSON.stringify(entry) }),
+          abiFunction: "f",
+          abi,
+        })
+      )
+      .toBe(
+        "Function Arguments: s.t: expected object for tuple. Check the arguments for f (s, u)."
+      );
+    // With s.t given its object, u given as an array is named.
+    expect
+      .soft(
+        await failure({
+          ...argsList([[1, { i: { p: 1 } }, [1, 2]]], "f"),
+          abi,
+        })
+      )
+      .toBe(
+        'Argument Sets entry 1: give u as an object with its member names, like {"c": 1, "d": [1, 1]}, not as an array.'
+      );
+  });
+
+  it("lines up an array member only on an array", async () => {
+    const abi = abiWith("f", [
+      tupleOf("t", [
+        { name: "i", type: "tuple[]", components: [uint("p")] },
+        uint("q"),
+      ]),
+      tupleOf("s", [uint("a"), { name: "b", type: "uint256[]" }]),
+    ]);
+    // t.i holds 1, so s, given flat, is not named.
+    expect(await failure({ ...argsList([[1, 2, [1, 2]]], "f"), abi })).toBe(
+      'Argument Sets entry 1 has 3 values for f (t, s), a number it takes when tuples are given flat, but not in the right places. Make each entry an array like [{"i": [{...}, {...}], "q": 1}, {"a": 1, "b": [1, 1]}].'
+    );
+  });
+
+  it("names a tuple starting with a tuple in Function Arguments as in Argument Sets", async () => {
+    const abi = abiWith("f", [
+      nestedT,
+      tupleOf("s", [uint("a"), { name: "b", type: "uint256[]" }]),
+    ]);
+    expect(
+      await failure({
+        ...addressList([CONTRACT], {
+          functionArgs: JSON.stringify([1, [1, 2]]),
+        }),
+        abiFunction: "f",
+        abi,
+      })
+    ).toBe(
+      'Function Arguments: t must be an object with its member names, like {"i": {"p": 1}}, got 1.'
     );
   });
 });

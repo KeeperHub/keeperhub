@@ -10,6 +10,7 @@ import { validateArgsForAbi } from "@/lib/abi/validate-args";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
   badChecksumError,
+  count,
   describeKind,
   echo,
   jsonText,
@@ -38,7 +39,6 @@ export const ARGS_LIST_LABEL = "Argument Sets";
 export const SHARED_ARGS_LABEL = "Function Arguments";
 
 export const MAX_REASON_LENGTH = 200;
-const EN_US = "en-US";
 const SCALAR_TYPE_RE = /^(address|bool|string|bytes\d*|u?int\d*)$/;
 const INTEGER_TYPE_RE = /^u?int\d*$/;
 const INTEGER_PREFIX_RE = /^u?int/;
@@ -57,8 +57,7 @@ const ETHERS_ARGUMENT_RE = /argument="([^"]+)"/;
 const NUMBER_RANGE_RE = /overflow|underflow|out-of-bounds/i;
 // validateArgsForAbi's wording for a blank or absent value.
 const BLANK_ERROR_RE = /cannot be empty|is missing$/;
-const LIST_SIZE_STEP =
-  "Filter the list first or split it across two Batch Read nodes.";
+const LIST_SIZE_STEP = "Filter the list first or split it across several nodes.";
 
 export type ListFunction = {
   name: string;
@@ -95,10 +94,6 @@ export function resolveCallsFrom(value: unknown): CallsFrom {
   throw new Error(
     `Calls From must be "${CALLS_FROM_ROWS}", "${CALLS_FROM_ARGS_LIST}" or "${CALLS_FROM_ADDRESS_LIST}", got ${showValue(value)}.`
   );
-}
-
-function count(n: number): string {
-  return n.toLocaleString(EN_US);
 }
 
 function plural(n: number, word: string): string {
@@ -348,11 +343,6 @@ function integerLeafError(
     : tooManyDigits(path, value, type);
 }
 
-/**
- * The checks lib/abi leaves to the encoder, made before encoding so a list
- * entry fails with its own name: a bool must be true or false, an address a
- * 0x address, a bytesN 0x hex of its length, a whole number not too long.
- */
 // An object on a plain value's place is said to belong to a tuple, whichever
 // check names it.
 function checkListLeaf(
@@ -366,6 +356,11 @@ function checkListLeaf(
     : error;
 }
 
+/**
+ * The checks lib/abi leaves to the encoder, made before encoding so a list
+ * entry fails with its own name: a bool must be true or false, an address a
+ * 0x address, a bytesN 0x hex of its length, a whole number not too long.
+ */
 function plainLeafError(
   value: unknown,
   type: string,
@@ -702,14 +697,28 @@ function canGoFlat(input: AbiParam): boolean {
 
 type FlatTuple = { label: string; members: number };
 
-// A tuple's members, read flat from start, can hold the values there: only a
-// member that is a tuple can take an object.
+// A value can sit in a member's place: a tuple takes its object or the whole
+// tuple as text or an array, an array an array or JSON array text, and any
+// other type anything but an object.
+function fitsPlace(value: unknown, param: AbiParam): boolean {
+  if (param.type === "tuple") {
+    return isPlainObject(value)
+      ? objectFits(value, param)
+      : takesOneValue(value, param);
+  }
+  if (param.type.endsWith("]")) {
+    return Array.isArray(value) || Array.isArray(jsonContainerText(value));
+  }
+  return !isPlainObject(value);
+}
+
+// A tuple's members, read flat from start, can hold the values there.
 function membersFit(args: unknown[], input: AbiParam, start: number): boolean {
   return (
     canGoFlat(input) &&
     start < args.length &&
-    (input.components ?? []).every(
-      (member, k) => member.type === "tuple" || !isPlainObject(args[start + k])
+    (input.components ?? []).every((member, k) =>
+      fitsPlace(args[start + k], member)
     )
   );
 }
@@ -831,6 +840,18 @@ function countFits(n: number, fn: ListFunction): boolean {
   return sums.has(extra);
 }
 
+// The one tuple that can go flat is named; with several, they are not.
+function flatTakes(fn: ListFunction): string {
+  const flat = fn.inputs.flatMap((input, index) =>
+    canGoFlat(input) && (input.components?.length ?? 0) > 1
+      ? [{ label: input.name || `arg${index}`, members: input.components?.length ?? 0 }]
+      : []
+  );
+  return flat.length === 1
+    ? `the number it takes when ${echo(flat[0].label, MAX_REASON_LENGTH)} is given flat as its ${count(flat[0].members)} members`
+    : "a number it takes when tuples are given flat";
+}
+
 /** A count message; tuples the values read as flat are named with both counts. */
 function countMismatch(
   at: string,
@@ -873,7 +894,7 @@ function countMismatch(
     countFits(args.length, fn)
   ) {
     return new Error(
-      `${at} has ${given} for ${fn.name} (${names}), a number it takes when tuples are given flat, but not in the right places. ${hint}`
+      `${at} has ${given} for ${fn.name} (${names}), ${flatTakes(fn)}, but not in the right places. ${hint}`
     );
   }
   if (flat.length === 0 || flatCount === args.length) {
@@ -990,14 +1011,12 @@ function tupleSlotError(
   const input = fn.inputs[index];
   const components = input.components ?? [];
   const members = components.length;
-  // Read flat from start, only a tuple member can take an object. Values after
-  // it are not checked: a value missing there shifts them.
+  // Read flat from start, each member's value fits its place. Values after it
+  // are not checked: a value missing there shifts them.
   const fits = (start: number): boolean =>
     start >= 0 &&
     start + members <= entry.length &&
-    components.every(
-      (member, k) => member.type === "tuple" || !isPlainObject(entry[start + k])
-    );
+    components.every((member, k) => fitsPlace(entry[start + k], member));
   const flat = canGoFlat(input);
   if (flat && components.some((_, k) => fits(index - k))) {
     return;
@@ -1155,10 +1174,11 @@ function nestedSlot(entry: unknown[], fn: ListFunction): NestedSlot | undefined 
 function nestedTupleError(
   entry: unknown[],
   fn: ListFunction,
-  at: string
+  at: string,
+  blankTail = false
 ): Error | undefined {
   const slot = nestedSlot(entry, fn);
-  if (!(slot && linesUpFixed(entry, fn, slot.place))) {
+  if (!(slot && linesUpFixed(entry, fn, slot.place, blankTail))) {
     return;
   }
   return slotError(at, slot.input, slot.index, entry[slot.place]);
@@ -1236,15 +1256,14 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
   const given = parsed.slice(0, end);
   const reshaped = reshapeArgsCounted(given, fn);
   const { consumed } = reshaped;
-  if (given.length !== consumed) {
-    const positional = positionalTupleError(
-      given,
-      fn,
-      SHARED_ARGS_LABEL,
-      given.length < consumed
-    );
-    if (positional) {
-      throw positional;
+  // Named as in Argument Sets, with blanks missing at the end allowed.
+  if (given.length !== consumed || nestedSlot(given, fn)) {
+    const blankTail = given.length < consumed;
+    const named =
+      positionalTupleError(given, fn, SHARED_ARGS_LABEL, blankTail) ??
+      nestedTupleError(given, fn, SHARED_ARGS_LABEL, blankTail);
+    if (named) {
+      throw named;
     }
   }
   if (given.length > consumed) {
