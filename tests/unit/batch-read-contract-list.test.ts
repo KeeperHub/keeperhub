@@ -2558,7 +2558,7 @@ describe("batch-read-contract - second review, round 2", () => {
       );
   });
 
-  it("names the first of two tuples starting with a tuple", async () => {
+  it("names neither of two tuples starting with a tuple when both hold a plain value", async () => {
     const nested = {
       type: "tuple",
       components: [
@@ -2570,8 +2570,9 @@ describe("batch-read-contract - second review, round 2", () => {
       { name: "o", ...nested },
       { name: "n", ...nested },
     ]);
+    // Neither lines up with the other still holding a plain value.
     expect(await failure({ ...argsList([[1, 2]], "k"), abi: twoNested })).toBe(
-      'Argument Sets entry 1: o must be an object with its member names, like {"i": {"p": 1}, "c": 1}, got 1.'
+      'Argument Sets entry 1 has 2 values for k (o, n), the right number, but not in the right places. Make each entry an array like [{"i": {"p": 1}, "c": 1}, {"i": {"p": 1}, "c": 1}].'
     );
   });
 
@@ -2864,7 +2865,8 @@ describe("batch-read-contract - second review, round 2", () => {
     expect(await failure({ ...argsList([[1, 2, 3]], "f"), abi })).toBe(
       'Argument Sets entry 1 has 3 values for f (t, x, u), which takes 3 when t is an object, or 4 when t is given flat as its 2 members. Make each entry an array like [{"a": 1, "b": 1}, 1, {"a": 1, "b": 1}].'
     );
-    // Reading u flat would put the object on a plain member: no flat count.
+    // Reading u flat would put the object on a plain member, but t given flat
+    // takes 4 values, so the count is not called wrong.
     const stop = abiWith("g", [
       { name: "t", ...pair },
       { name: "u", ...pair },
@@ -2876,7 +2878,7 @@ describe("batch-read-contract - second review, round 2", () => {
         abi: stop,
       })
     ).toBe(
-      'Argument Sets entry 1 has 4 values, but g takes 3 (t, u, x). Make each entry an array like [{"a": 1, "b": 1}, {"a": 1, "b": 1}, 1].'
+      'Argument Sets entry 1 has 4 values for g (t, u, x), a number it takes when tuples are given flat, but not in the right places. Make each entry an array like [{"a": 1, "b": 1}, {"a": 1, "b": 1}, 1].'
     );
   });
 
@@ -3231,7 +3233,12 @@ describe("batch-read-contract - fourth review", () => {
       tupleOf("t", [tupleOf("i", [uint("p")])]),
     ]);
     expect
-      .soft(await failure({ ...argsList([[{ i: { p: 1 } }, 1]], "f"), abi }))
+      .soft(
+        await failure({
+          ...argsList([[{ i: { p: 1 } }, { i: { p: 1 } }]], "f"),
+          abi,
+        })
+      )
       .toBe(
         'Argument Sets entry 1: x must be a whole number, got {"i":{"p":1}}. Only a tuple takes an object.'
       );
@@ -3257,7 +3264,8 @@ describe("batch-read-contract - fourth review", () => {
     const nested = (name: string): ReturnType<typeof tupleOf> =>
       tupleOf(name, [tupleOf("inner", [uint("a"), uint("b")]), uint("id")]);
     const abi = abiWith("f", [nested("o"), nested("p")]);
-    expect(await failure({ ...argsList([[5, 6]], "f"), abi })).toBe(
+    const object = { inner: { a: 1, b: 2 }, id: 3 };
+    expect(await failure({ ...argsList([[5, object]], "f"), abi })).toBe(
       'Argument Sets entry 1: o must be an object with its member names, like {"inner": {"a": 1, "b": 1}, "id": 1}, got 5.'
     );
   });
@@ -3319,7 +3327,9 @@ describe("batch-read-contract - fourth review", () => {
           })
         )
       )
-      .toBe('Function Arguments: x must be a whole number, got {"a":1,"b":2}.');
+      .toBe(
+        'Function Arguments: x must be a whole number, got {"a":1,"b":2}. Only a tuple takes an object.'
+      );
   });
 
   it("does not name a tuple that can go flat when fixing it leaves an object on a plain input", async () => {
@@ -3378,7 +3388,7 @@ describe("batch-read-contract - fourth review", () => {
     ]);
     expect(
       await failure({
-        ...argsList([[{ i: { p: 1 } }, { a: 1, b: 2 }, 5]], "f"),
+        ...argsList([[{ i: { p: 1 } }, { a: 1, b: 2 }, { i: { p: 1 } }]], "f"),
         abi,
       })
     ).toBe(
@@ -3437,14 +3447,20 @@ describe("batch-read-contract - fourth review", () => {
     expect
       .soft(
         await failure({
-          ...argsList([[{ i: { p: 1 } }, 1, { a: 1, b: 1 }]], "h"),
+          ...argsList(
+            [[{ i: { p: 1 } }, { i: { p: 1 } }, { a: 1, b: 1 }]],
+            "h"
+          ),
           abi,
         })
       )
       .toBe(named);
     expect
       .soft(
-        await failure({ ...argsList([[{ i: { p: 1 } }, 1, 1, 2]], "h"), abi })
+        await failure({
+          ...argsList([[{ i: { p: 1 } }, { i: { p: 1 } }, 1, 2]], "h"),
+          abi,
+        })
       )
       .toBe(named);
   });
@@ -3500,9 +3516,9 @@ describe("batch-read-contract - fourth review", () => {
       'Argument Sets entry 1: x must be a whole number, got {"i":{"p":1}}. Only a tuple takes an object.';
     // t given flat, as an object, and as an array.
     for (const entry of [
-      [1, 2, { i: { p: 1 } }, 5],
-      [{ a: 1, b: 2 }, { i: { p: 1 } }, 5],
-      [[1, 2], { i: { p: 1 } }, 5],
+      [1, 2, { i: { p: 1 } }, { i: { p: 1 } }],
+      [{ a: 1, b: 2 }, { i: { p: 1 } }, { i: { p: 1 } }],
+      [[1, 2], { i: { p: 1 } }, { i: { p: 1 } }],
     ]) {
       expect
         .soft(await failure({ ...argsList([entry], "f"), abi }))
@@ -3525,7 +3541,7 @@ describe("batch-read-contract - fourth review", () => {
         abi,
       })
     ).toBe(
-      'Argument Sets entry 1 has 4 values, but f takes 3 (na, ub, lc). Make each entry an array like [{"i": {"p": 1}, "c": 1}, 1, {"a": 1, "b": {"p": 1}}].'
+      'Argument Sets entry 1 has 4 values for f (na, ub, lc), a number it takes when tuples are given flat, but not in the right places. Make each entry an array like [{"i": {"p": 1}, "c": 1}, 1, {"a": 1, "b": {"p": 1}}].'
     );
   });
 
@@ -3537,11 +3553,100 @@ describe("batch-read-contract - fourth review", () => {
     ]);
     expect(
       await failure({
-        ...argsList([[{ a: 1, b: 2 }, { a: 1, b: 2 }, 5]], "f"),
+        ...argsList([[{ a: 1, b: 2 }, { a: 1, b: 2 }, { i: { p: 1 } }]], "f"),
         abi,
       })
     ).toBe(
       'Argument Sets entry 1: x must be a whole number, got {"a":1,"b":2}. Only a tuple takes an object.'
+    );
+  });
+});
+
+describe("batch-read-contract - fifth review", () => {
+  const abiWith = (name: string, inputs: unknown[]): string =>
+    JSON.stringify([
+      {
+        name,
+        type: "function",
+        stateMutability: "view",
+        inputs,
+        outputs: [{ name: "", type: "uint256" }],
+      },
+    ]);
+  const uint = (name: string): { name: string; type: string } => ({
+    name,
+    type: "uint256",
+  });
+  const tupleOf = (
+    name: string,
+    components: unknown[]
+  ): { name: string; type: string; components: unknown[] } => ({
+    name,
+    type: "tuple",
+    components,
+  });
+  const nestedT = tupleOf("t", [tupleOf("i", [uint("p")])]);
+
+  it("names a tuple starting with a tuple that holds a plain value, not the tuple after it", async () => {
+    const abi = abiWith("f", [
+      nestedT,
+      tupleOf("s", [uint("a"), { name: "b", type: "uint256[]" }]),
+    ]);
+    // s is given flat and is fine; t holds 1.
+    expect(await failure({ ...argsList([[1, [1, 2]]], "f"), abi })).toBe(
+      'Argument Sets entry 1: t must be an object with its member names, like {"i": {"p": 1}}, got 1.'
+    );
+  });
+
+  it("lines up a tuple starting with a tuple on the whole tuple as text or an array", async () => {
+    const abi = abiWith("f", [nestedT, tupleOf("s", [uint("a"), uint("b")])]);
+    expect
+      .soft(
+        await failure({ ...argsList([['{"i": {"p": 1}}', 1, 2]], "f"), abi })
+      )
+      .toBe(
+        'Argument Sets entry 1: give t as an object with its member names, like {"i": {"p": 1}}, not as text.'
+      );
+    expect
+      .soft(await failure({ ...argsList([[[[1]], 1, 2]], "f"), abi }))
+      .toBe(
+        'Argument Sets entry 1: give t as an object with its member names, like {"i": {"p": 1}}, not as an array.'
+      );
+  });
+
+  it("does not send a swapped entry back and forth between messages", async () => {
+    const abi = abiWith("h", [
+      uint("x"),
+      nestedT,
+      tupleOf("s", [uint("a"), uint("b")]),
+    ]);
+    // t's object on x and a plain value on t: fixing x alone does not line up.
+    expect
+      .soft(
+        await failure({
+          ...argsList([[{ i: { p: 1 } }, 1, { a: 1, b: 1 }]], "h"),
+          abi,
+        })
+      )
+      .toBe(
+        'Argument Sets entry 1 has 3 values for h (x, t, s), the right number, but not in the right places. Make each entry an array like [1, {"i": {"p": 1}}, {"a": 1, "b": 1}].'
+      );
+    // With s given flat the count is not called wrong either.
+    expect
+      .soft(
+        await failure({ ...argsList([[{ i: { p: 1 } }, 1, 1, 2]], "h"), abi })
+      )
+      .toBe(
+        'Argument Sets entry 1 has 4 values for h (x, t, s), a number it takes when tuples are given flat, but not in the right places. Make each entry an array like [1, {"i": {"p": 1}}, {"a": 1, "b": 1}].'
+      );
+  });
+
+  it("keeps the plain count when no flat reading takes that many values", async () => {
+    const abi = abiWith("f", [uint("x"), nestedT]);
+    expect(
+      await failure({ ...argsList([[1, { i: { p: 1 } }, 3]], "f"), abi })
+    ).toBe(
+      'Argument Sets entry 1 has 3 values, but f takes 2 (x, t). Make each entry an array like [1, {"i": {"p": 1}}].'
     );
   });
 });

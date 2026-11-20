@@ -353,7 +353,20 @@ function integerLeafError(
  * entry fails with its own name: a bool must be true or false, an address a
  * 0x address, a bytesN 0x hex of its length, a whole number not too long.
  */
+// An object on a plain value's place is said to belong to a tuple, whichever
+// check names it.
 function checkListLeaf(
+  value: unknown,
+  type: string,
+  path: string
+): string | undefined {
+  const error = plainLeafError(value, type, path);
+  return error && isPlainObject(value)
+    ? `${sentence(error)} Only a tuple takes an object`
+    : error;
+}
+
+function plainLeafError(
   value: unknown,
   type: string,
   path: string
@@ -798,8 +811,24 @@ function plainInputError(
   const name = input.name || `arg${index}`;
   const error =
     checkListLeaf(value, input.type, name) ??
-    `${name} must be a value of type ${input.type}, got ${showValue(value)}`;
-  return new Error(`${at}: ${sentence(error)} Only a tuple takes an object.`);
+    `${name} must be a value of type ${input.type}, got ${showValue(value)}. Only a tuple takes an object`;
+  return new Error(`${at}: ${sentence(error)}`);
+}
+
+// Some choice of tuples given flat makes the inputs take exactly n values.
+function countFits(n: number, fn: ListFunction): boolean {
+  const extra = n - fn.inputs.length;
+  if (extra < 0) {
+    return false;
+  }
+  let sums = new Set([0]);
+  for (const input of fn.inputs) {
+    const more = canGoFlat(input) ? (input.components?.length ?? 1) - 1 : 0;
+    if (more > 0) {
+      sums = new Set([...sums, ...[...sums].map((sum) => sum + more)]);
+    }
+  }
+  return sums.has(extra);
 }
 
 /** A count message; tuples the values read as flat are named with both counts. */
@@ -836,6 +865,15 @@ function countMismatch(
   if (flat.length === 0 && args.length === takes) {
     return new Error(
       `${at} has ${given} for ${fn.name} (${names}), the right number, but not in the right places. ${hint}`
+    );
+  }
+  // Some tuples given flat take this many values, so the count is not wrong.
+  if (
+    (flat.length === 0 || flatCount === args.length) &&
+    countFits(args.length, fn)
+  ) {
+    return new Error(
+      `${at} has ${given} for ${fn.name} (${names}), a number it takes when tuples are given flat, but not in the right places. ${hint}`
     );
   }
   if (flat.length === 0 || flatCount === args.length) {
@@ -986,13 +1024,13 @@ function slotError(
   );
 }
 
-// A tuple's place holds one value: an object, the whole tuple as text or an
-// array, or anything for a tuple starting with a tuple.
+// A tuple's place holds one value: an object, or the whole tuple as text or
+// an array. A tuple starting with a tuple can't go flat, so any other value
+// there does not line up.
 function takesOneValue(value: unknown, input: AbiParam): boolean {
   const first = input.components?.[0];
   return (
     isPlainObject(value) ||
-    !canGoFlat(input) ||
     (first !== undefined && isWholeTupleShape(value, first))
   );
 }
@@ -1084,7 +1122,8 @@ function plainObjectError(
     if (members > 0 && !isPlainObject(value)) {
       holdingPlain.push(input);
     }
-    cursor += members > 0 && !takesOneValue(value, input) ? members : 1;
+    cursor +=
+      canGoFlat(input) && !takesOneValue(value, input) ? members : 1;
   }
   return;
 }
