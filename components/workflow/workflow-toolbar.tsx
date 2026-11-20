@@ -54,7 +54,10 @@ import {
 } from "@/lib/api-client";
 import { useProjects, useTags } from "@/lib/hooks/use-org-data";
 import { useOrgAccess } from "@/lib/hooks/use-org-access";
-import { VIEWER_DISABLED_REASON } from "@/lib/organization/role-label";
+import {
+  READ_ONLY_LABEL,
+  VIEWER_DISABLED_REASON,
+} from "@/lib/organization/role-label";
 import { VersionPreviewBanner } from "./version-preview-banner";
 import { useSession } from "@/lib/auth-client";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
@@ -2120,7 +2123,7 @@ const VIEW_ONLY_BADGE_CLASS =
   "border-2 border-[var(--color-text-accent)]/60 bg-[var(--color-bg-accent)]/10 font-semibold text-[var(--color-text-accent)] text-xs uppercase tracking-wider backdrop-blur-sm dark:border-[var(--color-text-accent)]/50 dark:bg-transparent";
 
 // Neutral (unlike the viewer's badge), so the green button stays the one
-// accent. An org viewer's says "View only": it shows at every width.
+// accent. An org viewer's reads Read only: it shows at every width.
 function PreviewBadge({
   className,
   viewOnly,
@@ -2134,9 +2137,11 @@ function PreviewBadge({
         "border-border bg-transparent font-semibold text-foreground/80 text-xs uppercase tracking-wider",
         className
       )}
+      title={viewOnly ? VIEWER_DISABLED_REASON : undefined}
       variant="outline"
     >
-      {viewOnly ? "View only" : "Preview"}
+      {viewOnly && <Eye aria-hidden="true" />}
+      {viewOnly ? READ_ONLY_LABEL : "Preview"}
     </Badge>
   );
 }
@@ -2151,7 +2156,7 @@ function ViewOnlyBadge() {
       variant="outline"
     >
       <Eye aria-hidden="true" />
-      <span className="max-lg:sr-only">Read only</span>
+      <span className="max-lg:sr-only">{READ_ONLY_LABEL}</span>
     </Badge>
   );
 }

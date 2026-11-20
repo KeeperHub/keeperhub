@@ -191,6 +191,33 @@ export async function addTestOrganization(
 }
 
 /**
+ * Make a user a viewer of an organization made by addTestOrganization, and
+ * move a workflow into it. Delete the workflow before removeTestOrganization.
+ */
+export async function addTestOrganizationViewer(
+  orgId: string,
+  viewerEmail: string,
+  workflowId: string
+): Promise<void> {
+  const sql = getDbConnection();
+  try {
+    const users = await sql`SELECT id FROM users WHERE email = ${viewerEmail}`;
+    if (users.length === 0) {
+      throw new Error(`User not found: ${viewerEmail}`);
+    }
+    await sql.begin(async (tx) => {
+      await tx`UPDATE workflows SET organization_id = ${orgId} WHERE id = ${workflowId}`;
+      await tx`
+        INSERT INTO member (id, organization_id, user_id, role, created_at)
+        VALUES (${generateId()}, ${orgId}, ${users[0].id as string}, 'viewer', ${new Date()})
+      `;
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
  * Remove an organization made by addTestOrganization. A session it was
  * active in goes back to its user's seeded organization (owned, oldest
  * first, as createTestWorkflow picks it), so later tests start there.

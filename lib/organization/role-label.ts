@@ -34,6 +34,9 @@ export function canEditOrg(role: string | null | undefined): boolean {
   return Boolean(role) && !isViewerRole(role);
 }
 
+/** Badge label where a viewer, or anyone without edit rights, only reads. */
+export const READ_ONLY_LABEL = "Read only";
+
 /** Tooltip for an action a viewer sees but cannot use. */
 export const VIEWER_DISABLED_REASON =
   "View-only access: you cannot make changes in this organization";

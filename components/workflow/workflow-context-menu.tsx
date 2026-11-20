@@ -1,17 +1,11 @@
 "use client";
 
 import type { Edge, Node, XYPosition } from "@xyflow/react";
-import { useAtomValue, useSetAtom, useStore } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import { Link2Off, Plus, Trash2, Upload } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useRouter } from "next/navigation";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { ConfirmOverlay } from "@/components/overlays/confirm-overlay";
@@ -22,7 +16,6 @@ import { isAnonymousUser } from "@/lib/is-anonymous";
 import { cn } from "@/lib/utils";
 import {
   addNodeAtom,
-  currentWorkflowIdAtom,
   deleteEdgeAtom,
   deleteNodeAtom,
   nodesAtom,
@@ -33,9 +26,6 @@ import {
 import { useShowStepSettings } from "./use-show-step-settings";
 
 export type ContextMenuType = "node" | "edge" | "pane" | null;
-
-// The menu keeps this far inside the window.
-const MENU_EDGE_GAP_PX = 8;
 
 export type ContextMenuState = {
   type: ContextMenuType;
@@ -67,39 +57,6 @@ export function WorkflowContextMenu({
   const isAnonymous = isAnonymousUser(session?.user);
   const menuRef = useRef<HTMLDivElement>(null);
   const [ioOpen, setIoOpen] = useState(false);
-  const [placed, setPlaced] = useState<{ x: number; y: number } | null>(null);
-  const store = useStore();
-  // A confirm can outlive the workflow it was opened on (browser Back): it
-  // then does nothing, as the same node or edge id may exist in the new one.
-  const onSameWorkflow = useCallback((): (() => boolean) => {
-    const openedOn = store.get(currentWorkflowIdAtom);
-    return () => store.get(currentWorkflowIdAtom) === openedOn;
-  }, [store]);
-
-  // Before paint: open upward near the bottom edge, shift left near the right.
-  useLayoutEffect(() => {
-    const menu = menuRef.current;
-    if (!(menuState && menu)) {
-      setPlaced(null);
-      return;
-    }
-    // offset sizes ignore the zoom-in animation's scale.
-    const width = menu.offsetWidth;
-    const height = menu.offsetHeight;
-    const { x, y } = menuState.position;
-    const room = (size: number, max: number): number =>
-      Math.max(MENU_EDGE_GAP_PX, max - size - MENU_EDGE_GAP_PX);
-    setPlaced({
-      x: Math.min(x, room(width, window.innerWidth)),
-      y:
-        y + height > window.innerHeight - MENU_EDGE_GAP_PX
-          ? Math.min(
-              Math.max(MENU_EDGE_GAP_PX, y - height),
-              room(height, window.innerHeight)
-            )
-          : y,
-    });
-  }, [menuState]);
 
   const handleIoImported = useCallback(
     (workflowId: string) => {
@@ -118,7 +75,6 @@ export function WorkflowContextMenu({
   const handleDeleteNode = useCallback(() => {
     if (menuState?.nodeId) {
       const nodeId = menuState.nodeId;
-      const stillHere = onSameWorkflow();
       onClose();
       openOverlay(ConfirmOverlay, {
         title: "Delete Step",
@@ -127,18 +83,15 @@ export function WorkflowContextMenu({
         confirmLabel: "Delete",
         confirmVariant: "destructive" as const,
         onConfirm: () => {
-          if (stillHere()) {
-            deleteNode(nodeId);
-          }
+          deleteNode(nodeId);
         },
       });
     }
-  }, [menuState, deleteNode, onClose, openOverlay, onSameWorkflow]);
+  }, [menuState, deleteNode, onClose, openOverlay]);
 
   const handleDeleteEdge = useCallback(() => {
     if (menuState?.edgeId) {
       const edgeId = menuState.edgeId;
-      const stillHere = onSameWorkflow();
       onClose();
       openOverlay(ConfirmOverlay, {
         title: "Delete Connection",
@@ -147,13 +100,11 @@ export function WorkflowContextMenu({
         confirmLabel: "Delete",
         confirmVariant: "destructive" as const,
         onConfirm: () => {
-          if (stillHere()) {
-            deleteEdge(edgeId);
-          }
+          deleteEdge(edgeId);
         },
       });
     }
-  }, [menuState, deleteEdge, onClose, openOverlay, onSameWorkflow]);
+  }, [menuState, deleteEdge, onClose, openOverlay]);
 
   const handleAddStep = useCallback(() => {
     if (menuState?.flowPosition) {
@@ -215,14 +166,11 @@ export function WorkflowContextMenu({
       document.addEventListener("mousedown", handleClickOutside);
       document.addEventListener("keydown", handleEscape);
     }, 0);
-    // Placed for the old window size, so it closes rather than sit off screen.
-    window.addEventListener("resize", onClose);
 
     return () => {
       clearTimeout(timeoutId);
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleEscape);
-      window.removeEventListener("resize", onClose);
     };
   }, [menuState, onClose]);
 
@@ -240,11 +188,11 @@ export function WorkflowContextMenu({
       {menuState &&
         createPortal(
           <div
-            className="fade-in-0 zoom-in-95 fixed z-50 min-w-[8rem] animate-in overflow-hidden whitespace-nowrap rounded-md max-w-[calc(100vw-1rem)] border bg-popover p-1 text-popover-foreground shadow-md"
+            className="fade-in-0 zoom-in-95 fixed z-50 min-w-[8rem] animate-in overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
             ref={menuRef}
             style={{
-              left: (placed ?? menuState.position).x,
-              top: (placed ?? menuState.position).y,
+              left: menuState.position.x,
+              top: menuState.position.y,
             }}
           >
             {menuState.type === "node" && (
@@ -325,12 +273,10 @@ function MenuItem({
       )}
       disabled={disabled}
       onClick={onClick}
-      title={label}
       type="button"
     >
       {icon}
-      {/* A long step name truncates instead of widening the menu off screen. */}
-      <span className="min-w-0 truncate">{label}</span>
+      {label}
     </button>
   );
 }

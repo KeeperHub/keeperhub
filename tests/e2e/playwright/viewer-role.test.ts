@@ -1,11 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { expect, test } from "./fixtures";
-import { getDbConnection } from "./utils/connection";
 import {
   addTestOrganization,
+  addTestOrganizationViewer,
   createTestWorkflow,
   deleteTestWorkflow,
-  getUserIdByEmail,
   PERSISTENT_BYSTANDER_EMAIL,
   PERSISTENT_TEST_USER_EMAIL,
   removeTestOrganization,
@@ -30,17 +28,11 @@ test.describe("viewer role", () => {
     });
     workflowId = workflow.id;
 
-    const viewerId = await getUserIdByEmail(PERSISTENT_TEST_USER_EMAIL);
-    const sql = getDbConnection();
-    try {
-      await sql`UPDATE workflows SET organization_id = ${orgId} WHERE id = ${workflowId}`;
-      await sql`
-        INSERT INTO member (id, organization_id, user_id, role, created_at)
-        VALUES (${randomUUID()}, ${orgId}, ${viewerId}, 'viewer', ${new Date()})
-      `;
-    } finally {
-      await sql.end();
-    }
+    await addTestOrganizationViewer(
+      orgId,
+      PERSISTENT_TEST_USER_EMAIL,
+      workflowId
+    );
   });
 
   test.afterAll(async () => {

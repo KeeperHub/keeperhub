@@ -1,17 +1,16 @@
-import { randomUUID } from "node:crypto";
 import type { Locator, Page } from "@playwright/test";
-import { VIEWER_DISABLED_REASON } from "@/lib/organization/role-label";
 import {
-  createActionNode,
-  createWebhookTriggerNode,
-} from "../../fixtures/workflows";
+  READ_ONLY_LABEL,
+  VIEWER_DISABLED_REASON,
+} from "@/lib/organization/role-label";
+import { VIEWER_READ_ONLY_ERROR } from "@/lib/security/viewer-policy";
+import { createWebhookTriggerNode } from "../../fixtures/workflows";
 import { expect, test } from "./fixtures";
-import { getDbConnection } from "./utils/connection";
 import {
   addTestOrganization,
+  addTestOrganizationViewer,
   createTestWorkflow,
   deleteTestWorkflow,
-  getUserIdByEmail,
   PERSISTENT_BYSTANDER_EMAIL,
   PERSISTENT_INVITER_EMAIL,
   PERSISTENT_TEST_USER_EMAIL,
@@ -62,22 +61,6 @@ function card(page: Page): Locator {
 }
 
 const MENU_ITEMS = ["Add Step", "New Workflow from JSON"] as const;
-const LONG_STEP =
-  "Notify the on-call operations team about every failed liquidation";
-// The menu's own gap from the window edges.
-const MENU_GAP = 8;
-
-function menuOf(item: Locator): Locator {
-  return item.locator("..");
-}
-
-function expectInWindow(menu: Box, width: number, height: number): void {
-  expect(menu.x).toBeGreaterThanOrEqual(MENU_GAP - 0.5);
-  expect(menu.y).toBeGreaterThanOrEqual(MENU_GAP - 0.5);
-  expect(right(menu)).toBeLessThanOrEqual(width - MENU_GAP + 0.5);
-  expect(bottom(menu)).toBeLessThanOrEqual(height - MENU_GAP + 0.5);
-}
-
 function menuItem(page: Page, name: string): Locator {
   return page.getByRole("button", { name, exact: true });
 }
@@ -284,7 +267,6 @@ test.describe("Use template bar, signed in", () => {
   let foreignId = "";
   let ownId = "";
   let ownTriggerId = "";
-  let ownLongId = "";
   let copyableId = "";
 
   test.beforeAll(async () => {
@@ -317,20 +299,7 @@ test.describe("Use template bar, signed in", () => {
         edges: [],
       })
     ).id;
-    ownLongId = (
-      await createTestWorkflow(PERSISTENT_TEST_USER_EMAIL, {
-        name: "Use template bar own long step",
-        nodes: [
-          createWebhookTriggerNode(),
-          {
-            ...createActionNode(),
-            data: { ...createActionNode().data, label: LONG_STEP },
-          },
-        ],
-        edges: [],
-      })
-    ).id;
-    ids.push(foreignId, ownId, ownTriggerId, ownLongId, copyableId);
+    ids.push(foreignId, ownId, ownTriggerId, copyableId);
   });
 
   test.afterAll(async () => {
@@ -642,43 +611,6 @@ test.describe("Use template bar, signed in", () => {
       }
     });
   }
-
-  test("the right-click menu stays in the window at the bottom and right edges", async ({
-    page,
-  }) => {
-    for (const [width, height, x, y] of [
-      [1280, 800, 640, 790],
-      [390, HEIGHT, 384, 600],
-    ] as const) {
-      await test.step(`${width}px at ${x},${y}`, async () => {
-        await openOwn(page, width, height, ownTriggerId);
-        const spot = await paneNear(page, x, y);
-        await page.mouse.click(spot.x, spot.y, { button: "right" });
-        const items = MENU_ITEMS.map((name) => menuItem(page, name));
-        await expect(items[1]).toBeVisible();
-        expectInWindow(await box(menuOf(items[0])), width, height);
-        for (const item of items) {
-          expect(await isOnTop(item, { corners: true })).toBe(true);
-          expect(await textFits(item)).toBe(true);
-        }
-        await page.keyboard.press("Escape");
-      });
-    }
-  });
-
-  test("a long step name truncates in its menu, which stays in the window", async ({
-    page,
-  }) => {
-    await openOwn(page, 320, 640, ownLongId);
-    const node = page.getByTestId("action-node-action-1");
-    await expect(node).toBeVisible();
-    await node.click({ button: "right" });
-    const item = menuItem(page, `Delete ${LONG_STEP}`);
-    await expect(item).toBeVisible();
-    await expect(item).toHaveAttribute("title", `Delete ${LONG_STEP}`);
-    expectInWindow(await box(menuOf(item)), 320, 640);
-    expect(await textFits(item.locator("span"))).toBe(false);
-  });
 });
 
 // The signed-in user reads an org as a viewer: it may not copy into it.
@@ -705,17 +637,7 @@ test.describe("Use template bar, org viewer", () => {
         hub: {},
       })
     ).id;
-    const viewerId = await getUserIdByEmail(PERSISTENT_TEST_USER_EMAIL);
-    const sql = getDbConnection();
-    try {
-      await sql`UPDATE workflows SET organization_id = ${orgId} WHERE id = ${inOrgId}`;
-      await sql`
-        INSERT INTO member (id, organization_id, user_id, role, created_at)
-        VALUES (${randomUUID()}, ${orgId}, ${viewerId}, 'viewer', ${new Date()})
-      `;
-    } finally {
-      await sql.end();
-    }
+    await addTestOrganizationViewer(orgId, PERSISTENT_TEST_USER_EMAIL, inOrgId);
   });
 
   // Also moves the shared session back to an org the user is still in.
@@ -740,7 +662,7 @@ test.describe("Use template bar, org viewer", () => {
     await open(page, 390, foreignId);
     await expect(templateButton(page)).toBeDisabled();
     await expect(
-      card(page).getByText("View only", { exact: true })
+      card(page).getByText(READ_ONLY_LABEL, { exact: true })
     ).toBeVisible();
     await open(page, 1280, foreignId);
     await expect(templateButton(page)).toBeDisabled();
@@ -755,9 +677,11 @@ test.describe("Use template bar, org viewer", () => {
       data: {},
     });
     expect(res.status()).toBe(403);
+    // The viewer rule, not the cross-site check, which is a 403 too.
+    expect((await res.json()).code).toBe(VIEWER_READ_ONLY_ERROR.code);
   });
 
-  test("a public workflow in that org: View only badge, no Use template", async ({
+  test("a public workflow in that org: Read only badge, no Use template", async ({
     page,
   }) => {
     for (const width of [390, 1280]) {
