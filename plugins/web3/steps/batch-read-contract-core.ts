@@ -1490,64 +1490,155 @@ function editorArgs(stored: unknown[], fn: ListFunction): unknown[] {
   return reshaped.args;
 }
 
+// At most this many "" in tuple places are tried both ways (2^n readings).
+const MAX_BLANK_CHOICES = 6;
+
+/** One way to read the values: each "" in a tuple's place blank or flat. */
+type Reading = { values: unknown[]; blanked: number[]; call?: string };
+
 /**
  * The editor stores a tuple field left untouched as "", which can also be a
- * flat tuple's blank first member. Read as the tuple left blank only when the
- * flat reading does not line up; when both do and differ, refuse.
+ * flat tuple's blank first member. The flat reading is used when it makes a
+ * valid call, another reading only when it does not; two readings that make
+ * different valid calls are refused.
  */
 function editorReading(stored: unknown[], fn: ListFunction): unknown[] {
-  const blanked = blankTuples(stored, fn);
-  if (!(blanked.first && readsWhole(stored, fn))) {
-    return blanked.values;
+  let end = stored.length;
+  while (end > 0 && stored[end - 1] === "") {
+    end -= 1;
   }
-  if (
-    readsWhole(blanked.values, fn) &&
-    paddedReading(stored, fn) !== paddedReading(blanked.values, fn)
-  ) {
-    const { input, index } = blanked.first;
-    throw new Error(
-      `${SHARED_ARGS_LABEL}: the "" in ${input.name || `arg${index}`}'s place can be it left blank or its first member, and the values after it are read differently. Give ${input.name || `arg${index}`} as an object with its member names, like ${echo(exampleValue(input.type, input.components), MAX_REASON_LENGTH)}.`
+  const readings = readingsOf(stored.slice(0, end), fn);
+  if (readings.length < 2) {
+    return stored;
+  }
+  for (const reading of readings) {
+    reading.call = callData(reading.values, fn);
+  }
+  const [flat] = readings;
+  const base = flat.call ? flat : readings.find((r) => r.call);
+  if (!base) {
+    return fallbackReading(stored, fn);
+  }
+  const others = readings.filter((r) => r.call && r.call !== base.call);
+  if (others.length > 0) {
+    throw ambiguousBlankError(base, others, fn);
+  }
+  return base === flat ? stored : [...base.values, ...stored.slice(end)];
+}
+
+// Every reading, the flat one first. Throws past MAX_BLANK_CHOICES.
+function readingsOf(values: unknown[], fn: ListFunction): Reading[] {
+  const out: Reading[] = [];
+  const walk = (index: number, cursor: number, reading: Reading): void => {
+    const input = fn.inputs[index];
+    if (!input) {
+      out.push(reading);
+      return;
+    }
+    const members = input.type === "tuple" ? (input.components?.length ?? 0) : 0;
+    const value = reading.values[cursor];
+    if (members === 0 || isPlainObject(value)) {
+      walk(index + 1, cursor + 1, reading);
+      return;
+    }
+    walk(index + 1, cursor + members, reading);
+    if (value !== "") {
+      return;
+    }
+    if (reading.blanked.length >= MAX_BLANK_CHOICES) {
+      throw new Error(
+        `${SHARED_ARGS_LABEL}: too many tuples are given as "" to tell how to read them. Give each tuple as an object with its member names.`
+      );
+    }
+    const blank = [...reading.values];
+    blank[cursor] = blankObject(input);
+    walk(index + 1, cursor + 1, {
+      values: blank,
+      blanked: [...reading.blanked, index],
+    });
+  };
+  walk(0, 0, { values, blanked: [] });
+  return out;
+}
+
+// The call data the values make with missing values blank, or undefined when
+// they leave a value over or make no valid call.
+function callData(values: unknown[], fn: ListFunction): string | undefined {
+  try {
+    const { consumed } = reshapeArgsCounted(values, fn);
+    if (consumed < values.length || nestedSlot(values, fn)) {
+      return;
+    }
+    const blanks = new Array<string>(consumed - values.length).fill("");
+    const { args } = reshapeArgsCounted([...values, ...blanks], fn);
+    // Over the size caps is no valid call, found before any encoding.
+    estimateCalldata(args, fn, SHARED_ARGS_LABEL, 0);
+    const shaped = coerceArgsForAbi(args, fn);
+    if (validateListArgs(shaped, fn)) {
+      return;
+    }
+    return ethers.AbiCoder.defaultAbiCoder().encode(
+      fn.inputs.map((input) => ethers.ParamType.from(input)),
+      shaped
     );
+  } catch {
+    return;
   }
-  return stored;
 }
 
-// Every value has a place, as stored or with missing strings at the end blank.
-function readsWhole(values: unknown[], fn: ListFunction): boolean {
-  return (
-    (reshapeArgsCounted(values, fn).consumed === values.length ||
-      linesUp(values, fn, true)) &&
-    !nestedSlot(values, fn)
-  );
-}
-
-// The arguments the values give with every missing value blank, as text.
-function paddedReading(values: unknown[], fn: ListFunction): string {
-  const { consumed } = reshapeArgsCounted(values, fn);
-  const blanks = new Array<string>(Math.max(consumed - values.length, 0));
-  return JSON.stringify(
-    reshapeArgsCounted([...values, ...blanks.fill("")], fn).args
-  );
-}
-
-// Each "" in a tuple's place read as the tuple with every member blank, and
-// the first tuple read that way.
-function blankTuples(
-  values: unknown[],
-  fn: ListFunction
-): { values: unknown[]; first?: { input: AbiParam; index: number } } {
-  const out = [...values];
-  let first: { input: AbiParam; index: number } | undefined;
+// No reading makes a valid call: read as before, so the usual checks name it.
+function fallbackReading(stored: unknown[], fn: ListFunction): unknown[] {
+  if (
+    reshapeArgsCounted(stored, fn).consumed === stored.length &&
+    !nestedSlot(stored, fn)
+  ) {
+    return stored;
+  }
+  const out = [...stored];
   let cursor = 0;
-  for (const [index, input] of fn.inputs.entries()) {
+  for (const input of fn.inputs) {
     const members = input.type === "tuple" ? (input.components?.length ?? 0) : 0;
     if (members > 0 && out[cursor] === "") {
       out[cursor] = blankObject(input);
-      first ??= { input, index };
     }
     cursor += members > 0 && !isPlainObject(out[cursor]) ? members : 1;
   }
-  return { values: out, first };
+  return out;
+}
+
+// Names the tuples read the other way in the readings closest to base.
+function ambiguousBlankError(
+  base: Reading,
+  others: Reading[],
+  fn: ListFunction
+): Error {
+  const flips = others.map((other) =>
+    [...base.blanked, ...other.blanked].filter(
+      (index) => base.blanked.includes(index) !== other.blanked.includes(index)
+    )
+  );
+  const fewest = Math.min(...flips.map((flip) => flip.length));
+  const indexes = [
+    ...new Set(flips.filter((flip) => flip.length === fewest).flat()),
+  ].sort((x, y) => x - y);
+  const names = indexes.map((index) => echo(argName(fn, index)));
+  const first = fn.inputs[indexes[0]];
+  const example = echo(
+    exampleValue(first.type, first.components),
+    MAX_REASON_LENGTH
+  );
+  if (names.length === 1) {
+    return new Error(
+      `${SHARED_ARGS_LABEL}: the "" in ${names[0]}'s place can mean ${names[0]} left blank or its first member given flat, and the two make different calls. Give ${names[0]} as an object with its member names, like ${example}. In the editor, typing in one of its fields does this.`
+    );
+  }
+  return new Error(
+    `${SHARED_ARGS_LABEL}: the "" in the places of ${names.join(", ")} can each mean that tuple left blank or its first member given flat, and these make different calls. Give ${names.join(", ")} as objects with their member names, like ${example} for ${names[0]}. In the editor, typing in one of a tuple's fields does this.`
+  );
+}
+
+function argName(fn: ListFunction, index: number): string {
+  return fn.inputs[index].name || `arg${index}`;
 }
 
 function blankObject(param: AbiParam): Record<string, unknown> {

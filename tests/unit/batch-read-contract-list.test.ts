@@ -4226,8 +4226,8 @@ describe("batch-read-contract - sixth review", () => {
       str("z"),
     ]);
     // x blank with m = 8, or x = ("", "8") with m = 9: both are valid calls.
-    const [, shared] = await both(abi, [7, "", 8, "9"]);
-    expect(shared).toMatch(/^Function Arguments: the "" in x's place can be/);
+    const [, shared] = await both(abi, ["7", "", "8", "9"]);
+    expect(shared).toMatch(/^Function Arguments: the "" in x's place can mean/);
   });
 
   it("gives the count for an array that lands on a string while a value is missing", async () => {
@@ -4551,7 +4551,7 @@ describe("batch-read-contract - seventh review", () => {
     type: string;
     components: { name: string; type: string }[];
   } => ({ name, type: "tuple", components });
-  const AMBIGUOUS = /can be it left blank or its first member/;
+  const AMBIGUOUS = /left blank or its first member given flat/;
 
   // The arguments the one call sent, or undefined when nothing was sent.
   const sent = async (
@@ -4593,7 +4593,7 @@ describe("batch-read-contract - seventh review", () => {
     ]);
     const { error } = await sent(abi, [[], "", " [x] ", "[1]", "hi"]);
     expect(error).toBe(
-      'Function Arguments: the "" in n1\'s place can be it left blank or its first member, and the values after it are read differently. Give n1 as an object with its member names, like {"n2": "...", "n3": "...", "n4": "...", "n5": "..."}.'
+      'Function Arguments: the "" in n1\'s place can mean n1 left blank or its first member given flat, and the two make different calls. Give n1 as an object with its member names, like {"n2": "...", "n3": "...", "n4": "...", "n5": "..."}. In the editor, typing in one of its fields does this.'
     );
     // Given as an object, it is sent as written.
     expect(
@@ -4608,7 +4608,11 @@ describe("batch-read-contract - seventh review", () => {
       typed("m", "uint256"),
       str("z"),
     ]);
-    expect((await sent(abi, [7, "", 8, "9"])).error).toMatch(AMBIGUOUS);
+    expect((await sent(abi, ["7", "", "8", "9"])).error).toMatch(AMBIGUOUS);
+    // A number is no string, so x.b = 8 makes no valid call: only blank fits.
+    expect(await sent(abi, [7, "", 8, "9"])).toEqual({
+      args: [BigInt(7), ["", ""], BigInt(8), "9"],
+    });
     expect(await sent(abi, [7, { a: "", b: "" }, 8, "9"])).toEqual({
       args: [BigInt(7), ["", ""], BigInt(8), "9"],
     });
@@ -4633,116 +4637,335 @@ describe("batch-read-contract - seventh review", () => {
     expect(error).not.toMatch(AMBIGUOUS);
     expect(error).toMatch(/^Function Arguments: t\.b/);
   });
+});
 
-  // Correct flat entries whose tuple starts with a blank string, with the
-  // untouched strings at the end left out: each is sent as read flat, or
-  // refused as ambiguous, never sent any other way.
-  it("sends a flat tuple with a blank first member as given, or refuses, over many shapes", async () => {
-    const pool: { name: string; type: string }[] = [
-      typed("u", "uint256"),
-      str("s"),
-      typed("ss", "string[]"),
-      typed("us", "uint256[]"),
-      typed("ok", "bool"),
-    ];
-    const tuples = [
-      [str("a"), str("b")],
-      [str("a"), typed("b", "uint256")],
-      [str("a"), str("b"), str("c")],
-      [str("a")],
-    ];
-    const sample = (type: string, k: number): unknown => {
-      switch (type) {
-        case "uint256":
-          return String(k + 1);
-        case "string":
-          return `v${k}`;
-        case "string[]":
-          return [`w${k}`];
-        case "uint256[]":
-          return [String(k + 2)];
-        default:
-          return true;
-      }
+describe("batch-read-contract - seventh review, readings by call", () => {
+  type Param = { name: string; type: string; components?: Param[] };
+  const t = (name: string, components: Param[]): Param => ({
+    name,
+    type: "tuple",
+    components,
+  });
+  const p = (name: string, type = "string"): Param => ({ name, type });
+  const abiWith = (inputs: Param[]): string =>
+    JSON.stringify([
+      {
+        name: "f",
+        type: "function",
+        stateMutability: "view",
+        inputs,
+        outputs: [{ name: "", type: "uint256" }],
+      },
+    ]);
+  const AMBIGUOUS = /left blank or its first member given flat/;
+  const ADDRESS = `0x${"0".repeat(39)}1`;
+
+  // The arguments the one call sent, or the error.
+  const sent = async (
+    inputs: Param[],
+    functionArgs: unknown
+  ): Promise<{ args?: unknown[]; error?: string }> => {
+    mockStaticCall.mockClear();
+    const abi = abiWith(inputs);
+    const outcome = await run({
+      ...addressList([CONTRACT], {
+        functionArgs:
+          typeof functionArgs === "string" || !Array.isArray(functionArgs)
+            ? (functionArgs as string)
+            : (functionArgs as never),
+      }),
+      abiFunction: "f",
+      abi,
+    });
+    if (!outcome.success) {
+      return { error: outcome.error };
+    }
+    const [call] = mockStaticCall.mock.calls[0][0] as Call[];
+    return {
+      args: new ethers.Interface(abi)
+        .decodeFunctionData("f", call.callData)
+        .toArray(true),
     };
-    const decoded = (type: string, value: unknown): unknown => {
+  };
+  const json = (value: unknown[]): string => JSON.stringify(value);
+
+  it("sends the flat reading when a blank tuple cannot be sent", async () => {
+    const ts = [t("t", [p("a"), p("b", "uint256")]), p("s")];
+    const expected = { args: [["", BigInt(5)], ""] };
+    expect(await sent(ts, json(["", "5"]))).toEqual(expected);
+    expect(await sent(ts, json(["", "5", ""]))).toEqual(expected);
+    expect(
+      await sent(
+        [t("t", [p("a"), p("b", "address")]), p("s")],
+        json(["", ADDRESS])
+      )
+    ).toEqual({ args: [["", ADDRESS], ""] });
+    expect(
+      await sent(
+        [t("t", [p("a"), p("b", "uint256")]), p("n", "uint256"), p("s")],
+        json(["", "5", "6"])
+      )
+    ).toEqual({ args: [["", BigInt(5)], BigInt(6), ""] });
+  });
+
+  it("sends the blank reading when the flat one cannot be sent", async () => {
+    const ts = [t("t", [p("a"), p("b")]), p("p", "uint256"), p("s")];
+    expect(await sent(ts, json(["", "1", "y"]))).toEqual({
+      args: [["", ""], BigInt(1), "y"],
+    });
+  });
+
+  it("reads extra blanks at the end the same as none", async () => {
+    const lone = [t("t", [p("a"), p("b", "uint256")])];
+    expect(await sent(lone, json(["", "2", ""]))).toEqual({
+      args: [["", BigInt(2)]],
+    });
+    const pair = [t("t", [p("a"), p("b")]), p("s")];
+    for (const entry of [
+      ["", "x"],
+      ["", "x", ""],
+      ["", "x", "", ""],
+    ]) {
+      expect
+        .soft((await sent(pair, json(entry))).error, json(entry))
+        .toMatch(AMBIGUOUS);
+    }
+  });
+
+  it("refuses an untouched string tuple before a filled field, with an editor hint", async () => {
+    const { error } = await sent(
+      [t("meta", [p("name"), p("symbol")]), p("key")],
+      json(["", "hi"])
+    );
+    expect(error).toBe(
+      'Function Arguments: the "" in meta\'s place can mean meta left blank or its first member given flat, and the two make different calls. Give meta as an object with its member names, like {"name": "...", "symbol": "..."}. In the editor, typing in one of its fields does this.'
+    );
+    expect(
+      await sent(
+        [t("meta", [p("name"), p("symbol")]), p("key")],
+        json([{ name: "", symbol: "" }, "hi"])
+      )
+    ).toEqual({ args: [["", ""], "hi"] });
+  });
+
+  it("gives the usual message when no reading can be sent", async () => {
+    const { error } = await sent(
+      [t("t", [p("a", "address"), p("b")]), p("s")],
+      json(["", "hi"])
+    );
+    expect(error).not.toMatch(AMBIGUOUS);
+    expect(error).toMatch(/^Function Arguments: t\.a/);
+  });
+
+  it("names only the tuple whose reading changes the call", async () => {
+    const { error } = await sent(
+      [t("p", [p("a")]), t("q", [p("b"), p("c")]), p("s")],
+      json(["", "", "x"])
+    );
+    expect(error).toMatch(/^Function Arguments: the "" in q's place/);
+  });
+
+  it("tries each tuple blank or flat on its own", async () => {
+    // x blank with y = ("", "q") also fits: refused, not sent flat.
+    expect(
+      (
+        await sent(
+          [t("x", [p("a"), p("b")]), t("y", [p("c"), p("d")])],
+          json(["", "", "q"])
+        )
+      ).error
+    ).toMatch(AMBIGUOUS);
+    // Only x blank with y flat fits.
+    expect(
+      await sent(
+        [t("x", [p("a"), p("b")]), t("y", [p("c"), p("d", "uint256")])],
+        json(["", "", "5"])
+      )
+    ).toEqual({
+      args: [
+        ["", ""],
+        ["", BigInt(5)],
+      ],
+    });
+    expect(
+      await sent(
+        [
+          t("t1", [p("m0")]),
+          t("t5", [p("m2"), p("m3"), p("m4")]),
+          t("t9", [p("m6"), p("m7", "string[]"), p("m8")]),
+        ],
+        json(["", "", "", ["w"]])
+      )
+    ).toEqual({ args: [[""], ["", "", ""], ["", ["w"], ""]] });
+  });
+
+  it("refuses, not guesses, past six tuples given as an empty value", async () => {
+    const inputs = [
+      ...Array.from({ length: 7 }, (_, i) => t(`t${i}`, [p("a"), p("b")])),
+      p("s"),
+    ];
+    const { error } = await sent(inputs, json([...new Array(7).fill(""), "x"]));
+    expect(error).toBe(
+      'Function Arguments: too many tuples are given as "" to tell how to read them. Give each tuple as an object with its member names.'
+    );
+  });
+
+  it("takes a bigint and a deeply nested array without a raw error", async () => {
+    const ts = [p("n", "uint256"), t("t", [p("a"), p("b")]), p("s")];
+    expect(await sent(ts, [BigInt(5), ""])).toEqual({
+      args: [BigInt(5), ["", ""], ""],
+    });
+    const deep = `${"[".repeat(6000)}${"]".repeat(6000)}`;
+    const { error } = await sent(
+      [p("d", "uint256[]"), t("t", [p("a"), p("b")]), p("s")],
+      `[${deep}, "", "y"]`
+    );
+    expect(error).toMatch(/^Function Arguments/);
+    expect(error).not.toMatch(/stack|serialize/i);
+  });
+
+  it("stays fast with a big array before a tuple given as an empty value", async () => {
+    const ts = [p("ids", "uint256[]"), t("t", [p("a"), p("b")]), p("s")];
+    const ids = Array.from({ length: 50_000 }, () => "1");
+    const started = Date.now();
+    await sent(ts, json([ids, "", "x"]));
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  // Oracle: list every reading (each "" in a tuple's place blank or flat,
+  // missing values blank), encode each with ethers, and expect the flat call
+  // when it encodes and no other call differs, the one call when only other
+  // readings encode, a refusal when two differ, and an error when none encode.
+  it("matches an oracle of every reading over many random shapes", async () => {
+    let seed = 7;
+    const rnd = (): number => {
+      seed = (Math.imul(seed, 1_103_515_245) + 12_345) & 0x7f_ff_ff_ff;
+      return seed / 0x7f_ff_ff_ff;
+    };
+    const pick = <X>(xs: X[]): X => xs[Math.floor(rnd() * xs.length)];
+    const LEAF = ["string", "string", "string", "uint256", "string[]"];
+    const sample = (type: string): unknown => {
+      const r = rnd();
       if (type === "uint256") {
-        return BigInt(value as string);
+        return String(Math.floor(r * 3));
       }
-      if (type === "uint256[]") {
-        return (value as string[]).map((v) => BigInt(v));
+      if (type === "string[]") {
+        return r < 0.3 ? [] : ["w"];
       }
-      return value;
+      return r < 0.25 ? "" : pick(["x", "[1]", "{}"]);
     };
-    let flat = 0;
-    let refused = 0;
-    for (const before of [[], ...pool.map((p) => [p])]) {
-      for (const components of tuples) {
-        for (const after of [
-          [],
-          ...pool.map((p) => [p]),
-          ...pool.map((p) => [p, str("z")]),
-          [str("y"), tupleOf("q", [str("q1")])],
-        ]) {
-          const inputs = [
-            ...before,
-            tupleOf(
-              "t",
-              components.map((c) => ({ ...c }))
-            ),
-            ...after,
-          ];
-          // The last blankLast inputs, plain strings, are left blank too.
-          for (const blankLast of [0, 1, 2]) {
-            const tail = inputs.slice(inputs.length - blankLast);
-            if (
-              blankLast > after.length ||
-              tail.some((input) => input.type !== "string")
-            ) {
-              continue;
-            }
-            const abi = abiWith(inputs);
-            const values: unknown[] = [];
-            const expected: unknown[] = [];
-            let k = 0;
-            for (const [index, input] of inputs.entries()) {
-              const members: { name: string; type: string }[] =
-                "components" in input
-                  ? (input.components as { name: string; type: string }[])
-                  : [input];
-              const blank = index >= inputs.length - blankLast;
-              const decodedMembers = members.map((member, m) => {
-                const value =
-                  blank || (input.name === "t" && m === 0)
-                    ? ""
-                    : sample(member.type, k);
-                k += 1;
-                values.push(value);
-                return decoded(member.type, value);
-              });
-              expected.push(
-                "components" in input ? decodedMembers : decodedMembers[0]
-              );
-            }
-            // The editor leaves untouched strings at the end out.
-            let end = values.length;
-            while (end > 0 && values[end - 1] === "") {
-              end -= 1;
-            }
-            const label = `${JSON.stringify(inputs)} ${JSON.stringify(values)}`;
-            const outcome = await sent(abi, values.slice(0, end));
-            if (outcome.error) {
-              refused += 1;
-              expect.soft(outcome.error, label).toMatch(AMBIGUOUS);
-            } else {
-              flat += 1;
-              expect.soft(outcome.args, label).toEqual(expected);
-            }
+    const readings = (s: unknown[], inputs: Param[]): unknown[][] => {
+      const out: unknown[][] = [];
+      const at = (k: number): unknown => (k < s.length ? s[k] : "");
+      const walk = (i: number, cur: number, args: unknown[]): void => {
+        if (i === inputs.length) {
+          if (s.slice(cur).every((v) => v === "")) {
+            out.push(args);
           }
+          return;
+        }
+        const { components } = inputs[i];
+        if (!components) {
+          walk(i + 1, cur + 1, [...args, at(cur)]);
+          return;
+        }
+        const v = s[cur];
+        if (typeof v === "object" && v !== null && !Array.isArray(v)) {
+          const o = v as Record<string, unknown>;
+          walk(i + 1, cur + 1, [
+            ...args,
+            components.map((c) => o[c.name] ?? ""),
+          ]);
+          return;
+        }
+        walk(i + 1, cur + components.length, [
+          ...args,
+          components.map((_, k) => at(cur + k)),
+        ]);
+        if (v === "") {
+          walk(i + 1, cur + 1, [...args, components.map(() => "")]);
+        }
+      };
+      walk(0, 0, []);
+      return out;
+    };
+    const seen = new Set<string>();
+    const wrong: string[] = [];
+    const tally = { sent: 0, refused: 0, failed: 0 };
+    while (seen.size < 3000) {
+      const inputs: Param[] = [];
+      let id = 0;
+      for (let i = 0, n = 1 + Math.floor(rnd() * 4); i < n; i++) {
+        if (rnd() < 0.5) {
+          const members = Array.from(
+            { length: 1 + Math.floor(rnd() * 3) },
+            () => p(`m${id++}`, pick(LEAF))
+          );
+          inputs.push(t(`t${id++}`, members));
+        } else {
+          inputs.push(p(`p${id++}`, pick(LEAF)));
         }
       }
+      const stored: unknown[] = [];
+      for (const input of inputs) {
+        const r = rnd();
+        if (!input.components) {
+          stored.push(sample(input.type));
+        } else if (r < 0.4) {
+          stored.push("");
+        } else if (r < 0.5) {
+          stored.push(
+            Object.fromEntries(
+              input.components.map((c) => [c.name, sample(c.type)])
+            )
+          );
+        } else {
+          stored.push(...input.components.map((c) => sample(c.type)));
+        }
+      }
+      const tail = Math.floor(rnd() * 3);
+      let end = stored.length;
+      while (end > 0 && stored[end - 1] === "") {
+        end -= 1;
+      }
+      const entry = [...stored.slice(0, end), ...new Array(tail).fill("")];
+      const key = json([inputs, entry]);
+      if (!entry.includes("") || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      const iface = new ethers.Interface(abiWith(inputs));
+      const encode = (args: unknown[]): string | undefined => {
+        try {
+          return iface.encodeFunctionData("f", args);
+        } catch {
+          return;
+        }
+      };
+      const calls = readings(entry, inputs).map(encode);
+      const [flat] = calls;
+      const base = flat ?? calls.find(Boolean);
+      const differs = calls.some((call) => call && call !== base);
+      const outcome = await sent(inputs, json(entry));
+      const actual = outcome.args ? encode(outcome.args) : undefined;
+      let ok: boolean;
+      if (base && differs) {
+        ok = AMBIGUOUS.test(outcome.error ?? "");
+        tally.refused += 1;
+      } else if (base) {
+        ok = actual === base;
+        tally.sent += 1;
+      } else {
+        ok = outcome.error !== undefined && !AMBIGUOUS.test(outcome.error);
+        tally.failed += 1;
+      }
+      if (!ok && wrong.length < 5) {
+        wrong.push(`${key} -> ${outcome.error ?? json(outcome.args ?? [])}`);
+      }
     }
-    expect(flat).toBeGreaterThan(20);
-    expect(refused).toBeGreaterThan(5);
-  });
+    expect(wrong).toEqual([]);
+    expect(tally.sent).toBeGreaterThan(1500);
+    expect(tally.refused).toBeGreaterThan(40);
+    expect(tally.failed).toBeGreaterThan(500);
+  }, 120_000);
 });
