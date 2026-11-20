@@ -3699,7 +3699,7 @@ describe("batch-read-contract - fifth review", () => {
         })
       )
       .toBe(
-        "Function Arguments: s.t: expected object for tuple. Check the arguments for f (s, u)."
+        "Function Arguments has 3 values for f (s, u), a number it takes when tuples are given flat, but not in the right places. The same arguments go to every contract in the list."
       );
     // With s.t given its object, u given as an array is named.
     expect
@@ -3722,9 +3722,9 @@ describe("batch-read-contract - fifth review", () => {
       ]),
       tupleOf("s", [uint("a"), { name: "b", type: "uint256[]" }]),
     ]);
-    // t.i holds 1, so s, given flat, is not named.
+    // t.i holds 1, so s, given flat, is not named; t's place holds the 1.
     expect(await failure({ ...argsList([[1, 2, [1, 2]]], "f"), abi })).toBe(
-      'Argument Sets entry 1 has 3 values for f (t, s), a number it takes when tuples are given flat, but not in the right places. Make each entry an array like [{"i": [{...}, {...}], "q": 1}, {"a": 1, "b": [1, 1]}].'
+      'Argument Sets entry 1: t must be an object with its member names, like {"i": [{...}, {...}], "q": 1}, got 1. Or give its 2 members flat in its place.'
     );
   });
 
@@ -3873,5 +3873,150 @@ describe("batch-read-contract - fifth review", () => {
       ...argsList(`[[${deep}]]`),
     });
     expect(message).not.toContain("Maximum call stack");
+  });
+
+  it("names a tuple holding a plain value before a tuple given flat, in both fields", async () => {
+    const abi = abiWith("f", [
+      tupleOf("t", [uint("a"), uint("b")]),
+      tupleOf("s", [{ name: "c", type: "uint256[]" }, uint("d")]),
+    ]);
+    const named =
+      't must be an object with its member names, like {"a": 1, "b": 1}, got 1. Or give its 2 members flat in its place.';
+    for (const entry of [
+      [1, [1], 2],
+      [1, "[1]", 2],
+    ]) {
+      const [args, shared] = await both(abi, entry);
+      expect
+        .soft(args, JSON.stringify(entry))
+        .toBe(`Argument Sets entry 1: ${named}`);
+      expect
+        .soft(shared, JSON.stringify(entry))
+        .toBe(`Function Arguments: ${named}`);
+    }
+  });
+
+  it("does not take array text as a plain value", async () => {
+    const abi = abiWith("f", [
+      tupleOf("t", [uint("a"), uint("b")]),
+      { name: "xs", type: "uint256[]" },
+    ]);
+    const named =
+      't must be an object with its member names, like {"a": 1, "b": 1}, got 1. Or give its 2 members flat in its place.';
+    const [args, shared] = await both(abi, [1, "[1,2]"]);
+    expect.soft(args).toBe(`Argument Sets entry 1: ${named}`);
+    expect.soft(shared).toBe(`Function Arguments: ${named}`);
+  });
+
+  it("leaves text that is not JSON to the member it sits on", async () => {
+    const abi = abiWith("f", [tupleOf("t", [uint("a"), uint("b")]), uint("x")]);
+    const [, shared] = await both(abi, ["[1", "3", ""]);
+    expect(shared).not.toContain("not as text");
+  });
+
+  it("gives the count, not a padded member message, when a short entry does not line up", async () => {
+    const abi = abiWith("f", [
+      tupleOf("t", [tupleOf("i", [uint("p")]), uint("q")]),
+      uint("x"),
+      uint("y"),
+    ]);
+    const [, shared] = await both(abi, ["5", [1], ""]);
+    expect(shared).not.toContain("expected object for tuple");
+  });
+
+  it("ends a blank tuple's message with its own field's next step", async () => {
+    const abi = abiWith("f", [nestedT, uint("x")]);
+    const [args] = await both(abi, ["", 5]);
+    expect(args).toBe(
+      'Argument Sets entry 1: t cannot be empty. Give it as an object with its member names, like {"i": {"p": 1}}.'
+    );
+  });
+
+  // Function Arguments reads values missing at the end as inputs left blank;
+  // Argument Sets does not. Each pair pins both fields on one entry.
+  it("pins both fields on line-up edge cases", async () => {
+    const arr = (name: string): { name: string; type: string } => ({
+      name,
+      type: "uint256[]",
+    });
+    const nestedNamed =
+      't must be an object with its member names, like {"i": {"p": 1}}, got 5.';
+    const flatNamed =
+      't must be an object with its member names, like {"a": [1, 1], "b": 1}, got 2. Or give its 2 members flat in its place.';
+    const cases: [string, unknown[], string, string][] = [
+      // An array on plain x does not line up, so t is not named.
+      [
+        abiWith("f", [nestedT, uint("x")]),
+        [5, [1, 2]],
+        'Argument Sets entry 1 has 2 values for f (t, x), the right number, but not in the right places. Make each entry an array like [{"i": {"p": 1}}, 1].',
+        "Function Arguments has 2 values for f (t, x), the right number, but not in the right places. The same arguments go to every contract in the list.",
+      ],
+      [
+        abiWith("f", [
+          { name: "o", type: "string" },
+          tupleOf("s", [uint("a"), arr("b")]),
+        ]),
+        [{ a: 1 }, 2],
+        'Argument Sets entry 1 has 2 values for f (o, s), which takes 2 when s is an object, or 3 when s is given flat as its 2 members. Make each entry an array like ["...", {"a": 1, "b": [1, 1]}].',
+        'Function Arguments: o must be a value of type string, got {"a":1}. Only a tuple takes an object.',
+      ],
+      [
+        abiWith("f", [
+          uint("x"),
+          tupleOf("t", [arr("a"), uint("b")]),
+          uint("y"),
+        ]),
+        [1, 2],
+        'Argument Sets entry 1 has 2 values, but f takes 3 (x, t, y). Make each entry an array like [1, {"a": [1, 1], "b": 1}, 1].',
+        `Function Arguments: ${flatNamed}`,
+      ],
+      [
+        abiWith("f", [
+          uint("x"),
+          tupleOf("t", [arr("a"), uint("b")]),
+          tupleOf("u", [arr("a"), uint("b")]),
+        ]),
+        [1, 2],
+        'Argument Sets entry 1 has 2 values, but f takes 3 (x, t, u). Make each entry an array like [1, {"a": [1, 1], "b": 1}, {"a": [1, 1], "b": 1}].',
+        `Function Arguments: ${flatNamed}`,
+      ],
+      [
+        abiWith("f", [nestedT]),
+        [' {"i": {"p": 1}}'],
+        'Argument Sets entry 1: give t as an object with its member names, like {"i": {"p": 1}}, not as text.',
+        'Function Arguments: give t as an object with its member names, like {"i": {"p": 1}}, not as text.',
+      ],
+      [
+        abiWith("f", [tupleOf("t", [uint("a"), uint("q")]), uint("x")]),
+        ['\n{"a":1,"q":2}', 3],
+        'Argument Sets entry 1: give t as an object with its member names, like {"a": 1, "q": 1}, not as text.',
+        'Function Arguments: give t as an object with its member names, like {"a": 1, "q": 1}, not as text.',
+      ],
+      [
+        abiWith("f", [
+          nestedT,
+          tupleOf("s", [uint("a"), uint("b"), uint("c")]),
+          uint("y"),
+        ]),
+        [5, 1, 2, 3],
+        'Argument Sets entry 1 has 4 values for f (t, s, y), which takes 3 when s is an object, or 5 when s is given flat as its 3 members. Make each entry an array like [{"i": {"p": 1}}, {"a": 1, "b": 1, "c": 1}, 1].',
+        `Function Arguments: ${nestedNamed}`,
+      ],
+      [
+        abiWith("f", [
+          nestedT,
+          tupleOf("s", [uint("a"), uint("b")]),
+          uint("y"),
+        ]),
+        [5, 1, 2],
+        'Argument Sets entry 1 has 3 values for f (t, s, y), which takes 3 when s is an object, or 4 when s is given flat as its 2 members. Make each entry an array like [{"i": {"p": 1}}, {"a": 1, "b": 1}, 1].',
+        `Function Arguments: ${nestedNamed}`,
+      ],
+    ];
+    for (const [abi, entry, args, shared] of cases) {
+      const [gotArgs, gotShared] = await both(abi, entry);
+      expect.soft(gotArgs, JSON.stringify(entry)).toBe(args);
+      expect.soft(gotShared, JSON.stringify(entry)).toBe(shared);
+    }
   });
 });

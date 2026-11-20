@@ -705,7 +705,8 @@ type FlatTuple = { label: string; members: number };
 
 // A value can sit in an input's or member's place: a tuple takes its object
 // or the whole tuple as text or an array, an array an array or JSON array
-// text, and any other type a plain value (no object, no array).
+// text, a string any value but an object or array, and any other type a plain
+// value (no object or array, as such or as JSON text).
 function fitsPlace(value: unknown, param: AbiParam): boolean {
   if (param.type === "tuple") {
     return isPlainObject(value)
@@ -715,7 +716,10 @@ function fitsPlace(value: unknown, param: AbiParam): boolean {
   if (param.type.endsWith("]")) {
     return Array.isArray(value) || containerText(value) === "array";
   }
-  return !(isPlainObject(value) || Array.isArray(value));
+  if (isPlainObject(value) || Array.isArray(value)) {
+    return false;
+  }
+  return param.type === "string" || containerText(value) === undefined;
 }
 
 // A tuple's members, read flat from start, can hold the values there.
@@ -941,6 +945,15 @@ function containerText(value: unknown): "object" | "array" | undefined {
   return first === "[" ? "array" : undefined;
 }
 
+function parsesAsJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isPlainObject(value: unknown): boolean {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -978,7 +991,11 @@ function positionalTupleError(
       cursor += 1;
       continue;
     }
-    if (isWholeTupleShape(value, components[0])) {
+    // Text that is not JSON is a member's bad value, not the whole tuple.
+    const whole =
+      isWholeTupleShape(value, components[0]) &&
+      (typeof value !== "string" || parsesAsJson(value));
+    if (whole) {
       if (!linesUpFixed(args, fn, cursor, blankTail)) {
         return;
       }
@@ -1002,13 +1019,40 @@ function tupleSlotError(
   blankTail = false
 ): Error | undefined {
   // With blankTail, inputs missing at the end are blanks, not slots.
-  if (
-    blankTail
-      ? entry.length > fn.inputs.length
-      : entry.length !== fn.inputs.length
-  ) {
+  const oneEach = blankTail
+    ? entry.length <= fn.inputs.length
+    : entry.length === fn.inputs.length;
+  const slot = oneEach
+    ? slotByIndex(entry, fn)
+    : soleTupleSlot(entry, fn, blankTail);
+  if (!slot) {
     return;
   }
+  const { input, index, place } = slot;
+  const components = input.components ?? [];
+  const members = components.length;
+  // Read flat from start, each member's value fits its place. Values after it
+  // are not checked: a value missing there shifts them.
+  const fits = (start: number): boolean =>
+    start >= 0 &&
+    (blankTail || start + members <= entry.length) &&
+    components.every(
+      (member, k) =>
+        start + k >= entry.length || fitsPlace(entry[start + k], member)
+    );
+  if (canGoFlat(input) && components.some((_, k) => fits(place - k))) {
+    return;
+  }
+  if (!linesUpFixed(entry, fn, place, blankTail)) {
+    return;
+  }
+  return slotError(at, input, index, entry[place]);
+}
+
+type TupleSlot = { input: AbiParam; index: number; place: number };
+
+// One value per input: the only tuple not holding an object.
+function slotByIndex(entry: unknown[], fn: ListFunction): TupleSlot | undefined {
   const slots = fn.inputs.flatMap((input, index) =>
     index < entry.length &&
     input.type === "tuple" &&
@@ -1021,26 +1065,50 @@ function tupleSlotError(
     return;
   }
   const index = slots[0];
-  const input = fn.inputs[index];
-  const components = input.components ?? [];
-  const members = components.length;
-  // Read flat from start, each member's value fits its place. Values after it
-  // are not checked: a value missing there shifts them.
-  const fits = (start: number): boolean =>
-    start >= 0 &&
-    (blankTail || start + members <= entry.length) &&
-    components.every(
-      (member, k) =>
-        start + k >= entry.length || fitsPlace(entry[start + k], member)
-    );
-  const flat = canGoFlat(input);
-  if (flat && components.some((_, k) => fits(index - k))) {
+  return { input: fn.inputs[index], index, place: index };
+}
+
+// Any other length: the one place that, given an object, lines the entry up,
+// when a tuple takes it there. Two such places, at a tuple or inside one,
+// are ambiguous.
+function soleTupleSlot(
+  entry: unknown[],
+  fn: ListFunction,
+  blankTail: boolean
+): TupleSlot | undefined {
+  const width = fn.inputs.reduce(
+    (total, input) =>
+      total + (canGoFlat(input) ? (input.components?.length ?? 1) : 1),
+    0
+  );
+  // No reading of the inputs takes this many values.
+  if (entry.length > width) {
     return;
   }
-  if (!linesUpFixed(entry, fn, index, blankTail)) {
-    return;
+  let found: TupleSlot | undefined;
+  let hits = 0;
+  for (const [place, value] of entry.entries()) {
+    if (isPlainObject(value)) {
+      continue;
+    }
+    const fixed = [...entry];
+    fixed[place] = {};
+    const starts = lineUpStarts(fixed, fn, blankTail);
+    if (!starts) {
+      continue;
+    }
+    if (hits > 0) {
+      return;
+    }
+    hits += 1;
+    const index = starts.indexOf(place);
+    const input = fn.inputs[index];
+    found =
+      input?.type === "tuple" && input.components?.length
+        ? { input, index, place }
+        : undefined;
   }
-  return slotError(at, input, index, entry[index]);
+  return found;
 }
 
 /** A tuple holding a plain value, named; the flat line only where it can go flat. */
@@ -1052,17 +1120,23 @@ function slotError(
 ): Error {
   const name = input.name || `arg${index}`;
   // The editor stores an input it has not touched as "".
+  const example = echo(
+    exampleValue(input.type, input.components),
+    MAX_REASON_LENGTH
+  );
   if (value === "") {
-    return new Error(
-      `${at}: ${name} cannot be empty. Fill in every argument; only a string may be left blank.`
-    );
+    const next =
+      at === SHARED_ARGS_LABEL
+        ? "Fill in every argument; only a string may be left blank."
+        : `Give it as an object with its member names, like ${example}.`;
+    return new Error(`${at}: ${name} cannot be empty. ${next}`);
   }
   const members = input.components?.length ?? 0;
   const orFlat = canGoFlat(input)
     ? ` Or give its ${count(members)} members flat in its place.`
     : "";
   return new Error(
-    `${at}: ${name} must be an object with its member names, like ${echo(exampleValue(input.type, input.components), MAX_REASON_LENGTH)}, got ${showValue(value)}.${orFlat}`
+    `${at}: ${name} must be an object with its member names, like ${example}, got ${showValue(value)}.${orFlat}`
   );
 }
 
@@ -1081,33 +1155,46 @@ function takesOneValue(value: unknown, input: AbiParam): boolean {
 // (one value when takesOneValue), no plain input holds an object, and nothing
 // is left over. With blankTail, values missing at the end are trimmed blanks.
 function linesUp(entry: unknown[], fn: ListFunction, blankTail = false): boolean {
+  return lineUpStarts(entry, fn, blankTail) !== undefined;
+}
+
+// Where each input starts when the entry lines up, or undefined when it does
+// not. Inputs left blank at the end start past it.
+function lineUpStarts(
+  entry: unknown[],
+  fn: ListFunction,
+  blankTail = false
+): number[] | undefined {
+  const starts: number[] = [];
   let cursor = 0;
   for (const input of fn.inputs) {
+    starts.push(cursor);
     if (blankTail && cursor >= entry.length) {
-      return true;
+      return starts;
     }
     const value = entry[cursor];
     const members = input.type === "tuple" ? (input.components?.length ?? 0) : 0;
     if (members > 0 && isPlainObject(value) && !objectFits(value, input)) {
-      return false;
+      return;
     }
     if (members > 0 && takesOneValue(value, input)) {
       if (cursor >= entry.length) {
-        return false;
+        return;
       }
       cursor += 1;
     } else if (members > 0) {
       if (!membersFit(entry, input, cursor)) {
-        return false;
+        return;
       }
       cursor += members;
     } else if (cursor >= entry.length || !fitsPlace(value, input)) {
-      return false;
+      return;
     } else {
       cursor += 1;
     }
   }
-  return blankTail ? cursor >= entry.length : cursor === entry.length;
+  const fits = blankTail ? cursor >= entry.length : cursor === entry.length;
+  return fits ? starts : undefined;
 }
 
 // An object can be this tuple's: empty, or sharing a member name with it.
@@ -1306,8 +1393,13 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
       throw named;
     }
   }
-  // Too few values are blanks, padded and named by the checks below.
-  if (offShape && given.length >= consumed) {
+  // Too few values are blanks, padded and named by the checks below, but only
+  // when the values given line up; otherwise padding would shift them.
+  const padOk =
+    given.length < consumed &&
+    !nestedSlot(given, fn) &&
+    linesUp(given, fn, true);
+  if (offShape && !padOk) {
     throw countMismatch(
       SHARED_ARGS_LABEL,
       given,
