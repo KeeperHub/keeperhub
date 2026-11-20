@@ -10,6 +10,7 @@ import {
 import {
   type Box,
   dismissPhoneOverlays,
+  horizontalOverflow,
   isOnTop,
   overlaps,
   box as sharedBox,
@@ -88,25 +89,6 @@ async function atWidth(
   });
 }
 
-// Every corner (3px in, past the rounding, which hit testing follows) and the
-// centre of the element are drawn on top.
-async function whollyOnTop(locator: Locator): Promise<boolean> {
-  return await locator.evaluate((element) => {
-    const r = element.getBoundingClientRect();
-    const points = [
-      [r.left + 3, r.top + 3],
-      [r.right - 3, r.top + 3],
-      [r.left + 3, r.bottom - 3],
-      [r.right - 3, r.bottom - 3],
-      [r.left + r.width / 2, r.top + r.height / 2],
-    ];
-    return points.every(([x, y]) => {
-      const hit = document.elementFromPoint(x, y);
-      return hit !== null && element.contains(hit);
-    });
-  });
-}
-
 // Every control in the header's left side is clear of the right side's.
 async function headerControlsApart(page: Page): Promise<void> {
   const boxesIn = async (testId: string): Promise<Box[]> =>
@@ -154,13 +136,9 @@ async function expectCardSound(page: Page): Promise<Box> {
   expect(await overlaps(cardBox, controls)).toBe(false);
   expect(cardBox.y).toBeGreaterThan(bottom(header));
   expect(bottom(cardBox)).toBeLessThanOrEqual(HEIGHT - 16 + 0.5);
-  expect(await whollyOnTop(button)).toBe(true);
+  expect(await isOnTop(button, { corners: true })).toBe(true);
   expect(await textFits(button)).toBe(true);
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth - window.innerWidth
-    )
-  ).toBeLessThanOrEqual(0);
+  expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
   await headerControlsApart(page);
   return cardBox;
 }
@@ -190,13 +168,9 @@ async function expectWideBar(
     // A pill: its rounded corners are not hit, so its centre.
     expect(await isOnTop(badge)).toBe(true);
     expect(await textFits(badge)).toBe(true);
-    expect(await whollyOnTop(fallback)).toBe(true);
+    expect(await isOnTop(fallback, { corners: true })).toBe(true);
     expect(await textFits(fallback)).toBe(true);
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth - window.innerWidth
-      )
-    ).toBeLessThanOrEqual(0);
+    expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
     await headerControlsApart(page);
     return;
   }
@@ -523,6 +497,44 @@ test.describe("Use template bar, signed in", () => {
         const controls = await box(page.locator(".workflow-controls-panel"));
         expect(bottom(controls)).toBeGreaterThan(HEIGHT - 40);
       }
+    }
+  });
+
+  test("right-clicking just above the card opens no menu under it", async ({
+    page,
+  }) => {
+    await open(page, 1280, foreignId);
+    const cardBox = await box(card(page));
+    await page.mouse.click(cardBox.x + cardBox.width / 2, cardBox.y - 12, {
+      button: "right",
+    });
+    await expect(
+      page.getByRole("button", { name: "Add Step", exact: true })
+    ).toHaveCount(0);
+    await expect(templateButton(page)).toBeVisible();
+  });
+
+  test("the right-click menu is drawn over a bar at the bottom", async ({
+    page,
+  }) => {
+    // Below 768px the owner's actions are a bar at the bottom, like the card.
+    await page.setViewportSize({ width: 700, height: HEIGHT });
+    await page.goto(`/workflows/${ownId}`, { waitUntil: "domcontentloaded" });
+    const bar = page.getByTestId("workflow-actions");
+    await expect(bar).toBeVisible({ timeout: 15_000 });
+    const barBox = await box(bar);
+    // Near the left edge, clear of the nodes; the menu opens down over the bar.
+    await page.mouse.click(barBox.x + 24, barBox.y - 12, { button: "right" });
+    const items = [
+      page.getByRole("button", { name: "Add Step", exact: true }),
+      page.getByRole("button", { name: "New Workflow from JSON" }),
+    ];
+    for (const item of items) {
+      await expect(item).toBeVisible();
+    }
+    expect(await overlaps(items[1], barBox)).toBe(true);
+    for (const item of items) {
+      expect(await isOnTop(item, { corners: true })).toBe(true);
     }
   });
 });

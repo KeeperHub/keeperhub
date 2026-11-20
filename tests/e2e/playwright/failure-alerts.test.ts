@@ -13,7 +13,7 @@ import {
   seedFailureAlerts,
   setOrgThreshold,
 } from "./utils/failure-alerts";
-import { dismissPhoneOverlays } from "./utils/layout";
+import { dismissPhoneOverlays, horizontalOverflow } from "./utils/layout";
 
 // A user of its own, signed in per test, so the shared test account is untouched.
 test.use({ storageState: { cookies: [], origins: [] } });
@@ -92,14 +92,6 @@ async function openProperties(
   const section = page.getByTestId("workflow-failure-alerts").first();
   await expect(section).toBeVisible(FIRST_VISIT);
   return section;
-}
-
-async function pageOverflow(page: Page): Promise<number> {
-  return await page.evaluate(
-    () =>
-      document.documentElement.scrollWidth -
-      document.documentElement.clientWidth
-  );
 }
 
 // Elements sticking out past either side of the viewport, or scrolling inside.
@@ -860,22 +852,26 @@ test.describe("Failure alerts", () => {
     }) => {
       await page.setViewportSize({ width, height: 1200 });
       await openAlerts(page);
-      expect(await pageOverflow(page), "Setup overflow").toBeLessThanOrEqual(0);
+      expect(
+        await horizontalOverflow(page),
+        "Setup overflow"
+      ).toBeLessThanOrEqual(0);
       expect(
         await pastTheEdge(page, methodCards(page)),
         "method cards past the edge"
       ).toBe(0);
       for (const tab of ["overview", "sent"] as const) {
         await openAlerts(page, tab);
-        expect(await pageOverflow(page), `${tab} overflow`).toBeLessThanOrEqual(
-          0
-        );
+        expect(
+          await horizontalOverflow(page),
+          `${tab} overflow`
+        ).toBeLessThanOrEqual(0);
       }
 
       const section = await openProperties(page, fixture.failingId);
       await section.scrollIntoViewIfNeeded();
       expect(
-        await pageOverflow(page),
+        await horizontalOverflow(page),
         "workflow page overflow"
       ).toBeLessThanOrEqual(0);
       expect(await pastTheEdge(page, section), "Properties section").toBe(0);
