@@ -3441,10 +3441,9 @@ describe("batch-read-contract - fourth review", () => {
           })
         )
       )
-      // y is a number, so its blank is not lined up, and t taken whole from an
-      // array is not how padding reads it: the count is given.
+      // Two values stored, t as an array: the count, as stored.
       .toBe(
-        "Function Arguments has 1 value, but g takes 2 (t, y). The same arguments go to every contract in the list."
+        "Function Arguments has 2 values for g (t, y), which takes 2 when t is an object, or 3 when t is given flat as its 2 members. The same arguments go to every contract in the list."
       );
     // In Argument Sets a missing value is not a blank, so the count is given.
     expect
@@ -3804,7 +3803,7 @@ describe("batch-read-contract - fifth review", () => {
     const abi = abiWith("f", [nestedT, uint("x")]);
     const [, shared] = await both(abi, ["", "5"]);
     expect(shared).toBe(
-      "Function Arguments: t cannot be empty. Fill in every argument; only a string may be left blank."
+      "Function Arguments: t.i.p: uint256 cannot be empty. Fill in every argument; only a string may be left blank."
     );
   });
 
@@ -4030,17 +4029,26 @@ describe("batch-read-contract - fifth review", () => {
   it("reads broken JSON text as a member's bad value, not a whole tuple", async () => {
     const abi = abiWith("f", [tupleOf("t", [uint("a"), uint("b")]), uint("x")]);
     const [, shared] = await both(abi, ["[1", "3", ""]);
-    // x is missing and a given value fails, so it may have moved: the count.
+    // x is stored blank, so nothing is missing and t.a is named, in both fields.
     expect(shared).toBe(
-      "Function Arguments has 2 values for f (t, x), which takes 2 when t is an object, or 3 when t is given flat as its 2 members. The same arguments go to every contract in the list."
+      'Function Arguments: t.a must be a whole number in digits, got "[1".'
+    );
+    const [args] = await both(abi, ["[1", "3", "4"]);
+    expect(args).toBe(
+      'Argument Sets entry 1: t.a must be a whole number in digits, got "[1".'
     );
   });
 
   it("gives the count when a value given fails and another is missing", async () => {
     const abi = abiWith("f", [uint("x"), { name: "s", type: "string" }]);
     const [, shared] = await both(abi, [[1], ""]);
-    // s is missing and x fails, so the count is given, not x.
+    // s is stored blank: nothing is missing, so x is named.
     expect(shared).toBe(
+      "Function Arguments: x must be a whole number, got [1]."
+    );
+    // s is left out and x fails, so it may have moved: the count.
+    const [, missing] = await both(abi, [[1]]);
+    expect(missing).toBe(
       "Function Arguments has 1 value, but f takes 2 (x, s). The same arguments go to every contract in the list."
     );
   });
@@ -4181,6 +4189,83 @@ describe("batch-read-contract - sixth review", () => {
     );
   });
 
+  it("gives the count when a value given is out of range and another is missing", async () => {
+    const abi = abiWith([{ name: "x", type: "uint8" }, str("s")]);
+    const [, shared] = await both(abi, ["300"]);
+    expect(shared).toBe(
+      "Function Arguments has 1 value, but f takes 2 (x, s). The same arguments go to every contract in the list."
+    );
+  });
+
+  it("names a blank after values that pass, whatever their type", async () => {
+    const abi = abiWith([
+      { name: "f", type: "bool" },
+      { name: "p", type: "uint256[2]" },
+      { name: "h", type: "bytes32" },
+      { name: "d", type: "bytes" },
+      { name: "i", type: "int8" },
+      { name: "g", type: "bool" },
+    ]);
+    const [, shared] = await both(abi, [
+      true,
+      ["1", "2"],
+      `0x${"11".repeat(32)}`,
+      "0x12",
+      "-3",
+    ]);
+    expect(shared).toBe(
+      "Function Arguments: g: bool cannot be empty. Fill in every argument; only a string may be left blank."
+    );
+  });
+
+  it("reads an untouched tuple of strings as left blank, not as taking the next field", async () => {
+    const abi = abiWith([
+      uint("n"),
+      tupleOf("x", [str("a"), str("b")]),
+      uint("m"),
+      str("z"),
+    ]);
+    const outcome = await run({
+      ...addressList([CONTRACT], {
+        functionArgs: JSON.stringify([7, "", 8, "9"]),
+      }),
+      abiFunction: "f",
+      abi,
+    });
+    expect(outcome.success).toBe(true);
+  });
+
+  it("gives the count for an array that lands on a string while a value is missing", async () => {
+    const abi = abiWith([
+      { name: "i", type: "int8" },
+      tupleOf("t", [{ name: "o", type: "bool" }, str("m")]),
+      { name: "ss", type: "string[]" },
+    ]);
+    const [, shared] = await both(abi, [-3, true, ["a", "b"]]);
+    expect(shared).toMatch(
+      /^Function Arguments has 3 values for f \(i, t, ss\)/
+    );
+  });
+
+  it("gives the count, fast, when a blank fixed array is too big to stand in for", async () => {
+    const abi = abiWith([
+      uint("a"),
+      { name: "b", type: "uint256[100000][100000]" },
+    ]);
+    const started = Date.now();
+    const [, shared] = await both(abi, [7]);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(shared).toBe(
+      "Function Arguments has 1 value, but f takes 2 (a, b). The same arguments go to every contract in the list."
+    );
+  });
+
+  it("names a tuple whose object has mistyped member names", async () => {
+    const abi = abiWith([uint("a"), tupleOf("t", [uint("x"), uint("y")])]);
+    const [args] = await both(abi, [7, { X: 1, Y: 2 }]);
+    expect(args).toMatch(/^Argument Sets entry 1: t\.x/);
+  });
+
   it("pads an untouched array field in the middle of Function Arguments", async () => {
     const abi = abiWith([
       { name: "ids", type: "uint256[]" },
@@ -4200,16 +4285,16 @@ describe("batch-read-contract - sixth review", () => {
       uint("x"),
       uint("y"),
     ]);
-    // Every value given passes, so the blank t is named (lib/abi's wording).
+    // "" in a tuple's place is the tuple left blank, its members blank too.
     const [, shared] = await both(abi, ["", "7"]);
     expect(shared).toBe(
-      "Function Arguments: t.i: expected object for tuple. Check the arguments for f (t, x, y)."
+      "Function Arguments: t.i.p: uint256 cannot be empty. Fill in every argument; only a string may be left blank."
     );
   });
 
-  // A correct entry with one value dropped, two neighbours swapped, or a
-  // tuple's object given twice: a message may name only an input the change
-  // touched; anything else gets the count. With a value dropped, "cannot be
+  // A correct entry with one value dropped, two neighbours swapped, a value
+  // added, or a tuple's object given twice: a message may name only an input
+  // the change touched; anything else gets the count. With a value dropped, "cannot be
   // empty" may name a later input: the editor leaves untouched fields out.
   it("names only an input the mistake touched, over many shapes", async () => {
     type Param = { name: string; type: string; components?: Param[] };
@@ -4323,6 +4408,13 @@ describe("batch-read-contract - sixth review", () => {
             touched: [name],
             dropped: true,
           });
+          // A value added before this one.
+          for (const extra of [7, "txt", {}]) {
+            mistakes.push({
+              entry: [...values.slice(0, k), extra, ...values.slice(k)],
+              touched: [owner[k - 1] ?? name, name],
+            });
+          }
           // A tuple's object given twice.
           if (
             inputs.some((p) => p.name === name && p.components) &&

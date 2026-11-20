@@ -715,8 +715,8 @@ function canGoFlat(input: AbiParam): boolean {
 type FlatTuple = { label: string; members: number };
 
 // A value can sit in an input's or member's place: a tuple takes its object
-// or the whole tuple as text or an array, an array an array, JSON array text
-// or "", a string any value but an object or array, and any other type a plain
+// or the whole tuple as text or an array, an array an array or JSON array
+// text, a string any value but an object or array, and any other type a plain
 // value (no object or array, as such or as JSON text).
 function fitsPlace(value: unknown, param: AbiParam): boolean {
   if (param.type === "tuple") {
@@ -725,10 +725,7 @@ function fitsPlace(value: unknown, param: AbiParam): boolean {
       : takesOneValue(value, param);
   }
   if (param.type.endsWith("]")) {
-    // "" is a field the editor left blank, named as such later.
-    return (
-      value === "" || Array.isArray(value) || containerText(value) === "array"
-    );
+    return Array.isArray(value) || containerText(value) === "array";
   }
   if (isPlainObject(value) || Array.isArray(value)) {
     return false;
@@ -1438,7 +1435,23 @@ export function argSetsFromList(
  * blank is "" and one never touched may be missing, so trailing blanks are
  * trimmed or padded to the inputs. An empty final `string` is sent as "".
  */
-function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
+function editorArgs(stored: unknown[], fn: ListFunction): unknown[] {
+  const parsed = blankTuples(stored, fn);
+  const countError = (): Error =>
+    countMismatch(
+      SHARED_ARGS_LABEL,
+      parsed,
+      fn,
+      "The same arguments go to every contract in the list."
+    );
+  const full = reshapeArgsCounted(parsed, fn);
+  // A value for every input, some maybe blank: nothing is missing.
+  if (full.consumed === parsed.length && !nestedSlot(parsed, fn)) {
+    if (misplacedObject(parsed, fn)) {
+      throw countError();
+    }
+    return full.args;
+  }
   let end = parsed.length;
   while (end > 0 && parsed[end - 1] === "") {
     end -= 1;
@@ -1446,13 +1459,6 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
   const given = parsed.slice(0, end);
   const reshaped = reshapeArgsCounted(given, fn);
   const { consumed } = reshaped;
-  const countError = (): Error =>
-    countMismatch(
-      SHARED_ARGS_LABEL,
-      given,
-      fn,
-      "The same arguments go to every contract in the list."
-    );
   // Named as in Argument Sets, with strings missing at the end allowed.
   const offShape = given.length !== consumed || nestedSlot(given, fn);
   if (offShape) {
@@ -1475,6 +1481,30 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
   return reshaped.args;
 }
 
+// The editor stores a tuple field left untouched as "": read it as the tuple
+// with every member blank, not as its first member given flat.
+function blankTuples(values: unknown[], fn: ListFunction): unknown[] {
+  const out = [...values];
+  let cursor = 0;
+  for (const input of fn.inputs) {
+    const members = input.type === "tuple" ? (input.components?.length ?? 0) : 0;
+    if (members > 0 && out[cursor] === "") {
+      out[cursor] = blankObject(input);
+    }
+    cursor += members > 0 && !isPlainObject(out[cursor]) ? members : 1;
+  }
+  return out;
+}
+
+function blankObject(param: AbiParam): Record<string, unknown> {
+  return Object.fromEntries(
+    (param.components ?? []).map((member) => [
+      member.name,
+      member.type === "tuple" ? blankObject(member) : "",
+    ])
+  );
+}
+
 /**
  * Too few values: the rest are blanks the editor left out. Padded only when
  * every value given passes with a valid stand-in in each blank, so a failure
@@ -1488,45 +1518,87 @@ function paddedArgs(
 ): unknown[] {
   const blanks = new Array<string>(consumed - given.length).fill("");
   const args = reshapeArgsCounted([...given, ...blanks], fn).args;
+  // Size caps first, on the values as given, before any dry run.
+  estimateCalldata(args, fn, SHARED_ARGS_LABEL, 0);
   const standIns = fn.inputs.map((input, index) =>
     withStandIns(args[index], input)
   );
-  if (standIns.some((value) => value === NOT_PLAIN)) {
+  if (standIns.some((value) => value === NO_FIT)) {
     throw countError();
   }
-  estimateCalldata(standIns, fn, SHARED_ARGS_LABEL, 0);
-  if (validateListArgs(coerceArgsForAbi(standIns, fn), fn)) {
+  const shaped = coerceArgsForAbi(standIns, fn);
+  if (validateListArgs(shaped, fn) || !encodes(shaped, fn)) {
     throw countError();
   }
   return args;
 }
 
-const NOT_PLAIN = Symbol("object on a plain place");
+// Range and length checks happen only when encoding.
+function encodes(args: unknown[], fn: ListFunction): boolean {
+  try {
+    ethers.AbiCoder.defaultAbiCoder().encode(
+      fn.inputs.map((input) => ethers.ParamType.from(input)),
+      args
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-// The value with each blank ("") replaced by a valid stand-in, or NOT_PLAIN
-// when an object sits on a plain place (validation would let a string take it).
+const NO_FIT = Symbol("value that cannot sit in its place");
+
+// The value with each blank ("") replaced by a valid stand-in, or NO_FIT when
+// a value does not fit its place (validation lets a string take an object or
+// an array) or a blank is too big to stand in for.
 function withStandIns(value: unknown, param: AbiParam): unknown {
   if (value === "") {
-    return validSample(param);
+    return sampleWords(param) > MAX_CALL_CALLDATA_BYTES / 32
+      ? NO_FIT
+      : validSample(param);
   }
   const array = ARRAY_TYPE_RE.exec(param.type);
   if (array && Array.isArray(value)) {
     const item = { ...param, type: array[1] };
     const items = value.map((entry) => withStandIns(entry, item));
-    return items.includes(NOT_PLAIN) ? NOT_PLAIN : items;
+    return items.includes(NO_FIT) ? NO_FIT : items;
   }
   if (param.type === "tuple" && isPlainObject(value)) {
     const object = value as Record<string, unknown>;
     const members = (param.components ?? []).map(
-      (member) => [member.name, withStandIns(object[member.name], member)] as const
+      (member) =>
+        [
+          member.name,
+          withStandIns(
+            Object.hasOwn(object, member.name) ? object[member.name] : undefined,
+            member
+          ),
+        ] as const
     );
-    return members.some(([, member]) => member === NOT_PLAIN)
-      ? NOT_PLAIN
+    return members.some(([, member]) => member === NO_FIT)
+      ? NO_FIT
       : { ...object, ...Object.fromEntries(members) };
   }
-  return !array && param.type !== "tuple" && isPlainObject(value)
-    ? NOT_PLAIN
+  return !array && param.type !== "tuple" && !fitsPlace(value, param)
+    ? NO_FIT
     : value;
+}
+
+// 32-byte words a fixed-size value of this type takes; dynamic arrays count 0.
+function sampleWords(param: AbiParam): number {
+  const array = ARRAY_TYPE_RE.exec(param.type);
+  if (array) {
+    return array[2]
+      ? Number(array[2]) * sampleWords({ ...param, type: array[1] })
+      : 0;
+  }
+  if (param.type === "tuple") {
+    return (param.components ?? []).reduce(
+      (total, member) => total + sampleWords(member),
+      0
+    );
+  }
+  return 1;
 }
 
 // Whether any tuple was read from its members, and the member each such
@@ -1551,8 +1623,8 @@ function flatReading(
 }
 
 // An object no input there can take: on a plain member of a tuple read from
-// its members, or in a tuple's place sharing none of its member names. A value
-// was likely added or left out before it, so no single input can be named.
+// its members, or in a tuple's place when it fits another tuple instead. A
+// value was likely added or left out before it, so no input can be named.
 function misplacedObject(args: unknown[], fn: ListFunction): boolean {
   const { params, members } = flatReading(args, fn);
   return params.some((param, k) => {
@@ -1560,8 +1632,24 @@ function misplacedObject(args: unknown[], fn: ListFunction): boolean {
     if (!isPlainObject(value)) {
       return false;
     }
-    return param.type === "tuple" ? !objectFits(value, param) : members[k];
+    if (param.type !== "tuple") {
+      return members[k];
+    }
+    // Another tuple's object, not this one's with names mistyped.
+    return (
+      !objectFits(value, param) &&
+      tuplesOf(fn.inputs).some((tuple) => objectFits(value, tuple))
+    );
   });
+}
+
+// Every tuple input and tuple member, at any depth.
+function tuplesOf(params: AbiParam[]): AbiParam[] {
+  return params.flatMap((param) =>
+    param.type === "tuple"
+      ? [param, ...tuplesOf(param.components ?? [])]
+      : []
+  );
 }
 
 // A value that passes every check for its type, put where a blank is.
