@@ -1180,11 +1180,45 @@ function linesUp(entry: unknown[], fn: ListFunction, blankTail = false): boolean
 }
 
 // Where each input starts when the entry lines up, or undefined when it does
-// not. Inputs left blank at the end start past it.
+// not. With blankTail, only a string may be missing at the end: the naming
+// checks must not line up on a blank that fails anyway.
 function lineUpStarts(
   entry: unknown[],
   fn: ListFunction,
   blankTail = false
+): number[] | undefined {
+  const starts = lineUpReading(entry, fn, blankTail);
+  return starts && (!blankTail || blanksAreStrings(entry, fn, starts))
+    ? starts
+    : undefined;
+}
+
+// Each input missing at the end, or a flat tuple's members missing there,
+// is a string.
+function blanksAreStrings(
+  entry: unknown[],
+  fn: ListFunction,
+  starts: number[]
+): boolean {
+  return fn.inputs.every((input, index) => {
+    const start = starts[index];
+    if (start >= entry.length) {
+      return canBeBlank(input);
+    }
+    if (input.type !== "tuple" || takesOneValue(entry[start], input)) {
+      return true;
+    }
+    return (input.components ?? [])
+      .slice(entry.length - start)
+      .every((member) => member.type === "string");
+  });
+}
+
+// lineUpStarts with any input left blank at the end, as padding reads it.
+function lineUpReading(
+  entry: unknown[],
+  fn: ListFunction,
+  blankTail: boolean
 ): number[] | undefined {
   const starts: number[] = [];
   let cursor = 0;
@@ -1216,6 +1250,16 @@ function lineUpStarts(
   }
   const fits = blankTail ? cursor >= entry.length : cursor === entry.length;
   return fits ? starts : undefined;
+}
+
+// Only a string, or a flat tuple of strings, may be left blank at the end: a
+// blank anywhere else fails.
+function canBeBlank(input: AbiParam): boolean {
+  return (
+    input.type === "string" ||
+    (canGoFlat(input) &&
+      (input.components ?? []).every((member) => member.type === "string"))
+  );
 }
 
 // An object can be this tuple's: empty, or sharing a member name with it.
@@ -1420,7 +1464,8 @@ function editorArgs(parsed: unknown[], fn: ListFunction): unknown[] {
   const padOk =
     given.length < consumed &&
     !nestedSlot(given, fn) &&
-    (consumed === fn.inputs.length || linesUp(given, fn, true));
+    (consumed === fn.inputs.length ||
+      lineUpReading(given, fn, true) !== undefined);
   if (offShape && !padOk) {
     throw countMismatch(
       SHARED_ARGS_LABEL,

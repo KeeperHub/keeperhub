@@ -3355,8 +3355,9 @@ describe("batch-read-contract - fourth review", () => {
           })
         )
       )
+      // ids is not a string, so it is not read as left blank.
       .toBe(
-        'Function Arguments: x must be a whole number, got {"a":1,"b":2}. Only a tuple takes an object.'
+        "Function Arguments has 2 values, but g takes 3 (x, t, ids). The same arguments go to every contract in the list."
       );
   });
 
@@ -3436,9 +3437,8 @@ describe("batch-read-contract - fourth review", () => {
           })
         )
       )
-      .toBe(
-        'Function Arguments: give t as an object with its member names, like {"a": 1, "b": 1}, not as an array.'
-      );
+      // y is a number, so its blank is not lined up: the padded call names t.a.
+      .toBe("Function Arguments: t.a must be a whole number, got [1,2].");
     // In Argument Sets a missing value is not a blank, so the count is given.
     expect
       .soft(await failure({ ...argsList([[[1, 2]]], "g"), abi }))
@@ -3800,13 +3800,14 @@ describe("batch-read-contract - fifth review", () => {
     );
   });
 
-  it("names a tuple starting with a tuple with the count right, and with blanks at the end", async () => {
+  it("names a tuple starting with a tuple with the count right, not with a number missing at the end", async () => {
     const [, equal] = await both(abiWith("f", [nestedT, uint("x")]), [1, 2]);
     expect
       .soft(equal)
       .toBe(
         'Function Arguments: t must be an object with its member names, like {"i": {"p": 1}}, got 1.'
       );
+    // y is a number, so a missing y is not a blank: the count is given.
     const [, short] = await both(
       abiWith("f", [nestedT, uint("x"), uint("y")]),
       [1, 2]
@@ -3814,7 +3815,7 @@ describe("batch-read-contract - fifth review", () => {
     expect
       .soft(short)
       .toBe(
-        'Function Arguments: t must be an object with its member names, like {"i": {"p": 1}}, got 1.'
+        "Function Arguments has 2 values, but f takes 3 (t, x, y). The same arguments go to every contract in the list."
       );
   });
 
@@ -3939,10 +3940,6 @@ describe("batch-read-contract - fifth review", () => {
       name,
       type: "uint256[]",
     });
-    const nestedNamed =
-      't must be an object with its member names, like {"i": {"p": 1}}, got 5.';
-    const flatNamed =
-      't must be an object with its member names, like {"a": [1, 1], "b": 1}, got 2. Or give its 2 members flat in its place.';
     const cases: [string, unknown[], string, string][] = [
       // An array on plain x does not line up, so t is not named.
       [
@@ -3958,7 +3955,8 @@ describe("batch-read-contract - fifth review", () => {
         ]),
         [{ a: 1 }, 2],
         'Argument Sets entry 1 has 2 values for f (o, s), which takes 2 when s is an object, or 3 when s is given flat as its 2 members. Make each entry an array like ["...", {"a": 1, "b": [1, 1]}].',
-        'Function Arguments: o must be a value of type string, got {"a":1}. Only a tuple takes an object.',
+        // {"a":1} may be s's object with o missing: not tied to o.
+        "Function Arguments has 2 values for f (o, s), which takes 2 when s is an object, or 3 when s is given flat as its 2 members. The same arguments go to every contract in the list.",
       ],
       [
         abiWith("f", [
@@ -3968,7 +3966,8 @@ describe("batch-read-contract - fifth review", () => {
         ]),
         [1, 2],
         'Argument Sets entry 1 has 2 values, but f takes 3 (x, t, y). Make each entry an array like [1, {"a": [1, 1], "b": 1}, 1].',
-        `Function Arguments: ${flatNamed}`,
+        // y is a number, so it is not read as left blank.
+        "Function Arguments has 2 values, but f takes 3 (x, t, y). The same arguments go to every contract in the list.",
       ],
       [
         abiWith("f", [
@@ -3978,7 +3977,7 @@ describe("batch-read-contract - fifth review", () => {
         ]),
         [1, 2],
         'Argument Sets entry 1 has 2 values, but f takes 3 (x, t, u). Make each entry an array like [1, {"a": [1, 1], "b": 1}, {"a": [1, 1], "b": 1}].',
-        `Function Arguments: ${flatNamed}`,
+        "Function Arguments has 2 values, but f takes 3 (x, t, u). The same arguments go to every contract in the list.",
       ],
       [
         abiWith("f", [nestedT]),
@@ -4000,7 +3999,7 @@ describe("batch-read-contract - fifth review", () => {
         ]),
         [5, 1, 2, 3],
         'Argument Sets entry 1 has 4 values for f (t, s, y), which takes 3 when s is an object, or 5 when s is given flat as its 3 members. Make each entry an array like [{"i": {"p": 1}}, {"a": 1, "b": 1, "c": 1}, 1].',
-        `Function Arguments: ${nestedNamed}`,
+        "Function Arguments has 4 values for f (t, s, y), which takes 3 when s is an object, or 5 when s is given flat as its 3 members. The same arguments go to every contract in the list.",
       ],
       [
         abiWith("f", [
@@ -4010,7 +4009,7 @@ describe("batch-read-contract - fifth review", () => {
         ]),
         [5, 1, 2],
         'Argument Sets entry 1 has 3 values for f (t, s, y), which takes 3 when s is an object, or 4 when s is given flat as its 2 members. Make each entry an array like [{"i": {"p": 1}}, {"a": 1, "b": 1}, 1].',
-        `Function Arguments: ${nestedNamed}`,
+        "Function Arguments has 3 values for f (t, s, y), which takes 3 when s is an object, or 4 when s is given flat as its 2 members. The same arguments go to every contract in the list.",
       ],
     ];
     for (const [abi, entry, args, shared] of cases) {
@@ -4065,6 +4064,97 @@ describe("batch-read-contract - fifth review", () => {
     const [, shared] = await both(abi, ["5", [1]]);
     expect(shared).toBe(
       "Function Arguments has 2 values, but f takes 3 (s, x, y). The same arguments go to every contract in the list."
+    );
+  });
+});
+
+describe("batch-read-contract - sixth review", () => {
+  const abiWith = (inputs: unknown[]): string =>
+    JSON.stringify([
+      {
+        name: "f",
+        type: "function",
+        stateMutability: "view",
+        inputs,
+        outputs: [{ name: "", type: "uint256" }],
+      },
+    ]);
+  const uint = (name: string): { name: string; type: string } => ({
+    name,
+    type: "uint256",
+  });
+  const str = (name: string): { name: string; type: string } => ({
+    name,
+    type: "string",
+  });
+  const tupleOf = (
+    name: string,
+    components: unknown[]
+  ): { name: string; type: string; components: unknown[] } => ({
+    name,
+    type: "tuple",
+    components,
+  });
+  const both = async (
+    abi: string,
+    entry: unknown[]
+  ): Promise<[string, string]> => [
+    await failure({ ...argsList([entry], "f"), abi }),
+    await failure({
+      ...addressList([CONTRACT], { functionArgs: JSON.stringify(entry) }),
+      abiFunction: "f",
+      abi,
+    }),
+  ];
+
+  it("does not blame a string whose value moved left when a value before it is missing", async () => {
+    const abi = abiWith([
+      uint("a"),
+      str("s"),
+      tupleOf("t", [uint("x"), uint("y")]),
+    ]);
+    const [args, shared] = await both(abi, ["hi", { x: 1, y: 2 }]);
+    expect
+      .soft(args)
+      .toBe(
+        'Argument Sets entry 1 has 2 values, but f takes 3 (a, s, t). Make each entry an array like [1, "...", {"x": 1, "y": 1}].'
+      );
+    expect
+      .soft(shared)
+      .toBe(
+        "Function Arguments has 2 values, but f takes 3 (a, s, t). The same arguments go to every contract in the list."
+      );
+  });
+
+  it("does not read a missing number or tuple at the end as left blank", async () => {
+    const abi = abiWith([str("s"), uint("n"), tupleOf("t", [uint("x")])]);
+    // n is missing in every reading of the object, so it is named.
+    const [args, shared] = await both(abi, [{ x: 1 }]);
+    expect
+      .soft(args)
+      .toBe(
+        'Argument Sets entry 1 has 1 value, but f takes 3 (s, n, t). Make each entry an array like ["...", 1, {"x": 1}].'
+      );
+    expect
+      .soft(shared)
+      .toBe(
+        "Function Arguments: n: uint256 cannot be empty. Fill in every argument; only a string may be left blank."
+      );
+  });
+
+  it("reads a flat tuple of strings missing at the end as left blank", async () => {
+    const abi = abiWith([uint("n"), tupleOf("t", [str("a"), str("b")])]);
+    const [, shared] = await both(abi, ["x1"]);
+    expect(shared).toBe(
+      'Function Arguments: n must be a whole number in digits, got "x1".'
+    );
+  });
+
+  it("still reads a missing string at the end as left blank", async () => {
+    const abi = abiWith([tupleOf("t", [uint("x"), uint("y")]), str("s")]);
+    const [, shared] = await both(abi, [1, "2x"]);
+    expect(shared).toBe(
+      'Function Arguments: t.y must be a whole number in digits, got "2x".'
     );
   });
 });
