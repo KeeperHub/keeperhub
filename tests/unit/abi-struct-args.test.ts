@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   asRawFunctionArgs,
   coerceArgsForAbi,
+  reshapeArgsCounted,
   reshapeArgsForAbi,
 } from "@/lib/abi/struct-args";
 
@@ -519,5 +520,78 @@ describe("coerceArgsForAbi", () => {
       ],
     });
     expect(result).toEqual([null, undefined]);
+  });
+});
+
+describe("reshapeArgsCounted", () => {
+  const fn = {
+    inputs: [
+      {
+        name: "t",
+        type: "tuple",
+        components: [
+          { name: "a", type: "uint256" },
+          { name: "b", type: "address" },
+        ],
+      },
+      { name: "c", type: "uint256" },
+    ],
+  };
+
+  it("counts a tuple given as an object as one value", () => {
+    expect(reshapeArgsCounted([{ a: "1", b: "0x1" }, "2"], fn)).toEqual({
+      args: [{ a: "1", b: "0x1" }, "2"],
+      consumed: 2,
+    });
+  });
+
+  it("counts a tuple given flat as one value per member", () => {
+    expect(reshapeArgsCounted(["1", "0x1", "2"], fn)).toEqual({
+      args: [{ a: "1", b: "0x1" }, "2"],
+      consumed: 3,
+    });
+  });
+
+  it("gives one value per input without tuples, so extras show in the count", () => {
+    const simple = { inputs: [{ name: "x", type: "uint256" }] };
+    expect(reshapeArgsCounted(["1", "2"], simple)).toEqual({
+      args: ["1"],
+      consumed: 1,
+    });
+  });
+});
+
+describe("coerceArgsForAbi array text", () => {
+  it("parses inner arrays the array editor stores as JSON text", () => {
+    expect(
+      coerceArgsForAbi([["[1,2]", "[3]"]], {
+        inputs: [{ name: "m", type: "uint256[][]" }],
+      })
+    ).toEqual([[[1, 2], [3]]]);
+  });
+
+  it("parses array text inside a tuple and coerces its bools", () => {
+    expect(
+      coerceArgsForAbi([{ flags: '["true","false"]' }], {
+        inputs: [
+          {
+            name: "t",
+            type: "tuple",
+            components: [{ name: "flags", type: "bool[]" }],
+          },
+        ],
+      })
+    ).toEqual([{ flags: [true, false] }]);
+  });
+
+  it("leaves text that is not a JSON array for validation to refuse", () => {
+    expect(
+      coerceArgsForAbi(["oops", "[1,"], {
+        inputs: [
+          { name: "a", type: "uint256[]" },
+          { name: "b", type: "uint256[]" },
+        ],
+      })
+    ).toEqual(["oops", "[1,"]);
   });
 });

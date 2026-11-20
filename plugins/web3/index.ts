@@ -24,7 +24,22 @@ import {
 } from "@/plugins/field-fragments";
 import type { ShowWhen } from "@/lib/workflow/editor/show-when";
 import { registerIntegration } from "@/plugins/registry-core";
-import { checkQueryEventsConfig } from "./address-list-config";
+import {
+  checkBatchReadConfig,
+  checkQueryEventsConfig,
+} from "./address-list-config";
+import {
+  CALLS_FROM_ADDRESS_LIST,
+  CALLS_FROM_ARGS_LIST,
+  CALLS_FROM_ROWS,
+  INPUT_MODE_MIXED,
+  INPUT_MODE_UNIFORM,
+  SHOW_WHEN_ADDRESS_LIST,
+  SHOW_WHEN_ARGS_LIST,
+  SHOW_WHEN_CONTRACT_ADDRESS,
+  SHOW_WHEN_ROWS,
+  SHOW_WHEN_UNIFORM,
+} from "./batch-read-modes";
 import { Web3Icon } from "./icon";
 
 // Single-event mode, including workflows saved before queryMode existed.
@@ -1527,10 +1542,11 @@ const web3Plugin: IntegrationPlugin = {
       slug: "batch-read-contract",
       label: "Batch Read Contract",
       description:
-        "Call the same contract function with multiple argument sets in a single RPC call using Multicall3",
+        "Call one contract function with many argument sets, or on a list of contracts, in a single RPC call using Multicall3",
       category: "Web3",
       stepFunction: "batchReadContractStep",
       stepImportPath: "batch-read-contract",
+      validateConfig: checkBatchReadConfig,
       outputFields: [
         {
           field: "success",
@@ -1559,18 +1575,18 @@ const web3Plugin: IntegrationPlugin = {
           type: "select",
           options: [
             {
-              value: "uniform",
+              value: INPUT_MODE_UNIFORM,
               label: "Same function, multiple args",
             },
             {
-              value: "mixed",
+              value: INPUT_MODE_MIXED,
               label: "Different contracts/functions",
             },
           ],
-          defaultValue: "uniform",
+          defaultValue: INPUT_MODE_UNIFORM,
           required: true,
           helpTip:
-            "Uniform: one contract + one function + array of arg sets. Mixed: each call has its own contract, function, and args.",
+            "Same function: one function called with many argument sets, or on a list of contracts (e.g. done() on every spell). Different contracts: each call has its own network, contract, function, and args.",
         },
         {
           key: "network",
@@ -1579,7 +1595,24 @@ const web3Plugin: IntegrationPlugin = {
           chainTypeFilter: "evm",
           placeholder: "Select network",
           required: true,
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: SHOW_WHEN_UNIFORM,
+        },
+        {
+          key: "callsFrom",
+          label: "Calls From",
+          type: "select",
+          options: [
+            { value: CALLS_FROM_ROWS, label: "Rows I add here" },
+            { value: CALLS_FROM_ARGS_LIST, label: "A list of argument sets" },
+            {
+              value: CALLS_FROM_ADDRESS_LIST,
+              label: "A list of contract addresses",
+            },
+          ],
+          defaultValue: CALLS_FROM_ROWS,
+          helpTip:
+            "Rows: add each call here. A list: take the calls from a JSON array, usually an earlier node's output, one call per entry, in order.",
+          showWhen: SHOW_WHEN_UNIFORM,
         },
         {
           key: "contractAddress",
@@ -1588,18 +1621,44 @@ const web3Plugin: IntegrationPlugin = {
           placeholder: "0x... or {{NodeName.contractAddress}}",
           example: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
           required: true,
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: SHOW_WHEN_CONTRACT_ADDRESS,
+        },
+        {
+          key: "contractAddresses",
+          label: "Contract Addresses",
+          type: "template-textarea",
+          rows: 3,
+          required: true,
+          acceptsJsonArray: true,
+          placeholder: '{{@node1:Label.result}} or ["0xabc...", "0xdef..."]',
+          helpText:
+            "One call per address, in order, all on the network above. Up to 5,000 addresses.",
+          showWhen: SHOW_WHEN_ADDRESS_LIST,
+        },
+        {
+          key: "abiFetchAddress",
+          label: "Fetch ABI From",
+          type: "template-input",
+          placeholder: "0x... one contract with the same ABI (optional)",
+          isAddressField: true,
+          helpText:
+            "Only used to fetch the ABI; it is not called. Or tick Use manual ABI and paste it.",
+          showWhen: SHOW_WHEN_ADDRESS_LIST,
         },
         {
           key: "abi",
           label: "Contract ABI",
           type: "abi-with-auto-fetch",
           contractAddressField: "contractAddress",
+          contractAddressFieldWhen: {
+            field: "abiFetchAddress",
+            showWhen: SHOW_WHEN_ADDRESS_LIST,
+          },
           contractInteractionType: "read",
           networkField: "network",
           rows: 6,
           required: true,
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: SHOW_WHEN_UNIFORM,
         },
         {
           key: "abiFunction",
@@ -1608,7 +1667,7 @@ const web3Plugin: IntegrationPlugin = {
           abiField: "abi",
           placeholder: "Select a function",
           required: true,
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: SHOW_WHEN_UNIFORM,
         },
         {
           key: "argsList",
@@ -1618,7 +1677,30 @@ const web3Plugin: IntegrationPlugin = {
           abiFunctionField: "abiFunction",
           helpTip:
             "Add argument sets for each call. Each row represents one call with the selected function's parameters.",
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: SHOW_WHEN_ROWS,
+        },
+        {
+          key: "argsFromList",
+          label: "Argument Sets",
+          type: "template-textarea",
+          rows: 3,
+          required: true,
+          acceptsJsonArray: true,
+          placeholder:
+            '{{@node1:Label.result}} or [["0xabc...", 5], ["0xdef...", 6]]',
+          helpText:
+            'One call per entry, in order. An entry is the call\'s arguments in order, e.g. ["0xabc...", 5]. For a function with one plain argument (address, number, string, bool, bytes or bytes32), an entry can be the bare value. A tuple is an object keyed by its member names. Up to 5,000 entries.',
+          showWhen: SHOW_WHEN_ARGS_LIST,
+        },
+        {
+          key: "functionArgs",
+          label: "Function Arguments",
+          type: "abi-function-args",
+          abiField: "abi",
+          abiFunctionField: "abiFunction",
+          helpText:
+            "These arguments go to every contract in the list. Fill in each one; only a string may be left blank.",
+          showWhen: SHOW_WHEN_ADDRESS_LIST,
         },
         {
           key: "calls",
@@ -1629,7 +1711,7 @@ const web3Plugin: IntegrationPlugin = {
           contractInteractionType: "read",
           helpTip:
             "Add contract calls to batch. Each call has its own network, contract address, ABI, function, and arguments.",
-          showWhen: { field: "inputMode", equals: "mixed" },
+          showWhen: { field: "inputMode", equals: INPUT_MODE_MIXED },
         },
         {
           type: "group",
@@ -1649,7 +1731,9 @@ const web3Plugin: IntegrationPlugin = {
             },
           ],
         },
-        readFailOnErrorField(),
+        readFailOnErrorField(
+          "When off, a failed read passes a soft error to the next node instead of failing the run: a failed batch, a problem with the ABI, function or arguments, a bad Argument Sets entry, an empty list ([]) or one over the size limits. Only problems that leave the step with nowhere to call still fail the run: a missing or unknown network, unresolved RPC config, a missing or invalid Contract Address, or a Contract Addresses that is blank, not a list or has a bad entry. In Different contracts/functions mode, so does a call that is not an object or has no valid network or address."
+        ),
       ],
     },
     {

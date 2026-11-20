@@ -193,6 +193,70 @@ describe("collectContractRefs", () => {
   });
 });
 
+describe("collectContractRefs, batch-read-contract calls from a list", () => {
+  function batchReadNode(config: Record<string, unknown>) {
+    return {
+      id: "batch-read",
+      data: {
+        type: "action",
+        config: {
+          actionType: "web3/batch-read-contract",
+          inputMode: "uniform",
+          network: "1",
+          abi: SIMPLE_ABI_TRANSFER,
+          contractAddress: "0x00000000000000000000000000000000000000a1",
+          ...config,
+        },
+      },
+    };
+  }
+
+  it("checks the ABI against Fetch ABI From, not the hidden Contract Address", () => {
+    const refs = collectContractRefs([
+      batchReadNode({
+        callsFrom: "address-list",
+        abiFetchAddress: "0x00000000000000000000000000000000000000b2",
+      }),
+    ]);
+    expect(refs.map((ref) => ref.contractAddress)).toEqual([
+      "0x00000000000000000000000000000000000000b2",
+    ]);
+  });
+
+  it("uses Contract Address in mixed mode even if callsFrom was left on address-list", () => {
+    const refs = collectContractRefs([
+      batchReadNode({
+        inputMode: "mixed",
+        callsFrom: "address-list",
+        abiFetchAddress: "0x00000000000000000000000000000000000000b2",
+      }),
+    ]);
+    expect(refs.map((ref) => ref.contractAddress)).toEqual([
+      "0x00000000000000000000000000000000000000a1",
+    ]);
+  });
+
+  it("skips an address list without Fetch ABI From", () => {
+    expect(
+      collectContractRefs([batchReadNode({ callsFrom: "address-list" })])
+    ).toHaveLength(0);
+  });
+
+  it("keeps using Contract Address for rows and argument sets", () => {
+    for (const callsFrom of [undefined, "rows", "args-list"]) {
+      const refs = collectContractRefs([
+        batchReadNode({
+          callsFrom,
+          abiFetchAddress: "0x00000000000000000000000000000000000000b2",
+        }),
+      ]);
+      expect(refs.map((ref) => ref.contractAddress)).toEqual([
+        "0x00000000000000000000000000000000000000a1",
+      ]);
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // collectContractRefs, batch-write-contract calls[]
 // ---------------------------------------------------------------------------

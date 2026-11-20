@@ -914,6 +914,9 @@ function validateFieldValue(
         ? { valid: true }
         : { valid: false, expected: "object", received: value };
     default:
+      if (field.acceptsJsonArray && Array.isArray(value)) {
+        return { valid: true };
+      }
       if (field.isAddressField) {
         return typeof value === "string" &&
           (valueContainsTemplate(value) || EVM_ADDRESS_RE.test(value))

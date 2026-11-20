@@ -46,6 +46,7 @@ vi.mock("@/lib/rpc/network-utils", () => ({
 
 vi.mock("@/lib/rpc/provider-factory", () => ({
   getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
+  isSolanaChain: (chainId: number) => chainId === 101 || chainId === 103,
 }));
 
 // Mock ethers with enough fidelity for encoding/decoding tests
@@ -245,7 +246,7 @@ describe("batch-read-contract - uniform mode validation", () => {
       contractAddress: "not-an-address",
       abiFunction: "balanceOf",
     });
-    expect(result.error).toContain("Invalid contract address");
+    expect(result.error).toContain("Contract Address is not a valid address");
   });
 
   it("fails when function is missing", async () => {
@@ -289,7 +290,9 @@ describe("batch-read-contract - uniform mode validation", () => {
       contractAddress: VALID_ADDRESS,
       abiFunction: "nonExistentFunction",
     });
-    expect(result.error).toContain("not found in ABI");
+    expect(result.error).toContain(
+      "is not in the ABI. Pick it again in Function"
+    );
   });
 
   it("fails when argsList is invalid JSON", async () => {
@@ -692,7 +695,9 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("missing network");
+    expect(result.error).toContain(
+      "Call 1 has no network. Pick one for this call."
+    );
   });
 
   it("fails when call is missing contractAddress", async () => {
@@ -707,7 +712,9 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("missing contractAddress");
+    expect(result.error).toContain(
+      "Call 1 has no Contract Address. Enter the contract to call."
+    );
   });
 
   it("fails when call has invalid address", async () => {
@@ -723,7 +730,7 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("invalid address");
+    expect(result.error).toContain("Contract Address is not a valid address");
   });
 
   it("fails when call is missing abiFunction", async () => {
@@ -738,7 +745,9 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("missing abiFunction");
+    expect(result.error).toContain(
+      "Call 1 has no function. Pick one for this call."
+    );
   });
 
   it("fails when call is missing abi", async () => {
@@ -753,7 +762,9 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("missing abi");
+    expect(result.error).toContain(
+      "Call 1 has no ABI. Add the ABI for this call."
+    );
   });
 
   it("fails when call ABI has function not found", async () => {
@@ -770,7 +781,9 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("not found in ABI");
+    expect(result.error).toContain(
+      "is not in the ABI. Pick it again in Function"
+    );
   });
 
   it("reports correct index for validation errors", async () => {
@@ -793,8 +806,8 @@ describe("batch-read-contract - mixed mode validation", () => {
         },
       ]),
     });
-    expect(result.error).toContain("index 1");
-    expect(result.error).toContain("invalid address");
+    expect(result.error).toContain("Call 2");
+    expect(result.error).toContain("Contract Address is not a valid address");
   });
 });
 

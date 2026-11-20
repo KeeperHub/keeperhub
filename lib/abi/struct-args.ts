@@ -32,7 +32,8 @@ function isPreStructuredObject(arg: unknown): boolean {
   return arg !== null && typeof arg === "object" && !Array.isArray(arg);
 }
 
-function parseArrayComponentValue(value: unknown): unknown {
+/** An array given as JSON text, parsed; anything else is returned as is. */
+export function parseArrayComponentValue(value: unknown): unknown {
   if (typeof value !== "string") {
     return value;
   }
@@ -117,6 +118,17 @@ export function reshapeArgsForAbi(
     return args;
   }
 
+  return reshapeArgsCounted(args, functionAbi).args;
+}
+
+/**
+ * reshapeArgsForAbi, always one value per input, plus how many flat args the
+ * inputs took, so a caller can reject a set with values missing or left over.
+ */
+export function reshapeArgsCounted(
+  args: unknown[],
+  functionAbi: FunctionAbiEntry
+): { args: unknown[]; consumed: number } {
   const reshaped: unknown[] = [];
   let cursor = 0;
 
@@ -133,7 +145,7 @@ export function reshapeArgsForAbi(
     }
   }
 
-  return reshaped;
+  return { args: reshaped, consumed: cursor };
 }
 
 /**
@@ -148,7 +160,8 @@ export function reshapeArgsForAbi(
  * checksum validation, and `bytes`/`bytesN` reject wrong lengths or missing
  * `0x` prefixes. Extending coercion beyond `bool` would hide those errors
  * instead of fixing them. Template variables (`{{...}}`) pass through and
- * are resolved later in the pipeline.
+ * are resolved later in the pipeline. An array given as JSON text, as the
+ * array editor stores inner arrays, is parsed first.
  */
 export function coerceArgsForAbi(
   args: unknown[],
@@ -189,11 +202,13 @@ function coerceArray(
   arrayType: string,
   components: AbiComponent[] | undefined
 ): unknown {
-  if (!Array.isArray(value)) {
+  // The array editor stores each inner array as JSON text.
+  const parsed = parseArrayComponentValue(value);
+  if (!Array.isArray(parsed)) {
     return value;
   }
   const elementType = solidityArrayItemType(arrayType);
-  return value.map((item) => coerceValue(item, elementType, components));
+  return parsed.map((item) => coerceValue(item, elementType, components));
 }
 
 function coerceTuple(

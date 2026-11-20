@@ -135,6 +135,10 @@ export type ActionConfigFieldBase = {
   // and the button appears to do nothing at all.
   valueFormat?: "json";
 
+  // A template-textarea that also takes a native JSON array, as API and MCP
+  // callers send one; the editor shows it as JSON text.
+  acceptsJsonArray?: boolean;
+
   // Min value (for number fields)
   min?: number;
 
@@ -181,6 +185,9 @@ export type ActionConfigFieldBase = {
 
   // For abi-with-auto-fetch: which field contains the contract address
   contractAddressField?: string;
+
+  // For abi-with-auto-fetch: fetch from this field instead while showWhen holds
+  contractAddressFieldWhen?: { field: string; showWhen: ShowWhen };
 
   // For abi-with-auto-fetch: which field contains the network
   networkField?: string;

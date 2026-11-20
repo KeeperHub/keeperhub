@@ -117,7 +117,7 @@ Failed steps are retried with exponential backoff. To reduce risk: test on Sepol
 | API rate limit (unauthenticated) | 10 requests/minute |
 | Direct Execution API | 60 requests/minute per API key |
 | Code Plugin timeout | 1-120 seconds (default 60) |
-| Batch Read Contract | 5,000 total calls per execution |
+| Batch Read Contract | 5,000 total calls per execution (rows or list) |
 | Batch size per RPC request | 1-500 (default 100) |
 
 ### How does gas estimation work?

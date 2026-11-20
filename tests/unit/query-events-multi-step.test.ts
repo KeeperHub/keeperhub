@@ -21,13 +21,16 @@ vi.mock("@/lib/rpc/network-utils", () => ({
     if (network === "mainnet") {
       return 1;
     }
+    if (network === "solana") {
+      return 101;
+    }
     throw new Error(`Unsupported network: ${network}`);
   },
 }));
 
 vi.mock("@/lib/rpc/provider-factory", () => ({
   getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
-  isSolanaChain: () => false,
+  isSolanaChain: (chainId: number) => chainId === 101,
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -416,6 +419,23 @@ describe("queryEventsStep - one event on an address list", () => {
     expect(node.getLogsCalls.length).toBeGreaterThan(0);
   });
 
+  it("refuses a Solana network before the list, as in every Query Events mode", async () => {
+    const result = await queryEventsStep({
+      ...listInput,
+      network: "solana",
+      contractAddresses: JSON.stringify([
+        "So11111111111111111111111111111111111111112",
+      ]),
+    });
+
+    // The shared evmOnlyGuard result, not a 0x message about the list.
+    expect(result).toEqual({
+      success: false,
+      error: "Solana is not supported for this action yet",
+    });
+    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+  });
+
   it("fails before any RPC call on a list that is not an array, even with failOnError off", async () => {
     const result = await queryEventsStep({
       ...listInput,
@@ -425,7 +445,9 @@ describe("queryEventsStep - one event on an address list", () => {
 
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error).toContain("must be a list of addresses");
+      expect(result.error).toBe(
+        'Contract Addresses got a single value, not a list. To give one, put it in brackets, like ["0xabc..."]. If it comes from Encode / Decode, a one-entry array comes back as a plain value; see the docs.'
+      );
     }
     expect(mockGetRpcProvider).not.toHaveBeenCalled();
   });
