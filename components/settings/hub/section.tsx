@@ -46,6 +46,7 @@ export function SectionHeader({
   description,
   action,
   leading,
+  wide = false,
 }: {
   title: string;
   /** A node, so a page still waiting for it can hold the line open. */
@@ -53,8 +54,15 @@ export function SectionHeader({
   action?: ReactNode;
   /** Sits to the left of the title, for the way back out of a subpage. */
   leading?: ReactNode;
+  /** The description runs the full width, under the title and the action. */
+  wide?: boolean;
 }): React.ReactElement {
-  return (
+  const text = description && (
+    <p className={cn("text-muted-foreground text-sm", !wide && "max-w-xl")}>
+      {description}
+    </p>
+  );
+  const header = (
     <div className="flex flex-wrap items-end justify-between gap-4">
       {/* Aligned to the title's line, not to the middle of the block: with a
           second line under the title the control sat between the two. */}
@@ -64,14 +72,19 @@ export function SectionHeader({
           <h1 className="font-bold text-xl tracking-tight @xl/settings:text-2xl">
             {title}
           </h1>
-          {description && (
-            <p className="max-w-xl text-muted-foreground text-sm">
-              {description}
-            </p>
-          )}
+          {!wide && text}
         </div>
       </div>
       {action}
+    </div>
+  );
+  if (!(wide && text)) {
+    return header;
+  }
+  return (
+    <div className="flex flex-col gap-1.5">
+      {header}
+      {text}
     </div>
   );
 }

@@ -1,6 +1,8 @@
 // Operator labels, groups and hints. Kept free of nanoid so plugin
 // definitions (bundled into the workflow runtime) can import it.
 
+import { groupedSelectLabel } from "@/lib/workflow/editor/select-option-groups";
+import type { SelectOption } from "@/plugins/registry";
 import type { ConditionOperator } from "./builder-types";
 
 // Grouping categories drive the type-aware operator dropdown: each operator
@@ -110,7 +112,15 @@ export const OPERATOR_METADATA: Record<ConditionOperator, OperatorMeta> = {
     label: "matches regex",
     unary: false,
     category: "text",
-    description: "Matches the regular expression (new RegExp(b).test(a))",
+    description:
+      'Text matches the regular expression anywhere; ^ start, $ end, (?i) ignore case. null is tested as "null"',
+  },
+  notMatchesRegex: {
+    label: "does not match regex",
+    unary: false,
+    category: "text",
+    description:
+      'Text does not match the regular expression anywhere; ^ start, $ end, (?i) ignore case. null is tested as "null": add is not null to leave it out',
   },
   isEmpty: {
     label: "is empty",
@@ -221,20 +231,31 @@ export function operatorsForCategory(
   );
 }
 
-const REPEATED_LABELS: ReadonlySet<string> = new Set(
-  Object.values(OPERATOR_METADATA)
-    .map((meta) => meta.label)
-    .filter((label, index, labels) => labels.indexOf(label) !== index)
-);
+// Condition's dropdown as select options, built once: the open list groups
+// them and the closed select labels them with the same shared helpers Filter
+// Array uses, so the two dropdowns cannot drift apart.
+export const CONDITION_OPERATOR_OPTIONS: readonly SelectOption[] =
+  OPERATOR_GROUPS.flatMap((group) =>
+    operatorsForCategory(group.category).map((op) => ({
+      value: op,
+      label: OPERATOR_METADATA[op].label,
+      group: group.label,
+      description: OPERATOR_METADATA[op].description,
+    }))
+  );
+
+// Takes any operator name, so Filter Array's own operators can ask too.
+export function isRegexOperator(operator: string): boolean {
+  return operator === "matchesRegex" || operator === "notMatchesRegex";
+}
 
 // The closed dropdown names the group only where the label repeats
 // ("Text: contains" vs "Array: contains"), so it fits Condition's narrow select.
 export function closedOperatorLabel(operator: ConditionOperator): string {
-  const meta = OPERATOR_METADATA[operator];
-  const group = OPERATOR_GROUPS.find(
-    (candidate) => candidate.category === meta.category
+  // Every operator is in the options (a test pins it); the fallback only
+  // keeps the return type a string.
+  return (
+    groupedSelectLabel(CONDITION_OPERATOR_OPTIONS, operator) ??
+    OPERATOR_METADATA[operator].label
   );
-  return group && REPEATED_LABELS.has(meta.label)
-    ? `${group.label}: ${meta.label}`
-    : meta.label;
 }

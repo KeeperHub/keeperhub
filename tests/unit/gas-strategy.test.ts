@@ -481,6 +481,42 @@ describe("AdaptiveGasStrategy", () => {
       }
     );
 
+    describe("zero-tip networks", () => {
+      const stableBaseFees = new Array(11).fill("0x1312d00"); // 0.02 gwei
+      const zeroRewards = new Array(10).fill(["0x0"]);
+
+      it("should send no tip on Arbitrum when no block paid one", async () => {
+        const strategy = new AdaptiveGasStrategy();
+        const provider = createMockProvider({
+          feeHistory: { baseFeePerGas: stableBaseFees, reward: zeroRewards },
+        });
+
+        const config = await strategy.getGasConfig(
+          provider as unknown as import("ethers").Provider,
+          BigInt(21_000),
+          42_161
+        );
+
+        expect(config.maxPriorityFeePerGas).toBe(BigInt(0));
+        expect(config.maxFeePerGas).toBe(BigInt(40_000_000)); // 2x base fee
+      });
+
+      it("should apply the chain floor when no block paid a tip", async () => {
+        const strategy = new AdaptiveGasStrategy();
+        const provider = createMockProvider({
+          feeHistory: { baseFeePerGas: stableBaseFees, reward: zeroRewards },
+        });
+
+        const config = await strategy.getGasConfig(
+          provider as unknown as import("ethers").Provider,
+          BigInt(21_000),
+          8453 // Base (minPriorityFeeGwei: 0.001)
+        );
+
+        expect(config.maxPriorityFeePerGas).toBe(BigInt(1_000_000));
+      });
+    });
+
     it("should keep a HyperEVM gas limit inside the chain's 3M block cap", async () => {
       // HyperEVM's regular blocks cap at 3,000,000 gas and the node rejects
       // anything above it at submission with -32000 "exceeds block gas

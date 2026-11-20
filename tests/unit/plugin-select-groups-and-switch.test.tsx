@@ -45,6 +45,13 @@ describe("isSwitchOn", () => {
     expect(isSwitchOn(undefined, "false")).toBe(false);
     expect(isSwitchOn(undefined, undefined)).toBe(false);
   });
+
+  it("reads blank as unset and anything else as off, as the step does", () => {
+    expect(isSwitchOn("", "true")).toBe(true);
+    expect(isSwitchOn(null, "true")).toBe(true);
+    expect(isSwitchOn("{{@a:A.on}}", "true")).toBe(false);
+    expect(isSwitchOn("True", undefined)).toBe(false);
+  });
 });
 
 describe("PlainSwitchField", () => {

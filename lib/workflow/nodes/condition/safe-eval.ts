@@ -16,8 +16,9 @@
  * - Unary: ! - + typeof
  * - Ternary: test ? a : b
  * - Member access: obj.prop, obj["key"], obj[0], .length
- * - Calls: String(...), Array.isArray(...), Object.keys(...), and the
- *   allowlisted instance methods (includes/startsWith/endsWith/toString/
+ * - Calls: String(...), Array.isArray(...), Object.keys(...),
+ *   matchesRegex(text, "pattern") (RE2, pattern must be a string literal), and
+ *   the allowlisted instance methods (includes/startsWith/endsWith/toString/
  *   toLowerCase/toUpperCase/trim)
  *
  * Everything else (arbitrary identifiers, array/object literals, prototype
@@ -31,8 +32,22 @@ import {
   type MissingReference,
   missingReferenceError,
 } from "./missing-reference";
+import {
+  compileRegex,
+  MAX_CONDITION_REGEX_WORK,
+  MAX_REGEX_CALLS,
+  REGEX_ARITY_ERROR,
+  REGEX_BACKSLASH_ERROR,
+  REGEX_CALLS_ERROR,
+  REGEX_LITERAL_ERROR,
+  REGEX_NON_TEXT_ERROR,
+  REGEX_SOURCE_ERROR,
+  REGEX_UNDEFINED_ERROR,
+  RegexBudget,
+  regexMatches,
+} from "./regex-match";
+import { scanString } from "./string-literal";
 
-const HEX_RE = /^[0-9a-fA-F]+$/;
 const WHITESPACE_RE = /\s/;
 
 const ALLOWED_METHODS = new Set([
@@ -47,11 +62,23 @@ const ALLOWED_METHODS = new Set([
 
 const ALLOWED_UNARY = new Set(["!", "-", "+", "typeof"]);
 
-const BLOCKED_PROPS = new Set(["constructor", "__proto__", "prototype"]);
+export const BLOCKED_PROPS: ReadonlySet<string> = new Set([
+  "constructor",
+  "__proto__",
+  "prototype",
+]);
 
+// A missing field must not read as the text "[object Object]".
 const ALLOWED_GLOBALS: Record<string, (...args: unknown[]) => unknown> = {
-  String: (...args) => String(args[0]),
+  String: (...args) => {
+    if (isMissingReference(args[0])) {
+      throw missingReferenceError(args[0]);
+    }
+    return String(args[0]);
+  },
 };
+
+const REGEX_FUNCTION = "matchesRegex";
 
 const ALLOWED_STATIC: Record<string, (...args: unknown[]) => unknown> = {
   "Array.isArray": (...args) => Array.isArray(args[0]),
@@ -112,7 +139,12 @@ const SINGLE_CHAR_PUNCTUATORS = new Set([
   ",",
 ]);
 
-type LiteralNode = { type: "Literal"; value: unknown };
+type LiteralNode = {
+  type: "Literal";
+  value: unknown;
+  /** A string whose escapes dropped a backslash, e.g. "\d" read as "d". */
+  lossy?: boolean;
+};
 type IdentifierNode = { type: "Identifier"; name: string };
 type UnaryNode = {
   type: "UnaryExpression";
@@ -159,7 +191,11 @@ type AstNode =
   | MemberNode
   | CallNode;
 
-type Token = { type: "num" | "str" | "ident" | "punct"; value: string };
+type Token = {
+  type: "num" | "str" | "ident" | "punct";
+  value: string;
+  lossy?: boolean;
+};
 
 function isIdentifierStart(ch: string): boolean {
   return (
@@ -176,98 +212,6 @@ function isIdentifierPart(ch: string): boolean {
 
 function isDigit(ch: string): boolean {
   return ch >= "0" && ch <= "9";
-}
-
-function decodeHexEscape(
-  src: string,
-  backslashIndex: number,
-  count: number
-): { value: string; next: number } {
-  const hex = src.slice(backslashIndex + 2, backslashIndex + 2 + count);
-  if (hex.length < count || !HEX_RE.test(hex)) {
-    throw new Error("Invalid escape sequence in string literal");
-  }
-  return {
-    value: String.fromCodePoint(Number.parseInt(hex, 16)),
-    next: backslashIndex + 2 + count,
-  };
-}
-
-function decodeUnicodeEscape(
-  src: string,
-  backslashIndex: number
-): { value: string; next: number } {
-  const afterU = backslashIndex + 2;
-  if (src[afterU] === "{") {
-    const end = src.indexOf("}", afterU);
-    if (end === -1) {
-      throw new Error("Invalid escape sequence in string literal");
-    }
-    const hex = src.slice(afterU + 1, end);
-    if (hex.length === 0 || !HEX_RE.test(hex)) {
-      throw new Error("Invalid escape sequence in string literal");
-    }
-    return {
-      value: String.fromCodePoint(Number.parseInt(hex, 16)),
-      next: end + 1,
-    };
-  }
-  return decodeHexEscape(src, backslashIndex, 4);
-}
-
-const SIMPLE_ESCAPES: Record<string, string> = {
-  n: "\n",
-  t: "\t",
-  r: "\r",
-  b: "\b",
-  f: "\f",
-  v: "\v",
-  "0": "\0",
-};
-
-function decodeEscape(
-  src: string,
-  backslashIndex: number
-): { value: string; next: number } {
-  const esc = src[backslashIndex + 1];
-  if (esc === undefined) {
-    throw new Error("Unterminated string literal");
-  }
-  if (esc === "x") {
-    return decodeHexEscape(src, backslashIndex, 2);
-  }
-  if (esc === "u") {
-    return decodeUnicodeEscape(src, backslashIndex);
-  }
-  const simple = SIMPLE_ESCAPES[esc];
-  if (simple !== undefined) {
-    return { value: simple, next: backslashIndex + 2 };
-  }
-  return { value: esc, next: backslashIndex + 2 };
-}
-
-function scanString(
-  src: string,
-  start: number
-): { value: string; next: number } {
-  const quote = src[start];
-  let i = start + 1;
-  let out = "";
-  while (i < src.length) {
-    const ch = src[i];
-    if (ch === "\\") {
-      const decoded = decodeEscape(src, i);
-      out += decoded.value;
-      i = decoded.next;
-      continue;
-    }
-    if (ch === quote) {
-      return { value: out, next: i + 1 };
-    }
-    out += ch;
-    i += 1;
-  }
-  throw new Error("Unterminated string literal");
 }
 
 function scanNumber(
@@ -314,7 +258,7 @@ function tokenize(src: string): Token[] {
     }
     if (ch === '"' || ch === "'") {
       const scanned = scanString(src, i);
-      tokens.push({ type: "str", value: scanned.value });
+      tokens.push({ type: "str", value: scanned.value, lossy: scanned.lossy });
       i = scanned.next;
       continue;
     }
@@ -403,7 +347,7 @@ function parse(expression: string): AstNode {
       return { type: "Literal", value: Number(token.value) };
     }
     if (token.type === "str") {
-      return { type: "Literal", value: token.value };
+      return { type: "Literal", value: token.value, lossy: token.lossy };
     }
     if (token.type === "ident") {
       return literalFromIdentifier(token.value);
@@ -818,7 +762,7 @@ function applyBinary(
     case "%":
       return (left as number) % (right as number);
     case "**":
-      return (left as number) ** (right as number);
+      return power(left, right);
     default:
       throw new Error(`Operator not allowed in condition: ${operator}`);
   }
@@ -911,14 +855,83 @@ function evalMember(node: MemberNode, ctx: Record<string, unknown>): unknown {
   return (object as Record<string | number, unknown>)[key];
 }
 
+// The pattern is a literal so it is known before any workflow data arrives.
+function regexPattern(node: CallNode): string {
+  if (node.arguments.length !== 2) {
+    throw new Error(REGEX_ARITY_ERROR);
+  }
+  const pattern = node.arguments[1];
+  if (pattern.type !== "Literal" || typeof pattern.value !== "string") {
+    // Built from a variable means taken from another node; anything else
+    // (!"a", 1) is just not quoted text.
+    throw new Error(
+      mentionsIdentifier(pattern) ? REGEX_SOURCE_ERROR : REGEX_LITERAL_ERROR
+    );
+  }
+  if (pattern.lossy) {
+    throw new Error(REGEX_BACKSLASH_ERROR);
+  }
+  return pattern.value;
+}
+
+// One budget per evaluation; evaluation is synchronous, so a module slot is safe.
+let activeRegexBudget: RegexBudget | undefined;
+// The values as resolved, before large-integer mode: the regex tests them.
+let activeTextContext: Record<string, unknown> | undefined;
+
+function evalRegexCall(node: CallNode, ctx: Record<string, unknown>): boolean {
+  if (!activeRegexBudget) {
+    throw new Error(`${REGEX_FUNCTION} runs only inside a compiled condition`);
+  }
+  // A reference typed inside the pattern is refused on the raw text, before
+  // references become __vN (preValidateConditionExpression).
+  const regex = compileRegex(regexPattern(node), false, activeRegexBudget);
+  const text = evalNode(node.arguments[0], activeTextContext ?? ctx);
+  if (isMissingReference(text)) {
+    throw missingReferenceError(text);
+  }
+  // e.g. a node on a branch that did not run: not the text "undefined".
+  if (text === undefined) {
+    throw new Error(REGEX_UNDEFINED_ERROR);
+  }
+  if (typeof text === "object" && text !== null) {
+    throw new Error(REGEX_NON_TEXT_ERROR);
+  }
+  return regexMatches(regex, String(text), activeRegexBudget);
+}
+
+// Exact BigInt powers grow without bound; cap the size of the result.
+const MAX_POWER_BITS = BigInt(65_536);
+const ZERO = BigInt(0);
+const ONE = BigInt(1);
+
+function power(left: unknown, right: unknown): unknown {
+  if (typeof left === "bigint" && typeof right === "bigint" && right > ZERO) {
+    const magnitude = left < ZERO ? -left : left;
+    // 0, 1 and -1 stay that small at any power.
+    if (magnitude <= ONE) {
+      return left ** right;
+    }
+    const bits = BigInt(magnitude.toString(2).length);
+    if (bits * right > MAX_POWER_BITS) {
+      throw new Error("Power result is too large for a condition");
+    }
+  }
+  return (left as number) ** (right as number);
+}
+
 function evalCall(node: CallNode, ctx: Record<string, unknown>): unknown {
   const callee = node.callee;
   if (callee.type === "Identifier") {
-    const fn = ALLOWED_GLOBALS[callee.name];
-    if (!fn) {
+    if (callee.name === REGEX_FUNCTION) {
+      return evalRegexCall(node, ctx);
+    }
+    if (!Object.hasOwn(ALLOWED_GLOBALS, callee.name)) {
       throw new Error(`Function "${callee.name}" is not allowed in condition`);
     }
-    return fn(...node.arguments.map((arg) => evalNode(arg, ctx)));
+    return ALLOWED_GLOBALS[callee.name](
+      ...node.arguments.map((arg) => evalNode(arg, ctx))
+    );
   }
   if (callee.type === "MemberExpression" && !callee.computed) {
     if (callee.property.type !== "Identifier") {
@@ -1045,7 +1058,10 @@ function walkMember(node: MemberNode): void {
 function walkCall(node: CallNode): void {
   const callee = node.callee;
   if (callee.type === "Identifier") {
-    if (!Object.hasOwn(ALLOWED_GLOBALS, callee.name)) {
+    if (callee.name === REGEX_FUNCTION) {
+      // Read, not compiled: compiling here would cost CPU no budget charges.
+      regexPattern(node);
+    } else if (!Object.hasOwn(ALLOWED_GLOBALS, callee.name)) {
       throw new Error(`Function "${callee.name}" is not allowed`);
     }
   } else if (callee.type === "MemberExpression" && !callee.computed) {
@@ -1076,15 +1092,76 @@ function walkCall(node: CallNode): void {
  */
 export function safeEvaluateCondition(
   expression: string,
-  context: Record<string, unknown>
+  context: Record<string, unknown>,
+  runBudget?: RegexBudget,
+  textContext?: Record<string, unknown>
 ): unknown {
-  return compileSafeCondition(expression)(context);
+  return compileSafeCondition(expression)(context, runBudget, textContext);
 }
 
-// Parses once, for callers that evaluate one expression against many contexts.
-export function compileSafeCondition(
-  expression: string
-): (context: Record<string, unknown>) => unknown {
+function childNodes(node: AstNode): AstNode[] {
+  const children: AstNode[] = [];
+  switch (node.type) {
+    case "UnaryExpression":
+      children.push(node.argument);
+      break;
+    case "BinaryExpression":
+    case "LogicalExpression":
+      children.push(node.left, node.right);
+      break;
+    case "ConditionalExpression":
+      children.push(node.test, node.consequent, node.alternate);
+      break;
+    case "MemberExpression":
+      children.push(node.object, node.property);
+      break;
+    case "CallExpression":
+      children.push(node.callee, ...node.arguments);
+      break;
+    default:
+      break;
+  }
+  return children;
+}
+
+function mentionsIdentifier(node: AstNode): boolean {
+  return (
+    node.type === "Identifier" || childNodes(node).some(mentionsIdentifier)
+  );
+}
+
+function countRegexCalls(node: AstNode): number {
+  const own =
+    node.type === "CallExpression" &&
+    node.callee.type === "Identifier" &&
+    node.callee.name === REGEX_FUNCTION
+      ? 1
+      : 0;
+  return childNodes(node).reduce(
+    (total, child) => total + countRegexCalls(child),
+    own
+  );
+}
+
+function regexCallNodes(node: AstNode, found: CallNode[] = []): CallNode[] {
+  if (
+    node.type === "CallExpression" &&
+    node.callee.type === "Identifier" &&
+    node.callee.name === REGEX_FUNCTION
+  ) {
+    found.push(node);
+  }
+  for (const child of childNodes(node)) {
+    regexCallNodes(child, found);
+  }
+  return found;
+}
+
+/**
+ * The patterns of a run-ready condition's matchesRegex calls, read as a run
+ * reads them, without compiling; throws what the run would.
+ */
+export function regexCallPatterns(expression: string): string[] {
   let ast: AstNode;
   try {
     ast = parse(expression);
@@ -1093,7 +1170,48 @@ export function compileSafeCondition(
       `Condition parse error: ${error instanceof Error ? error.message : String(error)}`
     );
   }
-  return (context: Record<string, unknown>): unknown => evalNode(ast, context);
+  return regexCallNodes(ast).map(regexPattern);
+}
+
+type CompiledCondition = (
+  context: Record<string, unknown>,
+  runBudget?: RegexBudget,
+  // What matchesRegex reads when context holds large-integer mode's BigInts.
+  textContext?: Record<string, unknown>
+) => unknown;
+
+// Parses once, for callers that evaluate one expression against many contexts.
+export function compileSafeCondition(expression: string): CompiledCondition {
+  let ast: AstNode;
+  try {
+    ast = parse(expression);
+  } catch (error) {
+    throw new Error(
+      `Condition parse error: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  const regexCalls = countRegexCalls(ast);
+  if (regexCalls > MAX_REGEX_CALLS) {
+    throw new Error(REGEX_CALLS_ERROR);
+  }
+  if (regexCalls === 0) {
+    return (context: Record<string, unknown>): unknown =>
+      evalNode(ast, context);
+  }
+  return (context, runBudget, textContext) => {
+    const outerBudget = activeRegexBudget;
+    const outerText = activeTextContext;
+    activeRegexBudget = new RegexBudget(MAX_CONDITION_REGEX_WORK, {
+      parent: runBudget,
+    });
+    activeTextContext = textContext;
+    try {
+      return evalNode(ast, context);
+    } finally {
+      activeRegexBudget = outerBudget;
+      activeTextContext = outerText;
+    }
+  };
 }
 
 /**
@@ -1102,10 +1220,15 @@ export function compileSafeCondition(
  * expressions in displayed/exported source.
  */
 export function isSafeConditionExpression(expression: string): boolean {
+  return runnableConditionError(expression) === undefined;
+}
+
+/** Why a run-ready condition would fail every run's checks, without compiling. */
+export function runnableConditionError(expression: string): string | undefined {
   try {
     walkAllowlist(parse(expression));
-    return true;
-  } catch {
-    return false;
+    return;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
   }
 }

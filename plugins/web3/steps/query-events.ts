@@ -26,7 +26,9 @@ import {
   TIP_SAFETY_MARGIN_BLOCKS,
 } from "./query-events-core";
 import {
+  parseAddressListQuery,
   parseEventQueries,
+  planAddressListQueries,
   planLogQueries,
   queryPlannedEvents,
   type TaggedEvent,
@@ -62,13 +64,15 @@ const SOFT_QUERY_FIELDS = {
 
 export type QueryEventsCoreInput = ReadFailOnErrorInput & {
   network: string;
-  // "multiple" reads eventQueries; anything else is the single-event query.
+  // "multiple" reads eventQueries, "address-list" reads contractAddresses; anything else is the single-event query.
   queryMode?: string;
   contractAddress?: string;
   abi?: string;
   eventName?: string;
   eventArgs?: string | Record<string, unknown>;
   eventQueries?: string | unknown[];
+  // Read when queryMode is "address-list": one event on each listed contract.
+  contractAddresses?: string | unknown[];
   fromBlock?: string;
   toBlock?: string;
   blockCount?: number | string;
@@ -78,6 +82,10 @@ export type QueryEventsInput = StepInput & QueryEventsCoreInput;
 
 function isMultipleEventQuery(input: QueryEventsCoreInput): boolean {
   return input.queryMode === "multiple";
+}
+
+function isAddressListQuery(input: QueryEventsCoreInput): boolean {
+  return input.queryMode === "address-list";
 }
 
 type EventBatchesResult = { events: DecodedEvent[]; actualToBlock: number };
@@ -289,11 +297,16 @@ async function multipleEventsHandler(
   input: QueryEventsInput,
   chainId: number
 ): Promise<QueryEventsResult> {
-  const parsed = parseEventQueries(input.eventQueries);
+  const addressList = isAddressListQuery(input);
+  const parsed = addressList
+    ? parseAddressListQuery(input)
+    : parseEventQueries(input.eventQueries);
   if (!parsed.success) {
     return parsed;
   }
-  const plans = planLogQueries(parsed.queries);
+  const plans = addressList
+    ? planAddressListQueries(parsed.queries)
+    : planLogQueries(parsed.queries);
 
   const opened = await openBlockRange(
     input,
@@ -360,7 +373,7 @@ async function stepHandler(
     return evmOnlyResult;
   }
 
-  return isMultipleEventQuery(input)
+  return isMultipleEventQuery(input) || isAddressListQuery(input)
     ? multipleEventsHandler(input, chainId)
     : singleEventHandler(input, chainId);
 }
@@ -370,9 +383,10 @@ export async function queryEventsStep(
 ): Promise<QueryEventsResult> {
   "use step";
 
-  // A multiple-events query has no single contract to link to.
+  // A multiple-events or address-list query has no single contract to link to.
   const contractAddressLink =
-    isMultipleEventQuery(input) || input.contractAddress === undefined
+    isMultipleEventQuery(input) ||
+    isAddressListQuery(input) || input.contractAddress === undefined
       ? undefined
       : await resolveExplorerLink(input.network, input.contractAddress);
   const enrichedInput: QueryEventsInput & { contractAddressLink?: string } =

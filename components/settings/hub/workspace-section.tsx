@@ -2,16 +2,19 @@
 
 import { Plus } from "lucide-react";
 import { useState } from "react";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { ProjectFormDialog } from "@/components/projects/project-form-dialog";
 import { TagFormDialog } from "@/components/tags/tag-form-dialog";
 import { Button } from "@/components/ui/button";
 import type { Project, Tag } from "@/lib/api-client";
 import { useProjectsTags } from "./hooks/use-projects-tags";
 import { EmptyState, SectionHeader, SettingsCard } from "./section";
+import { useSettingsContext } from "./settings-context";
 import { GroupingTable } from "./workspace/grouping-table";
 
 export function WorkspaceSection(): React.ReactElement {
   const data = useProjectsTags();
+  const { canEdit, isViewer } = useSettingsContext();
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [editingTag, setEditingTag] = useState<Tag | null>(null);
   const [projectDialog, setProjectDialog] = useState(false);
@@ -35,10 +38,17 @@ export function WorkspaceSection(): React.ReactElement {
 
       <SettingsCard
         action={
-          <Button onClick={() => openProject(null)} size="sm" variant="outline">
-            <Plus className="size-3.5" />
-            New project
-          </Button>
+          <ViewOnlyTooltip isViewer={isViewer}>
+            <Button
+              disabled={!canEdit}
+              onClick={() => openProject(null)}
+              size="sm"
+              variant="outline"
+            >
+              <Plus className="size-3.5" />
+              New project
+            </Button>
+          </ViewOnlyTooltip>
         }
         bodyClassName="p-2"
         description="The top-level grouping in the workflows sidebar."
@@ -49,7 +59,7 @@ export function WorkspaceSection(): React.ReactElement {
         )}
         {(data.loadingProjects || data.projects.length > 0) && (
           <GroupingTable
-            canManage
+            canManage={canEdit}
             loading={data.loadingProjects}
             onDelete={async (id) => {
               const project = data.projects.find((p) => p.id === id);
@@ -68,10 +78,17 @@ export function WorkspaceSection(): React.ReactElement {
 
       <SettingsCard
         action={
-          <Button onClick={() => openTag(null)} size="sm" variant="outline">
-            <Plus className="size-3.5" />
-            New tag
-          </Button>
+          <ViewOnlyTooltip isViewer={isViewer}>
+            <Button
+              disabled={!canEdit}
+              onClick={() => openTag(null)}
+              size="sm"
+              variant="outline"
+            >
+              <Plus className="size-3.5" />
+              New tag
+            </Button>
+          </ViewOnlyTooltip>
         }
         bodyClassName="p-2"
         description="Tags subdivide a project in the second sidebar panel."
@@ -82,7 +99,7 @@ export function WorkspaceSection(): React.ReactElement {
         )}
         {(data.loadingTags || data.tags.length > 0) && (
           <GroupingTable
-            canManage
+            canManage={canEdit}
             loading={data.loadingTags}
             onDelete={async (id) => {
               const tag = data.tags.find((t) => t.id === id);

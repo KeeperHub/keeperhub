@@ -147,6 +147,50 @@ export function resolveDefaultOnFlag(value: unknown): boolean {
 }
 
 /**
+ * Read a plain on/off switch: unset (undefined, null or "") takes its declared
+ * default, which is off when none is declared. The editor, save validation,
+ * the step and the MCP pin schema all read a switch through this. Undefined
+ * for any other value.
+ */
+export function resolveSwitch(
+  value: unknown,
+  defaultValue: unknown
+): boolean | undefined {
+  const unset = value === undefined || value === null || value === "";
+  const raw = unset ? (defaultValue ?? false) : value;
+  if (raw === true || raw === "true") {
+    return true;
+  }
+  if (raw === false || raw === "false") {
+    return false;
+  }
+  return;
+}
+
+/**
+ * Why a switch refuses a value resolveSwitch cannot read, worded the same at
+ * save and at run. "True" or " true" is also told what to change.
+ */
+export function switchRefusal(name: string, value: unknown): string {
+  const text = typeof value === "string" ? value : "";
+  const trimmed = text.trim();
+  const word = trimmed.toLowerCase();
+  if (word !== "true" && word !== "false") {
+    return `${name} must be true or false.`;
+  }
+  const hints: string[] = [];
+  if (text !== trimmed) {
+    hints.push("with no spaces around it");
+  }
+  if (trimmed !== word) {
+    hints.push("in lowercase");
+  }
+  return hints.length > 0
+    ? `${name} must be true or false, ${hints.join(" and ")}.`
+    : `${name} must be true or false.`;
+}
+
+/**
  * Resolve a "fail workflow on error" config flag. Defaults to true (a failure
  * fails the step); only an explicit `false` (boolean or the "false" string
  * the visual editor may persist) opts into soft-fail. Shared by any step that

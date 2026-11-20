@@ -15,6 +15,7 @@ import {
 } from "@/lib/workflow/retry-policy";
 import type { PagerDutyCredentials } from "../credentials";
 import {
+  CHANGE_EVENT_PATH,
   cleanCustomDetails,
   cleanDisplayField,
   describeTrims,
@@ -27,7 +28,6 @@ import {
 
 const RETRY_ATTEMPT_LIMITS = { defaultAttempts: 2, maxAttempts: 5 };
 const RETRY_DELAY_LIMITS = { defaultDelaySeconds: 1, maxDelaySeconds: 15 };
-const CHANGE_EVENT_PATH = "/v2/change/enqueue";
 
 const LOG_LABELS = {
   plugin_name: "pagerduty",

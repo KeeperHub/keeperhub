@@ -2,7 +2,11 @@ import type { Edge, EdgeChange, Node, NodeChange } from "@xyflow/react";
 import { applyEdgeChanges, applyNodeChanges } from "@xyflow/react";
 import { atom } from "jotai";
 import { toast } from "sonner";
-import { api } from "@/lib/api-client";
+import {
+  api,
+  WORKFLOW_SAVE_ERROR_TOAST,
+  workflowSaveErrorMessage,
+} from "@/lib/api-client";
 import type { NodeExecutionStatus } from "@/lib/errors/execution-status";
 import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import { computeAutoLayout } from "@/lib/workflow/editor/auto-layout";
@@ -124,6 +128,9 @@ export const currentWorkflowPublicTagsAtom = atom<
   Array<{ id: string; name: string; slug: string }>
 >([]);
 export const isWorkflowOwnerAtom = atom<boolean>(true); // Whether current user owns this workflow
+// The caller reads this workflow as a viewer of its organization: full read
+// access (runs, history) but no edits.
+export const isWorkflowViewerAtom = atom<boolean>(false);
 export const isWorkflowEnabled = atom<boolean>(false);
 // The toolbar's Enable switch handler (validation, sign-in prompt, API call),
 // published for the Configuration sheet's switch so it always acts on the
@@ -257,6 +264,11 @@ export const autosaveAtom = atom(
       return;
     }
 
+    // A caller who cannot edit this workflow has nothing to save.
+    if (!get(isWorkflowOwnerAtom)) {
+      return;
+    }
+
     const saveFunc = async () => {
       try {
         set(isSavingAtom, true);
@@ -272,7 +284,13 @@ export const autosaveAtom = atom(
           "[Workflow] Autosave failed",
           error
         );
-        toast.error("Couldn't save workflow changes. Please try again.");
+        toast.error(
+          workflowSaveErrorMessage(
+            error,
+            "Couldn't save workflow changes. Please try again."
+          ),
+          WORKFLOW_SAVE_ERROR_TOAST
+        );
       } finally {
         await new Promise((resolve) => setTimeout(resolve, 800));
         set(isSavingAtom, false);
@@ -681,6 +699,7 @@ export const resetWorkflowStateForOrgSwitchAtom = atom(null, (_get, set) => {
   set(currentWorkflowVisibilityAtom, "private");
   set(currentWorkflowPublicTagsAtom, []);
   set(isWorkflowOwnerAtom, true);
+  set(isWorkflowViewerAtom, false);
   set(isWorkflowEnabled, false);
   set(workflowNotFoundAtom, false);
   set(currentExecutionIdAtom, null);

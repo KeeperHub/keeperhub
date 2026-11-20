@@ -388,7 +388,18 @@ For **Condition nodes** and **For Each nodes**, edges require a `sourceHandle` f
 
 Condition nodes have dual output paths with `true` and `false` source handles. Connect downstream nodes to the appropriate handle to create if/else logic in a single Condition node.
 
-Conditions support these operators: `==` (soft equals), `===` (equals), `!=` (soft not equals), `!==` (not equals), `>`, `>=`, `<`, `<=`, `contains`, `startsWith`, `endsWith`, `matchesRegex`, `isEmpty`, `isNotEmpty`, `exists`, `doesNotExist`, `isNull`, `isNotNull`, `isUndefined`, `isNotUndefined`.
+Conditions support these operators: `==` (soft equals), `===` (equals), `!=` (soft not equals), `!==` (not equals), `>`, `>=`, `<`, `<=`, `contains`, `startsWith`, `endsWith`, `matchesRegex`, `notMatchesRegex`, `isEmpty`, `isNotEmpty`, `exists`, `doesNotExist`, `isNull`, `isNotNull`, `isUndefined`, `isNotUndefined`.
+
+`matchesRegex` and `notMatchesRegex` take an [RE2](https://github.com/google/re2/wiki/Syntax) pattern: close to JavaScript's syntax, without lookahead, lookbehind, back-references or `\u` escapes. Start it with `(?i)` to ignore case. The pattern must be typed, not a template reference. In a visual rule, `rightOperand` is the pattern exactly as it should run, e.g. `^0x[0-9a-fA-F]{40}$`, with spaces at either end trimmed. A pattern that is one quoted string, or `/.../` with flags or regex syntax inside, is refused; to match a quote, put a backslash before it in the pattern. In JSON, each backslash and quote of the pattern gets one more backslash, e.g. `{ "leftOperand": "{{@n1:Webhook.body}}", "operator": "matchesRegex", "rightOperand": "^\\\"ok\\\"$" }` for the pattern `^\"ok\"$`. In an expression, write `matchesRegex({{@nodeId:Label.field}}, "^0x[0-9a-fA-F]{40}$")` and double each backslash inside the quotes (`"^\\d+$"`); `notMatchesRegex` is a rule operator only, so write `!matchesRegex(...)` for it. A list or object value fails the run; `null` is tested as the text `null`. A missing value fails the run.
+
+Regex limits:
+
+- Per Condition that uses `matchesRegex`: at most 16 calls (the negated form included) and 10,000 characters, each `{{...}}` reference counting as about 4. Other conditions have no length limit.
+- Per pattern: up to 512 characters and 1,000 compiled steps. Per tested value: up to 4,096 characters.
+- Per workflow, counting enabled Conditions only (their rules when they have them, otherwise their text; not Filter Array), including those on branches a run does not take: at most 32 Conditions that use `matchesRegex`, at most 100,000 characters of them, and their distinct patterns at most 5,000,000 to prepare together (2,000 per character plus 400 per step, roughly 2,000 pattern characters; identical patterns count once). See the limits table in [Creating Workflows](/workflows/creating#operators).
+- Matching: 5,000,000 (steps x characters) per Condition check and 10,000,000 per run, loops included. For more items use Filter Array.
+- A save is refused, with the reason and node in `invalidFields`, when an enabled Condition that uses `matchesRegex` would fail any run that reaches it (a bad pattern, too many calls, too long, a parse error) or the workflow is over a total. Only the first problem is reported, on one node: for a total length or pattern cost, the Condition with the most. When the cost is reported as "more than N%" (too far over to measure), the named node is only a place to start. The editor shows a workflow total on every regex Condition. Conditions without `matchesRegex` save as before.
+- A workflow that runs anyway (one saved before these limits, or a copy) with a regex Condition over 10,000 characters or over a total fails at its start, before any step runs.
 
 Conditions reference previous node outputs using template syntax: `{{@nodeId:Label.field}}`.
 

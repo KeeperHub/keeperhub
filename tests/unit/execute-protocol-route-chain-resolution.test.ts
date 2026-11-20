@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
+vi.mock("@/lib/features/route-guard", () => ({
+  enforceWorkflowFeatures: vi.fn().mockResolvedValue({ blocked: false }),
+}));
+
 vi.mock("server-only", () => ({}));
 vi.mock("@/protocols", () => ({}));
 

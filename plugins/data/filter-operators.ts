@@ -2,7 +2,7 @@
  * Operator options for data/filter. No "use step": the plugin definition and
  * the step core both read this list.
  *
- * Every set below is derived from Condition's operator metadata, so an
+ * Each operator's rule is derived from Condition's operator metadata, so an
  * operator added there is classified here without a second list to update.
  */
 
@@ -14,39 +14,35 @@ import {
   type OperatorCategory,
   operatorsForCategory,
 } from "@/lib/workflow/nodes/condition/operator-metadata";
+import type { SelectOption } from "@/plugins/registry";
 
 export const KEEP_ALL_OPERATOR = "keepAll";
 export const DEFAULT_FILTER_OPERATOR = "===";
 
-// Filter-only negations of the Text tests; regex stays out until it is safe.
-export const NEGATED_TEXT_OPERATORS = {
+// Filter-only negations of the Text tests.
+const NEGATED_TEXT_OPERATORS = {
   notContains: "contains",
   notStartsWith: "startsWith",
   notEndsWith: "endsWith",
 } as const satisfies Record<string, ConditionOperator>;
 
-export type NegatedTextOperator = keyof typeof NEGATED_TEXT_OPERATORS;
-
-export type FilterConditionOperator = Exclude<
-  ConditionOperator,
-  "matchesRegex"
->;
+type NegatedTextOperator = keyof typeof NEGATED_TEXT_OPERATORS;
 
 export type FilterOperator =
-  | FilterConditionOperator
+  | ConditionOperator
   | NegatedTextOperator
   | typeof KEEP_ALL_OPERATOR;
 
-export type FilterOperatorOption = {
+// A select option, so the operator list goes to the field as it is.
+type FilterOperatorOption = SelectOption & {
   value: FilterOperator;
-  label: string;
   group: string;
   description: string;
 };
 
 // Where Filter's test differs from Condition's, its hint says so.
 const NUMBER_TEST_SCOPE = "numbers, numeric text and hex are tested";
-const BOOLEAN_TEST_SCOPE = "other values are skipped";
+const BOOLEAN_TEST_SCOPE = "other values can't be tested";
 
 const FILTER_HINTS: Partial<Record<FilterOperator, string>> = {
   contains: "Text includes the value",
@@ -55,6 +51,10 @@ const FILTER_HINTS: Partial<Record<FilterOperator, string>> = {
   notContains: "Text does not include the value",
   notStartsWith: "Text does not begin with the value",
   notEndsWith: "Text does not end with the value",
+  matchesRegex:
+    "Text matches the regular expression anywhere; ^ start, $ end, (?i) ignore case",
+  notMatchesRegex:
+    "Text does not match the regular expression anywhere; ^ start, $ end, (?i) ignore case",
   ">": `Numerically greater than; ${NUMBER_TEST_SCOPE}`,
   ">=": `Numerically greater than or equal; ${NUMBER_TEST_SCOPE}`,
   "<": `Numerically less than; ${NUMBER_TEST_SCOPE}`,
@@ -71,7 +71,7 @@ const NEGATED_LABELS: Record<NegatedTextOperator, string> = {
 };
 
 function conditionOption(
-  op: FilterConditionOperator,
+  op: ConditionOperator,
   group: string
 ): FilterOperatorOption {
   return {
@@ -91,19 +91,13 @@ function negatedOption(op: NegatedTextOperator): FilterOperatorOption {
   };
 }
 
-function isFilterConditionOperator(
-  op: ConditionOperator
-): op is FilterConditionOperator {
-  return op !== "matchesRegex";
-}
-
 function groupOptions(
   category: OperatorCategory,
   label: string
 ): FilterOperatorOption[] {
-  const options = operatorsForCategory(category)
-    .filter(isFilterConditionOperator)
-    .map((op) => conditionOption(op, label));
+  const options = operatorsForCategory(category).map((op) =>
+    conditionOption(op, label)
+  );
   if (category !== "text") {
     return options;
   }
@@ -140,7 +134,7 @@ export function isNegatedTextOperator(
 // The Condition operator a Filter operator evaluates (a negation runs its base).
 export function baseConditionOperator(
   op: Exclude<FilterOperator, typeof KEEP_ALL_OPERATOR>
-): FilterConditionOperator {
+): ConditionOperator {
   return isNegatedTextOperator(op) ? NEGATED_TEXT_OPERATORS[op] : op;
 }
 
@@ -158,51 +152,85 @@ function isUnary(op: FilterOperator): boolean {
   );
 }
 
-// Operators that take no Value: Condition's unary operators plus keep every item.
-export const VALUELESS_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter(isUnary);
+/**
+ * How the step reads an item for a test, which decides the items it applies
+ * to: "presence" tests take any item, a missing field included; "any" (equals,
+ * not equals) takes any item that is there; "loose" only primitives.
+ */
+export type FilterTestKind =
+  | "none"
+  | "presence"
+  | "any"
+  | "loose"
+  | "text"
+  | "number"
+  | "boolean"
+  | "array"
+  | "object";
 
-// Operators that compare against Value.
-export const VALUE_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter((op) => !isUnary(op));
+/**
+ * What one operator reads. The step, the save-time check and the form's
+ * showWhen all come from this, so a hidden setting is never read.
+ */
+export type FilterOperatorRule = {
+  test: FilterTestKind;
+  readsField: boolean;
+  readsValue: boolean;
+  readsIgnoreCase: boolean;
+  // A number item can meet a Value kept as exact text (see exactNumberOf).
+  meetsNumberText: boolean;
+  // Reads "If an item can't be tested": the test can meet an item it can't apply to.
+  canSkip: boolean;
+};
 
-// Text tests that compare against Value (is empty / is not empty take none).
-export const TEXT_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter((op) => categoryOf(op) === "text" && !isUnary(op));
+function testKindOf(op: FilterOperator): FilterTestKind {
+  const category = categoryOf(op);
+  if (category === undefined) {
+    return "none";
+  }
+  if (isUnary(op) && (category === "general" || category === "text")) {
+    return "presence";
+  }
+  if (category === "general") {
+    return op === "==" || op === "!=" ? "loose" : "any";
+  }
+  return category;
+}
 
-export const NUMBER_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter((op) => categoryOf(op) === "number");
+function ruleOf(op: FilterOperator): FilterOperatorRule {
+  const test = testKindOf(op);
+  const readsValue = !isUnary(op);
+  const equality = test === "any" || test === "loose";
+  return {
+    test,
+    readsField: test !== "none",
+    readsValue,
+    // Comparisons of text against Value.
+    readsIgnoreCase:
+      readsValue && (equality || test === "text" || op === "arrayContains"),
+    meetsNumberText: readsValue && (equality || op === "arrayContains"),
+    canSkip: test !== "none" && test !== "presence",
+  };
+}
 
-export const BOOLEAN_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter((op) => categoryOf(op) === "boolean");
+const RULES = new Map<FilterOperator, FilterOperatorRule>(
+  ALL_VALUES.map((op) => [op, ruleOf(op)])
+);
 
-export const ARRAY_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter((op) => categoryOf(op) === "array");
+export function filterOperatorRule(op: FilterOperator): FilterOperatorRule {
+  const rule = RULES.get(op);
+  if (!rule) {
+    throw new Error(`Unknown operator "${op}".`);
+  }
+  return rule;
+}
 
-export const OBJECT_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter((op) => categoryOf(op) === "object");
-
-// Unary General and Text tests: they ask whether a value is there at all.
-export const PRESENCE_FILTER_OPERATORS: readonly FilterOperator[] =
-  ALL_VALUES.filter(
-    (op) =>
-      op !== KEEP_ALL_OPERATOR &&
-      isUnary(op) &&
-      (categoryOf(op) === "general" || categoryOf(op) === "text")
-  );
-
-// Soft equals and soft not equals compare loosely, so they only see primitives.
-export const LOOSE_EQUALITY_FILTER_OPERATORS: readonly FilterOperator[] = [
-  "==",
-  "!=",
-] satisfies readonly FilterConditionOperator[];
-
-// Where Ignore case applies: comparisons of text against Value.
-export const CASE_FOLDING_FILTER_OPERATORS: readonly FilterOperator[] = [
-  ...ALL_VALUES.filter((op) => categoryOf(op) === "general" && !isUnary(op)),
-  ...TEXT_FILTER_OPERATORS,
-  ...(["arrayContains"] satisfies FilterConditionOperator[]),
-];
+/** The operators whose rule passes `predicate`, in option order. */
+export function filterOperatorsWhere(
+  predicate: (rule: FilterOperatorRule) => boolean
+): FilterOperator[] {
+  return ALL_VALUES.filter((op) => predicate(filterOperatorRule(op)));
+}
 
 export function filterOperatorLabel(operator: FilterOperator): string {
   return qualifiedOptionLabel(FILTER_OPERATOR_OPTIONS, operator) ?? operator;

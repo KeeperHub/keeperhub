@@ -1,9 +1,7 @@
 "use client";
 
 import {
-  AlertTriangle,
   ExternalLink,
-  Info,
   KeyRound,
   Loader2,
   RefreshCw,
@@ -11,6 +9,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Notice } from "@/components/ui/notice";
 import { authClient } from "@/lib/auth-client";
 import {
   Select,
@@ -140,28 +139,6 @@ function usePagerDutyResources<T>(
   }, [integrationId, resource, pick, nonce]);
 
   return { ...state, reload };
-}
-
-function Notice({
-  tone,
-  children,
-}: {
-  tone: "info" | "warning";
-  children: React.ReactNode;
-}) {
-  const Icon = tone === "warning" ? AlertTriangle : Info;
-  return (
-    <div
-      className={`flex items-start gap-2 rounded-md border p-2 text-xs ${
-        tone === "warning"
-          ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300"
-          : "border-border bg-muted/30 text-muted-foreground"
-      }`}
-    >
-      <Icon className="mt-0.5 size-3.5 shrink-0" />
-      <div className="min-w-0">{children}</div>
-    </div>
-  );
 }
 
 /**

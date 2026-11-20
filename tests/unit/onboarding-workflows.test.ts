@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { expressionToConditionGroup } from "@/lib/workflow/nodes/condition/builder-utils";
+import { editorConditionState } from "@/lib/workflow/nodes/condition/builder-utils";
 import {
   ONBOARDING_WORKFLOW_FIXTURES,
   type OnboardingWorkflowFixture,
@@ -114,9 +114,9 @@ describe("ONBOARDING_WORKFLOW_FIXTURES", () => {
             "string"
           );
           expect(
-            expressionToConditionGroup(condition as string),
-            `${node.id}: the editor cannot parse ${String(condition)}`
-          ).not.toBeNull();
+            editorConditionState(condition as string, undefined).initialMode,
+            `${node.id}: the editor cannot show ${String(condition)} as rules`
+          ).toBe("visual");
         }
       });
     });

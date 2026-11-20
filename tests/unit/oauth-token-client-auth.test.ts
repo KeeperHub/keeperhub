@@ -54,6 +54,10 @@ vi.mock("@/lib/workflow/access", () => ({
   isUserMemberOfOrganization: vi.fn(async () => true),
 }));
 
+vi.mock("@/lib/security/org-role", () => ({
+  getOrgRole: vi.fn(async () => "member"),
+}));
+
 import { POST } from "@/app/api/oauth/token/route";
 
 const SECRET = "super-secret-value";
