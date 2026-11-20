@@ -931,9 +931,10 @@ function countMismatch(
 }
 
 /**
- * Text that holds a JSON object or array, by its first and last characters
- * ("{...}" or "[...]"); undefined for anything else, "[1" included. Not
- * parsed: line-up checks run it in loops.
+ * Text that holds a JSON object or array, by its first character for an
+ * object ("{", broken or not: never a plain value) and its first and last for
+ * an array ("[...]"; "[1" is a bad plain value). Not parsed: line-up checks
+ * run it in loops.
  */
 function containerText(value: unknown): "object" | "array" | undefined {
   if (typeof value !== "string") {
@@ -948,11 +949,12 @@ function containerText(value: unknown): "object" | "array" | undefined {
   while (end > start && isSpace(value.charCodeAt(end))) {
     end -= 1;
   }
-  const pair = `${value[start] ?? ""}${value[end] ?? ""}`;
-  if (end > start && pair === "{}") {
+  if (value[start] === "{") {
     return "object";
   }
-  return end > start && pair === "[]" ? "array" : undefined;
+  return end > start && value[start] === "[" && value[end] === "]"
+    ? "array"
+    : undefined;
 }
 
 // JSON's whitespace: space, tab, line feed, carriage return.

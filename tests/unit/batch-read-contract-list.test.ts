@@ -4047,4 +4047,24 @@ describe("batch-read-contract - fifth review", () => {
       "Function Arguments: t.b: expected array for uint256[]. Check the arguments for f (x, t)."
     );
   });
+
+  it("reads broken object text in a tuple's place as a try at the tuple", async () => {
+    const abi = abiWith("f", [tupleOf("t", [uint("a"), uint("b")]), uint("x")]);
+    const [, shared] = await both(abi, ['{"a":1,', "5"]);
+    expect(shared).toBe(
+      'Function Arguments: t must be an object with its member names, like {"a": 1, "b": 1}, got "{\\"a\\":1,". Or give its 2 members flat in its place.'
+    );
+  });
+
+  it("does not pad a short entry whose tuple starting with a tuple holds a plain value", async () => {
+    const abi = abiWith("f", [
+      tupleOf("s", [tupleOf("i", [uint("p")]), uint("q")]),
+      uint("x"),
+      uint("y"),
+    ]);
+    const [, shared] = await both(abi, ["5", [1]]);
+    expect(shared).toBe(
+      "Function Arguments has 2 values, but f takes 3 (s, x, y). The same arguments go to every contract in the list."
+    );
+  });
 });
