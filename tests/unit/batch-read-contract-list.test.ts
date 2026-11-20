@@ -4593,7 +4593,7 @@ describe("batch-read-contract - seventh review", () => {
     ]);
     const { error } = await sent(abi, [[], "", " [x] ", "[1]", "hi"]);
     expect(error).toBe(
-      'Function Arguments: the "" in n1\'s place can mean n1 left blank or its first member given flat, and the two make different calls. Give n1 as an object with its member names, like {"n2": "...", "n3": "...", "n4": "...", "n5": "..."}. In the editor, typing in one of its fields does this.'
+      'Function Arguments: the "" in n1\'s place can mean n1 left blank or its first member given flat, and the two make different calls. Give n1 as an object with its member names, like {"n2": "...", "n3": "...", "n4": "...", "n5": "..."}. In the editor, type in any field of n1 (you can clear it again).'
     );
     // Given as an object, it is sent as written.
     expect(
@@ -4738,7 +4738,7 @@ describe("batch-read-contract - seventh review, readings by call", () => {
       json(["", "hi"])
     );
     expect(error).toBe(
-      'Function Arguments: the "" in meta\'s place can mean meta left blank or its first member given flat, and the two make different calls. Give meta as an object with its member names, like {"name": "...", "symbol": "..."}. In the editor, typing in one of its fields does this.'
+      'Function Arguments: the "" in meta\'s place can mean meta left blank or its first member given flat, and the two make different calls. Give meta as an object with its member names, like {"name": "...", "symbol": "..."}. In the editor, type in any field of meta (you can clear it again).'
     );
     expect(
       await sent(
@@ -4799,15 +4799,67 @@ describe("batch-read-contract - seventh review, readings by call", () => {
     ).toEqual({ args: [[""], ["", "", ""], ["", ["w"], ""]] });
   });
 
-  it("refuses, not guesses, past six tuples given as an empty value", async () => {
+  it("refuses, not guesses, past 64 readings of tuples given as an empty value", async () => {
     const inputs = [
       ...Array.from({ length: 7 }, (_, i) => t(`t${i}`, [p("a"), p("b")])),
       p("s"),
     ];
-    const { error } = await sent(inputs, json([...new Array(7).fill(""), "x"]));
-    expect(error).toBe(
-      'Function Arguments: too many tuples are given as "" to tell how to read them. Give each tuple as an object with its member names.'
+    const { error } = await sent(
+      inputs,
+      json([...new Array(14).fill(""), "x"])
     );
+    expect(error).toBe(
+      'Function Arguments: too many tuples are given as "" to tell how each is meant. Give each tuple as an object with its member names. In the editor, type in any field of each (you can clear it again).'
+    );
+    // No reading can be sent: the usual message names the problem instead.
+    const uints = [
+      ...Array.from({ length: 7 }, (_, i) =>
+        t(`t${i}`, [p("a", "uint256"), p("b", "uint256")])
+      ),
+      p("s"),
+    ];
+    expect(
+      (await sent(uints, json([...new Array(14).fill(""), "x"]))).error
+    ).toMatch(/^Function Arguments: t0\.a: uint256 cannot be empty/);
+    // A one-member tuple reads the same blank or flat: not counted.
+    const ones = [
+      ...Array.from({ length: 7 }, (_, i) => t(`t${i}`, [p("a")])),
+      p("n", "uint256"),
+    ];
+    expect(await sent(ones, json([...new Array(7).fill(""), "3"]))).toEqual({
+      args: [...new Array(7).fill([""]), BigInt(3)],
+    });
+  });
+
+  it("names every tuple whose reading changes the call", async () => {
+    const { error } = await sent(
+      [t("p", [p("a"), p("b")]), t("q", [p("c"), p("d")]), p("z"), p("w")],
+      json(["", "", "x", "y"])
+    );
+    expect(error).toBe(
+      'Function Arguments: the "" in the places of p, q can each mean that tuple left blank or its first member given flat, and these make different calls. Give each as an object with its member names, like {"a": "...", "b": "..."} for p. In the editor, type in any field of each (you can clear it again).'
+    );
+  });
+
+  it("does not let the size cap pick a reading", async () => {
+    const inputs = [t("t", [p("a"), p("b")]), p("s", "bytes"), p("z")];
+    const big = `0x${"ab".repeat(40_000)}`;
+    const { error } = await sent(inputs, json(["", big, "0x"]));
+    expect(error).toMatch(/^Function Arguments/);
+    expect(error).not.toMatch(AMBIGUOUS);
+    expect(mockStaticCall).not.toHaveBeenCalled();
+  });
+
+  it("checks a big argument shared by every reading once", async () => {
+    const inputs = [
+      p("us", "uint256[]"),
+      ...Array.from({ length: 6 }, (_, i) => t(`t${i}`, [p("a"), p("b")])),
+      p("s"),
+    ];
+    const us = Array.from({ length: 1900 }, () => `1${"0".repeat(70)}`);
+    const started = Date.now();
+    await sent(inputs, json([us, "", "", "", "", "", "", "x"]));
+    expect(Date.now() - started).toBeLessThan(1000);
   });
 
   it("takes a bigint and a deeply nested array without a raw error", async () => {
