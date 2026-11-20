@@ -1,5 +1,9 @@
 import type { IntegrationType } from "@/lib/types/integration";
-import { resolveDefaultOnFlag, resolveSwitch } from "@/lib/utils";
+import {
+  isToggleValue,
+  resolveDefaultOnFlag,
+  resolveSwitch,
+} from "@/lib/utils";
 import {
   evaluateShowWhen,
   type ShowWhen,
@@ -677,27 +681,82 @@ const DISPLAY_ONLY_FIELD_SUFFIXES = [
 ] as const;
 
 // These resolve through resolveDefaultOnFlag, which ignores defaultValue.
-const DEFAULT_ON_TOGGLE_TYPES: ReadonlySet<string> = new Set([
+const DEFAULT_ON_TOGGLE_LIST = [
   "fail-on-error-switch",
   "gas-sponsorship-switch",
-]);
+] as const;
+const DEFAULT_ON_TOGGLE_TYPES: ReadonlySet<string> = new Set(
+  DEFAULT_ON_TOGGLE_LIST
+);
 
 // Field types that hold a true/false toggle. The action schema and the MCP
 // pin schema both read this, so they agree on which toggle fields are booleans.
-const TOGGLE_FIELD_TYPES: ReadonlySet<string> = new Set([
-  "switch",
-  ...DEFAULT_ON_TOGGLE_TYPES,
-]);
+const TOGGLE_FIELD_LIST = ["switch", ...DEFAULT_ON_TOGGLE_LIST] as const;
+const TOGGLE_FIELD_TYPES: ReadonlySet<string> = new Set(TOGGLE_FIELD_LIST);
+
+/** An on/off toggle field type; a map keyed by it must cover every one. */
+export type ToggleFieldType = (typeof TOGGLE_FIELD_LIST)[number];
 
 export function isToggleField(type: string | undefined): boolean {
   return type !== undefined && TOGGLE_FIELD_TYPES.has(type);
 }
 
+export function isDefaultOnToggleField(type: string | undefined): boolean {
+  return type !== undefined && DEFAULT_ON_TOGGLE_TYPES.has(type);
+}
+
+/**
+ * Whether the form shows a field only so a value save refuses can be cleared:
+ * a default-on toggle holding neither on nor off whose own condition fails.
+ * Its switch is then locked, leaving Reset as the only action.
+ */
+export function isShownOnlyToFix(
+  field: ActionConfigFieldBase,
+  config: Record<string, unknown>
+): boolean {
+  return (
+    !field.hidden &&
+    isDefaultOnToggleField(field.type) &&
+    !isToggleValue(config[field.key]) &&
+    !evaluateShowWhen(field.showWhen, config)
+  );
+}
+
+/** Whether the config form shows a field. A `hidden` field is never shown. */
+export function isFieldShown(
+  field: ActionConfigFieldBase,
+  config: Record<string, unknown>
+): boolean {
+  return (
+    !field.hidden &&
+    (evaluateShowWhen(field.showWhen, config) ||
+      isShownOnlyToFix(field, config))
+  );
+}
+
+// How a toggle reads its value, as its step does: Sponsor gas and Fail
+// workflow on error through resolveDefaultOnFlag, a plain switch resolveSwitch.
+export type ToggleRule = "default-on" | { switchDefault: unknown };
+
+/** The rule a toggle field reads its value by, decided by its type. */
+export function toggleRuleOf(
+  field: Pick<ActionConfigFieldBase, "type" | "defaultValue">
+): ToggleRule {
+  return isDefaultOnToggleField(field.type)
+    ? "default-on"
+    : { switchDefault: field.defaultValue };
+}
+
+/** Whether a toggle is on for a stored value, by its rule. */
+export function readToggle(rule: ToggleRule, value: unknown): boolean {
+  return rule === "default-on"
+    ? resolveDefaultOnFlag(value)
+    : resolveSwitch(value, rule.switchDefault) === true;
+}
+
 /** What a toggle does when it is left unset, by the rule its step applies. */
 export function toggleDefault(field: ActionConfigFieldBase): boolean {
-  return DEFAULT_ON_TOGGLE_TYPES.has(field.type)
-    ? resolveDefaultOnFlag(undefined)
-    : resolveSwitch(undefined, field.defaultValue) === true;
+  return readToggle(toggleRuleOf(field), undefined);
 }
 
 export function isDisplayOnlyField(type: string | undefined): boolean {

@@ -28,6 +28,7 @@ function render(value: unknown): void {
         id="sponsorGas"
         label="Sponsor gas"
         onChange={vi.fn()}
+        resetOnly={false}
         value={value}
       />
     );
@@ -55,7 +56,7 @@ describe("SponsorGasField", () => {
   });
 
   it("stays quiet while sponsorship is on, including when unset", () => {
-    for (const value of [undefined, null, true, "true"]) {
+    for (const value of [undefined, null, "", true, "true"]) {
       render(value);
       expect(container.textContent ?? "").not.toContain("pays its own gas");
     }

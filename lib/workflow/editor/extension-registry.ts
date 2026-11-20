@@ -21,7 +21,9 @@ type FieldRendererContext = {
   disabled?: boolean;
 };
 
-type CustomFieldRenderer = (context: FieldRendererContext) => ReactNode | null;
+export type CustomFieldRenderer = (
+  context: FieldRendererContext
+) => ReactNode | null;
 
 const customFieldRenderers: Map<string, CustomFieldRenderer> = new Map();
 

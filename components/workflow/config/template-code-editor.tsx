@@ -20,8 +20,8 @@ import {
   findDuplicateTemplateLabels,
   getCommonFields,
   getNodeDisplayName,
-  sanitizeNodeId,
 } from "@/lib/workflow/editor/template-helpers";
+import { sanitizeNodeId } from "@/lib/workflow/template-ref";
 import { useStableRef } from "@/lib/use-stable-ref";
 import {
   formatTemplateForDisplay,
