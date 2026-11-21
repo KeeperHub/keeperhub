@@ -71,7 +71,9 @@ const mockPlugins = [
   },
 ];
 
-vi.mock("@/plugins/registry", () => ({
+vi.mock("@/plugins/registry", async (importOriginal) => ({
+  // The real field helpers, so the schema types fields as the app does.
+  ...(await importOriginal<typeof import("@/plugins/registry")>()),
   getAllIntegrations: () => mockPlugins,
   computeActionId: (pluginType: string, slug: string) =>
     `${pluginType}.${slug}`,

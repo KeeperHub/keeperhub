@@ -916,3 +916,29 @@ describe("read-contract-core - functionArgs as a native array (#2359)", () => {
     expect(mockContractFunction).toHaveBeenCalledWith();
   });
 });
+
+describe("read-contract-core - editor-stored inner arrays", () => {
+  it("parses each inner array the array editor stores as JSON text", async () => {
+    setupRpcMocks();
+    mockContractFunction.mockResolvedValueOnce(BigInt("6"));
+
+    const result = await readContractCore(
+      makeInput({
+        abi: JSON.stringify([
+          {
+            name: "total",
+            type: "function",
+            stateMutability: "view",
+            inputs: [{ name: "m", type: "uint256[][]" }],
+            outputs: [{ name: "", type: "uint256" }],
+          },
+        ]),
+        abiFunction: "total",
+        functionArgs: JSON.stringify([["[1,2]", "[3]"]]),
+      })
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockContractFunction).toHaveBeenCalledWith([[1, 2], [3]]);
+  });
+});

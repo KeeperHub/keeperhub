@@ -10,9 +10,11 @@ import {
 } from "./utils/db";
 import {
   type Box,
+  bottom,
   box,
   dismissPhoneOverlays,
   overlaps,
+  right,
   textFits,
 } from "./utils/layout";
 
@@ -26,8 +28,6 @@ const TABLET_WIDTHS = [640, 768, 900] as const;
 const HEIGHT = 844;
 
 const middle = (b: Box): number => b.y + b.height / 2;
-const right = (b: Box): number => b.x + b.width;
-const bottom = (b: Box): number => b.y + b.height;
 
 async function open(page: Page, width: number, path: string): Promise<void> {
   await dismissPhoneOverlays(page);

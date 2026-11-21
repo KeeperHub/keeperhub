@@ -5,6 +5,7 @@ import { and, eq, lt } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { idempotencyRecords } from "@/lib/db/schema-extensions";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { stableStringify } from "@/lib/stable-json";
 import { DAY_MS } from "@/lib/utils/duration";
 import { generateId } from "@/lib/utils/id";
 import type { IdempotencyDisposition } from "./idempotency-disposition";
@@ -43,22 +44,6 @@ export type IdempotencyOutcome =
   | { kind: "conflict"; originalResourceId: string | null }
   | { kind: "in_progress" }
   | { kind: "invalid_key"; message: string };
-
-// Deterministic JSON so two logically-equal request bodies hash identically
-// regardless of key order.
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value) ?? "null";
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(stableStringify).join(",")}]`;
-  }
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
-  return `{${keys
-    .map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`)
-    .join(",")}}`;
-}
 
 // Exported for tests: two logically-equal bodies must hash identically so a
 // retry isn't mistaken for a conflicting request.

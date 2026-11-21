@@ -97,11 +97,11 @@ For trigger nodes, you'll also configure specific settings based on the trigger 
 
 ### Condition Configuration
 
-Condition nodes evaluate expressions and branch the workflow into **true** and **false** paths. Use the **Visual** builder for point-and-click rule creation, or switch to **Expression** mode to write raw JavaScript expressions.
+Condition nodes evaluate expressions and branch the workflow into **true** and **false** paths. Use the **Visual** builder for point-and-click rule creation, or switch to **Expression** mode to write JavaScript-style expressions (regex objects such as `new RegExp(...)` or `/.../.test(...)` are not supported; use `matchesRegex`).
 
 #### Visual Builder
 
-Each rule has a left operand, an operator, and (for binary operators) a right operand. Operands accept literal values or template references like `{{@nodeId:Label.field}}`.
+Each rule has a left operand, an operator, and (for binary operators) a right operand. Operands accept literal values or template references like `{{@nodeId:Label.field}}`, except a regex pattern, which must be typed.
 
 Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for complex conditions.
 
@@ -120,7 +120,8 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | `contains` | contains | String | Left operand contains right operand |
 | `startsWith` | starts with | String | Left operand starts with right operand |
 | `endsWith` | ends with | String | Left operand ends with right operand |
-| `matchesRegex` | matches regex | Pattern | Left operand matches regex pattern in right operand |
+| `matchesRegex` | matches regex | String | Left operand matches the regular expression in the right operand, anywhere in the text unless anchored with `^` and `$` |
+| `notMatchesRegex` | does not match regex | String | Left operand does not match the regular expression in the right operand |
 | `isEmpty` | is empty | Existence | Value is null, undefined, or empty string |
 | `isNotEmpty` | is not empty | Existence | Value is not null, undefined, or empty string |
 | `exists` | exists | Existence | Value is not null and not undefined |
@@ -129,6 +130,75 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | `isNotNull` | is not null | Existence | Value is anything except null (undefined still matches) |
 | `isUndefined` | is undefined | Existence | Value is strictly undefined (null does not match) |
 | `isNotUndefined` | is not undefined | Existence | Value is anything except undefined (null still matches) |
+
+**Matches regex:** tests the text against a regular expression, anywhere in the text unless you
+anchor it: `^` marks the start and `$` the end. Start the pattern with `(?i)` to ignore case.
+**Does not match regex** is the opposite test (`!matchesRegex(...)` in Expression mode), with the
+same rules.
+
+- **Values:** numbers and `true`/`false` are tested as their text, and so is `null`: `^n` matches a
+  null field. If the field can be null, add an **is not null** rule. A number is written the way
+  JavaScript prints it, so a very large or very small one is tested in exponent form (`1e21` as
+  `1e+21`), and a number above 2^53 may not keep its digits (2^60 is tested as
+  `1152921504606847000`); send such amounts as text. This also applies when the condition compares
+  large integers exactly: the regex test still sees ordinary numbers. A list or object fails the
+  run. (Filter Array differs: `null` and booleans are items it can't test, which fail the step
+  unless it is set to skip them.)
+- **Syntax:** patterns use [RE2 syntax](https://github.com/google/re2/wiki/Syntax), which is
+  close to JavaScript's. Lookahead and lookbehind, back-references such as `\1`, and `\u` escapes
+  (write `\x{00e9}` for `é`) are not supported and get a message naming them; other refused
+  syntax quotes RE2's own message. `\s` does not match a non-breaking space.
+- **Visual builder:** type the pattern exactly as it should run, e.g. `^0x[0-9a-fA-F]{40}$`;
+  spaces at either end are trimmed (write `[ ]` or `\x20` to match one). Leave out quotes and
+  JavaScript's `/.../i` around it: a pattern that is one quoted string, or slashes with flags or
+  regex syntax inside, is refused. A plain path such as `/api/` is fine. To match a quote, put a
+  backslash before it; to match `{{`, write `\{\{`. A pattern that cannot run shows an error under
+  the rule. The pattern cannot come from another node; to look for text from another node,
+  use **contains** or **starts with**.
+- **Expression mode:** write `matchesRegex({{@nodeId:Label.field}}, "^0x[0-9a-fA-F]{40}$")`.
+  Inside the quotes, double each backslash: `"^\\d+$"` for `^\d+$`. A single backslash before
+  anything but a quote, `n`, `r` or `t` is refused rather than silently changing the pattern.
+- **Limits:** see the table below. Matching never backtracks, so a regex test cannot hold up a
+  run for more than a few seconds.
+- **Exported code:** code export does not include regex tests. A Condition that uses one is
+  exported as code that throws an error when it is reached, so port that test by hand.
+
+**Regex limits.** "Steps" is the size of the compiled pattern: about one per character, more for
+ranges and groups, and `{n}` copies its piece n times.
+
+| Limit | Applies to | Value | Past it |
+|---|---|---|---|
+| Pattern size | each pattern | 512 characters, 1,000 steps | error under the rule; the workflow won't save |
+| Regex tests | each Condition | 16 | the workflow won't save |
+| Condition length | each Condition with a regex test | 10,000 characters, each `{{...}}` reference counting as about 4 | the workflow won't save |
+| Enabled Conditions with a regex test | the workflow | 32 | error on each regex Condition; the workflow won't save |
+| Their total length | the workflow | 100,000 characters, counted as above | error on each regex Condition; the workflow won't save |
+| Total pattern size | enabled Conditions of the workflow | about 2,000 pattern characters, fewer with `{n}` repeats | error on each regex Condition; the workflow won't save |
+| Text tested | each value | 4,096 characters | the run fails |
+| Matching | each Condition check | 5,000,000 steps x characters tested | the run fails |
+| Matching | each run, loops included | 10,000,000 | the run fails |
+
+- **Total pattern size:** each distinct pattern costs 2,000 per character plus 400 per step to
+  prepare, and a workflow's Conditions may cost 5,000,000 together. Every enabled Condition
+  counts, even on a branch a run does not take: its rules when it has them, otherwise its text. A
+  pattern used in several places counts once, when its text is identical (`(?i)^0x` and `^0x` are
+  two). Filter Array patterns do not count. Each run prepares them all once, at its start, from
+  its 10,000,000, so it keeps at least 5,000,000 to test values.
+- **Run budget:** shared by every regex test in a run. A For Each can test about 5,100 addresses
+  against `^0x[0-9a-fA-F]{40}$` (46 steps x 42 characters each), or about 2,150 transaction hashes
+  against `^0x[0-9a-f]{64}$` (70 x 66 each), less what the run's patterns cost to prepare. For
+  more, use Filter Array, which has its own budget per node. For a long allow-list, a few `equals`
+  rules joined with OR also work.
+- **Saving:** an enabled Condition with a regex test that would fail any run reaching it (a
+  pattern that cannot run, more than 16 tests, too long), or the workflow over one of its totals
+  above, stops the workflow saving until it is fixed; the editor shows why, a total on every
+  regex Condition. A save through the API reports the first problem on one node. Conditions
+  without a
+  regex test save as before. A workflow that runs anyway (one saved before these limits, or a
+  copy) with a regex Condition over 10,000 characters, or over one of the totals, fails at its
+  start, before any step runs.
+- A value that is missing, or comes from a node that did not run, fails the run; add an **exists**
+  rule before it.
 
 **What counts as a number:** an operand is compared by magnitude only when it is a
 plain decimal - an optional sign, digits, and at most one point, such as `42`, `-0.50` or
@@ -203,6 +273,8 @@ Expression mode allows you to write raw JavaScript condition expressions for adv
 - `{{@GetRewards:Rewards.amount}} % 10 === 0` - Check if rewards are divisible by 10
 
 Expression mode also supports JavaScript methods, array indexing, and property access for complex logic.
+
+A condition opens in the Visual Builder only if the builder would write exactly the same text. Otherwise (for example, an expression on several lines or with different spacing) it opens in Expression mode, so opening it never changes what it does. Switching it to Visual shows an empty builder, and any change there replaces the expression.
 
 #### Dual Output Paths
 

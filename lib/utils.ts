@@ -146,6 +146,59 @@ export function resolveDefaultOnFlag(value: unknown): boolean {
   return value !== false && value !== "false";
 }
 
+export function isBoolLiteral(value: unknown): boolean {
+  return (
+    value === true || value === false || value === "true" || value === "false"
+  );
+}
+
+/** A toggle left unset, which takes its default: undefined, null or "". */
+function isUnsetToggle(value: unknown): boolean {
+  return value === undefined || value === null || value === "";
+}
+
+/** What an on/off toggle may hold: a boolean literal, or unset for its default. */
+export function isToggleValue(value: unknown): boolean {
+  return isUnsetToggle(value) || isBoolLiteral(value);
+}
+
+/**
+ * Read a plain on/off switch: unset takes its declared default, which is off
+ * when none is declared. The editor, the step and the MCP pin schema read a
+ * switch through this; save accepts what isToggleValue accepts, built on the
+ * same checks. Undefined for any other value.
+ */
+export function resolveSwitch(
+  value: unknown,
+  defaultValue: unknown
+): boolean | undefined {
+  const raw = isUnsetToggle(value) ? (defaultValue ?? false) : value;
+  return isBoolLiteral(raw) ? raw === true || raw === "true" : undefined;
+}
+
+/**
+ * Why a switch refuses a value resolveSwitch cannot read, worded the same at
+ * save and at run. "True" or " true" is also told what to change.
+ */
+export function switchRefusal(name: string, value: unknown): string {
+  const text = typeof value === "string" ? value : "";
+  const trimmed = text.trim();
+  const word = trimmed.toLowerCase();
+  if (word !== "true" && word !== "false") {
+    return `${name} must be true or false.`;
+  }
+  const hints: string[] = [];
+  if (text !== trimmed) {
+    hints.push("with no spaces around it");
+  }
+  if (trimmed !== word) {
+    hints.push("in lowercase");
+  }
+  return hints.length > 0
+    ? `${name} must be true or false, ${hints.join(" and ")}.`
+    : `${name} must be true or false.`;
+}
+
 /**
  * Resolve a "fail workflow on error" config flag. Defaults to true (a failure
  * fails the step); only an explicit `false` (boolean or the "false" string

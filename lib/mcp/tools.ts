@@ -2850,7 +2850,7 @@ export function registerMetaTools(
       "Return the JSON Schema each node in a workflow expects as pin data, so an agent can construct valid test inputs.",
       "Read-only introspection: does NOT execute any plugin step, does NOT write to the database, makes zero network calls beyond the workflow row fetch.",
       "Return shape: { ok: true, result: { nodes: Array<{ nodeId, nodeName, type, pinSchema: JSONSchema, required: boolean }> } }.",
-      "Each node's pinSchema is a JSON Schema with type:object describing the fields its plugin action expects.",
+      "Each node's pinSchema is a JSON Schema with type:object describing the fields its plugin action expects. On/off toggles and Solidity bool inputs are boolean (JSON true/false only, no strings or templates). Toggles carry default: what the step does when the field is unset, not the node's current value.",
       "`required` on each node is true when the action declares one or more required configFields.",
       "Use this to learn what pin data to supply before invoking the future test_workflow execution tool (on the roadmap — see specs/mcp-test-workflow.md).",
     ].join(" "),

@@ -23,7 +23,11 @@ import { ProjectSelect } from "@/components/projects/project-select";
 import { TagSelect } from "@/components/tags/tag-select";
 import { WorkflowFailureAlerts } from "@/components/failure-alerts/workflow-failure-alerts";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
-import { api } from "@/lib/api-client";
+import {
+  api,
+  WORKFLOW_SAVE_ERROR_TOAST,
+  workflowSaveErrorMessage,
+} from "@/lib/api-client";
 import { actionConnectionMode } from "@/lib/integration-helpers";
 import { integrationsAtom } from "@/lib/integrations-store";
 import { SYSTEM_ACTION_INTEGRATIONS } from "@/lib/integrations/system";
@@ -589,7 +593,10 @@ export const PanelInner = () => {
         }, 500);
       } catch (error) {
         console.error("Failed to update workflow name:", error);
-        toast.error("Failed to update workspace name");
+        toast.error(
+          workflowSaveErrorMessage(error, "Failed to update workflow name"),
+          WORKFLOW_SAVE_ERROR_TOAST
+        );
       }
     }
   };

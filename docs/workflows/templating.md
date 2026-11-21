@@ -108,6 +108,20 @@ Templates work in any string-valued config field. Common places:
 
 Templates do **not** work inside binary fields (images, file uploads) or inside the workflow's structural metadata (node ids, edge ids, position).
 
+### On/off toggles
+
+On/off toggles such as **Sponsor gas**, **Fail workflow on error** and **Ignore case** take only `true` or `false` (or the strings `"true"` and `"false"`). Leaving one unset uses its default. A save with a template or any other value in one is refused. **Sponsor gas** and **Fail workflow on error** are checked even where the current settings hide them, as the step still reads them; a plain switch such as **Ignore case** is checked once it shows.
+
+A step that already holds another value keeps it, and the workflow still saves, while all of these hold:
+
+- it is the same step, with the same action;
+- the value is unchanged, and is text of up to 2,000 characters or a number;
+- its references use the stored format (`{{@nodeId:Label.field}}`), not the display or `$` format;
+- each step it references is the same step, with the same action or trigger, as when it was saved, or is absent;
+- for a plain switch the settings can hide (such as **Ignore case**), it was showing when saved.
+
+Anything else is refused at the next save; reset the toggle to its default in the editor. Importing a workflow that holds such a value is refused, and so is restoring a version that holds one the current workflow does not. A copy of another organization's workflow starts with such a toggle unset, so it takes its default.
+
 ## Referencing a field the editor has not seen yet
 
 The `@` autocomplete lists the fields it can see on a node's recorded output, taking the current run first and the node's last run otherwise. A node that has not run yet has no recorded output, so it offers no fields.

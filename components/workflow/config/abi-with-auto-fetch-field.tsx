@@ -450,6 +450,8 @@ type FieldProps = {
 
 type AbiWithAutoFetchProps = FieldProps & {
   contractAddressField?: string;
+  // Shown while the ABI is fetched from an address that is not the call target.
+  autoFetchPlaceholder?: string;
   contractInteractionType?: "read" | "write";
   networkField?: string;
   config: Record<string, unknown>;
@@ -465,6 +467,7 @@ export function AbiWithAutoFetchField({
   onChange,
   disabled,
   contractAddressField = "contractAddress",
+  autoFetchPlaceholder,
   contractInteractionType,
   networkField = "network",
   config,
@@ -914,7 +917,8 @@ export function AbiWithAutoFetchField({
             placeholder={
               useManualAbi
                 ? "Paste your ABI here"
-                : "ABI will be fetched automatically when a contract address and network are set"
+                : (autoFetchPlaceholder ??
+                  "ABI will be fetched automatically when a contract address and network are set")
             }
             rows={4}
             value={value}

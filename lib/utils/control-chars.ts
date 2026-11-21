@@ -16,6 +16,9 @@
  * carriage return survive, and whether a removed character leaves a space
  * behind. This module has no imports, deliberately - one of its readers is
  * bundled into the browser and another cannot pull in the plugin registry.
+ *
+ * escapeHiddenChars, at the end, is the one other job here: it escapes a wider
+ * class for a value shown for inspection, instead of removing anything.
  */
 
 const ALL_CONTROL_CHARS_RE =
@@ -45,4 +48,17 @@ export function stripControlChars(
     ? CONTROL_CHARS_KEEPING_LINE_BREAKS_RE
     : ALL_CONTROL_CHARS_RE;
   return value.replace(pattern, options.replacement ?? "");
+}
+
+// Wider than the strip class (tag characters, variation selectors, fillers),
+// which stripping must keep so flag emoji and Arabic number signs survive.
+const ALL_HIDDEN_CHARS_RE =
+  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+
+/** Write each hidden character out as a visible \uXXXX or \u{XXXXX} escape. */
+export function escapeHiddenChars(value: string): string {
+  return value.replace(ALL_HIDDEN_CHARS_RE, (char) => {
+    const code = (char.codePointAt(0) ?? 0).toString(16);
+    return code.length > 4 ? `\\u{${code}}` : `\\u${code.padStart(4, "0")}`;
+  });
 }

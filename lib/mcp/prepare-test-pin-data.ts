@@ -1,8 +1,12 @@
 import type { ActionConfigFieldBase, PluginAction } from "@/plugins/registry";
 import {
+  fieldEnumValues,
+  fieldJsonType,
   flattenConfigFields,
   getAllIntegrations,
   isDisplayOnlyField,
+  isToggleField,
+  toggleDefault,
 } from "@/plugins/registry";
 
 /**
@@ -133,7 +137,8 @@ function buildPinSchemaForAction(action: PluginAction): {
       continue;
     }
     properties[field.key] = buildPropertyForField(field);
-    if (field.required === true) {
+    // A key can be declared once per mode; JSON Schema rejects repeats in required.
+    if (field.required === true && !required.includes(field.key)) {
       required.push(field.key);
     }
   }
@@ -154,31 +159,38 @@ function buildPropertyForField(
 ): PinDataPropertySchema {
   const description = field.helpTip ?? field.label;
 
-  if (field.type === "number") {
+  // The JSON type comes from the same function the action schema uses.
+  const jsonType = fieldJsonType(field.type);
+  if (jsonType === "number") {
     return { type: "number", description };
   }
 
-  if (field.type === "protocol-bool") {
-    return { type: "boolean", description };
+  if (jsonType === "boolean") {
+    return isToggleField(field.type)
+      ? { type: "boolean", description, default: toggleDefault(field) }
+      : { type: "boolean", description };
   }
 
-  if (field.type === "select" && field.options !== undefined) {
-    // A field that accepts a template cannot be a closed enum here: the
-    // schema is `additionalProperties: false`, so an agent deriving the value
-    // from an earlier step would have its pin data rejected for a value the
-    // step resolves perfectly well.
-    if (field.allowTemplate) {
-      return {
-        type: "string",
-        description: `${description} Accepts one of ${field.options
-          .map((option) => option.value)
-          .join(", ")}, or a template.`,
-      };
-    }
+  // The action schema's closed list comes from the same fieldEnumValues.
+  const enumValues = fieldEnumValues(field);
+  if (enumValues !== undefined) {
+    return { type: "string", description, enum: enumValues };
+  }
+
+  // A field that accepts a template cannot be a closed enum here: the
+  // schema is `additionalProperties: false`, so an agent deriving the value
+  // from an earlier step would have its pin data rejected for a value the
+  // step resolves perfectly well.
+  if (
+    field.type === "select" &&
+    field.allowTemplate &&
+    field.options !== undefined
+  ) {
     return {
       type: "string",
-      description,
-      enum: field.options.map((o) => o.value),
+      description: `${description} Accepts one of ${field.options
+        .map((option) => option.value)
+        .join(", ")}, or a template.`,
     };
   }
 

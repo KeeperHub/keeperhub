@@ -13,28 +13,19 @@ import type {
   ConditionRule,
 } from "./builder-types";
 import { isConditionGroup } from "./builder-types";
+import { isRegexOperator, OPERATOR_METADATA } from "./operator-metadata";
+import { readRegexPattern } from "./regex-match";
 
 // Decimal grammar the safe-eval tokenizer accepts (integer or fixed-point, optional sign).
 // Excludes hex like 0x... and exponents like 1e5, which Number() treats as numeric but the
 // tokenizer cannot parse, so those stay quoted as string literals.
 const NUMERIC_LITERAL_RE = /^[+-]?\d+(\.\d+)?$/;
 
-// Keep in sync with OPERATOR_METADATA in condition-builder-utils.ts (unary: true entries)
-const UNARY_OPERATORS: ReadonlySet<ConditionOperator> = new Set([
-  "isEmpty",
-  "isNotEmpty",
-  "exists",
-  "doesNotExist",
-  "isNull",
-  "isNotNull",
-  "isUndefined",
-  "isNotUndefined",
-  "isTrue",
-  "isFalse",
-  "arrayIsEmpty",
-  "arrayIsNotEmpty",
-  "objectIsEmpty",
-]);
+const UNARY_OPERATORS: ReadonlySet<ConditionOperator> = new Set(
+  (Object.keys(OPERATOR_METADATA) as ConditionOperator[]).filter(
+    (op) => OPERATOR_METADATA[op].unary
+  )
+);
 
 function wrapOperand(operand: string): string {
   const trimmed = operand.trim();
@@ -65,14 +56,26 @@ function wrapOperand(operand: string): string {
     return trimmed;
   }
 
-  const escaped = trimmed.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  return `"${escaped}"`;
+  return quoteText(trimmed);
 }
 
-function ruleToExpression(rule: ConditionRule): string {
-  const left = wrapOperand(rule.leftOperand);
+function quoteText(text: string): string {
+  return `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
 
-  switch (rule.operator) {
+// The pattern exactly as typed, always one quoted literal (42, true and
+// "a"|"b" included). A reference inside it is refused when the rule runs.
+function regexOperand(operand: string): string {
+  return quoteText(readRegexPattern(operand));
+}
+
+// Both sides arrive as expressions: wrapped operands, or variables such as __v0.
+export function operatorToExpression(
+  operator: ConditionOperator,
+  left: string,
+  right: string
+): string {
+  switch (operator) {
     case "==":
     case "===":
     case "!=":
@@ -81,16 +84,16 @@ function ruleToExpression(rule: ConditionRule): string {
     case ">=":
     case "<":
     case "<=":
-      return `${left} ${rule.operator} ${wrapOperand(rule.rightOperand)}`;
+      return `${left} ${operator} ${right}`;
 
     case "contains":
-      return `String(${left}).includes(${wrapOperand(rule.rightOperand)})`;
+      return `String(${left}).includes(${right})`;
 
     case "startsWith":
-      return `String(${left}).startsWith(${wrapOperand(rule.rightOperand)})`;
+      return `String(${left}).startsWith(${right})`;
 
     case "endsWith":
-      return `String(${left}).endsWith(${wrapOperand(rule.rightOperand)})`;
+      return `String(${left}).endsWith(${right})`;
 
     case "isEmpty":
       return `(${left} === null || ${left} === undefined || ${left} === "")`;
@@ -116,8 +119,13 @@ function ruleToExpression(rule: ConditionRule): string {
     case "isNotUndefined":
       return `(${left} !== undefined)`;
 
+    // No String(): the call refuses a list or object instead of testing
+    // "[object Object]".
     case "matchesRegex":
-      return `new RegExp(${wrapOperand(rule.rightOperand)}).test(String(${left}))`;
+      return `matchesRegex(${left}, ${right})`;
+
+    case "notMatchesRegex":
+      return `!matchesRegex(${left}, ${right})`;
 
     case "isTrue":
       return `${left} === true`;
@@ -134,10 +142,10 @@ function ruleToExpression(rule: ConditionRule): string {
       return `(Array.isArray(${left}) && ${left}.length > 0)`;
 
     case "arrayContains":
-      return `(Array.isArray(${left}) && ${left}.includes(${wrapOperand(rule.rightOperand)}))`;
+      return `(Array.isArray(${left}) && ${left}.includes(${right}))`;
 
     case "arrayLength":
-      return `(Array.isArray(${left}) && ${left}.length === ${wrapOperand(rule.rightOperand)})`;
+      return `(Array.isArray(${left}) && ${left}.length === ${right})`;
 
     // Object operators guard against null/undefined before reading keys, so a
     // missing reference is false rather than a thrown error.
@@ -145,13 +153,23 @@ function ruleToExpression(rule: ConditionRule): string {
       return `(${left} !== null && ${left} !== undefined && Object.keys(${left}).length === 0)`;
 
     case "objectHasKey":
-      return `(${left} !== null && ${left} !== undefined && Object.keys(${left}).includes(${wrapOperand(rule.rightOperand)}))`;
+      return `(${left} !== null && ${left} !== undefined && Object.keys(${left}).includes(${right}))`;
 
     default: {
-      const _exhaustive: never = rule.operator;
-      return `${left} == ${wrapOperand(rule.rightOperand)}`;
+      const _exhaustive: never = operator;
+      return `${left} == ${right}`;
     }
   }
+}
+
+function ruleToExpression(rule: ConditionRule): string {
+  return operatorToExpression(
+    rule.operator,
+    wrapOperand(rule.leftOperand),
+    isRegexOperator(rule.operator)
+      ? regexOperand(rule.rightOperand)
+      : wrapOperand(rule.rightOperand)
+  );
 }
 
 function isEmptyRule(rule: ConditionRule): boolean {

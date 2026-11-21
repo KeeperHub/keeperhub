@@ -1,24 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("@/plugins/registry", () => ({
+// The real helpers (flattening, display-only and toggle checks) so this test
+// cannot drift from them; only the integration list is replaced.
+vi.mock("@/plugins/registry", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/plugins/registry")>()),
   getAllIntegrations: vi.fn(),
-  flattenConfigFields: (fields: unknown[]) => {
-    const out: unknown[] = [];
-    for (const f of fields) {
-      if ((f as { type?: string }).type === "group") {
-        out.push(...(f as { fields: unknown[] }).fields);
-      } else {
-        out.push(f);
-      }
-    }
-    return out;
-  },
-  // A field that renders rather than collects is left out of the pin schema,
-  // since the schema is `additionalProperties: false` and an agent reads it to
-  // decide what it may set.
-  isDisplayOnlyField: (type?: string) =>
-    type !== undefined &&
-    (type.endsWith("-preview") || type.endsWith("-test-node")),
 }));
 
 import {
@@ -100,6 +86,30 @@ describe("preparePinDataForWorkflow", () => {
     expect(result[0].required).toBe(true);
   });
 
+  it("types a generic switch field as boolean", () => {
+    mockRegistry([
+      {
+        pluginType: "data",
+        slug: "filter",
+        configFields: [
+          { key: "ignoreCase", label: "Ignore case", type: "switch" },
+        ],
+      },
+    ]);
+    const result = preparePinDataForWorkflow([
+      {
+        id: "n1",
+        type: "action",
+        data: { label: "Filter", config: { actionType: "data/filter" } },
+      },
+    ]);
+    expect(result[0].pinSchema.properties.ignoreCase).toEqual({
+      type: "boolean",
+      description: "Ignore case",
+      default: false,
+    });
+  });
+
   it("unresolved action returns fallback schema with additionalProperties:true", () => {
     mockRegistry([]);
     const result = preparePinDataForWorkflow([
@@ -146,6 +156,56 @@ describe("preparePinDataForWorkflow", () => {
     ]);
     expect(r[0].pinSchema.properties.flag.type).toBe("boolean");
   });
+
+  it.each(["fail-on-error-switch", "gas-sponsorship-switch"])(
+    "%s field type -> JSON Schema type:boolean, as the action schema says",
+    (type) => {
+      mockRegistry([
+        {
+          pluginType: "x",
+          slug: "y",
+          configFields: [
+            { key: "toggle", label: "Toggle", type, defaultValue: "true" },
+          ],
+        },
+      ]);
+      const r = preparePinDataForWorkflow([
+        {
+          id: "n",
+          data: { config: { actionType: "x/y" } },
+        },
+      ]);
+      expect(r[0].pinSchema.properties.toggle).toEqual({
+        type: "boolean",
+        description: "Toggle",
+        default: true,
+      });
+    }
+  );
+
+  it.each([
+    ["fail-on-error-switch", "false"],
+    ["fail-on-error-switch", undefined],
+    ["gas-sponsorship-switch", "false"],
+    ["gas-sponsorship-switch", undefined],
+  ])(
+    "%s advertises default true whatever defaultValue says (%s)",
+    (type, defaultValue) => {
+      mockRegistry([
+        {
+          pluginType: "x",
+          slug: "y",
+          configFields: [
+            { key: "toggle", label: "Toggle", type, defaultValue },
+          ],
+        },
+      ]);
+      const r = preparePinDataForWorkflow([
+        { id: "n", data: { config: { actionType: "x/y" } } },
+      ]);
+      expect(r[0].pinSchema.properties.toggle?.default).toBe(true);
+    }
+  );
 
   it("select field type with options -> enum present", () => {
     mockRegistry([

@@ -157,6 +157,67 @@ describe("classifyExecutionError", () => {
       expect(r.errorType).toBe("user");
     });
 
+    it.each([
+      "Function 'balanceOf' is not in the ABI. Pick it again in Function, or check the ABI.",
+      "Call 2: Function 'x' matches more than one function in the ABI. Pick the one you mean in Function.",
+      'Contract Address is not a valid address: "0x12". Use a 0x address with 40 hex characters.',
+      'Call 2: Contract Address has a bad checksum: "0xAb". Use the address exactly as published, or in all lower case.',
+      "Contract Address is required. Enter the contract to call.",
+      "Contract ABI is required. Enter Contract Address to fetch it, or tick Use manual ABI and paste it.",
+      "Function is required. Pick one in Function.",
+      "Call 1 has no network. Pick one for this call.",
+      "Call 1 must be an object with its network, contract, ABI and function.",
+      'Contract Addresses entry 2 is not a valid address: "0x12". Use a 0x address with 40 hex characters.',
+      "Contract Addresses is empty. Check the node that produces it.",
+      'Argument Sets entry 1: on must be true or false, got "no". Use true or false.',
+      "Function Arguments has more than 64 KB of call data, the limit per call. Use smaller arguments.",
+      "The calls hold more than 50,000 values, the limit per run. Use fewer entries or smaller arguments.",
+      "The calls' data adds up to 10.1 MB; the limit is 10 MB per run. Use smaller arguments or fewer entries.",
+      'Calls From must be "rows", "args-list" or "address-list", got "x".',
+      "getReserves takes no arguments, so a list of argument sets has nothing to change between calls.",
+      "pairU takes a tuple with unnamed members (p). Tuple values are given by member name, so Batch Read cannot fill this one.",
+      "huge declares 1,001 parameters and tuple members; a list can call a function with up to 1,000.",
+    ])("classifies Batch Read's check %s as validation + user", (input) => {
+      const r = classifyExecutionError(input);
+      expect(r.errorCategory).toBe(ErrorCategory.VALIDATION);
+      expect(r.errorType).toBe("user");
+    });
+
+    it.each([
+      "Too many calls (5001). Maximum is 5000.",
+      "No calls to execute",
+      "Failed to parse ABI: invalid fragment",
+      "Call 2: Failed to parse ABI: invalid fragment",
+      "Call 2: Invalid ABI JSON: Unexpected token",
+      "Failed to encode call 1 (balanceOf): invalid address",
+      "ABI must be a JSON array",
+      "Call 3: ABI must be a JSON array",
+      "Calls JSON is required in mixed mode",
+      "Invalid Calls JSON: Unexpected end of JSON input",
+      "Calls must be a JSON array of call objects",
+      "Invalid Args List JSON: Unexpected token",
+      "Args List must be a JSON array of arg arrays",
+      "Args List entry at index 0 must be an array, got string",
+    ])("classifies Batch Read's %s as validation + user", (input) => {
+      const r = classifyExecutionError(input);
+      expect(r.errorCategory).toBe(ErrorCategory.VALIDATION);
+      expect(r.errorType).toBe("user");
+    });
+
+    it.each([
+      'Multicall batch 1/1 failed: server response 502 (body="0x1 is not a valid address: x")',
+      'Step "check is not a valid address: x" exceeded max retries',
+      "Failed to initialize organization wallet: Function 'x' is not in the ABI",
+      'Step "x takes a tuple with unnamed members" exceeded max retries',
+      'Multicall batch 1/1 failed: server response 502 (body="f declares 9 parameters and tuple members")',
+      "Failed to initialize organization wallet: takes no arguments, so a list of argument sets",
+    ])(
+      "does not relabel a system message quoting Batch Read text: %s",
+      (input) => {
+        expect(classifyExecutionError(input).errorType).toBe("system");
+      }
+    );
+
     it("DATABASE_URL is not configured: configuration + user", () => {
       const r = classifyExecutionError(
         "DATABASE_URL is not configured. Please add it in Project Integrations."

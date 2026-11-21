@@ -58,6 +58,11 @@ Each `pinSchema` is a JSON Schema object:
       "type": "string | number | boolean",
       "description": "...",
       "enum": ["option-a", "option-b"]
+    },
+    "failOnError": {
+      "type": "boolean",
+      "description": "...",
+      "default": true
     }
   },
   "required": ["fieldName"],
@@ -65,7 +70,9 @@ Each `pinSchema` is a JSON Schema object:
 }
 ```
 
-- `properties` maps field keys to their type, optional description, and optional enum values for select fields.
+- `properties` maps field keys to their type, optional description, optional enum values for select fields, and `default` for on/off toggles.
+- On/off toggles (for example `failOnError` and `sponsorGas`) are `boolean` and take JSON `true` or `false`, not strings, even where a saved node config holds `"true"` or `"false"`. They carry `default`: what the step does when the field is not set in the node's config. It is not the node's current value.
+- Solidity `bool` inputs on protocol actions are `boolean` too and take JSON `true` or `false`. The action schema from `search_protocol_actions` also allows the strings `"true"` and `"false"` and, in a workflow step, a `{{@nodeId:Label.field}}` template, but a pinned value is a literal test input, so the pin schema lists only `true` or `false`.
 - `required` lists the keys that must be present in a valid pin payload.
 - `additionalProperties: false` for known actions; `additionalProperties: true` for unknown action types (indicating the registry has no schema for that step).
 

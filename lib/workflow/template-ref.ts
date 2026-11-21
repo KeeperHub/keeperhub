@@ -67,6 +67,11 @@ export function hasTemplateToken(text: string): boolean {
   return nextTemplateToken(text) !== null;
 }
 
+/** hasTemplateToken for a config value of any type. */
+export function valueContainsTemplate(value: unknown): boolean {
+  return typeof value === "string" && hasTemplateToken(value);
+}
+
 /**
  * Replace each token with the callback's result, like `String.replace` with
  * `/\{\{([^}]+)\}\}/g`.
@@ -156,4 +161,11 @@ export function splitTemplateRef(
     label: rest.slice(0, dotIndex),
     fieldPath: rest.slice(dotIndex + 1),
   };
+}
+
+const NODE_ID_UNSAFE_CHARS = /[^a-zA-Z0-9]/g;
+
+/** The key a node's output is stored under: its id with anything but letters and digits as "_". */
+export function sanitizeNodeId(nodeId: string): string {
+  return nodeId.replace(NODE_ID_UNSAFE_CHARS, "_");
 }

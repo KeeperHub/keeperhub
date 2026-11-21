@@ -21,6 +21,7 @@
 
 import { getCompletedStepOutputs } from "@/lib/workflow/executor/get-completed-step-output";
 import type { WorkflowNode } from "@/lib/workflow/store";
+import { sanitizeNodeId } from "@/lib/workflow/template-ref";
 
 export type NodeOutputs = Record<string, { label: string; data: unknown }>;
 
@@ -85,7 +86,7 @@ export function mergeFromTracker(params: {
     if (merged === null) {
       merged = { ...outputs };
     }
-    const sanitized = predId.replace(/[^a-zA-Z0-9]/g, "_");
+    const sanitized = sanitizeNodeId(predId);
     merged[sanitized] = {
       label: getNodeName(node),
       data: recorded.get(predId),
@@ -149,7 +150,7 @@ export async function mergeFromAuthority(params: {
     if (merged === null) {
       merged = { ...outputs };
     }
-    const sanitized = predId.replace(/[^a-zA-Z0-9]/g, "_");
+    const sanitized = sanitizeNodeId(predId);
     merged[sanitized] = {
       label: getNodeName(node),
       data: result.output,
