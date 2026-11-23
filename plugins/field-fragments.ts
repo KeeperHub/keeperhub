@@ -8,6 +8,10 @@
  * diverge from a fragment goes back to an inline literal in its action - do
  * not add override parameters here.
  */
+import {
+  MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
+  MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
+} from "@/lib/web3/next-block-limits";
 import type {
   ActionConfigField,
   ActionConfigFieldBase,
@@ -117,6 +121,47 @@ export function sponsorGasField(): ActionConfigFieldBase {
     // could only ever turn off something that was never available.
     showWhen: { computed: "sponsorshipSupported", networkField: "network" },
     type: "gas-sponsorship-switch",
+  };
+}
+
+/**
+ * "Simulate at" on Read Contract, Write Contract and Batch Write Contract.
+ * See parseSimulationSettings in lib/web3/next-block-simulation.ts.
+ */
+export function simulateAtField(): ActionConfigFieldBase {
+  return {
+    defaultValue: "latest",
+    helpTip:
+      "Next block checks the call as if the next block had already arrived, so a call that unlocks in the next block is treated as unlocked one block sooner. Needs an RPC that can simulate a future block. On a write, gas sponsorship is off, so the paying wallet needs native gas. See the docs before using it on a write.",
+    key: "simulateAt",
+    label: "Simulate at",
+    options: [
+      { label: "Latest block", value: "latest" },
+      { label: "Next block", value: "next-block" },
+    ],
+    type: "select",
+  };
+}
+
+export function simulateTimestampOffsetField(): ActionConfigFieldBase {
+  return {
+    helpTip: `Seconds to add to the latest block's time, from ${MIN_SIMULATE_TIMESTAMP_OFFSET_SEC} to ${MAX_SIMULATE_TIMESTAMP_OFFSET_SEC}. Leave empty to use this network's block time. A value above the real block time makes the check pass early.`,
+    key: "simulateTimestampOffsetSec",
+    label: "Next block timestamp offset (seconds)",
+    max: MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
+    min: MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
+    placeholder: "Auto (network block time)",
+    showWhen: { field: "simulateAt", equals: "next-block" },
+    step: 1,
+    type: "number",
+  };
+}
+
+export function simulationOutput(): OutputField {
+  return {
+    description:
+      "The predicted block a Next block check ran against: { mode, baseBlock (the latest block used), assumedBlockNumber, assumedTimestamp, timestampOffsetSec, rpcMethod }. Absent with Latest block, and when the step failed before or without simulating (a settings or RPC support error).",
+    field: "simulation",
   };
 }
 
@@ -265,4 +310,5 @@ export const outputFragmentFactories: Record<string, () => OutputField> = {
   querySuccessOutput,
   queryErrorOutput,
   fromWalletOutput,
+  simulationOutput,
 };

@@ -21,10 +21,10 @@ import { getErrorMessage } from "@/lib/utils";
 import {
   classifyRevert,
   decodeRevertReason,
-  extractRevertData,
   getRemediationForRevert,
 } from "@/lib/web3/decode-revert-error";
 import { buildErrorDecodeInterface } from "@/lib/web3/extra-error-abis";
+import { extractRevertData } from "@/lib/web3/revert-data";
 import {
   convertAmountForWrite,
   resolveForWrite,

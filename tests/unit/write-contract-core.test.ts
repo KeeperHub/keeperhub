@@ -46,6 +46,7 @@ vi.mock("@/lib/logging", () => ({
     NETWORK_RPC: "network_rpc",
     EXTERNAL_SERVICE: "external_service",
     TRANSACTION: "transaction",
+    CONFIGURATION: "configuration",
   },
   logUserError: vi.fn(),
   logSystemWarn: vi.fn(),
@@ -298,6 +299,7 @@ vi.mock("@/lib/web3/transaction-manager", () => ({
 }));
 
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { RpcRelayTransportError } from "@/lib/rpc/providers/transport-error";
@@ -307,6 +309,7 @@ import {
 } from "@/lib/safe/execute-as-safe";
 import { resolveSignerForNode } from "@/lib/safe/signer-resolver";
 import { parsePriorityFeeGwei } from "@/lib/web3/gas-defaults";
+import { NextBlockSimulationUnsupportedError } from "@/lib/web3/next-block-simulation";
 import { OnChainPendingError } from "@/lib/web3/onchain-revert";
 import { PreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 // Import mocks for assertion
@@ -587,6 +590,186 @@ describe("writeContractCore priorityFeeGwei override", () => {
   });
 });
 
+describe("writeContractCore simulateAt next-block", () => {
+  const SIMULATION = {
+    mode: "next-block",
+    baseBlock: 100,
+    assumedBlockNumber: 101,
+    assumedTimestamp: 1_000_012,
+    rpcMethod: "eth_estimateGas+blockOverrides",
+  };
+  const baseInput = {
+    contractAddress: "0x1234567890123456789012345678901234567890",
+    network: "16602",
+    abi: VALID_ABI,
+    abiFunction: "transfer",
+    _context: { organizationId: "org-1" },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExecuteContractCall.mockResolvedValue({
+      hash: "0xhash",
+      gasUsed: BigInt(21_000),
+      effectiveGasPrice: BigInt(1_000_000_000),
+      simulation: SIMULATION,
+    });
+  });
+
+  it("asks the adapter to simulate as of the next block and reports it", async () => {
+    const result = await writeContractCore({
+      ...baseInput,
+      simulateAt: "next-block",
+      simulateTimestampOffsetSec: "12",
+    });
+
+    const optionsArg = mockExecuteContractCall.mock.calls[0]?.[3] as {
+      simulation?: unknown;
+    };
+    expect(optionsArg.simulation).toEqual({ timestampOffsetSec: 12 });
+    expect(result).toMatchObject({ success: true, simulation: SIMULATION });
+  });
+
+  it("passes no simulation option by default", async () => {
+    mockExecuteContractCall.mockResolvedValue({
+      hash: "0xhash",
+      gasUsed: BigInt(21_000),
+      effectiveGasPrice: BigInt(1_000_000_000),
+    });
+
+    const result = await writeContractCore(baseInput);
+
+    const optionsArg = mockExecuteContractCall.mock.calls[0]?.[3] as {
+      simulation?: unknown;
+    };
+    expect(optionsArg.simulation).toBeUndefined();
+    expect(result).not.toHaveProperty("simulation");
+  });
+
+  it("forwards the option to Safe-routed sends", async () => {
+    vi.mocked(resolveSignerForNode).mockResolvedValueOnce({
+      kind: "safe",
+      safeAddress: "0xsafe",
+      ownerAddress: "0xowner",
+    } as Awaited<ReturnType<typeof resolveSignerForNode>>);
+    vi.mocked(executeContractCallAsSafe).mockResolvedValueOnce({
+      hash: "0xhash",
+      gasUsed: BigInt(21_000),
+      effectiveGasPrice: BigInt(1_000_000_000),
+      blockNumber: 1,
+    });
+
+    await writeContractCore({ ...baseInput, simulateAt: "next-block" });
+
+    const options = vi.mocked(executeContractCallAsSafe).mock.calls[0]?.[3];
+    expect(options?.simulation).toEqual({});
+  });
+
+  it("forwards the option to Safe-role sends", async () => {
+    vi.mocked(resolveSignerForNode).mockResolvedValueOnce({
+      kind: "safe-role",
+      safeAddress: "0xsafe",
+      delegateAddress: "0xdelegate",
+      rolesModifierAddress: "0xmodifier",
+      roleKey: "0xrole",
+    } as Awaited<ReturnType<typeof resolveSignerForNode>>);
+    vi.mocked(executeContractCallAsRole).mockResolvedValueOnce({
+      hash: "0xhash",
+      gasUsed: BigInt(21_000),
+      effectiveGasPrice: BigInt(1_000_000_000),
+      blockNumber: 1,
+    });
+
+    await writeContractCore({ ...baseInput, simulateAt: "next-block" });
+
+    const options = vi.mocked(executeContractCallAsRole).mock.calls[0]?.[3];
+    expect(options?.simulation).toEqual({});
+  });
+
+  it("simulates on the private-mempool relay, the same RPC that sends", async () => {
+    await writeContractCore({
+      ...baseInput,
+      usePrivateMempool: true,
+      simulateAt: "next-block",
+    });
+
+    expect(vi.mocked(getRpcProvider)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(getRpcProvider).mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+    });
+    const optionsArg = mockExecuteContractCall.mock.calls[0]?.[3] as {
+      rpcManager?: unknown;
+      simulation?: unknown;
+    };
+    expect(optionsArg.simulation).toEqual({});
+  });
+
+  it("refuses an invalid offset before resolving anything", async () => {
+    const result = await writeContractCore({
+      ...baseInput,
+      simulateAt: "next-block",
+      simulateTimestampOffsetSec: "0",
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+      broadcastAttempted: false,
+    });
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("fails an unsupported RPC as a user error that never broadcast", async () => {
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new NextBlockSimulationUnsupportedError(
+        "eth_call ignored the block overrides"
+      )
+    );
+
+    const result = await writeContractCore({
+      ...baseInput,
+      simulateAt: "next-block",
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+      broadcastAttempted: false,
+      error: expect.stringContaining("ignored the block overrides"),
+    });
+    expect(applyFailOnError(result, false).success).toBe(false);
+    expect(vi.mocked(logUserError)).toHaveBeenCalledWith(
+      "configuration",
+      "[Next-Block Simulation] Not supported by the network's RPC",
+      expect.any(NextBlockSimulationUnsupportedError),
+      { plugin_name: "web3", action_name: "write-contract" }
+    );
+  });
+
+  it("names the assumed block on a next-block revert", async () => {
+    const revert = Object.assign(new Error("execution reverted"), {
+      nextBlockSimulation: SIMULATION,
+    });
+    mockExecuteContractCall.mockRejectedValueOnce(revert);
+
+    const result = await writeContractCore({
+      ...baseInput,
+      simulateAt: "next-block",
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error:
+        "contract error (simulated as of next block 101, timestamp 1000012)",
+      simulation: SIMULATION,
+    });
+    expect(applyFailOnError(result, false)).toMatchObject({
+      success: true,
+      simulation: SIMULATION,
+    });
+  });
+});
+
 describe("writeContractCore RPC resolution failure", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -851,6 +1034,21 @@ describe("writeContractCore Sponsor gas toggle", () => {
     if (result.success) {
       expect(result.transactionHash).toBe("0xhash");
     }
+    expect(mockExecuteSponsoredContractTransaction).not.toHaveBeenCalled();
+    expect(mockExecuteContractCall).toHaveBeenCalled();
+  });
+
+  it("signs directly when the node simulates at the next block", async () => {
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      simulateAt: "next-block",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(true);
     expect(mockExecuteSponsoredContractTransaction).not.toHaveBeenCalled();
     expect(mockExecuteContractCall).toHaveBeenCalled();
   });

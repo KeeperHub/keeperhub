@@ -29,6 +29,15 @@ import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import { formatContractError } from "@/lib/web3/decode-revert-error";
 import { buildErrorDecodeInterface } from "@/lib/web3/extra-error-abis";
 import {
+  type NextBlockSimulation,
+  NextBlockSimulationUnsupportedError,
+  parseSimulationSettings,
+  nextBlockFailure,
+  type SimulateAt,
+  simulateCallAtNextBlock,
+  unsupportedFailure,
+} from "@/lib/web3/next-block-simulation";
+import {
   applyReadFailOnError,
   type ReadDestinationFailure,
 } from "@/plugins/web3/steps/read-fail-on-error-core";
@@ -59,6 +68,11 @@ export type ReadContractCoreInput = {
   // #2430: extra ABI documents whose error entries join the decode path, after
   // `abi`. Decoding only - `abi` still encodes the call and reads its result.
   errorAbis?: string[];
+  // "next-block" reads as of the next block (number + 1, timestamp + offset).
+  // Unset or "latest" = today's behaviour.
+  simulateAt?: SimulateAt;
+  // Seconds added to the latest timestamp; unset = the chain's block time.
+  simulateTimestampOffsetSec?: string | number;
   _context?: { executionId?: string; organizationId?: string };
 };
 
@@ -67,6 +81,8 @@ export type ReadContractResult =
       success: true;
       result: unknown;
       addressLink: string;
+      // The predicted block a next-block read ran against.
+      simulation?: NextBlockSimulation;
       // Present only when failOnError=false softened a failed read into a
       // success value so the workflow continues. Absent on a genuine read;
       // `result` is null when it is set.
@@ -76,6 +92,7 @@ export type ReadContractResult =
       success: false;
       error: string;
       errorClass?: ExecutionErrorType;
+      simulation?: NextBlockSimulation;
     });
 
 /**
@@ -88,11 +105,14 @@ export type ReadContractResult =
 export async function readContractCore(
   input: ReadContractCoreInput
 ): Promise<ReadContractResult> {
-  return applyReadFailOnError(
-    await readContractInner(input),
-    input.failOnError,
-    { result: null, addressLink: "" }
-  );
+  const result = await readContractInner(input);
+  // A softened failure keeps the predicted block it was read at.
+  const simulation = result.success ? undefined : result.simulation;
+  return applyReadFailOnError(result, input.failOnError, {
+    result: null,
+    addressLink: "",
+    ...(simulation ? { simulation } : {}),
+  });
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Contract interaction requires extensive validation
@@ -107,6 +127,8 @@ async function readContractInner(
     functionArgs,
     callerAddress,
     errorAbis,
+    simulateAt,
+    simulateTimestampOffsetSec,
     _context,
   } = input;
 
@@ -172,6 +194,15 @@ async function readContractInner(
       errorClass: ExecutionErrorType.USER,
     };
   }
+
+  const simulationSettings = parseSimulationSettings(
+    simulateAt,
+    simulateTimestampOffsetSec
+  );
+  if (!simulationSettings.ok) {
+    return simulationSettings.failure;
+  }
+  const simulation = simulationSettings.options;
 
   // Parse ABI
   let parsedAbi: unknown;
@@ -354,14 +385,37 @@ async function readContractInner(
     functionAbi.stateMutability === "pure";
 
   try {
-    const result = await adapter.readContract(rpcManager, {
-      contractAddress,
-      abi: parsedAbi as ethers.InterfaceAbi,
-      functionKey: abiFunctionKey,
-      args,
-      isView,
-      ...(caller ? { callerAddress: caller } : {}),
-    });
+    let result: unknown;
+    let nextBlock: NextBlockSimulation | undefined;
+    if (simulation) {
+      const simulated = await simulateCallAtNextBlock(rpcManager, {
+        chainId,
+        tx: {
+          from: caller,
+          to: contractAddress,
+          data: contractInterface.encodeFunctionData(abiFunctionKey, args),
+        },
+        options: simulation,
+        operationType: "read",
+      });
+      // Unwrap a single output the way ethers' Contract call does, so the
+      // normalisation below sees the same shape on both paths.
+      const decoded = contractInterface.decodeFunctionResult(
+        abiFunctionKey,
+        simulated.returnData
+      );
+      result = decoded.length === 1 ? decoded[0] : decoded;
+      nextBlock = simulated.simulation;
+    } else {
+      result = await adapter.readContract(rpcManager, {
+        contractAddress,
+        abi: parsedAbi as ethers.InterfaceAbi,
+        functionKey: abiFunctionKey,
+        args,
+        isView,
+        ...(caller ? { callerAddress: caller } : {}),
+      });
+    }
 
     // Convert BigInt values to strings for JSON serialization. This also
     // flattens the ethers Result into positional arrays (its named getters are
@@ -399,8 +453,12 @@ async function readContractInner(
       success: true,
       result: structuredResult,
       addressLink,
+      ...(nextBlock ? { simulation: nextBlock } : {}),
     };
   } catch (error) {
+    if (error instanceof NextBlockSimulationUnsupportedError) {
+      return { ...unsupportedFailure(error, "read-contract"), destinationError: true };
+    }
     logUserError(
       ErrorCategory.NETWORK_RPC,
       "[Read Contract] Function call failed:",
@@ -411,13 +469,15 @@ async function readContractInner(
         chain_id: String(chainId),
       }
     );
-    const message = formatContractError(
-      error,
-      buildErrorDecodeInterface(contractInterface, errorAbis)
-    );
     return {
       success: false,
-      error: message,
+      ...nextBlockFailure(
+        formatContractError(
+          error,
+          buildErrorDecodeInterface(contractInterface, errorAbis)
+        ),
+        error
+      ),
       errorClass: ExecutionErrorType.USER,
     };
   }

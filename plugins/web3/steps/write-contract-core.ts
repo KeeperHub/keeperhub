@@ -57,6 +57,14 @@ import {
   parsePriorityFeeGwei,
   resolveGasLimitOverrides,
 } from "@/lib/web3/gas-defaults";
+import {
+  type NextBlockSimulation,
+  NextBlockSimulationUnsupportedError,
+  nextBlockFailure,
+  parseSimulationSettings,
+  type SimulateAt,
+  unsupportedFailure,
+} from "@/lib/web3/next-block-simulation";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
@@ -108,6 +116,11 @@ export type WriteContractCoreInput = {
   // that position. LayerZero's OFT send uses it for refundAddress, so a fee
   // refund can only go back to whoever paid it.
   payerParam?: string;
+  // "next-block" runs the revert check and gas estimate as of the next block
+  // (number + 1, timestamp + offset). Unset or "latest" = today's behaviour.
+  simulateAt?: SimulateAt;
+  // Seconds added to the latest timestamp; unset = the chain's block time.
+  simulateTimestampOffsetSec?: string | number;
   _context?: {
     executionId?: string;
     organizationId?: string;
@@ -154,12 +167,15 @@ export type WriteContractResult =
       // Absent on a genuine successful write; transactionHash is absent here.
       error?: string;
       rejection?: RevertKind;
+      simulation?: NextBlockSimulation;
     }
   | {
       success: false;
       error: string;
       rejection?: RevertKind;
       errorClass?: ExecutionErrorType;
+      // The predicted block a next-block simulation ran against.
+      simulation?: NextBlockSimulation;
       // Set only when a transaction reached the chain and failed
       // there, so the finalizer can persist a receipt for the failure. Absent
       // on pre-broadcast failures, where no transaction exists.
@@ -224,6 +240,7 @@ export function applyFailOnError(
     success: true,
     error: redactAllUrls(result.error),
     rejection: result.rejection,
+    ...(result.simulation ? { simulation: result.simulation } : {}),
   };
 }
 
@@ -251,6 +268,8 @@ async function writeContractCoreImpl(
     web3Connection,
     errorAbis,
     payerParam,
+    simulateAt,
+    simulateTimestampOffsetSec,
     _context,
   } = input;
 
@@ -271,6 +290,15 @@ async function writeContractCoreImpl(
   const { multiplierOverride, gasLimitOverride } =
     resolveGasLimitOverrides(gasLimitMultiplier);
   const priorityFeeOverride = parsePriorityFeeGwei(priorityFeeGwei);
+
+  const simulationSettings = parseSimulationSettings(
+    simulateAt,
+    simulateTimestampOffsetSec
+  );
+  if (!simulationSettings.ok) {
+    return simulationSettings.failure;
+  }
+  const simulation = simulationSettings.options;
 
   // Validate contract address
   if (!ethers.isAddress(contractAddress)) {
@@ -585,6 +613,7 @@ async function writeContractCoreImpl(
       signerMode,
       sponsorGas,
       usePrivateMempool,
+      simulatesNextBlock: simulation !== undefined,
     })
   ) {
     try {
@@ -741,6 +770,7 @@ async function writeContractCoreImpl(
             chainId,
             workflowId,
             rpcManager,
+            simulation,
           }
         );
       } else if (signerMode.kind === SIGNER_MODE.SAFE) {
@@ -760,6 +790,7 @@ async function writeContractCoreImpl(
             chainId,
             workflowId,
             rpcManager,
+            simulation,
           }
         );
       } else {
@@ -781,6 +812,7 @@ async function writeContractCoreImpl(
             },
             workflowId,
             rpcManager,
+            simulation,
           }
         );
       }
@@ -807,8 +839,12 @@ async function writeContractCoreImpl(
         effectiveGasPrice,
         result: undefined,
         executedCall,
+        ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
       };
     } catch (error) {
+      if (error instanceof NextBlockSimulationUnsupportedError) {
+        return { ...unsupportedFailure(error, "write-contract"), broadcastAttempted: false };
+      }
       logUserError(
         ErrorCategory.NETWORK_RPC,
         "[Write Contract] Function call failed",
@@ -844,9 +880,12 @@ async function writeContractCoreImpl(
         (isOnChainPendingError(error) ? ExecutionErrorType.SYSTEM : undefined);
       return {
         success: false,
-        error: formatContractError(
-          error,
-          buildErrorDecodeInterface(contractInterface, errorAbis)
+        ...nextBlockFailure(
+          formatContractError(
+            error,
+            buildErrorDecodeInterface(contractInterface, errorAbis)
+          ),
+          error
         ),
         ...(errorClass ? { errorClass } : {}),
         broadcastAttempted: broadcastHash

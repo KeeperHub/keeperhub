@@ -12,6 +12,10 @@ import {
 import { RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
 import { submitSignedTransactionWithFailover } from "@/lib/web3/submit-signed";
 import type { AdaptiveGasStrategy, GasConfig } from "../gas-strategy";
+import {
+  type NextBlockSimulation,
+  simulateSendAtNextBlock,
+} from "../next-block-simulation";
 import type { NonceManager, NonceSession } from "../nonce-manager";
 import { buildChainAddressUrl, buildChainTransactionUrl } from "./explorer";
 import type {
@@ -162,30 +166,35 @@ export class EvmChainAdapter implements ChainAdapter {
     const fn = contract.getFunction(request.functionKey);
 
     const signerAddress = await signer.getAddress();
-    const callOverrides = {
-      ...(request.value ? { value: request.value } : {}),
-      from: signerAddress,
-    };
 
-    if (options.rpcManager) {
-      await options.rpcManager.executeWithFailover((rpcProvider) => {
-        const readContract = new ethers.Contract(
-          request.contractAddress,
-          request.abi,
-          rpcProvider
-        );
-        return readContract
-          .getFunction(request.functionKey)
-          .staticCall(...request.args, callOverrides);
-      }, "preflight");
+    let estimatedGas: bigint;
+    let simulation: NextBlockSimulation | undefined;
+    if (options.simulation) {
+      if (!options.rpcManager) {
+        throw new Error("Next-block simulation requires an RPC manager");
+      }
+      const simulated = await simulateSendAtNextBlock(options.rpcManager, {
+        chainId: this.chainId,
+        tx: {
+          from: signerAddress,
+          to: request.contractAddress,
+          data: contract.interface.encodeFunctionData(
+            request.functionKey,
+            request.args
+          ),
+          value: request.value,
+        },
+        options: options.simulation,
+      });
+      estimatedGas = simulated.gasEstimate;
+      simulation = simulated.simulation;
     } else {
-      await fn.staticCall(...request.args, callOverrides);
-    }
-
-    const nonce = this.nonceManager.getNextNonce(session);
-
-    const estimatedGas = options.rpcManager
-      ? await options.rpcManager.executeWithFailover((rpcProvider) => {
+      const callOverrides = {
+        ...(request.value ? { value: request.value } : {}),
+        from: signerAddress,
+      };
+      if (options.rpcManager) {
+        await options.rpcManager.executeWithFailover((rpcProvider) => {
           const readContract = new ethers.Contract(
             request.contractAddress,
             request.abi,
@@ -193,9 +202,27 @@ export class EvmChainAdapter implements ChainAdapter {
           );
           return readContract
             .getFunction(request.functionKey)
-            .estimateGas(...request.args, callOverrides);
-        }, "preflight")
-      : await fn.estimateGas(...request.args, callOverrides);
+            .staticCall(...request.args, callOverrides);
+        }, "preflight");
+      } else {
+        await fn.staticCall(...request.args, callOverrides);
+      }
+
+      estimatedGas = options.rpcManager
+        ? await options.rpcManager.executeWithFailover((rpcProvider) => {
+            const readContract = new ethers.Contract(
+              request.contractAddress,
+              request.abi,
+              rpcProvider
+            );
+            return readContract
+              .getFunction(request.functionKey)
+              .estimateGas(...request.args, callOverrides);
+          }, "preflight")
+        : await fn.estimateGas(...request.args, callOverrides);
+    }
+
+    const nonce = this.nonceManager.getNextNonce(session);
 
     const gasConfig = await this.gasStrategy.getGasConfig(
       provider,
@@ -249,7 +276,14 @@ export class EvmChainAdapter implements ChainAdapter {
     // stage (sidecar marker + process-local counter, best-effort).
     markBroadcast();
 
-    return this.confirmTransaction(tx, session, nonce, gasConfig, options);
+    const receipt = await this.confirmTransaction(
+      tx,
+      session,
+      nonce,
+      gasConfig,
+      options
+    );
+    return simulation ? { ...receipt, simulation } : receipt;
   }
 
   async readContract(

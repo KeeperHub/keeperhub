@@ -1,0 +1,886 @@
+import { ethers } from "ethers";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("server-only", () => ({}));
+
+import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { isNonRetryableError } from "@/lib/rpc/providers/error-classification";
+import { formatContractError } from "@/lib/web3/decode-revert-error";
+import {
+  clearSlotSecondsCache,
+  getNextBlockSimulation,
+  NextBlockSimulationUnsupportedError,
+  nextBlockFailure,
+  parseSimulationSettings,
+  simulateCallAtNextBlock,
+  simulateSendAtNextBlock,
+} from "@/lib/web3/next-block-simulation";
+
+// A contract that reverts with "too-soon" until block.timestamp >= unlockAt.
+const IFACE = new ethers.Interface([
+  "function run()",
+  "function workable() view returns (bool)",
+]);
+const CONTRACT = "0x00000000000000000000000000000000000c0de1";
+const WALLET = "0x00000000000000000000000000000000000a11ce";
+const CHAIN_ID = 31_337;
+const SLOT = 12;
+const RUN_GAS = 46_097;
+const NOOP_GAS = 21_000;
+const SIMULATED_GAS = 30_000;
+const coder = ethers.AbiCoder.defaultAbiCoder();
+// Error("too-soon")
+const TOO_SOON = `0x08c379a0${coder.encode(["string"], ["too-soon"]).slice(2)}`;
+// The proof's init code: 0x42 0x67 <8-byte time> ...
+const PROOF_PREFIX = "0x4267";
+
+type RpcError = { code: number; message: string; data?: string };
+type JsonRpcAnswer = { result: unknown } | { error: RpcError };
+type Tx = { to?: string; data: string };
+type Overrides = { number: string; time: string } | undefined;
+type Support = "supported" | "rejected" | "ignored";
+type Outcome = { result: string; gas: number } | { error: RpcError };
+
+const HEADER_NOT_FOUND: RpcError = {
+  code: -32_000,
+  message: "header not found",
+};
+
+class FakeNode {
+  latestNumber = 100;
+  latestTimestamp = 1_000_000;
+  unlockAt = 1_000_000;
+  timestampOf = (n: number): number =>
+    this.latestTimestamp - (this.latestNumber - n) * SLOT;
+  callOverrides: Support = "supported";
+  estimateOverrides: Support = "supported";
+  simulateV1: Support | "missing" = "supported";
+  // Before the unlock, run() is a cheap no-op instead of a revert.
+  noopWhenLocked = false;
+  // Errors the node answers for the real call or the proof of a method.
+  realCallError: { method: string; error: RpcError } | undefined;
+  proofError: { method: string; error: RpcError } | undefined;
+  seen: { method: string; blockTag: unknown; overrides: Overrides }[] = [];
+  methods: string[] = [];
+
+  handle(method: string, params: unknown[]): JsonRpcAnswer {
+    this.methods.push(method);
+    switch (method) {
+      case "eth_getBlockByNumber":
+        return { result: this.block(params[0] as string) };
+      case "eth_call":
+      case "eth_estimateGas":
+        return this.single(method, params);
+      case "eth_simulateV1":
+        return this.simulate(params);
+      default:
+        return { error: { code: -32_601, message: `${method} not found` } };
+    }
+  }
+
+  private block(tag: string): Record<string, unknown> {
+    const n = tag === "latest" ? this.latestNumber : Number(BigInt(tag));
+    const timestamp =
+      n === this.latestNumber ? this.latestTimestamp : this.timestampOf(n);
+    return {
+      hash: ethers.zeroPadValue(ethers.toBeHex(n + 1), 32),
+      parentHash: ethers.zeroPadValue(ethers.toBeHex(n), 32),
+      number: ethers.toQuantity(n),
+      timestamp: ethers.toQuantity(timestamp),
+      nonce: "0x0000000000000000",
+      difficulty: "0x0",
+      gasLimit: "0x1c9c380",
+      gasUsed: "0x0",
+      miner: ethers.ZeroAddress,
+      extraData: "0x",
+      baseFeePerGas: "0x3b9aca00",
+      transactions: [],
+    };
+  }
+
+  private timeFor(mode: Support, overrides: Overrides): number {
+    return mode === "supported" && overrides
+      ? Number(BigInt(overrides.time))
+      : this.latestTimestamp;
+  }
+
+  // Runs the proof's init code as the EVM would: success when TIMESTAMP is
+  // the embedded time, else a revert carrying TIMESTAMP.
+  private evaluate(tx: Tx, time: number): Outcome {
+    if (tx.to === undefined) {
+      const embedded = Number(BigInt(`0x${tx.data.slice(6, 22)}`));
+      // Pins the init code byte for byte; this fake runs its semantics.
+      expect(tx.data).toBe(
+        `${PROOF_PREFIX}${embedded.toString(16).padStart(16, "0")}146017574260005260206000fd5b00`
+      );
+      return embedded === time
+        ? { result: "0x", gas: 53_000 }
+        : {
+            error: {
+              code: 3,
+              message: "execution reverted",
+              data: coder.encode(["uint256"], [time]),
+            },
+          };
+    }
+    const unlocked = time >= this.unlockAt;
+    if (tx.data === IFACE.encodeFunctionData("workable")) {
+      return { result: coder.encode(["bool"], [unlocked]), gas: NOOP_GAS };
+    }
+    if (unlocked) {
+      return { result: "0x", gas: RUN_GAS };
+    }
+    if (this.noopWhenLocked) {
+      return { result: "0x", gas: NOOP_GAS };
+    }
+    return {
+      error: {
+        code: 3,
+        message: "execution reverted: too-soon",
+        data: TOO_SOON,
+      },
+    };
+  }
+
+  private single(method: string, params: unknown[]): JsonRpcAnswer {
+    const mode =
+      method === "eth_call" ? this.callOverrides : this.estimateOverrides;
+    if (params.length > 3 && mode === "rejected") {
+      return {
+        error: { code: -32_602, message: "too many arguments, want at most 3" },
+      };
+    }
+    const tx = params[0] as Tx;
+    const injected = tx.to === undefined ? this.proofError : this.realCallError;
+    if (injected?.method === method) {
+      return { error: injected.error };
+    }
+    this.seen.push({
+      method,
+      blockTag: params[1],
+      overrides: params[3] as Overrides,
+    });
+    const outcome = this.evaluate(
+      tx,
+      this.timeFor(mode, params[3] as Overrides)
+    );
+    if ("error" in outcome) {
+      return outcome;
+    }
+    return method === "eth_call"
+      ? { result: outcome.result }
+      : { result: ethers.toQuantity(outcome.gas) };
+  }
+
+  // Like geth: a failed call carries its revert data in error.data and an
+  // empty returnData.
+  private simulate(params: unknown[]): JsonRpcAnswer {
+    if (this.simulateV1 === "missing" || this.simulateV1 === "rejected") {
+      return {
+        error: {
+          code: -32_601,
+          message: "the method eth_simulateV1 does not exist/is not available",
+        },
+      };
+    }
+    if (this.realCallError?.method === "eth_simulateV1") {
+      return { error: this.realCallError.error };
+    }
+    const [{ blockStateCalls }, blockTag] = params as [
+      { blockStateCalls: { blockOverrides: Overrides; calls: Tx[] }[] },
+      unknown,
+    ];
+    const [{ blockOverrides, calls }] = blockStateCalls;
+    this.seen.push({
+      method: "eth_simulateV1",
+      blockTag,
+      overrides: blockOverrides,
+    });
+    const time = this.timeFor(this.simulateV1, blockOverrides);
+    return {
+      result: [
+        {
+          calls: calls.map((call) => {
+            const outcome = this.evaluate(call, time);
+            if ("result" in outcome) {
+              return {
+                status: "0x1",
+                gasUsed: ethers.toQuantity(SIMULATED_GAS),
+                returnData: outcome.result,
+                logs: [],
+              };
+            }
+            return {
+              status: "0x0",
+              gasUsed: ethers.toQuantity(SIMULATED_GAS),
+              returnData: "0x",
+              error: outcome.error,
+              logs: [],
+            };
+          }),
+        },
+      ],
+    };
+  }
+}
+
+class FakeProvider extends ethers.JsonRpcProvider {
+  private readonly node: FakeNode;
+
+  constructor(node: FakeNode, url = "http://fake.invalid") {
+    super(url, CHAIN_ID, { staticNetwork: true, batchMaxCount: 1 });
+    this.node = node;
+  }
+
+  override _send(
+    payload: ethers.JsonRpcPayload | ethers.JsonRpcPayload[]
+  ): Promise<ethers.JsonRpcResult[]> {
+    const list = Array.isArray(payload) ? payload : [payload];
+    return Promise.resolve(
+      list.map(
+        (p) =>
+          ({
+            id: p.id,
+            jsonrpc: "2.0",
+            ...this.node.handle(p.method, p.params as unknown[]),
+          }) as unknown as ethers.JsonRpcResult
+      )
+    );
+  }
+}
+
+function managerFor(provider: ethers.JsonRpcProvider): RpcProviderManager {
+  return {
+    executeWithFailover: <T>(
+      operation: (p: ethers.JsonRpcProvider) => Promise<T>
+    ): Promise<T> => operation(provider),
+  } as unknown as RpcProviderManager;
+}
+
+function httpError(status: number): Error {
+  return ethers.makeError(`server response ${status}`, "SERVER_ERROR", {
+    request: new ethers.FetchRequest("https://relay.invalid/key123"),
+    response: new ethers.FetchResponse(status, "status", {}, null),
+  });
+}
+
+const RUN_TX = {
+  from: WALLET,
+  to: CONTRACT,
+  data: IFACE.encodeFunctionData("run"),
+};
+const WORKABLE_TX = {
+  to: CONTRACT,
+  data: IFACE.encodeFunctionData("workable"),
+};
+const PADDED_SIMULATED_GAS = BigInt(Math.floor((SIMULATED_GAS * 80) / 63));
+
+describe("parseSimulationSettings", () => {
+  it("keeps today's behaviour when unset or latest", () => {
+    for (const value of [undefined, null, "", "latest", " Latest "]) {
+      expect(parseSimulationSettings(value, "5")).toEqual({
+        ok: true,
+        options: undefined,
+      });
+    }
+  });
+
+  it("reads next-block with an automatic or explicit offset", () => {
+    expect(parseSimulationSettings("next-block", undefined)).toEqual({
+      ok: true,
+      options: {},
+    });
+    expect(parseSimulationSettings(" Next-Block ", "")).toEqual({
+      ok: true,
+      options: {},
+    });
+    expect(parseSimulationSettings("next-block", 6)).toEqual({
+      ok: true,
+      options: { timestampOffsetSec: 6 },
+    });
+    expect(parseSimulationSettings("next-block", " 60 ")).toEqual({
+      ok: true,
+      options: { timestampOffsetSec: 60 },
+    });
+  });
+
+  it("refuses unknown modes and offsets outside 1..60 as user errors naming the field", () => {
+    expect(parseSimulationSettings("pending", undefined)).toEqual({
+      ok: false,
+      failure: {
+        success: false,
+        error:
+          'Invalid Simulate at "pending": expected "latest" or "next-block"',
+        errorClass: "user",
+      },
+    });
+    for (const offset of ["0", "-1", "1.5", "61", "abc", "1e1"]) {
+      expect(parseSimulationSettings("next-block", offset)).toMatchObject({
+        ok: false,
+        failure: {
+          error: expect.stringContaining("Invalid Next block timestamp offset"),
+        },
+      });
+    }
+  });
+});
+
+describe("next-block simulation", () => {
+  let node: FakeNode;
+  let provider: FakeProvider;
+
+  function send(): ReturnType<typeof simulateSendAtNextBlock> {
+    return simulateSendAtNextBlock(managerFor(provider), {
+      chainId: CHAIN_ID,
+      tx: RUN_TX,
+      options: { timestampOffsetSec: SLOT },
+    });
+  }
+
+  function read(
+    options: { timestampOffsetSec?: number } = {}
+  ): ReturnType<typeof simulateCallAtNextBlock> {
+    return simulateCallAtNextBlock(managerFor(provider), {
+      chainId: CHAIN_ID,
+      tx: WORKABLE_TX,
+      options,
+    });
+  }
+
+  beforeEach(() => {
+    clearSlotSecondsCache();
+    node = new FakeNode();
+    provider = new FakeProvider(node);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe("a send", () => {
+    it("passes one block before the unlock with eth_estimateGas alone, where latest reverts", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+      await expect(provider.estimateGas(RUN_TX)).rejects.toMatchObject({
+        code: "CALL_EXCEPTION",
+      });
+
+      const result = await send();
+
+      expect(result.gasEstimate).toBe(BigInt(RUN_GAS));
+      expect(result.simulation).toEqual({
+        mode: "next-block",
+        baseBlock: 100,
+        assumedBlockNumber: 101,
+        assumedTimestamp: node.latestTimestamp + SLOT,
+        timestampOffsetSec: SLOT,
+        rpcMethod: "eth_estimateGas+blockOverrides",
+      });
+      // Works on relays that refuse eth_call and eth_simulateV1.
+      expect(node.methods).not.toContain("eth_call");
+      expect(node.methods).not.toContain("eth_simulateV1");
+    });
+
+    it("pins every call to the base block and overrides number to base + 1", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+      node.estimateOverrides = "rejected";
+
+      await send();
+      await read({ timestampOffsetSec: SLOT });
+
+      expect(node.seen.length).toBeGreaterThan(0);
+      for (const call of node.seen) {
+        expect(call.blockTag).toBe(ethers.toQuantity(100));
+        expect(call.overrides).toEqual({
+          number: ethers.toQuantity(101),
+          time: ethers.toQuantity(node.latestTimestamp + SLOT),
+        });
+      }
+    });
+
+    it.each(["rejected", "ignored"] as const)(
+      "falls back to padded eth_simulateV1 gas when eth_estimateGas has %s the overrides",
+      async (mode) => {
+        // At latest run() is a cheap no-op: that estimate must not be used.
+        node.unlockAt = node.latestTimestamp + 5;
+        node.noopWhenLocked = true;
+        node.estimateOverrides = mode;
+
+        const result = await send();
+        expect(result.gasEstimate).toBe(PADDED_SIMULATED_GAS);
+        expect(result.simulation.rpcMethod).toBe("eth_simulateV1");
+      }
+    );
+
+    it("fails as unsupported, not as a revert, when neither method takes overrides", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+      node.estimateOverrides = "ignored";
+      node.simulateV1 = "missing";
+
+      const error = await send().catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect((error as Error).message).toContain("eth_estimateGas");
+      expect(getNextBlockSimulation(error)).toBeUndefined();
+      expect(isNonRetryableError(error)).toBe(true);
+    });
+
+    it.each([
+      ["eth_estimateGas+blockOverrides", "supported"],
+      ["eth_simulateV1", "rejected"],
+    ] as const)(
+      "still reverts two blocks early (%s), keeping the revert reason",
+      async (method, estimateOverrides) => {
+        node.unlockAt = node.latestTimestamp + 30;
+        node.estimateOverrides = estimateOverrides;
+
+        const error = await send().catch((e: unknown) => e);
+
+        expect(error).toMatchObject({ code: "CALL_EXCEPTION" });
+        expect(formatContractError(error, IFACE)).toContain("too-soon");
+        expect(getNextBlockSimulation(error)?.rpcMethod).toBe(method);
+        expect(nextBlockFailure("failed", error).error).toBe(
+          `failed (simulated as of next block 101, timestamp ${node.latestTimestamp + SLOT})`
+        );
+      }
+    );
+
+    it("keeps the node's reason for an eth_simulateV1 failure without revert data", async () => {
+      node.unlockAt = node.latestTimestamp + 30;
+      node.estimateOverrides = "rejected";
+      vi.spyOn(node, "handle").mockImplementation(function (
+        this: FakeNode,
+        method,
+        params
+      ) {
+        const answer = FakeNode.prototype.handle.call(this, method, params);
+        if (method === "eth_simulateV1" && "result" in answer) {
+          const [block] = answer.result as {
+            calls: Record<string, unknown>[];
+          }[];
+          block.calls[0] = {
+            status: "0x0",
+            gasUsed: "0x1",
+            returnData: "0x",
+            error: { code: -32_015, message: "out of gas" },
+          };
+        }
+        return answer;
+      });
+
+      const error = await send().catch((e: unknown) => e);
+      expect((error as { shortMessage?: string }).shortMessage).toBe(
+        "out of gas"
+      );
+    });
+  });
+
+  describe("a read", () => {
+    it("answers as of the next block with eth_simulateV1 or eth_call", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+      const atLatest = await provider.call(WORKABLE_TX);
+      expect(IFACE.decodeFunctionResult("workable", atLatest)[0]).toBe(false);
+
+      for (const [simulateV1, method] of [
+        ["supported", "eth_simulateV1"],
+        ["missing", "eth_call+blockOverrides"],
+        ["ignored", "eth_call+blockOverrides"],
+      ] as const) {
+        node.simulateV1 = simulateV1;
+        const { returnData, simulation } = await read({
+          timestampOffsetSec: SLOT,
+        });
+        expect(IFACE.decodeFunctionResult("workable", returnData)[0]).toBe(
+          true
+        );
+        expect(simulation.rpcMethod).toBe(method);
+      }
+    });
+
+    it("keeps a geth-shaped eth_simulateV1 revert reason", async () => {
+      node.unlockAt = node.latestTimestamp + 30;
+      const error = await simulateCallAtNextBlock(managerFor(provider), {
+        chainId: CHAIN_ID,
+        tx: RUN_TX,
+        options: { timestampOffsetSec: SLOT },
+      }).catch((e: unknown) => e);
+      expect(formatContractError(error, IFACE)).toContain("too-soon");
+      expect(getNextBlockSimulation(error)?.rpcMethod).toBe("eth_simulateV1");
+    });
+
+    it("keeps a revert reason carried only in eth_simulateV1 returnData", async () => {
+      node.unlockAt = node.latestTimestamp + 30;
+      const handle = node.handle.bind(node);
+      vi.spyOn(node, "handle").mockImplementation((method, params) => {
+        const answer = handle(method, params);
+        if (method === "eth_simulateV1" && "result" in answer) {
+          const [block] = answer.result as {
+            calls: Record<string, unknown>[];
+          }[];
+          block.calls[0] = {
+            status: "0x0",
+            gasUsed: "0x1",
+            returnData: TOO_SOON,
+          };
+        }
+        return answer;
+      });
+      const error = await simulateCallAtNextBlock(managerFor(provider), {
+        chainId: CHAIN_ID,
+        tx: RUN_TX,
+        options: { timestampOffsetSec: SLOT },
+      }).catch((e: unknown) => e);
+      expect(formatContractError(error, IFACE)).toContain("too-soon");
+    });
+
+    it("uses eth_call when eth_simulateV1 is refused in an unknown way", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+      node.realCallError = {
+        method: "eth_simulateV1",
+        error: { code: -32_005, message: "rpc method is not whitelisted" },
+      };
+
+      const { simulation } = await read({ timestampOffsetSec: SLOT });
+      expect(simulation.rpcMethod).toBe("eth_call+blockOverrides");
+    });
+
+    it("fails clearly when eth_call rejects block overrides", async () => {
+      node.simulateV1 = "missing";
+      node.callOverrides = "rejected";
+
+      const error = await read({ timestampOffsetSec: SLOT }).catch(
+        (e: unknown) => e
+      );
+      expect(error).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect((error as Error).message).toContain("does not accept");
+    });
+
+    it("fails clearly instead of answering at latest when eth_call ignores the overrides", async () => {
+      node.simulateV1 = "missing";
+      node.callOverrides = "ignored";
+      node.unlockAt = node.latestTimestamp + 5;
+
+      const error = await read({ timestampOffsetSec: SLOT }).catch(
+        (e: unknown) => e
+      );
+      expect(error).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect((error as Error).message).toContain("ignored the block overrides");
+    });
+  });
+
+  describe("the automatic offset", () => {
+    it("is the smallest recent gap, so a missed slot does not stretch it", async () => {
+      node.timestampOf = (n: number): number =>
+        node.latestTimestamp -
+        (node.latestNumber - n) * SLOT -
+        (n < 97 ? SLOT : 0);
+
+      const { simulation } = await read();
+      expect(simulation.timestampOffsetSec).toBe(SLOT);
+    });
+
+    it("is cached per chain and RPC, so another RPC or chain cannot set it", async () => {
+      const forged = new FakeNode();
+      forged.timestampOf = (n: number): number =>
+        forged.latestTimestamp - (forged.latestNumber - n) * 30;
+      await simulateCallAtNextBlock(
+        managerFor(new FakeProvider(forged, "http://custom.invalid")),
+        { chainId: CHAIN_ID, tx: WORKABLE_TX, options: {} }
+      );
+      await simulateCallAtNextBlock(managerFor(new FakeProvider(forged)), {
+        chainId: CHAIN_ID + 1,
+        tx: WORKABLE_TX,
+        options: {},
+      });
+
+      const { simulation } = await read();
+      expect(simulation.timestampOffsetSec).toBe(SLOT);
+    });
+
+    it("is refreshed after 10 minutes", async () => {
+      const now = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+      await read();
+      node.timestampOf = (n: number): number =>
+        node.latestTimestamp - (node.latestNumber - n) * 2;
+      // Same URL, so the same cache entry; a fresh provider skips ethers'
+      // own short request cache.
+      provider = new FakeProvider(node);
+
+      clock.mockReturnValue(now + 9 * 60_000);
+      expect((await read()).simulation.timestampOffsetSec).toBe(SLOT);
+      clock.mockReturnValue(now + 11 * 60_000);
+      expect((await read()).simulation.timestampOffsetSec).toBe(2);
+    });
+
+    it("keeps at most 256 cached RPCs", async () => {
+      for (let i = 0; i < 257; i += 1) {
+        await simulateCallAtNextBlock(
+          managerFor(new FakeProvider(node, `http://rpc-${i}.invalid`)),
+          { chainId: CHAIN_ID, tx: WORKABLE_TX, options: {} }
+        );
+      }
+      const before = node.methods.length;
+      // The first one was evicted, so it samples blocks again.
+      await simulateCallAtNextBlock(
+        managerFor(new FakeProvider(node, "http://rpc-0.invalid")),
+        { chainId: CHAIN_ID, tx: WORKABLE_TX, options: {} }
+      );
+      const sampled = node.methods
+        .slice(before)
+        .filter((m) => m === "eth_getBlockByNumber").length;
+      expect(sampled).toBeGreaterThan(1);
+    });
+
+    it("never goes above 60 seconds", async () => {
+      node.timestampOf = (n: number): number =>
+        node.latestTimestamp - (node.latestNumber - n) * 100_000;
+
+      const { simulation } = await read();
+      expect(simulation.timestampOffsetSec).toBe(60);
+    });
+
+    it("refuses to guess when recent blocks share a timestamp", async () => {
+      node.timestampOf = (): number => node.latestTimestamp;
+
+      const error = await read().catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect((error as Error).message).toContain("share a timestamp");
+    });
+  });
+
+  describe("node errors", () => {
+    it.each([
+      ["code 3 with no data", { code: 3, message: "execution reverted" }],
+      [
+        "an older Nethermind revert",
+        { code: -32_015, message: "VM execution error.", data: "revert" },
+      ],
+    ])(
+      "treats a proof that reverted with %s as overrides ignored",
+      async (_label, error) => {
+        // Reads: a clear refusal, not an endless retry.
+        node.simulateV1 = "missing";
+        node.proofError = { method: "eth_call", error };
+        const readError = await read({ timestampOffsetSec: SLOT }).catch(
+          (e: unknown) => e
+        );
+        expect(readError).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+
+        // Sends: the eth_simulateV1 fallback is still reached.
+        node.simulateV1 = "supported";
+        node.unlockAt = node.latestTimestamp + 5;
+        node.proofError = { method: "eth_estimateGas", error };
+        const result = await send();
+        expect(result.simulation.rpcMethod).toBe("eth_simulateV1");
+      }
+    );
+
+    it("keeps the relay's refusal in the send-path unsupported message", async () => {
+      node.simulateV1 = "missing";
+      node.proofError = {
+        method: "eth_estimateGas",
+        error: { code: -32_601, message: "rpc method is not whitelisted" },
+      };
+      const error = await send().catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect((error as Error).message).toContain(
+        "eth_estimateGas does not apply block overrides (rpc method is not whitelisted), and eth_simulateV1"
+      );
+    });
+
+    it("does not show an ignored proof's revert as if the user's call reverted", async () => {
+      node.simulateV1 = "missing";
+      node.estimateOverrides = "ignored";
+      const error = await send().catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect((error as Error).message).not.toContain("execution reverted");
+    });
+
+    it.each([
+      ["-32005 alone", { code: -32_005, message: "limit exceeded" }],
+      [
+        "a Nethermind missing block",
+        { code: -32_001, message: "Block 100 could not be found" },
+      ],
+    ])(
+      "keeps %s on the real estimate retryable, not final",
+      async (_label, error) => {
+        node.unlockAt = node.latestTimestamp + 5;
+        node.realCallError = { method: "eth_estimateGas", error };
+        const thrown = await send().catch((e: unknown) => e);
+        expect(isNonRetryableError(thrown)).toBe(false);
+        expect((thrown as Error).message).toContain("retried automatically");
+      }
+    );
+
+    it.each([
+      [
+        "a timeout",
+        () =>
+          ethers.makeError("request timeout", "TIMEOUT", {
+            operation: "request",
+            reason: "timeout",
+          }),
+      ],
+      [
+        "a network error",
+        () =>
+          ethers.makeError("network error", "NETWORK_ERROR", {
+            event: "request",
+          }),
+      ],
+      ["HTTP 503", () => httpError(503)],
+      ["HTTP 429", () => httpError(429)],
+    ])(
+      "keeps %s on the proof or the real estimate retryable",
+      async (_label, makeErr) => {
+        for (const onProof of [true, false]) {
+          node.unlockAt = node.latestTimestamp + 5;
+          vi.spyOn(provider, "_send").mockImplementation((payload) => {
+            const p = Array.isArray(payload) ? payload[0] : payload;
+            const tx = (p.params as Tx[] | undefined)?.[0];
+            if (
+              p.method === "eth_estimateGas" &&
+              (tx?.to === undefined) === onProof
+            ) {
+              return Promise.reject(makeErr());
+            }
+            return FakeProvider.prototype._send.call(provider, payload);
+          });
+          const thrown = await send().catch((e: unknown) => e);
+          expect(thrown).toBeInstanceOf(Error);
+          expect((thrown as Error).message).toContain("retried automatically");
+          expect(isNonRetryableError(thrown)).toBe(false);
+          vi.restoreAllMocks();
+        }
+      }
+    );
+
+    it("treats an HTTP 403 refusal as unsupported and keeps the URL out of the message", async () => {
+      node.simulateV1 = "missing";
+      vi.spyOn(provider, "_send").mockImplementation((payload) => {
+        const p = Array.isArray(payload) ? payload[0] : payload;
+        if (p.method === "eth_call") {
+          return Promise.reject(httpError(403));
+        }
+        return FakeProvider.prototype._send.call(provider, payload);
+      });
+
+      const error = await read({ timestampOffsetSec: SLOT }).catch(
+        (e: unknown) => e
+      );
+      expect(error).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect((error as Error).message).not.toContain("key123");
+    });
+
+    it.each([
+      ["code -32602", { code: -32_602, message: "bad request" }],
+      [
+        "a refused-parameter message",
+        { code: -32_000, message: "too many arguments, want at most 3" },
+      ],
+      [
+        "a method-not-found message",
+        { code: -32_000, message: "block override not supported" },
+      ],
+      [
+        "a not-whitelisted message",
+        { code: -32_601, message: "rpc method is not whitelisted" },
+      ],
+    ])(
+      "treats %s on the eth_call proof as unsupported",
+      async (_label, error) => {
+        node.simulateV1 = "missing";
+        node.proofError = { method: "eth_call", error };
+
+        const thrown = await read({ timestampOffsetSec: SLOT }).catch(
+          (e: unknown) => e
+        );
+        expect(thrown).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      }
+    );
+
+    it.each([
+      ["-32603 internal error", { code: -32_603, message: "internal error" }],
+      [
+        "service unavailable",
+        { code: -32_000, message: "service unavailable" },
+      ],
+      [
+        "a Nethermind missing block",
+        { code: -32_001, message: "Block 100 could not be found" },
+      ],
+      ["a Besu missing block", { code: -32_000, message: "Block not found" }],
+    ])(
+      "keeps %s on a proof retryable, not unsupported",
+      async (_label, error) => {
+        node.unlockAt = node.latestTimestamp + 5;
+        node.proofError = { method: "eth_estimateGas", error };
+
+        const thrown = await send().catch((e: unknown) => e);
+        expect(thrown).not.toBeInstanceOf(NextBlockSimulationUnsupportedError);
+        expect(isNonRetryableError(thrown)).toBe(false);
+        expect((thrown as Error).message).toContain("retried automatically");
+      }
+    );
+
+    it.each([
+      ["code 3 with no data", { code: 3, message: "execution failed" }],
+      [
+        "a geth -32000 invalid opcode",
+        { code: -32_000, message: "invalid opcode: INVALID" },
+      ],
+      [
+        "a geth aborted call",
+        { code: -32_000, message: "execution aborted (timeout = 5s)" },
+      ],
+    ])(
+      "treats %s on the real estimate as final, like latest does",
+      async (_label, error) => {
+        node.unlockAt = node.latestTimestamp + 5;
+        node.realCallError = { method: "eth_estimateGas", error };
+
+        const thrown = await send().catch((e: unknown) => e);
+        expect(thrown).toMatchObject({ code: "CALL_EXCEPTION" });
+        expect(isNonRetryableError(thrown)).toBe(true);
+        expect(getNextBlockSimulation(thrown)).toBeDefined();
+      }
+    );
+
+    it.each([
+      ["the real eth_estimateGas", "realCallError", "eth_estimateGas"],
+      ["the eth_estimateGas proof", "proofError", "eth_estimateGas"],
+    ] as const)(
+      "keeps a transient error on %s retryable",
+      async (_label, slot, method) => {
+        node.unlockAt = node.latestTimestamp + 5;
+        node[slot] = { method, error: HEADER_NOT_FOUND };
+
+        const error = await send().catch((e: unknown) => e);
+        expect(isNonRetryableError(error)).toBe(false);
+        expect((error as Error).message).toContain("header not found");
+      }
+    );
+
+    it.each([
+      ["the real eth_call", "realCallError", "eth_call", "missing"],
+      ["the eth_call proof", "proofError", "eth_call", "missing"],
+      ["eth_simulateV1", "realCallError", "eth_simulateV1", "supported"],
+    ] as const)(
+      "keeps a transient error on %s retryable for a read",
+      async (_label, slot, method, simulateV1) => {
+        node.simulateV1 = simulateV1;
+        node[slot] = {
+          method,
+          error: { code: -32_005, message: "rate limited" },
+        };
+
+        const error = await read({ timestampOffsetSec: SLOT }).catch(
+          (e: unknown) => e
+        );
+        expect(isNonRetryableError(error)).toBe(false);
+        expect((error as Error).message).toContain("rate limited");
+      }
+    );
+  });
+});

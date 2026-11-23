@@ -12,6 +12,7 @@ type SponsorshipEligibility = {
   signerMode: SignerMode;
   sponsorGas?: boolean;
   usePrivateMempool?: boolean;
+  simulatesNextBlock?: boolean;
 };
 
 /**
@@ -27,7 +28,9 @@ type SponsorshipEligibility = {
  *  - KEEP-137: the node routes through a private mempool (e.g. Flashbots
  *    Protect), which Turnkey's own broadcast infrastructure would bypass;
  *  - the send goes through a Safe, where a sponsored call built as a direct
- *    send from the org's EOA would change msg.sender away from the Safe.
+ *    send from the org's EOA would change msg.sender away from the Safe;
+ *  - the node simulates as of the next block, which the sponsor's own
+ *    simulation at `latest` would undo.
  *
  * A false answer is never an error: the caller signs and pays directly, which
  * is also what happens when this returns true and sponsorship then declines
@@ -38,12 +41,14 @@ export function shouldTrySponsorship({
   signerMode,
   sponsorGas,
   usePrivateMempool,
+  simulatesNextBlock,
 }: SponsorshipEligibility): boolean {
   return (
     isGasSponsorshipEnabled() &&
     isSponsorshipSupported(chainId) &&
     resolveSponsorGas(sponsorGas) &&
     !usePrivateMempool &&
+    !simulatesNextBlock &&
     signerMode.kind === SIGNER_MODE.EOA
   );
 }

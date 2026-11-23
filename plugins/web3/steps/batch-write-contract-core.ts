@@ -36,7 +36,7 @@ import {
   initializeWalletSigner,
 } from "@/lib/web3/wallet-helpers";
 import { resolveSignerForNode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
-import { rpcRelayErrorClass } from "@/lib/rpc/providers";
+import { type RpcProviderManager, rpcRelayErrorClass } from "@/lib/rpc/providers";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import {
   preflightGasBalance,
@@ -57,6 +57,16 @@ import {
   isOnChainPendingError,
   isOnChainRevertError,
 } from "@/lib/web3/onchain-revert";
+import {
+  type NextBlockSimulation,
+  type NextBlockSimulationOptions,
+  NextBlockSimulationUnsupportedError,
+  nextBlockFailure,
+  parseSimulationSettings,
+  type SimulateAt,
+  simulateCallAtNextBlock,
+  unsupportedFailure,
+} from "@/lib/web3/next-block-simulation";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import type { TransactionContext } from "@/lib/web3/transaction-manager";
 import { withNonceSession } from "@/lib/web3/transaction-manager";
@@ -93,6 +103,9 @@ export type BatchWriteContractCoreInput = {
   usePrivateMempool?: boolean;
   strict?: boolean;
   web3Connection?: string;
+  // See WriteContractCoreInput: "next-block" simulates as of the next block.
+  simulateAt?: SimulateAt;
+  simulateTimestampOffsetSec?: string | number;
   _context?: {
     executionId?: string;
     organizationId?: string;
@@ -120,12 +133,14 @@ export type BatchWriteContractResult =
     // successful broadcast.
     error?: string;
     rejection?: RevertKind;
+    simulation?: NextBlockSimulation;
   }
   | {
     success: false;
     error: string;
     rejection?: RevertKind;
     errorClass?: ExecutionErrorType;
+    simulation?: NextBlockSimulation;
     transactionHash?: string;
     chainId?: number;
     // Present when the pre-broadcast simulation ran and decoded per-call
@@ -170,6 +185,7 @@ export function applyBatchFailOnError(
     // them on a softened result.
     results: result.results,
     totalCalls: result.totalCalls,
+    ...(result.simulation ? { simulation: result.simulation } : {}),
   };
 }
 
@@ -536,12 +552,23 @@ async function batchWriteContractCoreImpl(
     usePrivateMempool,
     strict,
     web3Connection,
+    simulateAt,
+    simulateTimestampOffsetSec,
     _context,
   } = input;
 
   const { multiplierOverride, gasLimitOverride } =
     resolveGasLimitOverrides(gasLimitMultiplier);
   const priorityFeeOverride = parsePriorityFeeGwei(priorityFeeGwei);
+
+  const simulationSettings = parseSimulationSettings(
+    simulateAt,
+    simulateTimestampOffsetSec
+  );
+  if (!simulationSettings.ok) {
+    return simulationSettings.failure;
+  }
+  const simulation = simulationSettings.options;
 
   const { calls: callsWithMeta, error: buildError } = buildCallsWithMeta({
     calls,
@@ -616,20 +643,23 @@ async function batchWriteContractCoreImpl(
   // success/result/error before, and immediately preceding, the real send.
   let aggregateResults: [boolean, string][];
   try {
-    aggregateResults = await rpcManager.executeWithFailover(
-      (provider) =>
-        new ethers.Contract(MULTICALL3_ADDRESS, MULTICALL3_ABI, provider)
-          .aggregate3.staticCall(call3Array, {
-            from: walletAddress,
-          }) as Promise<[boolean, string][]>
-    );
+    aggregateResults = simulation
+      ? await simulateAggregate3AtNextBlock({
+          rpcManager,
+          chainId,
+          walletAddress,
+          call3Array,
+          options: simulation,
+        })
+      : await rpcManager.executeWithFailover(
+          (provider) =>
+            new ethers.Contract(MULTICALL3_ADDRESS, MULTICALL3_ABI, provider)
+              .aggregate3.staticCall(call3Array, {
+                from: walletAddress,
+              }) as Promise<[boolean, string][]>
+        );
   } catch (error) {
-    const rejection = classifyRevert(error, revertIface);
-    return {
-      success: false,
-      error: formatContractError(error, revertIface),
-      ...(rejection.kind !== "unknown" ? { rejection } : {}),
-    };
+    return aggregateSimulationFailure(error, revertIface);
   }
 
   if (aggregateResults.length !== callsWithMeta.length) {
@@ -722,6 +752,7 @@ async function batchWriteContractCoreImpl(
           gasOverrides: { multiplierOverride, gasLimitOverride, priorityFeeOverride },
           workflowId,
           rpcManager,
+          simulation,
         }
       );
 
@@ -741,8 +772,12 @@ async function batchWriteContractCoreImpl(
         effectiveGasPrice,
         results,
         totalCalls: results.length,
+        ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
       };
     } catch (error) {
+      if (error instanceof NextBlockSimulationUnsupportedError) {
+        return { ...unsupportedFailure(error, "batch-write-contract"), broadcastAttempted: false };
+      }
       const rejection = classifyRevert(error, revertIface);
       // Set so a failOnError=false node cannot soften an unresolved in-flight
       // send into success. A relay-determined class is the more specific
@@ -754,7 +789,7 @@ async function batchWriteContractCoreImpl(
         broadcastTransactionHash(error) ?? receivedTransactionHash;
       const base = {
         success: false as const,
-        error: formatContractError(error, revertIface),
+        ...nextBlockFailure(formatContractError(error, revertIface), error),
         ...(errorClass ? { errorClass } : {}),
         ...(broadcastHash ? { transactionHash: broadcastHash, chainId } : {}),
         broadcastAttempted: broadcastHash
@@ -788,6 +823,47 @@ async function batchWriteContractCoreImpl(
       };
     }
   });
+}
+
+// aggregate3's per-call results, simulated as of the next block.
+async function simulateAggregate3AtNextBlock(params: {
+  rpcManager: RpcProviderManager;
+  chainId: number;
+  walletAddress: string;
+  call3Array: Call3[];
+  options: NextBlockSimulationOptions;
+}): Promise<[boolean, string][]> {
+  const multicall = new ethers.Interface(MULTICALL3_ABI);
+  const { returnData } = await simulateCallAtNextBlock(params.rpcManager, {
+    chainId: params.chainId,
+    tx: {
+      from: params.walletAddress,
+      to: MULTICALL3_ADDRESS,
+      data: multicall.encodeFunctionData("aggregate3", [params.call3Array]),
+    },
+    options: params.options,
+    operationType: "preflight",
+  });
+  return multicall.decodeFunctionResult("aggregate3", returnData)[0] as [
+    boolean,
+    string,
+  ][];
+}
+
+// A whole-batch failure of the pre-broadcast simulation.
+function aggregateSimulationFailure(
+  error: unknown,
+  revertIface: ethers.Interface | undefined
+): BatchWriteContractResult {
+  if (error instanceof NextBlockSimulationUnsupportedError) {
+    return { ...unsupportedFailure(error, "batch-write-contract"), broadcastAttempted: false };
+  }
+  const rejection = classifyRevert(error, revertIface);
+  return {
+    success: false,
+    ...nextBlockFailure(formatContractError(error, revertIface), error),
+    ...(rejection.kind !== "unknown" ? { rejection } : {}),
+  };
 }
 
 export async function batchWriteContractCore(
