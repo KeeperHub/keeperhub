@@ -824,7 +824,6 @@ async function executeActionStep(input: ActionStepInput) {
 }
 
 async function runActionStep(input: ActionStepInput) {
-}) {
   const { actionType, config, outputs, context, stepFunctions } = input;
 
   // Build step input WITHOUT credentials, but WITH integrationId reference and logging context

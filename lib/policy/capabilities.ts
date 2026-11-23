@@ -91,6 +91,7 @@ export const Capability = {
   ORG_SETTINGS_UPDATE: "org.settings.update",
   ORG_MFA_ENFORCEMENT_UPDATE: "org.mfa.update",
   ORG_DIGEST_UPDATE: "org.digest.update",
+  ORG_ALERTS_UPDATE: "org.alerts.update",
   WALLET_APPROVAL_REQUEST: "wallet.approval.request",
   WALLET_APPROVAL_DECIDE: "wallet.approval.decide",
   AGENT_CONNECTION_REVOKE: "agent.connection.revoke",
@@ -304,6 +305,10 @@ export const CAPABILITIES: Readonly<Record<Capability, CapabilityDefinition>> =
     [Capability.ORG_DIGEST_UPDATE]: controlLeaf(
       Capability.ORG_DIGEST_UPDATE,
       "Change execution digest preferences"
+    ),
+    [Capability.ORG_ALERTS_UPDATE]: controlLeaf(
+      Capability.ORG_ALERTS_UPDATE,
+      "Change failure alert settings"
     ),
     [Capability.WALLET_APPROVAL_REQUEST]: controlLeaf(
       Capability.WALLET_APPROVAL_REQUEST,

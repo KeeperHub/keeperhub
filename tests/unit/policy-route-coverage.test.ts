@@ -89,6 +89,11 @@ describe("control-plane route coverage", () => {
       "validateSafeAdmin",
       // resolveCaller resolves through getDualAuthContext, so it inherits it.
       "resolveCaller",
+      // Everything in this module authenticates through getDualAuthContext.
+      // Matched by module path rather than by the exported name, because
+      // "authenticate" on its own would match files that never reach the gate
+      // and quietly turn this check into a pass.
+      "notifications/failure-alerts/route-auth",
       "validateSafeOwner",
       // A route whose auth is its own calls the check itself.
       "enforceControlPlane",

@@ -320,6 +320,30 @@ export const CONTROL_PLANE_ROUTES: Readonly<
       param: "organizationId",
     }),
   },
+  "/api/organizations/[organizationId]/failure-alerts": {
+    PUT: governed(Capability.ORG_ALERTS_UPDATE, {
+      type: ArnSegment.ORGANIZATION,
+      param: "organizationId",
+    }),
+  },
+  "/api/organizations/[organizationId]/failure-alerts/pause": {
+    PUT: governed(Capability.ORG_ALERTS_UPDATE, {
+      type: ArnSegment.ORGANIZATION,
+      param: "organizationId",
+    }),
+    DELETE: governed(Capability.ORG_ALERTS_UPDATE, {
+      type: ArnSegment.ORGANIZATION,
+      param: "organizationId",
+    }),
+  },
+  // Sends a real alert through the organization's own channel, so it is the
+  // notification capability rather than a settings change.
+  "/api/organizations/[organizationId]/failure-alerts/test": {
+    POST: governed(Capability.OFFCHAIN_NOTIFY, {
+      type: ArnSegment.ORGANIZATION,
+      param: "organizationId",
+    }),
+  },
   "/api/organizations/[organizationId]/execution-digest": {
     PUT: governed(Capability.ORG_DIGEST_UPDATE, {
       type: ArnSegment.ORGANIZATION,
@@ -492,6 +516,12 @@ export const CONTROL_PLANE_ROUTES: Readonly<
   },
   "/api/workflows/[workflowId]/duplicate": {
     POST: creates(Capability.WORKFLOW_CREATE, ArnSegment.WORKFLOW),
+  },
+  "/api/workflows/[workflowId]/failure-alerts": {
+    PUT: governed(Capability.ORG_ALERTS_UPDATE, {
+      type: ArnSegment.WORKFLOW,
+      param: "workflowId",
+    }),
   },
   "/api/workflows/[workflowId]/executions": {
     DELETE: governed(Capability.EXECUTION_HISTORY_DELETE, {
