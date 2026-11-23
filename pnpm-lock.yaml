@@ -22,7 +22,7 @@ overrides:
   '@trpc/server': ^11.8.0
   glob: ^11.1.0
   dompurify: ^3.4.17
-  hono: ^4.13.5
+  hono: ^4.13.16
   form-data: ^4.0.6
   piscina: ^4.9.3
   brace-expansion: ^5.0.9
@@ -34,7 +34,7 @@ overrides:
   ws: ^8.23.0
   '@opentelemetry/core': ^2.8.0
   lodash: ^4.17.23
-  '@hono/node-server': '>=2.0.10'
+  '@hono/node-server': '>=2.1.6'
   file-type: '>=21.3.1'
   yauzl: '>=3.2.1'
   drizzle-orm: ^0.45.4
@@ -43,13 +43,14 @@ overrides:
   uuid@<11: ^11.1.1
   postcss: ^8.5.23
   valibot: ^1.4.2
-  effect: ^3.20.0
-  follow-redirects: ^1.16.0
+  effect: ^3.22.1
+  follow-redirects: ^1.16.2
   fast-xml-builder: ~1.1.7
   esbuild@<0.25.0: ^0.25.0
   fast-uri: ^3.1.6
   kysely: ^0.28.17
   sharp: ^0.35.5
+  '@smithy/core@<3.38.1': ^3.38.1
   zod@>=4.0.0 <4.6.6: ^4.6.7
   esbuild@>=0.27.3 <0.28.1: ^0.28.1
   body-parser@<2: ^1.20.6
@@ -250,7 +251,7 @@ importers:
         version: 12.43.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       mppx:
         specifier: ^0.21.1
-        version: 0.21.1(@modelcontextprotocol/sdk@1.32.2(@cfworker/json-schema@4.1.1)(zod@4.6.7))(@x402/core@2.31.0)(@x402/evm@2.31.0)(@x402/next@2.31.0)(express@5.3.0)(hono@4.13.14)(next@16.4.6(@babel/core@7.29.13)(@opentelemetry/api@1.9.1)(@playwright/test@1.65.1)(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(typescript@5.9.3)(viem@2.58.2)
+        version: 0.21.1(@modelcontextprotocol/sdk@1.32.2(@cfworker/json-schema@4.1.1)(zod@4.6.7))(@x402/core@2.31.0)(@x402/evm@2.31.0)(@x402/next@2.31.0)(express@5.3.0)(hono@4.13.19)(next@16.4.6(@babel/core@7.29.13)(@opentelemetry/api@1.9.1)(@playwright/test@1.65.1)(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(typescript@5.9.3)(viem@2.58.2)
       nanoid:
         specifier: ^5.1.16
         version: 5.1.16
@@ -337,8 +338,8 @@ importers:
         version: 3.4.8(@gnosis-guild/eth-sdk-client@0.1.6)(bufferutil@4.1.0)(utf-8-validate@6.0.6)
     devDependencies:
       '@biomejs/biome':
-        specifier: 2.6.8
-        version: 2.6.8
+        specifier: 2.5.15
+        version: 2.5.15
       '@inquirer/prompts':
         specifier: ^8.8.0
         version: 8.8.0(@types/node@24.19.2)
@@ -410,7 +411,7 @@ importers:
         version: 5.9.3
       ultracite:
         specifier: 6.5.1
-        version: 6.5.1(effect@3.21.2)(typescript@5.9.3)(valibot@1.4.2(typescript@5.9.3))
+        version: 6.5.1(typescript@5.9.3)(valibot@1.4.2(typescript@5.9.3))
       vite:
         specifier: ^7.3.8
         version: 7.3.8(@types/node@24.19.2)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.3)(tsx@4.23.15)(yaml@2.9.1)
@@ -722,71 +723,59 @@ packages:
   '@better-fetch/fetch@1.3.3':
     resolution: {integrity: sha512-U6SlDt/GUWtK2JAxS/NhdoYTEim+EL1G5byz2TUj83KjLZBUpYzb5SmX0aXaCnbGkAjFKnV/o/0+cyXMbEcqqg==}
 
-  '@biomejs/biome@2.6.8':
-    resolution: {integrity: sha512-kqZUFvX6/aYQOmzfRN5ANcfNS9wLH4aHLWWP/dQKyhRZVoA6rdWszA7DGugFcxPbMiznUyVYyukVl+ExZN4PQA==}
+  '@biomejs/biome@2.5.15':
+    resolution: {integrity: sha512-WZTW4slm/pdkh92K6t/3aEN++44JD1PQ7squ7RCMLI1flHGl43DVOIGXvCjHiZgBMO1V4uYxoFNtqrIA4qGuIQ==}
     engines: {node: '>=14.21.3'}
     hasBin: true
 
-  '@biomejs/cli-android-arm64@2.6.8':
-    resolution: {integrity: sha512-X4JKPLK85kfUTwuuaORFplnBfGjKkp62PsFhhcL7F/Tpltc7pyUofjlkkMnlZZLWsifFl7LNB8ngVrwJg1uo1Q==}
-    engines: {node: '>=14.21.3'}
-    cpu: [arm64]
-    os: [android]
-
-  '@biomejs/cli-android-x64@2.6.8':
-    resolution: {integrity: sha512-C3Hk485vl+deEj53K08+SYYelPIPkdSZL3qHuD31Xi+qydVa4q2ze+aCYo1k3iJGWtvWtjHaGkDh7S2sX6wk8w==}
-    engines: {node: '>=14.21.3'}
-    cpu: [x64]
-    os: [android]
-
-  '@biomejs/cli-darwin-arm64@2.6.8':
-    resolution: {integrity: sha512-DHyj+JnRHcn4YdvpiqgTFZMYKSPELMCfFpNNlEuu1L8DKTGXhzW7raIwdsbo2Ie9nCljQLAQkVWQk/mwM0ueiA==}
+  '@biomejs/cli-darwin-arm64@2.5.15':
+    resolution: {integrity: sha512-BZVzFhJ/mUvTLMYbc9x6el0o2Uv5zP7bACYyhFb6fSc1giroXm7PL0a5KqMJ9F+/BnkYRjagD/ROSDVOZ6eapg==}
     engines: {node: '>=14.21.3'}
     cpu: [arm64]
     os: [darwin]
 
-  '@biomejs/cli-darwin-x64@2.6.8':
-    resolution: {integrity: sha512-QWWUPjlA0RnkkgYnFLUHZu+RrDc0FdK0A+wEPA+dENQJwsuSHMH89lspnAw2QUWWc9VHyfluGx1Xmp6Y2GZi8Q==}
+  '@biomejs/cli-darwin-x64@2.5.15':
+    resolution: {integrity: sha512-V5Kw63V+fVGNFhFrizDxMbGXAzZCh8kYzJpy3GI6gTapWDg7bZK9oYC9CbVgQSEdTnupz0U5Efz8Ev+5vdBBXw==}
     engines: {node: '>=14.21.3'}
     cpu: [x64]
     os: [darwin]
 
-  '@biomejs/cli-linux-arm64-musl@2.6.8':
-    resolution: {integrity: sha512-WB9PhOitX+bRc0G3+GNJGlvbKoWn3JoB9z4E04JQizIC9aPCQyIvwvWG7QZHxw6k20Fi+dHLmZ2fSEmBa9HqiA==}
+  '@biomejs/cli-linux-arm64-musl@2.5.15':
+    resolution: {integrity: sha512-tGzZUTcJCV7tj5Adh/Gn6nR4MycqA3iohq2LEcrarAgRBkU0h0OKd2UzCRkOsOYOuUGaUJb4YmqRqyy2feGGSw==}
     engines: {node: '>=14.21.3'}
     cpu: [arm64]
     os: [linux]
     libc: [musl]
 
-  '@biomejs/cli-linux-arm64@2.6.8':
-    resolution: {integrity: sha512-0Bjim8lKwnrvXUHoI4k3Tb51BjoiLEwDnovCI8nSzkk6wj3dShiuAjrx6+X0Hjf4ejR1sRZgTQiSDHlpy9vB7w==}
+  '@biomejs/cli-linux-arm64@2.5.15':
+    resolution: {integrity: sha512-XaG7P7eeSLYETD3K9grfB0mQmpLQZjygdbsxekWBJAg4am79fGAtRpfRyNnTvXB2fZFNnJZG3nXm7HBat0+VUw==}
     engines: {node: '>=14.21.3'}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  '@biomejs/cli-linux-x64-musl@2.6.8':
-    resolution: {integrity: sha512-64Yzo+J4fEk7Kf9SMnVdVxC+Y2A2e/L86QTP9JjGQ57lsddyELLpbBcNMxSJggre2T1AvISwwSrOApkBAHDqNA==}
+  '@biomejs/cli-linux-x64-musl@2.5.15':
+    resolution: {integrity: sha512-IlxUcyxilVGPsE008x13pWdkTbU3nQpP2i9b5UrbOYj6goBkKsRX1XB7yJLcV+O1H9LBchIIm4adOaVLZBX0ZQ==}
     engines: {node: '>=14.21.3'}
     cpu: [x64]
     os: [linux]
     libc: [musl]
 
-  '@biomejs/cli-linux-x64@2.6.8':
-    resolution: {integrity: sha512-XIk3pLQT56I6Tti+u0DF8FtSNXjCMTPbxVTzfJ9cS2t1ImVKvrqV5b52GuEaJg6/wuiXvz0sjfb5saB4TPRjzA==}
+  '@biomejs/cli-linux-x64@2.5.15':
+    resolution: {integrity: sha512-xE4iEW/3LqlYj9GFgGrFsFSH51dEEpUbYWBfeOv0q87WkUDxK2o/HhreSb7qMJqck70RVM6Lg96hgedcAYcOkA==}
     engines: {node: '>=14.21.3'}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@biomejs/cli-win32-arm64@2.6.8':
-    resolution: {integrity: sha512-ezjCEZzHIWE2pdh83a7zLVcAAcDaERcTcvfA7uWlxqz/1CuDxgtfO19pDg9B6YY4wKYIDvYBw2QCMnqIshSwmw==}
+  '@biomejs/cli-win32-arm64@2.5.15':
+    resolution: {integrity: sha512-2kPKzhNlm8C+Ru3GcO0Me2ODkCBLrVOUNuyi84RJyWDVKAA4+Kjj3jMjL938lF6BRfvltC4vB2nPY9SvN51Ovg==}
     engines: {node: '>=14.21.3'}
     cpu: [arm64]
     os: [win32]
 
-  '@biomejs/cli-win32-x64@2.6.8':
-    resolution: {integrity: sha512-cD6HvGczZUiAYsY8s2TxxXj2AHFzEdMomvVJfEjzOjBM45nGqIDfBpbtvwGQzDCN8X2yKKk9u1jnDZisT2nxIg==}
+  '@biomejs/cli-win32-x64@2.5.15':
+    resolution: {integrity: sha512-yAzh4UqEImV6Hcy0zjUqNfJAsUhoD64FBQCdTG8Md/Z2wQeVP/ZmJ3XRYAs1g8J9fjTFyl2fCtc5FB5til47+g==}
     engines: {node: '>=14.21.3'}
     cpu: [x64]
     os: [win32]
@@ -1325,13 +1314,7 @@ packages:
     resolution: {integrity: sha512-KzKz9vl4vvr1vgLHamj+g5uonbrj5NwAdO3yzOS6cd2HjALVeOgTgeZOyAzNxejbkfOOPIcvuf/Tg8l1pEFLog==}
     engines: {node: '>=20'}
     peerDependencies:
-      hono: ^4.13.5
-
-  '@hono/node-server@2.1.5':
-    resolution: {integrity: sha512-MgP/I06GdvsilDspMk/qmRzpk8LOUStP6jFAbSRi40W09DhoyUn+Mj7eyKICPqeYKybOjVFLVIAQzvu1bfIa7Q==}
-    engines: {node: '>=20'}
-    peerDependencies:
-      hono: ^4.13.5
+      hono: ^4.13.16
 
   '@hpke/chacha20poly1305@1.8.1':
     resolution: {integrity: sha512-EqIpqvybIQrdMMbVcrF9cr6q8PZWbKQ60428iZyESjGO8j9jJCsILNHaCyWWBwnJYAKT8nZko5sNIkIXmlHsuw==}
@@ -5670,8 +5653,8 @@ packages:
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
 
-  effect@3.21.2:
-    resolution: {integrity: sha512-rXd2FGDM8KdjSIrc+mqEELo7ScW7xTVxEf1iInmPSpIde9/nyGuFM710cjTo7/EreGXiUX2MOonPpprbz2XHCg==}
+  effect@3.22.5:
+    resolution: {integrity: sha512-AdIU4llI19BzhJ4xUBZix7kS8oiYSlCsJ61j3UM3UyJw9ecDrsrrweDFm/Ku1nHbJWMLoynK+1Me4it3Zkmjpw==}
 
   ejs@3.1.10:
     resolution: {integrity: sha512-UeJmFfOrAQS8OJWPZ4qtgHyWExa088/MtK5UEyoJGFH67cDEXkZSviOiKRCZ4Xij0zxI3JECgYs3oKx+AizQBA==}
@@ -6176,8 +6159,8 @@ packages:
     resolution: {integrity: sha512-Ox1pJVrDCyGHMG9CFg1tmrRUMRPRsAWYc/PinY0XzJU4K7y7vjNoLKIQ7BR5UJMCxNN8EM1MNDmHWA/B3aZUuw==}
     engines: {node: '>=6'}
 
-  hono@4.13.14:
-    resolution: {integrity: sha512-yhRLQ21U6qa9Hsu2N7Qcbh8tE+WKEcoErjIo56LeSGiGXGp9sA7UpE86Ui9uexb61KakiGwuHMn2QdV7w6i6kQ==}
+  hono@4.13.19:
+    resolution: {integrity: sha512-KmXvQAXwcAHV+muzbIwoJ23niEB5nMoDVr9WcRkU8mvjUECm/1+7v4Jgp7P7a+H6MLFrh+vXrGonGrGS+RQfkA==}
     engines: {node: '>=16.9.0'}
 
   hpagent@1.2.0:
@@ -6926,7 +6909,7 @@ packages:
       '@x402/next': '>=2.22.0'
       elysia: '>=1.2.0'
       express: '>=5'
-      hono: ^4.13.5
+      hono: ^4.13.16
       next: '>=16.2.6'
       viem: '>=2.57.19'
     peerDependenciesMeta:
@@ -8240,7 +8223,7 @@ packages:
       '@orpc/server': ^1.0.0
       '@trpc/server': ^11.8.0
       '@valibot/to-json-schema': ^1.1.0
-      effect: ^3.20.0
+      effect: ^3.22.1
       valibot: ^1.4.2
       zod: ^4.6.7
     peerDependenciesMeta:
@@ -9277,47 +9260,39 @@ snapshots:
 
   '@better-fetch/fetch@1.3.3': {}
 
-  '@biomejs/biome@2.6.8':
+  '@biomejs/biome@2.5.15':
     optionalDependencies:
-      '@biomejs/cli-android-arm64': 2.6.8
-      '@biomejs/cli-android-x64': 2.6.8
-      '@biomejs/cli-darwin-arm64': 2.6.8
-      '@biomejs/cli-darwin-x64': 2.6.8
-      '@biomejs/cli-linux-arm64': 2.6.8
-      '@biomejs/cli-linux-arm64-musl': 2.6.8
-      '@biomejs/cli-linux-x64': 2.6.8
-      '@biomejs/cli-linux-x64-musl': 2.6.8
-      '@biomejs/cli-win32-arm64': 2.6.8
-      '@biomejs/cli-win32-x64': 2.6.8
+      '@biomejs/cli-darwin-arm64': 2.5.15
+      '@biomejs/cli-darwin-x64': 2.5.15
+      '@biomejs/cli-linux-arm64': 2.5.15
+      '@biomejs/cli-linux-arm64-musl': 2.5.15
+      '@biomejs/cli-linux-x64': 2.5.15
+      '@biomejs/cli-linux-x64-musl': 2.5.15
+      '@biomejs/cli-win32-arm64': 2.5.15
+      '@biomejs/cli-win32-x64': 2.5.15
 
-  '@biomejs/cli-android-arm64@2.6.8':
+  '@biomejs/cli-darwin-arm64@2.5.15':
     optional: true
 
-  '@biomejs/cli-android-x64@2.6.8':
+  '@biomejs/cli-darwin-x64@2.5.15':
     optional: true
 
-  '@biomejs/cli-darwin-arm64@2.6.8':
+  '@biomejs/cli-linux-arm64-musl@2.5.15':
     optional: true
 
-  '@biomejs/cli-darwin-x64@2.6.8':
+  '@biomejs/cli-linux-arm64@2.5.15':
     optional: true
 
-  '@biomejs/cli-linux-arm64-musl@2.6.8':
+  '@biomejs/cli-linux-x64-musl@2.5.15':
     optional: true
 
-  '@biomejs/cli-linux-arm64@2.6.8':
+  '@biomejs/cli-linux-x64@2.5.15':
     optional: true
 
-  '@biomejs/cli-linux-x64-musl@2.6.8':
+  '@biomejs/cli-win32-arm64@2.5.15':
     optional: true
 
-  '@biomejs/cli-linux-x64@2.6.8':
-    optional: true
-
-  '@biomejs/cli-win32-arm64@2.6.8':
-    optional: true
-
-  '@biomejs/cli-win32-x64@2.6.8':
+  '@biomejs/cli-win32-x64@2.5.15':
     optional: true
 
   '@borewit/text-codec@0.2.3': {}
@@ -9759,14 +9734,9 @@ snapshots:
     dependencies:
       graphql: 15.10.1
 
-  '@hono/node-server@2.1.11(hono@4.13.14)':
+  '@hono/node-server@2.1.11(hono@4.13.19)':
     dependencies:
-      hono: 4.13.14
-    optional: true
-
-  '@hono/node-server@2.1.5(hono@4.13.14)':
-    dependencies:
-      hono: 4.13.14
+      hono: 4.13.19
 
   '@hpke/chacha20poly1305@1.8.1':
     dependencies:
@@ -10102,7 +10072,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.32.2(@cfworker/json-schema@4.1.1)(zod@4.6.7)':
     dependencies:
-      '@hono/node-server': 2.1.5(hono@4.13.14)
+      '@hono/node-server': 2.1.11(hono@4.13.19)
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
       content-type: 1.0.5
@@ -10112,7 +10082,7 @@ snapshots:
       eventsource-parser: 3.1.1
       express: 5.3.0
       express-rate-limit: 8.7.1(express@5.3.0)
-      hono: 4.13.14
+      hono: 4.13.19
       jose: 6.2.18
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -10619,7 +10589,7 @@ snapshots:
     dependencies:
       c12: 3.1.0
       deepmerge-ts: 8.0.2
-      effect: 3.21.2
+      effect: 3.22.5
       empathic: 2.0.0
     transitivePeerDependencies:
       - magicast
@@ -10636,13 +10606,13 @@ snapshots:
       '@electric-sql/pglite': 0.3.15
       '@electric-sql/pglite-socket': 0.0.20(@electric-sql/pglite@0.3.15)
       '@electric-sql/pglite-tools': 0.2.20(@electric-sql/pglite@0.3.15)
-      '@hono/node-server': 2.1.11(hono@4.13.14)
+      '@hono/node-server': 2.1.11(hono@4.13.19)
       '@mrleebo/prisma-ast': 0.13.1
       '@prisma/get-platform': 7.2.0
       '@prisma/query-plan-executor': 7.2.0
       foreground-child: 3.3.1
       get-port-please: 3.2.0
-      hono: 4.13.14
+      hono: 4.13.19
       http-status-codes: 2.3.0
       pathe: 2.0.3
       proper-lockfile: 4.1.2
@@ -14670,7 +14640,7 @@ snapshots:
 
   ee-first@1.1.1: {}
 
-  effect@3.21.2:
+  effect@3.22.5:
     dependencies:
       '@standard-schema/spec': 1.1.0
       fast-check: 3.23.2
@@ -15284,7 +15254,7 @@ snapshots:
 
   hex-rgb@4.3.0: {}
 
-  hono@4.13.14: {}
+  hono@4.13.19: {}
 
   hpagent@1.2.0: {}
 
@@ -15913,7 +15883,7 @@ snapshots:
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
 
-  mppx@0.21.1(@modelcontextprotocol/sdk@1.32.2(@cfworker/json-schema@4.1.1)(zod@4.6.7))(@x402/core@2.31.0)(@x402/evm@2.31.0)(@x402/next@2.31.0)(express@5.3.0)(hono@4.13.14)(next@16.4.6(@babel/core@7.29.13)(@opentelemetry/api@1.9.1)(@playwright/test@1.65.1)(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(typescript@5.9.3)(viem@2.58.2):
+  mppx@0.21.1(@modelcontextprotocol/sdk@1.32.2(@cfworker/json-schema@4.1.1)(zod@4.6.7))(@x402/core@2.31.0)(@x402/evm@2.31.0)(@x402/next@2.31.0)(express@5.3.0)(hono@4.13.19)(next@16.4.6(@babel/core@7.29.13)(@opentelemetry/api@1.9.1)(@playwright/test@1.65.1)(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(typescript@5.9.3)(viem@2.58.2):
     dependencies:
       ox: 0.14.65(typescript@5.9.3)(zod@4.6.7)
       structured-headers: 2.1.0
@@ -15925,7 +15895,7 @@ snapshots:
       '@x402/evm': 2.31.0(bufferutil@4.1.0)(mppx@0.21.1)(typescript@5.9.3)(utf-8-validate@6.0.6)
       '@x402/next': 2.31.0(bufferutil@4.1.0)(ethers@6.17.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(mppx@0.21.1)(next@16.4.6(@babel/core@7.29.13)(@opentelemetry/api@1.9.1)(@playwright/test@1.65.1)(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(typescript@5.9.3)(utf-8-validate@6.0.6)
       express: 5.3.0
-      hono: 4.13.14
+      hono: 4.13.19
       next: 16.4.6(@babel/core@7.29.13)(@opentelemetry/api@1.9.1)(@playwright/test@1.65.1)(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
     transitivePeerDependencies:
       - typescript
@@ -17288,12 +17258,11 @@ snapshots:
     dependencies:
       punycode: 2.3.1
 
-  trpc-cli@0.12.4(@trpc/server@11.15.0(typescript@5.9.3))(effect@3.21.2)(valibot@1.4.2(typescript@5.9.3))(zod@4.6.7):
+  trpc-cli@0.12.4(@trpc/server@11.15.0(typescript@5.9.3))(valibot@1.4.2(typescript@5.9.3))(zod@4.6.7):
     dependencies:
       commander: 14.0.3
     optionalDependencies:
       '@trpc/server': 11.15.0(typescript@5.9.3)
-      effect: 3.21.2
       valibot: 1.4.2(typescript@5.9.3)
       zod: 4.6.7
 
@@ -17378,7 +17347,7 @@ snapshots:
 
   ulid@3.0.2: {}
 
-  ultracite@6.5.1(effect@3.21.2)(typescript@5.9.3)(valibot@1.4.2(typescript@5.9.3)):
+  ultracite@6.5.1(typescript@5.9.3)(valibot@1.4.2(typescript@5.9.3)):
     dependencies:
       '@clack/prompts': 0.11.0
       '@trpc/server': 11.15.0(typescript@5.9.3)
@@ -17387,7 +17356,7 @@ snapshots:
       jsonc-parser: 3.3.1
       nypm: 0.6.5
       picocolors: 1.1.1
-      trpc-cli: 0.12.4(@trpc/server@11.15.0(typescript@5.9.3))(effect@3.21.2)(valibot@1.4.2(typescript@5.9.3))(zod@4.6.7)
+      trpc-cli: 0.12.4(@trpc/server@11.15.0(typescript@5.9.3))(valibot@1.4.2(typescript@5.9.3))(zod@4.6.7)
       zod: 4.6.7
     transitivePeerDependencies:
       - '@orpc/server'
@@ -17550,7 +17519,7 @@ snapshots:
       ox: 0.14.67(typescript@5.9.3)(zod@3.25.76)
       ws: 8.23.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
     optionalDependencies:
-      mppx: 0.21.1(@modelcontextprotocol/sdk@1.32.2(@cfworker/json-schema@4.1.1)(zod@4.6.7))(@x402/core@2.31.0)(@x402/evm@2.31.0)(@x402/next@2.31.0)(express@5.3.0)(hono@4.13.14)(next@16.4.6(@babel/core@7.29.13)(@opentelemetry/api@1.9.1)(@playwright/test@1.65.1)(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(typescript@5.9.3)(viem@2.58.2)
+      mppx: 0.21.1(@modelcontextprotocol/sdk@1.32.2(@cfworker/json-schema@4.1.1)(zod@4.6.7))(@x402/core@2.31.0)(@x402/evm@2.31.0)(@x402/next@2.31.0)(express@5.3.0)(hono@4.13.19)(next@16.4.6(@babel/core@7.29.13)(@opentelemetry/api@1.9.1)(@playwright/test@1.65.1)(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(typescript@5.9.3)(viem@2.58.2)
       typescript: 5.9.3
     transitivePeerDependencies:
       - bufferutil
@@ -17568,7 +17537,7 @@ snapshots:
       ox: 0.14.67(typescript@5.9.3)(zod@4.6.7)
       ws: 8.23.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
     optionalDependencies:
-      mppx: 0.21.1(@modelcontextprotocol/sdk@1.32.2(@cfworker/json-schema@4.1.1)(zod@4.6.7))(@x402/core@2.31.0)(@x402/evm@2.31.0)(@x402/next@2.31.0)(express@5.3.0)(hono@4.13.14)(next@16.4.6(@babel/core@7.29.13)(@opentelemetry/api@1.9.1)(@playwright/test@1.65.1)(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(typescript@5.9.3)(viem@2.58.2)
+      mppx: 0.21.1(@modelcontextprotocol/sdk@1.32.2(@cfworker/json-schema@4.1.1)(zod@4.6.7))(@x402/core@2.31.0)(@x402/evm@2.31.0)(@x402/next@2.31.0)(express@5.3.0)(hono@4.13.19)(next@16.4.6(@babel/core@7.29.13)(@opentelemetry/api@1.9.1)(@playwright/test@1.65.1)(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(typescript@5.9.3)(viem@2.58.2)
       typescript: 5.9.3
     transitivePeerDependencies:
       - bufferutil
