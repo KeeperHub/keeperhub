@@ -333,13 +333,17 @@ describe.each(cases)("%s", (_name, invoke) => {
     expect(mocks.finishMetrics).toHaveBeenCalledWith("success");
   });
 
-  it("passes the node's priority fee to the gas strategy", async () => {
+  it("passes the node's fee overrides to the gas strategy", async () => {
     const { options } = makeRpcManager(makeReceipt(1));
-    const feeOverrides = { priorityFeeOverride: BigInt(2e9) };
+    const feeOverrides = {
+      priorityFeeOverride: BigInt(2e9),
+      maxFeeOverride: BigInt(40e9),
+    };
 
     await invoke({ ...options, feeOverrides });
 
     const args = mocks.getGasConfig.mock.calls[0];
     expect(args?.[6]).toBe(feeOverrides.priorityFeeOverride);
+    expect(args?.[7]).toBe(feeOverrides.maxFeeOverride);
   });
 });

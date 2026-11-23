@@ -54,10 +54,10 @@ import {
 } from "@/lib/web3/decode-revert-error";
 import { buildErrorDecodeInterface } from "@/lib/web3/extra-error-abis";
 import {
-  parsePriorityFeeGwei,
-  priorityFeeGweiError,
+  resolveFeeOverrides,
   resolveGasLimitOverrides,
 } from "@/lib/web3/gas-defaults";
+import { maxFeeBelowBaseFeeError } from "@/lib/web3/max-fee-check";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
@@ -86,6 +86,9 @@ export type WriteContractCoreInput = {
   // the network's mempool requires a tip above the configured floor (e.g. 0G
   // Galileo demands >= 2 gwei but the strategy floor is lower).
   priorityFeeGwei?: string;
+  // Optional maxFeePerGas ceiling (in gwei). The send is refused when it is
+  // below the current base fee.
+  maxFeeGwei?: string;
   // Per-node "Sponsor gas" toggle. Defaults on; false skips the gas-sponsored
   // route outright so the transaction is signed and paid for by the org's own
   // wallet. Resolved through resolveSponsorGas so an unset value stays on.
@@ -246,6 +249,7 @@ async function writeContractCoreImpl(
     ethValue,
     gasLimitMultiplier,
     priorityFeeGwei,
+    maxFeeGwei,
     sponsorGas,
     usePrivateMempool,
     strict,
@@ -271,15 +275,15 @@ async function writeContractCoreImpl(
 
   const { multiplierOverride, gasLimitOverride } =
     resolveGasLimitOverrides(gasLimitMultiplier);
-  const feeError = priorityFeeGweiError(priorityFeeGwei);
-  if (feeError) {
+  const fees = resolveFeeOverrides(priorityFeeGwei, maxFeeGwei);
+  if ("error" in fees) {
     return {
       success: false,
-      error: feeError,
+      error: fees.error,
       errorClass: ExecutionErrorType.USER,
     };
   }
-  const priorityFeeOverride = parsePriorityFeeGwei(priorityFeeGwei);
+  const { priorityFeeOverride, maxFeeOverride } = fees;
 
   // Validate contract address
   if (!ethers.isAddress(contractAddress)) {
@@ -426,6 +430,19 @@ async function writeContractCoreImpl(
       // endpoints) is.
       errorClass: rpcRelayErrorClass(error) ?? ExecutionErrorType.SYSTEM,
     };
+  }
+
+  if (maxFeeOverride !== undefined) {
+    const capError = await maxFeeBelowBaseFeeError(rpcManager, maxFeeOverride);
+    if (capError) {
+      // The base fee, not the node's config, decides this, so failOnError=false
+      // can carry a run through a gas spike.
+      return {
+        success: false,
+        error: capError,
+        errorClass: ExecutionErrorType.EXTERNAL,
+      };
+    }
   }
 
   // Stablecoin ceiling. An ERC-20 call carries no native value, so the daily
@@ -594,7 +611,8 @@ async function writeContractCoreImpl(
       signerMode,
       sponsorGas,
       usePrivateMempool,
-      customPriorityFee: priorityFeeOverride !== undefined,
+      customFees:
+        priorityFeeOverride !== undefined || maxFeeOverride !== undefined,
     })
   ) {
     try {
@@ -751,7 +769,7 @@ async function writeContractCoreImpl(
             chainId,
             workflowId,
             rpcManager,
-            feeOverrides: { priorityFeeOverride },
+            feeOverrides: { priorityFeeOverride, maxFeeOverride },
           }
         );
       } else if (signerMode.kind === SIGNER_MODE.SAFE) {
@@ -771,7 +789,7 @@ async function writeContractCoreImpl(
             chainId,
             workflowId,
             rpcManager,
-            feeOverrides: { priorityFeeOverride },
+            feeOverrides: { priorityFeeOverride, maxFeeOverride },
           }
         );
       } else {
@@ -790,6 +808,7 @@ async function writeContractCoreImpl(
               multiplierOverride,
               gasLimitOverride,
               priorityFeeOverride,
+              maxFeeOverride,
             },
             workflowId,
             rpcManager,

@@ -12,7 +12,7 @@ type SponsorshipEligibility = {
   signerMode: SignerMode;
   sponsorGas?: boolean;
   usePrivateMempool?: boolean;
-  customPriorityFee?: boolean;
+  customFees?: boolean;
 };
 
 /**
@@ -29,8 +29,8 @@ type SponsorshipEligibility = {
  *    Protect), which Turnkey's own broadcast infrastructure would bypass;
  *  - the send goes through a Safe, where a sponsored call built as a direct
  *    send from the org's EOA would change msg.sender away from the Safe;
- *  - the node sets its own priority fee, which the sponsored route cannot
- *    carry, so the tip the author asked for would be silently dropped.
+ *  - the node sets its own priority fee or max fee, which the sponsored route
+ *    cannot carry, so the fees the author asked for would be silently dropped.
  *
  * A false answer is never an error: the caller signs and pays directly, which
  * is also what happens when this returns true and sponsorship then declines
@@ -41,14 +41,14 @@ export function shouldTrySponsorship({
   signerMode,
   sponsorGas,
   usePrivateMempool,
-  customPriorityFee,
+  customFees,
 }: SponsorshipEligibility): boolean {
   return (
     isGasSponsorshipEnabled() &&
     isSponsorshipSupported(chainId) &&
     resolveSponsorGas(sponsorGas) &&
     !usePrivateMempool &&
-    !customPriorityFee &&
+    !customFees &&
     signerMode.kind === SIGNER_MODE.EOA
   );
 }

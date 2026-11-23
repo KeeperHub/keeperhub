@@ -5,6 +5,7 @@ import type { ShowWhen } from "@/lib/workflow/editor/show-when";
 // turned back on, so a hidden value never changes how the node sends.
 export const UNSPONSORED_ONLY_FIELD_KEYS: readonly string[] = [
   "priorityFeeGwei",
+  "maxFeeGwei",
 ];
 
 export const UNSPONSORED_ONLY_SHOW_WHEN: ShowWhen = {

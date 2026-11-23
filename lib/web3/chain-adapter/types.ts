@@ -21,6 +21,9 @@ export type GasOverrides = {
   // Caller-supplied maxPriorityFeePerGas (in wei). When set, the gas strategy
   // skips its chain min/max priority-fee clamp and uses this value directly.
   priorityFeeOverride?: bigint;
+  // Caller-supplied maxFeePerGas ceiling (in wei). The strategy's fees are
+  // lowered to it when they exceed it.
+  maxFeeOverride?: bigint;
 };
 
 export type SendTransactionRequest = {

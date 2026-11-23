@@ -69,6 +69,19 @@ function priorityFeeConfigField(showWhen?: ShowWhen): ActionConfigFieldBase {
   };
 }
 
+function maxFeeConfigField(showWhen?: ShowWhen): ActionConfigFieldBase {
+  return {
+    example: "50",
+    helpTip:
+      "Highest total fee per gas you will pay, in gwei (base fee plus tip). Higher fees are lowered to this cap. If it is below the next block's base fee, the step fails without sending, since the transaction could not be included. Leave empty for no cap. Sponsored sends cannot carry a custom fee, so on Write Contract this shows only while Sponsor gas is off or the network is not sponsored.",
+    key: "maxFeeGwei",
+    label: "Max Fee (gwei)",
+    placeholder: "No cap",
+    type: "template-input",
+    ...(showWhen ? { showWhen } : {}),
+  };
+}
+
 const web3Plugin: IntegrationPlugin = {
   type: "web3",
   egress: "fixed-host",
@@ -324,6 +337,7 @@ const web3Plugin: IntegrationPlugin = {
               type: "gas-limit-multiplier",
               networkField: "network",
               actionSlug: "transfer-funds",
+              ignoredWhenSponsored: true,
             },
             sponsorGasField(),
           ],
@@ -388,6 +402,7 @@ const web3Plugin: IntegrationPlugin = {
               type: "gas-limit-multiplier",
               networkField: "network",
               actionSlug: "transfer-token",
+              ignoredWhenSponsored: true,
             },
             sponsorGasField(),
           ],
@@ -1864,6 +1879,7 @@ const web3Plugin: IntegrationPlugin = {
               actionSlug: "batch-write-contract",
             },
             priorityFeeConfigField(),
+            maxFeeConfigField(),
           ],
         },
       ],
@@ -1947,6 +1963,7 @@ const web3Plugin: IntegrationPlugin = {
               type: "gas-limit-multiplier",
               networkField: "network",
               actionSlug: "approve-token",
+              ignoredWhenSponsored: true,
             },
             sponsorGasField(),
           ],
@@ -2170,8 +2187,10 @@ const web3Plugin: IntegrationPlugin = {
               type: "gas-limit-multiplier",
               networkField: "network",
               actionSlug: "write-contract",
+              ignoredWhenSponsored: true,
             },
             priorityFeeConfigField(UNSPONSORED_ONLY_SHOW_WHEN),
+            maxFeeConfigField(UNSPONSORED_ONLY_SHOW_WHEN),
             sponsorGasField(),
           ],
         },

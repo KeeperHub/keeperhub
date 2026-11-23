@@ -214,6 +214,10 @@ export type ActionConfigFieldBase = {
   // External documentation URL shown as "Docs" link in the field tooltip
   docUrl?: string;
 
+  // A gas setting a sponsored send ignores. While the node would be sponsored,
+  // the editor warns under a set value that it is not applied.
+  ignoredWhenSponsored?: boolean;
+
   // For protocol-tuple-array: ABI component definitions for the tuple items.
   // Supports 2 levels of nesting (tuple containing tuple) which covers all
   // current protocols. Extend to recursive type if deeper nesting is needed.

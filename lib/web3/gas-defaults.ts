@@ -155,6 +155,7 @@ export function resolveGasLimitOverrides(
 }
 
 export const MAX_PRIORITY_FEE_GWEI = 10_000;
+export const MAX_FEE_GWEI = 10_000;
 
 const GWEI_DECIMAL_RE = /^(\d+)(?:\.(\d{1,9}))?$/;
 const WEI_PER_GWEI = BigInt(1_000_000_000);
@@ -164,12 +165,12 @@ type GweiParse =
   | { ok: false; error: string };
 
 /**
- * Parse a caller-supplied priority fee exactly, as a plain decimal number of
- * gwei with at most 9 fractional digits (1 wei). Unset or blank means "use the
- * default". The same parse feeds validation and the wei value, so a value
- * that validates is the value sent. Client-safe: no ethers.
+ * Parse a caller-supplied gwei amount exactly, as a plain decimal with at
+ * most 9 fractional digits (1 wei). Unset or blank means "not set". The same
+ * parse feeds validation and the wei value, so a value that validates is the
+ * value that is sent. Client-safe: no ethers.
  */
-function parsePriorityFeeSetting(raw: unknown): GweiParse {
+function parseGweiSetting(label: string, raw: unknown, max: number): GweiParse {
   if (raw === undefined || raw === null) {
     return { ok: true, wei: undefined };
   }
@@ -184,19 +185,16 @@ function parsePriorityFeeSetting(raw: unknown): GweiParse {
   if (!match) {
     return {
       ok: false,
-      error: `Priority fee must be a positive decimal number in gwei with at most 9 decimal places, got "${String(raw)}"`,
+      error: `${label} must be a positive decimal number in gwei with at most 9 decimal places, got "${String(raw)}"`,
     };
   }
   const fraction = (match[2] ?? "").padEnd(9, "0");
   const wei = BigInt(match[1]) * WEI_PER_GWEI + BigInt(fraction);
   if (wei === BigInt(0)) {
-    return { ok: false, error: "Priority fee must be greater than 0 gwei" };
+    return { ok: false, error: `${label} must be greater than 0 gwei` };
   }
-  if (wei > BigInt(MAX_PRIORITY_FEE_GWEI) * WEI_PER_GWEI) {
-    return {
-      ok: false,
-      error: `Priority fee must not exceed ${MAX_PRIORITY_FEE_GWEI} gwei`,
-    };
+  if (wei > BigInt(max) * WEI_PER_GWEI) {
+    return { ok: false, error: `${label} must not exceed ${max} gwei` };
   }
   return { ok: true, wei };
 }
@@ -207,12 +205,40 @@ function parsePriorityFeeSetting(raw: unknown): GweiParse {
  * silently sending at the default tip. Empty means "use the default".
  */
 export function priorityFeeGweiError(raw: unknown): string | undefined {
-  const parsed = parsePriorityFeeSetting(raw);
+  const parsed = parseGweiSetting("Priority fee", raw, MAX_PRIORITY_FEE_GWEI);
   return parsed.ok ? undefined : parsed.error;
 }
 
-/** The priority fee in wei, or undefined when unset or invalid. */
-export function parsePriorityFeeGwei(raw: unknown): bigint | undefined {
-  const parsed = parsePriorityFeeSetting(raw);
-  return parsed.ok ? parsed.wei : undefined;
+export type FeeOverrides =
+  | { error: string }
+  | { priorityFeeOverride?: bigint; maxFeeOverride?: bigint };
+
+/**
+ * Resolve a write node's priority fee and max fee settings to wei. A max fee
+ * below the priority fee would silently lower the tip, so it is refused.
+ */
+export function resolveFeeOverrides(
+  priorityFeeRaw: unknown,
+  maxFeeRaw: unknown
+): FeeOverrides {
+  const priority = parseGweiSetting(
+    "Priority fee",
+    priorityFeeRaw,
+    MAX_PRIORITY_FEE_GWEI
+  );
+  if (!priority.ok) {
+    return { error: priority.error };
+  }
+  const max = parseGweiSetting("Max fee", maxFeeRaw, MAX_FEE_GWEI);
+  if (!max.ok) {
+    return { error: max.error };
+  }
+  if (
+    priority.wei !== undefined &&
+    max.wei !== undefined &&
+    max.wei < priority.wei
+  ) {
+    return { error: "Max fee must be at least the priority fee" };
+  }
+  return { priorityFeeOverride: priority.wei, maxFeeOverride: max.wei };
 }
