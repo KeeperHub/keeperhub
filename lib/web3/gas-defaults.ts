@@ -155,17 +155,13 @@ export function resolveGasLimitOverrides(
 }
 
 /**
- * Convert a caller-supplied priority fee (gwei, decimal string) to wei.
- * Returns undefined when the value is missing, malformed, or non-positive --
- * callers should fall through to the default chain-clamped strategy in that
- * case rather than raising. Implemented without ethers so this module remains
- * client-safe (gas-limit-multiplier-field.tsx imports it). Float64 has
- * ~15-16 decimal digits of precision, which comfortably covers gwei values
- * up to ~10^7 (well past any realistic priority fee).
+ * Convert a caller-supplied gwei value (decimal string) to wei.
+ * Returns undefined when the value is missing, malformed, or non-positive.
+ * Implemented without ethers so this module remains client-safe
+ * (gas-limit-multiplier-field.tsx imports it). Float64 has ~15-16 decimal
+ * digits of precision, which comfortably covers gwei values up to ~10^7.
  */
-export function parsePriorityFeeGwei(
-  raw: string | undefined
-): bigint | undefined {
+function gweiToWei(raw: string | undefined): bigint | undefined {
   if (!raw || raw.trim() === "") {
     return;
   }
@@ -176,7 +172,47 @@ export function parsePriorityFeeGwei(
   return BigInt(Math.floor(value * 1e9));
 }
 
+/** Caller-supplied maxPriorityFeePerGas (gwei) in wei, or undefined when unset. */
+export function parsePriorityFeeGwei(
+  raw: string | undefined
+): bigint | undefined {
+  return gweiToWei(raw);
+}
+
+/** Caller-supplied maxFeePerGas cap (gwei) in wei, or undefined when unset. */
+export function parseMaxFeeGwei(raw: string | undefined): bigint | undefined {
+  return gweiToWei(raw);
+}
+
 export const MAX_PRIORITY_FEE_GWEI = 10_000;
+export const MAX_FEE_GWEI = 10_000;
+
+function isUnset(raw: unknown): boolean {
+  return raw === undefined || raw === null || String(raw).trim() === "";
+}
+
+function toNumber(raw: unknown): number {
+  return typeof raw === "number" || typeof raw === "string"
+    ? Number(raw)
+    : Number.NaN;
+}
+
+function gweiSettingError(
+  label: string,
+  raw: unknown,
+  max: number
+): string | undefined {
+  if (isUnset(raw)) {
+    return;
+  }
+  const value = toNumber(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    return `${label} must be a positive number in gwei, got "${String(raw)}"`;
+  }
+  if (value > max) {
+    return `${label} must not exceed ${max} gwei`;
+  }
+}
 
 /**
  * Validate a caller-supplied priority fee (gwei). Returns an error message for
@@ -184,17 +220,30 @@ export const MAX_PRIORITY_FEE_GWEI = 10_000;
  * silently sending at the default tip. Empty means "use the default".
  */
 export function priorityFeeGweiError(raw: unknown): string | undefined {
-  if (raw === undefined || raw === null || String(raw).trim() === "") {
-    return;
+  return gweiSettingError("Priority fee", raw, MAX_PRIORITY_FEE_GWEI);
+}
+
+/**
+ * Validate the priority fee and max fee settings of a write node together.
+ * A max fee below the priority fee would silently lower the tip, so it is
+ * refused rather than sent.
+ */
+export function feeSettingsError(
+  priorityFeeRaw: unknown,
+  maxFeeRaw: unknown
+): string | undefined {
+  const priorityError = priorityFeeGweiError(priorityFeeRaw);
+  if (priorityError) {
+    return priorityError;
   }
-  const value =
-    typeof raw === "number" || typeof raw === "string"
-      ? Number(raw)
-      : Number.NaN;
-  if (!Number.isFinite(value) || value <= 0) {
-    return `Priority fee must be a positive number in gwei, got "${String(raw)}"`;
+  const maxError = gweiSettingError("Max fee", maxFeeRaw, MAX_FEE_GWEI);
+  if (maxError) {
+    return maxError;
   }
-  if (value > MAX_PRIORITY_FEE_GWEI) {
-    return `Priority fee must not exceed ${MAX_PRIORITY_FEE_GWEI} gwei`;
+  if (
+    !(isUnset(priorityFeeRaw) || isUnset(maxFeeRaw)) &&
+    toNumber(maxFeeRaw) < toNumber(priorityFeeRaw)
+  ) {
+    return "Max fee must be at least the priority fee";
   }
 }

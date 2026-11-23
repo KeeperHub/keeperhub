@@ -131,10 +131,16 @@ vi.mock("@/lib/web3/decode-revert-error", async (importOriginal) => {
 
 const mockResolveGasLimitOverrides = vi.fn();
 const mockParsePriorityFeeGwei = vi.fn();
+const { mockMaxFeeBelowBaseFeeError } = vi.hoisted(() => ({
+  mockMaxFeeBelowBaseFeeError: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@/lib/web3/max-fee-check", () => ({
+  maxFeeBelowBaseFeeError: (...args: unknown[]) =>
+    mockMaxFeeBelowBaseFeeError(...args),
+}));
+
 vi.mock("@/lib/web3/gas-defaults", async (importOriginal) => ({
-  priorityFeeGweiError: (
-    await importOriginal<typeof import("@/lib/web3/gas-defaults")>()
-  ).priorityFeeGweiError,
+  ...(await importOriginal<typeof import("@/lib/web3/gas-defaults")>()),
   resolveGasLimitOverrides: (...args: unknown[]) =>
     mockResolveGasLimitOverrides(...args),
   parsePriorityFeeGwei: (...args: unknown[]) =>
@@ -1005,6 +1011,35 @@ describe("batch-write-contract - gas overrides threaded through", () => {
     };
     expect(optionsArg.gasOverrides.multiplierOverride).toBe(1.5);
     expect(optionsArg.gasOverrides.priorityFeeOverride).toBe(fiveGweiWei);
+  });
+
+  it("forwards maxFeeGwei as gasOverrides.maxFeeOverride after the base-fee check", async () => {
+    mockStaticCall.mockResolvedValueOnce([SUCCESS_RETURN, SUCCESS_RETURN]);
+    mockResolveGasLimitOverrides.mockReturnValue({});
+    mockMaxFeeBelowBaseFeeError.mockResolvedValueOnce(undefined);
+
+    await batchWriteContractCore(baseInput({ maxFeeGwei: "40" }));
+
+    expect(mockMaxFeeBelowBaseFeeError).toHaveBeenCalledWith(
+      expect.anything(),
+      BigInt(40e9)
+    );
+    const optionsArg = mockExecuteContractCall.mock.calls[0][3] as {
+      gasOverrides: { maxFeeOverride?: bigint };
+    };
+    expect(optionsArg.gasOverrides.maxFeeOverride).toBe(BigInt(40e9));
+  });
+
+  it("does not send when the cap is below the base fee", async () => {
+    mockResolveGasLimitOverrides.mockReturnValue({});
+    mockMaxFeeBelowBaseFeeError.mockResolvedValueOnce(
+      "Max fee 1 gwei is below the current base fee of 2 gwei"
+    );
+
+    const result = await batchWriteContractCore(baseInput({ maxFeeGwei: "1" }));
+
+    expect(result.success).toBe(false);
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
   });
 });
 

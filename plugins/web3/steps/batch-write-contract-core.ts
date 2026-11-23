@@ -49,10 +49,12 @@ import {
   type RevertKind,
 } from "@/lib/web3/decode-revert-error";
 import {
+  feeSettingsError,
+  parseMaxFeeGwei,
   parsePriorityFeeGwei,
-  priorityFeeGweiError,
   resolveGasLimitOverrides,
 } from "@/lib/web3/gas-defaults";
+import { maxFeeBelowBaseFeeError } from "@/lib/web3/max-fee-check";
 import {
   broadcastTransactionHash,
   isOnChainPendingError,
@@ -91,6 +93,9 @@ export type BatchWriteContractCoreInput = {
   isolateCallFailures?: string | boolean;
   gasLimitMultiplier?: string;
   priorityFeeGwei?: string;
+  // Optional maxFeePerGas ceiling (in gwei). The send is refused when it is
+  // below the current base fee.
+  maxFeeGwei?: string;
   usePrivateMempool?: boolean;
   strict?: boolean;
   web3Connection?: string;
@@ -534,6 +539,7 @@ async function batchWriteContractCoreImpl(
     isolateCallFailures,
     gasLimitMultiplier,
     priorityFeeGwei,
+    maxFeeGwei,
     usePrivateMempool,
     strict,
     web3Connection,
@@ -542,7 +548,7 @@ async function batchWriteContractCoreImpl(
 
   const { multiplierOverride, gasLimitOverride } =
     resolveGasLimitOverrides(gasLimitMultiplier);
-  const feeError = priorityFeeGweiError(priorityFeeGwei);
+  const feeError = feeSettingsError(priorityFeeGwei, maxFeeGwei);
   if (feeError) {
     return {
       success: false,
@@ -552,6 +558,9 @@ async function batchWriteContractCoreImpl(
   }
   const priorityFeeOverride = parsePriorityFeeGwei(
     priorityFeeGwei === undefined ? undefined : String(priorityFeeGwei)
+  );
+  const maxFeeOverride = parseMaxFeeGwei(
+    maxFeeGwei === undefined ? undefined : String(maxFeeGwei)
   );
 
   const { calls: callsWithMeta, error: buildError } = buildCallsWithMeta({
@@ -590,6 +599,17 @@ async function batchWriteContractCoreImpl(
       error: getErrorMessage(error),
       errorClass: ExecutionErrorType.SYSTEM,
     };
+  }
+
+  if (maxFeeOverride !== undefined) {
+    const capError = await maxFeeBelowBaseFeeError(rpcManager, maxFeeOverride);
+    if (capError) {
+      return {
+        success: false,
+        error: capError,
+        errorClass: ExecutionErrorType.USER,
+      };
+    }
   }
 
   let walletAddress: string;
@@ -730,7 +750,12 @@ async function batchWriteContractCoreImpl(
         },
         session,
         {
-          gasOverrides: { multiplierOverride, gasLimitOverride, priorityFeeOverride },
+          gasOverrides: {
+            multiplierOverride,
+            gasLimitOverride,
+            priorityFeeOverride,
+            maxFeeOverride,
+          },
           workflowId,
           rpcManager,
         }

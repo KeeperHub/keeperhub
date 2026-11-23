@@ -119,10 +119,16 @@ vi.mock("@/lib/web3/decode-revert-error", () => ({
   classifyRevert: vi.fn().mockReturnValue({ kind: "unknown" }),
 }));
 
+const { mockMaxFeeBelowBaseFeeError } = vi.hoisted(() => ({
+  mockMaxFeeBelowBaseFeeError: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@/lib/web3/max-fee-check", () => ({
+  maxFeeBelowBaseFeeError: (...args: unknown[]) =>
+    mockMaxFeeBelowBaseFeeError(...args),
+}));
+
 vi.mock("@/lib/web3/gas-defaults", async (importOriginal) => ({
-  priorityFeeGweiError: (
-    await importOriginal<typeof import("@/lib/web3/gas-defaults")>()
-  ).priorityFeeGweiError,
+  ...(await importOriginal<typeof import("@/lib/web3/gas-defaults")>()),
   resolveGasLimitOverrides: vi.fn().mockReturnValue({
     multiplierOverride: undefined,
     gasLimitOverride: undefined,

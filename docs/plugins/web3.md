@@ -616,13 +616,13 @@ Schedule (every 15 min)
 
 Execute state-changing functions on smart contracts using your Turnkey wallet. Requires a connected wallet.
 
-**Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Fail workflow on error (optional, on by default), Gas Limit, Priority Fee and Sponsor gas (optional, in Advanced section; Sponsor gas only on networks gas sponsorship covers)
+**Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Fail workflow on error (optional, on by default), Gas Limit, Priority Fee, Max Fee and Sponsor gas (optional, in Advanced section; Sponsor gas only on networks gas sponsorship covers)
 
 **Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total gas cost in wei), `result`, `error`
 
 **When to use:** Execute DeFi operations (harvest, compound, rebalance), respond to on-chain events, automate protocol maintenance.
 
-**Gas Configuration:** Optionally set a custom Gas Limit or Priority Fee in the Advanced section to override the chain default. See [Gas Management](/wallet-management/gas) for details.
+**Gas Configuration:** Optionally set a custom Gas Limit, Priority Fee or Max Fee in the Advanced section to override the chain default. See [Gas Management](/wallet-management/gas) for details.
 
 **Note:** The `gasUsed` output represents the total transaction cost in wei (gas units × effective gas price), not just the number of gas units consumed.
 
@@ -654,6 +654,7 @@ If you're building this action via the [Workflows API](/api/workflows) rather th
 | Network | `network` | numeric chain id as a string (e.g. `"11155111"`) |
 | Fail workflow on error | `failOnError` | `true` or `false` (or `"true"` / `"false"`), on by default. Off softens a failed write into `success: true` with `error` set. Anything else, a template included, is refused at save, unless the step already holds it (see [On/off toggles](/workflows/templating#onoff-toggles)); a value kept that way runs as off only when it resolves to `false`. |
 | Priority Fee (gwei) | `priorityFeeGwei` | decimal string in gwei (e.g. `"3"`), optional. Templates are allowed. Must be greater than 0 and at most 10000. Empty uses the network default. A value that is set but not a valid number fails the step before anything is sent. When set, gas is paid from your own wallet. |
+| Max Fee (gwei) | `maxFeeGwei` | decimal string in gwei (e.g. `"50"`), optional. Templates are allowed. Must be greater than 0, at most 10000, and at least the priority fee when both are set. Empty means no cap. Higher fees are lowered to the cap; a cap below the current base fee fails the step before anything is sent. When set, gas is paid from your own wallet. |
 | Sponsor gas | `sponsorGas` | `true` or `false` (or `"true"` / `"false"`), on by default. Off always pays gas from your own wallet. Anything else, a template included, is refused at save, unless the step already holds it (see [On/off toggles](/workflows/templating#onoff-toggles)); a value kept that way runs as off only when it resolves to `false`. |
 
 See the [generic web3 write-contract example](/api/workflows#generic-web3-write-contract-example-manual-trigger) in the Workflows API docs for a full working request body.

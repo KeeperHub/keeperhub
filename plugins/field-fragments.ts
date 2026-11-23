@@ -124,10 +124,22 @@ export function priorityFeeField(): ActionConfigFieldBase {
   return {
     example: "3",
     helpTip:
-      "Tip paid to the block builder, in gwei. Transactions in the same block are ordered by tip, so raise it when racing other senders for the same call. Leave empty to use the network default. Setting it pays gas from your own wallet, since sponsored sends cannot carry a custom tip.",
+      "Tip paid to the block builder, in gwei. Transactions in the same block are ordered by tip, so raise it when racing other senders for the same call. Leave empty to use the network default. Setting it pays gas from your own wallet, since sponsored sends cannot carry a custom fee.",
     key: "priorityFeeGwei",
     label: "Priority Fee (gwei)",
     placeholder: "Network default",
+    type: "template-input",
+  };
+}
+
+export function maxFeeField(): ActionConfigFieldBase {
+  return {
+    example: "50",
+    helpTip:
+      "Highest total fee per gas you will pay, in gwei (base fee plus tip). Higher fees are lowered to this cap. If it is below the current base fee, the step fails without sending, since the transaction could not be included. Leave empty for no cap. Setting it pays gas from your own wallet, since sponsored sends cannot carry a custom fee.",
+    key: "maxFeeGwei",
+    label: "Max Fee (gwei)",
+    placeholder: "No cap",
     type: "template-input",
   };
 }

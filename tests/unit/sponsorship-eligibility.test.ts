@@ -104,12 +104,12 @@ describe("shouldTrySponsorship", () => {
     ).toBe(false);
   });
 
-  it("declines when the node sets its own priority fee", () => {
+  it("declines when the node sets its own priority fee or max fee", () => {
     expect(
       shouldTrySponsorship({
         chainId: SPONSORED_CHAIN,
         signerMode: EOA,
-        customPriorityFee: true,
+        customFees: true,
       })
     ).toBe(false);
   });

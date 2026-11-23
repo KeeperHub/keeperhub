@@ -397,7 +397,8 @@ export class AdaptiveGasStrategy {
     gasLimitMultiplierOverride?: number,
     gasLimitOverride?: bigint,
     rpcManager?: RpcProviderManager,
-    priorityFeeOverride?: bigint
+    priorityFeeOverride?: bigint,
+    maxFeeOverride?: bigint
   ): Promise<GasConfig> {
     // Apply chain-specific overrides (from DB with hardcoded fallback)
     const chainConfig = await this.getChainConfig(chainId);
@@ -432,15 +433,44 @@ export class AdaptiveGasStrategy {
       );
       return {
         gasLimit,
-        maxFeePerGas: baseComponent + priorityFeeOverride,
-        maxPriorityFeePerGas: priorityFeeOverride,
+        ...this.applyMaxFeeCap(
+          {
+            maxFeePerGas: baseComponent + priorityFeeOverride,
+            maxPriorityFeePerGas: priorityFeeOverride,
+          },
+          maxFeeOverride
+        ),
       };
     }
 
     return {
       gasLimit,
-      maxFeePerGas: feeConfig.maxFeePerGas,
-      maxPriorityFeePerGas: feeConfig.maxPriorityFeePerGas,
+      ...this.applyMaxFeeCap(feeConfig, maxFeeOverride),
+    };
+  }
+
+  // Caller-supplied maxFeePerGas ceiling. The tip is lowered with it so the
+  // EIP-1559 invariant maxFeePerGas >= maxPriorityFeePerGas still holds.
+  private applyMaxFeeCap(
+    fees: { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint },
+    maxFeeOverride?: bigint
+  ): { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint } {
+    if (
+      maxFeeOverride === undefined ||
+      maxFeeOverride <= BigInt(0) ||
+      fees.maxFeePerGas <= maxFeeOverride
+    ) {
+      return fees;
+    }
+    console.log(
+      `[GasStrategy] Max fee cap: ${ethers.formatUnits(maxFeeOverride, "gwei")} gwei (computed ${ethers.formatUnits(fees.maxFeePerGas, "gwei")} gwei)`
+    );
+    return {
+      maxFeePerGas: maxFeeOverride,
+      maxPriorityFeePerGas:
+        fees.maxPriorityFeePerGas > maxFeeOverride
+          ? maxFeeOverride
+          : fees.maxPriorityFeePerGas,
     };
   }
 

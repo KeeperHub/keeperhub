@@ -208,10 +208,16 @@ vi.mock("@/lib/web3/decode-revert-error", () => ({
   classifyRevert: vi.fn().mockReturnValue({ kind: "unknown" }),
 }));
 
+const { mockMaxFeeBelowBaseFeeError } = vi.hoisted(() => ({
+  mockMaxFeeBelowBaseFeeError: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@/lib/web3/max-fee-check", () => ({
+  maxFeeBelowBaseFeeError: (...args: unknown[]) =>
+    mockMaxFeeBelowBaseFeeError(...args),
+}));
+
 vi.mock("@/lib/web3/gas-defaults", async (importOriginal) => ({
-  priorityFeeGweiError: (
-    await importOriginal<typeof import("@/lib/web3/gas-defaults")>()
-  ).priorityFeeGweiError,
+  ...(await importOriginal<typeof import("@/lib/web3/gas-defaults")>()),
   resolveGasLimitOverrides: vi.fn().mockReturnValue({
     multiplierOverride: undefined,
     gasLimitOverride: undefined,
@@ -608,6 +614,96 @@ describe("writeContractCore priorityFeeGwei override", () => {
   });
 });
 
+describe("writeContractCore maxFeeGwei cap", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    mockMaxFeeBelowBaseFeeError.mockResolvedValue(undefined);
+    mockExecuteContractCall.mockResolvedValue({
+      hash: "0xhash",
+      gasUsed: BigInt(21_000),
+      effectiveGasPrice: BigInt(1_000_000_000),
+    });
+  });
+
+  it("forwards the cap in wei into adapter gasOverrides.maxFeeOverride", async () => {
+    await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "16602",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      maxFeeGwei: "50",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(mockMaxFeeBelowBaseFeeError).toHaveBeenCalledWith(
+      expect.anything(),
+      BigInt(50e9)
+    );
+    const optionsArg = mockExecuteContractCall.mock.calls[0]?.[3] as {
+      gasOverrides: { maxFeeOverride?: bigint };
+    };
+    expect(optionsArg.gasOverrides.maxFeeOverride).toBe(BigInt(50e9));
+  });
+
+  it("fails as a USER error without sending when the cap is below the base fee", async () => {
+    mockMaxFeeBelowBaseFeeError.mockResolvedValueOnce(
+      "Max fee 1 gwei is below the current base fee of 2 gwei"
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "16602",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      maxFeeGwei: "1",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorClass).toBe(ExecutionErrorType.USER);
+      expect(result.error).toMatch(/below the current base fee/);
+    }
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("refuses a cap below the priority fee before any RPC call", async () => {
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "16602",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      priorityFeeGwei: "5",
+      maxFeeGwei: "3",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBe("Max fee must be at least the priority fee");
+    }
+    expect(mockMaxFeeBelowBaseFeeError).not.toHaveBeenCalled();
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("skips the base-fee check when no cap is set", async () => {
+    await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "16602",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(mockMaxFeeBelowBaseFeeError).not.toHaveBeenCalled();
+    const optionsArg = mockExecuteContractCall.mock.calls[0]?.[3] as {
+      gasOverrides: { maxFeeOverride?: bigint };
+    };
+    expect(optionsArg.gasOverrides.maxFeeOverride).toBeUndefined();
+  });
+});
+
 describe("writeContractCore RPC resolution failure", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -894,6 +990,21 @@ describe("writeContractCore Sponsor gas toggle", () => {
       gasOverrides: { priorityFeeOverride?: bigint };
     };
     expect(optionsArg.gasOverrides.priorityFeeOverride).toBe(BigInt(3e9));
+  });
+
+  it("signs directly when the node sets a max fee", async () => {
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      maxFeeGwei: "80",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(true);
+    expect(mockExecuteSponsoredContractTransaction).not.toHaveBeenCalled();
+    expect(mockExecuteContractCall).toHaveBeenCalled();
   });
 
   it('reads the "false" string the editor may persist as off', async () => {
