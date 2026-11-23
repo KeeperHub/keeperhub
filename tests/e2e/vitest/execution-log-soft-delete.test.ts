@@ -41,7 +41,7 @@ vi.mock("@/lib/middleware/require-scope", () => ({
 
 vi.mock("@/lib/workflow/access", () => ({
   getWorkflowAccess: () =>
-    Promise.resolve({ hasFullAccess: true, isDeleted: false }),
+    Promise.resolve({ hasFullAccess: true, canEdit: true, isDeleted: false }),
   validateWorkflowAccess: () => Promise.resolve({ authorized: true }),
 }));
 

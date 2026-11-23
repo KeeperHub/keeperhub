@@ -15,9 +15,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { WalletDigestMenu } from "@/components/workflow/wallet-digest-menu";
 import { toChecksumAddress, truncateAddress } from "@/lib/address-utils";
 import { isWalletEmail } from "@/lib/auth/wallet-constants";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { authClient, useSession } from "@/lib/auth-client";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { usePinnedAccount } from "@/lib/wallet/use-default-account";
@@ -68,6 +70,7 @@ function AuthenticatedWalletToolbarButton(): React.ReactElement | null {
   const { data: activeOrg } = authClient.useActiveOrganization();
   const { hasWallet, walletAddress, isLoading } = useWalletInfo();
   const { isProvisioning } = useWalletProvisioning();
+  const { isViewer } = useOrgAccess();
 
   const pinned = usePinnedAccount(activeOrg?.id ?? null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -96,17 +99,20 @@ function AuthenticatedWalletToolbarButton(): React.ReactElement | null {
     }
 
     return (
-      <Button
-        className="h-9"
-        data-tour="create-wallet"
-        onClick={() => router.push(walletsHref)}
-        size="sm"
-        variant="outline"
-      >
-        <Plus className="size-4" />
-        <span className="hidden sm:inline">Create wallet</span>
-        <span className="sm:hidden">Wallet</span>
-      </Button>
+      <ViewOnlyTooltip isViewer={isViewer}>
+        <Button
+          className="h-9"
+          data-tour="create-wallet"
+          disabled={isViewer}
+          onClick={() => router.push(walletsHref)}
+          size="sm"
+          variant="outline"
+        >
+          <Plus className="size-4" />
+          <span className="hidden sm:inline">Create wallet</span>
+          <span className="sm:hidden">Wallet</span>
+        </Button>
+      </ViewOnlyTooltip>
     );
   }
 
@@ -137,8 +143,26 @@ function AuthenticatedWalletToolbarButton(): React.ReactElement | null {
             type="button"
           >
             <Wallet className="size-4 shrink-0" />
-            <span className="font-mono text-xs">
+            {/* Spoken as the shortened address at every width. A phone
+                header is short of room: from 420px (wallet) the address
+                shows in full, from 375px (xs) only its last 4 characters,
+                and below that the icon alone. */}
+            <span className="sr-only">
+              Wallet {truncateAddress(fullAddress)}
+            </span>
+            <span
+              aria-hidden="true"
+              className="hidden font-mono text-xs wallet:inline"
+            >
               {truncateAddress(fullAddress)}
+            </span>
+            <span
+              aria-hidden="true"
+              className="hidden whitespace-nowrap font-mono text-xs xs:max-wallet:inline"
+            >
+              {/* One ellipsis character: a header with wide initials at
+                  375-419px has no room for three dots. */}
+              …{fullAddress.slice(-4)}
             </span>
           </button>
         </DropdownMenuTrigger>

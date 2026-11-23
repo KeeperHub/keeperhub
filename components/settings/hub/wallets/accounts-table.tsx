@@ -28,7 +28,12 @@ import {
   accountSlug,
   type WalletAccounts,
 } from "@/lib/wallet/use-wallet-accounts";
-import { SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import {
+  NARROW_SR_ONLY,
+  NARROW_UNDER_NAME,
+  SETTINGS_HEAD_ROW,
+  SETTINGS_ROW,
+} from "../section";
 import { useSettingsContext } from "../settings-context";
 import { AccountAddress } from "./account-address";
 
@@ -66,8 +71,8 @@ export function AccountsTable({
       <TableBody>
         {loading &&
           SKELETON_ROWS.map((key) => (
-            <TableRow className={SETTINGS_ROW} key={key}>
-              <TableCell>
+            <TableRow className={SETTINGS_ROW} key={key} role="row">
+              <TableCell role="cell">
                 <div className="flex items-start gap-3">
                   <Skeleton className="mt-0.5 size-8 shrink-0 rounded-lg" />
                   <span className="flex flex-col gap-1.5">
@@ -76,10 +81,10 @@ export function AccountsTable({
                   </span>
                 </div>
               </TableCell>
-              <TableCell>
+              <TableCell className={NARROW_UNDER_NAME} role="cell">
                 <Skeleton className="h-5 w-28" />
               </TableCell>
-              <TableCell />
+              <TableCell role="cell" />
             </TableRow>
           ))}
         {!loading &&
@@ -100,8 +105,9 @@ export function AccountsTable({
                     `/settings/${organizationId}/wallets/${accountSlug(account)}`
                   )
                 }
+                role="row"
               >
-                <TableCell>
+                <TableCell role="cell">
                   <div className="flex items-start gap-3">
                     <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted">
                       {isSafe ? (
@@ -120,10 +126,14 @@ export function AccountsTable({
                     </span>
                   </div>
                 </TableCell>
-                <TableCell className="text-muted-foreground">
+                <TableCell
+                  className={cn("text-muted-foreground", NARROW_UNDER_NAME)}
+                  role="cell"
+                >
+                  <span className={NARROW_SR_ONLY}>Network </span>
                   {isSafe ? account.chainName : network}
                 </TableCell>
-                <TableCell className="text-right">
+                <TableCell className="text-right" role="cell">
                   <ChevronRight className="size-4 text-muted-foreground" />
                 </TableCell>
               </TableRow>
@@ -133,8 +143,8 @@ export function AccountsTable({
           // Adding an account belongs with the accounts, not in the card's
           // header: the header buttons named Safe operations rather than the
           // thing the user is after, which is another wallet.
-          <TableRow className={cn("group", SETTINGS_ROW)}>
-            <TableCell colSpan={2}>
+          <TableRow className={cn("group", SETTINGS_ROW)} role="row">
+            <TableCell colSpan={2} role="cell">
               <button
                 className="flex items-center gap-3 text-left"
                 onClick={onAddSafe}
@@ -151,7 +161,7 @@ export function AccountsTable({
                 </span>
               </button>
             </TableCell>
-            <TableCell className="text-right">
+            <TableCell className="text-right" role="cell">
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button

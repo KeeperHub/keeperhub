@@ -14,6 +14,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
+// Its background import of monaco-editor can outlive this file and fail at teardown.
+vi.mock("@/lib/monaco-loader-config", () => ({}));
 
 import { TemplateBadgeTextarea } from "@/components/ui/template-badge-textarea";
 import { BeautifiableField } from "@/components/workflow/config/beautifiable-field";
@@ -33,7 +35,7 @@ function Field(): React.ReactElement {
   const [value, setValue] = useState(MINIFIED);
   return (
     <BeautifiableField language="json" onChange={setValue} value={value}>
-      <TemplateBadgeTextarea onChange={setValue} value={value} />
+      {() => <TemplateBadgeTextarea onChange={setValue} value={value} />}
     </BeautifiableField>
   );
 }

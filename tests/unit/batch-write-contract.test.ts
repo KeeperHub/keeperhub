@@ -178,6 +178,7 @@ import {
   applyBatchFailOnError,
   type BatchWriteContractCoreInput,
   batchWriteContractCore,
+  buildCallsWithMeta,
 } from "@/plugins/web3/steps/batch-write-contract-core";
 
 const WORK_ABI = JSON.stringify([
@@ -1085,5 +1086,66 @@ describe("batch-write-contract - workflowId resolution", () => {
 
     expect(result.success).toBe(true);
     expect(mockDbWhere).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("batch-write-contract: inner arrays given as JSON text", () => {
+  it("encodes them as arrays, fixed-size ones too", () => {
+    // The array editor stores each inner array as JSON text; coerceArgsForAbi
+    // parses it, so a call Batch Write used to refuse now encodes.
+    const abi = [
+      {
+        type: "function",
+        name: "setLists",
+        stateMutability: "nonpayable",
+        inputs: [
+          { name: "rows", type: "uint256[][]" },
+          { name: "pair", type: "uint256[2]" },
+        ],
+        outputs: [],
+      },
+    ];
+    const { calls, error } = buildCallsWithMeta({
+      calls: [
+        {
+          contractAddress: "0x1234567890123456789012345678901234567890",
+          abi: JSON.stringify(abi),
+          abiFunction: "setLists",
+          args: [["[1,2]", "[3]"], "[4,5]"],
+        },
+      ],
+    });
+    expect(error).toBeUndefined();
+    const decoded = new ethers.Interface(abi).decodeFunctionData(
+      "setLists",
+      calls[0].callData
+    );
+    expect(decoded[0].map((row: bigint[]) => row.map(Number))).toEqual([
+      [1, 2],
+      [3],
+    ]);
+    expect(decoded[1].map(Number)).toEqual([4, 5]);
+  });
+
+  it("still refuses text that is not a JSON array", () => {
+    const { error } = buildCallsWithMeta({
+      calls: [
+        {
+          contractAddress: "0x1234567890123456789012345678901234567890",
+          abi: JSON.stringify([
+            {
+              type: "function",
+              name: "sum",
+              stateMutability: "nonpayable",
+              inputs: [{ name: "ids", type: "uint256[]" }],
+              outputs: [],
+            },
+          ]),
+          abiFunction: "sum",
+          args: ["1,2"],
+        },
+      ],
+    });
+    expect(error).toContain("expected array for uint256[]");
   });
 });

@@ -82,6 +82,16 @@ export const TOKEN_REGISTRY: Record<
       decimals: 6,
       symbol: "USDC",
     },
+    // Tether USDT, the token the LayerZero USDT0 OFT Adapter locks. No
+    // whale registered on purpose: acquired via balances-slot fabrication
+    // (Solidity mapping slot 2; the allowance mapping the LayerZero fixture
+    // fabricates is slot 5). Both verified against balanceOf/allowance on
+    // mainnet through eth_call state overrides, 2026-09-15.
+    USDT: {
+      address: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+      decimals: 6,
+      symbol: "USDT",
+    },
     WSTETH: {
       address: "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
       decimals: 18,

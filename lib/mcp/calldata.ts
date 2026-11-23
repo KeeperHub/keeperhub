@@ -10,6 +10,7 @@ import {
   BATCH_WRITE_CONTRACT_ACTION_TYPE,
   isWriteActionType,
 } from "@/lib/mcp/action-type";
+import { findTemplateTokens } from "@/lib/workflow/template-ref";
 import { buildCallsWithMeta } from "@/plugins/web3/steps/batch-write-contract-core";
 
 export type CalldataResult =
@@ -23,7 +24,13 @@ type WriteNode = {
 
 // Defined at module level to satisfy Biome useTopLevelRegex rule
 const TRIGGER_TEMPLATE_RE = /\{\{@trigger:Trigger\.(\w+)\}\}/g;
-const UNRESOLVED_TEMPLATE_RE = /\{\{@[^}]+\}\}/;
+
+/** True when any `{{@...}}` remains, including one after stray leading braces. */
+function hasNodeTemplate(value: string): boolean {
+  return findTemplateTokens(value).some(({ body }) =>
+    `{{${body}`.includes("{{@")
+  );
+}
 
 /**
  * Returns the FIRST write-action node in the workflow, or undefined if none.
@@ -124,7 +131,7 @@ function resolveArgsTemplates(
     typeof arg === "string" ? resolveTriggerTemplates(arg, triggerInputs) : arg
   );
   for (const arg of resolved) {
-    if (typeof arg === "string" && UNRESOLVED_TEMPLATE_RE.test(arg)) {
+    if (typeof arg === "string" && hasNodeTemplate(arg)) {
       return {
         args: resolved,
         error: `Unresolvable template reference: ${arg}`,
@@ -142,7 +149,6 @@ function generateSingleWriteCalldata(
   const abi = config.abi;
   const abiFunction = config.abiFunction;
   const functionArgs = config.functionArgs;
-  const ethValue = config.ethValue;
 
   // A write node with a missing, templated, or malformed contractAddress
   // used to serialize to a 200 whose `to` key was simply absent. A priced
@@ -228,6 +234,8 @@ function generateSingleWriteCalldata(
       error: `Failed to encode function call: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+
+  const ethValue = config.ethValue;
 
   // ethers.parseEther throws on non-numeric input ("abc", "1.5e18", etc).
   let value: string;

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Asserts that every declared pnpm patch is actually applied in the lockfile.
 #
-# keeperhub-events sets allowUnusedPatches, because stream-json reaches that
-# workspace only through solana-tracker and the event-tracker image installs a
-# subset without it. That flag also downgrades a patch that stopped matching
-# from an error to a warning, so a dependency bump that moves the package off
-# the patched version would silently drop the fix. This check is what turns
-# that back into a failure.
+# A workspace that sets allowUnusedPatches (needed when an image installs only
+# a subset of the tree) downgrades a patch that stopped matching from an error
+# to a warning, so a dependency bump that moves the package off the patched
+# version would silently drop the fix. This check is what turns that back into
+# a failure. No patches are declared today; the check passes trivially until
+# one is added.
 set -euo pipefail
 
 status=0

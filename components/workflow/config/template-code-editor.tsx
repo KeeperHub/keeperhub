@@ -3,9 +3,14 @@
 import type { EditorProps, Monaco, OnMount } from "@monaco-editor/react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { AlertTriangle } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CodeEditor } from "@/components/ui/code-editor";
-import { BeautifiableField } from "@/components/workflow/config/beautifiable-field";
+import {
+  BeautifiableField,
+  type FieldSize,
+  TALL_FIELD_MAX_LINES,
+  tallFieldHeight,
+} from "@/components/workflow/config/beautifiable-field";
 import { api } from "@/lib/api-client";
 import { getInputSchemaFields } from "@/lib/workflow/editor/input-schema-fields";
 import {
@@ -15,10 +20,14 @@ import {
   findDuplicateTemplateLabels,
   getCommonFields,
   getNodeDisplayName,
-  sanitizeNodeId,
 } from "@/lib/workflow/editor/template-helpers";
+import { sanitizeNodeId } from "@/lib/workflow/template-ref";
 import { useStableRef } from "@/lib/use-stable-ref";
-import { getAvailableFields, type NodeOutputs } from "@/lib/utils/template";
+import {
+  formatTemplateForDisplay,
+  getAvailableFields,
+  type NodeOutputs,
+} from "@/lib/utils/template";
 import {
   currentWorkflowIdAtom,
   currentWorkflowInputSchemaAtom,
@@ -29,6 +38,11 @@ import {
   selectedNodeAtom,
   type WorkflowNode,
 } from "@/lib/workflow/store";
+import {
+  findStoredRefTokens,
+  findTemplateTokens,
+  replaceTemplateTokens,
+} from "@/lib/workflow/template-ref";
 
 // ---------------------------------------------------------------------------
 // Component
@@ -60,6 +74,8 @@ export type TemplateCodeEditorProps = {
   disabled?: boolean;
   height?: string;
   placeholder?: string;
+  /** Names the field in the full-screen dialog. */
+  label?: string;
   /**
    * Replaces the default Monaco options wholesale (readOnly is still driven
    * by `disabled`). Lets variants keep their exact editor configuration.
@@ -74,6 +90,7 @@ export function TemplateCodeEditor({
   disabled,
   height = "320px",
   placeholder,
+  label,
   editorOptions,
 }: TemplateCodeEditorProps): React.ReactElement {
   const nodes = useAtomValue(nodesAtom);
@@ -100,16 +117,20 @@ export function TemplateCodeEditor({
   const editorRef = useRef<any>(null);
   const decorationIdsRef = useRef<string[]>([]);
 
+  // Measured from the mounted editor, so a taller field fits the text as
+  // Monaco lays it out - wrapped lines included - at its own line height.
+  const [contentHeight, setContentHeight] = useState<number | null>(null);
+  const [tallMaxHeight, setTallMaxHeight] = useState<number | null>(null);
+
   const displayValue = useMemo(
-    () => value.replace(/\{\{@[^:]+:([^}]+)\}\}/g, "{{$1}}"),
+    () => formatTemplateForDisplay(value),
     [value]
   );
 
   useEffect(() => {
     const map = new Map<string, string>();
-    const pattern = /\{\{@([^:]+):([^}]+)\}\}/g;
-    for (const match of value.matchAll(pattern)) {
-      map.set(match[2], match[1]);
+    for (const ref of findStoredRefTokens(value)) {
+      map.set(ref.rest, ref.nodeId);
     }
     templateMapRef.current = map;
   }, [value]);
@@ -138,9 +159,13 @@ export function TemplateCodeEditor({
 
   const handleEditorChange = useCallback(
     (newDisplay: string) => {
-      const stored = newDisplay.replace(
-        /\{\{([^@}][^}]*)\}\}/g,
-        (full: string, displayPart: string) => {
+      const stored = replaceTemplateTokens(
+        newDisplay,
+        ({ body: displayPart }) => {
+          const full = `{{${displayPart}}}`;
+          if (displayPart.startsWith("@")) {
+            return full;
+          }
           const mappedId = templateMapRef.current.get(displayPart);
           if (mappedId) {
             return `{{@${mappedId}:${displayPart}}}`;
@@ -375,13 +400,12 @@ export function TemplateCodeEditor({
     }
 
     const text = model.getValue();
-    const templatePattern = /\{\{([^}]+)\}\}/g;
     // biome-ignore lint/suspicious/noExplicitAny: Monaco decoration types vary across versions
     const newDecorations: any[] = [];
 
-    for (const match of text.matchAll(templatePattern)) {
-      const start = model.getPositionAt(match.index);
-      const end = model.getPositionAt(match.index + match[0].length);
+    for (const token of findTemplateTokens(text)) {
+      const start = model.getPositionAt(token.start);
+      const end = model.getPositionAt(token.end);
       newDecorations.push({
         range: {
           startLineNumber: start.lineNumber,
@@ -391,7 +415,7 @@ export function TemplateCodeEditor({
         },
         options: {
           inlineClassName: "template-badge",
-          hoverMessage: { value: `Template: ${match[1]}` },
+          hoverMessage: { value: `Template: ${token.body}` },
         },
       });
     }
@@ -412,6 +436,22 @@ export function TemplateCodeEditor({
       editorRef.current = editor;
 
       updateDecorations();
+
+      const padding = editor.getOption(monaco.editor.EditorOption.padding);
+      const lineHeight = editor.getOption(
+        monaco.editor.EditorOption.lineHeight
+      );
+      setTallMaxHeight(
+        TALL_FIELD_MAX_LINES * lineHeight + padding.top + padding.bottom
+      );
+      setContentHeight(editor.getContentHeight());
+      editor.onDidContentSizeChange(
+        (event: { contentHeight: number; contentHeightChanged: boolean }) => {
+          if (event.contentHeightChanged) {
+            setContentHeight(event.contentHeight);
+          }
+        }
+      );
 
       let decorationRaf: number | undefined;
       editor.onDidChangeModelContent(() => {
@@ -478,6 +518,21 @@ export function TemplateCodeEditor({
     [language, updateDecorations]
   );
 
+  const editorHeight = (size: FieldSize): string => {
+    if (size === "fill") {
+      return "100%";
+    }
+    if (size === "normal" || contentHeight === null || tallMaxHeight === null) {
+      return height;
+    }
+    const tall = tallFieldHeight({
+      normalHeight: Number.parseFloat(height) || 0,
+      contentHeight,
+      maxHeight: tallMaxHeight,
+    });
+    return `${tall}px`;
+  };
+
   const duplicateLabelWarnings = useMemo(
     () => findDuplicateTemplateLabels(displayValue, nodes),
     [displayValue, nodes]
@@ -487,22 +542,28 @@ export function TemplateCodeEditor({
     <>
       <BeautifiableField
         disabled={disabled}
+        label={label}
         language={language}
         onChange={onChange}
         value={value}
       >
-        <CodeEditor
-          defaultLanguage={language}
-          defaultValue={placeholder}
-          height={height}
-          onChange={(v) => handleEditorChange(v || "")}
-          onMount={handleMount}
-          options={{
-            ...(editorOptions ?? DEFAULT_EDITOR_OPTIONS),
-            readOnly: disabled,
-          }}
-          value={displayValue}
-        />
+        {(size: FieldSize) => (
+          <CodeEditor
+            defaultLanguage={language}
+            defaultValue={placeholder}
+            height={editorHeight(size)}
+            onChange={(v) => handleEditorChange(v || "")}
+            onMount={handleMount}
+            options={{
+              ...(editorOptions ?? DEFAULT_EDITOR_OPTIONS),
+              readOnly: disabled,
+              // A taller field measures its content height, which Monaco pads
+              // by the editor's own height when it scrolls past the last line.
+              scrollBeyondLastLine: false,
+            }}
+            value={displayValue}
+          />
+        )}
       </BeautifiableField>
       {duplicateLabelWarnings.length > 0 && (
         <div className="flex items-start gap-2 rounded-md border border-yellow-200 bg-yellow-50 p-2 text-xs text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">

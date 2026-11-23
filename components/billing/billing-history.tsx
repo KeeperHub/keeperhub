@@ -22,6 +22,7 @@ import { BILLING_API } from "@/lib/billing/constants";
 import type { InvoiceItem } from "@/lib/billing/provider";
 import { useCachedResource } from "@/lib/hooks/use-cached-resource";
 import { useOrganization } from "@/lib/hooks/use-organization";
+import { formatCompactNumber } from "@/lib/utils/format-number";
 
 type InvoiceResponse = {
   invoices: Array<{
@@ -80,14 +81,9 @@ function formatPeriod(start: string, end: string): string {
   return `${startDate} - ${endDate}`;
 }
 
-const compactNumber = new Intl.NumberFormat("en-US", {
-  notation: "compact",
-  maximumFractionDigits: 1,
-});
-
 function formatUsageCompact(used: number, limit: number): string {
-  const usedLabel = compactNumber.format(used);
-  const limitLabel = limit === -1 ? "∞" : compactNumber.format(limit);
+  const usedLabel = formatCompactNumber(used);
+  const limitLabel = limit === -1 ? "∞" : formatCompactNumber(limit);
   return `${usedLabel} / ${limitLabel}`;
 }
 

@@ -1,6 +1,6 @@
 ---
 title: "LayerZero"
-description: "LayerZero V2 omnichain tokens (OFT) and endpoint configuration. Quote crosschain fees, inspect an OFT's peers and approval needs, and read the send library and DVN configuration a lane will use."
+description: "LayerZero V2 omnichain tokens (OFT) and endpoint configuration. Quote crosschain fees, inspect an OFT's peers and approval needs, read the send library and DVN configuration a lane will use, and send an OFT across chains paying the quoted fee."
 ---
 
 # LayerZero
@@ -33,9 +33,9 @@ Endpoint Message Executable runs on a wider set, because it needs no token deplo
 
 The OFT actions and the underlying-token actions take the contract address as an input, because there is no single OFT address the way there is a single lending pool: every omnichain token is its own deployment. The EndpointV2 actions do not, because LayerZero's endpoint has one known address per chain (`0x1a44076050125825900e736c501f859c50fE728c` on the mainnets listed above, `0x6EDCE65403992e310A62460808c4b910D972f10f` on both testnets), which is resolved from the chain you select. Endpoint Message Executable reads LayerZero's EndpointV2View the same way; its address differs on almost every chain and is also resolved for you.
 
-Every read action works without credentials. The one write action, OFT Approve, needs a connected wallet.
+Every read action works without credentials. The two write actions, OFT Approve and OFT Send, need a connected wallet.
 
-Sending tokens is not yet supported from this integration. The actions below let a workflow quote a transfer, check the preconditions, and gate on them; the send itself is a later addition.
+The send pays the LayerZero messaging fee as the transaction's native value, and a standard OFT, built on LayerZero's OApp, reverts unless that value equals the fee you declare in the call. OFT Send takes both from one input, Native Fee (wei), so they always match. OFT Quote Send returns the fee in wei, so the input takes wei too, and a workflow can pass the quote's `fee.nativeFee` through unchanged. This is the one place in the platform where a fee is not in whole ether; the label "Native Fee (wei)" says so.
 
 ## Endpoint IDs
 
@@ -81,8 +81,9 @@ None of the reads below is interesting on its own. What they are for is the sequ
 5. OFT Quote Transfer, to see the amount that will actually arrive after dust removal rather than the amount you asked for.
 6. OFT Quote Send with the exact options you intend to use, to get the native fee the send will have to pay, and to fail early if the options are wrong.
 7. Endpoint Get Send Library and Endpoint Get Config, compared against a stored baseline, to confirm the parties verifying the lane are still the ones you agreed to.
+8. OFT Send, with the same SendParam values as the quotes and the quote's `fee.nativeFee` in Native Fee (wei).
 
-Steps one through six each end in a revert or a shortfall you would have found the hard way. Step seven does not: it is the check that catches a change nothing else reports.
+Steps one through six each catch a revert or a shortfall before you send. Step seven catches a change nothing else reports. Step eight is the only one that moves anything.
 
 ## Actions
 
@@ -94,6 +95,7 @@ Steps one through six each end in a revert or a shortfall you would have found t
 | OFT Shared Decimals | Read | No | The decimal precision shared across every chain this OFT lives on |
 | OFT Underlying Token | Read | No | The ERC-20 this OFT moves |
 | OFT Peer | Read | No | The OFT address registered for a destination endpoint, as bytes32 |
+| OFT Send | Write | Wallet | Send an OFT to another chain, paying the fee OFT Quote Send returned |
 | OFT Approve | Write | Wallet | Approve an OFT Adapter to pull the underlying token |
 | OFT Check Token Balance | Read | No | Balance of the underlying token for an address |
 | OFT Check Allowance | Read | No | How much of the underlying token an Adapter may pull from an owner |
@@ -166,6 +168,37 @@ This is the action that answers "how much actually arrives". `oftReceipt.amountS
 `minAmountLD` is a floor both this quote and a real send enforce. Set it equal to the amount and a single unit of dust removal is enough to make the call revert, so leave headroom.
 
 **When to use:** confirming the exact amount a recipient will be credited before committing to a transfer, checking a size against the lane's limits, and catching an OFT whose own fee schedule changed.
+
+---
+
+## OFT Send
+
+Send an OFT to another chain, paying the LayerZero messaging fee quoted by OFT Quote Send.
+
+**Inputs:**
+
+| Input | Type | Description |
+|-------|------|-------------|
+| contractAddress | address | OFT / OFT Adapter Address |
+| dstEid | uint32 | Destination Endpoint ID. The LayerZero endpoint ID of the destination chain, not its EVM chain ID |
+| to | address | Recipient Address. Enter a standard EVM address; it is padded to the bytes32 the OFT expects |
+| amountLD | uint256 | Amount (token smallest unit). The amount to send, in the token's local decimals |
+| minAmountLD | uint256 | Minimum Amount (token smallest unit). The slippage floor, in the token's local decimals |
+| extraOptions | bytes | Extra Options. Advanced. Defaults to `0x00030100110100000000000000000000000000030d40` |
+| composeMsg | bytes | Compose Message. Advanced. Defaults to `0x` |
+| oftCmd | bytes | OFT Command. Advanced. Defaults to `0x` |
+| nativeFee | uint256 | Native Fee (wei). The quote's `fee.nativeFee`. KeeperHub attaches the same amount as the transaction's native value |
+| lzTokenFee | uint256 | LZ Token Fee. Advanced. Defaults to `0`; paying in ZRO is not supported here |
+
+**Outputs:** `transactionHash` and `transactionLink`, as for every write. The action does not expose the receipts the contract returns (`msgReceipt.guid`, `oftReceipt.amountSentLD`, `oftReceipt.amountReceivedLD`) as template fields; run OFT Quote Transfer beforehand for the amounts.
+
+The fee is one input. `nativeFee` is what you tell the OFT you are paying, and KeeperHub attaches the same amount as the transaction's native value, because LayerZero's `OAppSender` reverts with `NotEnoughNative` when the two differ by any amount, in either direction. The endpoint then compares your fee against the live quote: if it is short, the send reverts with `LZ_InsufficientFee`; if it is above the quote, the endpoint refunds the excess to the refund address. You do not choose the refund address. KeeperHub sets it to the address that pays for the send: your organization's Safe when the workflow signs through one, and its wallet otherwise, so an overpaid fee comes back to whoever paid it. The quote is an estimate that moves with gas prices and with the pricing of the DVNs and Executor that carry the message, so quote as close to the send as you can. If the send may run a while after the quote, enter a higher fee: the endpoint charges the fee it needs and refunds the rest.
+
+The fee is in wei. This is the one action in the platform whose fee is not in whole ether, and the quote is the reason: OFT Quote Send returns `fee.nativeFee` in wei, and templates have no unit arithmetic, so the send has to accept the number the quote produced. A reference such as `{{@quote:OFT Quote Send.fee.nativeFee}}` works here. If you type an ether amount such as `0.001`, KeeperHub rejects it before sending anything, instead of misreading it as wei.
+
+The SendParam inputs are the same seven the quotes take, so a workflow passes one set of values to OFT Quote Transfer, OFT Quote Send and OFT Send. If the OFT reports Approval Required, run OFT Approve on the underlying token first, for at least `amountLD`; a lock-and-unlock Adapter pulls the tokens with `transferFrom` inside the send and reverts without the allowance. `minAmountLD` works here as it does in the quotes: set it below `amountLD` to leave headroom for dust removal.
+
+**When to use:** the final step of the checked sequence above, once the lane is wired, the wallet holds the tokens, the allowance is in place, and the quote is fresh.
 
 ---
 
@@ -283,7 +316,7 @@ Approve an OFT Adapter to pull the underlying token. Needed only when OFT Approv
 
 Note which contract this runs against: the approval is granted on the token, not on the OFT, so `contractAddress` is the underlying token address from OFT Underlying Token, and `spender` is the OFT Adapter.
 
-This is the only write action in the integration, and it needs a connected wallet.
+This is one of the two write actions in the integration (the other is OFT Send), and it needs a connected wallet.
 
 When the underlying token is any token listed for that chain and flagged as a stablecoin (the USDT0 family included), this approval is bounded by the same 100 USD per-transaction stablecoin limit that applies to a stablecoin transfer. Approvals above that limit are allowed only when the spender is a contract address the platform already knows, and an OFT Adapter address is not one of those, so that exemption does not apply here. Approve the amount each transfer needs instead of a large standing allowance; the limit itself is a deployment-wide setting, not something an organization can raise from its own spending limits, and [Direct Execution](/api/direct-execution) covers how a self-hosted deployment changes it.
 
@@ -458,7 +491,7 @@ The inputs identify the message, and all four come from the source chain's `Pack
 
 ## Testing Without Risking Real Funds
 
-Every action except OFT Approve is a read, so the safe way to exercise them is against a live mainnet OFT: reads cost nothing and change nothing. For OFT Approve, and for driving the whole sequence end to end, use a local mainnet fork.
+Every action except OFT Approve and OFT Send is a read, so the safe way to exercise them is against a live mainnet OFT: reads cost nothing and change nothing. For the two writes, and for driving the whole sequence end to end, use a local mainnet fork.
 
 ### A public deployment to read against
 
@@ -486,7 +519,7 @@ Then point your local dev server at the same fork by overriding the Ethereum mai
 CHAIN_ETH_MAINNET_PRIMARY_RPC=http://localhost:8545 pnpm dev
 ```
 
-Any wallet you connect has to be funded on the fork. Use one of anvil's pre-funded private keys for gas, and to get USDT into it, impersonate a large holder with `anvil_impersonateAccount` and transfer some across; that is enough to run OFT Approve and then watch OFT Check Allowance change. Workflows targeting chain ID 1 will hit the forked bytecode instead of real mainnet.
+Any wallet you connect needs funds on the fork. Use one of anvil's pre-funded private keys for gas and for the messaging fee, and to get USDT into it, impersonate a large holder with `anvil_impersonateAccount` and transfer some across. That is enough to run OFT Approve, watch OFT Check Allowance change, then run OFT Send with the quote's `fee.nativeFee` in Native Fee (wei) and watch the allowance drop back by the amount sent. Workflows targeting chain ID 1 hit the forked bytecode instead of real mainnet. The message goes nowhere on a fork because there is no destination chain, so the source-side receipt is all you can observe.
 
 ### A testnet pair
 

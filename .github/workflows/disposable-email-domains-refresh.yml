@@ -1,0 +1,84 @@
+# Type: scheduled | Daily refresh of the disposable email domain blocklist
+name: Disposable Email Domains Refresh
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: disposable-email-domains-refresh
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: staging
+
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Download upstream lists
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/lists"
+          curl -fsSL --max-time 60 \
+            https://raw.githubusercontent.com/disposable-email-domains/disposable-email-domains/main/disposable_email_blocklist.conf \
+            -o "$RUNNER_TEMP/lists/disposable-email-domains.txt"
+          curl -fsSL --max-time 60 \
+            https://raw.githubusercontent.com/7c/fakefilter/main/txt/data.txt \
+            -o "$RUNNER_TEMP/lists/fakefilter.txt"
+          curl -fsSL --max-time 60 \
+            https://raw.githubusercontent.com/disposable/disposable-email-domains/master/domains.txt \
+            -o "$RUNNER_TEMP/lists/disposable.txt"
+          curl -fsSL --max-time 60 https://api.mail.tm/domains \
+            | jq -r '."hydra:member"[].domain' > "$RUNNER_TEMP/lists/mail-tm.txt"
+
+      - name: Regenerate the vendored list
+        run: |
+          pnpm tsx scripts/update-disposable-email-domains.ts \
+            "$RUNNER_TEMP/lists/disposable-email-domains.txt" \
+            "$RUNNER_TEMP/lists/fakefilter.txt" \
+            "$RUNNER_TEMP/lists/disposable.txt" \
+            "$RUNNER_TEMP/lists/mail-tm.txt"
+
+      - name: Run the disposable email tests
+        run: pnpm vitest run tests/unit/auth-disposable-emails.test.ts
+
+      - name: Open a pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- lib/auth-disposable-email-domains.json; then
+            echo "Blocklist is already up to date."
+            exit 0
+          fi
+
+          BRANCH="chore/disposable-email-domains-$(date -u +%Y%m%d)"
+          ADDED=$(git diff -U0 -- lib/auth-disposable-email-domains.json | grep -c '^+  "' || true)
+          REMOVED=$(git diff -U0 -- lib/auth-disposable-email-domains.json | grep -c '^-  "' || true)
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add lib/auth-disposable-email-domains.json
+          git commit -m "chore: refresh disposable email domain list"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --base staging \
+            --head "$BRANCH" \
+            --title "chore: refresh disposable email domain list" \
+            --label no-issue-required \
+            --body "Daily refresh of \`lib/auth-disposable-email-domains.json\` from disposable-email-domains/disposable-email-domains, 7c/fakefilter, disposable/disposable-email-domains and the mail.tm domain feed: ${ADDED} domains added, ${REMOVED} removed. The disposable email tests passed on this list before the PR was opened, and mainstream providers in \`NEVER_BLOCKED_DOMAINS\` are never blocked."

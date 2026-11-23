@@ -111,6 +111,7 @@ vi.mock("@/lib/db/schema", () => ({
 
 // Import after mocks so the simulate module binds to the stubbed deps.
 import {
+  prepareSimulationCall,
   simulateContractCall,
   simulateNativeTransfer,
   simulateTokenTransfer,
@@ -1194,5 +1195,43 @@ describe("simulateTokenTransfer", () => {
       expect(result.revertReason).toContain("Invalid amount for 18 decimals");
     }
     expect(executeWithFailover).not.toHaveBeenCalled();
+  });
+});
+
+describe("prepareSimulationCall argument order", () => {
+  it("reshapes a flat tuple before coercing it, so a bool member reads as given", () => {
+    const abi = [
+      {
+        type: "function",
+        name: "setCfg",
+        stateMutability: "nonpayable",
+        inputs: [
+          {
+            name: "cfg",
+            type: "tuple",
+            components: [
+              { name: "a", type: "uint256" },
+              { name: "b", type: "bool" },
+            ],
+          },
+        ],
+        outputs: [],
+      },
+    ];
+    const prepared = prepareSimulationCall({
+      contractAddress: "0x00000000000000000000000000000000000000aB",
+      abi: JSON.stringify(abi),
+      functionName: "setCfg",
+      functionArgs: JSON.stringify(["1", "false"]),
+    });
+    if (!("data" in prepared)) {
+      throw new Error(prepared.error);
+    }
+    const decoded = new ethers.Interface(abi).decodeFunctionData(
+      "setCfg",
+      prepared.data
+    );
+    expect(decoded[0].b).toBe(false);
+    expect(decoded[0].a).toBe(BigInt(1));
   });
 });

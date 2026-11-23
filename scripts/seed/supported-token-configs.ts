@@ -1,0 +1,393 @@
+/**
+ * Default supported tokens (stablecoins) per chain.
+ *
+ * Shared by scripts/seed/seed-tokens.ts, which writes them into the
+ * supported_tokens table, and scripts/turnkey/cleanup-orphaned-sub-orgs.ts,
+ * which checks wallet balances without a database.
+ */
+
+// Token logo URLs (using popular token list sources)
+const LOGOS = {
+  USDC: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48/logo.png",
+  USDT: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0xdAC17F958D2ee523a2206206994597C13D831ec7/logo.png",
+  USDS: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0xdC035D45d973E3EC169d2276DDab16f1e407384F/logo.png",
+};
+
+/**
+ * Token configuration - only addresses and metadata that can't be fetched
+ */
+export type TokenConfig = {
+  chainId: number;
+  tokenAddress: string;
+  logoUrl: string | null;
+  isStablecoin: boolean;
+  sortOrder: number;
+};
+
+export const TOKEN_CONFIGS: TokenConfig[] = [
+  // ==========================================================================
+  // Ethereum Mainnet (chainId: 1)
+  // ==========================================================================
+  {
+    chainId: 1,
+    tokenAddress: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", // USDC
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+  {
+    chainId: 1,
+    tokenAddress: "0xdac17f958d2ee523a2206206994597c13d831ec7", // USDT
+    logoUrl: LOGOS.USDT,
+    isStablecoin: true,
+    sortOrder: 2,
+  },
+  {
+    chainId: 1,
+    tokenAddress: "0xdc035d45d973e3ec169d2276ddab16f1e407384f", // USDS (Sky/MakerDAO)
+    logoUrl: LOGOS.USDS,
+    isStablecoin: true,
+    sortOrder: 3,
+  },
+
+  // ==========================================================================
+  // Sepolia Testnet (chainId: 11155111)
+  // ==========================================================================
+  {
+    chainId: 11_155_111,
+    tokenAddress: "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238", // USDC (Circle's official Sepolia)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+  {
+    chainId: 11_155_111,
+    tokenAddress: "0xaa8e23fb1079ea71e0a56f48a2aa51851d8433d0", // USDT (Aave's Sepolia)
+    logoUrl: LOGOS.USDT,
+    isStablecoin: true,
+    sortOrder: 2,
+  },
+  // Note: USDS not yet deployed on Sepolia
+
+  // ==========================================================================
+  // Ethereum Hoodi Testnet (chainId: 560048)
+  // ==========================================================================
+  {
+    chainId: 560_048,
+    tokenAddress: "0x3508a952176b3c15387c97be809eaffb1982176a", // Lido stETH
+    logoUrl: null,
+    isStablecoin: false,
+    sortOrder: 1,
+  },
+  {
+    chainId: 560_048,
+    tokenAddress: "0x7e99ee3c66636de415d2d7c880938f2f40f94de4", // Lido wstETH
+    logoUrl: null,
+    isStablecoin: false,
+    sortOrder: 2,
+  },
+
+  // ==========================================================================
+  // Base Mainnet (chainId: 8453)
+  // ==========================================================================
+  {
+    chainId: 8453,
+    tokenAddress: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", // USDC (native)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+  {
+    chainId: 8453,
+    tokenAddress: "0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca", // USDbC (bridged)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 2,
+  },
+  {
+    chainId: 8453,
+    tokenAddress: "0x820c137fa70c8691f0e44dc420a5e53c168921dc", // USDS (Sky/MakerDAO)
+    logoUrl: LOGOS.USDS,
+    isStablecoin: true,
+    sortOrder: 3,
+  },
+
+  // ==========================================================================
+  // Base Sepolia (chainId: 84532)
+  // ==========================================================================
+  {
+    chainId: 84_532,
+    tokenAddress: "0x036cbd53842c5426634e7929541ec2318f3dcf7e", // USDC (Circle's official Base Sepolia)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
+  // Unichain Mainnet (chainId: 130)
+  // ==========================================================================
+  {
+    chainId: 130,
+    tokenAddress: "0x078d782b760474a361dda0af3839290b0ef57ad6", // USDC (native, Circle)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
+  // Unichain Sepolia (chainId: 1301)
+  // ==========================================================================
+  {
+    chainId: 1301,
+    tokenAddress: "0x31d0220469e10c4e71834a79b1f276d740d3768f", // USDC (Circle's official Unichain Sepolia)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
+  // Tempo Testnet (chainId: 42431)
+  // ==========================================================================
+  {
+    chainId: 42_431,
+    tokenAddress: "0x20c0000000000000000000000000000000000000", // pathUSD
+    logoUrl: null, // Tempo testnet token
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+  {
+    chainId: 42_431,
+    tokenAddress: "0x20c0000000000000000000000000000000000001", // AlphaUSD
+    logoUrl: null, // Tempo testnet token
+    isStablecoin: true,
+    sortOrder: 2,
+  },
+  {
+    chainId: 42_431,
+    tokenAddress: "0x20c0000000000000000000000000000000000002", // BetaUSD
+    logoUrl: null, // Tempo testnet token
+    isStablecoin: true,
+    sortOrder: 3,
+  },
+  {
+    chainId: 42_431,
+    tokenAddress: "0x20c0000000000000000000000000000000000003", // ThetaUSD
+    logoUrl: null, // Tempo testnet token
+    isStablecoin: true,
+    sortOrder: 4,
+  },
+
+  // ==========================================================================
+  // BNB Chain Mainnet (chainId: 56)
+  // ==========================================================================
+  {
+    chainId: 56,
+    tokenAddress: "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", // USDC (Binance-Peg)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+  {
+    chainId: 56,
+    tokenAddress: "0x55d398326f99059ff775485246999027b3197955", // USDT (Binance-Peg)
+    logoUrl: LOGOS.USDT,
+    isStablecoin: true,
+    sortOrder: 2,
+  },
+
+  // ==========================================================================
+  // Polygon Mainnet (chainId: 137)
+  // ==========================================================================
+  {
+    chainId: 137,
+    tokenAddress: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", // USDC (native)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
+  // Polygon Amoy Testnet (chainId: 80002)
+  // ==========================================================================
+  {
+    chainId: 80_002,
+    tokenAddress: "0x41e94eb019c0762f9bfcf9fb1e58725bfb0e7582", // USDC (Circle testnet)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
+  // Arbitrum One (chainId: 42161)
+  // ==========================================================================
+  {
+    chainId: 42_161,
+    tokenAddress: "0xaf88d065e77c8cc2239327c5edb3a432268e5831", // USDC (native)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+  {
+    chainId: 42_161,
+    tokenAddress: "0x6491c05a82219b8d1479057361ff1654749b876b", // USDS (Sky/MakerDAO via SkyLink)
+    logoUrl: LOGOS.USDS,
+    isStablecoin: true,
+    sortOrder: 2,
+  },
+
+  // ==========================================================================
+  // Arbitrum Sepolia (chainId: 421614)
+  // ==========================================================================
+  {
+    chainId: 421_614,
+    tokenAddress: "0x75faf114eafb1bdbe2f0316df893fd58ce46aa4d", // USDC (Circle testnet)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
+  // Tempo Mainnet (chainId: 4217)
+  // ==========================================================================
+  {
+    chainId: 4217,
+    tokenAddress: "0x20c000000000000000000000b9537d11c60e8b50", // USDC.e (Bridged USDC via Stargate)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+  {
+    chainId: 4217,
+    tokenAddress: "0x20c00000000000000000000014f22ca97301eb73", // USDT0
+    logoUrl: LOGOS.USDT,
+    isStablecoin: true,
+    sortOrder: 2,
+  },
+  {
+    chainId: 4217,
+    tokenAddress: "0x20c0000000000000000000003554d28269e0f3c2", // frxUSD (Frax USD)
+    logoUrl: null,
+    isStablecoin: true,
+    sortOrder: 3,
+  },
+
+  // ==========================================================================
+  // Avalanche C-Chain (chainId: 43114)
+  // ==========================================================================
+  {
+    chainId: 43_114,
+    tokenAddress: "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e", // USDC (Circle native)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+  {
+    chainId: 43_114,
+    tokenAddress: "0x9702230a8ea53601f5cd2dc00fdbc13d4df4a8c7", // USDt (Tether native, symbol is lowercase 't')
+    logoUrl: LOGOS.USDT,
+    isStablecoin: true,
+    sortOrder: 2,
+  },
+
+  // ==========================================================================
+  // Avalanche Fuji Testnet (chainId: 43113)
+  // ==========================================================================
+  {
+    chainId: 43_113,
+    tokenAddress: "0x5425890298aed601595a70ab815c96711a31bc65", // USDC (Circle testnet)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
+  // Somnia Shannon Testnet (chainId: 50312)
+  // ==========================================================================
+  {
+    chainId: 50_312,
+    tokenAddress: "0x0ed782b8079529f7385c3eda9faf1eaa0dbc6a17", // USDC
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
+  // 0G Mainnet (chainId: 16661)
+  // ==========================================================================
+  // Only XSwap-bridged USDC.e is tracked: Circle has not deployed native USDC
+  // on 0G, and no other stablecoin issuer has deployed natively. Bridged via
+  // Chainlink CCIP from Ethereum. Galileo testnet has no canonical bridged
+  // USDC (CCIP is decommissioned on Galileo), so no testnet entry.
+  {
+    chainId: 16_661,
+    tokenAddress: "0x1f3aa82227281ca364bfb3d253b0f1af1da6473e", // USDC.e (XSwap Bridged USDC via Chainlink CCIP)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
+  // Plasma Mainnet (chainId: 9745)
+  // ==========================================================================
+  // Only USDT0 is tracked: Circle has not deployed native USDC on Plasma, and
+  // Sky's USDS has not been deployed on Plasma. Add new stablecoins here once
+  // issuers deploy natively.
+  {
+    chainId: 9745,
+    tokenAddress: "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb", // USDT0 (Tether omnichain via LayerZero)
+    logoUrl: LOGOS.USDT,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
+  // HyperEVM Mainnet (chainId: 999)
+  // ==========================================================================
+  // The chain's two largest dollar stablecoins, verified over the official RPC
+  // on 2026-09-15: USDC ("USDC", 6 decimals, ~6.36B supply) and USDT0 ("USD₮0",
+  // 6 decimals, ~85.6M supply). USDe, USDHL and feUSD also exist on HyperEVM
+  // and can be added here later.
+  {
+    chainId: 999,
+    tokenAddress: "0xb88339cb7199b77e23db6e890353e22632ba630f", // USDC
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+  {
+    chainId: 999,
+    tokenAddress: "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb", // USDT0 (Tether omnichain via LayerZero)
+    logoUrl: LOGOS.USDT,
+    isStablecoin: true,
+    sortOrder: 2,
+  },
+
+  // ==========================================================================
+  // Arc Mainnet (chainId: 5042)
+  // ==========================================================================
+  // Same fixed precompile address as the testnet, and it reports the same
+  // 6 decimals on mainnet - verified with eth_call decimals() against
+  // https://rpc.mainnet.arc.io, which returns 0x...06.
+  {
+    chainId: 5042,
+    tokenAddress: "0x3600000000000000000000000000000000000000", // USDC (native gas token, ERC-20 precompile)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
+  // Arc Testnet (chainId: 5042002)
+  // ==========================================================================
+  // USDC is Arc's native gas token; this address is the fixed ERC-20-interface
+  // precompile Circle documents for programmatic balance/transfer access
+  // (docs.arc.io/arc/references/contract-addresses). 6 decimals, unlike the
+  // 18-decimal native currency accounting used for gas.
+  {
+    chainId: 5_042_002,
+    tokenAddress: "0x3600000000000000000000000000000000000000", // USDC (native gas token, ERC-20 precompile)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+];

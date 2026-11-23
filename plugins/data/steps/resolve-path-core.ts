@@ -14,12 +14,19 @@ const ARRAY_INDEX_PATTERN = /^\d+$/;
  * gracefully rather than aborting the run.
  */
 export function resolvePath(source: unknown, path: string): unknown {
+  return resolveSegments(source, splitPath(path));
+}
+
+/** A dotted path as segments; an empty path reads the source itself. */
+export function splitPath(path: string): string[] {
   const trimmed = path.trim();
-  if (trimmed === "") {
-    return source;
-  }
+  return trimmed === "" ? [] : trimmed.split(PATH_SEPARATOR);
+}
+
+/** resolvePath for a path already split, so a loop splits it once. */
+export function resolveSegments(source: unknown, segments: string[]): unknown {
   let current: unknown = source;
-  for (const segment of trimmed.split(PATH_SEPARATOR)) {
+  for (const segment of segments) {
     if (current === null || current === undefined) {
       return;
     }
@@ -30,7 +37,8 @@ export function resolvePath(source: unknown, path: string): unknown {
       current = current[Number(segment)];
       continue;
     }
-    if (typeof current !== "object") {
+    // Own keys only, so a path like constructor or __proto__ reads nothing.
+    if (typeof current !== "object" || !Object.hasOwn(current, segment)) {
       return;
     }
     current = (current as Record<string, unknown>)[segment];

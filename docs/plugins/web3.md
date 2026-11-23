@@ -15,15 +15,16 @@ Interact with EVM-compatible blockchain networks and Solana. Read-only actions w
 | Get ERC20 Token Balance | Web3 | No | Check ERC20 token balance of any address |
 | Get SPL Token Balance | Web3 | No | Check SPL token balance of any Solana address |
 | Read Contract | Web3 | No | Call view/pure functions on smart contracts |
-| Batch Read Contract | Web3 | No | Batch multiple contract reads into one RPC call via Multicall3 |
+| Batch Read Contract | Web3 | No | Batch multiple contract reads into one RPC call via Multicall3, including one function on a list of contracts |
 | Get Transaction | Web3 | No | Fetch full transaction details by hash |
+| Get Address Nonce | Web3 | No | Read an address's mined and pending transaction counts |
 | Write Contract | Web3 | Wallet | Execute state-changing contract functions |
 | Transfer Native Token | Web3 | Wallet | Send native tokens (ETH/MATIC on EVM, SOL on Solana) to a recipient |
 | Transfer ERC20 Token | Web3 | Wallet | Send ERC20 tokens to a recipient |
 | Transfer SPL Token | Web3 | Wallet | Send SPL tokens on Solana to a recipient |
 | Approve ERC20 Token | Web3 | Wallet | Approve a spender contract to spend tokens on your behalf |
 | Check ERC20 Allowance | Web3 | No | Check the current token spending allowance granted to a spender |
-| Query Contract Events | Web3 | No | Query historical smart contract events across a block range, optionally filtered by indexed argument values |
+| Query Contract Events | Web3 | No | Query historical smart contract events across a block range, for one event, for several events across several contracts, or for one event across a list of contracts known at run time, optionally filtered by indexed argument values |
 | Query Transaction History | Web3 | No | Query historical transactions by function call with optional argument filtering |
 | Sign Typed Data (EIP-712) | Web3 | Wallet | Produce an EIP-712 signature over a typed-data payload for off-chain signed intents |
 | Decode Calldata | Security | No | Decode raw calldata into human-readable function calls |
@@ -98,7 +99,7 @@ Schedule (every 5 min)
 
 ## Batch Read Contract
 
-Call the same contract function with multiple argument sets -- or different functions across different contracts -- in a single RPC call using Multicall3. Reduces dozens of individual read-contract nodes into one.
+Call one contract function with many argument sets, the same function on a list of contracts (for example `done()` on every spell), or different functions across different contracts, in a single RPC call using Multicall3. Reduces dozens of individual read-contract nodes into one.
 
 No credentials required -- this is a read-only operation using Multicall3 at `0xcA11bde05977b3631167028862bE2a173976CA11`.
 
@@ -106,8 +107,8 @@ No credentials required -- this is a read-only operation using Multicall3 at `0x
 
 | Mode    | Description                                                                 | Best For                                                              |
 | ------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Uniform | One contract, one function, multiple arg sets on a single network           | Same function across many inputs: `balanceOf(addr)` for 50 pools      |
-| Mixed   | Each call has its own network, contract address, ABI, function, and args    | Heterogeneous reads: `hat()` + `approvals(addr)` on different chains  |
+| Uniform (Same function, multiple args) | One function on a single network: one contract with many arg sets, or the same call on a list of contracts | `balanceOf(addr)` for 50 pools; `done()` on every spell in a list |
+| Mixed (Different contracts/functions) | Each call has its own network, contract address, ABI, function, and args    | Heterogeneous reads: `hat()` + `approvals(addr)` on different chains  |
 
 ### Inputs
 
@@ -117,15 +118,49 @@ No credentials required -- this is a read-only operation using Multicall3 at `0x
 | --------------- | -------- | ---------------------------------------------------------------------------------------- |
 | inputMode       | Yes      | `uniform` (default) or `mixed`                                                           |
 | network         | Yes      | EVM chain to execute on                                                                  |
-| contractAddress | Yes      | Target contract address (`0x...` or template variable)                                   |
+| callsFrom       | No       | Where the calls come from: `rows` (default), `args-list` or `address-list` (see Calls From a List below) |
+| contractAddress | Yes, except with `address-list` | Target contract address (`0x...` or template variable)            |
 | abi             | Yes      | Contract ABI (auto-fetched from block explorer or pasted manually)                       |
 | abiFunction     | Yes      | Function to call (selected from ABI)                                                     |
-| argsList        | No       | Argument sets for each call (see Args List Builder below)                                |
+| argsList        | No       | Argument sets for each call, used with `rows` (see Args List Builder below)              |
+| argsFromList    | With `args-list` | Argument Sets: a JSON array, usually a template, one entry per call           |
+| contractAddresses | With `address-list` | Contract Addresses: a JSON array, usually a template, one call per address |
+| functionArgs    | If the function takes arguments | With `address-list`: the arguments sent to every contract in the list; fill in every one, only a `string` may be left blank |
+| abiFetchAddress | No       | With `address-list`: one contract with the same ABI, used only to fetch the ABI          |
 | batchSize       | No       | Max calls per Multicall3 request (default: 100, range: 1-500)                            |
 
 **Args List Builder (Uniform Mode):**
 
 The Args List field uses a dynamic builder instead of raw JSON. After selecting a function, the UI shows labeled inputs for each parameter based on the ABI signature. For example, selecting `allowance(address owner, address spender)` shows two labeled inputs per row: "owner (address)" and "spender (address)". Click "Add Arg Set" to add more rows, each representing one call. Template variables like `{{NodeName.value}}` are supported in all inputs.
+
+**Calls From a List (Uniform Mode):**
+
+The rows editor suits a fixed set of calls. When the calls come from an earlier node (a registry read, a database query, an HTTP response), set **Calls From** to a list instead:
+
+- **A list of argument sets** (`args-list`): one contract and function, one call per entry in **Argument Sets**. Each entry is the call's arguments in order, e.g. `["0xabc...", 5]`. For a function with one plain argument (an address, number, string, bool, bytes or bytes32), an entry can also be the bare value, e.g. `"0xabc..."`. Arguments are read as in Read Contract: a tuple is an object keyed by its member names, e.g. `{"token": "0xabc...", "amount": 5}`, or its members given flat, in order (except a tuple whose first member is itself a tuple, which must be an object).
+- **A list of contract addresses** (`address-list`): one function, called on every address in **Contract Addresses** with the same **Function Arguments** (fill in every argument the function takes; only a `string` may be left blank, and is sent as an empty string). Arguments as the editor stores them (one value per argument, an empty string for a field you never typed in) are read one value per argument, so an untouched tuple is sent blank. When there are more values than arguments, a tuple is read as its members given in order; if an empty string in a tuple's place could also mean that tuple left blank and the two readings make different calls, the step asks for the tuple as an object. Contract Address is not used; to fetch the ABI, enter any one contract with the same ABI in **Fetch ABI From** (it is not called), or tick Use manual ABI and paste it.
+
+Both lists take a JSON array typed in the field or, more often, a reference to an array from an earlier node, e.g. `{{@registry:Read Contract.result}}` for a function that returns an array. Prefer one reference to the whole array over references mixed into a typed list. Results keep the list's order, duplicates included, so another list of names lines up with them by position.
+
+The list is checked before any call is made, and the step fails when:
+
+- the list is blank (a reference that resolved to nothing) or an empty array, is a single value or not a JSON array, has more than 5,000 entries, or is larger than 1 MB
+- Function Arguments is larger than 1 MB, or leaves an argument blank that is not a `string`
+- an entry is not a valid address (an address in Contract Addresses is 0x and 40 hex characters), has the wrong number of arguments, or is not a plain value where one is expected (the message names the entry, counted from 1)
+- an address argument has spaces around it (an address in Contract Address or Contract Addresses is trimmed; one passed as an argument is not)
+- a tuple is given as an array of its members, as text or as a plain value instead of an object keyed by member name, or the function takes a tuple whose members have no names (such a function cannot be called from a list)
+- an argument cannot be encoded for the function: a `bool` that is not `true` or `false`, a `bytes32` that is not 0x hex of that length (turn text into `bytes32` with the Encode / Decode node first), a number that is not a whole number written in digits (no commas or `1e18` notation) or does not fit its type (a `uint` cannot be negative), or a fixed-size array such as `uint256[3]` with the wrong number of items
+- a number above 9,007,199,254,740,991 (or below its negative) is given without quotes: it may have lost digits on the way, so write it in quotes or have the earlier node send it as text
+- the function declares more than 1,000 parameters and tuple members in all
+- one call's arguments would encode to more than about 64 KB, the calls hold more than 50,000 values in all (Function Arguments, sent to every address, counts once), or the encoded calls add up to more than 10 MB
+
+With Fail workflow on error off, these failures, like a failed batch, are passed to the next node as `success: true` with `results` null and `error` set. Only problems that leave the step with nowhere to call still fail the run, as in Read Contract: a missing or unknown network, an RPC configuration that cannot be resolved, a network the step cannot read on (Solana), a missing or invalid Contract Address, or a Contract Addresses that is blank, not a list, has more than 5,000 entries, is larger than 1 MB or has an entry that is not a valid address. In Different contracts/functions mode, so does a call that is not an object or has no valid network or address. An empty Contract Addresses list (`[]`) is passed on like the failures above. A list typed into Contract Addresses is checked when the workflow is saved, except for checksums, which are checked when the step runs.
+
+Encode / Decode returns a one-entry array as a plain string, not a list. If the list may hold a single entry, take it from a source that always returns an array.
+
+To use another Batch Read Contract's `results` as a list, map them to their `result` values first (for example with a Code node): each entry of `results` is an object, not an address or a value.
+
+A list from a source you do not control (a webhook body, an HTTP response) decides which contracts are called. Calls are read-only and cannot spend, but any contract in the list can make its own call fail, or the whole batch (for example by using up all the gas), or return the values it chooses. Filter such a list, or check it against an allow-list, before it reaches Batch Read Contract.
 
 **Mixed Mode:**
 
@@ -207,6 +242,27 @@ Schedule (every 5 min)
   -> Discord: "Low MKR liquidity: {{@total:Aggregate.result}} across {{@batch:Batch Read Contract.totalCalls}} pools"
 ```
 
+### Registry Lookup (Argument Sets from a List)
+
+Look up the address of every key a registry lists, without adding a row per key. A key added to the registry is picked up on the next run.
+
+```
+Schedule (every hour)
+  -> Read Contract (node id: registry):
+       network: ethereum
+       contractAddress: 0xRegistry
+       function: list()            (returns bytes32[])
+  -> Batch Read Contract:
+       inputMode: uniform
+       network: ethereum
+       callsFrom: args-list
+       contractAddress: 0xRegistry
+       function: getAddress(bytes32)
+       argsFromList: {{@registry:Read Contract.result}}
+```
+
+If `list()` names its output (for example `keys`), the list is `{{@registry:Read Contract.result.keys}}`. `getAddress` takes one argument, so each key in the list is used as it is. `results[i]` is the address of the key at position `i` of the list.
+
 ### Multi-Contract Governance Dashboard (Mixed Mode)
 
 Read different parameters from multiple governance contracts on the same chain.
@@ -265,18 +321,19 @@ Schedule (every block)
   -> Write Contract: execute the workable job
 ```
 
-### Uniswap V2 Pair Reserves (Uniform Mode)
+### Uniswap V2 Pair Reserves (Address List)
 
-Read reserves from multiple Uniswap V2 pairs. `getReserves()` takes no parameters, so each arg set is empty -- just click "Add Arg Set" for each pair contract you want to query. Returns `(reserve0, reserve1, blockTimestampLast)` per call.
+Read reserves from multiple Uniswap V2 pairs. Every pair has the same `getReserves()` function, so set Calls From to a list of contract addresses: one call per pair, in the list's order. `getReserves()` takes no parameters, so Function Arguments stays empty. Returns `(reserve0, reserve1, blockTimestampLast)` per call.
 
 ```
 Schedule (every 5 min)
   -> Batch Read Contract:
        inputMode: uniform
        network: ethereum
-       contractAddress: 0xPairAddress
+       callsFrom: address-list
+       contractAddresses: ["0xPair1", "0xPair2", "0xPair3"]
+       abiFetchAddress: 0xPair1   (only used to fetch the ABI)
        function: getReserves()
-       argsList: (no parameters -- function has no inputs, single arg set added)
   -> Discord: "Pair reserves: {{@batch:Batch Read Contract.results}}"
 ```
 
@@ -299,22 +356,20 @@ Schedule (every hour)
   -> Discord: "Low allowance detected"
 ```
 
-### Loop + Batch Read (Dynamic Address List)
+### Balances for a Dynamic Wallet List (Argument Sets)
 
-Use a database query to get a dynamic list of addresses, then batch-read their balances. Each arg set's "account" field uses a template variable.
+Use a database query to get the current list of wallets, then batch-read their balances. The query returns the wallets as one JSON array, which becomes the Argument Sets list. `balanceOf` takes one argument, so each wallet address is used as it is.
 
 ```
 Schedule (daily)
-  -> Database Query: SELECT address FROM monitored_wallets
+  -> Database Query: SELECT COALESCE(json_agg(address), '[]'::json) AS wallets FROM monitored_wallets
   -> Batch Read Contract:
        inputMode: uniform
        network: ethereum
+       callsFrom: args-list
        contractAddress: 0xUSDC
        function: balanceOf(address)
-       argsList:
-         Call 1: account = {{@db:Database Query.rows[0].address}}
-         Call 2: account = {{@db:Database Query.rows[1].address}}
-         ...
+       argsFromList: {{@db:Database Query.rows[0].wallets}}
   -> Aggregate:
        operation: sum
        inputMode: array
@@ -322,6 +377,8 @@ Schedule (daily)
        fieldPath: result
   -> Discord: "Total USDC across {{@batch:Batch Read Contract.totalCalls}} wallets: {{@total:Aggregate.result}}"
 ```
+
+A wallet added to the table is read on the next run, with no change to the workflow. An empty table gives an empty list, which fails the step; turn Fail workflow on error off to pass it on as a soft error instead.
 
 ### Partial Failure Detection
 
@@ -364,21 +421,57 @@ Event (new transaction on monitored contract)
 
 ---
 
+## Get Address Nonce
+
+Read the transaction count (nonce) of any address on EVM chains via `eth_getTransactionCount`. Every run reads both the mined count and the pending count in one step, so a single node can tell when transactions from a wallet are waiting in the mempool and not being mined.
+
+**Inputs:** Network, Address, Block Tag (`latest` or `pending`, defaults to `latest`)
+
+**Outputs:** `success`, `nonce` (count at the selected block tag), `blockTag`, `address`, `latestNonce` (mined transactions), `pendingNonce` (mined plus mempool transactions), `pendingCount` (`pendingNonce` minus `latestNonce`, never negative), `error`
+
+**When to use:** Watch a keeper or bot wallet for stuck transactions, confirm a submitted transaction was mined before sending the next one, or compare the nonce against your own records to spot transactions that were mined but did not have the expected effect.
+
+**Example workflow:**
+```
+Schedule (every 5 min)
+  -> Get Address Nonce (keeper wallet)
+  -> Condition: pendingCount > 0
+  -> Discord: "{{GetAddressNonce.pendingCount}} transaction(s) waiting from {{GetAddressNonce.address}}"
+```
+
+---
+
 ## Query Contract Events
 
 Query historical smart contract events (logs) across a block range with automatic batching. Supports any EVM-compatible chain. The step internally batches queries in 2,000-block chunks to stay within RPC provider limits.
 
+One node can watch a single event on one contract, several events across several contracts on the same network, or one event across a list of contracts that is only known at run time.
+
+**Query modes:**
+
+| Mode | Description | Best For |
+| ---- | ----------- | -------- |
+| Single event (default) | One contract, one event, optional indexed argument filter | Watching one event, such as `Transfer` on a token |
+| Multiple events or contracts | A list of contract and event pairs on one network, each with its own ABI and optional filter, returned as one merged list | Watching a set of permission or emergency events across related contracts from one node |
+| One event, many contracts | One event and one ABI on a list of contract addresses, usually from an earlier node | Watching the same event on every contract in a list that changes between runs |
+
 **Inputs:**
-- Network (required)
+- Query Mode (default: Single event)
+- Network (required) -- an EVM network. A Solana network fails the step, and stops the run even with Fail workflow on error off
 - Contract Address (required)
 - Contract ABI (required, auto-fetched from block explorer)
 - Event Name (required, selected from ABI)
 - Filter by Indexed Arguments (optional) -- a value for any indexed parameter of the event. Omit a parameter to match any value for it; a parameter given an empty value fails the step. One value per parameter: `eth_getLogs` also accepts a list of alternatives per topic, but that OR form is not supported here
+- Events (required in Multiple mode): up to 20 entries, each with its own Contract Address, Contract ABI (auto-fetched from block explorer), Event and optional Filter by Indexed Arguments. In Multiple mode these replace the single Contract Address, Contract ABI, Event Name and filter fields above.
+- Contract Addresses (required in One event, many contracts mode): a JSON array of addresses, or a reference to an array from an earlier node such as `{{@filter:Filter Array.values}}`. Up to 5,000 addresses. Contract ABI, Event Name and Filter by Indexed Arguments apply to every address in the list, and Contract Address is not used
+- Fetch ABI From (optional, One event, many contracts mode): one contract with the same ABI, used only to fetch the ABI; it is not queried unless it is in the list. Alternatively tick Use manual ABI and paste the ABI
 - Block Lookback -- number of blocks to scan back from To Block (default: 6500, ~1 day on Ethereum). Ignored if From Block is set
 - From Block -- explicit start block (overrides Block Lookback)
 - To Block -- end block number (default: latest)
 
 **Outputs:** `success`, `events` (array of decoded event objects with `blockNumber`, `transactionHash`, `logIndex`, `args`), `fromBlock`, `toBlock`, `eventCount`, `error`
+
+In Multiple and One event, many contracts modes each event also carries `contractAddress` and `eventName`, and `events` is one list ordered by block number, then log index, across every entry.
 
 **How it works:**
 
@@ -401,7 +494,26 @@ Two limits are worth knowing before you rely on it:
 
 A filter naming a parameter that is not indexed, or a value that does not fit its type, fails the step before any query runs rather than scanning the range and returning nothing.
 
-**When to use:** Index historical events, monitor contract activity over time, aggregate on-chain data for analytics, trigger downstream actions based on past events, and watch one address, pool or token ID on a contract busy enough that an unfiltered scan is impractical.
+**Querying one event on a list of contracts**
+
+Set Query Mode to One event, many contracts and set Contract Addresses to the list. The list is checked before any query runs, and the step fails when it is blank, is a single value or text rather than a JSON array, has more than 5,000 entries, is larger than 1 MB, or has an entry that is not a valid address (the message names the entry, counted from 1; an address is 0x and 40 hex characters, and one in mixed case must have a valid checksum). Contract Addresses is checked the same way as in Batch Read Contract. These failures stop the run even with Fail workflow on error off. An empty list, `[]`, fails the step like any other query error: with Fail workflow on error off the run continues, and the node's `events` is null with `error` set, so an empty list is never mistaken for a range with no events. A list typed into the field is checked when the workflow is saved, except for checksums, which are checked when the step runs. An address listed more than once is queried once, so no event is returned twice. The addresses are queried in groups over one shared block range, and a latest To Block ends 5 blocks behind the latest block as in Multiple mode.
+
+**Querying multiple events or contracts**
+
+Set Query Mode to Multiple events or contracts and add one entry per contract and event pair. Each entry has its own contract address, ABI and event, and can carry its own indexed argument filter. Every entry runs on the node's network over one shared block range, so `fromBlock`, `toBlock` and `eventCount` describe the whole node.
+
+The node makes as few `eth_getLogs` calls as the entries allow:
+
+- Entries without a filter on the same contract share one call, and contracts watching the same set of events share one call through a list of addresses.
+- An entry with a filter gets a call of its own, because its filter narrows topics that the other entries leave open.
+
+Watching ten event types across three related contracts without filters takes at most three calls per 2,000-block batch, not one per contract and event pair. A log that two entries both match, such as a `Transfer` filtered on `from` in one entry and on `to` in another, is returned once.
+
+Every entry is checked before any query runs. An invalid address, an ABI that does not parse, an event missing from its ABI, or a filter that could never match fails the step with a message naming the entry, for example `Event 3 (RoleGranted): ...`. One node holds at most 20 entries.
+
+When To Block is empty or `latest`, a Multiple query ends 5 blocks behind the latest block. The calls for different entries can reach different nodes behind the same RPC provider, and a fixed end block lets every call cover exactly the same range. Block Lookback counts back from that end block, so a schedule whose lookback matches its interval still covers every block, and the most recent blocks are picked up on the next run.
+
+**When to use:** Index historical events, monitor contract activity over time, aggregate on-chain data for analytics, trigger downstream actions based on past events, and watch one address, pool or token ID on a contract busy enough that an unfiltered scan is impractical. Use Multiple mode to watch a set of related events across several contracts from one node instead of one node per contract and event.
 
 **Example workflow -- DEX Swap Monitor:**
 ```
@@ -426,6 +538,18 @@ Schedule (every 15 minutes)
   -> Discord: "{{QueryEvents.eventCount}} incoming transfers"
 ```
 Without the `to` filter this query fetches every USDC transfer in the window and the node is doing the filtering; with it, the RPC returns only the treasury's.
+
+**Example workflow (Protocol Emergency Watch):**
+```
+Schedule (every 15 minutes)
+  -> Query Contract Events: Multiple events or contracts, Block Lookback 75
+       Vault: "Paused", "Unpaused", "RoleGranted", "RoleRevoked"
+       Price oracle: "Paused", "Unpaused"
+       Governance token: "OwnershipTransferred"
+  -> Condition: eventCount > 0
+  -> Discord: "{{QueryEvents.eventCount}} admin events across the protocol"
+```
+One node replaces seven, and downstream nodes read one list in which each event names its contract and event.
 
 ---
 
@@ -492,7 +616,7 @@ Schedule (every 15 min)
 
 Execute state-changing functions on smart contracts using your Turnkey wallet. Requires a connected wallet.
 
-**Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Fail workflow on error (optional, on by default), Gas Limit Multiplier (optional, in Advanced section)
+**Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Fail workflow on error (optional, on by default), Gas Limit Multiplier and Sponsor gas (optional, in Advanced section; Sponsor gas only on networks gas sponsorship covers)
 
 **Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total gas cost in wei), `result`, `error`
 
@@ -528,7 +652,8 @@ If you're building this action via the [Workflows API](/api/workflows) rather th
 | Contract ABI | `abi` | JSON-encoded string (same convention as `functionArgs`) |
 | Web3 Connection | `web3Connection` | Sender routing: `"default"` (org policy), `"eoa"` (force the Turnkey EOA), or `"safe:<safeWalletId>"`. The signing wallet is your org's Turnkey wallet, resolved automatically. |
 | Network | `network` | numeric chain id as a string (e.g. `"11155111"`) |
-| Fail workflow on error | `failOnError` | boolean, on by default. `false`, or the string `"false"`, softens a failed write into `success: true` with `error` set; any other value stays on. |
+| Fail workflow on error | `failOnError` | `true` or `false` (or `"true"` / `"false"`), on by default. Off softens a failed write into `success: true` with `error` set. Anything else, a template included, is refused at save, unless the step already holds it (see [On/off toggles](/workflows/templating#onoff-toggles)); a value kept that way runs as off only when it resolves to `false`. |
+| Sponsor gas | `sponsorGas` | `true` or `false` (or `"true"` / `"false"`), on by default. Off always pays gas from your own wallet. Anything else, a template included, is refused at save, unless the step already holds it (see [On/off toggles](/workflows/templating#onoff-toggles)); a value kept that way runs as off only when it resolves to `false`. |
 
 See the [generic web3 write-contract example](/api/workflows#generic-web3-write-contract-example-manual-trigger) in the Workflows API docs for a full working request body.
 

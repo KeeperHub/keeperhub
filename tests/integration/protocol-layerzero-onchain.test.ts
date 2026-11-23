@@ -6,15 +6,18 @@
  * eleven of the twelve reads - that what comes back decodes into the shapes
  * the runtime expects. The twelfth read, Endpoint Message Executable, has
  * its own suite at the end of this file, run against every chain in its
- * view map. The one write is simulated only: USDT's approve returns no
+ * view map. The two writes are simulated only. USDT's approve returns no
  * data, so there is nothing to decode and that test asserts acceptance
- * rather than a return value. In the mainnet suite three deployments
- * answer: the USDT0 OFT Adapter, the USDT token it locks,
- * and the LayerZero EndpointV2. Every action goes through the shared
- * calldata builder, so the test exercises the definition itself - its
- * flattened SendParam tuple, the padAddressToBytes transform on the
- * recipient, and the ABIs - rather than a hand-written ABI that could
- * drift from it.
+ * rather than a return value. The OFT send is simulated with the sender's
+ * balances written in as eth_call state overrides, and asserts the
+ * receipts it returns plus the two revert selectors the fee rule produces.
+ * In the mainnet suite three deployments answer: the USDT0 OFT Adapter, the
+ * USDT token it locks, and the LayerZero EndpointV2. Every action goes
+ * through the shared calldata builder, so the test exercises the definition
+ * itself - its flattened SendParam and MessagingFee tuples, the
+ * padAddressToBytes transform on the recipient, the weiToEther transform on
+ * the payable value, and the ABIs - rather than a hand-written ABI that
+ * could drift from it.
  *
  * The asserted values are long-lived invariants of that deployment
  * (approval model, shared decimals, underlying token, wired peer, send
@@ -45,6 +48,10 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 // otherwise throw under vitest's Node runtime.
 vi.mock("server-only", () => ({}));
 
+import {
+  applyEthValueTransform,
+  readPayableValue,
+} from "@/lib/execute/protocol-eth-value";
 import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import {
@@ -53,7 +60,10 @@ import {
   PUBLIC_RPCS,
   parseRpcConfig,
 } from "@/lib/rpc/rpc-config";
-import layerzeroDef, { LAYERZERO_EIDS } from "@/protocols/layerzero";
+import layerzeroDef, {
+  LAYERZERO_EIDS,
+  OFT_SEND_FIXTURE_FEE_WEI,
+} from "@/protocols/layerzero";
 import { buildCalldata } from "./_shared/build-calldata";
 import { itOnchain } from "./_shared/onchain-rpc";
 
@@ -95,6 +105,79 @@ const ARBITRUM_OFT_PEER = ethers.zeroPadValue(
   layerzeroDef.contracts.oft.addresses["42161"],
   32
 );
+
+// USDT storage layout for the send simulation below: `balances` is mapping
+// slot 2 and `allowed` is nested-mapping slot 5 (TetherToken.sol). Both
+// verified against balanceOf/allowance on mainnet through eth_call state
+// overrides on 2026-09-15, the same mechanism the test uses.
+const USDT_BALANCES_SLOT = 2;
+const USDT_ALLOWED_SLOT = 5;
+// Custom error selectors the send reverts with. NotEnoughNative(uint256) is
+// OAppSender's equality check on msg.value; LZ_InsufficientFee(...) is the
+// endpoint's check that the fee covers the live quote.
+const NOT_ENOUGH_NATIVE_SELECTOR = ethers
+  .id("NotEnoughNative(uint256)")
+  .slice(0, 10);
+const LZ_INSUFFICIENT_FEE_SELECTOR = ethers
+  .id("LZ_InsufficientFee(uint256,uint256,uint256,uint256)")
+  .slice(0, 10);
+
+type StateOverride = Record<
+  string,
+  { balance?: string; stateDiff?: Record<string, string> }
+>;
+
+/** Solidity mapping slot for `mapping(address => T)` at root `slot`. */
+function mappingSlot(key: string, slot: number | bigint): string {
+  return ethers.keccak256(
+    ethers.AbiCoder.defaultAbiCoder().encode(
+      ["address", "uint256"],
+      [key, slot]
+    )
+  );
+}
+
+/**
+ * State the send needs and nothing else: the sender holds native for the
+ * fee, holds USDT to lock, and has approved the adapter for exactly the
+ * send amount. Written as an eth_call state override rather than through
+ * anvil, so this runs against a plain mainnet endpoint on every PR (the
+ * fork tier covers the real transaction).
+ */
+function fundedSenderOverride(
+  sender: string,
+  nativeWei: bigint,
+  usdtUnits: bigint
+): StateOverride {
+  return {
+    // A QUANTITY: JSON-RPC forbids leading zeros, and geth-based endpoints
+    // reject toBeHex's even-length padding ("0x0de0...") as an override.
+    [sender]: { balance: ethers.toQuantity(nativeWei) },
+    [USDT]: {
+      stateDiff: {
+        [mappingSlot(sender, USDT_BALANCES_SLOT)]: ethers.toBeHex(
+          usdtUnits,
+          32
+        ),
+        [mappingSlot(
+          USDT0_OFT_ADAPTER,
+          BigInt(mappingSlot(sender, USDT_ALLOWED_SLOT))
+        )]: ethers.toBeHex(usdtUnits, 32),
+      },
+    },
+  };
+}
+
+/** The 4-byte selector of a custom-error revert, or the raw message. */
+function revertSelector(err: unknown): string {
+  const e = err as {
+    data?: unknown;
+    error?: { data?: unknown };
+    message?: string;
+  };
+  const data = typeof e.data === "string" ? e.data : e.error?.data;
+  return typeof data === "string" ? data.slice(0, 10) : String(e.message);
+}
 
 // Resolve Ethereum mainnet RPC URLs via the shared config pipeline:
 // CHAIN_RPC_CONFIG first, individual env vars second, public default last.
@@ -398,6 +481,156 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
     },
     30_000
   );
+
+  // The send is simulated with the sender's balances and allowance written
+  // in as eth_call state overrides, because an unfunded call reverts with
+  // no data (USDT's transferFrom fails on a bare require) and an empty
+  // revert cannot be told apart from a selector the proxy does not
+  // implement. With the state in place the call returns the two receipts,
+  // which is the proof that the flattened SendParam, the flattened
+  // MessagingFee, the padded recipient and the payable value all reached
+  // the deployed adapter in the shape it expects.
+  //
+  // `value` goes through the same weiToEther transform the write step and
+  // the calldata harness apply, then parseEther, so a regression in either
+  // (or the registration going missing) shows up here as msg.value that
+  // does not match fee.nativeFee, and the adapter says so.
+  describe("oft-send against the deployed adapter", () => {
+    const SENDER = "0x1111111111111111111111111111111111111111";
+    const override = fundedSenderOverride(
+      SENDER,
+      ethers.parseEther("1"),
+      AMOUNT_LD_EXPECTED
+    );
+
+    function sendCalldata(nativeFeeWei: string): { to: string; data: string } {
+      const { to, data } = buildCalldata({
+        protocol: layerzeroDef,
+        actionSlug: "oft-send",
+        sampleInputs: {
+          ...SEND_PARAM_SAMPLE,
+          to: SENDER,
+          nativeFee: nativeFeeWei,
+          lzTokenFee: "0",
+          refundAddress: SENDER,
+        },
+        chainId: CHAIN_ID,
+      });
+      return { to, data };
+    }
+
+    // What the write step attaches for a send whose fee input holds `wei`:
+    // readPayableValue takes the value from nativeFee (payableValue.fromInput),
+    // then the action's registered transform converts it to ether.
+    function msgValueFor(wei: string): bigint {
+      const meta = {
+        protocolSlug: "layerzero",
+        contractKey: "oft",
+        functionName: "send",
+      };
+      const source = readPayableValue({ nativeFee: wei }, meta);
+      if (!source.ok) {
+        throw new Error(source.error);
+      }
+      const transformed = applyEthValueTransform(source.value, meta);
+      if (!transformed.ok || typeof transformed.value !== "string") {
+        throw new Error(
+          "layerzero/oft-send value selection or transform failed"
+        );
+      }
+      return ethers.parseEther(transformed.value);
+    }
+
+    async function simulateSend(
+      tx: { to: string; data: string },
+      value: bigint
+    ): Promise<string> {
+      return await manager.executeWithFailover((p) =>
+        p.send("eth_call", [
+          {
+            from: SENDER,
+            to: tx.to,
+            data: tx.data,
+            value: ethers.toQuantity(value),
+          },
+          "latest",
+          override,
+        ])
+      );
+    }
+
+    itOnchain(
+      "returns both receipts when msg.value equals fee.nativeFee at the fixture fee",
+      async () => {
+        const tx = sendCalldata(OFT_SEND_FIXTURE_FEE_WEI);
+        const value = msgValueFor(OFT_SEND_FIXTURE_FEE_WEI);
+        expect(value).toBe(BigInt(OFT_SEND_FIXTURE_FEE_WEI));
+
+        const ret = await simulateSend(tx, value);
+
+        const iface = new ethers.Interface(
+          JSON.parse(layerzeroDef.contracts.oft.abi as string)
+        );
+        const [msgReceipt, oftReceipt] = iface.decodeFunctionResult(
+          "send",
+          ret
+        );
+        // The adapter charges the live quote and refunds the rest, so the
+        // fee it reports is below the fixture's deliberately generous
+        // figure; asserting the receipt's fee is the live quote is what
+        // shows the fixture still clears it.
+        expect(msgReceipt.fee.nativeFee).toBeGreaterThan(ZERO);
+        expect(msgReceipt.fee.nativeFee).toBeLessThanOrEqual(value);
+        expect(msgReceipt.fee.lzTokenFee).toBe(ZERO);
+        expect(msgReceipt.guid).toMatch(/^0x[0-9a-f]{64}$/);
+        // One USDT at six shared decimals: no dust, no adapter fee.
+        expect(oftReceipt.amountSentLD).toBe(AMOUNT_LD_EXPECTED);
+        expect(oftReceipt.amountReceivedLD).toBe(AMOUNT_LD_EXPECTED);
+      },
+      30_000
+    );
+
+    itOnchain(
+      "reverts with NotEnoughNative when msg.value is one wei off fee.nativeFee, either way",
+      async () => {
+        // The rule the help text states: the two fee fields must be equal.
+        // Checked in both directions so a future "overpaying is fine"
+        // assumption cannot creep in - the endpoint does refund excess,
+        // but only excess over the live quote, and only when msg.value
+        // already equals what the caller declared in fee.nativeFee.
+        const tx = sendCalldata(OFT_SEND_FIXTURE_FEE_WEI);
+        const value = msgValueFor(OFT_SEND_FIXTURE_FEE_WEI);
+        for (const off of [value - BigInt(1), value + BigInt(1)]) {
+          let selector = "";
+          try {
+            await simulateSend(tx, off);
+          } catch (err) {
+            selector = revertSelector(err);
+          }
+          expect(selector, `msg.value ${off}`).toBe(NOT_ENOUGH_NATIVE_SELECTOR);
+        }
+      },
+      30_000
+    );
+
+    itOnchain(
+      "reverts with LZ_InsufficientFee when both fee fields agree but sit below the quote",
+      async () => {
+        // A stale or hand-typed fee that the two fields agree on still
+        // fails, at the endpoint rather than the OFT. One wei is the
+        // smallest such fee; the live quote is never that low.
+        const tx = sendCalldata("1");
+        let selector = "";
+        try {
+          await simulateSend(tx, msgValueFor("1"));
+        } catch (err) {
+          selector = revertSelector(err);
+        }
+        expect(selector).toBe(LZ_INSUFFICIENT_FEE_SELECTOR);
+      },
+      30_000
+    );
+  });
 
   itOnchain(
     "oft-approve: deployed USDT accepts the calldata",

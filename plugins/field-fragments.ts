@@ -69,7 +69,7 @@ export function amountField(): ActionConfigField {
   };
 }
 
-export function contractAddressField(): ActionConfigField {
+export function contractAddressField(): ActionConfigFieldBase {
   return {
     example: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
     key: "contractAddress",
@@ -87,10 +87,11 @@ export function contractAddressField(): ActionConfigField {
  * See softenReadFailure in plugins/web3/steps/read-fail-on-error-core.ts for
  * which failures qualify.
  */
-export function readFailOnErrorField(): ActionConfigField {
+export function readFailOnErrorField(helpTip?: string): ActionConfigField {
   return {
     defaultValue: "true",
     helpTip:
+      helpTip ??
       "When off, a failed read passes a soft error to the next node instead of failing the run, so one bad item in a For Each loop does not abort it. This covers the call itself and the ABI, function and arguments you send. Only problems that leave the step with nowhere to call - an invalid address, an unknown network, or unresolved RPC config - still fail the run, matching HTTP Request, which softens every response but refuses to soften an unusable URL.",
     key: "failOnError",
     label: "Fail workflow on error",

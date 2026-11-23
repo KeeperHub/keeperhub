@@ -145,6 +145,7 @@ export function MembersList({
                 </SelectTrigger>
                 {/* One owner per org (DB-enforced), so becoming owner is a transfer, handled in the Leave Organization flow. */}
                 <SelectContent>
+                  <SelectItem value="viewer">Viewer</SelectItem>
                   <SelectItem value="member">Member</SelectItem>
                   <SelectItem value="admin">Admin</SelectItem>
                 </SelectContent>

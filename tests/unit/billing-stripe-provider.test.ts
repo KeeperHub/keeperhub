@@ -8,12 +8,18 @@ vi.mock("@/lib/stripe", () => ({
     webhooks: { constructEvent: vi.fn() },
     invoiceItems: { create: vi.fn() },
     invoices: { list: vi.fn(), createPreview: vi.fn() },
-    subscriptions: { retrieve: vi.fn(), update: vi.fn(), list: vi.fn() },
+    subscriptions: {
+      retrieve: vi.fn(),
+      update: vi.fn(),
+      list: vi.fn(),
+      cancel: vi.fn(),
+    },
     prices: { retrieve: vi.fn() },
     paymentMethods: { list: vi.fn() },
   },
 }));
 
+import { SUBSCRIPTION_STATUS } from "@/lib/billing/constants";
 import {
   StripeBillingProvider,
   UnknownEventTypeError,
@@ -170,7 +176,7 @@ describe("StripeBillingProvider", () => {
         data: {
           object: {
             id: "sub_1",
-            status: "active",
+            status: SUBSCRIPTION_STATUS.ACTIVE,
             cancel_at_period_end: false,
             cancel_at: null,
             start_date: 1_704_067_200,
@@ -191,7 +197,7 @@ describe("StripeBillingProvider", () => {
 
       expect(result.type).toBe("subscription.updated");
       expect(result.data.providerSubscriptionId).toBe("sub_1");
-      expect(result.data.status).toBe("active");
+      expect(result.data.status).toBe(SUBSCRIPTION_STATUS.ACTIVE);
       expect(result.data.priceId).toBe("price_pro");
     });
 
@@ -259,7 +265,7 @@ describe("StripeBillingProvider", () => {
         data: {
           object: {
             id: "sub_1",
-            status: "canceled",
+            status: SUBSCRIPTION_STATUS.CANCELED,
             cancel_at_period_end: false,
             cancel_at: null,
             start_date: 1_704_067_200,
@@ -311,6 +317,82 @@ describe("StripeBillingProvider", () => {
       });
       expect(result.cancelAtPeriodEnd).toBe(true);
       expect(result.periodEnd).toEqual(new Date(1_706_745_600 * 1000));
+    });
+  });
+
+  describe("cancelSubscriptionNow", () => {
+    it("cancels a live subscription immediately", async () => {
+      vi.mocked(s.subscriptions.retrieve).mockResolvedValue({
+        status: SUBSCRIPTION_STATUS.PAST_DUE,
+      } as Awaited<ReturnType<typeof s.subscriptions.retrieve>>);
+
+      await provider.cancelSubscriptionNow("sub_1");
+
+      expect(s.subscriptions.cancel).toHaveBeenCalledWith("sub_1");
+    });
+
+    it("does nothing for a subscription that already ended", async () => {
+      vi.mocked(s.subscriptions.retrieve).mockResolvedValue({
+        status: SUBSCRIPTION_STATUS.CANCELED,
+      } as Awaited<ReturnType<typeof s.subscriptions.retrieve>>);
+
+      await provider.cancelSubscriptionNow("sub_1");
+
+      expect(s.subscriptions.cancel).not.toHaveBeenCalled();
+    });
+
+    it("treats a subscription the provider no longer has as ended", async () => {
+      vi.mocked(s.subscriptions.retrieve).mockRejectedValue(
+        Object.assign(new Error("No such subscription"), { statusCode: 404 })
+      );
+
+      await expect(provider.cancelSubscriptionNow("sub_1")).resolves.toBe(
+        undefined
+      );
+    });
+
+    it("surfaces any other provider error", async () => {
+      vi.mocked(s.subscriptions.retrieve).mockRejectedValue(
+        Object.assign(new Error("rate limited"), { statusCode: 429 })
+      );
+
+      await expect(provider.cancelSubscriptionNow("sub_1")).rejects.toThrow(
+        "rate limited"
+      );
+    });
+  });
+
+  describe("hasPaidInvoice", () => {
+    function listing(
+      invoices: { total: number }[]
+    ): ReturnType<typeof s.invoices.list> {
+      return invoices as unknown as ReturnType<typeof s.invoices.list>;
+    }
+
+    it("reads only the subscription's paid invoices", async () => {
+      vi.mocked(s.invoices.list).mockReturnValue(listing([]));
+
+      await provider.hasPaidInvoice("sub_1");
+
+      expect(s.invoices.list).toHaveBeenCalledWith({
+        subscription: "sub_1",
+        status: "paid",
+        limit: 100,
+      });
+    });
+
+    it("does not count the $0 invoice issued at trial start", async () => {
+      vi.mocked(s.invoices.list).mockReturnValue(listing([{ total: 0 }]));
+
+      await expect(provider.hasPaidInvoice("sub_1")).resolves.toBe(false);
+    });
+
+    it("counts an invoice with a non-zero total", async () => {
+      vi.mocked(s.invoices.list).mockReturnValue(
+        listing([{ total: 0 }, { total: 4900 }])
+      );
+
+      await expect(provider.hasPaidInvoice("sub_1")).resolves.toBe(true);
     });
   });
 
@@ -385,7 +467,7 @@ describe("StripeBillingProvider", () => {
     it("retrieves and maps subscription", async () => {
       vi.mocked(s.subscriptions.retrieve).mockResolvedValue({
         id: "sub_1",
-        status: "active",
+        status: SUBSCRIPTION_STATUS.ACTIVE,
         cancel_at_period_end: false,
         start_date: 1_704_067_200,
         items: {
@@ -402,7 +484,7 @@ describe("StripeBillingProvider", () => {
       const result = await provider.getSubscriptionDetails("sub_1");
 
       expect(result.priceId).toBe("price_pro_25k");
-      expect(result.status).toBe("active");
+      expect(result.status).toBe(SUBSCRIPTION_STATUS.ACTIVE);
       expect(result.cancelAtPeriodEnd).toBe(false);
       expect(result.periodStart).toEqual(new Date(1_706_659_200 * 1000));
       expect(result.periodEnd).toEqual(new Date(1_706_745_600 * 1000));
@@ -890,7 +972,7 @@ describe("StripeBillingProvider", () => {
       expect(result.paymentMethod?.last4).toBe("2222");
       expect(s.subscriptions.list).toHaveBeenCalledTimes(1);
       expect(s.subscriptions.list).toHaveBeenCalledWith(
-        expect.objectContaining({ status: "active" })
+        expect.objectContaining({ status: SUBSCRIPTION_STATUS.ACTIVE })
       );
       expect(s.paymentMethods.list).not.toHaveBeenCalled();
     });
@@ -910,7 +992,7 @@ describe("StripeBillingProvider", () => {
       expect(result.paymentMethod?.last4).toBe("3333");
       expect(s.subscriptions.list).toHaveBeenCalledTimes(2);
       expect(vi.mocked(s.subscriptions.list).mock.calls[0][0]).toMatchObject({
-        status: "active",
+        status: SUBSCRIPTION_STATUS.ACTIVE,
       });
       expect(vi.mocked(s.subscriptions.list).mock.calls[1][0]).toMatchObject({
         status: "all",

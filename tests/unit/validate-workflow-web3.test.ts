@@ -141,7 +141,7 @@ describe("validateWorkflow — unknown-chain-id (VALID-05)", () => {
   });
 
   it("skips a reference whose body contains an opening brace", () => {
-    // TEMPLATE_PATTERN is /\{\{([^}]+)\}\}/g, so "{{a{b}}" resolves at
+    // The resolver's token body may contain "{", so "{{a{b}}" resolves at
     // execution time. Rejecting it here would be the false positive this skip
     // exists to remove.
     const wf = makeWorkflow({

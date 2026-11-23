@@ -72,6 +72,12 @@ Format: `oklch(L C H)` where L = 0-1, C = 0-0.4, H = 0-360.
 | `--ds-green-accent` | `#09fd67` | Bright accent (hub badges, active states) |
 | `--ds-green-accent-10` | `#09fd671a` | Accent at 10% opacity (backgrounds) |
 
+### Status
+
+| Token | Value | Usage |
+|---|---|---|
+| `--status-deactivated` (`text-status-deactivated`) | `oklch(0.924 0.12 95.746 / 0.7)` | "Deactivated" label for workflows KeeperHub ops switched off. A muted amber, kept apart from the brighter ambers used for warnings and system errors. 7.5:1 on the background, 5:1 on `bg-muted`. |
+
 ### Hub Surfaces (dark-only)
 
 | Token | Value | Usage |

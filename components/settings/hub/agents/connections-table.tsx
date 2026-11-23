@@ -21,6 +21,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { truncateAddress } from "@/lib/address-utils";
+import { isWalletEmail } from "@/lib/auth/wallet-constants";
 import {
   effectiveScope,
   SUPPORTED_SCOPES,
@@ -33,7 +35,17 @@ import type {
   McpConnectionRow,
   McpUserGroup,
 } from "../hooks/use-mcp-connections";
-import { SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import {
+  NARROW_ONLY,
+  NARROW_SR_ONLY,
+  SETTINGS_HEAD_ROW,
+  SETTINGS_ROW,
+} from "../section";
+
+// In a narrow column a person's access and last use sit under their name,
+// past the chevron, and a session's under its own indented name.
+const UNDER_PERSON = "@max-xl/settings:pl-8";
+const UNDER_SESSION = "@max-xl/settings:pl-10";
 
 const SKELETON_ROWS = ["a", "b", "c"] as const;
 
@@ -76,14 +88,47 @@ function LastUsed({
 }: {
   session: McpConnectionRow;
 }): React.ReactElement {
-  if (!session.lastUsedAt) {
-    return <span className="text-muted-foreground text-xs">Not used yet</span>;
-  }
+  return <LastUsedText at={session.lastUsedAt} />;
+}
+
+/**
+ * When something was last used, cut short in its column with the whole of it
+ * in the title: the browser's locale sets the wording, and the day count has
+ * no cap, so no column width fits every value.
+ */
+function LastUsedText({ at }: { at: string | null }): React.ReactElement {
+  const text = at ? relativeTime(at) : "Not used yet";
   return (
-    <span className="text-muted-foreground text-xs">
-      {relativeTime(session.lastUsedAt)}
+    <span className="block truncate text-muted-foreground text-xs" title={text}>
+      {at && <span className={NARROW_ONLY}>Last used </span>}
+      {text}
     </span>
   );
+}
+
+/**
+ * A wallet member's email is a synthetic `<address>@wallet...`. Cut from the
+ * end, members whose addresses share a prefix all read the same, so it is
+ * shown as the short address, which keeps the tail that tells them apart.
+ */
+function shownEmail(email: string): string {
+  return isWalletEmail(email) ? truncateAddress(email.split("@")[0]) : email;
+}
+
+/**
+ * The person's name, else their sign-in. Wallet accounts made before sign-up
+ * gave them a generated handle carry their address as their name, so that is
+ * shown short too.
+ */
+function shownName(group: McpUserGroup): string {
+  const { userName, userEmail } = group;
+  if (isWalletEmail(userEmail)) {
+    const address = userEmail.split("@")[0];
+    if (!userName || userName.toLowerCase() === address.toLowerCase()) {
+      return truncateAddress(address);
+    }
+  }
+  return userName || userEmail;
 }
 
 /** The most recent moment any of this person's sessions was used. */
@@ -203,12 +248,18 @@ export function ConnectionsTable({
         />
       </div>
 
-      <Table>
+      {/* Fixed widths, so a long address is cut short in its own column
+          rather than widening the table past the card. The other columns
+          take what their controls need and a little more, so a select or a
+          button a few pixels wider does not run into the next column; the
+          first one gets what is left in a settings column as narrow as
+          36rem. */}
+      <Table className="table-fixed">
         <TableHeader>
           <TableRow className={SETTINGS_HEAD_ROW}>
-            <TableHead>Person and sessions</TableHead>
-            <TableHead className="w-52">Access</TableHead>
-            <TableHead className="w-36">Last used</TableHead>
+            <TableHead className="truncate">Person and sessions</TableHead>
+            <TableHead className="w-48">Access</TableHead>
+            <TableHead className="w-28">Last used</TableHead>
             <TableHead className="w-24" />
           </TableRow>
         </TableHeader>
@@ -216,7 +267,7 @@ export function ConnectionsTable({
           {loading &&
             SKELETON_ROWS.map((key) => (
               <TableRow key={key}>
-                <TableCell colSpan={4}>
+                <TableCell colSpan={4} role="cell">
                   <Skeleton className="h-8 w-full" />
                 </TableCell>
               </TableRow>
@@ -224,7 +275,7 @@ export function ConnectionsTable({
 
           {!loading && shown.length === 0 && (
             <TableRow>
-              <TableCell colSpan={4}>
+              <TableCell colSpan={4} role="cell">
                 <span className="block py-6 text-center text-muted-foreground text-xs">
                   Nothing matches that.
                 </span>
@@ -239,11 +290,17 @@ export function ConnectionsTable({
               const hasSessions = group.sessions.length > 0;
               const isOpen = hasSessions && !collapsed.has(group.userId);
               return [
-                <TableRow className={SETTINGS_ROW} key={group.userId}>
-                  <TableCell>
+                <TableRow
+                  className={SETTINGS_ROW}
+                  key={group.userId}
+                  role="row"
+                >
+                  <TableCell role="cell">
+                    {/* A button is as wide as its text unless capped, which
+                        would leave the lines inside nothing to cut short. */}
                     <button
                       aria-expanded={isOpen}
-                      className="flex min-w-0 items-center gap-2 text-left"
+                      className="flex min-w-0 max-w-full items-center gap-2 text-left"
                       disabled={!hasSessions}
                       onClick={() => toggle(group.userId)}
                       type="button"
@@ -259,22 +316,33 @@ export function ConnectionsTable({
                       />
                       <span className="flex min-w-0 flex-col">
                         <span className="truncate font-medium">
-                          {group.userName || group.userEmail}
+                          {shownName(group)}
                         </span>
-                        <span className="truncate text-muted-foreground text-xs">
-                          {group.userEmail} · {sessionSummary(group)}
+                        {/* The address gives way, not what is connected:
+                            where both do not fit, the summary drops under
+                            it. */}
+                        <span className="flex min-w-0 flex-wrap gap-x-1 text-muted-foreground text-xs">
+                          <span
+                            className="max-w-full truncate"
+                            title={group.userEmail}
+                          >
+                            {shownEmail(group.userEmail)}
+                          </span>
+                          <span className="whitespace-normal">
+                            · {sessionSummary(group)}
+                          </span>
                         </span>
                       </span>
                     </button>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className={UNDER_PERSON} role="cell">
                     {canManage && group.canEdit ? (
                       <Select
                         disabled={busyId === group.userId}
                         onValueChange={(next) => onScopeChange(group, next)}
                         value={group.maxScope ?? UNSET_READS_AS}
                       >
-                        <SelectTrigger className="h-8 w-48">
+                        <SelectTrigger aria-label="Access" className="h-8 w-40">
                           <SelectValue />
                         </SelectTrigger>
                         {/* The label stays plain: the trigger renders the
@@ -299,29 +367,29 @@ export function ConnectionsTable({
                         </SelectContent>
                       </Select>
                     ) : (
-                      <span className="pl-3 text-sm">
+                      <span className="text-sm @xl/settings:pl-3">
+                        <span className={NARROW_SR_ONLY}>Access </span>
                         {scopeLabel(group.maxScope ?? UNSET_READS_AS)}
                       </span>
                     )}
                   </TableCell>
-                  <TableCell>
-                    {(() => {
-                      const latest = lastUsedAcross(group);
-                      return (
-                        <span className="text-muted-foreground text-xs">
-                          {latest ? relativeTime(latest) : "Not used yet"}
-                        </span>
-                      );
-                    })()}
+                  <TableCell className={UNDER_PERSON} role="cell">
+                    <LastUsedText at={lastUsedAcross(group)} />
                   </TableCell>
-                  <TableCell />
+                  <TableCell role="cell" />
                 </TableRow>,
 
                 ...(isOpen ? group.sessions : []).map((session) => (
-                  <TableRow className={SETTINGS_ROW} key={session.id}>
-                    <TableCell className="pl-10">
+                  <TableRow
+                    className={SETTINGS_ROW}
+                    key={session.id}
+                    role="row"
+                  >
+                    <TableCell className="pl-10" role="cell">
                       <div className="flex min-w-0 flex-col">
-                        <span className="flex min-w-0 items-center gap-2 text-sm">
+                        {/* Where both do not fit, the badge drops under the
+                            name rather than squeezing it to nothing. */}
+                        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
                           <span className="truncate">{session.clientName}</span>
                           <ConnectedBadge session={session} />
                         </span>
@@ -329,26 +397,35 @@ export function ConnectionsTable({
                             can hold several sessions under the same name. The
                             client id is what tells them apart, and it is public
                             in OAuth, so a leading fragment is safe to show. */}
-                        <span className="text-muted-foreground text-xs">
-                          Connected {relativeTime(session.connectedAt)} ·{" "}
-                          <span className="font-mono">
-                            {session.clientId.slice(0, 8)}
+                        {/* Wraps rather than being cut short: how long ago
+                            is the point of the line. */}
+                        <span className="flex min-w-0 flex-wrap gap-x-1 whitespace-normal text-muted-foreground text-xs">
+                          <span>
+                            Connected {relativeTime(session.connectedAt)}
+                          </span>
+                          <span className="shrink-0 whitespace-nowrap">
+                            ·{" "}
+                            <span className="font-mono">
+                              {session.clientId.slice(0, 8)}
+                            </span>
                           </span>
                         </span>
                       </div>
                     </TableCell>
-                    <TableCell>
-                      {/* Padded to the select trigger above it, so the session's
-                          level lines up with the person's rather than sitting a
-                          step to its left. */}
-                      <span className="pl-3 text-muted-foreground text-xs">
+                    <TableCell className={UNDER_SESSION} role="cell">
+                      {/* In the wide layout, padded to the select trigger above
+                          it, so the session's level lines up with the person's.
+                          Stacked in a narrow column it lines up with the lines
+                          around it instead. */}
+                      <span className="text-muted-foreground text-xs @xl/settings:pl-3">
+                        <span className={NARROW_SR_ONLY}>Access </span>
                         {scopeLabel(effectiveScope(session.scope))}
                       </span>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className={UNDER_SESSION} role="cell">
                       <LastUsed session={session} />
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="text-right" role="cell">
                       <Button
                         className="h-7 text-xs"
                         disabled={busyId === session.id}

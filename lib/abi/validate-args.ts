@@ -16,15 +16,47 @@ import type { AbiParam, FunctionAbiEntry } from "@/lib/abi/types";
 
 export type ValidationResult = { ok: true } | { ok: false; error: string };
 
+export type ValidateArgsOptions = {
+  // Values already resolved at run time, so a {{...}} string is plain text.
+  resolved?: boolean;
+  // Also walk fixed-size arrays (uint256[3]) and check their length. Off by
+  // default: a fixed-size array is otherwise left to the encoder as one leaf.
+  fixedArrays?: boolean;
+  // A further check on each leaf that passed the empty and missing checks.
+  checkLeaf?: (
+    value: unknown,
+    type: string,
+    path: string
+  ) => string | undefined;
+};
+
 const TEMPLATE_VARIABLE_RE = /^\{\{.+\}\}$/;
 const BYTES_TYPE_RE = /^bytes\d*$/;
+const FIXED_ARRAY_RE = /\[(\d+)\]$/;
 
-function isTemplateVariable(value: unknown): boolean {
-  return typeof value === "string" && TEMPLATE_VARIABLE_RE.test(value.trim());
+function isTemplateVariable(
+  value: unknown,
+  options: ValidateArgsOptions
+): boolean {
+  return (
+    !options.resolved &&
+    typeof value === "string" &&
+    TEMPLATE_VARIABLE_RE.test(value.trim())
+  );
 }
 
+/** `uint256[]` -> `uint256`; `uint256[3]` -> `uint256` when fixed arrays are walked. */
 function stripArraySuffix(type: string): string {
-  return type.endsWith("[]") ? type.slice(0, -2) : type;
+  return type.endsWith("[]")
+    ? type.slice(0, -2)
+    : type.replace(FIXED_ARRAY_RE, "");
+}
+
+function isWalkedArray(type: string, options: ValidateArgsOptions): boolean {
+  return (
+    type.endsWith("[]") ||
+    (options.fixedArrays === true && FIXED_ARRAY_RE.test(type))
+  );
 }
 
 /**
@@ -44,9 +76,10 @@ function isBytesType(type: string): boolean {
 function validateLeaf(
   value: unknown,
   type: string,
-  path: string
+  path: string,
+  options: ValidateArgsOptions
 ): ValidationResult {
-  if (isTemplateVariable(value)) {
+  if (isTemplateVariable(value, options)) {
     return { ok: true };
   }
 
@@ -65,17 +98,26 @@ function validateLeaf(
     };
   }
 
-  return { ok: true };
+  const error = options.checkLeaf?.(value, type, path);
+  return error ? { ok: false, error } : { ok: true };
 }
 
 function validateArray(
   value: unknown,
   type: string,
   components: AbiParam[] | undefined,
-  path: string
+  path: string,
+  options: ValidateArgsOptions
 ): ValidationResult {
   if (!Array.isArray(value)) {
     return { ok: false, error: `${path}: expected array for ${type}` };
+  }
+  const fixed = FIXED_ARRAY_RE.exec(type);
+  if (fixed && value.length !== Number(fixed[1])) {
+    return {
+      ok: false,
+      error: `${path}: ${type} takes ${fixed[1]} items, got ${value.length}`,
+    };
   }
   const baseType = stripArraySuffix(type);
   for (let i = 0; i < value.length; i++) {
@@ -83,7 +125,8 @@ function validateArray(
       value[i],
       baseType,
       components,
-      `${path}[${i}]`
+      `${path}[${i}]`,
+      options
     );
     if (!result.ok) {
       return result;
@@ -95,7 +138,8 @@ function validateArray(
 function validateTuple(
   value: unknown,
   components: AbiParam[] | undefined,
-  path: string
+  path: string,
+  options: ValidateArgsOptions
 ): ValidationResult {
   if (!components || components.length === 0) {
     return { ok: true };
@@ -115,7 +159,8 @@ function validateTuple(
       obj[comp.name],
       comp.type,
       comp.components,
-      `${path}.${comp.name}`
+      `${path}.${comp.name}`,
+      options
     );
     if (!result.ok) {
       return result;
@@ -128,29 +173,37 @@ function validateValue(
   value: unknown,
   type: string,
   components: AbiParam[] | undefined,
-  path: string
+  path: string,
+  options: ValidateArgsOptions
 ): ValidationResult {
-  if (isTemplateVariable(value)) {
+  if (isTemplateVariable(value, options)) {
     return { ok: true };
   }
-  if (type.endsWith("[]")) {
-    return validateArray(value, type, components, path);
+  if (isWalkedArray(type, options)) {
+    return validateArray(value, type, components, path, options);
   }
   if (type === "tuple") {
-    return validateTuple(value, components, path);
+    return validateTuple(value, components, path, options);
   }
-  return validateLeaf(value, type, path);
+  return validateLeaf(value, type, path, options);
 }
 
 export function validateArgsForAbi(
   args: unknown[],
-  functionAbi: FunctionAbiEntry
+  functionAbi: FunctionAbiEntry,
+  options: ValidateArgsOptions = {}
 ): ValidationResult {
   const inputs = functionAbi.inputs ?? [];
   for (let i = 0; i < inputs.length; i++) {
     const input = inputs[i];
     const label = input.name ? `${input.name}` : `arg${i}`;
-    const result = validateValue(args[i], input.type, input.components, label);
+    const result = validateValue(
+      args[i],
+      input.type,
+      input.components,
+      label,
+      options
+    );
     if (!result.ok) {
       return result;
     }

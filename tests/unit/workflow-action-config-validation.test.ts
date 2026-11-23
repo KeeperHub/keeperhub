@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import {
   formatActionConfigValidationResponse,
   hasDraftActionNodes,
@@ -29,6 +30,38 @@ function actionNode(
 }
 
 describe("validateWorkflowActionConfigs", () => {
+  it("rejects a non-string actionType", () => {
+    const node = {
+      id: "node-1",
+      type: "action",
+      data: { type: "action", config: { actionType: ["code/run-code"] } },
+    };
+    const result = validateWorkflowActionConfigs([node]);
+    expect(result.valid).toBe(false);
+    expect(result.issues).toMatchObject([
+      {
+        code: "INVALID_ACTION_TYPE",
+        path: "nodes[0].data.config.actionType",
+        nodeId: "node-1",
+      },
+    ]);
+  });
+
+  it("rejects a non-string node id", () => {
+    const result = validateWorkflowActionConfigs([
+      { ...actionNode("HTTP Request", {}), id: 123 },
+    ]);
+    expect(result.valid).toBe(false);
+    expect(result.issues).toMatchObject([
+      { code: "INVALID_NODE_ID", path: "nodes[0].id" },
+    ]);
+  });
+
+  it("allows a node with no id", () => {
+    const { id: _id, ...node } = actionNode("HTTP Request", {});
+    expect(validateWorkflowActionConfigs([node]).valid).toBe(true);
+  });
+
   it("accepts the valid workflow import fixture", () => {
     const fixture = JSON.parse(
       readFileSync(
@@ -717,6 +750,164 @@ describe("validateWorkflowActionConfigs", () => {
     });
   });
 
+  describe("query-events query modes", () => {
+    const PAUSED_ABI = JSON.stringify([
+      {
+        type: "event",
+        name: "Paused",
+        inputs: [{ name: "account", type: "address", indexed: false }],
+      },
+    ]);
+    const ENTRY = {
+      contractAddress: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+      abi: PAUSED_ABI,
+      eventName: "Paused",
+    };
+    const SINGLE = {
+      network: "1",
+      contractAddress: ENTRY.contractAddress,
+      abi: PAUSED_ABI,
+      eventName: "Paused",
+    };
+
+    it("accepts a single-event config saved before the query mode existed", () => {
+      expect(
+        validateWorkflowActionConfigs([actionNode("web3/query-events", SINGLE)])
+      ).toEqual({ valid: true, issues: [] });
+    });
+
+    it("still requires the single-event fields when the mode is absent or single", () => {
+      for (const config of [
+        { network: "1" },
+        { network: "1", queryMode: "single" },
+      ]) {
+        const result = validateWorkflowActionConfigs([
+          actionNode("web3/query-events", config),
+        ]);
+        expect(result.issues.map((issue) => issue.field)).toEqual([
+          "contractAddress",
+          "abi",
+          "eventName",
+        ]);
+      }
+    });
+
+    it("accepts a multiple-events config without the single-event fields", () => {
+      for (const eventQueries of [JSON.stringify([ENTRY, ENTRY]), [ENTRY]]) {
+        expect(
+          validateWorkflowActionConfigs([
+            actionNode("web3/query-events", {
+              network: "1",
+              queryMode: "multiple",
+              eventQueries,
+            }),
+          ])
+        ).toEqual({ valid: true, issues: [] });
+      }
+    });
+
+    it("requires the event list in multiple mode", () => {
+      const result = validateWorkflowActionConfigs([
+        actionNode("web3/query-events", {
+          network: "1",
+          queryMode: "multiple",
+        }),
+      ]);
+
+      expect(result.issues).toEqual([
+        expect.objectContaining({
+          code: "MISSING_REQUIRED_FIELD",
+          field: "eventQueries",
+        }),
+      ]);
+    });
+
+    it("flags every missing field of an incomplete entry, naming the entry", () => {
+      const result = validateWorkflowActionConfigs([
+        actionNode("web3/query-events", {
+          network: "1",
+          queryMode: "multiple",
+          eventQueries: JSON.stringify([
+            ENTRY,
+            { contractAddress: "", abi: "", eventName: "" },
+          ]),
+        }),
+      ]);
+
+      expect(result.issues.map((issue) => issue.path)).toEqual([
+        "nodes[0].data.config.eventQueries[1].contractAddress",
+        "nodes[0].data.config.eventQueries[1].abi",
+        "nodes[0].data.config.eventQueries[1].eventName",
+      ]);
+      expect(result.issues[2].message).toContain('"Event" for event 2');
+    });
+
+    it("rejects an event list that is not an array", () => {
+      const result = validateWorkflowActionConfigs([
+        actionNode("web3/query-events", {
+          network: "1",
+          queryMode: "multiple",
+          eventQueries: JSON.stringify(ENTRY),
+        }),
+      ]);
+
+      expect(result.issues).toEqual([
+        expect.objectContaining({
+          code: "INVALID_FIELD_TYPE",
+          field: "eventQueries",
+          expected: "array",
+        }),
+      ]);
+    });
+
+    it("requires the address list, ABI and event in address-list mode and nothing else", () => {
+      const result = validateWorkflowActionConfigs([
+        actionNode("web3/query-events", {
+          network: "1",
+          queryMode: "address-list",
+        }),
+      ]);
+
+      expect(result.issues.map((issue) => issue.field)).toEqual([
+        "contractAddresses",
+        "abi",
+        "eventName",
+      ]);
+    });
+
+    it("accepts a complete address-list config, with a template or typed JSON list", () => {
+      for (const contractAddresses of [
+        "{{@node:Registry.values}}",
+        JSON.stringify([ENTRY.contractAddress]),
+      ]) {
+        expect(
+          validateWorkflowActionConfigs([
+            actionNode("web3/query-events", {
+              network: "1",
+              queryMode: "address-list",
+              contractAddresses,
+              abi: PAUSED_ABI,
+              eventName: "Paused",
+            }),
+          ])
+        ).toEqual({ valid: true, issues: [] });
+      }
+    });
+
+    it("rejects a query mode that is not one of its options", () => {
+      const result = validateWorkflowActionConfigs([
+        actionNode("web3/query-events", { ...SINGLE, queryMode: "several" }),
+      ]);
+
+      expect(result.issues).toEqual([
+        expect.objectContaining({
+          code: "INVALID_FIELD_TYPE",
+          field: "queryMode",
+        }),
+      ]);
+    });
+  });
+
   describe("KEEP-571 legacy field aliases", () => {
     const WRITE_CONTRACT_ABI = JSON.stringify([
       {
@@ -1232,6 +1423,21 @@ describe("validateWorkflowActionConfigs", () => {
             field: "network",
           }),
         ])
+      );
+    });
+
+    it("reads an absent inputMode on batch-read-contract as uniform, as the step does", () => {
+      const result = validateWorkflowActionConfigs([
+        actionNode("web3/batch-read-contract", {
+          callsFrom: "args-list",
+          argsFromList: '[["1"]]',
+          abi: "[]",
+          abiFunction: "echo",
+        }),
+      ]);
+      expect(result.valid).toBe(false);
+      expect(result.issues.map((i) => i.field)).toEqual(
+        expect.arrayContaining(["network", "contractAddress"])
       );
     });
 
@@ -2164,5 +2370,214 @@ describe("protocol-array element validation", () => {
     expect(
       claim({ requestIds: '["{{@n1:Get Requests.first}}","135185"]' })
     ).toEqual({ valid: true, issues: [] });
+  });
+});
+
+describe("validateWorkflowActionConfigs - Batch Read Contract calls from a list", () => {
+  const ABI = JSON.stringify([
+    {
+      inputs: [{ name: "x", type: "uint256" }],
+      name: "echo",
+      outputs: [{ name: "", type: "uint256" }],
+      stateMutability: "view",
+      type: "function",
+    },
+  ]);
+  const uniform = {
+    inputMode: "uniform",
+    network: "1",
+    abi: ABI,
+    abiFunction: "echo",
+  };
+  const missingFields = (config: Record<string, unknown>): unknown[] =>
+    validateWorkflowActionConfigs([
+      actionNode("web3/batch-read-contract", config),
+    ])
+      .issues.filter((issue) => issue.code === "MISSING_REQUIRED_FIELD")
+      .map((issue) => issue.field);
+
+  it("keeps a saved workflow without Calls From valid, needing Contract Address as before", () => {
+    expect(
+      validateWorkflowActionConfigs([
+        actionNode("web3/batch-read-contract", {
+          ...uniform,
+          contractAddress: "0x0000000000000000000000000000000000000001",
+          argsList: '[["1"]]',
+        }),
+      ])
+    ).toEqual({ valid: true, issues: [] });
+    expect(missingFields(uniform)).toEqual(["contractAddress"]);
+  });
+
+  it("needs Argument Sets, not the rows, when Calls From is a list of argument sets", () => {
+    expect(
+      missingFields({
+        ...uniform,
+        callsFrom: "args-list",
+        contractAddress: "0x0000000000000000000000000000000000000001",
+      })
+    ).toEqual(["argsFromList"]);
+    expect(
+      missingFields({
+        ...uniform,
+        callsFrom: "args-list",
+        contractAddress: "0x0000000000000000000000000000000000000001",
+        argsFromList: "{{@n1:Encode.result}}",
+      })
+    ).toEqual([]);
+  });
+
+  it("needs Contract Addresses but not Contract Address when Calls From is a list of addresses", () => {
+    expect(missingFields({ ...uniform, callsFrom: "address-list" })).toEqual([
+      "contractAddresses",
+    ]);
+    expect(
+      validateWorkflowActionConfigs([
+        actionNode("web3/batch-read-contract", {
+          ...uniform,
+          callsFrom: "address-list",
+          contractAddresses: "{{@n1:Filter Array.values}}",
+          abiFetchAddress: "0x0000000000000000000000000000000000000002",
+          functionArgs: '["1"]',
+        }),
+      ])
+    ).toEqual({ valid: true, issues: [] });
+  });
+
+  it("checks a typed Contract Addresses list when saved, in both steps", () => {
+    const vault = "0x0000000000000000000000000000000000000001";
+    const bad = JSON.stringify([vault, vault.slice(2)]);
+    const batch = (contractAddresses: string): Record<string, unknown> => ({
+      ...uniform,
+      callsFrom: "address-list",
+      abiFetchAddress: vault,
+      functionArgs: '["1"]',
+      contractAddresses,
+    });
+    const events = (contractAddresses: string): Record<string, unknown> => ({
+      network: "1",
+      queryMode: "address-list",
+      abi: ABI,
+      eventName: "Paused",
+      contractAddresses,
+    });
+    for (const [actionType, config] of [
+      ["web3/batch-read-contract", batch],
+      ["web3/query-events", events],
+    ] as const) {
+      const failed = validateWorkflowActionConfigs([
+        actionNode(actionType, config(bad)),
+      ]);
+      expect.soft(failed.issues).toHaveLength(1);
+      expect.soft(failed.issues[0]).toMatchObject({
+        code: "INVALID_FIELD_VALUE",
+        field: "contractAddresses",
+      });
+      expect
+        .soft(failed.issues[0]?.message)
+        .toContain("entry 2 has no 0x in front");
+      expect
+        .soft(
+          validateWorkflowActionConfigs([
+            actionNode(actionType, config(JSON.stringify([vault]))),
+          ])
+        )
+        .toEqual({ valid: true, issues: [] });
+    }
+  });
+
+  it("checks Fetch ABI From as an address", () => {
+    const result = validateWorkflowActionConfigs([
+      actionNode("web3/batch-read-contract", {
+        ...uniform,
+        callsFrom: "address-list",
+        contractAddresses: '["0x0000000000000000000000000000000000000001"]',
+        abiFetchAddress: "not an address",
+      }),
+    ]);
+    expect(result.issues.map((issue) => issue.field)).toEqual([
+      "abiFetchAddress",
+    ]);
+  });
+
+  it("shows the list fields when inputMode is absent, as the step runs it", () => {
+    const { inputMode: _omit, ...noMode } = uniform;
+    expect(missingFields({ ...noMode, callsFrom: "address-list" })).toContain(
+      "contractAddresses"
+    );
+    expect(
+      missingFields({
+        ...noMode,
+        callsFrom: "args-list",
+        contractAddress: "0x0000000000000000000000000000000000000001",
+      })
+    ).toContain("argsFromList");
+  });
+
+  it("accepts both lists as native JSON arrays, as MCP agents send them", () => {
+    expect(
+      validateWorkflowActionConfigs([
+        actionNode("web3/batch-read-contract", {
+          ...uniform,
+          callsFrom: "address-list",
+          contractAddresses: ["0x0000000000000000000000000000000000000001"],
+        }),
+        actionNode(
+          "web3/batch-read-contract",
+          {
+            ...uniform,
+            callsFrom: "args-list",
+            contractAddress: "0x0000000000000000000000000000000000000001",
+            argsFromList: ["1", "2"],
+          },
+          "node-2"
+        ),
+      ])
+    ).toEqual({ valid: true, issues: [] });
+  });
+
+  it("fetches the ABI from Fetch ABI From only for an address list in Same function mode", () => {
+    const abiField = findActionById("web3/batch-read-contract")
+      ?.configFields.flatMap((field) =>
+        field.type === "group" ? field.fields : [field]
+      )
+      .find((field) => field.key === "abi");
+    const when = abiField?.contractAddressFieldWhen;
+    expect(when?.field).toBe("abiFetchAddress");
+    const fetchesElsewhere = (config: Record<string, unknown>): boolean =>
+      evaluateShowWhen(when?.showWhen, config);
+    expect(fetchesElsewhere({ callsFrom: "address-list" })).toBe(true);
+    expect(
+      fetchesElsewhere({ inputMode: "uniform", callsFrom: "address-list" })
+    ).toBe(true);
+    expect(
+      fetchesElsewhere({ inputMode: "mixed", callsFrom: "address-list" })
+    ).toBe(false);
+    expect(fetchesElsewhere({ inputMode: "uniform", callsFrom: "rows" })).toBe(
+      false
+    );
+    expect(fetchesElsewhere({ inputMode: "uniform" })).toBe(false);
+  });
+
+  it("rejects a Calls From value that is not an option", () => {
+    const result = validateWorkflowActionConfigs([
+      actionNode("web3/batch-read-contract", {
+        ...uniform,
+        contractAddress: "0x0000000000000000000000000000000000000001",
+        callsFrom: "everything",
+      }),
+    ]);
+    expect(result.issues.map((issue) => issue.field)).toEqual(["callsFrom"]);
+  });
+
+  it("does not ask for list fields in mixed mode", () => {
+    expect(
+      missingFields({
+        inputMode: "mixed",
+        callsFrom: "address-list",
+        calls:
+          '[{"network":"1","contractAddress":"0x0000000000000000000000000000000000000001","abi":"[]","abiFunction":"foo","args":[]}]',
+      })
+    ).toEqual([]);
   });
 });

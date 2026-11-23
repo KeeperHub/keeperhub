@@ -755,12 +755,12 @@ export function prepareSimulationCall(input: {
 
   try {
     const iface = new ethers.Interface(abiArray as ethers.InterfaceAbi);
-    const coerced = coerceArgsForAbi(argsOrError, abiFn);
-    const reshaped = reshapeArgsForAbi(coerced, abiFn);
+    // Reshape first, as the steps do, so coercion sees one value per input.
+    const args = coerceArgsForAbi(reshapeArgsForAbi(argsOrError, abiFn), abiFn);
     // Encode with the signature derived from the resolved entry, not with the
     // key as supplied: an API or MCP caller may send the legacy raw spelling
     // (`f(tuple)`), which resolves here but is not a fragment ethers accepts.
-    const data = iface.encodeFunctionData(resolution.canonicalKey, reshaped);
+    const data = iface.encodeFunctionData(resolution.canonicalKey, args);
     return {
       to,
       value,
@@ -811,6 +811,11 @@ export async function simulateContractCall(
   //
   // Reported as a failed simulation rather than thrown: the caller asked what
   // would happen, and this is what would happen.
+  //
+  // These are the args as sent, not as the core will broadcast them: a payer
+  // argument is rewritten to the funding holder in writeContractCore. The two
+  // agree while no payer input sits on a function the ceiling scores; put one
+  // there and this check has to apply the same rewrite.
   const stablecoinCap = await checkStablecoinContractCall({
     organizationId: input.organizationId,
     chainId,

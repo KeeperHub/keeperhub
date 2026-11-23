@@ -30,7 +30,7 @@ import {
   resolveSelectValue,
 } from "@/components/workflow/config/chain-select-field";
 import { CodeEditorField } from "@/components/workflow/config/code-editor-field";
-import { FailOnErrorSwitchField } from "@/components/workflow/config/fail-on-error-switch-field";
+import { EventListField } from "@/components/workflow/config/event-list-field";
 import { GasLimitMultiplierField } from "@/components/workflow/config/gas-limit-multiplier-field";
 import { PagerDutyPreviewField } from "@/components/workflow/config/pagerduty-preview-field";
 import {
@@ -42,7 +42,12 @@ import {
   PagerDutyTestNodeButton,
   PagerDutyTriggerNodeField,
 } from "@/components/workflow/config/pagerduty-resource-field";
-import { SponsorGasField } from "@/components/workflow/config/sponsor-gas-field";
+// Imported statically: client-only like this file, and a jsdom test renders it.
+import {
+  ProtocolBoolField,
+  protocolBoolFieldValue,
+} from "@/components/workflow/config/protocol-fields/protocol-bool-field";
+import { TOGGLE_FIELD_RENDERERS } from "@/components/workflow/config/toggle-field-renderers";
 import { TokenSelectField } from "@/components/workflow/config/token-select-field";
 import { integrationsAtom } from "@/lib/integrations-store";
 import {
@@ -55,6 +60,7 @@ import {
   registerFieldRenderer,
   registerIntegrationFormHandler,
 } from "@/lib/workflow/editor/extension-registry";
+import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { nodesAtom } from "@/lib/workflow/store";
 
 // ============================================================================
@@ -68,8 +74,14 @@ import { nodesAtom } from "@/lib/workflow/store";
 registerFieldRenderer(
   "abi-with-auto-fetch",
   ({ field, config, onUpdateConfig, disabled }) => {
+    const override = field.contractAddressFieldWhen;
+    const fetchElsewhere = Boolean(
+      override && evaluateShowWhen(override.showWhen, config)
+    );
     const contractAddressField =
-      field.contractAddressField || "contractAddress";
+      fetchElsewhere && override
+        ? override.field
+        : field.contractAddressField || "contractAddress";
     const networkField = field.networkField || "network";
     const value =
       (config[field.key] as string | undefined) || field.defaultValue || "";
@@ -80,6 +92,11 @@ registerFieldRenderer(
           {field.label}
         </Label>
         <AbiWithAutoFetchField
+          autoFetchPlaceholder={
+            fetchElsewhere
+              ? "ABI will be fetched automatically when Fetch ABI From and Network are set"
+              : undefined
+          }
           config={config}
           contractAddressField={contractAddressField}
           contractInteractionType={field.contractInteractionType}
@@ -263,6 +280,7 @@ registerFieldRenderer(
         <ProtocolFieldLabel field={field} />
         <CodeEditorField
           disabled={disabled}
+          label={field.label}
           onChange={(val: unknown) => onUpdateConfig(field.key, val)}
           placeholder={field.placeholder}
           value={value}
@@ -288,6 +306,7 @@ registerFieldRenderer(
         <CodeEditorField
           disabled={disabled}
           height="160px"
+          label={field.label}
           language="json"
           onChange={(val: unknown) => onUpdateConfig(field.key, val)}
           placeholder={field.placeholder}
@@ -322,6 +341,27 @@ registerFieldRenderer(
       </div>
     );
   }
+);
+
+/**
+ * Event List Builder Field
+ * Dynamic list of contract and event rows for query-events multiple mode
+ * Each row configures: contract address, ABI, event, and indexed argument filter
+ */
+registerFieldRenderer(
+  "event-list-builder",
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <div className="space-y-2" key={field.key}>
+      <ProtocolFieldLabel field={field} />
+      <EventListField
+        actionConfig={config}
+        disabled={disabled}
+        field={field}
+        onChange={(val: string) => onUpdateConfig(field.key, val)}
+        value={config[field.key] ?? field.defaultValue ?? ""}
+      />
+    </div>
+  )
 );
 
 /**
@@ -538,10 +578,10 @@ registerFieldRenderer(
 registerFieldRenderer(
   "protocol-bool",
   ({ field, config, onUpdateConfig, disabled }) => {
-    const { ProtocolBoolField } =
-      require("@/components/workflow/config/protocol-fields/protocol-bool-field") as typeof import("@/components/workflow/config/protocol-fields/protocol-bool-field");
-    const value =
-      (config[field.key] as string | undefined) || field.defaultValue || "";
+    const { value, unrecognized } = protocolBoolFieldValue(
+      config[field.key],
+      field.defaultValue
+    );
 
     return (
       <div className="space-y-2" key={field.key}>
@@ -550,6 +590,7 @@ registerFieldRenderer(
           disabled={disabled}
           fieldKey={field.key}
           onChange={(val: unknown) => onUpdateConfig(field.key, val)}
+          unrecognized={unrecognized}
           value={value}
         />
       </div>
@@ -653,51 +694,10 @@ registerFieldRenderer(
   }
 );
 
-/**
- * Fail-On-Error Switch Field
- * Write Contract's declarative "Fail workflow on error" toggle. Shares
- * FailOnErrorSwitchField with the HTTP Request node's hardcoded failOnError
- * toggle so both nodes render and resolve it identically. This renderer is
- * specific to that field: it resolves default-on through resolveFailOnError
- * rather than reading field.defaultValue, so it is not a general-purpose
- * boolean switch renderer.
- */
-registerFieldRenderer(
-  "fail-on-error-switch",
-  ({ field, config, onUpdateConfig, disabled }) => (
-    <FailOnErrorSwitchField
-      description={field.helpTip ?? field.helpText}
-      disabled={disabled}
-      id={field.key}
-      key={field.key}
-      label={field.label}
-      onChange={(checked) => onUpdateConfig(field.key, checked)}
-      value={config[field.key]}
-    />
-  )
-);
-
-/**
- * Gas Sponsorship Switch Field
- * The "Sponsor gas" toggle on a web3 write action. Like the fail-on-error
- * switch it is default-on and resolves through its own helper
- * (resolveSponsorGas) rather than field.defaultValue, so the form and the
- * step can never disagree about what an unset value means.
- */
-registerFieldRenderer(
-  "gas-sponsorship-switch",
-  ({ field, config, onUpdateConfig, disabled }) => (
-    <SponsorGasField
-      description={field.helpTip ?? field.helpText}
-      disabled={disabled}
-      id={field.key}
-      key={field.key}
-      label={field.label}
-      onChange={(checked) => onUpdateConfig(field.key, checked)}
-      value={config[field.key]}
-    />
-  )
-);
+// On/off toggles: Fail workflow on error, plain switches and Sponsor gas.
+for (const [type, renderer] of Object.entries(TOGGLE_FIELD_RENDERERS)) {
+  registerFieldRenderer(type, renderer);
+}
 
 // ============================================================================
 // Register Custom Integration Form Handlers

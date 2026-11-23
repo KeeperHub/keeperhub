@@ -15,9 +15,13 @@ type TruncatedTooltipProps = {
   /** Classes applied to the truncating span (the `truncate` class is added). */
   className?: string;
   side?: React.ComponentProps<typeof TooltipContent>["side"];
+  /** Hover time in ms before it opens; immediate by default. */
+  delayDuration?: number;
   /** Distance from the text, for clearing anything drawn beside it. */
   sideOffset?: number;
   tooltipClassName?: string;
+  /** Told whenever the text starts or stops being cut off. */
+  onTruncatedChange?: (truncated: boolean) => void;
 };
 
 /**
@@ -30,15 +34,21 @@ export function TruncatedTooltip({
   className,
   side = "top",
   sideOffset,
+  delayDuration,
   tooltipClassName,
+  onTruncatedChange,
 }: TruncatedTooltipProps): React.ReactNode {
   const spanRef = useRef<HTMLSpanElement>(null);
   const [isTruncated, setIsTruncated] = useState(false);
+  const onTruncatedChangeRef = useRef(onTruncatedChange);
+  onTruncatedChangeRef.current = onTruncatedChange;
 
   const measure = useCallback(() => {
     const el = spanRef.current;
     if (el) {
-      setIsTruncated(el.scrollWidth > el.clientWidth);
+      const truncated = el.scrollWidth > el.clientWidth;
+      setIsTruncated(truncated);
+      onTruncatedChangeRef.current?.(truncated);
     }
   }, []);
 
@@ -51,10 +61,12 @@ export function TruncatedTooltip({
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [measure]);
+    // A new text in a fixed-width box does not resize the span, so it is
+    // measured again whenever the text changes.
+  }, [measure, text]);
 
   return (
-    <Tooltip>
+    <Tooltip delayDuration={delayDuration}>
       <TooltipTrigger asChild>
         <span className={cn("truncate", className)} ref={spanRef}>
           {text}

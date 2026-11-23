@@ -10,6 +10,7 @@ import {
 } from "@/lib/mcp/validate-workflow-codes";
 import { isSolanaChain } from "@/lib/rpc/provider-factory";
 import { validateChainAddress } from "@/lib/web3/validate-chain-address";
+import { hasTemplateToken } from "@/lib/workflow/template-ref";
 
 type Web3Issue = {
   code: ValidationErrorCode;
@@ -200,10 +201,8 @@ export function tokenAddressFormat(nodes: unknown): Web3Issue[] {
 // address at execution time (e.g. `{{@prep:Prep.governor_address_safe}}`).
 // These are not literal addresses, so the ethers.isAddress format check
 // must skip them rather than report a false invalid-token-address.
-const TEMPLATE_REFERENCE_RE = /\{\{.*?\}\}/;
-
 export function isTemplateReference(value: string): boolean {
-  return TEMPLATE_REFERENCE_RE.test(value);
+  return hasTemplateToken(value);
 }
 
 /**
@@ -216,9 +215,9 @@ export function isTemplateReference(value: string): boolean {
  * resolve into a chain the author never chose.
  *
  * An empty or whitespace-only body is not a reference any resolver in the repo
- * recognises. A closing brace inside the body is not either: TEMPLATE_PATTERN
- * in lib/utils/template.ts is /\{\{([^}]+)\}\}/g, so the body it accepts may
- * contain "{" but never "}". Rejecting "{" here would flag "{{a{b}}", which
+ * recognises. A closing brace inside the body is not either: the resolver's
+ * token scan in lib/workflow/template-ref.ts accepts a body that may contain
+ * "{" but never "}". Rejecting "{" here would flag "{{a{b}}", which
  * resolves at execution time — exactly the false positive this skip exists to
  * remove.
  */

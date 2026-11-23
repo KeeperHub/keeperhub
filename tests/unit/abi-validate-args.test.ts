@@ -266,3 +266,85 @@ describe("validateArgsForAbi", () => {
     });
   });
 });
+
+describe("validateArgsForAbi options", () => {
+  const flagFn = { inputs: [{ name: "on", type: "bool" }] };
+
+  it("treats a {{...}} string as plain text when values are resolved", () => {
+    expect(validateArgsForAbi(["{{@a:A.x}}"], flagFn)).toEqual({ ok: true });
+    expect(
+      validateArgsForAbi(["{{@a:A.x}}"], flagFn, {
+        resolved: true,
+        checkLeaf: (value, type, path) =>
+          type === "bool" && typeof value !== "boolean"
+            ? `${path} must be true or false`
+            : undefined,
+      })
+    ).toEqual({ ok: false, error: "on must be true or false" });
+  });
+
+  it("runs checkLeaf on every present leaf, inside arrays and tuples", () => {
+    const seen: string[] = [];
+    const result = validateArgsForAbi(
+      [["1", "2"], { a: "3" }],
+      {
+        inputs: [
+          { name: "xs", type: "uint256[2]" },
+          {
+            name: "t",
+            type: "tuple",
+            components: [{ name: "a", type: "uint256" }],
+          },
+        ],
+      },
+      {
+        fixedArrays: true,
+        checkLeaf: (_value, type, path) => {
+          seen.push(`${path}:${type}`);
+          return;
+        },
+      }
+    );
+    expect(result).toEqual({ ok: true });
+    expect(seen).toEqual(["xs[0]:uint256", "xs[1]:uint256", "t.a:uint256"]);
+  });
+
+  it("checks the items and length of a fixed-size array when asked", () => {
+    const fn = { inputs: [{ name: "xs", type: "uint256[2]" }] };
+    const options = { fixedArrays: true };
+    expect(validateArgsForAbi([["1", ""]], fn, options)).toEqual({
+      ok: false,
+      error: "xs[1]: uint256 cannot be empty",
+    });
+    expect(validateArgsForAbi([["1"]], fn, options)).toEqual({
+      ok: false,
+      error: "xs: uint256[2] takes 2 items, got 1",
+    });
+  });
+
+  it("leaves a fixed-size array to the encoder by default", () => {
+    // Positional tuples in a tuple[2] encode fine, so existing callers keep them.
+    expect(
+      validateArgsForAbi(
+        [
+          [
+            ["1", "0x1"],
+            ["2", "0x2"],
+          ],
+        ],
+        {
+          inputs: [
+            {
+              name: "ps",
+              type: "tuple[2]",
+              components: [
+                { name: "a", type: "uint256" },
+                { name: "b", type: "address" },
+              ],
+            },
+          ],
+        }
+      )
+    ).toEqual({ ok: true });
+  });
+});

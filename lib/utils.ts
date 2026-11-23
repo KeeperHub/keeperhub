@@ -1,8 +1,35 @@
 import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
+import { extendTailwindMerge } from 'tailwind-merge';
+
+// hub-focus-ring (app/globals.css) sets the ring and outline, so it replaces
+// a primitive's own ring classes such as Button's ring-[3px] ring-ring/50.
+const twMerge = extendTailwindMerge<'hub-focus-ring'>({
+  extend: {
+    classGroups: { 'hub-focus-ring': ['hub-focus-ring'] },
+    conflictingClassGroups: {
+      'hub-focus-ring': [
+        'ring-w',
+        'ring-color',
+        'ring-offset-w',
+        'outline-style',
+        'outline-w',
+        'outline-color',
+      ],
+    },
+  },
+});
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
+}
+
+// Node reports a failed multi-address connect as an AggregateError with an
+// empty message and one error per address tried.
+function describeCause(cause: Error): string {
+  if (cause.message === "" && cause instanceof AggregateError) {
+    return cause.errors.map((inner) => getErrorMessage(inner)).join("; ");
+  }
+  return cause.message;
 }
 
 /**
@@ -21,7 +48,7 @@ export function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     // Some errors have a cause property with more details
     if (error.cause && error.cause instanceof Error) {
-      return `${error.message}: ${error.cause.message}`;
+      return `${error.message}: ${describeCause(error.cause)}`;
     }
     return error.message;
   }
@@ -117,6 +144,59 @@ export function getErrorMessage(error: unknown): string {
  */
 export function resolveDefaultOnFlag(value: unknown): boolean {
   return value !== false && value !== "false";
+}
+
+export function isBoolLiteral(value: unknown): boolean {
+  return (
+    value === true || value === false || value === "true" || value === "false"
+  );
+}
+
+/** A toggle left unset, which takes its default: undefined, null or "". */
+function isUnsetToggle(value: unknown): boolean {
+  return value === undefined || value === null || value === "";
+}
+
+/** What an on/off toggle may hold: a boolean literal, or unset for its default. */
+export function isToggleValue(value: unknown): boolean {
+  return isUnsetToggle(value) || isBoolLiteral(value);
+}
+
+/**
+ * Read a plain on/off switch: unset takes its declared default, which is off
+ * when none is declared. The editor, the step and the MCP pin schema read a
+ * switch through this; save accepts what isToggleValue accepts, built on the
+ * same checks. Undefined for any other value.
+ */
+export function resolveSwitch(
+  value: unknown,
+  defaultValue: unknown
+): boolean | undefined {
+  const raw = isUnsetToggle(value) ? (defaultValue ?? false) : value;
+  return isBoolLiteral(raw) ? raw === true || raw === "true" : undefined;
+}
+
+/**
+ * Why a switch refuses a value resolveSwitch cannot read, worded the same at
+ * save and at run. "True" or " true" is also told what to change.
+ */
+export function switchRefusal(name: string, value: unknown): string {
+  const text = typeof value === "string" ? value : "";
+  const trimmed = text.trim();
+  const word = trimmed.toLowerCase();
+  if (word !== "true" && word !== "false") {
+    return `${name} must be true or false.`;
+  }
+  const hints: string[] = [];
+  if (text !== trimmed) {
+    hints.push("with no spaces around it");
+  }
+  if (trimmed !== word) {
+    hints.push("in lowercase");
+  }
+  return hints.length > 0
+    ? `${name} must be true or false, ${hints.join(" and ")}.`
+    : `${name} must be true or false.`;
 }
 
 /**
@@ -408,4 +488,18 @@ export function deserializeTriggerInput(
     return deserialized;
   }
   return triggerInput;
+}
+
+/**
+ * A copy of the set with the value added, or taken out if it was there. For
+ * multi-pick filters and toggled groups; the set it is given is not changed.
+ */
+export function toggleInSet<T>(set: ReadonlySet<T>, value: T): Set<T> {
+  const next = new Set(set);
+  if (next.has(value)) {
+    next.delete(value);
+  } else {
+    next.add(value);
+  }
+  return next;
 }

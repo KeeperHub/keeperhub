@@ -15,6 +15,7 @@ import { remapNodeReferencesInConfig } from "@/lib/utils/template";
 import { findActionById, flattenConfigFields } from "@/plugins/registry";
 import { getWorkflowAccess } from "@/lib/workflow/access";
 import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
+import { clearStrayToggles } from "@/lib/workflow/validation/action-config";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 // Node type for type-safe node manipulation
 type WorkflowNodeLike = {
@@ -190,7 +191,11 @@ export async function POST(
       duplicatedNodes as Record<string, unknown>[],
       duplicatedEdges as Record<string, unknown>[]
     );
-    const newNodes = sanitized.nodes;
+    // A copy into another organization starts with no stray toggle values.
+    const newNodes =
+      sourceWorkflow.organizationId === organizationId
+        ? sanitized.nodes
+        : clearStrayToggles(sanitized.nodes);
     const newEdges = sanitized.edges;
 
     const featureGuard = await enforceWorkflowFeatures(

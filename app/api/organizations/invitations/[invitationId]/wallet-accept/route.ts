@@ -2,7 +2,10 @@ import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { isAddress } from "viem";
 import { auth } from "@/lib/auth";
-import { isWalletEmail } from "@/lib/auth/wallet-constants";
+import {
+  isWalletEmail,
+  walletAddressFromEmail,
+} from "@/lib/auth/wallet-constants";
 import { db } from "@/lib/db";
 import { invitation, member } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
@@ -93,7 +96,7 @@ async function loadContext(
     };
   }
 
-  const address = invite.email.split("@")[0];
+  const address = walletAddressFromEmail(invite.email);
   if (!(address && isAddress(address))) {
     return {
       ok: false,

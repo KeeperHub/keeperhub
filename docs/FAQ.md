@@ -117,7 +117,7 @@ Failed steps are retried with exponential backoff. To reduce risk: test on Sepol
 | API rate limit (unauthenticated) | 10 requests/minute |
 | Direct Execution API | 60 requests/minute per API key |
 | Code Plugin timeout | 1-120 seconds (default 60) |
-| Batch Read Contract | 5,000 total calls per execution |
+| Batch Read Contract | 5,000 total calls per execution (rows or list) |
 | Batch size per RPC request | 1-500 (default 100) |
 
 ### How does gas estimation work?
@@ -232,7 +232,7 @@ There's no built-in version history or CI/CD integration yet. If you need that, 
 
 ### How do teams and organizations work?
 
-You can create organizations, invite team members via email, and share workflows within the org. Organizations have three roles (owner, admin, and member) that gate sensitive wallet and security actions, while workflow collaboration is shared across all members. See [Access Control](/users-teams-orgs/permissions) for the breakdown.
+You can create organizations, invite team members via email, and share workflows within the org. Organizations have four roles (owner, admin, member, and viewer). Members, admins, and owners collaborate on workflows, admins and owners handle sensitive wallet and security actions, and viewers get read-only access to workflows, runs, and settings. See [Access Control](/users-teams-orgs/permissions) for the breakdown.
 
 See [Organizations](/users-teams-orgs/organizations) for details.
 

@@ -16,24 +16,28 @@ import {
 import { buildEventArgTopics } from "./event-arg-filter-core";
 import {
   type AbiEntry,
+  type DecodedEvent,
+  decodeEventArgs,
   type EventTopicFilter,
   isNearHeadBatch,
+  parseAbi,
+  QUERY_BATCH_SIZE,
   queryBatchWithRetry,
+  TIP_SAFETY_MARGIN_BLOCKS,
 } from "./query-events-core";
+import {
+  parseAddressListQuery,
+  parseEventQueries,
+  planAddressListQueries,
+  planLogQueries,
+  queryPlannedEvents,
+  type TaggedEvent,
+} from "./query-events-multi-core";
 import {
   applyReadFailOnError,
   type ReadDestinationFailure,
   type ReadFailOnErrorInput,
 } from "./read-fail-on-error-core";
-
-const DEFAULT_BATCH_SIZE = 2000;
-
-type DecodedEvent = {
-  blockNumber: number;
-  transactionHash: string;
-  logIndex: number;
-  args: Record<string, unknown>;
-};
 
 type QueryEventsResult =
   | {
@@ -42,7 +46,7 @@ type QueryEventsResult =
       // value so the workflow continues; `error` carries the reason. Null
       // rather than an empty list so a downstream node cannot read a failed
       // query as "no events in range".
-      events: DecodedEvent[] | null;
+      events: (DecodedEvent | TaggedEvent)[] | null;
       fromBlock: number | null;
       toBlock: number | null;
       eventCount: number | null;
@@ -60,10 +64,15 @@ const SOFT_QUERY_FIELDS = {
 
 export type QueryEventsCoreInput = ReadFailOnErrorInput & {
   network: string;
-  contractAddress: string;
-  abi: string;
-  eventName: string;
+  // "multiple" reads eventQueries, "address-list" reads contractAddresses; anything else is the single-event query.
+  queryMode?: string;
+  contractAddress?: string;
+  abi?: string;
+  eventName?: string;
   eventArgs?: string | Record<string, unknown>;
+  eventQueries?: string | unknown[];
+  // Read when queryMode is "address-list": one event on each listed contract.
+  contractAddresses?: string | unknown[];
   fromBlock?: string;
   toBlock?: string;
   blockCount?: number | string;
@@ -71,43 +80,12 @@ export type QueryEventsCoreInput = ReadFailOnErrorInput & {
 
 export type QueryEventsInput = StepInput & QueryEventsCoreInput;
 
-function serializeBigInts(value: unknown): unknown {
-  return JSON.parse(
-    JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v))
-  );
+function isMultipleEventQuery(input: QueryEventsCoreInput): boolean {
+  return input.queryMode === "multiple";
 }
 
-function decodeEventArgs(
-  event: ethers.EventLog,
-  eventFragment: ethers.EventFragment
-): Record<string, unknown> {
-  const args: Record<string, unknown> = {};
-  for (const [index, input] of eventFragment.inputs.entries()) {
-    const name = input.name || `arg${index}`;
-    args[name] = serializeBigInts(event.args[index]);
-  }
-  return args;
-}
-
-
-function parseAbi(
-  abi: string
-): { success: true; parsed: AbiEntry[] } | { success: false; error: string } {
-  let parsedAbi: unknown;
-  try {
-    parsedAbi = JSON.parse(abi);
-  } catch (error) {
-    return {
-      success: false,
-      error: `Invalid ABI JSON: ${getErrorMessage(error)}`,
-    };
-  }
-
-  if (!Array.isArray(parsedAbi)) {
-    return { success: false, error: "ABI must be a JSON array" };
-  }
-
-  return { success: true, parsed: parsedAbi as AbiEntry[] };
+function isAddressListQuery(input: QueryEventsCoreInput): boolean {
+  return input.queryMode === "address-list";
 }
 
 type EventBatchesResult = { events: DecodedEvent[]; actualToBlock: number };
@@ -121,7 +99,7 @@ async function queryEventBatches(
   range: BlockRange,
   topics: EventTopicFilter
 ): Promise<EventBatchesResult> {
-  const batchSize = DEFAULT_BATCH_SIZE;
+  const batchSize = QUERY_BATCH_SIZE;
   const allEvents: DecodedEvent[] = [];
   let actualToBlock = range.fromBlock - 1;
 
@@ -151,7 +129,7 @@ async function queryEventBatches(
           blockNumber: event.blockNumber,
           transactionHash: event.transactionHash,
           logIndex: event.index,
-          args: decodeEventArgs(event, eventFragment),
+          args: decodeEventArgs(event.args, eventFragment),
         });
       }
     }
@@ -174,26 +152,20 @@ async function queryEventBatches(
   return { events: allEvents, actualToBlock };
 }
 
-async function stepHandler(
-  input: QueryEventsInput
-): Promise<QueryEventsResult> {
-  console.log("[Query Events] Starting step with input:", {
-    contractAddress: input.contractAddress,
-    network: input.network,
-    eventName: input.eventName,
-    fromBlock: input.fromBlock,
-    toBlock: input.toBlock,
-    blockCount: input.blockCount,
-    executionId: input._context?.executionId,
-  });
+type OpenedBlockRange =
+  | { success: true; rpcManager: RpcProviderManager; range: BlockRange }
+  | (ReadDestinationFailure & { success: false; error: string });
 
-  const { contractAddress, network, abi, eventName, _context } = input;
+async function openBlockRange(
+  input: QueryEventsInput,
+  chainId: number,
+  headMargin: number
+): Promise<OpenedBlockRange> {
+  const userId = await getRpcPreferenceUserId(input._context?.executionId);
 
-  // Resolve the chain first so the address check and the Solana guard below
-  // can branch on the chain family.
-  let chainId: number;
+  let rpcManager: RpcProviderManager;
   try {
-    chainId = getChainIdFromNetwork(network);
+    rpcManager = await getRpcProvider({ chainId, userId });
   } catch (error) {
     return {
       success: false,
@@ -202,12 +174,42 @@ async function stepHandler(
     };
   }
 
-  // Event querying decodes EVM ABI logs, which have no Solana equivalent
-  // (Solana program logs are untyped and unindexed) - not yet supported.
-  const evmOnlyResult = evmOnlyGuard(chainId);
-  if (evmOnlyResult) {
-    return evmOnlyResult;
+  // Resolve block range (uses RPC for latest block number)
+  const blockRangeResult = await rpcManager.executeWithFailover(
+    async (provider) =>
+      resolveBlockRange(
+        provider,
+        input.fromBlock,
+        input.toBlock,
+        input.blockCount,
+        headMargin
+      )
+  );
+  if (!blockRangeResult.success) {
+    return { success: false, error: blockRangeResult.error };
   }
+  const { range } = blockRangeResult;
+  if (range.toBlockIsLatest) {
+    console.log("[Query Events] Resolved latest block:", range.toBlock);
+  }
+  return { success: true, rpcManager, range };
+}
+
+function emptyRangeResult(range: BlockRange): QueryEventsResult {
+  return {
+    success: true,
+    events: [],
+    fromBlock: range.fromBlock,
+    toBlock: range.toBlock,
+    eventCount: 0,
+  };
+}
+
+async function singleEventHandler(
+  input: QueryEventsInput,
+  chainId: number
+): Promise<QueryEventsResult> {
+  const { contractAddress, abi, eventName } = input;
 
   if (!ethers.isAddress(contractAddress)) {
     return {
@@ -229,11 +231,9 @@ async function stepHandler(
     return { success: false, error: `Event '${eventName}' not found in ABI` };
   }
 
-  const userId = await getRpcPreferenceUserId(_context?.executionId);
-
   // Validate event exists in ABI using ethers Interface (no provider needed)
   const iface = new ethers.Interface(abiResult.parsed);
-  const eventFragment = iface.getEvent(eventName);
+  const eventFragment = iface.getEvent(eventAbiEntry.name);
   if (!eventFragment) {
     return {
       success: false,
@@ -254,43 +254,14 @@ async function stepHandler(
     );
   }
 
-  let rpcManager: RpcProviderManager;
-  try {
-    rpcManager = await getRpcProvider({ chainId, userId });
-  } catch (error) {
-    return {
-      success: false,
-      destinationError: true,
-      error: getErrorMessage(error),
-    };
+  const opened = await openBlockRange(input, chainId, 0);
+  if (!opened.success) {
+    return opened;
   }
-
-  // Resolve block range (uses RPC for latest block number)
-  const blockRangeResult = await rpcManager.executeWithFailover(
-    async (provider) =>
-      resolveBlockRange(
-        provider,
-        input.fromBlock,
-        input.toBlock,
-        input.blockCount
-      )
-  );
-  if (!blockRangeResult.success) {
-    return { success: false, error: blockRangeResult.error };
-  }
-  const { range } = blockRangeResult;
-  if (range.toBlockIsLatest) {
-    console.log("[Query Events] Resolved latest block:", range.toBlock);
-  }
+  const { rpcManager, range } = opened;
 
   if (range.fromBlock > range.toBlock) {
-    return {
-      success: true,
-      events: [],
-      fromBlock: range.fromBlock,
-      toBlock: range.toBlock,
-      eventCount: 0,
-    };
+    return emptyRangeResult(range);
   }
 
   // Query events (each batch fails over between endpoints and retries with a
@@ -300,7 +271,7 @@ async function stepHandler(
       rpcManager,
       contractAddress,
       abiResult.parsed,
-      eventName,
+      eventAbiEntry.name,
       eventFragment,
       range,
       topicResult.topics
@@ -321,15 +292,103 @@ async function stepHandler(
   }
 }
 
+// A latest end stops short of the head so every call scans one fixed range.
+async function multipleEventsHandler(
+  input: QueryEventsInput,
+  chainId: number
+): Promise<QueryEventsResult> {
+  const addressList = isAddressListQuery(input);
+  const parsed = addressList
+    ? parseAddressListQuery(input)
+    : parseEventQueries(input.eventQueries);
+  if (!parsed.success) {
+    return parsed;
+  }
+  const plans = addressList
+    ? planAddressListQueries(parsed.queries)
+    : planLogQueries(parsed.queries);
+
+  const opened = await openBlockRange(
+    input,
+    chainId,
+    TIP_SAFETY_MARGIN_BLOCKS
+  );
+  if (!opened.success) {
+    return opened;
+  }
+  const { rpcManager, range } = opened;
+
+  if (range.fromBlock > range.toBlock) {
+    return emptyRangeResult(range);
+  }
+
+  try {
+    const events = await queryPlannedEvents(rpcManager, plans, range);
+    return {
+      success: true,
+      events,
+      fromBlock: range.fromBlock,
+      toBlock: range.toBlock,
+      eventCount: events.length,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Event query failed: ${getErrorMessage(error)}`,
+    };
+  }
+}
+
+async function stepHandler(
+  input: QueryEventsInput
+): Promise<QueryEventsResult> {
+  console.log("[Query Events] Starting step with input:", {
+    queryMode: input.queryMode,
+    contractAddress: input.contractAddress,
+    network: input.network,
+    eventName: input.eventName,
+    fromBlock: input.fromBlock,
+    toBlock: input.toBlock,
+    blockCount: input.blockCount,
+    executionId: input._context?.executionId,
+  });
+
+  // Resolve the chain first so the address check and the Solana guard below
+  // can branch on the chain family.
+  let chainId: number;
+  try {
+    chainId = getChainIdFromNetwork(input.network);
+  } catch (error) {
+    return {
+      success: false,
+      destinationError: true,
+      error: getErrorMessage(error),
+    };
+  }
+
+  // Event querying decodes EVM ABI logs, which have no Solana equivalent
+  // (Solana program logs are untyped and unindexed) - not yet supported.
+  const evmOnlyResult = evmOnlyGuard(chainId);
+  if (evmOnlyResult) {
+    return evmOnlyResult;
+  }
+
+  return isMultipleEventQuery(input) || isAddressListQuery(input)
+    ? multipleEventsHandler(input, chainId)
+    : singleEventHandler(input, chainId);
+}
+
 export async function queryEventsStep(
   input: QueryEventsInput
 ): Promise<QueryEventsResult> {
   "use step";
 
-  const contractAddressLink = await resolveExplorerLink(
-    input.network,
-    input.contractAddress
-  );
+  // A multiple-events or address-list query has no single contract to link to.
+  const contractAddressLink =
+    isMultipleEventQuery(input) ||
+    isAddressListQuery(input) || input.contractAddress === undefined
+      ? undefined
+      : await resolveExplorerLink(input.network, input.contractAddress);
   const enrichedInput: QueryEventsInput & { contractAddressLink?: string } =
     contractAddressLink ? { ...input, contractAddressLink } : input;
 

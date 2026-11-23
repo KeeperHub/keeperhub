@@ -4,16 +4,12 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { publicTags, workflowPublicTags } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { getActiveOrgId } from "@/lib/middleware/org-context";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
+import { isOrgViewer } from "@/lib/security/org-role";
+import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
+import { publicTagSlug } from "@/lib/workflow/public-tag-slug";
 import { isReservedSlug } from "@/lib/workflow/reserved-slugs";
-
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
 
 export async function GET(): Promise<NextResponse> {
   try {
@@ -64,6 +60,9 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    if (await isOrgViewer(session.user.id, getActiveOrgId(session))) {
+      return viewerReadOnlyResponse();
+    }
 
     const body = await request.json().catch(() => ({}));
     const name = body.name?.trim();
@@ -72,7 +71,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
     }
 
-    const slug = slugify(name);
+    const slug = publicTagSlug(name);
 
     if (!slug) {
       return NextResponse.json({ error: "Invalid tag name" }, { status: 400 });

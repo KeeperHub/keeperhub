@@ -13,22 +13,29 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { Button } from "@/components/ui/button";
 import { NodeConfigPanel } from "@/components/workflow/node-config-panel";
 import { useGatedWorkflowWarning } from "@/hooks/use-features";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { api } from "@/lib/api-client";
+import {
+  api,
+  WORKFLOW_SAVE_ERROR_TOAST,
+  workflowSaveErrorMessage,
+} from "@/lib/api-client";
 import { authClient, useSession } from "@/lib/auth-client";
 import {
   getPendingClaim,
   useClaimWorkflow,
 } from "@/lib/hooks/use-claim-workflow";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { SYSTEM_ACTION_INTEGRATIONS } from "@/lib/integrations/system";
 import {
   integrationsAtom,
   integrationsLoadedAtom,
   integrationsVersionAtom,
 } from "@/lib/integrations-store";
+import { refetchSidebar } from "@/lib/refetch-sidebar";
 import type { IntegrationType } from "@/lib/types/integration";
 import {
   currentExecutionIdAtom,
@@ -56,6 +63,7 @@ import {
   isSidebarCollapsedAtom,
   isWorkflowEnabled,
   isWorkflowOwnerAtom,
+  isWorkflowViewerAtom,
   newlyCreatedNodeIdAtom,
   nodesAtom,
   previewVersionAtom,
@@ -70,7 +78,10 @@ import {
   type WorkflowVisibility,
   workflowNotFoundAtom,
 } from "@/lib/workflow/store";
-import { useVersionPreview } from "@/lib/workflow/use-version-preview";
+import {
+  useExitPreviewOnLeavingHistory,
+  useVersionPreview,
+} from "@/lib/workflow/use-version-preview";
 import { findActionById } from "@/plugins/registry";
 
 type WorkflowPageProps = {
@@ -199,6 +210,8 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     currentWorkflowVisibilityAtom
   );
   const [isOwner, setIsWorkflowOwner] = useAtom(isWorkflowOwnerAtom);
+  const setIsWorkflowViewer = useSetAtom(isWorkflowViewerAtom);
+  const { isViewer } = useOrgAccess();
   const setIsWorkflowEnabled = useSetAtom(isWorkflowEnabled); // keeperhub custom field //
   const setCurrentWorkflowPublicTags = useSetAtom(
     currentWorkflowPublicTagsAtom
@@ -423,7 +436,10 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
         });
       } catch (error) {
         console.error("Failed to generate workflow:", error);
-        toast.error("Failed to generate workflow");
+        toast.error(
+          workflowSaveErrorMessage(error, "Failed to generate workflow"),
+          WORKFLOW_SAVE_ERROR_TOAST
+        );
       } finally {
         setIsGenerating(false);
       }
@@ -498,6 +514,9 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
         (workflow.visibility as WorkflowVisibility) ?? "private"
       );
       setIsWorkflowOwner(workflow.isOwner !== false); // Default to true if not set
+      setIsWorkflowViewer(
+        workflow.isOwner === false && workflow.canRead === true
+      );
       setIsWorkflowEnabled(workflow.enabled ?? false); // keeperhub custom field //
       setCurrentWorkflowProjectId(workflow.projectId ?? null);
       setCurrentWorkflowTagId(workflow.tagId ?? null);
@@ -534,6 +553,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     setCurrentWorkflowName,
     setCurrentWorkflowVisibility,
     setIsWorkflowOwner,
+    setIsWorkflowViewer,
     setIsWorkflowEnabled, // keeperhub custom field //
     setCurrentWorkflowProjectId,
     setCurrentWorkflowPublicTags,
@@ -570,6 +590,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
       setCurrentWorkflowDescription("");
       setCurrentWorkflowVisibility("private");
       setIsWorkflowOwner(true);
+      setIsWorkflowViewer(false);
       setNodes([]);
       setEdges([]);
       setSelectedNode(null);
@@ -582,6 +603,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
       setCurrentWorkflowDescription("");
       setCurrentWorkflowVisibility("private");
       setIsWorkflowOwner(true);
+      setIsWorkflowViewer(false);
       setNodes([]);
       setEdges([]);
       setSelectedNode(null);
@@ -595,6 +617,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     setCurrentWorkflowDescription,
     setCurrentWorkflowVisibility,
     setIsWorkflowOwner,
+    setIsWorkflowViewer,
     setNodes,
     setEdges,
     setSelectedNode,
@@ -647,6 +670,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
   // canvas. "current" is the live version, so it opens history without a canvas
   // preview. Fires once per distinct version param; clears when removed.
   const { preview: previewVersionOnCanvas } = useVersionPreview();
+  useExitPreviewOnLeavingHistory();
   const appliedVersionParamRef = useRef<string | null>(null);
   useEffect(() => {
     const raw = searchParams?.get("version");
@@ -677,13 +701,13 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     setActiveTab,
   ]);
 
-  // Deep-link from the activity feed: `?tab=history` opens the workflow-level
-  // History tab once the workflow is loaded (no specific version preview).
-  // Fires once per distinct tab param.
+  // Deep-links: `?tab=history` from the activity feed opens the workflow-level
+  // History tab (no specific version preview), and `?tab=runs` from a failure
+  // alert opens Runs. Fires once per distinct tab param.
   const appliedTabParamRef = useRef<string | null>(null);
   useEffect(() => {
     const tab = searchParams?.get("tab");
-    if (tab !== "history") {
+    if (tab !== "history" && tab !== "runs") {
       appliedTabParamRef.current = null;
       return;
     }
@@ -871,7 +895,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
 
   // Keyboard shortcuts
   const handleSave = useCallback(async () => {
-    if (!currentWorkflowId || isGenerating) {
+    if (!currentWorkflowId || isGenerating || !isOwner) {
       return;
     }
     setIsSaving(true);
@@ -880,7 +904,10 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
       setHasUnsavedChanges(false);
     } catch (error) {
       console.error("Failed to save workflow:", error);
-      toast.error("Failed to save workflow");
+      toast.error(
+        workflowSaveErrorMessage(error, "Failed to save workflow"),
+        WORKFLOW_SAVE_ERROR_TOAST
+      );
     } finally {
       setIsSaving(false);
     }
@@ -889,6 +916,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     nodes,
     edges,
     isGenerating,
+    isOwner,
     setIsSaving,
     setHasUnsavedChanges,
   ]);
@@ -930,13 +958,15 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
           e.preventDefault();
           e.stopPropagation();
           // Trigger execute via atom - the toolbar will handle it
-          setTriggerExecute(true);
+          if (isOwner) {
+            setTriggerExecute(true);
+          }
         }
         return true;
       }
       return false;
     },
-    [setTriggerExecute, isInputElement, isInMonacoEditor]
+    [setTriggerExecute, isInputElement, isInMonacoEditor, isOwner]
   );
 
   useEffect(() => {
@@ -1051,59 +1081,65 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
               The workflow you're looking for doesn't exist or has been deleted.
             </p>
             <div className="flex justify-center gap-3">
-              <Button
-                className="gap-2"
-                onClick={async () => {
-                  try {
-                    await ensureSession();
-                    const triggerId = `trigger-${Date.now()}`;
-                    const actionId = `action-${Date.now()}`;
-                    const triggerNode = {
-                      id: triggerId,
-                      type: "trigger" as const,
-                      position: { x: 400, y: 200 },
-                      data: {
-                        label: "",
+              <ViewOnlyTooltip isViewer={isViewer}>
+                <Button
+                  className="gap-2"
+                  disabled={isViewer}
+                  onClick={async () => {
+                    try {
+                      await ensureSession();
+                      const triggerId = `trigger-${Date.now()}`;
+                      const actionId = `action-${Date.now()}`;
+                      const triggerNode = {
+                        id: triggerId,
                         type: "trigger" as const,
-                        config: { triggerType: "Manual" },
-                        status: "idle" as const,
-                      },
-                    };
-                    const actionNode = {
-                      id: actionId,
-                      type: "action" as const,
-                      position: { x: 672, y: 200 },
-                      selected: true,
-                      data: {
-                        label: "",
-                        type: "action" as const,
-                        config: {},
-                        status: "idle" as const,
-                      },
-                    };
-                    const newWorkflow = await api.workflow.create({
-                      name: "Untitled Workflow",
-                      description: "",
-                      nodes: [triggerNode, actionNode],
-                      edges: [
-                        {
-                          id: `edge-${Date.now()}`,
-                          source: triggerId,
-                          target: actionId,
-                          type: "animated",
+                        position: { x: 400, y: 200 },
+                        data: {
+                          label: "",
+                          type: "trigger" as const,
+                          config: { triggerType: "Manual" },
+                          status: "idle" as const,
                         },
-                      ],
-                    });
-                    router.replace(`/workflows/${newWorkflow.id}`);
-                  } catch (error) {
-                    console.error("Failed to create workflow:", error);
-                    toast.error("Failed to create workflow. Please try again.");
-                  }
-                }}
-              >
-                <Plus className="size-4" />
-                Start building
-              </Button>
+                      };
+                      const actionNode = {
+                        id: actionId,
+                        type: "action" as const,
+                        position: { x: 672, y: 200 },
+                        selected: true,
+                        data: {
+                          label: "",
+                          type: "action" as const,
+                          config: {},
+                          status: "idle" as const,
+                        },
+                      };
+                      const newWorkflow = await api.workflow.create({
+                        name: "Untitled Workflow",
+                        description: "",
+                        nodes: [triggerNode, actionNode],
+                        edges: [
+                          {
+                            id: `edge-${Date.now()}`,
+                            source: triggerId,
+                            target: actionId,
+                            type: "animated",
+                          },
+                        ],
+                      });
+                      refetchSidebar({ workflowCreated: true });
+                      router.replace(`/workflows/${newWorkflow.id}`);
+                    } catch (error) {
+                      console.error("Failed to create workflow:", error);
+                      toast.error(
+                        "Failed to create workflow. Please try again."
+                      );
+                    }
+                  }}
+                >
+                  <Plus className="size-4" />
+                  Start building
+                </Button>
+              </ViewOnlyTooltip>
               <Button
                 className="gap-2"
                 onClick={() => router.push("/hub")}
@@ -1120,7 +1156,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
       {/* Expand button when panel is collapsed - only show if trigger exists */}
       {!isMobile && hasTriggerNode && panelCollapsed && (
         <button
-          className="pointer-events-auto absolute top-[calc(60px+0.75rem)] right-0 z-20 flex size-6 items-center justify-center rounded-l-full border border-r-0 bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+          className="pointer-events-auto absolute top-[calc(var(--header-height)+var(--app-banner-height,0px)+0.75rem)] right-0 z-20 flex size-6 items-center justify-center rounded-l-full border border-r-0 bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
           onClick={() => {
             setIsPanelAnimating(true);
             setPanelCollapsed(false);
@@ -1135,7 +1171,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
       {/* Right panel overlay (desktop only) - only show if trigger exists */}
       {!isMobile && hasTriggerNode && (
         <div
-          className="pointer-events-auto absolute top-[calc(6rem+var(--app-banner-height,0px))] right-0 bottom-0 z-20 border-l bg-background transition-transform duration-300 ease-out lg:top-[calc(60px+var(--app-banner-height,0px))]"
+          className="pointer-events-auto absolute top-[calc(var(--header-height)+var(--app-banner-height,0px))] right-0 bottom-0 z-20 border-l bg-background transition-transform duration-300 ease-out"
           style={{
             width: `${panelWidth}%`,
             transform:

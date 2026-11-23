@@ -11,8 +11,16 @@ import { api, type SecurityAuditEvent } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
 import { usePaginatedResource } from "@/lib/hooks/use-paginated-resource";
 import type { PageMeta } from "@/lib/pagination";
+import { cn } from "@/lib/utils";
 import { ActivityRow } from "./activity-row";
 import { Pager } from "./pager";
+import {
+  PHONE_FEED_LIST,
+  PHONE_FEED_TOP,
+  PHONE_HELD_HEIGHT,
+  PHONE_PAGE_FILL,
+  PHONE_STICKY_HEADING,
+} from "./phone-scroll";
 
 type FeedParams = {
   resourceType?: string;
@@ -65,13 +73,60 @@ function mergeFallback(
   );
 }
 
+// The nearest scrolling ancestor, or null when an ancestor clips first. From
+// 640px up the page container clips and only the list scrolls, so this is
+// null there and the page-change handling below does nothing.
+function scrollParent(element: HTMLElement): HTMLElement | null {
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    const { overflowY } = getComputedStyle(node);
+    if (overflowY === "auto" || overflowY === "scroll") {
+      return node;
+    }
+    if (overflowY === "hidden" || overflowY === "clip") {
+      return null;
+    }
+  }
+  return null;
+}
+
+// On a phone the page itself scrolls. When the page changes, hold the list at
+// its current height while the next page loads (so a shorter skeleton does not
+// pull the reader up mid-load), and bring the list's top back under the app
+// header if the reader had scrolled past it; never scroll down to it.
+function keepPlaceOnPageChange(
+  feed: HTMLElement,
+  list: HTMLElement | null
+): void {
+  const scroller = scrollParent(feed);
+  if (!scroller) {
+    return;
+  }
+  if (list) {
+    feed.style.setProperty("--activity-held-height", `${list.offsetHeight}px`);
+  }
+  // Unset scroll padding reads back as "auto", which counts as none.
+  const px = (value: string): number => Number.parseFloat(value) || 0;
+  const landing =
+    scroller.getBoundingClientRect().top +
+    px(getComputedStyle(scroller).scrollPaddingTop) +
+    px(getComputedStyle(feed).scrollMarginTop);
+  const offBy = feed.getBoundingClientRect().top - landing;
+  if (offBy < 0) {
+    scroller.scrollBy({ top: offBy });
+  }
+}
+
 // Stable keys for the placeholder rows so the skeleton list doesn't key on
 // the array index.
 const SKELETON_KEYS = ["a", "b", "c", "d", "e", "f"] as const;
 
-function SkeletonRow(): React.ReactElement {
+function SkeletonRow({
+  className,
+}: {
+  className?: string;
+}): React.ReactElement {
   return (
-    <li className="flex items-start gap-3 py-3">
+    <li className={cn("flex items-start gap-3 py-3", className)}>
       <Skeleton className="size-7 shrink-0 rounded-full" />
       <div className="flex-1 space-y-2 py-0.5">
         <Skeleton className="h-3.5 w-2/5" />
@@ -285,7 +340,8 @@ export function ActivityFeed({
   // Capture the settled content height so the skeleton can hold it on the next
   // load. Without this the embedded feed (no fixed box) collapses to the
   // skeleton's natural height and back, jumping the modal on every filter/page
-  // change. Per-resource overlays use the fixed box below instead.
+  // change. Per-resource overlays use the fixed box below instead. The full
+  // page holds its height only on a phone's page change (keepPlaceOnPageChange).
   const listRef = useRef<HTMLDivElement>(null);
   const [reservedHeight, setReservedHeight] = useState<number>();
   useEffect(() => {
@@ -293,16 +349,27 @@ export function ActivityFeed({
       setReservedHeight(listRef.current.offsetHeight);
     }
   }, [embedded, fillHeight, loading]);
+  // On phones the skeleton draws no more rows than the page on screen has (the
+  // items stay until the next page arrives), or a short page would grow and
+  // push the pager down while the next one loads.
+  const shownRows = events.length || SKELETON_KEYS.length;
 
   // Three layout modes:
   // - fillHeight (full page): the list grows to fill the flex parent and scrolls
-  //   internally, so the Pager stays pinned at the bottom of the viewport.
+  //   internally, so the Pager stays pinned at the bottom of the viewport. On
+  //   phones the whole page scrolls instead (see phone-scroll.ts).
   // - embedded (already-scrolling overlay): no box, the parent owns scrolling.
   // - default (per-resource overlay): a fixed-height box so the modal never
   //   resizes; content taller than the box scrolls inside it.
   let scrollClass: string;
   if (fillHeight) {
-    scrollClass = "thin-scrollbar min-h-0 flex-1 overflow-y-auto";
+    // On phones the page scrolls as a whole (see phone-scroll.ts), so the list
+    // takes its natural height there, and at least the space left on screen.
+    scrollClass = cn(
+      "thin-scrollbar min-h-0 flex-1 overflow-y-auto max-sm:overflow-visible",
+      PHONE_PAGE_FILL,
+      PHONE_FEED_LIST
+    );
   } else if (embedded) {
     scrollClass = "";
   } else {
@@ -311,17 +378,39 @@ export function ActivityFeed({
 
   // In fillHeight mode the feed is a flex column so the list (flex-1) pushes the
   // Pager to the bottom; other modes keep the natural block flow.
-  const rootClass = fillHeight ? "flex min-h-0 flex-1 flex-col" : undefined;
-  const pagerClass = fillHeight ? "border-border/60 border-t pt-3" : "pt-2";
+  // On phones the pager sticks to the bottom of the screen instead (clear of
+  // the home indicator).
+  const rootClass = fillHeight
+    ? cn("flex min-h-0 flex-1 flex-col", PHONE_PAGE_FILL, PHONE_FEED_TOP)
+    : undefined;
+  const pagerClass = fillHeight
+    ? "border-border/60 border-t pt-3 max-sm:sticky max-sm:bottom-0 max-sm:z-10 max-sm:bg-sidebar max-sm:pb-(--activity-pager-pad)"
+    : "pt-2";
+  const groupLabelOffset = fillHeight ? PHONE_STICKY_HEADING : "";
+  const rootRef = useRef<HTMLDivElement>(null);
+  const goToPage = (next: number): void => {
+    setPage(next);
+    if (fillHeight && rootRef.current) {
+      keepPlaceOnPageChange(rootRef.current, listRef.current);
+    }
+  };
+  // The held height covers only the page change that set it: once that load
+  // settles it goes, so later loads (search, filters, page size) start from the
+  // skeleton's own height.
+  useEffect(() => {
+    if (fillHeight && !loading) {
+      rootRef.current?.style.removeProperty("--activity-held-height");
+    }
+  }, [fillHeight, loading]);
 
   // Skeletons show on every load in both modes. In the fixed box the swap is
   // absorbed; when embedded, the skeleton holds the last content height
   // (reservedHeight) so the modal doesn't jump.
   if (loading) {
     return (
-      <div className={rootClass}>
+      <div className={rootClass} ref={rootRef}>
         <div
-          className={scrollClass}
+          className={cn(scrollClass, fillHeight && PHONE_HELD_HEIGHT)}
           style={
             embedded && !fillHeight ? { minHeight: reservedHeight } : undefined
           }
@@ -330,14 +419,24 @@ export function ActivityFeed({
             {SKELETON_KEYS.slice(
               0,
               Math.min(limit ?? 3, SKELETON_KEYS.length)
-            ).map((key) => (
-              <SkeletonRow key={key} />
+            ).map((key, index) => (
+              <SkeletonRow
+                className={
+                  fillHeight && index >= shownRows ? "max-sm:hidden" : undefined
+                }
+                key={key}
+              />
             ))}
           </ul>
         </div>
         {meta && (
           <div className={pagerClass}>
-            <Pager meta={meta} onPage={setPage} unit="events" />
+            <Pager
+              compactOnPhones
+              meta={meta}
+              onPage={goToPage}
+              unit="events"
+            />
           </div>
         )}
       </div>
@@ -369,11 +468,16 @@ export function ActivityFeed({
   const groups = groupByDate(merged, (e) => e.createdAt);
 
   return (
-    <div className={rootClass}>
+    <div className={rootClass} ref={rootRef}>
       <div className={scrollClass} ref={listRef}>
         {groups.map((group) => (
           <div key={group.label}>
-            <p className="sticky top-0 z-10 mb-2 border-border/60 border-b bg-background pt-6 pb-2 font-medium text-muted-foreground text-xs uppercase tracking-wide first:pt-0">
+            <p
+              className={cn(
+                "sticky top-0 z-10 mb-2 border-border/60 border-b bg-background pt-6 pb-2 font-medium text-muted-foreground text-xs uppercase tracking-wide first:pt-0",
+                groupLabelOffset
+              )}
+            >
               {group.label}
             </p>
             <ul>
@@ -392,7 +496,7 @@ export function ActivityFeed({
       </div>
       {meta && (
         <div className={pagerClass}>
-          <Pager meta={meta} onPage={setPage} unit="events" />
+          <Pager compactOnPhones meta={meta} onPage={goToPage} unit="events" />
         </div>
       )}
     </div>

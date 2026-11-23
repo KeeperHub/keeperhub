@@ -1,5 +1,10 @@
 import type { IntegrationType } from "@/lib/types/integration";
 import {
+  isToggleValue,
+  resolveDefaultOnFlag,
+  resolveSwitch,
+} from "@/lib/utils";
+import {
   evaluateShowWhen,
   type ShowWhen,
 } from "@/lib/workflow/editor/show-when";
@@ -21,6 +26,10 @@ export { registerIntegration };
 export type SelectOption = {
   value: string;
   label: string;
+  // Options sharing a group render under one section header, in list order.
+  group?: string;
+  // One-line hint shown under the option in the open list.
+  description?: string;
 };
 
 /**
@@ -40,6 +49,7 @@ export type ActionConfigFieldBase = {
     | "template-textarea" // TemplateBadgeTextarea - supports {{variable}}
     | "text" // Regular text input
     | "number" // Number input
+    | "switch" // Generic boolean toggle; read by resolveSwitch (editor, step and pin schema): unset or blank takes defaultValue
     | "fail-on-error-switch" // "Fail workflow on error" toggle, shares HTTP Request's default-on resolution; not a generic boolean switch, ignores defaultValue in the renderer
     | "gas-sponsorship-switch" // "Sponsor gas" toggle on a write action; default-on, skips the sponsored route entirely when off
     | "datetime" // Native date + time picker (stores an ISO 8601 string)
@@ -56,6 +66,7 @@ export type ActionConfigFieldBase = {
     | "code-editor" // Monaco-based JavaScript code editor
     | "json-editor" // Monaco-based JSON editor
     | "call-list-builder" // Dynamic list of contract calls for batch operations
+    | "event-list-builder" // Dynamic list of contract and event pairs for a multi-event query
     | "args-list-builder" // Dynamic list of argument sets for batch uniform mode
     | "protocol-address" // Address input with checksum validation
     | "protocol-uint" // Unsigned integer input with range validation
@@ -124,6 +135,10 @@ export type ActionConfigFieldBase = {
   // and the button appears to do nothing at all.
   valueFormat?: "json";
 
+  // A template-textarea that also takes a native JSON array, as API and MCP
+  // callers send one; the editor shows it as JSON text.
+  acceptsJsonArray?: boolean;
+
   // Min value (for number fields)
   min?: number;
 
@@ -135,7 +150,8 @@ export type ActionConfigFieldBase = {
   required?: boolean;
 
   // Conditional rendering: only show if another field has a specific value.
-  // Use `equals` for single value match, `oneOf` for multiple value match.
+  // Use `equals` for single value match, `oneOf` for multiple value match,
+  // `notEquals` for any value but one (an absent value included).
   // Use `computed` to gate on a value derived from other config fields at
   // render time (no persistence). Currently supported computations:
   //   - "abiFunctionMutability": parses `abiField` (ABI JSON) and looks up
@@ -169,6 +185,9 @@ export type ActionConfigFieldBase = {
 
   // For abi-with-auto-fetch: which field contains the contract address
   contractAddressField?: string;
+
+  // For abi-with-auto-fetch: fetch from this field instead while showWhen holds
+  contractAddressFieldWhen?: { field: string; showWhen: ShowWhen };
 
   // For abi-with-auto-fetch: which field contains the network
   networkField?: string;
@@ -278,6 +297,12 @@ export type EgressTier = "user-destination" | "fixed-host" | "none";
  * Describes a single action provided by a plugin
  */
 export type PluginAction = {
+  // Optional save-time check across fields, run after the per-field checks.
+  // Returns the field to fix and why, or undefined when the config is fine.
+  validateConfig?: (
+    config: Record<string, unknown>
+  ) => { field: string; message: string } | undefined;
+
   // Unique slug for this action (e.g., "send-email")
   // Full action ID will be computed as `{integration}/{slug}` (e.g., "resend/send-email")
   slug: string;
@@ -661,6 +686,116 @@ const DISPLAY_ONLY_FIELD_SUFFIXES = [
   "-test-node",
   "-notice",
 ] as const;
+
+// These resolve through resolveDefaultOnFlag, which ignores defaultValue.
+const DEFAULT_ON_TOGGLE_LIST = [
+  "fail-on-error-switch",
+  "gas-sponsorship-switch",
+] as const;
+const DEFAULT_ON_TOGGLE_TYPES: ReadonlySet<string> = new Set(
+  DEFAULT_ON_TOGGLE_LIST
+);
+
+// Field types that hold a true/false toggle. The action schema and the MCP
+// pin schema both read this, so they agree on which toggle fields are booleans.
+const TOGGLE_FIELD_LIST = ["switch", ...DEFAULT_ON_TOGGLE_LIST] as const;
+const TOGGLE_FIELD_TYPES: ReadonlySet<string> = new Set(TOGGLE_FIELD_LIST);
+
+/** An on/off toggle field type; a map keyed by it must cover every one. */
+export type ToggleFieldType = (typeof TOGGLE_FIELD_LIST)[number];
+
+export function isToggleField(type: string | undefined): boolean {
+  return type !== undefined && TOGGLE_FIELD_TYPES.has(type);
+}
+
+/** A field's JSON type; the action schema and the pin schema both use it. */
+export function fieldJsonType(
+  type: string | undefined
+): "string" | "number" | "boolean" {
+  if (type === "number") {
+    return "number";
+  }
+  if (isToggleField(type) || type === "protocol-bool") {
+    return "boolean";
+  }
+  return "string";
+}
+
+/**
+ * The values of a closed enum field, or undefined when the field takes other
+ * values too. Both MCP schemas use it: an enum in one is a closed list in the
+ * other.
+ */
+export function fieldEnumValues(
+  field: ActionConfigFieldBase
+): string[] | undefined {
+  if (
+    field.type !== "select" ||
+    field.allowTemplate ||
+    !field.options?.length
+  ) {
+    return;
+  }
+  return field.options.map((option) => option.value);
+}
+
+export function isDefaultOnToggleField(type: string | undefined): boolean {
+  return type !== undefined && DEFAULT_ON_TOGGLE_TYPES.has(type);
+}
+
+/**
+ * Whether the form shows a field only so a value save refuses can be cleared:
+ * a default-on toggle holding neither on nor off whose own condition fails.
+ * Its switch is then locked, leaving Reset as the only action.
+ */
+export function isShownOnlyToFix(
+  field: ActionConfigFieldBase,
+  config: Record<string, unknown>
+): boolean {
+  return (
+    !field.hidden &&
+    isDefaultOnToggleField(field.type) &&
+    !isToggleValue(config[field.key]) &&
+    !evaluateShowWhen(field.showWhen, config)
+  );
+}
+
+/** Whether the config form shows a field. A `hidden` field is never shown. */
+export function isFieldShown(
+  field: ActionConfigFieldBase,
+  config: Record<string, unknown>
+): boolean {
+  return (
+    !field.hidden &&
+    (evaluateShowWhen(field.showWhen, config) ||
+      isShownOnlyToFix(field, config))
+  );
+}
+
+// How a toggle reads its value, as its step does: Sponsor gas and Fail
+// workflow on error through resolveDefaultOnFlag, a plain switch resolveSwitch.
+export type ToggleRule = "default-on" | { switchDefault: unknown };
+
+/** The rule a toggle field reads its value by, decided by its type. */
+export function toggleRuleOf(
+  field: Pick<ActionConfigFieldBase, "type" | "defaultValue">
+): ToggleRule {
+  return isDefaultOnToggleField(field.type)
+    ? "default-on"
+    : { switchDefault: field.defaultValue };
+}
+
+/** Whether a toggle is on for a stored value, by its rule. */
+export function readToggle(rule: ToggleRule, value: unknown): boolean {
+  return rule === "default-on"
+    ? resolveDefaultOnFlag(value)
+    : resolveSwitch(value, rule.switchDefault) === true;
+}
+
+/** What a toggle does when it is left unset, by the rule its step applies. */
+export function toggleDefault(field: ActionConfigFieldBase): boolean {
+  return readToggle(toggleRuleOf(field), undefined);
+}
 
 export function isDisplayOnlyField(type: string | undefined): boolean {
   return (

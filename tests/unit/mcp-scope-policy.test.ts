@@ -18,6 +18,11 @@ vi.mock("@sentry/nextjs", () => ({ captureMessage: vi.fn() }));
 vi.mock("@/lib/workflow/access", () => ({
   isUserMemberOfOrganization: mockIsMember,
 }));
+
+vi.mock("@/lib/security/org-role", () => ({
+  getOrgRole: async (...args: unknown[]) =>
+    (await mockIsMember(...args)) ? "member" : null,
+}));
 vi.mock("@/lib/mcp/connections", () => ({ touchConnection: mockTouch }));
 
 // The real clamp is used, so the guard is tested rather than mocked away.

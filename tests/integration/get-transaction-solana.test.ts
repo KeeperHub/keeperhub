@@ -51,10 +51,22 @@ vi.mock("@/lib/rpc/provider-factory", () => ({
   isSolanaChain: (chainId: number) => chainId === 101 || chainId === 103,
 }));
 
+vi.mock("@/lib/security/org-role", () => ({
+  getOrgRole: () => Promise.resolve("member"),
+}));
+
 vi.mock("@/lib/db", () => ({
   db: {
     select: () => ({
       from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            limit: () =>
+              Promise.resolve([
+                { userId: "user_1", executionOrganizationId: "org_1" },
+              ]),
+          }),
+        }),
         where: () => ({ limit: () => Promise.resolve([{ userId: "user_1" }]) }),
       }),
     }),
@@ -74,6 +86,7 @@ vi.mock("@/lib/db", () => ({
 vi.mock("@/lib/db/schema", () => ({
   explorerConfigs: { id: "id", chainId: "chainId" },
   workflowExecutions: { id: "id", userId: "userId" },
+  workflows: { id: "id", organizationId: "organizationId" },
 }));
 
 vi.mock("drizzle-orm", () => ({

@@ -78,6 +78,61 @@
   },
   {
     "type": "function",
+    "name": "send",
+    "stateMutability": "payable",
+    "inputs": [
+      {
+        "name": "sendParam",
+        "type": "tuple",
+        "components": [
+          { "name": "dstEid", "type": "uint32" },
+          { "name": "to", "type": "bytes32" },
+          { "name": "amountLD", "type": "uint256" },
+          { "name": "minAmountLD", "type": "uint256" },
+          { "name": "extraOptions", "type": "bytes" },
+          { "name": "composeMsg", "type": "bytes" },
+          { "name": "oftCmd", "type": "bytes" }
+        ]
+      },
+      {
+        "name": "fee",
+        "type": "tuple",
+        "components": [
+          { "name": "nativeFee", "type": "uint256" },
+          { "name": "lzTokenFee", "type": "uint256" }
+        ]
+      },
+      { "name": "refundAddress", "type": "address" }
+    ],
+    "outputs": [
+      {
+        "name": "msgReceipt",
+        "type": "tuple",
+        "components": [
+          { "name": "guid", "type": "bytes32" },
+          { "name": "nonce", "type": "uint64" },
+          {
+            "name": "fee",
+            "type": "tuple",
+            "components": [
+              { "name": "nativeFee", "type": "uint256" },
+              { "name": "lzTokenFee", "type": "uint256" }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "oftReceipt",
+        "type": "tuple",
+        "components": [
+          { "name": "amountSentLD", "type": "uint256" },
+          { "name": "amountReceivedLD", "type": "uint256" }
+        ]
+      }
+    ]
+  },
+  {
+    "type": "function",
     "name": "approvalRequired",
     "stateMutability": "view",
     "inputs": [],
@@ -103,5 +158,17 @@
     "stateMutability": "view",
     "inputs": [{ "name": "eid", "type": "uint32" }],
     "outputs": [{ "name": "", "type": "bytes32" }]
+  },
+  {
+    "type": "event",
+    "name": "OFTSent",
+    "anonymous": false,
+    "inputs": [
+      { "name": "guid", "type": "bytes32", "indexed": true },
+      { "name": "dstEid", "type": "uint32", "indexed": false },
+      { "name": "fromAddress", "type": "address", "indexed": true },
+      { "name": "amountSentLD", "type": "uint256", "indexed": false },
+      { "name": "amountReceivedLD", "type": "uint256", "indexed": false }
+    ]
   }
 ]

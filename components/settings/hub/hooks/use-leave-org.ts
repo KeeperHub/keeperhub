@@ -3,9 +3,11 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
+import { switchAwayFrom } from "@/components/organization/switch-away";
 import { ApiError, api } from "@/lib/api-client";
 import { authClient, useSession } from "@/lib/auth-client";
 import {
+  currentActiveOrgId,
   useOrganization,
   useOrganizations,
 } from "@/lib/hooks/use-organization";
@@ -56,15 +58,34 @@ export function useLeaveOrg(
   // organization from the URL, so lingering here would switch straight back
   // onto the one that was just removed. Replace rather than push, so back does
   // not return to a page whose organization is gone.
-  const afterGone = useCallback(async (): Promise<void> => {
-    router.replace("/settings");
-    const next = organizations.find((o) => o.id !== organizationId);
-    if (next) {
-      await switchOrganization(next.id);
-    }
-    await refetch();
-    router.refresh();
-  }, [organizations, organizationId, switchOrganization, refetch, router]);
+  const afterGone = useCallback(
+    async (done: "Left" | "Deleted", wasActive: boolean): Promise<void> => {
+      router.replace("/settings");
+      if (organizationId) {
+        await switchAwayFrom({
+          removed: { id: organizationId, name: organizationName },
+          wasActive,
+          organizations,
+          done,
+          switchOrganization,
+          // From /settings, whether or not the replace above has landed yet.
+          // Already on its way to /settings, which needs no organization, so
+          // there is no goHome.
+          firstFrom: "/settings",
+        });
+      }
+      await refetch();
+      router.refresh();
+    },
+    [
+      organizations,
+      organizationId,
+      organizationName,
+      switchOrganization,
+      refetch,
+      router,
+    ]
+  );
 
   const leave = useCallback(
     async (newOwnerMemberId?: string): Promise<void> => {
@@ -72,10 +93,13 @@ export function useLeaveOrg(
         return;
       }
       setWorking(true);
+      // As it is before leaving, which clears the active org (and has the
+      // auth client load it again): the settings page's org is made the
+      // active one, but that can still be on its way, or have failed.
+      const wasActive = currentActiveOrgId() === organizationId;
       try {
         await api.organization.leave(organizationId, { newOwnerMemberId });
-        toast.success(`Left ${organizationName}`);
-        await afterGone();
+        await afterGone("Left", wasActive);
       } catch (error) {
         toast.error(
           error instanceof ApiError
@@ -86,7 +110,7 @@ export function useLeaveOrg(
         setWorking(false);
       }
     },
-    [organizationId, organizationName, afterGone]
+    [organizationId, afterGone]
   );
 
   const remove = useCallback(async (): Promise<void> => {
@@ -94,6 +118,9 @@ export function useLeaveOrg(
       return;
     }
     setWorking(true);
+    // As it is before deleting, which clears the active org and has the
+    // auth client load it again, maybe before this reads it.
+    const wasActive = currentActiveOrgId() === organizationId;
     try {
       const { error } = await authClient.organization.delete({
         organizationId,
@@ -102,8 +129,7 @@ export function useLeaveOrg(
         toast.error(error.message || "Could not delete the organization");
         return;
       }
-      toast.success(`Deleted ${organizationName}`);
-      await afterGone();
+      await afterGone("Deleted", wasActive);
     } catch (error) {
       toast.error(
         error instanceof Error
@@ -113,7 +139,7 @@ export function useLeaveOrg(
     } finally {
       setWorking(false);
     }
-  }, [organizationId, organizationName, afterGone]);
+  }, [organizationId, afterGone]);
 
   return {
     canLeave,

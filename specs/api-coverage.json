@@ -30,10 +30,10 @@
     },
     {
       "method": "DELETE",
-      "path": "/api/organizations/{organizationId}/policies/{policyId}",
-      "route_file": "app/api/organizations/[organizationId]/policies/[policyId]/route.ts",
-      "source": "docs/api/policies.md",
-      "line": 318
+      "path": "/api/organizations/{organizationId}/failure-alerts/pause",
+      "route_file": "app/api/organizations/[organizationId]/failure-alerts/pause/route.ts",
+      "source": "docs/api/failure-alerts.md",
+      "line": 84
     },
     {
       "method": "DELETE",
@@ -96,14 +96,14 @@
       "path": "/api/analytics/runs/{executionId}/steps",
       "route_file": "app/api/analytics/runs/[id]/steps/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 281
+      "line": 286
     },
     {
       "method": "GET",
       "path": "/api/analytics/spend-cap",
       "route_file": "app/api/analytics/spend-cap/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 330
+      "line": 335
     },
     {
       "method": "GET",
@@ -111,7 +111,7 @@
       "route_file": "app/api/analytics/stream/route.ts",
       "streaming": true,
       "source": "docs/api/analytics.md",
-      "line": 355
+      "line": 360
     },
     {
       "method": "GET",
@@ -153,7 +153,7 @@
       "path": "/api/execute/{executionId}/status",
       "route_file": "app/api/execute/[executionId]/status/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 1191
+      "line": 1189
     },
     {
       "method": "GET",
@@ -192,24 +192,24 @@
     },
     {
       "method": "GET",
-      "path": "/api/organizations/{organizationId}/policies",
-      "route_file": "app/api/organizations/[organizationId]/policies/route.ts",
-      "source": "docs/api/policies.md",
-      "line": 271
+      "path": "/api/organizations/{organizationId}/failure-alerts",
+      "route_file": "app/api/organizations/[organizationId]/failure-alerts/route.ts",
+      "source": "docs/api/failure-alerts.md",
+      "line": 53
     },
     {
       "method": "GET",
-      "path": "/api/organizations/{organizationId}/policies/catalog",
-      "route_file": "app/api/organizations/[organizationId]/policies/catalog/route.ts",
-      "source": "docs/api/policies.md",
-      "line": 335
+      "path": "/api/organizations/{organizationId}/failure-alerts/history",
+      "route_file": "app/api/organizations/[organizationId]/failure-alerts/history/route.ts",
+      "source": "docs/api/failure-alerts.md",
+      "line": 122
     },
     {
       "method": "GET",
-      "path": "/api/organizations/{organizationId}/policy-decisions",
-      "route_file": "app/api/organizations/[organizationId]/policy-decisions/route.ts",
-      "source": "docs/api/policies.md",
-      "line": 345
+      "path": "/api/organizations/{organizationId}/failure-alerts/preview",
+      "route_file": "app/api/organizations/[organizationId]/failure-alerts/preview/route.ts",
+      "source": "docs/api/failure-alerts.md",
+      "line": 112
     },
     {
       "method": "GET",
@@ -339,6 +339,13 @@
     },
     {
       "method": "GET",
+      "path": "/api/workflows/{workflowId}/failure-alerts",
+      "route_file": "app/api/workflows/[workflowId]/failure-alerts/route.ts",
+      "source": "docs/api/failure-alerts.md",
+      "line": 17
+    },
+    {
+      "method": "GET",
       "path": "/api/workflows/{workflowId}/history",
       "route_file": "app/api/workflows/[workflowId]/history/route.ts",
       "source": "docs/api/index.md",
@@ -350,13 +357,6 @@
       "route_file": "app/api/address-book/[entryId]/route.ts",
       "source": "docs/api/user.md",
       "line": 251
-    },
-    {
-      "method": "PATCH",
-      "path": "/api/organizations/{organizationId}/policies/{policyId}",
-      "route_file": "app/api/organizations/[organizationId]/policies/[policyId]/route.ts",
-      "source": "docs/api/policies.md",
-      "line": 317
     },
     {
       "method": "PATCH",
@@ -426,28 +426,28 @@
       "path": "/api/execute/check-and-execute",
       "route_file": "app/api/execute/check-and-execute/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 693
+      "line": 691
     },
     {
       "method": "POST",
       "path": "/api/execute/contract-call",
       "route_file": "app/api/execute/contract-call/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 490
+      "line": 487
     },
     {
       "method": "POST",
       "path": "/api/execute/gas-top-up",
       "route_file": "app/api/execute/gas-top-up/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 784
+      "line": 782
     },
     {
       "method": "POST",
       "path": "/api/execute/transfer",
       "route_file": "app/api/execute/transfer/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 422
+      "line": 419
     },
     {
       "method": "POST",
@@ -486,24 +486,17 @@
     },
     {
       "method": "POST",
+      "path": "/api/organizations/{organizationId}/failure-alerts/test",
+      "route_file": "app/api/organizations/[organizationId]/failure-alerts/test/route.ts",
+      "source": "docs/api/failure-alerts.md",
+      "line": 92
+    },
+    {
+      "method": "POST",
       "path": "/api/organizations/{organizationId}/leave",
       "route_file": "app/api/organizations/[organizationId]/leave/route.ts",
       "source": "docs/api/organizations.md",
       "line": 13
-    },
-    {
-      "method": "POST",
-      "path": "/api/organizations/{organizationId}/policies",
-      "route_file": "app/api/organizations/[organizationId]/policies/route.ts",
-      "source": "docs/api/policies.md",
-      "line": 296
-    },
-    {
-      "method": "POST",
-      "path": "/api/organizations/{organizationId}/policies/simulate",
-      "route_file": "app/api/organizations/[organizationId]/policies/simulate/route.ts",
-      "source": "docs/api/policies.md",
-      "line": 324
     },
     {
       "method": "POST",
@@ -601,7 +594,7 @@
       "path": "/api/workflows/{workflowId}/simulate",
       "route_file": "app/api/workflows/[workflowId]/simulate/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 1387
+      "line": 1385
     },
     {
       "method": "POST",
@@ -619,10 +612,31 @@
     },
     {
       "method": "PUT",
+      "path": "/api/organizations/{organizationId}/failure-alerts",
+      "route_file": "app/api/organizations/[organizationId]/failure-alerts/route.ts",
+      "source": "docs/api/failure-alerts.md",
+      "line": 61
+    },
+    {
+      "method": "PUT",
+      "path": "/api/organizations/{organizationId}/failure-alerts/pause",
+      "route_file": "app/api/organizations/[organizationId]/failure-alerts/pause/route.ts",
+      "source": "docs/api/failure-alerts.md",
+      "line": 83
+    },
+    {
+      "method": "PUT",
       "path": "/api/user/rpc-preferences/{chainId}",
       "route_file": "app/api/user/rpc-preferences/[chainId]/route.ts",
       "source": "docs/api/user.md",
       "line": 135
+    },
+    {
+      "method": "PUT",
+      "path": "/api/workflows/{workflowId}/failure-alerts",
+      "route_file": "app/api/workflows/[workflowId]/failure-alerts/route.ts",
+      "source": "docs/api/failure-alerts.md",
+      "line": 29
     },
     {
       "method": "PUT",

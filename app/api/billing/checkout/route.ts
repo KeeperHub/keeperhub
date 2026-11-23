@@ -1,7 +1,11 @@
 import { eq, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
-import { PAID_PLANS, VALID_INTERVALS } from "@/lib/billing/constants";
+import {
+  PAID_PLANS,
+  SUBSCRIPTION_STATUS,
+  VALID_INTERVALS,
+} from "@/lib/billing/constants";
 import { isBillingEnabled } from "@/lib/billing/feature-flag";
 import type { PlanName, TierKey } from "@/lib/billing/plans";
 import {
@@ -58,7 +62,7 @@ async function ensureProviderCustomer(
       organizationId: activeOrgId,
       providerCustomerId: customerId,
       plan: "free",
-      status: "active",
+      status: SUBSCRIPTION_STATUS.ACTIVE,
     })
     .onConflictDoUpdate({
       target: organizationSubscriptions.organizationId,
@@ -235,7 +239,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (
       sub &&
       existingSubId &&
-      sub.status !== "canceled" &&
+      sub.status !== SUBSCRIPTION_STATUS.CANCELED &&
       sub.plan !== "free"
     ) {
       if (sub.providerPriceId === priceId) {
@@ -250,7 +254,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       // Manage-trial modal sends trial:true to keep the trial, and only when the
       // target stays on the trial plan/tier (Pro 25k).
       const endTrial =
-        sub.status === "trialing" && !(trial && isTrialPlan(plan, tier));
+        sub.status === SUBSCRIPTION_STATUS.TRIALING &&
+        !(trial && isTrialPlan(plan, tier));
 
       return await handleExistingSubscription(
         provider,
@@ -261,6 +266,13 @@ export async function POST(request: Request): Promise<NextResponse> {
         { userId, request },
         endTrial
       );
+    }
+
+    // An org dropped to free over an unpaid charge still has a live
+    // subscription that the provider keeps retrying. End it before opening a
+    // new one, so a late retry cannot charge the card for a second plan.
+    if (sub && existingSubId && sub.status !== SUBSCRIPTION_STATUS.CANCELED) {
+      await provider.cancelSubscriptionNow(existingSubId);
     }
 
     const providerCustomerId = await ensureProviderCustomer(

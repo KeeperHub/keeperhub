@@ -6,6 +6,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { ConnectAuthPanel } from "@/components/auth/connect-auth-panel";
 import { WalletPicker } from "@/components/auth/wallet-picker";
 import { Button } from "@/components/ui/button";
+import { useAfterChange } from "@/hooks/use-after-change";
 import { resolvePostAuthDestination } from "@/lib/post-auth-destination";
 
 /**
@@ -17,13 +18,18 @@ import { resolvePostAuthDestination } from "@/lib/post-auth-destination";
  * takes over.
  */
 export function SignInChoices({
+  onViewChange,
   redirectTo,
 }: {
+  // Called whenever what is shown changes: the wallet picker in or out, or a
+  // view of the email panel.
+  onViewChange?: () => void;
   // Where to land after a successful sign-in; forwarded to the email panel and
   // the wallet path. Defaults to the resolved post-auth destination.
   redirectTo?: string;
 } = {}): React.ReactElement {
   const [showWallet, setShowWallet] = useState(false);
+  useAfterChange(showWallet, onViewChange);
 
   const contentRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState<number | "auto">("auto");
@@ -87,6 +93,7 @@ export function SignInChoices({
             >
               <ConnectAuthPanel
                 hideChooserHeader
+                onViewChange={onViewChange}
                 onWalletClick={() => setShowWallet(true)}
                 redirectTo={redirectTo}
               />

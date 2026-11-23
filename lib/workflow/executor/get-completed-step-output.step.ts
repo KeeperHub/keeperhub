@@ -36,6 +36,31 @@ async function queryCompletedSuccessRow(
   return { outputRaw: row.outputRaw as unknown };
 }
 
+/**
+ * True while the node still has a 'running' log row, i.e. an earlier attempt
+ * of the step is still executing and its outcome is not yet known.
+ */
+async function queryStepAttemptInFlight(
+  executionId: string,
+  nodeId: string
+): Promise<boolean> {
+  const row = await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL statement_timeout = '2s'`);
+    return tx.query.workflowExecutionLogs.findFirst({
+      where: and(
+        eq(workflowExecutionLogs.executionId, executionId),
+        eq(workflowExecutionLogs.nodeId, nodeId),
+        eq(workflowExecutionLogs.status, "running"),
+        isNull(workflowExecutionLogs.iterationIndex),
+        isNull(workflowExecutionLogs.forEachNodeId)
+      ),
+      columns: { id: true },
+    });
+  });
+
+  return row !== undefined;
+}
+
 // biome-ignore lint/suspicious/useAwait: workflow "use step" requires async
 export async function fetchCompletedStepOutputStep(
   executionId: string,
@@ -98,19 +123,30 @@ fetchCompletedStepOutputAtIterationStep.maxRetries = 1;
  * committed. The success then lands ~0.3-0.5s later; a one-shot read misses
  * it. Polling here lets the catch handler reconcile instead of nullifying the
  * node and racing convergence ahead with no data.
+ *
+ * The same throw fires when the queue delivers a step twice while the first
+ * attempt is still executing. That attempt's success lands only when it
+ * finishes, so while the node still has a 'running' row the poll keeps waiting
+ * up to `inFlightTimeoutMs`.
  */
 // biome-ignore lint/suspicious/useAwait: workflow "use step" requires async
 export async function awaitCompletedStepOutputStep(
   executionId: string,
   nodeId: string,
   timeoutMs: number,
-  intervalMs: number
+  intervalMs: number,
+  inFlightTimeoutMs?: number
 ): Promise<{ outputRaw: unknown } | null> {
   "use step";
 
   return pollForCompletedOutput(
     () => queryCompletedSuccessRow(executionId, nodeId),
-    { timeoutMs, intervalMs }
+    {
+      timeoutMs,
+      intervalMs,
+      extendWhile: () => queryStepAttemptInFlight(executionId, nodeId),
+      maxTimeoutMs: inFlightTimeoutMs,
+    }
   );
 }
 

@@ -21,8 +21,6 @@ RUN npm install -g pnpm@10
 # Copy package files
 COPY package.json pnpm-lock.yaml* ./
 COPY .npmrc* ./
-# pnpm resolves pnpm.patchedDependencies paths from the workspace root
-COPY patches/ ./patches/
 
 # Install dependencies with cache mount for faster rebuilds
 RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
@@ -39,7 +37,6 @@ WORKDIR /app
 RUN npm install -g pnpm@10
 COPY --link --from=deps /app/node_modules ./node_modules
 COPY package.json pnpm-lock.yaml* .npmrc* ./
-COPY patches/ ./patches/
 ENV HOSTNAME=0.0.0.0
 EXPOSE 3000
 CMD ["pnpm", "dev", "--hostname", "0.0.0.0"]

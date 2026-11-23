@@ -27,6 +27,7 @@ import {
 } from "@/lib/mcp/validate-workflow-web3";
 import { parsePythTriggerConfig } from "@/lib/pyth/price-trigger";
 import { findPythTriggerNode } from "@/lib/pyth/trigger-config";
+import { findStoredRef } from "@/lib/workflow/template-ref";
 
 export type ValidationIssue = {
   code: ValidationErrorCode | ValidationWarningCode;
@@ -317,15 +318,11 @@ function runOutputMappingCheck(
   }
 }
 
-// Captures the nodeId from a `{{@nodeId:Label.field}}` template reference.
-// Mirrors TEMPLATE_REF_PATTERN in lib/utils/template.ts.
-const OUTPUT_MAPPING_TEMPLATE_RE = /\{\{@([^:]+):[^}]+\}\}/;
-
 function extractNodeIdReference(value: unknown): string | null {
   if (typeof value === "string") {
-    const templateMatch = value.match(OUTPUT_MAPPING_TEMPLATE_RE);
-    if (templateMatch) {
-      return templateMatch[1].trim();
+    const ref = findStoredRef(value);
+    if (ref) {
+      return ref.nodeId.trim();
     }
     return value;
   }

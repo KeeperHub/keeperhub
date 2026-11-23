@@ -10,6 +10,7 @@ import type {
   WorkflowExecutionStatus,
 } from "@/lib/errors/execution-status";
 import type { Page } from "@/lib/pagination";
+import { refetchSidebarIfTriggerChanged } from "@/lib/refetch-sidebar";
 import type { ActorCredential } from "@/lib/security/credential-label";
 import type { HeldPaymentView } from "@/lib/tempo/held-payment-view";
 import type { VoteDirection } from "@/lib/workflow/editor/votes";
@@ -54,6 +55,8 @@ export type SavedWorkflow = WorkflowData & {
   createdAt: string;
   updatedAt: string;
   isOwner?: boolean;
+  // Full read access (org member), true for viewers who cannot edit.
+  canRead?: boolean;
   featured?: boolean;
   projectId?: string | null;
   tagId?: string | null;
@@ -134,6 +137,8 @@ export type ExecutionSummary = {
   // The workflow_history version this run executed, resolved from the
   // run's content hash. Null when no matching version exists yet.
   ranVersion: number | null;
+  /** Refusals folded into a skipped run's hourly row; null otherwise. */
+  refusals: number | null;
 };
 
 export type ExecutionSummaryPage = {
@@ -152,12 +157,35 @@ export type VoteResponse = {
 // API error class
 export class ApiError extends Error {
   status: number;
+  // The response's own `message`, when it sent one (the `error` is a code).
+  detail?: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, detail?: string) {
     super(message);
     this.status = status;
     this.name = "ApiError";
+    this.detail = detail;
   }
+}
+
+// One toast for save failures, held long enough to read the reason; a later
+// failed autosave replaces it instead of stacking another.
+export const WORKFLOW_SAVE_ERROR_TOAST = {
+  id: "workflow-save-error",
+  duration: 10_000,
+} as const;
+
+// A refused workflow save says which node and setting to fix; show that
+// rather than a generic "try again".
+export function workflowSaveErrorMessage(
+  error: unknown,
+  fallback: string
+): string {
+  return error instanceof ApiError &&
+    error.message === "INVALID_ACTION_CONFIG" &&
+    error.detail
+    ? error.detail
+    : fallback;
 }
 
 // Helper function to make API calls
@@ -174,7 +202,11 @@ async function apiCall<T>(endpoint: string, options?: RequestInit): Promise<T> {
     const error = await response
       .json()
       .catch(() => ({ error: "Unknown error" }));
-    throw new ApiError(response.status, error.error || "Request failed");
+    throw new ApiError(
+      response.status,
+      error.error || "Request failed",
+      typeof error.message === "string" ? error.message : undefined
+    );
   }
 
   return response.json();
@@ -754,12 +786,22 @@ export const workflowApi = {
       body: JSON.stringify(workflow),
     }),
 
-  // Update a workflow
-  update: (id: string, workflow: Partial<WorkflowData>) =>
-    apiCall<SavedWorkflow>(`/api/workflows/${id}`, {
+  // Update a workflow. The editor's saves of the nodes (autosave, Save, AI
+  // edits, version restore) come through here, so this is where the sidebar
+  // learns that a workflow's trigger changed.
+  update: async (
+    id: string,
+    workflow: Partial<WorkflowData>
+  ): Promise<SavedWorkflow> => {
+    const saved = await apiCall<SavedWorkflow>(`/api/workflows/${id}`, {
       method: "PATCH",
       body: JSON.stringify(workflow),
-    }),
+    });
+    if (workflow.nodes) {
+      refetchSidebarIfTriggerChanged(id, workflow.nodes);
+    }
+    return saved;
+  },
 
   // Delete a workflow
   delete: (id: string, options?: { force?: boolean }) =>

@@ -17,6 +17,21 @@ export const BILLING_ALERTS = {
   PAYMENT_FAILED: "payment_failed",
 } as const;
 
+/** Values of organization_subscriptions.status, mirrored from the provider. */
+export const SUBSCRIPTION_STATUS = {
+  ACTIVE: "active",
+  TRIALING: "trialing",
+  PAST_DUE: "past_due",
+  CANCELED: "canceled",
+  UNPAID: "unpaid",
+  PAUSED: "paused",
+  INCOMPLETE: "incomplete",
+  INCOMPLETE_EXPIRED: "incomplete_expired",
+} as const;
+
+export type SubscriptionStatus =
+  (typeof SUBSCRIPTION_STATUS)[keyof typeof SUBSCRIPTION_STATUS];
+
 export const PAID_PLANS = new Set<string>(["pro", "business", "enterprise"]);
 export const VALID_INTERVALS = new Set<string>(["monthly", "yearly"]);
 

@@ -19,7 +19,7 @@ type AddressActionsProps = {
 };
 
 const iconClass =
-  "inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)]";
+  "inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:hub-focus-ring focus-visible:ring-offset-background";
 
 /**
  * Subtle explorer / copy / add-to-address-book actions for a read-only address

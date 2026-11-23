@@ -23,7 +23,7 @@ export default async function WelcomePage(): Promise<React.ReactElement> {
     // crawler can see is the cloaking this work set out not to do.
     // components/activity/activity-page.tsx solves the same problem the same way.
     <div className="h-dvh overflow-y-auto">
-      <main className="flex min-h-dvh items-center justify-center bg-background p-6">
+      <main className="flex min-h-dvh items-center justify-center bg-background p-4 sm:p-6">
         <WelcomeAuth />
       </main>
       <SiteFooter />

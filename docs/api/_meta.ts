@@ -6,6 +6,7 @@ export default {
   executions: "Executions",
   "direct-execution": "Direct Execution",
   analytics: "Analytics",
+  "failure-alerts": "Failure Alerts",
   integrations: "Integrations",
   projects: "Projects",
   tags: "Tags",

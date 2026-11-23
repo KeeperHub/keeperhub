@@ -1,16 +1,22 @@
 import { buildEdgesBySourceHandle } from "@/lib/workflow/editor/edge-handle-utils";
+import { mentionsRegex } from "@/lib/workflow/nodes/condition/regex-calls";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
 import { isSafeConditionExpression } from "@/lib/workflow/nodes/condition/safe-eval";
 import { DEFAULT_HTTP_METHOD } from "@/lib/workflow/nodes/http-request/constants";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
-import { splitTemplateRef } from "@/lib/workflow/template-ref";
+import {
+  replaceTemplateTokens,
+  splitTemplateRef,
+} from "@/lib/workflow/template-ref";
 import { findActionById, flattenConfigFields } from "@/plugins/registry";
 import {
   analyzeNodeUsage,
   buildAccessPath,
+  commentSafe,
   getStepInfo,
+  REGEX_NOT_EXPORTED,
+  readsTheSameInJs,
   removeInvisibleChars,
-  TEMPLATE_PATTERN,
   toFriendlyVarName,
   toTypeScriptLiteral,
 } from "./shared";
@@ -173,6 +179,36 @@ export function generateWorkflowCode(
     return `\${${varName}${accessPath}}`;
   }
 
+  // The if (...) test for a Condition node, or an error in its place.
+  function exportedCondition(
+    condition: string | undefined,
+    nodeName: string
+  ): string {
+    const name = commentSafe(nodeName);
+    if (!condition) {
+      const errorMsg = `Condition node "${name}" has no condition expression configured`;
+      validationErrors.push(errorMsg);
+      return `false /* ERROR: ${errorMsg} */`;
+    }
+    if (mentionsRegex(condition)) {
+      validationErrors.push(
+        `Condition node "${name}" uses matchesRegex, which exported code does not support`
+      );
+      return REGEX_NOT_EXPORTED;
+    }
+    // The code as written is checked, so nothing in it can run but the
+    // condition's own grammar.
+    const converted = convertConditionToJS(condition);
+    if (
+      !(isSafeConditionExpression(converted) && readsTheSameInJs(converted))
+    ) {
+      const errorMsg = `Condition node "${name}" contains unsupported syntax`;
+      validationErrors.push(errorMsg);
+      return `false /* ERROR: ${errorMsg} */`;
+    }
+    return converted;
+  }
+
   // Helper to process @nodeId:DisplayName.field format for JavaScript expressions (not template strings)
   function processAtFormatForExpression(
     trimmed: string,
@@ -197,7 +233,7 @@ export function generateWorkflowCode(
       return varName;
     }
 
-    const accessPath = buildAccessPath(fieldPath);
+    const accessPath = buildAccessPath(fieldPath, { writtenAsIs: true });
     return `${varName}${accessPath}`;
   }
 
@@ -220,7 +256,7 @@ export function generateWorkflowCode(
       return varName;
     }
 
-    const accessPath = buildAccessPath(fieldPath);
+    const accessPath = buildAccessPath(fieldPath, { writtenAsIs: true });
     return `${varName}${accessPath}`;
   }
 
@@ -230,8 +266,9 @@ export function generateWorkflowCode(
       return template;
     }
 
-    return template.replace(TEMPLATE_PATTERN, (match, expression) => {
-      const trimmed = expression.trim();
+    return replaceTemplateTokens(template, ({ body }) => {
+      const match = `{{${body}}}`;
+      const trimmed = body.trim();
 
       if (trimmed.startsWith("@")) {
         return processAtFormat(trimmed, match);
@@ -255,8 +292,9 @@ export function generateWorkflowCode(
     const cleaned = removeInvisibleChars(condition);
 
     // Then convert template references
-    const converted = cleaned.replace(TEMPLATE_PATTERN, (match, expression) => {
-      const trimmed = expression.trim();
+    const converted = replaceTemplateTokens(cleaned, ({ body }) => {
+      const match = `{{${body}}}`;
+      const trimmed = body.trim();
 
       if (trimmed.startsWith("@")) {
         return processAtFormatForExpression(trimmed, match);
@@ -740,10 +778,10 @@ export function generateWorkflowCode(
 
     // Use label if available, otherwise fall back to action type
     const actionLabel = node.data.label || actionType || "Unknown Action";
-    const lines: string[] = [`${indent}// Action: ${actionLabel}`];
+    const lines: string[] = [`${indent}// Action: ${commentSafe(actionLabel)}`];
 
     if (node.data.description) {
-      lines.push(`${indent}// ${node.data.description}`);
+      lines.push(`${indent}// ${commentSafe(node.data.description)}`);
     }
 
     // Check if this node's output is used
@@ -849,14 +887,18 @@ export function generateWorkflowCode(
         lines.push(...wrapActionCall(pluginCode));
       } else if (outputIsUsed) {
         // Unknown action type - generate placeholder
-        lines.push(`${indent}// TODO: Implement action type "${actionType}"`);
         lines.push(
-          `${indent}const ${varName} = { status: 'pending', actionType: "${actionType}" };`
+          `${indent}// TODO: Implement action type "${commentSafe(actionType)}"`
+        );
+        lines.push(
+          `${indent}const ${varName} = { status: 'pending', actionType: ${JSON.stringify(actionType)} };`
         );
       } else {
-        lines.push(`${indent}// TODO: Implement action type "${actionType}"`);
         lines.push(
-          `${indent}void ({ status: 'pending', actionType: "${actionType}" });`
+          `${indent}// TODO: Implement action type "${commentSafe(actionType)}"`
+        );
+        lines.push(
+          `${indent}void ({ status: 'pending', actionType: ${JSON.stringify(actionType)} });`
         );
       }
     }
@@ -895,10 +937,12 @@ export function generateWorkflowCode(
     nodeId: string,
     indent: string
   ): string[] {
-    const lines: string[] = [`${indent}// Condition: ${node.data.label}`];
+    const lines: string[] = [
+      `${indent}// Condition: ${commentSafe(node.data.label ?? "")}`,
+    ];
 
     if (node.data.description) {
-      lines.push(`${indent}// ${node.data.description}`);
+      lines.push(`${indent}// ${commentSafe(node.data.description)}`);
     }
 
     const condition = resolveConditionExpression(node.data.config);
@@ -909,22 +953,10 @@ export function generateWorkflowCode(
     } = resolveConditionTargets(nodeId);
 
     if (effectiveTrueTargets.length > 0 || effectiveFalseTargets.length > 0) {
-      let convertedCondition: string;
-      if (condition) {
-        convertedCondition = convertConditionToJS(condition);
-        const isDisplayableCondition =
-          convertedCondition.includes("{{") ||
-          isSafeConditionExpression(convertedCondition);
-        if (!isDisplayableCondition) {
-          const errorMsg = `Condition node "${node.data.label || node.id}" contains unsupported syntax`;
-          validationErrors.push(errorMsg);
-          convertedCondition = `false /* ERROR: ${errorMsg} */`;
-        }
-      } else {
-        const errorMsg = `Condition node "${node.data.label || node.id}" has no condition expression configured`;
-        validationErrors.push(errorMsg);
-        convertedCondition = `false /* ERROR: ${errorMsg} */`;
-      }
+      const convertedCondition = exportedCondition(
+        condition,
+        node.data.label || node.id
+      );
 
       lines.push(`${indent}if (${convertedCondition}) {`);
       if (effectiveTrueTargets.length > 0) {
@@ -1029,7 +1061,9 @@ export function generateWorkflowCode(
     indent: string,
     branchVisited: Set<string>
   ): string[] {
-    const lines: string[] = [`${indent}// Condition: ${node.data.label}`];
+    const lines: string[] = [
+      `${indent}// Condition: ${commentSafe(node.data.label ?? "")}`,
+    ];
     const condition = resolveConditionExpression(node.data.config);
 
     const {
@@ -1038,22 +1072,10 @@ export function generateWorkflowCode(
     } = resolveConditionTargets(nodeId);
 
     if (effectiveTrueTargets.length > 0 || effectiveFalseTargets.length > 0) {
-      let convertedCondition: string;
-      if (condition) {
-        convertedCondition = convertConditionToJS(condition);
-        const isDisplayableCondition =
-          convertedCondition.includes("{{") ||
-          isSafeConditionExpression(convertedCondition);
-        if (!isDisplayableCondition) {
-          const errorMsg = `Condition node "${node.data.label || nodeId}" contains unsupported syntax`;
-          validationErrors.push(errorMsg);
-          convertedCondition = `false /* ERROR: ${errorMsg} */`;
-        }
-      } else {
-        const errorMsg = `Condition node "${node.data.label || nodeId}" has no condition expression configured`;
-        validationErrors.push(errorMsg);
-        convertedCondition = `false /* ERROR: ${errorMsg} */`;
-      }
+      const convertedCondition = exportedCondition(
+        condition,
+        node.data.label || nodeId
+      );
 
       lines.push(`${indent}if (${convertedCondition}) {`);
       for (const targetId of effectiveTrueTargets) {
@@ -1091,7 +1113,7 @@ export function generateWorkflowCode(
       `import { ${stepInfo.functionName} } from '${stepInfo.importPath}';`
     );
 
-    const lines: string[] = [`${indent}// ${actionLabel}`];
+    const lines: string[] = [`${indent}// ${commentSafe(actionLabel)}`];
     if (configParams.length > 0) {
       lines.push(`${indent}await ${stepInfo.functionName}({`);
       lines.push(...configParams);
@@ -1313,7 +1335,7 @@ export function generateWorkflowCode(
   // Generate code for each node in the workflow
   function generateNodeCode(nodeId: string, indent = "  "): string[] {
     if (visited.has(nodeId)) {
-      return [`${indent}// Already processed: ${nodeId}`];
+      return [`${indent}// Already processed: ${commentSafe(nodeId)}`];
     }
 
     visited.add(nodeId);
@@ -1354,7 +1376,9 @@ export function generateWorkflowCode(
       }
 
       default:
-        lines.push(`${indent}// Unknown node type: ${node.data.type}`);
+        lines.push(
+          `${indent}// Unknown node type: ${commentSafe(String(node.data.type))}`
+        );
         break;
     }
 

@@ -553,32 +553,42 @@ jobs:
             echo "::warning::CHAIN_RPC_CONFIG is empty for this job; the fork will use the public upstream"
           fi
           case "${{ matrix.chain_id }}" in
-            8453) UPSTREAM="${ANVIL_FORK_BASE_URL:-${ARCHIVE_FROM_CONFIG:-${{ matrix.default_upstream }}}}" ;;
-            42161) UPSTREAM="${ANVIL_FORK_ARBITRUM_URL:-${ARCHIVE_FROM_CONFIG:-${{ matrix.default_upstream }}}}" ;;
+            8453) SECRET_URL="$ANVIL_FORK_BASE_URL" ;;
+            42161) SECRET_URL="$ANVIL_FORK_ARBITRUM_URL" ;;
             *) echo "unknown chain ${{ matrix.chain_id }}"; exit 1 ;;
           esac
-          # Log which source won, host only - these URLs carry provider API
-          # keys. Without this the job gives no way to tell a credentialed
-          # upstream from the flaky public fallback.
-          if [ -n "$ANVIL_FORK_BASE_URL" ] || [ -n "$ANVIL_FORK_ARBITRUM_URL" ]; then
-            UPSTREAM_SOURCE="ANVIL_FORK_*_URL secret"
-          elif [ -n "$ARCHIVE_FROM_CONFIG" ]; then
-            UPSTREAM_SOURCE="CHAIN_RPC_CONFIG"
-          else
-            UPSTREAM_SOURCE="public default (matrix.default_upstream)"
+          # Take the first upstream that answers, so a provider rejecting
+          # requests (exhausted plan, revoked key) falls through to the next.
+          # Log host only - these URLs carry provider API keys.
+          UPSTREAM=""
+          HEAD=""
+          for CANDIDATE in \
+            "ANVIL_FORK_*_URL secret|$SECRET_URL" \
+            "CHAIN_RPC_CONFIG|$ARCHIVE_FROM_CONFIG" \
+            "public default (matrix.default_upstream)|${{ matrix.default_upstream }}"; do
+            SOURCE="${CANDIDATE%%|*}"
+            URL="${CANDIDATE#*|}"
+            [ -z "$URL" ] && continue
+            HOST=$(printf '%s' "$URL" | sed -E 's#^[a-z]+://([^/]+).*#\1#')
+            HEAD=$(curl -sf --max-time 15 -X POST -H 'Content-Type: application/json' \
+              --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
+              "$URL" | grep -oE '"result":"0x[0-9a-f]+"' | cut -d'"' -f4) || true
+            if [ -n "$HEAD" ]; then
+              UPSTREAM="$URL"
+              echo "fork upstream source: ${SOURCE} (host: ${HOST})"
+              break
+            fi
+            echo "::warning::${SOURCE} upstream (host: ${HOST}) did not answer eth_blockNumber; trying the next one"
+          done
+          if [ -z "$UPSTREAM" ]; then
+            echo "no fork upstream answered eth_blockNumber"
+            exit 1
           fi
-          echo "fork upstream source: ${UPSTREAM_SOURCE} (host: $(printf '%s' "$UPSTREAM" | sed -E 's#^[a-z]+://([^/]+).*#\1#'))"
           # Pin a few blocks behind head so a node behind a load-balanced
           # public upstream already has the block (bash arithmetic parses the
           # 0x head). See scripts/protocol-local.sh start_fork.
-          HEAD=$(curl -sf -X POST -H 'Content-Type: application/json' \
-            --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
-            "$UPSTREAM" | grep -oE '"result":"0x[0-9a-f]+"' | cut -d'"' -f4) || true
-          PIN_ARGS=""
-          if [ -n "$HEAD" ]; then
-            PIN=$((HEAD - 12))
-            PIN_ARGS="--fork-block-number $PIN"
-          fi
+          PIN=$((HEAD - 12))
+          PIN_ARGS="--fork-block-number $PIN"
           docker run -d --name keeperhub-test-anvil-fork-${{ matrix.name }} -p 8545:8545 \
             --entrypoint anvil "$FOUNDRY_IMAGE" \
             --host 0.0.0.0 --fork-url "$UPSTREAM" $PIN_ARGS \
@@ -641,7 +651,7 @@ jobs:
           --health-retries 5
 
       localstack:
-        image: localstack/localstack:latest
+        image: localstack/localstack:4.14.0
         ports:
           - 4566:4566
         env:
@@ -939,7 +949,7 @@ jobs:
           --health-retries 5
 
       localstack:
-        image: localstack/localstack:latest
+        image: localstack/localstack:4.14.0
         ports:
           - 4566:4566
         env:

@@ -19,3 +19,13 @@ export function isWalletEmail(email: string | null | undefined): boolean {
     email.toLowerCase().endsWith(`@${WALLET_EMAIL_DOMAIN.toLowerCase()}`)
   );
 }
+
+/**
+ * The wallet address a wallet account's synthetic email carries, as stored
+ * (not checksummed), or null for any other email.
+ */
+export function walletAddressFromEmail(
+  email: string | null | undefined
+): string | null {
+  return email && isWalletEmail(email) ? email.split("@")[0] : null;
+}

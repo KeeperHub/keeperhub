@@ -26,8 +26,7 @@ Supported chains: Base (8453). Read-only actions work without credentials. Write
 | Swap Exact Tokens | Write | Wallet | Swap exact input tokens for output tokens via routes |
 | Add Liquidity | Write | Wallet | Add liquidity to a pool and receive LP tokens |
 | Remove Liquidity | Write | Wallet | Remove liquidity from a pool by burning LP tokens |
-| Vote on Gauges | Write | Wallet | Cast votes for pool gauges using veAERO |
-| Reset Votes | Write | Wallet | Reset all gauge votes for a veNFT |
+| Reset Votes | Write | Wallet | Reset all gauge votes for a veNFT, required before withdrawing it |
 | Create veAERO Lock | Write | Wallet | Lock AERO tokens to create a veNFT |
 | Increase Lock Amount | Write | Wallet | Add more AERO to an existing veNFT lock |
 | Increase Lock Duration | Write | Wallet | Extend lock duration of a veNFT |
@@ -43,9 +42,7 @@ Supported chains: Base (8453). Read-only actions work without credentials. Write
 | Pool Reserves Synced | Pool | Fires when reserves update after any pool operation |
 | veAERO Deposit | VotingEscrow | Fires when AERO tokens are locked or added to a veNFT |
 | veAERO Withdrawal | VotingEscrow | Fires when AERO is withdrawn from an expired lock |
-| Gauge Vote Cast | Voter | Fires when a veNFT holder casts gauge votes |
 | Gauge Created | Voter | Fires when a new gauge is created for a pool |
-| Reward Distributed | Voter | Fires when AERO emissions are distributed to a gauge |
 
 ---
 
@@ -317,27 +314,9 @@ Remove liquidity from an Aerodrome pool by burning LP tokens.
 
 ---
 
-## Vote on Gauges
-
-Cast votes for pool gauges using veAERO voting power. Votes determine emission distribution to liquidity pools.
-
-**Inputs:**
-
-| Input | Type | Description |
-|-------|------|-------------|
-| _tokenId | uint256 | veNFT Token ID |
-| _poolVote | address[] | Pool Addresses (comma-separated) |
-| _weights | uint256[] | Vote Weights (comma-separated) |
-
-**Outputs:** `success`, `transactionHash`, `transactionLink`, `error`
-
-**When to use:** Participate in gauge voting, automate weekly vote rebalancing, optimize emission allocation.
-
----
-
 ## Reset Votes
 
-Reset all gauge votes for a veNFT. Required before changing vote allocations in a new epoch.
+Reset all gauge votes for a veNFT. Required before a voted veNFT can be withdrawn.
 
 **Inputs:**
 
@@ -347,7 +326,7 @@ Reset all gauge votes for a veNFT. Required before changing vote allocations in 
 
 **Outputs:** `success`, `transactionHash`, `transactionLink`, `error`
 
-**When to use:** Clear previous epoch votes before re-voting, automate weekly vote reset + re-vote workflows.
+**When to use:** Clear a veNFT's votes so its lock can be withdrawn after it expires.
 
 ---
 
@@ -476,12 +455,6 @@ Monitor veAERO voting power decay and send an email reminder when it drops below
 `Schedule (daily) -> Aerodrome: Get Lock Details -> Code: Check Expiry -> Condition (expiry within 7 days) -> Aerodrome: Increase Lock Duration`
 
 Check veNFT lock expiration daily and auto-extend the lock when it's within 7 days of expiring.
-
-### Weekly Vote Reset and Re-Vote
-
-`Schedule (weekly, epoch flip) -> Aerodrome: Reset Votes -> Aerodrome: Vote on Gauges`
-
-Automate the weekly voting cycle: reset previous epoch votes and cast new votes for target gauge pools.
 
 ### Reward Harvesting and Compounding
 

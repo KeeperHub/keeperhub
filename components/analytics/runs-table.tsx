@@ -2,6 +2,7 @@
 
 import { useAtom, useAtomValue } from "jotai";
 import {
+  Bell,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -29,6 +30,7 @@ import {
 import { STATUS_DISPLAY } from "@/lib/analytics/status-display";
 import type {
   NormalizedStatus,
+  RunAlert,
   StepLog,
   UnifiedRun,
 } from "@/lib/analytics/types";
@@ -46,6 +48,7 @@ import {
   analyticsSourceFiltersAtom,
   analyticsStatusFiltersAtom,
 } from "@/lib/atoms/analytics";
+import { authClient } from "@/lib/auth-client";
 import { getCustomerRunErrorMessage } from "@/lib/errors/customer-message";
 import type { ChainDisplay } from "@/lib/hooks/use-chain-display";
 import {
@@ -54,6 +57,7 @@ import {
   useChainDisplay,
 } from "@/lib/hooks/use-chain-display";
 import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
+import { CHANNEL_LABEL } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import { ProjectDrawer } from "./project-drawer";
 
@@ -277,6 +281,50 @@ function StatusBadge({ status }: { status: NormalizedStatus }): ReactNode {
       </TooltipTrigger>
       <TooltipContent className="max-w-xs">{tooltip}</TooltipContent>
     </Tooltip>
+  );
+}
+
+const ALERT_WORD: Record<RunAlert["state"], string> = {
+  delivered: "Alert sent",
+  sending: "Alert sending",
+  failed: "Alert not delivered",
+};
+
+/** The alert this run set off; opens Sent alerts for its workflow. */
+function AlertSentChip({
+  alert,
+  workflowId,
+}: {
+  alert: RunAlert;
+  workflowId: string;
+}): ReactNode {
+  const { data: activeOrg } = authClient.useActiveOrganization();
+  if (!activeOrg?.id) {
+    return null;
+  }
+  const time = new Date(alert.sentAt).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const methods = alert.channels
+    .map((c) => CHANNEL_LABEL[c as keyof typeof CHANNEL_LABEL] ?? c)
+    .join(", ");
+  const query = new URLSearchParams({ tab: "sent", workflow: workflowId });
+  return (
+    <a
+      className={cn(
+        "inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-muted-foreground text-xs hover:bg-muted hover:text-foreground",
+        alert.state === "failed" && "border-destructive/50 text-destructive"
+      )}
+      data-state={alert.state}
+      data-testid="run-alert-sent"
+      href={`/settings/${encodeURIComponent(activeOrg.id)}/alerts?${query.toString()}`}
+      onClick={(e) => e.stopPropagation()}
+      title="Open Sent alerts for this workflow"
+    >
+      <Bell aria-hidden="true" className="size-3" />
+      {ALERT_WORD[alert.state]} {time} · {methods}
+    </a>
   );
 }
 
@@ -595,7 +643,12 @@ function ExpandableRunRow({
           </div>
         </td>
         <td className="py-3 pr-3">
-          <StatusBadge status={run.status} />
+          <div className="flex flex-wrap items-center gap-1.5">
+            <StatusBadge status={run.status} />
+            {run.alert && run.workflowId ? (
+              <AlertSentChip alert={run.alert} workflowId={run.workflowId} />
+            ) : null}
+          </div>
         </td>
         <td className="py-3 pr-3">
           <SourceBadge source={run.source} />
@@ -675,29 +728,36 @@ export function Pagination({
   const rangeEnd = Math.min(page * pageSize, total);
 
   return (
-    <nav aria-label="Pagination" className="flex items-center gap-2">
-      <span className="font-medium text-muted-foreground text-xs tabular-nums">
+    <nav
+      aria-label="Pagination"
+      className="flex flex-wrap items-center gap-x-2 gap-y-1"
+    >
+      <span className="whitespace-nowrap font-medium text-muted-foreground text-xs tabular-nums">
         {rangeStart.toLocaleString()}&ndash;{rangeEnd.toLocaleString()} of{" "}
         {total.toLocaleString()}
       </span>
-      <Button
-        className="size-7 p-0"
-        disabled={page <= 1 || loading}
-        onClick={() => onPageChange(page - 1)}
-        size="sm"
-        variant="ghost"
-      >
-        <ChevronLeft className="size-3.5" />
-      </Button>
-      <Button
-        className="size-7 p-0"
-        disabled={page >= totalPages || loading}
-        onClick={() => onPageChange(page + 1)}
-        size="sm"
-        variant="ghost"
-      >
-        <ChevronRight className="size-3.5" />
-      </Button>
+      <div className="flex items-center gap-2">
+        <Button
+          aria-label="Previous page"
+          className="size-7 p-0"
+          disabled={page <= 1 || loading}
+          onClick={() => onPageChange(page - 1)}
+          size="sm"
+          variant="ghost"
+        >
+          <ChevronLeft className="size-3.5" />
+        </Button>
+        <Button
+          aria-label="Next page"
+          className="size-7 p-0"
+          disabled={page >= totalPages || loading}
+          onClick={() => onPageChange(page + 1)}
+          size="sm"
+          variant="ghost"
+        >
+          <ChevronRight className="size-3.5" />
+        </Button>
+      </div>
     </nav>
   );
 }
@@ -892,9 +952,14 @@ export function RunsTable(): ReactNode {
         data-testid="runs-table"
       >
         <ProjectDrawer />
-        <Card className="flex-1 rounded-none border-0">
+        {/* On a phone the open Projects drawer takes the card's place. */}
+        <Card className="flex-1 rounded-none border-0 peer-data-replaces-card:hidden">
           <CardHeader>
-            <CardTitle className="flex items-center justify-between">
+            {/* When the card is too narrow for one row (a small phone, or a
+                tablet with the sidebar flyout and Projects open), the count
+                moves under the title rather than both squeezing, and the
+                arrows stay together. */}
+            <CardTitle className="flex flex-wrap items-center justify-between gap-y-2">
               <span>Workflow Runs</span>
               <Pagination
                 loading={pageLoading}

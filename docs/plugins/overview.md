@@ -14,7 +14,7 @@ Plugins provide the actions available in your workflows. Each plugin adds one or
 | [Web3](/plugins/web3) | Blockchain | Balance checks, contract reads/writes, transfers, calldata decoding, risk assessment | Wallet (for writes) |
 | [Code](/plugins/code) | Code | Execute custom JavaScript in a sandboxed VM | None |
 | [Math](/plugins/math) | Math | Aggregation operations (sum, count, average, median, min, max, product), tolerance comparison, number formatting | None |
-| [Data](/plugins/data) | Data | Encode/decode strings, hash values (keccak256, SHA-2, SHA3, RIPEMD-160, BLAKE2b), extract named fields, flatten findings, static config | None |
+| [Data](/plugins/data) | Data | Encode/decode strings, hash values (keccak256, SHA-2, SHA3, RIPEMD-160, BLAKE2b), extract named fields, filter and compare arrays, flatten findings, static config | None |
 | [Safe](/plugins/safe) | Protocol | Safe multisig owners, threshold, nonce, module status, pending transactions | API key (for pending txs) |
 | [Aave V3](/plugins/aave-v3) | Protocol | Supply, borrow, repay, collateral management, health factor monitoring | Wallet (for writes) |
 | [Aave V4](/plugins/aave-v4) | Protocol | Hub-and-Spoke supply, borrow, repay, collateral management via the Lido Spoke | Wallet (for writes) |
@@ -29,7 +29,7 @@ Plugins provide the actions available in your workflows. Each plugin adds one or
 | [Ethena](/plugins/ethena) | Protocol | sUSDe staking vault, cooldown/unstake, USDe and ENA balances | Wallet (for writes) |
 | [Euler V2](/plugins/euler-v2) | Protocol | ERC-4626 vault deposit/mint/withdraw/redeem, liquidity, borrow demand, interest accrual, vault configuration | Wallet (for writes) |
 | [Frax Ether V2](/plugins/frax-ether-v2) | Protocol | Liquid staking on Ethereum mainnet. Mint frxETH 1:1 from native ETH, or mint and stake directly into sfrxETH in one transaction | Wallet (for writes) |
-| [LayerZero](/plugins/layerzero) | Protocol | Crosschain OFT fee quotes, transfer previews, peer and approval checks, endpoint send library and DVN configuration reads | Wallet (for the approve action) |
+| [LayerZero](/plugins/layerzero) | Protocol | Crosschain OFT sends paying the quoted fee, fee quotes, transfer previews, peer and approval checks, endpoint send library and DVN configuration reads | Wallet (for the approve and send actions) |
 | [Lido](/plugins/lido) | Protocol | Wrap/unwrap stETH to wstETH, exchange rates, balances across Ethereum, Base, Sepolia | Wallet (for writes) |
 | [Morpho](/plugins/morpho) | Protocol | Supply, borrow, repay, liquidate, collateral management, position tracking, market monitoring | Wallet (for writes) |
 | [Pendle](/plugins/pendle) | Protocol | Yield tokenization, market data, PT/YT/SY balances, mint/redeem | Wallet (for writes) |
@@ -47,9 +47,11 @@ Plugins provide the actions available in your workflows. Each plugin adds one or
 | [SendGrid](/plugins/sendgrid) | Notifications | Send emails | API key |
 | [PagerDuty](/plugins/pagerduty) | Notifications | Trigger, acknowledge and resolve incidents on a service picked from your account | Read-only API token, or scoped OAuth |
 | [Webhook](/plugins/webhook) | Integrations | Send HTTP requests to external services | None |
+| [Lucid Agents](/plugins/lucid) | Integrations | Discover Lucid agents and call their entrypoints; priced ones return their x402 terms without running | None |
 | [Hyperliquid](/plugins/hyperliquid) | Data | Read-only Info API queries: clearinghouse state, vault details, validators, funding history, spot deploy state, referrals, sub-accounts, active asset data | None |
 | [Blockscout](/plugins/blockscout) | Data | Read-only block explorer queries: address balance, transaction details, token info | None (optional instance URL/API key) |
 | [Robinhood](/plugins/robinhood) | Data | Read-only stock-token reads on Robinhood Chain: price, holder position in share terms, market/trading status | None |
+| [Hedera](/plugins/hedera) | Data | Read-only reads of Hedera Consensus Service topic messages from the public mirror node, with optional expected-payload verification | None |
 
 ## How Plugins Work
 

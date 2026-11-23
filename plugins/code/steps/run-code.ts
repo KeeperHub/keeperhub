@@ -18,6 +18,7 @@ import {
   runRemote,
 } from "@/lib/sandbox/client";
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
+import { findTemplateTokens } from "@/lib/workflow/template-ref";
 
 export type RunCodeCoreInput = {
   code: string;
@@ -28,7 +29,6 @@ export type RunCodeInput = StepInput & RunCodeCoreInput;
 
 const DEFAULT_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 120;
-const UNRESOLVED_TEMPLATE_REGEX = /\{\{@?[^}]+\}\}/g;
 
 const SANDBOX_BACKEND = process.env.SANDBOX_BACKEND;
 
@@ -261,10 +261,10 @@ function validateInput(input: RunCodeCoreInput): RunCodeResult | null {
   if (!code || code.trim() === "") {
     return { success: false, error: "No code provided", logs: [], errorClass: ExecutionErrorType.USER };
   }
-  const unresolvedTemplates = stripStringsAndComments(code).match(
-    UNRESOLVED_TEMPLATE_REGEX,
-  );
-  if (unresolvedTemplates) {
+  const unresolvedTemplates = findTemplateTokens(
+    stripStringsAndComments(code),
+  ).map(({ body }) => `{{${body}}}`);
+  if (unresolvedTemplates.length > 0) {
     const unique = [...new Set(unresolvedTemplates)];
     return {
       success: false,

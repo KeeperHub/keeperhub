@@ -4,10 +4,29 @@ import "@/lib/monaco-loader-config";
 
 import MonacoEditor, { type EditorProps, type OnMount } from "@monaco-editor/react";
 import { useTheme } from "next-themes";
-import { useCallback, useMemo } from "react";
+import { useCallback, useContext, useMemo } from "react";
+import { EditorPopupContainerContext } from "@/components/ui/editor-popup-container";
 import { vercelDarkTheme } from "@/lib/monaco-theme";
 
 let overflowWidgetsDomNode: HTMLElement | null = null;
+
+/**
+ * A root for Monaco's overflow widgets - suggestions, hovers, menus. It
+ * carries the classes Monaco scopes its widget styles to. The shared one
+ * lives on <body>; a modal that hosts an editor makes its own, since a modal
+ * leaves anything outside it unreachable.
+ */
+export function createOverflowWidgetsNode(zIndex = 10_000): HTMLElement {
+  const node = document.createElement("div");
+  node.className = "monaco-editor monaco-editor-overflow-widgets-root";
+  node.style.position = "absolute";
+  node.style.top = "0";
+  node.style.left = "0";
+  node.style.width = "0";
+  node.style.height = "0";
+  node.style.zIndex = String(zIndex);
+  return node;
+}
 
 function getOverflowWidgetsDomNode(): HTMLElement | undefined {
   if (typeof document === "undefined") {
@@ -16,14 +35,7 @@ function getOverflowWidgetsDomNode(): HTMLElement | undefined {
   if (overflowWidgetsDomNode) {
     return overflowWidgetsDomNode;
   }
-  const node = document.createElement("div");
-  node.className = "monaco-editor monaco-editor-overflow-widgets-root";
-  node.style.position = "absolute";
-  node.style.top = "0";
-  node.style.left = "0";
-  node.style.width = "0";
-  node.style.height = "0";
-  node.style.zIndex = "10000";
+  const node = createOverflowWidgetsNode();
   document.body.appendChild(node);
   overflowWidgetsDomNode = node;
   return node;
@@ -32,14 +44,16 @@ function getOverflowWidgetsDomNode(): HTMLElement | undefined {
 export function CodeEditor(props: EditorProps): React.ReactElement {
   const { resolvedTheme } = useTheme();
   const propsOnMount = props.onMount;
+  // Inside a modal, widgets go in the modal's own root so they stay usable.
+  const modalWidgets = useContext(EditorPopupContainerContext)?.monacoWidgets;
 
   const mergedOptions = useMemo(
     () => ({
       fixedOverflowWidgets: true,
-      overflowWidgetsDomNode: getOverflowWidgetsDomNode(),
+      overflowWidgetsDomNode: modalWidgets ?? getOverflowWidgetsDomNode(),
       ...props.options,
     }),
-    [props.options]
+    [props.options, modalWidgets]
   );
 
   const handleEditorMount: OnMount = useCallback(
@@ -58,11 +72,17 @@ export function CodeEditor(props: EditorProps): React.ReactElement {
         });
       }
 
+      // A modal places focus when it opens, before Monaco has loaded, so an
+      // editor inside one takes focus itself once it exists.
+      if (modalWidgets) {
+        editor.focus();
+      }
+
       if (propsOnMount) {
         propsOnMount(editor, monaco);
       }
     },
-    [propsOnMount, resolvedTheme]
+    [propsOnMount, resolvedTheme, modalWidgets]
   );
 
   return (

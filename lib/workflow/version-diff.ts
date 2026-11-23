@@ -8,6 +8,7 @@
 
 import { findAbiFunction } from "@/lib/abi/utils";
 import { getActionLabel } from "@/lib/step-registry";
+import { formatTemplateForDisplay } from "@/lib/utils/template";
 import {
   type ConditionGroup,
   type ConditionRule,
@@ -137,10 +138,8 @@ function nodeChainId(node: AnyRecord): string | undefined {
 
 // Template refs persist as `{{@nodeId:Display.field}}`; the node id is noise in
 // a human diff, so collapse them to `{{Display.field}}`.
-const TEMPLATE_REF = /\{\{@[^:}]+:([^}]+)\}\}/g;
-
 function cleanTemplateRefs(text: string): string {
-  return text.replace(TEMPLATE_REF, "{{$1}}");
+  return formatTemplateForDisplay(text);
 }
 
 function byId(nodes: AnyRecord[]): Map<string, AnyRecord> {

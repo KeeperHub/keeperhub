@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   isConnectionFailure,
   isRetryableHttpStatus,
+  isTransientNetworkFailure,
   linearBackoffMs,
   parseRetryAfterHeaderMs,
   RETRYABLE_HTTP_STATUS,
@@ -200,5 +201,67 @@ describe("isConnectionFailure", () => {
     a.cause = b;
     b.cause = a;
     expect(isConnectionFailure(a)).toBe(false);
+  });
+
+  it("recognises undici's connect timeout", () => {
+    const wrapped = new TypeError("fetch failed", {
+      cause: withCode("UND_ERR_CONNECT_TIMEOUT"),
+    });
+    expect(isConnectionFailure(wrapped)).toBe(true);
+  });
+
+  it("recognises a multi-address connect that timed out on one address and was refused on the next", () => {
+    const attempts = [
+      Object.assign(withCode("ETIMEDOUT"), { syscall: "connect" }),
+      Object.assign(withCode("ECONNREFUSED"), { syscall: "connect" }),
+    ];
+    const wrapped = new TypeError("fetch failed", {
+      cause: Object.assign(new AggregateError(attempts, "connect failed"), {
+        code: "ETIMEDOUT",
+      }),
+    });
+    expect(isConnectionFailure(wrapped)).toBe(true);
+  });
+});
+
+describe("isTransientNetworkFailure", () => {
+  function fetchFailed(cause: Error): TypeError {
+    return new TypeError("fetch failed", { cause });
+  }
+  function withCode(message: string, code: string): Error {
+    return Object.assign(new Error(message), { code });
+  }
+
+  it.each([
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "UND_ERR_SOCKET",
+    "UND_ERR_HEADERS_TIMEOUT",
+  ])("treats %s as transient", (code) => {
+    expect(isTransientNetworkFailure(fetchFailed(withCode(code, code)))).toBe(
+      true
+    );
+  });
+
+  it("treats a connection dropped mid-body as transient", () => {
+    const terminated = new TypeError("terminated", {
+      cause: withCode("other side closed", "UND_ERR_SOCKET"),
+    });
+    expect(isTransientNetworkFailure(terminated)).toBe(true);
+  });
+
+  it.each([
+    [
+      "an invalid header",
+      withCode("invalid transfer-encoding header", "UND_ERR_INVALID_ARG"),
+    ],
+    ["a blocked port", new Error("bad port")],
+    ["a redirect loop", new Error("redirect count exceeded")],
+    [
+      "a TLS certificate error",
+      withCode("self-signed certificate", "DEPTH_ZERO_SELF_SIGNED_CERT"),
+    ],
+  ])("does not treat %s as transient", (_label, cause) => {
+    expect(isTransientNetworkFailure(fetchFailed(cause))).toBe(false);
   });
 });

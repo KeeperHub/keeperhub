@@ -15,21 +15,27 @@
  * author did not intend.
  */
 
+// A symbol key, so data parsed from JSON (an upstream item, a webhook body)
+// can never pass for the marker. Symbol.for, so a copy of this module in
+// another bundle still knows it. A serialized marker loses the key. The key
+// is process-wide, so never run user code in this process (e.g. node:vm).
+const MISSING_REFERENCE = Symbol.for("keeperhub.missingReference");
+
 export type MissingReference = {
-  readonly __keeperhubMissingReference: true;
+  readonly [MISSING_REFERENCE]: true;
   /** Resolver diagnostic, including the available field names. */
   readonly detail: string;
 };
 
 export function makeMissingReference(detail: string): MissingReference {
-  return { __keeperhubMissingReference: true, detail };
+  return { [MISSING_REFERENCE]: true, detail };
 }
 
 export function isMissingReference(value: unknown): value is MissingReference {
   return (
     typeof value === "object" &&
     value !== null &&
-    (value as MissingReference).__keeperhubMissingReference === true
+    (value as Partial<MissingReference>)[MISSING_REFERENCE] === true
   );
 }
 

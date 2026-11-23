@@ -17,13 +17,19 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import { TemplateBadgeInput } from "@/components/ui/template-badge-input";
 import { TemplateBadgeTextarea } from "@/components/ui/template-badge-textarea";
-import { BeautifiableField } from "@/components/workflow/config/beautifiable-field";
+import {
+  BeautifiableField,
+  type FieldSize,
+  TALL_FIELD_MAX_ROWS,
+} from "@/components/workflow/config/beautifiable-field";
 import { SaveAddressBookmark } from "@/components/address-book/save-address-bookmark";
 import type { AbiComponent } from "@/components/workflow/config/abi-types";
 import { ArrayInputField } from "@/components/workflow/config/array-input-field";
@@ -41,15 +47,22 @@ import {
   resolveAbiFunction,
 } from "@/lib/abi/utils";
 import { summariseGroup } from "@/lib/workflow/editor/group-summary";
-import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { parseAddressBookSelection } from "@/lib/address-book-selection";
 import { toChecksumAddress } from "@/lib/address-utils";
+import { isToggleValue } from "@/lib/utils";
 import { parseSchemaFields } from "@/lib/schema-fields";
 import { getCustomFieldRenderer } from "@/lib/workflow/editor/extension-registry";
+import {
+  groupedSelectLabel,
+  groupSelectOptions,
+} from "@/lib/workflow/editor/select-option-groups";
 import {
   type ActionConfigField,
   type ActionConfigFieldBase,
   isFieldGroup,
+  isFieldShown,
+  isToggleField,
+  type SelectOption,
 } from "@/plugins/registry";
 import { SchemaBuilder } from "./schema-builder";
 
@@ -133,23 +146,29 @@ function BeautifiableTextareaField({
     <BeautifiableField
       className="shadow-xs"
       disabled={disabled}
+      label={field.label}
       language="json"
       onChange={onChange}
       value={value}
     >
-      <TemplateBadgeTextarea
-        className="rounded-none border-0 opacity-100 shadow-none focus-within:ring-0"
-        disabled={disabled}
-        id={field.key}
-        // Formatting turns one line into hundreds - an ERC-20 ABI pasted into
-        // the override field goes to 224 - and this editor grows without limit
-        // unless it is given a ceiling. Past it the field scrolls.
-        maxRows={FORMATTED_FIELD_MAX_ROWS}
-        onChange={onChange}
-        placeholder={field.placeholder}
-        rows={field.rows || 4}
-        value={value}
-      />
+      {(size: FieldSize) => (
+        <TemplateBadgeTextarea
+          className="rounded-none border-0 opacity-100 shadow-none focus-within:ring-0"
+          disabled={disabled}
+          fill={size === "fill"}
+          id={field.key}
+          // Formatting turns one line into hundreds - an ERC-20 ABI pasted into
+          // the override field goes to 224 - and this editor grows without
+          // limit unless it is given a ceiling. Past it the field scrolls.
+          maxRows={
+            size === "tall" ? TALL_FIELD_MAX_ROWS : FORMATTED_FIELD_MAX_ROWS
+          }
+          onChange={onChange}
+          placeholder={field.placeholder}
+          rows={field.rows || 4}
+          value={value}
+        />
+      )}
     </BeautifiableField>
   );
 }
@@ -475,22 +494,40 @@ function DateTimeField({
   );
 }
 
+function renderSelectOption(option: SelectOption): React.ReactElement {
+  return (
+    <SelectItem
+      description={option.description}
+      key={option.value}
+      value={option.value}
+    >
+      {option.label}
+    </SelectItem>
+  );
+}
+
 function SelectField({ field, value, onChange, disabled }: FieldProps) {
   if (!field.options) {
     return null;
   }
+  const grouped = field.options.some((option) => option.group);
 
   return (
     <Select disabled={disabled} onValueChange={onChange} value={value}>
       <SelectTrigger className="w-full" id={field.key}>
-        <SelectValue placeholder={field.placeholder} />
+        <SelectValue placeholder={field.placeholder}>
+          {grouped ? groupedSelectLabel(field.options, value) : undefined}
+        </SelectValue>
       </SelectTrigger>
-      <SelectContent>
-        {field.options.map((option) => (
-          <SelectItem key={option.value} value={option.value}>
-            {option.label}
-          </SelectItem>
-        ))}
+      <SelectContent className={grouped ? "max-w-xs" : undefined}>
+        {grouped
+          ? groupSelectOptions(field.options).map((group) => (
+              <SelectGroup key={group.options[0]?.value ?? group.label}>
+                {group.label && <SelectLabel>{group.label}</SelectLabel>}
+                {group.options.map(renderSelectOption)}
+              </SelectGroup>
+            ))
+          : field.options.map(renderSelectOption)}
       </SelectContent>
     </Select>
   );
@@ -843,6 +880,10 @@ function renderAbiFunctionArgs(
         onChange={(val) => onUpdateConfig(field.key, val)}
         value={value}
       />
+      {field.helpText &&
+        resolveFunctionInputs(abiValue, functionValue).inputs.length > 0 && (
+          <p className="text-muted-foreground text-xs">{field.helpText}</p>
+        )}
     </div>
   );
 }
@@ -874,17 +915,17 @@ function renderField(
   disabled?: boolean,
   nodeId?: string
 ) {
-  // Check conditional rendering
-  if (field.hidden) {
+  // Check conditional rendering (`hidden` included)
+  if (!isFieldShown(field, config)) {
     return null;
   }
 
-  if (!evaluateShowWhen(field.showWhen, config)) {
-    return null;
-  }
-
+  const raw = config[field.key];
+  // A list sent as a native array by the API is shown as its JSON text.
   const value =
-    (config[field.key] as string | undefined) || field.defaultValue || "";
+    field.acceptsJsonArray && Array.isArray(raw)
+      ? JSON.stringify(raw)
+      : (raw as string | undefined) || field.defaultValue || "";
 
   // Special handling for abi-function-select
   if (field.type === "abi-function-select") {
@@ -963,6 +1004,24 @@ function renderField(
   );
 }
 
+// The shown toggles holding neither on nor off, as one comparable string.
+// Each needs a fix, so its group opens to show it.
+function strayToggles(
+  fields: ActionConfigFieldBase[],
+  config: Record<string, unknown>
+): string {
+  return JSON.stringify(
+    fields
+      .filter(
+        (field) =>
+          isToggleField(field.type) &&
+          !isToggleValue(config[field.key]) &&
+          isFieldShown(field, config)
+      )
+      .map((field) => [field.key, config[field.key]])
+  );
+}
+
 /**
  * Collapsible field group component
  */
@@ -983,16 +1042,28 @@ function FieldGroup({
   defaultExpanded?: boolean;
   nodeId?: string;
 }) {
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  const stray = strayToggles(fields, config);
+  const holdsStray = stray !== "[]";
+  const [isExpanded, setIsExpanded] = useState(
+    () => defaultExpanded || holdsStray
+  );
+  // Also when a stray value arrives later (AI edit, undo, version restore),
+  // including a second one while the user has the group shut.
+  useEffect(() => {
+    if (stray !== "[]") {
+      setIsExpanded(true);
+    }
+  }, [stray]);
   // Only worth computing for the collapsed state: expanded, the fields speak
   // for themselves.
   const summary = isExpanded ? null : summariseGroup(fields, config);
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2" data-field-group="">
       <div className="flex items-center gap-1">
         <button
           className="ml-1 flex items-center gap-1 text-left"
+          aria-expanded={isExpanded}
           onClick={() => setIsExpanded(!isExpanded)}
           type="button"
         >

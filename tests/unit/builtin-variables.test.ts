@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { sanitizeNodeId } from "@/lib/workflow/template-ref";
 
 // Mock server-only to allow importing workflow-executor in tests
 vi.mock("server-only", () => ({}));
@@ -57,8 +58,7 @@ describe("builtin-variables", () => {
     });
 
     it("sanitized BUILTIN_NODE_ID equals itself", () => {
-      const sanitized = BUILTIN_NODE_ID.replace(/[^a-zA-Z0-9]/g, "_");
-      expect(sanitized).toBe("__system");
+      expect(sanitizeNodeId(BUILTIN_NODE_ID)).toBe("__system");
     });
   });
 

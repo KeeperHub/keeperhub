@@ -1,32 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BLOCKSCOUT_INSTANCES } from "@/plugins/blockscout/chains";
 
-const { seededValues } = vi.hoisted(() => ({
-  seededValues: [] as Record<string, unknown>[],
-}));
-
-vi.mock("server-only", () => ({}));
-vi.mock("@/lib/db/connection-utils", () => ({
-  getDatabaseUrl: () => "postgres://unused",
-}));
-vi.mock("postgres", () => ({
-  default: () => ({ end: async () => undefined }),
-}));
-vi.mock("drizzle-orm/postgres-js", () => ({
-  drizzle: () => ({
-    select: () => ({
-      from: () => ({
-        where: () => ({ limit: async () => [] }),
-      }),
-    }),
-    insert: () => ({
-      values: async (value: Record<string, unknown>) => {
-        seededValues.push(value);
-      },
-    }),
-  }),
-}));
-
 const SHANNON_CHAIN_ID = 50_312;
 const PRIMARY_RPC = "https://dream-rpc.somnia.network";
 const FALLBACK_RPC = "https://rpc.ankr.com/somnia_testnet";
@@ -37,7 +11,6 @@ const MAINNET_FALLBACK_RPC = "https://somnia-rpc.publicnode.com";
 const MAINNET_PRIMARY_WSS = "wss://api.infra.mainnet.somnia.network/ws";
 
 beforeEach(() => {
-  seededValues.length = 0;
   vi.stubEnv("CHAIN_RPC_CONFIG", "");
   vi.stubEnv("CHAIN_SOMNIA_SHANNON_PRIMARY_RPC", "");
   vi.stubEnv("CHAIN_SOMNIA_SHANNON_FALLBACK_RPC", "");
@@ -78,46 +51,51 @@ describe("Somnia Shannon chain onboarding", () => {
     expect(getRpcUrlByChainId(SHANNON_CHAIN_ID)).toBe(override);
   });
 
-  it("defines Shannon in the executable seed with its reviewed settings", async () => {
-    const exit = vi
-      .spyOn(process, "exit")
-      .mockImplementation(() => undefined as never);
-    try {
-      const { DEFAULT_CHAINS } = await import("@/scripts/seed/seed-chains");
-      const shannon = DEFAULT_CHAINS.find(
-        (chain) => chain.chainId === SHANNON_CHAIN_ID
-      );
+  it("defines Shannon in the seed with its reviewed settings", async () => {
+    const {
+      buildExplorerConfigs,
+      CHAIN_TO_DEFAULT_ID,
+      DEFAULT_CHAINS,
+      EXPLORER_CONFIG_TEMPLATES,
+    } = await import("@/scripts/seed/seed-chains");
+    const shannon = DEFAULT_CHAINS.find(
+      (chain) => chain.chainId === SHANNON_CHAIN_ID
+    );
 
-      expect(shannon).toMatchObject({
+    expect(shannon).toMatchObject({
+      chainId: SHANNON_CHAIN_ID,
+      name: "Somnia Shannon",
+      symbol: "STT",
+      chainType: "evm",
+      defaultPrimaryRpc: PRIMARY_RPC,
+      defaultFallbackRpc: FALLBACK_RPC,
+      defaultPrimaryWss: PRIMARY_WSS,
+      isTestnet: true,
+      isEnabled: true,
+      status: "experimental",
+      aliases: [],
+    });
+    expect(shannon?.defaultPrimaryRpc).not.toBe(shannon?.defaultFallbackRpc);
+    // The explorer row the seed would write, built by the same function the
+    // seed calls, so no database connection is needed.
+    expect(
+      buildExplorerConfigs(
+        DEFAULT_CHAINS,
+        CHAIN_TO_DEFAULT_ID,
+        EXPLORER_CONFIG_TEMPLATES
+      )
+    ).toContainEqual(
+      expect.objectContaining({
         chainId: SHANNON_CHAIN_ID,
-        name: "Somnia Shannon",
-        symbol: "STT",
         chainType: "evm",
-        defaultPrimaryRpc: PRIMARY_RPC,
-        defaultFallbackRpc: FALLBACK_RPC,
-        defaultPrimaryWss: PRIMARY_WSS,
-        isTestnet: true,
-        isEnabled: true,
-        status: "experimental",
-        aliases: [],
-      });
-      expect(shannon?.defaultPrimaryRpc).not.toBe(shannon?.defaultFallbackRpc);
-      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
-      expect(seededValues).toContainEqual(
-        expect.objectContaining({
-          chainId: SHANNON_CHAIN_ID,
-          chainType: "evm",
-          explorerUrl: "https://shannon-explorer.somnia.network",
-          explorerApiType: "blockscout",
-          explorerApiUrl: "https://shannon-explorer.somnia.network/api",
-          explorerTxPath: "/tx/{hash}",
-          explorerAddressPath: "/address/{address}",
-          explorerContractPath: "/address/{address}?tab=contract",
-        })
-      );
-    } finally {
-      exit.mockRestore();
-    }
+        explorerUrl: "https://shannon-explorer.somnia.network",
+        explorerApiType: "blockscout",
+        explorerApiUrl: "https://shannon-explorer.somnia.network/api",
+        explorerTxPath: "/tx/{hash}",
+        explorerAddressPath: "/address/{address}",
+        explorerContractPath: "/address/{address}?tab=contract",
+      })
+    );
   });
 
   it("registers Shannon, Robinhood Chain, and Arc Testnet Blockscout instances", () => {
@@ -151,44 +129,47 @@ describe("Somnia Mainnet chain onboarding", () => {
     ).toBe(MAINNET_PRIMARY_WSS);
   });
 
-  it("defines Somnia Mainnet in the executable seed with its explorer", async () => {
-    const exit = vi
-      .spyOn(process, "exit")
-      .mockImplementation(() => undefined as never);
-    try {
-      const { DEFAULT_CHAINS } = await import("@/scripts/seed/seed-chains");
-      const mainnet = DEFAULT_CHAINS.find(
-        (chain) => chain.chainId === MAINNET_CHAIN_ID
-      );
+  it("defines Somnia Mainnet in the seed with its explorer", async () => {
+    const {
+      buildExplorerConfigs,
+      CHAIN_TO_DEFAULT_ID,
+      DEFAULT_CHAINS,
+      EXPLORER_CONFIG_TEMPLATES,
+    } = await import("@/scripts/seed/seed-chains");
+    const mainnet = DEFAULT_CHAINS.find(
+      (chain) => chain.chainId === MAINNET_CHAIN_ID
+    );
 
-      expect(mainnet).toMatchObject({
+    expect(mainnet).toMatchObject({
+      chainId: MAINNET_CHAIN_ID,
+      name: "Somnia",
+      symbol: "SOMI",
+      chainType: "evm",
+      defaultPrimaryRpc: MAINNET_PRIMARY_RPC,
+      defaultFallbackRpc: MAINNET_FALLBACK_RPC,
+      defaultPrimaryWss: MAINNET_PRIMARY_WSS,
+      isTestnet: false,
+      isEnabled: true,
+      status: "experimental",
+      aliases: ["somnia"],
+    });
+    expect(
+      buildExplorerConfigs(
+        DEFAULT_CHAINS,
+        CHAIN_TO_DEFAULT_ID,
+        EXPLORER_CONFIG_TEMPLATES
+      )
+    ).toContainEqual(
+      expect.objectContaining({
         chainId: MAINNET_CHAIN_ID,
-        name: "Somnia",
-        symbol: "SOMI",
         chainType: "evm",
-        defaultPrimaryRpc: MAINNET_PRIMARY_RPC,
-        defaultFallbackRpc: MAINNET_FALLBACK_RPC,
-        defaultPrimaryWss: MAINNET_PRIMARY_WSS,
-        isTestnet: false,
-        isEnabled: true,
-        status: "experimental",
-        aliases: ["somnia"],
-      });
-      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
-      expect(seededValues).toContainEqual(
-        expect.objectContaining({
-          chainId: MAINNET_CHAIN_ID,
-          chainType: "evm",
-          explorerUrl: "https://explorer.somnia.network",
-          explorerApiType: "blockscout",
-          explorerApiUrl: "https://explorer.somnia.network/api/",
-          explorerTxPath: "/tx/{hash}",
-          explorerAddressPath: "/address/{address}",
-          explorerContractPath: "/address/{address}?tab=contract",
-        })
-      );
-    } finally {
-      exit.mockRestore();
-    }
+        explorerUrl: "https://explorer.somnia.network",
+        explorerApiType: "blockscout",
+        explorerApiUrl: "https://explorer.somnia.network/api/",
+        explorerTxPath: "/tx/{hash}",
+        explorerAddressPath: "/address/{address}",
+        explorerContractPath: "/address/{address}?tab=contract",
+      })
+    );
   });
 });

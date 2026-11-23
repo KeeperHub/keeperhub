@@ -7,7 +7,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/api-client";
+import {
+  api,
+  WORKFLOW_SAVE_ERROR_TOAST,
+  workflowSaveErrorMessage,
+} from "@/lib/api-client";
 import { dedupeEdges } from "@/lib/workflow/editor/edge-helpers";
 import {
   currentWorkflowIdAtom,
@@ -18,6 +22,7 @@ import {
   pendingAiPromptAtom,
   selectedNodeAtom,
 } from "@/lib/workflow/store";
+import { refetchSidebar } from "@/lib/refetch-sidebar";
 
 type AIPromptProps = {
   workflowId?: string;
@@ -214,6 +219,7 @@ export function AIPrompt({ workflowId, onWorkflowCreated }: AIPromptProps): Reac
             edges: finalEdges,
           });
 
+          refetchSidebar({ workflowCreated: true });
           // State already updated by streaming callback
           setCurrentWorkflowId(newWorkflow.id);
 
@@ -267,7 +273,10 @@ export function AIPrompt({ workflowId, onWorkflowCreated }: AIPromptProps): Reac
         inputRef.current?.blur();
       } catch (error) {
         console.error("Failed to generate workflow:", error);
-        toast.error("Failed to generate workflow");
+        toast.error(
+          workflowSaveErrorMessage(error, "Failed to generate workflow"),
+          WORKFLOW_SAVE_ERROR_TOAST
+        );
       } finally {
         setIsGenerating(false);
       }
@@ -315,7 +324,7 @@ export function AIPrompt({ workflowId, onWorkflowCreated }: AIPromptProps): Reac
       {/* Always visible prompt input */}
       <div
         ref={containerRef}
-        className="pointer-events-auto absolute bottom-4 left-1/2 z-10 -translate-x-1/2 px-4"
+        className="workflow-prompt pointer-events-auto absolute bottom-4 left-1/2 z-10 -translate-x-1/2 px-4"
         style={{
           width: isExpanded ? "min(100%, 42rem)" : "20rem",
           transition: "width 150ms ease-out",

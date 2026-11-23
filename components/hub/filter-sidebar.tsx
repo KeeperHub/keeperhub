@@ -40,7 +40,7 @@ function SectionHeader({
   return (
     <CollapsibleTrigger asChild>
       <button
-        className="group flex w-full items-center justify-between rounded-md px-3 py-2 font-normal text-muted-foreground text-xs uppercase tracking-widest transition-colors duration-100 hover:bg-[var(--color-hub-icon-bg)]/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-text-accent)] motion-reduce:transition-none"
+        className="group flex w-full items-center justify-between rounded-md px-3 py-2 font-normal text-muted-foreground text-xs uppercase tracking-widest transition-colors duration-100 hover:bg-[var(--color-hub-icon-bg)]/40 hover:text-foreground focus-visible:hub-focus-ring focus-visible:ring-offset-[var(--color-hub-card)] motion-reduce:transition-none"
         type="button"
       >
         <span className="inline-flex items-center gap-2">
@@ -96,7 +96,7 @@ export function FilterSidebar<TSort extends string>({
               // biome-ignore lint/a11y/useSemanticElements: WAI-ARIA radio pattern on a <button> is the only option that supports rich label markup + click handling without form-association side effects (matches Radix RadioGroupItem).
               <button
                 aria-checked={active}
-                className={`flex min-h-7 items-center rounded-md px-3 py-1.5 text-left text-sm transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-text-accent)] motion-reduce:transition-none ${
+                className={`flex min-h-7 items-center rounded-md px-3 py-1.5 text-left text-sm transition-colors duration-100 focus-visible:hub-focus-ring focus-visible:ring-offset-[var(--color-hub-card)] motion-reduce:transition-none ${
                   active
                     ? "bg-muted font-normal text-foreground"
                     : "font-normal text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -123,7 +123,7 @@ export function FilterSidebar<TSort extends string>({
         >
           <Link
             aria-current={activeTagSlug === null ? "page" : undefined}
-            className={`flex min-h-7 items-center justify-between rounded-md px-3 py-1.5 text-sm transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-text-accent)] motion-reduce:transition-none ${
+            className={`flex min-h-7 items-center justify-between rounded-md px-3 py-1.5 text-sm transition-colors duration-100 focus-visible:hub-focus-ring focus-visible:ring-offset-[var(--color-hub-card)] motion-reduce:transition-none ${
               activeTagSlug === null
                 ? "bg-muted font-normal text-foreground"
                 : "font-normal text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -139,7 +139,7 @@ export function FilterSidebar<TSort extends string>({
             return (
               <Link
                 aria-current={active ? "page" : undefined}
-                className={`flex min-h-7 items-center justify-between rounded-md px-3 py-1.5 text-sm transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-text-accent)] motion-reduce:transition-none ${
+                className={`flex min-h-7 items-center justify-between rounded-md px-3 py-1.5 text-sm transition-colors duration-100 focus-visible:hub-focus-ring focus-visible:ring-offset-[var(--color-hub-card)] motion-reduce:transition-none ${
                   active
                     ? "bg-muted font-normal text-foreground"
                     : "font-normal text-muted-foreground hover:bg-muted hover:text-foreground"

@@ -1,7 +1,11 @@
 import "server-only";
 
 import { DEFAULT_HTTP_METHOD } from "@/lib/workflow/nodes/http-request/constants";
-import { splitTemplateRef } from "@/lib/workflow/template-ref";
+import {
+  replaceTemplateTokens,
+  sanitizeNodeId,
+  splitTemplateRef,
+} from "@/lib/workflow/template-ref";
 import { findActionById } from "@/plugins/registry";
 import { synthesiseProtocolForSDK } from "./protocol-synthesiser";
 // System action codegen templates (not in plugin registry)
@@ -16,13 +20,21 @@ const SYSTEM_CODEGEN_TEMPLATES: Record<string, string> = {
   Condition: conditionTemplate,
 };
 
+import { mentionsRegex } from "@/lib/workflow/nodes/condition/regex-calls";
+import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
+import { isSafeConditionExpression } from "@/lib/workflow/nodes/condition/safe-eval";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import {
-  ARRAY_INDEX_PATTERN,
   analyzeNodeUsage,
+  buildAccessPath,
   buildEdgeMap,
+  commentSafe,
   escapeForTemplateLiteral,
+  escapeTextAroundTokens,
   findTriggerNodes,
+  isExportableCondition,
+  REGEX_NOT_EXPORTED,
+  readsTheSameInJs,
   sanitizeFunctionName,
   sanitizeStepName,
   sanitizeVarName,
@@ -84,22 +96,13 @@ function processNewFormatID(
   const rest = withoutAt.substring(colonIndex + 1);
   const { fieldPath } = splitTemplateRef(rest, nodeLabels?.get(nodeId));
 
-  const sanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+  const sanitizedNodeId = sanitizeNodeId(nodeId);
 
   if (!fieldPath) {
     return `\${outputs?.['${sanitizedNodeId}']?.data}`;
   }
 
-  const accessPath = fieldPath
-    .split(".")
-    .map((part: string) => {
-      const arrayMatch = part.match(ARRAY_INDEX_PATTERN);
-      if (arrayMatch) {
-        return `?.${arrayMatch[1]}?.[${arrayMatch[2]}]`;
-      }
-      return `?.${part}`;
-    })
-    .join("");
+  const accessPath = buildAccessPath(fieldPath, { optional: true });
 
   return `\${outputs?.['${sanitizedNodeId}']?.data${accessPath}}`;
 }
@@ -111,31 +114,46 @@ function processLegacyDollarRef(trimmed: string): string {
   const withoutDollar = trimmed.substring(1);
 
   if (!(withoutDollar.includes(".") || withoutDollar.includes("["))) {
-    const sanitizedNodeId = withoutDollar.replace(/[^a-zA-Z0-9]/g, "_");
+    const sanitizedNodeId = sanitizeNodeId(withoutDollar);
     return `\${outputs?.['${sanitizedNodeId}']?.data}`;
   }
 
   const parts = withoutDollar.split(".");
   const nodeId = parts[0];
-  const sanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+  const sanitizedNodeId = sanitizeNodeId(nodeId);
   const fieldPath = parts.slice(1).join(".");
 
   if (!fieldPath) {
     return `\${outputs?.['${sanitizedNodeId}']?.data}`;
   }
 
-  const accessPath = fieldPath
-    .split(".")
-    .map((part: string) => {
-      const arrayMatch = part.match(ARRAY_INDEX_PATTERN);
-      if (arrayMatch) {
-        return `?.${arrayMatch[1]}?.[${arrayMatch[2]}]`;
-      }
-      return `?.${part}`;
-    })
-    .join("");
+  const accessPath = buildAccessPath(fieldPath, { optional: true });
 
   return `\${outputs?.['${sanitizedNodeId}']?.data${accessPath}}`;
+}
+
+// The tokens convertTemplateToJSWithLabels turns into code; any other is
+// written as typed.
+function sdkResolves(tokenBody: string): boolean {
+  const trimmed = tokenBody.trim();
+  return (
+    (trimmed.startsWith("@") && trimmed.includes(":")) ||
+    trimmed.startsWith("$")
+  );
+}
+
+function conditionValueLine(
+  condition: string,
+  converted: string | undefined,
+  varName: string,
+  indent: string
+): string {
+  if (mentionsRegex(condition)) {
+    return `${indent}const ${varName} = ${REGEX_NOT_EXPORTED};`;
+  }
+  return converted === undefined
+    ? `${indent}const ${varName} = false; // not supported in exported code`
+    : `${indent}const ${varName} = \`${converted}\`;`;
 }
 
 /**
@@ -150,10 +168,9 @@ function convertTemplateToJSWithLabels(
     return template;
   }
 
-  const pattern = /\{\{([^}]+)\}\}/g;
-
-  return template.replace(pattern, (match, expression) => {
-    const trimmed = expression.trim();
+  return replaceTemplateTokens(template, ({ body }) => {
+    const match = `{{${body}}}`;
+    const trimmed = body.trim();
 
     if (trimmed.startsWith("@")) {
       return processNewFormatID(trimmed, match, nodeLabels);
@@ -367,9 +384,16 @@ export function generateWorkflowSDKCode(
   }
 
   function buildConditionParams(config: Record<string, unknown>): string[] {
-    return [
-      `condition: ${convertTemplateToJS((config.condition as string) || "true")}`,
-    ];
+    // The condition the run uses: saved rules first, as codegen does.
+    const condition = resolveConditionExpression(config) || "true";
+    if (mentionsRegex(condition)) {
+      return [`condition: ${REGEX_NOT_EXPORTED}`];
+    }
+    // Written as code, so the code as written must be the run's grammar.
+    const converted = convertTemplateToJS(condition);
+    return isSafeConditionExpression(converted) && readsTheSameInJs(converted)
+      ? [`condition: ${converted}`]
+      : ["condition: false /* not supported in exported code */"];
   }
 
   function buildFirecrawlParams(
@@ -452,14 +476,18 @@ export function generateWorkflowSDKCode(
   }
 
   function buildProtocolStepInputParams(
-    inputs: Array<{ name: string }>,
+    inputs: Array<{ name: string; payer?: boolean }>,
     config: Record<string, unknown>
   ): string[] {
-    return inputs.map((inp) => {
-      const raw = String(config[inp.name] ?? "");
-      const converted = convertTemplateToJS(raw);
-      return `${inp.name}: \`${escapeForTemplateLiteral(converted)}\``;
-    });
+    // A payer input is never caller-supplied: the synthesised body reads
+    // the signing account for it, so stepInput carries no key.
+    return inputs
+      .filter((inp) => !inp.payer)
+      .map((inp) => {
+        const raw = String(config[inp.name] ?? "");
+        const converted = convertTemplateToJS(raw);
+        return `${inp.name}: \`${escapeForTemplateLiteral(converted)}\``;
+      });
   }
 
   function generateProtocolStepFunctionBody(
@@ -551,7 +579,7 @@ ${stepBody}
     return [
       `${indent}// Triggered`,
       `${indent}let ${varName} = input;`,
-      `${indent}outputs['${sanitizeVarName(nodeId)}'] = { label: '${label}', data: ${varName} };`,
+      `${indent}outputs['${sanitizeNodeId(nodeId)}'] = { label: ${JSON.stringify(label)}, data: ${varName} };`,
     ];
   }
 
@@ -567,7 +595,7 @@ ${stepBody}
     const stepFnName =
       nodeToStepName.get(nodeId) || sanitizeStepName(nodeLabel);
 
-    const lines: string[] = [`${indent}// ${nodeLabel}`];
+    const lines: string[] = [`${indent}// ${commentSafe(nodeLabel)}`];
 
     // Check if this node's output is used by any downstream node
     const outputIsUsed = usedNodeOutputs.has(nodeId);
@@ -578,7 +606,7 @@ ${stepBody}
         `${indent}const ${varName} = await ${stepFnName}({ ...input, outputs });`
       );
       lines.push(
-        `${indent}outputs['${sanitizeVarName(nodeId)}'] = { label: '${nodeLabel}', data: ${varName} };`
+        `${indent}outputs['${sanitizeNodeId(nodeId)}'] = { label: ${JSON.stringify(nodeLabel)}, data: ${varName} };`
       );
     } else {
       // If output not used, don't store the result in a variable
@@ -595,16 +623,26 @@ ${stepBody}
     indent: string,
     visitedLocal: Set<string>
   ): string[] {
-    const condition = (node.data.config?.condition as string) || "true";
-    const convertedCondition = convertTemplateToJS(condition);
+    const condition =
+      resolveConditionExpression(node.data.config ?? {}) || "true";
+    // Written as template text: only the text between references is escaped,
+    // and references become ${...} with paths written as data.
+    const convertedCondition = isExportableCondition(condition, sdkResolves)
+      ? escapeTextAroundTokens(condition, convertTemplateToJS)
+      : undefined;
     const nextNodes = edgesBySource.get(nodeId) || [];
     const conditionVarName = `conditionValue_${sanitizeVarName(nodeId)}`;
     const lines: string[] = [];
 
     if (nextNodes.length > 0) {
-      lines.push(`${indent}// ${node.data.label}`);
+      lines.push(`${indent}// ${commentSafe(node.data.label ?? "")}`);
       lines.push(
-        `${indent}const ${conditionVarName} = \`${escapeForTemplateLiteral(convertedCondition)}\`;`
+        conditionValueLine(
+          condition,
+          convertedCondition,
+          conditionVarName,
+          indent
+        )
       );
       lines.push(`${indent}if (${conditionVarName}) {`);
 
@@ -672,7 +710,9 @@ ${stepBody}
       }
 
       default:
-        lines.push(`${indent}// Unknown node type: ${node.data.type}`);
+        lines.push(
+          `${indent}// Unknown node type: ${commentSafe(String(node.data.type))}`
+        );
         break;
     }
 

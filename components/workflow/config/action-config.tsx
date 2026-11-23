@@ -1,6 +1,7 @@
 "use client";
 
 import { useAtomValue, useSetAtom } from "jotai";
+import { selectAtom } from "jotai/utils";
 import { Gem, HelpCircle, Plus, Settings } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FeatureUpgradeDialog } from "@/components/billing/feature-upgrade-dialog";
@@ -39,12 +40,26 @@ import {
   MAX_RETRY_DELAY_SECONDS,
 } from "@/lib/workflow/nodes/http-request/constants";
 import {
+  countRegexRules,
   createEmptyGroup,
-  expressionToConditionGroup,
+  editorConditionState,
   visualConditionToExpression,
 } from "@/lib/workflow/nodes/condition/builder-utils";
-import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
-import { validateConditionExpressionUI } from "@/lib/workflow/nodes/condition/validator";
+import {
+  resolveCondition,
+  resolveConditionExpression,
+} from "@/lib/workflow/nodes/condition/resolver";
+import {
+  conditionUsesRegex,
+  limitMessage,
+  mostIn,
+  validateConditionExpressionUI,
+  visualConditionLimitError,
+  workflowConditions,
+  workflowRegexIssue,
+  workflowRegexLimit,
+} from "@/lib/workflow/nodes/condition/validator";
+import { useDebounce } from "@/lib/hooks/use-debounce";
 import { stateValueToEditorText } from "@/lib/workflow/nodes/workflow-state/utils";
 import { useFeatures } from "@/hooks/use-features";
 import type { FeatureDefinition } from "@/lib/features";
@@ -65,6 +80,7 @@ import {
   executionLogsAtom,
   lastExecutionLogsAtom,
   nodesAtom,
+  type WorkflowNode,
 } from "@/lib/workflow/store";
 import {
   findActionById,
@@ -79,6 +95,9 @@ import { Web3ConnectionSelect } from "./web3-connection-select";
 const DIGITS_ONLY = /[^0-9]/g;
 
 type ConfigValue = string | boolean | Record<string, unknown> | undefined;
+
+// Condition rules and the text they write.
+type WrittenRules = { group: ConditionGroup; written: string };
 
 type ActionConfigProps = {
   config: Record<string, unknown>;
@@ -114,6 +133,7 @@ function DatabaseQueryFields({
             wordWrap: "off",
           }}
           height="150px"
+          label="SQL Query"
           language="sql"
           onChange={(v) => onUpdateConfig("dbQuery", v)}
           value={(config?.dbQuery as string) || ""}
@@ -224,6 +244,7 @@ function HttpRequestFields({
         <TemplateCodeEditor
           disabled={disabled}
           height="100px"
+          label="Headers (JSON)"
           language="json"
           onChange={(value) => onUpdateConfig("httpHeaders", value || "{}")}
           value={(config?.httpHeaders as string) || "{}"}
@@ -231,17 +252,14 @@ function HttpRequestFields({
       </div>
       <div className="space-y-2">
         <Label htmlFor="httpBody">Body (JSON)</Label>
-        <div
-          className={config?.httpMethod === "GET" ? "opacity-50" : ""}
-        >
-          <TemplateCodeEditor
-            disabled={config?.httpMethod === "GET" || disabled}
-            height="120px"
-            language="json"
-            onChange={(value) => onUpdateConfig("httpBody", value || "{}")}
-            value={(config?.httpBody as string) || "{}"}
-          />
-        </div>
+        <TemplateCodeEditor
+          disabled={config?.httpMethod === "GET" || disabled}
+          height="120px"
+          label="Body (JSON)"
+          language="json"
+          onChange={(value) => onUpdateConfig("httpBody", value || "{}")}
+          value={(config?.httpBody as string) || "{}"}
+        />
         {config?.httpMethod === "GET" && (
           <p className="text-muted-foreground text-xs">
             Body is disabled for GET requests
@@ -315,63 +333,85 @@ function HttpRequestFields({
         disabled={disabled}
         id="failOnError"
         label="Fail workflow on error"
-        onChange={(checked) => onUpdateConfig("failOnError", checked)}
+        onChange={(next) => onUpdateConfig("failOnError", next)}
+        resetOnly={false}
         value={config?.failOnError}
       />
     </>
   );
 }
 
+type NodeSlice = Pick<WorkflowNode, "id" | "type" | "data">;
+
+// Nodes without positions: unchanged while nodes are dragged.
+const nodeSlicesAtom = selectAtom(
+  nodesAtom,
+  (nodes): NodeSlice[] =>
+    nodes.map(({ id, type, data }) => ({ id, type, data })),
+  (a, b) =>
+    a.length === b.length &&
+    a.every(
+      (node, i) =>
+        node.id === b[i].id &&
+        node.type === b[i].type &&
+        node.data === b[i].data
+    )
+);
+
 // Condition fields component with visual builder + expression mode toggle
-function ConditionFields({
+export function ConditionFields({
   config,
   onUpdateConfig,
   disabled,
+  nodeId,
 }: {
   config: Record<string, unknown>;
   onUpdateConfig: (key: string, value: ConfigValue) => void;
   disabled: boolean;
-}) {
-  const conditionValue =
-    resolveConditionExpression(config ?? {}) ?? "";
+  nodeId?: string;
+}): React.ReactElement {
+  const conditionValue = resolveConditionExpression(config ?? {}) ?? "";
   const existingConditionConfig = config?.conditionConfig as
     | { group: ConditionGroup }
     | undefined;
-
-  // Parse expression into visual form (memoized, computed once).
-  // Also derives the initial mode to avoid parsing the expression twice.
-  // Re-parses when the stored visual group's expression doesn't match the
-  // actual condition expression (e.g. after operator support was extended).
-  const { parsedGroup, initialMode } = useMemo(() => {
-    if (!conditionValue) {
-      return { parsedGroup: null, initialMode: "visual" as const };
+  // Saved rules count when they write the text that runs. Unfinished rules
+  // write "true", which runs nothing; they count only if no text runs either,
+  // so a rule being filled in stays in the builder.
+  const saved = useMemo((): WrittenRules | undefined => {
+    const group = existingConditionConfig?.group;
+    if (!group) {
+      return;
     }
-    if (existingConditionConfig) {
-      const storedExpression = visualConditionToExpression(
-        existingConditionConfig.group
-      );
-      if (storedExpression === conditionValue) {
-        return { parsedGroup: null, initialMode: "visual" as const };
-      }
-    }
-    const parsed = expressionToConditionGroup(conditionValue);
-    return {
-      parsedGroup: parsed,
-      initialMode: parsed !== null ? ("visual" as const) : ("expression" as const),
-    };
-  }, [conditionValue, existingConditionConfig]);
+    const written = visualConditionToExpression(group);
+    const matches =
+      written === conditionValue || (written === "true" && !conditionValue);
+    return matches ? { group, written } : undefined;
+  }, [existingConditionConfig, conditionValue]);
+  const savedGroup = saved?.group;
 
-  // Persist the parsed group to config so it's saved with the workflow.
-  // Track identity via conditionValue to reset when switching between nodes.
+  // Rules for the condition text, when they rebuild it exactly, and the mode
+  // to open in (editorConditionState).
+  const { parsedGroup, initialMode } = useMemo(
+    () => editorConditionState(conditionValue, existingConditionConfig?.group),
+    [conditionValue, existingConditionConfig]
+  );
+
+  const [mode, setMode] = useState<"visual" | "expression">(initialMode);
+
+  // Save parsed rules with the workflow while the rules are what is shown;
+  // typing in Expression mode must not save rules for a half-typed text.
   const persistedForExpression = useRef<string | null>(null);
   useEffect(() => {
-    if (parsedGroup && persistedForExpression.current !== conditionValue) {
+    if (
+      mode === "visual" &&
+      !disabled &&
+      parsedGroup &&
+      persistedForExpression.current !== conditionValue
+    ) {
       onUpdateConfig("conditionConfig", { group: parsedGroup });
       persistedForExpression.current = conditionValue;
     }
-  }, [parsedGroup, conditionValue, onUpdateConfig]);
-
-  const [mode, setMode] = useState<"visual" | "expression">(initialMode);
+  }, [mode, parsedGroup, conditionValue, onUpdateConfig]);
 
   const [validationError, setValidationError] = useState<string | null>(null);
 
@@ -396,17 +436,98 @@ function ConditionFields({
     onUpdateConfig("condition", expression);
   };
 
-  const handleModeSwitch = (newMode: "visual" | "expression"): void => {
-    if (newMode === "expression" && existingConditionConfig) {
-      // Clear visual config so the raw expression takes precedence on reload
+  // Switching modes keeps the saved rules; editing the text clears them, since
+  // the text then runs. They come back if the text returns to what they write.
+  const rulesBeforeEdit = useRef<WrittenRules | undefined>(undefined);
+  const handleExpressionChange = (value: string): void => {
+    // Unfinished rules write "true" and run nothing: never kept or restored.
+    const finished = saved && saved.written !== "true" ? saved : undefined;
+    const rules = finished ?? rulesBeforeEdit.current;
+    if (rules && rules.written === value) {
+      if (!finished) {
+        onUpdateConfig("conditionConfig", { group: rules.group });
+      }
+      onUpdateConfig("condition", value);
+      return;
+    }
+    if (existingConditionConfig) {
+      if (finished) {
+        rulesBeforeEdit.current = finished;
+      }
       onUpdateConfig("conditionConfig", undefined);
     }
-    setMode(newMode);
+    onUpdateConfig("condition", value);
   };
 
   const emptyGroup = useMemo(() => createEmptyGroup(), []);
-  const currentGroup =
-    existingConditionConfig?.group ?? parsedGroup ?? emptyGroup;
+  const shownGroup = savedGroup ?? parsedGroup ?? undefined;
+  const currentGroup = shownGroup ?? emptyGroup;
+  // Text with no rules that write it: the builder starts empty.
+  const shownAsRules = shownGroup !== undefined;
+
+  // Save checks compile patterns, so they wait for a pause in typing.
+  const checkedValue = useDebounce(conditionValue, 400);
+  const checkedNodes = useDebounce(useAtomValue(nodeSlicesAtom), 400);
+  // A disabled Condition never runs, so it never stops a save.
+  const enabled =
+    checkedNodes.find((node) => node.id === nodeId)?.data?.enabled !== false;
+
+  // This Condition's own problem that refuses a save, other than the cap.
+  const ownSaveError = useMemo(() => {
+    if (!enabled) {
+      return;
+    }
+    const fromRules = resolveCondition(config)?.fromRules ?? false;
+    const issue = workflowRegexIssue([
+      { index: 0, condition: checkedValue, fromRules },
+    ]);
+    return issue?.kind === "condition" ? issue.message : undefined;
+  }, [checkedValue, config, enabled]);
+
+  // The workflow's regex Conditions together, shown on each one.
+  const workflowLimitError = useMemo(() => {
+    if (!enabled || !conditionUsesRegex(checkedValue)) {
+      return;
+    }
+    const limit = workflowRegexLimit(workflowConditions(checkedNodes));
+    if (!limit) {
+      return;
+    }
+    const largest = checkedNodes[limit.index];
+    const where =
+      largest?.id === nodeId
+        ? "This Condition has the most"
+        : mostIn(largest?.data?.label);
+    return `${limitMessage(limit, where)}.`;
+  }, [checkedNodes, checkedValue, enabled, nodeId]);
+
+  // Limits the rules can reach that would fail every run.
+  const visualLimitError = useMemo(
+    () =>
+      mode === "visual"
+        ? visualConditionLimitError(
+            conditionValue,
+            countRegexRules(currentGroup)
+          )
+        : undefined,
+    [mode, conditionValue, currentGroup]
+  );
+  const firstError =
+    (mode === "visual" ? visualLimitError : undefined) ?? ownSaveError;
+  const savingBlocked = enabled && Boolean(firstError ?? workflowLimitError);
+  const blockingErrors = (
+    <>
+      {firstError && <p className="text-destructive text-xs">{firstError}</p>}
+      {workflowLimitError && (
+        <p className="text-destructive text-xs">{workflowLimitError}</p>
+      )}
+    </>
+  );
+  const wontSave = savingBlocked && (
+    <p className="text-muted-foreground text-xs">
+      Changes to this workflow won't save until this is fixed.
+    </p>
+  );
 
   return (
     <div className="space-y-3">
@@ -420,7 +541,7 @@ function ConditionFields({
                 : "text-muted-foreground hover:text-foreground"
             }`}
             disabled={disabled}
-            onClick={() => handleModeSwitch("visual")}
+            onClick={() => setMode("visual")}
             type="button"
           >
             Visual
@@ -432,12 +553,22 @@ function ConditionFields({
                 : "text-muted-foreground hover:text-foreground"
             }`}
             disabled={disabled}
-            onClick={() => handleModeSwitch("expression")}
+            onClick={() => setMode("expression")}
             type="button"
           >
             Expression
           </button>
         </div>
+      </div>
+
+      {/* Mounted in both modes, so switching to Visual announces it. */}
+      <div aria-live="polite">
+        {mode === "visual" && !shownAsRules && conditionValue.trim() && (
+          <p className="text-muted-foreground text-xs">
+            This expression can't be shown as rules. Any change below replaces
+            it. To keep it, edit it in Expression mode.
+          </p>
+        )}
       </div>
 
       {mode === "visual" ? (
@@ -447,10 +578,15 @@ function ConditionFields({
             group={currentGroup}
             onChange={handleVisualChange}
           />
+          {/* Always mounted, so screen readers announce it once. */}
+          <div aria-live="polite">
+            {blockingErrors}
+            {wontSave}
+          </div>
           {conditionValue.trim() && (
             <div className="space-y-1">
               <Label className="text-muted-foreground text-xs">
-                Generated expression
+                {shownAsRules ? "Generated expression" : "Current expression"}
               </Label>
               <pre className="bg-muted rounded-md p-2 text-xs break-all whitespace-pre-wrap">
                 {conditionValue}
@@ -463,22 +599,32 @@ function ConditionFields({
           <TemplateBadgeInput
             disabled={disabled}
             id="condition"
-            onChange={(value) => onUpdateConfig("condition", value)}
+            onChange={handleExpressionChange}
             placeholder="e.g., 5 > 3, status === 200, {{PreviousNode.value}} > 100"
             value={conditionValue}
           />
-          {validationError && (
-            <p className="text-xs text-yellow-600">{validationError}</p>
-          )}
+          {/* Always mounted, so screen readers announce an error once. */}
+          <div aria-live="polite">
+            {blockingErrors}
+            {validationError && validationError !== ownSaveError && (
+              <p className="text-xs text-yellow-600">{validationError}</p>
+            )}
+            {wontSave}
+          </div>
           <p className="text-muted-foreground text-xs">
             Enter a JavaScript expression that evaluates to true or false. Use @
             to reference previous node outputs.
+          </p>
+          <p className="text-muted-foreground text-xs">
+            Regex: matchesRegex(@field, &quot;^0x&quot;). Inside the quotes, type
+            each backslash twice, e.g. &quot;^\\d+$&quot;.
           </p>
         </div>
       )}
     </div>
   );
 }
+
 /**
  * Extract dot-paths from the first element of the array referenced by arraySource.
  */
@@ -754,6 +900,7 @@ function StateSetFields({
             wordWrap: "off",
           }}
           height="100px"
+          label="Value"
           language="json"
           onChange={(v) => onUpdateConfig("value", v)}
           value={stateValueToEditorText(config?.value)}
@@ -809,11 +956,13 @@ function SystemActionFields({
   config,
   onUpdateConfig,
   disabled,
+  nodeId,
 }: {
   actionType: string;
   config: Record<string, unknown>;
   onUpdateConfig: (key: string, value: ConfigValue) => void;
   disabled: boolean;
+  nodeId?: string;
 }) {
   switch (actionType) {
     case "HTTP Request":
@@ -837,6 +986,7 @@ function SystemActionFields({
         <ConditionFields
           config={config}
           disabled={disabled}
+          nodeId={nodeId}
           onUpdateConfig={onUpdateConfig}
         />
       );
@@ -1289,6 +1439,7 @@ export function ActionConfig({
         actionType={(config?.actionType as string) || ""}
         config={config}
         disabled={disabled}
+        nodeId={nodeId}
         onUpdateConfig={onUpdateConfig}
       />
 

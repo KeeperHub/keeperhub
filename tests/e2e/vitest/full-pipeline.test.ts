@@ -64,6 +64,7 @@ const TEST_WORKFLOW_PREFIX = `${TEST_PREFIX}wf_`;
 const TEST_EXECUTION_PREFIX = `${TEST_PREFIX}exec_`;
 const TEST_SCHEDULE_PREFIX = `${TEST_PREFIX}sched_`;
 const TEST_ORG_ID = `${TEST_PREFIX}org`;
+const TEST_MEMBER_ID = `${TEST_PREFIX}member`;
 const TEST_QUEUE_NAME = "keeperhub-pipeline-test-queue";
 
 // Test RPC URLs
@@ -172,6 +173,7 @@ describe.skipIf(SKIP_INFRA_TESTS)("Full Pipeline E2E", () => {
 
     // Ensure the org that owns the test workflows exists (workflows.organizationId
     // is NOT NULL and the scheduler/executor INNER JOINs organization).
+    await queryClient`DELETE FROM member WHERE organization_id = ${TEST_ORG_ID}`;
     await queryClient`DELETE FROM organization WHERE id = ${TEST_ORG_ID}`;
     await db.insert(organization).values({
       id: TEST_ORG_ID,
@@ -179,6 +181,11 @@ describe.skipIf(SKIP_INFRA_TESTS)("Full Pipeline E2E", () => {
       slug: TEST_ORG_ID,
       createdAt: new Date(),
     });
+    // Runs use a creator's RPC preferences only while they can act in the org.
+    await queryClient`
+      INSERT INTO member (id, organization_id, user_id, role, created_at)
+      VALUES (${TEST_MEMBER_ID}, ${TEST_ORG_ID}, ${TEST_USER_ID}, 'owner', now())
+    `;
   });
 
   beforeEach(async () => {
@@ -214,6 +221,7 @@ describe.skipIf(SKIP_INFRA_TESTS)("Full Pipeline E2E", () => {
       await queryClient`DELETE FROM workflow_executions WHERE workflow_id LIKE ${`${TEST_WORKFLOW_PREFIX}%`}`;
       await queryClient`DELETE FROM workflow_schedules WHERE id LIKE ${`${TEST_SCHEDULE_PREFIX}%`}`;
       await queryClient`DELETE FROM workflows WHERE id LIKE ${`${TEST_WORKFLOW_PREFIX}%`}`;
+      await queryClient`DELETE FROM member WHERE organization_id = ${TEST_ORG_ID}`;
       await queryClient`DELETE FROM organization WHERE id = ${TEST_ORG_ID}`;
       await db
         .delete(userRpcPreferences)

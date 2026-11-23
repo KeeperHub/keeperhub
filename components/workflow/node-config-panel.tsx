@@ -21,8 +21,13 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ProjectSelect } from "@/components/projects/project-select";
 import { TagSelect } from "@/components/tags/tag-select";
+import { WorkflowFailureAlerts } from "@/components/failure-alerts/workflow-failure-alerts";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
-import { api } from "@/lib/api-client";
+import {
+  api,
+  WORKFLOW_SAVE_ERROR_TOAST,
+  workflowSaveErrorMessage,
+} from "@/lib/api-client";
 import { actionConnectionMode } from "@/lib/integration-helpers";
 import { integrationsAtom } from "@/lib/integrations-store";
 import { SYSTEM_ACTION_INTEGRATIONS } from "@/lib/integrations/system";
@@ -40,8 +45,10 @@ import {
   deleteNodeAtom,
   deleteSelectedItemsAtom,
   edgesAtom,
+  getTriggerTypeFromConfig,
   isGeneratingAtom,
   isWorkflowOwnerAtom,
+  isWorkflowViewerAtom,
   newlyCreatedNodeIdAtom,
   nodesAtom,
   pendingIntegrationNodesAtom,
@@ -70,7 +77,7 @@ const MultiSelectionPanel = ({
 }: {
   selectedNodes: { id: string; selected?: boolean }[];
   selectedEdges: { id: string; selected?: boolean }[];
-  onDelete: () => void;
+  onDelete?: () => void;
 }) => {
   const [showDeleteAlert, setShowDeleteAlert] = useState(false);
 
@@ -88,7 +95,7 @@ const MultiSelectionPanel = ({
   const selectionText = selectionParts.join(" and ");
 
   const handleDelete = () => {
-    onDelete();
+    onDelete?.();
     setShowDeleteAlert(false);
   };
 
@@ -106,17 +113,19 @@ const MultiSelectionPanel = ({
             </p>
           </div>
 
-          <div className="flex items-center gap-2 pt-4">
-            <Button
-              className="text-muted-foreground"
-              onClick={() => setShowDeleteAlert(true)}
-              size="sm"
-              variant="ghost"
-            >
-              <Trash2 className="mr-2 size-4" />
-              Delete
-            </Button>
-          </div>
+          {onDelete && (
+            <div className="flex items-center gap-2 pt-4">
+              <Button
+                className="text-muted-foreground"
+                onClick={() => setShowDeleteAlert(true)}
+                size="sm"
+                variant="ghost"
+              >
+                <Trash2 className="mr-2 size-4" />
+                Delete
+              </Button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -160,6 +169,10 @@ export const PanelInner = () => {
     currentWorkflowTagIdAtom
   );
   const isOwner = useAtomValue(isWorkflowOwnerAtom);
+  // Viewers of the workflow's org cannot edit but may read its run and
+  // version history.
+  const isViewer = useAtomValue(isWorkflowViewerAtom);
+  const canReadHistory = isOwner || isViewer;
   const workflowNotFound = useAtomValue(workflowNotFoundAtom);
   const updateNodeData = useSetAtom(updateNodeDataAtom);
   const deleteNode = useSetAtom(deleteNodeAtom);
@@ -580,7 +593,10 @@ export const PanelInner = () => {
         }, 500);
       } catch (error) {
         console.error("Failed to update workflow name:", error);
-        toast.error("Failed to update workspace name");
+        toast.error(
+          workflowSaveErrorMessage(error, "Failed to update workflow name"),
+          WORKFLOW_SAVE_ERROR_TOAST
+        );
       }
     }
   };
@@ -653,7 +669,7 @@ export const PanelInner = () => {
   if (hasMultipleSelections) {
     return (
       <MultiSelectionPanel
-        onDelete={deleteSelectedItems}
+        onDelete={isOwner ? deleteSelectedItems : undefined}
         selectedEdges={selectedEdges}
         selectedNodes={selectedNodes}
       />
@@ -728,220 +744,23 @@ export const PanelInner = () => {
     );
   }
 
-  // If no node is selected, show workspace properties and runs
-  if (!selectedNode) {
-    return (
-      <>
-        <Tabs
-          className="size-full"
-          defaultValue="properties"
-          onValueChange={setActiveTab}
-          value={
-            activeTab === "properties" ||
-            ((activeTab === "runs" || activeTab === "history") && isOwner)
-              ? activeTab
-              : "properties"
-          }
-        >
-          <TabsList className="h-14 w-full shrink-0 rounded-none border-b bg-transparent px-4 py-2.5">
-            <TabsTrigger
-              className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
-              value="properties"
-            >
-              Properties
-            </TabsTrigger>
-            {isOwner && (
-              <TabsTrigger
-                className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
-                value="runs"
-              >
-                Runs
-              </TabsTrigger>
-            )}
-            {isOwner && (
-              <TabsTrigger
-                className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
-                value="history"
-              >
-                History
-              </TabsTrigger>
-            )}
-          </TabsList>
-          <TabsContent
-            className="flex flex-col overflow-hidden"
-            value="properties"
-          >
-            <div className="flex-1 space-y-4 overflow-y-auto p-4">
-              <div className="space-y-2">
-                <Label className="ml-1" htmlFor="workflow-name">
-                  Workflow Name
-                </Label>
-                <Input
-                  disabled={!isOwner}
-                  id="workflow-name"
-                  onChange={(e) => handleUpdateWorkspaceName(e.target.value)}
-                  value={currentWorkflowName}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label className="ml-1" htmlFor="workflow-description">
-                  Description
-                </Label>
-                <Textarea
-                  disabled={!isOwner}
-                  id="workflow-description"
-                  onChange={(e) =>
-                    handleUpdateWorkflowDescription(e.target.value)
-                  }
-                  placeholder="Optional workflow description"
-                  rows={3}
-                  value={currentWorkflowDescription}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label className="ml-1">Project</Label>
-                <ProjectSelect
-                  disabled={!isOwner}
-                  onChange={handleUpdateWorkflowProject}
-                  value={currentWorkflowProjectId}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label className="ml-1">Tag</Label>
-                <p className="ml-1 text-muted-foreground text-xs">
-                  Add a tag to organise your workflow within your project.
-                </p>
-                <TagSelect
-                  disabled={!isOwner}
-                  onChange={handleUpdateWorkflowTag}
-                  value={currentWorkflowTagId}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label className="ml-1" htmlFor="workflow-id">
-                  Workflow ID
-                </Label>
-                <Input
-                  disabled
-                  id="workflow-id"
-                  value={currentWorkflowId || "Not saved"}
-                />
-              </div>
-              {!isOwner && (
-                <div className="rounded-lg border border-muted bg-muted/30 p-3">
-                  <p className="text-muted-foreground text-sm">
-                    You're viewing this workflow in read-only mode.
-                    Use it as a template to create your own editable copy.
-                  </p>
-                </div>
-              )}
-              {isOwner && (
-                <div className="flex items-center gap-2 pt-4">
-                  <Button
-                    className="text-muted-foreground"
-                    disabled={workflowNotFound}
-                    onClick={() => setShowClearDialog(true)}
-                    size="sm"
-                    variant="ghost"
-                  >
-                    <Eraser className="mr-2 size-4" />
-                    Clear
-                  </Button>
-                  <Button
-                    className="text-muted-foreground"
-                    disabled={workflowNotFound}
-                    onClick={() => {
-                      setShowDeleteDialog(true);
-                    }}
-                    size="sm"
-                    variant="ghost"
-                  >
-                    <Trash2 className="mr-2 size-4" />
-                    Delete
-                  </Button>
-                </div>
-              )}
-            </div>
-          </TabsContent>
-          {isOwner && (
-            <TabsContent className="flex flex-col overflow-hidden" value="runs">
-              {/* Actions in content header */}
-              <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
-                <Button
-                  className="text-muted-foreground"
-                  disabled={isRefreshing}
-                  onClick={handleRefreshRuns}
-                  size="sm"
-                  variant="ghost"
-                >
-                  <RefreshCw
-                    className={`mr-2 size-4 ${isRefreshing ? "animate-spin" : ""}`}
-                  />
-                  Refresh
-                </Button>
-                <Button
-                  className="text-muted-foreground"
-                  disabled={workflowNotFound}
-                  onClick={() => setShowDeleteRunsAlert(true)}
-                  size="sm"
-                  variant="ghost"
-                >
-                  <Eraser className="mr-2 size-4" />
-                  Clear All
-                </Button>
-              </div>
-              <div className="flex-1 space-y-4 overflow-y-auto p-4">
-                <WorkflowRuns
-                  isActive={activeTab === "runs"}
-                  onRefreshRef={refreshRunsRef}
-                />
-              </div>
-            </TabsContent>
-          )}
-          {isOwner && (
-            <TabsContent
-              className="flex flex-col overflow-y-auto p-3"
-              value="history"
-            >
-              <VersionHistoryContent active={activeTab === "history"} />
-            </TabsContent>
-          )}
-        </Tabs>
-
-        <AlertDialog
-          onOpenChange={setShowDeleteRunsAlert}
-          open={showDeleteRunsAlert}
-        >
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete All Runs</AlertDialogTitle>
-              <AlertDialogDescription>
-                Are you sure you want to delete all workflow runs? This action
-                cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={handleDeleteAllRuns}>
-                Delete
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </>
-    );
-  }
-
-  return (
+  // Both panels (workflow and node) render their tabs through this one
+  // function, so the tab panels keep the same order and position. React then
+  // keeps the open Runs panel mounted when a node is selected or deselected,
+  // instead of handing its slot to a different panel.
+  const renderPanelTabs = (
+    propertiesContent: React.ReactNode,
+    historyNode?: { id: string; label: string | null }
+  ): React.ReactElement => (
     <>
       <Tabs
         className="size-full"
-        data-testid="properties-panel"
+        data-testid={historyNode ? "properties-panel" : undefined}
         defaultValue="properties"
         onValueChange={setActiveTab}
         value={
           activeTab === "properties" ||
-          ((activeTab === "runs" || activeTab === "history") && isOwner)
+          ((activeTab === "runs" || activeTab === "history") && canReadHistory)
             ? activeTab
             : "properties"
         }
@@ -953,7 +772,7 @@ export const PanelInner = () => {
           >
             Properties
           </TabsTrigger>
-          {isOwner && (
+          {canReadHistory && (
             <TabsTrigger
               className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
               value="runs"
@@ -961,7 +780,7 @@ export const PanelInner = () => {
               Runs
             </TabsTrigger>
           )}
-          {isOwner && (
+          {canReadHistory && (
             <TabsTrigger
               className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
               value="history"
@@ -974,6 +793,200 @@ export const PanelInner = () => {
           className="flex flex-col overflow-hidden"
           value="properties"
         >
+          {propertiesContent}
+        </TabsContent>
+        {canReadHistory && (
+          <TabsContent className="flex flex-col overflow-hidden" value="runs">
+            {/* Actions in content header */}
+            <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
+              <Button
+                className="text-muted-foreground"
+                disabled={isRefreshing}
+                onClick={handleRefreshRuns}
+                size="sm"
+                variant="ghost"
+              >
+                <RefreshCw
+                  className={`mr-2 size-4 ${isRefreshing ? "animate-spin" : ""}`}
+                />
+                Refresh
+              </Button>
+              {isOwner && (
+                <Button
+                  className="text-muted-foreground"
+                  disabled={workflowNotFound}
+                  onClick={() => setShowDeleteRunsAlert(true)}
+                  size="sm"
+                  variant="ghost"
+                >
+                  <Eraser className="mr-2 size-4" />
+                  Clear All
+                </Button>
+              )}
+            </div>
+            <div className="flex-1 space-y-4 overflow-y-auto p-4">
+              <WorkflowRuns
+                isActive={activeTab === "runs"}
+                onRefreshRef={refreshRunsRef}
+              />
+            </div>
+          </TabsContent>
+        )}
+        {canReadHistory && (
+          <TabsContent
+            className="flex flex-col overflow-y-auto p-3"
+            value="history"
+          >
+            {/* Keyed by scope so the workflow and node timelines never share
+                paging or expanded rows. */}
+            <VersionHistoryContent
+              active={activeTab === "history"}
+              key={historyNode?.id ?? "workflow"}
+              nodeId={historyNode?.id}
+              nodeLabel={historyNode?.label}
+            />
+          </TabsContent>
+        )}
+      </Tabs>
+
+      <AlertDialog
+        onOpenChange={setShowDeleteRunsAlert}
+        open={showDeleteRunsAlert}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete All Runs</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete all workflow runs? This action
+              cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeleteAllRuns}>
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+
+  // If no node is selected, show workspace properties and runs
+  if (!selectedNode) {
+    return (
+      <>
+        {renderPanelTabs(
+          <div className="flex-1 space-y-4 overflow-y-auto p-4">
+            <div className="space-y-2">
+              <Label className="ml-1" htmlFor="workflow-name">
+                Workflow Name
+              </Label>
+              <Input
+                disabled={!isOwner}
+                id="workflow-name"
+                onChange={(e) => handleUpdateWorkspaceName(e.target.value)}
+                value={currentWorkflowName}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="ml-1" htmlFor="workflow-description">
+                Description
+              </Label>
+              <Textarea
+                disabled={!isOwner}
+                id="workflow-description"
+                onChange={(e) =>
+                  handleUpdateWorkflowDescription(e.target.value)
+                }
+                placeholder="Optional workflow description"
+                rows={3}
+                value={currentWorkflowDescription}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="ml-1">Project</Label>
+              <ProjectSelect
+                disabled={!isOwner}
+                onChange={handleUpdateWorkflowProject}
+                value={currentWorkflowProjectId}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="ml-1">Tag</Label>
+              <p className="ml-1 text-muted-foreground text-xs">
+                Add a tag to organise your workflow within your project.
+              </p>
+              <TagSelect
+                disabled={!isOwner}
+                onChange={handleUpdateWorkflowTag}
+                value={currentWorkflowTagId}
+              />
+            </div>
+            {isOwner && currentWorkflowId && !workflowNotFound && (
+              <WorkflowFailureAlerts
+                triggerType={getTriggerTypeFromConfig(
+                  nodes.find((node) => node.data.type === "trigger")?.data
+                    .config
+                )}
+                workflowId={currentWorkflowId}
+              />
+            )}
+            <div className="space-y-2">
+              <Label className="ml-1" htmlFor="workflow-id">
+                Workflow ID
+              </Label>
+              <Input
+                disabled
+                id="workflow-id"
+                value={currentWorkflowId || "Not saved"}
+              />
+            </div>
+            {!isOwner && (
+              <div className="rounded-lg border border-muted bg-muted/30 p-3">
+                <p className="text-muted-foreground text-sm">
+                  {isViewer
+                    ? "You have view-only access to this organization."
+                    : "You're viewing this workflow in read-only mode. Use it as a template to create your own editable copy."}
+                </p>
+              </div>
+            )}
+            {isOwner && (
+              <div className="flex items-center gap-2 pt-4">
+                <Button
+                  className="text-muted-foreground"
+                  disabled={workflowNotFound}
+                  onClick={() => setShowClearDialog(true)}
+                  size="sm"
+                  variant="ghost"
+                >
+                  <Eraser className="mr-2 size-4" />
+                  Clear
+                </Button>
+                <Button
+                  className="text-muted-foreground"
+                  disabled={workflowNotFound}
+                  onClick={() => {
+                    setShowDeleteDialog(true);
+                  }}
+                  size="sm"
+                  variant="ghost"
+                >
+                  <Trash2 className="mr-2 size-4" />
+                  Delete
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <>
+      {renderPanelTabs(
+        <>
           {/* Action selection - full height flex layout */}
           {selectedNode.data.type === "action" &&
             !selectedNode.data.config?.actionType &&
@@ -1071,8 +1084,9 @@ export const PanelInner = () => {
               {!isOwner && (
                 <div className="rounded-lg border border-muted bg-muted/30 p-3">
                   <p className="text-muted-foreground text-sm">
-                    You're viewing this workflow in read-only mode.
-                    Use it as a template to create your own editable copy.
+                    {isViewer
+                      ? "You have view-only access to this organization."
+                      : "You're viewing this workflow in read-only mode. Use it as a template to create your own editable copy."}
                   </p>
                 </div>
               )}
@@ -1117,75 +1131,12 @@ export const PanelInner = () => {
               )}
             </div>
           )}
-        </TabsContent>
-        {isOwner && (
-          <TabsContent
-            className="flex flex-col overflow-y-auto p-3"
-            value="history"
-          >
-            <VersionHistoryContent
-              active={activeTab === "history"}
-              nodeId={selectedNode.id}
-              nodeLabel={(selectedNode.data.label as string) ?? null}
-            />
-          </TabsContent>
-        )}
-        {isOwner && (
-          <TabsContent className="flex flex-col overflow-hidden" value="runs">
-            {/* Actions in content header */}
-            <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
-              <Button
-                className="text-muted-foreground"
-                disabled={isRefreshing}
-                onClick={handleRefreshRuns}
-                size="sm"
-                variant="ghost"
-              >
-                <RefreshCw
-                  className={`mr-2 size-4 ${isRefreshing ? "animate-spin" : ""}`}
-                />
-                Refresh
-              </Button>
-              <Button
-                className="text-muted-foreground"
-                onClick={() => setShowDeleteRunsAlert(true)}
-                size="sm"
-                variant="ghost"
-              >
-                <Eraser className="mr-2 size-4" />
-                Clear All
-              </Button>
-            </div>
-            <div className="flex-1 space-y-4 overflow-y-auto p-4">
-              <WorkflowRuns
-                isActive={activeTab === "runs"}
-                onRefreshRef={refreshRunsRef}
-              />
-            </div>
-          </TabsContent>
-        )}
-      </Tabs>
-
-      <AlertDialog
-        onOpenChange={setShowDeleteRunsAlert}
-        open={showDeleteRunsAlert}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete All Runs</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete all workflow runs? This action
-              cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDeleteAllRuns}>
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        </>,
+        {
+          id: selectedNode.id,
+          label: (selectedNode.data.label as string) ?? null,
+        }
+      )}
 
       <AlertDialog
         onOpenChange={setShowDeleteNodeAlert}

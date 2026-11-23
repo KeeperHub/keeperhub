@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gt, gte, sql } from "drizzle-orm";
 import { type Address, createPublicClient, http } from "viem";
 import { db } from "@/lib/db";
 import {
@@ -124,6 +124,32 @@ async function resolveAllocation(
     .limit(1);
 
   return row[0]?.allocatedCents ?? capCents;
+}
+
+/**
+ * Cut an org's allocation for a period down to the cap of the plan it now holds.
+ *
+ * resolveAllocation never lowers an allocation within a period, so without this
+ * an org dropped from a paid plan keeps the paid credit until the period ends.
+ */
+export async function lowerGasAllocationToPlan(
+  organizationId: string,
+  periodStart: Date,
+  planName: PlanName,
+  overrides?: Partial<PlanLimits> | null
+): Promise<void> {
+  const capCents = getGasCreditCapCents(planName, overrides);
+
+  await db
+    .update(gasCreditAllocations)
+    .set({ allocatedCents: capCents })
+    .where(
+      and(
+        eq(gasCreditAllocations.organizationId, organizationId),
+        eq(gasCreditAllocations.periodStart, periodStart),
+        gt(gasCreditAllocations.allocatedCents, capCents)
+      )
+    );
 }
 
 /**

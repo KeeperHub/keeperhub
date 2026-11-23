@@ -36,7 +36,9 @@ import {
   NO_STEP_COMPLETION_REGEX,
 } from "@/lib/workflow/executor/runner-error-patterns";
 import type { StepContext } from "@/lib/workflow/executor/step-handler";
+import { readActionType } from "@/lib/workflow/node-config-read";
 import type { WorkflowNode } from "@/lib/workflow/store";
+import { sanitizeNodeId } from "@/lib/workflow/template-ref";
 
 /** Result captured for each step run inside a body iteration. */
 export type BodyExecutionResult = {
@@ -135,12 +137,6 @@ export type RunBodyContext = {
    *  inside this function. */
   baseStepContext: Omit<StepContext, "nodeId" | "nodeName" | "nodeType">;
 };
-
-const SANITIZE_PATTERN = /[^a-zA-Z0-9]/g;
-
-function sanitizeNodeId(nodeId: string): string {
-  return nodeId.replace(SANITIZE_PATTERN, "_");
-}
 
 function isErrorStepResult(stepResult: unknown): boolean {
   return (
@@ -353,7 +349,7 @@ export async function runBodyNode(
   ctx.injectBuiltinVariables(ctx.scopedOutputs);
 
   const config = node.data.config ?? {};
-  const actionType = config.actionType as string | undefined;
+  const actionType = readActionType(config);
   let processedConfig: Record<string, unknown> | undefined;
 
   try {

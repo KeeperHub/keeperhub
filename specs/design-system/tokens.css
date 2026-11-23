@@ -160,6 +160,7 @@
   --ds-z-flyout: 30;
   --ds-z-sidebar: 40;
   --ds-z-modal: 50;
+  --ds-z-banner: 55;
   --ds-z-toast: 60;
 
   /* --- Motion / Transitions --- */
@@ -173,6 +174,7 @@
 
   /* --- Layout Constants --- */
   --ds-header-height: 60px;
+  --ds-app-banner-slot-height: 36px;
   --ds-sidebar-strip-width: 32px;
   --ds-flyout-width: 280px;
   --ds-drawer-width: 220px;
@@ -193,6 +195,10 @@
   --color-text-link-hover: var(--ds-green-400, oklch(0.8671 0.2514 147.76));
   --color-text-accent: var(--ds-green-accent, #09fd67);
   --color-text-error: var(--ds-red-500, oklch(0.577 0.245 27.325));
+  --color-status-deactivated: var(
+    --status-deactivated,
+    oklch(0.924 0.12 95.746 / 0.7)
+  );
 
   /* --- Color: Background --- */
   --color-bg: var(--ds-neutral-50, oklch(0.9842 0.0034 247.86));
@@ -302,6 +308,7 @@
   --z-flyout: var(--ds-z-flyout, 30);
   --z-sidebar: var(--ds-z-sidebar, 40);
   --z-modal: var(--ds-z-modal, 50);
+  --z-banner: var(--ds-z-banner, 55);
   --z-toast: var(--ds-z-toast, 60);
 
   /* --- Motion --- */
@@ -315,6 +322,7 @@
 
   /* --- Layout --- */
   --header-height: var(--ds-header-height, 60px);
+  --app-banner-slot-height: var(--ds-app-banner-slot-height, 36px);
   --sidebar-strip-width: var(--ds-sidebar-strip-width, 32px);
   --flyout-width: var(--ds-flyout-width, 280px);
   --drawer-width: var(--ds-drawer-width, 220px);

@@ -6,6 +6,7 @@ import {
   Check,
   Copy,
   Download,
+  Eye,
   Globe,
   Link2,
   Loader2,
@@ -20,22 +21,49 @@ import {
 } from "lucide-react";
 import { nanoid } from "nanoid";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import {
+  type CSSProperties,
+  type Ref,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { toast, useSonner } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ButtonGroup } from "@/components/ui/button-group";
+import { MobileNav } from "@/components/mobile-nav";
+import { useSwitcherOffering } from "@/components/organization/org-switch-runner";
 import { OrgSwitcher } from "@/components/organization/org-switcher";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { GoLiveOverlay } from "@/components/overlays/go-live-overlay";
 import { ListingOverlay } from "@/components/overlays/listing-overlay";
 import { ManualRunInputOverlay } from "@/components/overlays/manual-run-input-overlay";
-import { Switch } from "@/components/ui/switch";
 import { WalletToolbarButton } from "@/components/workflow/wallet-toolbar-button";
 import { BUILTIN_NODE_ID } from "@/lib/workflow/editor/builtin-variables";
 import { useAuthPrompt } from "@/components/auth/provider";
 import { isAnonymousUser } from "@/lib/is-anonymous";
-import { api, ApiError, type Project, type Tag } from "@/lib/api-client";
+import {
+  ApiError,
+  api,
+  type Project,
+  type Tag,
+  WORKFLOW_SAVE_ERROR_TOAST,
+  workflowSaveErrorMessage,
+} from "@/lib/api-client";
 import { useProjects, useTags } from "@/lib/hooks/use-org-data";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
+import {
+  READ_ONLY_LABEL,
+  VIEWER_DISABLED_REASON,
+} from "@/lib/organization/role-label";
+import {
+  PREVIEW_LABEL,
+  USE_TEMPLATE_IMPORTING,
+  USE_TEMPLATE_LABEL,
+  USE_TEMPLATE_TEXT,
+} from "@/lib/workflow/use-template-copy";
 import { VersionPreviewBanner } from "./version-preview-banner";
 import { useSession } from "@/lib/auth-client";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
@@ -53,7 +81,7 @@ import {
   shouldCollectManualRunInput,
 } from "@/lib/workflow/editor/manual-run-input";
 import { evaluateShowWhen, type ShowWhen } from "@/lib/workflow/editor/show-when";
-import { getMissingBatchCallFields } from "@/lib/workflow/validation/action-config";
+import { getMissingListEntryFields } from "@/lib/workflow/validation/action-config";
 import { ensureSavedBeforeRun } from "@/lib/workflow/run-preflight";
 import {
   addNodeAtom,
@@ -82,15 +110,18 @@ import {
   isSavingAtom,
   isWorkflowEnabled,
   isWorkflowOwnerAtom,
+  isWorkflowViewerAtom,
   nodesAtom,
   previewVersionAtom,
   propertiesPanelActiveTabAtom,
   redoAtom,
+  rightPanelWidthAtom,
   runsRefreshTriggerAtom,
   selectedEdgeAtom,
   selectedExecutionIdAtom,
   selectedNodeAtom,
   shouldShowEnableSwitch,
+  workflowEnableToggleAtom,
   triggerExecuteAtom,
   undoAtom,
   updateNodeDataAtom,
@@ -99,6 +130,8 @@ import {
   WorkflowTriggerEnum,
   type WorkflowVisibility,
 } from "@/lib/workflow/store";
+import { extraUnsavedAtom, flushExtraSaves } from "@/lib/workflow/extra-saves";
+import { findStoredRefTokens } from "@/lib/workflow/template-ref";
 import {
   findActionById,
   flattenConfigFields,
@@ -106,7 +139,10 @@ import {
   getIntegrationLabels,
 } from "@/plugins/registry";
 import { Panel } from "../ai-elements/panel";
-import { ConfigurationOverlay } from "../overlays/configuration-overlay";
+import {
+  CONFIGURATION_OVERLAY_OPTIONS,
+  ConfigurationOverlay,
+} from "../overlays/configuration-overlay";
 import { ConfirmOverlay } from "../overlays/confirm-overlay";
 import { useOverlay } from "../overlays/overlay-provider";
 import { WorkflowIOOverlay } from "../overlays/workflow-io-overlay";
@@ -118,6 +154,8 @@ import {
   TooltipTrigger,
 } from "../ui/tooltip";
 import { UserMenu } from "../workflows/user-menu";
+import { STEP_SIZE } from "./use-show-step-settings";
+
 type WorkflowToolbarProps = {
   workflowId?: string;
   persistent?: boolean;
@@ -197,12 +235,9 @@ function extractTemplateReferences(
     return [];
   }
 
-  const pattern = /\{\{@([^:]+):([^}]+)\}\}/g;
-  const matches = value.matchAll(pattern);
-
-  return Array.from(matches).map((match) => ({
-    nodeId: match[1],
-    displayText: match[2],
+  return findStoredRefTokens(value).map((ref) => ({
+    nodeId: ref.nodeId,
+    displayText: ref.rest,
   }));
 }
 
@@ -351,27 +386,19 @@ function getNodeMissingFields(
       fieldLabel: field.label,
     }));
 
-  // Each call inside a batch-write-contract/batch-read-contract `calls[]` is
-  // its own contract/ABI/function trio, required the same as a standalone
-  // write-contract/read-contract node. An incomplete call blocks Run the
-  // same way a missing top-level required field does.
-  const missingCallFields = flatFields
-    .filter(
-      (field) =>
-        field.type === "call-list-builder" &&
-        shouldShowField(field, config || {})
-    )
+  // An incomplete list builder entry blocks Run like a missing required field.
+  const missingEntryFields = flatFields
+    .filter((field) => shouldShowField(field, config || {}))
     .flatMap((field) =>
-      getMissingBatchCallFields(
-        config?.[field.key],
-        field.hideNetworkColumn
-      ).map((missingCall) => ({
-        fieldKey: `${field.key}[${missingCall.callIndex}].${missingCall.fieldKey}`,
-        fieldLabel: `Call ${missingCall.callIndex + 1}: ${missingCall.fieldLabel}`,
-      }))
+      getMissingListEntryFields(field, config?.[field.key]).map(
+        (missingEntry) => ({
+          fieldKey: `${field.key}[${missingEntry.entryIndex}].${missingEntry.fieldKey}`,
+          fieldLabel: `${missingEntry.entryLabel} ${missingEntry.entryIndex + 1}: ${missingEntry.fieldLabel}`,
+        })
+      )
     );
 
-  const allMissingFields = [...missingFields, ...missingCallFields];
+  const allMissingFields = [...missingFields, ...missingEntryFields];
 
   if (allMissingFields.length === 0) {
     return null;
@@ -686,12 +713,20 @@ function useWorkflowHandlers({
     // this save supersedes should be dropped.
     cancelPendingAutosave();
     try {
+      // Settings saved beside the canvas (alerts) go too; they keep their own flag.
+      await flushExtraSaves();
       await api.workflow.update(currentWorkflowId, { nodes, edges });
       setHasUnsavedChanges(false);
       return true;
     } catch (error) {
       console.error("Failed to save workflow:", error);
-      toast.error("Failed to save workflow. Please try again.");
+      toast.error(
+        workflowSaveErrorMessage(
+          error,
+          "Failed to save workflow. Please try again."
+        ),
+        WORKFLOW_SAVE_ERROR_TOAST
+      );
       return false;
     } finally {
       setIsSaving(false);
@@ -1477,6 +1512,7 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
     setIsDuplicating(true);
     try {
       const newWorkflow = await api.workflow.duplicate(currentWorkflowId);
+      refetchSidebar({ workflowCreated: true });
       toast.success("Template ready in your workflows");
       router.push(`/workflows/${newWorkflow.id}`);
     } catch (error) {
@@ -1528,6 +1564,20 @@ function ToolbarActions({
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
   const hasSelection = selectedNode || selectedEdge;
 
+  // The Configuration sheet's Enable switch runs this toolbar's toggle (its
+  // validation, sign-in prompt and API call) as it is at that moment.
+  const setEnableToggle = useSetAtom(workflowEnableToggleAtom);
+  const toggleEnabledRef = useRef(actions.handleToggleEnabled);
+  useEffect(() => {
+    toggleEnabledRef.current = actions.handleToggleEnabled;
+  });
+  useEffect(() => {
+    setEnableToggle({
+      toggle: (enabled: boolean) => toggleEnabledRef.current(enabled),
+    });
+    return () => setEnableToggle(null);
+  }, [setEnableToggle]);
+
   // Hide owner-only toolbar actions (Run, Save, Edit, Settings) only for
   // non-owners. Shared-link viewers of public/unlisted workflows still see
   // the workflow exactly as the owner does (read-only canvas + the same
@@ -1577,11 +1627,8 @@ function ToolbarActions({
     const position = screenToFlowPosition({ x: centerX, y: centerY });
 
     // Adjust for node dimensions to center it properly
-    // Action node is 192px wide and 192px tall (w-48 h-48 in Tailwind)
-    const nodeWidth = 192;
-    const nodeHeight = 192;
-    position.x -= nodeWidth / 2;
-    position.y -= nodeHeight / 2;
+    position.x -= STEP_SIZE / 2;
+    position.y -= STEP_SIZE / 2;
 
     // Check if there's already a node at this position
     const offset = 20; // Offset distance in pixels
@@ -1632,42 +1679,43 @@ function ToolbarActions({
   const shouldDisplayEnableWorkflowSwitch = shouldShowEnableSwitch(triggerType);
 
   return (
-    <>
-      {/* Properties - Mobile Vertical (always visible) */}
-      <ButtonGroup className="flex lg:hidden" orientation="vertical">
+    // In the header from md up (its buttons sit in the header's row); on
+    // phones a bar floating at the bottom of the canvas, with Run at its end.
+    // Below xs the bar takes 4px more on each side and Run shows its icon
+    // alone, so a selection's Delete still fits at 320px.
+    <div
+      className="flex items-center gap-1 max-md:fixed max-md:right-[max(1rem,env(safe-area-inset-right))] max-md:bottom-[max(1rem,env(safe-area-inset-bottom))] max-md:left-[max(1rem,env(safe-area-inset-left))] max-md:rounded-lg max-md:border max-md:bg-background max-md:p-2 max-md:shadow-lg max-xs:right-3 max-xs:left-3 max-xs:px-1.5 wallet:gap-2 md:contents"
+      data-editor-toolbar=""
+      data-testid="workflow-actions"
+    >
+      {/* Configuration, and Delete when something is selected - below lg */}
+      <Button
+        className="border hover:bg-black/5 lg:hidden dark:hover:bg-white/5"
+        onClick={() =>
+          openOverlay(ConfigurationOverlay, {}, CONFIGURATION_OVERLAY_OPTIONS)
+        }
+        size="icon"
+        title="Configuration"
+        variant="secondary"
+      >
+        <Settings2 className="size-4" />
+      </Button>
+      {hasSelection && (
         <Button
-          className="border hover:bg-black/5 dark:hover:bg-white/5"
-          onClick={() => openOverlay(ConfigurationOverlay, {})}
+          className="border hover:bg-black/5 lg:hidden dark:hover:bg-white/5"
+          onClick={handleDeleteConfirm}
           size="icon"
-          title="Configuration"
+          title="Delete"
           variant="secondary"
         >
-          <Settings2 className="size-4" />
+          <Trash2 className="size-4" />
         </Button>
-        {/* Delete - Show when node or edge is selected */}
-        {hasSelection && (
-          <Button
-            className="border hover:bg-black/5 dark:hover:bg-white/5"
-            onClick={handleDeleteConfirm}
-            size="icon"
-            title="Delete"
-            variant="secondary"
-          >
-            <Trash2 className="size-4" />
-          </Button>
-        )}
-      </ButtonGroup>
+      )}
 
-      {/* Save/Download - Mobile Vertical */}
-      <div className="flex flex-col gap-1 lg:hidden">
-        <SaveButton handleSave={actions.handleSave} state={state} />
-        <DownloadButton actions={actions} state={state} />
-      </div>
-
-      {/* Save/Download - Desktop Horizontal */}
-      <div className="hidden items-center gap-2 lg:flex">
+      {/* Save/Download - one group from lg, with the saving note */}
+      <div className="contents lg:flex lg:items-center lg:gap-2">
         {state.isSaving && !isAnonymousUser(state.session?.user) && (
-          <span className="flex items-center gap-1 text-muted-foreground text-xs">
+          <span className="hidden items-center gap-1 text-muted-foreground text-xs lg:flex">
             <Loader2 className="size-3 animate-spin" />
             Saving...
           </span>
@@ -1682,52 +1730,79 @@ function ToolbarActions({
       {/* Listing Button */}
       <ListingButton actions={actions} state={state} />
 
-      {shouldDisplayEnableWorkflowSwitch && (
-        <button
-          className="relative hidden h-8 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background lg:inline-flex"
-          onClick={() => actions.handleToggleEnabled(!state.isEnabled)}
-          style={{
-            width: 98,
-            backgroundColor: state.isEnabled
-              ? "var(--color-keeperhub-green)"
-              : "var(--color-input)",
-          }}
-          title={state.isEnabled ? "Disable workflow" : "Enable workflow"}
-          type="button"
-        >
-          <span
-            className="pointer-events-none absolute inset-0 flex items-center pl-3 pr-2 font-medium text-sm transition-opacity"
-            style={{
-              justifyContent: "flex-start",
-              opacity: state.isEnabled ? 1 : 0,
-              color: "var(--color-background)",
-            }}
-          >
-            Disable
-          </span>
-          <span
-            className="pointer-events-none absolute inset-0 flex items-center pl-2 pr-3 font-medium text-sm transition-opacity"
-            style={{
-              justifyContent: "flex-end",
-              opacity: state.isEnabled ? 0 : 1,
-              color: "var(--color-foreground)",
-            }}
-          >
-            Enable
-          </span>
-          <span
-            className="pointer-events-none block size-6 rounded-full bg-background shadow-lg ring-0 transition-transform"
-            style={{
-              transform: state.isEnabled
-                ? "translateX(66px)"
-                : "translateX(2px)",
-            }}
+      <div className="flex shrink-0 items-center gap-1 max-md:ml-auto wallet:gap-2">
+        {shouldDisplayEnableWorkflowSwitch && (
+          <EnableWorkflowSwitch
+            enabled={state.isEnabled}
+            hasSelection={Boolean(hasSelection)}
+            onToggle={actions.handleToggleEnabled}
           />
-        </button>
-      )}
+        )}
+        <RunButtonGroup
+          actions={actions}
+          iconOnlyBelow={runIconOnlyBelow(
+            shouldDisplayEnableWorkflowSwitch,
+            Boolean(hasSelection)
+          )}
+          state={state}
+        />
+      </div>
+    </div>
+  );
+}
 
-      <RunButtonGroup actions={actions} state={state} />
-    </>
+// The workflow's Enable switch. From lg the 98px pill with its word; below lg
+// a compact switch beside Run, with a 44px square tap area. It hides where it
+// has no room (below xs, and in the 768-1023px header beside a selection's
+// Delete below switch-row); the Configuration sheet has it there instead
+// (WorkflowEnabledRow), on the same conditions.
+function EnableWorkflowSwitch({
+  enabled,
+  hasSelection,
+  onToggle,
+}: {
+  enabled: boolean;
+  hasSelection: boolean;
+  onToggle: (enabled: boolean) => Promise<void>;
+}): React.ReactElement {
+  const label = enabled ? "Disable workflow" : "Enable workflow";
+  return (
+    <button
+      aria-checked={enabled}
+      aria-label={label}
+      className={cn(
+        "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background max-xs:hidden max-lg:before:absolute max-lg:before:-inset-x-0.5 max-lg:before:-inset-y-3 lg:h-8 lg:w-24.5",
+        enabled ? "bg-keeperhub-green" : "bg-input",
+        hasSelection && "tablet-width:max-switch-row:hidden"
+      )}
+      onClick={() => onToggle(!enabled)}
+      role="switch"
+      title={label}
+      type="button"
+    >
+      <span
+        className={cn(
+          "pointer-events-none absolute inset-0 hidden items-center justify-start pr-2 pl-3 font-medium text-background text-sm transition-opacity lg:flex",
+          enabled ? "opacity-100" : "opacity-0"
+        )}
+      >
+        Disable
+      </span>
+      <span
+        className={cn(
+          "pointer-events-none absolute inset-0 hidden items-center justify-end pr-3 pl-2 font-medium text-foreground text-sm transition-opacity lg:flex",
+          enabled ? "opacity-0" : "opacity-100"
+        )}
+      >
+        Enable
+      </span>
+      <span
+        className={cn(
+          "pointer-events-none block size-5 rounded-full bg-background shadow-lg ring-0 transition-transform lg:size-6",
+          enabled ? "translate-x-5 lg:translate-x-16.5" : "lg:translate-x-0.5"
+        )}
+      />
+    </button>
   );
 }
 
@@ -1740,6 +1815,7 @@ function SaveButton({
   handleSave: () => Promise<void>;
 }) {
   const isAnonymous = isAnonymousUser(state.session?.user);
+  const extraUnsaved = useAtomValue(extraUnsavedAtom);
   const disabled =
     isAnonymous ||
     !state.currentWorkflowId ||
@@ -1762,9 +1838,14 @@ function SaveButton({
       variant="secondary"
     >
       <Save className="size-4" />
-      {state.hasUnsavedChanges && !state.isSaving && !isAnonymous && (
-        <div className="absolute top-1.5 right-1.5 size-2 rounded-full bg-primary" />
-      )}
+      {(state.hasUnsavedChanges || extraUnsaved) &&
+        !state.isSaving &&
+        !isAnonymous && (
+          <div
+            className="absolute top-1.5 right-1.5 size-2 rounded-full bg-primary"
+            data-testid="workflow-unsaved-dot"
+          />
+        )}
     </Button>
   );
 
@@ -1901,13 +1982,49 @@ function ListingButton({
 }
 
 // Run Button Group Component
+// On a phone Run gives up its label (it stays its name) below a width that
+// depends on what shares the bar with it: below xs, below run-label beside
+// the Enable switch, and below sm beside the switch and a selection's
+// Delete. Its longer in-progress labels (Waiting..., Checking...) show only
+// from lg: below it the bar and the 768-1023px header have no room for them.
+const RUN_ICON_ONLY = {
+  xs: { button: "max-xs:min-w-9 max-xs:px-0", label: "max-xs:sr-only" },
+  withSwitch: {
+    button: "max-run-label:min-w-9 max-run-label:px-0",
+    label: "max-run-label:sr-only",
+  },
+  withSwitchAndDelete: {
+    button: "max-sm:min-w-9 max-sm:px-0",
+    label: "max-sm:sr-only",
+  },
+} as const;
+
+type RunIconOnlyBelow = keyof typeof RUN_ICON_ONLY;
+
+function runIconOnlyBelow(
+  hasEnableSwitch: boolean,
+  hasSelection: boolean
+): RunIconOnlyBelow {
+  if (!hasEnableSwitch) {
+    return "xs";
+  }
+  return hasSelection ? "withSwitchAndDelete" : "withSwitch";
+}
+
+// The editor's filled green buttons (Run, Use template).
+const GREEN_BUTTON_CLASSES =
+  "bg-keeperhub-green hover:bg-keeperhub-green-dark disabled:opacity-70";
+
 function RunButtonGroup({
   state,
   actions,
+  iconOnlyBelow = "xs",
 }: {
   state: ReturnType<typeof useWorkflowState>;
   actions: ReturnType<typeof useWorkflowActions>;
+  iconOnlyBelow?: RunIconOnlyBelow;
 }) {
+  const iconOnly = RUN_ICON_ONLY[iconOnlyBelow];
   const triggerType = state.nodes.find((node) => node.data.type === "trigger")
     ?.data.config?.triggerType;
 
@@ -1928,12 +2045,16 @@ function RunButtonGroup({
   if (state.isExecuting) {
     return (
       <Button
-        className="min-w-20 bg-destructive text-white hover:bg-destructive/90"
+        className={cn(
+          "min-w-20 bg-destructive text-white hover:bg-destructive/90",
+          iconOnly.button
+        )}
         onClick={() => actions.handleCancel()}
         title="Stop Execution"
       >
         <div className="flex items-center gap-2">
-          <Square className="size-3.5 fill-current" /> Stop
+          <Square className="size-3.5 fill-current" />
+          <span className={iconOnly.label}>Stop</span>
         </div>
       </Button>
     );
@@ -1941,7 +2062,11 @@ function RunButtonGroup({
 
   const button = (
     <Button
-      className="min-w-20 bg-keeperhub-green hover:bg-keeperhub-green-dark disabled:opacity-70 disabled:[&>svg]:text-muted-foreground"
+      className={cn(
+        GREEN_BUTTON_CLASSES,
+        "min-w-20 disabled:[&>svg]:text-muted-foreground",
+        iconOnly.button
+      )}
       data-tour="workflow-run"
       disabled={disabled}
       onClick={() => actions.handleExecute()}
@@ -1960,17 +2085,21 @@ function RunButtonGroup({
                 isPreflighting and outlasts the check itself. Nothing is being
                 checked while the author is typing, so it does not spin. */}
             <TextCursorInput className="size-4" />
-            Waiting...
+            <span className={cn("max-lg:sr-only", iconOnly.label)}>
+              Waiting...
+            </span>
           </>
         ) : actions.isPreflighting ? (
           <>
             <Loader2 className="size-4 animate-spin" />
-            Checking...
+            <span className={cn("max-lg:sr-only", iconOnly.label)}>
+              Checking...
+            </span>
           </>
         ) : (
           <>
             <Play className="size-4" />
-            Run
+            <span className={iconOnly.label}>Run</span>
           </>
         )}
       </div>
@@ -1996,67 +2125,256 @@ function RunButtonGroup({
   return button;
 }
 
-// Read-only badge - pill with a strong accent outline on the toolbar
-function ReadOnlyBadge({ className }: { className?: string }) {
+const READ_ONLY_BADGE_CLASS =
+  "border-2 border-[var(--color-text-accent)]/60 bg-[var(--color-bg-accent)]/10 font-semibold text-[var(--color-text-accent)] text-xs uppercase tracking-wider backdrop-blur-sm dark:border-[var(--color-text-accent)]/50 dark:bg-transparent";
+
+// Neutral (unlike the viewer's badge), so the green button stays the one
+// accent. An org viewer sees Read only instead, with the reason on hover.
+function PreviewBadge({
+  className,
+  viewOnly,
+}: {
+  className?: string;
+  viewOnly: boolean;
+}): React.ReactElement {
   return (
     <Badge
       className={cn(
-        "border-2 border-[var(--color-text-accent)]/60 bg-[var(--color-bg-accent)]/10 font-semibold text-[var(--color-text-accent)] text-xs uppercase tracking-wider backdrop-blur-sm dark:border-[var(--color-text-accent)]/50 dark:bg-transparent",
+        "border-border bg-transparent font-semibold text-foreground/80 text-xs uppercase tracking-wider",
         className
       )}
+      title={viewOnly ? VIEWER_DISABLED_REASON : undefined}
       variant="outline"
     >
-      Preview
+      {viewOnly && <Eye aria-hidden="true" />}
+      {viewOnly ? READ_ONLY_LABEL : PREVIEW_LABEL}
     </Badge>
   );
 }
 
-// Use-template Button — placed next to Sign In for non-owners (HUB-01, HUB-02).
-function UseTemplateButton({
-  isUsingTemplate,
-  onUseTemplate,
-}: {
-  isUsingTemplate: boolean;
-  onUseTemplate: () => void;
-}) {
+// A viewer's badge shows at every width: the icon alone below lg, with its label from lg.
+function ViewOnlyBadge() {
   return (
-    <button
-      aria-label="Use this workflow as a template"
-      className="inline-flex h-8 items-center rounded-md border px-2.5 font-normal text-xs transition-colors duration-150 hover:bg-[var(--color-bg-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50 motion-reduce:transition-none"
-      data-analytics="template_use_clicked"
-      disabled={isUsingTemplate}
-      onClick={onUseTemplate}
-      style={{
-        borderColor: "color-mix(in oklab, var(--color-text-accent) 50%, transparent)",
-        color: "var(--color-text-accent)",
-      }}
-      title="Use this workflow as a template in your account"
-      type="button"
+    <Badge
+      className={cn(READ_ONLY_BADGE_CLASS, "shrink-0")}
+      data-testid="workflow-read-only-badge"
+      title={VIEWER_DISABLED_REASON}
+      variant="outline"
     >
-      {isUsingTemplate ? (
-        <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-      ) : (
-        <Copy className="mr-1.5 size-3.5" />
-      )}
-      {isUsingTemplate ? "Importing…" : "Use template"}
-    </button>
+      <Eye aria-hidden="true" />
+      <span className="max-lg:sr-only">{READ_ONLY_LABEL}</span>
+    </Badge>
   );
 }
 
-// Workflow Menu Component
-function WorkflowMenuComponent({
-  workflowId,
-  state,
-}: {
-  workflowId?: string;
-  state: ReturnType<typeof useWorkflowState>;
-  actions: ReturnType<typeof useWorkflowActions>;
-}) {
-  const pathname = usePathname();
-  const isWorkflowRoute = pathname.startsWith("/workflows/");
+// What the free canvas has room for: nothing (the header takes the button
+// and the read-only badge), the button alone (the header takes the badge),
+// or both. The widths: the card's button, then its badge too, with padding.
+type BarFit = "none" | "button" | "full";
+const BUTTON_FITS_REM = 9.5;
+const BADGE_FITS_REM = 15.5;
+// The card lifts the zoom controls and toasts that come this close to it.
+const LIFT_GAP_PX = 16;
 
+type BarLifts = { controls: boolean; toasts: boolean };
+const NO_LIFTS: BarLifts = { controls: false, toasts: false };
+
+// Whether the element's horizontal span comes within LIFT_GAP_PX of rect's.
+function nearSideways(rect: DOMRect, element: Element | null): boolean {
+  if (!element) {
+    return false;
+  }
+  const other = element.getBoundingClientRect();
   return (
-    <div className="flex flex-col gap-1">
+    rect.left < other.right + LIFT_GAP_PX &&
+    other.left < rect.right + LIFT_GAP_PX
+  );
+}
+
+function UseTemplateButton({
+  className,
+  isUsingTemplate,
+  onUseTemplate,
+  ref,
+  viewOnly,
+}: {
+  className?: string;
+  isUsingTemplate: boolean;
+  onUseTemplate: () => void;
+  ref: Ref<HTMLButtonElement>;
+  // True for org viewers: a template lands in the active org, which they cannot change.
+  viewOnly: boolean;
+}): React.ReactElement {
+  return (
+    <ViewOnlyTooltip className={cn("shrink-0", className)} isViewer={viewOnly}>
+      <Button
+        aria-busy={isUsingTemplate}
+        aria-label={USE_TEMPLATE_LABEL}
+        className={cn(
+          GREEN_BUTTON_CLASSES,
+          // Dimmed like the app's other view-only controls.
+          viewOnly && "disabled:opacity-50",
+          "shrink-0 focus-visible:hub-focus-ring focus-visible:ring-offset-background",
+          !viewOnly && className
+        )}
+        data-analytics="template_use_clicked"
+        disabled={viewOnly || isUsingTemplate}
+        onClick={onUseTemplate}
+        ref={ref}
+      >
+        {isUsingTemplate ? (
+          <Loader2 className="size-4 animate-spin" />
+        ) : (
+          <Copy className="size-4" />
+        )}
+        {isUsingTemplate ? USE_TEMPLATE_IMPORTING : USE_TEMPLATE_TEXT}
+      </Button>
+    </ViewOnlyTooltip>
+  );
+}
+
+// Use template for a public workflow you do not own (HUB-01, HUB-02), across
+// the bottom of the free canvas. It measures that canvas and tells the
+// toolbar what fits (the toolbar puts the rest in the header); its card
+// steps its text down as the canvas narrows, and it lifts the zoom controls
+// and toasts only where they come near the card.
+function UseTemplateBar({
+  badge,
+  button,
+  fit,
+  onFitChange,
+  viewOnly,
+}: {
+  badge: React.ReactNode;
+  button: React.ReactNode;
+  fit: BarFit;
+  onFitChange: (fit: BarFit) => void;
+  // An org viewer cannot copy into the org: the wide hint says why.
+  viewOnly: boolean;
+}): React.ReactElement {
+  const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
+  const [track, setTrack] = useState<HTMLDivElement | null>(null);
+  const [card, setCard] = useState<HTMLDivElement | null>(null);
+  const [lifts, setLifts] = useState<BarLifts>(NO_LIFTS);
+  // Measured again when toasts first show: the toaster mounts with them.
+  // The lift outlives the last toast, so its exit stays clear of the card.
+  const toastsUp = useSonner().toasts.length > 0;
+  // Before paint, so the first frame is right; then on every resize, acting
+  // only on a change.
+  useLayoutEffect(() => {
+    const bar = track;
+    if (!bar) {
+      return;
+    }
+    let reported = fit;
+    let controls: HTMLElement | null = null;
+    let watched: Element[] = [];
+    const update = (): void => {
+      // The bar's rem offsets and padding resize it when the root font
+      // changes, so a fresh read here sees that too.
+      const remPx =
+        Number.parseFloat(
+          getComputedStyle(document.documentElement).fontSize
+        ) || 16;
+      const width = bar.clientWidth;
+      let fits: BarFit = "none";
+      if (width >= BADGE_FITS_REM * remPx) {
+        fits = "full";
+      } else if (width >= BUTTON_FITS_REM * remPx) {
+        fits = "button";
+      }
+      if (fits !== fit) {
+        if (fits !== reported) {
+          reported = fits;
+          onFitChange(fits);
+        }
+        return;
+      }
+      // The zoom controls mount with the canvas, maybe after the bar. Also
+      // watch the box they sit in: the right panel resizes it over 300ms,
+      // moving them without resizing them.
+      const found = document.querySelector<HTMLElement>(
+        ".workflow-controls-panel"
+      );
+      if (found !== controls) {
+        for (const element of watched) {
+          observer.unobserve(element);
+        }
+        watched = [found, found?.offsetParent].filter(
+          (element): element is Element => element instanceof Element
+        );
+        for (const element of watched) {
+          observer.observe(element);
+        }
+        controls = found;
+      }
+      const rect = card?.getBoundingClientRect();
+      const next: BarLifts = rect
+        ? {
+            controls: nearSideways(rect, controls),
+            toasts: nearSideways(
+              rect,
+              document.querySelector("[data-sonner-toaster]")
+            ),
+          }
+        : NO_LIFTS;
+      // Same lifts: React bails out without rendering.
+      setLifts((now) =>
+        now.controls === next.controls && now.toasts === next.toasts
+          ? now
+          : next
+      );
+    };
+    const observer = new ResizeObserver(update);
+    update();
+    observer.observe(bar);
+    if (card) {
+      observer.observe(card);
+    }
+    return () => observer.disconnect();
+  }, [track, card, fit, onFitChange, toastsUp]);
+  return (
+    <div
+      className="pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))] left-[max(1rem,env(safe-area-inset-left))] flex max-xs:right-3 max-xs:left-3 md:right-(--use-template-right) md:left-(--nav-content-offset,var(--nav-sidebar-width,60px)) md:px-4 md:motion-safe:transition-[left,right] md:motion-safe:duration-200 md:motion-safe:ease-out"
+      data-lifts-controls={lifts.controls || undefined}
+      data-lifts-toasts={lifts.toasts || undefined}
+      data-testid="use-template-bar"
+      style={
+        { "--use-template-right": rightPanelWidth ?? "0px" } as CSSProperties
+      }
+    >
+      <div
+        className="@container flex w-full min-w-0 justify-center"
+        ref={setTrack}
+      >
+        {fit !== "none" && (
+          <div
+            className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2.5 rounded-lg border bg-background py-2 pr-2 pl-3 shadow-lg max-md:w-full"
+            data-testid="use-template-card"
+            ref={setCard}
+          >
+            {badge}
+            <p
+              className={cn(
+                "hidden min-w-0 flex-1 truncate text-foreground/80 text-sm leading-4 md:flex-none",
+                viewOnly ? "@min-[36rem]:block" : "@min-[24.5rem]:block"
+              )}
+            >
+              {!viewOnly && (
+                <span className="@min-[36rem]:hidden">
+                  Copy to edit and run
+                </span>
+              )}
+              <span className="hidden @min-[36rem]:inline">
+                {viewOnly
+                  ? VIEWER_DISABLED_REASON
+                  : "Read-only. Make your own copy to edit and run it."}
+              </span>
+            </p>
+            {button}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -2067,6 +2385,17 @@ export const WorkflowToolbar = ({
 }: WorkflowToolbarProps) => {
   const state = useWorkflowState();
   const actions = useWorkflowActions(state);
+  // Template use creates a workflow in the active org, which a viewer cannot.
+  // Signed-out visitors have no role yet may still use one, so gate on viewer only.
+  const { isViewer } = useOrgAccess();
+  const isWorkflowViewer = useAtomValue(isWorkflowViewerAtom);
+  // The phone menu's button, where the org switcher hands focus when it is
+  // hidden (below xs).
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  // No org active and opening one failed, or the active one could not be
+  // loaded: the switcher, which offers to try again, shows in a 768-1023px
+  // window with a mouse too, which otherwise has none.
+  const switcherOffering = useSwitcherOffering();
 
   // Use prop if provided, otherwise fall back to atom value
   const effectiveWorkflowId =
@@ -2085,66 +2414,143 @@ export const WorkflowToolbar = ({
 
   // If persistent mode, use fixed positioning
   const containerClassName = persistent
-    ? "pointer-events-auto fixed top-[var(--app-banner-height,0px)] right-0 left-0 z-50 flex items-center justify-between border-b bg-background px-4 py-3"
+    ? // The side padding clears a notch on a phone turned sideways (the
+      // viewport is viewport-fit=cover).
+      "pointer-events-auto fixed top-[var(--app-banner-height,0px)] right-0 left-0 z-50 flex items-center justify-between border-b bg-background py-3 phone-ui:gap-2 pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))]"
     : "";
 
   const leftSectionClassName = persistent
     ? "flex items-center gap-2"
     : "flex flex-col gap-2 rounded-none border-none bg-transparent p-0 lg:flex-row lg:items-center";
 
+  // globals.css gives every element min-width: 0, so in a crowded header
+  // each flex item would shrink below its content. From md the right side
+  // is never squeezed: at 768-1023px the left side, and the org switcher in
+  // it, gives way instead; from lg the logo and the switcher are shrink-0
+  // too, so only the workflow's name (truncating, at most 192px) makes room,
+  // and the right side stays 8px clear of it.
   const rightSectionClassName = persistent
-    ? "flex items-center gap-2"
+    ? "flex items-center gap-2 md:shrink-0 lg:ml-2"
     : "pointer-events-auto absolute top-4 right-4 z-10";
 
   const rightContentClassName = persistent
     ? "flex items-center gap-2"
     : "flex flex-col-reverse items-end gap-2 lg:flex-row lg:items-center";
 
+  const offersTemplate =
+    isWorkflowRoute &&
+    Boolean(effectiveWorkflowId) &&
+    !state.isOwner &&
+    !isWorkflowViewer &&
+    state.workflowVisibility === "public";
+  // A read-only member of the workflow's org: a badge, never Use template.
+  const showsViewOnlyBadge =
+    isWorkflowRoute && Boolean(effectiveWorkflowId) && isWorkflowViewer;
+  // One Use template button and one read-only badge, each in the bar's card
+  // or, where the free canvas has no room for it, in the header.
+  const [barFit, setBarFit] = useState<BarFit>("full");
+  const useTemplateRef = useRef<HTMLButtonElement | null>(null);
+  const refocusUseTemplate = useRef(false);
+  const onBarFitChange = useCallback(
+    (fit: BarFit): void => {
+      // Moving between bar and header remounts the button: focus goes with
+      // it if it had it.
+      const moves = (fit === "none") !== (barFit === "none");
+      refocusUseTemplate.current =
+        moves &&
+        useTemplateRef.current !== null &&
+        useTemplateRef.current === document.activeElement;
+      setBarFit(fit);
+    },
+    [barFit]
+  );
+  const setUseTemplateButton = useCallback(
+    (button: HTMLButtonElement | null): void => {
+      useTemplateRef.current = button;
+      if (button && refocusUseTemplate.current) {
+        refocusUseTemplate.current = false;
+        button.focus();
+      }
+    },
+    []
+  );
+  const buttonInBar = barFit !== "none";
+  const badgeInBar = barFit === "full";
+  const useTemplateButton = offersTemplate && (
+    <UseTemplateButton
+      className={buttonInBar ? "ml-auto" : undefined}
+      isUsingTemplate={state.isDuplicating}
+      onUseTemplate={actions.handleUseTemplate}
+      ref={setUseTemplateButton}
+      viewOnly={isViewer}
+    />
+  );
+  const useTemplateBar = offersTemplate && (
+    <UseTemplateBar
+      badge={
+        badgeInBar && <PreviewBadge className="shrink-0" viewOnly={isViewer} />
+      }
+      button={buttonInBar && useTemplateButton}
+      fit={barFit}
+      onFitChange={onBarFitChange}
+      viewOnly={isViewer}
+    />
+  );
+  // Phones (below md) never had the badge in their crowded header.
+  const headerUseTemplate = offersTemplate && !badgeInBar && (
+    <>
+      <PreviewBadge className="shrink-0 max-md:hidden" viewOnly={isViewer} />
+      {!buttonInBar && useTemplateButton}
+    </>
+  );
+
   if (persistent) {
     return (
       <div className={containerClassName}>
         <VersionPreviewBanner />
-        {/* Left side: Logo + Menu + Org Switcher */}
-        <div className={leftSectionClassName}>
+        {/* Left side: Nav (phones) + Logo + Menu + Org Switcher */}
+        <div className={leftSectionClassName} data-testid="header-left">
+          <MobileNav triggerRef={menuButtonRef} />
           {(() => {
             const CustomLogo = getCustomLogo();
             return CustomLogo ? (
-              <a href="/">
-                <CustomLogo className="size-7 shrink-0" />
+              // On phones a 26px-wide tap area around the 18px mark, without
+              // moving anything.
+              <a className="max-md:-mx-1 max-md:px-1 lg:shrink-0" href="/">
+                {/* Only as wide as the mark on phones, where the header is
+                    short of room; the square box from md up. */}
+                <CustomLogo className="h-7 w-4.5 shrink-0 md:w-7" />
               </a>
             ) : null;
           })()}
+          {/* Phones and touch tablets (below lg) get the switcher, except
+              below 375px, where it is in the nav drawer instead; a
+              768-1023px window with a mouse has the sidebar and the avatar
+              menu's organization item instead (but for a failed open). From
+              sm a crowded header squeezes this wrapper, never under 76px,
+              and the switcher with it. */}
           {showOrgSwitcher && (
-            <div className="hidden ml-2 lg:block">
-              <OrgSwitcher />
+            <div
+              className={cn(
+                "flex max-xs:hidden sm:ml-2 sm:max-lg:min-w-19 lg:block lg:shrink-0",
+                !switcherOffering && "mouse-tablet:hidden"
+              )}
+            >
+              <OrgSwitcher focusFallback={menuButtonRef} />
             </div>
           )}
-          <WorkflowMenuComponent
-            actions={actions}
-            state={state}
-            workflowId={effectiveWorkflowId}
-          />
+          {/* The workflow's name from lg, 16px (the gap and an ml-2) after
+              the logo and switcher. */}
           {isWorkflowRoute && state.currentWorkflowId && (
-            <span className="hidden max-w-48 truncate font-medium text-foreground text-sm lg:inline-block">
+            <span className="hidden max-w-48 truncate font-medium text-foreground text-sm lg:ml-2 lg:inline-block">
               {state.workflowName}
             </span>
           )}
-          {isWorkflowRoute &&
-            effectiveWorkflowId &&
-            !state.isOwner &&
-            state.workflowVisibility === "public" && (
-              <>
-                <ReadOnlyBadge className="hidden lg:inline-flex" />
-                <UseTemplateButton
-                  isUsingTemplate={state.isDuplicating}
-                  onUseTemplate={actions.handleUseTemplate}
-                />
-              </>
-            )}
+          {showsViewOnlyBadge && <ViewOnlyBadge />}
         </div>
 
         {/* Right side: Actions + User Menu */}
-        <div className={rightSectionClassName}>
+        <div className={rightSectionClassName} data-testid="header-right">
           <div className={rightContentClassName}>
             {isWorkflowRoute && (
               <ToolbarActions
@@ -2153,12 +2559,14 @@ export const WorkflowToolbar = ({
                 workflowId={effectiveWorkflowId}
               />
             )}
+            {headerUseTemplate}
             <div className="flex items-center gap-2">
               <WalletToolbarButton />
               <UserMenu />
             </div>
           </div>
         </div>
+        {useTemplateBar}
       </div>
     );
   }
@@ -2184,23 +2592,7 @@ export const WorkflowToolbar = ({
               <OrgSwitcher />
             </div>
           )}
-          <WorkflowMenuComponent
-            actions={actions}
-            state={state}
-            workflowId={effectiveWorkflowId}
-          />
-          {isWorkflowRoute &&
-            effectiveWorkflowId &&
-            !state.isOwner &&
-            state.workflowVisibility === "public" && (
-              <>
-                <ReadOnlyBadge className="hidden lg:inline-flex" />
-                <UseTemplateButton
-                  isUsingTemplate={state.isDuplicating}
-                  onUseTemplate={actions.handleUseTemplate}
-                />
-              </>
-            )}
+          {showsViewOnlyBadge && <ViewOnlyBadge />}
         </div>
       </Panel>
 
@@ -2213,11 +2605,13 @@ export const WorkflowToolbar = ({
               workflowId={effectiveWorkflowId}
             />
           )}
+          {headerUseTemplate}
           <div className="flex items-center gap-2">
             <UserMenu />
           </div>
         </div>
       </div>
+      {useTemplateBar}
     </>
   );
 };

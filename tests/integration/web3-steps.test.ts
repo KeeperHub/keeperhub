@@ -73,10 +73,23 @@ vi.mock("@/lib/rpc/provider-factory", () => ({
 }));
 
 // Mock database
+vi.mock("@/lib/security/org-role", () => ({
+  getOrgRole: () => Promise.resolve("member"),
+}));
+
 vi.mock("@/lib/db", () => ({
   db: {
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi
+              .fn()
+              .mockResolvedValue([
+                { userId: "user_123", executionOrganizationId: "org_123" },
+              ]),
+          }),
+        }),
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{ userId: "user_123" }]),
         }),

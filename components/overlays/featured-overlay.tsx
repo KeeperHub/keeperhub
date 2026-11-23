@@ -79,7 +79,7 @@ export function FeaturedOverlay({ overlayId }: FeaturedOverlayProps) {
       }
 
       const duplicated = await api.workflow.duplicate(workflowId);
-      refetchSidebar();
+      refetchSidebar({ workflowCreated: true });
       toast.success("Template applied successfully");
       closeAll();
       router.push(`/workflows/${duplicated.id}`);

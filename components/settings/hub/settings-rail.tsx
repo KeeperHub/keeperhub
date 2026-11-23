@@ -10,9 +10,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { useExitPath } from "./hooks/use-exit-path";
 import { RAIL_WIDTH } from "./hooks/use-rail-width";
-import { SettingsNavList } from "./settings-nav-list";
+import { MENU_CARD, MENU_ROW, SettingsNavList } from "./settings-nav-list";
 import { SettingsNavMatches } from "./settings-nav-matches";
 import { SettingsSearch } from "./settings-search";
 
@@ -29,6 +30,42 @@ const LINKS = [
   },
 ] as const;
 
+/** Discord and the docs, at the foot of the rail and of the phone menu. */
+export function SettingsLinks({
+  variant = "rail",
+}: {
+  /** "menu" is the phone's settings menu: a card of tap-sized rows. */
+  variant?: "rail" | "menu";
+}): React.ReactElement {
+  const menu = variant === "menu";
+  return (
+    <div
+      className={
+        menu ? MENU_CARD : "flex shrink-0 flex-col gap-1 border-t px-2.5 py-3"
+      }
+    >
+      {LINKS.map((item) => (
+        <a
+          className={
+            menu
+              ? MENU_ROW
+              : "flex h-9 w-full items-center gap-3 rounded-md px-2 transition-colors hover:bg-muted"
+          }
+          href={item.href}
+          key={item.label}
+          rel="noopener"
+          target="_blank"
+        >
+          <item.icon className="size-4 shrink-0" />
+          <span className={cn("truncate", !menu && "text-sm")}>
+            {item.label}
+          </span>
+        </a>
+      ))}
+    </div>
+  );
+}
+
 export function SettingsRail(): React.ReactElement {
   const [query, setQuery] = useState("");
   const exitPath = useExitPath();
@@ -37,7 +74,8 @@ export function SettingsRail(): React.ReactElement {
   return (
     <aside
       aria-label="Settings navigation"
-      className="relative flex shrink-0 flex-col border-r bg-background"
+      // A phone has the settings menu (the index page) in its place.
+      className="relative flex shrink-0 flex-col border-r bg-background max-md:hidden"
       data-testid="settings-rail"
       style={{ width: RAIL_WIDTH }}
     >
@@ -67,20 +105,7 @@ export function SettingsRail(): React.ReactElement {
         {searching ? <SettingsNavMatches query={query} /> : <SettingsNavList />}
       </nav>
 
-      <div className="flex shrink-0 flex-col gap-1 border-t px-2.5 py-3">
-        {LINKS.map((item) => (
-          <a
-            className="flex h-9 w-full items-center gap-3 rounded-md px-2 transition-colors hover:bg-muted"
-            href={item.href}
-            key={item.label}
-            rel="noopener"
-            target="_blank"
-          >
-            <item.icon className="size-4 shrink-0" />
-            <span className="truncate text-sm">{item.label}</span>
-          </a>
-        ))}
-      </div>
+      <SettingsLinks />
     </aside>
   );
 }

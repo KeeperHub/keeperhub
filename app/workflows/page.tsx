@@ -2,21 +2,33 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api-client";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
+import {
+  latestVisibleWorkflow,
+  newestWorkflow,
+} from "@/lib/workflow/latest-workflow";
 
 type IndexState = "loading" | "empty" | "error";
 
 // Index route for `/workflows` (no workflow selected). Without this the bare
 // path 404s in the canvas. Redirects to the most recently created workflow so
 // the canvas always has content; falls back to an empty state when the org has
-// none. A digest-email deep link (`?digestSettings=`) opens a modal over this
-// page, so we skip the redirect in that case to avoid navigating out from under
-// it.
+// none. A digest-email deep link (`?digestSettings=`) switches organization
+// and opens a modal over this page, so the redirect waits while it is followed
+// (the param stays until it is done with), rather than redirecting with the
+// old organization's workflows. `?latest=edited` (the phone navigation
+// drawer's Workflows) redirects to the workflow edited most recently instead,
+// among those the lists show.
 export default function WorkflowsIndexPage(): React.ReactElement | null {
   const router = useRouter();
+  // Signed-out visitors have no role yet still start here, so gate on viewer only.
+  const { isViewer } = useOrgAccess();
   const searchParams = useSearchParams();
   const hasDeepLink = searchParams.get("digestSettings") !== null;
+  const lastEdited = searchParams.get("latest") === "edited";
   const resolvedRef = useRef(false);
   const [state, setState] = useState<IndexState>("loading");
 
@@ -24,10 +36,9 @@ export default function WorkflowsIndexPage(): React.ReactElement | null {
     setState("loading");
     try {
       const list = await api.workflow.getAll();
-      const mostRecent = [...list].sort(
-        (a, b) =>
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      )[0];
+      const mostRecent = lastEdited
+        ? latestVisibleWorkflow(list)
+        : newestWorkflow(list);
       if (mostRecent) {
         router.replace(`/workflows/${mostRecent.id}`);
       } else {
@@ -36,7 +47,7 @@ export default function WorkflowsIndexPage(): React.ReactElement | null {
     } catch {
       setState("error");
     }
-  }, [router]);
+  }, [router, lastEdited]);
 
   useEffect(() => {
     if (hasDeepLink || resolvedRef.current) {
@@ -71,9 +82,15 @@ export default function WorkflowsIndexPage(): React.ReactElement | null {
     <div className="flex h-dvh w-full flex-col items-center justify-center gap-3 text-center">
       <h1 className="font-semibold text-xl">No workflows yet</h1>
       <p className="text-muted-foreground text-sm">
-        Create your first workflow to get started.
+        {isViewer
+          ? "Workflows created in this organization will appear here."
+          : "Create your first workflow to get started."}
       </p>
-      <Button onClick={() => router.push("/")}>New workflow</Button>
+      <ViewOnlyTooltip isViewer={isViewer}>
+        <Button disabled={isViewer} onClick={() => router.push("/")}>
+          New workflow
+        </Button>
+      </ViewOnlyTooltip>
     </div>
   );
 }

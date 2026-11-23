@@ -19,6 +19,7 @@ export type ConditionOperator =
   | "isUndefined"
   | "isNotUndefined"
   | "matchesRegex"
+  | "notMatchesRegex"
   | "isTrue"
   | "isFalse"
   | "arrayIsEmpty"

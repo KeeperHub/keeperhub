@@ -1,3 +1,9 @@
+import {
+  getTriggerConfig,
+  type TriggerNodeLike,
+  triggerDisplayKey,
+} from "@/lib/workflow/trigger-display-key";
+
 /**
  * Global event-based sidebar refetch system
  *
@@ -7,6 +13,12 @@
 
 type RefetchOptions = {
   closeFlyout?: boolean;
+  // The active organization changed: a list that fails to load must not
+  // leave the previous organization's workflows on screen.
+  orgChanged?: boolean;
+  // A workflow was just created outside any project: the Workflows panel
+  // drops its filter so the new workflow is listed whatever its trigger.
+  workflowCreated?: boolean;
 };
 
 type RefetchCallback = (options?: RefetchOptions) => void;
@@ -15,15 +27,21 @@ const refetchCallbacks: Set<RefetchCallback> = new Set();
 let pendingOptions: RefetchOptions | null = null;
 
 /**
- * Register a refetch callback (called from NavigationSidebar).
- * Replays any pending refetch that fired before registration.
+ * Register a refetch callback (the workflow list's PickerDataProvider, and
+ * NavigationSidebar for its panels and filters). A refetch that fired with
+ * none registered is replayed to every callback registering in that same
+ * commit (a child's effects run before its parent's).
  */
 export function registerSidebarRefetch(callback: RefetchCallback): () => void {
   refetchCallbacks.add(callback);
 
   if (pendingOptions !== null) {
     const opts = pendingOptions;
-    pendingOptions = null;
+    queueMicrotask(() => {
+      if (pendingOptions === opts) {
+        pendingOptions = null;
+      }
+    });
     try {
       callback(opts);
     } catch {
@@ -40,7 +58,7 @@ export function registerSidebarRefetch(callback: RefetchCallback): () => void {
  * Trigger all registered sidebar refetch callbacks.
  * Call this after org switch, project/tag changes, or any action
  * that changes sidebar data. Queues the call if no callbacks are
- * registered yet, replaying when the first one registers.
+ * registered yet, replaying when the next ones register.
  */
 export function refetchSidebar(options?: RefetchOptions): void {
   if (refetchCallbacks.size === 0) {
@@ -54,4 +72,26 @@ export function refetchSidebar(options?: RefetchOptions): void {
       /* ignore callback errors */
     }
   }
+}
+
+// What each workflow's sidebar row showed for its trigger at its last save.
+const savedTriggers = new Map<string, string>();
+
+/**
+ * Refetch the sidebar after a save that changes what a workflow's row shows
+ * for its trigger (type, schedule, event, block interval), so the row follows
+ * it. Edits the row does not show (an ABI, a webhook schema) do not refetch.
+ * The first save of a workflow in a session has nothing to compare to and
+ * refetches once.
+ */
+export function refetchSidebarIfTriggerChanged(
+  workflowId: string,
+  nodes: TriggerNodeLike[]
+): void {
+  const trigger = triggerDisplayKey(getTriggerConfig(nodes));
+  if (savedTriggers.get(workflowId) === trigger) {
+    return;
+  }
+  savedTriggers.set(workflowId, trigger);
+  refetchSidebar();
 }

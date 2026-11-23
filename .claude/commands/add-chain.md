@@ -16,6 +16,10 @@ RPC config (chain ID to RPC URL mapping): @lib/rpc/rpc-config.ts
 Wallet modal (consumes supported_tokens via /api/supported-tokens): @components/overlays/wallet-overlay.tsx
 Supported tokens API (master-list logic, TEMPO carve-outs): @app/api/supported-tokens/route.ts
 Schema: @lib/db/schema-extensions.ts (supportedTokens), @lib/db/schema.ts (chains, explorerConfigs)
+Contributor runbook with every touchpoint, including the ones this command
+does not walk through (both wallet token-list consumers, Blockscout instances,
+gas overrides, API name aliases, the WSS requirement for Event triggers, the
+chain-config ordering): @specs/adding-an-evm-chain.md
 Project conventions: @CLAUDE.md
 </context>
 
@@ -40,7 +44,7 @@ Needed facts (ask the user for anything missing):
 Idempotency matters. For the target chain ID, check:
 
 - `lib/rpc/rpc-config.ts`: does `CHAIN_CONFIG[<id>]` exist? Does `PUBLIC_RPCS` have entries?
-- `scripts/seed/seed-chains.ts`: is there an entry in `DEFAULT_CHAINS`? An entry in `EXPLORER_CONFIG_TEMPLATES`? An entry in `chainToDefaultIdMap`?
+- `scripts/seed/seed-chains.ts`: is there an entry in `DEFAULT_CHAINS`? An entry in `EXPLORER_CONFIG_TEMPLATES`? An entry in `CHAIN_TO_DEFAULT_ID`?
 - `scripts/seed/seed-tokens.ts`: any `TOKEN_CONFIGS` rows?
 - Database (dev): `SELECT chain_id, name FROM chains WHERE chain_id = <id>`; `SELECT COUNT(*) FROM supported_tokens WHERE chain_id = <id>`.
 
@@ -56,8 +60,10 @@ Edit [lib/rpc/rpc-config.ts](lib/rpc/rpc-config.ts):
 
 Edit [scripts/seed/seed-chains.ts](scripts/seed/seed-chains.ts):
 - Append a `NewChain` entry to `DEFAULT_CHAINS` following the existing pattern (use `getChainConfigValue`, `getRpcUrlByChainId`, `getWssUrl`, `getUsePrivateMempoolRpc`, `getPrivateRpcUrl`).
-- Add the chain to `chainToDefaultIdMap` (name to default chainId).
+- Add the chain to `CHAIN_TO_DEFAULT_ID` (display name to default chainId). `tests/unit/seed-chains-explorer-coverage.test.ts` fails, and the seed throws, when a `DEFAULT_CHAINS` entry has no row here.
 - Add an entry to `EXPLORER_CONFIG_TEMPLATES` keyed by chain ID. Etherscan V2 chains use `explorerApiUrl: "https://api.etherscan.io/v2/api"`; Blockscout chains use their own endpoint.
+- If the chain publishes a public WSS endpoint, set `publicWssDefault` on its `CHAIN_CONFIG` entry; without a WSS URL (here or in chain-config) Event triggers on the chain never register. See step 3 of the runbook.
+- Go through steps 4 to 9 of the runbook (Blockscout instance, gas override, independent token list, name aliases and `docs/api/chains.md`, display names, scanner) and record which ones applied.
 
 ### 5. Verify stablecoins on-chain
 
@@ -131,7 +137,7 @@ If the chain requires env vars (private RPC, API keys), coordinate the Helm/Para
 
 <success_criteria>
 - `lib/rpc/rpc-config.ts` has `CHAIN_CONFIG[<id>]` and public RPC entries.
-- `scripts/seed/seed-chains.ts` has the chain in `DEFAULT_CHAINS`, `chainToDefaultIdMap`, and `EXPLORER_CONFIG_TEMPLATES`.
+- `scripts/seed/seed-chains.ts` has the chain in `DEFAULT_CHAINS`, `CHAIN_TO_DEFAULT_ID`, and `EXPLORER_CONFIG_TEMPLATES`, and `tests/unit/seed-chains-explorer-coverage.test.ts` passes.
 - `scripts/seed/seed-tokens.ts` has at least one `TOKEN_CONFIGS` row per tracked stablecoin, all addresses lowercase and verified on-chain by `scripts/verify-token.ts`.
 - Local seed runs complete without errors; `/api/supported-tokens?chainId=<id>` returns the expected payload; wallet modal renders the new chain card.
 - `pnpm check`, `pnpm type-check` and `pnpm fix` pass.

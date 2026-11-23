@@ -32,6 +32,7 @@ import {
   type StepImporter,
 } from "@/lib/step-registry";
 import { deserializeTriggerInput, getErrorMessageAsync } from "@/lib/utils";
+import { hasOwnField, readOwnField } from "@/lib/utils/read-own-field";
 import {
   collectReachable,
   isBackEdge,
@@ -98,10 +99,15 @@ import {
   TemplateResolutionError,
   type TemplateResolutionTracker,
 } from "@/lib/workflow/executor/template-resolution";
+import { readActionType } from "@/lib/workflow/node-config-read";
 import {
   isMissingReference,
   makeMissingReference,
 } from "@/lib/workflow/nodes/condition/missing-reference";
+import {
+  MAX_RUN_REGEX_WORK,
+  RegexBudget,
+} from "@/lib/workflow/nodes/condition/regex-match";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
 import { safeEvaluateCondition } from "@/lib/workflow/nodes/condition/safe-eval";
 import {
@@ -109,6 +115,7 @@ import {
   collectSkippedTargets,
 } from "@/lib/workflow/nodes/condition/skipped-branch";
 import {
+  prepareRunRegex,
   preValidateConditionExpression,
   validateConditionExpression,
 } from "@/lib/workflow/nodes/condition/validator";
@@ -120,7 +127,14 @@ import {
 import { ARRAY_SOURCE_RE } from "@/lib/workflow/nodes/for-each/utils";
 import { triggerStep } from "@/lib/workflow/nodes/trigger/step";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
-import { splitTemplateRef } from "@/lib/workflow/template-ref";
+import {
+  findTemplateTokens,
+  parseStoredRef,
+  replaceTemplateTokens,
+  sanitizeNodeId,
+  splitTemplateRef,
+  type TemplateToken,
+} from "@/lib/workflow/template-ref";
 import { triggerTypeOf } from "@/lib/workflow/trigger-type";
 import { LEGACY_ACTION_MAPPINGS } from "@/plugins/legacy-mappings";
 import { findActionById, flattenConfigFields } from "@/plugins/registry";
@@ -260,9 +274,14 @@ function formatConditionValueForDisplay(value: unknown): unknown {
  * is committed, the real success lands ~0.3-0.5s later. The catch handler
  * polls the step authority for up to this window before falling back to
  * nullifying the node.
+ *
+ * A duplicate delivery of a step whose first attempt is still executing throws
+ * the same error; that success lands when the attempt finishes. While the node
+ * still has a 'running' row the poll extends up to the in-flight window.
  */
 const SPURIOUS_RECOVERY_POLL_TIMEOUT_MS = 3000;
 const SPURIOUS_RECOVERY_POLL_INTERVAL_MS = 250;
+const SPURIOUS_RECOVERY_INFLIGHT_TIMEOUT_MS = 60_000;
 
 /**
  * KEEP-398: SDK error shapes that indicate a spurious step-completion failure.
@@ -316,10 +335,10 @@ function describeMissingFieldPath(data: unknown, fieldPath: string): string {
     if (arrayMatch) {
       const [, key, indexStr] = arrayMatch;
       const index = Number.parseInt(indexStr, 10);
-      if (!(key in container)) {
+      if (!hasOwnField(container, key)) {
         return `"${fieldPath}": "${key}" does not exist on the data. Available fields: ${Object.keys(container).join(", ") || "(none)"}.`;
       }
-      const arr = container[key];
+      const arr = readOwnField(container, key);
       if (!Array.isArray(arr)) {
         return `"${fieldPath}": "${key}" is not an array. Cannot access [${index}].`;
       }
@@ -330,10 +349,10 @@ function describeMissingFieldPath(data: unknown, fieldPath: string): string {
       continue;
     }
 
-    if (!(segment in container)) {
+    if (!hasOwnField(container, segment)) {
       return `"${fieldPath}": "${segment}" does not exist on the data. Available fields: ${Object.keys(container).join(", ") || "(none)"}.`;
     }
-    current = container[segment];
+    current = readOwnField(container, segment);
   }
 
   return `"${fieldPath}" could not be resolved.`;
@@ -353,7 +372,7 @@ function replaceTemplateVariable(
   executionResults?: Record<string, ExecutionResult>,
   unresolvedFields?: string[]
 ): string {
-  const sanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+  const sanitizedNodeId = sanitizeNodeId(nodeId);
   const output = outputs[sanitizedNodeId];
 
   // KEEP-1284: Throw error when referenced node output doesn't exist
@@ -481,7 +500,8 @@ export function evaluateConditionExpression(
   conditionExpression: unknown,
   outputs: NodeOutputs,
   nodeMap?: ReadonlyMap<string, unknown>,
-  executionResults?: Record<string, ExecutionResult>
+  executionResults?: Record<string, ExecutionResult>,
+  regexRunBudget?: RegexBudget
 ): ConditionEvalResult {
   console.log("[Condition] Original expression:", conditionExpression);
 
@@ -511,13 +531,18 @@ export function evaluateConditionExpression(
       const resolvedValues: Record<string, unknown> = {};
       const tokenLiterals: Record<string, string> = {};
       let transformedExpression = conditionExpression;
-      const templatePattern = /\{\{@([^:]+):([^}]+)\}\}/g;
       const varCounter = { value: 0 };
       const unresolvedFields: string[] = [];
 
-      transformedExpression = transformedExpression.replace(
-        templatePattern,
-        (match, nodeId, rest) => {
+      transformedExpression = replaceTemplateTokens(
+        transformedExpression,
+        ({ body }) => {
+          const match = `{{${body}}}`;
+          const ref = parseStoredRef(body);
+          if (!ref) {
+            return match;
+          }
+          const { nodeId, rest } = ref;
           const varName = replaceTemplateVariable(
             match,
             nodeId,
@@ -542,9 +567,9 @@ export function evaluateConditionExpression(
 
       // Mirror the substitution against the original expression so the value
       // side keeps the author's literals (quotes, operators) intact.
-      const resolvedExpression = conditionExpression.replace(
-        templatePattern,
-        (match: string) => tokenLiterals[match] ?? match
+      const resolvedExpression = replaceTemplateTokens(
+        conditionExpression,
+        ({ body }) => tokenLiterals[`{{${body}}}`] ?? `{{${body}}}`
       );
 
       // KEEP-468: any `{{...}}` token left after stored-format substitution
@@ -554,9 +579,10 @@ export function evaluateConditionExpression(
       // as a misleading "Unexpected token '{'" syntax error. Fail closed
       // explicitly with a clear message that points the author at the right
       // grammar.
-      const leftoverTemplateMatches =
-        transformedExpression.match(/\{\{[^}]+\}\}/g);
-      if (leftoverTemplateMatches && leftoverTemplateMatches.length > 0) {
+      const leftoverTemplateMatches = findTemplateTokens(
+        transformedExpression
+      ).map(({ body }) => `{{${body}}}`);
+      if (leftoverTemplateMatches.length > 0) {
         throw new Error(
           `Condition contains unresolved template reference(s): ${[...new Set(leftoverTemplateMatches)].join(", ")}. Use stored format \`{{@nodeId:Label.field}}\` for condition references.`
         );
@@ -572,11 +598,22 @@ export function evaluateConditionExpression(
       }
 
       // BigInt-safe conversion for large Web3 values (e.g. token balances in wei)
+      let regexTextContext: Record<string, unknown> | undefined;
       if (needsBigIntMode(transformedExpression, evalContext)) {
         const converted = applyBigIntConversion(
           transformedExpression,
           evalContext
         );
+        // matchesRegex sees what it would outside this mode: values as
+        // resolved ("01234", not 1234n) and typed integers as numbers.
+        if (converted.expression.includes("matchesRegex")) {
+          regexTextContext = { ...evalContext };
+          for (const [name, value] of Object.entries(converted.evalContext)) {
+            if (!Object.hasOwn(evalContext, name)) {
+              regexTextContext[name] = Number(value);
+            }
+          }
+        }
         transformedExpression = converted.expression;
         evalContext = converted.evalContext;
       }
@@ -584,7 +621,12 @@ export function evaluateConditionExpression(
       // Safe AST interpreter (no new Function / no host access) for A-01.
       // Only reads the resolved __v/__b values and applies allowlisted
       // operators and methods.
-      const result = safeEvaluateCondition(transformedExpression, evalContext);
+      const result = safeEvaluateCondition(
+        transformedExpression,
+        evalContext,
+        regexRunBudget,
+        regexTextContext
+      );
       if (unresolvedFields.length > 0) {
         logWarn("[Condition] Reference(s) resolved to undefined", {
           unresolved: unresolvedFields.join(" | "),
@@ -675,7 +717,7 @@ export async function preloadStepFunctions(
     if (node.data.type !== "action") {
       continue;
     }
-    const actionType = node.data.config?.actionType as string | undefined;
+    const actionType = readActionType(node.data.config);
     if (actionType) {
       actionTypes.add(actionType);
     }
@@ -720,6 +762,7 @@ type ActionStepInput = {
   stepFunctions: StepFunctionTable;
   nodeMap?: ReadonlyMap<string, unknown>;
   executionResults?: Record<string, ExecutionResult>;
+  regexRunBudget?: RegexBudget;
 };
 
 /**
@@ -781,6 +824,7 @@ async function executeActionStep(input: ActionStepInput) {
 }
 
 async function runActionStep(input: ActionStepInput) {
+}) {
   const { actionType, config, outputs, context, stepFunctions } = input;
 
   // Build step input WITHOUT credentials, but WITH integrationId reference and logging context
@@ -818,7 +862,8 @@ async function runActionStep(input: ActionStepInput) {
         originalExpression,
         outputs,
         input.nodeMap,
-        input.executionResults
+        input.executionResults,
+        input.regexRunBudget
       );
       evaluatedCondition = result.result;
       resolvedValues = result.resolvedValues;
@@ -867,14 +912,13 @@ function resolveConfigFieldPath(data: unknown, fieldPath: string): unknown {
     const arrayMatch = trimmed.match(ARRAY_ACCESS_PATTERN);
     if (arrayMatch) {
       const [, key, indexStr] = arrayMatch;
-      const obj = current as Record<string, unknown>;
-      const arr = obj?.[key];
+      const arr = readOwnField(current, key);
       if (!Array.isArray(arr)) {
         return;
       }
       current = arr[Number.parseInt(indexStr, 10)];
     } else {
-      current = (current as Record<string, unknown>)?.[trimmed];
+      current = readOwnField(current, trimmed);
     }
     if (current === undefined || current === null) {
       return;
@@ -972,7 +1016,7 @@ function replaceConfigTemplate(
   path?: string
 ): string {
   const trimmedNodeId = nodeId.trim();
-  const sanitizedNodeId = trimmedNodeId.replace(/[^a-zA-Z0-9]/g, "_");
+  const sanitizedNodeId = sanitizeNodeId(trimmedNodeId);
   const output = outputs[sanitizedNodeId] ?? outputs[trimmedNodeId];
   const fieldPath = rest.includes(".")
     ? rest.substring(rest.indexOf(".") + 1).trim()
@@ -1122,20 +1166,18 @@ function renderTemplateValue(
 }
 
 /**
- * Matches a stored ref `{{@nodeId:Label.field}}` OR a display ref
+ * True for a stored ref `{{@nodeId:Label.field}}` OR a display ref
  * `{{Label.field}}`. The display form is the fallback for tokens the editor
  * never converted to stored format (mirrors extractTemplateParameters).
  *
- * One alternation, so both forms resolve in a single pass. Two passes read
- * the text the first pass substituted, so every `{{...}}` inside an upstream
- * node's output became a reference the author appeared to have written.
+ * Both forms resolve in a single pass. Two passes read the text the first
+ * pass substituted, so every `{{...}}` inside an upstream node's output
+ * became a reference the author appeared to have written.
  * processCodeTemplates has always resolved code fields in one pass.
  */
-const configTemplatePattern = (): RegExp =>
-  /\{\{@([^:]+):([^}]+)\}\}|\{\{([^@}][^}]*)\}\}/g;
-
-/** Any `{{...}}`, used to find a token the reference patterns cannot match. */
-const anyTemplateToken = (): RegExp => /\{\{[^}]+\}\}/g;
+function isReferenceToken({ body }: TemplateToken): boolean {
+  return !body.startsWith("@") || parseStoredRef(body) !== null;
+}
 
 /**
  * Resolve one matched reference to the text that replaces it. `escapeValue`,
@@ -1143,27 +1185,26 @@ const anyTemplateToken = (): RegExp => /\{\{[^}]+\}\}/g;
  * never to the author's own surrounding text.
  */
 function resolveConfigMatch(
-  match: RegExpExecArray,
+  { body }: TemplateToken,
   outputs: NodeOutputs,
   tracker?: TemplateResolutionTracker,
   path?: string,
   escapeValue?: (substituted: string) => string
 ): string {
-  const [full, storedNodeId, storedRest, displayRef] = match;
-  if (storedNodeId !== undefined && storedRest !== undefined) {
+  const full = `{{${body}}}`;
+  const stored = parseStoredRef(body);
+  if (stored) {
     const substituted = replaceConfigTemplate(
       full,
-      storedNodeId,
-      storedRest,
+      stored.nodeId,
+      stored.rest,
       outputs,
       tracker,
       path
     );
     return escapeValue ? escapeValue(substituted) : substituted;
   }
-  if (displayRef === undefined) {
-    return full;
-  }
+  const displayRef = body;
   const resolved = resolveDisplayTemplate(displayRef, outputs);
   if (resolved === null || resolved === undefined) {
     recordUnresolved(tracker, {
@@ -1199,12 +1240,12 @@ function recordAuthoredLeftovers(
   if (!(tracker && authored.includes("{{"))) {
     return;
   }
-  for (const leftover of authored.matchAll(anyTemplateToken())) {
+  for (const leftover of findTemplateTokens(authored)) {
     if (tracker.unresolved.length >= MAX_TRACKED_LEFTOVERS) {
       return;
     }
     recordUnresolved(tracker, {
-      token: leftover[0],
+      token: `{{${leftover.body}}}`,
       reason: "literal-leftover",
       detail: "Reference left in rendered config; resolver did not match.",
       path: path || undefined,
@@ -1236,17 +1277,17 @@ export function renderTemplateString(
   escapeValue?: (substituted: string) => string,
   path = ""
 ): string {
-  const pattern = configTemplatePattern();
   let result = "";
   let cursor = 0;
-  let match = pattern.exec(value);
-  while (match !== null) {
-    const authored = value.slice(cursor, match.index);
+  for (const token of findTemplateTokens(value)) {
+    if (!isReferenceToken(token)) {
+      continue;
+    }
+    const authored = value.slice(cursor, token.start);
     recordAuthoredLeftovers(authored, tracker, path);
     result +=
-      authored + resolveConfigMatch(match, outputs, tracker, path, escapeValue);
-    cursor = match.index + match[0].length;
-    match = pattern.exec(value);
+      authored + resolveConfigMatch(token, outputs, tracker, path, escapeValue);
+    cursor = token.end;
   }
   const tail = value.slice(cursor);
   recordAuthoredLeftovers(tail, tracker, path);
@@ -1415,7 +1456,7 @@ function resolveStoredCodeRef(
   line: number
 ): string {
   const trimmedNodeId = nodeId.trim();
-  const sanitizedNodeId = trimmedNodeId.replace(/[^a-zA-Z0-9]/g, "_");
+  const sanitizedNodeId = sanitizeNodeId(trimmedNodeId);
   const output = outputs[sanitizedNodeId] ?? outputs[trimmedNodeId];
   if (!output) {
     recordUnresolved(tracker, {
@@ -1470,10 +1511,6 @@ function resolveDisplayCodeRef(
   return formatCodeValue(resolved);
 }
 
-// Matches a stored ref `{{@nodeId:Label.field}}` OR a display ref
-// `{{Label.field}}` in one pass so offsets align with the comment scan below.
-const CODE_TEMPLATE_PATTERN = /\{\{@([^:]+):([^}]+)\}\}|\{\{([^@}][^}]*)\}\}/g;
-
 export function processCodeTemplates(
   code: string,
   outputs: NodeOutputs,
@@ -1484,35 +1521,30 @@ export function processCodeTemplates(
   // original code so match offsets line up with the comment ranges.
   const commentRanges = computeCommentRanges(code);
 
-  return code.replace(
-    CODE_TEMPLATE_PATTERN,
-    (
-      full: string,
-      storedNodeId: string | undefined,
-      storedRest: string | undefined,
-      displayRef: string | undefined,
-      offset: number
-    ) => {
-      if (offsetInRanges(offset, commentRanges)) {
-        return full;
-      }
-      const line = lineNumberAt(code, offset);
-      if (storedNodeId !== undefined && storedRest !== undefined) {
-        return resolveStoredCodeRef(
-          full,
-          storedNodeId,
-          storedRest,
-          outputs,
-          tracker,
-          line
-        );
-      }
-      if (displayRef !== undefined) {
-        return resolveDisplayCodeRef(full, displayRef, outputs, tracker, line);
-      }
+  // Stored refs and display refs resolve in one pass so offsets align with
+  // the comment scan.
+  return replaceTemplateTokens(code, (token) => {
+    const full = `{{${token.body}}}`;
+    if (
+      !isReferenceToken(token) ||
+      offsetInRanges(token.start, commentRanges)
+    ) {
       return full;
     }
-  );
+    const line = lineNumberAt(code, token.start);
+    const stored = parseStoredRef(token.body);
+    if (stored) {
+      return resolveStoredCodeRef(
+        full,
+        stored.nodeId,
+        stored.rest,
+        outputs,
+        tracker,
+        line
+      );
+    }
+    return resolveDisplayCodeRef(full, token.body, outputs, tracker, line);
+  });
 }
 
 /**
@@ -1554,6 +1586,38 @@ export function resolveDisplayTemplateChecked(
   }
 
   return resolveFromOutputDataChecked(entry.data, fieldPath);
+}
+
+/**
+ * Replace each token `replace` accepts, leaving the rest as written. With
+ * `quoted`, only a token wrapped in a pair of single quotes is replaced, and
+ * the quotes go with it.
+ */
+function replaceQueryTokens(
+  query: string,
+  quoted: boolean,
+  replace: (token: TemplateToken, match: string) => string | null
+): string {
+  const pad = quoted ? 1 : 0;
+  let result = "";
+  let last = 0;
+  for (const token of findTemplateTokens(query)) {
+    const start = token.start - pad;
+    const end = token.end + pad;
+    if (
+      quoted &&
+      !(start >= last && query[start] === "'" && query[token.end] === "'")
+    ) {
+      continue;
+    }
+    const replacement = replace(token, query.slice(start, end));
+    if (replacement === null) {
+      continue;
+    }
+    result += query.slice(last, start) + replacement;
+    last = end;
+  }
+  return result + query.slice(last);
 }
 
 /**
@@ -1616,13 +1680,20 @@ export function extractTemplateParameters(
     return `$${paramIndex}`;
   };
 
+  const stored = (token: TemplateToken, match: string): string | null => {
+    const ref = parseStoredRef(token.body);
+    return ref ? replaceStored(match, ref.nodeId, ref.rest) : null;
+  };
+  const display = (token: TemplateToken, match: string): string | null =>
+    token.body.startsWith("@") ? null : replaceDisplay(match, token.body);
+
   // Stored format: fully-quoted first (strip both quotes), then unquoted
-  let result = query.replace(/'\{\{@([^:]+):([^}]+)\}\}'/g, replaceStored);
-  result = result.replace(/\{\{@([^:]+):([^}]+)\}\}/g, replaceStored);
+  let result = replaceQueryTokens(query, true, stored);
+  result = replaceQueryTokens(result, false, stored);
 
   // Display format: fully-quoted first (strip both quotes), then unquoted
-  result = result.replace(/'\{\{([^@}][^}]*)\}\}'/g, replaceDisplay);
-  result = result.replace(/\{\{([^@}][^}]*)\}\}/g, replaceDisplay);
+  result = replaceQueryTokens(result, true, display);
+  result = replaceQueryTokens(result, false, display);
 
   return { parameterizedQuery: result, paramValues };
 }
@@ -1710,10 +1781,10 @@ function resolveStrictPath(
         return { found: false, reason: "no-path" };
       }
       const obj = current as Record<string, unknown>;
-      if (!(key in obj)) {
+      if (!hasOwnField(obj, key)) {
         return { found: false, reason: "no-path" };
       }
-      const arr = obj[key];
+      const arr = readOwnField(obj, key);
       if (!Array.isArray(arr)) {
         return { found: false, reason: "no-path" };
       }
@@ -1732,10 +1803,10 @@ function resolveStrictPath(
       return { found: false, reason: "no-path" };
     }
     const obj = current as Record<string, unknown>;
-    if (!(trimmed in obj)) {
+    if (!hasOwnField(obj, trimmed)) {
       return { found: false, reason: "no-path" };
     }
-    current = obj[trimmed];
+    current = readOwnField(obj, trimmed);
   }
   return { found: true, value: current };
 }
@@ -1774,7 +1845,7 @@ export function resolveTemplateToRawValueChecked(
   outputs: NodeOutputs
 ): RawValueResolution {
   const trimmedNodeId = nodeId.trim();
-  const sanitizedNodeId = trimmedNodeId.replace(/[^a-zA-Z0-9]/g, "_");
+  const sanitizedNodeId = sanitizeNodeId(trimmedNodeId);
   const output = outputs[sanitizedNodeId] ?? outputs[trimmedNodeId];
   const fieldPath = rest.includes(".")
     ? rest.substring(rest.indexOf(".") + 1).trim()
@@ -2426,10 +2497,7 @@ export function markCollectSkippedOnForEachFailure(params: {
     count: params.iterationResults.length,
     skipped: true as const,
   };
-  const sanitizedCollectId = params.aggregateCollectNodeId.replace(
-    /[^a-zA-Z0-9]/g,
-    "_"
-  );
+  const sanitizedCollectId = sanitizeNodeId(params.aggregateCollectNodeId);
   params.currentVisited.add(params.aggregateCollectNodeId);
   params.attemptedNodes.add(params.aggregateCollectNodeId);
   params.currentResults[params.aggregateCollectNodeId] = {
@@ -2448,7 +2516,7 @@ export function markCollectSkippedOnForEachFailure(params: {
     params.collectNodeId !== params.doneCollectNodeId
   ) {
     const legacyCollectNodeId = params.collectNodeId;
-    const sanitizedLegacyId = legacyCollectNodeId.replace(/[^a-zA-Z0-9]/g, "_");
+    const sanitizedLegacyId = sanitizeNodeId(legacyCollectNodeId);
     params.currentVisited.add(legacyCollectNodeId);
     params.attemptedNodes.add(legacyCollectNodeId);
     params.currentResults[legacyCollectNodeId] = {
@@ -2581,7 +2649,7 @@ export function resolveArraySource(
   const raw = resolveTemplateToRawValue(nodeId, rest, outputs);
 
   if (raw === null || raw === undefined) {
-    const sanitizedId = nodeId.trim().replace(/[^a-zA-Z0-9]/g, "_");
+    const sanitizedId = sanitizeNodeId(nodeId.trim());
     const nodeExists =
       outputs[sanitizedId] !== undefined ||
       outputs[nodeId.trim()] !== undefined;
@@ -2833,6 +2901,9 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
   // once it has, every step call downstream is reached synchronously, so the
   // order they are invoked in follows the graph rather than module-load timing.
   const stepFunctions = await preloadStepFunctions(nodes);
+  // Regex work of every Condition in this run, loops included. The body runs
+  // again on each resume, and each pass rebuilds this from zero.
+  const regexRunBudget = new RegexBudget(MAX_RUN_REGEX_WORK, { scope: "run" });
 
   // Find trigger nodes
   const nodesWithIncoming = new Set(edges.map((e) => e.target));
@@ -3016,7 +3087,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       getNodeName,
       getErrorMessageAsync,
       injectBuiltinVariables: (outputs) => {
-        const builtinSanitized = BUILTIN_NODE_ID.replace(/[^a-zA-Z0-9]/g, "_");
+        const builtinSanitized = sanitizeNodeId(BUILTIN_NODE_ID);
         outputs[builtinSanitized] = {
           label: BUILTIN_NODE_LABEL,
           data: getBuiltinVariables(),
@@ -3050,6 +3121,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           stepFunctions,
           nodeMap,
           executionResults: results,
+          regexRunBudget,
         }),
       // KEEP-543: Same KEEP-398/431 spurious-max-retries recovery pattern as
       // the top-level node executor, scoped to the current iteration.
@@ -3216,7 +3288,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     // body chain (handled by the existing fallback).
     const captureCollectNodeId = collectNodeId;
 
-    const sanitizedForEachId = forEachNodeId.replace(/[^a-zA-Z0-9]/g, "_");
+    const sanitizedForEachId = sanitizeNodeId(forEachNodeId);
 
     // 3. Single iteration executor
     const mapExpression = processedConfig.mapExpression as string | undefined;
@@ -3304,7 +3376,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
         for (const bodyNodeId of bodyNodeIds) {
           const targets = bodyEdgesBySource.get(bodyNodeId) ?? [];
           if (targets.includes(captureCollectNodeId)) {
-            const sanitizedBodyId = bodyNodeId.replace(/[^a-zA-Z0-9]/g, "_");
+            const sanitizedBodyId = sanitizeNodeId(bodyNodeId);
             const output = scopedOutputs[sanitizedBodyId];
             if (output?.data !== undefined) {
               iterationOutput = output.data;
@@ -3317,7 +3389,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       // and the canonical done-handle pattern with no in-body Collect).
       if (iterationOutput === undefined) {
         for (const bodyNodeId of bodyNodeIds) {
-          const sanitizedBodyId = bodyNodeId.replace(/[^a-zA-Z0-9]/g, "_");
+          const sanitizedBodyId = sanitizeNodeId(bodyNodeId);
           const output = scopedOutputs[sanitizedBodyId];
           if (output?.data !== undefined) {
             iterationOutput = output.data;
@@ -3396,10 +3468,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           results: iterationResults,
           count: iterationResults.length,
         };
-        const sanitizedCollectId = aggregateCollectNodeId.replace(
-          /[^a-zA-Z0-9]/g,
-          "_"
-        );
+        const sanitizedCollectId = sanitizeNodeId(aggregateCollectNodeId);
         const collectLabel = skipCollectLabel;
 
         const collectAction = SYSTEM_ACTIONS.Collect;
@@ -3683,7 +3752,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       console.log("[Workflow Executor] Skipping disabled node:", nodeId);
 
       // Store null output for disabled nodes so downstream templates don't fail
-      const sanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+      const sanitizedNodeId = sanitizeNodeId(nodeId);
       outputs[sanitizedNodeId] = {
         label: getNodeName(node),
         data: null,
@@ -3697,7 +3766,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     // Inject fresh built-in system variables before each node executes.
     // Intentionally per-node (not per-workflow) so long-running sequential
     // workflows get an up-to-date timestamp at each step.
-    const builtinSanitizedId = BUILTIN_NODE_ID.replace(/[^a-zA-Z0-9]/g, "_");
+    const builtinSanitizedId = sanitizeNodeId(BUILTIN_NODE_ID);
     outputs[builtinSanitizedId] = {
       label: BUILTIN_NODE_LABEL,
       data: getBuiltinVariables(),
@@ -3827,7 +3896,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
         };
       } else if (node.data.type === "action") {
         const config = node.data.config || {};
-        const actionType = config.actionType as string | undefined;
+        const actionType = readActionType(config);
 
         console.log("[Workflow Executor] Executing action node:", actionType);
 
@@ -3917,6 +3986,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           stepFunctions,
           nodeMap,
           executionResults: results,
+          regexRunBudget,
         });
 
         console.log("[Workflow Executor] Step result received:", {
@@ -3962,7 +4032,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       results[nodeId] = result;
 
       // Store outputs with sanitized nodeId for template variable lookup
-      const sanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+      const sanitizedNodeId = sanitizeNodeId(nodeId);
       outputs[sanitizedNodeId] = {
         label: getNodeName(node),
         data: result.data,
@@ -4018,7 +4088,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           });
 
           // Update the For Each node's output with resolved iteration metadata
-          const sanitizedFEId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+          const sanitizedFEId = sanitizeNodeId(nodeId);
           outputs[sanitizedFEId] = {
             label: getNodeName(node),
             data: iterationSummary,
@@ -4111,7 +4181,8 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
               executionId,
               nodeId,
               SPURIOUS_RECOVERY_POLL_TIMEOUT_MS,
-              SPURIOUS_RECOVERY_POLL_INTERVAL_MS
+              SPURIOUS_RECOVERY_POLL_INTERVAL_MS,
+              SPURIOUS_RECOVERY_INFLIGHT_TIMEOUT_MS
             )
           )?.outputRaw;
         } catch (pollError) {
@@ -4144,7 +4215,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           data: recordedOutput,
         };
         results[nodeId] = reconciledResult;
-        const reconciledSanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+        const reconciledSanitizedNodeId = sanitizeNodeId(nodeId);
         outputs[reconciledSanitizedNodeId] = {
           label: getNodeName(node),
           data: recordedOutput,
@@ -4223,7 +4294,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       // resolve to a sentinel instead of `undefined`. The previous
       // unconditional overwrite discarded replay-survivor output and caused
       // downstream resolvers to throw `Node "X" produced no data.`
-      const sanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
+      const sanitizedNodeId = sanitizeNodeId(nodeId);
       recordCatchOutput(outputs, sanitizedNodeId, getNodeName(node));
 
       // Signal arrival at downstream convergence nodes to prevent deadlocks.
@@ -4275,6 +4346,12 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           "Looping back into or out of a For Each body is not supported. Move the " +
           "connection outside the For Each, or use the For Each iteration itself to repeat the work."
       );
+    }
+
+    // Every Condition's regex patterns, compiled once into this pass's budget.
+    const regexCompileError = prepareRunRegex(nodes, regexRunBudget);
+    if (regexCompileError) {
+      throw new Error(regexCompileError);
     }
 
     const triggerType = detectTriggerType(nodes);

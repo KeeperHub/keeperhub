@@ -1,27 +1,14 @@
 "use client";
 
 import type { NodeProps } from "@xyflow/react";
-import {
-  ArrowDownToLine,
-  Box,
-  Boxes,
-  Check,
-  Clock,
-  Play,
-  Radio,
-  Webhook,
-  XCircle,
-} from "lucide-react";
+import { Check, XCircle } from "lucide-react";
 import Image from "next/image";
-import { type ElementType, memo } from "react";
+import { memo } from "react";
 import { Node } from "@/components/ai-elements/node";
 import { NodeLabel } from "@/components/workflow/nodes/node-label";
+import { getTriggerIcon } from "@/components/workflow-trigger-icons";
 import { cn } from "@/lib/utils";
-import type {
-  WorkflowNodeData,
-  WorkflowTriggerType,
-} from "@/lib/workflow/store";
-import { WorkflowTriggerEnum } from "@/lib/workflow/store";
+import type { WorkflowNodeData } from "@/lib/workflow/store";
 
 type TriggerNodeProps = NodeProps & {
   data?: WorkflowNodeData;
@@ -37,18 +24,7 @@ export const TriggerNode = memo(({ data, selected, id }: TriggerNodeProps) => {
   const displayDescription = data.description || "Trigger";
   const status = data.status;
 
-  // Select icon based on trigger type
-  const triggerIcons: Record<WorkflowTriggerType, ElementType> = {
-    [WorkflowTriggerEnum.PYTH_PRICE]: Radio,
-    [WorkflowTriggerEnum.MANUAL]: Play,
-    [WorkflowTriggerEnum.SCHEDULE]: Clock,
-    [WorkflowTriggerEnum.WEBHOOK]: Webhook,
-    [WorkflowTriggerEnum.EVENT]: Boxes, // keeperhub custom field //
-    [WorkflowTriggerEnum.BLOCK]: Box, // keeperhub custom field //
-    [WorkflowTriggerEnum.TEMPO_PAYMENT]: ArrowDownToLine, // keeperhub custom field //
-  };
-
-  const TriggerIcon = triggerIcons[triggerType as WorkflowTriggerType] || Play;
+  const TriggerIcon = getTriggerIcon(triggerType);
 
   const protocolIconPath = data.config?._eventProtocolIconPath as
     | string

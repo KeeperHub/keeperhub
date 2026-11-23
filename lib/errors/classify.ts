@@ -76,6 +76,9 @@ const CHAIN_REJECTION_PATTERNS: readonly RegExp[] = [
   /intrinsic gas too low/i,
 ];
 
+/** The wallet holds less than the run needs; anchored so a quoted RPC body never matches. */
+export const INSUFFICIENT_BALANCE_PATTERN = /^Insufficient \S+ balance\b/i;
+
 /**
  * Ordered list of rules. First match wins. Order matters when patterns
  * overlap; more specific patterns should come before broader ones.
@@ -195,7 +198,7 @@ const RULES: readonly Rule[] = [
   // variant. Anchored so an RPC-exhaustion message that quotes a provider
   // body containing this phrase still falls through to the system RPC rules.
   {
-    pattern: /^Insufficient \S+ balance\b/i,
+    pattern: INSUFFICIENT_BALANCE_PATTERN,
     errorCategory: ErrorCategory.TRANSACTION,
     errorType: ExecutionErrorType.USER,
     code: null,
@@ -228,6 +231,22 @@ const RULES: readonly Rule[] = [
   },
   {
     pattern: /Function '.+' not found in ABI/i,
+    errorCategory: ErrorCategory.VALIDATION,
+    errorType: ExecutionErrorType.USER,
+    code: null,
+  },
+  // Batch Read Contract checks its config and lists before any call; each
+  // message names the field or entry ("Call N", "Argument Sets entry N").
+  {
+    pattern:
+      /^(Call \d+: )?(Function '.+' (is not in|matches more than one function in) the ABI|Contract Address (is not a valid address|has a bad checksum): )/,
+    errorCategory: ErrorCategory.VALIDATION,
+    errorType: ExecutionErrorType.USER,
+    code: null,
+  },
+  {
+    pattern:
+      /^(Argument Sets|Contract Addresses|Function Arguments|Calls From)\b|^Call \d+ (has no|must be)\b|^The calls(' data adds up to| hold more than) |^(Contract Address|Contract ABI|Function) is required\b|^[A-Za-z_$][\w$]* (takes no arguments, so a list of argument sets|takes a tuple with unnamed members|declares [\d,]+ parameters and tuple members)|^Too many calls \(\d+\)\. Maximum is \d+|^No calls to execute$|^(Call \d+: )?(Failed to parse ABI: |Invalid ABI JSON: |ABI must be a JSON array$)|^Failed to encode call \d+ \(|^Invalid (Args List|Calls) JSON: |^Args List (must be a JSON array|entry at index \d+ must be)|^Calls (JSON is required in mixed mode$|must be a JSON array)/,
     errorCategory: ErrorCategory.VALIDATION,
     errorType: ExecutionErrorType.USER,
     code: null,

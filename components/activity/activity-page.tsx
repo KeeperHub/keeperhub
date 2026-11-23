@@ -6,6 +6,10 @@ import type { ReactNode } from "react";
 import { ActivityFeed } from "@/components/activity/activity-feed";
 import { ActivityMemberPreview } from "@/components/activity/activity-member-preview";
 import { AuditFilterBar } from "@/components/activity/audit-filter-bar";
+import {
+  PHONE_PAGE_FILL,
+  PHONE_PAGE_SCROLLER,
+} from "@/components/activity/phone-scroll";
 import { useAuthPrompt } from "@/components/auth/provider";
 import { ExportAuditOverlay } from "@/components/overlays/export-audit-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
@@ -25,6 +29,7 @@ import {
   useAuditActivity,
 } from "@/lib/hooks/use-audit-activity";
 import { useActiveMember } from "@/lib/hooks/use-organization";
+import { cn } from "@/lib/utils";
 
 /**
  * In-page sign-in panel for the Activity route. Signed-out users reach the page
@@ -36,7 +41,7 @@ function ActivityGuestGate(): ReactNode {
   return (
     <div className="pointer-events-auto fixed inset-0 overflow-y-auto bg-sidebar">
       <div className="transition-[margin-left] duration-200 ease-out md:ml-[var(--nav-content-offset,var(--nav-sidebar-width,60px))]">
-        <div className="flex min-h-[80vh] flex-col items-center justify-center gap-6 p-6 text-center">
+        <div className="flex min-h-[80vh] flex-col items-center justify-center gap-6 p-6 text-center max-sm:px-4">
           <div className="flex size-20 items-center justify-center rounded-2xl bg-muted">
             <LogIn className="size-10 text-muted-foreground" />
           </div>
@@ -87,9 +92,27 @@ function ActivityAdminView(): ReactNode {
   const activity = useAuditActivity({ initialPageSize, initialSearch });
 
   return (
-    <div className="pointer-events-auto fixed inset-0 flex flex-col overflow-hidden bg-sidebar">
-      <div className="flex min-h-0 flex-1 flex-col transition-[margin-left] duration-200 ease-out md:ml-[var(--nav-content-offset,var(--nav-sidebar-width,60px))]">
-        <div className="flex min-h-0 flex-1 flex-col gap-6 p-6 pt-[calc(5rem+var(--app-banner-height,0px))]">
+    // On phones the whole page scrolls rather than only the feed, which would
+    // otherwise get the little height left under the title and toolbar. The
+    // pager is the last thing on it and pads itself, so the page does not.
+    <div
+      className={cn(
+        "pointer-events-auto fixed inset-0 flex flex-col overflow-hidden bg-sidebar",
+        PHONE_PAGE_SCROLLER
+      )}
+    >
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col transition-[margin-left] duration-200 ease-out md:ml-[var(--nav-content-offset,var(--nav-sidebar-width,60px))]",
+          PHONE_PAGE_FILL
+        )}
+      >
+        <div
+          className={cn(
+            "flex min-h-0 flex-1 flex-col gap-6 p-6 pt-[calc(5rem+var(--app-banner-height,0px))] max-sm:gap-4 max-sm:px-4 max-sm:pb-0",
+            PHONE_PAGE_FILL
+          )}
+        >
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="space-y-1">
               <h1 className="font-semibold text-2xl tracking-tight">
@@ -118,8 +141,10 @@ function ActivityAdminView(): ReactNode {
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-1 flex-wrap items-center gap-2">
-              <div className="relative w-full max-w-xs">
+            {/* On phones this group dissolves into the row so search takes a
+                full line and Filter shares the next one with the page size. */}
+            <div className="flex flex-1 flex-wrap items-center gap-2 max-sm:contents">
+              <div className="relative w-full max-w-xs max-sm:max-w-none">
                 <Search className="-translate-y-1/2 absolute top-1/2 left-2.5 size-4 text-muted-foreground" />
                 <Input
                   className="h-8 pl-8 text-sm"
@@ -134,7 +159,7 @@ function ActivityAdminView(): ReactNode {
               onValueChange={(v) => activity.setPageSize(Number(v))}
               value={String(activity.pageSize)}
             >
-              <SelectTrigger className="h-8 w-28 text-xs">
+              <SelectTrigger className="w-28 text-xs" size="sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

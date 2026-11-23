@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { parseGasLimitConfig } from "@/lib/web3/gas-defaults";
+import { hasTemplateToken } from "@/lib/workflow/template-ref";
 import type { ActionConfigFieldBase } from "@/plugins/registry";
 
 type GasLimitMultiplierFieldProps = {
@@ -22,11 +23,9 @@ type GasEstimateState =
   | { status: "error"; message: string };
 
 const DEBOUNCE_MS = 500;
-const TEMPLATE_REF_PATTERN = /\{\{.*?\}\}/;
-
 function hasTemplateRefs(config: Record<string, unknown>): boolean {
   return Object.values(config).some((v) =>
-    TEMPLATE_REF_PATTERN.test(typeof v === "string" ? v : JSON.stringify(v))
+    hasTemplateToken(typeof v === "string" ? v : JSON.stringify(v))
   );
 }
 

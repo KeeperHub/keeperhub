@@ -72,6 +72,23 @@ describe("evaluateShowWhen", () => {
     });
   });
 
+  describe("notEquals variant", () => {
+    const predicate = { field: "mode", notEquals: "multiple" };
+
+    it("returns true for any other stored value", () => {
+      expect(evaluateShowWhen(predicate, { mode: "single" })).toBe(true);
+      expect(evaluateShowWhen(predicate, { mode: "" })).toBe(true);
+    });
+
+    it("returns true when the field is absent, as on a node saved before it existed", () => {
+      expect(evaluateShowWhen(predicate, {})).toBe(true);
+    });
+
+    it("returns false for the excluded value", () => {
+      expect(evaluateShowWhen(predicate, { mode: "multiple" })).toBe(false);
+    });
+  });
+
   describe("all variant", () => {
     const predicate = {
       all: [

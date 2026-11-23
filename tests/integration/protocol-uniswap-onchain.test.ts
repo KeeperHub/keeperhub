@@ -260,6 +260,76 @@ describe("Uniswap V3 on-chain integration (Sepolia)", () => {
     30_000
   );
 
+  // The three position lifecycle writes take a struct each. A business revert
+  // (not approved, invalid token ID) proves the position manager decoded the
+  // flattened inputs back into its struct; an ABI failure would not.
+  const UINT128_MAX = "340282366920938463463374607431768211455";
+  const FAR_DEADLINE = "4102444800";
+  const lifecycleCases: [string, Record<string, string>][] = [
+    [
+      "collect-fees",
+      {
+        tokenId: "1",
+        recipient: TEST_ADDRESS,
+        amount0Max: UINT128_MAX,
+        amount1Max: UINT128_MAX,
+      },
+    ],
+    [
+      "decrease-liquidity",
+      {
+        tokenId: "1",
+        liquidity: "1",
+        amount0Min: "0",
+        amount1Min: "0",
+        deadline: FAR_DEADLINE,
+      },
+    ],
+    [
+      "increase-liquidity",
+      {
+        tokenId: "1",
+        amount0Desired: "1000000",
+        amount1Desired: ONE_ETH,
+        amount0Min: "0",
+        amount1Min: "0",
+        deadline: FAR_DEADLINE,
+      },
+    ],
+  ];
+
+  for (const [actionSlug, sampleInputs] of lifecycleCases) {
+    itOnchain(
+      `${actionSlug}: estimateGas calldata is valid (business revert expected)`,
+      async () => {
+        // Without this, a run where estimateGas returns instead of throwing
+        // passes with nothing asserted - and for increase-liquidity, the one
+        // action with no ownership check, success is the case worth seeing.
+        expect.hasAssertions();
+        const { to, data } = buildCalldata({
+          protocol: uniswapDef,
+          actionSlug,
+          sampleInputs,
+          chainId: CHAIN_ID,
+        });
+
+        const provider = await makeProvider();
+        try {
+          const gas = await provider.executeWithFailover(
+            async (p) => await p.estimateGas({ to, data, from: TEST_ADDRESS })
+          );
+          expect(gas).toBeGreaterThan(BigInt(0));
+        } catch (error) {
+          const msg = String(error);
+          expect(msg).not.toContain("INVALID_ARGUMENT");
+          expect(msg).not.toContain("could not decode");
+          expect(msg).not.toContain("invalid function");
+        }
+      },
+      30_000
+    );
+  }
+
   // -- quoter (tuple-flattened inputs) ---------------------------------------
 
   itOnchain(

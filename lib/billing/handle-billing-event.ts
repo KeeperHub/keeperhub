@@ -13,8 +13,9 @@ import {
 import { getMetricsCollector } from "@/lib/metrics";
 import { MetricNames } from "@/lib/metrics/types";
 import { recordAuditEvent } from "@/lib/security/audit-log";
-import { BILLING_ALERTS } from "./constants";
+import { BILLING_ALERTS, SUBSCRIPTION_STATUS } from "./constants";
 import { clearDebtForInvoice } from "./execution-debt";
+import { lowerGasAllocationToPlan } from "./gas-credits";
 import {
   billOverageForOrg,
   collectFinalPeriodOverage,
@@ -22,7 +23,11 @@ import {
 } from "./overage";
 import { type PlanName, parsePlanName } from "./plans";
 import { resolveSubscriptionPlan } from "./plans-server";
-import type { BillingProvider, BillingWebhookEvent } from "./provider";
+import type {
+  BillingProvider,
+  BillingWebhookEvent,
+  SubscriptionDetails,
+} from "./provider";
 
 const LOG_PREFIX = "[Billing Handler]";
 
@@ -70,7 +75,12 @@ function recordTrialConversion(
   plan: PlanName,
   tier: string | null
 ): void {
-  if (!(previousStatus === "trialing" && nextStatus === "active")) {
+  if (
+    !(
+      previousStatus === SUBSCRIPTION_STATUS.TRIALING &&
+      nextStatus === SUBSCRIPTION_STATUS.ACTIVE
+    )
+  ) {
     return;
   }
   getMetricsCollector().incrementCounter(MetricNames.BILLING_TRIAL_CONVERTED, {
@@ -135,7 +145,7 @@ export async function handleBillingEvent(
       break;
     }
     case "invoice.payment_failed": {
-      await handleInvoicePaymentFailed(data);
+      await handleInvoicePaymentFailed(data, provider);
       break;
     }
     case "invoice.overdue": {
@@ -225,14 +235,16 @@ async function handleCheckoutCompleted(
   // checkout.completed only fires on success, so the subscription is either
   // trialing (trial requested) or active. Persist the real status and stamp
   // trial consumption so the org cannot start a second trial.
-  const isTrialing = details.status === "trialing";
+  const isTrialing = details.status === SUBSCRIPTION_STATUS.TRIALING;
 
   const subscriptionData = {
     providerSubscriptionId,
     providerPriceId: details.priceId,
     plan,
     tier,
-    status: isTrialing ? ("trialing" as const) : ("active" as const),
+    status: isTrialing
+      ? SUBSCRIPTION_STATUS.TRIALING
+      : SUBSCRIPTION_STATUS.ACTIVE,
     currentPeriodStart: details.periodStart,
     currentPeriodEnd: details.periodEnd,
     cancelAtPeriodEnd: details.cancelAtPeriodEnd,
@@ -544,6 +556,24 @@ async function collectFinalPeriodOverageSafely(
   }
 }
 
+/**
+ * Cut the current period's gas credit to the free cap. Runs before the plan
+ * write and throws on failure, so the event is retried with the row unchanged.
+ */
+async function lowerGasAllocationToFree(
+  sub: SubscriptionRow | undefined
+): Promise<void> {
+  if (!(sub?.currentPeriodStart instanceof Date)) {
+    return;
+  }
+  await lowerGasAllocationToPlan(
+    sub.organizationId,
+    sub.currentPeriodStart,
+    "free",
+    sub.planOverrides
+  );
+}
+
 async function handleSubscriptionDeleted(
   data: BillingWebhookEvent["data"]
 ): Promise<void> {
@@ -554,74 +584,20 @@ async function handleSubscriptionDeleted(
   }
 
   const current = await findSubscriptionByProviderId(providerSubscriptionId);
-  const periodEnd =
-    data.periodEnd instanceof Date ? data.periodEnd : current?.currentPeriodEnd;
   const now = new Date();
 
-  // If the billing period hasn't ended yet (cancel at period end),
-  // keep the plan active but mark status as canceled so the UI shows
-  // the cancellation notice. The plan features remain available.
-  if (periodEnd !== null && periodEnd !== undefined && periodEnd > now) {
-    console.info(
-      LOG_PREFIX,
-      "subscription.deleted - subId:",
-      providerSubscriptionId,
-      "period still active until:",
-      periodEnd.toISOString(),
-      "- keeping plan, marking canceled"
-    );
-
-    await db
-      .update(organizationSubscriptions)
-      .set({
-        status: "canceled",
-        cancelAtPeriodEnd: false,
-        updatedAt: now,
-      })
-      .where(
-        eq(
-          organizationSubscriptions.providerSubscriptionId,
-          providerSubscriptionId
-        )
-      );
-
-    // Debt is deliberately left in place. The org still owes the amount, and
-    // it is what gates them if they subscribe again. The period is not over
-    // here, so the excess is billed later by the overage scan.
-
-    getMetricsCollector().incrementCounter(
-      MetricNames.BILLING_SUBSCRIPTION_CANCELED,
-      {
-        plan: parsePlanName(current?.plan, "free"),
-        tier: current?.tier ?? "none",
-      }
-    );
-
-    if (current) {
-      await recordAuditEvent({
-        actor: {
-          userId: null,
-          organizationId: current.organizationId,
-          authMethod: "internal",
-        },
-        action: "subscription.canceled",
-        resourceType: "subscription",
-        resourceId: current.organizationId,
-        before: { plan: current.plan, status: current.status },
-        after: { status: "canceled", activeUntil: periodEnd.toISOString() },
-        metadata: { source: "stripe", providerSubscriptionId },
-      });
-    }
-    return;
-  }
-
-  // Period has ended (or no period data) -- fully reset to free
+  // The provider sends this only once the subscription has ended. A user cancel
+  // is scheduled for the period end, so a deletion before it means the provider
+  // ended the subscription early (failed payment retries ran out, or it was
+  // canceled outright), and the plan ends with it.
   console.info(
     LOG_PREFIX,
     "subscription.deleted - subId:",
     providerSubscriptionId,
-    "period ended, resetting to free"
+    "resetting to free"
   );
+
+  await lowerGasAllocationToFree(current);
 
   // Before the reset, while the row still carries the paid plan and its limit.
   // billOverageForOrg reads plan off the row and skips a free one, so this
@@ -639,7 +615,7 @@ async function handleSubscriptionDeleted(
     .set({
       plan: "free",
       tier: null,
-      status: "canceled",
+      status: SUBSCRIPTION_STATUS.CANCELED,
       cancelAtPeriodEnd: false,
       updatedAt: now,
     })
@@ -672,7 +648,7 @@ async function handleSubscriptionDeleted(
       resourceType: "subscription",
       resourceId: current.organizationId,
       before: { plan: current.plan, status: current.status },
-      after: { plan: "free", status: "canceled" },
+      after: { plan: "free", status: SUBSCRIPTION_STATUS.CANCELED },
       metadata: { source: "stripe", providerSubscriptionId },
     });
   }
@@ -734,8 +710,8 @@ async function markOverageRecordsPaid(
 }
 
 /**
- * The status the provider reports for a subscription, or undefined when that
- * read fails.
+ * The subscription as the provider reports it, or undefined when that read
+ * fails.
  *
  * A paid invoice proves an invoice was paid. It does not prove the subscription
  * is active: the provider issues a paid $0 invoice at trial start, so treating
@@ -746,15 +722,12 @@ async function markOverageRecordsPaid(
  * Returns undefined instead of a guess, so the caller leaves the stored status
  * alone rather than writing one it cannot support.
  */
-async function readSubscriptionStatus(
+async function readSubscriptionDetails(
   providerSubscriptionId: string,
   provider: BillingProvider
-): Promise<string | undefined> {
+): Promise<SubscriptionDetails | undefined> {
   try {
-    const details = await provider.getSubscriptionDetails(
-      providerSubscriptionId
-    );
-    return details.status;
+    return await provider.getSubscriptionDetails(providerSubscriptionId);
   } catch (error) {
     logSystemWarn(
       ErrorCategory.BILLING,
@@ -764,6 +737,30 @@ async function readSubscriptionStatus(
     );
     return undefined;
   }
+}
+
+/**
+ * The plan to put back on a row that dropped to free over an unpaid charge,
+ * once the provider reports the subscription active again. Resolved from the
+ * subscription's own price, so it is whichever plan the customer subscribed to.
+ */
+function planToRestore(
+  sub: SubscriptionRow,
+  details: SubscriptionDetails | undefined
+): ReturnType<typeof resolveSubscriptionPlan> {
+  if (
+    !(
+      details?.status === SUBSCRIPTION_STATUS.ACTIVE &&
+      details.priceId &&
+      parsePlanName(sub.plan) === "free"
+    )
+  ) {
+    return;
+  }
+  return resolveSubscriptionPlan(details.priceId, {
+    subscription: details.subscriptionMetadata,
+    price: details.priceMetadata,
+  });
 }
 
 async function handleInvoicePaid(
@@ -781,10 +778,11 @@ async function handleInvoicePaid(
     console.info(LOG_PREFIX, "invoice.paid - subId:", providerSubscriptionId);
 
     const sub = await findSubscriptionByProviderId(providerSubscriptionId);
-    const status = await readSubscriptionStatus(
+    const details = await readSubscriptionDetails(
       providerSubscriptionId,
       provider
     );
+    const status = details?.status;
 
     const update: Partial<typeof organizationSubscriptions.$inferInsert> = {
       billingAlert: null,
@@ -793,6 +791,12 @@ async function handleInvoicePaid(
     };
     if (status !== undefined) {
       update.status = status;
+    }
+    const restored = sub ? planToRestore(sub, details) : undefined;
+    if (restored) {
+      update.plan = restored.plan;
+      update.tier = restored.tier;
+      update.providerPriceId = details?.priceId ?? null;
     }
 
     await db
@@ -818,8 +822,24 @@ async function handleInvoicePaid(
       await markOverageRecordsPaid(sub.organizationId, invoiceId, provider);
     }
 
+    if (sub && restored) {
+      await recordAuditEvent({
+        actor: {
+          userId: null,
+          organizationId: sub.organizationId,
+          authMethod: "internal",
+        },
+        action: "subscription.plan_changed",
+        resourceType: "subscription",
+        resourceId: sub.organizationId,
+        before: { plan: sub.plan, tier: sub.tier },
+        after: { plan: restored.plan, tier: restored.tier },
+        metadata: { source: "stripe", providerSubscriptionId, reason: "paid" },
+      });
+    }
+
     getMetricsCollector().incrementCounter(MetricNames.BILLING_INVOICE_PAID, {
-      plan: parsePlanName(sub?.plan, "free"),
+      plan: restored?.plan ?? parsePlanName(sub?.plan, "free"),
     });
     return;
   }
@@ -858,8 +878,38 @@ async function handleInvoicePaid(
   }
 }
 
+/**
+ * Whether a failed charge leaves the org on a plan nobody has paid for.
+ *
+ * A trial that ends on a declined card still opens a full paid period on the
+ * provider, so the plan has to drop here rather than wait for the provider to
+ * give up on its retries. Returns false when the provider cannot be read, so a
+ * paying customer is never downgraded on a guess.
+ */
+async function isNeverPaid(
+  sub: SubscriptionRow,
+  providerSubscriptionId: string,
+  provider: BillingProvider
+): Promise<boolean> {
+  if (parsePlanName(sub.plan) === "free") {
+    return false;
+  }
+  try {
+    return !(await provider.hasPaidInvoice(providerSubscriptionId));
+  } catch (error) {
+    logSystemWarn(
+      ErrorCategory.BILLING,
+      `${LOG_PREFIX} Could not read the invoice history; keeping the plan`,
+      error,
+      { provider_subscription_id: providerSubscriptionId }
+    );
+    return false;
+  }
+}
+
 async function handleInvoicePaymentFailed(
-  data: BillingWebhookEvent["data"]
+  data: BillingWebhookEvent["data"],
+  provider: BillingProvider
 ): Promise<void> {
   const { providerSubscriptionId, invoiceUrl } = data;
 
@@ -878,14 +928,27 @@ async function handleInvoicePaymentFailed(
 
   const sub = await findSubscriptionByProviderId(providerSubscriptionId);
 
+  const update: Partial<typeof organizationSubscriptions.$inferInsert> = {
+    billingAlert: BILLING_ALERTS.PAYMENT_FAILED,
+    billingAlertUrl: invoiceUrl ?? null,
+    updatedAt: new Date(),
+  };
+  // A failure on a subscription that already ended must not reopen it.
+  if (sub?.status !== SUBSCRIPTION_STATUS.CANCELED) {
+    update.status = SUBSCRIPTION_STATUS.PAST_DUE;
+  }
+  const downgrade =
+    sub !== undefined &&
+    (await isNeverPaid(sub, providerSubscriptionId, provider));
+  if (downgrade) {
+    await lowerGasAllocationToFree(sub);
+    update.plan = "free";
+    update.tier = null;
+  }
+
   await db
     .update(organizationSubscriptions)
-    .set({
-      status: "past_due",
-      billingAlert: BILLING_ALERTS.PAYMENT_FAILED,
-      billingAlertUrl: invoiceUrl ?? null,
-      updatedAt: new Date(),
-    })
+    .set(update)
     .where(
       eq(
         organizationSubscriptions.providerSubscriptionId,
@@ -896,6 +959,22 @@ async function handleInvoicePaymentFailed(
   getMetricsCollector().incrementCounter(MetricNames.BILLING_INVOICE_FAILED, {
     plan: parsePlanName(sub?.plan, "free"),
   });
+
+  if (downgrade && sub) {
+    await recordAuditEvent({
+      actor: {
+        userId: null,
+        organizationId: sub.organizationId,
+        authMethod: "internal",
+      },
+      action: "subscription.plan_changed",
+      resourceType: "subscription",
+      resourceId: sub.organizationId,
+      before: { plan: sub.plan, tier: sub.tier },
+      after: { plan: "free", tier: null },
+      metadata: { source: "stripe", providerSubscriptionId, reason: "unpaid" },
+    });
+  }
 }
 
 async function handleInvoiceOverdue(

@@ -17,13 +17,19 @@ const ALWAYS_TRUE = "true";
  * shape of every empty builder and every autosave taken mid-edit. The group stays on disk;
  * it just does not become a gate. The editor writes `condition` from the group it is
  * showing, so an always-true string beside a group is derived from it, not authored, and
- * cannot stand in for it either. handleModeSwitch clears `conditionConfig` when the author
- * deliberately moves to expression mode, so a bare "true" with no group is authored and is
- * still honoured.
+ * cannot stand in for it either. Editing the text in expression mode clears `conditionConfig`,
+ * so a bare "true" with no group is authored and is still honoured.
  */
 export function resolveConditionExpression(
   config: Record<string, unknown> | undefined
 ): string | undefined {
+  return resolveCondition(config)?.expression;
+}
+
+/** The expression that runs, and whether it came from the saved rules. */
+export function resolveCondition(
+  config: Record<string, unknown> | undefined
+): { expression: string; fromRules: boolean } | undefined {
   if (!config) {
     return undefined;
   }
@@ -39,10 +45,14 @@ export function resolveConditionExpression(
   if (conditionConfig?.group) {
     const expression = visualConditionToExpression(conditionConfig.group);
     if (expression !== ALWAYS_TRUE) {
-      return expression;
+      return { expression, fromRules: true };
     }
-    return authored?.trim() === ALWAYS_TRUE ? undefined : authored;
+    if (authored?.trim() === ALWAYS_TRUE) {
+      return undefined;
+    }
   }
 
-  return authored;
+  return authored === undefined
+    ? undefined
+    : { expression: authored, fromRules: false };
 }

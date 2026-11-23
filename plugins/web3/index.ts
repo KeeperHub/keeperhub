@@ -22,8 +22,33 @@ import {
   transferErrorOutput,
   transferSuccessOutput,
 } from "@/plugins/field-fragments";
+import type { ShowWhen } from "@/lib/workflow/editor/show-when";
 import { registerIntegration } from "@/plugins/registry-core";
+import {
+  checkBatchReadConfig,
+  checkQueryEventsConfig,
+} from "./address-list-config";
+import {
+  CALLS_FROM_ADDRESS_LIST,
+  CALLS_FROM_ARGS_LIST,
+  CALLS_FROM_ROWS,
+  INPUT_MODE_MIXED,
+  INPUT_MODE_UNIFORM,
+  SHOW_WHEN_ADDRESS_LIST,
+  SHOW_WHEN_ARGS_LIST,
+  SHOW_WHEN_CONTRACT_ADDRESS,
+  SHOW_WHEN_ROWS,
+  SHOW_WHEN_UNIFORM,
+} from "./batch-read-modes";
 import { Web3Icon } from "./icon";
+
+// Single-event mode, including workflows saved before queryMode existed.
+const SINGLE_EVENT_SHOW_WHEN: ShowWhen = {
+  all: [
+    { field: "queryMode", notEquals: "multiple" },
+    { field: "queryMode", notEquals: "address-list" },
+  ],
+};
 
 const web3Plugin: IntegrationPlugin = {
   type: "web3",
@@ -1001,6 +1026,82 @@ const web3Plugin: IntegrationPlugin = {
       ],
     },
     {
+      slug: "get-nonce",
+      label: "Get Address Nonce",
+      description:
+        "Get the transaction count (nonce) of any address, with both the mined and pending counts to spot stuck transactions",
+      category: "Web3",
+      stepFunction: "getNonceStep",
+      stepImportPath: "get-nonce",
+      outputFields: [
+        {
+          field: "success",
+          description:
+            "Whether the nonce read succeeded. Also true when failOnError is off and a failed read was softened; the nonce fields are null and `error` is set.",
+        },
+        {
+          field: "nonce",
+          description:
+            "Transaction count at the selected block tag, which is also the next nonce the address will use",
+        },
+        {
+          field: "blockTag",
+          description:
+            "The block tag the nonce was read at (latest or pending)",
+        },
+        {
+          field: "address",
+          description: "The address that was checked",
+        },
+        {
+          field: "latestNonce",
+          description:
+            "Transaction count at the latest block, counting mined transactions only",
+        },
+        {
+          field: "pendingNonce",
+          description:
+            "Transaction count including transactions still waiting in the mempool",
+        },
+        {
+          field: "pendingCount",
+          description:
+            "Transactions submitted but not yet mined (pendingNonce minus latestNonce, never negative). A value that stays above 0 can mean a stuck transaction.",
+        },
+        checkErrorOutput(),
+      ],
+      configFields: [
+        evmNetworkField(),
+        {
+          key: "address",
+          label: "Address",
+          type: "template-input",
+          placeholder: "0x... or {{NodeName.address}}",
+          example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+          required: true,
+        },
+        {
+          key: "blockTag",
+          label: "Block Tag",
+          type: "select",
+          options: [
+            {
+              value: "latest",
+              label: "Latest (mined transactions only)",
+            },
+            {
+              value: "pending",
+              label: "Pending (includes mempool transactions)",
+            },
+          ],
+          defaultValue: "latest",
+          helpTip:
+            "Which count the nonce output reports. Both counts are always returned as latestNonce and pendingNonce.",
+        },
+        readFailOnErrorField(),
+      ],
+    },
+    {
       slug: "decode-calldata",
       label: "Decode Calldata",
       description:
@@ -1165,10 +1266,11 @@ const web3Plugin: IntegrationPlugin = {
       slug: "query-events",
       label: "Query Contract Events",
       description:
-        "Query historical smart contract events across a block range with automatic batching, optionally filtered by indexed argument values at the RPC",
+        "Query historical smart contract events across a block range with automatic batching, optionally filtered by indexed argument values at the RPC. Can watch several events across several contracts in one node and return them as one merged list.",
       category: "Web3",
       stepFunction: "queryEventsStep",
       stepImportPath: "query-events",
+      validateConfig: checkQueryEventsConfig,
       outputFields: [
         {
           field: "success",
@@ -1178,7 +1280,7 @@ const web3Plugin: IntegrationPlugin = {
         {
           field: "events",
           description:
-            "Array of decoded event objects with blockNumber, transactionHash, logIndex, and args",
+            "Array of decoded event objects with blockNumber, transactionHash, logIndex, and args. With multiple events or a contract address list, each object also carries contractAddress and eventName, and the list is ordered by blockNumber then logIndex across every entry.",
         },
         {
           field: "fromBlock",
@@ -1186,12 +1288,13 @@ const web3Plugin: IntegrationPlugin = {
         },
         {
           field: "toBlock",
-          description: "Actual end block used (resolved from latest)",
+          description:
+            "Actual end block used (resolved from latest). With multiple events or a contract address list, a latest end stops a few blocks behind the head so every entry is scanned through the same block.",
         },
         {
           field: "eventCount",
           description:
-            "Number of events returned. Counts events matching the indexed argument filter when one is set, not every occurrence of the event.",
+            "Number of events returned. Counts events matching the indexed argument filter when one is set, not every occurrence of the event. With multiple events or a contract address list, counts the merged list.",
         },
         {
           field: "error",
@@ -1200,8 +1303,24 @@ const web3Plugin: IntegrationPlugin = {
         },
       ],
       configFields: [
+        {
+          key: "queryMode",
+          label: "Query Mode",
+          type: "select",
+          options: [
+            { value: "single", label: "Single event" },
+            { value: "multiple", label: "Multiple events or contracts" },
+            { value: "address-list", label: "One event, many contracts" },
+          ],
+          defaultValue: "single",
+          helpTip:
+            "Single event: one contract and one event. Multiple: a list of contract and event pairs on the selected network, each with its own ABI and optional filter, returned as one merged event list. One event, many contracts: one event on a list of contract addresses known at run time, for example from an earlier node.",
+        },
         evmNetworkField(),
-        contractAddressField(),
+        {
+          ...contractAddressField(),
+          showWhen: SINGLE_EVENT_SHOW_WHEN,
+        },
         {
           key: "abi",
           label: "Contract ABI",
@@ -1211,6 +1330,38 @@ const web3Plugin: IntegrationPlugin = {
           networkField: "network",
           rows: 6,
           required: true,
+          showWhen: SINGLE_EVENT_SHOW_WHEN,
+        },
+        {
+          key: "contractAddresses",
+          label: "Contract Addresses",
+          type: "template-textarea",
+          rows: 3,
+          required: true,
+          placeholder: "{{@nodeId:Label.values}} or [\"0x...\", \"0x...\"]",
+          helpTip:
+            "A JSON array of contract addresses, usually a reference to an array from an earlier node. Up to 5,000 addresses; each is checked before any query runs and a repeated address is queried once.",
+          showWhen: { field: "queryMode", equals: "address-list" },
+        },
+        {
+          key: "abiFetchAddress",
+          label: "Fetch ABI From",
+          type: "template-input",
+          placeholder: "0x... (one contract with the same ABI)",
+          helpTip:
+            "Optional. Only used to fetch the ABI; this contract is not queried unless it is in Contract Addresses.",
+          showWhen: { field: "queryMode", equals: "address-list" },
+        },
+        {
+          key: "abi",
+          label: "Contract ABI",
+          type: "abi-with-auto-fetch",
+          contractAddressField: "abiFetchAddress",
+          contractInteractionType: "read",
+          networkField: "network",
+          rows: 6,
+          required: true,
+          showWhen: { field: "queryMode", equals: "address-list" },
         },
         {
           key: "eventName",
@@ -1219,6 +1370,7 @@ const web3Plugin: IntegrationPlugin = {
           abiField: "abi",
           placeholder: "Select an event",
           required: true,
+          showWhen: { field: "queryMode", notEquals: "multiple" },
         },
         {
           key: "eventArgs",
@@ -1228,6 +1380,18 @@ const web3Plugin: IntegrationPlugin = {
           abiEventField: "eventName",
           helpTip:
             "Optional. Filters at the RPC, so only matching logs are fetched. Only indexed parameters can be filtered this way. Omit a parameter to match any value for it.",
+          showWhen: { field: "queryMode", notEquals: "multiple" },
+        },
+        {
+          key: "eventQueries",
+          label: "Events",
+          type: "event-list-builder",
+          required: true,
+          contractInteractionType: "read",
+          networkField: "network",
+          helpTip:
+            "Up to 20 contract and event pairs, all on the network above. Each has its own contract address, ABI, event and optional indexed argument filter. Events without a filter on the same contract share one RPC call.",
+          showWhen: { field: "queryMode", equals: "multiple" },
         },
         {
           type: "group",
@@ -1378,10 +1542,11 @@ const web3Plugin: IntegrationPlugin = {
       slug: "batch-read-contract",
       label: "Batch Read Contract",
       description:
-        "Call the same contract function with multiple argument sets in a single RPC call using Multicall3",
+        "Call one contract function with many argument sets, or on a list of contracts, in a single RPC call using Multicall3",
       category: "Web3",
       stepFunction: "batchReadContractStep",
       stepImportPath: "batch-read-contract",
+      validateConfig: checkBatchReadConfig,
       outputFields: [
         {
           field: "success",
@@ -1410,18 +1575,18 @@ const web3Plugin: IntegrationPlugin = {
           type: "select",
           options: [
             {
-              value: "uniform",
+              value: INPUT_MODE_UNIFORM,
               label: "Same function, multiple args",
             },
             {
-              value: "mixed",
+              value: INPUT_MODE_MIXED,
               label: "Different contracts/functions",
             },
           ],
-          defaultValue: "uniform",
+          defaultValue: INPUT_MODE_UNIFORM,
           required: true,
           helpTip:
-            "Uniform: one contract + one function + array of arg sets. Mixed: each call has its own contract, function, and args.",
+            "Same function: one function called with many argument sets, or on a list of contracts (e.g. done() on every spell). Different contracts: each call has its own network, contract, function, and args.",
         },
         {
           key: "network",
@@ -1430,7 +1595,24 @@ const web3Plugin: IntegrationPlugin = {
           chainTypeFilter: "evm",
           placeholder: "Select network",
           required: true,
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: SHOW_WHEN_UNIFORM,
+        },
+        {
+          key: "callsFrom",
+          label: "Calls From",
+          type: "select",
+          options: [
+            { value: CALLS_FROM_ROWS, label: "Rows I add here" },
+            { value: CALLS_FROM_ARGS_LIST, label: "A list of argument sets" },
+            {
+              value: CALLS_FROM_ADDRESS_LIST,
+              label: "A list of contract addresses",
+            },
+          ],
+          defaultValue: CALLS_FROM_ROWS,
+          helpTip:
+            "Rows: add each call here. A list: take the calls from a JSON array, usually an earlier node's output, one call per entry, in order.",
+          showWhen: SHOW_WHEN_UNIFORM,
         },
         {
           key: "contractAddress",
@@ -1439,18 +1621,44 @@ const web3Plugin: IntegrationPlugin = {
           placeholder: "0x... or {{NodeName.contractAddress}}",
           example: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
           required: true,
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: SHOW_WHEN_CONTRACT_ADDRESS,
+        },
+        {
+          key: "contractAddresses",
+          label: "Contract Addresses",
+          type: "template-textarea",
+          rows: 3,
+          required: true,
+          acceptsJsonArray: true,
+          placeholder: '{{@node1:Label.result}} or ["0xabc...", "0xdef..."]',
+          helpText:
+            "One call per address, in order, all on the network above. Up to 5,000 addresses.",
+          showWhen: SHOW_WHEN_ADDRESS_LIST,
+        },
+        {
+          key: "abiFetchAddress",
+          label: "Fetch ABI From",
+          type: "template-input",
+          placeholder: "0x... one contract with the same ABI (optional)",
+          isAddressField: true,
+          helpText:
+            "Only used to fetch the ABI; it is not called. Or tick Use manual ABI and paste it.",
+          showWhen: SHOW_WHEN_ADDRESS_LIST,
         },
         {
           key: "abi",
           label: "Contract ABI",
           type: "abi-with-auto-fetch",
           contractAddressField: "contractAddress",
+          contractAddressFieldWhen: {
+            field: "abiFetchAddress",
+            showWhen: SHOW_WHEN_ADDRESS_LIST,
+          },
           contractInteractionType: "read",
           networkField: "network",
           rows: 6,
           required: true,
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: SHOW_WHEN_UNIFORM,
         },
         {
           key: "abiFunction",
@@ -1459,7 +1667,7 @@ const web3Plugin: IntegrationPlugin = {
           abiField: "abi",
           placeholder: "Select a function",
           required: true,
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: SHOW_WHEN_UNIFORM,
         },
         {
           key: "argsList",
@@ -1469,7 +1677,30 @@ const web3Plugin: IntegrationPlugin = {
           abiFunctionField: "abiFunction",
           helpTip:
             "Add argument sets for each call. Each row represents one call with the selected function's parameters.",
-          showWhen: { field: "inputMode", oneOf: ["uniform", ""] },
+          showWhen: SHOW_WHEN_ROWS,
+        },
+        {
+          key: "argsFromList",
+          label: "Argument Sets",
+          type: "template-textarea",
+          rows: 3,
+          required: true,
+          acceptsJsonArray: true,
+          placeholder:
+            '{{@node1:Label.result}} or [["0xabc...", 5], ["0xdef...", 6]]',
+          helpText:
+            'One call per entry, in order. An entry is the call\'s arguments in order, e.g. ["0xabc...", 5]. For a function with one plain argument (address, number, string, bool, bytes or bytes32), an entry can be the bare value. A tuple is an object keyed by its member names. Up to 5,000 entries.',
+          showWhen: SHOW_WHEN_ARGS_LIST,
+        },
+        {
+          key: "functionArgs",
+          label: "Function Arguments",
+          type: "abi-function-args",
+          abiField: "abi",
+          abiFunctionField: "abiFunction",
+          helpText:
+            "These arguments go to every contract in the list. Fill in each one; only a string may be left blank.",
+          showWhen: SHOW_WHEN_ADDRESS_LIST,
         },
         {
           key: "calls",
@@ -1480,7 +1711,7 @@ const web3Plugin: IntegrationPlugin = {
           contractInteractionType: "read",
           helpTip:
             "Add contract calls to batch. Each call has its own network, contract address, ABI, function, and arguments.",
-          showWhen: { field: "inputMode", equals: "mixed" },
+          showWhen: { field: "inputMode", equals: INPUT_MODE_MIXED },
         },
         {
           type: "group",
@@ -1500,7 +1731,9 @@ const web3Plugin: IntegrationPlugin = {
             },
           ],
         },
-        readFailOnErrorField(),
+        readFailOnErrorField(
+          "When off, a failed read passes a soft error to the next node instead of failing the run: a failed batch, a problem with the ABI, function or arguments, a bad Argument Sets entry, an empty list ([]) or one over the size limits. Only problems that leave the step with nowhere to call still fail the run: a missing or unknown network, unresolved RPC config, a missing or invalid Contract Address, or a Contract Addresses that is blank, not a list or has a bad entry. In Different contracts/functions mode, so does a call that is not an object or has no valid network or address."
+        ),
       ],
     },
     {

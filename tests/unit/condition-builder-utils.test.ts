@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-
+import { groupedSelectLabel } from "@/lib/workflow/editor/select-option-groups";
 import type {
   ConditionGroup,
+  ConditionOperator,
   ConditionRule,
 } from "@/lib/workflow/nodes/condition/builder-types";
 import {
@@ -11,6 +12,12 @@ import {
   isUnaryOperator,
   visualConditionToExpression,
 } from "@/lib/workflow/nodes/condition/builder-utils";
+import {
+  CONDITION_OPERATOR_OPTIONS,
+  closedOperatorLabel,
+  OPERATOR_GROUPS,
+  operatorsForCategory,
+} from "@/lib/workflow/nodes/condition/operator-metadata";
 
 function rule(
   left: string,
@@ -203,7 +210,7 @@ describe("condition-builder-utils", () => {
       it("should generate matchesRegex expression", () => {
         const g = group("AND", [rule("email", "matchesRegex", "^[a-z]+@")]);
         expect(visualConditionToExpression(g)).toBe(
-          'new RegExp("^[a-z]+@").test(String("email"))'
+          'matchesRegex("email", "^[a-z]+@")'
         );
       });
 
@@ -211,9 +218,9 @@ describe("condition-builder-utils", () => {
         const g = group("AND", [
           rule("phone", "matchesRegex", "\\d{3}-\\d{4}"),
         ]);
-        const expr = visualConditionToExpression(g);
-        expect(expr).toContain("new RegExp");
-        expect(expr).toContain(".test(");
+        expect(visualConditionToExpression(g)).toBe(
+          'matchesRegex("phone", "\\\\d{3}-\\\\d{4}")'
+        );
       });
     });
 
@@ -572,9 +579,7 @@ describe("condition-builder-utils", () => {
 
     describe("regex operator", () => {
       it("should parse matchesRegex", () => {
-        const r = parseFirstRule(
-          'new RegExp("^[a-z]+@").test(String("email"))'
-        );
+        const r = parseFirstRule('matchesRegex("email", "^[a-z]+@")');
         expect(r.leftOperand).toBe("email");
         expect(r.operator).toBe("matchesRegex");
         expect(r.rightOperand).toBe("^[a-z]+@");
@@ -761,5 +766,26 @@ describe("condition-builder-utils", () => {
         expect(r.operator).toBe("exists");
       });
     });
+  });
+});
+
+describe("closedOperatorLabel", () => {
+  it("names the group only where the label repeats", () => {
+    expect(closedOperatorLabel("contains")).toBe("Text: contains");
+    expect(closedOperatorLabel("arrayContains")).toBe("Array: contains");
+    expect(closedOperatorLabel("objectIsEmpty")).toBe("Object: is empty");
+    expect(closedOperatorLabel("startsWith")).toBe("starts with");
+    expect(closedOperatorLabel("===")).toBe("equals");
+  });
+
+  it("matches the shared select label over Condition's own options", () => {
+    for (const option of CONDITION_OPERATOR_OPTIONS) {
+      expect(closedOperatorLabel(option.value as ConditionOperator)).toBe(
+        groupedSelectLabel(CONDITION_OPERATOR_OPTIONS, option.value)
+      );
+    }
+    expect(CONDITION_OPERATOR_OPTIONS.map((option) => option.value)).toEqual(
+      OPERATOR_GROUPS.flatMap((group) => operatorsForCategory(group.category))
+    );
   });
 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import {
   createContext,
   type ReactNode,
@@ -12,11 +12,21 @@ import {
   useState,
 } from "react";
 import {
+  reportLinkProblem,
+  runOrgSwitch,
+  useOrgSwitching,
+} from "@/components/organization/org-switch-runner";
+import { useAlertsEnabled } from "@/lib/hooks/use-notifications";
+import {
   useActiveMember,
   useOrganization,
   useOrganizations,
 } from "@/lib/hooks/use-organization";
-import type { OrgRole } from "@/lib/organization/role-label";
+import {
+  canEditOrg,
+  isViewerRole,
+  type OrgRole,
+} from "@/lib/organization/role-label";
 
 type SettingsContextValue = {
   organizationId: string | null;
@@ -26,6 +36,10 @@ type SettingsContextValue = {
   roleLoading: boolean;
   isOwner: boolean;
   isAdmin: boolean;
+  /** False for viewers, who read everything in the org and change nothing, and while the role loads. */
+  canEdit: boolean;
+  /** The role is known to be viewer; never true while it loads. */
+  isViewer: boolean;
   isLoading: boolean;
   /**
    * Bumps on every active-organization change and on refreshAll(). Every
@@ -34,14 +48,19 @@ type SettingsContextValue = {
    */
   revision: number;
   refreshAll: () => void;
+  /** Alerts are switched on for this org; null until known. */
+  alertsEnabled: boolean | null;
 };
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
 
 export function SettingsProvider({
   children,
+  alertsOrgIds,
 }: {
   children: ReactNode;
+  /** The user's orgs with alerts on, from the server; undefined if it could not tell. */
+  alertsOrgIds?: string[];
 }): React.ReactElement {
   const params = useParams();
   const {
@@ -50,7 +69,13 @@ export function SettingsProvider({
     switchOrganization: setActiveOrganization,
   } = useOrganization();
   const { role: memberRole, isLoading: memberLoading } = useActiveMember();
-  const { organizations, isLoading: orgsLoading } = useOrganizations();
+  const {
+    organizations,
+    isLoading: orgsLoading,
+    hasError: listFailed,
+    reload: reloadList,
+  } = useOrganizations();
+  const router = useRouter();
   const [revision, setRevision] = useState(0);
 
   // The URL is the source of truth for org-scoped sections, so a shared link
@@ -59,12 +84,8 @@ export function SettingsProvider({
   const routeOrgId = typeof params.orgId === "string" ? params.orgId : null;
   const organizationId = routeOrgId ?? organization?.id ?? null;
 
-  // useOrganization rebuilds switchOrganization on every render, so it is read
-  // through a ref: keeping it in the dependency list would re-run this on each
-  // render and thrash setActive.
-  const switchRef = useRef(setActiveOrganization);
-  switchRef.current = setActiveOrganization;
   const activeOrgId = organization?.id;
+  const switching = useOrgSwitching();
 
   // Only a change of organization in the URL should drive a switch, never a
   // change of the active organization. Switching from the toolbar sets the
@@ -72,27 +93,90 @@ export function SettingsProvider({
   // org would see the old path still in place and switch straight back.
   const reconciledRef = useRef<string | null>(null);
 
+  // The URL's org the list failed for, so that is said once (its Try again
+  // says it again should the list fail again).
+  const listProblemFor = useRef<string | null>(null);
+
+  // Through the switch runner, as the switchers' own: one switch at a time
+  // (this waits for one running), and a failure says so with Try again. It
+  // waits for the list too, which names the org. A link for an org the user
+  // is not in (an old bookmark) says so and goes to Settings, where a switch
+  // cannot work; a list that failed to load says that instead, with Try
+  // again, and the switch waits for it.
   useEffect(() => {
-    if (!(routeOrgId && activeOrgId) || reconciledRef.current === routeOrgId) {
+    if (
+      !(routeOrgId && activeOrgId) ||
+      switching ||
+      orgsLoading ||
+      reconciledRef.current === routeOrgId
+    ) {
+      return;
+    }
+    if (routeOrgId === activeOrgId) {
+      reconciledRef.current = routeOrgId;
+      return;
+    }
+    if (listFailed) {
+      if (listProblemFor.current !== routeOrgId) {
+        listProblemFor.current = routeOrgId;
+        reportLinkProblem("listFailed", reloadList);
+      }
       return;
     }
     reconciledRef.current = routeOrgId;
-    if (routeOrgId !== activeOrgId) {
-      switchRef.current(routeOrgId);
+    const routeOrg = organizations.find((org) => org.id === routeOrgId);
+    if (!routeOrg) {
+      reportLinkProblem("notMember");
+      router.replace("/settings");
+      return;
     }
-  }, [routeOrgId, activeOrgId]);
+    runOrgSwitch({
+      orgId: routeOrg.id,
+      name: routeOrg.name,
+      start: () => setActiveOrganization(routeOrg.id),
+      announce: false,
+    }).then((ran) => {
+      // Did not run (a switch took the lock first): tried again once that
+      // one is done.
+      if (ran === null && reconciledRef.current === routeOrgId) {
+        reconciledRef.current = null;
+      }
+    });
+  }, [
+    routeOrgId,
+    activeOrgId,
+    switching,
+    organizations,
+    orgsLoading,
+    listFailed,
+    reloadList,
+    router,
+    setActiveOrganization,
+  ]);
 
   // The role has to describe the organization on screen, which is the one in
   // the URL and not always the active one. /api/organizations carries a role
   // per organization, so it answers for whichever is being shown; the active
-  // membership only stands in until that list arrives.
+  // membership stands in until that list arrives, for the active org only
+  // (never for another org a link names, which the user may not be in).
   const listedRole = organizations.find((o) => o.id === organizationId)?.role;
-  const role = (listedRole ?? memberRole) as OrgRole | undefined;
+  const role = (listedRole ??
+    (organizationId === organization?.id ? memberRole : undefined)) as
+    | OrgRole
+    | undefined;
   const roleLoading = !role && (memberLoading || orgsLoading || orgLoading);
   // Unknown is treated as no privileges, so a page never appears and then
   // disappears once the answer arrives.
   const isOwner = role === "owner";
   const isAdmin = role === "owner" || role === "admin";
+  const canEdit = canEditOrg(role);
+  const isViewer = isViewerRole(role);
+  const fetchedAlertsEnabled = useAlertsEnabled(organizationId);
+  // The server's list answers at once; the request covers an org joined since.
+  const alertsEnabled =
+    organizationId && alertsOrgIds?.includes(organizationId)
+      ? true
+      : fetchedAlertsEnabled;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: organizationId is a reload trigger, not a value this reads
   useEffect(() => {
@@ -105,9 +189,12 @@ export function SettingsProvider({
 
   const value = useMemo<SettingsContextValue>(
     () => ({
+      canEdit,
+      alertsEnabled,
       isAdmin,
       isLoading: orgLoading || memberLoading,
       isOwner,
+      isViewer,
       organizationId,
       organizationName: organization?.name ?? null,
       refreshAll,
@@ -116,8 +203,11 @@ export function SettingsProvider({
       roleLoading,
     }),
     [
+      canEdit,
+      alertsEnabled,
       isAdmin,
       isOwner,
+      isViewer,
       memberLoading,
       roleLoading,
       organization?.name,

@@ -272,7 +272,7 @@ function parseDaysOfWeek(field: string): number[] | null {
 /**
  * Format time from 24h to 12h AM/PM
  */
-function formatTime(hour: number, minute: number): string {
+export function formatTime(hour: number, minute: number): string {
   const period = hour >= 12 ? "PM" : "AM";
   let displayHour = hour;
   if (hour === 0) {

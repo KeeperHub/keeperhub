@@ -29,3 +29,13 @@ export function formatAbbreviatedNumber(num: number): string {
 
   return num.toString();
 }
+
+const compactFormat = new Intl.NumberFormat("en-US", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
+/** Short count for tight spaces: 1,234 -> "1.2K", 1,234,567 -> "1.2M". */
+export function formatCompactNumber(value: number): string {
+  return compactFormat.format(value);
+}

@@ -12,7 +12,9 @@ import {
   useReactFlow,
   useUpdateNodeInternals,
   type Connection as XYFlowConnection,
+  type EdgeChange,
   type Edge as XYFlowEdge,
+  type NodeChange,
 } from "@xyflow/react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -21,6 +23,7 @@ import { Canvas } from "@/components/ai-elements/canvas";
 import { Connection } from "@/components/ai-elements/connection";
 import { Controls } from "@/components/ai-elements/controls";
 import { AIPrompt } from "@/components/ai-elements/prompt";
+import { useIsMobile } from "@/hooks/use-mobile";
 import "@xyflow/react/dist/style.css";
 
 import { PlayCircle, Zap } from "lucide-react";
@@ -38,9 +41,11 @@ import {
   isPanelAnimatingAtom,
   isSidebarCollapsedAtom,
   isTransitioningFromHomepageAtom,
+  isWorkflowOwnerAtom,
   nodesAtom,
   onEdgesChangeAtom,
   onNodesChangeAtom,
+  previewRequestsAtom,
   propertiesPanelActiveTabAtom,
   rightPanelWidthAtom,
   selectedEdgeAtom,
@@ -56,6 +61,7 @@ import { Panel } from "../ai-elements/panel";
 import { ActionNode } from "./nodes/action-node";
 import { AddNode } from "./nodes/add-node";
 import { TriggerNode } from "./nodes/trigger-node";
+import { STEP_SIZE, useShowStepSettings } from "./use-show-step-settings";
 import {
   type ContextMenuState,
   useContextMenuHandlers,
@@ -99,20 +105,47 @@ const FIT_VIEW_DEFAULTS = { maxZoom: 1, minZoom: 0.1, padding: 0.2, duration: 0 
 export function WorkflowCanvas() {
   const pathname = usePathname();
   const isWorkflowRoute = pathname.startsWith("/workflows/");
+  const isMobile = useIsMobile();
+  const showStepSettings = useShowStepSettings();
   const [nodes, setNodes] = useAtom(nodesAtom);
   const [edges, setEdges] = useAtom(edgesAtom);
   const [isGenerating] = useAtom(isGeneratingAtom);
   const currentWorkflowId = useAtomValue(currentWorkflowIdAtom);
   const [showMinimap] = useAtom(showMinimapAtom);
   const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
+  const previewRequests = useAtomValue(previewRequestsAtom);
   const isPanelAnimating = useAtomValue(isPanelAnimatingAtom);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useAtom(isSidebarCollapsedAtom);
-  const setIsPanelAnimating = useSetAtom(isPanelAnimatingAtom);
+  const isSidebarCollapsed = useAtomValue(isSidebarCollapsedAtom);
   const [isTransitioningFromHomepage, setIsTransitioningFromHomepage] = useAtom(
     isTransitioningFromHomepageAtom
   );
-  const onNodesChange = useSetAtom(onNodesChangeAtom);
-  const onEdgesChange = useSetAtom(onEdgesChangeAtom);
+  const applyNodesChange = useSetAtom(onNodesChangeAtom);
+  const applyEdgesChange = useSetAtom(onEdgesChangeAtom);
+  // Anyone who cannot edit this workflow (viewers included) can select nodes
+  // to read their config but cannot move, connect, delete or add anything.
+  const canEditWorkflow = useAtomValue(isWorkflowOwnerAtom);
+  const isReadOnly = isWorkflowRoute && !canEditWorkflow;
+  // Right-click menus only in the editor: the scan preview on / is a modal
+  // sheet, and the menu (on document.body) would sit outside it, unclickable.
+  const noCanvasMenu = isGenerating || isReadOnly || !isWorkflowRoute;
+  const onNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      applyNodesChange(
+        isReadOnly
+          ? changes.filter((c) => c.type === "select" || c.type === "dimensions")
+          : changes
+      );
+    },
+    [applyNodesChange, isReadOnly]
+  );
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange[]) => {
+      applyEdgesChange(
+        isReadOnly ? changes.filter((c) => c.type === "select") : changes
+      );
+    },
+    [applyEdgesChange, isReadOnly]
+  );
   const setSelectedNode = useSetAtom(selectedNodeAtom);
   const setSelectedEdge = useSetAtom(selectedEdgeAtom);
   const addNode = useSetAtom(addNodeAtom);
@@ -142,6 +175,12 @@ export function WorkflowCanvas() {
   const closeContextMenu = useCallback(() => {
     setContextMenuState(null);
   }, []);
+
+  // The canvas outlives route changes: a menu from the last workflow must not.
+  // When menus turn off, the prop below also hides the menu in the same frame.
+  useEffect(() => {
+    setContextMenuState(null);
+  }, [currentWorkflowId, noCanvasMenu]);
 
   // Suppress sidebar auto-open briefly after workflow switch
   useEffect(() => {
@@ -561,14 +600,17 @@ export function WorkflowCanvas() {
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
       setSelectedNode(node.id);
-      // Don't auto-open sidebar during workflow switch
-      if (isSidebarCollapsed && !isLoadingWorkflow.current) {
-        setIsPanelAnimating(true);
-        setIsSidebarCollapsed(false);
-        setTimeout(() => setIsPanelAnimating(false), 350);
+      // The phone sheet opens on the tapped step, whatever tab it was left on
+      if (isMobile) {
+        setActiveTab("properties");
+      }
+      // Don't auto-open sidebar during workflow switch; on a phone the tap
+      // is how a step's settings open, so it always counts
+      if (isMobile || !isLoadingWorkflow.current) {
+        showStepSettings();
       }
     },
-    [setSelectedNode, isSidebarCollapsed, setIsPanelAnimating, setIsSidebarCollapsed]
+    [setSelectedNode, isMobile, setActiveTab, showStepSettings]
   );
 
   // Open node details from any tab
@@ -650,9 +692,7 @@ export function WorkflowCanvas() {
         });
 
         // Center the node vertically at the cursor position
-        // Node height is 192px (h-48 in Tailwind)
-        const nodeHeight = 192;
-        position.y -= nodeHeight / 2;
+        position.y -= STEP_SIZE / 2;
 
         // Create new action node
         const newNode: WorkflowNode = {
@@ -672,6 +712,7 @@ export function WorkflowCanvas() {
         addNode(newNode);
         setSelectedNode(newNode.id);
         setActiveTab("properties");
+        showStepSettings(newNode);
 
         // Deselect all other nodes and select only the new node
         // Need to do this after a delay because panOnDrag will clear selection
@@ -733,6 +774,7 @@ export function WorkflowCanvas() {
       setNodes,
       setSelectedNode,
       setActiveTab,
+      showStepSettings,
       setHasUnsavedChanges,
       triggerAutosave,
     ]
@@ -769,6 +811,9 @@ export function WorkflowCanvas() {
       className="relative h-full bg-background"
       data-testid="workflow-canvas"
       data-ready={isCanvasReady}
+      data-preview-request={previewRequests
+        .map((entry) => `${entry.version}:${entry.status}`)
+        .join(" ")}
       style={{
         opacity: isCanvasReady ? 1 : 0,
         width: rightPanelWidth ? `calc(100% - ${rightPanelWidth})` : "100%",
@@ -782,30 +827,30 @@ export function WorkflowCanvas() {
         className={`bg-background${isAnimatingLayout ? " [&_.react-flow__node]:transition-[transform] [&_.react-flow__node]:duration-300 [&_.react-flow__node]:ease-in-out" : ""}`}
         connectionLineComponent={Connection}
         connectionMode={ConnectionMode.Strict}
+        // A tap on a phone's small handles means the step, not a connection
+        connectOnClick={!isMobile}
         defaultEdgeOptions={{ type: "animated" }}
         edges={edges}
         edgeTypes={edgeTypes}
         elementsSelectable={!isGenerating}
         isValidConnection={isValidConnection}
         nodes={nodes}
-        nodesConnectable={!isGenerating}
-        nodesDraggable={!isGenerating}
+        nodesConnectable={!(isGenerating || isReadOnly)}
+        nodesDraggable={!(isGenerating || isReadOnly)}
         nodeTypes={nodeTypes}
-        onConnect={isGenerating ? undefined : onConnect}
-        onConnectEnd={isGenerating ? undefined : onConnectEnd}
-        onConnectStart={isGenerating ? undefined : onConnectStart}
-        onEdgeContextMenu={isGenerating ? undefined : onEdgeContextMenu}
+        onConnect={isGenerating || isReadOnly ? undefined : onConnect}
+        onConnectEnd={isGenerating || isReadOnly ? undefined : onConnectEnd}
+        onConnectStart={isGenerating || isReadOnly ? undefined : onConnectStart}
+        onEdgeContextMenu={noCanvasMenu ? undefined : onEdgeContextMenu}
         onEdgesChange={isGenerating ? undefined : onEdgesChange}
         onNodeClick={isGenerating ? undefined : onNodeClick}
-        onNodeContextMenu={isGenerating ? undefined : onNodeContextMenu}
+        onNodeContextMenu={noCanvasMenu ? undefined : onNodeContextMenu}
         onNodeDoubleClick={isGenerating ? undefined : onNodeDoubleClick}
         onNodesChange={isGenerating ? undefined : onNodesChange}
         onPaneClick={onPaneClick}
-        onPaneContextMenu={
-          // Add Step is the pane menu's only action; gate by route since the canvas is shared with /
-          isGenerating || !isWorkflowRoute ? undefined : onPaneContextMenu
-        }
+        onPaneContextMenu={noCanvasMenu ? undefined : onPaneContextMenu}
         onSelectionChange={isGenerating ? undefined : onSelectionChange}
+        {...(isReadOnly ? { deleteKeyCode: null } : {})}
       >
         {isWorkflowRoute && (
           <Panel
@@ -822,20 +867,22 @@ export function WorkflowCanvas() {
                 />
               </div>
             )}
-            <Controls onFitView={() => fitViewSidebarAware({ duration: 300 })} onAutoLayout={handleAutoLayout} />
+            <Controls onFitView={() => fitViewSidebarAware({ duration: 300 })} onAutoLayout={isReadOnly ? undefined : handleAutoLayout} />
           </Panel>
         )}
       </Canvas>
 
-      {/* AI Prompt - gated by NEXT_PUBLIC_AI_PROMPT_ENABLED feature flag */}
+      {/* AI Prompt - gated by NEXT_PUBLIC_AI_PROMPT_ENABLED feature flag; only
+          for a workflow you can edit (Use template takes its place). */}
       {currentWorkflowId &&
+        !isReadOnly &&
         process.env.NEXT_PUBLIC_AI_PROMPT_ENABLED === "true" && (
           <AIPrompt workflowId={currentWorkflowId} />
         )}
 
       {/* Context Menu */}
       <WorkflowContextMenu
-        menuState={contextMenuState}
+        menuState={noCanvasMenu ? null : contextMenuState}
         onClose={closeContextMenu}
       />
     </div>

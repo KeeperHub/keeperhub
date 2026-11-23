@@ -1,10 +1,13 @@
 import { ADDRESS_BOOK_SELECTION_KEY } from "@/lib/address-book-selection";
+import { systemActionToggleKeys } from "@/lib/mcp/workflow-schema-constants";
 import {
   isSolidityArrayType,
   normalizeProtocolArrayValue,
   solidityArrayItemType,
 } from "@/lib/protocol-array-value";
+import { isBoolLiteral, isToggleValue, switchRefusal } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
+import { cutText } from "@/lib/utils/cut-text";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
   checkSolidityValue,
@@ -12,14 +15,32 @@ import {
   INTEGER_PATTERN,
   UNSIGNED_INTEGER_PATTERN,
 } from "@/lib/web3/solidity-values";
-import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
-import { SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST } from "@/lib/workflow/executor/system-action-types";
+import { BUILTIN_NODE_ID } from "@/lib/workflow/editor/builtin-variables";
+import {
+  evaluateShowWhen,
+  type ShowWhen,
+} from "@/lib/workflow/editor/show-when";
+import {
+  SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST,
+  type SystemActionType,
+} from "@/lib/workflow/executor/system-action-types";
+import {
+  workflowConditions,
+  workflowRegexIssue,
+} from "@/lib/workflow/nodes/condition/validator";
+import {
+  sanitizeNodeId,
+  valueContainsTemplate,
+} from "@/lib/workflow/template-ref";
+import { strayValueParts } from "@/lib/workflow/validation/stray-toggle-value";
 import {
   type ActionConfigField,
   type ActionConfigFieldBase,
   findActionById,
   getAllActions,
+  isDefaultOnToggleField,
   isDisplayOnlyField,
+  isToggleField,
 } from "@/plugins/registry";
 
 // Built from the shared union so this validator, the executor dispatch table,
@@ -40,7 +61,6 @@ const RESERVED_CONFIG_KEYS = new Set([
   "useManualAbi",
 ]);
 
-const TEMPLATE_VALUE_PATTERN = /\{\{[^}]+}}/;
 const DECIMAL_PATTERN = /^\d+(?:\.\d+)?$/;
 const FIXED_ARRAY_LENGTH_PATTERN = /\[(\d+)]$/;
 // The `nodes[N]` prefix the validator writes into every issue path, used to
@@ -54,6 +74,9 @@ const NODE_LABEL_MAX_CHARS = 100;
 // An UNKNOWN_FIELD issue carries a config key the caller chose, so field names
 // are sanitised on the same path as labels, with a tighter cap.
 const FIELD_NAME_MAX_CHARS = 40;
+// How much of an action's cross-field message the summary quotes.
+const DETAIL_MAX_CHARS = 200;
+const TRAILING_PERIOD = /\.$/;
 
 // Per-node field names rendered into the message before it elides the rest.
 const SUMMARY_FIELDS_PER_NODE = 3;
@@ -63,26 +86,34 @@ const SUMMARY_FIELDS_PER_NODE = 3;
 // keys elides the very field that blocks the save. Rank the blocking codes
 // first; ties keep emission order, since the sort is stable.
 const SUMMARY_NAME_PRIORITY: Record<ActionConfigValidationIssueCode, number> = {
+  INVALID_NODE_ID: 0,
+  INVALID_ACTION_TYPE: 0,
   UNKNOWN_ACTION_TYPE: 0,
   MISSING_REQUIRED_FIELD: 1,
   INVALID_FIELD_TYPE: 1,
+  INVALID_FIELD_VALUE: 1,
   UNKNOWN_FIELD: 2,
 };
 
-function sanitiseSummaryText(text: string, maxChars: number): string {
+function sanitiseSummaryText(
+  text: string,
+  maxChars: number,
+  { keepParens = false } = {}
+): string {
   // The text is interpolated into a single-line summary, so nothing
   // whitespace-like survives, and a removed character leaves a space rather
   // than joining the words either side of it into one.
   let stripped = stripControlChars(text, { replacement: " " });
   // Escape format delimiters to prevent malicious text from rendering a
-  // convincing fake entry in the summary.
-  stripped = stripped
-    .replace(/"/g, "'")
-    .replace(/\(/g, "[")
-    .replace(/\)/g, "]");
+  // convincing fake entry in the summary. Every entry starts with a double
+  // quote, so a reason may keep its parentheses (regex advice needs them).
+  stripped = stripped.replace(/"/g, "'");
+  if (!keepParens) {
+    stripped = stripped.replace(/\(/g, "[").replace(/\)/g, "]");
+  }
   stripped = stripped.trim();
   if (stripped.length > maxChars) {
-    return `${stripped.slice(0, maxChars - 3)}...`;
+    return `${cutText(stripped, maxChars - 3)}...`;
   }
   return stripped;
 }
@@ -166,10 +197,13 @@ function sanitiseFieldName(field: string): string {
 }
 
 export type ActionConfigValidationIssueCode =
+  | "INVALID_NODE_ID"
+  | "INVALID_ACTION_TYPE"
   | "UNKNOWN_ACTION_TYPE"
   | "UNKNOWN_FIELD"
   | "MISSING_REQUIRED_FIELD"
-  | "INVALID_FIELD_TYPE";
+  | "INVALID_FIELD_TYPE"
+  | "INVALID_FIELD_VALUE";
 
 export type ActionConfigValidationIssue = {
   code: ActionConfigValidationIssueCode;
@@ -190,7 +224,7 @@ export type ActionConfigValidationResult = {
 };
 
 export type WorkflowNodeForValidation = {
-  id?: string;
+  id?: unknown;
   type?: unknown;
   data?: {
     type?: unknown;
@@ -199,9 +233,14 @@ export type WorkflowNodeForValidation = {
   };
 };
 
+// `reason`, when given, is the message shown to the builder.
 type FieldCheckResult =
   | { valid: true }
-  | { valid: false; expected: string; received: unknown };
+  | { valid: false; expected: string; received: unknown; reason?: string };
+
+function isSystemActionType(value: string): value is SystemActionType {
+  return SYSTEM_ACTION_TYPES.has(value);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -256,25 +295,41 @@ function isMissingRequiredValue(value: unknown): boolean {
   return value === undefined || value === null || value === "";
 }
 
-// Each entry inside a `call-list-builder` field (batch-write-contract,
-// batch-read-contract) carries its own contract address, ABI, and function --
-// the same three fields that are `required` on the equivalent standalone
-// write-contract/read-contract node. Validated independently per call so an
-// incomplete call added after a valid one is never silently treated as
-// optional. Network is required too, but only when the field renders a
-// per-row Network selector: batch-write-contract sets hideNetworkColumn and
-// reads the action-level network instead, so a blank per-call network there
-// is not a config error.
-const BATCH_CALL_REQUIRED_FIELDS: Array<{
-  key: "contractAddress" | "abi" | "abiFunction" | "network";
-  label: string;
-}> = [
+// Each list builder entry carries the fields its standalone node requires, so
+// an incomplete entry is never silently optional. A call's Network is required
+// only where the row renders its own selector (not with hideNetworkColumn).
+type ListEntryRequiredField = { key: string; label: string };
+
+const BATCH_CALL_REQUIRED_FIELDS: ListEntryRequiredField[] = [
   { key: "contractAddress", label: "Contract Address" },
   { key: "abi", label: "Contract ABI" },
   { key: "abiFunction", label: "Function" },
 ];
 
-function parseBatchCalls(value: unknown): Record<string, unknown>[] {
+const EVENT_QUERY_REQUIRED_FIELDS: ListEntryRequiredField[] = [
+  { key: "contractAddress", label: "Contract Address" },
+  { key: "abi", label: "Contract ABI" },
+  { key: "eventName", label: "Event" },
+];
+
+function listEntrySpec(
+  field: ActionConfigFieldBase
+): { entryLabel: string; required: ListEntryRequiredField[] } | undefined {
+  if (field.type === "call-list-builder") {
+    return {
+      entryLabel: "Call",
+      required: field.hideNetworkColumn
+        ? BATCH_CALL_REQUIRED_FIELDS
+        : [...BATCH_CALL_REQUIRED_FIELDS, { key: "network", label: "Network" }],
+    };
+  }
+  if (field.type === "event-list-builder") {
+    return { entryLabel: "Event", required: EVENT_QUERY_REQUIRED_FIELDS };
+  }
+  return;
+}
+
+function parseListEntries(value: unknown): Record<string, unknown>[] {
   const parsed = Array.isArray(value) ? value : safeParseJsonArray(value);
   return parsed.filter(isRecord);
 }
@@ -291,27 +346,32 @@ function safeParseJsonArray(value: unknown): unknown[] {
   }
 }
 
-export type BatchCallMissingField = {
-  callIndex: number;
-  fieldKey: "contractAddress" | "abi" | "abiFunction" | "network";
+type ListEntryMissingField = {
+  entryIndex: number;
+  // "Call" or "Event", as the editor labels each row.
+  entryLabel: string;
+  fieldKey: string;
   fieldLabel: string;
 };
 
-export function getMissingBatchCallFields(
-  callsValue: unknown,
-  hideNetworkColumn?: boolean
-): BatchCallMissingField[] {
-  const requiredFields = hideNetworkColumn
-    ? BATCH_CALL_REQUIRED_FIELDS
-    : [
-        ...BATCH_CALL_REQUIRED_FIELDS,
-        { key: "network", label: "Network" } as const,
-      ];
-  const missing: BatchCallMissingField[] = [];
-  for (const [callIndex, call] of parseBatchCalls(callsValue).entries()) {
-    for (const { key, label } of requiredFields) {
-      if (isMissingRequiredValue(call[key])) {
-        missing.push({ callIndex, fieldKey: key, fieldLabel: label });
+export function getMissingListEntryFields(
+  field: ActionConfigFieldBase,
+  value: unknown
+): ListEntryMissingField[] {
+  const spec = listEntrySpec(field);
+  if (!spec) {
+    return [];
+  }
+  const missing: ListEntryMissingField[] = [];
+  for (const [entryIndex, entry] of parseListEntries(value).entries()) {
+    for (const { key, label } of spec.required) {
+      if (isMissingRequiredValue(entry[key])) {
+        missing.push({
+          entryIndex,
+          entryLabel: spec.entryLabel,
+          fieldKey: key,
+          fieldLabel: label,
+        });
       }
     }
   }
@@ -332,10 +392,6 @@ function flattenConfigFields(
   }
 
   return flattened;
-}
-
-function valueContainsTemplate(value: unknown): boolean {
-  return typeof value === "string" && TEMPLATE_VALUE_PATTERN.test(value);
 }
 
 function isJsonArrayString(value: unknown): boolean {
@@ -458,8 +514,220 @@ export function isKnownConfigKeyForAction(
   return isLegacyIgnoredField(actionType, key);
 }
 
+/** A bool field value save accepts; the editor's bool field uses it too. */
+export function isSavableBoolValue(value: unknown): boolean {
+  return isBoolLiteral(value) || valueContainsTemplate(value);
+}
+
+// A field value echoed in `received` is the caller's own input; long text is
+// cut and a large list or object is described rather than sent back whole.
+const RECEIVED_MAX_CHARS = 200;
+// 100 entries already serialise past 200 characters ("[0,0,...]").
+const RECEIVED_MAX_ENTRIES = 100;
+
+function capReceived(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value.length > RECEIVED_MAX_CHARS
+      ? `${cutText(value, RECEIVED_MAX_CHARS)}...`
+      : value;
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  const description = Array.isArray(value)
+    ? `[a list of ${value.length}]`
+    : "[an object]";
+  // Top-level entry count first, so a list with many entries is not
+  // serialised just to measure it; a short one is, once.
+  const entries = Array.isArray(value)
+    ? value.length
+    : Object.keys(value).length;
+  if (entries >= RECEIVED_MAX_ENTRIES) {
+    return description;
+  }
+  try {
+    const size = JSON.stringify(value)?.length ?? 0;
+    return size > RECEIVED_MAX_CHARS ? description : value;
+  } catch {
+    return description;
+  }
+}
+
 function validateStringLike(value: unknown): boolean {
   return typeof value === "string" || typeof value === "number";
+}
+
+// Why a toggle refuses a value, the same words for every toggle.
+function toggleRefusal(label: string, value: unknown): string {
+  return valueContainsTemplate(value)
+    ? `${label} does not take a template, only true or false.`
+    : switchRefusal(label, value);
+}
+
+// A toggle has no template mode in the editor, and a template could let the
+// data it reads switch gas sponsorship or fail-on-error off.
+function toggleIssue(
+  path: string,
+  actionType: string,
+  field: { key: string; label?: string },
+  value: unknown,
+  identity: { nodeId?: string; nodeLabel?: string }
+): ActionConfigValidationIssue {
+  return {
+    code: "INVALID_FIELD_VALUE",
+    path,
+    actionType,
+    field: field.key,
+    nodeId: identity.nodeId,
+    nodeLabel: identity.nodeLabel,
+    expected: "boolean",
+    received: capReceived(value),
+    message: toggleRefusal(field.label ?? field.key, value),
+  };
+}
+
+// Node id -> a field read from each node: its config or its label.
+function nodesById<T>(
+  nodes: readonly unknown[],
+  read: (data: Record<string, unknown>) => T | undefined
+): Map<string, T> {
+  const byId = new Map<string, T>();
+  for (const node of nodes) {
+    if (isRecord(node) && typeof node.id === "string" && isRecord(node.data)) {
+      const value = read(node.data);
+      if (value !== undefined) {
+        byId.set(node.id, value);
+      }
+    }
+  }
+  return byId;
+}
+
+// What a node is and runs, e.g. "action:HTTP Request" or "trigger:Webhook".
+function nodeKind(data: Record<string, unknown>): string {
+  const config = isRecord(data.config) ? data.config : {};
+  return data.type === "trigger"
+    ? `trigger:${String(config.triggerType)}`
+    : `action:${String(config.actionType)}`;
+}
+
+type KeptStray = (
+  node: { id?: unknown },
+  config: Record<string, unknown>,
+  field: { key: string; type?: string; showWhen?: ShowWhen }
+) => boolean;
+
+type NodeIndex = {
+  configs: Map<string, Record<string, unknown>>;
+  // Output key -> "id=kind" of every node whose output is stored under it.
+  kinds: Map<string, Set<string>>;
+};
+
+function indexNodes(nodes: readonly unknown[]): NodeIndex {
+  const kinds = new Map<string, Set<string>>();
+  // The run stores the built-in variables under their own key before any node.
+  const entries: [string, string][] = [
+    [BUILTIN_NODE_ID, "system"],
+    ...nodesById(nodes, nodeKind),
+  ];
+  for (const [id, kind] of entries) {
+    const key = sanitizeNodeId(id);
+    kinds.set(key, (kinds.get(key) ?? new Set()).add(`${id}=${kind}`));
+  }
+  return {
+    configs: nodesById(nodes, (data) =>
+      isRecord(data.config) ? data.config : undefined
+    ),
+    kinds,
+  };
+}
+
+// The nodes a reference reads (id and kind), as one comparable string.
+function kindsRead(index: NodeIndex, key: string): string {
+  return [...(index.kinds.get(key) ?? [])].sort().join("|");
+}
+
+// Same text and references; each reference now reads the same nodes (id and
+// kind) as when saved, or nothing.
+function sameStrayText(
+  was: string,
+  value: string,
+  saved: NodeIndex,
+  current: NodeIndex
+): boolean {
+  const parts = strayValueParts(value);
+  if (
+    !parts ||
+    JSON.stringify(strayValueParts(was)) !== JSON.stringify(parts)
+  ) {
+    return false;
+  }
+  return parts.every((part) => {
+    if (!("reads" in part)) {
+      return true;
+    }
+    const before = kindsRead(saved, part.reads);
+    const now = kindsRead(current, part.reads);
+    return now === "" || now === before;
+  });
+}
+
+// Lets a toggle keep the stray value it was saved with, so older workflows
+// keep saving; same node and action, text or a number, plain switch shown.
+function keptStrayMatcher(
+  nodes: readonly unknown[],
+  savedNodes: readonly unknown[] | undefined
+): KeptStray {
+  if (!savedNodes) {
+    return () => false;
+  }
+  const saved = indexNodes(savedNodes);
+  const current = indexNodes(nodes);
+  const idCounts = new Map<string, number>();
+  for (const node of nodes) {
+    if (isRecord(node) && typeof node.id === "string") {
+      idCounts.set(node.id, (idCounts.get(node.id) ?? 0) + 1);
+    }
+  }
+  return (node, config, field) => {
+    const value = config[field.key];
+    const before =
+      typeof node.id === "string" && idCounts.get(node.id) === 1
+        ? saved.configs.get(node.id)
+        : undefined;
+    if (
+      before === undefined ||
+      isToggleValue(value) ||
+      before.actionType !== config.actionType ||
+      !Object.hasOwn(before, field.key) ||
+      (field.type === "switch" && !evaluateShowWhen(field.showWhen, before))
+    ) {
+      return false;
+    }
+    const was = before[field.key];
+    if (typeof was === "string" && typeof value === "string") {
+      return sameStrayText(was, value, saved, current);
+    }
+    return typeof was === "number" && Object.is(was, value);
+  };
+}
+
+// "refuse" a default-on toggle holding neither on nor off, even when its
+// condition fails, as the step still reads it. A plain switch goes through
+// the usual "check", shown fields only. A `hidden` field is skipped: the form
+// never shows it, so a value there could not be fixed.
+function toggleVerdict(
+  field: ActionConfigFieldBase,
+  value: unknown,
+  keptAsSaved: boolean
+): "refuse" | "skip" | "check" {
+  if (field.hidden || keptAsSaved) {
+    return "skip";
+  }
+  if (isDefaultOnToggleField(field.type)) {
+    return isToggleValue(value) ? "skip" : "refuse";
+  }
+  return "check";
 }
 
 function validateFieldValue(
@@ -537,14 +805,19 @@ function validateFieldValue(
             expected: field.solidityType ?? "int",
             received: value,
           };
+    // A plain switch has no template mode in the editor, and its step takes
+    // only true or false.
+    case "switch":
+      return isToggleValue(value)
+        ? { valid: true }
+        : {
+            valid: false,
+            expected: "boolean",
+            received: value,
+            reason: toggleRefusal(field.label, value),
+          };
     case "protocol-bool":
-      if (valueContainsTemplate(value)) {
-        return { valid: true };
-      }
-      return value === true ||
-        value === false ||
-        value === "true" ||
-        value === "false"
+      return isSavableBoolValue(value)
         ? { valid: true }
         : { valid: false, expected: "boolean", received: value };
     case "protocol-bytes":
@@ -627,6 +900,12 @@ function validateFieldValue(
         isJsonArrayOrObjectString(value)
         ? { valid: true }
         : { valid: false, expected: "object or array", received: value };
+    case "event-list-builder":
+      return Array.isArray(value) ||
+        valueContainsTemplate(value) ||
+        isJsonArrayString(value)
+        ? { valid: true }
+        : { valid: false, expected: "array", received: value };
     case "abi-event-args":
       // Keyed by indexed parameter name, so the step refuses an array.
       return isRecord(value) ||
@@ -635,6 +914,9 @@ function validateFieldValue(
         ? { valid: true }
         : { valid: false, expected: "object", received: value };
     default:
+      if (field.acceptsJsonArray && Array.isArray(value)) {
+        return { valid: true };
+      }
       if (field.isAddressField) {
         return typeof value === "string" &&
           (valueContainsTemplate(value) || EVM_ADDRESS_RE.test(value))
@@ -647,12 +929,73 @@ function validateFieldValue(
   }
 }
 
+/** The on/off toggle keys of an action, plugin or system. */
+function toggleKeysOf(actionType: string): string[] {
+  if (isSystemActionType(actionType)) {
+    return systemActionToggleKeys(actionType);
+  }
+  const action = findActionById(actionType);
+  return action
+    ? flattenConfigFields(action.configFields)
+        .filter((field) => isToggleField(field.type))
+        .map((field) => field.key)
+    : [];
+}
+
+/**
+ * Unsets every stray toggle, hidden ones too, for a copy into another
+ * organization, which must not keep one the way a save of the same workflow does.
+ */
+export function clearStrayToggles(
+  nodes: Record<string, unknown>[]
+): Record<string, unknown>[] {
+  return nodes.map((node) => {
+    const data = node.data;
+    if (!(isRecord(data) && isRecord(data.config))) {
+      return node;
+    }
+    const config = data.config;
+    const actionType = config.actionType;
+    if (typeof actionType !== "string") {
+      return node;
+    }
+    const stray = toggleKeysOf(actionType).filter(
+      (key) => !isToggleValue(config[key])
+    );
+    if (stray.length === 0) {
+      return node;
+    }
+    const cleared = { ...config };
+    for (const key of stray) {
+      delete cleared[key];
+    }
+    return { ...node, data: { ...data, config: cleared } };
+  });
+}
+
+export type ActionConfigValidationOptions = {
+  // The workflow's nodes as stored, when an existing workflow is saved.
+  savedNodes?: readonly unknown[];
+};
+
 export function validateWorkflowActionConfigs(
-  nodes: WorkflowNodeForValidation[]
+  nodes: WorkflowNodeForValidation[],
+  options: ActionConfigValidationOptions = {}
 ): ActionConfigValidationResult {
   const issues: ActionConfigValidationIssue[] = [];
+  const keptStray = keptStrayMatcher(nodes, options.savedNodes);
 
   for (const [nodeIndex, node] of nodes.entries()) {
+    if (node.id !== undefined && typeof node.id !== "string") {
+      issues.push({
+        code: "INVALID_NODE_ID",
+        path: `nodes[${nodeIndex}].id`,
+        expected: "string",
+        received: node.id,
+        message: "Node id must be a string.",
+      });
+    }
+
     if (!isActionNode(node)) {
       continue;
     }
@@ -663,11 +1006,41 @@ export function validateWorkflowActionConfigs(
     }
 
     const actionType = config.actionType;
+    if (
+      actionType !== undefined &&
+      actionType !== null &&
+      typeof actionType !== "string"
+    ) {
+      const identity = nodeIdentity(node, `nodes[${nodeIndex}]`);
+      issues.push({
+        code: "INVALID_ACTION_TYPE",
+        path: `nodes[${nodeIndex}].data.config.actionType`,
+        expected: "string",
+        received: actionType,
+        nodeId: identity.nodeId,
+        nodeLabel: identity.nodeLabel,
+        message: "Action type must be a string.",
+      });
+      continue;
+    }
     if (typeof actionType !== "string" || actionType.trim() === "") {
       continue;
     }
 
-    if (SYSTEM_ACTION_TYPES.has(actionType)) {
+    if (isSystemActionType(actionType)) {
+      for (const key of systemActionToggleKeys(actionType)) {
+        if (!(isToggleValue(config[key]) || keptStray(node, config, { key }))) {
+          issues.push(
+            toggleIssue(
+              `nodes[${nodeIndex}].data.config.${key}`,
+              actionType,
+              { key },
+              config[key],
+              nodeIdentity(node, `nodes[${nodeIndex}]`)
+            )
+          );
+        }
+      }
       continue;
     }
 
@@ -702,6 +1075,7 @@ export function validateWorkflowActionConfigs(
     }
 
     const identity = nodeIdentity(node, `nodes[${nodeIndex}]`);
+    const issuesBeforeNode = issues.length;
     const fields = flattenConfigFields(action.configFields);
     const fieldsByKey = new Map(fields.map((field) => [field.key, field]));
     const aliasMap = getLegacyAliasMap(actionType);
@@ -732,7 +1106,7 @@ export function validateWorkflowActionConfigs(
         field: key,
         nodeId: identity.nodeId,
         nodeLabel: identity.nodeLabel,
-        received: value,
+        received: capReceived(value),
         message: `Unknown field "${key}" for action "${actionType}".`,
       });
     }
@@ -745,6 +1119,27 @@ export function validateWorkflowActionConfigs(
       // persisted anything would otherwise start blocking saves.
       if (isDisplayOnlyField(field.type)) {
         continue;
+      }
+      if (isToggleField(field.type)) {
+        const verdict = toggleVerdict(
+          field,
+          config[field.key],
+          keptStray(node, config, field)
+        );
+        if (verdict === "refuse") {
+          issues.push(
+            toggleIssue(
+              `nodes[${nodeIndex}].data.config.${field.key}`,
+              actionType,
+              field,
+              config[field.key],
+              identity
+            )
+          );
+        }
+        if (verdict !== "check") {
+          continue;
+        }
       }
       if (!evaluateShowWhen(field.showWhen, config)) {
         continue;
@@ -775,39 +1170,77 @@ export function validateWorkflowActionConfigs(
         continue;
       }
 
-      if (field.type === "call-list-builder") {
-        for (const missingCall of getMissingBatchCallFields(
-          value,
-          field.hideNetworkColumn
-        )) {
-          issues.push({
-            code: "MISSING_REQUIRED_FIELD",
-            path: `nodes[${nodeIndex}].data.config.${field.key}[${missingCall.callIndex}].${missingCall.fieldKey}`,
-            actionType,
-            field: `${field.key}[${missingCall.callIndex}].${missingCall.fieldKey}`,
-            nodeId: identity.nodeId,
-            nodeLabel: identity.nodeLabel,
-            expected: missingCall.fieldLabel,
-            message: `Missing required field "${missingCall.fieldLabel}" for call ${missingCall.callIndex + 1} on action "${actionType}".`,
-          });
-        }
+      for (const missingEntry of getMissingListEntryFields(field, value)) {
+        issues.push({
+          code: "MISSING_REQUIRED_FIELD",
+          path: `nodes[${nodeIndex}].data.config.${field.key}[${missingEntry.entryIndex}].${missingEntry.fieldKey}`,
+          actionType,
+          field: `${field.key}[${missingEntry.entryIndex}].${missingEntry.fieldKey}`,
+          nodeId: identity.nodeId,
+          nodeLabel: identity.nodeLabel,
+          expected: missingEntry.fieldLabel,
+          message: `Missing required field "${missingEntry.fieldLabel}" for ${missingEntry.entryLabel.toLowerCase()} ${missingEntry.entryIndex + 1} on action "${actionType}".`,
+        });
       }
 
       const fieldCheck = validateFieldValue(field, value);
       if (!fieldCheck.valid) {
+        // A check that explains itself is quoted in the summary, as a
+        // cross-field issue is.
         issues.push({
-          code: "INVALID_FIELD_TYPE",
+          code: fieldCheck.reason
+            ? "INVALID_FIELD_VALUE"
+            : "INVALID_FIELD_TYPE",
           path: `nodes[${nodeIndex}].data.config.${field.key}`,
           actionType,
           field: field.key,
           nodeId: identity.nodeId,
           nodeLabel: identity.nodeLabel,
           expected: fieldCheck.expected,
-          received: fieldCheck.received,
-          message: `Invalid value for field "${field.key}" on action "${actionType}".`,
+          received: capReceived(fieldCheck.received),
+          message:
+            fieldCheck.reason ??
+            `Invalid value for field "${field.key}" on action "${actionType}".`,
         });
       }
     }
+
+    // Cross-field rules run once the per-field checks pass, so one mistake
+    // is not reported twice.
+    const crossFieldIssue =
+      issues.length === issuesBeforeNode
+        ? action.validateConfig?.(config)
+        : undefined;
+    if (crossFieldIssue) {
+      issues.push({
+        code: "INVALID_FIELD_VALUE",
+        path: `nodes[${nodeIndex}].data.config.${crossFieldIssue.field}`,
+        actionType,
+        field: crossFieldIssue.field,
+        nodeId: identity.nodeId,
+        nodeLabel: identity.nodeLabel,
+        // No `received`: the field can hold a whole typed array.
+        message: crossFieldIssue.message,
+      });
+    }
+  }
+
+  // Regex Conditions that fail any run reaching them, then their patterns together.
+  const regexIssue = workflowRegexIssue(workflowConditions(nodes));
+  if (regexIssue) {
+    const identity = nodeIdentity(
+      nodes[regexIssue.index],
+      `nodes[${regexIssue.index}]`
+    );
+    issues.push({
+      code: "INVALID_FIELD_VALUE",
+      path: `nodes[${regexIssue.index}].data.config.condition`,
+      actionType: "Condition",
+      field: "condition",
+      nodeId: identity.nodeId,
+      nodeLabel: identity.nodeLabel,
+      message: regexIssue.message,
+    });
   }
 
   return { valid: issues.length === 0, issues };
@@ -908,6 +1341,7 @@ export function formatActionConfigValidationResponse(
               display: string;
               fallback: string;
               fields: Map<string, number>;
+              detail?: string;
             }
           >();
           for (const issue of validation.issues) {
@@ -920,6 +1354,11 @@ export function formatActionConfigValidationResponse(
               fields: new Map<string, number>(),
             };
             entry.count++;
+            // A check that explains itself stands in for the field list when
+            // it is the node's only issue (see below).
+            if (issue.code === "INVALID_FIELD_VALUE" && !entry.detail) {
+              entry.detail = issue.message;
+            }
             const field = issueFieldName(issue);
             if (field) {
               // One name can come from several issues; keep the most blocking
@@ -936,7 +1375,14 @@ export function formatActionConfigValidationResponse(
           }
           const entries: string[] = [];
           let shown = 0;
-          for (const { count, display, fallback, fields } of labels.values()) {
+          let quotesReason = false;
+          for (const {
+            count,
+            display,
+            fallback,
+            fields,
+            detail,
+          } of labels.values()) {
             if (shown >= 3) {
               entries.push(`and ${labels.size - 3} more`);
               break;
@@ -950,10 +1396,23 @@ export function formatActionConfigValidationResponse(
             const ordered = [...fields.entries()]
               .sort(([, a], [, b]) => a - b)
               .map(([name]) => name);
-            entries.push(`"${label}"${formatNodeFields(ordered, count)}`);
+            // A reason is quoted only for a node's sole issue; with others,
+            // its fields are listed instead.
+            const reason = count === 1 ? detail : undefined;
+            if (reason) {
+              quotesReason = true;
+            }
+            entries.push(
+              reason
+                ? `"${label}": ${sanitiseSummaryText(reason, DETAIL_MAX_CHARS, { keepParens: true }).replace(TRAILING_PERIOD, "")}`
+                : `"${label}"${formatNodeFields(ordered, count)}`
+            );
             shown++;
           }
-          return `Invalid node(s): ${entries.join(", ")}. `;
+          // A quoted reason has commas of its own, so the shown entries then
+          // part on "; ".
+          const separator = quotesReason ? "; " : ", ";
+          return `Invalid node(s): ${entries.join(separator)}. `;
         })()
       : "";
   return {

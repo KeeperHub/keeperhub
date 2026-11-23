@@ -156,4 +156,103 @@ describe("synthesiseProtocolForSDK (direct)", () => {
     );
     expect(sdk.inputs.map((i) => i.name)).toEqual(["spender", "amount"]);
   });
+
+  it("keeps the payer input out of the generated step input for oft-send", () => {
+    // The refund address is payer-owned: the caller never supplies it, so
+    // the generated stepInput must not carry it and the args list must
+    // read the signing account instead.
+    const out = synthesiseProtocolForSDK("layerzero/oft-send", {
+      network: "1",
+      contractAddress: "0x6C96dE32CEa08842dcc4058c14d3aaAD7Fa41dee",
+    });
+    expect(out).not.toBeNull();
+    const sdk = out as NonNullable<typeof out>;
+
+    const body = sdk.bodyLines.join("\n");
+    expect(body).toContain("account.address");
+    expect(body).not.toContain("stepInput.refundAddress");
+  });
+});
+
+describe("generateWorkflowSDKCode (payer-owned input)", () => {
+  it("emits no refundAddress stepInput entry for an oft-send node", () => {
+    const node: WorkflowNode = {
+      id: "oft-1",
+      type: "action",
+      position: { x: 0, y: 0 },
+      data: {
+        type: "action",
+        label: "OFT Send",
+        config: {
+          actionType: "layerzero/oft-send",
+          network: "1",
+          contractAddress: "0x6C96dE32CEa08842dcc4058c14d3aaAD7Fa41dee",
+          dstEid: "30110",
+          to: "0x1111111111111111111111111111111111111111",
+          amountLD: "1000000",
+          minAmountLD: "990000",
+          extraOptions: "0x",
+          composeMsg: "0x",
+          oftCmd: "0x",
+          nativeFee: "218756042576226",
+          lzTokenFee: "0",
+        },
+      },
+    };
+    const code = generateWorkflowSDKCode(
+      "oft_send_workflow",
+      [triggerNode, node],
+      [edge(triggerNode.id, node.id)]
+    );
+
+    const stepInput = /const stepInput = \{[\s\S]*?\};/.exec(code)?.[0];
+    expect(stepInput).toBeDefined();
+    expect(stepInput).not.toContain("refundAddress");
+    expect(code).toContain("account.address");
+  });
+});
+
+describe("generateWorkflowSDKCode output keys", () => {
+  it("writes and reads a node's output under one key", () => {
+    const first = ccipBalanceNode("a-b");
+    const base = ccipBalanceNode("c.d");
+    const second: WorkflowNode = {
+      ...base,
+      data: {
+        ...base.data,
+        config: {
+          ...base.data.config,
+          account: "{{@a-b:Check CCIP Balance.balance}}",
+        },
+      },
+    };
+    const code = generateWorkflowSDKCode(
+      "Keys",
+      [triggerNode, first, second],
+      [edge("trigger-1", "a-b"), edge("a-b", "c.d")]
+    );
+    expect(code).toContain("outputs['a_b'] = {");
+    expect(code).toContain("outputs?.['a_b']?.data?.balance");
+  });
+
+  it("writes and reads a trigger's output under one key", () => {
+    const base = ccipBalanceNode("step");
+    const step: WorkflowNode = {
+      ...base,
+      data: {
+        ...base.data,
+        config: {
+          ...base.data.config,
+          account: "{{@trigger-1:Manual Trigger.addr}}",
+        },
+      },
+    };
+    const code = generateWorkflowSDKCode(
+      "Trigger keys",
+      [triggerNode, step],
+      [edge("trigger-1", "step")]
+    );
+    expect(code).toContain("outputs['trigger_1'] = {");
+    expect(code).toContain("outputs?.['trigger_1']");
+  });
 });

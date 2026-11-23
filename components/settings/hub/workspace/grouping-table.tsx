@@ -13,7 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ConfirmDeleteDialog } from "../confirm-delete-dialog";
-import { SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
+import { NARROW_ONLY, SETTINGS_HEAD_ROW, SETTINGS_ROW } from "../section";
 
 export type GroupingRow = {
   id: string;
@@ -57,8 +57,8 @@ export function GroupingTable({
         <TableBody>
           {loading &&
             SKELETON_ROWS.map((key) => (
-              <TableRow className={SETTINGS_ROW} key={key}>
-                <TableCell>
+              <TableRow className={SETTINGS_ROW} key={key} role="row">
+                <TableCell role="cell">
                   <div className="flex items-center gap-2.5">
                     <Skeleton className="size-2.5 shrink-0 rounded-full" />
                     <div className="flex flex-col gap-1.5">
@@ -67,16 +67,16 @@ export function GroupingTable({
                     </div>
                   </div>
                 </TableCell>
-                <TableCell>
+                <TableCell role="cell">
                   <Skeleton className="h-5 w-16" />
                 </TableCell>
-                <TableCell />
+                <TableCell role="cell" />
               </TableRow>
             ))}
           {!loading &&
             rows.map((row) => (
-              <TableRow className={SETTINGS_ROW} key={row.id}>
-                <TableCell>
+              <TableRow className={SETTINGS_ROW} key={row.id} role="row">
+                <TableCell role="cell">
                   <div className="flex items-center gap-2.5">
                     <span
                       className="size-2.5 shrink-0 rounded-full"
@@ -94,10 +94,17 @@ export function GroupingTable({
                     </div>
                   </div>
                 </TableCell>
-                <TableCell className="text-muted-foreground tabular-nums">
+                {/* In a narrow column: under the name, past the dot. */}
+                <TableCell
+                  className="text-muted-foreground tabular-nums @max-xl/settings:pl-7 @max-xl/settings:text-xs"
+                  role="cell"
+                >
                   {row.workflowCount}
+                  <span className={NARROW_ONLY}>
+                    {row.workflowCount === 1 ? " workflow" : " workflows"}
+                  </span>
                 </TableCell>
-                <TableCell className="text-right">
+                <TableCell className="text-right" role="cell">
                   {canManage && (
                     <div className="flex justify-end gap-1">
                       <Button

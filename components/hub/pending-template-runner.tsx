@@ -7,6 +7,7 @@ import { api } from "@/lib/api-client";
 import { useSession } from "@/lib/auth-client";
 import { AUTH_SUCCESS_EVENT } from "@/lib/auth-events";
 import { isAnonymousUser } from "@/lib/is-anonymous";
+import { refetchSidebar } from "@/lib/refetch-sidebar";
 
 const SESSION_KEY_PREFIX = "pending_template:";
 const IDEMPOTENCY_TTL_MS = 30_000; // 30s (43-CONTEXT.md HUB-05)
@@ -135,6 +136,7 @@ export function PendingTemplateRunner(): null {
 
         try {
           const duplicated = await api.workflow.duplicate(workflowId);
+          refetchSidebar({ workflowCreated: true });
           writeSessionFlag(workflowId);
           toast.success("Template ready in your workflows");
           router.push(`/workflows/${duplicated.id}`);

@@ -13,16 +13,19 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { WorkflowFailureAlerts } from "@/components/failure-alerts/workflow-failure-alerts";
 import { ConfirmOverlay } from "@/components/overlays/confirm-overlay";
 import { SmartOverlayHeader } from "@/components/overlays/overlay-header";
 import { useOverlay } from "@/components/overlays/overlay-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError } from "@/lib/api-client";
 import { integrationsAtom } from "@/lib/integrations-store";
 import type { IntegrationType } from "@/lib/types/integration";
+import { cn } from "@/lib/utils";
 import {
   clearNodeStatusesAtom,
   clearWorkflowAtom,
@@ -30,16 +33,22 @@ import {
   currentWorkflowIdAtom,
   currentWorkflowNameAtom,
   deleteEdgeAtom,
+  getTriggerTypeFromConfig,
   deleteNodeAtom,
   edgesAtom,
   isGeneratingAtom,
+  isWorkflowEnabled,
   isWorkflowOwnerAtom,
+  isWorkflowViewerAtom,
   newlyCreatedNodeIdAtom,
   nodesAtom,
   propertiesPanelActiveTabAtom,
   selectedEdgeAtom,
   selectedNodeAtom,
+  shouldShowEnableSwitch,
   updateNodeDataAtom,
+  type WorkflowTriggerType,
+  workflowEnableToggleAtom,
 } from "@/lib/workflow/store";
 import { findActionById } from "@/plugins/registry";
 import { ActionConfig } from "../workflow/config/action-config";
@@ -52,6 +61,52 @@ import type { OverlayComponentProps } from "./types";
 
 
 type ConfigurationOverlayProps = OverlayComponentProps;
+
+// Every opener names the phone sheet the same for screen readers: it shows the
+// workflow, or a step, whichever is selected.
+export const CONFIGURATION_OVERLAY_OPTIONS = Object.freeze({
+  title: "Configuration",
+});
+
+// The workflow's Enable switch for where the toolbar's has no room: below xs,
+// and in the 768-1023px header beside a selection's Delete below switch-row
+// (see EnableWorkflowSwitch in workflow-toolbar.tsx). The caller gives the
+// visibility classes for its view. Owner only, for triggers that can be
+// switched on and off; it reads the live workflow and runs the toolbar's own
+// toggle (validation, sign-in prompt, API call).
+function WorkflowEnabledRow({
+  className,
+}: {
+  className: string;
+}): React.ReactElement | null {
+  const enabled = useAtomValue(isWorkflowEnabled);
+  const owner = useAtomValue(isWorkflowOwnerAtom);
+  const workflowNodes = useAtomValue(nodesAtom);
+  const enableToggle = useAtomValue(workflowEnableToggleAtom);
+  const triggerType = workflowNodes.find((node) => node.data.type === "trigger")
+    ?.data.config?.triggerType as WorkflowTriggerType | undefined;
+  if (!(owner && enableToggle && shouldShowEnableSwitch(triggerType))) {
+    return null;
+  }
+  return (
+    <div
+      className={cn("min-h-11 items-center justify-between gap-3", className)}
+    >
+      <Label htmlFor="workflow-enabled">Workflow enabled</Label>
+      <Switch
+        checked={enabled}
+        id="workflow-enabled"
+        onCheckedChange={(checked) => enableToggle.toggle(checked)}
+      />
+    </div>
+  );
+}
+
+// With nothing selected the toolbar's switch hides only below xs; with a
+// selection also in the narrow tablet header.
+const ENABLED_ROW_NO_SELECTION = "hidden max-xs:flex";
+const ENABLED_ROW_WITH_SELECTION =
+  "hidden max-xs:flex tablet-width:max-switch-row:flex";
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Complex UI logic with multiple conditions
 export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
@@ -69,6 +124,10 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
     currentWorkflowDescriptionAtom
   );
   const isOwner = useAtomValue(isWorkflowOwnerAtom);
+  // Viewers of the workflow's org cannot edit but may read its run and
+  // version history.
+  const isViewer = useAtomValue(isWorkflowViewerAtom);
+  const canReadHistory = isOwner || isViewer;
 
   const updateNodeData = useSetAtom(updateNodeDataAtom);
   const deleteNode = useSetAtom(deleteNodeAtom);
@@ -248,7 +307,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
       // For workflow view, validate the tab
       const validTab =
         activeTab === "properties" ||
-        ((activeTab === "runs" || activeTab === "history") && isOwner)
+        ((activeTab === "runs" || activeTab === "history") && canReadHistory)
           ? activeTab
           : "properties";
       switch (validTab) {
@@ -380,6 +439,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
         <SmartOverlayHeader overlayId={overlayId} title="Connection" />
 
         <div className="flex-1 space-y-4 overflow-y-auto px-6 pt-4 pb-6">
+          <WorkflowEnabledRow className={ENABLED_ROW_WITH_SELECTION} />
           <div className="space-y-2">
             <Label htmlFor="edge-id">Connection ID</Label>
             <Input disabled id="edge-id" value={selectedEdge.id} />
@@ -410,7 +470,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
     // For workflow view, properties plus runs/history (if owner) are valid tabs.
     const validWorkflowTab =
       activeTab === "properties" ||
-      ((activeTab === "runs" || activeTab === "history") && isOwner)
+      ((activeTab === "runs" || activeTab === "history") && canReadHistory)
         ? activeTab
         : "properties";
 
@@ -421,6 +481,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
         <div className="flex-1 overflow-y-auto">
           {validWorkflowTab === "properties" && (
             <div className="space-y-4 px-6 pt-4 pb-6">
+              <WorkflowEnabledRow className={ENABLED_ROW_NO_SELECTION} />
               <div className="space-y-2">
                 <Label htmlFor="workflow-name">Workflow Name</Label>
                 <Input
@@ -451,15 +512,25 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
                   value={currentWorkflowDescription}
                 />
               </div>
+              {isOwner && currentWorkflowId && (
+                <WorkflowFailureAlerts
+                  triggerType={getTriggerTypeFromConfig(
+                    nodes.find((node) => node.data.type === "trigger")?.data
+                      .config
+                  )}
+                  workflowId={currentWorkflowId}
+                />
+              )}
               {!isOwner && (
                 <div className="rounded-lg border border-muted bg-muted/30 p-3">
                   <p className="text-muted-foreground text-sm">
-                    You're viewing this workflow in read-only mode.
-                    Use it as a template to create your own editable copy.
+                    {isViewer
+                      ? "You have view-only access to this organization."
+                      : "You're viewing this workflow in read-only mode. Use it as a template to create your own editable copy."}
                   </p>
                 </div>
               )}
-              {isOwner ? (
+              {isOwner && (
                 <div className="flex items-center gap-2 pt-2">
                   <Button onClick={handleClearWorkflow} variant="ghost">
                     <Eraser className="mr-2 size-4" />
@@ -475,21 +546,17 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
                     Delete
                   </Button>
                 </div>
-              ) : (
-                <div className="text-red-500 text-xs">
-                  DEBUG: isOwner is false - Delete button not rendered
-                </div>
               )}
             </div>
           )}
 
-          {validWorkflowTab === "history" && isOwner && (
+          {validWorkflowTab === "history" && canReadHistory && (
             <div className="px-3 py-3">
               <VersionHistoryContent active={validWorkflowTab === "history"} />
             </div>
           )}
 
-          {validWorkflowTab === "runs" && isOwner && (
+          {validWorkflowTab === "runs" && canReadHistory && (
             <div className="flex h-full flex-col">
               <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
                 <Button
@@ -503,14 +570,16 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
                     className={`size-4 ${isRefreshing ? "animate-spin" : ""}`}
                   />
                 </Button>
-                <Button
-                  className="text-muted-foreground"
-                  onClick={handleDeleteAllRuns}
-                  size="icon"
-                  variant="ghost"
-                >
-                  <Eraser className="size-4" />
-                </Button>
+                {isOwner && (
+                  <Button
+                    className="text-muted-foreground"
+                    onClick={handleDeleteAllRuns}
+                    size="icon"
+                    variant="ghost"
+                  >
+                    <Eraser className="size-4" />
+                  </Button>
+                )}
               </div>
               <div className="flex-1 overflow-y-auto p-4">
                 <WorkflowRuns
@@ -536,7 +605,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
             <Settings2 className="size-5" />
             Workflow
           </button>
-          {isOwner && (
+          {canReadHistory && (
             <button
               className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
                 validWorkflowTab === "runs"
@@ -550,7 +619,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
               Runs
             </button>
           )}
-          {isOwner && (
+          {canReadHistory && (
             <button
               className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
                 validWorkflowTab === "history"
@@ -578,6 +647,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
       <div className="flex-1 overflow-y-auto">
         {activeTab === "properties" && (
           <div className="space-y-4 px-6 pt-4 pb-6">
+            <WorkflowEnabledRow className={ENABLED_ROW_WITH_SELECTION} />
             {/* Action selection */}
             {selectedNode.data.type === "action" &&
               !selectedNode.data.config?.actionType &&
@@ -609,6 +679,8 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
                   config={selectedNode.data.config || {}}
                   disabled={isGenerating || !isOwner}
                   isOwner={isOwner}
+                  // A fresh editor per node, as the side panel does.
+                  key={selectedNode.id}
                   nodeId={selectedNode.id}
                   onUpdateConfig={handleUpdateConfig}
                 />
@@ -679,7 +751,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
           </div>
         )}
 
-        {activeTab === "history" && isOwner && (
+        {activeTab === "history" && canReadHistory && (
           <div className="px-3 py-3">
             <VersionHistoryContent
               active={activeTab === "history"}
@@ -689,7 +761,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
           </div>
         )}
 
-        {activeTab === "runs" && isOwner && (
+        {activeTab === "runs" && canReadHistory && (
           <div className="flex h-full flex-col">
             <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
               <Button
@@ -704,15 +776,17 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
                 />
                 Refresh
               </Button>
-              <Button
-                className="text-muted-foreground"
-                onClick={handleDeleteAllRuns}
-                size="sm"
-                variant="ghost"
-              >
-                <Eraser className="mr-2 size-4" />
-                Clear All
-              </Button>
+              {isOwner && (
+                <Button
+                  className="text-muted-foreground"
+                  onClick={handleDeleteAllRuns}
+                  size="sm"
+                  variant="ghost"
+                >
+                  <Eraser className="mr-2 size-4" />
+                  Clear All
+                </Button>
+              )}
             </div>
             <div className="flex-1 overflow-y-auto p-4">
               <WorkflowRuns
@@ -738,7 +812,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
           <Settings2 className="size-5" />
           Properties
         </button>
-        {isOwner && (
+        {canReadHistory && (
           <button
             className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
               activeTab === "runs" ? "text-foreground" : "text-muted-foreground"
@@ -750,7 +824,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
             Runs
           </button>
         )}
-        {isOwner && (
+        {canReadHistory && (
           <button
             className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
               activeTab === "history"

@@ -3,9 +3,21 @@
 import { Info, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import {
+  AppBannerSlot,
+  useAppBannerOffset,
+} from "@/components/app-banner-slot";
 import { QuotaBanner } from "@/components/billing/quota-banner";
+import { FailureAlertsPausedBanner } from "@/components/failure-alerts/paused-banner";
+import { FailureAlertsUnreachableBanner } from "@/components/failure-alerts/unreachable-banner";
 import { useSession } from "@/lib/auth-client";
 import { isBillingEnabled } from "@/lib/billing/feature-flag";
+import {
+  hasNotificationType,
+  invalidateNotificationStatus,
+  useNotificationStatus,
+} from "@/lib/hooks/use-notifications";
+import { useActiveMember, useOrganization } from "@/lib/hooks/use-organization";
 import {
   quotaBannerStorageKey,
   useQuotaStatus,
@@ -14,11 +26,64 @@ import { isAnonymousUser } from "@/lib/is-anonymous";
 
 const STORAGE_KEY = "kh-billing-announce-v1";
 
+/**
+ * The fixed banners at the top of the app: one alerts strip ("nobody would be
+ * told" outranks "paused") and, under it, one billing strip, so a pause never
+ * hides the plans news or a quota warning.
+ */
 export function AppBanner(): React.ReactElement | null {
-  if (!isBillingEnabled()) {
-    return null;
+  const { organization } = useOrganization();
+  const { isAdmin } = useActiveMember();
+  const { data: session } = useSession();
+  const signedIn = Boolean(session?.user) && !isAnonymousUser(session?.user);
+  // Every member sees the alerts banners; only owners and admins can fix them.
+  const { status } = useNotificationStatus(signedIn ? organization?.id : null);
+  const organizationId = organization?.id;
+  const unreachable =
+    Boolean(organizationId) &&
+    hasNotificationType(status, "failure_alerts_unreachable");
+  const pausedUntil = organizationId ? status.alertsPausedUntil : null;
+
+  // Ask again once the pause runs out, so the banner leaves on time.
+  useEffect(() => {
+    if (!(organizationId && pausedUntil)) {
+      return;
+    }
+    const wait = Math.max(Date.parse(pausedUntil) - Date.now(), 0) + 1000;
+    const timer = window.setTimeout(
+      () => invalidateNotificationStatus(organizationId),
+      wait
+    );
+    return () => window.clearTimeout(timer);
+  }, [organizationId, pausedUntil]);
+
+  let alert: React.ReactElement | null = null;
+  if (unreachable && organizationId) {
+    alert = (
+      <FailureAlertsUnreachableBanner
+        canManage={isAdmin}
+        organizationId={organizationId}
+      />
+    );
+  } else if (pausedUntil && organizationId) {
+    alert = (
+      <FailureAlertsPausedBanner
+        organizationId={organizationId}
+        until={pausedUntil}
+      />
+    );
   }
-  return <BillingBanner />;
+  const alertRows = alert ? 1 : 0;
+  const billing = isBillingEnabled();
+  // With billing on, BillingBanner owns the offset for both strips.
+  useAppBannerOffset(billing ? 0 : alertRows);
+
+  return (
+    <>
+      {alert}
+      {billing && <BillingBanner row={alertRows} />}
+    </>
+  );
 }
 
 /**
@@ -26,7 +91,12 @@ export function AppBanner(): React.ReactElement | null {
  * outranks the plan announcement, so at most one banner renders and
  * `--app-banner-height` is set once for whichever won.
  */
-function BillingBanner(): React.ReactElement | null {
+function BillingBanner({
+  row,
+}: {
+  /** Strips above it (the alerts banner). */
+  row: number;
+}): React.ReactElement | null {
   const [mounted, setMounted] = useState(false);
   const [announceDismissed, setAnnounceDismissed] = useState(true);
   const [quotaDismissedKey, setQuotaDismissedKey] = useState<string | null>(
@@ -71,16 +141,7 @@ function BillingBanner(): React.ReactElement | null {
     }
   }, [quotaKey]);
 
-  useEffect(() => {
-    if (visible) {
-      document.documentElement.style.setProperty("--app-banner-height", "36px");
-    } else {
-      document.documentElement.style.removeProperty("--app-banner-height");
-    }
-    return (): void => {
-      document.documentElement.style.removeProperty("--app-banner-height");
-    };
-  }, [visible]);
+  useAppBannerOffset(row + (visible ? 1 : 0));
 
   const handleDismissQuota = useCallback((): void => {
     if (!quotaKey) {
@@ -104,7 +165,9 @@ function BillingBanner(): React.ReactElement | null {
   }
 
   if (quotaVisible && status) {
-    return <QuotaBanner onDismiss={handleDismissQuota} status={status} />;
+    return (
+      <QuotaBanner onDismiss={handleDismissQuota} row={row} status={status} />
+    );
   }
 
   if (!announceVisible) {
@@ -112,9 +175,10 @@ function BillingBanner(): React.ReactElement | null {
   }
 
   return (
-    <div
-      className="pointer-events-auto fixed top-0 right-0 left-0 z-[55] flex h-9 items-center justify-center border-b border-keeperhub-green/30 bg-keeperhub-green/10 px-12 text-sm backdrop-blur-sm"
+    <AppBannerSlot
+      className="border-keeperhub-green/30 bg-keeperhub-green/10 px-12"
       data-testid="app-banner"
+      row={row}
     >
       <p className="flex items-center gap-2 truncate text-foreground">
         <Info
@@ -140,6 +204,6 @@ function BillingBanner(): React.ReactElement | null {
       >
         <X className="size-3.5" />
       </button>
-    </div>
+    </AppBannerSlot>
   );
 }

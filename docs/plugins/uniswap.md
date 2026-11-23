@@ -20,6 +20,9 @@ Supported chains: Ethereum, Base, Arbitrum, Optimism (all contracts on all chain
 | Approve Position Transfer | Write | Wallet | Approve an address to manage a position NFT |
 | Transfer Position NFT | Write | Wallet | Transfer a position NFT to another address |
 | Burn Empty Position | Write | Wallet | Burn an empty position NFT |
+| Collect Fees | Write | Wallet | Withdraw a position's earned fees to a recipient |
+| Decrease Liquidity | Write | Wallet | Remove liquidity from a position, crediting the tokens to it |
+| Increase Liquidity | Write | Wallet | Add liquidity to a position you already hold |
 
 ---
 
@@ -164,6 +167,76 @@ Burn an empty liquidity position NFT. The position must have zero liquidity and 
 **Outputs:** `success`, `transactionHash`, `transactionLink`, `error`
 
 **When to use:** Clean up closed positions, reduce NFT clutter after removing all liquidity and collecting fees.
+
+---
+
+## Collect Fees
+
+Withdraw the fees a position has earned, plus any tokens a Decrease Liquidity step has credited to it, and send them to a recipient.
+
+**Inputs:**
+
+| Input | Type | Description |
+|-------|------|-------------|
+| tokenId | uint256 | Position Token ID |
+| recipient | address | Address that receives the collected tokens |
+| amount0Max | uint128 | Most of token 0 to collect (defaults to the maximum, meaning everything) |
+| amount1Max | uint128 | Most of token 1 to collect (defaults to the maximum, meaning everything) |
+
+**Outputs:** `success`, `transactionHash`, `transactionLink`, `error`
+
+**When to use:** Harvest trading fees on a schedule, or withdraw the tokens a Decrease Liquidity step credited to the position.
+
+The recipient cannot be the zero address or the position manager itself. Uniswap treats both as "leave the tokens in the position manager", where anyone can sweep them, so the step refuses those values rather than sending the fees somewhere unrecoverable.
+
+Get Position Details reports `tokensOwed0` and `tokensOwed1` as of the last time the position was touched, so they do not include fees earned since. They cannot tell a workflow whether there is anything to collect.
+
+---
+
+## Decrease Liquidity
+
+Remove liquidity from a position. The tokens are credited to the position rather than sent to a wallet; a Collect Fees step withdraws them.
+
+**Inputs:**
+
+| Input | Type | Description |
+|-------|------|-------------|
+| tokenId | uint256 | Position Token ID |
+| liquidity | uint128 | Amount of liquidity to remove |
+| amount0Min | uint256 | Minimum token 0 to receive, for slippage protection |
+| amount1Min | uint256 | Minimum token 1 to receive, for slippage protection |
+| deadline | uint256 | Deadline (unix timestamp) |
+
+**Outputs:** `success`, `transactionHash`, `transactionLink`, `error`
+
+**When to use:** Exit a position in stages, free capital when a position moves out of range, or empty a position before burning it.
+
+Pair it with Collect Fees. On its own this step moves nothing to your wallet.
+
+---
+
+## Increase Liquidity
+
+Add liquidity to a position that already exists.
+
+**Inputs:**
+
+| Input | Type | Description |
+|-------|------|-------------|
+| tokenId | uint256 | Position Token ID |
+| amount0Desired | uint256 | Most of token 0 to add |
+| amount1Desired | uint256 | Most of token 1 to add |
+| amount0Min | uint256 | Minimum token 0 to add, for slippage protection |
+| amount1Min | uint256 | Minimum token 1 to add, for slippage protection |
+| deadline | uint256 | Deadline (unix timestamp) |
+
+**Outputs:** `success`, `transactionHash`, `transactionLink`, `error`
+
+**When to use:** Compound collected fees back into a position, or top one up on a schedule.
+
+The position manager needs an allowance for both tokens before this step runs - use Approve Token. Supply WETH rather than native ETH.
+
+**Ownership check:** Uniswap performs no ownership check on this call. A wrong token ID deposits your tokens into someone else's position, reports success, and cannot be undone. The step therefore reads the position's owner first and runs only when the holder is one of your organization's wallets: the wallet the step sends from, the owner wallet behind it, or one of your Safes on that chain. Anything else is refused with the holder's address in the message. If the position is yours but held elsewhere, transfer the NFT to one of those wallets. The step also refuses when the owner cannot be read at all, rather than depositing into a position it could not verify.
 
 ---
 

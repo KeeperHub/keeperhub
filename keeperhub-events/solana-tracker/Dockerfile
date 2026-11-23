@@ -14,7 +14,6 @@ WORKDIR /app
 FROM base AS deps
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY patches/ ./patches/
 COPY solana-tracker/package.json ./solana-tracker/
 
 RUN --mount=type=cache,id=pnpm-solana,target=/root/.local/share/pnpm/store \
@@ -27,7 +26,6 @@ RUN --mount=type=cache,id=pnpm-solana,target=/root/.local/share/pnpm/store \
 FROM base AS build
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
-COPY patches/ ./patches/
 COPY solana-tracker/package.json solana-tracker/tsconfig.json solana-tracker/tsup.config.ts ./solana-tracker/
 COPY solana-tracker/src/ ./solana-tracker/src/
 COPY solana-tracker/lib/ ./solana-tracker/lib/

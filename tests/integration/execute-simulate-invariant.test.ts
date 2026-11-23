@@ -141,6 +141,10 @@ const spies = vi.hoisted(() => ({
   executeGasTopUp: vi.fn(),
 }));
 
+vi.mock("@/lib/features/route-guard", () => ({
+  enforceWorkflowFeatures: vi.fn().mockResolvedValue({ blocked: false }),
+}));
+
 vi.mock("server-only", () => ({}));
 
 // The policy store reads tables the schema mock below does not model, and a

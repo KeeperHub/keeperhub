@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useAuthPrompt } from "@/components/auth/provider";
+import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { AddressActions } from "@/components/scan/address-actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +26,8 @@ import {
 } from "@/components/ui/sheet";
 import { WorkflowCanvas } from "@/components/workflow/workflow-canvas";
 import { getChainName } from "@/lib/chain-utils";
+import { useOrgAccess } from "@/lib/hooks/use-org-access";
+import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { buildWorkflow } from "@/lib/scan/factory";
 import {
   addressFieldLabel,
@@ -85,6 +88,7 @@ export function SuggestionPreviewDrawer({
   const setIsOwner = useSetAtom(isWorkflowOwnerAtom);
   const setRightPanelWidth = useSetAtom(rightPanelWidthAtom);
   const { openAuthPrompt } = useAuthPrompt();
+  const { isViewer } = useOrgAccess();
   const router = useRouter();
   const [needsWallet, setNeedsWallet] = useState<boolean>(false);
   const [isPersisting, setIsPersisting] = useState<boolean>(false);
@@ -298,6 +302,7 @@ export function SuggestionPreviewDrawer({
       const { id } = await persistSuggestion(activeSuggestion, mode, {
         defaultEmail: alertEmail,
       });
+      refetchSidebar({ workflowCreated: true });
       toast.success("Workflow saved!");
       router.push(`/workflows/${id}`);
     } catch (err) {
@@ -411,7 +416,7 @@ export function SuggestionPreviewDrawer({
           {isAddress ? (
             <AddressActions
               address={value}
-              canBookmark={isAuthenticated}
+              canBookmark={isAuthenticated && !isViewer}
               chainId={activeSuggestion.chainId}
             />
           ) : null}
@@ -553,7 +558,7 @@ export function SuggestionPreviewDrawer({
           {/* CTAs — see FUNNEL-02/03/04/05 for the full branching logic.
               needsWallet replaces the normal CTA pair with a provision prompt
               (FUNNEL-05, write-type suggestion only, forward-compat). */}
-          {needsWallet ? (
+          {!isViewer && needsWallet ? (
             <div className="mt-6">
               <p className="mb-3 text-sm text-muted-foreground">
                 This workflow requires a connected wallet. Set one up to
@@ -570,14 +575,24 @@ export function SuggestionPreviewDrawer({
             </div>
           ) : (
             <div className="mt-6">
-              <Button
-                className="w-full"
-                disabled={isPersisting || (isAuthenticated && !alertEmail)}
-                onClick={handleUseClick}
-                variant="default"
-              >
-                Use this workflow
-              </Button>
+              <ViewOnlyTooltip className="w-full" isViewer={isViewer}>
+                <Button
+                  className="w-full"
+                  disabled={
+                    isViewer || isPersisting || (isAuthenticated && !alertEmail)
+                  }
+                  onClick={handleUseClick}
+                  variant="default"
+                >
+                  Use this workflow
+                </Button>
+              </ViewOnlyTooltip>
+              {isViewer && (
+                <p className="mt-2 text-muted-foreground text-xs">
+                  You have view-only access to this organization, so you cannot
+                  add this workflow.
+                </p>
+              )}
             </div>
           )}
 

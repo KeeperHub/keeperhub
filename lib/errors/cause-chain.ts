@@ -14,3 +14,30 @@
  */
 
 export const MAX_CAUSE_DEPTH = 5;
+
+/**
+ * First value in `error`, its `cause` chain, or the `errors` of an
+ * AggregateError (Node reports one per address it tried) that `match` accepts.
+ */
+export function findInErrorChain(
+  error: unknown,
+  match: (candidate: object) => boolean,
+  depth = 0
+): object | undefined {
+  if (depth >= MAX_CAUSE_DEPTH || typeof error !== "object" || error === null) {
+    return;
+  }
+  if (match(error)) {
+    return error;
+  }
+  const { cause, errors } = error as { cause?: unknown; errors?: unknown };
+  if (Array.isArray(errors)) {
+    for (const inner of errors) {
+      const found = findInErrorChain(inner, match, depth + 1);
+      if (found !== undefined) {
+        return found;
+      }
+    }
+  }
+  return findInErrorChain(cause, match, depth + 1);
+}

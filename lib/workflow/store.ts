@@ -2,7 +2,11 @@ import type { Edge, EdgeChange, Node, NodeChange } from "@xyflow/react";
 import { applyEdgeChanges, applyNodeChanges } from "@xyflow/react";
 import { atom } from "jotai";
 import { toast } from "sonner";
-import { api } from "@/lib/api-client";
+import {
+  api,
+  WORKFLOW_SAVE_ERROR_TOAST,
+  workflowSaveErrorMessage,
+} from "@/lib/api-client";
 import type { NodeExecutionStatus } from "@/lib/errors/execution-status";
 import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import { computeAutoLayout } from "@/lib/workflow/editor/auto-layout";
@@ -41,40 +45,25 @@ export function shouldShowEnableSwitch(
 }
 
 /**
- * Pull the trigger type off the trigger node in a workflow's node list.
- * Used by surfaces that need to gate behavior on what fires the workflow
- * without dragging the full editor store into view -- e.g. the sidebar
- * picker deciding whether to surface a "Disabled" label.
+ * The trigger type held in a trigger node's config. Pair with
+ * getTriggerConfig (lib/workflow/trigger-display-key) to read it off a node list.
  */
-export function getWorkflowTriggerType(
-  nodes: Array<{ data?: { type?: string; config?: Record<string, unknown> } }>
+export function getTriggerTypeFromConfig(
+  config: Record<string, unknown> | undefined
 ): WorkflowTriggerType | undefined {
-  const triggerNode = nodes.find((node) => node.data?.type === "trigger");
-  const raw = triggerNode?.data?.config?.triggerType;
-  if (typeof raw !== "string") {
-    return undefined;
-  }
-  // "Scheduled" is a legacy spelling that still lives in some workflow rows;
-  // executor / metrics / mcp normalize it the same way before comparing.
-  const normalized = raw === "Scheduled" ? "Schedule" : raw;
-  return normalized as WorkflowTriggerType;
+  const raw = config?.triggerType;
+  // Anything unrecognized has no trigger to show, like no type at all. That
+  // includes the legacy "Scheduled" spelling: the schedule service accepts
+  // only "Schedule", so a "Scheduled" workflow never gets a schedule and must
+  // not read as a running one.
+  return typeof raw === "string" && TRIGGER_TYPES.has(raw)
+    ? (raw as WorkflowTriggerType)
+    : undefined;
 }
 
-/**
- * Show the "Disabled" label in the sidebar picker only when the workflow has
- * a trigger type whose schedule the user can actually flip with the enable
- * switch. Manual workflows persist `enabled = false` by default but can't be
- * disabled through the UI -- labeling them would be noise.
- */
-export function shouldShowDisabledBadge(workflow: {
-  enabled?: boolean | null;
-  triggerType?: WorkflowTriggerType | null;
-}): boolean {
-  if (workflow.enabled !== false) {
-    return false;
-  }
-  return shouldShowEnableSwitch(workflow.triggerType ?? undefined);
-}
+const TRIGGER_TYPES: ReadonlySet<string> = new Set(
+  Object.values(WorkflowTriggerEnum)
+);
 
 export type WorkflowNodeData = {
   label: string;
@@ -104,6 +93,23 @@ export const edgesAtom = atom<WorkflowEdge[]>([]);
 // this is set so previewing a past version can never clobber the live
 // workflow via the debounced save.
 export const previewVersionAtom = atom<number | null>(null);
+// Version-preview requests, announced on the canvas as data-preview-request
+// ("2:discarded 3:applied") so tests can wait for one specific request:
+// "pending" while it loads, "applied" when it reached the canvas, "discarded"
+// when an exit, restore or newer preview had superseded it, "failed" when it
+// errored. Each request only updates its own entry, and starting a preview
+// drops the settled ones, so an earlier outcome cannot answer a later wait.
+export type PreviewRequestStatus =
+  | "pending"
+  | "applied"
+  | "discarded"
+  | "failed";
+export type PreviewRequest = {
+  request: number;
+  version: number;
+  status: PreviewRequestStatus;
+};
+export const previewRequestsAtom = atom<PreviewRequest[]>([]);
 // Whether the right-docked version-history panel is open in the editor.
 export const versionHistoryOpenAtom = atom(false);
 export const selectedNodeAtom = atom<string | null>(null);
@@ -122,7 +128,16 @@ export const currentWorkflowPublicTagsAtom = atom<
   Array<{ id: string; name: string; slug: string }>
 >([]);
 export const isWorkflowOwnerAtom = atom<boolean>(true); // Whether current user owns this workflow
+// The caller reads this workflow as a viewer of its organization: full read
+// access (runs, history) but no edits.
+export const isWorkflowViewerAtom = atom<boolean>(false);
 export const isWorkflowEnabled = atom<boolean>(false);
+// The toolbar's Enable switch handler (validation, sign-in prompt, API call),
+// published for the Configuration sheet's switch so it always acts on the
+// current workflow; null while no editor toolbar is mounted.
+export const workflowEnableToggleAtom = atom<{
+  toggle: (enabled: boolean) => Promise<void>;
+} | null>(null);
 
 // v1.7 listing state atoms
 export const currentWorkflowIsListedAtom = atom<boolean>(false);
@@ -162,6 +177,10 @@ export const editorTourRequestedAtom = atom<boolean>(false);
 // Forces the getting-started launcher open/expanded. Set by the user-menu
 // "Getting started" entry so a dismissed launcher can be reopened.
 export const gettingStartedOpenAtom = atom<boolean>(false);
+
+// True while the sidebar's launcher can show (even dismissed). Otherwise
+// (phones, settings) the user-menu entry opens the checklist in an overlay.
+export const gettingStartedDockedAtom = atom<boolean>(false);
 
 // A getting-started chip seeds a preset prompt here, then navigates to a fresh
 // builder. The AI prompt box (components/ai-elements/prompt.tsx) consumes it on
@@ -245,6 +264,11 @@ export const autosaveAtom = atom(
       return;
     }
 
+    // A caller who cannot edit this workflow has nothing to save.
+    if (!get(isWorkflowOwnerAtom)) {
+      return;
+    }
+
     const saveFunc = async () => {
       try {
         set(isSavingAtom, true);
@@ -260,7 +284,13 @@ export const autosaveAtom = atom(
           "[Workflow] Autosave failed",
           error
         );
-        toast.error("Couldn't save workflow changes. Please try again.");
+        toast.error(
+          workflowSaveErrorMessage(
+            error,
+            "Couldn't save workflow changes. Please try again."
+          ),
+          WORKFLOW_SAVE_ERROR_TOAST
+        );
       } finally {
         await new Promise((resolve) => setTimeout(resolve, 800));
         set(isSavingAtom, false);
@@ -669,6 +699,7 @@ export const resetWorkflowStateForOrgSwitchAtom = atom(null, (_get, set) => {
   set(currentWorkflowVisibilityAtom, "private");
   set(currentWorkflowPublicTagsAtom, []);
   set(isWorkflowOwnerAtom, true);
+  set(isWorkflowViewerAtom, false);
   set(isWorkflowEnabled, false);
   set(workflowNotFoundAtom, false);
   set(currentExecutionIdAtom, null);

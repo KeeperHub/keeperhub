@@ -1,11 +1,12 @@
 /**
  * Evaluates a `showWhen` field predicate against the current config.
  *
- * Supports four variants:
+ * Supports five variants:
  *   1. { field, equals }       - simple equality against a stored field
  *   2. { field, oneOf }        - membership against a stored field
- *   3. { computed, ... }       - live-derived value (no persistence)
- *   4. { all: [...] }          - every listed predicate holds
+ *   3. { field, notEquals }    - any stored value but this one, absent included
+ *   4. { computed, ... }       - live-derived value (no persistence)
+ *   5. { all: [...] }          - every listed predicate holds
  *
  * `all` exists because a hidden field keeps its stored value: a field that
  * depends on `format` alone would still render after the operation that owns
@@ -27,6 +28,7 @@ import { isSponsorshipSupported } from "@/lib/web3/sponsorship-chains-meta";
 export type ShowWhen =
   | { field: string; equals: string }
   | { field: string; oneOf: string[] }
+  | { field: string; notEquals: string }
   | {
       computed: "abiFunctionMutability";
       abiField: string;
@@ -83,6 +85,9 @@ export function evaluateShowWhen(
   const dependentValue = config[showWhen.field];
   if ("oneOf" in showWhen) {
     return showWhen.oneOf.includes(dependentValue as string);
+  }
+  if ("notEquals" in showWhen) {
+    return dependentValue !== showWhen.notEquals;
   }
   return dependentValue === showWhen.equals;
 }

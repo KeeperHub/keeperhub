@@ -1,3 +1,5 @@
+import { readOwnField } from "@/lib/utils/read-own-field";
+
 /**
  * Pure helper functions for For Each loop features.
  *
@@ -9,8 +11,13 @@
  *   - tests/unit/template-autocomplete-foreach.test.ts
  */
 
-/** Matches `{{@nodeId:Label.fieldPath}}` templates used by array sources. */
-export const ARRAY_SOURCE_RE = /^\{\{@([^:]+):([^.}]+)\.?([^}]*)\}\}$/;
+/**
+ * Matches `{{@nodeId:Label.fieldPath}}` templates used by array sources. The
+ * label must end at a dot or the closing braces so it cannot trade characters
+ * with the field path, which would backtrack quadratically.
+ */
+export const ARRAY_SOURCE_RE =
+  /^\{\{@([^:]+):([^.}]+)(?:\.|(?=\}))([^}]*)\}\}$/;
 
 /**
  * Traverse a dot-path into a nested value, returning null on failure.
@@ -21,7 +28,7 @@ export function traverseDotPath(root: unknown, path: string): unknown {
   let data: unknown = root;
   for (const part of path.split(".")) {
     if (data && typeof data === "object" && !Array.isArray(data)) {
-      data = (data as Record<string, unknown>)[part];
+      data = readOwnField(data, part);
       if (data === undefined) {
         return null;
       }

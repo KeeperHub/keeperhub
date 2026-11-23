@@ -5,6 +5,54 @@ import { getErrorMessage } from "@/lib/utils";
 
 export type AbiEntry = { type: string; name: string };
 
+// Blocks per eth_getLogs call, to stay within RPC provider range limits.
+export const QUERY_BATCH_SIZE = 2000;
+
+export type DecodedEvent = {
+  blockNumber: number;
+  transactionHash: string;
+  logIndex: number;
+  args: Record<string, unknown>;
+};
+
+function serializeBigInts(value: unknown): unknown {
+  return JSON.parse(
+    JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v))
+  );
+}
+
+export function decodeEventArgs(
+  values: ethers.Result,
+  eventFragment: ethers.EventFragment
+): Record<string, unknown> {
+  const args: Record<string, unknown> = {};
+  for (const [index, input] of eventFragment.inputs.entries()) {
+    const name = input.name || `arg${index}`;
+    args[name] = serializeBigInts(values[index]);
+  }
+  return args;
+}
+
+export function parseAbi(
+  abi: unknown
+): { success: true; parsed: AbiEntry[] } | { success: false; error: string } {
+  let parsedAbi: unknown;
+  try {
+    parsedAbi = JSON.parse(String(abi));
+  } catch (error) {
+    return {
+      success: false,
+      error: `Invalid ABI JSON: ${getErrorMessage(error)}`,
+    };
+  }
+
+  if (!Array.isArray(parsedAbi)) {
+    return { success: false, error: "ABI must be a JSON array" };
+  }
+
+  return { success: true, parsed: parsedAbi as AbiEntry[] };
+}
+
 export type BatchQueryResult = {
   events: (ethers.Log | ethers.EventLog)[];
   // The block actually scanned up to. Equal to the requested `end` for a
@@ -117,50 +165,16 @@ async function fetchTipBatch(
   return { events, actualEnd };
 }
 
-// Query a single block range, failing over between RPC endpoints AND retrying
-// the batch with a backoff (at least MAX_BATCH_RETRIES attempts) before giving
-// up. A timed-out batch is the common transient failure on long scans; this
-// keeps it from sinking the whole node.
-//
-// `isTipBatch` marks the final batch of a range whose end we resolved
-// ourselves (see query-events.ts's `toBlockIsLatest`). Only that batch
-// queries against "latest" directly; an explicit user-provided toBlock is
-// always queried as a fixed number, so a real user misconfiguration still
-// surfaces as an error instead of being silently reinterpreted.
-export async function queryBatchWithRetry(
-  rpcManager: RpcProviderManager,
-  contractAddress: string,
-  parsedAbi: AbiEntry[],
-  eventName: string,
+async function withBatchRetry<T>(
   start: number,
   end: number,
-  isTipBatch: boolean,
-  topics: EventTopicFilter = null
-): Promise<BatchQueryResult> {
+  run: () => Promise<T>
+): Promise<T> {
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= MAX_BATCH_RETRIES; attempt++) {
     try {
-      return await rpcManager.executeWithFailover((provider) =>
-        isTipBatch
-          ? fetchTipBatch(
-              provider,
-              contractAddress,
-              parsedAbi,
-              eventName,
-              start,
-              topics
-            )
-          : fetchFixedBatch(
-              provider,
-              contractAddress,
-              parsedAbi,
-              eventName,
-              start,
-              end,
-              topics
-            )
-      );
+      return await run();
     } catch (error) {
       lastError = error;
       console.log(
@@ -172,4 +186,73 @@ export async function queryBatchWithRetry(
     }
   }
   throw lastError;
+}
+
+// Query a single block range, failing over between RPC endpoints AND retrying
+// the batch with a backoff (at least MAX_BATCH_RETRIES attempts) before giving
+// up. A timed-out batch is the common transient failure on long scans; this
+// keeps it from sinking the whole node.
+//
+// `isTipBatch` marks the final batch of a range whose end we resolved
+// ourselves (see query-events.ts's `toBlockIsLatest`). Only that batch
+// queries against "latest" directly; an explicit user-provided toBlock is
+// always queried as a fixed number, so a real user misconfiguration still
+// surfaces as an error instead of being silently reinterpreted.
+export function queryBatchWithRetry(
+  rpcManager: RpcProviderManager,
+  contractAddress: string,
+  parsedAbi: AbiEntry[],
+  eventName: string,
+  start: number,
+  end: number,
+  isTipBatch: boolean,
+  topics: EventTopicFilter = null
+): Promise<BatchQueryResult> {
+  return withBatchRetry(start, end, () =>
+    rpcManager.executeWithFailover((provider) =>
+      isTipBatch
+        ? fetchTipBatch(
+            provider,
+            contractAddress,
+            parsedAbi,
+            eventName,
+            start,
+            topics
+          )
+        : fetchFixedBatch(
+            provider,
+            contractAddress,
+            parsedAbi,
+            eventName,
+            start,
+            end,
+            topics
+          )
+    )
+  );
+}
+
+// An address list and a topic array whose positions may each hold an OR-list.
+export type LogQueryFilter = {
+  addresses: string[];
+  topics: (string | string[] | null)[];
+};
+
+// The same failover and retry for one fixed-range eth_getLogs call.
+export function queryLogsWithRetry(
+  rpcManager: RpcProviderManager,
+  filter: LogQueryFilter,
+  start: number,
+  end: number
+): Promise<ethers.Log[]> {
+  return withBatchRetry(start, end, () =>
+    rpcManager.executeWithFailover((provider) =>
+      provider.getLogs({
+        address: filter.addresses,
+        topics: filter.topics,
+        fromBlock: start,
+        toBlock: end,
+      })
+    )
+  );
 }

@@ -159,6 +159,16 @@ export interface BillingProvider {
     subscriptionId: string
   ): Promise<{ cancelAtPeriodEnd: boolean; periodEnd: Date | null }>;
 
+  /** End the subscription now, not at the end of its period. */
+  cancelSubscriptionNow(subscriptionId: string): Promise<void>;
+
+  /**
+   * Whether the subscription has ever had a paid invoice with a non-zero total.
+   * The $0 invoice issued at trial start does not count, so a trial whose first
+   * charge failed reads as never paid.
+   */
+  hasPaidInvoice(subscriptionId: string): Promise<boolean>;
+
   previewProration(
     subscriptionId: string,
     newPriceId: string,

@@ -4,7 +4,6 @@ import * as React from "react"
 import * as SelectPrimitive from "@radix-ui/react-select"
 import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react"
 
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
 function Select({
@@ -109,8 +108,10 @@ function SelectItem({
 }: React.ComponentProps<typeof SelectPrimitive.Item> & {
   description?: React.ReactNode
 }) {
+  const descriptionId = React.useId()
   return (
     <SelectPrimitive.Item
+      aria-describedby={description ? descriptionId : undefined}
       data-slot="select-item"
       className={cn(
         "focus:bg-accent focus:text-accent-foreground [&_svg:not([class*='text-'])]:text-muted-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
@@ -124,16 +125,17 @@ function SelectItem({
         </SelectPrimitive.ItemIndicator>
       </span>
       {description ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span>
-              <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-[240px]" side="right">
+        // A visible line, not a tooltip, so keyboard and touch users see it.
+        // Outside ItemText, so the closed trigger shows only the label.
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+          <span
+            className="text-muted-foreground text-xs leading-snug"
+            id={descriptionId}
+          >
             {description}
-          </TooltipContent>
-        </Tooltip>
+          </span>
+        </div>
       ) : (
         <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
       )}

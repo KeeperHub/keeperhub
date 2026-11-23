@@ -445,7 +445,7 @@ spec:
     spec:
       containers:
         - name: localstack
-          image: localstack/localstack:latest
+          image: localstack/localstack:4.14.0
           ports:
             - containerPort: 4566
           env:

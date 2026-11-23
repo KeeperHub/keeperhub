@@ -1,6 +1,5 @@
-import { and, eq, isNull } from "drizzle-orm";
-import { db } from "@/lib/db";
-import { member, users } from "@/lib/db/schema";
+import { isViewerRole } from "@/lib/organization/role-label";
+import { getOrgRole } from "@/lib/security/org-role";
 
 type WorkflowAccessSubject = {
   userId: string | null;
@@ -22,6 +21,9 @@ export type WorkflowAccess = {
   isCreatorWithCurrentAccess: boolean;
   isSameOrg: boolean;
   hasFullAccess: boolean;
+  // Full read access plus permission to change, run or delete the workflow.
+  // False for org viewers, who read everything but change nothing.
+  canEdit: boolean;
   // KEEP-440: true when the workflow has been soft-deleted. Mutation, execution
   // and export routes must reject deleted workflows; only the owner-facing read
   // paths keep serving them so the UI can render a deleted marker.
@@ -32,20 +34,7 @@ export async function isUserMemberOfOrganization(
   userId: string,
   organizationId: string
 ): Promise<boolean> {
-  const [membership] = await db
-    .select({ id: member.id })
-    .from(member)
-    .innerJoin(users, eq(member.userId, users.id))
-    .where(
-      and(
-        eq(member.userId, userId),
-        eq(member.organizationId, organizationId),
-        isNull(users.deactivatedAt)
-      )
-    )
-    .limit(1);
-
-  return membership !== undefined && membership !== null;
+  return (await getOrgRole(userId, organizationId)) !== null;
 }
 
 export async function getWorkflowAccess(
@@ -64,20 +53,12 @@ export async function getWorkflowAccess(
     workflow.organizationId !== null &&
     subject.organizationId === workflow.organizationId;
 
-  let currentMembership: boolean | null = null;
-  const hasCurrentMembership = async (): Promise<boolean> => {
-    if (workflow.organizationId === null || userId === null) {
-      return false;
-    }
-    currentMembership ??= await isUserMemberOfOrganization(
-      userId,
-      workflow.organizationId
-    );
-    return currentMembership;
-  };
+  const currentRole =
+    hasSameOrgContext && userId !== null && workflow.organizationId !== null
+      ? await getOrgRole(userId, workflow.organizationId)
+      : null;
 
-  const isSameOrg =
-    hasSameOrgContext && userId !== null && (await hasCurrentMembership());
+  const isSameOrg = currentRole !== null;
 
   return {
     // Retained for callers that distinguish "the creator, acting in-org" from
@@ -86,6 +67,7 @@ export async function getWorkflowAccess(
     isCreatorWithCurrentAccess: isCreator && isSameOrg,
     isSameOrg,
     hasFullAccess: isSameOrg,
+    canEdit: isSameOrg && !isViewerRole(currentRole),
     isDeleted: (workflow.deletedAt ?? null) !== null,
   };
 }
