@@ -436,6 +436,64 @@ describe("AdaptiveGasStrategy", () => {
       expect(config.maxFeePerGas).toBeGreaterThanOrEqual(BigInt(5e9));
     });
 
+    it("lowers the max fee to the caller's cap", async () => {
+      const strategy = new AdaptiveGasStrategy();
+      const provider = createMockProvider();
+      const capped = await strategy.getGasConfig(
+        provider as unknown as import("ethers").Provider,
+        BigInt(21_000),
+        1,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        BigInt(5e9)
+      );
+
+      expect(capped.maxFeePerGas).toBe(BigInt(5e9));
+      expect(capped.maxPriorityFeePerGas).toBeLessThanOrEqual(BigInt(5e9));
+    });
+
+    it("lowers an overridden tip that exceeds the cap", async () => {
+      const strategy = new AdaptiveGasStrategy();
+      const provider = createMockProvider();
+      const config = await strategy.getGasConfig(
+        provider as unknown as import("ethers").Provider,
+        BigInt(21_000),
+        1,
+        undefined,
+        undefined,
+        undefined,
+        BigInt(8e9),
+        BigInt(6e9)
+      );
+
+      expect(config.maxFeePerGas).toBe(BigInt(6e9));
+      expect(config.maxPriorityFeePerGas).toBe(BigInt(6e9));
+    });
+
+    it("leaves fees unchanged when they are under the cap", async () => {
+      const strategy = new AdaptiveGasStrategy();
+      const uncapped = await strategy.getGasConfig(
+        createMockProvider() as unknown as import("ethers").Provider,
+        BigInt(21_000),
+        1
+      );
+      const capped = await strategy.getGasConfig(
+        createMockProvider() as unknown as import("ethers").Provider,
+        BigInt(21_000),
+        1,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        uncapped.maxFeePerGas + BigInt(1e9)
+      );
+
+      expect(capped.maxFeePerGas).toBe(uncapped.maxFeePerGas);
+      expect(capped.maxPriorityFeePerGas).toBe(uncapped.maxPriorityFeePerGas);
+    });
+
     // Both 0G chains share a hardcoded floor of 4 gwei
     // (gasLimitMultiplier=2.0, minPriorityFeeGwei=4.0). Mainnet (16661)
     // mirrors Galileo (16602) defensively until mainnet has measurable

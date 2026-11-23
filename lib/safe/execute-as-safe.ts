@@ -53,6 +53,8 @@ export type ExecuteAsSafeOptions = {
   rpcManager: RpcProviderManager;
   // Present = estimate (and so revert-check) as of the next block.
   simulation?: NextBlockSimulationOptions;
+  // The node's priority fee and max fee, applied to the owner transaction.
+  feeOverrides?: { priorityFeeOverride?: bigint; maxFeeOverride?: bigint };
 };
 
 // The outer transaction's gas estimate, which is also its revert check.
@@ -218,7 +220,9 @@ export async function executeContractCallAsSafe(
       options.chainId,
       undefined,
       undefined,
-      options.rpcManager
+      options.rpcManager,
+      options.feeOverrides?.priorityFeeOverride,
+      options.feeOverrides?.maxFeeOverride
     );
 
     const nonce = nonceManager.getNextNonce(session);
@@ -340,7 +344,9 @@ export async function executeContractCallAsRole(
       options.chainId,
       undefined,
       undefined,
-      options.rpcManager
+      options.rpcManager,
+      options.feeOverrides?.priorityFeeOverride,
+      options.feeOverrides?.maxFeeOverride
     );
 
     const nonce = nonceManager.getNextNonce(session);
@@ -442,7 +448,9 @@ export async function executeNativeTransferAsRole(
       options.chainId,
       undefined,
       undefined,
-      options.rpcManager
+      options.rpcManager,
+      options.feeOverrides?.priorityFeeOverride,
+      options.feeOverrides?.maxFeeOverride
     );
 
     const nonce = nonceManager.getNextNonce(session);
@@ -544,7 +552,9 @@ export async function executeNativeTransferAsSafe(
       options.chainId,
       undefined,
       undefined,
-      options.rpcManager
+      options.rpcManager,
+      options.feeOverrides?.priorityFeeOverride,
+      options.feeOverrides?.maxFeeOverride
     );
 
     const nonce = nonceManager.getNextNonce(session);

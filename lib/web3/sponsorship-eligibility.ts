@@ -13,6 +13,7 @@ type SponsorshipEligibility = {
   sponsorGas?: boolean;
   usePrivateMempool?: boolean;
   simulatesNextBlock?: boolean;
+  customFees?: boolean;
 };
 
 /**
@@ -30,7 +31,9 @@ type SponsorshipEligibility = {
  *  - the send goes through a Safe, where a sponsored call built as a direct
  *    send from the org's EOA would change msg.sender away from the Safe;
  *  - the node simulates as of the next block, which the sponsor's own
- *    simulation at `latest` would undo.
+ *    simulation at `latest` would undo;
+ *  - the node sets its own priority fee or max fee, which the sponsored route
+ *    cannot carry, so the fees the author asked for would be silently dropped.
  *
  * A false answer is never an error: the caller signs and pays directly, which
  * is also what happens when this returns true and sponsorship then declines
@@ -42,6 +45,7 @@ export function shouldTrySponsorship({
   sponsorGas,
   usePrivateMempool,
   simulatesNextBlock,
+  customFees,
 }: SponsorshipEligibility): boolean {
   return (
     isGasSponsorshipEnabled() &&
@@ -49,6 +53,7 @@ export function shouldTrySponsorship({
     resolveSponsorGas(sponsorGas) &&
     !usePrivateMempool &&
     !simulatesNextBlock &&
+    !customFees &&
     signerMode.kind === SIGNER_MODE.EOA
   );
 }
