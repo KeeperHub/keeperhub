@@ -2,20 +2,10 @@
 
 import { AlertTriangle } from "lucide-react";
 import {
+  isIgnoredWhileSponsored,
   SPONSORSHIP_GAS_SETTINGS_DOC_URL,
-  sponsorshipConflictFor,
 } from "@/lib/workflow/editor/sponsorship-conflict";
-import type {
-  ActionConfigFieldBase,
-  SponsorshipConflict,
-} from "@/plugins/registry";
-
-const MESSAGES: Record<SponsorshipConflict, string> = {
-  "skips-sponsorship":
-    "Gas sponsorship is skipped while this is set, because sponsored sends cannot carry a custom fee. This node pays gas from the sending wallet, which must hold enough native token.",
-  "not-applied-when-sponsored":
-    "Not applied while Sponsor gas is on: sponsored sends set their own gas limit. This limit is used only when the node pays its own gas. Turn off Sponsor gas to always use it.",
-};
+import type { ActionConfigFieldBase } from "@/plugins/registry";
 
 type SponsorshipConflictNoticeProps = {
   field: ActionConfigFieldBase;
@@ -26,8 +16,7 @@ export function SponsorshipConflictNotice({
   field,
   config,
 }: SponsorshipConflictNoticeProps) {
-  const conflict = sponsorshipConflictFor(field, config);
-  if (!conflict) {
+  if (!isIgnoredWhileSponsored(field, config)) {
     return null;
   }
   return (
@@ -37,7 +26,9 @@ export function SponsorshipConflictNotice({
     >
       <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
       <span className="break-words">
-        {MESSAGES[conflict]}{" "}
+        Not applied while Sponsor gas is on: sponsored sends set their own gas
+        limit. This limit is used only when the node pays its own gas. Turn off
+        Sponsor gas to always use it.{" "}
         <a
           className="break-all underline"
           href={SPONSORSHIP_GAS_SETTINGS_DOC_URL}

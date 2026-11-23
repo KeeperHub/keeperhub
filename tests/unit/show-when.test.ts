@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 
@@ -260,6 +260,59 @@ describe("evaluateShowWhen", () => {
       );
       expect(evaluateShowWhen(predicate, { network: null })).toBe(false);
       expect(evaluateShowWhen(predicate, { network: {} })).toBe(false);
+    });
+  });
+
+  describe("computed: notSponsored", () => {
+    const predicate = {
+      computed: "notSponsored",
+      networkField: "network",
+    } as const;
+
+    beforeEach(() => {
+      vi.stubEnv("NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED", "true");
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("hides the field while the node would be sponsored", () => {
+      expect(evaluateShowWhen(predicate, { network: "1" })).toBe(false);
+      expect(
+        evaluateShowWhen(predicate, { network: "1", sponsorGas: true })
+      ).toBe(false);
+    });
+
+    it("shows the field when Sponsor gas is off", () => {
+      expect(
+        evaluateShowWhen(predicate, { network: "1", sponsorGas: false })
+      ).toBe(true);
+      expect(
+        evaluateShowWhen(predicate, { network: "1", sponsorGas: "false" })
+      ).toBe(true);
+    });
+
+    it("shows the field on a network sponsorship does not cover", () => {
+      expect(evaluateShowWhen(predicate, { network: "10" })).toBe(true);
+      expect(evaluateShowWhen(predicate, {})).toBe(true);
+    });
+
+    it("shows the field for a private mempool or an explicit Safe sender", () => {
+      expect(
+        evaluateShowWhen(predicate, { network: "1", usePrivateMempool: true })
+      ).toBe(true);
+      expect(
+        evaluateShowWhen(predicate, {
+          network: "1",
+          web3Connection: "safe:abc",
+        })
+      ).toBe(true);
+    });
+
+    it("shows the field when sponsorship is off for the deployment", () => {
+      vi.stubEnv("NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED", "false");
+      expect(evaluateShowWhen(predicate, { network: "1" })).toBe(true);
     });
   });
 });

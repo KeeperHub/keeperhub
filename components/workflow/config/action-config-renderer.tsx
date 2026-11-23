@@ -946,7 +946,7 @@ function renderField(
     disabled
   );
   if (customResult !== null) {
-    if (!field.sponsorshipConflict) {
+    if (!field.ignoredWhenSponsored) {
       return customResult;
     }
     return (
