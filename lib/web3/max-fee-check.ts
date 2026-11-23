@@ -6,32 +6,41 @@ import type { getRpcProvider } from "@/lib/rpc/provider-factory";
 
 type RpcManager = Awaited<ReturnType<typeof getRpcProvider>>;
 
+type FeeHistory = { baseFeePerGas?: string[] };
+
 /**
- * Refuse a max fee cap below the latest block's base fee: a transaction capped
- * there cannot be included and would hold the wallet's nonce until the base
- * fee falls. A failed base-fee read does not block the send; the cap is still
- * applied by the gas strategy.
+ * Refuse a max fee cap below the next block's base fee: a transaction capped
+ * there cannot be included in that block and would hold the wallet's nonce
+ * until the base fee falls. eth_feeHistory reports the next block's base fee
+ * as its last entry, computed by the node with its own chain's rules. A failed
+ * read does not block the send; the gas strategy still applies the cap.
  */
 export async function maxFeeBelowBaseFeeError(
   rpcManager: RpcManager,
   maxFeeWei: bigint
 ): Promise<string | undefined> {
-  let baseFee: bigint | null | undefined;
+  let nextBaseFee: bigint | undefined;
   try {
-    const block = await rpcManager.executeWithFailover((provider) =>
-      provider.getBlock("latest")
+    const history = await rpcManager.executeWithFailover(
+      (provider) =>
+        provider.send("eth_feeHistory", [
+          "0x1",
+          "latest",
+          [],
+        ]) as Promise<FeeHistory | null>
     );
-    baseFee = block?.baseFeePerGas;
+    const last = history?.baseFeePerGas?.at(-1);
+    nextBaseFee = last === undefined ? undefined : BigInt(last);
   } catch (error) {
     logSystemWarn(
       ErrorCategory.NETWORK_RPC,
-      "[Max Fee] Could not read the latest base fee, sending with the cap",
+      "[Max Fee] Could not read the next base fee, sending with the cap",
       error
     );
     return;
   }
-  if (baseFee === null || baseFee === undefined || maxFeeWei >= baseFee) {
+  if (nextBaseFee === undefined || maxFeeWei >= nextBaseFee) {
     return;
   }
-  return `Max fee ${ethers.formatUnits(maxFeeWei, "gwei")} gwei is below the current base fee of ${ethers.formatUnits(baseFee, "gwei")} gwei, so the transaction could not be included. Raise the max fee or leave it empty.`;
+  return `Max fee ${ethers.formatUnits(maxFeeWei, "gwei")} gwei is below the next block's base fee of ${ethers.formatUnits(nextBaseFee, "gwei")} gwei, so the transaction could not be included. Raise the max fee or leave it empty.`;
 }

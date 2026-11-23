@@ -622,9 +622,19 @@ Execute state-changing functions on smart contracts using your Turnkey wallet. R
 
 **When to use:** Execute DeFi operations (harvest, compound, rebalance), respond to on-chain events, automate protocol maintenance.
 
-**Gas Configuration:** Optionally set a custom Gas Limit, Priority Fee or Max Fee in the Advanced section to override the chain default. See [Gas Management](/wallet-management/gas) for details. A sponsored transaction does not use these settings: see [Custom gas settings and sponsorship](/wallet-management/gas#custom-gas-settings-and-sponsorship).
-
 **Note:** The `gasUsed` output represents the total transaction cost in wei (gas units × effective gas price), not just the number of gas units consumed.
+
+### Gas settings
+
+The Advanced section has three optional gas settings. Leave them empty to use the network defaults.
+
+| Setting | What it does | With Sponsor gas on |
+|---------|--------------|---------------------|
+| [Gas Limit](/wallet-management/gas#gas-limit-override) | Fixed gas limit, used instead of the estimate | Not applied to a sponsored transaction; the sponsor sets its own limit |
+| [Priority Fee (gwei)](/wallet-management/gas#priority-fee) | Tip paid to the block builder; a higher tip puts the transaction ahead of others in the same block | The node is never sponsored and pays gas from the sending wallet |
+| [Max Fee (gwei)](/wallet-management/gas#max-fee) | Ceiling on the total fee per gas; a cap below the next block's base fee fails the step before sending | The node is never sponsored and pays gas from the sending wallet |
+
+Sponsored transactions cannot carry a custom priority fee or max fee, so setting either one takes the node off gas sponsorship. Make sure the sending wallet holds enough of the network's native token to pay for gas. The editor warns under each field when this applies. See [Custom gas settings and sponsorship](/wallet-management/gas#custom-gas-settings-and-sponsorship) for the full rules.
 
 ### When a write fails
 
@@ -653,8 +663,8 @@ If you're building this action via the [Workflows API](/api/workflows) rather th
 | Web3 Connection | `web3Connection` | Sender routing: `"default"` (org policy), `"eoa"` (force the Turnkey EOA), or `"safe:<safeWalletId>"`. The signing wallet is your org's Turnkey wallet, resolved automatically. |
 | Network | `network` | numeric chain id as a string (e.g. `"11155111"`) |
 | Fail workflow on error | `failOnError` | `true` or `false` (or `"true"` / `"false"`), on by default. Off softens a failed write into `success: true` with `error` set. Anything else, a template included, is refused at save, unless the step already holds it (see [On/off toggles](/workflows/templating#onoff-toggles)); a value kept that way runs as off only when it resolves to `false`. |
-| Priority Fee (gwei) | `priorityFeeGwei` | decimal string in gwei (e.g. `"3"`), optional. Templates are allowed. Must be greater than 0 and at most 10000. Empty uses the network default. A value that is set but not a valid number fails the step before anything is sent. When set, gas is paid from your own wallet. |
-| Max Fee (gwei) | `maxFeeGwei` | decimal string in gwei (e.g. `"50"`), optional. Templates are allowed. Must be greater than 0, at most 10000, and at least the priority fee when both are set. Empty means no cap. Higher fees are lowered to the cap; a cap below the current base fee fails the step before anything is sent. When set, gas is paid from your own wallet. |
+| Priority Fee (gwei) | `priorityFeeGwei` | plain decimal string in gwei (e.g. `"3"`), optional. Greater than 0, at most 10000, at most 9 decimal places. Templates are allowed. Empty uses the network default. A value that is set but not valid (for example `"abc"`, `"0x5"`, `"1e3"`, `"0"`) fails the step before anything is sent. When set, the node is never gas-sponsored and pays gas from the sending wallet. See [Priority Fee](/wallet-management/gas#priority-fee). |
+| Max Fee (gwei) | `maxFeeGwei` | plain decimal string in gwei (e.g. `"50"`), optional. Same format rules as `priorityFeeGwei`, and at least the priority fee when both are set. Empty means no cap. Higher fees are lowered to the cap; a cap below the next block's base fee fails the step before anything is sent (softened when `failOnError` is off). When set, the node is never gas-sponsored and pays gas from the sending wallet. See [Max Fee](/wallet-management/gas#max-fee). |
 | Sponsor gas | `sponsorGas` | `true` or `false` (or `"true"` / `"false"`), on by default. Off always pays gas from your own wallet. Anything else, a template included, is refused at save, unless the step already holds it (see [On/off toggles](/workflows/templating#onoff-toggles)); a value kept that way runs as off only when it resolves to `false`. |
 
 See the [generic web3 write-contract example](/api/workflows#generic-web3-write-contract-example-manual-trigger) in the Workflows API docs for a full working request body.

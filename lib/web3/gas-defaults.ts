@@ -154,64 +154,49 @@ export function resolveGasLimitOverrides(
   return {};
 }
 
-/**
- * Convert a caller-supplied gwei value (decimal string) to wei.
- * Returns undefined when the value is missing, malformed, or non-positive.
- * Implemented without ethers so this module remains client-safe
- * (gas-limit-multiplier-field.tsx imports it). Float64 has ~15-16 decimal
- * digits of precision, which comfortably covers gwei values up to ~10^7.
- */
-function gweiToWei(raw: string | undefined): bigint | undefined {
-  if (!raw || raw.trim() === "") {
-    return;
-  }
-  const value = Number.parseFloat(raw);
-  if (!Number.isFinite(value) || value <= 0) {
-    return;
-  }
-  return BigInt(Math.floor(value * 1e9));
-}
-
-/** Caller-supplied maxPriorityFeePerGas (gwei) in wei, or undefined when unset. */
-export function parsePriorityFeeGwei(
-  raw: string | undefined
-): bigint | undefined {
-  return gweiToWei(raw);
-}
-
-/** Caller-supplied maxFeePerGas cap (gwei) in wei, or undefined when unset. */
-export function parseMaxFeeGwei(raw: string | undefined): bigint | undefined {
-  return gweiToWei(raw);
-}
-
 export const MAX_PRIORITY_FEE_GWEI = 10_000;
 export const MAX_FEE_GWEI = 10_000;
 
-function isUnset(raw: unknown): boolean {
-  return raw === undefined || raw === null || String(raw).trim() === "";
-}
+const GWEI_DECIMAL_RE = /^(\d+)(?:\.(\d{1,9}))?$/;
+const WEI_PER_GWEI = BigInt(1_000_000_000);
 
-function toNumber(raw: unknown): number {
-  return typeof raw === "number" || typeof raw === "string"
-    ? Number(raw)
-    : Number.NaN;
-}
+type GweiParse =
+  | { ok: true; wei: bigint | undefined }
+  | { ok: false; error: string };
 
-function gweiSettingError(
-  label: string,
-  raw: unknown,
-  max: number
-): string | undefined {
-  if (isUnset(raw)) {
-    return;
+/**
+ * Parse a caller-supplied gwei amount exactly, as a plain decimal with at
+ * most 9 fractional digits (1 wei). Unset or blank means "not set". The same
+ * parse feeds validation and the wei value, so a value that validates is the
+ * value that is sent. Client-safe: no ethers.
+ */
+function parseGweiSetting(label: string, raw: unknown, max: number): GweiParse {
+  if (raw === undefined || raw === null) {
+    return { ok: true, wei: undefined };
   }
-  const value = toNumber(raw);
-  if (!Number.isFinite(value) || value <= 0) {
-    return `${label} must be a positive number in gwei, got "${String(raw)}"`;
+  const text =
+    typeof raw === "string" || typeof raw === "number"
+      ? String(raw).trim()
+      : "";
+  if (text === "" && typeof raw === "string") {
+    return { ok: true, wei: undefined };
   }
-  if (value > max) {
-    return `${label} must not exceed ${max} gwei`;
+  const match = GWEI_DECIMAL_RE.exec(text);
+  if (!match) {
+    return {
+      ok: false,
+      error: `${label} must be a positive decimal number in gwei with at most 9 decimal places, got "${String(raw)}"`,
+    };
   }
+  const fraction = (match[2] ?? "").padEnd(9, "0");
+  const wei = BigInt(match[1]) * WEI_PER_GWEI + BigInt(fraction);
+  if (wei === BigInt(0)) {
+    return { ok: false, error: `${label} must be greater than 0 gwei` };
+  }
+  if (wei > BigInt(max) * WEI_PER_GWEI) {
+    return { ok: false, error: `${label} must not exceed ${max} gwei` };
+  }
+  return { ok: true, wei };
 }
 
 /**
@@ -220,30 +205,40 @@ function gweiSettingError(
  * silently sending at the default tip. Empty means "use the default".
  */
 export function priorityFeeGweiError(raw: unknown): string | undefined {
-  return gweiSettingError("Priority fee", raw, MAX_PRIORITY_FEE_GWEI);
+  const parsed = parseGweiSetting("Priority fee", raw, MAX_PRIORITY_FEE_GWEI);
+  return parsed.ok ? undefined : parsed.error;
 }
 
+export type FeeOverrides =
+  | { error: string }
+  | { priorityFeeOverride?: bigint; maxFeeOverride?: bigint };
+
 /**
- * Validate the priority fee and max fee settings of a write node together.
- * A max fee below the priority fee would silently lower the tip, so it is
- * refused rather than sent.
+ * Resolve a write node's priority fee and max fee settings to wei. A max fee
+ * below the priority fee would silently lower the tip, so it is refused.
  */
-export function feeSettingsError(
+export function resolveFeeOverrides(
   priorityFeeRaw: unknown,
   maxFeeRaw: unknown
-): string | undefined {
-  const priorityError = priorityFeeGweiError(priorityFeeRaw);
-  if (priorityError) {
-    return priorityError;
+): FeeOverrides {
+  const priority = parseGweiSetting(
+    "Priority fee",
+    priorityFeeRaw,
+    MAX_PRIORITY_FEE_GWEI
+  );
+  if (!priority.ok) {
+    return { error: priority.error };
   }
-  const maxError = gweiSettingError("Max fee", maxFeeRaw, MAX_FEE_GWEI);
-  if (maxError) {
-    return maxError;
+  const max = parseGweiSetting("Max fee", maxFeeRaw, MAX_FEE_GWEI);
+  if (!max.ok) {
+    return { error: max.error };
   }
   if (
-    !(isUnset(priorityFeeRaw) || isUnset(maxFeeRaw)) &&
-    toNumber(maxFeeRaw) < toNumber(priorityFeeRaw)
+    priority.wei !== undefined &&
+    max.wei !== undefined &&
+    max.wei < priority.wei
   ) {
-    return "Max fee must be at least the priority fee";
+    return { error: "Max fee must be at least the priority fee" };
   }
+  return { priorityFeeOverride: priority.wei, maxFeeOverride: max.wei };
 }

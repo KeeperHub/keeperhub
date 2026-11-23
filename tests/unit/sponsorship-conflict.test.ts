@@ -88,6 +88,28 @@ describe("sponsorshipConflictFor", () => {
     ).toBeUndefined();
   });
 
+  it("drops the gas limit warning when a custom fee already skips sponsorship", () => {
+    const config = {
+      network: SPONSORED_NETWORK,
+      gasLimitMultiplier: GAS_LIMIT,
+      maxFeeGwei: "50",
+    };
+    expect(sponsorshipConflictFor(GAS_LIMIT_FIELD, config)).toBeUndefined();
+    expect(
+      sponsorshipConflictFor({ ...FEE_FIELD, key: "maxFeeGwei" }, config)
+    ).toBe("skips-sponsorship");
+  });
+
+  it("stays quiet for an explicit Safe sender, which is never sponsored", () => {
+    expect(
+      sponsorshipConflictFor(GAS_LIMIT_FIELD, {
+        network: SPONSORED_NETWORK,
+        gasLimitMultiplier: GAS_LIMIT,
+        web3Connection: "safe:abc",
+      })
+    ).toBeUndefined();
+  });
+
   it("stays quiet for a cleared gas limit", () => {
     expect(
       sponsorshipConflictFor(GAS_LIMIT_FIELD, {

@@ -30,6 +30,13 @@ function isTrue(value: unknown): boolean {
   return value === true || value === "true";
 }
 
+function isSet(value: unknown): boolean {
+  return value !== undefined && value !== null && String(value).trim() !== "";
+}
+
+// The fee settings a node can carry that take it off the sponsored route.
+const SPONSORSHIP_SKIPPING_KEYS = ["priorityFeeGwei", "maxFeeGwei"] as const;
+
 /**
  * The sponsorship conflict to warn about for a field, or undefined when the
  * node would not take the sponsored route anyway.
@@ -41,13 +48,28 @@ export function sponsorshipConflictFor(
   if (!(field.sponsorshipConflict && hasValue(field, config[field.key]))) {
     return;
   }
+  // An explicit Safe sender is never sponsored. A "default" connection may
+  // still resolve to a Safe through org policy, which the editor cannot see.
+  const viaSafe = String(config.web3Connection ?? "").startsWith("safe:");
   const sponsored =
     isGasSponsorshipEnabled() &&
     resolveSponsorGas(config.sponsorGas) &&
     !isTrue(config.usePrivateMempool) &&
+    !viaSafe &&
     evaluateShowWhen(
       { computed: "sponsorshipSupported", networkField: "network" },
       config
     );
-  return sponsored ? field.sponsorshipConflict : undefined;
+  if (!sponsored) {
+    return;
+  }
+  // A custom fee already sends the node unsponsored, where the gas limit
+  // applies, so only the fee fields warn.
+  if (
+    field.sponsorshipConflict === "not-applied-when-sponsored" &&
+    SPONSORSHIP_SKIPPING_KEYS.some((key) => isSet(config[key]))
+  ) {
+    return;
+  }
+  return field.sponsorshipConflict;
 }

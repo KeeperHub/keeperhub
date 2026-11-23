@@ -14,36 +14,51 @@ import { maxFeeBelowBaseFeeError } from "@/lib/web3/max-fee-check";
 
 type Manager = Parameters<typeof maxFeeBelowBaseFeeError>[0];
 
-function managerWithBaseFee(baseFee: bigint | null): Manager {
-  return {
-    executeWithFailover: vi.fn().mockResolvedValue({ baseFeePerGas: baseFee }),
+// eth_feeHistory with blockCount 1 returns [latest, next] base fees.
+function managerWithFeeHistory(history: unknown): {
+  manager: Manager;
+  send: ReturnType<typeof vi.fn>;
+} {
+  const send = vi.fn().mockResolvedValue(history);
+  const manager = {
+    executeWithFailover: vi.fn(
+      (operation: (provider: { send: typeof send }) => Promise<unknown>) =>
+        operation({ send })
+    ),
   } as unknown as Manager;
+  return { manager, send };
 }
 
 describe("maxFeeBelowBaseFeeError", () => {
-  it("passes a cap at or above the base fee", async () => {
+  it("asks the node for the next block's base fee", async () => {
+    const { manager, send } = managerWithFeeHistory({
+      baseFeePerGas: ["0x2540be400", "0x2540be400"],
+    });
+    await maxFeeBelowBaseFeeError(manager, BigInt(10e9));
+    expect(send).toHaveBeenCalledWith("eth_feeHistory", ["0x1", "latest", []]);
+  });
+
+  it("passes a cap at or above the next base fee", async () => {
+    const { manager } = managerWithFeeHistory({
+      baseFeePerGas: ["0x1", "0x2540be400"],
+    });
     expect(
-      await maxFeeBelowBaseFeeError(
-        managerWithBaseFee(BigInt(10e9)),
-        BigInt(10e9)
-      )
+      await maxFeeBelowBaseFeeError(manager, BigInt(10e9))
     ).toBeUndefined();
   });
 
-  it("refuses a cap below the base fee", async () => {
-    const error = await maxFeeBelowBaseFeeError(
-      managerWithBaseFee(BigInt(12e9)),
-      BigInt(10e9)
-    );
-    expect(error).toMatch(
-      /Max fee 10\.0 gwei is below the current base fee of 12\.0 gwei/
+  it("refuses a cap below the next base fee even when the latest one is lower", async () => {
+    const { manager } = managerWithFeeHistory({
+      baseFeePerGas: ["0x2540be400", "0x2cb417800"],
+    });
+    expect(await maxFeeBelowBaseFeeError(manager, BigInt(11e9))).toMatch(
+      /Max fee 11\.0 gwei is below the next block's base fee of 12\.0 gwei/
     );
   });
 
-  it("passes on a chain without a base fee", async () => {
-    expect(
-      await maxFeeBelowBaseFeeError(managerWithBaseFee(null), BigInt(1))
-    ).toBeUndefined();
+  it("passes on a chain that reports no base fee", async () => {
+    const { manager } = managerWithFeeHistory({ baseFeePerGas: [] });
+    expect(await maxFeeBelowBaseFeeError(manager, BigInt(1))).toBeUndefined();
   });
 
   it("does not block the send when the base fee cannot be read", async () => {

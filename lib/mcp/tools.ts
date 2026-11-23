@@ -1833,7 +1833,7 @@ export function registerTools(
         "Gas limit multiplier (e.g., '1.5' for 50% buffer)"
       ).optional(),
       priority_fee_gwei: looseString(
-        "Explicit maxPriorityFeePerGas in gwei (e.g., '2'). Bypasses the chain's default min/max priority-fee clamp. Use when the network's mempool requires a tip above the configured floor."
+        "Explicit maxPriorityFeePerGas in gwei (e.g., '2'). Bypasses the chain's default min/max priority-fee clamp. Use when the network's mempool requires a tip above the configured floor, or to be ordered ahead of other transactions in the same block. Plain decimal, greater than 0, at most 10000. When set, the call is not gas-sponsored and pays gas from the sending wallet."
       ).optional(),
       simulate: SIMULATE_ARG,
       idempotency_key: IDEMPOTENCY_KEY_ARG,

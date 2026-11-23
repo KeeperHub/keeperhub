@@ -54,9 +54,7 @@ import {
 } from "@/lib/web3/decode-revert-error";
 import { buildErrorDecodeInterface } from "@/lib/web3/extra-error-abis";
 import {
-  feeSettingsError,
-  parseMaxFeeGwei,
-  parsePriorityFeeGwei,
+  resolveFeeOverrides,
   resolveGasLimitOverrides,
 } from "@/lib/web3/gas-defaults";
 import { maxFeeBelowBaseFeeError } from "@/lib/web3/max-fee-check";
@@ -277,20 +275,15 @@ async function writeContractCoreImpl(
 
   const { multiplierOverride, gasLimitOverride } =
     resolveGasLimitOverrides(gasLimitMultiplier);
-  const feeError = feeSettingsError(priorityFeeGwei, maxFeeGwei);
-  if (feeError) {
+  const fees = resolveFeeOverrides(priorityFeeGwei, maxFeeGwei);
+  if ("error" in fees) {
     return {
       success: false,
-      error: feeError,
+      error: fees.error,
       errorClass: ExecutionErrorType.USER,
     };
   }
-  const priorityFeeOverride = parsePriorityFeeGwei(
-    priorityFeeGwei === undefined ? undefined : String(priorityFeeGwei)
-  );
-  const maxFeeOverride = parseMaxFeeGwei(
-    maxFeeGwei === undefined ? undefined : String(maxFeeGwei)
-  );
+  const { priorityFeeOverride, maxFeeOverride } = fees;
 
   // Validate contract address
   if (!ethers.isAddress(contractAddress)) {
@@ -442,10 +435,12 @@ async function writeContractCoreImpl(
   if (maxFeeOverride !== undefined) {
     const capError = await maxFeeBelowBaseFeeError(rpcManager, maxFeeOverride);
     if (capError) {
+      // The base fee, not the node's config, decides this, so failOnError=false
+      // can carry a run through a gas spike.
       return {
         success: false,
         error: capError,
-        errorClass: ExecutionErrorType.USER,
+        errorClass: ExecutionErrorType.EXTERNAL,
       };
     }
   }
@@ -774,6 +769,7 @@ async function writeContractCoreImpl(
             chainId,
             workflowId,
             rpcManager,
+            feeOverrides: { priorityFeeOverride, maxFeeOverride },
           }
         );
       } else if (signerMode.kind === SIGNER_MODE.SAFE) {
@@ -793,6 +789,7 @@ async function writeContractCoreImpl(
             chainId,
             workflowId,
             rpcManager,
+            feeOverrides: { priorityFeeOverride, maxFeeOverride },
           }
         );
       } else {
