@@ -24,6 +24,10 @@
 import { deriveStateMutability } from "@/lib/abi/mutability";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { isSponsorshipSupported } from "@/lib/web3/sponsorship-chains-meta";
+import {
+  isGasSponsorshipEnabled,
+  resolveSponsorGas,
+} from "@/lib/web3/sponsorship-feature-flag";
 
 export type ShowWhen =
   | { field: string; equals: string }
@@ -36,6 +40,7 @@ export type ShowWhen =
       equals: string;
     }
   | { computed: "sponsorshipSupported"; networkField: string }
+  | { computed: "notSponsored"; networkField: string }
   | { all: ShowWhen[] };
 
 function evaluateComputed(
@@ -52,19 +57,47 @@ function evaluateComputed(
     return deriveStateMutability(abi, funcName) === showWhen.equals;
   }
   if (showWhen.computed === "sponsorshipSupported") {
-    const network = config[showWhen.networkField];
-    if (typeof network !== "string" && typeof network !== "number") {
-      return false;
-    }
-    try {
-      return isSponsorshipSupported(getChainIdFromNetwork(network));
-    } catch {
-      // An unset or unrecognised network cannot be sponsored, and
-      // getChainIdFromNetwork throws rather than returning a sentinel.
-      return false;
-    }
+    return isNetworkSponsorable(config[showWhen.networkField]);
+  }
+  if (showWhen.computed === "notSponsored") {
+    return !wouldBeSponsored(config, showWhen.networkField);
   }
   return false;
+}
+
+function isNetworkSponsorable(network: unknown): boolean {
+  if (typeof network !== "string" && typeof network !== "number") {
+    return false;
+  }
+  try {
+    return isSponsorshipSupported(getChainIdFromNetwork(network));
+  } catch {
+    // An unset or unrecognised network cannot be sponsored, and
+    // getChainIdFromNetwork throws rather than returning a sentinel.
+    return false;
+  }
+}
+
+/**
+ * Whether a write node would take the gas-sponsored route, as far as the
+ * editor can tell: the deployment flag, a covered network, the Sponsor gas
+ * toggle, and neither a private mempool nor an explicit Safe sender. A
+ * "default" connection that org policy resolves to a Safe is not visible here.
+ */
+export function wouldBeSponsored(
+  config: Record<string, unknown>,
+  networkField: string
+): boolean {
+  const privateMempool =
+    config.usePrivateMempool === true || config.usePrivateMempool === "true";
+  const viaSafe = String(config.web3Connection ?? "").startsWith("safe:");
+  return (
+    isGasSponsorshipEnabled() &&
+    resolveSponsorGas(config.sponsorGas) &&
+    !privateMempool &&
+    !viaSafe &&
+    isNetworkSponsorable(config[networkField])
+  );
 }
 
 export function evaluateShowWhen(

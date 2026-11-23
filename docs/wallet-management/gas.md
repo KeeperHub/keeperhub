@@ -77,7 +77,8 @@ The setting is available on Write Contract and Batch Write Contract:
 
 1. Open the action node configuration
 2. Expand the **Advanced** section
-3. Set **Priority Fee (gwei)** to a value in gwei (e.g. 3)
+3. On Write Contract, turn off **Sponsor gas** if it is shown. The priority fee field appears only while the node pays its own gas
+4. Set **Priority Fee (gwei)** to a value in gwei (e.g. 3)
 
 | Setting | Result |
 |---------|--------|
@@ -86,13 +87,19 @@ The setting is available on Write Contract and Batch Write Contract:
 
 ### Priority fee and gas sponsorship
 
-Sponsored transactions cannot carry a custom priority fee. The gas sponsor sets the fees of the transactions it pays for.
+Sponsored transactions cannot carry a custom priority fee. The gas sponsor sets the fees of the transactions it pays for. So on Write Contract the two are exclusive:
 
-- A node with a priority fee set is never sponsored, even with **Sponsor gas** on. It pays gas from the sending wallet, with your tip.
-- The sending wallet must hold enough of the network's native token to pay the gas. If it does not, the step fails before anything is sent.
-- No gas credits are used for that node.
+- **Sponsor gas on**: the Priority Fee field is hidden and the network's default tip is used, paid by the sponsor.
+- **Sponsor gas off**: the Priority Fee field is shown. The node pays gas from the sending wallet, with your tip.
+- Turning Sponsor gas back on clears the priority fee, so a hidden value never changes how the node sends.
 
-Batch Write Contract is never sponsored, so its priority fee always applies.
+The field is also shown when the node cannot be sponsored anyway: on a network gas sponsorship does not cover, through a private mempool, or through a Safe.
+
+With a priority fee, the sending wallet must hold enough of the network's native token to pay the gas. If it does not, the step fails before anything is sent. No gas credits are used for that node.
+
+Batch Write Contract is never sponsored, so its Priority Fee field is always shown and always applies.
+
+A priority fee sent through the [direct execution API](/api/direct-execution) also takes the call off sponsorship.
 
 ### Priority fee with a Safe
 
