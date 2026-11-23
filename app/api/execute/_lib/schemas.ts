@@ -6,7 +6,7 @@ import {
 import { MAX_SEQUENCE_CALLS } from "@/lib/execute/simulate-sequence-limits";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import { readErrorAbiDocuments } from "@/lib/web3/extra-error-abis";
-import { MAX_PRIORITY_FEE_GWEI } from "@/lib/web3/gas-defaults";
+import { priorityFeeGweiError } from "@/lib/web3/gas-defaults";
 import { isValidOperator, VALID_OPERATORS } from "./condition";
 import { selectorOf } from "./raw-calldata";
 import type { ExecuteErrorResponse } from "./types";
@@ -312,19 +312,12 @@ function priorityFeeError(value: unknown): ExecuteErrorResponse | null {
       details: "priorityFeeGwei must be a non-empty decimal string in gwei",
     };
   }
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
+  const valueError = priorityFeeGweiError(value);
+  if (valueError) {
     return {
       error: "Invalid field value",
       field: "priorityFeeGwei",
-      details: "priorityFeeGwei must be a finite positive decimal in gwei",
-    };
-  }
-  if (parsed > MAX_PRIORITY_FEE_GWEI) {
-    return {
-      error: "Invalid field value",
-      field: "priorityFeeGwei",
-      details: `priorityFeeGwei must not exceed ${MAX_PRIORITY_FEE_GWEI} gwei`,
+      details: valueError,
     };
   }
   return null;

@@ -550,9 +550,7 @@ async function batchWriteContractCoreImpl(
       errorClass: ExecutionErrorType.USER,
     };
   }
-  const priorityFeeOverride = parsePriorityFeeGwei(
-    priorityFeeGwei === undefined ? undefined : String(priorityFeeGwei)
-  );
+  const priorityFeeOverride = parsePriorityFeeGwei(priorityFeeGwei);
 
   const { calls: callsWithMeta, error: buildError } = buildCallsWithMeta({
     calls,

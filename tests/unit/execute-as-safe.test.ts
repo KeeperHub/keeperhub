@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   recordTransaction: vi.fn(),
   confirmTransaction: vi.fn(),
   submitSigned: vi.fn(),
+  getGasConfig: vi.fn(),
 }));
 
 vi.mock("@/lib/metrics/instrumentation/safe", () => ({
@@ -35,13 +36,7 @@ vi.mock("@/lib/web3/nonce-manager", () => ({
 }));
 
 vi.mock("@/lib/web3/gas-strategy", () => ({
-  getGasStrategy: () => ({
-    getGasConfig: async () => ({
-      gasLimit: BigInt(100_000),
-      maxFeePerGas: BigInt(20_000_000_000),
-      maxPriorityFeePerGas: BigInt(1_000_000_000),
-    }),
-  }),
+  getGasStrategy: () => ({ getGasConfig: mocks.getGasConfig }),
 }));
 
 vi.mock("@/lib/web3/submit-signed", async () => {
@@ -225,6 +220,11 @@ const cases: [string, Invoke][] = [
 describe.each(cases)("%s", (_name, invoke) => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.getGasConfig.mockResolvedValue({
+      gasLimit: BigInt(100_000),
+      maxFeePerGas: BigInt(20_000_000_000),
+      maxPriorityFeePerGas: BigInt(1_000_000_000),
+    });
     mocks.submitSigned.mockResolvedValue({
       hash: TX_HASH,
       response: { hash: TX_HASH },
@@ -331,5 +331,15 @@ describe.each(cases)("%s", (_name, invoke) => {
     });
     expect(mocks.confirmTransaction).toHaveBeenCalledWith(TX_HASH);
     expect(mocks.finishMetrics).toHaveBeenCalledWith("success");
+  });
+
+  it("passes the node's priority fee to the gas strategy", async () => {
+    const { options } = makeRpcManager(makeReceipt(1));
+    const feeOverrides = { priorityFeeOverride: BigInt(2e9) };
+
+    await invoke({ ...options, feeOverrides });
+
+    const args = mocks.getGasConfig.mock.calls[0];
+    expect(args?.[6]).toBe(feeOverrides.priorityFeeOverride);
   });
 });

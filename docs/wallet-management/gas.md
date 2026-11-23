@@ -67,21 +67,42 @@ If the network estimates 100,000 gas for your transaction and the network's defa
 
 Setting a gas limit below the estimate will cause the transaction to revert with an out-of-gas error. Setting it close to the estimate risks failure if on-chain state changes between estimation and execution.
 
-## Priority Fee Override
+## Priority Fee
 
-On Write Contract and Batch Write Contract you can set the priority fee (the tip paid to the block builder) per node:
+The priority fee (tip) is what you pay the block builder on top of the base fee. Transactions in the same block are ordered by priority fee, so a higher tip puts your transaction ahead of others that compete for the same call, such as a liquidation or a job that anyone can trigger once a cooldown ends.
+
+### Setting the priority fee
+
+The setting is available on Write Contract and Batch Write Contract:
 
 1. Open the action node configuration
 2. Expand the **Advanced** section
 3. Set **Priority Fee (gwei)** to a value in gwei (e.g. 3)
 
-Transactions in the same block are ordered by priority fee, so a higher tip helps when other senders race for the same call, such as a liquidation or a job that anyone can trigger once a cooldown ends.
+| Setting | Result |
+|---------|--------|
+| Empty (default) | KeeperHub's adaptive fee strategy picks the tip from recent blocks, within the network's minimum and maximum |
+| Set | Your value is used as the tip, even when it is above or below the network's usual range. The max fee is set to the base fee buffer plus your tip |
 
-- **When empty**: KeeperHub's adaptive fee strategy picks the tip from recent blocks, within the network's minimum and maximum
-- **When set**: Your value is used as the tip, and the max fee is set to the base fee buffer plus your tip
-- **Gas payment**: A node with a priority fee always pays gas from your own wallet, because sponsored transactions cannot carry a custom tip
+### Priority fee and gas sponsorship
 
-The value accepts templates, so a previous step can compute it. A value that is not a positive number, or is above 10000 gwei, fails the step before anything is sent.
+Sponsored transactions cannot carry a custom priority fee. The gas sponsor sets the fees of the transactions it pays for.
+
+- A node with a priority fee set is never sponsored, even with **Sponsor gas** on. It pays gas from the sending wallet, with your tip.
+- The sending wallet must hold enough of the network's native token to pay the gas. If it does not, the step fails before anything is sent.
+- No gas credits are used for that node.
+
+Batch Write Contract is never sponsored, so its priority fee always applies.
+
+### Priority fee with a Safe
+
+When the node sends through a Safe, the priority fee applies to the transaction your wallet sends to execute the Safe transaction.
+
+### Accepted values
+
+- A plain decimal number of gwei, greater than 0 and at most 10000, with at most 9 decimal places (1 wei). For example `3`, `0.5` or `1.25`.
+- Templates are accepted, so a previous step can compute the tip.
+- A value that is set but not valid (for example `abc`, `0x5`, `1e3` or `0`) fails the step before anything is sent. It does not fall back to the default tip.
 
 ## Gas Sponsorship
 
@@ -106,7 +127,7 @@ A transaction is sponsored only when all of the following are true. Otherwise it
 - **Public mempool**: transactions routed through a private mempool are not sponsored.
 - **Gas credits available**: your organization still has gas credits for the current period.
 - **Sponsor gas is on for the node**: the action's own toggle, described below.
-- **No custom priority fee**: a node with a [Priority Fee](#priority-fee-override) set pays gas from your wallet.
+- **No custom priority fee**: a node with a [Priority Fee](#priority-fee) set pays gas from your wallet.
 
 ### Sponsor gas toggle
 
@@ -193,7 +214,7 @@ The transaction reserves more gas but only consumes what it needs. Unused gas is
 
 ### Does the gas limit affect gas price/fees?
 
-No. The gas limit only sets the maximum gas units. Gas pricing is handled separately by KeeperHub's adaptive fee strategy. To set the tip yourself on a contract write, use the [Priority Fee](#priority-fee-override) field.
+No. The gas limit only sets the maximum gas units. Gas pricing is handled separately by KeeperHub's adaptive fee strategy. To set the tip yourself on a contract write, use the [Priority Fee](#priority-fee) field.
 
 ## Solana Fees
 

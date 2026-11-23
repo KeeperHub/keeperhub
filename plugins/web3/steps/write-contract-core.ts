@@ -279,9 +279,7 @@ async function writeContractCoreImpl(
       errorClass: ExecutionErrorType.USER,
     };
   }
-  const priorityFeeOverride = parsePriorityFeeGwei(
-    priorityFeeGwei === undefined ? undefined : String(priorityFeeGwei)
-  );
+  const priorityFeeOverride = parsePriorityFeeGwei(priorityFeeGwei);
 
   // Validate contract address
   if (!ethers.isAddress(contractAddress)) {
@@ -753,6 +751,7 @@ async function writeContractCoreImpl(
             chainId,
             workflowId,
             rpcManager,
+            feeOverrides: { priorityFeeOverride },
           }
         );
       } else if (signerMode.kind === SIGNER_MODE.SAFE) {
@@ -772,6 +771,7 @@ async function writeContractCoreImpl(
             chainId,
             workflowId,
             rpcManager,
+            feeOverrides: { priorityFeeOverride },
           }
         );
       } else {

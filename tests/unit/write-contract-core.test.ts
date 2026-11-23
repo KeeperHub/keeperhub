@@ -602,7 +602,7 @@ describe("writeContractCore priorityFeeGwei override", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.errorClass).toBe(ExecutionErrorType.USER);
-      expect(result.error).toMatch(/positive number in gwei/);
+      expect(result.error).toMatch(/positive decimal number in gwei/);
     }
     expect(mockExecuteContractCall).not.toHaveBeenCalled();
   });
@@ -1262,6 +1262,25 @@ describe("writeContractCore payerParam (#2470)", () => {
     };
     expect(sent.args).toEqual(["1", SAFE_ADDRESS]);
     expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("applies the node's priority fee to a Safe send", async () => {
+    vi.mocked(resolveSignerForNode).mockResolvedValue({
+      kind: "safe",
+      ownerAddress: "0xwalletaddress",
+      safeAddress: SAFE_ADDRESS,
+      safeWalletId: "safe-1",
+    });
+    vi.mocked(parsePriorityFeeGwei).mockReturnValueOnce(BigInt(2e9));
+
+    const result = await writeContractCore({
+      ...baseInput,
+      priorityFeeGwei: "2",
+    });
+
+    expect(result.success).toBe(true);
+    const options = vi.mocked(executeContractCallAsSafe).mock.calls[0]?.[3];
+    expect(options?.feeOverrides).toEqual({ priorityFeeOverride: BigInt(2e9) });
   });
 
   it("sets the payer argument to the Safe in safe-role mode", async () => {
