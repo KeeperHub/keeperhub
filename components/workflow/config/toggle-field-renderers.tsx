@@ -56,7 +56,7 @@ export const TOGGLE_FIELD_RENDERERS: Readonly<
         if (resolveSponsorGas(next)) {
           for (const key of UNSPONSORED_ONLY_FIELD_KEYS) {
             if (config[key] !== undefined && config[key] !== "") {
-              onUpdateConfig(key, undefined);
+              onUpdateConfig(key, "");
             }
           }
         }

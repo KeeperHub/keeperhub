@@ -53,7 +53,7 @@ describe("Sponsor gas toggle and unsponsored-only settings", () => {
 
     expect(onUpdateConfig).toHaveBeenCalledWith("sponsorGas", true);
     for (const key of UNSPONSORED_ONLY_FIELD_KEYS) {
-      expect(onUpdateConfig).toHaveBeenCalledWith(key, undefined);
+      expect(onUpdateConfig).toHaveBeenCalledWith(key, "");
     }
   });
 
@@ -67,10 +67,7 @@ describe("Sponsor gas toggle and unsponsored-only settings", () => {
     clickToggle();
 
     expect(onUpdateConfig).toHaveBeenCalledWith("sponsorGas", false);
-    expect(onUpdateConfig).not.toHaveBeenCalledWith(
-      "priorityFeeGwei",
-      undefined
-    );
+    expect(onUpdateConfig).not.toHaveBeenCalledWith("priorityFeeGwei", "");
   });
 
   it("does not touch settings that are already empty", () => {
