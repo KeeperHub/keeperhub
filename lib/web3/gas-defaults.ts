@@ -175,3 +175,26 @@ export function parsePriorityFeeGwei(
   }
   return BigInt(Math.floor(value * 1e9));
 }
+
+export const MAX_PRIORITY_FEE_GWEI = 10_000;
+
+/**
+ * Validate a caller-supplied priority fee (gwei). Returns an error message for
+ * a value that is set but unusable, so a typo fails the step instead of
+ * silently sending at the default tip. Empty means "use the default".
+ */
+export function priorityFeeGweiError(raw: unknown): string | undefined {
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return;
+  }
+  const value =
+    typeof raw === "number" || typeof raw === "string"
+      ? Number(raw)
+      : Number.NaN;
+  if (!Number.isFinite(value) || value <= 0) {
+    return `Priority fee must be a positive number in gwei, got "${String(raw)}"`;
+  }
+  if (value > MAX_PRIORITY_FEE_GWEI) {
+    return `Priority fee must not exceed ${MAX_PRIORITY_FEE_GWEI} gwei`;
+  }
+}

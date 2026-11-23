@@ -131,7 +131,10 @@ vi.mock("@/lib/web3/decode-revert-error", async (importOriginal) => {
 
 const mockResolveGasLimitOverrides = vi.fn();
 const mockParsePriorityFeeGwei = vi.fn();
-vi.mock("@/lib/web3/gas-defaults", () => ({
+vi.mock("@/lib/web3/gas-defaults", async (importOriginal) => ({
+  priorityFeeGweiError: (
+    await importOriginal<typeof import("@/lib/web3/gas-defaults")>()
+  ).priorityFeeGweiError,
   resolveGasLimitOverrides: (...args: unknown[]) =>
     mockResolveGasLimitOverrides(...args),
   parsePriorityFeeGwei: (...args: unknown[]) =>

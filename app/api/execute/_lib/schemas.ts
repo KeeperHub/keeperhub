@@ -6,6 +6,7 @@ import {
 import { MAX_SEQUENCE_CALLS } from "@/lib/execute/simulate-sequence-limits";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import { readErrorAbiDocuments } from "@/lib/web3/extra-error-abis";
+import { MAX_PRIORITY_FEE_GWEI } from "@/lib/web3/gas-defaults";
 import { isValidOperator, VALID_OPERATORS } from "./condition";
 import { selectorOf } from "./raw-calldata";
 import type { ExecuteErrorResponse } from "./types";
@@ -20,8 +21,6 @@ import type { ExecuteErrorResponse } from "./types";
  * reads it back so the public contract is byte-for-byte preserved while the
  * validation itself now runs through Zod's safeParse at the boundary.
  */
-
-const MAX_PRIORITY_FEE_GWEI = 10_000;
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";

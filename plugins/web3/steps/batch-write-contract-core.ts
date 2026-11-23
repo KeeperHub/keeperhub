@@ -50,6 +50,7 @@ import {
 } from "@/lib/web3/decode-revert-error";
 import {
   parsePriorityFeeGwei,
+  priorityFeeGweiError,
   resolveGasLimitOverrides,
 } from "@/lib/web3/gas-defaults";
 import {
@@ -541,7 +542,17 @@ async function batchWriteContractCoreImpl(
 
   const { multiplierOverride, gasLimitOverride } =
     resolveGasLimitOverrides(gasLimitMultiplier);
-  const priorityFeeOverride = parsePriorityFeeGwei(priorityFeeGwei);
+  const feeError = priorityFeeGweiError(priorityFeeGwei);
+  if (feeError) {
+    return {
+      success: false,
+      error: feeError,
+      errorClass: ExecutionErrorType.USER,
+    };
+  }
+  const priorityFeeOverride = parsePriorityFeeGwei(
+    priorityFeeGwei === undefined ? undefined : String(priorityFeeGwei)
+  );
 
   const { calls: callsWithMeta, error: buildError } = buildCallsWithMeta({
     calls,
