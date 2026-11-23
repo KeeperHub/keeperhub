@@ -65,6 +65,8 @@ Histogram metrics tracking duration/response times.
 | `executor.execution.latency_ms` | Full executor-visible lifetime (receive -> terminal, in-process runs) | `trigger_type`, `dispatch_target`, `stage` | P95 < 30000ms | Executor |
 | `executor.broadcast.latency_ms` | Trigger observed -> transaction broadcast (issue #2289) | `trigger_type`, `dispatch_target` | P95 < 10000ms | Executor |
 
+`dispatch_target` on the executor latency series is `k8s-job`, `in-process`, `api`, or `warm-pool` (a run started on a pre-started runner from the warm pool, for workflows with a low-latency start).
+
 ---
 
 ## 2. TRAFFIC (Request Rate)
@@ -77,6 +79,9 @@ Counter/Gauge metrics tracking request/event counts.
 | `workflow.execution.errors.total` | Total failed workflow executions (all-time) | - | gauge | DB |
 | `plugin.invocations.total` | Plugin action invocations | `plugin_name`, `action_name` | count | API |
 | `user.active.daily` | Daily active users (24h) | - | gauge | DB |
+| `executor.warm_pool.ready` | Warm runner pods holding an open claim request on this executor replica | - | gauge | Executor |
+| `executor.warm_pool.starting` | Warm runner Jobs created whose pod has not polled yet | - | gauge | Executor |
+| `executor.warm_pool.claims.total` | Low-latency dispatches by outcome: `claimed` (ran on a warm pod); `miss` (none ready), `org_limited` (organization used its per-minute share) or `invalid` (assignment a pod would reject), each falling back to a per-run Job; `not_entitled` (plan lacks low-latency start) | `claim_result`, `trigger_type` | count | Executor |
 
 ### Scan Funnel Metrics (scan-to-automate landing)
 
@@ -706,6 +711,9 @@ Prometheus metrics are prefixed with `keeperhub_` and use snake_case:
 | `executor.broadcast.latency_ms` | `keeperhub_executor_broadcast_latency_ms` | histogram |
 | `executor.broadcasts.total` | `keeperhub_executor_broadcasts_total` | counter |
 | `executor.broadcast.write_failures.total` | `keeperhub_executor_broadcast_write_failures_total` | counter |
+| `executor.warm_pool.ready` | `keeperhub_executor_warm_pool_ready` | gauge |
+| `executor.warm_pool.starting` | `keeperhub_executor_warm_pool_starting` | gauge |
+| `executor.warm_pool.claims.total` | `keeperhub_executor_warm_pool_claims_total` | counter |
 | `plugin.invocations.total` | `keeperhub_plugin_invocations_total` | counter |
 | `plugin.action.errors` | `keeperhub_plugin_action_errors_total` | counter |
 | `api.errors.total` | `keeperhub_api_errors_total` | counter |

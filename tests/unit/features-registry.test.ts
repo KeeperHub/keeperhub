@@ -100,6 +100,7 @@ describe("getEnabledFeatureIdsForPlan", () => {
       "action.external-request",
       "action.predge-read-signal",
       "notifications.execution-digest",
+      "automation.low-latency-start",
     ];
     for (const plan of ["pro", "business", "enterprise"] as const) {
       const ids = getEnabledFeatureIdsForPlan(plan);

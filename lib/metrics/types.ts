@@ -119,6 +119,17 @@ export const MetricNames = {
   // (in-process runs read the broadcast sidecar after the run).
   EXECUTOR_BROADCAST_LATENCY: "executor.broadcast.latency_ms",
 
+  // Warm runner pool (keeperhub-executor/warm-pool.ts). Ready = pods holding
+  // an open claim request; starting = Jobs created whose pod has not polled
+  // yet. Claims count each low-latency dispatch by outcome (claim_result):
+  // claimed; miss (no ready pod), org_limited (the organization used its
+  // per-minute share) or invalid (a pod would reject the assignment), all of
+  // which fall back to a per-run Job; or not_entitled (the organization's
+  // plan does not include low-latency start).
+  EXECUTOR_WARM_POOL_READY: "executor.warm_pool.ready",
+  EXECUTOR_WARM_POOL_STARTING: "executor.warm_pool.starting",
+  EXECUTOR_WARM_POOL_CLAIMS: "executor.warm_pool.claims.total",
+
   // Traffic metrics
   WORKFLOW_EXECUTIONS_TOTAL: "workflow.executions.total",
   WORKFLOW_EXECUTIONS_STARTED_TOTAL: "workflow.executions.started.total",

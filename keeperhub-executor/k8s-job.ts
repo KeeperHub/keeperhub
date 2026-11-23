@@ -1,5 +1,7 @@
+import { randomBytes } from "node:crypto";
 import {
   BatchV1Api,
+  CoreV1Api,
   KubeConfig,
   type V1EnvVar,
   type V1Job,
@@ -7,10 +9,12 @@ import {
 import { CONFIG } from "./config";
 import { isSafeCorrelationId } from "./latency";
 import { getRunnerSystemEnvVars } from "./runner-env";
+import { WARM_POOL_ENV } from "./warm-pool-protocol";
 
 const kc = new KubeConfig();
 kc.loadFromDefault();
 const batchApi = kc.makeApiClient(BatchV1Api);
+const coreApi = kc.makeApiClient(CoreV1Api);
 
 // Non-root identity for runner pods. Pinned to 1000/1000, the "node" user/group
 // that ships in the node:alpine runner image (see the workflow-runner stage in
@@ -125,7 +129,7 @@ export async function createWorkflowJob(params: {
   // security.content_scanner_hit signals never reached the alert.
   const jobName = `keeperhub-workflow-${executionId.substring(0, 8)}-${Date.now()}`;
 
-  const envVars: V1EnvVar[] = [
+  const runEnv: V1EnvVar[] = [
     { name: "WORKFLOW_ID", value: workflowId },
     { name: "EXECUTION_ID", value: executionId },
     { name: "WORKFLOW_INPUT", value: JSON.stringify(input) },
@@ -145,6 +149,180 @@ export async function createWorkflowJob(params: {
     ...(latencyEpochs?.observedAt !== undefined
       ? [{ name: "KH_OBSERVED_AT", value: String(latencyEpochs.observedAt) }]
       : []),
+    ...(scheduleId ? [{ name: "SCHEDULE_ID", value: scheduleId }] : []),
+  ];
+
+  const labels: Record<string, string> = {
+    app: "workflow-runner",
+    "workflow-id": workflowId,
+    "execution-id": executionId,
+    "trigger-type": triggerType,
+    ...(jobCorrelationId ? { "correlation-id": jobCorrelationId } : {}),
+    ...(scheduleId ? { "schedule-id": scheduleId } : {}),
+  };
+
+  const job = buildRunnerJob({
+    jobName,
+    labels,
+    podLabels: {
+      app: "workflow-runner",
+      "workflow-id": workflowId,
+      "execution-id": executionId,
+    },
+    runEnv,
+    activeDeadlineSeconds: CONFIG.jobActiveDeadline,
+  });
+
+  await acquireJobSlot();
+
+  try {
+    const response = await batchApi.createNamespacedJob({
+      namespace: CONFIG.namespace,
+      body: job,
+    });
+
+    return response;
+  } finally {
+    releaseJobSlot();
+  }
+}
+
+// Label marking a pre-started runner Job that belongs to the warm pool, and
+// the executor replica that owns it (each replica runs its own pool).
+export const WARM_POOL_LABEL = "keeperhub.com/warm-pool";
+export const WARM_POOL_OWNER_LABEL = "keeperhub.com/warm-pool-owner";
+
+const LABEL_VALUE_UNSAFE = /[^A-Za-z0-9_.-]/g;
+const LABEL_VALUE_EDGE = /^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g;
+
+function toLabelValue(value: string): string {
+  return value
+    .replace(LABEL_VALUE_UNSAFE, "-")
+    .slice(0, 63)
+    .replace(LABEL_VALUE_EDGE, "");
+}
+
+/**
+ * Create a pre-started runner Job for the warm pool (see warm-pool.ts).
+ *
+ * The pod spec is the one every per-run Job gets (same image, hardening,
+ * resources and secret references), with no execution in its environment:
+ * no WORKFLOW_ID, EXECUTION_ID, WORKFLOW_INPUT, TRIGGER_TYPE or SCHEDULE_ID.
+ * The pod boots, then claims exactly one execution from its owning executor
+ * with its single-use token, runs it and exits like a per-run Job.
+ *
+ * The deadline covers the longest the pod may wait plus a full run, so a pod
+ * claimed at the end of its idle window still gets the whole run budget.
+ */
+export async function createWarmRunnerJob(params: {
+  token: string;
+  claimUrl: string;
+  ownerId: string;
+  maxIdleMs: number;
+  preloadActionPrefixes: string;
+}): Promise<V1Job> {
+  const { token, claimUrl, ownerId, maxIdleMs, preloadActionPrefixes } = params;
+  // Named from its own random suffix, never from the token.
+  const jobName = `keeperhub-workflow-warm-${randomBytes(4).toString("hex")}-${Date.now()}`;
+  const owner = toLabelValue(ownerId) || "unknown";
+
+  const job = buildRunnerJob({
+    jobName,
+    labels: {
+      app: "workflow-runner",
+      [WARM_POOL_LABEL]: "true",
+      [WARM_POOL_OWNER_LABEL]: owner,
+    },
+    podLabels: {
+      app: "workflow-runner",
+      [WARM_POOL_LABEL]: "true",
+    },
+    runEnv: [
+      { name: WARM_POOL_ENV.claimUrl, value: claimUrl },
+      { name: WARM_POOL_ENV.token, value: token },
+      { name: WARM_POOL_ENV.maxIdleMs, value: String(maxIdleMs) },
+      // The Job deadline below runs from pod start, so it cannot cap the run
+      // itself; the runner enforces the per-run limit from its claim.
+      {
+        name: WARM_POOL_ENV.runDeadlineMs,
+        value: String(CONFIG.jobActiveDeadline * 1000),
+      },
+      {
+        name: WARM_POOL_ENV.preloadActionPrefixes,
+        value: preloadActionPrefixes,
+      },
+    ],
+    activeDeadlineSeconds:
+      Math.ceil(maxIdleMs / 1000) + CONFIG.jobActiveDeadline,
+  });
+
+  return await batchApi.createNamespacedJob({
+    namespace: CONFIG.namespace,
+    body: job,
+  });
+}
+
+/**
+ * The addresses of the one running pod a Job owns, or undefined while there
+ * is none (or, unexpectedly, more than one). The warm pool accepts a claim
+ * only from these addresses. Ownership is checked by the Job's UID on the
+ * pod's controller reference, not by the job-name label alone, which anyone
+ * able to create or relabel a pod could copy. Uses the pods get/list access
+ * the executor already has for reading runner logs.
+ */
+export async function getRunnerPodIps(job: {
+  name: string;
+  uid: string;
+}): Promise<string[] | undefined> {
+  const pods = await coreApi.listNamespacedPod({
+    namespace: CONFIG.namespace,
+    labelSelector: `job-name=${job.name}`,
+  });
+  const owned = pods.items.filter(
+    (pod) =>
+      pod.status?.phase === "Running" &&
+      (pod.metadata?.ownerReferences ?? []).some(
+        (ref) => ref.controller === true && ref.uid === job.uid
+      )
+  );
+  if (owned.length !== 1) {
+    return undefined;
+  }
+  const status = owned[0].status;
+  const ips = (status?.podIPs ?? [])
+    .map((entry) => entry.ip)
+    .filter((ip): ip is string => Boolean(ip));
+  if (ips.length === 0 && status?.podIP) {
+    ips.push(status.podIP);
+  }
+  return ips.length > 0 ? ips : undefined;
+}
+
+/** Best-effort removal of a warm Job whose pod stopped polling. */
+export async function deleteRunnerJob(name: string): Promise<void> {
+  await batchApi.deleteNamespacedJob({
+    name,
+    namespace: CONFIG.namespace,
+    propagationPolicy: "Background",
+  });
+}
+
+/**
+ * The Job and pod spec shared by per-run Jobs and warm pool Jobs. Callers
+ * supply what differs between them: names, labels, the run-specific env and
+ * the deadline. Everything security-relevant lives here, once.
+ */
+function buildRunnerJob(params: {
+  jobName: string;
+  labels: Record<string, string>;
+  podLabels: Record<string, string>;
+  runEnv: V1EnvVar[];
+  activeDeadlineSeconds: number;
+}): V1Job {
+  const { jobName, labels, podLabels, runEnv, activeDeadlineSeconds } = params;
+
+  const envVars: V1EnvVar[] = [
+    ...runEnv,
     // With readOnlyRootFilesystem the only writable path is the /tmp emptyDir
     // below. tsx/esbuild and any plugin temp writes resolve through TMPDIR, so
     // point it there to keep the runner working under the hardened context.
@@ -197,22 +375,6 @@ export async function createWorkflowJob(params: {
     }
   }
 
-  if (scheduleId) {
-    envVars.push({ name: "SCHEDULE_ID", value: scheduleId });
-  }
-
-  const labels: Record<string, string> = {
-    app: "workflow-runner",
-    "workflow-id": workflowId,
-    "execution-id": executionId,
-    "trigger-type": triggerType,
-    ...(jobCorrelationId ? { "correlation-id": jobCorrelationId } : {}),
-  };
-
-  if (scheduleId) {
-    labels["schedule-id"] = scheduleId;
-  }
-
   // The cluster autoscaler drains nodes on its own - to consolidate capacity,
   // to move the fleet onto a newer node image, or when a node reaches its age
   // limit. A runner pod has backoffLimit 0 and restartPolicy Never, so an
@@ -244,14 +406,10 @@ export async function createWorkflowJob(params: {
     spec: {
       ttlSecondsAfterFinished: CONFIG.jobTtlSeconds,
       backoffLimit: 0,
-      activeDeadlineSeconds: CONFIG.jobActiveDeadline,
+      activeDeadlineSeconds,
       template: {
         metadata: {
-          labels: {
-            app: "workflow-runner",
-            "workflow-id": workflowId,
-            "execution-id": executionId,
-          },
+          labels: podLabels,
           annotations: podAnnotations,
         },
         spec: {
@@ -315,16 +473,5 @@ export async function createWorkflowJob(params: {
     },
   };
 
-  await acquireJobSlot();
-
-  try {
-    const response = await batchApi.createNamespacedJob({
-      namespace: CONFIG.namespace,
-      body: job,
-    });
-
-    return response;
-  } finally {
-    releaseJobSlot();
-  }
+  return job;
 }

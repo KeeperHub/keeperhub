@@ -7,11 +7,17 @@
 // to TRIGGERS and implement the UI in
 // components/workflow/config/trigger-config.tsx.
 
+import { PLANS } from "@/lib/billing/plans";
+import { FEATURES } from "@/lib/features/registry";
 import {
   BUILTIN_NODE_ID,
   BUILTIN_NODE_LABEL,
 } from "@/lib/workflow/editor/builtin-variables";
 import { OPERATOR_METADATA } from "@/lib/workflow/nodes/condition/operator-metadata";
+
+// Shared by every trigger whose runs the executor dispatches; see
+// lib/workflow/execution-priority.ts.
+const EXECUTION_PRIORITY_DOC = `string - "standard" (default) or "low-latency". Low latency starts runs on a pre-warmed runner when one is available, typically in under a second instead of 10-20 seconds, for time-critical workflows. Best effort: when the environment has no pre-warmed runners, none is free, the organization has used its share of fast starts for the minute, or the plan does not include low-latency start (${PLANS[FEATURES["automation.low-latency-start"].requiredPlan].name} and above), the run starts the standard way. Applies to Schedule, Event, Block and Webhook triggers; ignored for manual runs.`;
 
 const CONDITION_OPERATOR_DOCS = Object.entries(OPERATOR_METADATA)
   .map(
@@ -273,6 +279,7 @@ export const TRIGGERS = {
     },
     optionalFields: {
       scheduleTimezone: 'string - Timezone (e.g., "America/New_York", "UTC")',
+      executionPriority: EXECUTION_PRIORITY_DOC,
     },
     outputFields: {
       triggeredAt:
@@ -288,6 +295,7 @@ export const TRIGGERS = {
     optionalFields: {
       webhookSchema: "string - JSON schema for expected payload validation",
       webhookMockRequest: "string - Sample JSON payload for testing",
+      executionPriority: EXECUTION_PRIORITY_DOC,
     },
     outputFields: {
       body: "object - Webhook request body",
@@ -312,7 +320,9 @@ export const TRIGGERS = {
       eventName:
         'string - Event name to listen for (e.g., "Transfer", "Approval")',
     },
-    optionalFields: {},
+    optionalFields: {
+      executionPriority: EXECUTION_PRIORITY_DOC,
+    },
     outputFields: {
       eventName: "string - Name of the event that was emitted",
       args: "object - Event arguments (decoded parameters from ABI)",
@@ -334,7 +344,9 @@ export const TRIGGERS = {
       blockInterval:
         'string - Fire every N blocks (e.g., "1" for every block, "10" for every 10th)',
     },
-    optionalFields: {},
+    optionalFields: {
+      executionPriority: EXECUTION_PRIORITY_DOC,
+    },
     outputFields: {
       // EVM chains
       blockNumber: "number - EVM: the block number",

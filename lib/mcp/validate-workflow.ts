@@ -27,6 +27,7 @@ import {
 } from "@/lib/mcp/validate-workflow-web3";
 import { parsePythTriggerConfig } from "@/lib/pyth/price-trigger";
 import { findPythTriggerNode } from "@/lib/pyth/trigger-config";
+import { executionPriorityWarning } from "@/lib/workflow/execution-priority";
 import { findStoredRef } from "@/lib/workflow/template-ref";
 
 export type ValidationIssue = {
@@ -91,6 +92,7 @@ export function validateWorkflow(
   const nodeIds = collectNodeIds(workflow.nodes);
   runEdgeRefCheck(workflow, nodeIds, errors);
   runTriggerConfigCheck(workflow, errors);
+  runExecutionPriorityCheck(workflow, warnings);
   const pythTrigger = findPythTriggerNode(workflow.nodes);
   if (pythTrigger) {
     try {
@@ -245,6 +247,32 @@ function runTriggerConfigCheck(
         "Workflow has no trigger node (no node with data.type === 'trigger')",
       parameterPath: "nodes",
     });
+  }
+}
+
+function runExecutionPriorityCheck(
+  workflow: ValidatorWorkflow,
+  warnings: ValidationIssue[]
+): void {
+  if (!Array.isArray(workflow.nodes)) {
+    return;
+  }
+  for (const [idx, node] of workflow.nodes.entries()) {
+    const data = (node as { data?: { type?: unknown; config?: unknown } })
+      ?.data;
+    if (data?.type !== "trigger") {
+      continue;
+    }
+    const message = executionPriorityWarning(
+      data.config as Record<string, unknown> | undefined
+    );
+    if (message) {
+      warnings.push({
+        code: VALIDATION_WARNING_CODES.EXECUTION_PRIORITY_IGNORED,
+        message,
+        parameterPath: `nodes[${idx}].data.config.executionPriority`,
+      });
+    }
   }
 }
 

@@ -48,9 +48,20 @@ export type PendingObservation = {
   durationMs: number;
 };
 
-/** The correlation id the executor injected on the Job (k8s-job.ts). */
+/**
+ * The correlation id the executor injected on the Job (k8s-job.ts), or that a
+ * warm pod took from its assignment (warm-pool-protocol.ts).
+ */
 function runnerCorrelationId(): string {
   return process.env.KH_CORRELATION_ID ?? "";
+}
+
+/**
+ * How this pod received its run: "warm-pool" when a pre-started pod claimed
+ * it (KH_DISPATCH_TARGET, set from the assignment), else a per-run Job.
+ */
+function runnerDispatchTarget(): string {
+  return process.env.KH_DISPATCH_TARGET === "warm-pool" ? "warm-pool" : "k8s-job";
 }
 
 /**
@@ -75,6 +86,7 @@ export function collectLatencyObservations(params: {
   // the platform's own label for runs with no trigger origin.
   const triggerType = params.triggerType ?? "manual";
   const correlationId = runnerCorrelationId();
+  const dispatchTarget = runnerDispatchTarget();
   if (!correlationId) {
     return [];
   }
@@ -93,7 +105,7 @@ export function collectLatencyObservations(params: {
         executionId,
         workflowId,
         triggerType,
-        dispatchTarget: "k8s-job",
+        dispatchTarget,
         stage: "observed-broadcast",
         durationMs,
       });
@@ -108,7 +120,7 @@ export function collectLatencyObservations(params: {
         executionId,
         workflowId,
         triggerType,
-        dispatchTarget: "k8s-job",
+        dispatchTarget,
         stage: "received-completed",
         durationMs,
       });
