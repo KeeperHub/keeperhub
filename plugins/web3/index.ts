@@ -1,4 +1,7 @@
-import type { IntegrationPlugin } from "@/plugins/registry";
+import type {
+  ActionConfigFieldBase,
+  IntegrationPlugin,
+} from "@/plugins/registry";
 import {
   amountField,
   balanceCheckSuccessOutput,
@@ -22,6 +25,7 @@ import {
   transferErrorOutput,
   transferSuccessOutput,
 } from "@/plugins/field-fragments";
+import { UNSPONSORED_ONLY_SHOW_WHEN } from "@/lib/web3/unsponsored-only-fields";
 import type { ShowWhen } from "@/lib/workflow/editor/show-when";
 import { registerIntegration } from "@/plugins/registry-core";
 import {
@@ -49,6 +53,21 @@ const SINGLE_EVENT_SHOW_WHEN: ShowWhen = {
     { field: "queryMode", notEquals: "address-list" },
   ],
 };
+
+// Batch Write Contract is never sponsored, so its fee settings always show.
+// Write Contract shows them only while the node pays its own gas.
+function priorityFeeConfigField(showWhen?: ShowWhen): ActionConfigFieldBase {
+  return {
+    example: "3",
+    helpTip:
+      "Tip paid to the block builder, in gwei. Transactions in the same block are ordered by tip, so raise it when racing other senders for the same call. Leave empty to use the network default. Sponsored sends cannot carry a custom tip, so on Write Contract this shows only while Sponsor gas is off or the network is not sponsored.",
+    key: "priorityFeeGwei",
+    label: "Priority Fee (gwei)",
+    placeholder: "Network default",
+    type: "template-input",
+    ...(showWhen ? { showWhen } : {}),
+  };
+}
 
 const web3Plugin: IntegrationPlugin = {
   type: "web3",
@@ -1844,6 +1863,7 @@ const web3Plugin: IntegrationPlugin = {
               networkField: "network",
               actionSlug: "batch-write-contract",
             },
+            priorityFeeConfigField(),
           ],
         },
       ],
@@ -2151,6 +2171,7 @@ const web3Plugin: IntegrationPlugin = {
               networkField: "network",
               actionSlug: "write-contract",
             },
+            priorityFeeConfigField(UNSPONSORED_ONLY_SHOW_WHEN),
             sponsorGasField(),
           ],
         },

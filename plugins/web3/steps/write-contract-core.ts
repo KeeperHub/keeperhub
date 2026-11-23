@@ -55,6 +55,7 @@ import {
 import { buildErrorDecodeInterface } from "@/lib/web3/extra-error-abis";
 import {
   parsePriorityFeeGwei,
+  priorityFeeGweiError,
   resolveGasLimitOverrides,
 } from "@/lib/web3/gas-defaults";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
@@ -270,6 +271,14 @@ async function writeContractCoreImpl(
 
   const { multiplierOverride, gasLimitOverride } =
     resolveGasLimitOverrides(gasLimitMultiplier);
+  const feeError = priorityFeeGweiError(priorityFeeGwei);
+  if (feeError) {
+    return {
+      success: false,
+      error: feeError,
+      errorClass: ExecutionErrorType.USER,
+    };
+  }
   const priorityFeeOverride = parsePriorityFeeGwei(priorityFeeGwei);
 
   // Validate contract address
@@ -585,6 +594,7 @@ async function writeContractCoreImpl(
       signerMode,
       sponsorGas,
       usePrivateMempool,
+      customPriorityFee: priorityFeeOverride !== undefined,
     })
   ) {
     try {
@@ -741,6 +751,7 @@ async function writeContractCoreImpl(
             chainId,
             workflowId,
             rpcManager,
+            feeOverrides: { priorityFeeOverride },
           }
         );
       } else if (signerMode.kind === SIGNER_MODE.SAFE) {
@@ -760,6 +771,7 @@ async function writeContractCoreImpl(
             chainId,
             workflowId,
             rpcManager,
+            feeOverrides: { priorityFeeOverride },
           }
         );
       } else {

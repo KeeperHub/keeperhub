@@ -25,7 +25,7 @@ type GasEstimateState =
 const DEBOUNCE_MS = 500;
 function hasTemplateRefs(config: Record<string, unknown>): boolean {
   return Object.values(config).some((v) =>
-    hasTemplateToken(typeof v === "string" ? v : JSON.stringify(v))
+    hasTemplateToken(typeof v === "string" ? v : (JSON.stringify(v) ?? ""))
   );
 }
 

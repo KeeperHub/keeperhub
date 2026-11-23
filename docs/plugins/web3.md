@@ -616,15 +616,24 @@ Schedule (every 15 min)
 
 Execute state-changing functions on smart contracts using your Turnkey wallet. Requires a connected wallet.
 
-**Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Fail workflow on error (optional, on by default), Gas Limit Multiplier and Sponsor gas (optional, in Advanced section; Sponsor gas only on networks gas sponsorship covers)
+**Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Fail workflow on error (optional, on by default), Gas Limit, Priority Fee and Sponsor gas (optional, in Advanced section; Sponsor gas only on networks gas sponsorship covers)
 
 **Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total gas cost in wei), `result`, `error`
 
 **When to use:** Execute DeFi operations (harvest, compound, rebalance), respond to on-chain events, automate protocol maintenance.
 
-**Gas Configuration:** Optionally set a custom Gas Limit Multiplier in the Advanced section to override the chain default. See [Gas Management](/wallet-management/gas) for details.
-
 **Note:** The `gasUsed` output represents the total transaction cost in wei (gas units × effective gas price), not just the number of gas units consumed.
+
+### Gas settings
+
+The Advanced section has two optional gas settings. Leave them empty to use the network defaults.
+
+| Setting | What it does | With Sponsor gas on |
+|---------|--------------|---------------------|
+| [Gas Limit](/wallet-management/gas#gas-limit-override) | Fixed gas limit, used instead of the estimate | Not applied to a sponsored transaction; the sponsor sets its own limit |
+| [Priority Fee (gwei)](/wallet-management/gas#priority-fee) | Tip paid to the block builder; a higher tip puts the transaction ahead of others in the same block | Hidden. Turn off Sponsor gas to set it |
+
+Sponsored transactions cannot carry a custom priority fee, so the Priority Fee field shows only while the node pays its own gas: Sponsor gas off, or a network, private mempool or Safe that is not sponsored. Turning Sponsor gas back on clears it. With a priority fee set, make sure the sending wallet holds enough of the network's native token to pay for gas. See [Priority Fee](/wallet-management/gas#priority-fee).
 
 ### When a write fails
 
@@ -653,6 +662,7 @@ If you're building this action via the [Workflows API](/api/workflows) rather th
 | Web3 Connection | `web3Connection` | Sender routing: `"default"` (org policy), `"eoa"` (force the Turnkey EOA), or `"safe:<safeWalletId>"`. The signing wallet is your org's Turnkey wallet, resolved automatically. |
 | Network | `network` | numeric chain id as a string (e.g. `"11155111"`) |
 | Fail workflow on error | `failOnError` | `true` or `false` (or `"true"` / `"false"`), on by default. Off softens a failed write into `success: true` with `error` set. Anything else, a template included, is refused at save, unless the step already holds it (see [On/off toggles](/workflows/templating#onoff-toggles)); a value kept that way runs as off only when it resolves to `false`. |
+| Priority Fee (gwei) | `priorityFeeGwei` | plain decimal string in gwei (e.g. `"3"`), optional. Greater than 0, at most 10000, at most 9 decimal places. Templates are allowed. Empty uses the network default. A value that is set but not valid (for example `"abc"`, `"0x5"`, `"1e3"`, `"0"`) fails the step before anything is sent. The editor shows the field only while the node pays its own gas. When set, the node is never gas-sponsored and pays gas from the sending wallet. See [Priority Fee](/wallet-management/gas#priority-fee). |
 | Sponsor gas | `sponsorGas` | `true` or `false` (or `"true"` / `"false"`), on by default. Off always pays gas from your own wallet. Anything else, a template included, is refused at save, unless the step already holds it (see [On/off toggles](/workflows/templating#onoff-toggles)); a value kept that way runs as off only when it resolves to `false`. |
 
 See the [generic web3 write-contract example](/api/workflows#generic-web3-write-contract-example-manual-trigger) in the Workflows API docs for a full working request body.

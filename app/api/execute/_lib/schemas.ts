@@ -6,6 +6,7 @@ import {
 import { MAX_SEQUENCE_CALLS } from "@/lib/execute/simulate-sequence-limits";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import { readErrorAbiDocuments } from "@/lib/web3/extra-error-abis";
+import { priorityFeeGweiError } from "@/lib/web3/gas-defaults";
 import { isValidOperator, VALID_OPERATORS } from "./condition";
 import { selectorOf } from "./raw-calldata";
 import type { ExecuteErrorResponse } from "./types";
@@ -20,8 +21,6 @@ import type { ExecuteErrorResponse } from "./types";
  * reads it back so the public contract is byte-for-byte preserved while the
  * validation itself now runs through Zod's safeParse at the boundary.
  */
-
-const MAX_PRIORITY_FEE_GWEI = 10_000;
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
@@ -313,19 +312,12 @@ function priorityFeeError(value: unknown): ExecuteErrorResponse | null {
       details: "priorityFeeGwei must be a non-empty decimal string in gwei",
     };
   }
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
+  const valueError = priorityFeeGweiError(value);
+  if (valueError) {
     return {
       error: "Invalid field value",
       field: "priorityFeeGwei",
-      details: "priorityFeeGwei must be a finite positive decimal in gwei",
-    };
-  }
-  if (parsed > MAX_PRIORITY_FEE_GWEI) {
-    return {
-      error: "Invalid field value",
-      field: "priorityFeeGwei",
-      details: `priorityFeeGwei must not exceed ${MAX_PRIORITY_FEE_GWEI} gwei`,
+      details: valueError,
     };
   }
   return null;

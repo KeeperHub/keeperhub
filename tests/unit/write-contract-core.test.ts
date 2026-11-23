@@ -208,7 +208,10 @@ vi.mock("@/lib/web3/decode-revert-error", () => ({
   classifyRevert: vi.fn().mockReturnValue({ kind: "unknown" }),
 }));
 
-vi.mock("@/lib/web3/gas-defaults", () => ({
+vi.mock("@/lib/web3/gas-defaults", async (importOriginal) => ({
+  priorityFeeGweiError: (
+    await importOriginal<typeof import("@/lib/web3/gas-defaults")>()
+  ).priorityFeeGweiError,
   resolveGasLimitOverrides: vi.fn().mockReturnValue({
     multiplierOverride: undefined,
     gasLimitOverride: undefined,
@@ -585,6 +588,24 @@ describe("writeContractCore priorityFeeGwei override", () => {
     };
     expect(optionsArg.gasOverrides.priorityFeeOverride).toBeUndefined();
   });
+
+  it("fails a malformed priorityFeeGwei as a USER error without sending", async () => {
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "16602",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      priorityFeeGwei: "3gwei",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorClass).toBe(ExecutionErrorType.USER);
+      expect(result.error).toMatch(/positive decimal number in gwei/);
+    }
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
 });
 
 describe("writeContractCore RPC resolution failure", () => {
@@ -853,6 +874,26 @@ describe("writeContractCore Sponsor gas toggle", () => {
     }
     expect(mockExecuteSponsoredContractTransaction).not.toHaveBeenCalled();
     expect(mockExecuteContractCall).toHaveBeenCalled();
+  });
+
+  it("signs directly when the node sets its own priority fee", async () => {
+    vi.mocked(parsePriorityFeeGwei).mockReturnValueOnce(BigInt(3e9));
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      priorityFeeGwei: "3",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(true);
+    expect(mockExecuteSponsoredContractTransaction).not.toHaveBeenCalled();
+    const optionsArg = mockExecuteContractCall.mock.calls[0]?.[3] as {
+      gasOverrides: { priorityFeeOverride?: bigint };
+    };
+    expect(optionsArg.gasOverrides.priorityFeeOverride).toBe(BigInt(3e9));
   });
 
   it('reads the "false" string the editor may persist as off', async () => {
@@ -1221,6 +1262,25 @@ describe("writeContractCore payerParam (#2470)", () => {
     };
     expect(sent.args).toEqual(["1", SAFE_ADDRESS]);
     expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("applies the node's priority fee to a Safe send", async () => {
+    vi.mocked(resolveSignerForNode).mockResolvedValue({
+      kind: "safe",
+      ownerAddress: "0xwalletaddress",
+      safeAddress: SAFE_ADDRESS,
+      safeWalletId: "safe-1",
+    });
+    vi.mocked(parsePriorityFeeGwei).mockReturnValueOnce(BigInt(2e9));
+
+    const result = await writeContractCore({
+      ...baseInput,
+      priorityFeeGwei: "2",
+    });
+
+    expect(result.success).toBe(true);
+    const options = vi.mocked(executeContractCallAsSafe).mock.calls[0]?.[3];
+    expect(options?.feeOverrides).toEqual({ priorityFeeOverride: BigInt(2e9) });
   });
 
   it("sets the payer argument to the Safe in safe-role mode", async () => {

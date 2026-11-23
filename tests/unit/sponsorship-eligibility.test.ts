@@ -104,6 +104,16 @@ describe("shouldTrySponsorship", () => {
     ).toBe(false);
   });
 
+  it("declines when the node sets its own priority fee", () => {
+    expect(
+      shouldTrySponsorship({
+        chainId: SPONSORED_CHAIN,
+        signerMode: EOA,
+        customPriorityFee: true,
+      })
+    ).toBe(false);
+  });
+
   it.each([
     ["safe", SAFE],
     ["safe-role", SAFE_ROLE],
