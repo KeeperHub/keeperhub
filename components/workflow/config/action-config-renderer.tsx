@@ -31,6 +31,7 @@ import {
   TALL_FIELD_MAX_ROWS,
 } from "@/components/workflow/config/beautifiable-field";
 import { SaveAddressBookmark } from "@/components/address-book/save-address-bookmark";
+import { SponsorshipConflictNotice } from "@/components/workflow/config/sponsorship-conflict-notice";
 import type { AbiComponent } from "@/components/workflow/config/abi-types";
 import { ArrayInputField } from "@/components/workflow/config/array-input-field";
 import { MalformedAbiArgsNotice } from "@/components/workflow/config/malformed-abi-notice";
@@ -945,7 +946,15 @@ function renderField(
     disabled
   );
   if (customResult !== null) {
-    return customResult;
+    if (!field.ignoredWhenSponsored) {
+      return customResult;
+    }
+    return (
+      <div className="space-y-2" key={field.key}>
+        {customResult}
+        <SponsorshipConflictNotice config={config} field={field} />
+      </div>
+    );
   }
 
   const FieldRenderer = FIELD_RENDERERS[field.type];
@@ -1000,6 +1009,7 @@ function renderField(
       {field.helpText && (
         <p className="text-muted-foreground text-xs">{field.helpText}</p>
       )}
+      <SponsorshipConflictNotice config={config} field={field} />
     </div>
   );
 }

@@ -130,12 +130,18 @@ vi.mock("@/lib/web3/decode-revert-error", async (importOriginal) => {
 });
 
 const mockResolveGasLimitOverrides = vi.fn();
-const mockParsePriorityFeeGwei = vi.fn();
-vi.mock("@/lib/web3/gas-defaults", () => ({
+const { mockMaxFeeBelowBaseFeeError } = vi.hoisted(() => ({
+  mockMaxFeeBelowBaseFeeError: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@/lib/web3/max-fee-check", () => ({
+  maxFeeBelowBaseFeeError: (...args: unknown[]) =>
+    mockMaxFeeBelowBaseFeeError(...args),
+}));
+
+vi.mock("@/lib/web3/gas-defaults", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/web3/gas-defaults")>()),
   resolveGasLimitOverrides: (...args: unknown[]) =>
     mockResolveGasLimitOverrides(...args),
-  parsePriorityFeeGwei: (...args: unknown[]) =>
-    mockParsePriorityFeeGwei(...args),
 }));
 
 const mockPreflightGasBalance = vi.fn();
@@ -265,7 +271,6 @@ beforeEach(() => {
     multiplierOverride: undefined,
     gasLimitOverride: undefined,
   });
-  mockParsePriorityFeeGwei.mockReturnValue(undefined);
   mockExecuteContractCall.mockResolvedValue(RECEIPT);
   mockPreflightGasBalance.mockResolvedValue({ affordable: true });
 });
@@ -984,14 +989,12 @@ describe("batch-write-contract - gas overrides threaded through", () => {
       gasLimitOverride: undefined,
     });
     const fiveGweiWei = BigInt(5e9);
-    mockParsePriorityFeeGwei.mockReturnValue(fiveGweiWei);
 
     await batchWriteContractCore(
       baseInput({ gasLimitMultiplier: "1.5", priorityFeeGwei: "5" })
     );
 
     expect(mockResolveGasLimitOverrides).toHaveBeenCalledWith("1.5");
-    expect(mockParsePriorityFeeGwei).toHaveBeenCalledWith("5");
     expect(mockExecuteContractCall).toHaveBeenCalledTimes(1);
     const optionsArg = mockExecuteContractCall.mock.calls[0][3] as {
       gasOverrides: {
@@ -1002,6 +1005,38 @@ describe("batch-write-contract - gas overrides threaded through", () => {
     };
     expect(optionsArg.gasOverrides.multiplierOverride).toBe(1.5);
     expect(optionsArg.gasOverrides.priorityFeeOverride).toBe(fiveGweiWei);
+  });
+
+  it("forwards maxFeeGwei as gasOverrides.maxFeeOverride after the base-fee check", async () => {
+    mockStaticCall.mockResolvedValueOnce([SUCCESS_RETURN, SUCCESS_RETURN]);
+    mockResolveGasLimitOverrides.mockReturnValue({});
+    mockMaxFeeBelowBaseFeeError.mockResolvedValueOnce(undefined);
+
+    await batchWriteContractCore(baseInput({ maxFeeGwei: "40" }));
+
+    expect(mockMaxFeeBelowBaseFeeError).toHaveBeenCalledWith(
+      expect.anything(),
+      BigInt(40e9)
+    );
+    const optionsArg = mockExecuteContractCall.mock.calls[0][3] as {
+      gasOverrides: { maxFeeOverride?: bigint };
+    };
+    expect(optionsArg.gasOverrides.maxFeeOverride).toBe(BigInt(40e9));
+  });
+
+  it("does not send when the cap is below the next base fee", async () => {
+    mockResolveGasLimitOverrides.mockReturnValue({});
+    mockMaxFeeBelowBaseFeeError.mockResolvedValueOnce(
+      "Max fee 1 gwei is below the next block's base fee of 2 gwei"
+    );
+
+    const result = await batchWriteContractCore(baseInput({ maxFeeGwei: "1" }));
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
+    }
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
   });
 });
 

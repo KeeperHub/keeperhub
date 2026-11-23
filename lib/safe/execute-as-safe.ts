@@ -46,6 +46,8 @@ export type ExecuteAsSafeOptions = {
   chainId: number;
   workflowId?: string;
   rpcManager: RpcProviderManager;
+  // The node's priority fee and max fee, applied to the owner transaction.
+  feeOverrides?: { priorityFeeOverride?: bigint; maxFeeOverride?: bigint };
 };
 
 /**
@@ -195,7 +197,9 @@ export async function executeContractCallAsSafe(
       options.chainId,
       undefined,
       undefined,
-      options.rpcManager
+      options.rpcManager,
+      options.feeOverrides?.priorityFeeOverride,
+      options.feeOverrides?.maxFeeOverride
     );
 
     const nonce = nonceManager.getNextNonce(session);
@@ -320,7 +324,9 @@ export async function executeContractCallAsRole(
       options.chainId,
       undefined,
       undefined,
-      options.rpcManager
+      options.rpcManager,
+      options.feeOverrides?.priorityFeeOverride,
+      options.feeOverrides?.maxFeeOverride
     );
 
     const nonce = nonceManager.getNextNonce(session);
@@ -421,7 +427,9 @@ export async function executeNativeTransferAsRole(
       options.chainId,
       undefined,
       undefined,
-      options.rpcManager
+      options.rpcManager,
+      options.feeOverrides?.priorityFeeOverride,
+      options.feeOverrides?.maxFeeOverride
     );
 
     const nonce = nonceManager.getNextNonce(session);
@@ -523,7 +531,9 @@ export async function executeNativeTransferAsSafe(
       options.chainId,
       undefined,
       undefined,
-      options.rpcManager
+      options.rpcManager,
+      options.feeOverrides?.priorityFeeOverride,
+      options.feeOverrides?.maxFeeOverride
     );
 
     const nonce = nonceManager.getNextNonce(session);

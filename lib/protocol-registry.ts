@@ -554,6 +554,7 @@ function buildConfigFieldsFromAction(
       type: "gas-limit-multiplier",
       networkField: "network",
       actionSlug: action.slug,
+      ignoredWhenSponsored: true,
       ...(action.gasLimitDefault
         ? { defaultValue: action.gasLimitDefault }
         : {}),

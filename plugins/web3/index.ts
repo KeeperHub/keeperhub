@@ -1,4 +1,7 @@
-import type { IntegrationPlugin } from "@/plugins/registry";
+import type {
+  ActionConfigFieldBase,
+  IntegrationPlugin,
+} from "@/plugins/registry";
 import {
   amountField,
   balanceCheckSuccessOutput,
@@ -22,6 +25,7 @@ import {
   transferErrorOutput,
   transferSuccessOutput,
 } from "@/plugins/field-fragments";
+import { UNSPONSORED_ONLY_SHOW_WHEN } from "@/lib/web3/unsponsored-only-fields";
 import type { ShowWhen } from "@/lib/workflow/editor/show-when";
 import { registerIntegration } from "@/plugins/registry-core";
 import {
@@ -49,6 +53,34 @@ const SINGLE_EVENT_SHOW_WHEN: ShowWhen = {
     { field: "queryMode", notEquals: "address-list" },
   ],
 };
+
+// Batch Write Contract is never sponsored, so its fee settings always show.
+// Write Contract shows them only while the node pays its own gas.
+function priorityFeeConfigField(showWhen?: ShowWhen): ActionConfigFieldBase {
+  return {
+    example: "3",
+    helpTip:
+      "Tip paid to the block builder, in gwei. Transactions in the same block are ordered by tip, so raise it when racing other senders for the same call. Leave empty to use the network default. Sponsored sends cannot carry a custom tip, so on Write Contract this shows only while Sponsor gas is off or the network is not sponsored.",
+    key: "priorityFeeGwei",
+    label: "Priority Fee (gwei)",
+    placeholder: "Network default",
+    type: "template-input",
+    ...(showWhen ? { showWhen } : {}),
+  };
+}
+
+function maxFeeConfigField(showWhen?: ShowWhen): ActionConfigFieldBase {
+  return {
+    example: "50",
+    helpTip:
+      "Highest total fee per gas you will pay, in gwei (base fee plus tip). Higher fees are lowered to this cap. If it is below the next block's base fee, the step fails without sending, since the transaction could not be included. Leave empty for no cap. Sponsored sends cannot carry a custom fee, so on Write Contract this shows only while Sponsor gas is off or the network is not sponsored.",
+    key: "maxFeeGwei",
+    label: "Max Fee (gwei)",
+    placeholder: "No cap",
+    type: "template-input",
+    ...(showWhen ? { showWhen } : {}),
+  };
+}
 
 const web3Plugin: IntegrationPlugin = {
   type: "web3",
@@ -305,6 +337,7 @@ const web3Plugin: IntegrationPlugin = {
               type: "gas-limit-multiplier",
               networkField: "network",
               actionSlug: "transfer-funds",
+              ignoredWhenSponsored: true,
             },
             sponsorGasField(),
           ],
@@ -369,6 +402,7 @@ const web3Plugin: IntegrationPlugin = {
               type: "gas-limit-multiplier",
               networkField: "network",
               actionSlug: "transfer-token",
+              ignoredWhenSponsored: true,
             },
             sponsorGasField(),
           ],
@@ -1844,6 +1878,8 @@ const web3Plugin: IntegrationPlugin = {
               networkField: "network",
               actionSlug: "batch-write-contract",
             },
+            priorityFeeConfigField(),
+            maxFeeConfigField(),
           ],
         },
       ],
@@ -1927,6 +1963,7 @@ const web3Plugin: IntegrationPlugin = {
               type: "gas-limit-multiplier",
               networkField: "network",
               actionSlug: "approve-token",
+              ignoredWhenSponsored: true,
             },
             sponsorGasField(),
           ],
@@ -2150,7 +2187,10 @@ const web3Plugin: IntegrationPlugin = {
               type: "gas-limit-multiplier",
               networkField: "network",
               actionSlug: "write-contract",
+              ignoredWhenSponsored: true,
             },
+            priorityFeeConfigField(UNSPONSORED_ONLY_SHOW_WHEN),
+            maxFeeConfigField(UNSPONSORED_ONLY_SHOW_WHEN),
             sponsorGasField(),
           ],
         },

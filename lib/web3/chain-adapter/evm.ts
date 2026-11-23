@@ -93,7 +93,8 @@ export class EvmChainAdapter implements ChainAdapter {
       options.gasOverrides.multiplierOverride,
       options.gasOverrides.gasLimitOverride,
       options.rpcManager,
-      options.gasOverrides.priorityFeeOverride
+      options.gasOverrides.priorityFeeOverride,
+      options.gasOverrides.maxFeeOverride
     );
 
     // KEEP-565: when an rpcManager is wired, broadcast through the
@@ -204,7 +205,8 @@ export class EvmChainAdapter implements ChainAdapter {
       options.gasOverrides.multiplierOverride,
       options.gasOverrides.gasLimitOverride,
       options.rpcManager,
-      options.gasOverrides.priorityFeeOverride
+      options.gasOverrides.priorityFeeOverride,
+      options.gasOverrides.maxFeeOverride
     );
 
     // KEEP-565: route the broadcast through submitSignedTransactionWithFailover
