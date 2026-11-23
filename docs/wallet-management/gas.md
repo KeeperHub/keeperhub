@@ -52,6 +52,7 @@ You can set an absolute gas limit per action node:
 
 - **When empty**: The chain's default multiplier (see [Default Multipliers](#default-multipliers)) is applied to the gas estimate at execution time
 - **When set**: Your absolute value is used directly as the transaction gas limit, bypassing the multiplier
+- **With Sponsor gas on**: A sponsored transaction does not use this value. See [Custom gas settings and sponsorship](#custom-gas-settings-and-sponsorship)
 
 The field also shows a live gas estimate when enough configuration is filled in (network, contract address, function, etc.). This helps you choose an appropriate gas limit. If your value is below the current estimate, a warning is shown.
 
@@ -79,7 +80,7 @@ Transactions in the same block are ordered by priority fee, so a higher tip help
 
 - **When empty**: KeeperHub's adaptive fee strategy picks the tip from recent blocks, within the network's minimum and maximum
 - **When set**: Your value is used as the tip, and the max fee is set to the base fee buffer plus your tip
-- **Gas payment**: A node with a priority fee always pays gas from your own wallet, because sponsored transactions cannot carry a custom tip
+- **Gas payment**: A node with a priority fee always pays gas from your own wallet, because sponsored transactions cannot carry a custom tip. See [Custom gas settings and sponsorship](#custom-gas-settings-and-sponsorship)
 
 The value accepts templates, so a previous step can compute it. A value that is not a positive number, or is above 10000 gwei, fails the step before anything is sent.
 
@@ -94,7 +95,7 @@ On Write Contract and Batch Write Contract you can cap the total fee per gas (ba
 - **When empty**: No cap. KeeperHub's adaptive fee strategy sets the max fee
 - **When the computed max fee is above the cap**: The max fee is lowered to the cap, and the priority fee is lowered too if it would exceed it
 - **When the current base fee is above the cap**: The step fails before anything is sent, since a transaction capped below the base fee could not be included
-- **Gas payment**: A node with a max fee always pays gas from your own wallet, because sponsored transactions cannot carry a custom fee
+- **Gas payment**: A node with a max fee always pays gas from your own wallet, because sponsored transactions cannot carry a custom fee. See [Custom gas settings and sponsorship](#custom-gas-settings-and-sponsorship)
 
 The cap must be at least the [Priority Fee](#priority-fee-override) when both are set. Like the priority fee, it accepts templates and must be a positive number of at most 10000 gwei.
 
@@ -191,6 +192,26 @@ write that sends no native value, restoring the eligibility conditions above can
 also fix it without funding. A write that sends native value always needs that
 value in the wallet, because sponsorship covers the fee only (see
 [What sponsorship covers](#what-sponsorship-covers)).
+
+
+### Custom gas settings and sponsorship
+
+Sponsored transactions are built and paid for by the gas sponsor, so they cannot carry the gas settings you set on a node. What happens depends on the setting:
+
+| Setting | With Sponsor gas on |
+|---------|---------------------|
+| **Gas Limit** | Not applied to a sponsored transaction. The sponsor sets its own gas limit. Your limit is used only when the node pays its own gas: Sponsor gas is off, or sponsorship falls back for that run. |
+| **Priority Fee** | Sponsorship is skipped for the node. It pays gas from your wallet, with your priority fee. |
+| **Max Fee** | Sponsorship is skipped for the node. It pays gas from your wallet, with your max fee. |
+
+The editor shows a warning under each of these fields when it is set and the node would otherwise be sponsored.
+
+To be sure a node always uses your gas settings:
+
+1. Turn off **Sponsor gas** on the node (see [Sponsor gas toggle](#sponsor-gas-toggle)).
+2. Keep the sending wallet funded with the network's native token, since the node pays its own gas.
+
+A node with a Priority Fee or Max Fee set already pays its own gas, so step 1 only matters for the Gas Limit. Step 2 applies to all three.
 
 ## FAQ
 

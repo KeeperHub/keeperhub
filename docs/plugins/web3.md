@@ -622,7 +622,7 @@ Execute state-changing functions on smart contracts using your Turnkey wallet. R
 
 **When to use:** Execute DeFi operations (harvest, compound, rebalance), respond to on-chain events, automate protocol maintenance.
 
-**Gas Configuration:** Optionally set a custom Gas Limit, Priority Fee or Max Fee in the Advanced section to override the chain default. See [Gas Management](/wallet-management/gas) for details.
+**Gas Configuration:** Optionally set a custom Gas Limit, Priority Fee or Max Fee in the Advanced section to override the chain default. See [Gas Management](/wallet-management/gas) for details. A sponsored transaction does not use these settings: see [Custom gas settings and sponsorship](/wallet-management/gas#custom-gas-settings-and-sponsorship).
 
 **Note:** The `gasUsed` output represents the total transaction cost in wei (gas units × effective gas price), not just the number of gas units consumed.
 
