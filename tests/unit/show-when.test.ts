@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
+import { simulateTimestampOffsetField } from "@/plugins/field-fragments";
 
 const PAYABLE_ABI = JSON.stringify([
   {
@@ -284,6 +285,15 @@ describe("evaluateShowWhen", () => {
       ).toBe(false);
     });
 
+    it("shows the field when the node simulates at the next block, which skips sponsorship", () => {
+      expect(
+        evaluateShowWhen(predicate, { network: "1", simulateAt: "next-block" })
+      ).toBe(true);
+      expect(
+        evaluateShowWhen(predicate, { network: "1", simulateAt: "latest" })
+      ).toBe(false);
+    });
+
     it("shows the field when Sponsor gas is off", () => {
       expect(
         evaluateShowWhen(predicate, { network: "1", sponsorGas: false })
@@ -314,5 +324,23 @@ describe("evaluateShowWhen", () => {
       vi.stubEnv("NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED", "false");
       expect(evaluateShowWhen(predicate, { network: "1" })).toBe(true);
     });
+  });
+});
+
+describe("simulatesNextBlock visibility", () => {
+  it("reads Simulate at as the step does, so API casing still shows the offset", () => {
+    const rule = { computed: "simulatesNextBlock" } as const;
+    expect(evaluateShowWhen(rule, { simulateAt: "next-block" })).toBe(true);
+    expect(evaluateShowWhen(rule, { simulateAt: " Next-Block " })).toBe(true);
+    expect(evaluateShowWhen(rule, { simulateAt: "latest" })).toBe(false);
+    expect(evaluateShowWhen(rule, {})).toBe(false);
+  });
+
+  it("drives the offset field, so the editor shows the offset the run uses", () => {
+    const { showWhen } = simulateTimestampOffsetField();
+    expect(evaluateShowWhen(showWhen, { simulateAt: " Next-Block " })).toBe(
+      true
+    );
+    expect(evaluateShowWhen(showWhen, { simulateAt: "latest" })).toBe(false);
   });
 });

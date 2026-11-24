@@ -8,6 +8,10 @@
  * diverge from a fragment goes back to an inline literal in its action - do
  * not add override parameters here.
  */
+import {
+  MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
+  MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
+} from "@/lib/web3/next-block-limits";
 import type {
   ActionConfigField,
   ActionConfigFieldBase,
@@ -110,13 +114,55 @@ export function sponsorGasField(): ActionConfigFieldBase {
   return {
     defaultValue: "true",
     helpTip:
-      "When on, the transaction goes through gas sponsorship first and falls back to your own wallet if sponsorship is unavailable on this network or your credits are spent. Turn it off to always pay gas from your own wallet. Sponsorship is skipped regardless when the node routes through a private mempool or signs through a Safe.",
+      "When on, the transaction goes through gas sponsorship first and falls back to your own wallet if sponsorship is unavailable on this network or your credits are spent. Turn it off to always pay gas from your own wallet. Sponsorship is skipped regardless when the node routes through a private mempool or signs through a Safe, and on Write Contract when Simulate at is set to Next block.",
     key: "sponsorGas",
     label: "Sponsor gas",
     // Hidden on a network the Gas Station does not cover, where the toggle
     // could only ever turn off something that was never available.
     showWhen: { computed: "sponsorshipSupported", networkField: "network" },
     type: "gas-sponsorship-switch",
+  };
+}
+
+/**
+ * "Simulate at" on Read Contract, Write Contract and Batch Write Contract.
+ * See parseSimulationSettings in lib/web3/next-block-limits.ts.
+ */
+export function simulateAtField(): ActionConfigFieldBase {
+  return {
+    defaultValue: "latest",
+    helpTip:
+      "Next block checks the call as if the next block had already arrived, so a call that unlocks in the next block is treated as unlocked one block sooner. Needs an RPC that can simulate a future block. On a write, gas sponsorship is off, so the paying wallet needs native gas. See the docs before using it on a write.",
+    key: "simulateAt",
+    label: "Simulate at",
+    options: [
+      { label: "Latest block", value: "latest" },
+      { label: "Next block", value: "next-block" },
+    ],
+    type: "select",
+  };
+}
+
+export function simulateTimestampOffsetField(): ActionConfigFieldBase {
+  return {
+    helpTip: `Block time in seconds, from ${MIN_SIMULATE_TIMESTAMP_OFFSET_SEC} to ${MAX_SIMULATE_TIMESTAMP_OFFSET_SEC}. Leave empty to use this network's block time. The next block is assumed one block time after the latest one. On Ethereum, Ethereum Sepolia and Ethereum Hoodi it is the earliest 12-second slot the transaction can still land in, and this value only matters above 12. A value above the real block time makes the check pass early.`,
+    key: "simulateTimestampOffsetSec",
+    label: "Next block timestamp offset (seconds)",
+    max: MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
+    min: MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
+    placeholder: "Auto (network block time)",
+    // Read as the step reads it, so "Next-Block" saved via the API shows too.
+    showWhen: { computed: "simulatesNextBlock" },
+    step: 1,
+    type: "number",
+  };
+}
+
+export function simulationOutput(): OutputField {
+  return {
+    description:
+      "The predicted block a Next block check ran against: { mode, baseBlock (the latest block used), assumedBlockNumber, assumedTimestamp, timestampOffsetSec, rpcMethod }. Absent with Latest block, and when the step failed before or without simulating (a settings or RPC support error).",
+    field: "simulation",
   };
 }
 
@@ -265,4 +311,5 @@ export const outputFragmentFactories: Record<string, () => OutputField> = {
   querySuccessOutput,
   queryErrorOutput,
   fromWalletOutput,
+  simulationOutput,
 };

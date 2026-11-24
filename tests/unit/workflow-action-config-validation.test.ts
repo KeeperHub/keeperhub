@@ -464,6 +464,86 @@ describe("validateWorkflowActionConfigs", () => {
       ]);
     });
 
+    it.each([
+      "web3/read-contract",
+      "web3/write-contract",
+      "web3/batch-write-contract",
+    ])("checks the next block timestamp offset at save on %s", (actionType) => {
+      const writeAbi = JSON.stringify([
+        {
+          inputs: [],
+          name: "run",
+          outputs: [],
+          stateMutability: "nonpayable",
+          type: "function",
+        },
+      ]);
+      const target = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
+      const base: Record<string, Record<string, unknown>> = {
+        "web3/read-contract": {
+          network: "1",
+          contractAddress: target,
+          abi: READ_CONTRACT_ABI,
+          abiFunction: "reader",
+        },
+        "web3/write-contract": {
+          network: "1",
+          contractAddress: target,
+          abi: writeAbi,
+          abiFunction: "run",
+        },
+        "web3/batch-write-contract": {
+          network: "1",
+          calls: JSON.stringify([
+            {
+              contractAddress: target,
+              abi: writeAbi,
+              abiFunction: "run",
+              args: [],
+            },
+          ]),
+        },
+      };
+      // Otherwise valid, so the cross-field check runs.
+      expect(
+        validateWorkflowActionConfigs([
+          actionNode(actionType, base[actionType]),
+        ])
+      ).toEqual({ valid: true, issues: [] });
+      const offsetIssue = (config: Record<string, unknown>) =>
+        validateWorkflowActionConfigs([
+          actionNode(actionType, { ...base[actionType], ...config }),
+        ]).issues.find((issue) => issue.field === "simulateTimestampOffsetSec");
+      for (const bad of ["0", "61", "1.5", 120]) {
+        expect(
+          offsetIssue({
+            simulateAt: "next-block",
+            simulateTimestampOffsetSec: bad,
+          })
+        ).toMatchObject({ code: "INVALID_FIELD_VALUE" });
+      }
+      for (const ok of ["1", "12", 60, ""]) {
+        expect(
+          offsetIssue({
+            simulateAt: "next-block",
+            simulateTimestampOffsetSec: ok,
+          })
+        ).toBeUndefined();
+      }
+      // Save and run read Simulate at the same way.
+      for (const bad of ["next_block", "nextBlock", true]) {
+        expect(
+          validateWorkflowActionConfigs([
+            actionNode(actionType, { ...base[actionType], simulateAt: bad }),
+          ]).issues.find((issue) => issue.field === "simulateAt")
+        ).toMatchObject({ code: expect.stringMatching(/^INVALID_FIELD_/) });
+      }
+      // Hidden and unused with Latest block.
+      expect(
+        offsetIssue({ simulateAt: "latest", simulateTimestampOffsetSec: "99" })
+      ).toBeUndefined();
+    });
+
     it("accepts a JSON-stringified argsList on batch-read-contract", () => {
       const result = validateWorkflowActionConfigs([
         actionNode("web3/batch-read-contract", {

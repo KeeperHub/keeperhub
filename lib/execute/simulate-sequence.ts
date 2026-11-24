@@ -1,6 +1,7 @@
 import "server-only";
 
 import { ethers } from "ethers";
+import { simulateV1Params, txForNode } from "@/lib/execute/node-call";
 import {
   classifySimulationError,
   getRpcManagerForChain,
@@ -163,18 +164,6 @@ function reverted(
   };
 }
 
-function txForNode(from: string, call: EncodedCall): Record<string, string> {
-  const tx: Record<string, string> = {
-    from,
-    to: call.to,
-    data: call.data,
-  };
-  if (call.value > BigInt(0)) {
-    tx.value = ethers.toQuantity(call.value);
-  }
-  return tx;
-}
-
 function isMethodNotFound(err: unknown): boolean {
   const message = getErrorMessage(err).toLowerCase();
   return (
@@ -191,18 +180,7 @@ async function runSimulateV1(
   from: string,
   calls: EncodedCall[]
 ): Promise<RawCallResult[]> {
-  const params = [
-    {
-      blockStateCalls: [{ calls: calls.map((call) => txForNode(from, call)) }],
-      // The caller is asking what the calls would do, not whether the wallet
-      // is funded to send them, which is what the single-call path answers
-      // too. Balance and nonce checks here would refuse a dry run that is
-      // otherwise perfectly answerable.
-      validation: false,
-      traceTransfers: false,
-    },
-    "latest",
-  ];
+  const params = simulateV1Params(calls.map((call) => txForNode(from, call)));
   const blocks = await rpc.executeWithFailover(
     (provider) =>
       provider.send("eth_simulateV1", params) as Promise<

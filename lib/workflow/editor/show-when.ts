@@ -23,6 +23,7 @@
  */
 import { deriveStateMutability } from "@/lib/abi/mutability";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
+import { simulatesNextBlock } from "@/lib/web3/next-block-limits";
 import { isSponsorshipSupported } from "@/lib/web3/sponsorship-chains-meta";
 import {
   isGasSponsorshipEnabled,
@@ -41,6 +42,7 @@ export type ShowWhen =
     }
   | { computed: "sponsorshipSupported"; networkField: string }
   | { computed: "notSponsored"; networkField: string }
+  | { computed: "simulatesNextBlock" }
   | { all: ShowWhen[] };
 
 function evaluateComputed(
@@ -58,6 +60,9 @@ function evaluateComputed(
   }
   if (showWhen.computed === "sponsorshipSupported") {
     return isNetworkSponsorable(config[showWhen.networkField]);
+  }
+  if (showWhen.computed === "simulatesNextBlock") {
+    return simulatesNextBlock(config);
   }
   if (showWhen.computed === "notSponsored") {
     return !wouldBeSponsored(config, showWhen.networkField);
@@ -96,6 +101,7 @@ export function wouldBeSponsored(
     resolveSponsorGas(config.sponsorGas) &&
     !privateMempool &&
     !viaSafe &&
+    !simulatesNextBlock(config) &&
     isNetworkSponsorable(config[networkField])
   );
 }

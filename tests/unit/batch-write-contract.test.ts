@@ -51,6 +51,7 @@ vi.mock("@/lib/utils/id", () => ({
 
 vi.mock("@/lib/rpc/scrub-rpc-urls", () => ({
   redactAllUrls: (text: string) => text,
+  scrubRpcUrls: (text: string) => text,
 }));
 
 const mockGetChainIdFromNetwork = vi.fn();
@@ -69,11 +70,21 @@ vi.mock("@/lib/rpc/providers", () => ({
   rpcRelayErrorClass: (...args: unknown[]) => mockRpcRelayErrorClass(...args),
 }));
 
-vi.mock("@/lib/contracts/multicall3", () => ({
+// The real ABI: the next-block path encodes and decodes aggregate3 itself.
+vi.mock("@/lib/contracts/multicall3", async (importOriginal) => ({
   MULTICALL3_ADDRESS: "0xcA11bde05977b3631167028862bE2a173976CA11",
-  MULTICALL3_ABI: [
-    { name: "aggregate3", type: "function", inputs: [], outputs: [] },
-  ],
+  MULTICALL3_ABI: (
+    await importOriginal<typeof import("@/lib/contracts/multicall3")>()
+  ).MULTICALL3_ABI,
+}));
+
+const mockSimulateAtNextBlock = vi.fn();
+vi.mock("@/lib/web3/next-block-simulation", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/web3/next-block-simulation")
+  >()),
+  simulateCallAtNextBlock: (...args: unknown[]) =>
+    mockSimulateAtNextBlock(...args),
 }));
 
 vi.mock("@/lib/web3/resolve-org-context", () => ({
@@ -175,6 +186,7 @@ vi.mock("ethers", async () => {
 });
 
 import { ethers } from "ethers";
+import { MULTICALL3_ABI } from "@/lib/contracts/multicall3";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import {
   OnChainPendingError,
@@ -1182,5 +1194,166 @@ describe("batch-write-contract: inner arrays given as JSON text", () => {
       ],
     });
     expect(error).toContain("expected array for uint256[]");
+  });
+});
+
+describe("batch-write-contract - simulateAt next-block", () => {
+  const SIMULATION = {
+    mode: "next-block",
+    baseBlock: 100,
+    assumedBlockNumber: 101,
+    assumedTimestamp: 1_000_012,
+    rpcMethod: "eth_call+blockOverrides",
+  };
+  const multicall = new ethers.Interface(MULTICALL3_ABI);
+
+  function aggregate3Return(entries: [boolean, string][]): string {
+    return multicall.encodeFunctionResult("aggregate3", [entries]);
+  }
+
+  it("decides per-call outcomes at the next block and asks the adapter to do the same", async () => {
+    mockSimulateAtNextBlock.mockResolvedValueOnce({
+      returnData: aggregate3Return([SUCCESS_RETURN, revertReturn()]),
+      simulation: SIMULATION,
+    });
+    mockExecuteContractCall.mockResolvedValueOnce({
+      ...RECEIPT,
+      simulation: SIMULATION,
+    });
+
+    const result = await batchWriteContractCore(
+      baseInput({ simulateAt: "next-block", simulateTimestampOffsetSec: 12 })
+    );
+
+    expect(mockStaticCall).not.toHaveBeenCalled();
+    const request = mockSimulateAtNextBlock.mock.calls[0]?.[1] as {
+      tx: { to: string; data: string };
+      options: unknown;
+    };
+    expect(request.tx.to).toBe("0xcA11bde05977b3631167028862bE2a173976CA11");
+    expect(multicall.parseTransaction({ data: request.tx.data })?.name).toBe(
+      "aggregate3"
+    );
+    expect(request.options).toEqual({ timestampOffsetSec: 12 });
+    // The send reuses the block the per-call check predicted.
+    const adapterOptions = mockExecuteContractCall.mock.calls[0]?.[3] as {
+      simulation?: unknown;
+    };
+    expect(adapterOptions.simulation).toEqual({
+      timestampOffsetSec: 12,
+      basedOn: SIMULATION,
+    });
+    expect(result).toMatchObject({
+      success: true,
+      totalCalls: 2,
+      simulation: SIMULATION,
+      // The block the per-call results were checked against.
+      resultsSimulation: SIMULATION,
+    });
+    expect(result.success && result.results?.map((r) => r.success)).toEqual([
+      true,
+      false,
+    ]);
+  });
+
+  it("names each block when the send checked again on a newer one", async () => {
+    const sendSimulation = {
+      ...SIMULATION,
+      baseBlock: 101,
+      assumedBlockNumber: 102,
+      assumedTimestamp: 1_000_024,
+    };
+    mockSimulateAtNextBlock.mockResolvedValueOnce({
+      returnData: aggregate3Return([SUCCESS_RETURN, SUCCESS_RETURN]),
+      simulation: SIMULATION,
+    });
+    mockExecuteContractCall.mockResolvedValueOnce({
+      ...RECEIPT,
+      simulation: sendSimulation,
+    });
+
+    const result = await batchWriteContractCore(
+      baseInput({ simulateAt: "next-block" })
+    );
+
+    expect(result).toMatchObject({
+      success: true,
+      simulation: sendSimulation,
+      resultsSimulation: SIMULATION,
+    });
+  });
+
+  it("skips the broadcast when every call fails at the next block", async () => {
+    mockSimulateAtNextBlock.mockResolvedValueOnce({
+      returnData: aggregate3Return([revertReturn(), revertReturn()]),
+      simulation: SIMULATION,
+    });
+
+    const result = await batchWriteContractCore(
+      baseInput({ simulateAt: "next-block" })
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining(
+        "(simulated as of next block 101, timestamp 1000012)"
+      ),
+      simulation: SIMULATION,
+      resultsSimulation: SIMULATION,
+    });
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed next-block check on the send as not sent", async () => {
+    mockSimulateAtNextBlock.mockResolvedValueOnce({
+      returnData: aggregate3Return([SUCCESS_RETURN, SUCCESS_RETURN]),
+      simulation: SIMULATION,
+    });
+    mockExecuteContractCall.mockRejectedValueOnce(
+      Object.assign(new Error("header not found"), {
+        nextBlockCheckFailed: true,
+      })
+    );
+
+    const result = await batchWriteContractCore(
+      baseInput({ simulateAt: "next-block" })
+    );
+
+    expect(result).toMatchObject({ success: false, broadcastAttempted: false });
+  });
+
+  it("fails an unsupported RPC as a user error before any send", async () => {
+    const { NextBlockSimulationUnsupportedError } = await import(
+      "@/lib/web3/next-block-simulation"
+    );
+    mockSimulateAtNextBlock.mockRejectedValueOnce(
+      new NextBlockSimulationUnsupportedError(
+        "eth_call ignored the block overrides"
+      )
+    );
+
+    const result = await batchWriteContractCore(
+      baseInput({ simulateAt: "next-block", failOnError: false } as never)
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+      broadcastAttempted: false,
+    });
+    expect(applyBatchFailOnError(result, false).success).toBe(false);
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("refuses an invalid simulateAt", async () => {
+    const result = await batchWriteContractCore(
+      baseInput({ simulateAt: "soon" as never })
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+    });
+    expect(mockSimulateAtNextBlock).not.toHaveBeenCalled();
   });
 });

@@ -1,14 +1,13 @@
 import { resolveGasLimitOverrides } from "@/lib/web3/gas-defaults";
-import { UNSPONSORED_ONLY_FIELD_KEYS } from "@/lib/web3/unsponsored-only-fields";
+import {
+  isConfigValueSet,
+  UNSPONSORED_ONLY_FIELD_KEYS,
+} from "@/lib/web3/unsponsored-only-fields";
 import type { ActionConfigFieldBase } from "@/plugins/registry";
 import { wouldBeSponsored } from "./show-when";
 
-function isSet(value: unknown): boolean {
-  return value !== undefined && value !== null && String(value).trim() !== "";
-}
-
 function hasValue(field: ActionConfigFieldBase, value: unknown): boolean {
-  if (!isSet(value)) {
+  if (!isConfigValueSet(value)) {
     return false;
   }
   if (field.type === "gas-limit-multiplier") {
@@ -30,6 +29,6 @@ export function isIgnoredWhileSponsored(
     field.ignoredWhenSponsored === true &&
     hasValue(field, config[field.key]) &&
     wouldBeSponsored(config, "network") &&
-    !UNSPONSORED_ONLY_FIELD_KEYS.some((key) => isSet(config[key]))
+    !UNSPONSORED_ONLY_FIELD_KEYS.some((key) => isConfigValueSet(config[key]))
   );
 }

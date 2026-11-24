@@ -16,6 +16,9 @@ import {
   executedCallSponsoredOutput,
   readFailOnErrorField,
   receiptChainIdOutput,
+  simulateAtField,
+  simulateTimestampOffsetField,
+  simulationOutput,
   solanaNetworkField,
   sponsorGasField,
   tokenConfigField,
@@ -45,6 +48,7 @@ import {
   SHOW_WHEN_UNIFORM,
 } from "./batch-read-modes";
 import { Web3Icon } from "./icon";
+import { checkSimulationConfig } from "./simulation-config";
 
 // Single-event mode, including workflows saved before queryMode existed.
 const SINGLE_EVENT_SHOW_WHEN: ShowWhen = {
@@ -62,7 +66,7 @@ function priorityFeeConfigField(
   return {
     example: "3",
     helpTip:
-      "Tip paid to the block builder, in gwei. Transactions in the same block are ordered by tip, so raise it when racing other senders for the same call. Leave empty to use the network default. Sponsored sends cannot carry a custom tip, so on Write Contract it is locked while Sponsor gas is on.",
+      "Tip paid to the block builder, in gwei. Transactions in the same block are ordered by tip, so raise it when racing other senders for the same call. Leave empty to use the network default. Sponsored sends cannot carry a custom tip, so on Write Contract it is locked while the node would be sponsored (Sponsor gas on, unless Simulate at is Next block, the network is not covered, or it sends through a private mempool or a Safe), and cleared when a change locks it.",
     key: "priorityFeeGwei",
     label: "Priority Fee (gwei)",
     placeholder: "Network default",
@@ -77,7 +81,7 @@ function maxFeeConfigField(
   return {
     example: "50",
     helpTip:
-      "Highest total fee per gas you will pay, in gwei (base fee plus tip). Higher fees are lowered to this cap. If it is below the next block's base fee, the step fails without sending, since the transaction could not be included. Leave empty for no cap. Sponsored sends cannot carry a custom fee, so on Write Contract it is locked while Sponsor gas is on.",
+      "Highest total fee per gas you will pay, in gwei (base fee plus tip). Higher fees are lowered to this cap. If it is below the next block's base fee, the step fails without sending, since the transaction could not be included. Leave empty for no cap. Sponsored sends cannot carry a custom fee, so on Write Contract it is locked while the node would be sponsored (Sponsor gas on, unless Simulate at is Next block, the network is not covered, or it sends through a private mempool or a Safe), and cleared when a change locks it.",
     key: "maxFeeGwei",
     label: "Max Fee (gwei)",
     placeholder: "No cap",
@@ -910,6 +914,7 @@ const web3Plugin: IntegrationPlugin = {
     },
     {
       slug: "read-contract",
+      validateConfig: checkSimulationConfig,
       label: "Read Contract",
       description: "Read data from a smart contract (view/pure functions)",
       category: "Web3",
@@ -931,6 +936,7 @@ const web3Plugin: IntegrationPlugin = {
           description:
             "Error message if the call failed. Also set when failOnError is off and a failed read was softened into success=true. Match this string in a downstream Condition node (contains/matchesRegex) to filter known errors from ones that should alert.",
         },
+        simulationOutput(),
       ],
       configFields: [
         evmNetworkField(),
@@ -969,7 +975,15 @@ const web3Plugin: IntegrationPlugin = {
             "Optional. The address this read is made from - some contracts answer differently depending on who asks. Nothing is signed or sent from it, and a write is never sent from this address, so take care before gating a transfer on an answer obtained as someone else. Leave empty to keep the current behaviour.",
           isAddressField: true,
         },
-        readFailOnErrorField(),
+        readFailOnErrorField(
+          "When off, a failed read passes a soft error to the next node instead of failing the run, so one bad item in a For Each loop does not abort it. This covers the call itself and the ABI, function and arguments you send. Only problems that leave the step with nowhere to call - an invalid address, an unknown network, unresolved RPC config, or, with Simulate at set to Next block, an RPC that cannot simulate the next block - still fail the run."
+        ),
+        {
+          type: "group",
+          label: "Advanced",
+          defaultExpanded: false,
+          fields: [simulateAtField(), simulateTimestampOffsetField()],
+        },
       ],
     },
     {
@@ -1776,6 +1790,7 @@ const web3Plugin: IntegrationPlugin = {
     },
     {
       slug: "batch-write-contract",
+      validateConfig: checkSimulationConfig,
       label: "Batch Write Contract",
       description:
         "Send multiple write calls as a single on-chain transaction via Multicall3. Each call carries its own contract, ABI, and function. Every call executes with msg.sender set to the Multicall3 contract, not your organization wallet: any call whose behavior depends on msg.sender (an approve() sets Multicall3's allowance, not the wallet's; an ownerOnly-style check fails) will not behave like a direct call from your wallet.",
@@ -1830,6 +1845,12 @@ const web3Plugin: IntegrationPlugin = {
           description:
             "Classified revert kind when the batch was rejected on-chain, when it could be determined",
         },
+        simulationOutput(),
+        {
+          field: "resultsSimulation",
+          description:
+            "With Next block, the predicted block the per-call check before the send ran against. It differs from simulation when a new block or slot came before the send, which then checked again.",
+        },
       ],
       configFields: [
         evmPrivateNetworkField(),
@@ -1868,7 +1889,7 @@ const web3Plugin: IntegrationPlugin = {
           type: "fail-on-error-switch",
           defaultValue: "true",
           helpTip:
-            "When off, a failed batch send (signer/RPC error, or the whole tx reverting) passes a soft error to the next node instead of failing the run. Config/validation problems (bad ABI, missing function, malformed calls JSON) always fail the run regardless of this setting.",
+            "When off, a failed batch send (signer/RPC error, or the whole tx reverting) passes a soft error to the next node instead of failing the run. Config/validation problems (bad ABI, missing function, malformed calls JSON) always fail the run regardless of this setting. With Simulate at set to Next block, an RPC that cannot simulate the next block also always fails the run.",
         },
         {
           type: "group",
@@ -1884,6 +1905,8 @@ const web3Plugin: IntegrationPlugin = {
             },
             priorityFeeConfigField(),
             maxFeeConfigField(),
+            simulateAtField(),
+            simulateTimestampOffsetField(),
           ],
         },
       ],
@@ -2091,6 +2114,7 @@ const web3Plugin: IntegrationPlugin = {
     },
     {
       slug: "write-contract",
+      validateConfig: checkSimulationConfig,
       label: "Write Contract",
       description: "Write data to a smart contract (state-changing functions)",
       category: "Web3",
@@ -2128,6 +2152,7 @@ const web3Plugin: IntegrationPlugin = {
           description:
             "Error message if the call failed. Also set when failOnError is off and an execution failure was softened into success=true, e.g. 'Contract call failed: Error(Splitter/kicked-too-soon)'. Match this string in a downstream Condition node (contains/matchesRegex) to filter known errors from ones that should alert.",
         },
+        simulationOutput(),
       ],
       configFields: [
         evmPrivateNetworkField(),
@@ -2178,7 +2203,7 @@ const web3Plugin: IntegrationPlugin = {
           type: "fail-on-error-switch",
           defaultValue: "true",
           helpTip:
-            "When off, a failed send (signer/RPC error or an on-chain revert) passes a soft error to the next node instead of failing the run. Config/validation problems (bad ABI, missing function, unresolved RPC) always fail the run regardless of this setting.",
+            "When off, a failed send (signer/RPC error or an on-chain revert) passes a soft error to the next node instead of failing the run. Config/validation problems (bad ABI, missing function, unresolved RPC) always fail the run regardless of this setting. With Simulate at set to Next block, an RPC that cannot simulate the next block also always fails the run.",
         },
         {
           type: "group",
@@ -2196,6 +2221,8 @@ const web3Plugin: IntegrationPlugin = {
             priorityFeeConfigField(UNSPONSORED_ONLY_ENABLED_WHEN),
             maxFeeConfigField(UNSPONSORED_ONLY_ENABLED_WHEN),
             sponsorGasField(),
+            simulateAtField(),
+            simulateTimestampOffsetField(),
           ],
         },
 

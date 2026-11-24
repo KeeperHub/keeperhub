@@ -57,6 +57,16 @@ import {
   resolveFeeOverrides,
   resolveGasLimitOverrides,
 } from "@/lib/web3/gas-defaults";
+import {
+  type NextBlockSimulation,
+  failedNextBlockCheck,
+  getNextBlockSimulation,
+  isNextBlockSimulationUnsupported,
+  nextBlockFailure,
+  readSimulationSettings,
+  type SimulateAt,
+  unsupportedFailure,
+} from "@/lib/web3/next-block-simulation";
 import { maxFeeBelowBaseFeeError } from "@/lib/web3/max-fee-check";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
@@ -112,6 +122,11 @@ export type WriteContractCoreInput = {
   // that position. LayerZero's OFT send uses it for refundAddress, so a fee
   // refund can only go back to whoever paid it.
   payerParam?: string;
+  // "next-block" runs the revert check and gas estimate as of the next block
+  // (number + 1, its predicted time). Unset or "latest" = today's behaviour.
+  simulateAt?: SimulateAt;
+  // Block time (slot length) in seconds; unset = the chain's measured one.
+  simulateTimestampOffsetSec?: string | number;
   _context?: {
     executionId?: string;
     organizationId?: string;
@@ -158,12 +173,15 @@ export type WriteContractResult =
       // Absent on a genuine successful write; transactionHash is absent here.
       error?: string;
       rejection?: RevertKind;
+      simulation?: NextBlockSimulation;
     }
   | {
       success: false;
       error: string;
       rejection?: RevertKind;
       errorClass?: ExecutionErrorType;
+      // The predicted block a next-block simulation ran against.
+      simulation?: NextBlockSimulation;
       // Set only when a transaction reached the chain and failed
       // there, so the finalizer can persist a receipt for the failure. Absent
       // on pre-broadcast failures, where no transaction exists.
@@ -228,6 +246,7 @@ export function applyFailOnError(
     success: true,
     error: redactAllUrls(result.error),
     rejection: result.rejection,
+    ...(result.simulation ? { simulation: result.simulation } : {}),
   };
 }
 
@@ -256,6 +275,8 @@ async function writeContractCoreImpl(
     web3Connection,
     errorAbis,
     payerParam,
+    simulateAt,
+    simulateTimestampOffsetSec,
     _context,
   } = input;
 
@@ -284,6 +305,15 @@ async function writeContractCoreImpl(
     };
   }
   const { priorityFeeOverride, maxFeeOverride } = fees;
+
+  const simulationSettings = readSimulationSettings(
+    simulateAt,
+    simulateTimestampOffsetSec
+  );
+  if (!simulationSettings.ok) {
+    return simulationSettings.failure;
+  }
+  const simulation = simulationSettings.options;
 
   // Validate contract address
   if (!ethers.isAddress(contractAddress)) {
@@ -611,6 +641,7 @@ async function writeContractCoreImpl(
       signerMode,
       sponsorGas,
       usePrivateMempool,
+      simulatesNextBlock: simulation !== undefined,
       customFees:
         priorityFeeOverride !== undefined || maxFeeOverride !== undefined,
     })
@@ -769,6 +800,7 @@ async function writeContractCoreImpl(
             chainId,
             workflowId,
             rpcManager,
+            simulation,
             feeOverrides: { priorityFeeOverride, maxFeeOverride },
           }
         );
@@ -789,6 +821,7 @@ async function writeContractCoreImpl(
             chainId,
             workflowId,
             rpcManager,
+            simulation,
             feeOverrides: { priorityFeeOverride, maxFeeOverride },
           }
         );
@@ -812,6 +845,7 @@ async function writeContractCoreImpl(
             },
             workflowId,
             rpcManager,
+            simulation,
           }
         );
       }
@@ -838,8 +872,12 @@ async function writeContractCoreImpl(
         effectiveGasPrice,
         result: undefined,
         executedCall,
+        ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
       };
     } catch (error) {
+      if (isNextBlockSimulationUnsupported(error)) {
+        return { ...unsupportedFailure(error, "write-contract"), broadcastAttempted: false };
+      }
       logUserError(
         ErrorCategory.NETWORK_RPC,
         "[Write Contract] Function call failed",
@@ -875,15 +913,19 @@ async function writeContractCoreImpl(
         (isOnChainPendingError(error) ? ExecutionErrorType.SYSTEM : undefined);
       return {
         success: false,
-        error: formatContractError(
-          error,
-          buildErrorDecodeInterface(contractInterface, errorAbis)
+        ...nextBlockFailure(
+          formatContractError(
+            error,
+            buildErrorDecodeInterface(contractInterface, errorAbis)
+          ),
+          getNextBlockSimulation(error)
         ),
         ...(errorClass ? { errorClass } : {}),
         broadcastAttempted: broadcastHash
           ? true
           : rejection.kind !== "unknown" ||
-              isPreBroadcastNetworkError(error)
+              isPreBroadcastNetworkError(error) ||
+              failedNextBlockCheck(error)
             ? false
             : true,
         ...(rejection.kind !== "unknown" ? { rejection } : {}),

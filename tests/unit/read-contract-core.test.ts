@@ -98,6 +98,16 @@ vi.mock("ethers", async () => {
   };
 });
 
+const mockSimulateAtNextBlock = vi.fn();
+vi.mock("@/lib/web3/next-block-simulation", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/web3/next-block-simulation")
+  >()),
+  simulateCallAtNextBlock: (...args: unknown[]) =>
+    mockSimulateAtNextBlock(...args),
+}));
+
+import { NextBlockSimulationUnsupportedError } from "@/lib/web3/next-block-simulation";
 import type { ReadContractCoreInput } from "@/plugins/web3/steps/read-contract-core";
 import { readContractCore } from "@/plugins/web3/steps/read-contract-core";
 
@@ -940,5 +950,108 @@ describe("read-contract-core - editor-stored inner arrays", () => {
 
     expect(result.success).toBe(true);
     expect(mockContractFunction).toHaveBeenCalledWith([[1, 2], [3]]);
+  });
+});
+
+describe("read-contract-core - simulateAt next-block", () => {
+  const SIMULATION = {
+    mode: "next-block",
+    baseBlock: 100,
+    assumedBlockNumber: 101,
+    assumedTimestamp: 1_000_012,
+    rpcMethod: "eth_call+blockOverrides",
+  };
+
+  beforeEach(() => {
+    setupRpcMocks();
+  });
+
+  it("reads as of the next block and reports the assumed block", async () => {
+    mockSimulateAtNextBlock.mockResolvedValue({
+      returnData: ethers.AbiCoder.defaultAbiCoder().encode(["uint256"], [42]),
+      simulation: SIMULATION,
+    });
+
+    const result = await readContractCore(
+      makeInput({ simulateAt: "next-block", simulateTimestampOffsetSec: "12" })
+    );
+
+    expect(result).toMatchObject({
+      success: true,
+      result: { balance: "42" },
+      simulation: SIMULATION,
+    });
+    expect(mockContractFunction).not.toHaveBeenCalled();
+    const request = mockSimulateAtNextBlock.mock.calls[0]?.[1] as {
+      chainId: number;
+      tx: { to: string; data: string; from?: string };
+      options: unknown;
+    };
+    expect(request.chainId).toBe(1);
+    expect(request.tx.to).toBe(VALID_ADDRESS);
+    expect(request.tx.from).toBeUndefined();
+    expect(request.options).toEqual({ timestampOffsetSec: 12 });
+  });
+
+  it("leaves the read untouched when simulateAt is latest", async () => {
+    mockContractFunction.mockResolvedValue(BigInt(7));
+
+    const result = await readContractCore(makeInput({ simulateAt: "latest" }));
+
+    expect(result).toEqual({
+      success: true,
+      result: { balance: "7" },
+      addressLink: expect.any(String),
+    });
+    expect(mockSimulateAtNextBlock).not.toHaveBeenCalled();
+  });
+
+  it("hard-fails an RPC without block overrides even when failOnError is off", async () => {
+    mockSimulateAtNextBlock.mockRejectedValue(
+      new NextBlockSimulationUnsupportedError(
+        "eth_call ignored the block overrides"
+      )
+    );
+
+    const result = await readContractCore(
+      makeInput({ simulateAt: "next-block", failOnError: false })
+    );
+
+    expect(result.success).toBe(false);
+    expect(result).toMatchObject({
+      error: expect.stringContaining("ignored the block overrides"),
+    });
+  });
+
+  it("keeps the predicted block on a failed read, softened or not", async () => {
+    const revert = Object.assign(new Error("execution reverted"), {
+      code: "CALL_EXCEPTION",
+      nextBlockSimulation: SIMULATION,
+    });
+    for (const failOnError of [true, false]) {
+      mockSimulateAtNextBlock.mockRejectedValueOnce(revert);
+      const result = await readContractCore(
+        makeInput({ simulateAt: "next-block", failOnError })
+      );
+      expect(result).toMatchObject({
+        success: !failOnError,
+        error: expect.stringContaining(
+          "(simulated as of next block 101, timestamp 1000012)"
+        ),
+        simulation: SIMULATION,
+      });
+    }
+  });
+
+  it("refuses an invalid simulateAt before any RPC call", async () => {
+    const result = await readContractCore(
+      makeInput({ simulateAt: "pending" as never })
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining('Invalid Simulate at "pending"'),
+    });
+    expect(mockSimulateAtNextBlock).not.toHaveBeenCalled();
   });
 });
