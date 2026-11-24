@@ -81,9 +81,8 @@ async function findSkippedKey(
   const oldestStart = new Date(
     windowStart.getTime() - staleExecutionThresholdMinutes() * 60 * 1000
   );
-  // Shaped for a partial index on (workflow_id, completed_at) WHERE status = 'skipped'
-  // AND dispatch_key LIKE 'skipped-behind:%'; until it exists the started_at bound
-  // lets idx_workflow_executions_workflow_started serve it.
+  // Served by the partial idx_workflow_executions_skipped_behind (workflow_id, completed_at);
+  // where it is missing, the started_at bound lets idx_workflow_executions_workflow_started serve it.
   const [row] = await tx
     .select({ id: workflowExecutions.id })
     .from(workflowExecutions)

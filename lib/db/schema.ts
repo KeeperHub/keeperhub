@@ -880,6 +880,12 @@ export const workflowExecutions = pgTable(
     // Idempotency guard for dispatch dedup; NULL keys are distinct so only real
     // per-occurrence keys are constrained.
     uniqueIndex("idx_workflow_executions_dispatch_key").on(table.dispatchKey),
+    // Skip-if-running repeat lookup (findSkippedKey); predicate must match its literals.
+    index("idx_workflow_executions_skipped_behind")
+      .on(table.workflowId, table.completedAt)
+      .where(
+        sql`${table.status} = 'skipped' AND ${table.dispatchKey} LIKE 'skipped-behind:%'`
+      ),
   ]
 );
 
