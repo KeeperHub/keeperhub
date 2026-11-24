@@ -103,7 +103,7 @@ Sponsored transactions cannot carry a custom priority fee. The gas sponsor sets 
 
 - **Sponsor gas on**: the Priority Fee field is disabled and the network's default tip is used, paid by the sponsor.
 - **Sponsor gas off**: the Priority Fee field is editable. The node pays gas from the sending wallet, with your tip.
-- Any change that disables the field clears the priority fee, so a disabled field never changes how the node sends; the editor shows a notice when it does. For example: turning Sponsor gas on, or, with Sponsor gas on, setting Simulate at back to Latest block, switching to a network that gas sponsorship covers, moving off a private mempool or a Safe, or switching from Batch Write Contract to Write Contract.
+- Any change that disables the field clears the priority fee, so a value you can no longer edit never changes how the node sends; the editor shows a notice when it does. A fee saved through the API while the field is disabled stays set and keeps the node off sponsorship; turn off Sponsor gas to clear it. For example: turning Sponsor gas on, or, with Sponsor gas on, setting Simulate at back to Latest block, switching to a network that gas sponsorship covers, moving off a private mempool or a Safe, or switching from Batch Write Contract to Write Contract.
 
 The field is also editable when the node cannot be sponsored anyway: on a network that gas sponsorship does not cover, through a private mempool, through a Safe, or with Simulate at set to Next block.
 
@@ -153,7 +153,7 @@ Sponsored transactions cannot carry a custom max fee. The gas sponsor sets the f
 
 - **Sponsor gas on**: the Max Fee field is disabled and there is no cap; the sponsor sets the fees.
 - **Sponsor gas off**: the Max Fee field is editable. The node pays gas from the sending wallet, within your cap.
-- Any change that disables the field clears the max fee, so a disabled field never changes how the node sends; the editor shows a notice when it does. For example: turning Sponsor gas on, or, with Sponsor gas on, setting Simulate at back to Latest block, switching to a network that gas sponsorship covers, moving off a private mempool or a Safe, or switching from Batch Write Contract to Write Contract.
+- Any change that disables the field clears the max fee, so a value you can no longer edit never changes how the node sends; the editor shows a notice when it does. A fee saved through the API while the field is disabled stays set and keeps the node off sponsorship; turn off Sponsor gas to clear it. For example: turning Sponsor gas on, or, with Sponsor gas on, setting Simulate at back to Latest block, switching to a network that gas sponsorship covers, moving off a private mempool or a Safe, or switching from Batch Write Contract to Write Contract.
 
 The field is also editable when the node cannot be sponsored anyway: on a network that gas sponsorship does not cover, through a private mempool, through a Safe, or with Simulate at set to Next block.
 
@@ -195,7 +195,7 @@ A transaction is sponsored only when all of the following are true. Otherwise it
 - **Public mempool**: transactions routed through a private mempool are not sponsored.
 - **Gas credits available**: your organization still has gas credits for the current period.
 - **Sponsor gas is on for the node**: the action's own toggle, described below.
-- **No custom fees**: a node with a [Priority Fee](#priority-fee) or [Max Fee](#max-fee) set pays gas from your wallet. In the editor these fields show only while the node is not sponsored.
+- **No custom fees**: a node with a [Priority Fee](#priority-fee) or [Max Fee](#max-fee) set pays gas from your wallet. In the editor these fields are disabled while the node would be sponsored.
 
 ### Sponsor gas toggle
 

@@ -61,7 +61,7 @@ describe("Sponsor gas toggle", () => {
   });
 });
 
-describe("applyConfigUpdate: fees hidden while sponsored", () => {
+describe("applyConfigUpdate: fees locked while sponsored", () => {
   const FEES = { priorityFeeGwei: "3", maxFeeGwei: "50" };
   const WRITE = "web3/write-contract";
   const BATCH = "web3/batch-write-contract";
@@ -140,6 +140,20 @@ describe("applyConfigUpdate: fees hidden while sponsored", () => {
     });
   });
 
+  it("keeps the fees when Sponsor gas is turned off", () => {
+    const sponsored = {
+      actionType: WRITE,
+      network: "1",
+      sponsorGas: true,
+      simulateAt: "next-block",
+      ...FEES,
+    };
+    expect(update(sponsored, "sponsorGas", false)).toEqual({
+      ...sponsored,
+      sponsorGas: false,
+    });
+  });
+
   it("does not touch settings that are already empty", () => {
     const before = { actionType: WRITE, network: "1", sponsorGas: false };
     expect(update(before, "sponsorGas", true)).toEqual({
@@ -197,7 +211,7 @@ describe("applyConfigUpdate: fees hidden while sponsored", () => {
     expect(second.config.priorityFeeGwei).toBe("");
   });
 
-  it("clears fees a Batch Write showed once the node becomes a sponsored Write Contract", () => {
+  it("clears fees a Batch Write allowed once the node becomes a sponsored Write Contract", () => {
     const batch = { actionType: BATCH, network: "8453", ...FEES };
     const { config } = applyConfigUpdate(
       null,
@@ -211,7 +225,7 @@ describe("applyConfigUpdate: fees hidden while sponsored", () => {
     expect(config.priorityFeeGwei).toBe("");
   });
 
-  it("keeps fees across an action type change when they stay shown", () => {
+  it("keeps fees across an action type change when they stay editable", () => {
     const batch = { actionType: BATCH, network: "10", ...FEES };
     const { config } = applyConfigUpdate(
       null,
@@ -237,7 +251,7 @@ describe("applyConfigUpdate: fees hidden while sponsored", () => {
     expect("sponsorGas" in next.config).toBe(false);
   });
 
-  it("leaves a fee that was already hidden alone (a config saved outside the editor)", () => {
+  it("leaves a fee that was already locked alone (a config saved outside the editor)", () => {
     const saved = {
       actionType: WRITE,
       network: "8453",
@@ -253,7 +267,7 @@ describe("applyConfigUpdate: fees hidden while sponsored", () => {
     const { batch } = applyConfigUpdate(null, off, "sponsorGas", true);
     expect(batch.cleared).toEqual(["Priority Fee (gwei)", "Max Fee (gwei)"]);
     expect(clearedFieldsNotice(batch.cleared)).toBe(
-      "Priority Fee and Max Fee cleared: Sponsor gas is on, so the sponsor sets the fees. Turn Sponsor gas off to set them again."
+      "Priority Fee and Max Fee cleared: Sponsor gas is on, so the sponsor sets the fees. Turn off Sponsor gas to set them again."
     );
 
     // Flashbots: midway sponsored, final not: nothing cleared at the end.

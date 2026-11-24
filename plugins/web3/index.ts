@@ -66,7 +66,7 @@ function priorityFeeConfigField(
   return {
     example: "3",
     helpTip:
-      "Tip paid to the block builder, in gwei. Transactions in the same block are ordered by tip, so raise it when racing other senders for the same call. Leave empty to use the network default. Sponsored sends cannot carry a custom tip, so on Write Contract it is locked while the node would be sponsored (Sponsor gas on, unless Simulate at is Next block or the network, private mempool or Safe is not sponsored), and cleared when a change locks it.",
+      "Tip paid to the block builder, in gwei. Transactions in the same block are ordered by tip, so raise it when racing other senders for the same call. Leave empty to use the network default. Sponsored sends cannot carry a custom tip, so on Write Contract it is locked while the node would be sponsored (Sponsor gas on, unless Simulate at is Next block, the network is not covered, or it sends through a private mempool or a Safe), and cleared when a change locks it.",
     key: "priorityFeeGwei",
     label: "Priority Fee (gwei)",
     placeholder: "Network default",
@@ -81,7 +81,7 @@ function maxFeeConfigField(
   return {
     example: "50",
     helpTip:
-      "Highest total fee per gas you will pay, in gwei (base fee plus tip). Higher fees are lowered to this cap. If it is below the next block's base fee, the step fails without sending, since the transaction could not be included. Leave empty for no cap. Sponsored sends cannot carry a custom fee, so on Write Contract it is locked while the node would be sponsored (Sponsor gas on, unless Simulate at is Next block or the network, private mempool or Safe is not sponsored), and cleared when a change locks it.",
+      "Highest total fee per gas you will pay, in gwei (base fee plus tip). Higher fees are lowered to this cap. If it is below the next block's base fee, the step fails without sending, since the transaction could not be included. Leave empty for no cap. Sponsored sends cannot carry a custom fee, so on Write Contract it is locked while the node would be sponsored (Sponsor gas on, unless Simulate at is Next block, the network is not covered, or it sends through a private mempool or a Safe), and cleared when a change locks it.",
     key: "maxFeeGwei",
     label: "Max Fee (gwei)",
     placeholder: "No cap",
