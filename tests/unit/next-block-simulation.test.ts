@@ -1281,11 +1281,7 @@ describe("next-block simulation", () => {
     it.each([
       [
         "Alchemy's allowlist refusal",
-        { code: -32_600, message: "eth_call is not allowlisted for this app" },
-      ],
-      [
-        "an invalid-request code",
-        { code: -32_600, message: "invalid request" },
+        { code: -32_000, message: "eth_call is not allowlisted for this app" },
       ],
     ])("treats %s on the proof as unsupported", async (_label, error) => {
       node.simulateV1 = "missing";
@@ -1294,6 +1290,19 @@ describe("next-block simulation", () => {
         (e: unknown) => e
       );
       expect(thrown).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+    });
+
+    it("keeps a bare -32600 (an auth failure, say) on the proof retryable", async () => {
+      node.simulateV1 = "missing";
+      node.proofError = {
+        method: "eth_call",
+        error: { code: -32_600, message: "Must be authenticated!" },
+      };
+      const thrown = await read({ timestampOffsetSec: SLOT }).catch(
+        (e: unknown) => e
+      );
+      expect(thrown).not.toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect(isNonRetryableError(thrown)).toBe(false);
     });
 
     it("falls back to eth_call when eth_simulateV1 fails for good", async () => {
@@ -1331,7 +1340,9 @@ describe("next-block simulation", () => {
       });
       const error = (await send().catch((e: unknown) => e)) as Error;
       expect(error.message).toContain("invalid argument 0: bad from");
-      expect(error.message).not.toContain("missing revert data");
+      expect(error).not.toMatchObject({ code: "CALL_EXCEPTION" });
+      // Final, as the same answer over HTTP 200 would be: no failover.
+      expect(isNonRetryableError(error)).toBe(true);
     });
 
     it("reads a revert inside an HTTP 4xx body as a final, decodable revert", async () => {

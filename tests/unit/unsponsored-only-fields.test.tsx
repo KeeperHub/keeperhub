@@ -253,7 +253,7 @@ describe("applyConfigUpdate: fees hidden while sponsored", () => {
     const { batch } = applyConfigUpdate(null, off, "sponsorGas", true);
     expect(batch.cleared).toEqual(["Priority Fee (gwei)", "Max Fee (gwei)"]);
     expect(clearedFieldsNotice(batch.cleared)).toBe(
-      "Priority Fee (gwei) and Max Fee (gwei) cleared: a sponsored send sets its own fees."
+      "Priority Fee and Max Fee cleared: the node is now sponsored, so the sponsor sets the fees. Turn Sponsor gas off to set them again."
     );
 
     // Flashbots: midway sponsored, final not: nothing cleared at the end.

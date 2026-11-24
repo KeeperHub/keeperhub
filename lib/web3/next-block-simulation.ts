@@ -289,7 +289,6 @@ const METHOD_REFUSED_PATTERN =
 // A revert reason is the contract's own text and may contain any words.
 const REVERT_PATTERN = /revert/i;
 const INVALID_PARAMS_CODE = -32_602;
-const INVALID_REQUEST_CODE = -32_600;
 const METHOD_NOT_FOUND_CODE = -32_601;
 const LIMIT_EXCEEDED_CODE = -32_005;
 // Rate limits some providers send as JSON-RPC errors (QuickNode, Alchemy).
@@ -394,7 +393,6 @@ function classifyNodeError(error: unknown): NodeErrorKind {
   }
   if (
     answer.code === INVALID_PARAMS_CODE ||
-    answer.code === INVALID_REQUEST_CODE ||
     answer.code === METHOD_NOT_FOUND_CODE ||
     METHOD_REFUSED_PATTERN.test(answer.message)
   ) {
@@ -434,8 +432,8 @@ function callException(
 
 // The user's own call failed for good. An answer inside an HTTP 4xx body
 // would be retried as a transport error, so a revert is rebuilt as the
-// CALL_EXCEPTION a normal answer gives, and anything else keeps the node's
-// message.
+// CALL_EXCEPTION a normal answer gives, and anything else is a non-retryable
+// error with the node's message, as the same answer over HTTP 200 would be.
 function finalCallError(
   reason: unknown,
   action: "call" | "estimateGas",
@@ -448,12 +446,15 @@ function finalCallError(
   if (isRevert(answer)) {
     return callException(action, tx, answer.revertData ?? null, answer);
   }
-  return new Error(
-    `Next-block simulation: ${action === "call" ? "eth_call" : "eth_estimateGas"} failed: ${answer.message || detailOf(reason)}`.slice(
-      0,
-      DETAIL_MAX_CHARS + 60
+  return Object.assign(
+    new Error(
+      `Next-block simulation: ${action === "call" ? "eth_call" : "eth_estimateGas"} failed: ${answer.message || detailOf(reason)}`.slice(
+        0,
+        DETAIL_MAX_CHARS + 60
+      ),
+      { cause: reason }
     ),
-    { cause: reason }
+    { nonRetryable: true }
   );
 }
 

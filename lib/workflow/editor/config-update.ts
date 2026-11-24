@@ -15,9 +15,13 @@ export type ConfigUpdateBatch = {
 
 export const CLEARED_FIELDS_TOAST_ID = "unsponsored-fields-cleared";
 
+// "Max Fee (gwei)" reads as "Max Fee" inside a sentence.
+const LABEL_UNIT = /\s*\([^)]*\)$/;
+
 /** The editor notice once a batch has cleared fields, so it is never silent. */
 export function clearedFieldsNotice(labels: readonly string[]): string {
-  return `${labels.join(" and ")} cleared: a sponsored send sets its own fees.`;
+  const names = labels.map((label) => label.replace(LABEL_UNIT, ""));
+  return `${names.join(" and ")} cleared: the node is now sponsored, so the sponsor sets the fees. Turn Sponsor gas off to set them again.`;
 }
 
 function withFields(config: Record<string, unknown>): {
