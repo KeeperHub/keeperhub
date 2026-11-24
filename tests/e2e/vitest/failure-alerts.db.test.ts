@@ -4244,6 +4244,23 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(incident?.lastError).toBeNull();
     });
 
+    it("a skip with no category (expired signal, previous run still running) is not a refusal", async () => {
+      const org = await countingOrg("uncategorisedskip");
+      const wf = await makeWorkflow(org, "Uncategorised skip");
+      await addSchedule(wf);
+      await refusedRun(org, wf, -1, {
+        error:
+          "Pyth signal expired or its trigger configuration changed before dispatch.",
+        errorCategory: null,
+        errorType: null,
+      });
+      await runCycle();
+      const incident = await openIncident(wf);
+      expect(incident?.openedBy).toBe("missed");
+      expect(incident?.lastFailedExecutionId).toBeNull();
+      expect(incident?.lastError).toBeNull();
+    });
+
     it("an open not-running incident takes the newest refusal, and a plain one becomes refused", async () => {
       const org = await countingOrg("newrefusal");
       const wf = await makeWorkflow(org, "Newer refusal");

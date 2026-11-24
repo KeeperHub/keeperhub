@@ -1821,7 +1821,9 @@ async function latestRefusals(
         // Index bound: a row's newest refusal is under an hour after its start.
         gte(workflowExecutions.startedAt, beforeBucket(since)),
         isNull(workflowExecutions.deletedAt),
-        REFUSED_RUN_SQL
+        REFUSED_RUN_SQL,
+        // A skip with no category (previous run still running, expired signal) is not a refusal.
+        isNotNull(workflowExecutions.errorCategory)
       )
     )
     .orderBy(workflowExecutions.workflowId, desc(refusedAt));
