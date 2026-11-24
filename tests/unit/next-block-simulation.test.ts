@@ -680,23 +680,19 @@ describe("next-block simulation", () => {
       // A 2-second chain whose lagging backend lacks most recent blocks.
       node.timestampOf = (n: number): number =>
         node.latestTimestamp - (node.latestNumber - n) * 2;
-      node.missing = new Set([95, 96, 97, 98]);
+      node.missing = new Set([96, 97]);
 
       const { simulation } = await read();
       expect(simulation.timestampOffsetSec).toBe(2);
     });
 
-    it("uses a single measured gap for this run only, without caching it", async () => {
+    it("does not trust a single measured gap, which may span a missed slot", async () => {
       node.timestampOf = (n: number): number =>
         node.latestTimestamp - (node.latestNumber - n) * 24;
       node.missing = new Set([94, 95, 96, 97, 98]);
-      expect((await read()).simulation.timestampOffsetSec).toBe(24);
-
-      node.missing = new Set();
-      node.timestampOf = (n: number): number =>
-        node.latestTimestamp - (node.latestNumber - n) * SLOT;
-      provider = new FakeProvider(node);
-      expect((await read()).simulation.timestampOffsetSec).toBe(SLOT);
+      const error = await read().catch((e: unknown) => e);
+      expect(isNonRetryableError(error)).toBe(false);
+      expect((error as Error).message).toContain("block time");
     });
 
     it("fails as a temporary error, uncached, when no gap can be measured", async () => {
@@ -1235,6 +1231,108 @@ describe("next-block simulation", () => {
         expect((thrown as Error).message).toContain("retried automatically");
       }
     );
+
+    it.each([
+      ["code -32007 alone", { code: -32_007, message: "slow down" }],
+      ["code 429 alone", { code: 429, message: "exceeded" }],
+      [
+        "compute-units wording alone",
+        {
+          code: -32_000,
+          message: "exceeded its compute units per second capacity",
+        },
+      ],
+      [
+        "limit wording alone",
+        { code: -32_000, message: "request limit reached" },
+      ],
+    ])(
+      "keeps a rate limit with %s retryable on the proof and the real call",
+      async (_label, error) => {
+        for (const slot of ["proofError", "realCallError"] as const) {
+          node.unlockAt = node.latestTimestamp + 5;
+          node.proofError = undefined;
+          node.realCallError = undefined;
+          node[slot] = { method: "eth_estimateGas", error };
+          provider = new FakeProvider(node);
+          const thrown = await send().catch((e: unknown) => e);
+          expect(thrown).not.toBeInstanceOf(
+            NextBlockSimulationUnsupportedError
+          );
+          expect(isNonRetryableError(thrown)).toBe(false);
+        }
+      }
+    );
+
+    it("keeps a node error that merely mentions a method final, not unsupported", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+      node.realCallError = {
+        method: "eth_estimateGas",
+        error: {
+          code: -32_000,
+          message: "method handler error: account not found",
+        },
+      };
+      const error = await send().catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: "CALL_EXCEPTION" });
+      expect(error).not.toBeInstanceOf(NextBlockSimulationUnsupportedError);
+    });
+
+    it.each([
+      [
+        "Alchemy's allowlist refusal",
+        { code: -32_600, message: "eth_call is not allowlisted for this app" },
+      ],
+      [
+        "an invalid-request code",
+        { code: -32_600, message: "invalid request" },
+      ],
+    ])("treats %s on the proof as unsupported", async (_label, error) => {
+      node.simulateV1 = "missing";
+      node.proofError = { method: "eth_call", error };
+      const thrown = await read({ timestampOffsetSec: SLOT }).catch(
+        (e: unknown) => e
+      );
+      expect(thrown).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+    });
+
+    it("falls back to eth_call when eth_simulateV1 fails for good", async () => {
+      vi.spyOn(provider, "_send").mockImplementation((payload) => {
+        const p = Array.isArray(payload) ? payload[0] : payload;
+        if (p.method === "eth_simulateV1") {
+          return Promise.resolve([
+            {
+              id: p.id,
+              jsonrpc: "2.0",
+              error: { code: -32_001, message: "Unauthorized" },
+            } as unknown as ethers.JsonRpcResult,
+          ]);
+        }
+        return FakeProvider.prototype._send.call(provider, payload);
+      });
+      const { simulation } = await read({ timestampOffsetSec: SLOT });
+      expect(simulation.rpcMethod).toBe("eth_call+blockOverrides");
+    });
+
+    it("keeps the node's message when the real call is refused inside an HTTP 4xx body", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+      vi.spyOn(provider, "_send").mockImplementation((payload) => {
+        const p = Array.isArray(payload) ? payload[0] : payload;
+        const tx = (p.params as Tx[] | undefined)?.[0];
+        if (p.method === "eth_estimateGas" && tx?.to === CONTRACT) {
+          return Promise.reject(
+            httpError(
+              400,
+              '{"error":{"code":-32602,"message":"invalid argument 0: bad from"}}'
+            )
+          );
+        }
+        return FakeProvider.prototype._send.call(provider, payload);
+      });
+      const error = (await send().catch((e: unknown) => e)) as Error;
+      expect(error.message).toContain("invalid argument 0: bad from");
+      expect(error.message).not.toContain("missing revert data");
+    });
 
     it("reads a revert inside an HTTP 4xx body as a final, decodable revert", async () => {
       node.unlockAt = node.latestTimestamp + 5;

@@ -4,12 +4,21 @@ import { findActionById, flattenConfigFields } from "@/plugins/registry";
 /**
  * Field updates made in the same tick (the network select sends `network`,
  * then `usePrivateMempool`): `start` is the config before the first of them,
- * `merged` every value set since, before any clearing.
+ * `merged` every value set since, before any clearing, and `cleared` the
+ * labels of the fields the batch so far clears.
  */
 export type ConfigUpdateBatch = {
   start: Record<string, unknown>;
   merged: Record<string, unknown>;
+  cleared: readonly string[];
 };
+
+export const CLEARED_FIELDS_TOAST_ID = "unsponsored-fields-cleared";
+
+/** The editor notice once a batch has cleared fields, so it is never silent. */
+export function clearedFieldsNotice(labels: readonly string[]): string {
+  return `${labels.join(" and ")} cleared: a sponsored send sets its own fees.`;
+}
 
 function withFields(config: Record<string, unknown>): {
   config: Record<string, unknown>;
@@ -43,8 +52,10 @@ export function applyConfigUpdate(
   const start = batch?.start ?? current;
   const raw = { ...(batch?.merged ?? current), [key]: value };
   const merged = prepare ? prepare(raw) : raw;
-  return {
-    batch: { start, merged },
-    config: clearUnsponsoredOnlyFields(withFields(start), withFields(merged)),
-  };
+  const after = withFields(merged);
+  const config = clearUnsponsoredOnlyFields(withFields(start), after);
+  const cleared = after.fields
+    .filter((field) => config[field.key] !== merged[field.key])
+    .map((field) => field.label ?? field.key);
+  return { batch: { start, merged, cleared }, config };
 }

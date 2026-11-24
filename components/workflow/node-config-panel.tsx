@@ -63,7 +63,9 @@ import {
 import { buildConfigForActionTypeChange } from "@/lib/workflow/editor/action-type-transition";
 import {
   applyConfigUpdate,
+  CLEARED_FIELDS_TOAST_ID,
   type ConfigUpdateBatch,
+  clearedFieldsNotice,
 } from "@/lib/workflow/editor/config-update";
 import { findActionById } from "@/plugins/registry";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
@@ -550,7 +552,14 @@ export const PanelInner = () => {
 
       pendingConfigRef.current = batch;
       queueMicrotask(() => {
+        // Runs once the same-tick updates are done; only the first one acts.
+        const finished = pendingConfigRef.current;
         pendingConfigRef.current = null;
+        if (finished?.cleared.length) {
+          toast.info(clearedFieldsNotice(finished.cleared), {
+            id: CLEARED_FIELDS_TOAST_ID,
+          });
+        }
       });
       updateNodeData({ id: selectedNode.id, data: { config: newConfig } });
 

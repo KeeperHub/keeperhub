@@ -28,7 +28,9 @@ import type { IntegrationType } from "@/lib/types/integration";
 import { cn } from "@/lib/utils";
 import {
   applyConfigUpdate,
+  CLEARED_FIELDS_TOAST_ID,
   type ConfigUpdateBatch,
+  clearedFieldsNotice,
 } from "@/lib/workflow/editor/config-update";
 import {
   clearNodeStatusesAtom,
@@ -218,7 +220,14 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
       );
       pendingConfigRef.current = batch;
       queueMicrotask(() => {
+        // Runs once the same-tick updates are done; only the first one acts.
+        const finished = pendingConfigRef.current;
         pendingConfigRef.current = null;
+        if (finished?.cleared.length) {
+          toast.info(clearedFieldsNotice(finished.cleared), {
+            id: CLEARED_FIELDS_TOAST_ID,
+          });
+        }
       });
       updateNodeData({
         id: selectedNode.id,

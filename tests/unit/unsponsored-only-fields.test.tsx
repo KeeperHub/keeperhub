@@ -6,7 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TOGGLE_FIELD_RENDERERS } from "@/components/workflow/config/toggle-field-renderers";
 import { UNSPONSORED_ONLY_FIELD_KEYS } from "@/lib/web3/unsponsored-only-fields";
 import { buildConfigForActionTypeChange } from "@/lib/workflow/editor/action-type-transition";
-import { applyConfigUpdate } from "@/lib/workflow/editor/config-update";
+import {
+  applyConfigUpdate,
+  clearedFieldsNotice,
+} from "@/lib/workflow/editor/config-update";
 import { sponsorGasField } from "@/plugins/field-fragments";
 
 let container: HTMLDivElement;
@@ -234,6 +237,38 @@ describe("applyConfigUpdate: fees hidden while sponsored", () => {
     expect("sponsorGas" in next.config).toBe(false);
   });
 
+  it("leaves a fee that was already hidden alone (a config saved outside the editor)", () => {
+    const saved = {
+      actionType: WRITE,
+      network: "8453",
+      sponsorGas: "true",
+      maxFeeGwei: "50",
+    };
+    expect(update(saved, "functionName", "run").maxFeeGwei).toBe("50");
+    expect(update(saved, "sponsorGas", "true").maxFeeGwei).toBe("50");
+  });
+
+  it("lists the cleared fields for the editor's notice, once the batch ends", () => {
+    const off = { actionType: WRITE, network: "1", sponsorGas: false, ...FEES };
+    const { batch } = applyConfigUpdate(null, off, "sponsorGas", true);
+    expect(batch.cleared).toEqual(["Priority Fee (gwei)", "Max Fee (gwei)"]);
+    expect(clearedFieldsNotice(batch.cleared)).toBe(
+      "Priority Fee (gwei) and Max Fee (gwei) cleared: a sponsored send sets its own fees."
+    );
+
+    // Flashbots: midway sponsored, final not: nothing cleared at the end.
+    const optimism = { actionType: WRITE, network: "10", ...FEES };
+    const first = applyConfigUpdate(null, optimism, "network", "1");
+    expect(first.batch.cleared.length).toBeGreaterThan(0);
+    const second = applyConfigUpdate(
+      first.batch,
+      optimism,
+      "usePrivateMempool",
+      true
+    );
+    expect(second.batch.cleared).toEqual([]);
+  });
+
   it("clears once a batch ends sponsored", () => {
     const flashbots = {
       actionType: WRITE,
@@ -265,5 +300,9 @@ describe("editor config handlers", () => {
     );
     expect(source).toMatch(/pendingConfigRef\.current = batch;/);
     expect(source).not.toMatch(/pendingConfigRef\.current = newConfig/);
+    // The notice reads the finished batch, after the same-tick updates.
+    expect(source).toMatch(
+      /const finished = pendingConfigRef\.current;[\s\S]{0,200}clearedFieldsNotice\(finished\.cleared\)/
+    );
   });
 });
