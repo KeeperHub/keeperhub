@@ -1,8 +1,10 @@
 "use client";
 
-import { Copy, ExternalLink } from "lucide-react";
+import { Copy, ExternalLink, Gem } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { FeatureUpgradeDialog } from "@/components/billing/feature-upgrade-dialog";
+import { PlanRequiredBadge } from "@/components/hub/plan-required-badge";
 import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/ui/code-editor";
 import { Input } from "@/components/ui/input";
@@ -17,9 +19,16 @@ import {
 } from "@/components/ui/select";
 import { TimezoneSelect } from "@/components/ui/timezone-select";
 import { getTriggerIcon } from "@/components/workflow-trigger-icons";
-import { useFeatures } from "@/hooks/use-features";
+import { useFeature, useFeatures } from "@/hooks/use-features";
 import { parseIntervalSeconds } from "@/lib/cron-utils";
+import { PLANS } from "@/lib/billing/plans";
 import { parseSchemaFields } from "@/lib/schema-fields";
+import {
+  EXECUTION_PRIORITY_FIELD,
+  LOW_LATENCY_START_FEATURE_ID,
+  LOW_LATENCY_TRIGGER_TYPES,
+  readExecutionPriority,
+} from "@/lib/workflow/execution-priority";
 import type { ActionConfigField } from "@/plugins/registry";
 import { ActionConfigRenderer } from "./action-config-renderer";
 import { CronScheduleBuilder } from "./cron-schedule-builder";
@@ -312,7 +321,128 @@ export function TriggerConfig({
           onUpdateConfig={handleConfigValue}
         />
       )}
+      {LOW_LATENCY_TRIGGER_TYPES.includes(String(config?.triggerType)) && (
+        <StartPriorityField
+          disabled={disabled}
+          onUpdateConfig={onUpdateConfig}
+          value={config?.[EXECUTION_PRIORITY_FIELD]}
+        />
+      )}
     </>
+  );
+}
+
+type StartPriorityFieldProps = {
+  value: unknown;
+  disabled: boolean;
+  onUpdateConfig: (key: string, value: string) => void;
+};
+
+function StartPriorityField({
+  value,
+  disabled,
+  onUpdateConfig,
+}: StartPriorityFieldProps): React.ReactNode {
+  const { enabled, loading, feature } = useFeature(
+    LOW_LATENCY_START_FEATURE_ID
+  );
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const priority = readExecutionPriority(value);
+  const locked = Boolean(feature) && !(enabled || loading);
+
+  // Same gate as a paid action in the action picker (action-config.tsx): the
+  // locked option stays listed with its gem, and choosing it opens the
+  // upgrade dialog instead of saving. A value already saved is kept so it can
+  // be switched back; the executor ignores it while the plan lacks the feature.
+  const handleChange = (next: string): void => {
+    if (next === "low-latency" && locked) {
+      setUpgradeOpen(true);
+      return;
+    }
+    onUpdateConfig(EXECUTION_PRIORITY_FIELD, next);
+  };
+
+  // A value saved while the plan included it, kept so it can be seen and
+  // switched back; the executor ignores it until the plan includes it again.
+  const inactive = locked && priority === "low-latency";
+  const helpId = `${EXECUTION_PRIORITY_FIELD}-help`;
+  const noteId = `${EXECUTION_PRIORITY_FIELD}-plan-note`;
+  const planName = feature ? PLANS[feature.requiredPlan].name : "a paid";
+
+  return (
+    <div className="space-y-2">
+      <Label className="ml-1" htmlFor={EXECUTION_PRIORITY_FIELD}>
+        Start Priority
+      </Label>
+      <Select
+        disabled={disabled}
+        onValueChange={handleChange}
+        value={priority}
+      >
+        <SelectTrigger
+          aria-describedby={locked ? `${helpId} ${noteId}` : helpId}
+          className="w-full"
+          id={EXECUTION_PRIORITY_FIELD}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="standard">Standard</SelectItem>
+          <SelectItem
+            data-locked={locked ? "true" : undefined}
+            value="low-latency"
+          >
+            <span className="flex items-center gap-1.5">
+              {locked && (
+                <Gem
+                  aria-hidden="true"
+                  className="size-3 text-[var(--color-text-accent)]"
+                />
+              )}
+              <span className={locked ? "opacity-70" : undefined}>
+                Low latency
+              </span>
+              {locked && (
+                <span className="sr-only">(requires {planName} plan)</span>
+              )}
+            </span>
+          </SelectItem>
+        </SelectContent>
+      </Select>
+      <p className="text-muted-foreground text-xs" id={helpId}>
+        {inactive ? "When available, low" : "Low"} latency starts runs on a
+        pre-warmed runner, typically in under a second instead of 10-20
+        seconds. Runs start the standard way when none is free or the
+        environment has none.
+      </p>
+      {locked && feature && (
+        <div
+          className="flex flex-wrap items-center gap-x-2 gap-y-1"
+          id={noteId}
+        >
+          <PlanRequiredBadge plan={feature.requiredPlan} />
+          <span className="text-muted-foreground text-xs">
+            {inactive
+              ? "Your plan doesn't include low latency, so runs start the standard way."
+              : `Low latency requires the ${planName} plan.`}
+          </span>
+          <Button
+            aria-label="Upgrade to use low latency"
+            className="h-auto p-0 text-xs"
+            onClick={() => setUpgradeOpen(true)}
+            type="button"
+            variant="link"
+          >
+            Upgrade
+          </Button>
+        </div>
+      )}
+      <FeatureUpgradeDialog
+        feature={feature ?? null}
+        onOpenChange={setUpgradeOpen}
+        open={upgradeOpen}
+      />
+    </div>
   );
 }
 

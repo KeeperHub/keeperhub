@@ -41,6 +41,20 @@ function parseNonNegativeInt(value: string | undefined, fallback: number): numbe
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+// Parse a positive integer env var, falling back on unset, blank, non-numeric
+// or 0 (for durations where 0 would mean "never" or "always").
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = parseNonNegativeInt(value, fallback);
+  return parsed > 0 ? parsed : fallback;
+}
+
+// Warm pods give up on a claim request after 60s (lib/warm-pool-client.ts);
+// the executor must answer well before that or every poll looks like an
+// unreachable executor.
+const WARM_POOL_MAX_LONG_POLL_SECONDS = 45;
+// Caps a typo: each warm pod reserves a runner's CPU and memory while idle.
+const WARM_POOL_MAX_SIZE = 32;
+
 export const CONFIG = {
   executionMode: (process.env.EXECUTION_MODE || "isolated") as ExecutionMode,
 
@@ -133,6 +147,42 @@ export const CONFIG = {
   // false keeps freshness advisory so a queue backlog never drops real triggers;
   // enable once backlog behaviour is understood.
   sqsHmacMaxAgeEnforce: process.env.SQS_HMAC_MAX_AGE_ENFORCE === "true",
+
+  // Warm runner pool for workflows that opt into a low-latency start (see
+  // warm-pool.ts). The size is per executor replica; 0 (the default) disables
+  // the pool, and every run takes the per-execution Job path as before.
+  warmPoolSize: Math.min(
+    parseNonNegativeInt(process.env.WARM_POOL_SIZE, 0),
+    WARM_POOL_MAX_SIZE
+  ),
+  // Most warm-pod claims one organization may make per minute on this
+  // replica, so a single organization cannot drain a pool every organization
+  // shares. Above it, runs start the standard way. Unset derives it from the
+  // pool size (see defaultOrgClaimsPerMinute in warm-pool.ts).
+  // An invalid or zero value also derives it, rather than locking every
+  // organization out of the pool.
+  warmPoolOrgClaimsPerMinute:
+    parseNonNegativeInt(process.env.WARM_POOL_ORG_CLAIMS_PER_MINUTE, 0) ||
+    undefined,
+  // How long a warm pod may wait for an assignment before the executor retires
+  // it and starts a replacement. Bounds orphans and picks up new runner images.
+  warmPoolIdleTtlSeconds:
+    parsePositiveInt(process.env.WARM_POOL_IDLE_TTL_SECONDS, 600),
+  // How long the executor holds a warm pod's claim request open before
+  // answering "no work yet" so the pod polls again.
+  warmPoolLongPollSeconds:
+    Math.min(
+      parsePositiveInt(process.env.WARM_POOL_LONG_POLL_SECONDS, 20),
+      WARM_POOL_MAX_LONG_POLL_SECONDS
+    ),
+  // URL warm pods use to reach this executor replica. Unset means the
+  // executor resolves its own pod IP at startup; each replica owns its pool,
+  // so this must address the replica, not the load-balanced Service.
+  warmPoolClaimUrl: process.env.WARM_POOL_CLAIM_URL,
+  // Comma-separated action-type prefixes whose step modules a warm pod
+  // imports while it waits, so the first step does not pay for loading them.
+  warmPoolPreloadActionPrefixes:
+    process.env.WARM_POOL_PRELOAD_ACTION_PREFIXES ?? "web3/",
 
   visibilityTimeout: 300,
   waitTimeSeconds: 20,

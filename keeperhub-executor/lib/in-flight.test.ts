@@ -110,4 +110,25 @@ describe("InFlightTracker", () => {
     late.resolve();
     await expect(drained).resolves.toBe(true);
   });
+
+  it("settleAny resolves once any tracked promise settles, or at once when empty", async () => {
+    const tracker = new InFlightTracker();
+    await expect(tracker.settleAny()).resolves.toBeUndefined();
+
+    const slow = deferred();
+    const failing = deferred();
+    tracker.track(slow.promise);
+    tracker.track(failing.promise).catch(() => undefined);
+    let settled = false;
+    const any = tracker.settleAny().then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    failing.reject(new Error("dispatch failed"));
+    await any;
+    expect(settled).toBe(true);
+    slow.resolve();
+  });
 });

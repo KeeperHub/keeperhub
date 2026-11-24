@@ -281,9 +281,20 @@ describe("isLatencyObservation label allowlists", () => {
   });
 
   it("accepts every dispatch target in the union", () => {
-    for (const dispatchTarget of ["k8s-job", "in-process", "api"]) {
+    for (const dispatchTarget of ["k8s-job", "in-process", "api", "warm-pool"]) {
       expect(isLatencyObservation(observation({ dispatchTarget }))).toBe(true);
     }
+  });
+
+  it("keeps a warm-pool run's ingest payload, counters included", () => {
+    // A warm pod ships the same payload as a per-run Job pod; rejecting its
+    // observation would drop the whole payload and its counter deltas.
+    expect(
+      isIngestPayload({
+        deltas: [],
+        observations: [observation({ dispatchTarget: "warm-pool" })],
+      })
+    ).toBe(true);
   });
 
   it("rejects an unknown trigger type", () => {

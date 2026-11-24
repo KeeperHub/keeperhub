@@ -838,6 +838,31 @@ const executorBroadcastLatency = getOrCreateHistogram(
   [250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000, 120_000, 300_000]
 );
 
+// Warm runner pool (keeperhub-executor/warm-pool.ts) -> apiRegistry: each
+// executor replica owns its own pool, so these are per-pod and summed in
+// queries. claim_result is claimed | miss | org_limited | invalid |
+// refused | unacknowledged | not_entitled.
+const executorWarmPoolReady = getOrCreateGauge(
+  apiRegistry,
+  "keeperhub_executor_warm_pool_ready",
+  "Warm runner pods holding an open claim request on this executor replica",
+  []
+);
+
+const executorWarmPoolStarting = getOrCreateGauge(
+  apiRegistry,
+  "keeperhub_executor_warm_pool_starting",
+  "Warm runner Jobs created by this executor replica whose pod has not polled yet",
+  []
+);
+
+const executorWarmPoolClaimsTotal = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_executor_warm_pool_claims_total",
+  "Low-latency dispatches by outcome: claimed by a warm pod; miss, org_limited, invalid, refused or unacknowledged (fell back to a per-run Job); or not_entitled",
+  ["claim_result", "trigger_type"]
+);
+
 // Broadcast attempts, bumped by the process that performed the broadcast and
 // merged into the executor's registry via the counter-delta ingest. The
 // workflow.executions counters on Job pods use the same channel; the delta
@@ -1667,6 +1692,7 @@ const counterMap: Record<string, Counter> = {
   "safe_fetch.blocks.total": safeFetchBlocks,
   "ratelimit.mcp.degraded.total": mcpRateLimitDegraded,
   "protocol.alias.redirect.total": protocolAliasRedirects,
+  "executor.warm_pool.claims.total": executorWarmPoolClaimsTotal,
 };
 
 const errorCounterMap: Record<string, Counter> = {
@@ -1691,6 +1717,8 @@ const gaugeMap: Record<string, Gauge> = {
   "workflow.queue.depth": workflowQueueDepth,
   "workflow.concurrent.count": workflowConcurrent,
   "user.active.daily": activeUsers,
+  "executor.warm_pool.ready": executorWarmPoolReady,
+  "executor.warm_pool.starting": executorWarmPoolStarting,
 };
 
 /**
