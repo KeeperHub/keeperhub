@@ -1,5 +1,3 @@
-import { PLUGIN_STEP_IMPORTERS } from "../../lib/step-registry";
-
 /**
  * Import the step modules for every action type that starts with one of the
  * given prefixes. A warm pod runs this while it waits, so the first step of
@@ -16,6 +14,10 @@ export async function preloadStepModules(
   if (prefixes.length === 0) {
     return { loaded, failed };
   }
+  // Loaded here, not at module load: the registry is generated at build time
+  // (pnpm discover-plugins), and the runner module is also imported where it
+  // does not exist, such as unit tests and per-run Jobs that never preload.
+  const { PLUGIN_STEP_IMPORTERS } = await import("../../lib/step-registry");
   for (const [actionType, entry] of Object.entries(PLUGIN_STEP_IMPORTERS)) {
     if (!prefixes.some((prefix) => actionType.startsWith(prefix))) {
       continue;
