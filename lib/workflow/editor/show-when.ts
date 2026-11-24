@@ -42,6 +42,7 @@ export type ShowWhen =
     }
   | { computed: "sponsorshipSupported"; networkField: string }
   | { computed: "notSponsored"; networkField: string }
+  | { computed: "simulatesNextBlock" }
   | { all: ShowWhen[] };
 
 function evaluateComputed(
@@ -59,6 +60,9 @@ function evaluateComputed(
   }
   if (showWhen.computed === "sponsorshipSupported") {
     return isNetworkSponsorable(config[showWhen.networkField]);
+  }
+  if (showWhen.computed === "simulatesNextBlock") {
+    return simulatesNextBlock(config);
   }
   if (showWhen.computed === "notSponsored") {
     return !wouldBeSponsored(config, showWhen.networkField);

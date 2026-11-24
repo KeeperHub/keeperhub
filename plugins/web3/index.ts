@@ -1846,6 +1846,11 @@ const web3Plugin: IntegrationPlugin = {
             "Classified revert kind when the batch was rejected on-chain, when it could be determined",
         },
         simulationOutput(),
+        {
+          field: "resultsSimulation",
+          description:
+            "With Next block, the predicted block the per-call check before the send ran against. It differs from simulation when a new block or slot came before the send, which then checked again.",
+        },
       ],
       configFields: [
         evmPrivateNetworkField(),

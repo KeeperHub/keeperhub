@@ -1247,11 +1247,40 @@ describe("batch-write-contract - simulateAt next-block", () => {
       success: true,
       totalCalls: 2,
       simulation: SIMULATION,
+      // The block the per-call results were checked against.
+      resultsSimulation: SIMULATION,
     });
     expect(result.success && result.results?.map((r) => r.success)).toEqual([
       true,
       false,
     ]);
+  });
+
+  it("names each block when the send checked again on a newer one", async () => {
+    const sendSimulation = {
+      ...SIMULATION,
+      baseBlock: 101,
+      assumedBlockNumber: 102,
+      assumedTimestamp: 1_000_024,
+    };
+    mockSimulateAtNextBlock.mockResolvedValueOnce({
+      returnData: aggregate3Return([SUCCESS_RETURN, SUCCESS_RETURN]),
+      simulation: SIMULATION,
+    });
+    mockExecuteContractCall.mockResolvedValueOnce({
+      ...RECEIPT,
+      simulation: sendSimulation,
+    });
+
+    const result = await batchWriteContractCore(
+      baseInput({ simulateAt: "next-block" })
+    );
+
+    expect(result).toMatchObject({
+      success: true,
+      simulation: sendSimulation,
+      resultsSimulation: SIMULATION,
+    });
   });
 
   it("skips the broadcast when every call fails at the next block", async () => {
@@ -1270,6 +1299,7 @@ describe("batch-write-contract - simulateAt next-block", () => {
         "(simulated as of next block 101, timestamp 1000012)"
       ),
       simulation: SIMULATION,
+      resultsSimulation: SIMULATION,
     });
     expect(mockExecuteContractCall).not.toHaveBeenCalled();
   });

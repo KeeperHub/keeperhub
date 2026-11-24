@@ -145,13 +145,14 @@ export function simulateAtField(): ActionConfigFieldBase {
 
 export function simulateTimestampOffsetField(): ActionConfigFieldBase {
   return {
-    helpTip: `Block time in seconds, from ${MIN_SIMULATE_TIMESTAMP_OFFSET_SEC} to ${MAX_SIMULATE_TIMESTAMP_OFFSET_SEC}. Leave empty to use this network's block time. The next block is assumed one block time after the latest one. On Ethereum, Ethereum Sepolia and Ethereum Hoodi it is the next 12-second slot still open, and this value only matters above 12. A value above the real block time makes the check pass early.`,
+    helpTip: `Block time in seconds, from ${MIN_SIMULATE_TIMESTAMP_OFFSET_SEC} to ${MAX_SIMULATE_TIMESTAMP_OFFSET_SEC}. Leave empty to use this network's block time. The next block is assumed one block time after the latest one. On Ethereum, Ethereum Sepolia and Ethereum Hoodi it is the earliest 12-second slot the transaction can still land in, and this value only matters above 12. A value above the real block time makes the check pass early.`,
     key: "simulateTimestampOffsetSec",
     label: "Next block timestamp offset (seconds)",
     max: MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
     min: MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
     placeholder: "Auto (network block time)",
-    showWhen: { field: "simulateAt", equals: "next-block" },
+    // Read as the step reads it, so "Next-Block" saved via the API shows too.
+    showWhen: { computed: "simulatesNextBlock" },
     step: 1,
     type: "number",
   };

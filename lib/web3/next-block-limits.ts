@@ -3,7 +3,7 @@
 export const MIN_SIMULATE_TIMESTAMP_OFFSET_SEC = 1;
 export const MAX_SIMULATE_TIMESTAMP_OFFSET_SEC = 60;
 
-export type ParsedSimulationSettings =
+type ParsedSimulationSettings =
   | { ok: true; options: { timestampOffsetSec?: number } | undefined }
   | {
       ok: false;

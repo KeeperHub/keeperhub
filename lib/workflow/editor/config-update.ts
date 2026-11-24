@@ -1,5 +1,19 @@
 import { clearUnsponsoredOnlyFields } from "@/lib/web3/unsponsored-only-fields";
-import { findActionById, flattenConfigFields } from "@/plugins/registry";
+import {
+  type ActionConfigFieldBase,
+  findActionById,
+  flattenConfigFields,
+  isFieldEnabled,
+  isFieldShown,
+} from "@/plugins/registry";
+
+/** Shown and accepting input, as the form decides it. */
+export function isFieldEditable(
+  field: ActionConfigFieldBase,
+  config: Record<string, unknown>
+): boolean {
+  return isFieldShown(field, config) && isFieldEnabled(field, config);
+}
 
 /**
  * Field updates made in the same tick (the network select sends `network`,
@@ -57,7 +71,11 @@ export function applyConfigUpdate(
   const raw = { ...(batch?.merged ?? current), [key]: value };
   const merged = prepare ? prepare(raw) : raw;
   const after = withFields(merged);
-  const config = clearUnsponsoredOnlyFields(withFields(start), after);
+  const config = clearUnsponsoredOnlyFields(
+    withFields(start),
+    after,
+    isFieldEditable
+  );
   const cleared = after.fields
     .filter((field) => config[field.key] !== merged[field.key])
     .map((field) => field.label ?? field.key);

@@ -4,11 +4,15 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TOGGLE_FIELD_RENDERERS } from "@/components/workflow/config/toggle-field-renderers";
-import { UNSPONSORED_ONLY_FIELD_KEYS } from "@/lib/web3/unsponsored-only-fields";
+import {
+  clearUnsponsoredOnlyFields,
+  UNSPONSORED_ONLY_FIELD_KEYS,
+} from "@/lib/web3/unsponsored-only-fields";
 import { buildConfigForActionTypeChange } from "@/lib/workflow/editor/action-type-transition";
 import {
   applyConfigUpdate,
   clearedFieldsNotice,
+  isFieldEditable,
 } from "@/lib/workflow/editor/config-update";
 import { sponsorGasField } from "@/plugins/field-fragments";
 
@@ -152,6 +156,28 @@ describe("applyConfigUpdate: fees locked while sponsored", () => {
       ...sponsored,
       sponsorGas: false,
     });
+  });
+
+  it("never clears a field the form does not show (hidden)", () => {
+    const fee = {
+      key: "maxFeeGwei",
+      label: "Max Fee (gwei)",
+      type: "template-input" as const,
+      hidden: true,
+      enabledWhen: {
+        when: { computed: "notSponsored" as const, networkField: "network" },
+        hint: "",
+      },
+    };
+    const before = { network: "1", sponsorGas: false, maxFeeGwei: "50" };
+    const after = { ...before, sponsorGas: true };
+    expect(
+      clearUnsponsoredOnlyFields(
+        { config: before, fields: [fee] },
+        { config: after, fields: [fee] },
+        isFieldEditable
+      )
+    ).toBe(after);
   });
 
   it("does not touch settings that are already empty", () => {

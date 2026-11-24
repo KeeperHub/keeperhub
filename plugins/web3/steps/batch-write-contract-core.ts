@@ -140,6 +140,8 @@ export type BatchWriteContractResult =
     error?: string;
     rejection?: RevertKind;
     simulation?: NextBlockSimulation;
+    // The block the per-call results were checked against.
+    resultsSimulation?: NextBlockSimulation;
   }
   | {
     success: false;
@@ -156,6 +158,7 @@ export type BatchWriteContractResult =
     // resolution, a whole-batch revert on the staticCall itself).
     results?: BatchWriteCallResult[];
     totalCalls?: number;
+    resultsSimulation?: NextBlockSimulation;
     broadcastAttempted?: boolean;
   };
 
@@ -192,6 +195,9 @@ export function applyBatchFailOnError(
     results: result.results,
     totalCalls: result.totalCalls,
     ...(result.simulation ? { simulation: result.simulation } : {}),
+    ...(result.resultsSimulation
+      ? { resultsSimulation: result.resultsSimulation }
+      : {}),
   };
 }
 
@@ -726,6 +732,7 @@ async function batchWriteContractCoreImpl(
       ),
       results,
       totalCalls: results.length,
+      ...(checkedAt ? { resultsSimulation: checkedAt } : {}),
     };
   }
 
@@ -817,6 +824,7 @@ async function batchWriteContractCoreImpl(
         results,
         totalCalls: results.length,
         ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
+        ...(checkedAt ? { resultsSimulation: checkedAt } : {}),
       };
     } catch (error) {
       if (isNextBlockSimulationUnsupported(error)) {
@@ -868,6 +876,7 @@ async function batchWriteContractCoreImpl(
         ...base,
         results: revertedResults,
         totalCalls: revertedResults.length,
+        ...(checkedAt ? { resultsSimulation: checkedAt } : {}),
       };
     }
   });

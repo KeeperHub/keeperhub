@@ -8,6 +8,7 @@ import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { simulateV1Params, txForNode } from "@/lib/execute/node-call";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import type { RpcOperationType, RpcProviderManager } from "@/lib/rpc/providers";
+import { scrubRpcUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { getErrorMessage } from "@/lib/utils";
 import {
   MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
@@ -117,14 +118,15 @@ function rpcErrorOf(error: unknown): { code?: number; message?: string } {
   return e.info?.error ?? e.error ?? {};
 }
 
-// The node's own message when ethers wrapped it, else ethers' short message,
-// which unlike the full one carries no request URL. Capped.
+// The node's own message (also from an HTTP 4xx body), else ethers' short
+// message, which unlike the full one carries no request URL. Any URL a relay
+// echoes is masked before the cap, so a cut cannot leave half of one.
 function detailOf(error: unknown): string {
   const message =
-    rpcErrorOf(error).message ??
-    (error as { shortMessage?: string }).shortMessage ??
+    nodeAnswer(error).message ||
+    (error as { shortMessage?: string }).shortMessage ||
     getErrorMessage(error);
-  return message.slice(0, DETAIL_MAX_CHARS);
+  return scrubRpcUrls(message).slice(0, DETAIL_MAX_CHARS);
 }
 
 function unsupported(what: string, error?: unknown): never {
@@ -282,7 +284,7 @@ const OVERRIDES_REFUSED_PATTERN =
 // A block the node does not have yet, a rate limit, or an endpoint briefly
 // unavailable.
 const TRANSIENT_PATTERN =
-  /(header|block)\b(?!\s*overrides?)[^.]{0,80}(not found|not available|not yet available|does not exist|could not be found)|unknown block|missing trie node|rate limit|too many requests|request limit reached|compute units|exceeded .{0,40}capacity|(?<!execution aborted \()timed? ?out|service unavailable|bad gateway|try again/i;
+  /(header|block)\b(?!\s*overrides?)[^.]{0,80}(not found|not available|not yet available|does not exist|could not be found)|unknown block|invalid block (number|height)|block (number |height )?(is )?out of range|missing trie node|rate limit|too many requests|request limit reached|compute units|exceeded .{0,40}capacity|(?<!execution aborted \()timed? ?out|service unavailable|bad gateway|try again/i;
 // The method refused by name, or the extra parameter rejected as malformed.
 const METHOD_REFUSED_PATTERN =
   /unsupported method|\bmethod\s+(["'`]?[\w.]+["'`]?\s+)?(is\s+)?(not found|not supported|not available|does not exist|not allowed|disabled|not (white|allow)listed)|\beth_\w+\s+is\s+not\s+(white|allow)listed|too many arguments|invalid (method )?param|unknown field|unexpected (field|argument)/i;
@@ -391,12 +393,16 @@ function classifyNodeError(error: unknown): NodeErrorKind {
   ) {
     return "transient";
   }
+  // -32602 alone is not a refusal (nodes also send it for a bad block number),
+  // but it is the node's answer to this request: final, even over HTTP 4xx.
   if (
-    answer.code === INVALID_PARAMS_CODE ||
     answer.code === METHOD_NOT_FOUND_CODE ||
     METHOD_REFUSED_PATTERN.test(answer.message)
   ) {
     return "unsupported";
+  }
+  if (answer.code === INVALID_PARAMS_CODE) {
+    return "failed";
   }
   if (answer.viaHttp || answer.code === LIMIT_EXCEEDED_CODE) {
     return "transient";
@@ -448,7 +454,7 @@ function finalCallError(
   }
   return Object.assign(
     new Error(
-      `Next-block simulation: ${action === "call" ? "eth_call" : "eth_estimateGas"} failed: ${answer.message || detailOf(reason)}`.slice(
+      `Next-block simulation: ${action === "call" ? "eth_call" : "eth_estimateGas"} failed: ${detailOf(reason)}`.slice(
         0,
         DETAIL_MAX_CHARS + 60
       ),
@@ -702,23 +708,20 @@ const BEACON_SLOT_SECONDS = new Map<number, number>([
   [100, 5],
   [10_200, 5],
 ]);
-// A slot counts as passed a third of the way in, while blocks are still built.
-const SLOT_GRACE_FRACTION = 1 / 3;
 // An older head means a lagging RPC, a wrong server clock or missing slots.
 const STALE_HEAD_SLOTS = 5;
 
 /**
- * The first slot (latest + n slots) a transaction sent now can still land in,
- * as a keeper on the beacon slot clock counts it; never before latest + 1 slot.
+ * The earliest slot (latest + n slots) a transaction sent now can land in. A
+ * slot counts as passed only once it has fully elapsed, since its block may
+ * still be published late; never before latest + 1 slot.
  */
 export function nextSlotTime(
   latestTimestamp: number,
   slotSeconds: number,
   nowSeconds: number
 ): number {
-  const grace = slotSeconds * SLOT_GRACE_FRACTION;
-  const passed =
-    Math.floor((nowSeconds - latestTimestamp - grace) / slotSeconds) + 1;
+  const passed = Math.floor((nowSeconds - latestTimestamp) / slotSeconds);
   return latestTimestamp + Math.max(1, passed) * slotSeconds;
 }
 

@@ -622,7 +622,6 @@ describe("next-block simulation", () => {
 
   describe("the slot clock (beacon chains)", () => {
     const MAINNET = 1;
-    const GRACE = SLOT / 3;
 
     function sendOn(
       chainId: number,
@@ -635,9 +634,9 @@ describe("next-block simulation", () => {
       });
     }
 
-    it("predicts the next slot once a missed slot has passed its grace", async () => {
-      // No block for the slot after the latest one, 4 s into it.
-      setClock(node.latestTimestamp + SLOT + GRACE);
+    it("predicts the next slot once a missed slot has fully passed", async () => {
+      // No block for the slot after the latest one, and that slot is over.
+      setClock(node.latestTimestamp + 2 * SLOT);
       node.unlockAt = node.latestTimestamp + 2 * SLOT;
 
       const { simulation } = await sendOn(MAINNET);
@@ -645,8 +644,9 @@ describe("next-block simulation", () => {
       expect(simulation.assumedBlockNumber).toBe(101);
     });
 
-    it("keeps the current slot during its first third, while blocks are still built", async () => {
-      setClock(node.latestTimestamp + SLOT + GRACE - 1);
+    it("keeps a slot until it has fully passed, since its block may be late", async () => {
+      // The T+12 block may still be published (e.g. at T+16.5).
+      setClock(node.latestTimestamp + 2 * SLOT - 1);
       node.unlockAt = node.latestTimestamp + 2 * SLOT;
 
       const error = await sendOn(MAINNET).catch((e: unknown) => e);
@@ -657,7 +657,7 @@ describe("next-block simulation", () => {
     });
 
     it("refuses a call valid only from a later slot after a missed one", async () => {
-      setClock(node.latestTimestamp + SLOT + GRACE);
+      setClock(node.latestTimestamp + 2 * SLOT);
       node.unlockAt = node.latestTimestamp + 3 * SLOT;
 
       const error = await sendOn(MAINNET).catch((e: unknown) => e);
@@ -691,7 +691,7 @@ describe("next-block simulation", () => {
     it("checks again when the predicted slot passed with no new block", async () => {
       node.unlockAt = node.latestTimestamp + SLOT;
       const basedOn = (await sendOn(MAINNET)).simulation;
-      setClock(node.latestTimestamp + SLOT + GRACE);
+      setClock(node.latestTimestamp + 2 * SLOT);
       node.unlockAt = node.latestTimestamp + 2 * SLOT;
       provider = new FakeProvider(node);
 
@@ -748,7 +748,7 @@ describe("next-block simulation", () => {
       });
       expect(early.simulation.assumedTimestamp).toBe(node.latestTimestamp + 5);
 
-      setClock(node.latestTimestamp + 7);
+      setClock(node.latestTimestamp + 10);
       provider = new FakeProvider(node);
       const late = await simulateCallAtNextBlock(managerFor(provider), {
         chainId: GNOSIS,
@@ -812,16 +812,20 @@ describe("next-block simulation", () => {
       }
     );
 
-    it("matches a beacon-clock keeper that re-checks 4 s into each slot", () => {
-      // Mainnet genesis 1606824023, 12 s slots.
-      const genesis = 1_606_824_023;
-      const latest = genesis + 1_000_000 * SLOT;
-      const beaconNextSlotAfter = (t: number): number =>
-        genesis + (Math.floor((t - genesis) / SLOT) + 1) * SLOT;
-      for (const into of [0, 1, 3, 4, 5, 11, 12, 15, 16, 27, 28]) {
-        const now = latest + into;
-        expect(nextSlotTime(latest, SLOT, now)).toBe(
-          Math.max(beaconNextSlotAfter(now - GRACE), latest + SLOT)
+    it("never predicts later than the earliest slot a late block can still fill", () => {
+      const latest = 1_000_000;
+      const cases: [number, number][] = [
+        [0, 12],
+        [11, 12],
+        [16, 12],
+        [23, 12],
+        [24, 24],
+        [35, 24],
+        [36, 36],
+      ];
+      for (const [into, predicted] of cases) {
+        expect(nextSlotTime(latest, SLOT, latest + into)).toBe(
+          latest + predicted
         );
       }
     });
@@ -1134,10 +1138,17 @@ describe("next-block simulation", () => {
       );
       expect(error).toBeInstanceOf(NextBlockSimulationUnsupportedError);
       expect((error as Error).message).not.toContain("key123");
+      // The relay's own refusal, as over HTTP 200.
+      expect((error as Error).message).toContain(
+        "rpc method is not whitelisted"
+      );
     });
 
     it.each([
-      ["code -32602", { code: -32_602, message: "bad request" }],
+      [
+        "code -32602 with an invalid-params message",
+        { code: -32_602, message: "invalid params" },
+      ],
       [
         "a refused-parameter message",
         { code: -32_000, message: "too many arguments, want at most 3" },
@@ -1266,6 +1277,45 @@ describe("next-block simulation", () => {
       }
     );
 
+    it.each([
+      ["a bare -32602", { code: -32_602, message: "bad request" }],
+      [
+        "an invalid block number",
+        { code: -32_602, message: "invalid block number" },
+      ],
+      [
+        "a block out of range",
+        { code: -32_602, message: "block number out of range" },
+      ],
+    ])(
+      "keeps %s on the proof retryable, not unsupported",
+      async (_label, error) => {
+        node.simulateV1 = "missing";
+        node.proofError = { method: "eth_call", error };
+        const thrown = await read({ timestampOffsetSec: SLOT }).catch(
+          (e: unknown) => e
+        );
+        expect(thrown).not.toBeInstanceOf(NextBlockSimulationUnsupportedError);
+        expect(isNonRetryableError(thrown)).toBe(false);
+      }
+    );
+
+    it("keeps the relay's refusal text on a send refused over HTTP 403", async () => {
+      node.simulateV1 = "missing";
+      vi.spyOn(provider, "_send").mockImplementation((payload) => {
+        const p = Array.isArray(payload) ? payload[0] : payload;
+        if (p.method === "eth_estimateGas") {
+          return Promise.reject(httpError(403, NOT_WHITELISTED_BODY));
+        }
+        return FakeProvider.prototype._send.call(provider, payload);
+      });
+      const error = await send().catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect((error as Error).message).toContain(
+        "eth_estimateGas does not apply block overrides (rpc method is not whitelisted)"
+      );
+    });
+
     it('keeps a gateway\'s "IP not whitelisted" retryable, not unsupported', async () => {
       node.simulateV1 = "missing";
       node.proofError = {
@@ -1301,7 +1351,7 @@ describe("next-block simulation", () => {
     it.each([
       [
         "a JSON-RPC -32602 body",
-        '{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"bad params"}}',
+        '{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params"}}',
       ],
       [
         "an unsupported-method message",
@@ -1543,26 +1593,52 @@ describe("next-block simulation", () => {
       expect(simulation.rpcMethod).toBe("eth_call+blockOverrides");
     });
 
-    it("keeps the node's message when the real call is refused inside an HTTP 4xx body", async () => {
-      node.unlockAt = node.latestTimestamp + 5;
+    it.each([
+      ["a refused parameter", "too many arguments, want at most 3"],
+      ["a bad request (-32602)", "invalid argument 0: bad from"],
+    ])(
+      "keeps the node's message when the real call is refused inside an HTTP 4xx body: %s",
+      async (_label, message) => {
+        node.unlockAt = node.latestTimestamp + 5;
+        vi.spyOn(provider, "_send").mockImplementation((payload) => {
+          const p = Array.isArray(payload) ? payload[0] : payload;
+          const tx = (p.params as Tx[] | undefined)?.[0];
+          if (p.method === "eth_estimateGas" && tx?.to === CONTRACT) {
+            return Promise.reject(
+              httpError(
+                400,
+                JSON.stringify({ error: { code: -32_602, message } })
+              )
+            );
+          }
+          return FakeProvider.prototype._send.call(provider, payload);
+        });
+        const error = (await send().catch((e: unknown) => e)) as Error;
+        expect(error.message).toContain(message);
+        expect(error).not.toMatchObject({ code: "CALL_EXCEPTION" });
+        // Final, as the same answer over HTTP 200 would be: no failover.
+        expect(isNonRetryableError(error)).toBe(true);
+      }
+    );
+
+    it("masks a URL a relay echoes in its refusal", async () => {
+      node.simulateV1 = "missing";
       vi.spyOn(provider, "_send").mockImplementation((payload) => {
         const p = Array.isArray(payload) ? payload[0] : payload;
-        const tx = (p.params as Tx[] | undefined)?.[0];
-        if (p.method === "eth_estimateGas" && tx?.to === CONTRACT) {
+        if (p.method === "eth_estimateGas") {
           return Promise.reject(
             httpError(
-              400,
-              '{"error":{"code":-32602,"message":"invalid argument 0: bad from"}}'
+              403,
+              '{"error":{"code":-32601,"message":"https://relay.example/v3/0123456789abcdef0123456789abcdef not whitelisted"}}'
             )
           );
         }
         return FakeProvider.prototype._send.call(provider, payload);
       });
       const error = (await send().catch((e: unknown) => e)) as Error;
-      expect(error.message).toContain("invalid argument 0: bad from");
-      expect(error).not.toMatchObject({ code: "CALL_EXCEPTION" });
-      // Final, as the same answer over HTTP 200 would be: no failover.
-      expect(isNonRetryableError(error)).toBe(true);
+      expect(error).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect(error.message).not.toContain("0123456789abcdef");
+      expect(error.message).toContain("not whitelisted");
     });
 
     it("reads a revert inside an HTTP 4xx body as a final, decodable revert", async () => {

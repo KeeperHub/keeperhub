@@ -1,7 +1,4 @@
-import {
-  evaluateShowWhen,
-  type ShowWhen,
-} from "@/lib/workflow/editor/show-when";
+import type { ShowWhen } from "@/lib/workflow/editor/show-when";
 import type { ActionConfigFieldBase } from "@/plugins/registry";
 
 export const SPONSORSHIP_GAS_SETTINGS_DOC_URL =
@@ -28,17 +25,17 @@ export function isConfigValueSet(value: unknown): boolean {
   return value !== undefined && value !== null && String(value).trim() !== "";
 }
 
-type FieldAvailability = {
-  key: string;
-  showWhen?: ShowWhen;
-  enabledWhen?: { when: ShowWhen };
+type NodeFields = {
+  config: Record<string, unknown>;
+  fields: readonly ActionConfigFieldBase[];
 };
 
-/** A node's config with its action's (flattened) fields. */
-export type NodeFields = {
-  config: Record<string, unknown>;
-  fields: readonly FieldAvailability[];
-};
+// Whether the form shows a field and lets it be edited (the registry's
+// isFieldShown && isFieldEnabled, passed in to avoid an import cycle).
+type IsEditable = (
+  field: ActionConfigFieldBase,
+  config: Record<string, unknown>
+) => boolean;
 
 function isNotSponsoredRule(rule: ShowWhen | undefined): boolean {
   return (
@@ -46,14 +43,13 @@ function isNotSponsoredRule(rule: ShowWhen | undefined): boolean {
   );
 }
 
-// Shown and accepting input.
-function isEditable(node: NodeFields, key: string): boolean {
+function editableIn(
+  node: NodeFields,
+  key: string,
+  isEditable: IsEditable
+): boolean {
   const field = node.fields.find((candidate) => candidate.key === key);
-  return (
-    field !== undefined &&
-    evaluateShowWhen(field.showWhen, node.config) &&
-    evaluateShowWhen(field.enabledWhen?.when, node.config)
-  );
+  return field !== undefined && isEditable(field, node.config);
 }
 
 /**
@@ -64,20 +60,22 @@ function isEditable(node: NodeFields, key: string): boolean {
  */
 export function clearUnsponsoredOnlyFields(
   before: NodeFields,
-  after: NodeFields
+  after: NodeFields,
+  isEditable: IsEditable
 ): Record<string, unknown> {
   let cleared = after.config;
-  for (const { key, showWhen, enabledWhen } of after.fields) {
+  for (const field of after.fields) {
     const appliesWhenNotSponsored =
-      isNotSponsoredRule(showWhen) || isNotSponsoredRule(enabledWhen?.when);
+      isNotSponsoredRule(field.showWhen) ||
+      isNotSponsoredRule(field.enabledWhen?.when);
     if (
-      !(appliesWhenNotSponsored && isConfigValueSet(after.config[key])) ||
-      isEditable(after, key) ||
-      !isEditable(before, key)
+      !(appliesWhenNotSponsored && isConfigValueSet(after.config[field.key])) ||
+      isEditable(field, after.config) ||
+      !editableIn(before, field.key, isEditable)
     ) {
       continue;
     }
-    cleared = { ...cleared, [key]: "" };
+    cleared = { ...cleared, [field.key]: "" };
   }
   return cleared;
 }
