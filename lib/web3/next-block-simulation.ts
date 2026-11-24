@@ -692,14 +692,19 @@ function preparedFrom(simulation: NextBlockSimulation): Prepared {
 }
 
 const MS_PER_SECOND = 1000;
-// Beacon chains (Ethereum, Sepolia, Holesky, Hoodi, Gnosis, Chiado): a missed
-// slot leaves its timestamp unused, so blocks keep to the wall-clock slots.
-const SLOT_CLOCK_CHAIN_IDS = new Set([
-  1, 11_155_111, 17_000, 560_048, 100, 10_200,
+// Beacon chains keep to fixed wall-clock slots and leave a missed slot's
+// timestamp unused: Ethereum, Sepolia, Holesky, Hoodi (12 s), Gnosis, Chiado (5 s).
+const BEACON_SLOT_SECONDS = new Map<number, number>([
+  [1, 12],
+  [11_155_111, 12],
+  [17_000, 12],
+  [560_048, 12],
+  [100, 5],
+  [10_200, 5],
 ]);
 // A slot counts as passed a third of the way in, while blocks are still built.
 const SLOT_GRACE_FRACTION = 1 / 3;
-// An older head means a lagging RPC or a wrong server clock.
+// An older head means a lagging RPC, a wrong server clock or missing slots.
 const STALE_HEAD_SLOTS = 5;
 
 /**
@@ -717,25 +722,31 @@ export function nextSlotTime(
   return latestTimestamp + Math.max(1, passed) * slotSeconds;
 }
 
-// The next block's time: on the slot clock on beacon chains, where a missed
-// slot would otherwise be checked a slot early; else latest + one block time.
+// The next block's time: latest + block time, or on beacon chains the slot
+// clock (relies on an accurate server clock), with a set offset as a minimum.
 function predictedTime(
   chainId: number,
   latestTimestamp: number,
-  slotSeconds: number,
+  offsetSeconds: number,
   nowSeconds: number
 ): number {
-  if (!SLOT_CLOCK_CHAIN_IDS.has(chainId)) {
-    return latestTimestamp + slotSeconds;
+  const slot = BEACON_SLOT_SECONDS.get(chainId);
+  if (slot === undefined) {
+    return latestTimestamp + offsetSeconds;
   }
   const age = nowSeconds - latestTimestamp;
-  if (age > STALE_HEAD_SLOTS * slotSeconds) {
+  if (age > STALE_HEAD_SLOTS * slot) {
     throw new Error(
-      `Next-block simulation: the RPC's latest block is ${age}s old, more than ${STALE_HEAD_SLOTS} slots; the RPC may be lagging or the server clock off (${RETRY_HINT})`
+      `Next-block simulation: the RPC's latest block is ${age}s old, more than ${STALE_HEAD_SLOTS} slots: the RPC may be lagging, the server clock off or the network missing slots; on a fork or test node, set "Simulate at" back to "Latest block" (${RETRY_HINT})`
     );
   }
-  return nextSlotTime(latestTimestamp, slotSeconds, nowSeconds);
+  return Math.max(
+    nextSlotTime(latestTimestamp, slot, nowSeconds),
+    latestTimestamp + offsetSeconds
+  );
 }
+
+const currentSeconds = (): number => Math.floor(Date.now() / MS_PER_SECOND);
 
 async function prepare(
   provider: ethers.JsonRpcProvider,
@@ -749,7 +760,6 @@ async function prepare(
     );
   }
   const { basedOn } = options;
-  const now = Math.floor(Date.now() / MS_PER_SECOND);
   // Reuse an earlier check's prediction only while nothing moved, so a wait
   // never sends on a stale check.
   if (
@@ -759,7 +769,7 @@ async function prepare(
       chainId,
       latest.timestamp,
       basedOn.timestampOffsetSec,
-      now
+      currentSeconds()
     ) === basedOn.assumedTimestamp
   ) {
     return preparedFrom(basedOn);
@@ -771,13 +781,19 @@ async function prepare(
   }
   const offset =
     options.timestampOffsetSec ??
+    BEACON_SLOT_SECONDS.get(chainId) ??
     (await chainSlotSeconds(provider, chainId, latest));
   if (offset < MIN_SIMULATE_TIMESTAMP_OFFSET_SEC) {
     throw new NextBlockSimulationUnsupportedError(
       'Next-block simulation cannot predict the next block\'s time on this network: recent blocks share a timestamp. Set "Next block timestamp offset" to 1 (the call may then pass a few blocks early), or set "Simulate at" back to "Latest block".'
     );
   }
-  const time = predictedTime(chainId, latest.timestamp, offset, now);
+  const time = predictedTime(
+    chainId,
+    latest.timestamp,
+    offset,
+    currentSeconds()
+  );
   return {
     blockTag: toQuantity(latest.number),
     time,

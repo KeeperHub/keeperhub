@@ -700,6 +700,90 @@ describe("next-block simulation", () => {
       expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + 2 * SLOT);
     });
 
+    it("uses the chain's 12 s slot whatever offset is set, with the offset as a minimum", async () => {
+      // An offset below the slot changes nothing and never trips the guard.
+      setClock(node.latestTimestamp + 6);
+      node.unlockAt = node.latestTimestamp + SLOT;
+      const small = await simulateSendAtNextBlock(managerFor(provider), {
+        chainId: MAINNET,
+        tx: RUN_TX,
+        options: { timestampOffsetSec: 1 },
+      });
+      expect(small.simulation.assumedTimestamp).toBe(
+        node.latestTimestamp + SLOT
+      );
+
+      // An offset above the slot is a minimum: the user chose a later time.
+      node.unlockAt = node.latestTimestamp + 2 * SLOT;
+      provider = new FakeProvider(node);
+      const large = await simulateSendAtNextBlock(managerFor(provider), {
+        chainId: MAINNET,
+        tx: RUN_TX,
+        options: { timestampOffsetSec: 2 * SLOT },
+      });
+      expect(large.simulation.assumedTimestamp).toBe(
+        node.latestTimestamp + 2 * SLOT
+      );
+    });
+
+    it("does not measure the block time on a beacon chain", async () => {
+      node.unlockAt = node.latestTimestamp + SLOT;
+      const { simulation } = await simulateSendAtNextBlock(
+        managerFor(provider),
+        { chainId: MAINNET, tx: RUN_TX, options: {} }
+      );
+      expect(simulation.timestampOffsetSec).toBe(SLOT);
+      expect(
+        node.methods.filter((m) => m === "eth_getBlockByNumber")
+      ).toHaveLength(1);
+    });
+
+    it("follows Gnosis's 5 s slots", async () => {
+      const GNOSIS = 100;
+      setClock(node.latestTimestamp + 6);
+      const early = await simulateCallAtNextBlock(managerFor(provider), {
+        chainId: GNOSIS,
+        tx: WORKABLE_TX,
+        options: {},
+      });
+      expect(early.simulation.assumedTimestamp).toBe(node.latestTimestamp + 5);
+
+      setClock(node.latestTimestamp + 7);
+      provider = new FakeProvider(node);
+      const late = await simulateCallAtNextBlock(managerFor(provider), {
+        chainId: GNOSIS,
+        tx: WORKABLE_TX,
+        options: {},
+      });
+      expect(late.simulation.assumedTimestamp).toBe(node.latestTimestamp + 10);
+    });
+
+    it("still predicts with a head exactly 5 slots old", async () => {
+      setClock(node.latestTimestamp + 5 * SLOT);
+      node.unlockAt = node.latestTimestamp + 5 * SLOT;
+      const { simulation } = await sendOn(MAINNET);
+      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + 5 * SLOT);
+    });
+
+    it("falls back to one slot with a server clock far behind the chain", async () => {
+      setClock(node.latestTimestamp - 10 * SLOT);
+      node.unlockAt = node.latestTimestamp + SLOT;
+      const { simulation } = await sendOn(MAINNET);
+      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + SLOT);
+    });
+
+    it("reuses an earlier check within the same slot", async () => {
+      node.unlockAt = node.latestTimestamp + SLOT;
+      const basedOn = (await sendOn(MAINNET)).simulation;
+      setClock(node.latestTimestamp + 3);
+      provider = new FakeProvider(node);
+      const blockReads = node.methods.length;
+
+      const { simulation } = await sendOn(MAINNET, basedOn);
+      expect(simulation.assumedTimestamp).toBe(basedOn.assumedTimestamp);
+      expect(node.methods.slice(blockReads)).not.toContain("eth_simulateV1");
+    });
+
     it("matches a beacon-clock keeper that re-checks 4 s into each slot", () => {
       // Mainnet genesis 1606824023, 12 s slots.
       const genesis = 1_606_824_023;
