@@ -14,6 +14,7 @@ import {
 } from "@/lib/web3/gas-limit-error";
 import {
   isOnChainPendingError,
+  minedRevertError,
   OnChainPendingError,
   OnChainRevertError,
 } from "@/lib/web3/onchain-revert";
@@ -590,10 +591,13 @@ export class EvmChainAdapter implements ChainAdapter {
       if (code === "CALL_EXCEPTION") {
         const reverted = (error as { receipt?: ethers.TransactionReceipt })
           .receipt;
+        // The mined receipt goes back so the caller's status check settles it.
+        if (reverted) {
+          return reverted;
+        }
         throw new OnChainRevertError({
-          message: `Transaction ${reverted?.hash ?? tx.hash} reverted on-chain (${getErrorMessage(error)})`,
-          transactionHash: reverted?.hash ?? tx.hash,
-          blockNumber: reverted?.blockNumber,
+          message: `Transaction ${tx.hash} reverted on-chain (${getErrorMessage(error)})`,
+          transactionHash: tx.hash,
         });
       }
 
@@ -693,11 +697,11 @@ export class EvmChainAdapter implements ChainAdapter {
     // preflight and reverted only at inclusion time can still resolve here.
     // status 0 is authoritative: never report a reverted tx as confirmed.
     if (receipt.status === 0) {
-      throw new OnChainRevertError({
-        message: `Transaction ${receipt.hash} reverted on-chain (status 0, block ${receipt.blockNumber})`,
-        transactionHash: receipt.hash,
-        blockNumber: receipt.blockNumber,
-      });
+      throw minedRevertError(
+        receipt,
+        gasConfig.gasLimit,
+        fixedGasLimit(options.gasOverrides.gasLimitOverride) !== undefined
+      );
     }
 
     await this.nonceManager.confirmTransaction(tx.hash);

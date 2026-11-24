@@ -248,7 +248,7 @@ describe.each(cases)("%s", (_name, invoke) => {
     expect(broadcastTransactionHash(error)).toBe(TX_HASH);
     expect((error as { blockNumber?: number }).blockNumber).toBe(BLOCK);
     expect((error as Error).message).toContain(
-      `reverted on-chain (status 0, block ${BLOCK})`
+      `reverted on-chain (execution reverted, status 0, block ${BLOCK})`
     );
     expect(mocks.recordTransaction).toHaveBeenCalledOnce();
     expect(mocks.confirmTransaction).not.toHaveBeenCalled();

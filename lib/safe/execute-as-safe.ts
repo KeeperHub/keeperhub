@@ -16,8 +16,8 @@ import {
 } from "@/lib/web3/next-block-simulation";
 import { getNonceManager, type NonceSession } from "@/lib/web3/nonce-manager";
 import {
+  minedRevertError,
   OnChainPendingError,
-  OnChainRevertError,
 } from "@/lib/web3/onchain-revert";
 import { RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
 import {
@@ -113,13 +113,12 @@ function finishOnError(
  * with shouldRevert=true), and `waitForTransaction`, unlike `tx.wait()`,
  * resolves that receipt instead of throwing, so the status has to be read here.
  */
-function throwIfReverted(receipt: ethers.TransactionReceipt): void {
+function throwIfReverted(
+  receipt: ethers.TransactionReceipt,
+  gasLimit: bigint
+): void {
   if (receipt.status === 0) {
-    throw new OnChainRevertError({
-      message: `Transaction ${receipt.hash} reverted on-chain (status 0, block ${receipt.blockNumber})`,
-      transactionHash: receipt.hash,
-      blockNumber: receipt.blockNumber,
-    });
+    throw minedRevertError(receipt, gasLimit);
   }
 }
 
@@ -259,7 +258,7 @@ export async function executeContractCallAsSafe(
       options.rpcManager,
       "Safe-routed transaction"
     );
-    throwIfReverted(receipt);
+    throwIfReverted(receipt, gasConfig.gasLimit);
 
     await nonceManager.confirmTransaction(broadcast.hash);
     finishMetrics("success");
@@ -389,7 +388,7 @@ export async function executeContractCallAsRole(
       options.rpcManager,
       "Role-routed transaction"
     );
-    throwIfReverted(receipt);
+    throwIfReverted(receipt, gasConfig.gasLimit);
     await nonceManager.confirmTransaction(broadcast.hash);
     finishMetrics("success");
     return {
@@ -496,7 +495,7 @@ export async function executeNativeTransferAsRole(
       options.rpcManager,
       "Role-routed native transfer"
     );
-    throwIfReverted(receipt);
+    throwIfReverted(receipt, gasConfig.gasLimit);
     await nonceManager.confirmTransaction(broadcast.hash);
     finishMetrics("success");
     return {
@@ -600,7 +599,7 @@ export async function executeNativeTransferAsSafe(
       options.rpcManager,
       "Safe-routed native transfer"
     );
-    throwIfReverted(receipt);
+    throwIfReverted(receipt, gasConfig.gasLimit);
 
     await nonceManager.confirmTransaction(broadcast.hash);
     finishMetrics("success");
