@@ -1283,6 +1283,10 @@ describe("next-block simulation", () => {
         "Alchemy's allowlist refusal",
         { code: -32_000, message: "eth_call is not allowlisted for this app" },
       ],
+      [
+        "Alchemy's allowlist refusal with -32600",
+        { code: -32_600, message: "eth_call is not allowlisted for this app" },
+      ],
     ])("treats %s on the proof as unsupported", async (_label, error) => {
       node.simulateV1 = "missing";
       node.proofError = { method: "eth_call", error };

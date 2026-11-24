@@ -432,8 +432,8 @@ function callException(
 
 // The user's own call failed for good. An answer inside an HTTP 4xx body
 // would be retried as a transport error, so a revert is rebuilt as the
-// CALL_EXCEPTION a normal answer gives, and anything else is a non-retryable
-// error with the node's message, as the same answer over HTTP 200 would be.
+// CALL_EXCEPTION a normal answer gives, and a refusal (the only other final
+// 4xx answer) is a non-retryable error with the node's message, as over 200.
 function finalCallError(
   reason: unknown,
   action: "call" | "estimateGas",

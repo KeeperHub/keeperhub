@@ -21,7 +21,7 @@ const LABEL_UNIT = /\s*\([^)]*\)$/;
 /** The editor notice once a batch has cleared fields, so it is never silent. */
 export function clearedFieldsNotice(labels: readonly string[]): string {
   const names = labels.map((label) => label.replace(LABEL_UNIT, ""));
-  return `${names.join(" and ")} cleared: the node is now sponsored, so the sponsor sets the fees. Turn Sponsor gas off to set them again.`;
+  return `${names.join(" and ")} cleared: Sponsor gas is on, so the sponsor sets the fees. Turn Sponsor gas off to set them again.`;
 }
 
 function withFields(config: Record<string, unknown>): {
