@@ -143,6 +143,7 @@ export async function getRpcProvider(
     chainName: config.chainName,
     chainId,
     primaryIsPrivateRelay: config.primaryIsPrivateRelay,
+    broadcastRpcUrls: config.broadcastRpcUrls,
     metricsCollector,
     onFailoverStateChange: (chain, isUsingFallback, reason) => {
       try {

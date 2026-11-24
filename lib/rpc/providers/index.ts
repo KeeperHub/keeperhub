@@ -201,6 +201,8 @@ export type RpcProviderConfig = {
   // primary. Defaults to false, so a manager built from raw URLs keeps
   // attributing its failures to KeeperHub.
   primaryIsPrivateRelay?: boolean;
+  // Extra public RPCs a signed write is also sent to (chains.broadcast_rpc_urls).
+  broadcastRpcUrls?: readonly string[];
 };
 
 export type RpcProviderMetrics = {
@@ -251,6 +253,7 @@ export class RpcProviderManager {
       chainName: config.chainName ?? "unknown",
       chainId: config.chainId ?? 1,
       primaryIsPrivateRelay: config.primaryIsPrivateRelay ?? false,
+      broadcastRpcUrls: config.broadcastRpcUrls ?? [],
     };
 
     this.metricsCollector = metricsCollector;
@@ -308,6 +311,25 @@ export class RpcProviderManager {
       return this.fallbackProvider;
     }
     return this.getPrimaryProvider();
+  }
+
+  /** True when this provider is the private relay the swap put on the primary. */
+  isPrivateRelayProvider(provider: ethers.JsonRpcProvider): boolean {
+    return (
+      this.config.primaryIsPrivateRelay && provider === this.primaryProvider
+    );
+  }
+
+  /** True when the private-mempool swap put the relay on the primary. */
+  hasPrivateRelayPrimary(): boolean {
+    return this.config.primaryIsPrivateRelay;
+  }
+
+  /** Extra public broadcast URLs. The one place that keeps them off relay sends. */
+  getBroadcastRpcUrls(): readonly string[] {
+    return this.config.primaryIsPrivateRelay
+      ? []
+      : this.config.broadcastRpcUrls;
   }
 
   async executeWithFailover<T>(
@@ -801,6 +823,7 @@ export type CreateRpcProviderManagerOptions = {
   chainName?: string;
   chainId?: number;
   primaryIsPrivateRelay?: boolean;
+  broadcastRpcUrls?: readonly string[];
   metricsCollector?: RpcMetricsCollector;
   onFailoverStateChange?: FailoverStateChangeCallback;
 };
@@ -808,7 +831,7 @@ export type CreateRpcProviderManagerOptions = {
 export function createRpcProviderManager(
   options: CreateRpcProviderManagerOptions
 ): RpcProviderManager {
-  const cacheKey = `${options.primaryRpcUrl}|${options.fallbackRpcUrl || ""}|${options.chainId ?? ""}`;
+  const cacheKey = `${options.primaryRpcUrl}|${options.fallbackRpcUrl || ""}|${options.chainId ?? ""}|${options.primaryIsPrivateRelay ? "relay" : ""}|${(options.broadcastRpcUrls ?? []).join(",")}`;
 
   let manager = managerCache.get(cacheKey);
   if (!manager) {
@@ -821,6 +844,7 @@ export function createRpcProviderManager(
         chainName: options.chainName,
         chainId: options.chainId,
         primaryIsPrivateRelay: options.primaryIsPrivateRelay,
+        broadcastRpcUrls: options.broadcastRpcUrls,
       },
       metricsCollector: options.metricsCollector,
       onFailoverStateChange: options.onFailoverStateChange,

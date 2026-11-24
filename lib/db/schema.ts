@@ -1376,6 +1376,12 @@ export const chains = pgTable(
     // instead of the public mempool.
     usePrivateMempoolRpc: boolean("use_private_mempool_rpc").default(false),
     defaultPrivateRpcUrl: text("default_private_rpc_url"),
+    // Extra public RPCs every signed write is also sent to, at the same time.
+    // Set from CHAIN_RPC_CONFIG (broadcastRpcUrls) by the chain seed.
+    broadcastRpcUrls: jsonb("broadcast_rpc_urls")
+      .notNull()
+      .default([])
+      .$type<string[]>(),
     isTestnet: boolean("is_testnet").default(false),
     isEnabled: boolean("is_enabled").default(true), // Can disable chains
     // Support maturity signal surfaced to agents via list_action_schemas:

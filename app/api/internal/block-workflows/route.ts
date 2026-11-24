@@ -1,11 +1,18 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { type Chain, chains, workflows } from "@/lib/db/schema";
+import { chains, workflows } from "@/lib/db/schema";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 import type { WorkflowNode } from "@/lib/workflow/store";
+
+// Extra broadcast URLs can carry provider keys and nothing here needs them.
+function chainColumnsWithoutBroadcastUrls() {
+  const { broadcastRpcUrls: _broadcastRpcUrls, ...columns } =
+    getTableColumns(chains);
+  return columns;
+}
 
 /** The chainId a trigger node targets (config.network), or null if absent/unparseable. */
 function triggerChainId(node: WorkflowNode | undefined): number | null {
@@ -72,11 +79,11 @@ export async function GET(request: Request): Promise<NextResponse> {
     });
 
     const allChains = await db
-      .select()
+      .select(chainColumnsWithoutBroadcastUrls())
       .from(chains)
       .where(eq(chains.isEnabled, true));
 
-    const networkMap: Record<number, Chain> = {};
+    const networkMap: Record<number, (typeof allChains)[number]> = {};
     for (const network of allChains) {
       networkMap[network.chainId] = network;
     }

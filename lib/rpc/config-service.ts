@@ -13,6 +13,7 @@ import {
   userRpcPreferences,
 } from "@/lib/db/schema";
 import { logWarn } from "@/lib/logging";
+import { cleanBroadcastRpcUrls } from "./rpc-config";
 import type { ResolvedRpcConfig } from "./types";
 
 /**
@@ -113,6 +114,11 @@ function buildDefaultConfig(
     fallbackRpcUrl: chain.defaultFallbackRpc || undefined,
     primaryWssUrl: chain.defaultPrimaryWss || undefined,
     fallbackWssUrl: chain.defaultFallbackWss || undefined,
+    broadcastRpcUrls: cleanBroadcastRpcUrls(chain.broadcastRpcUrls, [
+      chain.defaultPrimaryRpc,
+      chain.defaultFallbackRpc,
+      chain.defaultPrivateRpcUrl,
+    ]),
     ...capabilities,
     source: "default",
   };
@@ -151,6 +157,8 @@ function applyPrivateMempoolSwap(
     ...baseConfig,
     primaryRpcUrl: baseConfig.privateRpcUrl,
     fallbackRpcUrl: strict ? undefined : baseConfig.primaryRpcUrl,
+    // Data hygiene only: the manager is what keeps extras off relay sends.
+    broadcastRpcUrls: [],
     // Only reached when the swap actually happened: the node asked for the
     // private mempool and the chain had a relay to route to. We configure that
     // pointer but do not run the node behind it.

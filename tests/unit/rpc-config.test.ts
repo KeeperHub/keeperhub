@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logSystemError } from "@/lib/logging";
 import {
   CHAIN_CONFIG,
+  cleanBroadcastRpcUrls,
   getConfigValue,
   getPrivateRpcUrl,
   getRpcUrl,
@@ -19,6 +20,7 @@ import {
   parseRpcConfigWithDetails,
   RPC_CONFIG_GZIP_PREFIX,
   type RpcConfig,
+  readBroadcastRpcUrls,
 } from "../../lib/rpc/rpc-config";
 
 vi.mock("@/lib/logging", async (importActual) => {
@@ -1224,6 +1226,63 @@ describe("RPC Config Resolution", () => {
  * This asserts over the whole exported table rather than the one entry that was
  * wrong, so an endpoint added later fails here rather than in someone's install.
  */
+describe("readBroadcastRpcUrls / cleanBroadcastRpcUrls", () => {
+  it("keeps https URLs, normalised and unique, and drops anything else", () => {
+    const rpcConfig = {
+      "eth-mainnet": {
+        broadcastRpcUrls: [
+          " https://a.example ",
+          "https://A.EXAMPLE/",
+          "http://c.example/rpc",
+          "wss://b.example",
+          "not a url",
+          42,
+          "https://d.example/v2/key/",
+        ] as unknown as string[],
+      },
+    };
+
+    expect(readBroadcastRpcUrls({ rpcConfig, jsonKey: "eth-mainnet" })).toEqual(
+      ["https://a.example", "https://d.example/v2/key"]
+    );
+  });
+
+  it("allows plain http only to a local node", () => {
+    expect(
+      cleanBroadcastRpcUrls([
+        "http://localhost:8545",
+        "http://127.0.0.1:8546/",
+        "http://10.0.0.1:8545",
+      ])
+    ).toEqual(["http://localhost:8545", "http://127.0.0.1:8546"]);
+  });
+
+  it("drops URLs equal to one of the chain's own RPCs", () => {
+    expect(
+      cleanBroadcastRpcUrls(
+        [
+          "https://primary.example/",
+          "https://relay.example",
+          "https://x.example",
+        ],
+        ["https://PRIMARY.example", null, "https://relay.example/"]
+      )
+    ).toEqual(["https://x.example"]);
+  });
+
+  it("keeps at most ten URLs", () => {
+    const urls = Array.from({ length: 12 }, (_, i) => `https://n${i}.example`);
+    expect(cleanBroadcastRpcUrls(urls)).toHaveLength(10);
+  });
+
+  it("is empty when the entry or the list is missing", () => {
+    expect(
+      readBroadcastRpcUrls({ rpcConfig: {}, jsonKey: "eth-mainnet" })
+    ).toEqual([]);
+    expect(cleanBroadcastRpcUrls("x")).toEqual([]);
+  });
+});
+
 describe("PUBLIC_RPCS contains no KeeperHub-operated endpoint", () => {
   const OPERATED_DOMAINS = ["techops.services", "keeperhub.com"];
 

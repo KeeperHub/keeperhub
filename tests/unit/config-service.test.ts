@@ -27,6 +27,7 @@ describe("config-service", () => {
     symbol: "ETH",
     defaultPrimaryRpc: "https://default-eth.example.com",
     defaultFallbackRpc: "https://default-eth-backup.example.com",
+    broadcastRpcUrls: ["https://extra.example"],
     isEnabled: true,
   };
 
@@ -79,6 +80,7 @@ describe("config-service", () => {
         fallbackWssUrl: undefined,
         usePrivateMempoolRpc: false,
         privateRpcUrl: undefined,
+        broadcastRpcUrls: ["https://extra.example"],
         source: "default",
       });
     });
@@ -123,6 +125,8 @@ describe("config-service", () => {
         privateRpcUrl: undefined,
         source: "user",
       });
+      // A user's own RPC may be private: never fan out next to it.
+      expect(result?.broadcastRpcUrls).toBeUndefined();
     });
 
     it("should return chain defaults when user has no custom config", async () => {
@@ -227,6 +231,36 @@ describe("config-service", () => {
 
       expect(result?.primaryRpcUrl).toBe("https://default-eth.example.com");
       expect(result?.primaryIsPrivateRelay).toBeUndefined();
+    });
+
+    it("cleans the stored extra URLs again at run time", async () => {
+      mockChainQuery({
+        ...mockChain,
+        broadcastRpcUrls: [
+          "https://default-eth.example.com/",
+          "http://plain.example",
+          "https://extra.example/",
+        ],
+      });
+
+      const result = await resolveRpcConfig(1);
+
+      expect(result?.broadcastRpcUrls).toEqual(["https://extra.example"]);
+    });
+
+    it("hands no extra URLs to a private relay send", async () => {
+      mockChainQuery({
+        ...mockChain,
+        usePrivateMempoolRpc: true,
+        defaultPrivateRpcUrl: "https://rpc.flashbots.example.com",
+      });
+
+      const result = await resolveRpcConfig(1, undefined, {
+        usePrivateMempool: true,
+        strict: false,
+      });
+
+      expect(result?.broadcastRpcUrls).toEqual([]);
     });
 
     it("does not flag the relay when the node did not ask for the private mempool", async () => {

@@ -38,6 +38,9 @@ export type ResolvedRpcConfig = {
    * mode clears it, non-strict keeps the public endpoint the swap replaced.
    */
   primaryIsPrivateRelay?: boolean;
+  // Extra public URLs a signed write is also sent to. Chain defaults only:
+  // empty for a user's own RPC and after the private-relay swap.
+  broadcastRpcUrls?: string[];
   primaryWssUrl?: string;
   fallbackWssUrl?: string;
   // KEEP-137: whether the chain supports private mempool routing (Flashbots Protect).

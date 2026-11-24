@@ -558,6 +558,7 @@ export type RpcConfigEntry = {
   fallbackWssUrl?: string;
   isPrivateMempoolRpcEnabled?: boolean;
   privateMempoolRpcUrl?: string;
+  broadcastRpcUrls?: string[];
   isEnabled?: boolean;
   isTestnet?: boolean;
 };
@@ -723,13 +724,8 @@ export function getWssUrl(options: GetWssUrlOptions): string | undefined {
     : chainEntry?.publicWssFallback;
 }
 
-/**
- * Options for getPrivateRpcUrl / getUsePrivateMempoolRpc
- */
-export type GetPrivateMempoolOptions = {
-  rpcConfig: RpcConfig;
-  jsonKey: string;
-};
+/** A chain's entry in chain-config JSON. */
+export type RpcConfigEntryKey = { rpcConfig: RpcConfig; jsonKey: string };
 
 /**
  * Get the private mempool RPC URL from chain-config JSON.
@@ -740,10 +736,77 @@ export type GetPrivateMempoolOptions = {
  * @returns The private RPC URL, or undefined if not configured
  */
 export function getPrivateRpcUrl(
-  options: GetPrivateMempoolOptions
+  options: RpcConfigEntryKey
 ): string | undefined {
   return findRpcConfigEntry(options.rpcConfig, options.jsonKey)
     ?.privateMempoolRpcUrl;
+}
+
+const MAX_BROADCAST_RPC_URLS = 10;
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1"]);
+
+/** The raw broadcastRpcUrls list of a chain-config entry, cleaned. */
+export function readBroadcastRpcUrls(options: RpcConfigEntryKey): string[] {
+  return cleanBroadcastRpcUrls(
+    findRpcConfigEntry(options.rpcConfig, options.jsonKey)?.broadcastRpcUrls
+  );
+}
+
+const TRAILING_SLASH_RE = /\/$/;
+
+// Undefined when not a URL.
+function parseRpcUrl(raw: unknown): URL | undefined {
+  if (typeof raw !== "string") {
+    return;
+  }
+  try {
+    return new URL(raw.trim());
+  } catch {
+    return;
+  }
+}
+
+function urlKey(url: URL): string {
+  return url.toString().replace(TRAILING_SLASH_RE, "");
+}
+
+// https only, except plain http to a local node.
+function isAllowedBroadcastUrl(url: URL): boolean {
+  return (
+    url.protocol === "https:" ||
+    (url.protocol === "http:" && LOCAL_HOSTS.has(url.hostname))
+  );
+}
+
+/**
+ * Extra broadcast URLs as they may be used: valid, unique after
+ * normalising, none equal to one of the chain's own RPCs, at most
+ * MAX_BROADCAST_RPC_URLS.
+ */
+export function cleanBroadcastRpcUrls(
+  raw: unknown,
+  chainRpcUrls: readonly (string | null | undefined)[] = []
+): string[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  for (const chainUrl of chainRpcUrls) {
+    const url = parseRpcUrl(chainUrl);
+    if (url) {
+      seen.add(urlKey(url));
+    }
+  }
+  const urls: string[] = [];
+  for (const entry of raw) {
+    const url = parseRpcUrl(entry);
+    const key = url && isAllowedBroadcastUrl(url) ? urlKey(url) : undefined;
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      urls.push(key);
+    }
+  }
+  return urls.slice(0, MAX_BROADCAST_RPC_URLS);
 }
 
 /**
@@ -751,9 +814,7 @@ export function getPrivateRpcUrl(
  *
  * Defaults to false when not set in chain-config JSON.
  */
-export function getUsePrivateMempoolRpc(
-  options: GetPrivateMempoolOptions
-): boolean {
+export function getUsePrivateMempoolRpc(options: RpcConfigEntryKey): boolean {
   return (
     findRpcConfigEntry(options.rpcConfig, options.jsonKey)
       ?.isPrivateMempoolRpcEnabled ?? false
