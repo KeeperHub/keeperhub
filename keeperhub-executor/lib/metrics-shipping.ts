@@ -263,6 +263,7 @@ const DISPATCH_TARGETS: Record<DispatchTarget, true> = {
   "k8s-job": true,
   "in-process": true,
   api: true,
+  "warm-pool": true,
 };
 
 function isDispatchTarget(value: string): value is DispatchTarget {

@@ -8,6 +8,12 @@ import { buildExecTransactionWithRoleCalldata } from "@/lib/safe/zodiac-roles";
 import { getErrorMessage } from "@/lib/utils";
 import type { TransactionReceipt } from "@/lib/web3/chain-adapter/types";
 import { getGasStrategy } from "@/lib/web3/gas-strategy";
+import {
+  type NextBlockSimulation,
+  type NextBlockSimulationOptions,
+  simulateSendAtNextBlock,
+  tagNextBlockSimulation,
+} from "@/lib/web3/next-block-simulation";
 import { getNonceManager, type NonceSession } from "@/lib/web3/nonce-manager";
 import {
   OnChainPendingError,
@@ -46,9 +52,31 @@ export type ExecuteAsSafeOptions = {
   chainId: number;
   workflowId?: string;
   rpcManager: RpcProviderManager;
+  // Present = estimate (and so revert-check) as of the next block.
+  simulation?: NextBlockSimulationOptions;
   // The node's priority fee and max fee, applied to the owner transaction.
   feeOverrides?: { priorityFeeOverride?: bigint; maxFeeOverride?: bigint };
 };
+
+// The outer transaction's gas estimate, which is also its revert check.
+async function estimateOuterGas(
+  options: ExecuteAsSafeOptions,
+  tx: { to: string; data: string; from: string }
+): Promise<{ gas: bigint; simulation?: NextBlockSimulation }> {
+  if (!options.simulation) {
+    const gas = await options.rpcManager.executeWithFailover(
+      (rpcProvider) => rpcProvider.estimateGas(tx),
+      "preflight"
+    );
+    return { gas };
+  }
+  const simulated = await simulateSendAtNextBlock(options.rpcManager, {
+    chainId: options.chainId,
+    tx,
+    options: options.simulation,
+  });
+  return { gas: simulated.gasEstimate, simulation: simulated.simulation };
+}
 
 /**
  * Classify the inner call so the safe.tx.* metric distinguishes ERC-20
@@ -159,6 +187,8 @@ export async function executeContractCallAsSafe(
     route: "exec",
     kind: classifyInnerKind(request.functionKey, request.value),
   });
+  // Set once the next-block check passes; later failures carry it.
+  let nextBlock: NextBlockSimulation | undefined;
   try {
     const provider = signer.provider;
     if (!provider) {
@@ -181,15 +211,12 @@ export async function executeContractCallAsSafe(
     const nonceManager = getNonceManager();
     const gasStrategy = getGasStrategy();
 
-    const estimatedGas = await options.rpcManager.executeWithFailover(
-      (rpcProvider) =>
-        rpcProvider.estimateGas({
-          to: request.safeAddress,
-          data: outerCalldata,
-          from: request.ownerAddress,
-        }),
-      "preflight"
-    );
+    const { gas: estimatedGas, simulation } = await estimateOuterGas(options, {
+      to: request.safeAddress,
+      data: outerCalldata,
+      from: request.ownerAddress,
+    });
+    nextBlock = simulation;
 
     const gasConfig = await gasStrategy.getGasConfig(
       provider,
@@ -241,9 +268,13 @@ export async function executeContractCallAsSafe(
       gasUsed: receipt.gasUsed,
       effectiveGasPrice: receipt.gasPrice,
       blockNumber: receipt.blockNumber,
+      ...(simulation ? { simulation } : {}),
     };
   } catch (err) {
-    finishOnError(finishMetrics, err);
+    finishOnError(
+      finishMetrics,
+      nextBlock ? tagNextBlockSimulation(err, nextBlock) : err
+    );
   }
 }
 
@@ -284,6 +315,8 @@ export async function executeContractCallAsRole(
     route: "role",
     kind: classifyInnerKind(request.functionKey, request.value),
   });
+  // Set once the next-block check passes; later failures carry it.
+  let nextBlock: NextBlockSimulation | undefined;
   try {
     const provider = signer.provider;
     if (!provider) {
@@ -308,15 +341,12 @@ export async function executeContractCallAsRole(
     const nonceManager = getNonceManager();
     const gasStrategy = getGasStrategy();
 
-    const estimatedGas = await options.rpcManager.executeWithFailover(
-      (rpcProvider) =>
-        rpcProvider.estimateGas({
-          to: request.rolesModifierAddress,
-          data: outerCalldata,
-          from: request.delegateAddress,
-        }),
-      "preflight"
-    );
+    const { gas: estimatedGas, simulation } = await estimateOuterGas(options, {
+      to: request.rolesModifierAddress,
+      data: outerCalldata,
+      from: request.delegateAddress,
+    });
+    nextBlock = simulation;
 
     const gasConfig = await gasStrategy.getGasConfig(
       provider,
@@ -367,9 +397,13 @@ export async function executeContractCallAsRole(
       gasUsed: receipt.gasUsed,
       effectiveGasPrice: receipt.gasPrice,
       blockNumber: receipt.blockNumber,
+      ...(simulation ? { simulation } : {}),
     };
   } catch (err) {
-    finishOnError(finishMetrics, err);
+    finishOnError(
+      finishMetrics,
+      nextBlock ? tagNextBlockSimulation(err, nextBlock) : err
+    );
   }
 }
 

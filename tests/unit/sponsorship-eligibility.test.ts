@@ -104,6 +104,16 @@ describe("shouldTrySponsorship", () => {
     ).toBe(false);
   });
 
+  it("declines a send that simulates as of the next block", () => {
+    expect(
+      shouldTrySponsorship({
+        chainId: SPONSORED_CHAIN,
+        signerMode: EOA,
+        simulatesNextBlock: true,
+      })
+    ).toBe(false);
+  });
+
   it("declines when the node sets its own priority fee or max fee", () => {
     expect(
       shouldTrySponsorship({

@@ -89,7 +89,7 @@ The setting is available on Write Contract and Batch Write Contract:
 
 1. Open the action node configuration
 2. Expand the **Advanced** section
-3. On Write Contract, turn off **Sponsor gas** if it is shown. The priority fee field appears only while the node pays its own gas
+3. On Write Contract, turn off **Sponsor gas** if it is shown. The priority fee field is disabled until the node pays its own gas
 4. Set **Priority Fee (gwei)** to a value in gwei (e.g. 3)
 
 | Setting | Result |
@@ -101,15 +101,15 @@ The setting is available on Write Contract and Batch Write Contract:
 
 Sponsored transactions cannot carry a custom priority fee. The gas sponsor sets the fees of the transactions it pays for. So on Write Contract the two are exclusive:
 
-- **Sponsor gas on**: the Priority Fee field is hidden and the network's default tip is used, paid by the sponsor.
-- **Sponsor gas off**: the Priority Fee field is shown. The node pays gas from the sending wallet, with your tip.
-- Turning Sponsor gas back on clears the priority fee, so a hidden value never changes how the node sends.
+- **Sponsor gas on**: the Priority Fee field is disabled and the network's default tip is used, paid by the sponsor.
+- **Sponsor gas off**: the Priority Fee field is editable. The node pays gas from the sending wallet, with your tip.
+- Any change that disables the field clears the priority fee, so a value you can no longer edit never changes how the node sends; the editor shows a notice when it does. A fee saved through the API while the field is disabled stays set and keeps the node off sponsorship; turn off Sponsor gas to clear it. For example: turning Sponsor gas on, or, with Sponsor gas on, setting Simulate at back to Latest block, switching to a network that gas sponsorship covers, moving off a private mempool or a Safe, or switching from Batch Write Contract to Write Contract.
 
-The field is also shown when the node cannot be sponsored anyway: on a network gas sponsorship does not cover, through a private mempool, or through a Safe.
+The field is also editable when the node cannot be sponsored anyway: on a network that gas sponsorship does not cover, through a private mempool, through a Safe, or with Simulate at set to Next block.
 
 With a priority fee, the sending wallet must hold enough of the network's native token to pay the gas. If it does not, the step fails before anything is sent. No gas credits are used for that node.
 
-Batch Write Contract is never sponsored, so its Priority Fee field is always shown and always applies.
+Batch Write Contract is never sponsored, so its Priority Fee field is always editable and always applies.
 
 A priority fee sent through the [direct execution API](/api/direct-execution) also takes the call off sponsorship. See [Custom gas settings and sponsorship](#custom-gas-settings-and-sponsorship).
 
@@ -133,7 +133,7 @@ The setting is available on Write Contract and Batch Write Contract:
 
 1. Open the action node configuration
 2. Expand the **Advanced** section
-3. On Write Contract, turn off **Sponsor gas** if it is shown. The max fee field appears only while the node pays its own gas
+3. On Write Contract, turn off **Sponsor gas** if it is shown. The max fee field is disabled until the node pays its own gas
 4. Set **Max Fee (gwei)** to a value in gwei (e.g. 50)
 
 | Situation | Result |
@@ -151,15 +151,15 @@ The base fee can still rise after the check. A capped transaction whose base fee
 
 Sponsored transactions cannot carry a custom max fee. The gas sponsor sets the fees of the transactions it pays for. So on Write Contract the two are exclusive:
 
-- **Sponsor gas on**: the Max Fee field is hidden and there is no cap; the sponsor sets the fees.
-- **Sponsor gas off**: the Max Fee field is shown. The node pays gas from the sending wallet, within your cap.
-- Turning Sponsor gas back on clears the max fee, so a hidden value never changes how the node sends.
+- **Sponsor gas on**: the Max Fee field is disabled and there is no cap; the sponsor sets the fees.
+- **Sponsor gas off**: the Max Fee field is editable. The node pays gas from the sending wallet, within your cap.
+- Any change that disables the field clears the max fee, so a value you can no longer edit never changes how the node sends; the editor shows a notice when it does. A fee saved through the API while the field is disabled stays set and keeps the node off sponsorship; turn off Sponsor gas to clear it. For example: turning Sponsor gas on, or, with Sponsor gas on, setting Simulate at back to Latest block, switching to a network that gas sponsorship covers, moving off a private mempool or a Safe, or switching from Batch Write Contract to Write Contract.
 
-The field is also shown when the node cannot be sponsored anyway: on a network gas sponsorship does not cover, through a private mempool, or through a Safe.
+The field is also editable when the node cannot be sponsored anyway: on a network that gas sponsorship does not cover, through a private mempool, through a Safe, or with Simulate at set to Next block.
 
 With a max fee, the sending wallet must hold enough of the network's native token to pay the gas. If it does not, the step fails before anything is sent. No gas credits are used for that node.
 
-Batch Write Contract is never sponsored, so its Max Fee field is always shown and always applies. See [Custom gas settings and sponsorship](#custom-gas-settings-and-sponsorship).
+Batch Write Contract is never sponsored, so its Max Fee field is always editable and always applies. See [Custom gas settings and sponsorship](#custom-gas-settings-and-sponsorship).
 
 ### Max fee with a Safe
 
@@ -195,7 +195,7 @@ A transaction is sponsored only when all of the following are true. Otherwise it
 - **Public mempool**: transactions routed through a private mempool are not sponsored.
 - **Gas credits available**: your organization still has gas credits for the current period.
 - **Sponsor gas is on for the node**: the action's own toggle, described below.
-- **No custom fees**: a node with a [Priority Fee](#priority-fee) or [Max Fee](#max-fee) set pays gas from your wallet. In the editor these fields show only while the node is not sponsored.
+- **No custom fees**: a node with a [Priority Fee](#priority-fee) or [Max Fee](#max-fee) set pays gas from your wallet. In the editor these fields are disabled while the node would be sponsored.
 
 ### Sponsor gas toggle
 
@@ -274,14 +274,14 @@ Sponsored transactions are built and paid for by the gas sponsor, which sets the
 | Setting | With Sponsor gas on | With Sponsor gas off |
 |---------|---------------------|----------------------|
 | [Gas Limit](#gas-limit-and-gas-sponsorship) | Shown, with a warning. A sponsored send ignores it; it is used only if sponsorship falls back for that run | Always used |
-| [Priority Fee](#priority-fee-and-gas-sponsorship) | Hidden, and cleared when Sponsor gas is turned on | Shown and used |
-| [Max Fee](#max-fee-and-gas-sponsorship) | Hidden, and cleared when Sponsor gas is turned on | Shown and used |
+| [Priority Fee](#priority-fee-and-gas-sponsorship) | Disabled, and cleared when a change disables it | Editable and used |
+| [Max Fee](#max-fee-and-gas-sponsorship) | Disabled, and cleared when a change disables it | Editable and used |
 
-Priority Fee and Max Fee are hidden while sponsored because a fee you choose cannot be honoured on a sponsored transaction. The Gas Limit stays visible because it still applies whenever the node ends up paying its own gas.
+Priority Fee and Max Fee are disabled while sponsored because a fee you choose cannot be honoured on a sponsored transaction. They stay on the form, with a note under each, so you can see they exist and turn off Sponsor gas to use them. The Gas Limit stays editable because it still applies whenever the node ends up paying its own gas.
 
-The fee fields are also shown when the node cannot be sponsored anyway: on a network gas sponsorship does not cover, through a private mempool, or through a Safe. A node with a fee set pays gas from the sending wallet, so keep that wallet funded with the network's native token.
+The fee fields are also editable when the node cannot be sponsored anyway: on a network that gas sponsorship does not cover, through a private mempool, through a Safe, or with Simulate at set to Next block (see [Simulate at the next block](/plugins/web3#simulate-at-the-next-block)). A node with a fee set pays gas from the sending wallet, so keep that wallet funded with the network's native token.
 
-Batch Write Contract is never sponsored, so its Gas Limit, Priority Fee and Max Fee always show and always apply.
+Batch Write Contract is never sponsored, so its Gas Limit, Priority Fee and Max Fee are always editable and always apply.
 
 A `priorityFeeGwei` sent through the [direct execution API](/api/direct-execution) is honoured, and the call pays its own gas instead of being sponsored.
 

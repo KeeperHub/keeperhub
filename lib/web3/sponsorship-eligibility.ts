@@ -12,6 +12,7 @@ type SponsorshipEligibility = {
   signerMode: SignerMode;
   sponsorGas?: boolean;
   usePrivateMempool?: boolean;
+  simulatesNextBlock?: boolean;
   customFees?: boolean;
 };
 
@@ -29,6 +30,8 @@ type SponsorshipEligibility = {
  *    Protect), which Turnkey's own broadcast infrastructure would bypass;
  *  - the send goes through a Safe, where a sponsored call built as a direct
  *    send from the org's EOA would change msg.sender away from the Safe;
+ *  - the node simulates as of the next block, which the sponsor's own
+ *    simulation at `latest` would undo;
  *  - the node sets its own priority fee or max fee, which the sponsored route
  *    cannot carry, so the fees the author asked for would be silently dropped.
  *
@@ -41,6 +44,7 @@ export function shouldTrySponsorship({
   signerMode,
   sponsorGas,
   usePrivateMempool,
+  simulatesNextBlock,
   customFees,
 }: SponsorshipEligibility): boolean {
   return (
@@ -48,6 +52,7 @@ export function shouldTrySponsorship({
     isSponsorshipSupported(chainId) &&
     resolveSponsorGas(sponsorGas) &&
     !usePrivateMempool &&
+    !simulatesNextBlock &&
     !customFees &&
     signerMode.kind === SIGNER_MODE.EOA
   );

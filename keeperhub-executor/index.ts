@@ -24,7 +24,9 @@
 // Normalize all console.* output in this process to canonical JSON. Must be
 // the first import so the patch installs before any module logs.
 import "./log-facade";
+import { lookup } from "node:dns/promises";
 import { createServer, type IncomingMessage } from "node:http";
+import { hostname } from "node:os";
 import {
   DeleteMessageCommand,
   type Message,
@@ -69,13 +71,22 @@ import {
 } from "../lib/billing/dispatch-refusal";
 import { chargePaygExecution } from "../lib/billing/payg/charge";
 import { PAYG_OVERFLOW_REASON } from "../lib/billing/payg/constants";
+import type { PlanName } from "../lib/billing/plans";
 import { type ApiExecuteTriggerType, executeViaApi } from "./api-execute";
 import { checkExecutionLimitForExecutor } from "./billing-guard";
 import { CONFIG } from "./config";
 import { resolveDispatchTarget } from "./execution-mode";
-import { checkWorkflowFeaturesForExecutor } from "./feature-guard";
+import {
+  checkWorkflowFeaturesForExecutor,
+  featureEnabledForPlan,
+} from "./feature-guard";
 import { executeInProcess } from "./in-process";
-import { createWorkflowJob } from "./k8s-job";
+import {
+  createWarmRunnerJob,
+  createWorkflowJob,
+  deleteRunnerJob,
+  getRunnerPodIps,
+} from "./k8s-job";
 import { takeLatency, trackLatency } from "./lib/correlation-map";
 import { enableBroadcastMarkers, sweepBroadcastMarkers } from "./lib/broadcast-marker";
 import {
@@ -86,6 +97,7 @@ import {
   resolveToSkipped,
 } from "./lib/db-helpers";
 import { InFlightTracker } from "./lib/in-flight";
+import { runReceiveLoop } from "./lib/receive-loop";
 import {
   applyCounterDeltas,
   applyLatencyObservations,
@@ -108,7 +120,24 @@ import {
   assertTurnkeyEnvForActiveWallets,
 } from "./startup-checks";
 import { ExecutionLatency } from "./latency";
-import type { ExecutorMessage, ScheduleMessage } from "./types";
+import type {
+  ExecutorMessage,
+  ScheduleMessage,
+  WorkflowRecord,
+} from "./types";
+import { WarmPool } from "./warm-pool";
+import {
+  WARM_POOL_ACK_PATH,
+  WARM_POOL_CLAIM_PATH,
+} from "./warm-pool-protocol";
+import { LOW_LATENCY_START_FEATURE_ID } from "../lib/workflow/execution-priority";
+import {
+  buildWarmAssignment,
+  type ClaimOutcome,
+  type LowLatencyStart,
+  resolveLowLatencyStart,
+  tryWarmStart,
+} from "./low-latency";
 
 const INGEST_MAX_BODY_BYTES = 256 * 1024;
 
@@ -277,6 +306,50 @@ function getScheduleId(message: ExecutorMessage): string | undefined {
   return message.triggerType === "schedule" ? message.scheduleId : undefined;
 }
 
+// Pre-started runners for workflows that opt into a low-latency start. Set
+// in listen() when WARM_POOL_SIZE > 0; undefined means every run that needs
+// isolation gets its own Job, as before.
+let warmPool: WarmPool | undefined;
+
+function recordWarmPoolClaim(result: ClaimOutcome, triggerType: string): void {
+  getMetricsCollector().incrementCounter(MetricNames.EXECUTOR_WARM_POOL_CLAIMS, {
+    [LabelKeys.CLAIM_RESULT]: result,
+    [LabelKeys.TRIGGER_TYPE]: triggerType,
+  });
+}
+
+/** See resolveLowLatencyStart in low-latency.ts for the rules. */
+function lowLatencyStartFor(params: {
+  workflow: Pick<WorkflowRecord, "nodes" | "organizationId">;
+  target: string;
+  triggerType: string;
+  /** The plan the feature guard already read for this message. */
+  plan: PlanName | undefined;
+}): Promise<LowLatencyStart | undefined> {
+  return resolveLowLatencyStart({
+    nodes: params.workflow.nodes,
+    organizationId: params.workflow.organizationId,
+    target: params.target,
+    triggerType: params.triggerType,
+    poolEnabled: warmPool?.enabled === true,
+    // No second plan query on the dispatch path this feature exists to
+    // shorten: the feature guard read the plan moments ago.
+    isEntitled: () =>
+      Promise.resolve(
+        featureEnabledForPlan(LOW_LATENCY_START_FEATURE_ID, params.plan)
+      ),
+    recordClaim: recordWarmPoolClaim,
+    onEntitlementError: (error) => {
+      // An optional speed-up must not fail the run: start it the standard way.
+      logSystemError(
+        ErrorCategory.DATABASE,
+        "[Executor] Low-latency entitlement check failed; using a per-run Job",
+        error
+      );
+    },
+  });
+}
+
 async function dispatchExecution(params: {
   target: string;
   workflowId: string;
@@ -285,12 +358,49 @@ async function dispatchExecution(params: {
   triggerType: ApiExecuteTriggerType;
   scheduleId?: string;
   latency?: ExecutionLatency;
+  /** Set when the run is cleared to try a pre-started runner first. */
+  lowLatency?: LowLatencyStart;
 }): Promise<void> {
-  const { target, workflowId, executionId, input, triggerType, scheduleId, latency } =
-    params;
+  const {
+    target,
+    workflowId,
+    executionId,
+    input,
+    triggerType,
+    scheduleId,
+    latency,
+    lowLatency,
+  } = params;
+  // What actually ran the hand-off, for the latency labels below: a warm pod
+  // claim reports "warm-pool" so it can be compared with per-run Jobs.
+  let dispatchedTarget = target;
 
   switch (target) {
     case "k8s-job": {
+      const warmResult = await tryWarmStart({
+        pool: warmPool,
+        start: lowLatency,
+        assignment: buildWarmAssignment({
+          workflowId,
+          executionId,
+          input,
+          triggerType,
+          scheduleId,
+          correlationId: latency?.correlationId,
+          receivedAt: latency?.at("received"),
+          observedAt: latency?.at("observed"),
+        }),
+        recordClaim: recordWarmPoolClaim,
+      });
+      if (warmResult === "claimed") {
+        dispatchedTarget = "warm-pool";
+        break;
+      }
+      if (warmResult !== undefined) {
+        console.warn(
+          `[Executor] Warm pool ${warmResult} for execution ${executionId}; starting a per-run Job`
+        );
+      }
       try {
         const job = await createWorkflowJob({
           workflowId,
@@ -382,7 +492,7 @@ async function dispatchExecution(params: {
   // dispatched execution. The in-process target records its own full-timeline
   // summary and histograms (it sees started/completed, which a handed-off Job
   // never does), so it is excluded here to avoid a second, out-of-order line.
-  if (latency && target !== "in-process") {
+  if (latency && dispatchedTarget !== "in-process") {
     // Wrapped so instrumentation cannot fail a dispatched execution. This block
     // runs after createWorkflowJob returned, so a throw here reaches the
     // processMessage catch and failExecutionAsSystemError flips the still-pending
@@ -399,7 +509,7 @@ async function dispatchExecution(params: {
           queueToDispatchMs,
           {
             [LabelKeys.TRIGGER_TYPE]: triggerType,
-            [LabelKeys.DISPATCH_TARGET]: target,
+            [LabelKeys.DISPATCH_TARGET]: dispatchedTarget,
             [LabelKeys.STAGE]: "dispatched",
           }
         );
@@ -408,7 +518,7 @@ async function dispatchExecution(params: {
         workflowId,
         executionId,
         triggerType,
-        dispatchTarget: target,
+        dispatchTarget: dispatchedTarget,
       });
     } catch (latencyError) {
       // logSystemError, not console.error: a swallowed instrumentation failure
@@ -680,6 +790,12 @@ async function processExecutorMessage(
         triggerType: "manual",
         scheduleId: undefined,
         latency,
+        lowLatency: await lowLatencyStartFor({
+          workflow,
+          target,
+          triggerType,
+          plan: featureResult.plan,
+        }),
       });
     } catch (error) {
       // We claimed pending -> running above, so the phantom/pending backstop in
@@ -809,6 +925,12 @@ async function processExecutorMessage(
       triggerType,
       scheduleId: getScheduleId(message),
       latency,
+      lowLatency: await lowLatencyStartFor({
+        workflow,
+        target,
+        triggerType,
+        plan: featureResult.plan,
+      }),
     });
   } catch (error) {
     // Don't leak the inserted row as 'pending' if dispatch fails. The
@@ -1033,6 +1155,66 @@ export async function processMessage(
   }
 }
 
+/**
+ * The address warm pods use to reach this replica. Each replica owns its own
+ * pool, so this is the pod's own IP (from its hostname, which Kubernetes maps
+ * to the pod IP), not the load-balanced Service. WARM_POOL_CLAIM_URL
+ * overrides it.
+ */
+async function resolveWarmPoolClaimUrl(): Promise<string | undefined> {
+  if (CONFIG.warmPoolClaimUrl) {
+    return CONFIG.warmPoolClaimUrl;
+  }
+  try {
+    const { address, family } = await lookup(hostname());
+    if (address.startsWith("127.") || address === "::1") {
+      return undefined;
+    }
+    const host = family === 6 ? `[${address}]` : address;
+    return `http://${host}:${CONFIG.healthPort}`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function startWarmPool(): Promise<void> {
+  if (CONFIG.warmPoolSize <= 0) {
+    return;
+  }
+  const claimUrl = await resolveWarmPoolClaimUrl();
+  if (!claimUrl) {
+    logSystemError(
+      ErrorCategory.CONFIGURATION,
+      "[WarmPool] Cannot determine an address warm pods can reach; warm pool disabled. Set WARM_POOL_CLAIM_URL.",
+      new Error("warm pool claim URL unresolved")
+    );
+    return;
+  }
+  warmPool = new WarmPool(
+    {
+      size: CONFIG.warmPoolSize,
+      idleTtlMs: CONFIG.warmPoolIdleTtlSeconds * 1000,
+      longPollMs: CONFIG.warmPoolLongPollSeconds * 1000,
+      claimUrl,
+      preloadActionPrefixes: CONFIG.warmPoolPreloadActionPrefixes,
+      orgClaimsPerMinute: CONFIG.warmPoolOrgClaimsPerMinute,
+      runDeadlineMs: CONFIG.jobActiveDeadline * 1000,
+    },
+    {
+      createJob: async (params) => {
+        const job = await createWarmRunnerJob(params);
+        return { name: job.metadata?.name, uid: job.metadata?.uid };
+      },
+      deleteJob: deleteRunnerJob,
+      lookupPodIps: getRunnerPodIps,
+    }
+  );
+  warmPool.start();
+  console.log(
+    `[Executor] Warm pool started: size=${CONFIG.warmPoolSize} claimUrl=${claimUrl}`
+  );
+}
+
 async function listen(): Promise<void> {
   console.log("[Executor] Starting unified workflow executor...");
   console.log(`[Executor] Execution mode: ${CONFIG.executionMode}`);
@@ -1121,6 +1303,29 @@ async function listen(): Promise<void> {
       return;
     }
 
+    if (req.url === WARM_POOL_ACK_PATH) {
+      if (warmPool) {
+        warmPool.handleAckRequest(req, res);
+      } else {
+        req.resume();
+        res.writeHead(410);
+        res.end();
+      }
+      return;
+    }
+
+    if (req.url === WARM_POOL_CLAIM_PATH) {
+      if (warmPool) {
+        warmPool.handleClaimRequest(req, res);
+      } else {
+        // Not (or no longer) running a pool: any pod asking should exit.
+        req.resume();
+        res.writeHead(410);
+        res.end();
+      }
+      return;
+    }
+
     if (req.url === "/metrics/ingest" && req.method === "POST") {
       if (process.env.METRICS_COLLECTOR !== "prometheus") {
         res.writeHead(404);
@@ -1199,6 +1404,8 @@ async function listen(): Promise<void> {
     );
   });
 
+  await startWarmPool();
+
   // Graceful shutdown: stop receiving, let in-flight handlers finish within the
   // pod's grace period, then close the DB. Exiting with work mid-processMessage
   // leaves the claimed row for the reaper and redelivers the message after the
@@ -1217,6 +1424,10 @@ async function listen(): Promise<void> {
     console.log(
       `\n[Executor] Received ${signal}, draining ${inFlight.size} in-flight message(s) (up to ${SHUTDOWN_TIMEOUT_MS}ms)...`
     );
+    // Before closing the server: answers the warm pods' open claim requests
+    // so they exit instead of waiting on a replica that is going away. A run
+    // being dispatched now falls back to a per-run Job.
+    warmPool?.stop();
     healthServer.close();
     // Cut the long poll short so the loop exits instead of handing back a
     // batch the drain could not cover.
@@ -1242,56 +1453,44 @@ async function listen(): Promise<void> {
     );
   });
 
-  // SQS polling loop
-  while (!shuttingDown) {
-    try {
+  // SQS polling loop. Up to maxMessages handlers run at once, and the loop
+  // receives again as soon as one finishes, so a dispatch waiting on a slow
+  // step (a warm-pool ack, a Job create) does not stop new messages arriving.
+  await runReceiveLoop({
+    receive: async (maxMessages) => {
       const response = await sqs.send(
         new ReceiveMessageCommand({
           QueueUrl: CONFIG.sqsQueueUrl,
-          MaxNumberOfMessages: CONFIG.maxMessages,
+          MaxNumberOfMessages: maxMessages,
           WaitTimeSeconds: CONFIG.waitTimeSeconds,
           VisibilityTimeout: CONFIG.visibilityTimeout,
           MessageAttributeNames: ["All"],
         }),
         { abortSignal: receiveAbort.signal }
       );
-
       const messages = response.Messages || [];
-
-      if (shuttingDown) {
-        // A batch that landed as the abort fired. It is already invisible on
-        // the queue, so leave it to redeliver after the visibility timeout
-        // rather than start work the drain cannot see through.
-        if (messages.length > 0) {
-          console.warn(
-            `[Executor] Ignoring ${messages.length} message(s) received during shutdown; they redeliver after the visibility timeout`
-          );
-        }
-        break;
-      }
-
       if (messages.length > 0) {
         console.log(`[Executor] Received ${messages.length} messages`);
-
-        const results = await Promise.allSettled(
-          messages.map((msg) => inFlight.track(processMessage(msg)))
-        );
-
-        for (const [idx, result] of results.entries()) {
-          if (result.status === "rejected") {
-            console.error(`[Executor] Message ${idx} failed:`, result.reason);
-          }
-        }
       }
-    } catch (error) {
-      if (shuttingDown) {
-        // The aborted long poll rejects; that is the loop's exit, not a fault.
-        break;
-      }
+      return messages;
+    },
+    process: (message) => processMessage(message),
+    inFlight,
+    maxInFlight: CONFIG.maxMessages,
+    isStopping: () => shuttingDown,
+    onReceiveError: async (error) => {
       console.error("[Executor] Error receiving messages:", error);
       await new Promise((r) => setTimeout(r, 5000));
-    }
-  }
+    },
+    onProcessError: (error) => {
+      console.error("[Executor] Message failed:", error);
+    },
+    onIgnoredWhileStopping: (count) => {
+      console.warn(
+        `[Executor] Ignoring ${count} message(s) received during shutdown; they redeliver after the visibility timeout`
+      );
+    },
+  });
 }
 
 // Only auto-start the poll loop when run as the executor entrypoint, not when

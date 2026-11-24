@@ -27,6 +27,12 @@ import { integrationsAtom } from "@/lib/integrations-store";
 import type { IntegrationType } from "@/lib/types/integration";
 import { cn } from "@/lib/utils";
 import {
+  applyConfigUpdate,
+  CLEARED_FIELDS_TOAST_ID,
+  type ConfigUpdateBatch,
+  clearedFieldsNotice,
+} from "@/lib/workflow/editor/config-update";
+import {
   clearNodeStatusesAtom,
   clearWorkflowAtom,
   currentWorkflowDescriptionAtom,
@@ -140,7 +146,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
   const [activeTab, setActiveTab] = useAtom(propertiesPanelActiveTabAtom);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const refreshRunsRef = useRef<(() => Promise<void>) | null>(null);
-  const pendingConfigRef = useRef<Record<string, unknown> | null>(null);
+  const pendingConfigRef = useRef<ConfigUpdateBatch | null>(null);
 
   const selectedNode = nodes.find((node) => node.id === selectedNodeId);
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
@@ -206,12 +212,22 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
       // both spread the same stale selectedNode.data.config snapshot and the
       // second call wipes out the first. The ref batches back-to-back updates
       // within a microtask so the second call sees the first's merged config.
-      const baseConfig =
-        pendingConfigRef.current ?? selectedNode.data.config ?? {};
-      const newConfig = { ...baseConfig, [key]: value };
-      pendingConfigRef.current = newConfig;
+      const { batch, config: newConfig } = applyConfigUpdate(
+        pendingConfigRef.current,
+        selectedNode.data.config ?? {},
+        key,
+        value
+      );
+      pendingConfigRef.current = batch;
       queueMicrotask(() => {
+        // Runs once the same-tick updates are done; only the first one acts.
+        const finished = pendingConfigRef.current;
         pendingConfigRef.current = null;
+        if (finished?.cleared.length) {
+          toast.info(clearedFieldsNotice(finished.cleared), {
+            id: CLEARED_FIELDS_TOAST_ID,
+          });
+        }
       });
       updateNodeData({
         id: selectedNode.id,

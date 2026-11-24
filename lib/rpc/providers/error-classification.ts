@@ -22,7 +22,14 @@ export const NON_RETRYABLE_ERROR_CODES: ReadonlySet<string> = new Set([
  * in RpcProviderManager and the write-path failover in submitAndConfirm.
  */
 export function isNonRetryableError(error: unknown): boolean {
-  if (typeof error !== "object" || error === null || !("code" in error)) {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  // Our own errors that no endpoint retry can fix opt out with this flag.
+  if ((error as { nonRetryable?: unknown }).nonRetryable === true) {
+    return true;
+  }
+  if (!("code" in error)) {
     return false;
   }
 

@@ -61,6 +61,12 @@ import {
   workflowNotFoundAtom,
 } from "@/lib/workflow/store";
 import { buildConfigForActionTypeChange } from "@/lib/workflow/editor/action-type-transition";
+import {
+  applyConfigUpdate,
+  CLEARED_FIELDS_TOAST_ID,
+  type ConfigUpdateBatch,
+  clearedFieldsNotice,
+} from "@/lib/workflow/editor/config-update";
 import { findActionById } from "@/plugins/registry";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { ActionConfig } from "./config/action-config";
@@ -318,7 +324,7 @@ export const PanelInner = () => {
   // Tracks in-flight config so multiple synchronous onUpdateConfig calls
   // within the same event (e.g. toggling manual ABI + clearing the field)
   // don't overwrite each other due to stale selectedNode closure.
-  const pendingConfigRef = useRef<Record<string, unknown> | null>(null);
+  const pendingConfigRef = useRef<ConfigUpdateBatch | null>(null);
   const sidebarRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
@@ -531,19 +537,29 @@ export const PanelInner = () => {
     value: string | boolean | Record<string, unknown> | undefined
   ): void => {
     if (selectedNode) {
-      const baseConfig = pendingConfigRef.current ?? selectedNode.data.config;
-      let newConfig: Record<string, unknown> = { ...baseConfig, [key]: value };
+      // An action type change prunes leftovers from the previous action and
+      // seeds the new action's defaults so showWhen conditions and validation
+      // evaluate immediately. See buildConfigForActionTypeChange for details.
+      const { batch, config: newConfig } = applyConfigUpdate(
+        pendingConfigRef.current,
+        selectedNode.data.config ?? {},
+        key,
+        value,
+        key === "actionType" && typeof value === "string"
+          ? (config) => buildConfigForActionTypeChange(value, config)
+          : undefined
+      );
 
-      if (key === "actionType" && typeof value === "string") {
-        // Prune leftovers from the previous action type and seed the new
-        // action's defaults so showWhen conditions and validation evaluate
-        // immediately. See buildConfigForActionTypeChange for details.
-        newConfig = buildConfigForActionTypeChange(value, newConfig);
-      }
-
-      pendingConfigRef.current = newConfig;
+      pendingConfigRef.current = batch;
       queueMicrotask(() => {
+        // Runs once the same-tick updates are done; only the first one acts.
+        const finished = pendingConfigRef.current;
         pendingConfigRef.current = null;
+        if (finished?.cleared.length) {
+          toast.info(clearedFieldsNotice(finished.cleared), {
+            id: CLEARED_FIELDS_TOAST_ID,
+          });
+        }
       });
       updateNodeData({ id: selectedNode.id, data: { config: newConfig } });
 

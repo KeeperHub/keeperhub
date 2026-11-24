@@ -2,8 +2,10 @@ import type { V1EnvVar, V1Job } from "@kubernetes/client-node";
 import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 let mockCreateNamespacedJob: Mock;
+let mockListNamespacedPod: Mock;
 
 vi.mock("@kubernetes/client-node", () => {
+  mockListNamespacedPod = vi.fn();
   mockCreateNamespacedJob = vi.fn().mockResolvedValue({
     metadata: { name: "workflow-test-123" },
   } as V1Job);
@@ -12,14 +14,21 @@ vi.mock("@kubernetes/client-node", () => {
     loadFromDefault(): void {
       // no-op for test mock
     }
-    makeApiClient(): { createNamespacedJob: Mock } {
-      return { createNamespacedJob: mockCreateNamespacedJob };
+    makeApiClient(): {
+      createNamespacedJob: Mock;
+      listNamespacedPod: Mock;
+    } {
+      return {
+        createNamespacedJob: mockCreateNamespacedJob,
+        listNamespacedPod: mockListNamespacedPod,
+      };
     }
   }
 
   return {
     KubeConfig: MockKubeConfig,
     BatchV1Api: class {},
+    CoreV1Api: class {},
   };
 });
 
@@ -50,7 +59,12 @@ vi.mock("./runner-env", () => ({
   ]),
 }));
 
-const { createWorkflowJob } = await import("./k8s-job");
+const {
+  createWarmRunnerJob,
+  createWorkflowJob,
+  getRunnerPodIps,
+  WARM_POOL_LABEL,
+} = await import("./k8s-job");
 const { CONFIG } = await import("./config");
 const { getRunnerSystemEnvVars } = await import("./runner-env");
 
@@ -595,5 +609,181 @@ describe("createWorkflowJob", () => {
     // off-heap allocations that sit alongside it, not merely undercut the limit.
     expect(heapCapMib).toBeLessThan(limitMib);
     expect(limitMib - heapCapMib).toBeGreaterThanOrEqual(256);
+  });
+});
+
+describe("createWarmRunnerJob", () => {
+  const warmParams = {
+    token: "a".repeat(64),
+    claimUrl: "http://10.0.0.5:3080",
+    maxIdleMs: 815_000,
+    preloadActionPrefixes: "web3/",
+  };
+
+  async function warmJob(): Promise<V1Job> {
+    await createWarmRunnerJob(warmParams);
+    return getSubmittedJob();
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("carries no execution, workflow or organization data before a claim", async () => {
+    const envVars = getJobEnvVars(await warmJob());
+    for (const name of [
+      "WORKFLOW_ID",
+      "EXECUTION_ID",
+      "WORKFLOW_INPUT",
+      "TRIGGER_TYPE",
+      "SCHEDULE_ID",
+      "KH_CORRELATION_ID",
+      "KH_RECEIVED_AT",
+      "KH_OBSERVED_AT",
+    ]) {
+      expect(envVars.find((v) => v.name === name)).toBeUndefined();
+    }
+    expect(getEnvVar(envVars, "KH_WARM_POOL_CLAIM_URL")).toBe(
+      "http://10.0.0.5:3080"
+    );
+    expect(getEnvVar(envVars, "KH_WARM_POOL_TOKEN")).toBe(warmParams.token);
+  });
+
+  it("never puts the claim token in the Job name or labels", async () => {
+    const job = await warmJob();
+    expect(job.metadata?.name).not.toContain(warmParams.token.slice(0, 8));
+    const labelValues = [
+      ...Object.values(job.metadata?.labels ?? {}),
+      ...Object.values(job.spec?.template?.metadata?.labels ?? {}),
+    ];
+    expect(labelValues.join(" ")).not.toContain(warmParams.token);
+  });
+
+  it("keeps the runner label the network policy matches, and marks the pool", async () => {
+    const job = await warmJob();
+    const podLabels = job.spec?.template?.metadata?.labels ?? {};
+    expect(podLabels.app).toBe("workflow-runner");
+    expect(podLabels[WARM_POOL_LABEL]).toBe("true");
+    expect(job.metadata?.name?.startsWith("keeperhub-workflow-")).toBe(true);
+  });
+
+  it("gets the same hardening and secret references as a per-run Job", async () => {
+    const warm = await warmJob();
+    vi.clearAllMocks();
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "block",
+    });
+    const cold = getSubmittedJob();
+
+    const warmPod = warm.spec?.template?.spec;
+    const coldPod = cold.spec?.template?.spec;
+    expect(warmPod?.securityContext).toEqual(coldPod?.securityContext);
+    expect(warmPod?.serviceAccountName).toBe(coldPod?.serviceAccountName);
+    expect(warmPod?.automountServiceAccountToken).toBe(false);
+    expect(warmPod?.volumes).toEqual(coldPod?.volumes);
+    expect(warmPod?.containers?.[0]?.securityContext).toEqual(
+      coldPod?.containers?.[0]?.securityContext
+    );
+    expect(warmPod?.containers?.[0]?.resources).toEqual(
+      coldPod?.containers?.[0]?.resources
+    );
+    const secretRefs = (job: V1Job): string[] =>
+      getJobEnvVars(job)
+        .filter((v) => v.valueFrom?.secretKeyRef)
+        .map((v) => v.name)
+        .sort();
+    expect(secretRefs(warm)).toEqual(secretRefs(cold));
+  });
+
+  it("covers the idle wait plus a full run, and caps the run from the claim", async () => {
+    const job = await warmJob();
+    expect(job.spec?.activeDeadlineSeconds).toBe(
+      Math.ceil(warmParams.maxIdleMs / 1000) + CONFIG.jobActiveDeadline
+    );
+    expect(
+      getEnvVar(getJobEnvVars(job), "KH_WARM_POOL_RUN_DEADLINE_MS")
+    ).toBe(String(CONFIG.jobActiveDeadline * 1000));
+  });
+});
+
+describe("getRunnerPodIps", () => {
+  const job = { name: "keeperhub-workflow-warm-ab12-1", uid: "job-uid-1" };
+
+  function pod(options: {
+    phase?: string;
+    ownerUid?: string;
+    controller?: boolean;
+    podIP?: string;
+    podIPs?: string[];
+  }): Record<string, unknown> {
+    return {
+      metadata: {
+        ownerReferences: [
+          {
+            uid: options.ownerUid ?? job.uid,
+            controller: options.controller ?? true,
+          },
+        ],
+      },
+      status: {
+        phase: options.phase ?? "Running",
+        podIP: options.podIP,
+        podIPs: options.podIPs?.map((ip) => ({ ip })),
+      },
+    };
+  }
+
+  function podsAre(...items: Array<Record<string, unknown>>): void {
+    mockListNamespacedPod.mockResolvedValueOnce({ items });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("looks up the Job's pods by name in the runner namespace", async () => {
+    podsAre(pod({ podIP: "10.1.2.3" }));
+    await expect(getRunnerPodIps(job)).resolves.toEqual(["10.1.2.3"]);
+    expect(mockListNamespacedPod).toHaveBeenCalledWith({
+      namespace: "test-ns",
+      labelSelector: `job-name=${job.name}`,
+    });
+  });
+
+  it("returns every address of a dual-stack pod", async () => {
+    podsAre(pod({ podIP: "10.1.2.3", podIPs: ["10.1.2.3", "fd00::12"] }));
+    await expect(getRunnerPodIps(job)).resolves.toEqual([
+      "10.1.2.3",
+      "fd00::12",
+    ]);
+  });
+
+  it("has no address while the pod is not running or has no IP", async () => {
+    podsAre();
+    await expect(getRunnerPodIps(job)).resolves.toBeUndefined();
+    podsAre(pod({ phase: "Pending" }));
+    await expect(getRunnerPodIps(job)).resolves.toBeUndefined();
+    podsAre(pod({}));
+    await expect(getRunnerPodIps(job)).resolves.toBeUndefined();
+  });
+
+  it("ignores a pod that only copies the job-name label", async () => {
+    podsAre(pod({ ownerUid: "someone-else", podIP: "10.6.6.6" }));
+    await expect(getRunnerPodIps(job)).resolves.toBeUndefined();
+    podsAre(pod({ controller: false, podIP: "10.6.6.6" }));
+    await expect(getRunnerPodIps(job)).resolves.toBeUndefined();
+    podsAre(
+      pod({ ownerUid: "someone-else", podIP: "10.6.6.6" }),
+      pod({ podIP: "10.1.2.3" })
+    );
+    await expect(getRunnerPodIps(job)).resolves.toEqual(["10.1.2.3"]);
+  });
+
+  it("trusts no address when the Job somehow owns more than one running pod", async () => {
+    podsAre(pod({ podIP: "10.1.2.3" }), pod({ podIP: "10.1.2.4" }));
+    await expect(getRunnerPodIps(job)).resolves.toBeUndefined();
   });
 });

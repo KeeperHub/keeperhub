@@ -87,7 +87,9 @@ export type ExecutorMessage =
   | UpstreamMessage
   | ManualMessage;
 
-export type DispatchTarget = "k8s-job" | "in-process" | "api";
+// "warm-pool": started on a pre-started runner pod (warm-pool.ts). Its pod
+// ships latency observations over the metrics ingest like a per-run Job.
+export type DispatchTarget = "k8s-job" | "in-process" | "api" | "warm-pool";
 
 export type WorkflowRecord = {
   id: string;

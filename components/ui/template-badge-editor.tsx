@@ -938,6 +938,7 @@ export function TemplateBadgeEditor({
                 )
               : "min-w-0 flex-1 overflow-hidden whitespace-nowrap outline-none"
           }
+          aria-disabled={disabled || undefined}
           contentEditable={!disabled}
           id={id}
           onBlur={handleBlur}
