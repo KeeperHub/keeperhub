@@ -737,7 +737,7 @@ function predictedTime(
   const age = nowSeconds - latestTimestamp;
   if (age > STALE_HEAD_SLOTS * slot) {
     throw new Error(
-      `Next-block simulation: the RPC's latest block is ${age}s old, more than ${STALE_HEAD_SLOTS} slots: the RPC may be lagging, the server clock off or the network missing slots; on a fork or test node, set "Simulate at" back to "Latest block" (${RETRY_HINT})`
+      `Next-block simulation: the RPC's latest block is ${age}s old, more than ${STALE_HEAD_SLOTS} slots (${STALE_HEAD_SLOTS * slot}s), so the RPC may be lagging (${RETRY_HINT}). On a fork or test node, set "Simulate at" back to "Latest block".`
     );
   }
   return Math.max(
@@ -779,10 +779,14 @@ async function prepare(
       `Next-block simulation: the RPC is behind the block the check ran on (${RETRY_HINT})`
     );
   }
+  // On a beacon chain the fixed slot is the block time; a set offset can only
+  // raise it, so the reported value is the one the prediction used.
+  const beaconSlot = BEACON_SLOT_SECONDS.get(chainId);
   const offset =
-    options.timestampOffsetSec ??
-    BEACON_SLOT_SECONDS.get(chainId) ??
-    (await chainSlotSeconds(provider, chainId, latest));
+    beaconSlot === undefined
+      ? (options.timestampOffsetSec ??
+        (await chainSlotSeconds(provider, chainId, latest)))
+      : Math.max(options.timestampOffsetSec ?? beaconSlot, beaconSlot);
   if (offset < MIN_SIMULATE_TIMESTAMP_OFFSET_SEC) {
     throw new NextBlockSimulationUnsupportedError(
       'Next-block simulation cannot predict the next block\'s time on this network: recent blocks share a timestamp. Set "Next block timestamp offset" to 1 (the call may then pass a few blocks early), or set "Simulate at" back to "Latest block".'

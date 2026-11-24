@@ -773,16 +773,44 @@ describe("next-block simulation", () => {
     });
 
     it("reuses an earlier check within the same slot", async () => {
-      node.unlockAt = node.latestTimestamp + SLOT;
-      const basedOn = (await sendOn(MAINNET)).simulation;
+      // A minimum of two slots: reuse keeps +24, a fresh +12-offset check +12.
+      node.unlockAt = node.latestTimestamp + 2 * SLOT;
+      const basedOn = (
+        await simulateSendAtNextBlock(managerFor(provider), {
+          chainId: MAINNET,
+          tx: RUN_TX,
+          options: { timestampOffsetSec: 2 * SLOT },
+        })
+      ).simulation;
       setClock(node.latestTimestamp + 3);
       provider = new FakeProvider(node);
-      const blockReads = node.methods.length;
 
       const { simulation } = await sendOn(MAINNET, basedOn);
-      expect(simulation.assumedTimestamp).toBe(basedOn.assumedTimestamp);
-      expect(node.methods.slice(blockReads)).not.toContain("eth_simulateV1");
+      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + 2 * SLOT);
     });
+
+    it.each([
+      [1, 12],
+      [11_155_111, 12],
+      [17_000, 12],
+      [560_048, 12],
+      [100, 5],
+      [10_200, 5],
+    ])(
+      "uses chain %i's fixed %i s slot without measuring",
+      async (chainId, slot) => {
+        setClock(node.latestTimestamp + 1);
+        const { simulation } = await simulateCallAtNextBlock(
+          managerFor(provider),
+          { chainId, tx: WORKABLE_TX, options: { timestampOffsetSec: 1 } }
+        );
+        expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + slot);
+        expect(simulation.timestampOffsetSec).toBe(slot);
+        expect(
+          node.methods.filter((m) => m === "eth_getBlockByNumber")
+        ).toHaveLength(1);
+      }
+    );
 
     it("matches a beacon-clock keeper that re-checks 4 s into each slot", () => {
       // Mainnet genesis 1606824023, 12 s slots.
