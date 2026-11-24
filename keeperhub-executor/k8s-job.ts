@@ -7,9 +7,12 @@ import {
   type V1Job,
 } from "@kubernetes/client-node";
 import { CONFIG } from "./config";
-import { isSafeCorrelationId } from "./latency";
 import { getRunnerSystemEnvVars } from "./runner-env";
-import { WARM_POOL_ENV } from "./warm-pool-protocol";
+import {
+  assignmentToRunnerEnv,
+  buildRunAssignment,
+  WARM_POOL_ENV,
+} from "./warm-pool-protocol";
 
 const kc = new KubeConfig();
 kc.loadFromDefault();
@@ -111,16 +114,33 @@ export async function createWorkflowJob(params: {
 }): Promise<V1Job> {
   const { workflowId, executionId, input, triggerType, scheduleId, correlationId, latencyEpochs } =
     params;
-  // A correlation id reaches the Job two ways: KH_CORRELATION_ID on the
-  // container and the "correlation-id" metadata label. A Kubernetes label
-  // value caps at 63 characters, must start and end alphanumeric and admits
-  // only [A-Za-z0-9_.-] in between; an over-long or slash-bearing id fails Job
-  // creation, which would turn a bad correlation id into a workflow that never
-  // runs. ExecutionLatency (latency.ts) already falls back to a locally minted
-  // id, so this only rejects an id that bypassed it - the same belt-and-braces
-  // posture as SAFE_EXECUTION_ID at the filesystem boundary.
-  const jobCorrelationId =
-    correlationId && isSafeCorrelationId(correlationId) ? correlationId : undefined;
+  // The run env comes from the same builder a warm pod uses, so the two start
+  // paths cannot drift apart. buildRunAssignment also drops a correlation id
+  // that could not go on the Job: it reaches the Job two ways,
+  // KH_CORRELATION_ID on the container and the "correlation-id" metadata
+  // label. A Kubernetes label value caps at 63 characters, must start and end
+  // alphanumeric and admits only [A-Za-z0-9_.-] in between; an over-long or
+  // slash-bearing id fails Job creation, which would turn a bad correlation id
+  // into a workflow that never runs. ExecutionLatency (latency.ts) already
+  // falls back to a locally minted id, so this only rejects an id that
+  // bypassed it.
+  //
+  // KH_CORRELATION_ID lets the runner pod's engine-level logs join the
+  // executor's receive/dispatch stages on one key; KH_RECEIVED_AT and
+  // KH_OBSERVED_AT let it ship point latency observations back over the
+  // metrics ingest (histogram observations cannot be merged across pods;
+  // point samples can).
+  const assignment = buildRunAssignment({
+    workflowId,
+    executionId,
+    input,
+    triggerType,
+    scheduleId,
+    correlationId,
+    receivedAt: latencyEpochs?.receivedAt,
+    observedAt: latencyEpochs?.observedAt,
+  });
+  const jobCorrelationId = assignment.correlationId;
   // Prefix with "keeperhub-" so the runner pod is captured by the Loki
   // security alert rules, which match pod=~".*keeperhub.*" (KEEP-612).
   // executeWorkflow -- and its content-scanner emit -- runs inside this pod
@@ -129,28 +149,9 @@ export async function createWorkflowJob(params: {
   // security.content_scanner_hit signals never reached the alert.
   const jobName = `keeperhub-workflow-${executionId.substring(0, 8)}-${Date.now()}`;
 
-  const runEnv: V1EnvVar[] = [
-    { name: "WORKFLOW_ID", value: workflowId },
-    { name: "EXECUTION_ID", value: executionId },
-    { name: "WORKFLOW_INPUT", value: JSON.stringify(input) },
-    { name: "TRIGGER_TYPE", value: triggerType },
-    // Latency correlation (issue #2289): the runner pod inherits the id minted
-    // at SQS receive, so its engine-level logs can be joined to the executor's
-    // receive/dispatch stages on one key. KH_RECEIVED_AT / KH_OBSERVED_AT let
-    // the pod ship point latency observations back over the metrics ingest
-    // (histogram observations cannot be merged across pods; point samples
-    // can).
-    ...(jobCorrelationId
-      ? [{ name: "KH_CORRELATION_ID", value: jobCorrelationId }]
-      : []),
-    ...(latencyEpochs?.receivedAt !== undefined
-      ? [{ name: "KH_RECEIVED_AT", value: String(latencyEpochs.receivedAt) }]
-      : []),
-    ...(latencyEpochs?.observedAt !== undefined
-      ? [{ name: "KH_OBSERVED_AT", value: String(latencyEpochs.observedAt) }]
-      : []),
-    ...(scheduleId ? [{ name: "SCHEDULE_ID", value: scheduleId }] : []),
-  ];
+  const runEnv: V1EnvVar[] = Object.entries(
+    assignmentToRunnerEnv(assignment, "k8s-job")
+  ).map(([name, value]) => ({ name, value }));
 
   const labels: Record<string, string> = {
     app: "workflow-runner",
@@ -187,20 +188,12 @@ export async function createWorkflowJob(params: {
   }
 }
 
-// Label marking a pre-started runner Job that belongs to the warm pool, and
-// the executor replica that owns it (each replica runs its own pool).
+// Marks a pre-started runner Job of the warm pool, so operators can list and
+// count them (kubectl get jobs -l keeperhub.com/warm-pool=true). Nothing
+// deletes by it: the executor cannot tell an idle warm Job from one running a
+// claimed execution, and an orphaned idle pod exits on its own within about a
+// minute once its executor is gone.
 export const WARM_POOL_LABEL = "keeperhub.com/warm-pool";
-export const WARM_POOL_OWNER_LABEL = "keeperhub.com/warm-pool-owner";
-
-const LABEL_VALUE_UNSAFE = /[^A-Za-z0-9_.-]/g;
-const LABEL_VALUE_EDGE = /^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g;
-
-function toLabelValue(value: string): string {
-  return value
-    .replace(LABEL_VALUE_UNSAFE, "-")
-    .slice(0, 63)
-    .replace(LABEL_VALUE_EDGE, "");
-}
 
 /**
  * Create a pre-started runner Job for the warm pool (see warm-pool.ts).
@@ -217,21 +210,18 @@ function toLabelValue(value: string): string {
 export async function createWarmRunnerJob(params: {
   token: string;
   claimUrl: string;
-  ownerId: string;
   maxIdleMs: number;
   preloadActionPrefixes: string;
 }): Promise<V1Job> {
-  const { token, claimUrl, ownerId, maxIdleMs, preloadActionPrefixes } = params;
+  const { token, claimUrl, maxIdleMs, preloadActionPrefixes } = params;
   // Named from its own random suffix, never from the token.
   const jobName = `keeperhub-workflow-warm-${randomBytes(4).toString("hex")}-${Date.now()}`;
-  const owner = toLabelValue(ownerId) || "unknown";
 
   const job = buildRunnerJob({
     jobName,
     labels: {
       app: "workflow-runner",
       [WARM_POOL_LABEL]: "true",
-      [WARM_POOL_OWNER_LABEL]: owner,
     },
     podLabels: {
       app: "workflow-runner",

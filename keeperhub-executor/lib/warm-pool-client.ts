@@ -1,6 +1,10 @@
 import {
+  WARM_POOL_ACK_PATH,
   WARM_POOL_CLAIM_PATH,
+  WARM_POOL_DECISION_HEADER,
+  WARM_POOL_EXECUTION_HEADER,
   WARM_POOL_TOKEN_HEADER,
+  type WarmAckDecision,
   type WarmAssignment,
   warmAssignmentSchema,
 } from "../warm-pool-protocol";
@@ -162,4 +166,39 @@ export async function waitForAssignment(
   }
 
   return { kind: "exit", reason: "idle lifetime reached" };
+}
+
+const ACK_REQUEST_TIMEOUT_MS = 2000;
+
+/**
+ * Tell the executor whether this pod takes the offered execution. Returns
+ * true only when the pod accepted and the executor confirmed (200); in every
+ * other case (refusal, 410 because the executor already started a per-run
+ * Job, unreachable executor) the pod must not run the execution.
+ */
+export async function acknowledgeAssignment(options: {
+  claimUrl: string;
+  token: string;
+  executionId: string;
+  decision: WarmAckDecision;
+  fetchImpl?: typeof fetch;
+}): Promise<boolean> {
+  const { claimUrl, token, executionId, decision, fetchImpl = fetch } = options;
+  try {
+    const response = await fetchImpl(
+      new URL(WARM_POOL_ACK_PATH, claimUrl).toString(),
+      {
+        method: "POST",
+        headers: {
+          [WARM_POOL_TOKEN_HEADER]: token,
+          [WARM_POOL_EXECUTION_HEADER]: executionId,
+          [WARM_POOL_DECISION_HEADER]: decision,
+        },
+        signal: AbortSignal.timeout(ACK_REQUEST_TIMEOUT_MS),
+      }
+    );
+    return decision === "accept" && response.status === 200;
+  } catch {
+    return false;
+  }
 }

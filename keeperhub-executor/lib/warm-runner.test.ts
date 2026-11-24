@@ -19,6 +19,7 @@ const assignment = {
 
 function warmEnv(): NodeJS.ProcessEnv {
   return {
+    NODE_ENV: "test",
     KH_WARM_POOL_CLAIM_URL: "http://10.0.0.5:3080",
     KH_WARM_POOL_TOKEN: TOKEN,
     KH_WARM_POOL_MAX_IDLE_MS: "815000",
@@ -38,6 +39,8 @@ function deps(overrides: Partial<WarmRunnerDeps> = {}): WarmRunnerDeps & {
       Promise.resolve<ClaimOutcome>({ kind: "assigned", assignment })
     ),
     isRunnable: vi.fn(() => Promise.resolve(true)),
+    acknowledge: vi.fn(() => Promise.resolve(true)),
+    sleep: () => Promise.resolve(),
     log: (message: string) => logs.push(message),
     logs,
     ...overrides,
@@ -107,12 +110,36 @@ describe("prepareWarmRun", () => {
     expect(d.isRunnable).not.toHaveBeenCalled();
   });
 
+  it("accepts the run and runs it only after the executor confirms", async () => {
+    const d = deps();
+    await expect(prepareWarmRun(d)).resolves.toBeDefined();
+    expect(d.acknowledge).toHaveBeenCalledWith(assignment, "accept");
+  });
+
+  it("does not run when the executor does not confirm the ack", async () => {
+    const d = deps({ acknowledge: vi.fn(() => Promise.resolve(false)) });
+    await expect(prepareWarmRun(d)).resolves.toBeUndefined();
+  });
+
   it.each([
     ["is not a waiting run of that workflow", () => Promise.resolve(false)],
     ["cannot be checked", () => Promise.reject(new Error("db down"))],
-  ])("refuses an assignment that %s", async (_label, isRunnable) => {
+  ])("gives back an assignment that %s", async (_label, isRunnable) => {
     const d = deps({ isRunnable: vi.fn(isRunnable) });
     await expect(prepareWarmRun(d)).resolves.toBeUndefined();
+    expect(d.acknowledge).toHaveBeenCalledWith(assignment, "refuse");
+    expect(d.acknowledge).not.toHaveBeenCalledWith(assignment, "accept");
+  });
+
+  it("retries a transient database error before giving the run back", async () => {
+    const isRunnable = vi
+      .fn<WarmRunnerDeps["isRunnable"]>()
+      .mockRejectedValueOnce(new Error("connection reset"))
+      .mockResolvedValueOnce(true);
+    const d = deps({ isRunnable });
+    await expect(prepareWarmRun(d)).resolves.toBeDefined();
+    expect(isRunnable).toHaveBeenCalledTimes(2);
+    expect(d.acknowledge).toHaveBeenCalledWith(assignment, "accept");
   });
 
   it("leaves the run deadline to the Job when none is set", async () => {

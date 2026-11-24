@@ -8,7 +8,10 @@ import {
 import { getMetricsCollector } from "../lib/metrics";
 import { MetricNames } from "../lib/metrics/types";
 import {
+  WARM_POOL_DECISION_HEADER,
+  WARM_POOL_EXECUTION_HEADER,
   WARM_POOL_TOKEN_HEADER,
+  type WarmAckDecision,
   type WarmAssignment,
   warmAssignmentSchema,
 } from "./warm-pool-protocol";
@@ -20,8 +23,11 @@ import {
  * start and runner bootstrap. The pool pays that cost ahead of time: it keeps
  * `size` runner Jobs that have booted and are waiting, each holding a long-poll
  * claim request open against this executor replica. Dispatching to the pool
- * answers one of those requests with the execution, so the run starts in the
- * time it takes to write an HTTP response.
+ * answers one of those requests with the execution; the pod checks it against
+ * the database and acknowledges, and runs it only once the executor confirms
+ * that ack. With no ack in time, or a refusal, the executor starts a per-run
+ * Job instead and the pod is told not to run it, so an execution is never
+ * lost to a dead connection and never started twice.
  *
  * Isolation is the same as a per-run Job:
  *  - One execution per pod. A slot is removed from the pool the moment it is
@@ -59,7 +65,6 @@ import {
 export type WarmJobParams = {
   token: string;
   claimUrl: string;
-  ownerId: string;
   maxIdleMs: number;
   preloadActionPrefixes: string;
 };
@@ -86,7 +91,6 @@ export type WarmPoolOptions = {
   idleTtlMs: number;
   longPollMs: number;
   claimUrl: string;
-  ownerId: string;
   preloadActionPrefixes: string;
   /** The per-run time limit a claimed pod gets (the Job deadline today). */
   runDeadlineMs: number;
@@ -96,6 +100,8 @@ export type WarmPoolOptions = {
    * 12-second chain).
    */
   orgClaimsPerMinute?: number;
+  /** How long to wait for a pod to acknowledge an offered execution. */
+  ackTimeoutMs?: number;
   /** How long a new pod may take to send its first poll. */
   startupGraceMs?: number;
   /** Slack on top of the long-poll window before a quiet pod counts as dead. */
@@ -133,7 +139,16 @@ export type WarmAssignResult =
   | "claimed"
   | "miss"
   | "org_limited"
-  | "invalid";
+  | "invalid"
+  | "refused"
+  | "unacknowledged";
+
+type PendingAck = {
+  executionId: string;
+  podIps: string[];
+  jobName?: string;
+  settle: (decision: WarmAckDecision | "timeout") => void;
+};
 
 export type WarmPoolStats = {
   ready: number;
@@ -142,6 +157,9 @@ export type WarmPoolStats = {
 };
 
 const DEFAULT_STARTUP_GRACE_MS = 180_000;
+// Covers the pod's database check and one in-cluster round trip with room
+// to spare; it only delays the fallback when a pod never answers.
+const DEFAULT_ACK_TIMEOUT_MS = 3000;
 const ORG_CLAIM_WINDOW_MS = 60_000;
 // A used pod is replaced in roughly 20 s, so the pool serves about three
 // claims per pod per minute; one organization may use half of that.
@@ -177,6 +195,13 @@ const RETIRE_JITTER_FRACTION = 0.2;
 
 function defaultToken(): string {
   return randomBytes(32).toString("hex");
+}
+
+function readToken(req: IncomingMessage): string | undefined {
+  const header = req.headers[WARM_POOL_TOKEN_HEADER];
+  return typeof header === "string" && TOKEN_SHAPE.test(header)
+    ? header
+    : undefined;
 }
 
 function normalizeAddress(address: string | undefined): string | undefined {
@@ -218,6 +243,8 @@ export class WarmPool {
   private readonly orgClaims = new Map<string, number[]>();
   // Claimed Jobs and when the executor deletes them if still around.
   private readonly claimedJobs = new Map<string, number>();
+  // Offered executions waiting for their pod's ack, by slot token.
+  private readonly pendingAcks = new Map<string, PendingAck>();
   private pendingCreates = 0;
   private readonly options: Required<WarmPoolOptions>;
   private readonly deps: Required<WarmPoolDeps>;
@@ -227,22 +254,33 @@ export class WarmPool {
   private nextCreateAt = 0;
 
   constructor(options: WarmPoolOptions, deps: WarmPoolDeps) {
+    // Each optional field resolved on its own: a caller passing a key as
+    // undefined (index.ts does, from config) still gets the default.
     this.options = {
-      startupGraceMs: DEFAULT_STARTUP_GRACE_MS,
-      orgClaimsPerMinute: defaultOrgClaimsPerMinute(options.size),
-      pollGraceMs: DEFAULT_POLL_GRACE_MS,
-      replaceLeadMs: Math.min(MAX_REPLACE_LEAD_MS, options.idleTtlMs / 4),
-      maintainIntervalMs: DEFAULT_MAINTAIN_INTERVAL_MS,
-      ...options,
+      size: options.size,
+      idleTtlMs: options.idleTtlMs,
+      longPollMs: options.longPollMs,
+      claimUrl: options.claimUrl,
+      preloadActionPrefixes: options.preloadActionPrefixes,
+      runDeadlineMs: options.runDeadlineMs,
+      orgClaimsPerMinute:
+        options.orgClaimsPerMinute ?? defaultOrgClaimsPerMinute(options.size),
+      ackTimeoutMs: options.ackTimeoutMs ?? DEFAULT_ACK_TIMEOUT_MS,
+      startupGraceMs: options.startupGraceMs ?? DEFAULT_STARTUP_GRACE_MS,
+      pollGraceMs: options.pollGraceMs ?? DEFAULT_POLL_GRACE_MS,
+      replaceLeadMs:
+        options.replaceLeadMs ??
+        Math.min(MAX_REPLACE_LEAD_MS, options.idleTtlMs / 4),
+      maintainIntervalMs:
+        options.maintainIntervalMs ?? DEFAULT_MAINTAIN_INTERVAL_MS,
     };
-    if (options.orgClaimsPerMinute === undefined) {
-      this.options.orgClaimsPerMinute = defaultOrgClaimsPerMinute(options.size);
-    }
     this.deps = {
-      now: Date.now,
-      random: Math.random,
-      newToken: defaultToken,
-      ...deps,
+      createJob: deps.createJob,
+      deleteJob: deps.deleteJob,
+      lookupPodIps: deps.lookupPodIps,
+      now: deps.now ?? Date.now,
+      random: deps.random ?? Math.random,
+      newToken: deps.newToken ?? defaultToken,
     };
   }
 
@@ -279,6 +317,10 @@ export class WarmPool {
    */
   stop(): void {
     this.stopped = true;
+    // Offers still waiting fall back to per-run Jobs; late acks get 410.
+    for (const entry of [...this.pendingAcks.values()]) {
+      entry.settle("timeout");
+    }
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = undefined;
@@ -315,32 +357,10 @@ export class WarmPool {
    * longer part of the pool (410).
    */
   handleClaimRequest(req: IncomingMessage, res: ServerResponse): void {
-    if (req.method !== "POST") {
-      req.resume();
-      res.writeHead(405);
-      res.end();
+    if (!this.acceptsBodylessPost(req, res)) {
       return;
     }
-
-    // A claim carries no body. Refuse one that does without reading it, so
-    // the endpoint cannot be used to stream data into the executor.
-    const contentLength = req.headers["content-length"];
-    if (
-      req.headers["transfer-encoding"] !== undefined ||
-      (contentLength !== undefined && contentLength !== "0")
-    ) {
-      res.writeHead(400, { Connection: "close" });
-      res.end();
-      req.destroy();
-      return;
-    }
-    req.resume();
-
-    const header = req.headers[WARM_POOL_TOKEN_HEADER];
-    const token =
-      typeof header === "string" && TOKEN_SHAPE.test(header)
-        ? header
-        : undefined;
+    const token = readToken(req);
     const slot = token ? this.slots.get(token) : undefined;
     if (!slot || this.stopped) {
       res.writeHead(410);
@@ -466,6 +486,34 @@ export class WarmPool {
     timer.unref();
   }
 
+  /**
+   * Claims and acks carry no body. Refuse one that does without reading it,
+   * so neither endpoint can be used to stream data into the executor.
+   */
+  private acceptsBodylessPost(
+    req: IncomingMessage,
+    res: ServerResponse
+  ): boolean {
+    if (req.method !== "POST") {
+      req.resume();
+      res.writeHead(405);
+      res.end();
+      return false;
+    }
+    const contentLength = req.headers["content-length"];
+    if (
+      req.headers["transfer-encoding"] !== undefined ||
+      (contentLength !== undefined && contentLength !== "0")
+    ) {
+      res.writeHead(400, { Connection: "close" });
+      res.end();
+      req.destroy();
+      return false;
+    }
+    req.resume();
+    return true;
+  }
+
   /** Hold a verified pod's request open until it is assigned or times out. */
   private holdRequest(slot: Slot, res: ServerResponse): void {
     // A pod has one claim request open at a time. A second one means the
@@ -479,10 +527,6 @@ export class WarmPool {
       if (slot.waiter?.res === res) {
         slot.lastSeenAt = this.deps.now();
         this.respondToWaiter(slot, 204);
-        // The write succeeds even if the pod vanished without closing the
-        // connection, so the address it was verified at may since belong to
-        // another pod: confirm it again before holding the next poll.
-        slot.reverify = true;
         this.publishGauges();
       }
     }, this.options.longPollMs);
@@ -531,17 +575,21 @@ export class WarmPool {
   }
 
   /**
-   * Hand an execution to a ready pod. Anything but "claimed" means the caller
-   * starts a per-run Job instead:
-   *  - miss         no pod is ready (or the pool is stopped)
-   *  - org_limited  this organization used its share of claims this minute
-   *  - invalid      a pod would reject the assignment
+   * Offer an execution to a ready pod and wait for it to acknowledge. Anything
+   * but "claimed" means the caller starts a per-run Job instead:
+   *  - miss            no pod is ready (or the pool is stopped)
+   *  - org_limited     this organization used its share of claims this minute
+   *  - invalid         a pod would reject the assignment
+   *  - refused         the pod checked the execution and declined it
+   *  - unacknowledged  no answer in time (pod gone, connection dead)
+   * In the last two cases the pod is told it may not run the execution (any
+   * later ack gets 410), so the per-run Job is the only one that runs it.
    * Never throws.
    */
-  tryAssign(
+  async tryAssign(
     assignment: WarmAssignment,
     organizationId: string
-  ): WarmAssignResult {
+  ): Promise<WarmAssignResult> {
     if (!this.enabled) {
       return "miss";
     }
@@ -558,8 +606,7 @@ export class WarmPool {
       .sort((a, b) => a.retireAt - b.retireAt);
 
     // Checked exactly as the pod will check it, after the same JSON round
-    // trip: a pod that rejects its assignment exits without running it, and
-    // by then the slot is spent, so the run must take a per-run Job instead.
+    // trip, so a malformed assignment never spends a pod.
     let body: string;
     try {
       body = JSON.stringify(assignment);
@@ -575,13 +622,57 @@ export class WarmPool {
       );
       return "invalid";
     }
+
+    const slot = this.handOver(candidates, body);
+    if (!slot) {
+      this.publishGauges();
+      return "miss";
+    }
+
+    // Counted now so concurrent offers respect the share; given back below if
+    // the pod does not take the run.
+    recentClaims.push(now);
+    this.orgClaims.set(organizationId, recentClaims);
+    // Refill while the pod checks the execution.
+    this.maintain();
+
+    const decision = await this.awaitAck(slot, assignment.executionId);
+    if (decision === "accept") {
+      if (slot.jobName) {
+        this.claimedJobs.set(
+          slot.jobName,
+          this.deps.now() + this.options.runDeadlineMs + CLAIMED_JOB_GRACE_MS
+        );
+      }
+      console.log(
+        `[WarmPool] Warm Job ${slot.jobName ?? "unknown"} took execution ${assignment.executionId}`
+      );
+      return "claimed";
+    }
+
+    const claims = this.orgClaims.get(organizationId);
+    const index = claims?.lastIndexOf(now) ?? -1;
+    if (claims && index >= 0) {
+      claims.splice(index, 1);
+    }
+    this.deleteJobQuietly(slot);
+    console.warn(
+      `[WarmPool] Warm Job ${slot.jobName ?? "unknown"} did not take execution ${assignment.executionId} (${decision}); starting a per-run Job`
+    );
+    return decision === "refuse" ? "refused" : "unacknowledged";
+  }
+
+  /**
+   * Write the assignment to the first candidate that accepts the write. The
+   * slot leaves the pool before the write, so its token can never be offered
+   * another run.
+   */
+  private handOver(candidates: Slot[], body: string): Slot | undefined {
     for (const slot of candidates) {
       const waiter = slot.waiter;
       if (!waiter) {
         continue;
       }
-      // Removed before the write: whatever happens next, this token never
-      // claims another run.
       slot.assigned = true;
       this.removeSlot(slot);
       try {
@@ -596,23 +687,73 @@ export class WarmPool {
         );
         continue;
       }
-      recentClaims.push(now);
-      this.orgClaims.set(organizationId, recentClaims);
-      if (slot.jobName) {
-        this.claimedJobs.set(
-          slot.jobName,
-          now + this.options.runDeadlineMs + CLAIMED_JOB_GRACE_MS
-        );
-      }
-      console.log(
-        `[WarmPool] Assigned execution ${assignment.executionId} to warm Job ${slot.jobName ?? "unknown"}`
-      );
-      this.maintain();
-      return "claimed";
+      return slot;
     }
+    return undefined;
+  }
 
-    this.publishGauges();
-    return "miss";
+  private awaitAck(
+    slot: Slot,
+    executionId: string
+  ): Promise<WarmAckDecision | "timeout"> {
+    return new Promise((resolve) => {
+      const settle = (decision: WarmAckDecision | "timeout"): void => {
+        clearTimeout(timer);
+        if (this.pendingAcks.get(slot.token) === entry) {
+          this.pendingAcks.delete(slot.token);
+        }
+        resolve(decision);
+      };
+      const timer = setTimeout(() => settle("timeout"), this.options.ackTimeoutMs);
+      timer.unref();
+      const entry: PendingAck = {
+        executionId,
+        podIps: slot.podIps ?? [],
+        jobName: slot.jobName,
+        settle,
+      };
+      this.pendingAcks.set(slot.token, entry);
+    });
+  }
+
+  /**
+   * A pod's answer to an offered execution. 200 to an "accept" is the only
+   * thing that lets the pod run it, and it is only given while the executor
+   * is still waiting; after that the executor has started a per-run Job and
+   * the ack gets 410.
+   */
+  handleAckRequest(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.acceptsBodylessPost(req, res)) {
+      return;
+    }
+    const token = readToken(req);
+    const entry = token ? this.pendingAcks.get(token) : undefined;
+    if (!entry || req.headers[WARM_POOL_EXECUTION_HEADER] !== entry.executionId) {
+      res.writeHead(410);
+      res.end();
+      return;
+    }
+    const remote = normalizeAddress(req.socket?.remoteAddress);
+    if (remote === undefined || !entry.podIps.includes(remote)) {
+      logSecurityEvent("warm_pool_claim_address_mismatch", {
+        job_name: entry.jobName ?? "unknown",
+        remote_address: remote ?? "unknown",
+      });
+      res.writeHead(410);
+      res.end();
+      return;
+    }
+    const decision = req.headers[WARM_POOL_DECISION_HEADER];
+    if (decision !== "accept" && decision !== "refuse") {
+      res.writeHead(400);
+      res.end();
+      return;
+    }
+    // Settled before answering, in the same tick: the timeout cannot fire in
+    // between, so a 200 here always means the executor will not start a Job.
+    entry.settle(decision);
+    res.writeHead(200);
+    res.end();
   }
 
   private recentOrgClaims(organizationId: string, now: number): number[] {
@@ -718,7 +859,6 @@ export class WarmPool {
       .createJob({
         token,
         claimUrl: this.options.claimUrl,
-        ownerId: this.options.ownerId,
         maxIdleMs: this.podMaxIdleMs,
         preloadActionPrefixes: this.options.preloadActionPrefixes,
       })

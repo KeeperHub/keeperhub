@@ -13,24 +13,25 @@ export type ExecutionPriority = (typeof EXECUTION_PRIORITIES)[number];
 
 export const LOW_LATENCY_START_FEATURE_ID = "automation.low-latency-start";
 
-// Trigger types (as the editor names them) that offer the setting. Matches
-// LOW_LATENCY_DISPATCH_TRIGGERS below, which the executor enforces.
-export const LOW_LATENCY_TRIGGER_TYPES: readonly string[] = [
-  "Schedule",
-  "Event",
-  "Block",
-  "Webhook",
-];
+/**
+ * Editor trigger types that offer a low-latency start, and the executor
+ * message trigger types their runs arrive as. The executor honours the
+ * setting only when both match, so what the editor offers and what the
+ * executor does cannot drift apart. Manual runs and webhooks (which run in
+ * the app, not the executor) never take a warm runner, so repeated manual
+ * runs cannot drain the pool either.
+ */
+export const LOW_LATENCY_TRIGGERS: Readonly<Record<string, readonly string[]>> =
+  {
+    Schedule: ["schedule"],
+    Event: ["event"],
+    Block: ["block"],
+    Transfer: ["event"],
+    "Pyth Price": ["event", "upstream"],
+  };
 
-// The same set as the executor's message trigger types. Enforced by the
-// executor, not just hidden in the UI: a manual or API-started run never
-// takes a warm runner, so repeated manual runs cannot drain the pool.
-export const LOW_LATENCY_DISPATCH_TRIGGERS: ReadonlySet<string> = new Set([
-  "schedule",
-  "block",
-  "event",
-  "webhook",
-]);
+export const LOW_LATENCY_TRIGGER_TYPES: readonly string[] =
+  Object.keys(LOW_LATENCY_TRIGGERS);
 
 type NodeLike = {
   data?: { type?: unknown; config?: Record<string, unknown> | null };
@@ -63,6 +64,34 @@ export function executionPriorityWarning(
 
 export function readExecutionPriority(value: unknown): ExecutionPriority {
   return value === "low-latency" ? "low-latency" : "standard";
+}
+
+function triggerConfig(
+  nodes: readonly unknown[]
+): Record<string, unknown> | undefined {
+  for (const node of nodes) {
+    const data = (node as NodeLike | null)?.data;
+    if (data?.type === "trigger") {
+      return data.config ?? undefined;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Whether a run of this workflow, arriving as this message trigger type, may
+ * take a warm runner: the workflow's own trigger must offer the setting and
+ * the run must have come from it.
+ */
+export function lowLatencyAppliesTo(
+  nodes: readonly unknown[],
+  messageTriggerType: string
+): boolean {
+  const editorType = triggerConfig(nodes)?.triggerType;
+  return (
+    typeof editorType === "string" &&
+    (LOW_LATENCY_TRIGGERS[editorType] ?? []).includes(messageTriggerType)
+  );
 }
 
 /** The start priority a workflow asks for, read from its trigger node. */

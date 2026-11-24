@@ -14,12 +14,20 @@ import {
 // it can run in the standalone executor process. Trigger funnel for scheduler,
 // block, and event services — blocking here defends all three at once.
 
+// `plan` is the organization's plan as read for this check, so later checks
+// on the same dispatch (featureEnabledForPlan) need no second query. It is
+// undefined when billing is disabled, where every feature is available.
 export type FeatureGuardResult =
-  | { allowed: true; reason: "billing_disabled" | "no_violations" }
+  | {
+      allowed: true;
+      reason: "billing_disabled" | "no_violations";
+      plan: PlanName | undefined;
+    }
   | {
       allowed: false;
       reason: "upgrade_required";
       violations: WorkflowFeatureViolation[];
+      plan: PlanName;
     };
 
 function isBillingEnabled(): boolean {
@@ -32,7 +40,7 @@ export async function checkWorkflowFeaturesForExecutor(
   nodes: readonly unknown[]
 ): Promise<FeatureGuardResult> {
   if (!isBillingEnabled()) {
-    return { allowed: true, reason: "billing_disabled" };
+    return { allowed: true, reason: "billing_disabled", plan: undefined };
   }
 
   const plan = await getOrgPlanForExecutor(db, organizationId);
@@ -40,10 +48,10 @@ export async function checkWorkflowFeaturesForExecutor(
   const violations = validateWorkflowFeatures(refs, plan);
 
   if (violations.length === 0) {
-    return { allowed: true, reason: "no_violations" };
+    return { allowed: true, reason: "no_violations", plan };
   }
 
-  return { allowed: false, reason: "upgrade_required", violations };
+  return { allowed: false, reason: "upgrade_required", violations, plan };
 }
 
 // Default-deny: when there's no org context (anonymous / system caller),
@@ -65,18 +73,14 @@ async function getOrgPlanForExecutor(
 }
 
 /**
- * Whether an organization's plan includes a feature that changes how a run is
- * executed rather than whether it may run (e.g. low-latency start). Every
- * feature is available when billing is disabled (self-hosted / dev).
+ * Whether a plan read by checkWorkflowFeaturesForExecutor includes a feature
+ * that changes how a run is executed rather than whether it may run (e.g.
+ * low-latency start). An undefined plan means billing is disabled
+ * (self-hosted / dev), where every feature is available.
  */
-export async function isFeatureEnabledForExecutor(
-  db: PostgresJsDatabase<Record<string, unknown>>,
-  organizationId: string | null | undefined,
-  featureId: FeatureId
-): Promise<boolean> {
-  if (!isBillingEnabled()) {
-    return true;
-  }
-  const plan = await getOrgPlanForExecutor(db, organizationId);
-  return isFeatureEnabled(featureId, plan);
+export function featureEnabledForPlan(
+  featureId: FeatureId,
+  plan: PlanName | undefined
+): boolean {
+  return plan === undefined || isFeatureEnabled(featureId, plan);
 }

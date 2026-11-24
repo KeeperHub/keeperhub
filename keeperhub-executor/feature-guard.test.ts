@@ -1,7 +1,10 @@
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FEATURES } from "../lib/features";
-import { isFeatureEnabledForExecutor } from "./feature-guard";
+import {
+  checkWorkflowFeaturesForExecutor,
+  featureEnabledForPlan,
+} from "./feature-guard";
 
 const FEATURE_ID = "automation.low-latency-start" as const;
 
@@ -20,7 +23,7 @@ function dbWithPlan(
   return chain as unknown as PostgresJsDatabase<Record<string, unknown>>;
 }
 
-describe("isFeatureEnabledForExecutor (low-latency start)", () => {
+describe("low-latency start entitlement", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
@@ -30,46 +33,48 @@ describe("isFeatureEnabledForExecutor (low-latency start)", () => {
     expect(FEATURES[FEATURE_ID].enabled).toBe(true);
   });
 
-  it("is available on every plan when billing is disabled", async () => {
-    vi.stubEnv("NEXT_PUBLIC_BILLING_ENABLED", "false");
-    const db = dbWithPlan([{ plan: "free" }]);
-    await expect(
-      isFeatureEnabledForExecutor(db, "org-1", FEATURE_ID)
-    ).resolves.toBe(true);
-  });
-
   it.each([
     ["free", false],
-    [null, false],
     ["pro", true],
     ["business", true],
     ["enterprise", true],
-  ])("plan %s -> %s", async (plan, expected) => {
+    [undefined, true],
+  ] as const)("plan %s -> %s (undefined: billing disabled)", (plan, expected) => {
+    expect(featureEnabledForPlan(FEATURE_ID, plan)).toBe(expected);
+  });
+
+  it("returns the plan it read, so the dispatch path needs no second query", async () => {
     vi.stubEnv("NEXT_PUBLIC_BILLING_ENABLED", "true");
-    const db = dbWithPlan([{ plan }]);
-    await expect(
-      isFeatureEnabledForExecutor(db, "org-1", FEATURE_ID)
-    ).resolves.toBe(expected);
+    const result = await checkWorkflowFeaturesForExecutor(
+      dbWithPlan([{ plan: "pro" }]),
+      "org-1",
+      []
+    );
+    expect(result.plan).toBe("pro");
+    expect(featureEnabledForPlan(FEATURE_ID, result.plan)).toBe(true);
   });
 
   it("treats an organization with no subscription, or none at all, as free", async () => {
     vi.stubEnv("NEXT_PUBLIC_BILLING_ENABLED", "true");
-    await expect(
-      isFeatureEnabledForExecutor(dbWithPlan([]), "org-1", FEATURE_ID)
-    ).resolves.toBe(false);
-    await expect(
-      isFeatureEnabledForExecutor(dbWithPlan([]), null, FEATURE_ID)
-    ).resolves.toBe(false);
+    for (const organizationId of ["org-1", null]) {
+      const result = await checkWorkflowFeaturesForExecutor(
+        dbWithPlan([]),
+        organizationId,
+        []
+      );
+      expect(result.plan).toBe("free");
+      expect(featureEnabledForPlan(FEATURE_ID, result.plan)).toBe(false);
+    }
   });
 
-  it("propagates a lookup error so the caller can fall back", async () => {
-    vi.stubEnv("NEXT_PUBLIC_BILLING_ENABLED", "true");
-    await expect(
-      isFeatureEnabledForExecutor(
-        dbWithPlan(new Error("db down")),
-        "org-1",
-        FEATURE_ID
-      )
-    ).rejects.toThrow("db down");
+  it("reports no plan when billing is disabled, so every feature is available", async () => {
+    vi.stubEnv("NEXT_PUBLIC_BILLING_ENABLED", "false");
+    const result = await checkWorkflowFeaturesForExecutor(
+      dbWithPlan(new Error("must not be queried")),
+      "org-1",
+      []
+    );
+    expect(result.plan).toBeUndefined();
+    expect(featureEnabledForPlan(FEATURE_ID, result.plan)).toBe(true);
   });
 });

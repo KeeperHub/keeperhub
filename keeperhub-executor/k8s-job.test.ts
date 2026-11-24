@@ -616,7 +616,6 @@ describe("createWarmRunnerJob", () => {
   const warmParams = {
     token: "a".repeat(64),
     claimUrl: "http://10.0.0.5:3080",
-    ownerId: "keeperhub-executor-common-7d9f/pod",
     maxIdleMs: 815_000,
     preloadActionPrefixes: "web3/",
   };
@@ -666,10 +665,6 @@ describe("createWarmRunnerJob", () => {
     expect(podLabels.app).toBe("workflow-runner");
     expect(podLabels[WARM_POOL_LABEL]).toBe("true");
     expect(job.metadata?.name?.startsWith("keeperhub-workflow-")).toBe(true);
-    // The owner id is made label-safe (no "/").
-    expect(Object.values(job.metadata?.labels ?? {}).join("")).not.toContain(
-      "/"
-    );
   });
 
   it("gets the same hardening and secret references as a per-run Job", async () => {

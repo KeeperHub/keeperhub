@@ -17,7 +17,7 @@ import { OPERATOR_METADATA } from "@/lib/workflow/nodes/condition/operator-metad
 
 // Shared by every trigger whose runs the executor dispatches; see
 // lib/workflow/execution-priority.ts.
-const EXECUTION_PRIORITY_DOC = `string - "standard" (default) or "low-latency". Low latency starts runs on a pre-warmed runner when one is available, typically in under a second instead of 10-20 seconds, for time-critical workflows. Best effort: when the environment has no pre-warmed runners, none is free, the organization has used its share of fast starts for the minute, or the plan does not include low-latency start (${PLANS[FEATURES["automation.low-latency-start"].requiredPlan].name} and above), the run starts the standard way. Applies to Schedule, Event, Block and Webhook triggers; ignored for manual runs.`;
+const EXECUTION_PRIORITY_DOC = `string - "standard" (default) or "low-latency". Low latency starts runs on a pre-warmed runner when one is available, typically in under a second instead of 10-20 seconds, for time-critical workflows. Best effort: when the environment has no pre-warmed runners, none is free, the organization has used its share of fast starts for the minute, or the plan does not include low-latency start (${PLANS[FEATURES["automation.low-latency-start"].requiredPlan].name} and above), the run starts the standard way. Applies to Schedule, Event, Block, Transfer and Pyth Price triggers; ignored for manual runs.`;
 
 const CONDITION_OPERATOR_DOCS = Object.entries(OPERATOR_METADATA)
   .map(
@@ -243,6 +243,7 @@ export const TRIGGERS = {
     optionalFields: {
       maxAgeSeconds:
         "number or integer string - Signal lifetime, 5 to 300 seconds; default 30. Expired updates and queued signals are discarded.",
+      executionPriority: EXECUTION_PRIORITY_DOC,
     },
     outputFields: {
       feedId: "string - Pyth feed ID",
@@ -295,7 +296,6 @@ export const TRIGGERS = {
     optionalFields: {
       webhookSchema: "string - JSON schema for expected payload validation",
       webhookMockRequest: "string - Sample JSON payload for testing",
-      executionPriority: EXECUTION_PRIORITY_DOC,
     },
     outputFields: {
       body: "object - Webhook request body",
@@ -382,6 +382,7 @@ export const TRIGGERS = {
     },
     optionalFields: {
       memo: "string - Only fire when the transfer memo matches. A 0x + 64-hex value matches exactly; a shorter string matches as a prefix",
+      executionPriority: EXECUTION_PRIORITY_DOC,
     },
     outputFields: {
       "args.from": "string - Sender address of the payment",

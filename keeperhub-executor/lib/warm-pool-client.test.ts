@@ -157,7 +157,7 @@ describe("waitForAssignment", () => {
 
 describe("assignmentToRunnerEnv", () => {
   it("produces the env a per-run Job carries, marked as a warm-pool run", () => {
-    expect(assignmentToRunnerEnv(assignment)).toEqual({
+    expect(assignmentToRunnerEnv(assignment, "warm-pool")).toEqual({
       WORKFLOW_ID: "wf-1",
       EXECUTION_ID: "exec-1",
       WORKFLOW_INPUT: JSON.stringify({ blockNumber: 7 }),
@@ -171,12 +171,15 @@ describe("assignmentToRunnerEnv", () => {
   });
 
   it("omits optional fields that are absent", () => {
-    const env = assignmentToRunnerEnv({
-      workflowId: "wf-1",
-      executionId: "exec-1",
-      input: {},
-      triggerType: "schedule",
-    });
+    const env = assignmentToRunnerEnv(
+      {
+        workflowId: "wf-1",
+        executionId: "exec-1",
+        input: {},
+        triggerType: "schedule",
+      },
+      "warm-pool"
+    );
     expect(Object.keys(env).sort()).toEqual(
       [
         "EXECUTION_ID",
@@ -186,5 +189,14 @@ describe("assignmentToRunnerEnv", () => {
         "WORKFLOW_INPUT",
       ].sort()
     );
+  });
+});
+
+describe("assignmentToRunnerEnv for a per-run Job", () => {
+  it("carries the same run env without the warm-pool marker", () => {
+    const env = assignmentToRunnerEnv(assignment, "k8s-job");
+    expect(env.KH_DISPATCH_TARGET).toBeUndefined();
+    expect(env.WORKFLOW_ID).toBe("wf-1");
+    expect(env.KH_CORRELATION_ID).toBe("abc123");
   });
 });

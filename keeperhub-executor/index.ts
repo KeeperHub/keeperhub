@@ -71,13 +71,14 @@ import {
 } from "../lib/billing/dispatch-refusal";
 import { chargePaygExecution } from "../lib/billing/payg/charge";
 import { PAYG_OVERFLOW_REASON } from "../lib/billing/payg/constants";
+import type { PlanName } from "../lib/billing/plans";
 import { type ApiExecuteTriggerType, executeViaApi } from "./api-execute";
 import { checkExecutionLimitForExecutor } from "./billing-guard";
 import { CONFIG } from "./config";
 import { resolveDispatchTarget } from "./execution-mode";
 import {
   checkWorkflowFeaturesForExecutor,
-  isFeatureEnabledForExecutor,
+  featureEnabledForPlan,
 } from "./feature-guard";
 import { executeInProcess } from "./in-process";
 import {
@@ -124,7 +125,10 @@ import type {
   WorkflowRecord,
 } from "./types";
 import { WarmPool } from "./warm-pool";
-import { WARM_POOL_CLAIM_PATH } from "./warm-pool-protocol";
+import {
+  WARM_POOL_ACK_PATH,
+  WARM_POOL_CLAIM_PATH,
+} from "./warm-pool-protocol";
 import { LOW_LATENCY_START_FEATURE_ID } from "../lib/workflow/execution-priority";
 import {
   buildWarmAssignment,
@@ -318,6 +322,8 @@ function lowLatencyStartFor(params: {
   workflow: Pick<WorkflowRecord, "nodes" | "organizationId">;
   target: string;
   triggerType: string;
+  /** The plan the feature guard already read for this message. */
+  plan: PlanName | undefined;
 }): Promise<LowLatencyStart | undefined> {
   return resolveLowLatencyStart({
     nodes: params.workflow.nodes,
@@ -325,11 +331,11 @@ function lowLatencyStartFor(params: {
     target: params.target,
     triggerType: params.triggerType,
     poolEnabled: warmPool?.enabled === true,
-    isEntitled: (organizationId) =>
-      isFeatureEnabledForExecutor(
-        db,
-        organizationId,
-        LOW_LATENCY_START_FEATURE_ID
+    // No second plan query on the dispatch path this feature exists to
+    // shorten: the feature guard read the plan moments ago.
+    isEntitled: () =>
+      Promise.resolve(
+        featureEnabledForPlan(LOW_LATENCY_START_FEATURE_ID, params.plan)
       ),
     recordClaim: recordWarmPoolClaim,
     onEntitlementError: (error) => {
@@ -370,7 +376,7 @@ async function dispatchExecution(params: {
 
   switch (target) {
     case "k8s-job": {
-      const warmResult = tryWarmStart({
+      const warmResult = await tryWarmStart({
         pool: warmPool,
         start: lowLatency,
         assignment: buildWarmAssignment({
@@ -787,6 +793,7 @@ async function processExecutorMessage(
           workflow,
           target,
           triggerType,
+          plan: featureResult.plan,
         }),
       });
     } catch (error) {
@@ -921,6 +928,7 @@ async function processExecutorMessage(
         workflow,
         target,
         triggerType,
+        plan: featureResult.plan,
       }),
     });
   } catch (error) {
@@ -1187,7 +1195,6 @@ async function startWarmPool(): Promise<void> {
       idleTtlMs: CONFIG.warmPoolIdleTtlSeconds * 1000,
       longPollMs: CONFIG.warmPoolLongPollSeconds * 1000,
       claimUrl,
-      ownerId: hostname(),
       preloadActionPrefixes: CONFIG.warmPoolPreloadActionPrefixes,
       orgClaimsPerMinute: CONFIG.warmPoolOrgClaimsPerMinute,
       runDeadlineMs: CONFIG.jobActiveDeadline * 1000,
@@ -1292,6 +1299,17 @@ async function listen(): Promise<void> {
           res.end("Failed to collect metrics");
         }
       })();
+      return;
+    }
+
+    if (req.url === WARM_POOL_ACK_PATH) {
+      if (warmPool) {
+        warmPool.handleAckRequest(req, res);
+      } else {
+        req.resume();
+        res.writeHead(410);
+        res.end();
+      }
       return;
     }
 

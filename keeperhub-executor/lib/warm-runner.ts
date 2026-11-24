@@ -5,6 +5,7 @@ import type {
 import {
   assignmentToRunnerEnv,
   WARM_POOL_ENV,
+  type WarmAckDecision,
   type WarmAssignment,
 } from "../warm-pool-protocol";
 
@@ -32,9 +33,24 @@ export type WarmRunnerDeps = {
    * source of truth, as it is for a per-run Job.
    */
   isRunnable: (assignment: WarmAssignment) => Promise<boolean>;
+  /**
+   * Answer the executor's offer. True only when the pod accepted and the
+   * executor confirmed; anything else means another path runs it (or nobody
+   * should), so this pod must not.
+   */
+  acknowledge: (
+    assignment: WarmAssignment,
+    decision: WarmAckDecision
+  ) => Promise<boolean>;
   log: (message: string) => void;
   now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
 };
+
+// A transient database error is retried within the executor's ack window
+// (3 s) before the pod gives the run back.
+const RUNNABLE_CHECK_ATTEMPTS = 3;
+const RUNNABLE_RETRY_DELAY_MS = 200;
 
 export type PreparedWarmRun = {
   assignment: WarmAssignment;
@@ -89,15 +105,22 @@ export async function prepareWarmRun(
   }
 
   const { assignment } = outcome;
-  let runnable = false;
-  try {
-    runnable = await deps.isRunnable(assignment);
-  } catch {
-    runnable = false;
-  }
-  if (!runnable) {
+  const check = await checkRunnable(deps, assignment);
+  if (check !== "runnable") {
+    // Handing it back makes the executor start a per-run Job right away,
+    // instead of the run waiting for the reaper.
+    await deps.acknowledge(assignment, "refuse");
     log(
-      `[Runner] Warm pod refused execution ${assignment.executionId}: not a waiting run of workflow ${assignment.workflowId}`
+      `[Runner] Warm pod gave execution ${assignment.executionId} back: ${check}`
+    );
+    return undefined;
+  }
+
+  if (!(await deps.acknowledge(assignment, "accept"))) {
+    // Too late or unreachable: the executor has started (or will start) a
+    // per-run Job for it, so this pod must not run it too.
+    log(
+      `[Runner] Warm pod did not get confirmation for execution ${assignment.executionId}, exiting without running it`
     );
     return undefined;
   }
@@ -105,7 +128,7 @@ export async function prepareWarmRun(
   log(`[Runner] Warm pod claimed execution ${assignment.executionId}`);
   return {
     assignment,
-    env: assignmentToRunnerEnv(assignment),
+    env: assignmentToRunnerEnv(assignment, "warm-pool"),
     runDeadlineMs:
       Number.isFinite(runDeadlineMs) && runDeadlineMs > 0
         ? runDeadlineMs
@@ -145,4 +168,28 @@ export function armRunDeadline(
 ): void {
   const timer = schedule(onExpire, runDeadlineMs);
   timer.unref?.();
+}
+
+async function checkRunnable(
+  deps: WarmRunnerDeps,
+  assignment: WarmAssignment
+): Promise<"runnable" | "not a waiting run of this workflow" | "database unavailable"> {
+  const sleep =
+    deps.sleep ??
+    ((ms: number) =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, ms);
+      }));
+  for (let attempt = 1; attempt <= RUNNABLE_CHECK_ATTEMPTS; attempt++) {
+    try {
+      return (await deps.isRunnable(assignment))
+        ? "runnable"
+        : "not a waiting run of this workflow";
+    } catch {
+      if (attempt < RUNNABLE_CHECK_ATTEMPTS) {
+        await sleep(RUNNABLE_RETRY_DELAY_MS);
+      }
+    }
+  }
+  return "database unavailable";
 }

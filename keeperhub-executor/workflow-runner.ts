@@ -55,7 +55,10 @@ import {
 } from "./lib/broadcast-marker";
 import { collectLatencyObservations } from "./lib/latency-observations";
 import { shipMetricsToExecutor } from "./lib/ship-metrics";
-import { waitForAssignment } from "./lib/warm-pool-client";
+import {
+  acknowledgeAssignment,
+  waitForAssignment,
+} from "./lib/warm-pool-client";
 import {
   armRunDeadline,
   isRunnableRow,
@@ -425,6 +428,10 @@ async function main(): Promise<void> {
 
 /** Warm pool mode: see lib/warm-runner.ts. False means exit without a run. */
 async function prepareWarmRunner(): Promise<boolean> {
+  // Read before prepareWarmRun removes the token from the env: the ack is
+  // the token's last use.
+  const claimUrl = process.env[WARM_POOL_ENV.claimUrl] ?? "";
+  const token = process.env[WARM_POOL_ENV.token] ?? "";
   const prepared = await prepareWarmRun({
     env: process.env,
     pingDb: async () => {
@@ -446,6 +453,13 @@ async function prepareWarmRunner(): Promise<boolean> {
         .limit(1);
       return isRunnableRow(row, workflowId);
     },
+    acknowledge: (assignment, decision) =>
+      acknowledgeAssignment({
+        claimUrl,
+        token,
+        executionId: assignment.executionId,
+        decision,
+      }),
     log: (message) => console.log(message),
   });
   if (!prepared) {

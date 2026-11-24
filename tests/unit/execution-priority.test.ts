@@ -7,8 +7,9 @@ import { VALIDATION_WARNING_CODES } from "@/lib/mcp/validate-workflow-codes";
 import {
   executionPriorityWarning,
   getWorkflowExecutionPriority,
-  LOW_LATENCY_DISPATCH_TRIGGERS,
   LOW_LATENCY_TRIGGER_TYPES,
+  LOW_LATENCY_TRIGGERS,
+  lowLatencyAppliesTo,
   readExecutionPriority,
 } from "@/lib/workflow/execution-priority";
 
@@ -41,10 +42,25 @@ describe("execution priority", () => {
     expect(getWorkflowExecutionPriority([null])).toBe("standard");
   });
 
-  it("offers the setting in the editor for exactly the triggers the executor honours", () => {
-    expect(
-      LOW_LATENCY_TRIGGER_TYPES.map((t) => t.toLowerCase()).sort()
-    ).toEqual([...LOW_LATENCY_DISPATCH_TRIGGERS].sort());
+  it("offers the setting for exactly the triggers whose runs the executor honours it for", () => {
+    const nodesFor = (triggerType: string): unknown[] => [
+      trigger({ triggerType, executionPriority: "low-latency" }),
+    ];
+    for (const [editorType, messageTypes] of Object.entries(
+      LOW_LATENCY_TRIGGERS
+    )) {
+      expect(LOW_LATENCY_TRIGGER_TYPES).toContain(editorType);
+      for (const messageType of messageTypes) {
+        expect(lowLatencyAppliesTo(nodesFor(editorType), messageType)).toBe(
+          true
+        );
+      }
+    }
+    // Not offered in the editor, so never honoured by the executor.
+    expect(lowLatencyAppliesTo(nodesFor("Webhook"), "webhook")).toBe(false);
+    expect(lowLatencyAppliesTo(nodesFor("Manual"), "manual")).toBe(false);
+    // A manual run of an eligible workflow does not count.
+    expect(lowLatencyAppliesTo(nodesFor("Block"), "manual")).toBe(false);
   });
 
   describe("executionPriorityWarning", () => {

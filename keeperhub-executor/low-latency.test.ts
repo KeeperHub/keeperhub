@@ -5,14 +5,17 @@ import {
   tryWarmStart,
 } from "./low-latency";
 
-function nodesWith(executionPriority?: unknown): unknown[] {
+function nodesWith(
+  executionPriority?: unknown,
+  triggerType = "Block"
+): unknown[] {
   return [
     {
       id: "trigger-1",
       data: {
         type: "trigger",
         config: {
-          triggerType: "Block",
+          triggerType,
           ...(executionPriority === undefined ? {} : { executionPriority }),
         },
       },
@@ -81,14 +84,41 @@ describe("resolveLowLatencyStart", () => {
     expect(isEntitled).not.toHaveBeenCalled();
   });
 
-  it.each(["schedule", "block", "event", "webhook"])(
-    "allows the automated trigger %s",
-    async (triggerType) => {
-      const { result } = resolve({ triggerType });
+  it.each([
+    ["Schedule", "schedule"],
+    ["Event", "event"],
+    ["Block", "block"],
+    ["Transfer", "event"],
+    ["Pyth Price", "event"],
+    ["Pyth Price", "upstream"],
+  ])(
+    "uses the pool for a %s trigger arriving as %s",
+    async (editorType, triggerType) => {
+      const { result } = resolve({
+        nodes: nodesWith("low-latency", editorType),
+        triggerType,
+      });
       await expect(result).resolves.toEqual({
         organizationId: "org-1",
         triggerType,
       });
+    }
+  );
+
+  it.each([
+    ["Webhook", "webhook"],
+    ["Manual", "manual"],
+    ["Block", "manual"],
+    ["Event", "block"],
+  ])(
+    "does not use the pool for a %s trigger arriving as %s",
+    async (editorType, triggerType) => {
+      const { result, isEntitled } = resolve({
+        nodes: nodesWith("low-latency", editorType),
+        triggerType,
+      });
+      await expect(result).resolves.toBeUndefined();
+      expect(isEntitled).not.toHaveBeenCalled();
     }
   );
 
@@ -119,41 +149,48 @@ describe("tryWarmStart", () => {
     triggerType: "block",
   });
 
-  it("does not touch the pool for a run that was not cleared", () => {
+  it("does not touch the pool for a run that was not cleared", async () => {
     const pool = { tryAssign: vi.fn() };
     const recordClaim = vi.fn();
-    expect(
+    await expect(
       tryWarmStart({ pool, start: undefined, assignment, recordClaim })
-    ).toBeUndefined();
+    ).resolves.toBeUndefined();
     expect(pool.tryAssign).not.toHaveBeenCalled();
     expect(recordClaim).not.toHaveBeenCalled();
   });
 
-  it("does nothing when no pool is running", () => {
+  it("does nothing when no pool is running", async () => {
     const recordClaim = vi.fn();
-    expect(
+    await expect(
       tryWarmStart({
         pool: undefined,
         start: { organizationId: "org-1", triggerType: "webhook" },
         assignment,
         recordClaim,
       })
-    ).toBeUndefined();
+    ).resolves.toBeUndefined();
   });
 
-  it.each(["claimed", "miss", "org_limited", "invalid"] as const)(
+  it.each([
+    "claimed",
+    "miss",
+    "org_limited",
+    "invalid",
+    "refused",
+    "unacknowledged",
+  ] as const)(
     "returns and counts %s under the message trigger type",
-    (outcome) => {
-      const pool = { tryAssign: vi.fn(() => outcome) };
+    async (outcome) => {
+      const pool = { tryAssign: vi.fn(() => Promise.resolve(outcome)) };
       const recordClaim = vi.fn();
-      expect(
+      await expect(
         tryWarmStart({
           pool,
           start: { organizationId: "org-1", triggerType: "webhook" },
           assignment,
           recordClaim,
         })
-      ).toBe(outcome);
+      ).resolves.toBe(outcome);
       expect(pool.tryAssign).toHaveBeenCalledWith(assignment, "org-1");
       expect(recordClaim).toHaveBeenCalledWith(outcome, "webhook");
     }
