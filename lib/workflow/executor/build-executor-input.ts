@@ -29,6 +29,8 @@ export function buildExecutorInput(
   workflow: ExecutorInputWorkflow,
   params: {
     triggerInput?: Record<string, unknown>;
+    // True only when the executor's queue message is a block-scheduler run.
+    fromBlockScheduler?: boolean;
     executionId?: string;
     organizationName?: string;
     organizationSlug?: string;
@@ -39,6 +41,7 @@ export function buildExecutorInput(
     nodes: workflow.nodes as WorkflowNode[],
     edges: workflow.edges as WorkflowEdge[],
     triggerInput: params.triggerInput,
+    fromBlockScheduler: params.fromBlockScheduler,
     executionId: params.executionId,
     workflowId: workflow.id,
     organizationId: workflow.organizationId ?? undefined,

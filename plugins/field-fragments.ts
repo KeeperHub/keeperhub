@@ -161,7 +161,7 @@ export function simulateTimestampOffsetField(): ActionConfigFieldBase {
 export function simulationOutput(): OutputField {
   return {
     description:
-      "The predicted block a Next block check ran against: { mode, baseBlock (the latest block used), assumedBlockNumber, assumedTimestamp, timestampOffsetSec, rpcMethod }. Absent with Latest block, and when the step failed before or without simulating (a settings or RPC support error).",
+      "The predicted block a Next block check ran against: { mode, baseBlock (the latest block, whose state was read), assumedBlockNumber, assumedTimestamp, timestampOffsetSec, rpcMethod, rpcBehindTrigger (true only when the RPC was exactly one block behind the block that triggered the run, so the time was predicted from that block; assumedBlockNumber is then that block's number) }. Absent with Latest block, and when the step failed before or without simulating (a settings or RPC support error).",
     field: "simulation",
   };
 }

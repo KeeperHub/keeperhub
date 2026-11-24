@@ -6,7 +6,7 @@
 import { AbiCoder, type ethers, isError, makeError, toQuantity } from "ethers";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { simulateV1Params, txForNode } from "@/lib/execute/node-call";
-import { ErrorCategory, logUserError } from "@/lib/logging";
+import { ErrorCategory, logUserError, logWarn } from "@/lib/logging";
 import type { RpcOperationType, RpcProviderManager } from "@/lib/rpc/providers";
 import { scrubRpcUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { getErrorMessage } from "@/lib/utils";
@@ -14,6 +14,7 @@ import {
   MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
   MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
   parseSimulationSettings,
+  type TriggerBlock,
 } from "@/lib/web3/next-block-limits";
 import { extractRevertData } from "@/lib/web3/revert-data";
 
@@ -25,6 +26,8 @@ export type NextBlockSimulationOptions = {
   // Reuse the block an earlier check predicted, so a batch's per-call check
   // and its send agree on one base block.
   basedOn?: NextBlockSimulation;
+  // The block that triggered the run: the predicted time never precedes the block after it.
+  triggerBlock?: TriggerBlock;
 };
 
 export type NextBlockSimulation = {
@@ -37,6 +40,8 @@ export type NextBlockSimulation = {
     | "eth_estimateGas+blockOverrides"
     | "eth_simulateV1"
     | "eth_call+blockOverrides";
+  // Set when the RPC was a block behind the trigger and the time followed the trigger.
+  rpcBehindTrigger?: true;
 };
 
 export type SimulationTx = {
@@ -164,11 +169,14 @@ type SettingsResult =
 /** The step's settings, or the user error a bad value fails the step with. */
 export function readSimulationSettings(
   simulateAt: unknown,
-  timestampOffsetSec: unknown
+  timestampOffsetSec: unknown,
+  triggerBlock?: TriggerBlock
 ): SettingsResult {
   const parsed = parseSimulationSettings(simulateAt, timestampOffsetSec);
   if (parsed.ok) {
-    return parsed;
+    return parsed.options && triggerBlock
+      ? { ok: true, options: { ...parsed.options, triggerBlock } }
+      : parsed;
   }
   return {
     ok: false,
@@ -526,8 +534,11 @@ export function nextBlockFailure(
   if (!simulation) {
     return { error: message };
   }
+  const lag = simulation.rpcBehindTrigger
+    ? `; the RPC was one block behind the trigger, so this is block ${simulation.assumedBlockNumber + 1}'s time`
+    : "";
   return {
-    error: `${message} (simulated as of next block ${simulation.assumedBlockNumber}, timestamp ${simulation.assumedTimestamp})`,
+    error: `${message} (simulated as of next block ${simulation.assumedBlockNumber}, timestamp ${simulation.assumedTimestamp}${lag})`,
     simulation,
   };
 }
@@ -725,6 +736,44 @@ export function nextSlotTime(
   return latestTimestamp + Math.max(1, passed) * slotSeconds;
 }
 
+// Seconds a trigger block's timestamp may run ahead of the server clock where
+// there is no slot clock; a beacon block never precedes its slot.
+const TRIGGER_CLOCK_SKEW_SECONDS = 2;
+
+// The trigger block's timestamp, when the RPC is one block behind it and it is
+// verifiably latest's child; the prediction's time then starts from it.
+function triggerFloor(
+  chainId: number,
+  latest: ethers.Block,
+  trigger: TriggerBlock | undefined,
+  nowSeconds: number
+): number | undefined {
+  if (trigger?.chainId !== chainId || trigger.number !== latest.number + 1) {
+    return;
+  }
+  const slot = BEACON_SLOT_SECONDS.get(chainId);
+  const gap = trigger.timestamp - latest.timestamp;
+  const skew = slot === undefined ? TRIGGER_CLOCK_SKEW_SECONDS : 0;
+  let ignored: string | undefined;
+  if (trigger.parentHash.toLowerCase() !== latest.hash?.toLowerCase()) {
+    ignored = "not the RPC latest block's child";
+  } else if (gap <= 0) {
+    // Fast chains often share a timestamp: the floor would change nothing.
+    return;
+  } else if (slot !== undefined && gap % slot !== 0) {
+    ignored = "timestamp off the slot grid";
+  } else if (trigger.timestamp > nowSeconds + skew) {
+    ignored = "timestamp ahead of the server clock";
+  }
+  logWarn(
+    ignored
+      ? `[Next-block simulation] Trigger block ignored: ${ignored}`
+      : "[Next-block simulation] RPC one block behind the trigger block",
+    { chain_id: String(chainId) }
+  );
+  return ignored ? undefined : trigger.timestamp;
+}
+
 // The next block's time: latest + block time, or on beacon chains the slot
 // clock (relies on an accurate server clock), with a set offset as a minimum.
 function predictedTime(
@@ -751,6 +800,28 @@ function predictedTime(
 
 const currentSeconds = (): number => Math.floor(Date.now() / MS_PER_SECOND);
 
+// Never before the block after the trigger block, when there is a floor.
+function nextTime(
+  chainId: number,
+  latestTimestamp: number,
+  floor: number | undefined,
+  offsetSeconds: number,
+  nowSeconds: number
+): number {
+  const fromLatest = predictedTime(
+    chainId,
+    latestTimestamp,
+    offsetSeconds,
+    nowSeconds
+  );
+  return floor === undefined
+    ? fromLatest
+    : Math.max(
+        fromLatest,
+        predictedTime(chainId, floor, offsetSeconds, nowSeconds)
+      );
+}
+
 async function prepare(
   provider: ethers.JsonRpcProvider,
   chainId: number,
@@ -763,16 +834,19 @@ async function prepare(
     );
   }
   const { basedOn } = options;
+  const now = currentSeconds();
+  const floor = triggerFloor(chainId, latest, options.triggerBlock, now);
   // Reuse an earlier check's prediction only while nothing moved, so a wait
   // never sends on a stale check.
   if (
     basedOn &&
     latest.number === basedOn.baseBlock &&
-    predictedTime(
+    nextTime(
       chainId,
       latest.timestamp,
+      floor,
       basedOn.timestampOffsetSec,
-      currentSeconds()
+      now
     ) === basedOn.assumedTimestamp
   ) {
     return preparedFrom(basedOn);
@@ -795,12 +869,7 @@ async function prepare(
       'Next-block simulation cannot predict the next block\'s time on this network: recent blocks share a timestamp. Set "Next block timestamp offset" to 1 (the call may then pass a few blocks early), or set "Simulate at" back to "Latest block".'
     );
   }
-  const time = predictedTime(
-    chainId,
-    latest.timestamp,
-    offset,
-    currentSeconds()
-  );
+  const time = nextTime(chainId, latest.timestamp, floor, offset, now);
   return {
     blockTag: toQuantity(latest.number),
     time,
@@ -815,6 +884,7 @@ async function prepare(
       assumedTimestamp: time,
       timestampOffsetSec: offset,
       rpcMethod: "eth_call+blockOverrides",
+      ...(floor === undefined ? {} : { rpcBehindTrigger: true }),
     },
   };
 }

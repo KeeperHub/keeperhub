@@ -6,11 +6,13 @@ vi.mock("server-only", () => ({}));
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { isNonRetryableError } from "@/lib/rpc/providers/error-classification";
 import { formatContractError } from "@/lib/web3/decode-revert-error";
+import type { TriggerBlock } from "@/lib/web3/next-block-limits";
 import {
   clearSlotSecondsCache,
   failedNextBlockCheck,
   getNextBlockSimulation,
   isNextBlockSimulationUnsupported,
+  type NextBlockSimulation,
   NextBlockSimulationUnsupportedError,
   nextBlockFailure,
   nextSlotTime,
@@ -329,6 +331,23 @@ describe("readSimulationSettings", () => {
     expect(readSimulationSettings("next-block", " 60 ")).toEqual({
       ok: true,
       options: { timestampOffsetSec: 60 },
+    });
+  });
+
+  it("carries the trigger block into next-block options only", () => {
+    const triggerBlock = {
+      chainId: 1,
+      number: 101,
+      timestamp: 1_000_012,
+      parentHash: ethers.ZeroHash,
+    };
+    expect(readSimulationSettings("next-block", "", triggerBlock)).toEqual({
+      ok: true,
+      options: { triggerBlock },
+    });
+    expect(readSimulationSettings("latest", "", triggerBlock)).toEqual({
+      ok: true,
+      options: undefined,
     });
   });
 
@@ -828,6 +847,168 @@ describe("next-block simulation", () => {
           latest + predicted
         );
       }
+    });
+  });
+
+  describe("a Block-triggered run whose RPC is a block behind the trigger", () => {
+    const MAINNET = 1;
+    // The fake node's block n has hash n + 1; latest is block 100 at T.
+    const LATEST_HASH = ethers.zeroPadValue(ethers.toBeHex(101), 32);
+    const trigger = (overrides: Partial<TriggerBlock> = {}): TriggerBlock => ({
+      chainId: MAINNET,
+      number: 101,
+      timestamp: 1_000_000 + SLOT,
+      parentHash: LATEST_HASH,
+      ...overrides,
+    });
+
+    function sendWith(
+      triggerBlock: TriggerBlock,
+      options: { chainId?: number; basedOn?: NextBlockSimulation } = {}
+    ): ReturnType<typeof simulateSendAtNextBlock> {
+      return simulateSendAtNextBlock(managerFor(provider), {
+        chainId: options.chainId ?? MAINNET,
+        tx: RUN_TX,
+        options: {
+          triggerBlock,
+          ...(options.basedOn ? { basedOn: options.basedOn } : {}),
+        },
+      });
+    }
+
+    it("predicts the time of the block after the trigger block", async () => {
+      // 5 s into the trigger block's slot: without the trigger the check
+      // would use the trigger block's own time and refuse.
+      setClock(node.latestTimestamp + SLOT + 5);
+      node.unlockAt = node.latestTimestamp + 2 * SLOT;
+
+      const { simulation } = await sendWith(trigger());
+      expect(simulation).toMatchObject({
+        baseBlock: 100,
+        assumedBlockNumber: 101,
+        assumedTimestamp: node.latestTimestamp + 2 * SLOT,
+        rpcBehindTrigger: true,
+      });
+      // State and block number stay the RPC's: no gap in block numbers.
+      for (const call of node.seen) {
+        expect(call.blockTag).toBe(ethers.toQuantity(100));
+        expect(call.overrides?.number).toBe(ethers.toQuantity(101));
+      }
+    });
+
+    it("refuses the same call without a trigger block", async () => {
+      setClock(node.latestTimestamp + SLOT + 5);
+      node.unlockAt = node.latestTimestamp + 2 * SLOT;
+      const error = await send().catch((e: unknown) => e);
+      expect(formatContractError(error, IFACE)).toContain("too-soon");
+    });
+
+    it("predicts trigger time + block time on a network without a slot clock", async () => {
+      setClock(node.latestTimestamp + SLOT + 2);
+      node.unlockAt = node.latestTimestamp + 2 * SLOT;
+      const { simulation } = await simulateSendAtNextBlock(
+        managerFor(provider),
+        {
+          chainId: CHAIN_ID,
+          tx: RUN_TX,
+          options: {
+            timestampOffsetSec: SLOT,
+            triggerBlock: trigger({ chainId: CHAIN_ID }),
+          },
+        }
+      );
+      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + 2 * SLOT);
+      expect(simulation.rpcBehindTrigger).toBe(true);
+    });
+
+    it.each([
+      ["the RPC already has the trigger block", { number: 100 }],
+      ["the RPC is more than one block behind", { number: 102 }],
+      ["the trigger is on another chain", { chainId: CHAIN_ID }],
+      ["the trigger is not latest's child", { parentHash: ethers.ZeroHash }],
+      ["its time is not after latest", { timestamp: 1_000_000 }],
+      ["its time is off the slot grid", { timestamp: 1_000_000 + SLOT + 1 }],
+      ["its time is in the future", { timestamp: 1_000_000 + 10 * SLOT }],
+    ])("keeps today's prediction when %s", async (_label, overrides) => {
+      setClock(node.latestTimestamp + SLOT + 5);
+      node.unlockAt = node.latestTimestamp + SLOT;
+      const { simulation } = await sendWith(trigger(overrides));
+      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + SLOT);
+      expect(simulation).not.toHaveProperty("rpcBehindTrigger");
+    });
+
+    it("takes a beacon trigger block only once its slot has started", async () => {
+      node.unlockAt = node.latestTimestamp + 2 * SLOT;
+      setClock(node.latestTimestamp + SLOT - 1);
+      const early = await sendWith(trigger()).catch((e: unknown) => e);
+      expect(getNextBlockSimulation(early)).not.toHaveProperty(
+        "rpcBehindTrigger"
+      );
+
+      setClock(node.latestTimestamp + SLOT);
+      provider = new FakeProvider(node);
+      const { simulation } = await sendWith(trigger());
+      expect(simulation.rpcBehindTrigger).toBe(true);
+    });
+
+    it("allows 2 s of clock skew where there is no slot clock", async () => {
+      node.unlockAt = node.latestTimestamp + 2 * SLOT;
+      const sendOn = () =>
+        simulateSendAtNextBlock(managerFor(provider), {
+          chainId: CHAIN_ID,
+          tx: RUN_TX,
+          options: {
+            timestampOffsetSec: SLOT,
+            triggerBlock: trigger({ chainId: CHAIN_ID }),
+          },
+        });
+      setClock(node.latestTimestamp + SLOT - 2);
+      expect((await sendOn()).simulation.rpcBehindTrigger).toBe(true);
+
+      setClock(node.latestTimestamp + SLOT - 3);
+      provider = new FakeProvider(node);
+      const error = await sendOn().catch((e: unknown) => e);
+      expect(getNextBlockSimulation(error)).not.toHaveProperty(
+        "rpcBehindTrigger"
+      );
+    });
+
+    it("names the block the time belongs to in a failure", async () => {
+      setClock(node.latestTimestamp + SLOT + 5);
+      node.unlockAt = node.latestTimestamp + 3 * SLOT;
+      const error = await sendWith(trigger()).catch((e: unknown) => e);
+      const simulation = getNextBlockSimulation(error);
+      expect(nextBlockFailure("reverted", simulation).error).toBe(
+        `reverted (simulated as of next block 101, timestamp ${node.latestTimestamp + 2 * SLOT}; the RPC was one block behind the trigger, so this is block 102's time)`
+      );
+    });
+
+    it("reuses an earlier check made with the trigger while nothing moved", async () => {
+      // A two-slot minimum: reuse keeps trigger + 24; a fresh check gives + 12.
+      setClock(node.latestTimestamp + SLOT + 5);
+      node.unlockAt = node.latestTimestamp + 3 * SLOT;
+      const basedOn = (
+        await simulateSendAtNextBlock(managerFor(provider), {
+          chainId: MAINNET,
+          tx: RUN_TX,
+          options: { timestampOffsetSec: 2 * SLOT, triggerBlock: trigger() },
+        })
+      ).simulation;
+      provider = new FakeProvider(node);
+
+      const { simulation } = await sendWith(trigger(), { basedOn });
+      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + 3 * SLOT);
+    });
+
+    it("checks again when the trigger moves the time an earlier check did not use", async () => {
+      setClock(node.latestTimestamp + SLOT + 5);
+      node.unlockAt = node.latestTimestamp + SLOT;
+      const basedOn = (await send()).simulation;
+      node.unlockAt = node.latestTimestamp + 2 * SLOT;
+      provider = new FakeProvider(node);
+
+      const { simulation } = await sendWith(trigger(), { basedOn });
+      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + 2 * SLOT);
     });
   });
 

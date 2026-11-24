@@ -993,6 +993,29 @@ describe("read-contract-core - simulateAt next-block", () => {
     expect(request.options).toEqual({ timestampOffsetSec: 12 });
   });
 
+  it("passes a Block-triggered run's trigger block to the next-block check", async () => {
+    mockSimulateAtNextBlock.mockResolvedValue({
+      returnData: ethers.AbiCoder.defaultAbiCoder().encode(["uint256"], [42]),
+      simulation: SIMULATION,
+    });
+    const triggerBlock = {
+      chainId: 1,
+      number: 101,
+      timestamp: 1_000_012,
+      parentHash: `0x${"ab".repeat(32)}`,
+    };
+
+    await readContractCore({
+      ...makeInput({ simulateAt: "next-block" }),
+      _context: { triggerBlock },
+    });
+
+    const request = mockSimulateAtNextBlock.mock.calls[0]?.[1] as {
+      options: unknown;
+    };
+    expect(request.options).toEqual({ triggerBlock });
+  });
+
   it("leaves the read untouched when simulateAt is latest", async () => {
     mockContractFunction.mockResolvedValue(BigInt(7));
 
