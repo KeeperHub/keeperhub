@@ -739,8 +739,8 @@ async function getWorkflowCounts(
   const error = Number(row?.error) || 0;
   // Total counts only completed runs (success + error). Pending, running,
   // cancelled and skipped runs are excluded so the success rate and Total Runs
-  // KPI ignore in-flight runs, cancellations, and runs the platform refused
-  // before they started.
+  // KPI ignore in-flight runs, cancellations, and runs that never started
+  // (refused, or skipped behind a still-running run).
   return {
     total: success + error,
     success,

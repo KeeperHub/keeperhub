@@ -28,7 +28,8 @@ export function isErrorStatus(status: string): status is ErrorStatus {
  * has to be handled.
  *
  * `skipped` is a run the platform refused before it started: over the plan's
- * execution limit, a gated action, or an unpaid pay-as-you-go charge. It is
+ * execution limit, a gated action, or an unpaid pay-as-you-go charge; or a
+ * Block trigger dispatch skipped while a previous run was still live. It is
  * terminal, never billable, and not a failure, so it belongs outside both the
  * error count and the success-rate denominator.
  */

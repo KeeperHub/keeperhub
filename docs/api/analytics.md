@@ -67,7 +67,7 @@ Returns aggregated analytics for the organization including run counts, success 
 | `successCount` | number | Runs that completed successfully |
 | `errorCount` | number | Runs that failed |
 | `cancelledCount` | number | Workflow runs that were cancelled |
-| `skippedCount` | number | Workflow runs with status `skipped`: a run the platform refused before it started (over the plan limit, a gated action, an unpaid pay-as-you-go charge, or a workflow that cannot run), or an expired price signal. Refusals of one workflow for one reason share a row per hour, so this counts rows, not refused attempts |
+| `skippedCount` | number | Workflow runs with status `skipped`: a run the platform refused before it started (over the plan limit, a gated action, an unpaid pay-as-you-go charge, or a workflow that cannot run), an expired price signal, or Block trigger dispatches skipped while a previous run was still running. Refusals of one workflow for one reason share a row per hour, and the skips behind one running run share one row, so this counts rows, not attempts |
 | `successRate` | number | Fraction of runs that succeeded, `0` to `1`, not a percentage. The dashboard renders it by multiplying by 100, so a consumer that wants a percentage has to do the same |
 | `avgDurationMs` | number or null | Mean duration in milliseconds, or `null` when the window holds no completed run to average |
 | `totalGasWei` | string | Every wei the runs burned over the range, sponsored gas included. A decimal string, because the figure overflows a JavaScript number |

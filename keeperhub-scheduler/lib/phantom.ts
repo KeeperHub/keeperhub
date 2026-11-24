@@ -44,6 +44,8 @@ export interface PhantomCreateResult {
    * which is a transport failure and still falls back to the id-less enqueue.
    */
   refused?: PhantomRefusalReason;
+  /** The dispatch is recorded as skipped (a live run, or a refused phantom): do not enqueue. */
+  skipped?: boolean;
 }
 
 /**
@@ -61,11 +63,13 @@ export async function createPhantomExecution(
   triggerSource: PhantomTriggerSource,
   userId?: string,
   dispatchKey?: string,
+  options: { skipIfRunning?: boolean } = {},
 ): Promise<PhantomCreateResult> {
   try {
     const { data: result, attempts } = await apiRequestWithAttempts<{
       executionId?: string;
       alreadyExisted?: boolean;
+      skipped?: boolean;
       refused?: boolean;
       reason?: PhantomRefusalReason;
       error?: string;
@@ -77,6 +81,7 @@ export async function createPhantomExecution(
         status: "phantom",
         triggerSource,
         dispatchKey,
+        ...(options.skipIfRunning ? { skipIfRunning: true } : {}),
       }),
     });
     if (result.refused) {
@@ -94,6 +99,9 @@ export async function createPhantomExecution(
     // delivery); skipping instead would strand the phantom until the reaper
     // marks it P-0005 and the occurrence would never run.
     const alreadyExisted = attempts === 1 && result.alreadyExisted === true;
+    if (result.skipped === true) {
+      return { executionId: result.executionId, alreadyExisted, skipped: true };
+    }
     return { executionId: result.executionId, alreadyExisted };
   } catch (error) {
     console.warn(

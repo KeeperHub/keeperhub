@@ -240,7 +240,7 @@ export function ExecutionShareView({
                 statusData.status === "running" && "bg-primary/15 text-primary",
                 statusData.status === "cancelled" &&
                   "bg-orange-500/15 text-orange-600 dark:text-orange-400",
-                // Refused before it started: neutral, not a failure colour.
+                // Never started (refused or skipped): neutral, not a failure colour.
                 statusData.status === "skipped" &&
                   "bg-muted text-muted-foreground"
               )}

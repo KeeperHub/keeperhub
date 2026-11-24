@@ -52,7 +52,7 @@ export const STATUS_DISPLAY: Record<NormalizedStatus, StatusDisplay> = {
       "bg-orange-500/10 text-orange-700 dark:text-orange-400 border-orange-500/20",
     chartColor: "var(--color-orange-500)",
   },
-  // Refused before it started: neutral everywhere, so it never reads as a
+  // Never started (refused, or skipped behind a live run): neutral everywhere, so it never reads as a
   // failure, in a badge or as a band on the chart.
   skipped: {
     label: "Skipped",

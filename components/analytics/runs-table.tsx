@@ -250,7 +250,7 @@ function formatTimeAgo(dateString: string): string {
 // one answers "whose fault is it and what do I do about it".
 const STATUS_TOOLTIPS: Partial<Record<NormalizedStatus, string>> = {
   skipped:
-    "The trigger fired but the run was refused before it started. Either the monthly execution limit was reached, or the workflow uses an action your plan does not include, or a pay-as-you-go charge could not be collected. Nothing ran, so a skipped run is not a failure and does not count towards your success rate or your usage.",
+    "The trigger fired but the run did not start. Either it was refused (the monthly execution limit was reached, the workflow uses an action your plan does not include, or a pay-as-you-go charge could not be collected), or a Block trigger set to skip while running found the previous run still going. Nothing ran, so a skipped run is not a failure and does not count towards your success rate or your usage.",
   error:
     "The run started and failed on something in the workflow itself: bad input, a missing or invalid credential, or a 4xx from an endpoint you configured. Fix the workflow and run it again.",
   external_error:

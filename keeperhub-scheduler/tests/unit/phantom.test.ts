@@ -54,6 +54,28 @@ describe("createPhantomExecution", () => {
     expect(body.dispatchKey).toBe("block:wf_1:1:99");
   });
 
+  it("asks for skip-if-running and reports a skipped row", async () => {
+    apiRequestWithAttempts.mockResolvedValue(
+      firstAttempt({ executionId: "exec_skip", skipped: true }),
+    );
+
+    const result = await createPhantomExecution(
+      "wf_1",
+      "block",
+      "owner_1",
+      "block:wf_1:1:99",
+      { skipIfRunning: true },
+    );
+
+    expect(result).toEqual({
+      executionId: "exec_skip",
+      alreadyExisted: false,
+      skipped: true,
+    });
+    const body = JSON.parse(apiRequestWithAttempts.mock.calls[0][1].body);
+    expect(body.skipIfRunning).toBe(true);
+  });
+
   it("reports alreadyExisted when the API returns it (dedup hit)", async () => {
     apiRequestWithAttempts.mockResolvedValue(
       firstAttempt({ executionId: "exec_existing", alreadyExisted: true }),

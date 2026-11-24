@@ -70,7 +70,7 @@ import { boundStoredOutput } from "@/lib/workflow/executor/stored-output-cap";
 import { computeTrulyFailedNodes } from "@/lib/workflow/executor/truly-failed-nodes";
 
 // Statuses a late step write must never resurrect: the user stopped the run,
-// or the platform refused it before it started.
+// or it never started (refused, or skipped behind a live run).
 const TERMINAL_STATUSES = new Set(["cancelled", "skipped"]);
 
 /**

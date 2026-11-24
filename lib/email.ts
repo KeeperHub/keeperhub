@@ -724,7 +724,7 @@ type ExecutionDigestEmailData = {
     total: number;
     success: number;
     error: number;
-    // Runs refused before they started. Rendered in its own neutral section:
+    // Runs that did not start (refused, or skipped behind a live run). Rendered in its own neutral section:
     // they never ran, so they are not failures and carry no rate.
     skipped: number;
     distinctWorkflows: number;
@@ -909,7 +909,7 @@ export async function sendWorkflowExecutionDigestEmail(
   // Omitted entirely when nothing was refused, which is the normal case.
   const skippedText = stats.skipped
     ? `
-Skipped: ${stats.skipped} (refused before starting, not failures)
+Skipped: ${stats.skipped} (did not start: refused, or a previous run was still running; not failures)
 ${topSkipped
   .map(
     (w) =>
@@ -1043,7 +1043,7 @@ ${socialText}
 
   const skippedSection = stats.skipped
     ? `<div style="text-align:left; margin-top:28px;">
-      <p style="margin:0 0 4px;"><span style="color:#666; font-weight:bold; font-size:17px;">Skipped: ${stats.skipped}</span> <span style="color:#999; font-size:13px;">- Runs refused before they started</span></p>
+      <p style="margin:0 0 4px;"><span style="color:#666; font-weight:bold; font-size:17px;">Skipped: ${stats.skipped}</span> <span style="color:#999; font-size:13px;">- Runs that did not start: refused, or a previous run was still running</span></p>
       <p style="margin:0 0 10px; color:#999; font-size:12px;">These runs never started, so they are not failures and do not count towards your success rate or your usage.</p>
       <table style="width:100%; border-collapse:collapse;">${tableHeader("Skipped")}${skippedRows}</table>
     </div>`

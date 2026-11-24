@@ -4,9 +4,12 @@ import { REFUSED_RUNS_THRESHOLD } from "@/lib/notifications/failure-alerts/const
 
 type RefusedRunFields = {
   status: string;
+  // output.refusals; a "previous run still running" row reuses it for its skip count (skip-if-running.ts).
   refusals: number | null;
   startedAt: Date | string;
   completedAt: Date | string | null;
+  /** Null on a skip that is not a refusal (previous run still running): once per block or slot, repeats within 2 minutes not counted. */
+  errorCategory?: string | null;
 };
 
 /**
@@ -31,6 +34,9 @@ export function refusalSummary(
       minute: "2-digit",
       timeZone: options.timeZone,
     });
+  if (run.errorCategory === null) {
+    return `Skipped ${run.refusals} times between ${time(run.startedAt)} and ${time(run.completedAt)}`;
+  }
   const count =
     run.refusals >= REFUSED_RUNS_THRESHOLD
       ? `at least ${run.refusals}`

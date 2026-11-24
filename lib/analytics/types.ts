@@ -37,8 +37,8 @@ export type NormalizedStatus =
   | "error"
   | "system_error"
   | "external_error"
-  // Refused before it started (over the plan limit, a gated action, an unpaid
-  // pay-as-you-go charge). Its own status so it stays out of the error count and
+  // Did not start: refused (over the plan limit, a gated action, an unpaid
+  // pay-as-you-go charge) or skipped behind a live run. Its own status so it stays out of the error count and
   // the success-rate denominator.
   | "skipped"
   | "cancelled";

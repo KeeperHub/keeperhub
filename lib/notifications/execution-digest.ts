@@ -143,8 +143,8 @@ export type OrgExecutionDigest = {
   // Every failed run in the window, platform failures included, so the digest
   // rates a run the same way the analytics dashboard does.
   error: number;
-  // Runs the platform refused before they started, over the plan's execution
-  // limit or on a gated action. They never ran, so they are reported on their
+  // Runs that did not start: refused (over the plan's execution limit, a gated
+  // action) or skipped behind a still-running run. They never ran, so they are reported on their
   // own rather than as failures, and they are excluded from `total`.
   skipped: number;
   // Distinct workflows that ran at least once over the window.

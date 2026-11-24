@@ -19,6 +19,7 @@ import {
 } from "@/lib/security/request-attribution";
 import { hashWorkflowDefinition } from "@/lib/workflow/content-hash";
 import { recordRefusedRun } from "@/lib/workflow/refused-runs";
+import { insertPhantomUnlessRunning } from "@/lib/workflow/skip-if-running";
 
 const VALID_TRIGGER_SOURCES: readonly TriggerSource[] = [
   "manual",
@@ -195,32 +196,54 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const attribution = buildAttribution({ request, source });
 
+  const values = {
+    workflowId,
+    organizationId: workflow.organizationId,
+    userId: ownerId,
+    status: isPhantom ? ("phantom" as const) : ("running" as const),
+    // KEEP-693: a phantom has not run yet, so it must not count toward the
+    // org's billable executions -- the executor flips it to billable when
+    // it upgrades the row to running. Non-phantom (direct) rows stay
+    // billable as before.
+    billable: !isPhantom,
+    input: input || {},
+    dispatchKey: dispatchKeyValue,
+    ...attribution,
+    // Tie the run to the workflow version that fired it. For phantoms the
+    // executor restamps this with the definition it actually loads at run
+    // time; this value links the row even if that restamp never lands.
+    executedWorkflowHash: hashWorkflowDefinition(
+      workflow.nodes,
+      workflow.edges
+    ),
+  };
+
+  // Block Trigger "Skip if the previous run is still running": the dispatcher asks.
+  if (isPhantom && body.skipIfRunning === true && dispatchKeyValue) {
+    const result = await withBackstopCapture(
+      { workflowId, userId: ownerId, source },
+      () =>
+        insertPhantomUnlessRunning(db, {
+          ...values,
+          dispatchKey: dispatchKeyValue,
+        })
+    );
+    return NextResponse.json(
+      {
+        executionId: result.id,
+        alreadyExisted: result.alreadyExisted,
+        ...(result.skipped ? { skipped: true } : {}),
+      },
+      { status: result.alreadyExisted ? 200 : 201 }
+    );
+  }
+
   const inserted = await withBackstopCapture(
     { workflowId, userId: ownerId, source },
     () =>
       db
         .insert(workflowExecutions)
-        .values({
-          workflowId,
-          organizationId: workflow.organizationId,
-          userId: ownerId,
-          status: isPhantom ? "phantom" : "running",
-          // KEEP-693: a phantom has not run yet, so it must not count toward the
-          // org's billable executions -- the executor flips it to billable when
-          // it upgrades the row to running. Non-phantom (direct) rows stay
-          // billable as before.
-          billable: !isPhantom,
-          input: input || {},
-          dispatchKey: dispatchKeyValue,
-          ...attribution,
-          // Tie the run to the workflow version that fired it. For phantoms the
-          // executor restamps this with the definition it actually loads at run
-          // time; this value links the row even if that restamp never lands.
-          executedWorkflowHash: hashWorkflowDefinition(
-            workflow.nodes,
-            workflow.edges
-          ),
-        })
+        .values(values)
         // No-op if another dispatcher already created a row for this dispatch
         // key. NULL keys never conflict (Postgres treats them as distinct).
         .onConflictDoNothing({ target: workflowExecutions.dispatchKey })
@@ -239,14 +262,18 @@ export async function POST(request: Request): Promise<NextResponse> {
   // flag it so the caller skips the duplicate SQS send. Only reachable with a
   // non-null key, so the lookup is well-defined.
   const [existing] = await db
-    .select({ id: workflowExecutions.id })
+    .select({ id: workflowExecutions.id, status: workflowExecutions.status })
     .from(workflowExecutions)
     .where(eq(workflowExecutions.dispatchKey, dispatchKeyValue as string))
     .limit(1);
 
   if (existing) {
     return NextResponse.json(
-      { executionId: existing.id, alreadyExisted: true },
+      {
+        executionId: existing.id,
+        alreadyExisted: true,
+        ...(existing.status === "skipped" ? { skipped: true } : {}),
+      },
       { status: 200 }
     );
   }

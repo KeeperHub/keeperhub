@@ -1387,7 +1387,7 @@ export function WorkflowRuns({
         return "bg-blue-600";
       case "cancelled":
         return "bg-orange-500";
-      // Neutral: refused before it started, not a failure.
+      // Neutral: never started (refused or skipped), not a failure.
       case "skipped":
         return "bg-muted-foreground";
       default:
@@ -1437,7 +1437,7 @@ export function WorkflowRuns({
           (log) => log.status === "error"
         );
         const showRunError = Boolean(runErrorMessage) && !hasFailedStep;
-        // Refused before it started: say why, and how often in its hourly row.
+        // Never started: say why, and how often its row counted it.
         const shownReason =
           execution.status === "skipped" && execution.error
             ? shownRefusal(execution.error)
