@@ -44,14 +44,18 @@ These defaults are resolved in order: database chain config > hardcoded chain ov
 
 You can set an absolute gas limit per action node:
 
-1. Open the action node configuration (Transfer Native Token, Transfer ERC20 Token, Approve ERC20 Token, or Write Contract)
+1. Open the action node configuration (Transfer Native Token, Transfer ERC20 Token, Approve ERC20 Token, Write Contract, or Batch Write Contract)
 2. Expand the **Advanced** section
 3. Set the **Gas Limit** field to an absolute gas unit value (e.g. 500000)
 
 ### Field Behavior
 
 - **When empty**: The chain's default multiplier (see [Default Multipliers](#default-multipliers)) is applied to the gas estimate at execution time
-- **When set**: Your absolute value is used directly as the transaction gas limit, bypassing the multiplier
+- **When set**: Your absolute value is used directly as the transaction gas limit, bypassing the multiplier. A limit above the network's limit (the block gas limit, and 16777216 on Ethereum mainnet, Sepolia and Hoodi) is refused before sending, and a limit the check shows is too low for the call fails before sending too. A node may still refuse a limit at send time; nothing is broadcast then either. Through a Safe the Gas Limit is not applied.
+- **Simulate at set to Latest**: direct wallet sends skip `eth_estimateGas`, and the pre-send `eth_call` that catches a revert runs with your Gas Limit. Transfer Native Token, Transfer ERC20 Token and Approve ERC20 Token have no Simulate at setting and work the same way.
+- **Simulate at set to Next block**: the estimate is the revert check, so it always runs, with your Gas Limit as its ceiling.
+- **On a "(Flashbots)" network**: the pre-send check goes through the same RPC as the send, the private relay first. Flashbots Protect refuses `eth_call`, so with Simulate at set to Latest the check cannot run on the relay. By default the step fails before sending; if the action's config sets `strict: false` (see [Chains API](/api/chains)), the call falls back to the public RPC, which then sees your calldata. Use Simulate at: Next block there; it checks with `eth_estimateGas`, which the relay accepts.
+- **Arbitrum**: on chains that charge the L1 data cost inside the gas limit (Arbitrum One, Arbitrum Sepolia) the pre-send check does not include that cost, so a fixed limit can pass the check and still be refused by the sequencer. Leave Gas Limit empty there, or set it from a real estimate.
 
 The field also shows a live gas estimate when enough configuration is filled in (network, contract address, function, etc.). This helps you choose an appropriate gas limit. If your value is below the current estimate, a warning is shown.
 
@@ -65,7 +69,7 @@ If the network estimates 100,000 gas for your transaction and the network's defa
 | 150,000 | 150,000 (used directly) |
 | 500,000 | 500,000 (used directly) |
 
-Setting a gas limit below the estimate will cause the transaction to revert with an out-of-gas error. Setting it close to the estimate risks failure if on-chain state changes between estimation and execution.
+Setting a gas limit below what the call needs fails the pre-send check, so nothing is sent, and the error names the Gas Limit. Setting it close to the estimate risks running out of gas on-chain if state changes before the transaction is mined.
 
 ### Gas Limit and gas sponsorship
 
@@ -293,11 +297,13 @@ The chain's default multiplier is applied to the gas estimate at execution time:
 
 ### What happens if my gas limit is too low?
 
-The transaction is mined but reverts with an "out of gas" error, and you still pay for the gas consumed up to the limit. KeeperHub does not retry it: the run fails and reports the revert, including the transaction hash. Raise or clear the gas limit and run the workflow again.
+Usually nothing is sent: the pre-send check runs under your limit, and the step fails with "Gas Limit N is too low for this call". If state changes between the check and the block, the transaction can still be mined and revert out of gas; you then pay for the gas used up to the limit, and the error says it used all its gas. KeeperHub does not retry either case. Raise or clear the gas limit and run the workflow again.
+
+When an inner call runs out of gas and the contract then reverts with no reason, the check cannot tell that from a real revert, so the step shows the node's "execution reverted" with no Gas Limit hint. If you are unsure, leave Gas Limit empty.
 
 ### What happens if my gas limit is too high?
 
-The transaction reserves more gas but only consumes what it needs. Unused gas is refunded. There is no direct cost penalty, but very high limits may cause the transaction to be deprioritized by some networks.
+Up to the network's limit, the transaction reserves more gas but only consumes what it needs, and unused gas is refunded; very high limits may make some networks deprioritize it. Above the network's limit (the block gas limit, or 16777216 on Ethereum mainnet, Sepolia and Hoodi), the step fails before sending with "Gas Limit N is above the network's limit".
 
 ### Does the gas limit affect gas price/fees?
 

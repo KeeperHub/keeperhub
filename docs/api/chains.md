@@ -99,9 +99,9 @@ its own broadcast path. The direct-execution API and MCP execute tools do not
 currently expose the workflow action's `usePrivateMempool` or `strict` fields.
 
 Neither this chain capability nor a saved workflow setting confirms that a
-specific transaction used a private route. Current execution outputs do not
-include a public/private route field, so describe the route as requested unless
-you have separate relay evidence.
+specific transaction used a private route. Workflow Write Contract and Batch
+Write Contract steps report it in their `route` and `included` outputs; see
+[Write Contract](/plugins/web3#write-contract).
 
 ### Chain Types
 

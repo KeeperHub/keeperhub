@@ -618,7 +618,18 @@ Execute state-changing functions on smart contracts using your Turnkey wallet. R
 
 **Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Fail workflow on error (optional, on by default), Gas Limit, Priority Fee, Max Fee, Sponsor gas, Simulate at and Next block timestamp offset (optional, in Advanced section; Sponsor gas only on networks gas sponsorship covers)
 
-**Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total gas cost in wei), `result`, `error`, `simulation` (only when Simulate at is Next block)
+**Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total gas cost in wei), `result`, `route`, `included`, `error`, `simulation` (only when Simulate at is Next block)
+
+- `route`: how KeeperHub routed the send. `public` is the public mempool, through your RPC or the chain's default RPC. `private-relay` means the private relay used by the network's "(Flashbots)" entry accepted it. `sponsored` is a gas-sponsored send. Through a Safe, it is the route of the transaction your wallet sent to the Safe. More values may be added.
+- `included`: `true` when the transaction was seen in a block (one confirmation, not final). It may have reverted, so check `error` too. `false` when it was sent but is not in a block.
+
+Both fields are absent when nothing was sent, so `included` absent with `error` set means KeeperHub found no sign the transaction was sent. Only Write Contract and Batch Write Contract report them for now.
+
+If the action's config sets `strict: false` (see [Chains API](/api/chains)), a relay that refuses the transaction makes it go out publicly, and `route` is `public`. A transaction the relay accepted and later dropped is not sent again publicly.
+
+A write that was sent but has no receipt within the wait (up to 10 minutes) fails the run whatever `Fail workflow on error` says: it may still be mined, so do not send it again on this alone. Its node output shows `included: false`; use workflow failure alerts (see [Failure Alerts API](/api/failure-alerts)) to hear about it. A next step only sees `included: false` when another transaction with the same nonce replaced it and `Fail workflow on error` is off.
+
+A Condition that compares an absent field fails the run. Put `exists` on the field as the first clause of an AND group, then compare with **equals** against the value you expect, for example `route` equals `public` or `included` equals `false`. Avoid **not equals** on `route`: values added later would match it. See [Runtime resolution](/workflows/templating#runtime-resolution).
 
 **When to use:** Execute DeFi operations (harvest, compound, rebalance), respond to on-chain events, automate protocol maintenance.
 
@@ -630,7 +641,7 @@ The Advanced section has three optional gas settings. Leave them empty to use th
 
 | Setting | What it does | With Sponsor gas on |
 |---------|--------------|---------------------|
-| [Gas Limit](/wallet-management/gas#gas-limit-override) | Fixed gas limit, used instead of the estimate | Not applied to a sponsored transaction; the sponsor sets its own limit |
+| [Gas Limit](/wallet-management/gas#gas-limit-override) | Fixed gas limit, used instead of the estimate. With Simulate at set to Latest the estimate is skipped and the pre-send check uses your limit; with Next block the estimate always runs, with your limit. Either way a limit above the network's limit, or one the check shows is too low, fails before sending. Not applied through a Safe | Not applied to a sponsored transaction; the sponsor sets its own limit |
 | [Priority Fee (gwei)](/wallet-management/gas#priority-fee) | Tip paid to the block builder; a higher tip puts the transaction ahead of others in the same block | Disabled. Turn off Sponsor gas to set it |
 | [Max Fee (gwei)](/wallet-management/gas#max-fee) | Ceiling on the total fee per gas; a cap below the next block's base fee fails the step before sending | Disabled. Turn off Sponsor gas to set it |
 
@@ -638,7 +649,7 @@ Sponsored transactions cannot carry a custom priority fee or max fee, so those t
 
 ### Simulate at the next block
 
-Before it sends, Write Contract simulates the call and estimates its gas against the latest block, and skips the send if the simulation reverts. A time-locked call (for example `require(block.timestamp >= lastRun + interval)`) therefore only passes once the first valid block already exists, so the transaction lands one block after it, or later.
+Before it sends, Write Contract simulates the call against the latest block, and estimates its gas there unless Gas Limit is set. It skips the send if the simulation reverts. A time-locked call (for example `require(block.timestamp >= lastRun + interval)`) therefore only passes once the first valid block already exists, so the transaction lands one block after it, or later.
 
 Set **Simulate at** to **Next block** to run the simulation as if the next block had already arrived: block number + 1, and the next block's predicted timestamp. The call then usually passes while the first valid block is still being built. The same setting is on Read Contract, where it answers the read as of the next block, and on Batch Write Contract.
 
@@ -657,14 +668,14 @@ The prediction only helps with a "not before" condition. A late next block has a
 
 **Costs and risks.**
 
-- If another transaction changes the state first, or a block lands while yours is being sent, your transaction can revert on-chain. On networks with a private-mempool option in the Network list (for example Ethereum (Flashbots), which sends through Flashbots Protect), choose it so a failed prediction costs nothing. The check then runs on the private relay, the same RPC that sends, so the call is not shown to any other RPC. A private relay does not promise inclusion in the very next block. Elsewhere a lost race or an early send spends gas.
+- If another transaction changes the state first, or a block lands while yours is being sent, your transaction can revert on-chain. On networks with a private-mempool option in the Network list (for example Ethereum (Flashbots), which sends through Flashbots Protect), choose it so a failed prediction costs nothing. The check then runs on the private relay, the same RPC that sends. By default the step fails before sending if the relay cannot answer; if the action's config sets `strict: false` (see [Chains API](/api/chains)), the call falls back to the public RPC, which then sees your calldata. A private relay does not promise inclusion in the very next block. Elsewhere a lost race or an early send spends gas.
 - KeeperHub does not stop a second send. With a trigger that fires every block, the run after the one that sent can still see the job as unworked (your transaction is not mined yet) and send again. Make the Condition before the write read something your transaction changes, or use a private-mempool network so a duplicate that reverts costs nothing.
 - Gas sponsorship is off for a write with this setting, because the sponsor would simulate against the latest block again. Keep native gas in the wallet that pays.
 - The extra calls take time. On networks with very short blocks the transaction can still land a block late.
 
 **How the check runs.**
 
-- **Writes** (Write Contract, and Batch Write Contract's send) use `eth_estimateGas` with block overrides: one call gives the revert check, the revert reason and the gas for the success path. This works on Flashbots Protect, which does not allow `eth_call`. If the RPC does not accept block overrides on `eth_estimateGas`, `eth_simulateV1` runs the check instead, and its gas used is taken plus about 27% (for refunds and nested calls) before your Gas Limit Multiplier applies; very deeply nested calls may need a higher multiplier.
+- **Writes** (Write Contract, and Batch Write Contract's send) use `eth_estimateGas` with block overrides: one call gives the revert check, the revert reason and the gas for the success path. This works on Flashbots Protect, which does not allow `eth_call`. With Simulate at set to Latest the pre-send check is an `eth_call`, so on an "(Flashbots)" network use Next block (see [Gas Limit](/wallet-management/gas#field-behavior)). If the RPC does not accept block overrides on `eth_estimateGas`, `eth_simulateV1` runs the check instead, and its gas used is taken plus about 27% (for refunds and nested calls) before your Gas Limit Multiplier applies; very deeply nested calls may need a higher multiplier.
 - **Reads** (Read Contract, and Batch Write Contract's per-call check before sending) need return data, so they use `eth_simulateV1`, or `eth_call` with block overrides. Read Contract always uses the network's regular RPC, never a private relay. Batch Write Contract's check runs on its own network's RPC, so on a private relay that allows neither method, such as Flashbots Protect, it cannot run at the next block. Its send reuses the check's prediction while the block it was predicted from is still the latest and, on Ethereum, the predicted slot has not passed; otherwise the send checks again, and the reported `simulation` is the send's. Either way, the send reads the latest block again and repeats the proof that the RPC applies the predicted timestamp. `resultsSimulation` names the predicted block the per-call results were checked against.
 - Each check is paired with a proof call showing that the RPC applies the predicted timestamp (on a load-balanced RPC the two are separate requests). If the proof shows the timestamp was not applied, or the RPC rejects the overrides (for a write, after the `eth_simulateV1` fallback), the step fails with "Next-block simulation is not supported by this network's RPC", naming the method, rather than falling back to the latest block. That failure stops the run even with Fail workflow on error off, and the fallback RPC is not tried for it. An invalid-params answer (`-32602`) counts as not supported only when its message names the overrides or the method's parameters; a bad or out-of-range block number is treated as temporary. Temporary RPC errors are retried and fail over as usual; if they persist, the step fails like any RPC error (softened when Fail workflow on error is off), and the next run or a re-run tries again.
 - To check an RPC without sending, run the write once while the job is still locked: an error ending with "(simulated as of next block N, timestamp T)" means the check works and nothing was sent. To use a different RPC for a network, set one through [RPC preferences](/api/user#rpc-preferences).
@@ -702,7 +713,7 @@ The Condition keeps runs far from the unlock from reaching the write: 24 is two 
 
 `Fail workflow on error` is on by default, so a write that fails stops the run and the failure is reported on the node.
 
-Turn it off and the failure is softened instead: the workflow continues, and the node reports `success: true` with `error` and `rejection` set. The softened result carries only those three fields (plus `simulation` when Simulate at is Next block), so `transactionHash`, `transactionLink` and the receipt fields are absent from it. Read `error` to tell a softened failure from a real success, because at the node the two are otherwise identical.
+Turn it off and the failure is softened instead: the workflow continues, and the node reports `success: true` with `error` and `rejection` set. The softened result carries only those three fields, plus `simulation` when Simulate at is Next block and `route` and `included` when the transaction was sent, so `transactionHash`, `transactionLink` and the receipt fields are absent from it. Read `error` to tell a softened failure from a real success, because at the node the two are otherwise identical.
 
 The two halves of a softened failure are reported in different places, which is the part that surprises people:
 
