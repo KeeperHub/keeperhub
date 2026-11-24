@@ -5,22 +5,12 @@ import { walletLocks } from "@/lib/db/schema-extensions";
 import { classifyExecutionError } from "@/lib/errors/classify";
 import type { ErrorCode } from "@/lib/errors/error-codes";
 import { recordExecutionErrorFinalized } from "@/lib/errors/finalize-error";
-
-const DEFAULT_THRESHOLD_MINUTES = 30;
+import { staleExecutionThresholdMinutes } from "@/lib/reaper/stale-threshold";
 
 // Pending rows that have produced no step logs are unambiguously stuck:
 // the executor inserted but the runtime never started. A few minutes is
 // generous for image pulls and k8s scheduling; beyond that, it's dead.
 const PENDING_THRESHOLD_MINUTES = 5;
-
-function getThresholdMinutes(): number {
-  const envValue = process.env.STALE_EXECUTION_THRESHOLD_MINUTES;
-  if (!envValue) {
-    return DEFAULT_THRESHOLD_MINUTES;
-  }
-  const parsed = Number.parseInt(envValue, 10);
-  return Number.isNaN(parsed) ? DEFAULT_THRESHOLD_MINUTES : parsed;
-}
 
 /**
  * Find workflow executions stuck past their threshold, mark them system_error
@@ -46,7 +36,7 @@ function getThresholdMinutes(): number {
  * in - and inflate the infrastructure counter it exists to keep accurate.
  */
 export async function reapStaleExecutions(
-  thresholdMinutes: number = getThresholdMinutes()
+  thresholdMinutes: number = staleExecutionThresholdMinutes()
 ): Promise<string[]> {
   const runningCutoff = new Date(Date.now() - thresholdMinutes * 60 * 1000);
   const pendingCutoff = new Date(

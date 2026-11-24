@@ -119,7 +119,7 @@ describe("/api/internal/reaper", () => {
   });
 
   afterEach(() => {
-    process.env.STALE_EXECUTION_THRESHOLD_MINUTES = undefined;
+    delete process.env.STALE_EXECUTION_THRESHOLD_MINUTES;
   });
 
   it("returns 401 when not authenticated", async () => {
