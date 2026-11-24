@@ -97,6 +97,7 @@ import {
   resolveToSkipped,
 } from "./lib/db-helpers";
 import { InFlightTracker } from "./lib/in-flight";
+import { runReceiveLoop } from "./lib/receive-loop";
 import {
   applyCounterDeltas,
   applyLatencyObservations,
@@ -1452,56 +1453,44 @@ async function listen(): Promise<void> {
     );
   });
 
-  // SQS polling loop
-  while (!shuttingDown) {
-    try {
+  // SQS polling loop. Up to maxMessages handlers run at once, and the loop
+  // receives again as soon as one finishes, so a dispatch waiting on a slow
+  // step (a warm-pool ack, a Job create) does not stop new messages arriving.
+  await runReceiveLoop({
+    receive: async (maxMessages) => {
       const response = await sqs.send(
         new ReceiveMessageCommand({
           QueueUrl: CONFIG.sqsQueueUrl,
-          MaxNumberOfMessages: CONFIG.maxMessages,
+          MaxNumberOfMessages: maxMessages,
           WaitTimeSeconds: CONFIG.waitTimeSeconds,
           VisibilityTimeout: CONFIG.visibilityTimeout,
           MessageAttributeNames: ["All"],
         }),
         { abortSignal: receiveAbort.signal }
       );
-
       const messages = response.Messages || [];
-
-      if (shuttingDown) {
-        // A batch that landed as the abort fired. It is already invisible on
-        // the queue, so leave it to redeliver after the visibility timeout
-        // rather than start work the drain cannot see through.
-        if (messages.length > 0) {
-          console.warn(
-            `[Executor] Ignoring ${messages.length} message(s) received during shutdown; they redeliver after the visibility timeout`
-          );
-        }
-        break;
-      }
-
       if (messages.length > 0) {
         console.log(`[Executor] Received ${messages.length} messages`);
-
-        const results = await Promise.allSettled(
-          messages.map((msg) => inFlight.track(processMessage(msg)))
-        );
-
-        for (const [idx, result] of results.entries()) {
-          if (result.status === "rejected") {
-            console.error(`[Executor] Message ${idx} failed:`, result.reason);
-          }
-        }
       }
-    } catch (error) {
-      if (shuttingDown) {
-        // The aborted long poll rejects; that is the loop's exit, not a fault.
-        break;
-      }
+      return messages;
+    },
+    process: (message) => processMessage(message),
+    inFlight,
+    maxInFlight: CONFIG.maxMessages,
+    isStopping: () => shuttingDown,
+    onReceiveError: async (error) => {
       console.error("[Executor] Error receiving messages:", error);
       await new Promise((r) => setTimeout(r, 5000));
-    }
-  }
+    },
+    onProcessError: (error) => {
+      console.error("[Executor] Message failed:", error);
+    },
+    onIgnoredWhileStopping: (count) => {
+      console.warn(
+        `[Executor] Ignoring ${count} message(s) received during shutdown; they redeliver after the visibility timeout`
+      );
+    },
+  });
 }
 
 // Only auto-start the poll loop when run as the executor entrypoint, not when
