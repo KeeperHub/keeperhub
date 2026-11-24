@@ -103,7 +103,7 @@ Sponsored transactions cannot carry a custom priority fee. The gas sponsor sets 
 
 - **Sponsor gas on**: the Priority Fee field is hidden and the network's default tip is used, paid by the sponsor.
 - **Sponsor gas off**: the Priority Fee field is shown. The node pays gas from the sending wallet, with your tip.
-- Any change that makes the node sponsored again (turning Sponsor gas back on, setting Simulate at back to Latest block, or switching to a sponsored network) clears the priority fee, so a hidden value never changes how the node sends.
+- Any change that hides the field (turning Sponsor gas on, setting Simulate at back to Latest block, switching to a network sponsorship covers, or switching from Batch Write Contract) clears the priority fee, so a hidden value never changes how the node sends.
 
 The field is also shown when the node cannot be sponsored anyway: on a network gas sponsorship does not cover, through a private mempool, through a Safe, or with Simulate at set to Next block.
 
@@ -153,7 +153,7 @@ Sponsored transactions cannot carry a custom max fee. The gas sponsor sets the f
 
 - **Sponsor gas on**: the Max Fee field is hidden and there is no cap; the sponsor sets the fees.
 - **Sponsor gas off**: the Max Fee field is shown. The node pays gas from the sending wallet, within your cap.
-- Any change that makes the node sponsored again (turning Sponsor gas back on, setting Simulate at back to Latest block, or switching to a sponsored network) clears the max fee, so a hidden value never changes how the node sends.
+- Any change that hides the field (turning Sponsor gas on, setting Simulate at back to Latest block, switching to a network sponsorship covers, or switching from Batch Write Contract) clears the max fee, so a hidden value never changes how the node sends.
 
 The field is also shown when the node cannot be sponsored anyway: on a network gas sponsorship does not cover, through a private mempool, through a Safe, or with Simulate at set to Next block.
 
@@ -274,8 +274,8 @@ Sponsored transactions are built and paid for by the gas sponsor, which sets the
 | Setting | With Sponsor gas on | With Sponsor gas off |
 |---------|---------------------|----------------------|
 | [Gas Limit](#gas-limit-and-gas-sponsorship) | Shown, with a warning. A sponsored send ignores it; it is used only if sponsorship falls back for that run | Always used |
-| [Priority Fee](#priority-fee-and-gas-sponsorship) | Hidden, and cleared when the node becomes sponsored again | Shown and used |
-| [Max Fee](#max-fee-and-gas-sponsorship) | Hidden, and cleared when the node becomes sponsored again | Shown and used |
+| [Priority Fee](#priority-fee-and-gas-sponsorship) | Hidden while the node is sponsored, and cleared when it becomes sponsored | Shown and used |
+| [Max Fee](#max-fee-and-gas-sponsorship) | Hidden while the node is sponsored, and cleared when it becomes sponsored | Shown and used |
 
 Priority Fee and Max Fee are hidden while sponsored because a fee you choose cannot be honoured on a sponsored transaction. The Gas Limit stays visible because it still applies whenever the node ends up paying its own gas.
 

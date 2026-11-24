@@ -1,11 +1,7 @@
 import "server-only";
 
 import { ethers } from "ethers";
-import {
-  isMethodNotFound,
-  simulateV1Params,
-  txForNode,
-} from "@/lib/execute/node-call";
+import { simulateV1Params, txForNode } from "@/lib/execute/node-call";
 import {
   classifySimulationError,
   getRpcManagerForChain,
@@ -166,6 +162,17 @@ function reverted(
     ...simulationFailure(from, call.to, call.value, reason, "revert"),
     originalError: fallbackMessage,
   };
+}
+
+function isMethodNotFound(err: unknown): boolean {
+  const message = getErrorMessage(err).toLowerCase();
+  return (
+    message.includes("method not found") ||
+    message.includes("-32601") ||
+    message.includes("does not exist") ||
+    message.includes("not supported") ||
+    message.includes("unsupported method")
+  );
 }
 
 async function runSimulateV1(

@@ -1127,14 +1127,14 @@ describe("next-block simulation", () => {
       expect(error).not.toBeInstanceOf(NextBlockSimulationUnsupportedError);
     });
 
-    it("falls back to eth_call when eth_simulateV1 answers an HTTP 4xx", async () => {
+    it("falls back to eth_call when eth_simulateV1 is refused in an HTTP 4xx body", async () => {
       vi.spyOn(provider, "_send").mockImplementation((payload) => {
         const p = Array.isArray(payload) ? payload[0] : payload;
         if (p.method === "eth_simulateV1") {
           return Promise.reject(
             httpError(
               400,
-              '{"error":{"code":-32600,"message":"Not offered on this plan"}}'
+              '{"error":{"code":-32600,"message":"Unsupported method: eth_simulateV1"}}'
             )
           );
         }
@@ -1142,6 +1142,146 @@ describe("next-block simulation", () => {
       });
       const { simulation } = await read({ timestampOffsetSec: SLOT });
       expect(simulation.rpcMethod).toBe("eth_call+blockOverrides");
+    });
+
+    it("keeps a brief HTTP 401 on eth_simulateV1 retryable on a send", async () => {
+      // The send's last resort: estimateGas refuses the overrides.
+      node.estimateOverrides = "rejected";
+      vi.spyOn(provider, "_send").mockImplementation((payload) => {
+        const p = Array.isArray(payload) ? payload[0] : payload;
+        if (p.method === "eth_simulateV1") {
+          return Promise.reject(httpError(401, "unauthorized"));
+        }
+        return FakeProvider.prototype._send.call(provider, payload);
+      });
+      const error = await send().catch((e: unknown) => e);
+      expect(error).not.toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect(isNonRetryableError(error)).toBe(false);
+    });
+
+    it.each([
+      ["method eth_call: header not found"],
+      ["upstream error for method eth_call: block 0x65 not found"],
+      [
+        "failed to call method eth_call, requested block not available, try again",
+      ],
+      ["method eth_call is not available right now, try again later"],
+    ])(
+      'keeps "%s" on the proof retryable, not unsupported',
+      async (message) => {
+        node.simulateV1 = "missing";
+        node.proofError = {
+          method: "eth_call",
+          error: { code: -32_000, message },
+        };
+        const error = await read({ timestampOffsetSec: SLOT }).catch(
+          (e: unknown) => e
+        );
+        expect(error).not.toBeInstanceOf(NextBlockSimulationUnsupportedError);
+        expect(isNonRetryableError(error)).toBe(false);
+      }
+    );
+
+    it("checks a refusal of the overrides before transient wording", async () => {
+      node.simulateV1 = "missing";
+      node.proofError = {
+        method: "eth_call",
+        error: {
+          code: -32_000,
+          message:
+            "block overrides not supported on this plan, try again with a paid key",
+        },
+      };
+      const error = await read({ timestampOffsetSec: SLOT }).catch(
+        (e: unknown) => e
+      );
+      expect(error).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+    });
+
+    it("treats an HTTP 403 whose body carries code -32601 alone as unsupported", async () => {
+      node.simulateV1 = "missing";
+      vi.spyOn(provider, "_send").mockImplementation((payload) => {
+        const p = Array.isArray(payload) ? payload[0] : payload;
+        if (p.method === "eth_call") {
+          return Promise.reject(
+            httpError(403, '{"error":{"code":-32601,"message":"rejected"}}')
+          );
+        }
+        return FakeProvider.prototype._send.call(provider, payload);
+      });
+      const error = await read({ timestampOffsetSec: SLOT }).catch(
+        (e: unknown) => e
+      );
+      expect(error).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+    });
+
+    it.each([
+      ["QuickNode", { code: -32_007, message: "request limit reached" }],
+      [
+        "Alchemy",
+        {
+          code: 429,
+          message:
+            "Your app has exceeded its compute units per second capacity",
+        },
+      ],
+    ])(
+      "keeps a %s rate limit on the real estimate retryable",
+      async (_label, error) => {
+        node.unlockAt = node.latestTimestamp + 5;
+        node.realCallError = { method: "eth_estimateGas", error };
+        const thrown = await send().catch((e: unknown) => e);
+        expect(isNonRetryableError(thrown)).toBe(false);
+        expect((thrown as Error).message).toContain("retried automatically");
+      }
+    );
+
+    it("reads a revert inside an HTTP 4xx body as a final, decodable revert", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+      vi.spyOn(provider, "_send").mockImplementation((payload) => {
+        const p = Array.isArray(payload) ? payload[0] : payload;
+        const tx = (p.params as Tx[] | undefined)?.[0];
+        if (p.method === "eth_estimateGas" && tx?.to === CONTRACT) {
+          return Promise.reject(
+            httpError(
+              400,
+              JSON.stringify({
+                error: {
+                  code: 3,
+                  message: "execution reverted",
+                  data: TOO_SOON,
+                },
+              })
+            )
+          );
+        }
+        return FakeProvider.prototype._send.call(provider, payload);
+      });
+      const error = await send().catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: "CALL_EXCEPTION" });
+      expect(isNonRetryableError(error)).toBe(true);
+      expect(formatContractError(error, IFACE)).toContain("too-soon");
+      expect(getNextBlockSimulation(error)).toBeDefined();
+    });
+
+    it("reads a missing block inside an HTTP 4xx body as temporary, as over HTTP 200", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+      vi.spyOn(provider, "_send").mockImplementation((payload) => {
+        const p = Array.isArray(payload) ? payload[0] : payload;
+        const tx = (p.params as Tx[] | undefined)?.[0];
+        if (p.method === "eth_estimateGas" && tx?.to === CONTRACT) {
+          return Promise.reject(
+            httpError(
+              400,
+              '{"error":{"code":-32602,"message":"requested block 100 is not available"}}'
+            )
+          );
+        }
+        return FakeProvider.prototype._send.call(provider, payload);
+      });
+      const error = await send().catch((e: unknown) => e);
+      expect(error).not.toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect(isNonRetryableError(error)).toBe(false);
     });
   });
 
@@ -1195,6 +1335,19 @@ describe("next-block simulation", () => {
       );
     });
 
+    it("fails as a temporary error on an RPC behind the checked block", async () => {
+      const basedOn = await checked();
+      // Failed over to a backend two blocks behind.
+      node.latestNumber -= 2;
+      node.latestTimestamp -= 2 * SLOT;
+      provider = new FakeProvider(node);
+
+      const error = await sendBasedOn(basedOn).catch((e: unknown) => e);
+      expect(isNonRetryableError(error)).toBe(false);
+      expect((error as Error).message).toContain("behind the block");
+      expect(failedNextBlockCheck(error)).toBe(true);
+    });
+
     it("refuses a call that became invalid while it waited", async () => {
       node.unlockAt = node.latestTimestamp + SLOT;
       const basedOn = await checked();
@@ -1222,6 +1375,19 @@ describe("next-block simulation", () => {
       };
       const transient = await send().catch((e: unknown) => e);
       expect(failedNextBlockCheck(transient)).toBe(true);
+    });
+
+    it("leaves a frozen error from the check as it is instead of throwing", async () => {
+      const frozen = Object.freeze(new Error("relay closed the socket"));
+      vi.spyOn(provider, "_send").mockImplementation((payload) => {
+        const p = Array.isArray(payload) ? payload[0] : payload;
+        if (p.method === "eth_estimateGas") {
+          return Promise.reject(frozen);
+        }
+        return FakeProvider.prototype._send.call(provider, payload);
+      });
+      const error = await send().catch((e: unknown) => e);
+      expect((error as Error).message).not.toContain("not extensible");
     });
 
     it("leaves errors thrown after the check unmarked", () => {

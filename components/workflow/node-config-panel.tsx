@@ -535,22 +535,18 @@ export const PanelInner = () => {
     value: string | boolean | Record<string, unknown> | undefined
   ): void => {
     if (selectedNode) {
-      const update = applyConfigUpdate(
+      // An action type change prunes leftovers from the previous action and
+      // seeds the new action's defaults so showWhen conditions and validation
+      // evaluate immediately. See buildConfigForActionTypeChange for details.
+      const { batch, config: newConfig } = applyConfigUpdate(
         pendingConfigRef.current,
         selectedNode.data.config ?? {},
         key,
-        value
+        value,
+        key === "actionType" && typeof value === "string"
+          ? (config) => buildConfigForActionTypeChange(value, config)
+          : undefined
       );
-      let newConfig = update.config;
-      let batch = update.batch;
-
-      if (key === "actionType" && typeof value === "string") {
-        // Prune leftovers from the previous action type and seed the new
-        // action's defaults so showWhen conditions and validation evaluate
-        // immediately. See buildConfigForActionTypeChange for details.
-        newConfig = buildConfigForActionTypeChange(value, newConfig);
-        batch = { start: newConfig, merged: newConfig };
-      }
 
       pendingConfigRef.current = batch;
       queueMicrotask(() => {

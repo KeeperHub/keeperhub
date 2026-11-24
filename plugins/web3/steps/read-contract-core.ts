@@ -30,8 +30,8 @@ import { formatContractError } from "@/lib/web3/decode-revert-error";
 import { buildErrorDecodeInterface } from "@/lib/web3/extra-error-abis";
 import {
   type NextBlockSimulation,
-  isNextBlockSimulationUnsupported,
   getNextBlockSimulation,
+  isNextBlockSimulationUnsupported,
   nextBlockFailure,
   readSimulationSettings,
   type SimulateAt,

@@ -834,9 +834,9 @@ async function batchWriteContractCoreImpl(
       const base = {
         success: false as const,
         ...nextBlockFailure(
-      formatContractError(error, revertIface),
-      getNextBlockSimulation(error)
-    ),
+          formatContractError(error, revertIface),
+          getNextBlockSimulation(error)
+        ),
         ...(errorClass ? { errorClass } : {}),
         ...(broadcastHash ? { transactionHash: broadcastHash, chainId } : {}),
         broadcastAttempted: broadcastHash

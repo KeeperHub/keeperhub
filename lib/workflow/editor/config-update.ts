@@ -11,28 +11,40 @@ export type ConfigUpdateBatch = {
   merged: Record<string, unknown>;
 };
 
+function withFields(config: Record<string, unknown>): {
+  config: Record<string, unknown>;
+  fields: ReturnType<typeof flattenConfigFields>;
+} {
+  const action =
+    typeof config.actionType === "string"
+      ? findActionById(config.actionType)
+      : undefined;
+  return {
+    config,
+    fields: action?.configFields
+      ? flattenConfigFields(action.configFields)
+      : [],
+  };
+}
+
 /**
- * One editor field update. The whole batch is judged from its start, so a
- * midway state (sponsored after `network`, not after `usePrivateMempool`)
- * cannot clear fees the final config still shows.
+ * One editor field update. `prepare` reshapes the merged config (an action
+ * type change prunes and seeds it). The whole batch is judged from its start,
+ * so a midway state (sponsored after `network`, not after
+ * `usePrivateMempool`) cannot clear fees the final config still shows.
  */
 export function applyConfigUpdate(
   batch: ConfigUpdateBatch | null,
   current: Record<string, unknown>,
   key: string,
-  value: unknown
+  value: unknown,
+  prepare?: (config: Record<string, unknown>) => Record<string, unknown>
 ): { batch: ConfigUpdateBatch; config: Record<string, unknown> } {
   const start = batch?.start ?? current;
-  const merged = { ...(batch?.merged ?? current), [key]: value };
-  const action =
-    typeof merged.actionType === "string"
-      ? findActionById(merged.actionType)
-      : undefined;
-  const fields = action?.configFields
-    ? flattenConfigFields(action.configFields)
-    : [];
+  const raw = { ...(batch?.merged ?? current), [key]: value };
+  const merged = prepare ? prepare(raw) : raw;
   return {
     batch: { start, merged },
-    config: clearUnsponsoredOnlyFields(start, merged, fields),
+    config: clearUnsponsoredOnlyFields(withFields(start), withFields(merged)),
   };
 }

@@ -187,7 +187,7 @@ function proofTx(time: number): Record<string, string> {
   return { data: `0x4267${word}146017574260005260206000fd5b00` };
 }
 
-const PROOF_REVERTED_PATTERN = /revert|vm execution error/i;
+const PROOF_REVERTED_PATTERN = /vm execution error/i;
 
 // Success proves the overrides applied. A failed proof means they were
 // ignored when it reverted (with or without its data), are unsupported on a
@@ -195,13 +195,8 @@ const PROOF_REVERTED_PATTERN = /revert|vm execution error/i;
 function proofFailure(
   reason: unknown
 ): "ignored" | "unsupported" | "transient" {
-  const data = extractRevertData(reason);
-  const { code, message = "" } = rpcErrorOf(reason);
-  if (
-    (data !== undefined && data.length > 2) ||
-    code === EXECUTION_REVERTED_CODE ||
-    PROOF_REVERTED_PATTERN.test(message)
-  ) {
+  const answer = nodeAnswer(reason);
+  if (isRevert(answer) || PROOF_REVERTED_PATTERN.test(answer.message)) {
     return "ignored";
   }
   return classifyNodeError(reason) === "unsupported"
@@ -283,21 +278,24 @@ export function clearSlotSecondsCache(): void {
 
 type NodeErrorKind = "failed" | "unsupported" | "transient";
 
-// A refusal of the overrides or the method by name; checked before the
-// transient answers, which share words such as "not available".
-const REFUSAL_PATTERN =
-  /overrides?\b[^.]{0,40}(not supported|unsupported|not allowed|disabled|not available|not enabled)|(does not|doesn't|cannot) (support|accept)[^.]{0,20}overrides?|unsupported method|method\b[^.]{0,80}(not found|not supported|not available|does not exist|not allowed|disabled|not whitelisted)/i;
-// A block the node does not have yet, or an endpoint briefly unavailable.
+// A refusal of the overrides themselves; checked before the transient
+// answers, which share words such as "not available".
+const OVERRIDES_REFUSED_PATTERN =
+  /overrides?\b[^.]{0,40}(not supported|unsupported|not allowed|disabled|not available|not enabled)|(does not|doesn't|cannot) (support|accept)[^.]{0,20}overrides?/i;
+// A block the node does not have yet, a rate limit, or an endpoint briefly
+// unavailable.
 const TRANSIENT_PATTERN =
-  /(header|block)\b(?!\s*overrides?)[^.]{0,80}(not found|not available|not yet available|does not exist|could not be found)|unknown block|missing trie node|rate limit|too many requests|(?<!execution aborted \()timed? ?out|service unavailable|bad gateway|try again/i;
-// The extra parameter rejected as malformed.
-const BAD_PARAMS_PATTERN =
-  /too many arguments|invalid (method )?param|unknown field|unexpected (field|argument)/i;
+  /(header|block)\b(?!\s*overrides?)[^.]{0,80}(not found|not available|not yet available|does not exist|could not be found)|unknown block|missing trie node|rate limit|too many requests|request limit reached|compute units|exceeded .{0,40}capacity|(?<!execution aborted \()timed? ?out|service unavailable|bad gateway|try again/i;
+// The method refused by name, or the extra parameter rejected as malformed.
+const METHOD_REFUSED_PATTERN =
+  /unsupported method|\bmethod\s+(["'`]?[\w.]+["'`]?\s+)?(is\s+)?(not found|not supported|not available|does not exist|not allowed|disabled|not whitelisted)|too many arguments|invalid (method )?param|unknown field|unexpected (field|argument)/i;
 // A revert reason is the contract's own text and may contain any words.
 const REVERT_PATTERN = /revert/i;
 const INVALID_PARAMS_CODE = -32_602;
 const METHOD_NOT_FOUND_CODE = -32_601;
 const LIMIT_EXCEEDED_CODE = -32_005;
+// Rate limits some providers send as JSON-RPC errors (QuickNode, Alchemy).
+const RATE_LIMIT_CODES = new Set<unknown>([-32_007, 429]);
 const EXECUTION_REVERTED_CODE = 3;
 const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_CLIENT_ERROR_MIN = 400;
@@ -324,72 +322,108 @@ function clientErrorResponse(error: unknown): HttpResponse | undefined {
   return response;
 }
 
+type RpcErrorBody = { code?: unknown; message?: unknown; data?: unknown };
+
 // The JSON-RPC error in an HTTP error body, if it has one.
-function bodyRpcError(response: HttpResponse): {
-  code?: unknown;
-  message?: unknown;
-} {
+function bodyRpcError(response: HttpResponse): RpcErrorBody {
   try {
     const body: unknown = JSON.parse(response.bodyText ?? "");
     const reply = Array.isArray(body) ? body[0] : body;
-    return (
-      (reply as { error?: { code?: unknown; message?: unknown } })?.error ?? {}
-    );
+    return (reply as { error?: RpcErrorBody })?.error ?? {};
   } catch {
     // Not JSON (an HTML error page, or unreadable): says nothing.
     return {};
   }
 }
 
-// An HTTP 4xx (not 429) whose JSON-RPC body refuses the method or its
-// parameters, as Flashbots Protect answers a method it does not allow (403,
-// -32601). Other 4xx, such as a gateway's brief 401/403, stay transient.
-function isMethodRefusedOverHttp(error: unknown): boolean {
+// The node's answer, read the same way whether it came as a JSON-RPC error
+// or inside an HTTP 4xx body (as Flashbots Protect answers, 403 + -32601).
+type NodeAnswer = {
+  code?: unknown;
+  message: string;
+  revertData?: string;
+  viaHttp: boolean;
+};
+
+function nodeAnswer(error: unknown): NodeAnswer {
   const response = clientErrorResponse(error);
-  if (!response) {
-    return false;
+  if (response) {
+    const { code, message, data } = bodyRpcError(response);
+    return {
+      code,
+      message: typeof message === "string" ? message : "",
+      revertData:
+        typeof data === "string" && data.startsWith("0x") ? data : undefined,
+      viaHttp: true,
+    };
   }
-  const { code, message } = bodyRpcError(response);
+  const { code, message = "" } = rpcErrorOf(error);
+  return {
+    code,
+    message,
+    revertData: extractRevertData(error),
+    viaHttp: false,
+  };
+}
+
+function isRevert(answer: NodeAnswer): boolean {
   return (
-    code === METHOD_NOT_FOUND_CODE ||
-    code === INVALID_PARAMS_CODE ||
-    (typeof message === "string" &&
-      (REFUSAL_PATTERN.test(message) || BAD_PARAMS_PATTERN.test(message)))
+    (answer.revertData !== undefined && answer.revertData.length > 2) ||
+    answer.code === EXECUTION_REVERTED_CODE ||
+    REVERT_PATTERN.test(answer.message)
   );
 }
 
 // ethers reports every eth_call / eth_estimateGas error as CALL_EXCEPTION, so
-// the node's own answer decides. A revert is final; a refusal of the
-// overrides or method comes next, then known transient answers, then
-// malformed-parameter codes; anything else is final, as at `latest`.
+// the node's own answer decides, in this order: a revert is final; a refusal
+// of the overrides; known transient answers; a refusal of the method or its
+// parameters. Anything else is final, as at `latest`, except an HTTP 4xx
+// whose body says nothing decisive, which is the gateway's and is retried.
 function classifyNodeError(error: unknown): NodeErrorKind {
-  const { code, message = "" } = rpcErrorOf(error);
-  const data = extractRevertData(error);
-  if (
-    (data !== undefined && data.length > 2) ||
-    code === EXECUTION_REVERTED_CODE ||
-    REVERT_PATTERN.test(message)
-  ) {
+  const answer = nodeAnswer(error);
+  if (isRevert(answer)) {
     return "failed";
   }
-  if (isMethodRefusedOverHttp(error) || REFUSAL_PATTERN.test(message)) {
+  if (OVERRIDES_REFUSED_PATTERN.test(answer.message)) {
     return "unsupported";
   }
-  if (isTransportError(error) || TRANSIENT_PATTERN.test(message)) {
+  if (
+    (isTransportError(error) && !answer.viaHttp) ||
+    TRANSIENT_PATTERN.test(answer.message) ||
+    RATE_LIMIT_CODES.has(answer.code)
+  ) {
     return "transient";
   }
   if (
-    code === INVALID_PARAMS_CODE ||
-    code === METHOD_NOT_FOUND_CODE ||
-    BAD_PARAMS_PATTERN.test(message)
+    answer.code === INVALID_PARAMS_CODE ||
+    answer.code === METHOD_NOT_FOUND_CODE ||
+    METHOD_REFUSED_PATTERN.test(answer.message)
   ) {
     return "unsupported";
   }
-  // -32005 is a rate limit, unless its message refused the method (above).
-  if (code === LIMIT_EXCEEDED_CODE) {
+  if (answer.viaHttp || answer.code === LIMIT_EXCEEDED_CODE) {
     return "transient";
   }
   return "failed";
+}
+
+// The user's own call failed for good. A revert that came inside an HTTP 4xx
+// body is rebuilt as the CALL_EXCEPTION a normal answer gives, so it is not
+// retried as a transport error and its reason still decodes.
+function finalCallError(
+  reason: unknown,
+  action: "call" | "estimateGas",
+  tx: Record<string, string>
+): unknown {
+  const answer = nodeAnswer(reason);
+  if (!answer.viaHttp) {
+    return reason;
+  }
+  return AbiCoder.getBuiltinCallException(
+    action,
+    { to: tx.to ?? null, from: tx.from ?? null, data: tx.data },
+    answer.revertData ?? null
+  );
 }
 
 const SIMULATION_KEY = "nextBlockSimulation";
@@ -507,11 +541,7 @@ async function trySimulateV1(
       )
     );
   } catch (error) {
-    // An HTTP 4xx falls back to eth_call, which then answers for the RPC.
-    if (
-      classifyNodeError(error) === "transient" &&
-      !clientErrorResponse(error)
-    ) {
+    if (classifyNodeError(error) === "transient") {
       throw retryable("eth_simulateV1", error);
     }
     return;
@@ -571,7 +601,10 @@ async function ethCallAtNextBlock(
     if (classifyNodeError(call.reason) === "transient") {
       throw retryable("eth_call", call.reason);
     }
-    throw tagNextBlockSimulation(call.reason, prepared.simulation);
+    throw tagNextBlockSimulation(
+      finalCallError(call.reason, "call", tx),
+      prepared.simulation
+    );
   }
   return call.value;
 }
@@ -613,7 +646,10 @@ async function tryEstimateAtNextBlock(
   if (classifyNodeError(estimate.reason) === "transient") {
     throw retryable("eth_estimateGas", estimate.reason);
   }
-  throw tagNextBlockSimulation(estimate.reason, simulation);
+  throw tagNextBlockSimulation(
+    finalCallError(estimate.reason, "estimateGas", tx),
+    simulation
+  );
 }
 
 // gasUsed is net of refunds (up to a fifth of the gas spent) and leaves out
@@ -640,14 +676,20 @@ async function prepare(
   options: NextBlockSimulationOptions
 ): Promise<Prepared> {
   const latest = await provider.getBlock("latest");
-  // An earlier check's block is reused only while it is still the latest, so
-  // a wait (for the wallet's nonce lock) never sends on a stale check.
-  if (options.basedOn && latest?.number === options.basedOn.baseBlock) {
-    return preparedFrom(options.basedOn);
-  }
   if (!latest) {
     throw new Error(
       `Next-block simulation: the RPC returned no latest block (${RETRY_HINT})`
+    );
+  }
+  const { basedOn } = options;
+  // An earlier check's prediction (block and time) is reused only while its
+  // block is still the latest, so a wait never sends on a stale check.
+  if (basedOn && latest.number === basedOn.baseBlock) {
+    return preparedFrom(basedOn);
+  }
+  if (basedOn && latest.number < basedOn.baseBlock) {
+    throw new Error(
+      `Next-block simulation: the RPC is behind the block the check ran on (${RETRY_HINT})`
     );
   }
   const offset =

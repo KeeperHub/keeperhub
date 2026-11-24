@@ -64,7 +64,7 @@ function priorityFeeConfigField(showWhen?: ShowWhen): ActionConfigFieldBase {
   return {
     example: "3",
     helpTip:
-      "Tip paid to the block builder, in gwei. Transactions in the same block are ordered by tip, so raise it when racing other senders for the same call. Leave empty to use the network default. Sponsored sends cannot carry a custom tip, so on Write Contract this shows only while the node pays its own gas (Sponsor gas off, Simulate at Next block, or an unsponsored network, private mempool or Safe), and is cleared once it is sponsored again.",
+      "Tip paid to the block builder, in gwei. Transactions in the same block are ordered by tip, so raise it when racing other senders for the same call. Leave empty to use the network default. Sponsored sends cannot carry a custom tip. On Write Contract this shows only while the node pays its own gas: Sponsor gas off, Simulate at set to Next block, a network gas sponsorship does not cover, a private mempool, or a Safe. It is cleared when a change hides it.",
     key: "priorityFeeGwei",
     label: "Priority Fee (gwei)",
     placeholder: "Network default",
@@ -77,7 +77,7 @@ function maxFeeConfigField(showWhen?: ShowWhen): ActionConfigFieldBase {
   return {
     example: "50",
     helpTip:
-      "Highest total fee per gas you will pay, in gwei (base fee plus tip). Higher fees are lowered to this cap. If it is below the next block's base fee, the step fails without sending, since the transaction could not be included. Leave empty for no cap. Sponsored sends cannot carry a custom fee, so on Write Contract this shows only while the node pays its own gas (Sponsor gas off, Simulate at Next block, or an unsponsored network, private mempool or Safe), and is cleared once it is sponsored again.",
+      "Highest total fee per gas you will pay, in gwei (base fee plus tip). Higher fees are lowered to this cap. If it is below the next block's base fee, the step fails without sending, since the transaction could not be included. Leave empty for no cap. Sponsored sends cannot carry a custom fee. On Write Contract this shows only while the node pays its own gas: Sponsor gas off, Simulate at set to Next block, a network gas sponsorship does not cover, a private mempool, or a Safe. It is cleared when a change hides it.",
     key: "maxFeeGwei",
     label: "Max Fee (gwei)",
     placeholder: "No cap",

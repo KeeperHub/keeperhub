@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TOGGLE_FIELD_RENDERERS } from "@/components/workflow/config/toggle-field-renderers";
 import { UNSPONSORED_ONLY_FIELD_KEYS } from "@/lib/web3/unsponsored-only-fields";
+import { buildConfigForActionTypeChange } from "@/lib/workflow/editor/action-type-transition";
 import { applyConfigUpdate } from "@/lib/workflow/editor/config-update";
 import { sponsorGasField } from "@/plugins/field-fragments";
 
@@ -179,6 +180,60 @@ describe("applyConfigUpdate: fees hidden while sponsored", () => {
     });
   });
 
+  it("clears when the network select moves to a sponsored network in one batch", () => {
+    // Optimism -> Base: `network`, then `usePrivateMempool: false`.
+    const optimism = { actionType: WRITE, network: "10", ...FEES };
+    const first = applyConfigUpdate(null, optimism, "network", "8453");
+    const second = applyConfigUpdate(
+      first.batch,
+      optimism,
+      "usePrivateMempool",
+      false
+    );
+    expect(second.config.maxFeeGwei).toBe("");
+    expect(second.config.priorityFeeGwei).toBe("");
+  });
+
+  it("clears fees a Batch Write showed once the node becomes a sponsored Write Contract", () => {
+    const batch = { actionType: BATCH, network: "8453", ...FEES };
+    const { config } = applyConfigUpdate(
+      null,
+      batch,
+      "actionType",
+      WRITE,
+      (merged) => buildConfigForActionTypeChange(WRITE, merged)
+    );
+    expect(config.sponsorGas).toBe("true");
+    expect(config.maxFeeGwei).toBe("");
+    expect(config.priorityFeeGwei).toBe("");
+  });
+
+  it("keeps fees across an action type change when they stay shown", () => {
+    const batch = { actionType: BATCH, network: "10", ...FEES };
+    const { config } = applyConfigUpdate(
+      null,
+      batch,
+      "actionType",
+      WRITE,
+      (merged) => buildConfigForActionTypeChange(WRITE, merged)
+    );
+    expect(config.maxFeeGwei).toBe("50");
+  });
+
+  it("keeps an action type change's pruning for later updates in the same tick", () => {
+    const write = { actionType: WRITE, network: "10", simulateAt: "latest" };
+    const changed = applyConfigUpdate(
+      null,
+      write,
+      "actionType",
+      "web3/read-contract",
+      (merged) => buildConfigForActionTypeChange("web3/read-contract", merged)
+    );
+    const next = applyConfigUpdate(changed.batch, write, "network", "1");
+    expect(next.config.actionType).toBe("web3/read-contract");
+    expect("sponsorGas" in next.config).toBe(false);
+  });
+
   it("clears once a batch ends sponsored", () => {
     const flashbots = {
       actionType: WRITE,
@@ -209,5 +264,6 @@ describe("editor config handlers", () => {
       /applyConfigUpdate\(\s*pendingConfigRef\.current,\s*selectedNode\.data\.config/
     );
     expect(source).toMatch(/pendingConfigRef\.current = batch;/);
+    expect(source).not.toMatch(/pendingConfigRef\.current = newConfig/);
   });
 });

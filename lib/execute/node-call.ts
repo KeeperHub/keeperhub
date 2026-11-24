@@ -1,5 +1,4 @@
 import { ethers } from "ethers";
-import { getErrorMessage } from "@/lib/utils";
 
 /** A call as nodes take it in eth_call / eth_estimateGas / eth_simulateV1. */
 export function txForNode(
@@ -14,18 +13,6 @@ export function txForNode(
     tx.value = ethers.toQuantity(call.value);
   }
   return tx;
-}
-
-/** The node does not implement the method it was asked for. */
-export function isMethodNotFound(err: unknown): boolean {
-  const message = getErrorMessage(err).toLowerCase();
-  return (
-    message.includes("method not found") ||
-    message.includes("-32601") ||
-    message.includes("does not exist") ||
-    message.includes("not supported") ||
-    message.includes("unsupported method")
-  );
 }
 
 /** eth_simulateV1 params for one simulated block holding `calls`. */

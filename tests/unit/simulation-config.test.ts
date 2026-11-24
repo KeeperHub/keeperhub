@@ -33,4 +33,10 @@ describe("checkSimulationConfig", () => {
       })
     ).toBeUndefined();
   });
+
+  it("leaves a template Simulate at to the run", () => {
+    expect(
+      checkSimulationConfig({ simulateAt: "{{@a:Node.mode}}" })
+    ).toBeUndefined();
+  });
 });

@@ -7,7 +7,10 @@ import { valueContainsTemplate } from "@/lib/workflow/template-ref";
 export function checkSimulationConfig(
   config: Record<string, unknown>
 ): { field: string; message: string } | undefined {
-  // A template offset is only known at run time; the step checks it then.
+  // A template is only known at run time; the step checks it then.
+  if (valueContainsTemplate(config.simulateAt)) {
+    return;
+  }
   const offset = valueContainsTemplate(config.simulateTimestampOffsetSec)
     ? undefined
     : config.simulateTimestampOffsetSec;
