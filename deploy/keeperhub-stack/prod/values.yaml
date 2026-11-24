@@ -1252,6 +1252,16 @@ executor:
     EXECUTION_MODE:
       type: kv
       value: "isolated"
+    # Warm runner pool for workflows with a low-latency start (see
+    # keeperhub-executor/warm-pool.ts). Pre-started runner pods per executor
+    # replica, each reserving a runner's requests while idle; 0 turns it off.
+    # Paid plans only; other runs are unaffected. Comes from Parameter Store;
+    # create it before deploy (a missing SSM param blocks the pod):
+    # /eks/techops-prod/keeperhub/warm-pool-size
+    WARM_POOL_SIZE:
+      type: parameterStore
+      name: warm-pool-size
+      parameter_name: /eks/techops-prod/keeperhub/warm-pool-size
     METRICS_COLLECTOR:
       type: kv
       value: "prometheus"
