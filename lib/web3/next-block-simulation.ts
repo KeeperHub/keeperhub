@@ -691,6 +691,24 @@ function preparedFrom(simulation: NextBlockSimulation): Prepared {
   };
 }
 
+const MS_PER_SECOND = 1000;
+
+/**
+ * The next block's time on the slot clock: the first slot (latest + n slots)
+ * strictly after now, never before latest + one slot. A transaction sent now
+ * cannot land in a slot that has already started, so after a missed slot or
+ * a stale head this moves forward instead of predicting a slot early.
+ */
+export function nextSlotTime(
+  latestTimestamp: number,
+  slotSeconds: number,
+  nowSeconds: number = Math.floor(Date.now() / MS_PER_SECOND)
+): number {
+  const elapsed = nowSeconds - latestTimestamp;
+  const slots = elapsed < 0 ? 1 : Math.floor(elapsed / slotSeconds) + 1;
+  return latestTimestamp + slots * slotSeconds;
+}
+
 async function prepare(
   provider: ethers.JsonRpcProvider,
   chainId: number,
@@ -703,9 +721,15 @@ async function prepare(
     );
   }
   const { basedOn } = options;
-  // An earlier check's prediction (block and time) is reused only while its
-  // block is still the latest, so a wait never sends on a stale check.
-  if (basedOn && latest.number === basedOn.baseBlock) {
+  // An earlier check's prediction is reused only while its block is still the
+  // latest and its slot has not started, so a wait never sends on a stale
+  // check.
+  if (
+    basedOn &&
+    latest.number === basedOn.baseBlock &&
+    nextSlotTime(latest.timestamp, basedOn.timestampOffsetSec) ===
+      basedOn.assumedTimestamp
+  ) {
     return preparedFrom(basedOn);
   }
   if (basedOn && latest.number < basedOn.baseBlock) {
@@ -721,7 +745,7 @@ async function prepare(
       'Next-block simulation cannot predict the next block\'s time on this network: recent blocks share a timestamp. Set "Next block timestamp offset" to 1 (the call may then pass a few blocks early), or set "Simulate at" back to "Latest block".'
     );
   }
-  const time = latest.timestamp + offset;
+  const time = nextSlotTime(latest.timestamp, offset);
   return {
     blockTag: toQuantity(latest.number),
     time,

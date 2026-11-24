@@ -145,7 +145,7 @@ export function simulateAtField(): ActionConfigFieldBase {
 
 export function simulateTimestampOffsetField(): ActionConfigFieldBase {
   return {
-    helpTip: `Seconds to add to the latest block's time, from ${MIN_SIMULATE_TIMESTAMP_OFFSET_SEC} to ${MAX_SIMULATE_TIMESTAMP_OFFSET_SEC}. Leave empty to use this network's block time. A value above the real block time makes the check pass early.`,
+    helpTip: `The block time in seconds, from ${MIN_SIMULATE_TIMESTAMP_OFFSET_SEC} to ${MAX_SIMULATE_TIMESTAMP_OFFSET_SEC}: the next block's time is the first slot of this length, counted from the latest block, that starts after the step runs. Leave empty to use this network's block time. A value above the real block time makes the check pass early.`,
     key: "simulateTimestampOffsetSec",
     label: "Next block timestamp offset (seconds)",
     max: MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,

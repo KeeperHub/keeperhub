@@ -640,9 +640,11 @@ Sponsored transactions cannot carry a custom priority fee or max fee, so those t
 
 Before it sends, Write Contract simulates the call and estimates its gas against the latest block, and skips the send if the simulation reverts. A time-locked call (for example `require(block.timestamp >= lastRun + interval)`) therefore only passes once the first valid block already exists, so the transaction lands one block after it, or later.
 
-Set **Simulate at** to **Next block** to run the simulation as if the next block had already arrived: block number + 1, and timestamp + one block time. The call then passes while the first valid block is still being built. The same setting is on Read Contract, where it answers the read as of the next block, and on Batch Write Contract.
+Set **Simulate at** to **Next block** to run the simulation as if the next block had already arrived: block number + 1, and the timestamp of the next slot. The call then passes while the first valid block is still being built. The same setting is on Read Contract, where it answers the read as of the next block, and on Batch Write Contract.
 
 **What it changes.** Only the decision to send and the gas estimate use the predicted block. The signed transaction, its fees and its nonce are set as for any write (see [Gas Management](/wallet-management/gas)). The latest block is read when the step runs, not when the run was triggered, and every call is made against that block. Only the block number and timestamp are predicted: the state, other pending transactions and the base fee are the latest block's. It works the same for writes sent from your wallet, a Safe or a Safe role.
+
+**Next slot.** Blocks come in slots of one block time, counted from the latest block. The predicted timestamp is the first slot that starts after the step runs, never earlier than one block time after the latest block. A transaction sent now cannot land in a slot that has already started, so after a missed slot (no block in it) the check moves to the following slot instead of checking one slot early.
 
 **Block time.** Leave **Next block timestamp offset (seconds)** empty to use the network's block time, taken as the smallest gap between its last few blocks (at most 60 seconds) and refreshed every 10 minutes:
 
