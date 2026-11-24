@@ -451,6 +451,13 @@ function resolveApiKeyContext(apiKeyAuth: {
 export type OrganizationAuthContext =
   | {
       organizationId: string;
+      /**
+       * Who is acting. Carried because the policy gate identifies its principal
+       * from this shape, and without it the gate has nobody to decide about and
+       * returns the context untouched. Every route resolved this way was
+       * therefore ungoverned whatever the route manifest said about it.
+       */
+      userId: string;
       authMethod: AuthMethod;
       apiKeyId: string | null;
       // OAuth token scope (mcp:read|write|admin). Also set for scoped API keys.
@@ -472,6 +479,7 @@ async function resolveOrganizationIdInner(
   if (oauthAuth?.organizationId) {
     return {
       organizationId: oauthAuth.organizationId,
+      userId: oauthAuth.userId ?? "",
       authMethod: "oauth",
       apiKeyId: null,
       scope: oauthAuth.scope,
@@ -491,6 +499,7 @@ async function resolveOrganizationIdInner(
     }
     return {
       organizationId,
+      userId: apiKeyAuth.userId ?? "",
       authMethod: "api-key",
       apiKeyId: apiKeyAuth.apiKeyId ?? null,
       scope: apiKeyAuth.scope,
@@ -533,6 +542,7 @@ async function resolveOrganizationIdInner(
   }
   return {
     organizationId: orgResult.organizationId,
+    userId: session.user.id,
     authMethod: "session",
     apiKeyId: null,
   };
@@ -688,6 +698,13 @@ async function withPolicyGate<T>(
     return context;
   }
   if ("error" in context) {
+    return context;
+  }
+  // Policy governs what an organization changes, so a read is not its business.
+  // Deciding that from the method, before the policy module is even loaded,
+  // keeps every read off this path entirely: nothing to import, nothing to
+  // throw, and no cost on the requests that make up most of the traffic.
+  if (!isStateChangingMethod(request.method)) {
     return context;
   }
   const { userId, organizationId } = context as unknown as {

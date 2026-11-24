@@ -19,6 +19,8 @@ import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { STEP_UP_ACTIONS } from "@/lib/mfa/step-up-policy";
 import { authorizeAction } from "@/lib/middleware/authorize-action";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
+import { isViewerForRequest } from "@/lib/security/viewer-gate";
+import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +51,21 @@ export async function POST(
   { params }: RouteParams
 ): Promise<Response> {
   const session = await auth.api.getSession({ headers: request.headers });
+  if (session?.user) {
+    // The proxy refuses viewers here too, but it answers from a short-lived
+    // cache and this route carries no gated resolver of its own. Asking again
+    // is what makes a demotion take hold at once on a route that approves a
+    // signature.
+    const viewer = await isViewerForRequest(
+      request,
+      session.user.id,
+      (session.session as { activeOrganizationId?: string | null })
+        .activeOrganizationId
+    );
+    if (viewer) {
+      return viewerReadOnlyResponse();
+    }
+  }
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

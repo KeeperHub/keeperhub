@@ -142,14 +142,34 @@ describe("policy gate", () => {
     expect(refusal).toMatchObject({ code: "policy_denied", status: 403 });
   });
 
-  it("falls back to the least authority when the role is unknown", async () => {
+  it("refuses when the role is unknown instead of assuming one", async () => {
     getOrgRole.mockResolvedValue(null);
+    const refusal = await policyRefusalFor(
+      post("http://localhost/api/workflows/create"),
+      CONTEXT
+    );
+    expect(refusal).toMatchObject({ code: "policy_denied", status: 403 });
+    expect(decideControlPlane).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the role is not one the engine ranks", async () => {
+    getOrgRole.mockResolvedValue("billing-contact");
+    const refusal = await policyRefusalFor(
+      post("http://localhost/api/workflows/create"),
+      CONTEXT
+    );
+    expect(refusal).toMatchObject({ code: "policy_denied", status: 403 });
+    expect(decideControlPlane).not.toHaveBeenCalled();
+  });
+
+  it("decides for a viewer with the viewer role, not a downgrade of it", async () => {
+    getOrgRole.mockResolvedValue("viewer");
     await policyRefusalFor(
       post("http://localhost/api/workflows/create"),
       CONTEXT
     );
     expect(decideControlPlane).toHaveBeenCalledWith(
-      expect.objectContaining({ role: "member" })
+      expect.objectContaining({ role: "viewer" })
     );
   });
 });

@@ -272,7 +272,12 @@ export const CONTROL_PLANE_ROUTES: Readonly<
       param: "integrationId",
     }),
   },
-  "/api/integrations/test": { POST: ungoverned(READ_ONLY) },
+  // Not read-only: it runs the real sender against caller-supplied config, so
+  // it reaches outside on the organization's behalf the same way the two other
+  // test routes do.
+  "/api/integrations/test": {
+    POST: governed(Capability.OFFCHAIN_NOTIFY),
+  },
 
   "/api/internal/executions": { POST: ungoverned("internal service call") },
   "/api/internal/executions/[executionId]": {

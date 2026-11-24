@@ -127,6 +127,7 @@ export async function executeSponsoredTransaction(
   }
 
   const submitResult = await submitTurnkeySponsoredTransaction({
+    organizationId: params.organizationId,
     subOrgId: client.subOrgId,
     walletAddress: client.walletAddress,
     chainId: params.chainId,
@@ -197,6 +198,7 @@ export async function executeSponsoredContractTransaction(
   });
 
   const submitResult = await submitTurnkeySponsoredTransaction({
+    organizationId: params.organizationId,
     subOrgId: client.subOrgId,
     walletAddress: client.walletAddress,
     chainId: params.chainId,

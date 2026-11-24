@@ -12,6 +12,7 @@ import {
   getDualAuthContext,
 } from "@/lib/middleware/auth-helpers";
 import { getActiveOrgId } from "@/lib/middleware/org-context";
+import { policyRefusalFor } from "@/lib/middleware/policy-gate";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
 import { provisionOrganizationWallet } from "@/lib/turnkey/provision-org-wallet";
 
@@ -231,6 +232,19 @@ export async function POST(request: Request) {
     }
     const { user, organizationId } = validation;
 
+    // This route authenticates itself rather than through a gated resolver, so
+    // it has to ask the gate on its own.
+    const refusal = await policyRefusalFor(request, {
+      organizationId,
+      userId: user.id,
+    });
+    if (refusal) {
+      return NextResponse.json(
+        { error: refusal.error, code: refusal.code },
+        { status: refusal.status }
+      );
+    }
+
     const body: { email?: string } = await request.json();
     const walletEmail = body.email;
 
@@ -304,7 +318,20 @@ export async function DELETE(request: Request) {
         { status: validation.status }
       );
     }
-    const { organizationId } = validation;
+    const { organizationId, user } = validation;
+
+    // This route authenticates itself rather than through a gated resolver, so
+    // it has to ask the gate on its own.
+    const refusal = await policyRefusalFor(request, {
+      organizationId,
+      userId: user.id,
+    });
+    if (refusal) {
+      return NextResponse.json(
+        { error: refusal.error, code: refusal.code },
+        { status: refusal.status }
+      );
+    }
 
     const deletedWallet = await db
       .delete(organizationWallets)

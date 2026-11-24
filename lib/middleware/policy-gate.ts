@@ -1,7 +1,7 @@
 import "server-only";
 
 import { ErrorCategory, logSystemError } from "@/lib/logging";
-import { type ArnSegment, PolicyRole } from "@/lib/policy";
+import { type ArnSegment, toPolicyRole } from "@/lib/policy";
 import { decideControlPlane } from "@/lib/policy/control-plane";
 import {
   isMutation,
@@ -102,11 +102,15 @@ export async function policyRefusalFor(
   }
 
   const { capability, resource, creates } = match.governance;
-  const role =
-    ((await getOrgRole(
-      context.userId,
-      context.organizationId
-    )) as PolicyRole | null) ?? PolicyRole.MEMBER;
+  const role = toPolicyRole(
+    await getOrgRole(context.userId, context.organizationId)
+  );
+  if (role === null) {
+    // No membership row, or one naming a role this build does not know. Reading
+    // either as "member" hands an unknown principal the authority of a real one,
+    // and a decision made about the wrong actor is worse than no decision.
+    return refuse("Your role in this organization could not be established");
+  }
 
   const body = await readBody(request);
   const id = resource

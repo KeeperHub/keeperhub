@@ -75,6 +75,7 @@ export {
   PolicySignalKey,
   PrincipalKind,
   SIGNAL_CONDITION_PREFIX,
+  toPolicyRole,
 } from "./constants";
 export {
   isPolicyDeniedError,

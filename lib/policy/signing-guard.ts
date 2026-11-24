@@ -237,13 +237,33 @@ async function decide(
  * signers are created is what makes the check unavoidable: a route added
  * tomorrow gets it without knowing policy exists.
  */
+/**
+ * Both ways a transaction leaves this process.
+ *
+ * `sendTransaction` signs and broadcasts in one call. The path that broadcasts
+ * through our own RPC failover does not use it: it populates, calls
+ * `signTransaction`, and puts the raw hex on the wire itself. Guarding only the
+ * first left the second unchecked, which is the path nearly every write
+ * actually takes, so the backstop stood behind the exception rather than the
+ * rule. The Solana guard below has always intercepted `signTransaction`, which
+ * is the method its own callers use.
+ *
+ * A signature is the commitment. Checking at both is what makes the point of no
+ * return the thing that is guarded, rather than whichever helper happened to be
+ * reached.
+ */
+const GUARDED_SIGNING_METHODS = new Set(["sendTransaction", "signTransaction"]);
+
 export function guardSigner(
   signer: ethers.Signer,
   context: SigningContext
 ): ethers.Signer {
   return new Proxy(signer, {
     get(target, property, receiver) {
-      if (property !== "sendTransaction") {
+      if (
+        typeof property !== "string" ||
+        !GUARDED_SIGNING_METHODS.has(property)
+      ) {
         return Reflect.get(target, property, receiver);
       }
       return async (tx: {
@@ -253,10 +273,11 @@ export function guardSigner(
       }) => {
         await assertSigningAllowed(context, tx);
         return await (
-          target as unknown as {
-            sendTransaction: (request: unknown) => Promise<unknown>;
-          }
-        ).sendTransaction(tx);
+          target as unknown as Record<
+            string,
+            (request: unknown) => Promise<unknown>
+          >
+        )[property](tx);
       };
     },
   });

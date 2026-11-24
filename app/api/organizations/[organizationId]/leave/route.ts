@@ -6,18 +6,24 @@ import { db } from "@/lib/db";
 import { mcpOauthRefreshTokens, member, sessions } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getActiveOrgId } from "@/lib/middleware/org-context";
-import { ArnSegment, Capability, PolicyRole } from "@/lib/policy";
+import {
+  ArnSegment,
+  Capability,
+  type PolicyRole,
+  toPolicyRole,
+} from "@/lib/policy";
 import { enforceControlPlane } from "@/lib/policy/control-plane";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
 import { getOrgRole } from "@/lib/security/org-role";
 
-/** The caller's role, defaulting to the least authority when it is unknown. */
+/** The caller's role, or nothing when it cannot be established. */
 async function leaveRoleOf(
   userId: string,
   organizationId: string
-): Promise<PolicyRole> {
-  const role = await getOrgRole(userId, organizationId);
-  return (role as PolicyRole | null) ?? PolicyRole.MEMBER;
+): Promise<PolicyRole | null> {
+  // Not defaulted to member: a role this build does not recognise, or no
+  // membership at all, is not the least authority, it is an unknown actor.
+  return toPolicyRole(await getOrgRole(userId, organizationId));
 }
 
 type LeaveRequestBody = {
@@ -62,10 +68,18 @@ export async function POST(
 
     // Leaving is a membership change, so a rule about who may leave, or about
     // who must hand ownership on before they do, reaches it here.
+    const role = await leaveRoleOf(session.user.id, organizationId);
+    if (role === null) {
+      return NextResponse.json(
+        { error: "You are not a member of this organization" },
+        { status: 403 }
+      );
+    }
+
     const policyRefusal = await enforceControlPlane({
       organizationId,
       userId: session.user.id,
-      role: await leaveRoleOf(session.user.id, organizationId),
+      role,
       capability: Capability.MEMBER_REMOVE,
       resource: { type: ArnSegment.MEMBER, id: session.user.id },
     });

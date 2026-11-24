@@ -174,6 +174,13 @@ export function isOrgScopedPrincipalKind(kind: PrincipalKind): boolean {
 
 /** Organization roles, ordered. Mirrors the Better Auth role vocabulary. */
 export const PolicyRole = {
+  /**
+   * Reads everything, changes nothing. Carried here so a rule can name one:
+   * without it a viewer reaches the engine as a string the vocabulary does not
+   * model, and a deny listing every role the editor offers would not match the
+   * one role that is defined by not being allowed to act.
+   */
+  VIEWER: "viewer",
   MEMBER: "member",
   ADMIN: "admin",
   OWNER: "owner",
@@ -181,11 +188,28 @@ export const PolicyRole = {
 
 export type PolicyRole = (typeof PolicyRole)[keyof typeof PolicyRole];
 
+const POLICY_ROLES = new Set<string>(Object.values(PolicyRole));
+
+/**
+ * The role a stored value names, or nothing when it names none.
+ *
+ * The role column is plain text and the organization vocabulary has grown
+ * before. Casting it and defaulting the misses to a real role reads an unknown
+ * principal as a member, which is the one direction a guess must never go, so
+ * callers take the nothing and refuse.
+ */
+export function toPolicyRole(value: unknown): PolicyRole | null {
+  return typeof value === "string" && POLICY_ROLES.has(value)
+    ? (value as PolicyRole)
+    : null;
+}
+
 /**
  * Rank for floor comparisons. An unrecognised role yields undefined and is
  * denied, which is the intended fail-closed behaviour for a plain text column.
  */
 export const POLICY_ROLE_RANK: Readonly<Record<PolicyRole, number>> = {
+  [PolicyRole.VIEWER]: 0,
   [PolicyRole.MEMBER]: 1,
   [PolicyRole.ADMIN]: 2,
   [PolicyRole.OWNER]: 3,

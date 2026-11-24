@@ -5,10 +5,20 @@ vi.mock("server-only", () => ({}));
 
 vi.mock("@/lib/logging", () => ({
   ErrorCategory: {
+    CONFIGURATION: "configuration",
+    DATABASE: "database",
     EXTERNAL_SERVICE: "external_service",
     TRANSACTION: "transaction",
   },
   logSystemError: vi.fn(),
+  logSystemWarn: vi.fn(),
+  logWarn: vi.fn(),
+  logInfo: vi.fn(),
+}));
+
+// Submitting now asks policy first, and this suite is about the gas station.
+vi.mock("@/lib/policy/signing-guard", () => ({
+  assertSigningAllowed: vi.fn(() => Promise.resolve()),
 }));
 
 const mockEthSend = vi.fn();
@@ -47,6 +57,7 @@ const CHECKSUMMED = getAddress(LOWER);
 
 function baseParams() {
   return {
+    organizationId: "org_1",
     subOrgId: "sub-org-test",
     walletAddress: LOWER,
     chainId: SEPOLIA,
