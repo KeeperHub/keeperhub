@@ -21,6 +21,7 @@ import { db } from "@/lib/db";
 import { chains } from "@/lib/db/schema";
 import { ErrorCategory, logSystemWarn, logWarn } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { fixedGasLimit } from "@/lib/web3/gas-defaults";
 
 /**
  * Route an RPC call through the failover-aware RpcProviderManager when one
@@ -392,7 +393,7 @@ export class AdaptiveGasStrategy {
    */
   async getGasConfig(
     provider: ethers.Provider,
-    estimatedGas: bigint,
+    estimatedGas: bigint | undefined,
     chainId: number,
     gasLimitMultiplierOverride?: number,
     gasLimitOverride?: bigint,
@@ -475,17 +476,21 @@ export class AdaptiveGasStrategy {
   }
 
   private calculateGasLimit(
-    estimatedGas: bigint,
+    estimatedGas: bigint | undefined,
     chainConfig: ChainGasConfig,
     gasLimitMultiplierOverride?: number,
     gasLimitOverride?: bigint
   ): bigint {
     // If an absolute gas limit is provided, use it directly (no multiplication)
-    if (gasLimitOverride !== undefined && gasLimitOverride > BigInt(0)) {
+    const fixed = fixedGasLimit(gasLimitOverride);
+    if (fixed !== undefined) {
       console.log(
-        `[GasStrategy] Using absolute gas limit override: ${gasLimitOverride.toString()}`
+        `[GasStrategy] Using absolute gas limit override: ${fixed.toString()}`
       );
-      return gasLimitOverride;
+      return fixed;
+    }
+    if (estimatedGas === undefined) {
+      throw new Error("[GasStrategy] No gas estimate and no fixed gas limit");
     }
 
     let multiplier: number;

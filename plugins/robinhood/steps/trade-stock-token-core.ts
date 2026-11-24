@@ -1,6 +1,6 @@
 import "server-only";
 import { classifyRevert } from "@/lib/web3/decode-revert-error";
-import { isPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
+import { isDefinitelyPreSend } from "@/lib/web3/pre-send";
 
 import { ethers } from "ethers";
 import { ErrorCategory, logUserError } from "@/lib/logging";
@@ -480,7 +480,7 @@ async function tradeStockTokenCoreImpl(
       broadcastAttempted: broadcastHash
         ? true
         : rejection.kind !== "unknown" ||
-            isPreBroadcastNetworkError(error)
+            isDefinitelyPreSend(error)
           ? false
           : true,
       ...(broadcastHash ? { transactionHash: broadcastHash, chainId } : {}),

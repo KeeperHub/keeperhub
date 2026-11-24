@@ -1419,3 +1419,51 @@ describe("pause toasts", () => {
     );
   });
 });
+
+describe("fixed Gas Limit hints", () => {
+  const alertFor = (lastError: string) =>
+    renderMessage(
+      {
+        ...org,
+        kind: "alert",
+        workflow,
+        incident: {
+          failureCount: 2,
+          firstFailedAt: new Date("2026-10-28T11:00:00Z"),
+          lastError,
+          openedBy: "count" as const,
+        },
+      },
+      now
+    );
+
+  it.each([
+    "Contract call failed: Gas Limit 30000 is too low for this call: the call fails under that limit and passes without one. Raise the Gas Limit or leave it empty.",
+    "Contract call failed: Gas Limit 30000 is too low for this call, which needs about 43169 gas. Raise the Gas Limit or leave it empty.",
+  ])("says nothing was sent for a Gas Limit too low: %s", (lastError) => {
+    const message = alertFor(lastError);
+
+    expect(message.text).toContain(
+      "The fixed Gas Limit is below what the call needs, so nothing was sent"
+    );
+    expect(message.text).not.toContain("often means it reverted");
+  });
+
+  it("says nothing was sent for a Gas Limit too high", () => {
+    expect(
+      alertFor(
+        "Contract call failed: Gas Limit 20000000 is above the network's limit of 16777216. Lower it or leave it empty."
+      ).text
+    ).toContain("The fixed Gas Limit is above what the network accepts");
+  });
+
+  it("asks to raise a fixed Gas Limit a mined transaction used up", () => {
+    const message = alertFor(
+      "Contract call failed: Transaction 0xabc reverted on-chain (execution reverted, status 0, block 5); used all 50000 gas, likely out of gas; raise the Gas Limit"
+    );
+
+    expect(message.text).toContain(
+      "used all of its fixed Gas Limit and reverted on-chain"
+    );
+  });
+});

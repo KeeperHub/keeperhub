@@ -255,6 +255,11 @@ function shortError(error: string | null): string {
 const RPC_TROUBLE =
   /\b(429|rate.?limit|too many requests|timed? ?out|timeout|ETIMEDOUT|ECONNRESET|503|502)\b/i;
 const GAS_LIMIT_TROUBLE = /out of gas|gas required exceeds|intrinsic gas/i;
+// The pre-send Gas Limit checks: nothing was sent.
+const FIXED_GAS_LIMIT_TOO_LOW = /Gas Limit \d+ is too low/;
+const FIXED_GAS_LIMIT_TOO_HIGH = /Gas Limit \d+ is above the network's limit/;
+// A mined transaction that used all of the user's fixed Gas Limit.
+const FIXED_GAS_LIMIT_USED_UP = /likely out of gas; raise the Gas Limit/;
 
 /** A first guess at the cause, for the errors that keep coming up. */
 function errorHint(error: string | null): string | null {
@@ -263,6 +268,15 @@ function errorHint(error: string | null): string | null {
   }
   if (isOutOfFunds(error)) {
     return "This looks like the wallet running out of funds: check its balance.";
+  }
+  if (FIXED_GAS_LIMIT_TOO_LOW.test(error)) {
+    return "The fixed Gas Limit is below what the call needs, so nothing was sent: raise it or leave it empty.";
+  }
+  if (FIXED_GAS_LIMIT_TOO_HIGH.test(error)) {
+    return "The fixed Gas Limit is above what the network accepts, so nothing was sent: lower it or leave it empty.";
+  }
+  if (FIXED_GAS_LIMIT_USED_UP.test(error)) {
+    return "The transaction used all of its fixed Gas Limit and reverted on-chain: raise the Gas Limit or leave it empty.";
   }
   if (GAS_LIMIT_TROUBLE.test(error)) {
     return "The transaction ran out of its gas limit, which often means it reverted.";

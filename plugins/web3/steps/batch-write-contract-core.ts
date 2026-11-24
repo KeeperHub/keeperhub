@@ -12,7 +12,7 @@
  * confirmed payable (not view) in lib/contracts/abis/multicall3.json.
  */
 import "server-only";
-import { isPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
+import { isDefinitelyPreSend } from "@/lib/web3/pre-send";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { eq } from "drizzle-orm";
@@ -61,7 +61,6 @@ import {
 import {
   type NextBlockSimulation,
   type NextBlockSimulationOptions,
-  failedNextBlockCheck,
   getNextBlockSimulation,
   isNextBlockSimulationUnsupported,
   nextBlockFailure,
@@ -850,8 +849,7 @@ async function batchWriteContractCoreImpl(
         broadcastAttempted: broadcastHash
           ? true
           : rejection.kind !== "unknown" ||
-              isPreBroadcastNetworkError(error) ||
-              failedNextBlockCheck(error)
+              isDefinitelyPreSend(error)
             ? false
             : true,
         ...(rejection.kind !== "unknown" ? { rejection } : {}),

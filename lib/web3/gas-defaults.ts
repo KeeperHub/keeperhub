@@ -121,6 +121,15 @@ export function getChainGasDefaults(chainId: number): ChainGasDefaults {
   return CHAIN_GAS_DEFAULTS[chainId] ?? GLOBAL_DEFAULT;
 }
 
+/** The fixed Gas Limit to use as is, or undefined when the gas is estimated. */
+export function fixedGasLimit(
+  gasLimitOverride: bigint | undefined
+): bigint | undefined {
+  return gasLimitOverride !== undefined && gasLimitOverride > BigInt(0)
+    ? gasLimitOverride
+    : undefined;
+}
+
 export type GasLimitOverrides = {
   multiplierOverride?: number;
   gasLimitOverride?: bigint;

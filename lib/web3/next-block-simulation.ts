@@ -3,13 +3,26 @@
  * block's predicted time) via RPC block overrides. Only the go / no-go decision and
  * the gas estimate use it; the signed transaction is unchanged.
  */
-import { AbiCoder, type ethers, isError, makeError, toQuantity } from "ethers";
+import {
+  AbiCoder,
+  type ethers,
+  type Interface,
+  isError,
+  makeError,
+  toQuantity,
+} from "ethers";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { simulateV1Params, txForNode } from "@/lib/execute/node-call";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import type { RpcOperationType, RpcProviderManager } from "@/lib/rpc/providers";
 import { scrubRpcUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { getErrorMessage } from "@/lib/utils";
+import {
+  assertGasLimitFits,
+  decodedRevertReason,
+  GasLimitTooLowError,
+  hasOutOfGasEvidence,
+} from "@/lib/web3/gas-limit-error";
 import {
   MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
   MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
@@ -538,6 +551,8 @@ type Overrides = { number: string; time: string };
 // simulated block always follows its base.
 type Prepared = {
   blockTag: string;
+  // The latest block's gas limit, when this check read it.
+  blockGasLimit?: bigint;
   overrides: Overrides;
   time: number;
   simulation: NextBlockSimulation;
@@ -775,7 +790,7 @@ async function prepare(
       currentSeconds()
     ) === basedOn.assumedTimestamp
   ) {
-    return preparedFrom(basedOn);
+    return { ...preparedFrom(basedOn), blockGasLimit: latest.gasLimit };
   }
   if (basedOn && latest.number < basedOn.baseBlock) {
     throw new Error(
@@ -803,6 +818,7 @@ async function prepare(
   );
   return {
     blockTag: toQuantity(latest.number),
+    blockGasLimit: latest.gasLimit,
     time,
     overrides: {
       number: toQuantity(latest.number + 1),
@@ -853,24 +869,105 @@ export async function simulateCallAtNextBlock(
  * The revert check and gas estimate for a send, as of the next block:
  * eth_estimateGas with block overrides, else eth_simulateV1 gas.
  */
+type SendCheckRequest = NextBlockRequest & {
+  gasLimit?: bigint;
+  // Names a custom error in the Gas Limit message, as at `latest`.
+  contractInterface?: Interface;
+};
+
+/**
+ * The send check at the next block. With a fixed Gas Limit: above the
+ * network's limit is too high (by numbers, in sendCheck); a capped failure
+ * with out-of-gas evidence is run uncapped (a real revert throws there) and
+ * capped again: failing again means too low. Any other failure is the
+ * node's own error, unchanged.
+ */
 export async function simulateSendAtNextBlock(
   rpcManager: RpcProviderManager,
-  request: NextBlockRequest
+  request: SendCheckRequest
 ): Promise<{ gasEstimate: bigint; simulation: NextBlockSimulation }> {
+  const { gasLimit } = request;
+  let cappedError: unknown;
   try {
-    return await sendCheck(rpcManager, request);
+    return await sendCheck(rpcManager, request, gasLimit);
   } catch (error) {
-    throw markCheckFailed(error);
+    if (gasLimit === undefined || !outOfGasCandidate(error)) {
+      throw markCheckFailed(error);
+    }
+    cappedError = error;
+  }
+  const sameBlock = (basedOn: NextBlockSimulation | undefined) => ({
+    ...request,
+    options: {
+      ...request.options,
+      basedOn: basedOn ?? request.options.basedOn,
+    },
+  });
+  let uncapped: { gasEstimate: bigint; simulation: NextBlockSimulation };
+  try {
+    uncapped = await sendCheck(
+      rpcManager,
+      sameBlock(getNextBlockSimulation(cappedError))
+    );
+  } catch (uncappedError) {
+    throw markCheckFailed(uncappedError);
+  }
+  try {
+    // Passing now means the first failure was a one-off node answer.
+    return await sendCheck(
+      rpcManager,
+      sameBlock(uncapped.simulation),
+      gasLimit
+    );
+  } catch (again) {
+    if (!outOfGasCandidate(again)) {
+      throw markCheckFailed(again);
+    }
+    // eth_simulateV1's figure is padded, so only a real estimate is quoted.
+    const needs =
+      uncapped.simulation.rpcMethod === "eth_estimateGas+blockOverrides"
+        ? uncapped.gasEstimate
+        : undefined;
+    throw markCheckFailed(
+      tagNextBlockSimulation(
+        new GasLimitTooLowError(
+          gasLimit,
+          {
+            needs,
+            revertedWith: decodedRevertReason(again, request.contractInterface),
+          },
+          { cause: again }
+        ),
+        uncapped.simulation
+      )
+    );
   }
 }
 
+function outOfGasCandidate(error: unknown): boolean {
+  return isError(error, "CALL_EXCEPTION") && hasOutOfGasEvidence(error);
+}
+
+// With a gas limit, the node tests that limit directly: the estimate cannot
+// go above it and eth_simulateV1 runs the call with it.
 async function sendCheck(
   rpcManager: RpcProviderManager,
-  request: NextBlockRequest
+  request: NextBlockRequest,
+  gasLimit?: bigint
 ): Promise<{ gasEstimate: bigint; simulation: NextBlockSimulation }> {
   return await rpcManager.executeWithFailover(async (provider) => {
     const base = await prepare(provider, request.chainId, request.options);
-    const tx = txForNode(request.tx.from, request.tx);
+    if (gasLimit !== undefined) {
+      try {
+        assertGasLimitFits(gasLimit, request.chainId, base.blockGasLimit);
+      } catch (tooHigh) {
+        throw tagNextBlockSimulation(tooHigh, base.simulation);
+      }
+    }
+    const tx = {
+      ...txForNode(request.tx.from, request.tx),
+      ...(gasLimit === undefined ? {} : { gas: toQuantity(gasLimit) }),
+    };
     const estimating: Prepared = {
       ...base,
       simulation: {

@@ -6,6 +6,7 @@ vi.mock("server-only", () => ({}));
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { isNonRetryableError } from "@/lib/rpc/providers/error-classification";
 import { formatContractError } from "@/lib/web3/decode-revert-error";
+import { isGasLimitError, nodeMessageOf } from "@/lib/web3/gas-limit-error";
 import {
   clearSlotSecondsCache,
   failedNextBlockCheck,
@@ -40,7 +41,7 @@ const PROOF_PREFIX = "0x4267";
 
 type RpcError = { code: number; message: string; data?: string };
 type JsonRpcAnswer = { result: unknown } | { error: RpcError };
-type Tx = { to?: string; data: string };
+type Tx = { to?: string; data: string; gas?: string };
 type Overrides = { number: string; time: string } | undefined;
 type Support = "supported" | "rejected" | "ignored";
 type Outcome = { result: string; gas: number } | { error: RpcError };
@@ -49,6 +50,41 @@ const HEADER_NOT_FOUND: RpcError = {
   code: -32_000,
   message: "header not found",
 };
+
+const TX_GAS_CAP = 16_777_216;
+// One capped answer to fail as a one-off, then answer normally.
+const oneOff = { failNextCapped: false, rateLimitCapped: false };
+
+// A call given less gas than it uses fails as a node would; so does a limit
+// above the EIP-7825 cap.
+function capped(tx: Tx, outcome: Outcome): Outcome {
+  if (tx.gas && BigInt(tx.gas) > BigInt(TX_GAS_CAP)) {
+    return {
+      error: {
+        code: -32_000,
+        message: `transaction gas limit too high (cap: ${TX_GAS_CAP}, tx: ${BigInt(tx.gas)})`,
+      },
+    };
+  }
+  if (tx.gas && oneOff.rateLimitCapped) {
+    return {
+      error: { code: -32_000, message: "your app's rate limit was reached" },
+    };
+  }
+  if (tx.gas && oneOff.failNextCapped) {
+    oneOff.failNextCapped = false;
+    return { error: { code: -32_000, message: "out of gas" } };
+  }
+  if ("result" in outcome && tx.gas && BigInt(tx.gas) < BigInt(outcome.gas)) {
+    return {
+      error: {
+        code: -32_000,
+        message: `gas required exceeds allowance (${BigInt(tx.gas)})`,
+      },
+    };
+  }
+  return outcome;
+}
 
 class FakeNode {
   latestNumber = 100;
@@ -171,9 +207,9 @@ class FakeNode {
       blockTag: params[1],
       overrides: params[3] as Overrides,
     });
-    const outcome = this.evaluate(
+    const outcome = capped(
       tx,
-      this.timeFor(mode, params[3] as Overrides)
+      this.evaluate(tx, this.timeFor(mode, params[3] as Overrides))
     );
     if ("error" in outcome) {
       return outcome;
@@ -216,7 +252,7 @@ class FakeNode {
             const burns = this.burnsGas && call.to === CONTRACT;
             const outcome: Outcome =
               gasLeft && !burns
-                ? this.evaluate(call, time)
+                ? capped(call, this.evaluate(call, time))
                 : { error: { code: -32_015, message: "out of gas" } };
             if (burns) {
               gasLeft = false;
@@ -386,6 +422,8 @@ describe("next-block simulation", () => {
     node = new FakeNode();
     provider = new FakeProvider(node);
     setClock(node.latestTimestamp + 1);
+    oneOff.failNextCapped = false;
+    oneOff.rateLimitCapped = false;
   });
 
   afterEach(() => {
@@ -413,6 +451,111 @@ describe("next-block simulation", () => {
       // Works on relays that refuse eth_call and eth_simulateV1.
       expect(node.methods).not.toContain("eth_call");
       expect(node.methods).not.toContain("eth_simulateV1");
+    });
+
+    function sendWithLimit(
+      gasLimit: bigint
+    ): ReturnType<typeof simulateSendAtNextBlock> {
+      return simulateSendAtNextBlock(managerFor(provider), {
+        chainId: CHAIN_ID,
+        tx: RUN_TX,
+        options: { timestampOffsetSec: SLOT },
+        gasLimit,
+      });
+    }
+
+    it("tests a fixed Gas Limit directly and names it when it is too low", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+
+      const error = await sendWithLimit(BigInt(RUN_GAS - 1)).catch(
+        (caught: unknown) => caught
+      );
+
+      expect(isGasLimitError(error)).toBe(true);
+      expect((error as Error).message).toBe(
+        `Gas Limit ${RUN_GAS - 1} is too low for this call, which needs about ${RUN_GAS} gas. Raise the Gas Limit or leave it empty.`
+      );
+      expect(failedNextBlockCheck(error)).toBe(true);
+      expect(getNextBlockSimulation(error)).toMatchObject({ baseBlock: 100 });
+      await expect(sendWithLimit(BigInt(RUN_GAS))).resolves.toMatchObject({
+        gasEstimate: BigInt(RUN_GAS),
+      });
+    });
+
+    it("names a Gas Limit above the block gas limit as too high, by numbers", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+
+      const error = await sendWithLimit(BigInt(40_000_000)).catch(
+        (caught: unknown) => caught
+      );
+
+      expect((error as Error).message).toBe(
+        "Gas Limit 40000000 is above the network's limit of 30000000. Lower it or leave it empty."
+      );
+      expect(failedNextBlockCheck(error)).toBe(true);
+      expect(getNextBlockSimulation(error)).toMatchObject({ baseBlock: 100 });
+      // Decided by numbers: the node is never asked.
+      expect(node.methods).not.toContain("eth_estimateGas");
+    });
+
+    it("keeps the node's own words when it refuses a limit the numbers allow", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+
+      const error = await sendWithLimit(BigInt(20_000_000)).catch(
+        (caught: unknown) => caught
+      );
+
+      expect(isGasLimitError(error)).toBe(false);
+      expect(nodeMessageOf(error)).toContain("transaction gas limit too high");
+    });
+
+    it("keeps the node's own error for a capped failure without out-of-gas evidence", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+      oneOff.rateLimitCapped = true;
+
+      const error = await sendWithLimit(BigInt(RUN_GAS)).catch(
+        (caught: unknown) => caught
+      );
+
+      expect(isGasLimitError(error)).toBe(false);
+      expect(nodeMessageOf(error)).toContain("rate limit");
+      expect(failedNextBlockCheck(error)).toBe(true);
+    });
+
+    it("does not blame the limit for a one-off failure under it", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+      oneOff.failNextCapped = true;
+
+      await expect(sendWithLimit(BigInt(RUN_GAS))).resolves.toMatchObject({
+        gasEstimate: BigInt(RUN_GAS),
+      });
+    });
+
+    it("keeps a real revert as the revert, not a Gas Limit message", async () => {
+      node.unlockAt = node.latestTimestamp + 1000;
+      const error = await sendWithLimit(BigInt(1_000_000)).catch(
+        (caught: unknown) => caught
+      );
+
+      expect(isGasLimitError(error)).toBe(false);
+      expect(failedNextBlockCheck(error)).toBe(true);
+      expect((error as { data?: string }).data).toBe(TOO_SOON);
+    });
+
+    it("refuses on eth_simulateV1 only when the call fails under the limit, with no padded figure", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+      node.estimateOverrides = "rejected";
+
+      // Padded figure is above the limit, but the call fits: no refusal.
+      await expect(sendWithLimit(BigInt(RUN_GAS))).resolves.toMatchObject({
+        simulation: { rpcMethod: "eth_simulateV1" },
+      });
+      const error = await sendWithLimit(BigInt(RUN_GAS - 1)).catch(
+        (caught: unknown) => caught
+      );
+      expect((error as Error).message).toBe(
+        `Gas Limit ${RUN_GAS - 1} is too low for this call: the call fails under that limit and passes without one. Raise the Gas Limit or leave it empty.`
+      );
     });
 
     it("pins every call to the base block and overrides number to base + 1", async () => {

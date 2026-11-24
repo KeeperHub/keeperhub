@@ -12,10 +12,11 @@ const cores = [
 
 describe.each(cores)("%s broadcastAttempted evidence", (path) => {
   const source = readFileSync(path, "utf8");
-  it("uses the structural pre-broadcast tag instead of error text", () => {
-    expect(source).toContain("isPreBroadcastNetworkError(error)");
+  // One helper: a refused connection, a failed next-block check, a Gas Limit too low.
+  it("uses the structural pre-send tags instead of error text", () => {
+    expect(source).toContain("isDefinitelyPreSend(error)");
     expect(source).toMatch(
-      /broadcastAttempted:[\s\S]{0,240}isPreBroadcastNetworkError\(error\)/
+      /broadcastAttempted:[\s\S]{0,240}isDefinitelyPreSend\(error\)/
     );
   });
   it("fails closed when no structural tag is present", () => {

@@ -436,6 +436,26 @@ describe("AdaptiveGasStrategy", () => {
       expect(config.maxFeePerGas).toBeGreaterThanOrEqual(BigInt(5e9));
     });
 
+    it("uses a fixed gas limit without an estimate, and needs one otherwise", async () => {
+      const strategy = new AdaptiveGasStrategy();
+      const provider = createMockProvider(
+        {}
+      ) as unknown as import("ethers").Provider;
+
+      const fixed = await strategy.getGasConfig(
+        provider,
+        undefined,
+        1,
+        undefined,
+        BigInt(90_000)
+      );
+
+      expect(fixed.gasLimit).toBe(BigInt(90_000));
+      await expect(
+        strategy.getGasConfig(provider, undefined, 1)
+      ).rejects.toThrow("No gas estimate");
+    });
+
     it("lowers the max fee to the caller's cap", async () => {
       const strategy = new AdaptiveGasStrategy();
       const provider = createMockProvider();
