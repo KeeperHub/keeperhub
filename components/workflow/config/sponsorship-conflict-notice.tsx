@@ -1,10 +1,8 @@
 "use client";
 
 import { AlertTriangle } from "lucide-react";
-import {
-  isIgnoredWhileSponsored,
-  SPONSORSHIP_GAS_SETTINGS_DOC_URL,
-} from "@/lib/workflow/editor/sponsorship-conflict";
+import { SPONSORSHIP_GAS_SETTINGS_DOC_URL } from "@/lib/web3/unsponsored-only-fields";
+import { isIgnoredWhileSponsored } from "@/lib/workflow/editor/sponsorship-conflict";
 import type { ActionConfigFieldBase } from "@/plugins/registry";
 
 type SponsorshipConflictNoticeProps = {

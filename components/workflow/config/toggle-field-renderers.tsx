@@ -51,7 +51,7 @@ export const TOGGLE_FIELD_RENDERERS: Readonly<
       label={field.label}
       onChange={(next) => {
         onUpdateConfig(field.key, next);
-        // Settings hidden while sponsored are cleared so they cannot keep
+        // Settings locked while sponsored are cleared so they cannot keep
         // taking the node off the sponsored route unseen.
         if (resolveSponsorGas(next)) {
           for (const key of UNSPONSORED_ONLY_FIELD_KEYS) {

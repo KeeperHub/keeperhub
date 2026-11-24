@@ -25,7 +25,7 @@ import {
   transferErrorOutput,
   transferSuccessOutput,
 } from "@/plugins/field-fragments";
-import { UNSPONSORED_ONLY_SHOW_WHEN } from "@/lib/web3/unsponsored-only-fields";
+import { UNSPONSORED_ONLY_ENABLED_WHEN } from "@/lib/web3/unsponsored-only-fields";
 import type { ShowWhen } from "@/lib/workflow/editor/show-when";
 import { registerIntegration } from "@/plugins/registry-core";
 import {
@@ -54,31 +54,35 @@ const SINGLE_EVENT_SHOW_WHEN: ShowWhen = {
   ],
 };
 
-// Batch Write Contract is never sponsored, so its fee settings always show.
-// Write Contract shows them only while the node pays its own gas.
-function priorityFeeConfigField(showWhen?: ShowWhen): ActionConfigFieldBase {
+// Batch Write Contract is never sponsored, so its fee settings are always
+// editable. Write Contract locks them while the node would be sponsored.
+function priorityFeeConfigField(
+  enabledWhen?: ActionConfigFieldBase["enabledWhen"]
+): ActionConfigFieldBase {
   return {
     example: "3",
     helpTip:
-      "Tip paid to the block builder, in gwei. Transactions in the same block are ordered by tip, so raise it when racing other senders for the same call. Leave empty to use the network default. Sponsored sends cannot carry a custom tip, so on Write Contract this shows only while Sponsor gas is off or the network is not sponsored.",
+      "Tip paid to the block builder, in gwei. Transactions in the same block are ordered by tip, so raise it when racing other senders for the same call. Leave empty to use the network default. Sponsored sends cannot carry a custom tip, so on Write Contract it is locked while Sponsor gas is on.",
     key: "priorityFeeGwei",
     label: "Priority Fee (gwei)",
     placeholder: "Network default",
     type: "template-input",
-    ...(showWhen ? { showWhen } : {}),
+    ...(enabledWhen ? { enabledWhen } : {}),
   };
 }
 
-function maxFeeConfigField(showWhen?: ShowWhen): ActionConfigFieldBase {
+function maxFeeConfigField(
+  enabledWhen?: ActionConfigFieldBase["enabledWhen"]
+): ActionConfigFieldBase {
   return {
     example: "50",
     helpTip:
-      "Highest total fee per gas you will pay, in gwei (base fee plus tip). Higher fees are lowered to this cap. If it is below the next block's base fee, the step fails without sending, since the transaction could not be included. Leave empty for no cap. Sponsored sends cannot carry a custom fee, so on Write Contract this shows only while Sponsor gas is off or the network is not sponsored.",
+      "Highest total fee per gas you will pay, in gwei (base fee plus tip). Higher fees are lowered to this cap. If it is below the next block's base fee, the step fails without sending, since the transaction could not be included. Leave empty for no cap. Sponsored sends cannot carry a custom fee, so on Write Contract it is locked while Sponsor gas is on.",
     key: "maxFeeGwei",
     label: "Max Fee (gwei)",
     placeholder: "No cap",
     type: "template-input",
-    ...(showWhen ? { showWhen } : {}),
+    ...(enabledWhen ? { enabledWhen } : {}),
   };
 }
 
@@ -2189,8 +2193,8 @@ const web3Plugin: IntegrationPlugin = {
               actionSlug: "write-contract",
               ignoredWhenSponsored: true,
             },
-            priorityFeeConfigField(UNSPONSORED_ONLY_SHOW_WHEN),
-            maxFeeConfigField(UNSPONSORED_ONLY_SHOW_WHEN),
+            priorityFeeConfigField(UNSPONSORED_ONLY_ENABLED_WHEN),
+            maxFeeConfigField(UNSPONSORED_ONLY_ENABLED_WHEN),
             sponsorGasField(),
           ],
         },
