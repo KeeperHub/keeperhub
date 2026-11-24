@@ -178,6 +178,44 @@ describe("executorMessageSchema", () => {
     ).toBe(true);
   });
 
+  it("keeps the missed-slot fields of a block message", () => {
+    const triggerData = {
+      blockNumber: 1,
+      blockHash: "0xhash",
+      blockTimestamp: 1,
+      parentHash: "0xparent",
+      missedSlot: true,
+      slotTimestamp: 13,
+      targetSlot: 2,
+      targetSlotTimestamp: 25,
+    };
+    const parsed = executorMessageSchema.parse({
+      triggerType: "block",
+      workflowId: "wf1",
+      userId: "u1",
+      triggerData,
+    });
+    expect(parsed.triggerType === "block" && parsed.triggerData).toEqual(
+      triggerData
+    );
+  });
+
+  it("keeps missedSlot false on a block run of an opted-in workflow", () => {
+    const parsed = executorMessageSchema.parse({
+      triggerType: "block",
+      workflowId: "wf1",
+      userId: "u1",
+      triggerData: {
+        blockNumber: 1,
+        blockHash: "0xhash",
+        blockTimestamp: 1,
+        parentHash: "0xparent",
+        missedSlot: false,
+      },
+    });
+    expect(parsed).toMatchObject({ triggerData: { missedSlot: false } });
+  });
+
   it("accepts a valid event message with arbitrary triggerData", () => {
     expect(
       executorMessageSchema.safeParse({

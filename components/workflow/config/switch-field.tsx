@@ -55,6 +55,12 @@ type SwitchFieldProps = {
   // Shown only so a stray value can be cleared (isShownOnlyToFix): the switch
   // is locked and Reset is the only action. Required so no caller forgets it.
   resetOnly: boolean;
+  // Replaces the step wording of the stray hint; save then always refuses the value.
+  strayHint?: string;
+  // Locked (reset-only) wording, replacing the stray hint, e.g. "Not used on this network.".
+  lockedHint?: string;
+  // Selector of the field that takes focus after a locked switch is reset and hides.
+  focusOnLockedReset?: string;
 };
 
 /**
@@ -70,6 +76,9 @@ export function SwitchField({
   onChange,
   disabled,
   resetOnly,
+  strayHint,
+  lockedHint,
+  focusOnLockedReset,
 }: SwitchFieldProps) {
   const switchRef = useRef<HTMLButtonElement>(null);
   const resetButtonRef = useRef<HTMLButtonElement>(null);
@@ -92,13 +101,25 @@ export function SwitchField({
     }
   }, [stray]);
 
+  // The nearest field matching the selector, searching outwards from the reset button.
+  const nearest = (selector: string): HTMLElement | null => {
+    let scope = resetButtonRef.current?.parentElement ?? null;
+    while (scope && !scope.querySelector(selector)) {
+      scope = scope.parentElement;
+    }
+    return scope?.querySelector<HTMLElement>(selector) ?? null;
+  };
+
   const reset = () => {
-    // A locked field hides once reset, so focus its group's header instead.
-    const header = locked
-      ? resetButtonRef.current
-          ?.closest<HTMLElement>("[data-field-group]")
-          ?.querySelector<HTMLButtonElement>("button")
-      : undefined;
+    // A locked field hides once reset, so focus its group's header (or the named field) instead.
+    let header: HTMLElement | null | undefined;
+    if (locked) {
+      header = focusOnLockedReset
+        ? nearest(focusOnLockedReset)
+        : resetButtonRef.current
+            ?.closest<HTMLElement>("[data-field-group]")
+            ?.querySelector<HTMLButtonElement>("button");
+    }
     if (header) {
       header.focus();
     } else {
@@ -118,14 +139,24 @@ export function SwitchField({
         )}
         {stray && (
           <div className="space-y-1">
-            <p className="break-words text-destructive text-xs" id={strayId}>
-              Holds {shownValue(value)}, which is neither on nor off.{" "}
-              {strayAtRun(rule)}
-              {!disabled && saveSentence(value)}
-              {locked &&
-                !disabled &&
-                " Hidden with these settings; reset it here."}
-            </p>
+            {locked && lockedHint ? (
+              <p className="break-words text-destructive text-xs" id={strayId}>
+                {lockedHint} It holds {shownValue(value)}, which is neither on
+                nor off.
+              </p>
+            ) : (
+              <p className="break-words text-destructive text-xs" id={strayId}>
+                Holds {shownValue(value)}, which is neither on nor off.{" "}
+                {strayHint ?? strayAtRun(rule)}
+                {!disabled &&
+                  (strayHint
+                    ? " A save refuses it, so reset it to save."
+                    : saveSentence(value))}
+                {locked &&
+                  !disabled &&
+                  " Hidden with these settings; reset it here."}
+              </p>
+            )}
             {!disabled && (
               <Button
                 aria-describedby={strayId}

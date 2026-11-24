@@ -3,6 +3,7 @@
  * Defines output fields for different trigger types to enable template autocomplete
  */
 
+import { missedSlotRunsApply } from "@/lib/workflow/block-trigger-switches";
 import type { OutputField } from "@/plugins/registry";
 
 /** Common field available on every trigger type */
@@ -127,7 +128,33 @@ export function getEventTriggerOutputFields(
 /**
  * Get output fields for Block trigger
  */
-export function getBlockTriggerOutputFields(): OutputField[] {
+// On every run while "Also run when a slot is missed" applies.
+const MISSED_SLOT_FIELDS: OutputField[] = [
+  {
+    field: "missedSlot",
+    description:
+      "True when no block had arrived 4 s into the slot (a late block does not start a second run), false for a block",
+  },
+  {
+    field: "slotTimestamp",
+    description:
+      "Start of the slot that fired the run (targetSlot - 1), in Unix seconds",
+  },
+  {
+    field: "targetSlot",
+    description:
+      "Beacon slot number of the next slot; dedupe on it, not blockNumber",
+  },
+  {
+    field: "targetSlotTimestamp",
+    description: "Start of the next slot, in Unix seconds",
+  },
+];
+
+export function getBlockTriggerOutputFields(
+  config: Record<string, unknown> = {}
+): OutputField[] {
+  const missedSlot = missedSlotRunsApply(config);
   return [
     {
       field: "blockNumber",
@@ -145,6 +172,7 @@ export function getBlockTriggerOutputFields(): OutputField[] {
       field: "parentHash",
       description: "Hash of the parent block",
     },
+    ...(missedSlot ? MISSED_SLOT_FIELDS : []),
     TRIGGERED_AT_FIELD,
   ];
 }
@@ -234,7 +262,7 @@ export function getTriggerOutputFields(
     ];
   }
   if (triggerType === "Block") {
-    return getBlockTriggerOutputFields();
+    return getBlockTriggerOutputFields(config);
   }
 
   if (triggerType === "Transfer") {

@@ -828,7 +828,9 @@ export const workflowExecutions = pgTable(
      * run two replicas with leader election; this key makes a duplicate
      * dispatch a no-op instead of a second SQS message and a second run. The
      * dispatcher sets a stable per-occurrence value
-     * (`schedule:<scheduleId>:<occurrenceIso>` / `block:<workflowId>:<chainId>:<blockNumber>`)
+     * (`schedule:<scheduleId>:<occurrenceIso>` / `block:<workflowId>:<chainId>:<blockNumber>`,
+     * or `slot:<workflowId>:<chainId>:<slot>` for a Block trigger with missed-slot runs on;
+     * a skip-if-running Skipped row uses `skipped-behind:<blocking run id>`)
      * and the create-phantom insert is `ON CONFLICT DO NOTHING` on the unique
      * index below, so an overlapping leader or a catch-up window that re-runs an
      * occurrence collides and skips its enqueue. Null for rows with no dedup key

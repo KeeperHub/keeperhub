@@ -17,6 +17,11 @@ type GroupedWorkflows = Map<
   { chain: ChainConfig; workflows: BlockWorkflow[] }
 >;
 
+// Same reading as the app's resolveSwitch: true or "true" is on, anything else off.
+function isOn(value: string | boolean | undefined): boolean {
+  return value === true || value === "true";
+}
+
 export async function fetchBlockWorkflows(): Promise<GroupedWorkflows> {
   const data = await apiRequest<FetchBlockWorkflowsResponse>(
     "/api/internal/block-workflows?active=true",
@@ -66,6 +71,8 @@ export async function fetchBlockWorkflows(): Promise<GroupedWorkflows> {
       organizationId: workflow.organizationId,
       network,
       blockInterval,
+      skipIfRunning: isOn(triggerNode?.data?.config?.skipIfRunning),
+      runOnMissedSlot: isOn(triggerNode?.data?.config?.runOnMissedSlot),
     };
 
     const existing = grouped.get(chainId);

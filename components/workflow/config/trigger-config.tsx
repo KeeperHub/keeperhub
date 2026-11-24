@@ -31,6 +31,7 @@ import {
 } from "@/lib/workflow/execution-priority";
 import type { ActionConfigField } from "@/plugins/registry";
 import { ActionConfigRenderer } from "./action-config-renderer";
+import { BlockTriggerOptions } from "./block-trigger-options";
 import { CronScheduleBuilder } from "./cron-schedule-builder";
 import { SchemaBuilder } from "./schema-builder";
 import { PythTriggerConfig } from "./pyth-trigger-config";
@@ -310,6 +311,11 @@ export function TriggerConfig({
                   Fire the workflow every N blocks on the selected network.
                 </p>
               </div>
+              <BlockTriggerOptions
+                config={config}
+                disabled={disabled}
+                onUpdateConfig={onUpdateConfig}
+              />
             </>
           );
         })()}

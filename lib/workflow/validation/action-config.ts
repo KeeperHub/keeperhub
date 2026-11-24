@@ -15,6 +15,10 @@ import {
   INTEGER_PATTERN,
   UNSIGNED_INTEGER_PATTERN,
 } from "@/lib/web3/solidity-values";
+import {
+  RUN_ON_MISSED_SLOT_LABEL,
+  SKIP_IF_RUNNING_LABEL,
+} from "@/lib/workflow/block-trigger-switches";
 import { BUILTIN_NODE_ID } from "@/lib/workflow/editor/builtin-variables";
 import {
   evaluateShowWhen,
@@ -586,6 +590,39 @@ function toggleIssue(
   };
 }
 
+// Block Trigger switches; the network decides whether one is used, not save.
+const BLOCK_TRIGGER_TOGGLES = [
+  { key: "skipIfRunning", label: SKIP_IF_RUNNING_LABEL },
+  { key: "runOnMissedSlot", label: RUN_ON_MISSED_SLOT_LABEL },
+] as const;
+
+function blockTriggerToggleIssues(
+  node: WorkflowNodeForValidation,
+  nodeIndex: number
+): ActionConfigValidationIssue[] {
+  const config = node.data?.config;
+  if (
+    !(
+      node.data?.type === "trigger" &&
+      isRecord(config) &&
+      config.triggerType === "Block"
+    )
+  ) {
+    return [];
+  }
+  return BLOCK_TRIGGER_TOGGLES.filter(
+    (toggle) => !isToggleValue(config[toggle.key])
+  ).map((toggle) =>
+    toggleIssue(
+      `nodes[${nodeIndex}].data.config.${toggle.key}`,
+      "Block",
+      toggle,
+      config[toggle.key],
+      nodeIdentity(node, `nodes[${nodeIndex}]`)
+    )
+  );
+}
+
 // Node id -> a field read from each node: its config or its label.
 function nodesById<T>(
   nodes: readonly unknown[],
@@ -996,6 +1033,7 @@ export function validateWorkflowActionConfigs(
       });
     }
 
+    issues.push(...blockTriggerToggleIssues(node, nodeIndex));
     if (!isActionNode(node)) {
       continue;
     }

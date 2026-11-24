@@ -17,7 +17,16 @@ import {
   createPhantomExecution,
   failPhantomExecution,
 } from "../lib/phantom.js";
-import type { BlockWorkflow, ChainConfig } from "../lib/types.js";
+import {
+  MISSED_SLOT_CHECK_DELAY_MS,
+  SLOT_CLOCK_GENESIS,
+  SLOT_SECONDS,
+  msUntilSlotCheck,
+  nextSlotToCheck,
+  slotAt,
+  slotStartSeconds,
+} from "../lib/slot-clock.js";
+import type { BlockMessage, BlockWorkflow, ChainConfig } from "../lib/types.js";
 import { enqueueBlockTrigger } from "./sqs-enqueue.js";
 
 const MAX_RECONNECT_ATTEMPTS = 10;
@@ -26,6 +35,27 @@ const MAX_DELAY_MS = 30_000;
 const STALE_BLOCK_THRESHOLD_S = 120; // warn if block timestamp >2 min behind
 const HEARTBEAT_INTERVAL_MS = 60_000;
 const MAX_BACKFILL_BLOCKS = 100;
+// A timestamp the slot clock can trust: finite, positive, at most one slot ahead of the local clock.
+function plausibleTimestamp(timestamp: number): boolean {
+  return (
+    Number.isFinite(timestamp) &&
+    timestamp > 0 &&
+    timestamp * 1000 <= Date.now() + SLOT_SECONDS * 1000
+  );
+}
+
+// A head older than this many slots means a lagging node, not missed slots.
+const MAX_MISSED_SLOTS_IN_A_ROW = 4;
+// Missed-slot checks pause only when every one of the last few headers was late.
+const HEADER_LAGS_KEPT = 5;
+const LAG_WARNING_INTERVAL_MS = 10 * 60_000;
+
+type BlockData = {
+  number: number;
+  hash: string;
+  timestamp: number;
+  parentHash: string;
+};
 
 // ---------------------------------------------------------------------------
 // LIVENESS — single source of truth for all reconnect/teardown timing.
@@ -240,6 +270,23 @@ export class ChainMonitor {
   private subscriptionPushCount = 0;
   private lastWsFrameAt: number | null = null;
   private wsMessageHandler: ((data: unknown) => void) | null = null;
+  // Missed-slot clock: genesis is set only on slot-clock chains.
+  private readonly slotGenesis: number | undefined;
+  private slotTimer: ReturnType<typeof setTimeout> | null = null;
+  private subscribedAt: number | null = null;
+  private latestBlockTimestamp: number | null = null;
+  // Newest slot that got a slot-keyed run, and newest slot that got a missed-slot run.
+  private lastRunSlot: number | null = null;
+  // Newest live header seen on this subscription (slot-clock chains only).
+  private lastHeader: {
+    number: number;
+    hash: string;
+    timestamp: number;
+  } | null = null;
+  private lastMissedSlot: number | null = null;
+  // How late, by the local clock, recent live block headers reached the socket.
+  private recentHeaderLagsMs: number[] = [];
+  private lagWarnedAt = 0;
 
   constructor(config: ChainMonitorConfig) {
     this.chainId = config.chain.chainId;
@@ -247,6 +294,7 @@ export class ChainMonitor {
     this.primaryWss = config.chain.defaultPrimaryWss;
     this.fallbackWss = config.chain.defaultFallbackWss;
     this.workflows = config.workflows;
+    this.slotGenesis = SLOT_CLOCK_GENESIS[this.chainId];
   }
 
   async start(): Promise<void> {
@@ -265,6 +313,7 @@ export class ChainMonitor {
       this.startPingPong();
       this.resetNoBlockTimer();
       this.startPrimaryProbe();
+      this.syncSlotClock();
       metrics.setIsAlive(this.chainName, true);
     } catch (error) {
       this.isRunning = false;
@@ -290,6 +339,7 @@ export class ChainMonitor {
   updateWorkflows(workflows: BlockWorkflow[]): void {
     this.workflows = workflows;
     metrics.setWorkflowsTracked(this.chainName, workflows.length);
+    this.syncSlotClock();
   }
 
   hasConfigChanged(chain: ChainConfig): boolean {
@@ -567,11 +617,15 @@ export class ChainMonitor {
     // a real block looked permanently alive to the reconciler. The cold-
     // start warmup case is now handled by monitorBootAt in isAlive().
     const subscribedAt = Date.now();
+    this.subscribedAt = subscribedAt;
     // KEEP-570 diagnostic: reset the per-subscription frame counters so the
     // noBlockTimer log shows what happened on THIS subscription, not the
     // cumulative since pod start.
     this.wsFrameCount = 0;
     this.subscriptionPushCount = 0;
+    this.recentHeaderLagsMs = [];
+    this.latestBlockTimestamp = null;
+    this.lastHeader = null;
     this.lastWsFrameAt = null;
     metrics.setHasActiveSubscription(this.chainName, true);
     metrics.setSubscribedAt(this.chainName, subscribedAt);
@@ -617,9 +671,15 @@ export class ChainMonitor {
           return;
         }
         try {
-          const parsed = JSON.parse(text) as { method?: string };
+          const parsed = JSON.parse(text) as {
+            method?: string;
+            params?: {
+              result?: { timestamp?: string; number?: string; hash?: string };
+            };
+          };
           if (parsed?.method === "eth_subscription") {
             this.subscriptionPushCount++;
+            this.noteHeader(parsed.params?.result);
           }
         } catch {
           // Non-JSON or partial frame; counted in wsFrameCount, ignored here.
@@ -746,6 +806,10 @@ export class ChainMonitor {
     if (!block) {
       return;
     }
+    const timestampOk = plausibleTimestamp(block.timestamp);
+    if (timestampOk) {
+      this.noteBlockTimestamp(block.timestamp);
+    }
 
     // Stale block warning + lag histogram
     const nowSeconds = Math.floor(Date.now() / 1000);
@@ -763,10 +827,43 @@ export class ChainMonitor {
       `[BlockMonitor:${this.chainName}] Block ${blockNumber} matched ${matchingWorkflows.length} workflow(s): ${matchingWorkflows.map((wf) => `${wf.id}(interval=${wf.blockInterval})`).join(", ")}`,
     );
 
+    // A body timestamp outside the bound gets no slot: such a block runs under its block: key.
+    const blockSlot =
+      this.slotGenesis === undefined || !timestampOk
+        ? null
+        : slotAt(this.slotGenesis, block.timestamp);
+    if (
+      blockSlot !== null &&
+      matchingWorkflows.some((wf) => this.optedInToMissedSlots(wf))
+    ) {
+      this.noteRunSlot(blockSlot);
+      if (blockSlot === this.lastMissedSlot) {
+        console.log(
+          `[BlockMonitor:${this.chainName}] Late block ${blockNumber} for slot ${blockSlot}, which already had a missed-slot run (may be deduplicated)`,
+        );
+      }
+    }
     const results = await Promise.allSettled(
-      matchingWorkflows.map((wf) =>
-        this.enqueueWithPhantom(wf, blockNumber, block),
-      ),
+      matchingWorkflows.map((wf) => {
+        const triggerData = {
+          blockNumber,
+          blockHash: block.hash,
+          blockTimestamp: block.timestamp,
+          parentHash: block.parentHash,
+        };
+        if (blockSlot === null || !this.optedInToMissedSlots(wf)) {
+          return this.enqueueWithPhantom(
+            wf,
+            `block:${wf.id}:${this.chainId}:${blockNumber}`,
+            triggerData,
+          );
+        }
+        // One run per slot: shares its key with a missed-slot run for the same slot.
+        return this.enqueueWithPhantom(wf, this.slotKey(wf, blockSlot), {
+          ...triggerData,
+          ...this.slotFields(blockSlot, false),
+        });
+      }),
     );
 
     for (const [index, result] of results.entries()) {
@@ -789,16 +886,17 @@ export class ChainMonitor {
    */
   private async enqueueWithPhantom(
     wf: BlockWorkflow,
-    blockNumber: number,
-    block: { hash: string; timestamp: number; parentHash: string },
+    dispatchKey: string,
+    triggerData: BlockMessage["triggerData"],
   ): Promise<void> {
-    // Stable per (workflow, chain, block) key. Two leaders that
+    // dispatchKey is stable per (workflow, chain, block or slot). Two leaders that
     // overlap on failover, or both process the same block, collide on the
     // unique index so only one enqueue lands. The in-memory lastProcessedBlock
     // dedup only guards a single instance, so this is what covers 2 replicas.
-    const dispatchKey = `block:${wf.id}:${this.chainId}:${blockNumber}`;
-    const { executionId, alreadyExisted, refused } =
-      await createPhantomExecution(wf.id, "block", wf.userId, dispatchKey);
+    const { executionId, alreadyExisted, refused, skipped } =
+      await createPhantomExecution(wf.id, "block", wf.userId, dispatchKey, {
+        skipIfRunning: wf.skipIfRunning === true,
+      });
 
     // Refused on plan grounds: the executor would refuse the same run. Skipping
     // here matters most on a fast chain, where enqueueing would otherwise cost
@@ -818,18 +916,20 @@ export class ChainMonitor {
       return;
     }
 
+    if (skipped) {
+      console.log(
+        `[BlockMonitor:${this.chainName}] Not enqueuing ${dispatchKey}: the platform recorded it as skipped`,
+      );
+      return;
+    }
+
     try {
       await enqueueBlockTrigger({
         executionId,
         workflowId: wf.id,
         userId: wf.userId,
         triggerType: "block",
-        triggerData: {
-          blockNumber,
-          blockHash: block.hash,
-          blockTimestamp: block.timestamp,
-          parentHash: block.parentHash,
-        },
+        triggerData,
       });
     } catch (error) {
       if (executionId) {
@@ -844,7 +944,8 @@ export class ChainMonitor {
     }
   }
 
-  private async getBlockData(blockNumber: number): Promise<{
+  private async getBlockData(blockNumber: number | string): Promise<{
+    number: number;
     hash: string;
     timestamp: number;
     parentHash: string;
@@ -858,6 +959,7 @@ export class ChainMonitor {
         const block = await this.provider.getBlock(blockNumber);
         if (block) {
           return {
+            number: block.number,
             hash: block.hash ?? "",
             timestamp: block.timestamp,
             parentHash: block.parentHash,
@@ -1001,6 +1103,291 @@ export class ChainMonitor {
     this.stopNoBlockTimer();
     this.stopPrimaryProbe();
     this.stopSocketAgeTimer();
+    this.stopSlotClock();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Missed-slot clock (slot-clock chains only)
+  //
+  // At each slot start + 4 s, if no block of that slot has been seen, fire the
+  // interval-1 workflows that opted in, targeting the next slot.
+  // ---------------------------------------------------------------------------
+
+  private optedInToMissedSlots(wf: BlockWorkflow): boolean {
+    return (
+      this.slotGenesis !== undefined &&
+      wf.runOnMissedSlot === true &&
+      wf.blockInterval === 1
+    );
+  }
+
+  private missedSlotWorkflows(): BlockWorkflow[] {
+    return this.workflows.filter((wf) => this.optedInToMissedSlots(wf));
+  }
+
+  // Turning the switch on moves a workflow from block: to slot: keys, so one block
+  // can fire twice during that switch-over (accepted).
+  private slotKey(wf: BlockWorkflow, slot: number): string {
+    return `slot:${wf.id}:${this.chainId}:${slot}`;
+  }
+
+  // Slot fields on every run of an opted-in workflow (timestamps in Unix seconds).
+  private slotFields(
+    slot: number,
+    missedSlot: boolean,
+  ): Pick<
+    BlockMessage["triggerData"],
+    "missedSlot" | "slotTimestamp" | "targetSlot" | "targetSlotTimestamp"
+  > {
+    const genesis = this.slotGenesis as number;
+    return {
+      missedSlot,
+      slotTimestamp: slotStartSeconds(genesis, slot),
+      targetSlot: slot + 1,
+      targetSlotTimestamp: slotStartSeconds(genesis, slot + 1),
+    };
+  }
+
+  // Live headers only (subscription pushes), never backfilled blocks.
+  private noteHeader(
+    header: { timestamp?: string; number?: string; hash?: string } | undefined,
+  ): void {
+    const timestamp = Number(header?.timestamp);
+    if (this.slotGenesis === undefined || !plausibleTimestamp(timestamp)) {
+      return;
+    }
+    const number = Number(header?.number);
+    if (Number.isSafeInteger(number) && typeof header?.hash === "string") {
+      this.lastHeader = { number, hash: header.hash, timestamp };
+    }
+    this.recentHeaderLagsMs.push(Date.now() - timestamp * 1000);
+    if (this.recentHeaderLagsMs.length > HEADER_LAGS_KEPT) {
+      this.recentHeaderLagsMs.shift();
+    }
+    // A header seen before the 4 s check means the slot has a block, even while its body loads.
+    this.noteBlockTimestamp(timestamp);
+  }
+
+  private noteRunSlot(slot: number): void {
+    this.lastRunSlot = Math.max(this.lastRunSlot ?? slot, slot);
+  }
+
+  private noteBlockTimestamp(timestamp: number): void {
+    this.latestBlockTimestamp = Math.max(
+      this.latestBlockTimestamp ?? 0,
+      timestamp,
+    );
+  }
+
+  private slotClockWanted(): boolean {
+    return (
+      this.isRunning &&
+      !this.isReconnecting &&
+      this.hasActiveSubscription &&
+      this.missedSlotWorkflows().length > 0
+    );
+  }
+
+  private syncSlotClock(): void {
+    if (!this.slotClockWanted()) {
+      this.stopSlotClock();
+    } else if (!this.slotTimer && this.slotGenesis !== undefined) {
+      this.scheduleSlotCheck(nextSlotToCheck(this.slotGenesis, Date.now()));
+    }
+  }
+
+  // Each timeout is computed from wall-clock slot boundaries, so it never drifts.
+  private scheduleSlotCheck(slot: number): void {
+    const genesis = this.slotGenesis as number;
+    this.slotTimer = setTimeout(
+      () => {
+        this.slotTimer = null;
+        this.checkSlot(slot).catch((error: unknown) => {
+          console.error(
+            `[BlockMonitor:${this.chainName}] Missed-slot check for slot ${slot} failed:`,
+            error instanceof Error ? error.message : error,
+          );
+        });
+        if (this.slotClockWanted()) {
+          this.scheduleSlotCheck(
+            Math.max(slot + 1, nextSlotToCheck(genesis, Date.now())),
+          );
+        }
+      },
+      msUntilSlotCheck(genesis, slot, Date.now()),
+    );
+  }
+
+  private stopSlotClock(): void {
+    if (this.slotTimer) {
+      clearTimeout(this.slotTimer);
+      this.slotTimer = null;
+    }
+  }
+
+  private async checkSlot(slot: number): Promise<void> {
+    const genesis = this.slotGenesis as number;
+    const slotStart = slotStartSeconds(genesis, slot);
+    // Only slots that started while subscribed: earlier ones may have had a block we never saw.
+    if (
+      !this.hasActiveSubscription ||
+      this.subscribedAt === null ||
+      slotStart * 1000 < this.subscribedAt
+    ) {
+      return;
+    }
+    const workflows = this.missedSlotWorkflows();
+    if (workflows.length === 0) {
+      return;
+    }
+    let latest: BlockData | null | undefined;
+    if ((this.latestBlockTimestamp ?? 0) >= slotStart) {
+      const found = await this.slotHasBlock(slot, workflows);
+      if (found === true) {
+        return;
+      }
+      latest = found;
+    }
+    // No live header since subscribing yet: cannot tell whether headers arrive on time.
+    if (this.recentHeaderLagsMs.length === 0) {
+      return;
+    }
+    // Every recent header later than the 4 s window by our clock: the clock or the node is off.
+    const lagMs = Math.min(...this.recentHeaderLagsMs);
+    if (lagMs > MISSED_SLOT_CHECK_DELAY_MS) {
+      if (Date.now() - this.lagWarnedAt >= LAG_WARNING_INTERVAL_MS) {
+        this.lagWarnedAt = Date.now();
+        console.warn(
+          `[BlockMonitor:${this.chainName}] Missed-slot checks paused: block headers arrive at least ${lagMs}ms after their timestamp`,
+        );
+      }
+      return;
+    }
+    // The subscription may lag the chain: confirm with the node before firing.
+    const head =
+      latest === undefined ? await this.getBlockData("latest") : latest;
+    if (!(head && plausibleTimestamp(head.timestamp))) {
+      return;
+    }
+    this.noteBlockTimestamp(head.timestamp);
+    if (head.timestamp >= slotStart) {
+      if (slotAt(genesis, head.timestamp) === slot) {
+        await this.fillSlot(slot, workflows, head);
+      }
+      return;
+    }
+    if (head.timestamp < slotStart - MAX_MISSED_SLOTS_IN_A_ROW * SLOT_SECONDS) {
+      return;
+    }
+    console.log(
+      `[BlockMonitor:${this.chainName}] Slot ${slot} missed (latest block ${head.number}), firing ${workflows.length} workflow(s)`,
+    );
+    this.lastMissedSlot = slot;
+    await this.dispatchSlotRun(workflows, slot, head, true);
+  }
+
+  /**
+   * True when the slot has a block, so no missed-slot run is due; otherwise the
+   * "latest" block it fetched (null if that fetch failed, undefined if not tried),
+   * for the missed-slot check to reuse. A block the
+   * normal path has not dispatched yet (newer than the last processed one) is
+   * left to it; an older-numbered one (a reorg) gets its run here.
+   */
+  private async slotHasBlock(
+    slot: number,
+    workflows: BlockWorkflow[],
+  ): Promise<true | BlockData | null | undefined> {
+    if ((this.lastRunSlot ?? -1) >= slot) {
+      return true;
+    }
+    const genesis = this.slotGenesis as number;
+    const header = this.lastHeader;
+    const headerInSlot =
+      header !== null && slotAt(genesis, header.timestamp) === slot;
+    let block: BlockData | null = null;
+    if (headerInSlot) {
+      if (this.isNewerThanProcessed(header.number)) {
+        return true;
+      }
+      // By hash: a load-balanced node can still serve an older "latest".
+      block = await this.getBlockData(header.hash);
+    }
+    const latest = block ? null : await this.getBlockData("latest");
+    block = block ?? latest;
+    if (!block) {
+      // Both fetches failed: the header alone proves the slot had a block.
+      return headerInSlot ? true : null;
+    }
+    if (
+      !plausibleTimestamp(block.timestamp) ||
+      slotAt(genesis, block.timestamp) !== slot
+    ) {
+      // Hand "latest" on if it was fetched; undefined lets the caller fetch it.
+      return latest ?? undefined;
+    }
+    await this.fillSlot(slot, workflows, block);
+    return true;
+  }
+
+  // Runs a block found in the slot unless the normal path will dispatch it.
+  private async fillSlot(
+    slot: number,
+    workflows: BlockWorkflow[],
+    block: BlockData,
+  ): Promise<void> {
+    if (
+      (this.lastRunSlot ?? -1) >= slot ||
+      this.isNewerThanProcessed(block.number)
+    ) {
+      return;
+    }
+    console.log(
+      `[BlockMonitor:${this.chainName}] Slot ${slot} has block ${block.number} but no run yet (a reorg), firing ${workflows.length} workflow(s)`,
+    );
+    await this.dispatchSlotRun(workflows, slot, block, false);
+  }
+
+  private isNewerThanProcessed(blockNumber: number): boolean {
+    return (
+      this.lastProcessedBlock === null || blockNumber > this.lastProcessedBlock
+    );
+  }
+
+  private async dispatchSlotRun(
+    workflows: BlockWorkflow[],
+    slot: number,
+    head: {
+      number: number;
+      hash: string;
+      timestamp: number;
+      parentHash: string;
+    },
+    missedSlot: boolean,
+  ): Promise<void> {
+    this.noteRunSlot(slot);
+    const results = await Promise.allSettled(
+      workflows.map((wf) =>
+        this.enqueueWithPhantom(wf, this.slotKey(wf, slot), {
+          blockNumber: head.number,
+          blockHash: head.hash,
+          blockTimestamp: head.timestamp,
+          parentHash: head.parentHash,
+          ...this.slotFields(slot, missedSlot),
+        }),
+      ),
+    );
+    for (const [index, result] of results.entries()) {
+      if (result.status === "rejected") {
+        console.error(
+          `[BlockMonitor:${this.chainName}] Failed to enqueue slot ${slot} run for ${workflows[index].id}:`,
+          result.reason,
+        );
+      }
+      metrics.recordSqsEnqueue(
+        this.chainName,
+        result.status === "rejected" ? "error" : "success",
+      );
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1200,6 +1587,7 @@ export class ChainMonitor {
         this.startPingPong();
         this.resetNoBlockTimer();
         this.startPrimaryProbe();
+        this.syncSlotClock();
         metrics.recordReconnect(this.chainName, "success");
         metrics.observeReconnectDuration(
           this.chainName,
