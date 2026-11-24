@@ -620,65 +620,96 @@ describe("next-block simulation", () => {
     });
   });
 
-  describe("the slot clock", () => {
-    it("predicts the next slot after a missed one, not a slot that has passed", async () => {
-      // The slot after the latest block was missed: 15 s since it, no block.
-      setClock(node.latestTimestamp + 15);
+  describe("the slot clock (beacon chains)", () => {
+    const MAINNET = 1;
+    const GRACE = SLOT / 3;
+
+    function sendOn(
+      chainId: number,
+      basedOn?: Awaited<ReturnType<typeof send>>["simulation"]
+    ): ReturnType<typeof simulateSendAtNextBlock> {
+      return simulateSendAtNextBlock(managerFor(provider), {
+        chainId,
+        tx: RUN_TX,
+        options: { timestampOffsetSec: SLOT, ...(basedOn ? { basedOn } : {}) },
+      });
+    }
+
+    it("predicts the next slot once a missed slot has passed its grace", async () => {
+      // No block for the slot after the latest one, 4 s into it.
+      setClock(node.latestTimestamp + SLOT + GRACE);
       node.unlockAt = node.latestTimestamp + 2 * SLOT;
 
-      const result = await send();
-      expect(result.simulation.assumedTimestamp).toBe(
-        node.latestTimestamp + 2 * SLOT
+      const { simulation } = await sendOn(MAINNET);
+      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + 2 * SLOT);
+      expect(simulation.assumedBlockNumber).toBe(101);
+    });
+
+    it("keeps the current slot during its first third, while blocks are still built", async () => {
+      setClock(node.latestTimestamp + SLOT + GRACE - 1);
+      node.unlockAt = node.latestTimestamp + 2 * SLOT;
+
+      const error = await sendOn(MAINNET).catch((e: unknown) => e);
+      expect(formatContractError(error, IFACE)).toContain("too-soon");
+      expect(getNextBlockSimulation(error)?.assumedTimestamp).toBe(
+        node.latestTimestamp + SLOT
       );
-      expect(result.simulation.assumedBlockNumber).toBe(101);
     });
 
     it("refuses a call valid only from a later slot after a missed one", async () => {
-      setClock(node.latestTimestamp + 15);
+      setClock(node.latestTimestamp + SLOT + GRACE);
       node.unlockAt = node.latestTimestamp + 3 * SLOT;
 
-      const error = await send().catch((e: unknown) => e);
+      const error = await sendOn(MAINNET).catch((e: unknown) => e);
       expect(formatContractError(error, IFACE)).toContain("too-soon");
-      expect(getNextBlockSimulation(error)?.assumedTimestamp).toBe(
-        node.latestTimestamp + 2 * SLOT
-      );
-    });
-
-    it("moves to the next slot exactly at a slot start", async () => {
-      setClock(node.latestTimestamp + SLOT);
-      const { simulation } = await read({ timestampOffsetSec: SLOT });
-      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + 2 * SLOT);
     });
 
     it("never predicts earlier than one slot after the latest block", async () => {
       // A server clock behind the chain.
       setClock(node.latestTimestamp - 30);
-      const { simulation } = await read({ timestampOffsetSec: SLOT });
+      node.unlockAt = node.latestTimestamp + SLOT;
+      const { simulation } = await sendOn(MAINNET);
       expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + SLOT);
     });
 
-    it("uses the set offset as the slot length", async () => {
-      setClock(node.latestTimestamp + 7);
-      const { simulation } = await read({ timestampOffsetSec: 5 });
-      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + 10);
-      expect(simulation.timestampOffsetSec).toBe(5);
+    it("fails as a temporary error on a head more than 5 slots old", async () => {
+      setClock(node.latestTimestamp + 5 * SLOT + 1);
+      const error = await sendOn(MAINNET).catch((e: unknown) => e);
+      expect(isNonRetryableError(error)).toBe(false);
+      expect((error as Error).message).toContain("latest block is 61s old");
+      expect(failedNextBlockCheck(error)).toBe(true);
     });
 
-    it("matches the beacon clock on Ethereum mainnet", () => {
-      // Mainnet genesis 1606824023, 12 s slots: slot starts are on that grid.
+    it("keeps latest + one block time on other networks", async () => {
+      // A late block on a non-beacon chain still gets latest + block time.
+      setClock(node.latestTimestamp + 5 * SLOT + 1);
+      node.unlockAt = node.latestTimestamp + SLOT;
+      const { simulation } = await sendOn(CHAIN_ID);
+      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + SLOT);
+    });
+
+    it("checks again when the predicted slot passed with no new block", async () => {
+      node.unlockAt = node.latestTimestamp + SLOT;
+      const basedOn = (await sendOn(MAINNET)).simulation;
+      setClock(node.latestTimestamp + SLOT + GRACE);
+      node.unlockAt = node.latestTimestamp + 2 * SLOT;
+      provider = new FakeProvider(node);
+
+      const { simulation } = await sendOn(MAINNET, basedOn);
+      expect(simulation.baseBlock).toBe(basedOn.baseBlock);
+      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + 2 * SLOT);
+    });
+
+    it("matches a beacon-clock keeper that re-checks 4 s into each slot", () => {
+      // Mainnet genesis 1606824023, 12 s slots.
       const genesis = 1_606_824_023;
       const latest = genesis + 1_000_000 * SLOT;
       const beaconNextSlotAfter = (t: number): number =>
         genesis + (Math.floor((t - genesis) / SLOT) + 1) * SLOT;
-      for (const now of [
-        latest,
-        latest + 1,
-        latest + 11,
-        latest + 12,
-        latest + 25,
-      ]) {
+      for (const into of [0, 1, 3, 4, 5, 11, 12, 15, 16, 27, 28]) {
+        const now = latest + into;
         expect(nextSlotTime(latest, SLOT, now)).toBe(
-          Math.max(beaconNextSlotAfter(now), latest + SLOT)
+          Math.max(beaconNextSlotAfter(now - GRACE), latest + SLOT)
         );
       }
     });
@@ -905,6 +936,7 @@ describe("next-block simulation", () => {
           });
           expect(isNonRetryableError(thrown)).toBe(false);
           vi.restoreAllMocks();
+          setClock(node.latestTimestamp + 1);
         }
       }
     );
@@ -1518,18 +1550,6 @@ describe("next-block simulation", () => {
       expect(node.seen.at(-1)?.blockTag).toBe(
         ethers.toQuantity(node.latestNumber)
       );
-    });
-
-    it("checks again when a slot passed with no new block while it waited", async () => {
-      const basedOn = await checked();
-      // The predicted slot was missed: same latest block, a slot later.
-      setClock(node.latestTimestamp + 13);
-      node.unlockAt = node.latestTimestamp + 2 * SLOT;
-      provider = new FakeProvider(node);
-
-      const { simulation } = await sendBasedOn(basedOn);
-      expect(simulation.baseBlock).toBe(basedOn.baseBlock);
-      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + 2 * SLOT);
     });
 
     it("fails as a temporary error on an RPC behind the checked block", async () => {

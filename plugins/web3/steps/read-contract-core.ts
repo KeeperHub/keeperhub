@@ -69,10 +69,10 @@ export type ReadContractCoreInput = {
   // #2430: extra ABI documents whose error entries join the decode path, after
   // `abi`. Decoding only - `abi` still encodes the call and reads its result.
   errorAbis?: string[];
-  // "next-block" reads as of the next block (number + 1, timestamp + offset).
+  // "next-block" reads as of the next block (number + 1, its predicted time).
   // Unset or "latest" = today's behaviour.
   simulateAt?: SimulateAt;
-  // Seconds added to the latest timestamp; unset = the chain's block time.
+  // Block time (slot length) in seconds; unset = the chain's measured one.
   simulateTimestampOffsetSec?: string | number;
   _context?: { executionId?: string; organizationId?: string };
 };

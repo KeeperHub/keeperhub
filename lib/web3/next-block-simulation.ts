@@ -1,6 +1,6 @@
 /**
- * Simulate as if the next block had already arrived (number + 1, timestamp +
- * one block time) via RPC block overrides. Only the go / no-go decision and
+ * Simulate as if the next block had already arrived (number + 1, the next
+ * block's predicted time) via RPC block overrides. Only the go / no-go decision and
  * the gas estimate use it; the signed transaction is unchanged.
  */
 import { AbiCoder, type ethers, isError, makeError, toQuantity } from "ethers";
@@ -692,21 +692,49 @@ function preparedFrom(simulation: NextBlockSimulation): Prepared {
 }
 
 const MS_PER_SECOND = 1000;
+// Beacon chains (Ethereum, Sepolia, Holesky, Hoodi, Gnosis, Chiado): a missed
+// slot leaves its timestamp unused, so blocks keep to the wall-clock slots.
+const SLOT_CLOCK_CHAIN_IDS = new Set([
+  1, 11_155_111, 17_000, 560_048, 100, 10_200,
+]);
+// A slot counts as passed a third of the way in, while blocks are still built.
+const SLOT_GRACE_FRACTION = 1 / 3;
+// An older head means a lagging RPC or a wrong server clock.
+const STALE_HEAD_SLOTS = 5;
 
 /**
- * The next block's time on the slot clock: the first slot (latest + n slots)
- * strictly after now, never before latest + one slot. A transaction sent now
- * cannot land in a slot that has already started, so after a missed slot or
- * a stale head this moves forward instead of predicting a slot early.
+ * The first slot (latest + n slots) a transaction sent now can still land in,
+ * as a keeper on the beacon slot clock counts it; never before latest + 1 slot.
  */
 export function nextSlotTime(
   latestTimestamp: number,
   slotSeconds: number,
-  nowSeconds: number = Math.floor(Date.now() / MS_PER_SECOND)
+  nowSeconds: number
 ): number {
-  const elapsed = nowSeconds - latestTimestamp;
-  const slots = elapsed < 0 ? 1 : Math.floor(elapsed / slotSeconds) + 1;
-  return latestTimestamp + slots * slotSeconds;
+  const grace = slotSeconds * SLOT_GRACE_FRACTION;
+  const passed =
+    Math.floor((nowSeconds - latestTimestamp - grace) / slotSeconds) + 1;
+  return latestTimestamp + Math.max(1, passed) * slotSeconds;
+}
+
+// The next block's time: on the slot clock on beacon chains, where a missed
+// slot would otherwise be checked a slot early; else latest + one block time.
+function predictedTime(
+  chainId: number,
+  latestTimestamp: number,
+  slotSeconds: number,
+  nowSeconds: number
+): number {
+  if (!SLOT_CLOCK_CHAIN_IDS.has(chainId)) {
+    return latestTimestamp + slotSeconds;
+  }
+  const age = nowSeconds - latestTimestamp;
+  if (age > STALE_HEAD_SLOTS * slotSeconds) {
+    throw new Error(
+      `Next-block simulation: the RPC's latest block is ${age}s old, more than ${STALE_HEAD_SLOTS} slots; the RPC may be lagging or the server clock off (${RETRY_HINT})`
+    );
+  }
+  return nextSlotTime(latestTimestamp, slotSeconds, nowSeconds);
 }
 
 async function prepare(
@@ -721,14 +749,18 @@ async function prepare(
     );
   }
   const { basedOn } = options;
-  // An earlier check's prediction is reused only while its block is still the
-  // latest and its slot has not started, so a wait never sends on a stale
-  // check.
+  const now = Math.floor(Date.now() / MS_PER_SECOND);
+  // Reuse an earlier check's prediction only while nothing moved, so a wait
+  // never sends on a stale check.
   if (
     basedOn &&
     latest.number === basedOn.baseBlock &&
-    nextSlotTime(latest.timestamp, basedOn.timestampOffsetSec) ===
-      basedOn.assumedTimestamp
+    predictedTime(
+      chainId,
+      latest.timestamp,
+      basedOn.timestampOffsetSec,
+      now
+    ) === basedOn.assumedTimestamp
   ) {
     return preparedFrom(basedOn);
   }
@@ -745,7 +777,7 @@ async function prepare(
       'Next-block simulation cannot predict the next block\'s time on this network: recent blocks share a timestamp. Set "Next block timestamp offset" to 1 (the call may then pass a few blocks early), or set "Simulate at" back to "Latest block".'
     );
   }
-  const time = nextSlotTime(latest.timestamp, offset);
+  const time = predictedTime(chainId, latest.timestamp, offset, now);
   return {
     blockTag: toQuantity(latest.number),
     time,

@@ -123,9 +123,9 @@ export type WriteContractCoreInput = {
   // refund can only go back to whoever paid it.
   payerParam?: string;
   // "next-block" runs the revert check and gas estimate as of the next block
-  // (number + 1, timestamp + offset). Unset or "latest" = today's behaviour.
+  // (number + 1, its predicted time). Unset or "latest" = today's behaviour.
   simulateAt?: SimulateAt;
-  // Seconds added to the latest timestamp; unset = the chain's block time.
+  // Block time (slot length) in seconds; unset = the chain's measured one.
   simulateTimestampOffsetSec?: string | number;
   _context?: {
     executionId?: string;
