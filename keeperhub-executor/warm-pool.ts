@@ -8,6 +8,7 @@ import {
 import { getMetricsCollector } from "../lib/metrics";
 import { MetricNames } from "../lib/metrics/types";
 import {
+  WARM_POOL_ACK_WINDOW_MS,
   WARM_POOL_DECISION_HEADER,
   WARM_POOL_EXECUTION_HEADER,
   WARM_POOL_TOKEN_HEADER,
@@ -26,8 +27,10 @@ import {
  * answers one of those requests with the execution; the pod checks it against
  * the database and acknowledges, and runs it only once the executor confirms
  * that ack. With no ack in time, or a refusal, the executor starts a per-run
- * Job instead and the pod is told not to run it, so an execution is never
- * lost to a dead connection and never started twice.
+ * Job instead and the pod is told not to run it. An execution is never
+ * started twice, and is lost only if the executor's confirmation itself is
+ * dropped on the network after it was sent (the same exposure as a per-run
+ * Job pod dying after it started).
  *
  * Isolation is the same as a per-run Job:
  *  - One execution per pod. A slot is removed from the pool the moment it is
@@ -158,8 +161,9 @@ export type WarmPoolStats = {
 
 const DEFAULT_STARTUP_GRACE_MS = 180_000;
 // Covers the pod's database check and one in-cluster round trip with room
-// to spare; it only delays the fallback when a pod never answers.
-const DEFAULT_ACK_TIMEOUT_MS = 3000;
+// to spare; it only delays the fallback when a pod never answers. Shared
+// with the pod, which waits longer for the answer (warm-pool-protocol.ts).
+const DEFAULT_ACK_TIMEOUT_MS = WARM_POOL_ACK_WINDOW_MS;
 const ORG_CLAIM_WINDOW_MS = 60_000;
 // A used pod is replaced in roughly 20 s, so the pool serves about three
 // claims per pod per minute; one organization may use half of that.
@@ -741,6 +745,11 @@ export class WarmPool {
       });
       res.writeHead(410);
       res.end();
+      return;
+    }
+    // An accept whose connection is already gone cannot receive the 200, so
+    // it must not count: leave the offer to time out into a per-run Job.
+    if (req.socket?.destroyed) {
       return;
     }
     const decision = req.headers[WARM_POOL_DECISION_HEADER];

@@ -841,7 +841,7 @@ const executorBroadcastLatency = getOrCreateHistogram(
 // Warm runner pool (keeperhub-executor/warm-pool.ts) -> apiRegistry: each
 // executor replica owns its own pool, so these are per-pod and summed in
 // queries. claim_result is claimed | miss | org_limited | invalid |
-// not_entitled.
+// refused | unacknowledged | not_entitled.
 const executorWarmPoolReady = getOrCreateGauge(
   apiRegistry,
   "keeperhub_executor_warm_pool_ready",
@@ -859,7 +859,7 @@ const executorWarmPoolStarting = getOrCreateGauge(
 const executorWarmPoolClaimsTotal = getOrCreateCounter(
   apiRegistry,
   "keeperhub_executor_warm_pool_claims_total",
-  "Low-latency dispatches by outcome: claimed by a warm pod; miss, org_limited or invalid (fell back to a per-run Job); or not_entitled",
+  "Low-latency dispatches by outcome: claimed by a warm pod; miss, org_limited, invalid, refused or unacknowledged (fell back to a per-run Job); or not_entitled",
   ["claim_result", "trigger_type"]
 );
 

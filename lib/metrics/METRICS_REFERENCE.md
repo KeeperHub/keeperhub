@@ -81,7 +81,7 @@ Counter/Gauge metrics tracking request/event counts.
 | `user.active.daily` | Daily active users (24h) | - | gauge | DB |
 | `executor.warm_pool.ready` | Warm runner pods holding an open claim request on this executor replica | - | gauge | Executor |
 | `executor.warm_pool.starting` | Warm runner Jobs created whose pod has not polled yet | - | gauge | Executor |
-| `executor.warm_pool.claims.total` | Low-latency dispatches by outcome: `claimed` (ran on a warm pod); `miss` (none ready), `org_limited` (organization used its per-minute share) or `invalid` (assignment a pod would reject), each falling back to a per-run Job; `not_entitled` (plan lacks low-latency start) | `claim_result`, `trigger_type` | count | Executor |
+| `executor.warm_pool.claims.total` | Low-latency dispatches by outcome: `claimed` (ran on a warm pod); `miss` (none ready), `org_limited` (organization used its per-minute share), `invalid` (assignment a pod would reject), `refused` (pod checked the execution and declined it) or `unacknowledged` (no ack within 3 s), each falling back to a per-run Job; `not_entitled` (plan lacks low-latency start) | `claim_result`, `trigger_type` | count | Executor |
 
 ### Scan Funnel Metrics (scan-to-automate landing)
 

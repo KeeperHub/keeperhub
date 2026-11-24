@@ -99,7 +99,9 @@ describe("execution priority", () => {
           triggerType: "Manual",
           executionPriority: "low-latency",
         })
-      ).toContain("has no effect on a Manual trigger");
+      ).toContain(
+        "has no effect on a Manual trigger; it applies to Schedule, Event, Block, Transfer and Pyth Price triggers"
+      );
     });
   });
 

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { assignmentToRunnerEnv } from "../warm-pool-protocol";
-import { waitForAssignment } from "./warm-pool-client";
+import {
+  acknowledgeAssignment,
+  waitForAssignment,
+} from "./warm-pool-client";
 
 const assignment = {
   workflowId: "wf-1",
@@ -198,5 +201,58 @@ describe("assignmentToRunnerEnv for a per-run Job", () => {
     expect(env.KH_DISPATCH_TARGET).toBeUndefined();
     expect(env.WORKFLOW_ID).toBe("wf-1");
     expect(env.KH_CORRELATION_ID).toBe("abc123");
+  });
+});
+
+describe("acknowledgeAssignment", () => {
+  const ackOptions = {
+    claimUrl: "http://10.0.0.5:3080",
+    token: "t".repeat(64),
+    executionId: "exec-1",
+  };
+
+  it("lets the pod run only when it accepted and the executor answered 200", async () => {
+    const fetchImpl = sequence(response(200));
+    await expect(
+      acknowledgeAssignment({
+        ...ackOptions,
+        decision: "accept",
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      })
+    ).resolves.toBe(true);
+
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe("http://10.0.0.5:3080/warm-pool/ack");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeUndefined();
+    expect(init.headers).toEqual({
+      "x-warm-pool-token": ackOptions.token,
+      "x-warm-pool-execution": "exec-1",
+      "x-warm-pool-decision": "accept",
+    });
+  });
+
+  it.each([
+    ["an accept answered 410 (executor moved on)", "accept", response(410)],
+    ["a refuse, even answered 200", "refuse", response(200)],
+    ["an accept whose request failed", "accept", new Error("ECONNRESET")],
+  ] as const)("never lets the pod run after %s", async (_label, decision, answer) => {
+    await expect(
+      acknowledgeAssignment({
+        ...ackOptions,
+        decision,
+        fetchImpl: sequence(answer) as unknown as typeof fetch,
+      })
+    ).resolves.toBe(false);
+  });
+});
+
+describe("ack timing", () => {
+  it("waits for the executor's answer longer than the executor waits for the ack", async () => {
+    const { WARM_POOL_ACK_REQUEST_TIMEOUT_MS, WARM_POOL_ACK_WINDOW_MS } =
+      await import("../warm-pool-protocol");
+    expect(WARM_POOL_ACK_REQUEST_TIMEOUT_MS).toBeGreaterThan(
+      WARM_POOL_ACK_WINDOW_MS
+    );
   });
 });

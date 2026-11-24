@@ -37,6 +37,12 @@ type NodeLike = {
   data?: { type?: unknown; config?: Record<string, unknown> | null };
 };
 
+function listWithAnd(items: readonly string[]): string {
+  return items.length <= 1
+    ? items.join("")
+    : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+
 /**
  * Why a trigger's executionPriority will not do what it says, for
  * validate_workflow to warn about; undefined when it is fine. Plan
@@ -57,7 +63,7 @@ export function executionPriorityWarning(
     value === "low-latency" &&
     !LOW_LATENCY_TRIGGER_TYPES.includes(String(triggerType ?? "Manual"))
   ) {
-    return `executionPriority "low-latency" has no effect on a ${String(triggerType ?? "Manual")} trigger; it applies to ${LOW_LATENCY_TRIGGER_TYPES.join(", ")} triggers`;
+    return `executionPriority "low-latency" has no effect on a ${String(triggerType ?? "Manual")} trigger; it applies to ${listWithAnd(LOW_LATENCY_TRIGGER_TYPES)} triggers`;
   }
   return undefined;
 }

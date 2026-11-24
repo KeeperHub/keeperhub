@@ -19,7 +19,7 @@ export type ClaimOutcome = WarmAssignResult | "not_entitled";
 /** A run cleared to try the warm pool, and the labels its claim reports. */
 export type LowLatencyStart = {
   organizationId: string;
-  /** The message trigger type (webhook stays "webhook"), for metrics. */
+  /** The message trigger type, for metrics. */
   triggerType: string;
 };
 

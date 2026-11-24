@@ -123,9 +123,10 @@ export const MetricNames = {
   // an open claim request; starting = Jobs created whose pod has not polled
   // yet. Claims count each low-latency dispatch by outcome (claim_result):
   // claimed; miss (no ready pod), org_limited (the organization used its
-  // per-minute share) or invalid (a pod would reject the assignment), all of
-  // which fall back to a per-run Job; or not_entitled (the organization's
-  // plan does not include low-latency start).
+  // per-minute share), invalid (a pod would reject the assignment), refused
+  // (the pod declined it) or unacknowledged (no ack in time), all of which
+  // fall back to a per-run Job; or not_entitled (the organization's plan
+  // does not include low-latency start).
   EXECUTOR_WARM_POOL_READY: "executor.warm_pool.ready",
   EXECUTOR_WARM_POOL_STARTING: "executor.warm_pool.starting",
   EXECUTOR_WARM_POOL_CLAIMS: "executor.warm_pool.claims.total",

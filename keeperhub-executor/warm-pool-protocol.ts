@@ -32,6 +32,16 @@ export const WARM_POOL_EXECUTION_HEADER = "x-warm-pool-execution";
 export const WARM_POOL_DECISION_HEADER = "x-warm-pool-decision";
 export type WarmAckDecision = "accept" | "refuse";
 
+/**
+ * How long the executor waits for an ack after offering an execution. The
+ * pod waits longer for the answer to its ack (it sends the ack after the
+ * offer, so its deadline always falls after the executor's): any 200 the
+ * executor sends is sent while the pod is still listening, and only a real
+ * network drop can lose it.
+ */
+export const WARM_POOL_ACK_WINDOW_MS = 3000;
+export const WARM_POOL_ACK_REQUEST_TIMEOUT_MS = WARM_POOL_ACK_WINDOW_MS + 2000;
+
 // Runner env vars that turn a runner into a warm pod (set on warm Jobs only).
 export const WARM_POOL_ENV = {
   claimUrl: "KH_WARM_POOL_CLAIM_URL",

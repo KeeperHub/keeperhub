@@ -17,7 +17,7 @@ import { OPERATOR_METADATA } from "@/lib/workflow/nodes/condition/operator-metad
 
 // Shared by every trigger whose runs the executor dispatches; see
 // lib/workflow/execution-priority.ts.
-const EXECUTION_PRIORITY_DOC = `string - "standard" (default) or "low-latency". Low latency starts runs on a pre-warmed runner when one is available, typically in under a second instead of 10-20 seconds, for time-critical workflows. Best effort: when the environment has no pre-warmed runners, none is free, the organization has used its share of fast starts for the minute, or the plan does not include low-latency start (${PLANS[FEATURES["automation.low-latency-start"].requiredPlan].name} and above), the run starts the standard way. Applies to Schedule, Event, Block, Transfer and Pyth Price triggers; ignored for manual runs.`;
+const EXECUTION_PRIORITY_DOC = `string - "standard" (default) or "low-latency". Low latency starts runs on a pre-warmed runner when one is available, typically in under a second instead of 10-20 seconds, for time-critical workflows. Best effort: when the environment has no pre-warmed runners, none is free, the organization has used its share of fast starts for the minute, or the plan does not include low-latency start (${PLANS[FEATURES["automation.low-latency-start"].requiredPlan].name} and above), the run starts the standard way. Applies to Schedule, Event, Block, Transfer and Pyth Price triggers; ignored for Manual and Webhook triggers and for manual or API runs.`;
 
 const CONDITION_OPERATOR_DOCS = Object.entries(OPERATOR_METADATA)
   .map(

@@ -1,5 +1,6 @@
 import {
   WARM_POOL_ACK_PATH,
+  WARM_POOL_ACK_REQUEST_TIMEOUT_MS,
   WARM_POOL_CLAIM_PATH,
   WARM_POOL_DECISION_HEADER,
   WARM_POOL_EXECUTION_HEADER,
@@ -168,7 +169,6 @@ export async function waitForAssignment(
   return { kind: "exit", reason: "idle lifetime reached" };
 }
 
-const ACK_REQUEST_TIMEOUT_MS = 2000;
 
 /**
  * Tell the executor whether this pod takes the offered execution. Returns
@@ -194,7 +194,7 @@ export async function acknowledgeAssignment(options: {
           [WARM_POOL_EXECUTION_HEADER]: executionId,
           [WARM_POOL_DECISION_HEADER]: decision,
         },
-        signal: AbortSignal.timeout(ACK_REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(WARM_POOL_ACK_REQUEST_TIMEOUT_MS),
       }
     );
     return decision === "accept" && response.status === 200;
