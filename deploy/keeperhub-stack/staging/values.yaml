@@ -1197,6 +1197,15 @@ executor:
       type: parameterStore
       name: warm-pool-size
       parameter_name: /eks/techops-staging/keeperhub/warm-pool-size
+    # Most warm-pod claims one organization may make per minute per executor
+    # replica; above it, runs start the standard way. Unset or 0 derives it
+    # from the pool size (minimum 5). Comes from Parameter Store; create it
+    # before deploy (a missing SSM param blocks the pod):
+    # /eks/techops-staging/keeperhub/warm-pool-org-claims-per-minute
+    WARM_POOL_ORG_CLAIMS_PER_MINUTE:
+      type: parameterStore
+      name: warm-pool-org-claims-per-minute
+      parameter_name: /eks/techops-staging/keeperhub/warm-pool-org-claims-per-minute
     METRICS_COLLECTOR:
       type: kv
       value: "prometheus"
