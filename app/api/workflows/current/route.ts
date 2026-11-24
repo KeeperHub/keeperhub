@@ -17,6 +17,18 @@ import {
   validateWorkflowActionConfigs,
 } from "@/lib/workflow/validation/action-config";
 
+import { ArnSegment, Capability, PolicyRole,
+  toPolicyRole } from "@/lib/policy";
+import { enforceControlPlane } from "@/lib/policy/control-plane";
+import { getOrgRole } from "@/lib/security/org-role";
+
+/** The caller's role, or nothing when it cannot be established. */
+async function orgRoleOf(userId: string, organizationId: string): Promise<PolicyRole | null> {
+  // Not defaulted to member: a role this build does not recognise, or no
+  // membership at all, is not the least authority, it is an unknown actor.
+  return toPolicyRole(await getOrgRole(userId, organizationId));
+}
+
 const CURRENT_WORKFLOW_NAME = "~~__CURRENT__~~";
 
 export async function GET(request: Request) {
@@ -147,6 +159,28 @@ export async function POST(request: Request) {
         formatActionConfigValidationResponse(actionConfigValidation),
         { status: 422 }
       );
+    }
+
+    // Saving a draft creates a workflow, which is a governed change like any
+    // other. After the validations above, which need no policy to decide, and
+    // before anything is written.
+    const role = await orgRoleOf(session.user.id, organizationId);
+    if (role === null) {
+      return NextResponse.json(
+        { error: "You are not a member of this organization" },
+        { status: 403 }
+      );
+    }
+
+    const policyRefusal = await enforceControlPlane({
+      organizationId,
+      userId: session.user.id,
+      role,
+      capability: Capability.WORKFLOW_CREATE,
+      resource: { type: ArnSegment.WORKFLOW, id: "new" },
+    });
+    if (policyRefusal) {
+      return policyRefusal;
     }
 
     // Check if current workflow exists for this user in this org.

@@ -204,6 +204,13 @@ vi.mock("@/lib/logging", () => ({
   logSystemError: vi.fn(),
 }));
 
+// The viewer check resolves a membership through a join this file's db mock
+// does not model. Stubbed to a non-viewer so the lifecycle stays the subject
+// here; that the check refuses a viewer is covered on its own.
+vi.mock("@/lib/security/viewer-gate", () => ({
+  isViewerForRequest: vi.fn(() => Promise.resolve(false)),
+}));
+
 const { POST: postApprovalRequest } = await import(
   "@/app/api/agentic-wallet/approval-request/route"
 );

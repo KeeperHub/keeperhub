@@ -67,6 +67,7 @@ import {
   workflows,
 } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { assertSigningAllowed } from "@/lib/policy/signing-guard";
 import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
 
 export const dynamic = "force-dynamic";
@@ -201,13 +202,19 @@ function validateInput(body: FeedbackRequestBody): ValidatedInput | string {
 }
 
 type WalletResolveResult =
-  | { ok: true; subOrgId: string; walletAddress: `0x${string}` }
+  | {
+      ok: true;
+      subOrgId: string;
+      walletAddress: `0x${string}`;
+      organizationId: string | null;
+    }
   | { ok: false; status: number; error: string };
 
 async function resolveWallet(subOrgId: string): Promise<WalletResolveResult> {
   const rows = await db
     .select({
       walletAddress: agenticWallets.walletAddressBase,
+      organizationId: agenticWallets.organizationId,
     })
     .from(agenticWallets)
     .where(eq(agenticWallets.subOrgId, subOrgId))
@@ -220,6 +227,7 @@ async function resolveWallet(subOrgId: string): Promise<WalletResolveResult> {
     ok: true,
     subOrgId,
     walletAddress: row.walletAddress as `0x${string}`,
+    organizationId: row.organizationId ?? null,
   };
 }
 
@@ -332,6 +340,7 @@ async function buildAndSignTx(args: {
   valueDecimals: number;
   feedbackId: string;
   feedbackHash: Hex;
+  organizationId: string | null;
 }): Promise<{ signedTx: Hex; publicBaseUrl: string }> {
   const publicBaseUrl =
     process.env.KEEPERHUB_PUBLIC_BASE_URL ?? "https://app.keeperhub.com";
@@ -397,6 +406,21 @@ async function buildAndSignTx(args: {
     maxFeePerGas: fees.maxFeePerGas,
     maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
   });
+
+  // This route signs a real transaction, so the organization's rules apply to
+  // it exactly as they do to any other write. The organization comes from the
+  // wallet row the caller was already resolved against; a wallet nobody has
+  // linked carries none, and nothing can govern that.
+  if (args.organizationId) {
+    await assertSigningAllowed(
+      { organizationId: args.organizationId, chainId: args.agentChainId },
+      {
+        to: ERC_8004_REPUTATION_REGISTRY_ADDRESS,
+        data: calldata,
+        value: BigInt(0),
+      }
+    );
+  }
 
   const { signedTransaction } = await signEthereumTransaction({
     subOrgId: args.subOrgId,
@@ -556,6 +580,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       valueDecimals: validated.valueDecimals,
       feedbackId,
       feedbackHash,
+      organizationId: wallet.organizationId,
     });
     signedTx = result.signedTx;
     publicBaseUrl = result.publicBaseUrl;

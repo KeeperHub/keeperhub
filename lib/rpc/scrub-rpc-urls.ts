@@ -25,6 +25,8 @@
  * `buildErrPayload` first.
  */
 
+import { isOwnAppUrl } from "@/lib/app-origin";
+
 const URL_RE = /\bhttps?:\/\/[^\s)'"<>]+|wss?:\/\/[^\s)'"<>]+/gi;
 
 // Patterns whose match ends at the secret segment. Each is applied to the
@@ -135,7 +137,9 @@ export function redactAllUrls(text: string): string {
   if (!text) {
     return text;
   }
-  return text.replace(URL_RE, URL_PLACEHOLDER);
+  return text.replace(URL_RE, (match) =>
+    isOwnAppUrl(match) ? match : URL_PLACEHOLDER
+  );
 }
 
 /**

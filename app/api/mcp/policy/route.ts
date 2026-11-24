@@ -36,6 +36,22 @@ export async function PUT(request: Request): Promise<NextResponse> {
     );
   }
 
+  // A credential cannot raise the ceiling that binds it. This is the limit on
+  // what an agent may do, so an agent holding an admin token could otherwise
+  // widen its own reach back up to whatever it was minted with, and a challenge
+  // would not help because there is nobody to ask. Policy writes are session
+  // only for the same reason; so is this.
+  if (caller.authMethod !== "session") {
+    return NextResponse.json(
+      {
+        error:
+          "The agent ceiling can only be changed from a signed-in session, not with an API key or token",
+        code: "session_required",
+      },
+      { status: 403 }
+    );
+  }
+
   try {
     const body = (await request.json()) as { maxScope?: unknown };
     const next =

@@ -2,6 +2,7 @@ import "server-only";
 import { TurnkeyRequestError } from "@turnkey/sdk-server";
 import { getAddress, type Hex } from "viem";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { assertSigningAllowed } from "@/lib/policy/signing-guard";
 import { sleep } from "@/lib/sleep";
 import { getTurnkeyClientForOrg } from "@/lib/turnkey/agentic-wallet";
 import {
@@ -92,6 +93,14 @@ function isDefinitePreBroadcastRejection(error: unknown): boolean {
 }
 
 export type TurnkeySponsoredTxParams = {
+  /**
+   * The organization answerable for the transaction.
+   *
+   * Required because policy is checked here. A sponsored transaction never
+   * builds an ethers signer, so the guard that wraps one cannot reach it, and
+   * this is the last point before the payload leaves for the gas station.
+   */
+  organizationId: string;
   subOrgId: string;
   walletAddress: string;
   chainId: number;
@@ -118,6 +127,14 @@ export async function submitTurnkeySponsoredTransaction(
   if (caip2 === null) {
     return null;
   }
+
+  // Judged on the same facts the direct path is judged on, and refused the same
+  // way: assertSigningAllowed throws, which stops the submission rather than
+  // falling through to the unsponsored route with the same payload.
+  await assertSigningAllowed(
+    { organizationId: params.organizationId, chainId: params.chainId },
+    { to: params.to, data: params.data ?? null, value: params.value ?? null }
+  );
 
   const turnkey = getTurnkeyClientForOrg(params.subOrgId);
   const client = turnkey.apiClient();

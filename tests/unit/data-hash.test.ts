@@ -311,7 +311,12 @@ describe("data/hash", () => {
 
       expect(result.count).toBe(3);
       expect(Object.keys(result.map)).toHaveLength(3);
-      expect(result.map.__proto__).toBe(ethers.id("__proto__"));
+      // Read it as the own property it is. Going through `.__proto__` would
+      // ask for the prototype, which is the very confusion this test exists to
+      // rule out, and biome refuses the spelling for that reason.
+      expect(
+        Object.getOwnPropertyDescriptor(result.map, "__proto__")?.value
+      ).toBe(ethers.id("__proto__"));
       expect(result.result).toEqual([
         ethers.id("abc"),
         ethers.id("__proto__"),

@@ -31,6 +31,11 @@ export const STEP_UP_ACTIONS = {
   // Releasing a held Tempo payment moves funds on-chain, so it is step-up gated.
   tempoHeldPaymentBroadcast: "tempo_held_payment_broadcast",
   sessionRevoke: "session_revoke",
+  // Editing policy is the meta case: a guardrail whoever it constrains can
+  // edit is not a guardrail. Unlike every other action here it is not a single
+  // act, so the challenge opens a short window rather than gating each write.
+  // See lib/mfa/policy-write-window.ts.
+  policyWrite: "policy_write",
   // Internal — step-up gated but not user-facing.
   stepUpEmailEnroll: "step_up_email_enroll",
   stepUpEmailRemove: "step_up_email_remove",

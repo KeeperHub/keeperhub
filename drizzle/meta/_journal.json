@@ -1191,6 +1191,20 @@
       "when": 1794931306913,
       "tag": "0169_failure_alerts_streak_index",
       "breakpoints": true
+    },
+    {
+      "idx": 170,
+      "version": "7",
+      "when": 1794931307913,
+      "tag": "0170_keep_1080_organization_policies",
+      "breakpoints": true
+    },
+    {
+      "idx": 171,
+      "version": "7",
+      "when": 1794931308913,
+      "tag": "0171_keep_1080_policy_pending_document",
+      "breakpoints": true
     }
   ]
 }

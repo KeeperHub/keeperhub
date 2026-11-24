@@ -10,6 +10,7 @@ import {
   type LucideIcon,
   Mail,
   Plug,
+  ScrollText,
   Shield,
   ShieldCheck,
   User,
@@ -463,6 +464,55 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
           },
         ],
         tags: ["risk", "guardrails", "budget"],
+        adminOnly: true,
+      },
+      {
+        segment: "policies",
+        scope: "org",
+        label: "Policies",
+        icon: ScrollText,
+        description:
+          "Rules that constrain what workflows and agents may do here.",
+        panels: [
+          {
+            title: "Policies",
+            tags: [
+              "policy",
+              "guardrails",
+              "rules",
+              "allowlist",
+              "denylist",
+              "capability",
+              "what agents can do",
+              "restrict a protocol",
+              "block borrowing",
+              "monitor mode",
+              "enforce",
+            ],
+          },
+          {
+            title: "Simulate",
+            tags: [
+              "test a policy",
+              "what would happen",
+              "dry run",
+              "preview a rule",
+              "check a workflow",
+            ],
+          },
+          {
+            title: "Recent decisions",
+            tags: [
+              "decision log",
+              "denied actions",
+              "blocked",
+              "why was this blocked",
+              "policy history",
+              "audit",
+            ],
+          },
+        ],
+        tags: ["governance", "guardrails", "permissions", "controls", "risk"],
         adminOnly: true,
       },
       {
