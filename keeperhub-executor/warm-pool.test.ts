@@ -535,6 +535,29 @@ describe("WarmPool", () => {
       pool.stop();
     });
 
+    it("ignores an accept whose connection is already closed, so the run falls back", async () => {
+      const { pool, tokens, poll, start, deleteJob } = makePool();
+      await start();
+      await poll(tokens[0]);
+
+      const pending = pool.tryAssign(assignment, "org-1");
+      await flush();
+      const req = claimRequest(tokens[0]);
+      Object.assign(req.headers, {
+        [WARM_POOL_EXECUTION_HEADER]: assignment.executionId,
+        [WARM_POOL_DECISION_HEADER]: "accept",
+      });
+      (req.socket as { destroyed?: boolean }).destroyed = true;
+      const res = new FakeResponse();
+      pool.handleAckRequest(req, res as unknown as ServerResponse);
+      expect(res.statusCode).toBeUndefined();
+
+      vi.advanceTimersByTime(3000);
+      await expect(pending).resolves.toBe("unacknowledged");
+      expect(deleteJob).toHaveBeenCalledWith(`job-${tokens[0]}`);
+      pool.stop();
+    });
+
     it("refuses an ack for another execution or from another address", async () => {
       const { pool, tokens, poll, start, ack } = makePool();
       await start();
