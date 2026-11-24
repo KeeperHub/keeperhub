@@ -15,6 +15,7 @@ import type { AdaptiveGasStrategy, GasConfig } from "../gas-strategy";
 import {
   type NextBlockSimulation,
   simulateSendAtNextBlock,
+  tagNextBlockSimulation,
 } from "../next-block-simulation";
 import type { NonceManager, NonceSession } from "../nonce-manager";
 import { buildChainAddressUrl, buildChainTransactionUrl } from "./explorer";
@@ -223,69 +224,75 @@ export class EvmChainAdapter implements ChainAdapter {
         : await fn.estimateGas(...request.args, callOverrides);
     }
 
-    const nonce = this.nonceManager.getNextNonce(session);
+    // A failure after a passed next-block check (broadcast, confirm, on-chain
+    // revert) still reports the block it was predicted for.
+    try {
+      const nonce = this.nonceManager.getNextNonce(session);
 
-    const gasConfig = await this.gasStrategy.getGasConfig(
-      provider,
-      estimatedGas,
-      this.chainId,
-      options.gasOverrides.multiplierOverride,
-      options.gasOverrides.gasLimitOverride,
-      options.rpcManager,
-      options.gasOverrides.priorityFeeOverride,
-      options.gasOverrides.maxFeeOverride
-    );
+      const gasConfig = await this.gasStrategy.getGasConfig(
+        provider,
+        estimatedGas,
+        this.chainId,
+        options.gasOverrides.multiplierOverride,
+        options.gasOverrides.gasLimitOverride,
+        options.rpcManager,
+        options.gasOverrides.priorityFeeOverride,
+        options.gasOverrides.maxFeeOverride
+      );
 
-    // KEEP-565: route the broadcast through submitSignedTransactionWithFailover
-    // when a manager is available. We encode the calldata via the contract's
-    // own Interface and pass an explicit TransactionRequest -- the helper
-    // populates / signs / broadcasts with failover and reconciles on error.
-    // Direct `fn(...)` call kept as fallback for callers without an
-    // rpcManager (legacy code paths; tracked by KEEP-548).
-    let tx: ethers.TransactionResponse;
-    if (options.rpcManager) {
-      const calldata = contract.interface.encodeFunctionData(
-        request.functionKey,
-        request.args
-      );
-      const txRequest = {
-        to: request.contractAddress,
-        data: calldata,
-        from: signerAddress,
+      // KEEP-565: route the broadcast through submitSignedTransactionWithFailover
+      // when a manager is available. We encode the calldata via the contract's
+      // own Interface and pass an explicit TransactionRequest -- the helper
+      // populates / signs / broadcasts with failover and reconciles on error.
+      // Direct `fn(...)` call kept as fallback for callers without an
+      // rpcManager (legacy code paths; tracked by KEEP-548).
+      let tx: ethers.TransactionResponse;
+      if (options.rpcManager) {
+        const calldata = contract.interface.encodeFunctionData(
+          request.functionKey,
+          request.args
+        );
+        const txRequest = {
+          to: request.contractAddress,
+          data: calldata,
+          from: signerAddress,
+          nonce,
+          gasLimit: gasConfig.gasLimit,
+          maxFeePerGas: gasConfig.maxFeePerGas,
+          maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
+          chainId: this.chainId,
+          ...(request.value ? { value: request.value } : {}),
+        };
+        const broadcast = await submitSignedTransactionWithFailover(
+          signer,
+          txRequest,
+          options.rpcManager
+        );
+        tx = broadcast.response;
+      } else {
+        tx = await fn(...request.args, {
+          nonce,
+          gasLimit: gasConfig.gasLimit,
+          maxFeePerGas: gasConfig.maxFeePerGas,
+          maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
+          ...(request.value ? { value: request.value } : {}),
+        });
+      }
+      // Issue #2289: the transaction is on the wire - record the broadcast
+      // stage (sidecar marker + process-local counter, best-effort).
+      markBroadcast();
+
+      const receipt = await this.confirmTransaction(
+        tx,
+        session,
         nonce,
-        gasLimit: gasConfig.gasLimit,
-        maxFeePerGas: gasConfig.maxFeePerGas,
-        maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
-        chainId: this.chainId,
-        ...(request.value ? { value: request.value } : {}),
-      };
-      const broadcast = await submitSignedTransactionWithFailover(
-        signer,
-        txRequest,
-        options.rpcManager
+        gasConfig,
+        options
       );
-      tx = broadcast.response;
-    } else {
-      tx = await fn(...request.args, {
-        nonce,
-        gasLimit: gasConfig.gasLimit,
-        maxFeePerGas: gasConfig.maxFeePerGas,
-        maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
-        ...(request.value ? { value: request.value } : {}),
-      });
+      return simulation ? { ...receipt, simulation } : receipt;
+    } catch (error) {
+      throw simulation ? tagNextBlockSimulation(error, simulation) : error;
     }
-    // Issue #2289: the transaction is on the wire - record the broadcast
-    // stage (sidecar marker + process-local counter, best-effort).
-    markBroadcast();
-
-    const receipt = await this.confirmTransaction(
-      tx,
-      session,
-      nonce,
-      gasConfig,
-      options
-    );
-    return simulation ? { ...receipt, simulation } : receipt;
   }
 
   async readContract(

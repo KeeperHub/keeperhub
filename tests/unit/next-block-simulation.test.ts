@@ -9,6 +9,7 @@ import { formatContractError } from "@/lib/web3/decode-revert-error";
 import {
   clearSlotSecondsCache,
   getNextBlockSimulation,
+  isNextBlockSimulationUnsupported,
   NextBlockSimulationUnsupportedError,
   nextBlockFailure,
   parseSimulationSettings,
@@ -57,6 +58,10 @@ class FakeNode {
   simulateV1: Support | "missing" = "supported";
   // Before the unlock, run() is a cheap no-op instead of a revert.
   noopWhenLocked = false;
+  // run() uses up all the gas left in a simulated block.
+  burnsGas = false;
+  // Block numbers this node does not return (a lagging backend).
+  missing = new Set<number>();
   // Errors the node answers for the real call or the proof of a method.
   realCallError: { method: string; error: RpcError } | undefined;
   proofError: { method: string; error: RpcError } | undefined;
@@ -78,8 +83,11 @@ class FakeNode {
     }
   }
 
-  private block(tag: string): Record<string, unknown> {
+  private block(tag: string): Record<string, unknown> | null {
     const n = tag === "latest" ? this.latestNumber : Number(BigInt(tag));
+    if (this.missing.has(n)) {
+      return null;
+    }
     const timestamp =
       n === this.latestNumber ? this.latestTimestamp : this.timestampOf(n);
     return {
@@ -197,11 +205,19 @@ class FakeNode {
       overrides: blockOverrides,
     });
     const time = this.timeFor(this.simulateV1, blockOverrides);
+    let gasLeft = true;
     return {
       result: [
         {
           calls: calls.map((call) => {
-            const outcome = this.evaluate(call, time);
+            const burns = this.burnsGas && call.to === CONTRACT;
+            const outcome: Outcome =
+              gasLeft && !burns
+                ? this.evaluate(call, time)
+                : { error: { code: -32_015, message: "out of gas" } };
+            if (burns) {
+              gasLeft = false;
+            }
             if ("result" in outcome) {
               return {
                 status: "0x1",
@@ -257,12 +273,21 @@ function managerFor(provider: ethers.JsonRpcProvider): RpcProviderManager {
   } as unknown as RpcProviderManager;
 }
 
-function httpError(status: number): Error {
+function httpError(status: number, body?: string): Error {
   return ethers.makeError(`server response ${status}`, "SERVER_ERROR", {
     request: new ethers.FetchRequest("https://relay.invalid/key123"),
-    response: new ethers.FetchResponse(status, "status", {}, null),
+    response: new ethers.FetchResponse(
+      status,
+      "status",
+      {},
+      body === undefined ? null : ethers.toUtf8Bytes(body)
+    ),
   });
 }
+
+// Flashbots Protect's answer to a method it does not allow.
+const NOT_WHITELISTED_BODY =
+  '{"jsonrpc":"2.0","error":{"code":-32601,"message":"rpc method is not whitelisted"},"id":1}';
 
 const RUN_TX = {
   from: WALLET,
@@ -457,7 +482,7 @@ describe("next-block simulation", () => {
           const [block] = answer.result as {
             calls: Record<string, unknown>[];
           }[];
-          block.calls[0] = {
+          block.calls[1] = {
             status: "0x0",
             gasUsed: "0x1",
             returnData: "0x",
@@ -471,6 +496,22 @@ describe("next-block simulation", () => {
       expect((error as { shortMessage?: string }).shortMessage).toBe(
         "out of gas"
       );
+    });
+  });
+
+  describe("a send whose call burns the block's gas", () => {
+    it("reports the call's failure, not an unsupported RPC", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+      node.estimateOverrides = "rejected";
+      node.burnsGas = true;
+
+      const error = await send().catch((e: unknown) => e);
+      expect(error).not.toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect(error).toMatchObject({ code: "CALL_EXCEPTION" });
+      expect((error as { shortMessage?: string }).shortMessage).toBe(
+        "out of gas"
+      );
+      expect(getNextBlockSimulation(error)?.rpcMethod).toBe("eth_simulateV1");
     });
   });
 
@@ -516,7 +557,7 @@ describe("next-block simulation", () => {
           const [block] = answer.result as {
             calls: Record<string, unknown>[];
           }[];
-          block.calls[0] = {
+          block.calls[1] = {
             status: "0x0",
             gasUsed: "0x1",
             returnData: TOO_SOON,
@@ -629,6 +670,31 @@ describe("next-block simulation", () => {
         .slice(before)
         .filter((m) => m === "eth_getBlockByNumber").length;
       expect(sampled).toBeGreaterThan(1);
+    });
+
+    it("only measures adjacent blocks, so missing ones cannot stretch it", async () => {
+      // A 2-second chain whose lagging backend lacks most recent blocks.
+      node.timestampOf = (n: number): number =>
+        node.latestTimestamp - (node.latestNumber - n) * 2;
+      node.missing = new Set([95, 96, 97, 98]);
+
+      const { simulation } = await read();
+      expect(simulation.timestampOffsetSec).toBe(2);
+    });
+
+    it("fails as a temporary error, uncached, when no gap can be measured", async () => {
+      node.timestampOf = (n: number): number =>
+        node.latestTimestamp - (node.latestNumber - n) * 2;
+      node.missing = new Set([95, 96, 97, 98, 99]);
+
+      const error = await read().catch((e: unknown) => e);
+      expect(error).not.toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect(isNonRetryableError(error)).toBe(false);
+      expect((error as Error).message).toContain("block time");
+
+      node.missing = new Set();
+      provider = new FakeProvider(node);
+      expect((await read()).simulation.timestampOffsetSec).toBe(2);
     });
 
     it("never goes above 60 seconds", async () => {
@@ -748,20 +814,88 @@ describe("next-block simulation", () => {
             return FakeProvider.prototype._send.call(provider, payload);
           });
           const thrown = await send().catch((e: unknown) => e);
-          expect(thrown).toBeInstanceOf(Error);
-          expect((thrown as Error).message).toContain("retried automatically");
+          // Rethrown as it came, so the failover keeps its code and response.
+          expect(thrown).toMatchObject({
+            code: (makeErr() as Error & { code: string }).code,
+          });
           expect(isNonRetryableError(thrown)).toBe(false);
           vi.restoreAllMocks();
         }
       }
     );
 
+    it.each([
+      ["a gateway's brief 401", () => httpError(401)],
+      ["a 403 without a method refusal", () => httpError(403, "forbidden")],
+    ])("keeps %s on the proof retryable", async (_label, makeErr) => {
+      node.simulateV1 = "missing";
+      vi.spyOn(provider, "_send").mockImplementation((payload) => {
+        const p = Array.isArray(payload) ? payload[0] : payload;
+        const tx = (p.params as Tx[] | undefined)?.[0];
+        if (p.method === "eth_call" && tx?.to === undefined) {
+          return Promise.reject(makeErr());
+        }
+        return FakeProvider.prototype._send.call(provider, payload);
+      });
+      const error = await read({ timestampOffsetSec: SLOT }).catch(
+        (e: unknown) => e
+      );
+      expect(error).not.toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect(isNonRetryableError(error)).toBe(false);
+    });
+
+    it.each([
+      ["requested block 100 is not available"],
+      ["block 100 does not exist"],
+      ["header for block 100 not found"],
+    ])(
+      'keeps a lagging node\'s "%s" on the proof retryable',
+      async (message) => {
+        node.simulateV1 = "missing";
+        node.proofError = {
+          method: "eth_call",
+          error: { code: -32_000, message },
+        };
+        const error = await read({ timestampOffsetSec: SLOT }).catch(
+          (e: unknown) => e
+        );
+        expect(error).not.toBeInstanceOf(NextBlockSimulationUnsupportedError);
+        expect(isNonRetryableError(error)).toBe(false);
+      }
+    );
+
+    it("rethrows a transport error unchanged, so the failover keeps its details", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+      const rateLimited = httpError(429);
+      vi.spyOn(provider, "_send").mockImplementation((payload) => {
+        const p = Array.isArray(payload) ? payload[0] : payload;
+        const tx = (p.params as Tx[] | undefined)?.[0];
+        if (p.method === "eth_estimateGas" && tx?.to === CONTRACT) {
+          return Promise.reject(rateLimited);
+        }
+        return FakeProvider.prototype._send.call(provider, payload);
+      });
+      const error = await send().catch((e: unknown) => e);
+      expect(error).toBe(rateLimited);
+    });
+
+    it("keeps a node's own transient answer as the cause of the retryable error", async () => {
+      node.unlockAt = node.latestTimestamp + 5;
+      node.realCallError = {
+        method: "eth_estimateGas",
+        error: HEADER_NOT_FOUND,
+      };
+      const error = (await send().catch((e: unknown) => e)) as Error;
+      expect(isNonRetryableError(error)).toBe(false);
+      expect(error.cause).toMatchObject({ code: "CALL_EXCEPTION" });
+    });
+
     it("treats an HTTP 403 refusal as unsupported and keeps the URL out of the message", async () => {
       node.simulateV1 = "missing";
       vi.spyOn(provider, "_send").mockImplementation((payload) => {
         const p = Array.isArray(payload) ? payload[0] : payload;
         if (p.method === "eth_call") {
-          return Promise.reject(httpError(403));
+          return Promise.reject(httpError(403, NOT_WHITELISTED_BODY));
         }
         return FakeProvider.prototype._send.call(provider, payload);
       });
@@ -882,5 +1016,27 @@ describe("next-block simulation", () => {
         expect((error as Error).message).toContain("rate limited");
       }
     );
+  });
+});
+
+describe("isNextBlockSimulationUnsupported", () => {
+  it("recognises the error by name and marker, not by class identity", () => {
+    // A copy of the class from another bundle is a different constructor.
+    const fromAnotherBundle = Object.assign(new Error("no"), {
+      name: "NextBlockSimulationUnsupportedError",
+      nonRetryable: true,
+    });
+    expect(isNextBlockSimulationUnsupported(fromAnotherBundle)).toBe(true);
+    expect(
+      isNextBlockSimulationUnsupported(
+        new NextBlockSimulationUnsupportedError("x")
+      )
+    ).toBe(true);
+    expect(isNextBlockSimulationUnsupported(new Error("x"))).toBe(false);
+    expect(
+      isNextBlockSimulationUnsupported({
+        name: "NextBlockSimulationUnsupportedError",
+      })
+    ).toBe(false);
   });
 });

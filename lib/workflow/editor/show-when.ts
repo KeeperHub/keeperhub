@@ -23,6 +23,7 @@
  */
 import { deriveStateMutability } from "@/lib/abi/mutability";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
+import { simulatesNextBlock } from "@/lib/web3/next-block-limits";
 import { isSponsorshipSupported } from "@/lib/web3/sponsorship-chains-meta";
 import {
   isGasSponsorshipEnabled,
@@ -84,15 +85,6 @@ function isNetworkSponsorable(network: unknown): boolean {
  * toggle, and neither a private mempool nor an explicit Safe sender. A
  * "default" connection that org policy resolves to a Safe is not visible here.
  */
-/** A next-block check skips sponsorship (shouldTrySponsorship). */
-export function simulatesNextBlock(config: Record<string, unknown>): boolean {
-  return (
-    String(config.simulateAt ?? "")
-      .trim()
-      .toLowerCase() === "next-block"
-  );
-}
-
 export function wouldBeSponsored(
   config: Record<string, unknown>,
   networkField: string

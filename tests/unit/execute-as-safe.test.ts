@@ -50,7 +50,10 @@ vi.mock("@/lib/web3/submit-signed", async () => {
 });
 
 const mockSimulateSend = vi.fn();
-vi.mock("@/lib/web3/next-block-simulation", () => ({
+vi.mock("@/lib/web3/next-block-simulation", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/web3/next-block-simulation")
+  >()),
   simulateSendAtNextBlock: (...args: unknown[]) => mockSimulateSend(...args),
 }));
 
@@ -393,6 +396,31 @@ describe.each([
     });
     expect(provider.estimateGas).not.toHaveBeenCalled();
     expect(receipt).toMatchObject({ hash: TX_HASH, simulation: SIMULATION });
+  });
+
+  it("tags a failure after the check passed with the predicted block", async () => {
+    mocks.submitSigned.mockRejectedValue(new Error("nonce too low"));
+    const { options } = makeRpcManager(makeReceipt(1));
+
+    const error = await invoke({ ...options, simulation: {} }).catch(
+      (e: unknown) => e
+    );
+
+    expect(error).toMatchObject({
+      message: "nonce too low",
+      nextBlockSimulation: SIMULATION,
+    });
+  });
+
+  it("tags an on-chain revert after the check passed", async () => {
+    const { options } = makeRpcManager(makeReceipt(0));
+
+    const error = await invoke({ ...options, simulation: {} }).catch(
+      (e: unknown) => e
+    );
+
+    expect(isOnChainRevertError(error)).toBe(true);
+    expect(error).toMatchObject({ nextBlockSimulation: SIMULATION });
   });
 
   it("sends nothing when the next-block estimate reverts", async () => {

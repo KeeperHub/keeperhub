@@ -59,7 +59,7 @@ import {
 } from "@/lib/web3/gas-defaults";
 import {
   type NextBlockSimulation,
-  NextBlockSimulationUnsupportedError,
+  isNextBlockSimulationUnsupported,
   nextBlockFailure,
   parseSimulationSettings,
   type SimulateAt,
@@ -873,7 +873,7 @@ async function writeContractCoreImpl(
         ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
       };
     } catch (error) {
-      if (error instanceof NextBlockSimulationUnsupportedError) {
+      if (isNextBlockSimulationUnsupported(error)) {
         return { ...unsupportedFailure(error, "write-contract"), broadcastAttempted: false };
       }
       logUserError(

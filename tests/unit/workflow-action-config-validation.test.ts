@@ -530,6 +530,14 @@ describe("validateWorkflowActionConfigs", () => {
           })
         ).toBeUndefined();
       }
+      // Save and run read Simulate at the same way.
+      for (const bad of ["next_block", "nextBlock", true]) {
+        expect(
+          validateWorkflowActionConfigs([
+            actionNode(actionType, { ...base[actionType], simulateAt: bad }),
+          ]).issues.find((issue) => issue.field === "simulateAt")
+        ).toMatchObject({ code: expect.stringMatching(/^INVALID_FIELD_/) });
+      }
       // Hidden and unused with Latest block.
       expect(
         offsetIssue({ simulateAt: "latest", simulateTimestampOffsetSec: "99" })

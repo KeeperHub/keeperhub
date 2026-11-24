@@ -5,17 +5,14 @@
  */
 import { AbiCoder, type ethers, isError, makeError, toQuantity } from "ethers";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
-import {
-  isMethodNotFound,
-  simulateV1Params,
-  txForNode,
-} from "@/lib/execute/node-call";
+import { simulateV1Params, txForNode } from "@/lib/execute/node-call";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import type { RpcOperationType, RpcProviderManager } from "@/lib/rpc/providers";
 import { getErrorMessage } from "@/lib/utils";
 import {
   MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
   MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
+  parseSimulationSettings as parseSettings,
 } from "@/lib/web3/next-block-limits";
 import { extractRevertData } from "@/lib/web3/revert-data";
 
@@ -24,6 +21,9 @@ export type SimulateAt = "latest" | "next-block";
 export type NextBlockSimulationOptions = {
   // Unset = the chain's observed block time.
   timestampOffsetSec?: number;
+  // Reuse the block an earlier check predicted, so a batch's per-call check
+  // and its send agree on one base block.
+  basedOn?: NextBlockSimulation;
 };
 
 export type NextBlockSimulation = {
@@ -57,6 +57,23 @@ export class NextBlockSimulationUnsupportedError extends Error {
     super(message);
     this.name = "NextBlockSimulationUnsupportedError";
   }
+}
+
+const UNSUPPORTED_ERROR_NAME = "NextBlockSimulationUnsupportedError";
+
+/**
+ * Duck-typed, like the repo's other cross-bundle errors: `instanceof` fails
+ * when the step bundle and lib/web3 hold separate copies of this module.
+ */
+export function isNextBlockSimulationUnsupported(
+  error: unknown
+): error is NextBlockSimulationUnsupportedError {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { name?: unknown }).name === UNSUPPORTED_ERROR_NAME &&
+    (error as { nonRetryable?: unknown }).nonRetryable === true
+  );
 }
 
 type ConfigFailure = {
@@ -117,9 +134,24 @@ function unsupported(what: string, error?: unknown): never {
   );
 }
 
-function retryable(method: string, error: unknown): Error {
+function isTransportError(error: unknown): boolean {
+  return (
+    isError(error, "TIMEOUT") ||
+    isError(error, "NETWORK_ERROR") ||
+    isError(error, "SERVER_ERROR")
+  );
+}
+
+// A transport error is rethrown unchanged, so the failover keeps its code,
+// response and Retry-After. A node's own transient answer arrives as a
+// non-retryable CALL_EXCEPTION, so it is wrapped, keeping it as `cause`.
+function retryable(method: string, error: unknown): unknown {
+  if (isTransportError(error) || !(error instanceof Error && "code" in error)) {
+    return error;
+  }
   return new Error(
-    `Next-block simulation: ${method} failed (${RETRY_HINT}): ${detailOf(error)}`
+    `Next-block simulation: ${method} failed (${RETRY_HINT}): ${detailOf(error)}`,
+    { cause: error }
   );
 }
 
@@ -127,51 +159,23 @@ type SettingsResult =
   | { ok: true; options: NextBlockSimulationOptions | undefined }
   | { ok: false; failure: ConfigFailure };
 
-const INTEGER_PATTERN = /^\d+$/;
-
-function settingsFailure(error: string): SettingsResult {
-  return {
-    ok: false,
-    failure: { success: false, error, errorClass: ExecutionErrorType.USER },
-  };
-}
-
-/** Reads the step's `simulateAt` / `simulateTimestampOffsetSec` config. */
+/** The step's settings, or the user error a bad value fails the step with. */
 export function parseSimulationSettings(
   simulateAt: unknown,
   timestampOffsetSec: unknown
 ): SettingsResult {
-  const mode =
-    typeof simulateAt === "string"
-      ? simulateAt.trim().toLowerCase()
-      : simulateAt;
-  if (mode === undefined || mode === null || mode === "" || mode === "latest") {
-    return { ok: true, options: undefined };
+  const parsed = parseSettings(simulateAt, timestampOffsetSec);
+  if (parsed.ok) {
+    return parsed;
   }
-  if (mode !== "next-block") {
-    return settingsFailure(
-      `Invalid Simulate at "${String(simulateAt)}": expected "latest" or "next-block"`
-    );
-  }
-  if (
-    timestampOffsetSec === undefined ||
-    timestampOffsetSec === null ||
-    timestampOffsetSec === ""
-  ) {
-    return { ok: true, options: {} };
-  }
-  const text = String(timestampOffsetSec).trim();
-  const offset = Number(text);
-  if (
-    !INTEGER_PATTERN.test(text) ||
-    offset < MIN_SIMULATE_TIMESTAMP_OFFSET_SEC ||
-    offset > MAX_SIMULATE_TIMESTAMP_OFFSET_SEC
-  ) {
-    return settingsFailure(
-      `Invalid Next block timestamp offset "${text}": expected a whole number of seconds from ${MIN_SIMULATE_TIMESTAMP_OFFSET_SEC} to ${MAX_SIMULATE_TIMESTAMP_OFFSET_SEC}`
-    );
-  }
-  return { ok: true, options: { timestampOffsetSec: offset } };
+  return {
+    ok: false,
+    failure: {
+      success: false,
+      error: parsed.error,
+      errorClass: ExecutionErrorType.USER,
+    },
+  };
 }
 
 // The proof: a contract creation whose init code succeeds only when TIMESTAMP
@@ -208,7 +212,6 @@ function proofFailure(
 const SLOT_SAMPLE_BLOCKS = 6;
 const SLOT_CACHE_TTL_MS = 10 * 60_000;
 const SLOT_CACHE_MAX_ENTRIES = 256;
-const FALLBACK_SLOT_SECONDS = 12;
 const slotSecondsCache = new Map<
   string,
   { seconds: number; expiresAt: number }
@@ -233,16 +236,23 @@ async function chainSlotSeconds(
     numbers.push(n);
   }
   const earlier = await Promise.all(numbers.map((n) => provider.getBlock(n)));
-  const timestamps = [
-    ...earlier.flatMap((block) => (block ? [block.timestamp] : [])),
-    latest.timestamp,
-  ];
+  const blocks = [...earlier, latest];
+  // Only adjacent blocks that both came back: a gap across a missing one
+  // would stretch the block time.
   let seconds = Number.POSITIVE_INFINITY;
-  for (let i = 1; i < timestamps.length; i += 1) {
-    seconds = Math.min(seconds, timestamps[i] - timestamps[i - 1]);
+  for (let i = 1; i < blocks.length; i += 1) {
+    const previous = blocks[i - 1];
+    const current = blocks[i];
+    if (previous && current && current.number === previous.number + 1) {
+      seconds = Math.min(seconds, current.timestamp - previous.timestamp);
+    }
   }
+  // Nothing measured. Guessing could send early on a fast chain, so fail as
+  // a temporary error: retried, and the next run measures again.
   if (!Number.isFinite(seconds) || seconds < 0) {
-    seconds = FALLBACK_SLOT_SECONDS;
+    throw new Error(
+      `Next-block simulation: could not read enough recent blocks to measure this network's block time (${RETRY_HINT}). Setting "Next block timestamp offset" skips the measurement.`
+    );
   }
   seconds = Math.min(seconds, MAX_SIMULATE_TIMESTAMP_OFFSET_SEC);
   slotSecondsCache.delete(key);
@@ -266,38 +276,55 @@ export function clearSlotSecondsCache(): void {
 
 type NodeErrorKind = "failed" | "unsupported" | "transient";
 
-const UNSUPPORTED_PATTERN =
-  /too many arguments|invalid (method )?param|unknown field|unexpected (field|argument)|not whitelisted|not allowed|not available|disabled/i;
+// A block the node does not have yet, or an endpoint briefly unavailable.
 const TRANSIENT_PATTERN =
-  /header not found|unknown block|block not found|could not be found|missing trie node|rate limit|too many requests|(?<!execution aborted \()timed? ?out/i;
+  /(header|block)\b[^.]{0,80}(not found|not available|not yet available|does not exist|could not be found)|unknown block|missing trie node|rate limit|too many requests|(?<!execution aborted \()timed? ?out|service unavailable|bad gateway|try again/i;
+// Refusals of the method itself or of the extra parameters only.
+const UNSUPPORTED_PATTERN =
+  /too many arguments|invalid (method )?param|unknown field|unexpected (field|argument)|not whitelisted|method\b[^.]{0,80}(not found|not supported|not available|does not exist|not allowed|disabled)|overrides? (is |are )?not supported/i;
 const INVALID_PARAMS_CODE = -32_602;
 const METHOD_NOT_FOUND_CODE = -32_601;
 const LIMIT_EXCEEDED_CODE = -32_005;
 const EXECUTION_REVERTED_CODE = 3;
-
 const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_CLIENT_ERROR_MIN = 400;
 const HTTP_SERVER_ERROR_MIN = 500;
 
-// Some relays refuse a method with an HTTP 4xx (Flashbots Protect: 403), which
-// ethers reports as SERVER_ERROR. Only 5xx and 429 are worth retrying.
-function isRefusedOverHttp(error: unknown): boolean {
+// An HTTP 4xx (not 429) whose body refuses the method, as Flashbots Protect
+// answers a method it does not allow (403, -32601 "not whitelisted"). Other
+// 4xx, such as a gateway's brief 401/403, stay transient.
+function isMethodRefusedOverHttp(error: unknown): boolean {
   if (!isError(error, "SERVER_ERROR")) {
     return false;
   }
-  const status = (error as { response?: { statusCode?: number } }).response
-    ?.statusCode;
+  const response = (
+    error as { response?: { statusCode?: number; bodyText?: string } }
+  ).response;
+  const status = response?.statusCode;
+  if (
+    status === undefined ||
+    status < HTTP_CLIENT_ERROR_MIN ||
+    status >= HTTP_SERVER_ERROR_MIN ||
+    status === HTTP_TOO_MANY_REQUESTS
+  ) {
+    return false;
+  }
+  let body = "";
+  try {
+    body = response?.bodyText ?? "";
+  } catch {
+    // A binary or unreadable body says nothing about the method.
+  }
   return (
-    status !== undefined &&
-    status >= HTTP_CLIENT_ERROR_MIN &&
-    status < HTTP_SERVER_ERROR_MIN &&
-    status !== HTTP_TOO_MANY_REQUESTS
+    body.includes(String(METHOD_NOT_FOUND_CODE)) ||
+    UNSUPPORTED_PATTERN.test(body)
   );
 }
 
 // ethers reports every eth_call / eth_estimateGas error as CALL_EXCEPTION, so
-// the node's own answer decides. Only known transient answers are retried;
-// anything else the node said about the call is final, as at `latest`.
+// the node's own answer decides. A revert is final; known transient answers
+// are checked before the narrow refusals; anything else is final, as at
+// `latest`.
 function classifyNodeError(error: unknown): NodeErrorKind {
   const { code, message = "" } = rpcErrorOf(error);
   const data = extractRevertData(error);
@@ -307,22 +334,21 @@ function classifyNodeError(error: unknown): NodeErrorKind {
   ) {
     return "failed";
   }
+  if (isMethodRefusedOverHttp(error)) {
+    return "unsupported";
+  }
+  if (isTransportError(error) || TRANSIENT_PATTERN.test(message)) {
+    return "transient";
+  }
   if (
-    isRefusedOverHttp(error) ||
     code === INVALID_PARAMS_CODE ||
     code === METHOD_NOT_FOUND_CODE ||
-    UNSUPPORTED_PATTERN.test(message) ||
-    isMethodNotFound(message)
+    UNSUPPORTED_PATTERN.test(message)
   ) {
     return "unsupported";
   }
-  if (
-    isError(error, "TIMEOUT") ||
-    isError(error, "NETWORK_ERROR") ||
-    isError(error, "SERVER_ERROR") ||
-    code === LIMIT_EXCEEDED_CODE ||
-    TRANSIENT_PATTERN.test(message)
-  ) {
+  // -32005 is a rate limit, unless its message refused the method (above).
+  if (code === LIMIT_EXCEEDED_CODE) {
     return "transient";
   }
   return "failed";
@@ -330,12 +356,25 @@ function classifyNodeError(error: unknown): NodeErrorKind {
 
 const SIMULATION_KEY = "nextBlockSimulation";
 
-function tagged(error: unknown, simulation: NextBlockSimulation): unknown {
-  if (typeof error === "object" && error !== null) {
+/**
+ * Attaches the predicted block to an error, so a failure after the check
+ * passed (broadcast, confirm, on-chain revert) still reports it.
+ */
+export function tagNextBlockSimulation(
+  error: unknown,
+  simulation: NextBlockSimulation
+): unknown {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    getNextBlockSimulation(error) === undefined
+  ) {
     Object.assign(error, { [SIMULATION_KEY]: simulation });
   }
   return error;
 }
+
+const tagged = tagNextBlockSimulation;
 
 /** The predicted block a failed simulation ran against, if it got that far. */
 export function getNextBlockSimulation(
@@ -401,8 +440,9 @@ async function trySimulateV1(
   try {
     blocks = await provider.send(
       "eth_simulateV1",
+      // The proof first, so a call that burns the block's gas cannot starve it.
       simulateV1Params(
-        [tx, proofTx(time)],
+        [proofTx(time), tx],
         { blockOverrides: overrides },
         blockTag
       )
@@ -413,7 +453,7 @@ async function trySimulateV1(
     }
     return;
   }
-  const [call, proof] = blocks?.[0]?.calls ?? [];
+  const [proof, call] = blocks?.[0]?.calls ?? [];
   if (!(call?.gasUsed && proof?.status === "0x1")) {
     return;
   }
@@ -519,11 +559,26 @@ function simulatedGas(simulateV1: SimulateV1Answer): bigint {
   return (simulateV1.gasUsed * BigInt(80)) / BigInt(63);
 }
 
+function preparedFrom(simulation: NextBlockSimulation): Prepared {
+  return {
+    blockTag: toQuantity(simulation.baseBlock),
+    time: simulation.assumedTimestamp,
+    overrides: {
+      number: toQuantity(simulation.assumedBlockNumber),
+      time: toQuantity(simulation.assumedTimestamp),
+    },
+    simulation,
+  };
+}
+
 async function prepare(
   provider: ethers.JsonRpcProvider,
   chainId: number,
   options: NextBlockSimulationOptions
 ): Promise<Prepared> {
+  if (options.basedOn) {
+    return preparedFrom(options.basedOn);
+  }
   const latest = await provider.getBlock("latest");
   if (!latest) {
     throw new Error(

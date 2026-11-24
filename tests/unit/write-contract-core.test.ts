@@ -829,6 +829,28 @@ describe("writeContractCore simulateAt next-block", () => {
     expect(mockExecuteContractCall).not.toHaveBeenCalled();
   });
 
+  it("recognises the unsupported error from another module copy", async () => {
+    // Not an instance of this test's class: what a second bundle would throw.
+    mockExecuteContractCall.mockRejectedValueOnce(
+      Object.assign(new Error("Next-block simulation is not supported"), {
+        name: "NextBlockSimulationUnsupportedError",
+        nonRetryable: true,
+      })
+    );
+
+    const result = await writeContractCore({
+      ...baseInput,
+      simulateAt: "next-block",
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+      broadcastAttempted: false,
+    });
+    expect(applyFailOnError(result, false).success).toBe(false);
+  });
+
   it("fails an unsupported RPC as a user error that never broadcast", async () => {
     mockExecuteContractCall.mockRejectedValueOnce(
       new NextBlockSimulationUnsupportedError(

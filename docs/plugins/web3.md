@@ -634,7 +634,7 @@ The Advanced section has three optional gas settings. Leave them empty to use th
 | [Priority Fee (gwei)](/wallet-management/gas#priority-fee) | Tip paid to the block builder; a higher tip puts the transaction ahead of others in the same block | Hidden. Turn off Sponsor gas to set it |
 | [Max Fee (gwei)](/wallet-management/gas#max-fee) | Ceiling on the total fee per gas; a cap below the next block's base fee fails the step before sending | Hidden. Turn off Sponsor gas to set it |
 
-Sponsored transactions cannot carry a custom priority fee or max fee, so those two fields show only while the node pays its own gas: Sponsor gas off, Simulate at set to Next block, or a network, private mempool or Safe that is not sponsored. Turning Sponsor gas back on clears them, unless Simulate at is Next block. With either one set, make sure the sending wallet holds enough of the network's native token to pay for gas. See [Custom gas settings and sponsorship](/wallet-management/gas#custom-gas-settings-and-sponsorship) for the full rules.
+Sponsored transactions cannot carry a custom priority fee or max fee, so those two fields show only while the node pays its own gas: Sponsor gas off, Simulate at set to Next block, or a network, private mempool or Safe that is not sponsored. Any change that makes the node sponsored again, such as turning Sponsor gas back on or setting Simulate at back to Latest block, clears them. With either one set, make sure the sending wallet holds enough of the network's native token to pay for gas. See [Custom gas settings and sponsorship](/wallet-management/gas#custom-gas-settings-and-sponsorship) for the full rules.
 
 ### Simulate at the next block
 
@@ -649,6 +649,7 @@ Set **Simulate at** to **Next block** to run the simulation as if the next block
 - Networks with fixed 12-second blocks (Ethereum) use 12, and networks with 2-second blocks (Base, OP, Polygon PoS) use 2.
 - On networks where several blocks share one timestamp (Arbitrum and other sub-second networks), the next block's time cannot be predicted and the step fails with a message saying so. Setting the offset to 1 lets it run anyway, but the call can then pass a few blocks early.
 - An offset larger than the real block time makes the check pass blocks early, and the transaction then reverts on-chain and spends gas. Leave it empty unless you have a reason to set it.
+- If the RPC cannot return enough consecutive recent blocks to measure the block time, the step fails as a temporary RPC error and the next run measures again. Setting the offset skips the measurement.
 
 The prediction only helps with a "not before" condition. A late next block has a later timestamp, so an unlock time still holds, but a deadline (`block.timestamp < deadline`) can pass the check and then fail on-chain.
 

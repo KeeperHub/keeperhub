@@ -1235,10 +1235,14 @@ describe("batch-write-contract - simulateAt next-block", () => {
       "aggregate3"
     );
     expect(request.options).toEqual({ timestampOffsetSec: 12 });
+    // The send reuses the block the per-call check predicted.
     const adapterOptions = mockExecuteContractCall.mock.calls[0]?.[3] as {
       simulation?: unknown;
     };
-    expect(adapterOptions.simulation).toEqual({ timestampOffsetSec: 12 });
+    expect(adapterOptions.simulation).toEqual({
+      timestampOffsetSec: 12,
+      basedOn: SIMULATION,
+    });
     expect(result).toMatchObject({
       success: true,
       totalCalls: 2,
@@ -1260,7 +1264,13 @@ describe("batch-write-contract - simulateAt next-block", () => {
       baseInput({ simulateAt: "next-block" })
     );
 
-    expect(result.success).toBe(false);
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining(
+        "(simulated as of next block 101, timestamp 1000012)"
+      ),
+      simulation: SIMULATION,
+    });
     expect(mockExecuteContractCall).not.toHaveBeenCalled();
   });
 

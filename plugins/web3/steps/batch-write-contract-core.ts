@@ -61,11 +61,12 @@ import {
 import {
   type NextBlockSimulation,
   type NextBlockSimulationOptions,
-  NextBlockSimulationUnsupportedError,
+  isNextBlockSimulationUnsupported,
   nextBlockFailure,
   parseSimulationSettings,
   type SimulateAt,
   simulateCallAtNextBlock,
+  tagNextBlockSimulation,
   unsupportedFailure,
 } from "@/lib/web3/next-block-simulation";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
@@ -668,6 +669,8 @@ async function batchWriteContractCoreImpl(
   // receipt's decoded return data, so this is the only way to get per-call
   // success/result/error before, and immediately preceding, the real send.
   let aggregateResults: [boolean, string][];
+  // The block the next-block check predicted; reused by the send below.
+  let checkedAt: NextBlockSimulation | undefined;
   try {
     aggregateResults = simulation
       ? await simulateAggregate3AtNextBlock({
@@ -676,6 +679,9 @@ async function batchWriteContractCoreImpl(
           walletAddress,
           call3Array,
           options: simulation,
+        }).then((checked) => {
+          checkedAt = checked.simulation;
+          return checked.results;
         })
       : await rpcManager.executeWithFailover(
           (provider) =>
@@ -713,7 +719,10 @@ async function batchWriteContractCoreImpl(
   if (allReverted) {
     return {
       success: false,
-      error: `All ${results.length} calls failed simulation; skipping broadcast to avoid wasting gas. First error: ${results[0].error}`,
+      ...nextBlockFailure(
+        `All ${results.length} calls failed simulation; skipping broadcast to avoid wasting gas. First error: ${results[0].error}`,
+        checkedAt ? tagNextBlockSimulation({}, checkedAt) : undefined
+      ),
       results,
       totalCalls: results.length,
     };
@@ -783,7 +792,10 @@ async function batchWriteContractCoreImpl(
           },
           workflowId,
           rpcManager,
-          simulation,
+          simulation:
+            simulation && checkedAt
+              ? { ...simulation, basedOn: checkedAt }
+              : simulation,
         }
       );
 
@@ -806,7 +818,7 @@ async function batchWriteContractCoreImpl(
         ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
       };
     } catch (error) {
-      if (error instanceof NextBlockSimulationUnsupportedError) {
+      if (isNextBlockSimulationUnsupported(error)) {
         return { ...unsupportedFailure(error, "batch-write-contract"), broadcastAttempted: false };
       }
       const rejection = classifyRevert(error, revertIface);
@@ -863,22 +875,31 @@ async function simulateAggregate3AtNextBlock(params: {
   walletAddress: string;
   call3Array: Call3[];
   options: NextBlockSimulationOptions;
-}): Promise<[boolean, string][]> {
+}): Promise<{
+  results: [boolean, string][];
+  simulation: NextBlockSimulation;
+}> {
   const multicall = new ethers.Interface(MULTICALL3_ABI);
-  const { returnData } = await simulateCallAtNextBlock(params.rpcManager, {
+  const { returnData, simulation } = await simulateCallAtNextBlock(
+    params.rpcManager,
+    {
     chainId: params.chainId,
     tx: {
       from: params.walletAddress,
       to: MULTICALL3_ADDRESS,
       data: multicall.encodeFunctionData("aggregate3", [params.call3Array]),
     },
-    options: params.options,
-    operationType: "preflight",
-  });
-  return multicall.decodeFunctionResult("aggregate3", returnData)[0] as [
-    boolean,
-    string,
-  ][];
+      options: params.options,
+      operationType: "preflight",
+    }
+  );
+  return {
+    results: multicall.decodeFunctionResult("aggregate3", returnData)[0] as [
+      boolean,
+      string,
+    ][],
+    simulation,
+  };
 }
 
 // A whole-batch failure of the pre-broadcast simulation.
@@ -886,7 +907,7 @@ function aggregateSimulationFailure(
   error: unknown,
   revertIface: ethers.Interface | undefined
 ): BatchWriteContractResult {
-  if (error instanceof NextBlockSimulationUnsupportedError) {
+  if (isNextBlockSimulationUnsupported(error)) {
     return { ...unsupportedFailure(error, "batch-write-contract"), broadcastAttempted: false };
   }
   const rejection = classifyRevert(error, revertIface);

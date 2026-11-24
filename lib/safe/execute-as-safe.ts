@@ -12,6 +12,7 @@ import {
   type NextBlockSimulation,
   type NextBlockSimulationOptions,
   simulateSendAtNextBlock,
+  tagNextBlockSimulation,
 } from "@/lib/web3/next-block-simulation";
 import { getNonceManager, type NonceSession } from "@/lib/web3/nonce-manager";
 import {
@@ -186,6 +187,8 @@ export async function executeContractCallAsSafe(
     route: "exec",
     kind: classifyInnerKind(request.functionKey, request.value),
   });
+  // Set once the next-block check passes; later failures carry it.
+  let nextBlock: NextBlockSimulation | undefined;
   try {
     const provider = signer.provider;
     if (!provider) {
@@ -213,6 +216,7 @@ export async function executeContractCallAsSafe(
       data: outerCalldata,
       from: request.ownerAddress,
     });
+    nextBlock = simulation;
 
     const gasConfig = await gasStrategy.getGasConfig(
       provider,
@@ -267,7 +271,10 @@ export async function executeContractCallAsSafe(
       ...(simulation ? { simulation } : {}),
     };
   } catch (err) {
-    finishOnError(finishMetrics, err);
+    finishOnError(
+      finishMetrics,
+      nextBlock ? tagNextBlockSimulation(err, nextBlock) : err
+    );
   }
 }
 
@@ -308,6 +315,8 @@ export async function executeContractCallAsRole(
     route: "role",
     kind: classifyInnerKind(request.functionKey, request.value),
   });
+  // Set once the next-block check passes; later failures carry it.
+  let nextBlock: NextBlockSimulation | undefined;
   try {
     const provider = signer.provider;
     if (!provider) {
@@ -337,6 +346,7 @@ export async function executeContractCallAsRole(
       data: outerCalldata,
       from: request.delegateAddress,
     });
+    nextBlock = simulation;
 
     const gasConfig = await gasStrategy.getGasConfig(
       provider,
@@ -390,7 +400,10 @@ export async function executeContractCallAsRole(
       ...(simulation ? { simulation } : {}),
     };
   } catch (err) {
-    finishOnError(finishMetrics, err);
+    finishOnError(
+      finishMetrics,
+      nextBlock ? tagNextBlockSimulation(err, nextBlock) : err
+    );
   }
 }
 

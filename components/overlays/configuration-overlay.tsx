@@ -1,6 +1,7 @@
 "use client";
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
+import { clearUnsponsoredOnlyFields } from "@/lib/web3/unsponsored-only-fields";
 import {
   Eraser,
   Eye,
@@ -208,7 +209,10 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
       // within a microtask so the second call sees the first's merged config.
       const baseConfig =
         pendingConfigRef.current ?? selectedNode.data.config ?? {};
-      const newConfig = { ...baseConfig, [key]: value };
+      const newConfig = clearUnsponsoredOnlyFields(baseConfig, {
+        ...baseConfig,
+        [key]: value,
+      });
       pendingConfigRef.current = newConfig;
       queueMicrotask(() => {
         pendingConfigRef.current = null;

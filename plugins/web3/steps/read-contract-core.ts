@@ -30,7 +30,7 @@ import { formatContractError } from "@/lib/web3/decode-revert-error";
 import { buildErrorDecodeInterface } from "@/lib/web3/extra-error-abis";
 import {
   type NextBlockSimulation,
-  NextBlockSimulationUnsupportedError,
+  isNextBlockSimulationUnsupported,
   parseSimulationSettings,
   nextBlockFailure,
   type SimulateAt,
@@ -456,7 +456,7 @@ async function readContractInner(
       ...(nextBlock ? { simulation: nextBlock } : {}),
     };
   } catch (error) {
-    if (error instanceof NextBlockSimulationUnsupportedError) {
+    if (isNextBlockSimulationUnsupported(error)) {
       return { ...unsupportedFailure(error, "read-contract"), destinationError: true };
     }
     logUserError(

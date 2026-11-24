@@ -1,5 +1,6 @@
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { Eraser, Eye, EyeOff, RefreshCw, Trash2 } from "lucide-react";
+import { clearUnsponsoredOnlyFields } from "@/lib/web3/unsponsored-only-fields";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ConfirmOverlay } from "@/components/overlays/confirm-overlay";
@@ -532,7 +533,10 @@ export const PanelInner = () => {
   ): void => {
     if (selectedNode) {
       const baseConfig = pendingConfigRef.current ?? selectedNode.data.config;
-      let newConfig: Record<string, unknown> = { ...baseConfig, [key]: value };
+      let newConfig: Record<string, unknown> = clearUnsponsoredOnlyFields(
+        baseConfig ?? {},
+        { ...baseConfig, [key]: value }
+      );
 
       if (key === "actionType" && typeof value === "string") {
         // Prune leftovers from the previous action type and seed the new

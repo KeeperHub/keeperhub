@@ -3,9 +3,6 @@
 import { FailOnErrorSwitchField } from "@/components/workflow/config/fail-on-error-switch-field";
 import { PlainSwitchField } from "@/components/workflow/config/plain-switch-field";
 import { SponsorGasField } from "@/components/workflow/config/sponsor-gas-field";
-import { UNSPONSORED_ONLY_FIELD_KEYS } from "@/lib/web3/unsponsored-only-fields";
-import { simulatesNextBlock } from "@/lib/workflow/editor/show-when";
-import { resolveSponsorGas } from "@/lib/web3/sponsorship-feature-flag";
 import type { CustomFieldRenderer } from "@/lib/workflow/editor/extension-registry";
 import { isShownOnlyToFix, type ToggleFieldType } from "@/plugins/registry";
 
@@ -50,19 +47,9 @@ export const TOGGLE_FIELD_RENDERERS: Readonly<
       id={field.key}
       key={field.key}
       label={field.label}
-      onChange={(next) => {
-        onUpdateConfig(field.key, next);
-        // Settings hidden while sponsored are cleared so they cannot keep
-        // taking the node off the sponsored route unseen. A next-block check
-        // stays unsponsored, so its fees still apply and are kept.
-        if (resolveSponsorGas(next) && !simulatesNextBlock(config)) {
-          for (const key of UNSPONSORED_ONLY_FIELD_KEYS) {
-            if (config[key] !== undefined && config[key] !== "") {
-              onUpdateConfig(key, "");
-            }
-          }
-        }
-      }}
+      // Clearing fees once the node becomes sponsored again is a general
+      // rule, applied to every config change (clearUnsponsoredOnlyFields).
+      onChange={(next) => onUpdateConfig(field.key, next)}
       resetOnly={isShownOnlyToFix(field, config)}
       value={config[field.key]}
     />

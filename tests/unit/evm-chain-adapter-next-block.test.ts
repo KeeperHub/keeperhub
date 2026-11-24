@@ -20,7 +20,10 @@ vi.mock("@/lib/web3/submit-signed", () => ({
 }));
 
 const mockSimulate = vi.fn();
-vi.mock("@/lib/web3/next-block-simulation", () => ({
+vi.mock("@/lib/web3/next-block-simulation", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/web3/next-block-simulation")
+  >()),
   simulateSendAtNextBlock: (...args: unknown[]) => mockSimulate(...args),
 }));
 
@@ -127,6 +130,25 @@ describe("EvmChainAdapter.executeContractCall at the next block", () => {
     });
     expect(receipt).toEqual({ ...RECEIPT, simulation: SIMULATION });
     confirm.mockRestore();
+  });
+
+  it("tags a failure after the check passed with the predicted block", async () => {
+    const { adapter, signer, rpcManager } = setup();
+    mockSubmit.mockRejectedValue(new Error("nonce too low"));
+
+    const error = await adapter
+      .executeContractCall(
+        signer,
+        { contractAddress: TARGET, abi: ABI, functionKey: "run", args: [5] },
+        {} as never,
+        { gasOverrides: {}, rpcManager, simulation: {} }
+      )
+      .catch((e: unknown) => e);
+
+    expect(error).toMatchObject({
+      message: "nonce too low",
+      nextBlockSimulation: SIMULATION,
+    });
   });
 
   it("sends nothing when the next-block simulation reverts", async () => {
