@@ -6,9 +6,6 @@ import {
 import type { ActionConfigFieldBase } from "@/plugins/registry";
 import { wouldBeSponsored } from "./show-when";
 
-export const SPONSORSHIP_GAS_SETTINGS_DOC_URL =
-  "https://docs.keeperhub.com/wallet-management/gas#custom-gas-settings-and-sponsorship";
-
 function hasValue(field: ActionConfigFieldBase, value: unknown): boolean {
   if (!isConfigValueSet(value)) {
     return false;
