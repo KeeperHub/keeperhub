@@ -1,5 +1,9 @@
 import type { ethers } from "ethers";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
+import type {
+  NextBlockSimulation,
+  NextBlockSimulationOptions,
+} from "../next-block-simulation";
 import type { NonceSession } from "../nonce-manager";
 
 export type TransactionReceipt = {
@@ -13,6 +17,8 @@ export type TransactionReceipt = {
    * gasUsed x effectiveGasPrice, so adapters there leave it unset.
    */
   feeLamports?: bigint;
+  // Set when the pre-send check and gas estimate ran against the next block.
+  simulation?: NextBlockSimulation;
 };
 
 export type GasOverrides = {
@@ -21,6 +27,9 @@ export type GasOverrides = {
   // Caller-supplied maxPriorityFeePerGas (in wei). When set, the gas strategy
   // skips its chain min/max priority-fee clamp and uses this value directly.
   priorityFeeOverride?: bigint;
+  // Caller-supplied maxFeePerGas ceiling (in wei). The strategy's fees are
+  // lowered to it when they exceed it.
+  maxFeeOverride?: bigint;
 };
 
 export type SendTransactionRequest = {
@@ -109,4 +118,6 @@ export type TransactionOptions = {
   solanaSigner?: SolanaTransactionSigner;
   /** Declared max native SOL outflow (lamports) for arbitrary instruction txs. */
   maxSolLamports?: bigint;
+  /** Present = simulate and estimate gas as of the next block (EVM only). */
+  simulation?: NextBlockSimulationOptions;
 };

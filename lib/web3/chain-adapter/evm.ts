@@ -12,6 +12,11 @@ import {
 import { RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
 import { submitSignedTransactionWithFailover } from "@/lib/web3/submit-signed";
 import type { AdaptiveGasStrategy, GasConfig } from "../gas-strategy";
+import {
+  type NextBlockSimulation,
+  simulateSendAtNextBlock,
+  tagNextBlockSimulation,
+} from "../next-block-simulation";
 import type { NonceManager, NonceSession } from "../nonce-manager";
 import { buildChainAddressUrl, buildChainTransactionUrl } from "./explorer";
 import type {
@@ -93,7 +98,8 @@ export class EvmChainAdapter implements ChainAdapter {
       options.gasOverrides.multiplierOverride,
       options.gasOverrides.gasLimitOverride,
       options.rpcManager,
-      options.gasOverrides.priorityFeeOverride
+      options.gasOverrides.priorityFeeOverride,
+      options.gasOverrides.maxFeeOverride
     );
 
     // KEEP-565: when an rpcManager is wired, broadcast through the
@@ -162,30 +168,35 @@ export class EvmChainAdapter implements ChainAdapter {
     const fn = contract.getFunction(request.functionKey);
 
     const signerAddress = await signer.getAddress();
-    const callOverrides = {
-      ...(request.value ? { value: request.value } : {}),
-      from: signerAddress,
-    };
 
-    if (options.rpcManager) {
-      await options.rpcManager.executeWithFailover((rpcProvider) => {
-        const readContract = new ethers.Contract(
-          request.contractAddress,
-          request.abi,
-          rpcProvider
-        );
-        return readContract
-          .getFunction(request.functionKey)
-          .staticCall(...request.args, callOverrides);
-      }, "preflight");
+    let estimatedGas: bigint;
+    let simulation: NextBlockSimulation | undefined;
+    if (options.simulation) {
+      if (!options.rpcManager) {
+        throw new Error("Next-block simulation requires an RPC manager");
+      }
+      const simulated = await simulateSendAtNextBlock(options.rpcManager, {
+        chainId: this.chainId,
+        tx: {
+          from: signerAddress,
+          to: request.contractAddress,
+          data: contract.interface.encodeFunctionData(
+            request.functionKey,
+            request.args
+          ),
+          value: request.value,
+        },
+        options: options.simulation,
+      });
+      estimatedGas = simulated.gasEstimate;
+      simulation = simulated.simulation;
     } else {
-      await fn.staticCall(...request.args, callOverrides);
-    }
-
-    const nonce = this.nonceManager.getNextNonce(session);
-
-    const estimatedGas = options.rpcManager
-      ? await options.rpcManager.executeWithFailover((rpcProvider) => {
+      const callOverrides = {
+        ...(request.value ? { value: request.value } : {}),
+        from: signerAddress,
+      };
+      if (options.rpcManager) {
+        await options.rpcManager.executeWithFailover((rpcProvider) => {
           const readContract = new ethers.Contract(
             request.contractAddress,
             request.abi,
@@ -193,63 +204,95 @@ export class EvmChainAdapter implements ChainAdapter {
           );
           return readContract
             .getFunction(request.functionKey)
-            .estimateGas(...request.args, callOverrides);
-        }, "preflight")
-      : await fn.estimateGas(...request.args, callOverrides);
+            .staticCall(...request.args, callOverrides);
+        }, "preflight");
+      } else {
+        await fn.staticCall(...request.args, callOverrides);
+      }
 
-    const gasConfig = await this.gasStrategy.getGasConfig(
-      provider,
-      estimatedGas,
-      this.chainId,
-      options.gasOverrides.multiplierOverride,
-      options.gasOverrides.gasLimitOverride,
-      options.rpcManager,
-      options.gasOverrides.priorityFeeOverride
-    );
-
-    // KEEP-565: route the broadcast through submitSignedTransactionWithFailover
-    // when a manager is available. We encode the calldata via the contract's
-    // own Interface and pass an explicit TransactionRequest -- the helper
-    // populates / signs / broadcasts with failover and reconciles on error.
-    // Direct `fn(...)` call kept as fallback for callers without an
-    // rpcManager (legacy code paths; tracked by KEEP-548).
-    let tx: ethers.TransactionResponse;
-    if (options.rpcManager) {
-      const calldata = contract.interface.encodeFunctionData(
-        request.functionKey,
-        request.args
-      );
-      const txRequest = {
-        to: request.contractAddress,
-        data: calldata,
-        from: signerAddress,
-        nonce,
-        gasLimit: gasConfig.gasLimit,
-        maxFeePerGas: gasConfig.maxFeePerGas,
-        maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
-        chainId: this.chainId,
-        ...(request.value ? { value: request.value } : {}),
-      };
-      const broadcast = await submitSignedTransactionWithFailover(
-        signer,
-        txRequest,
-        options.rpcManager
-      );
-      tx = broadcast.response;
-    } else {
-      tx = await fn(...request.args, {
-        nonce,
-        gasLimit: gasConfig.gasLimit,
-        maxFeePerGas: gasConfig.maxFeePerGas,
-        maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
-        ...(request.value ? { value: request.value } : {}),
-      });
+      estimatedGas = options.rpcManager
+        ? await options.rpcManager.executeWithFailover((rpcProvider) => {
+            const readContract = new ethers.Contract(
+              request.contractAddress,
+              request.abi,
+              rpcProvider
+            );
+            return readContract
+              .getFunction(request.functionKey)
+              .estimateGas(...request.args, callOverrides);
+          }, "preflight")
+        : await fn.estimateGas(...request.args, callOverrides);
     }
-    // Issue #2289: the transaction is on the wire - record the broadcast
-    // stage (sidecar marker + process-local counter, best-effort).
-    markBroadcast();
 
-    return this.confirmTransaction(tx, session, nonce, gasConfig, options);
+    // A failure after a passed next-block check (broadcast, confirm, on-chain
+    // revert) still reports the block it was predicted for.
+    try {
+      const nonce = this.nonceManager.getNextNonce(session);
+
+      const gasConfig = await this.gasStrategy.getGasConfig(
+        provider,
+        estimatedGas,
+        this.chainId,
+        options.gasOverrides.multiplierOverride,
+        options.gasOverrides.gasLimitOverride,
+        options.rpcManager,
+        options.gasOverrides.priorityFeeOverride,
+        options.gasOverrides.maxFeeOverride
+      );
+
+      // KEEP-565: route the broadcast through submitSignedTransactionWithFailover
+      // when a manager is available. We encode the calldata via the contract's
+      // own Interface and pass an explicit TransactionRequest -- the helper
+      // populates / signs / broadcasts with failover and reconciles on error.
+      // Direct `fn(...)` call kept as fallback for callers without an
+      // rpcManager (legacy code paths; tracked by KEEP-548).
+      let tx: ethers.TransactionResponse;
+      if (options.rpcManager) {
+        const calldata = contract.interface.encodeFunctionData(
+          request.functionKey,
+          request.args
+        );
+        const txRequest = {
+          to: request.contractAddress,
+          data: calldata,
+          from: signerAddress,
+          nonce,
+          gasLimit: gasConfig.gasLimit,
+          maxFeePerGas: gasConfig.maxFeePerGas,
+          maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
+          chainId: this.chainId,
+          ...(request.value ? { value: request.value } : {}),
+        };
+        const broadcast = await submitSignedTransactionWithFailover(
+          signer,
+          txRequest,
+          options.rpcManager
+        );
+        tx = broadcast.response;
+      } else {
+        tx = await fn(...request.args, {
+          nonce,
+          gasLimit: gasConfig.gasLimit,
+          maxFeePerGas: gasConfig.maxFeePerGas,
+          maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
+          ...(request.value ? { value: request.value } : {}),
+        });
+      }
+      // Issue #2289: the transaction is on the wire - record the broadcast
+      // stage (sidecar marker + process-local counter, best-effort).
+      markBroadcast();
+
+      const receipt = await this.confirmTransaction(
+        tx,
+        session,
+        nonce,
+        gasConfig,
+        options
+      );
+      return simulation ? { ...receipt, simulation } : receipt;
+    } catch (error) {
+      throw simulation ? tagNextBlockSimulation(error, simulation) : error;
+    }
   }
 
   async readContract(

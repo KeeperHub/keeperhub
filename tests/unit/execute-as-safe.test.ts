@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   recordTransaction: vi.fn(),
   confirmTransaction: vi.fn(),
   submitSigned: vi.fn(),
+  getGasConfig: vi.fn(),
 }));
 
 vi.mock("@/lib/metrics/instrumentation/safe", () => ({
@@ -35,13 +36,7 @@ vi.mock("@/lib/web3/nonce-manager", () => ({
 }));
 
 vi.mock("@/lib/web3/gas-strategy", () => ({
-  getGasStrategy: () => ({
-    getGasConfig: async () => ({
-      gasLimit: BigInt(100_000),
-      maxFeePerGas: BigInt(20_000_000_000),
-      maxPriorityFeePerGas: BigInt(1_000_000_000),
-    }),
-  }),
+  getGasStrategy: () => ({ getGasConfig: mocks.getGasConfig }),
 }));
 
 vi.mock("@/lib/web3/submit-signed", async () => {
@@ -53,6 +48,14 @@ vi.mock("@/lib/web3/submit-signed", async () => {
     submitSignedTransactionWithFailover: mocks.submitSigned,
   };
 });
+
+const mockSimulateSend = vi.fn();
+vi.mock("@/lib/web3/next-block-simulation", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/web3/next-block-simulation")
+  >()),
+  simulateSendAtNextBlock: (...args: unknown[]) => mockSimulateSend(...args),
+}));
 
 // ---------------------------------------------------------------------------
 // Import module under test AFTER mocks
@@ -225,6 +228,11 @@ const cases: [string, Invoke][] = [
 describe.each(cases)("%s", (_name, invoke) => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.getGasConfig.mockResolvedValue({
+      gasLimit: BigInt(100_000),
+      maxFeePerGas: BigInt(20_000_000_000),
+      maxPriorityFeePerGas: BigInt(1_000_000_000),
+    });
     mocks.submitSigned.mockResolvedValue({
       hash: TX_HASH,
       response: { hash: TX_HASH },
@@ -331,5 +339,106 @@ describe.each(cases)("%s", (_name, invoke) => {
     });
     expect(mocks.confirmTransaction).toHaveBeenCalledWith(TX_HASH);
     expect(mocks.finishMetrics).toHaveBeenCalledWith("success");
+  });
+
+  it("passes the node's fee overrides to the gas strategy", async () => {
+    const { options } = makeRpcManager(makeReceipt(1));
+    const feeOverrides = {
+      priorityFeeOverride: BigInt(2e9),
+      maxFeeOverride: BigInt(40e9),
+    };
+
+    await invoke({ ...options, feeOverrides });
+
+    const args = mocks.getGasConfig.mock.calls[0];
+    expect(args?.[6]).toBe(feeOverrides.priorityFeeOverride);
+    expect(args?.[7]).toBe(feeOverrides.maxFeeOverride);
+  });
+});
+
+describe.each([
+  ["executeContractCallAsSafe", cases[0][1], SAFE],
+  ["executeContractCallAsRole", cases[1][1], MODIFIER],
+] as const)("%s at the next block", (_name, invoke, outerTarget) => {
+  const SIMULATION = {
+    mode: "next-block",
+    baseBlock: 100,
+    assumedBlockNumber: 101,
+    assumedTimestamp: 1_000_012,
+    timestampOffsetSec: 12,
+    rpcMethod: "eth_estimateGas+blockOverrides",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.submitSigned.mockResolvedValue({
+      hash: TX_HASH,
+      response: { hash: TX_HASH },
+    });
+    mockSimulateSend.mockResolvedValue({
+      gasEstimate: BigInt(77_000),
+      simulation: SIMULATION,
+    });
+  });
+
+  it("estimates the outer transaction at the next block and reports it", async () => {
+    const { options } = makeRpcManager(makeReceipt(1));
+    const provider = await options.rpcManager.executeWithFailover(
+      async (p) => p
+    );
+
+    const receipt = await invoke({ ...options, simulation: {} });
+
+    expect(mockSimulateSend).toHaveBeenCalledWith(options.rpcManager, {
+      chainId: 1,
+      tx: { to: outerTarget, data: "0xouter", from: OWNER },
+      options: {},
+    });
+    expect(provider.estimateGas).not.toHaveBeenCalled();
+    expect(receipt).toMatchObject({ hash: TX_HASH, simulation: SIMULATION });
+  });
+
+  it("tags a failure after the check passed with the predicted block", async () => {
+    mocks.submitSigned.mockRejectedValue(new Error("nonce too low"));
+    const { options } = makeRpcManager(makeReceipt(1));
+
+    const error = await invoke({ ...options, simulation: {} }).catch(
+      (e: unknown) => e
+    );
+
+    expect(error).toMatchObject({
+      message: "nonce too low",
+      nextBlockSimulation: SIMULATION,
+    });
+  });
+
+  it("tags an on-chain revert after the check passed", async () => {
+    const { options } = makeRpcManager(makeReceipt(0));
+
+    const error = await invoke({ ...options, simulation: {} }).catch(
+      (e: unknown) => e
+    );
+
+    expect(isOnChainRevertError(error)).toBe(true);
+    expect(error).toMatchObject({ nextBlockSimulation: SIMULATION });
+  });
+
+  it("sends nothing when the next-block estimate reverts", async () => {
+    mockSimulateSend.mockRejectedValue(new Error("execution reverted"));
+    const { options } = makeRpcManager(makeReceipt(1));
+
+    await expect(invoke({ ...options, simulation: {} })).rejects.toThrow(
+      "execution reverted"
+    );
+    expect(mocks.submitSigned).not.toHaveBeenCalled();
+  });
+
+  it("keeps the latest-block estimate without the option", async () => {
+    const { options } = makeRpcManager(makeReceipt(1));
+
+    const receipt = await invoke(options);
+
+    expect(mockSimulateSend).not.toHaveBeenCalled();
+    expect(receipt).not.toHaveProperty("simulation");
   });
 });

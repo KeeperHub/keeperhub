@@ -44,6 +44,9 @@ export const VALIDATION_WARNING_CODES = {
   // Configure-time hint: a signer-routed node sets `integrationId`, which the
   // runtime does not read. Sender routing comes from `web3Connection`.
   SIGNER_ROUTING_KEY_IGNORED: "signer-routing-key-ignored",
+  // A trigger's executionPriority is unknown, or low-latency on a trigger
+  // type it does not apply to; the run starts the standard way.
+  EXECUTION_PRIORITY_IGNORED: "execution-priority-ignored",
 } as const;
 
 export type ValidationErrorCode =

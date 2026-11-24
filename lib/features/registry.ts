@@ -86,6 +86,20 @@ export const FEATURES: Record<FeatureId, FeatureDefinition> = {
     upgradeCta:
       "Upgrade to get scheduled email digests of your workflow executions.",
   },
+  // Not an action gate: read from the trigger node's executionPriority by the
+  // executor, which falls back to the standard start for an ineligible plan
+  // instead of refusing the run (see lib/workflow/execution-priority.ts).
+  "automation.low-latency-start": {
+    id: "automation.low-latency-start",
+    name: "Low-latency start",
+    description:
+      "Start time-critical workflows on a pre-warmed runner when one is available, typically in under a second instead of 10-20 seconds.",
+    category: "automation",
+    enabled: true,
+    requiredPlan: "pro",
+    upgradeCta:
+      "Upgrade to start time-critical workflows on a pre-warmed runner when one is available, typically in under a second instead of 10-20 seconds.",
+  },
 } as const;
 
 // Pre-computed reverse index: actionType -> FeatureId. Built once at module

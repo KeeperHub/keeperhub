@@ -529,6 +529,7 @@ Call any smart contract function. Automatically detects read vs write operations
   400 rather than accepted and ignored.
 - `value` (optional): Native value to send with the call, as a decimal string in ether units (e.g. `0.1`) (for payable functions)
 - `gasLimitMultiplier` (optional): Gas limit multiplier
+- `priorityFeeGwei` (optional, writes only): Priority fee (tip) in gwei, as a plain decimal string greater than 0 and at most 10000 with at most 9 decimal places (e.g. `"3"`). It replaces the network's default tip. Sponsored transactions cannot carry a custom priority fee, so a call with `priorityFeeGwei` is never gas-sponsored and pays gas from the sending wallet. See [Priority Fee](/wallet-management/gas#priority-fee).
 
 ### Raw calldata
 

@@ -31,6 +31,7 @@ import {
   TALL_FIELD_MAX_ROWS,
 } from "@/components/workflow/config/beautifiable-field";
 import { SaveAddressBookmark } from "@/components/address-book/save-address-bookmark";
+import { SponsorshipConflictNotice } from "@/components/workflow/config/sponsorship-conflict-notice";
 import type { AbiComponent } from "@/components/workflow/config/abi-types";
 import { ArrayInputField } from "@/components/workflow/config/array-input-field";
 import { MalformedAbiArgsNotice } from "@/components/workflow/config/malformed-abi-notice";
@@ -60,6 +61,7 @@ import {
   type ActionConfigField,
   type ActionConfigFieldBase,
   isFieldGroup,
+  isFieldEnabled,
   isFieldShown,
   isToggleField,
   type SelectOption,
@@ -919,6 +921,29 @@ function renderField(
   if (!isFieldShown(field, config)) {
     return null;
   }
+  const locked = !isFieldEnabled(field, config);
+  const inputDisabled = disabled || locked;
+  const lockHint = locked && field.enabledWhen && (
+    <p
+      className="text-muted-foreground text-xs"
+      data-testid={`field-locked-${field.key}`}
+    >
+      {field.enabledWhen.hint}
+      {field.enabledWhen.docUrl && (
+        <>
+          {" "}
+          <a
+            className="wrap-anywhere underline"
+            href={field.enabledWhen.docUrl}
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            {field.enabledWhen.docUrl}
+          </a>
+        </>
+      )}
+    </p>
+  );
 
   const raw = config[field.key];
   // A list sent as a native array by the API is shown as its JSON text.
@@ -929,12 +954,17 @@ function renderField(
 
   // Special handling for abi-function-select
   if (field.type === "abi-function-select") {
-    return renderAbiFunctionSelect(field, config, onUpdateConfig, disabled);
+    return renderAbiFunctionSelect(
+      field,
+      config,
+      onUpdateConfig,
+      inputDisabled
+    );
   }
 
   // Special handling for abi-function-args
   if (field.type === "abi-function-args") {
-    return renderAbiFunctionArgs(field, config, onUpdateConfig, disabled);
+    return renderAbiFunctionArgs(field, config, onUpdateConfig, inputDisabled);
   }
 
   // Check for custom field renderers (extension registry)
@@ -942,10 +972,19 @@ function renderField(
     field,
     config,
     onUpdateConfig,
-    disabled
+    inputDisabled
   );
   if (customResult !== null) {
-    return customResult;
+    if (!(field.ignoredWhenSponsored || lockHint)) {
+      return customResult;
+    }
+    return (
+      <div className="space-y-2" key={field.key}>
+        {customResult}
+        {lockHint}
+        <SponsorshipConflictNotice config={config} field={field} />
+      </div>
+    );
   }
 
   const FieldRenderer = FIELD_RENDERERS[field.type];
@@ -990,7 +1029,7 @@ function renderField(
       </Label>
       <FieldRenderer
         config={config}
-        disabled={disabled}
+        disabled={inputDisabled}
         field={field}
         nodeId={nodeId}
         onChange={(val: unknown) => onUpdateConfig(field.key, val)}
@@ -1000,6 +1039,8 @@ function renderField(
       {field.helpText && (
         <p className="text-muted-foreground text-xs">{field.helpText}</p>
       )}
+      {lockHint}
+      <SponsorshipConflictNotice config={config} field={field} />
     </div>
   );
 }

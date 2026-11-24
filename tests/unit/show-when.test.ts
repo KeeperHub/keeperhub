@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
+import { simulateTimestampOffsetField } from "@/plugins/field-fragments";
 
 const PAYABLE_ABI = JSON.stringify([
   {
@@ -261,5 +262,85 @@ describe("evaluateShowWhen", () => {
       expect(evaluateShowWhen(predicate, { network: null })).toBe(false);
       expect(evaluateShowWhen(predicate, { network: {} })).toBe(false);
     });
+  });
+
+  describe("computed: notSponsored", () => {
+    const predicate = {
+      computed: "notSponsored",
+      networkField: "network",
+    } as const;
+
+    beforeEach(() => {
+      vi.stubEnv("NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED", "true");
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("hides the field while the node would be sponsored", () => {
+      expect(evaluateShowWhen(predicate, { network: "1" })).toBe(false);
+      expect(
+        evaluateShowWhen(predicate, { network: "1", sponsorGas: true })
+      ).toBe(false);
+    });
+
+    it("shows the field when the node simulates at the next block, which skips sponsorship", () => {
+      expect(
+        evaluateShowWhen(predicate, { network: "1", simulateAt: "next-block" })
+      ).toBe(true);
+      expect(
+        evaluateShowWhen(predicate, { network: "1", simulateAt: "latest" })
+      ).toBe(false);
+    });
+
+    it("shows the field when Sponsor gas is off", () => {
+      expect(
+        evaluateShowWhen(predicate, { network: "1", sponsorGas: false })
+      ).toBe(true);
+      expect(
+        evaluateShowWhen(predicate, { network: "1", sponsorGas: "false" })
+      ).toBe(true);
+    });
+
+    it("shows the field on a network sponsorship does not cover", () => {
+      expect(evaluateShowWhen(predicate, { network: "10" })).toBe(true);
+      expect(evaluateShowWhen(predicate, {})).toBe(true);
+    });
+
+    it("shows the field for a private mempool or an explicit Safe sender", () => {
+      expect(
+        evaluateShowWhen(predicate, { network: "1", usePrivateMempool: true })
+      ).toBe(true);
+      expect(
+        evaluateShowWhen(predicate, {
+          network: "1",
+          web3Connection: "safe:abc",
+        })
+      ).toBe(true);
+    });
+
+    it("shows the field when sponsorship is off for the deployment", () => {
+      vi.stubEnv("NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED", "false");
+      expect(evaluateShowWhen(predicate, { network: "1" })).toBe(true);
+    });
+  });
+});
+
+describe("simulatesNextBlock visibility", () => {
+  it("reads Simulate at as the step does, so API casing still shows the offset", () => {
+    const rule = { computed: "simulatesNextBlock" } as const;
+    expect(evaluateShowWhen(rule, { simulateAt: "next-block" })).toBe(true);
+    expect(evaluateShowWhen(rule, { simulateAt: " Next-Block " })).toBe(true);
+    expect(evaluateShowWhen(rule, { simulateAt: "latest" })).toBe(false);
+    expect(evaluateShowWhen(rule, {})).toBe(false);
+  });
+
+  it("drives the offset field, so the editor shows the offset the run uses", () => {
+    const { showWhen } = simulateTimestampOffsetField();
+    expect(evaluateShowWhen(showWhen, { simulateAt: " Next-Block " })).toBe(
+      true
+    );
+    expect(evaluateShowWhen(showWhen, { simulateAt: "latest" })).toBe(false);
   });
 });

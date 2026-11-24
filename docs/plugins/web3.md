@@ -81,9 +81,9 @@ Check the balance of any SPL token for a given Solana address. Supports Token-20
 
 Call view or pure functions on any verified smart contract. Automatically fetches the ABI from block explorers and supports proxy contracts.
 
-**Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments
+**Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Simulate at and Next block timestamp offset (optional, in Advanced section; see [Simulate at the next block](#simulate-at-the-next-block))
 
-**Outputs:** `success`, `result` (structured based on ABI outputs), `error`
+**Outputs:** `success`, `result` (structured based on ABI outputs), `error`, `simulation` (only when Simulate at is Next block)
 
 **When to use:** Read on-chain state (prices, positions, governance proposals), check protocol health factors, monitor contract parameters.
 
@@ -616,21 +616,93 @@ Schedule (every 15 min)
 
 Execute state-changing functions on smart contracts using your Turnkey wallet. Requires a connected wallet.
 
-**Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Fail workflow on error (optional, on by default), Gas Limit Multiplier and Sponsor gas (optional, in Advanced section; Sponsor gas only on networks gas sponsorship covers)
+**Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Fail workflow on error (optional, on by default), Gas Limit, Priority Fee, Max Fee, Sponsor gas, Simulate at and Next block timestamp offset (optional, in Advanced section; Sponsor gas only on networks gas sponsorship covers)
 
-**Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total gas cost in wei), `result`, `error`
+**Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total gas cost in wei), `result`, `error`, `simulation` (only when Simulate at is Next block)
 
 **When to use:** Execute DeFi operations (harvest, compound, rebalance), respond to on-chain events, automate protocol maintenance.
 
-**Gas Configuration:** Optionally set a custom Gas Limit Multiplier in the Advanced section to override the chain default. See [Gas Management](/wallet-management/gas) for details.
-
 **Note:** The `gasUsed` output represents the total transaction cost in wei (gas units × effective gas price), not just the number of gas units consumed.
+
+### Gas settings
+
+The Advanced section has three optional gas settings. Leave them empty to use the network defaults.
+
+| Setting | What it does | With Sponsor gas on |
+|---------|--------------|---------------------|
+| [Gas Limit](/wallet-management/gas#gas-limit-override) | Fixed gas limit, used instead of the estimate | Not applied to a sponsored transaction; the sponsor sets its own limit |
+| [Priority Fee (gwei)](/wallet-management/gas#priority-fee) | Tip paid to the block builder; a higher tip puts the transaction ahead of others in the same block | Disabled. Turn off Sponsor gas to set it |
+| [Max Fee (gwei)](/wallet-management/gas#max-fee) | Ceiling on the total fee per gas; a cap below the next block's base fee fails the step before sending | Disabled. Turn off Sponsor gas to set it |
+
+Sponsored transactions cannot carry a custom priority fee or max fee, so those two fields stay visible but disabled while the node would be sponsored. They become editable once the node pays its own gas: Sponsor gas off, Simulate at set to Next block, a network that gas sponsorship does not cover, a private mempool, or a Safe. Any change that disables them, such as turning Sponsor gas on or setting Simulate at back to Latest block, clears them, and the editor says so. With either one set, make sure the sending wallet holds enough of the network's native token to pay for gas. See [Custom gas settings and sponsorship](/wallet-management/gas#custom-gas-settings-and-sponsorship) for the full rules.
+
+### Simulate at the next block
+
+Before it sends, Write Contract simulates the call and estimates its gas against the latest block, and skips the send if the simulation reverts. A time-locked call (for example `require(block.timestamp >= lastRun + interval)`) therefore only passes once the first valid block already exists, so the transaction lands one block after it, or later.
+
+Set **Simulate at** to **Next block** to run the simulation as if the next block had already arrived: block number + 1, and the next block's predicted timestamp. The call then usually passes while the first valid block is still being built. The same setting is on Read Contract, where it answers the read as of the next block, and on Batch Write Contract.
+
+**What it changes.** Only the decision to send and the gas estimate use the predicted block. The signed transaction, its fees and its nonce are set as for any write (see [Gas Management](/wallet-management/gas)). The latest block is read when the step runs, not when the run was triggered, and every call is made against that block. Only the block number and timestamp are predicted: the state, other pending transactions and the base fee are the latest block's. It works the same for writes sent from your wallet, a Safe or a Safe role.
+
+**Predicted time.** On most networks the predicted timestamp is the latest block's timestamp + one block time. Ethereum, Ethereum Sepolia and Ethereum Hoodi keep to fixed 12-second slots, and a missed slot (no block in it) leaves its timestamp unused, so there the step follows the slot clock instead: the predicted timestamp is the earliest slot a transaction sent now can still land in. A slot counts as passed only once it has fully elapsed, because its block can still be published late. Once a missed slot is over, the check therefore moves to the next slot instead of checking a slot that has already passed. The trade-off: for a call valid from slot time U, the check passes as soon as the block for the slot before U is seen; if that block is missed or late, the check passes only once slot U has begun, and the transaction usually lands one slot later. On these networks the block time is the fixed 12 seconds and is not measured. A set offset is only a minimum: the predicted timestamp is never earlier than the latest block's timestamp + the offset, so an offset of 12 or less has no effect. If the RPC's latest block is more than 5 slots (60 seconds) old, which usually means the RPC is lagging, the step fails as a temporary RPC error rather than checking old state. The slot clock uses KeeperHub's server clock; if that clock ran fast, the check could pass a slot or more early.
+
+**Block time.** Leave **Next block timestamp offset (seconds)** empty to use the network's block time, taken as the smallest gap between its last few blocks (at most 60 seconds) and refreshed every 10 minutes:
+
+- Ethereum, Ethereum Sepolia and Ethereum Hoodi use their fixed 12-second slot without measuring, and networks with 2-second blocks (Base, OP, Polygon PoS) use 2.
+- On networks where several blocks share one timestamp (Arbitrum and other sub-second networks), the next block's time cannot be predicted and the step fails with a message saying so. Setting the offset to 1 lets it run anyway, but the call can then pass a few blocks early.
+- An offset larger than the real block time makes the check pass blocks early, and the transaction then reverts on-chain and spends gas. Leave it empty unless you have a reason to set it.
+- If the RPC cannot return enough consecutive recent blocks to measure the block time, the step fails as a temporary RPC error and the next run measures again. Setting the offset skips the measurement.
+
+The prediction only helps with a "not before" condition. A late next block has a later timestamp, so an unlock time still holds, but a deadline (`block.timestamp < deadline`) can pass the check and then fail on-chain.
+
+**Costs and risks.**
+
+- If another transaction changes the state first, or a block lands while yours is being sent, your transaction can revert on-chain. On networks with a private-mempool option in the Network list (for example Ethereum (Flashbots), which sends through Flashbots Protect), choose it so a failed prediction costs nothing. The check then runs on the private relay, the same RPC that sends, so the call is not shown to any other RPC. A private relay does not promise inclusion in the very next block. Elsewhere a lost race or an early send spends gas.
+- KeeperHub does not stop a second send. With a trigger that fires every block, the run after the one that sent can still see the job as unworked (your transaction is not mined yet) and send again. Make the Condition before the write read something your transaction changes, or use a private-mempool network so a duplicate that reverts costs nothing.
+- Gas sponsorship is off for a write with this setting, because the sponsor would simulate against the latest block again. Keep native gas in the wallet that pays.
+- The extra calls take time. On networks with very short blocks the transaction can still land a block late.
+
+**How the check runs.**
+
+- **Writes** (Write Contract, and Batch Write Contract's send) use `eth_estimateGas` with block overrides: one call gives the revert check, the revert reason and the gas for the success path. This works on Flashbots Protect, which does not allow `eth_call`. If the RPC does not accept block overrides on `eth_estimateGas`, `eth_simulateV1` runs the check instead, and its gas used is taken plus about 27% (for refunds and nested calls) before your Gas Limit Multiplier applies; very deeply nested calls may need a higher multiplier.
+- **Reads** (Read Contract, and Batch Write Contract's per-call check before sending) need return data, so they use `eth_simulateV1`, or `eth_call` with block overrides. Read Contract always uses the network's regular RPC, never a private relay. Batch Write Contract's check runs on its own network's RPC, so on a private relay that allows neither method, such as Flashbots Protect, it cannot run at the next block. Its send reuses the check's prediction while the block it was predicted from is still the latest and, on Ethereum, the predicted slot has not passed; otherwise the send checks again, and the reported `simulation` is the send's. Either way, the send reads the latest block again and repeats the proof that the RPC applies the predicted timestamp. `resultsSimulation` names the predicted block the per-call results were checked against.
+- Each check is paired with a proof call showing that the RPC applies the predicted timestamp (on a load-balanced RPC the two are separate requests). If the proof shows the timestamp was not applied, or the RPC rejects the overrides (for a write, after the `eth_simulateV1` fallback), the step fails with "Next-block simulation is not supported by this network's RPC", naming the method, rather than falling back to the latest block. That failure stops the run even with Fail workflow on error off, and the fallback RPC is not tried for it. An invalid-params answer (`-32602`) counts as not supported only when its message names the overrides or the method's parameters; a bad or out-of-range block number is treated as temporary. Temporary RPC errors are retried and fail over as usual; if they persist, the step fails like any RPC error (softened when Fail workflow on error is off), and the next run or a re-run tries again.
+- To check an RPC without sending, run the write once while the job is still locked: an error ending with "(simulated as of next block N, timestamp T)" means the check works and nothing was sent. To use a different RPC for a network, set one through [RPC preferences](/api/user#rpc-preferences).
+
+**Example.** Race a job that unlocks at `lastRun + interval`:
+
+```
+Block trigger (every block)
+  -> Read Contract "Read lastRun" (id lastRun)      lastRun()
+  -> Read Contract "Read interval" (id interval)    interval()
+  -> Condition     {{@__system:System.unixTimestamp}} - {{@lastRun:Read lastRun.result}} >= {{@interval:Read interval.result}} - 24
+  -> Write Contract    run(), Simulate at: Next block, Network: Ethereum (Flashbots), Fail workflow on error: off
+```
+
+The Condition keeps runs far from the unlock from reaching the write: 24 is two 12-second blocks, so use about twice the block time on other networks. It only subtracts, because read results are text and `+` would join them instead of adding. Close to the unlock, the write's check reverts until the run where the next block is the first valid one; its error ends with "(simulated as of next block N, timestamp T)". That run sends. If the job exposes a check such as `workable()`, a single Read Contract with Simulate at set to Next block can replace the two reads and the arithmetic.
+
+**Output.** With Next block set, the step output includes `simulation` once the check has run, also when a failure is softened by Fail workflow on error:
+
+```json
+{
+  "simulation": {
+    "mode": "next-block",
+    "baseBlock": 1000000,
+    "assumedBlockNumber": 1000001,
+    "assumedTimestamp": 1795447751,
+    "timestampOffsetSec": 12,
+    "rpcMethod": "eth_estimateGas+blockOverrides"
+  }
+}
+```
+
+`baseBlock` is the latest block the check started from. `assumedTimestamp` is the predicted time of the next block and `timestampOffsetSec` the block time used; on Ethereum, after a missed slot or on a slow RPC, `assumedTimestamp` can be more than one block time after `baseBlock`'s timestamp. `rpcMethod` is `eth_estimateGas+blockOverrides`, `eth_simulateV1` or `eth_call+blockOverrides`. Compare `assumedBlockNumber` with the block in the transaction link to see whether the transaction made the predicted block. `simulation` is absent when the step failed before the check ran, for example on an invalid setting or an RPC that does not support it. Batch Write Contract also reports `resultsSimulation`, the predicted block its per-call check ran against; it differs from `simulation` when the send had to check again on a newer block or slot.
 
 ### When a write fails
 
 `Fail workflow on error` is on by default, so a write that fails stops the run and the failure is reported on the node.
 
-Turn it off and the failure is softened instead: the workflow continues, and the node reports `success: true` with `error` and `rejection` set. The softened result carries only those three fields, so `transactionHash`, `transactionLink` and the receipt fields are absent from it. Read `error` to tell a softened failure from a real success, because at the node the two are otherwise identical.
+Turn it off and the failure is softened instead: the workflow continues, and the node reports `success: true` with `error` and `rejection` set. The softened result carries only those three fields (plus `simulation` when Simulate at is Next block), so `transactionHash`, `transactionLink` and the receipt fields are absent from it. Read `error` to tell a softened failure from a real success, because at the node the two are otherwise identical.
 
 The two halves of a softened failure are reported in different places, which is the part that surprises people:
 
@@ -653,7 +725,11 @@ If you're building this action via the [Workflows API](/api/workflows) rather th
 | Web3 Connection | `web3Connection` | Sender routing: `"default"` (org policy), `"eoa"` (force the Turnkey EOA), or `"safe:<safeWalletId>"`. The signing wallet is your org's Turnkey wallet, resolved automatically. |
 | Network | `network` | numeric chain id as a string (e.g. `"11155111"`) |
 | Fail workflow on error | `failOnError` | `true` or `false` (or `"true"` / `"false"`), on by default. Off softens a failed write into `success: true` with `error` set. Anything else, a template included, is refused at save, unless the step already holds it (see [On/off toggles](/workflows/templating#onoff-toggles)); a value kept that way runs as off only when it resolves to `false`. |
+| Priority Fee (gwei) | `priorityFeeGwei` | plain decimal string in gwei (e.g. `"3"`), optional. Greater than 0, at most 10000, at most 9 decimal places. Templates are allowed. Empty uses the network default. A value that is set but not valid (for example `"abc"`, `"0x5"`, `"1e3"`, `"0"`) fails the step before anything is sent. The editor disables the field while the node would be sponsored. When set, the node is never gas-sponsored and pays gas from the sending wallet. See [Priority Fee](/wallet-management/gas#priority-fee). |
+| Max Fee (gwei) | `maxFeeGwei` | plain decimal string in gwei (e.g. `"50"`), optional. Same format rules as `priorityFeeGwei`, and at least the priority fee when both are set. Empty means no cap. Higher fees are lowered to the cap; a cap below the next block's base fee fails the step before anything is sent (softened when `failOnError` is off). The editor disables the field while the node would be sponsored. When set, the node is never gas-sponsored and pays gas from the sending wallet. See [Max Fee](/wallet-management/gas#max-fee). |
 | Sponsor gas | `sponsorGas` | `true` or `false` (or `"true"` / `"false"`), on by default. Off always pays gas from your own wallet. Anything else, a template included, is refused at save, unless the step already holds it (see [On/off toggles](/workflows/templating#onoff-toggles)); a value kept that way runs as off only when it resolves to `false`. |
+| Simulate at | `simulateAt` | `"latest"` (default) or `"next-block"`. See [Simulate at the next block](#simulate-at-the-next-block). |
+| Next block timestamp offset (seconds) | `simulateTimestampOffsetSec` | The block time (slot length) used to predict the next block's time: a whole number from 1 to 60. Empty uses the network's block time. On Ethereum, Ethereum Sepolia and Ethereum Hoodi it is only a minimum over the fixed 12-second slot. Read only when `simulateAt` is `"next-block"` (any letter case). Read Contract and Batch Write Contract take the same two keys. |
 
 See the [generic web3 write-contract example](/api/workflows#generic-web3-write-contract-example-manual-trigger) in the Workflows API docs for a full working request body.
 

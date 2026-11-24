@@ -47,6 +47,8 @@ export const TOGGLE_FIELD_RENDERERS: Readonly<
       id={field.key}
       key={field.key}
       label={field.label}
+      // Clearing fees once the node becomes sponsored again is a general
+      // rule, applied to every config change (clearUnsponsoredOnlyFields).
       onChange={(next) => onUpdateConfig(field.key, next)}
       resetOnly={isShownOnlyToFix(field, config)}
       value={config[field.key]}

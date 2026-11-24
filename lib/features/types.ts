@@ -14,7 +14,8 @@ export type FeatureId =
   | "action.webhook"
   | "action.external-request"
   | "action.predge-read-signal"
-  | "notifications.execution-digest";
+  | "notifications.execution-digest"
+  | "automation.low-latency-start";
 
 // High-level grouping used for UI ("Workflow actions", "API access", etc.)
 // and analytics. Extend freely as new categories are needed.

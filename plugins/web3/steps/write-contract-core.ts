@@ -54,9 +54,20 @@ import {
 } from "@/lib/web3/decode-revert-error";
 import { buildErrorDecodeInterface } from "@/lib/web3/extra-error-abis";
 import {
-  parsePriorityFeeGwei,
+  resolveFeeOverrides,
   resolveGasLimitOverrides,
 } from "@/lib/web3/gas-defaults";
+import {
+  type NextBlockSimulation,
+  failedNextBlockCheck,
+  getNextBlockSimulation,
+  isNextBlockSimulationUnsupported,
+  nextBlockFailure,
+  readSimulationSettings,
+  type SimulateAt,
+  unsupportedFailure,
+} from "@/lib/web3/next-block-simulation";
+import { maxFeeBelowBaseFeeError } from "@/lib/web3/max-fee-check";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
@@ -85,6 +96,9 @@ export type WriteContractCoreInput = {
   // the network's mempool requires a tip above the configured floor (e.g. 0G
   // Galileo demands >= 2 gwei but the strategy floor is lower).
   priorityFeeGwei?: string;
+  // Optional maxFeePerGas ceiling (in gwei). The send is refused when it is
+  // below the current base fee.
+  maxFeeGwei?: string;
   // Per-node "Sponsor gas" toggle. Defaults on; false skips the gas-sponsored
   // route outright so the transaction is signed and paid for by the org's own
   // wallet. Resolved through resolveSponsorGas so an unset value stays on.
@@ -108,6 +122,11 @@ export type WriteContractCoreInput = {
   // that position. LayerZero's OFT send uses it for refundAddress, so a fee
   // refund can only go back to whoever paid it.
   payerParam?: string;
+  // "next-block" runs the revert check and gas estimate as of the next block
+  // (number + 1, its predicted time). Unset or "latest" = today's behaviour.
+  simulateAt?: SimulateAt;
+  // Block time (slot length) in seconds; unset = the chain's measured one.
+  simulateTimestampOffsetSec?: string | number;
   _context?: {
     executionId?: string;
     organizationId?: string;
@@ -154,12 +173,15 @@ export type WriteContractResult =
       // Absent on a genuine successful write; transactionHash is absent here.
       error?: string;
       rejection?: RevertKind;
+      simulation?: NextBlockSimulation;
     }
   | {
       success: false;
       error: string;
       rejection?: RevertKind;
       errorClass?: ExecutionErrorType;
+      // The predicted block a next-block simulation ran against.
+      simulation?: NextBlockSimulation;
       // Set only when a transaction reached the chain and failed
       // there, so the finalizer can persist a receipt for the failure. Absent
       // on pre-broadcast failures, where no transaction exists.
@@ -224,6 +246,7 @@ export function applyFailOnError(
     success: true,
     error: redactAllUrls(result.error),
     rejection: result.rejection,
+    ...(result.simulation ? { simulation: result.simulation } : {}),
   };
 }
 
@@ -245,12 +268,15 @@ async function writeContractCoreImpl(
     ethValue,
     gasLimitMultiplier,
     priorityFeeGwei,
+    maxFeeGwei,
     sponsorGas,
     usePrivateMempool,
     strict,
     web3Connection,
     errorAbis,
     payerParam,
+    simulateAt,
+    simulateTimestampOffsetSec,
     _context,
   } = input;
 
@@ -270,7 +296,24 @@ async function writeContractCoreImpl(
 
   const { multiplierOverride, gasLimitOverride } =
     resolveGasLimitOverrides(gasLimitMultiplier);
-  const priorityFeeOverride = parsePriorityFeeGwei(priorityFeeGwei);
+  const fees = resolveFeeOverrides(priorityFeeGwei, maxFeeGwei);
+  if ("error" in fees) {
+    return {
+      success: false,
+      error: fees.error,
+      errorClass: ExecutionErrorType.USER,
+    };
+  }
+  const { priorityFeeOverride, maxFeeOverride } = fees;
+
+  const simulationSettings = readSimulationSettings(
+    simulateAt,
+    simulateTimestampOffsetSec
+  );
+  if (!simulationSettings.ok) {
+    return simulationSettings.failure;
+  }
+  const simulation = simulationSettings.options;
 
   // Validate contract address
   if (!ethers.isAddress(contractAddress)) {
@@ -417,6 +460,19 @@ async function writeContractCoreImpl(
       // endpoints) is.
       errorClass: rpcRelayErrorClass(error) ?? ExecutionErrorType.SYSTEM,
     };
+  }
+
+  if (maxFeeOverride !== undefined) {
+    const capError = await maxFeeBelowBaseFeeError(rpcManager, maxFeeOverride);
+    if (capError) {
+      // The base fee, not the node's config, decides this, so failOnError=false
+      // can carry a run through a gas spike.
+      return {
+        success: false,
+        error: capError,
+        errorClass: ExecutionErrorType.EXTERNAL,
+      };
+    }
   }
 
   // Stablecoin ceiling. An ERC-20 call carries no native value, so the daily
@@ -585,6 +641,9 @@ async function writeContractCoreImpl(
       signerMode,
       sponsorGas,
       usePrivateMempool,
+      simulatesNextBlock: simulation !== undefined,
+      customFees:
+        priorityFeeOverride !== undefined || maxFeeOverride !== undefined,
     })
   ) {
     try {
@@ -741,6 +800,8 @@ async function writeContractCoreImpl(
             chainId,
             workflowId,
             rpcManager,
+            simulation,
+            feeOverrides: { priorityFeeOverride, maxFeeOverride },
           }
         );
       } else if (signerMode.kind === SIGNER_MODE.SAFE) {
@@ -760,6 +821,8 @@ async function writeContractCoreImpl(
             chainId,
             workflowId,
             rpcManager,
+            simulation,
+            feeOverrides: { priorityFeeOverride, maxFeeOverride },
           }
         );
       } else {
@@ -778,9 +841,11 @@ async function writeContractCoreImpl(
               multiplierOverride,
               gasLimitOverride,
               priorityFeeOverride,
+              maxFeeOverride,
             },
             workflowId,
             rpcManager,
+            simulation,
           }
         );
       }
@@ -807,8 +872,12 @@ async function writeContractCoreImpl(
         effectiveGasPrice,
         result: undefined,
         executedCall,
+        ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
       };
     } catch (error) {
+      if (isNextBlockSimulationUnsupported(error)) {
+        return { ...unsupportedFailure(error, "write-contract"), broadcastAttempted: false };
+      }
       logUserError(
         ErrorCategory.NETWORK_RPC,
         "[Write Contract] Function call failed",
@@ -844,15 +913,19 @@ async function writeContractCoreImpl(
         (isOnChainPendingError(error) ? ExecutionErrorType.SYSTEM : undefined);
       return {
         success: false,
-        error: formatContractError(
-          error,
-          buildErrorDecodeInterface(contractInterface, errorAbis)
+        ...nextBlockFailure(
+          formatContractError(
+            error,
+            buildErrorDecodeInterface(contractInterface, errorAbis)
+          ),
+          getNextBlockSimulation(error)
         ),
         ...(errorClass ? { errorClass } : {}),
         broadcastAttempted: broadcastHash
           ? true
           : rejection.kind !== "unknown" ||
-              isPreBroadcastNetworkError(error)
+              isPreBroadcastNetworkError(error) ||
+              failedNextBlockCheck(error)
             ? false
             : true,
         ...(rejection.kind !== "unknown" ? { rejection } : {}),

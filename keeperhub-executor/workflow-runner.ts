@@ -17,12 +17,17 @@
  *   DATABASE_URL - PostgreSQL connection string
  *   INTEGRATION_ENCRYPTION_KEY - Key for decrypting integration credentials
  *
+ * In warm pool mode (KH_WARM_POOL_CLAIM_URL set) WORKFLOW_ID, EXECUTION_ID,
+ * WORKFLOW_INPUT, TRIGGER_TYPE and SCHEDULE_ID are absent at start and come
+ * from the one assignment the pod claims from its executor (warm-pool.ts).
+ *
  * Environment variables (optional):
  *   WORKFLOW_INPUT - JSON string of trigger input (default: {})
  *   SCHEDULE_ID - ID of the schedule (for scheduled executions)
  *   + system credentials from runner-env.ts (ETHERSCAN_API_KEY, etc.)
  */
 
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { validateWorkflowIntegrations } from "../lib/db/integrations";
@@ -50,6 +55,20 @@ import {
 } from "./lib/broadcast-marker";
 import { collectLatencyObservations } from "./lib/latency-observations";
 import { shipMetricsToExecutor } from "./lib/ship-metrics";
+import {
+  acknowledgeAssignment,
+  waitForAssignment,
+} from "./lib/warm-pool-client";
+import {
+  armRunDeadline,
+  isRunnableRow,
+  prepareWarmRun,
+} from "./lib/warm-runner";
+import {
+  parsePreloadPrefixes,
+  preloadStepModules,
+} from "./lib/warm-preload";
+import { WARM_POOL_ENV } from "./warm-pool-protocol";
 // Register the async-local workflow error context: this process has no Next
 // instrumentation.ts (the Dockerfile does not copy it), so without this the
 // engine's enterWorkflowErrorContext() is a no-op and markBroadcast() cannot
@@ -407,7 +426,75 @@ async function main(): Promise<void> {
   }
 }
 
-main()
+/** Warm pool mode: see lib/warm-runner.ts. False means exit without a run. */
+async function prepareWarmRunner(): Promise<boolean> {
+  // Read before prepareWarmRun removes the token from the env: the ack is
+  // the token's last use.
+  const claimUrl = process.env[WARM_POOL_ENV.claimUrl] ?? "";
+  const token = process.env[WARM_POOL_ENV.token] ?? "";
+  const prepared = await prepareWarmRun({
+    env: process.env,
+    pingDb: async () => {
+      await queryClient`select 1`;
+    },
+    preload: () =>
+      preloadStepModules(
+        parsePreloadPrefixes(process.env[WARM_POOL_ENV.preloadActionPrefixes])
+      ),
+    waitForAssignment,
+    isRunnable: async ({ executionId, workflowId }) => {
+      const [row] = await db
+        .select({
+          workflowId: workflowExecutions.workflowId,
+          status: workflowExecutions.status,
+        })
+        .from(workflowExecutions)
+        .where(eq(workflowExecutions.id, executionId))
+        .limit(1);
+      return isRunnableRow(row, workflowId);
+    },
+    acknowledge: (assignment, decision) =>
+      acknowledgeAssignment({
+        claimUrl,
+        token,
+        executionId: assignment.executionId,
+        decision,
+      }),
+    log: (message) => console.log(message),
+  });
+  if (!prepared) {
+    return false;
+  }
+
+  Object.assign(process.env, prepared.env);
+  // Known to the shutdown handler from the claim on, so a signal before
+  // main() still records the run as terminated instead of leaving it pending.
+  currentExecutionId = prepared.assignment.executionId;
+  currentScheduleId = prepared.assignment.scheduleId ?? null;
+  const { runDeadlineMs } = prepared;
+  if (runDeadlineMs !== undefined) {
+    armRunDeadline(runDeadlineMs, () => {
+      console.error(
+        `[Runner] Run exceeded its ${runDeadlineMs}ms deadline, terminating`
+      );
+      onShutdownSignal("run deadline");
+    });
+  }
+  return true;
+}
+
+async function run(): Promise<void> {
+  if (process.env[WARM_POOL_ENV.claimUrl]) {
+    const assigned = await prepareWarmRunner();
+    if (!assigned) {
+      await queryClient.end();
+      return;
+    }
+  }
+  await main();
+}
+
+run()
   .then(() => {
     process.exit(process.exitCode ?? 0);
   })

@@ -161,6 +161,11 @@ export type ActionConfigFieldBase = {
   // needs to gate on the sibling's own condition too.
   showWhen?: ShowWhen;
 
+  // Render the field but lock it while `when` fails, with `hint` (and a link
+  // to `docUrl`) under it saying what unlocks it. For a setting the user
+  // should see exists even when the rest of the node's config rules it out.
+  enabledWhen?: { when: ShowWhen; hint: string; docUrl?: string };
+
   // Escape values substituted from {{...}} references into this field before
   // the step runs, so resolved data cannot change the meaning of the author's
   // own markup. `when` gates the rule on a sibling field using showWhen syntax.
@@ -213,6 +218,10 @@ export type ActionConfigFieldBase = {
 
   // External documentation URL shown as "Docs" link in the field tooltip
   docUrl?: string;
+
+  // A gas setting a sponsored send ignores. While the node would be sponsored,
+  // the editor warns under a set value that it is not applied.
+  ignoredWhenSponsored?: boolean;
 
   // For protocol-tuple-array: ABI component definitions for the tuple items.
   // Supports 2 levels of nesting (tuple containing tuple) which covers all
@@ -772,6 +781,14 @@ export function isFieldShown(
   );
 }
 
+/** Whether a shown field accepts input, per its `enabledWhen`. */
+export function isFieldEnabled(
+  field: ActionConfigFieldBase,
+  config: Record<string, unknown>
+): boolean {
+  return evaluateShowWhen(field.enabledWhen?.when, config);
+}
+
 // How a toggle reads its value, as its step does: Sponsor gas and Fail
 // workflow on error through resolveDefaultOnFlag, a plain switch resolveSwitch.
 export type ToggleRule = "default-on" | { switchDefault: unknown };
@@ -829,6 +846,7 @@ export function buildExampleConfig(
     // example assembled so far. Fields are visited in declaration order,
     // so a field's dependencies are already in the example.
     if (!evaluateShowWhen(field.showWhen, exampleConfig)) continue;
+    if (!isFieldEnabled(field, exampleConfig)) continue;
 
     // Use example, defaultValue, or a sensible default based on type
     if (field.example !== undefined) {

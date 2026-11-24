@@ -23,6 +23,24 @@ export class InFlightTracker {
   }
 
   /**
+   * Resolve once any tracked promise settles, either way, or at once when
+   * nothing is tracked. The receive loop waits on this when it is at capacity.
+   */
+  settleAny(): Promise<void> {
+    if (this.pending.size === 0) {
+      return Promise.resolve();
+    }
+    return Promise.race(
+      [...this.pending].map((promise) =>
+        promise.then(
+          () => undefined,
+          () => undefined
+        )
+      )
+    );
+  }
+
+  /**
    * Resolve true once every tracked promise has settled, including any tracked
    * while waiting, or false when timeoutMs elapses first (work is still running
    * and will be cut off by the exit that follows).
