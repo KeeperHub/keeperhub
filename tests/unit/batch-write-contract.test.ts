@@ -363,6 +363,27 @@ describe("batch-write-contract - happy path", () => {
   });
 });
 
+describe("batch-write-contract - route and included", () => {
+  it("reports the route the adapter broadcast on", async () => {
+    mockStaticCall.mockResolvedValueOnce([SUCCESS_RETURN, SUCCESS_RETURN]);
+    mockExecuteContractCall.mockImplementationOnce((...args: unknown[]) => {
+      const report = (args[3] as { sendReport: Record<string, unknown> })
+        .sendReport;
+      report.route = "private-relay";
+      report.included = true;
+      return Promise.resolve(RECEIPT);
+    });
+
+    const result = await batchWriteContractCore(baseInput({}));
+
+    expect(result).toMatchObject({
+      success: true,
+      route: "private-relay",
+      included: true,
+    });
+  });
+});
+
 describe("batch-write-contract - per-call failure isolation", () => {
   it("isolateCallFailures true: one call fails, batch still broadcasts", async () => {
     mockStaticCall.mockResolvedValueOnce([SUCCESS_RETURN, revertReturn()]);
@@ -1318,6 +1339,18 @@ describe("batch-write-contract - simulateAt next-block", () => {
     const result = await batchWriteContractCore(
       baseInput({ simulateAt: "next-block" })
     );
+
+    expect(result).toMatchObject({ success: false, broadcastAttempted: false });
+  });
+
+  it("reports a Gas Limit too low (Simulate at: Latest) as not sent", async () => {
+    mockStaticCall.mockResolvedValueOnce([SUCCESS_RETURN, SUCCESS_RETURN]);
+    const { GasLimitTooLowError } = await import("@/lib/web3/gas-limit-error");
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new GasLimitTooLowError(BigInt(30_000), {})
+    );
+
+    const result = await batchWriteContractCore(baseInput({}));
 
     expect(result).toMatchObject({ success: false, broadcastAttempted: false });
   });

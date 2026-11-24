@@ -7,6 +7,11 @@
  */
 import "server-only";
 import { isDefinitelyPreSend } from "@/lib/web3/pre-send";
+import {
+  type SendReport,
+  type SendRoute,
+  sendReportFields,
+} from "@/lib/web3/submit-signed";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { eq } from "drizzle-orm";
@@ -77,6 +82,7 @@ import {
 } from "@/lib/web3/onchain-revert";
 import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
 import { shouldTrySponsorship } from "@/lib/web3/sponsorship-eligibility";
+import { isSponsoredTxRevertError } from "@/lib/web3/turnkey-revert";
 import {
   type TransactionContext,
   withNonceSession,
@@ -173,6 +179,9 @@ export type WriteContractResult =
       error?: string;
       rejection?: RevertKind;
       simulation?: NextBlockSimulation;
+      // Where the transaction was broadcast, and whether a receipt came back.
+      route?: SendRoute;
+      included?: boolean;
     }
   | {
       success: false;
@@ -181,6 +190,9 @@ export type WriteContractResult =
       errorClass?: ExecutionErrorType;
       // The predicted block a next-block simulation ran against.
       simulation?: NextBlockSimulation;
+      // Absent before broadcast. included is true for an on-chain revert.
+      route?: SendRoute;
+      included?: boolean;
       // Set only when a transaction reached the chain and failed
       // there, so the finalizer can persist a receipt for the failure. Absent
       // on pre-broadcast failures, where no transaction exists.
@@ -246,6 +258,7 @@ export function applyFailOnError(
     error: redactAllUrls(result.error),
     rejection: result.rejection,
     ...(result.simulation ? { simulation: result.simulation } : {}),
+    ...sendReportFields(result),
   };
 }
 
@@ -677,6 +690,8 @@ async function writeContractCoreImpl(
         return {
           success: true,
           sponsored: true,
+          route: "sponsored",
+          included: true,
           transactionHash: sponsoredResult.transactionHash,
           chainId,
           transactionLink,
@@ -725,6 +740,8 @@ async function writeContractCoreImpl(
           error: decision.error,
           errorClass: decision.errorClass,
           sponsored: true,
+          route: "sponsored",
+          included: isSponsoredTxRevertError(error),
           broadcastAttempted: decision.broadcastAttempted,
           ...(decision.transactionHash
             ? {
@@ -778,6 +795,7 @@ async function writeContractCoreImpl(
     }
 
     let receivedTransactionHash: string | undefined;
+    const sendReport: SendReport = {};
     try {
       let receipt: Awaited<ReturnType<typeof adapter.executeContractCall>>;
       if (signerMode.kind === SIGNER_MODE.SAFE_ROLE) {
@@ -801,6 +819,7 @@ async function writeContractCoreImpl(
             rpcManager,
             simulation,
             feeOverrides: { priorityFeeOverride, maxFeeOverride },
+            sendReport,
           }
         );
       } else if (signerMode.kind === SIGNER_MODE.SAFE) {
@@ -822,6 +841,7 @@ async function writeContractCoreImpl(
             rpcManager,
             simulation,
             feeOverrides: { priorityFeeOverride, maxFeeOverride },
+            sendReport,
           }
         );
       } else {
@@ -845,6 +865,7 @@ async function writeContractCoreImpl(
             workflowId,
             rpcManager,
             simulation,
+            sendReport,
           }
         );
       }
@@ -872,6 +893,7 @@ async function writeContractCoreImpl(
         result: undefined,
         executedCall,
         ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
+        ...sendReportFields(sendReport),
       };
     } catch (error) {
       if (isNextBlockSimulationUnsupported(error)) {
@@ -927,6 +949,7 @@ async function writeContractCoreImpl(
             ? false
             : true,
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
+        ...sendReportFields(sendReport),
         ...(broadcastHash
           ? {
               transactionHash: broadcastHash,

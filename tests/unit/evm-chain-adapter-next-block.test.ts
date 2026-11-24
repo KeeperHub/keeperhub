@@ -136,9 +136,10 @@ describe("EvmChainAdapter.executeContractCall at the next block", () => {
     confirm.mockRestore();
   });
 
-  it("still runs the next-block check with a fixed Gas Limit", async () => {
+  it("still runs the next-block check with a fixed Gas Limit, and fills the send report", async () => {
     const { adapter, getGasConfig, signer, rpcManager, executeWithFailover } =
       setup();
+    const sendReport = {};
     const confirm = vi
       .spyOn(
         EvmChainAdapter.prototype as unknown as {
@@ -156,6 +157,7 @@ describe("EvmChainAdapter.executeContractCall at the next block", () => {
         gasOverrides: { gasLimitOverride: BigInt(90_000) },
         rpcManager,
         simulation: { timestampOffsetSec: 12 },
+        sendReport,
       }
     );
 
@@ -167,6 +169,7 @@ describe("EvmChainAdapter.executeContractCall at the next block", () => {
     });
     expect(executeWithFailover).not.toHaveBeenCalled();
     expect(getGasConfig.mock.calls[0]?.[4]).toBe(BigInt(90_000));
+    expect(mockSubmit.mock.calls[0]?.[3]).toBe(sendReport);
     confirm.mockRestore();
   });
 

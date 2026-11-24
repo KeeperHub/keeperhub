@@ -316,7 +316,11 @@ import {
   executeContractCallAsSafe,
 } from "@/lib/safe/execute-as-safe";
 import { resolveSignerForNode } from "@/lib/safe/signer-resolver";
-import { NextBlockSimulationUnsupportedError } from "@/lib/web3/next-block-simulation";
+import { GasLimitTooLowError } from "@/lib/web3/gas-limit-error";
+import {
+  NextBlockSimulationUnsupportedError,
+  tagNextBlockSimulation,
+} from "@/lib/web3/next-block-simulation";
 import { OnChainPendingError } from "@/lib/web3/onchain-revert";
 import { PreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 // Import mocks for assertion
@@ -1435,6 +1439,55 @@ describe("writeContractCore functionArgs shape (#2359)", () => {
   });
 });
 
+describe("writeContractCore Gas Limit too low", () => {
+  const input = {
+    contractAddress: "0x1234567890123456789012345678901234567890",
+    network: "ethereum",
+    abi: VALID_ABI,
+    abiFunction: "transfer",
+    _context: { organizationId: "org-1" },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+    registry.safeRows = [];
+  });
+
+  it.each([
+    ["Latest", () => new GasLimitTooLowError(BigInt(20_000), {})],
+    [
+      "Next block",
+      () =>
+        tagNextBlockSimulation(
+          new GasLimitTooLowError(BigInt(20_000), { needs: BigInt(43_000) }),
+          {
+            mode: "next-block",
+            baseBlock: 100,
+            assumedBlockNumber: 101,
+            assumedTimestamp: 1_000_012,
+            timestampOffsetSec: 12,
+            rpcMethod: "eth_estimateGas+blockOverrides",
+          }
+        ),
+    ],
+  ])(
+    "reports nothing sent (%s), so the idempotency key is released",
+    async (_mode, makeError) => {
+      mockExecuteContractCall.mockRejectedValueOnce(makeError());
+
+      const result = await writeContractCore(input);
+
+      expect(result).toMatchObject({
+        success: false,
+        broadcastAttempted: false,
+      });
+      expect("route" in result).toBe(false);
+    }
+  );
+});
+
 describe("writeContractCore broadcastAttempted evidence", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1796,5 +1849,142 @@ describe("writeContractCore payerParam (#2470)", () => {
       args: unknown[];
     };
     expect(sent.args).toEqual([ORG_WALLET, RECIPIENT, "1000"]);
+  });
+});
+
+describe("writeContractCore route and included", () => {
+  const RECEIPT = {
+    hash: "0xhash",
+    gasUsed: BigInt(21_000),
+    effectiveGasPrice: BigInt(1_000_000_000),
+    blockNumber: 1,
+  };
+  const input = {
+    contractAddress: "0x1234567890123456789012345678901234567890",
+    network: "ethereum",
+    abi: VALID_ABI,
+    abiFunction: "transfer",
+    _context: { organizationId: "org-1" },
+  };
+  type Report = { route?: string; included?: boolean };
+
+  // Stands in for the adapter / Safe helper filling the report as it sends.
+  function sendsVia(route: string, included: boolean, failWith?: Error) {
+    return (...args: unknown[]): Promise<typeof RECEIPT> => {
+      const report = (args[3] as { sendReport: Report }).sendReport;
+      report.route = route;
+      report.included = included;
+      return failWith ? Promise.reject(failWith) : Promise.resolve(RECEIPT);
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+    registry.safeRows = [];
+    vi.mocked(resolveSignerForNode).mockResolvedValue({
+      kind: "eoa",
+      ownerAddress: "0xwalletaddress",
+    });
+  });
+
+  afterEach(() => {
+    mockIsGasSponsorshipEnabled.mockReturnValue(false);
+    mockExecuteSponsoredContractTransaction.mockResolvedValue(null);
+    mockExecuteContractCall.mockResolvedValue(RECEIPT);
+  });
+
+  it("reports the route the adapter broadcast on", async () => {
+    mockExecuteContractCall.mockImplementationOnce(
+      sendsVia("private-relay", true)
+    );
+
+    const result = await writeContractCore(input);
+
+    expect(result).toMatchObject({
+      success: true,
+      route: "private-relay",
+      included: true,
+    });
+  });
+
+  it("reports included for an on-chain revert", async () => {
+    mockExecuteContractCall.mockImplementationOnce(
+      sendsVia("public", true, new Error("reverted"))
+    );
+
+    const result = await writeContractCore(input);
+
+    expect(result).toMatchObject({
+      success: false,
+      route: "public",
+      included: true,
+    });
+  });
+
+  it("reports neither field when nothing was sent", async () => {
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new PreBroadcastNetworkError("ECONNREFUSED", new Error("ECONNREFUSED"))
+    );
+
+    const result = await writeContractCore(input);
+
+    expect(result.success).toBe(false);
+    expect("route" in result).toBe(false);
+    expect("included" in result).toBe(false);
+  });
+
+  it("reports the outer transaction's route for a Safe send", async () => {
+    vi.mocked(resolveSignerForNode).mockResolvedValue({
+      kind: "safe",
+      ownerAddress: "0xwalletaddress",
+      safeAddress: "0x9999999999999999999999999999999999999999",
+      safeWalletId: "safe-1",
+    });
+    vi.mocked(executeContractCallAsSafe).mockImplementationOnce(
+      sendsVia("public", true)
+    );
+
+    const result = await writeContractCore(input);
+
+    expect(result).toMatchObject({ route: "public", included: true });
+  });
+
+  it("reports sponsored for a gas-sponsored send", async () => {
+    mockIsGasSponsorshipEnabled.mockReturnValue(true);
+    mockExecuteSponsoredContractTransaction.mockResolvedValue({
+      transactionHash: "0xsponsored",
+      gasUsed: "21000",
+      gasUsedUnits: "21000",
+      effectiveGasPrice: "1000000000",
+    });
+
+    const result = await writeContractCore(input);
+
+    expect(result).toMatchObject({
+      success: true,
+      sponsored: true,
+      route: "sponsored",
+      included: true,
+    });
+  });
+
+  it("keeps route and included on a softened failure", () => {
+    const softened = applyFailOnError(
+      {
+        success: false,
+        error: "reverted",
+        route: "public",
+        included: true,
+      },
+      false
+    );
+
+    expect(softened).toMatchObject({
+      success: true,
+      route: "public",
+      included: true,
+    });
   });
 });

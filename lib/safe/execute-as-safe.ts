@@ -23,6 +23,7 @@ import { RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
 import {
   type BroadcastResult,
   NonceConflictError,
+  type SendReport,
   submitSignedTransactionWithFailover,
 } from "@/lib/web3/submit-signed";
 
@@ -56,6 +57,8 @@ export type ExecuteAsSafeOptions = {
   simulation?: NextBlockSimulationOptions;
   // The node's priority fee and max fee, applied to the owner transaction.
   feeOverrides?: { priorityFeeOverride?: bigint; maxFeeOverride?: bigint };
+  // Filled with the outer transaction's route and whether a receipt came back.
+  sendReport?: SendReport;
 };
 
 // The outer transaction's gas estimate, which is also its revert check.
@@ -149,11 +152,21 @@ function throwIfReverted(
 async function waitForSafeReceipt(
   broadcast: BroadcastResult,
   rpcManager: RpcProviderManager,
+  label: string,
+  report: SendReport = {}
+): Promise<ethers.TransactionReceipt> {
+  const receipt =
+    broadcast.preExistingReceipt ??
+    (await readSafeReceipt(broadcast, rpcManager, label));
+  report.included = true;
+  return receipt;
+}
+
+async function readSafeReceipt(
+  broadcast: BroadcastResult,
+  rpcManager: RpcProviderManager,
   label: string
 ): Promise<ethers.TransactionReceipt> {
-  if (broadcast.preExistingReceipt) {
-    return broadcast.preExistingReceipt;
-  }
   let receipt: ethers.TransactionReceipt | null;
   try {
     receipt = await rpcManager.executeWithFailover(
@@ -242,7 +255,8 @@ export async function executeContractCallAsSafe(
         maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
         chainId: options.chainId,
       },
-      options.rpcManager
+      options.rpcManager,
+      options.sendReport
     );
 
     await nonceManager.recordTransaction(
@@ -256,7 +270,8 @@ export async function executeContractCallAsSafe(
     const receipt = await waitForSafeReceipt(
       broadcast,
       options.rpcManager,
-      "Safe-routed transaction"
+      "Safe-routed transaction",
+      options.sendReport
     );
     throwIfReverted(receipt, gasConfig.gasLimit);
 
@@ -372,7 +387,8 @@ export async function executeContractCallAsRole(
         maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
         chainId: options.chainId,
       },
-      options.rpcManager
+      options.rpcManager,
+      options.sendReport
     );
 
     await nonceManager.recordTransaction(
@@ -386,7 +402,8 @@ export async function executeContractCallAsRole(
     const receipt = await waitForSafeReceipt(
       broadcast,
       options.rpcManager,
-      "Role-routed transaction"
+      "Role-routed transaction",
+      options.sendReport
     );
     throwIfReverted(receipt, gasConfig.gasLimit);
     await nonceManager.confirmTransaction(broadcast.hash);
@@ -479,7 +496,8 @@ export async function executeNativeTransferAsRole(
         maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
         chainId: options.chainId,
       },
-      options.rpcManager
+      options.rpcManager,
+      options.sendReport
     );
 
     await nonceManager.recordTransaction(
@@ -493,7 +511,8 @@ export async function executeNativeTransferAsRole(
     const receipt = await waitForSafeReceipt(
       broadcast,
       options.rpcManager,
-      "Role-routed native transfer"
+      "Role-routed native transfer",
+      options.sendReport
     );
     throwIfReverted(receipt, gasConfig.gasLimit);
     await nonceManager.confirmTransaction(broadcast.hash);
@@ -583,7 +602,8 @@ export async function executeNativeTransferAsSafe(
         maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
         chainId: options.chainId,
       },
-      options.rpcManager
+      options.rpcManager,
+      options.sendReport
     );
 
     await nonceManager.recordTransaction(
@@ -597,7 +617,8 @@ export async function executeNativeTransferAsSafe(
     const receipt = await waitForSafeReceipt(
       broadcast,
       options.rpcManager,
-      "Safe-routed native transfer"
+      "Safe-routed native transfer",
+      options.sendReport
     );
     throwIfReverted(receipt, gasConfig.gasLimit);
 

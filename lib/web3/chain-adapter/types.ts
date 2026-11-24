@@ -1,5 +1,6 @@
 import type { ethers } from "ethers";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
+import type { SendReport } from "@/lib/web3/submit-signed";
 import type {
   NextBlockSimulation,
   NextBlockSimulationOptions,
@@ -115,6 +116,8 @@ export type TransactionOptions = {
   gasOverrides: GasOverrides;
   workflowId?: string;
   rpcManager?: RpcProviderManager;
+  // EVM only: filled with the send route and whether a receipt came back.
+  sendReport?: SendReport;
   solanaSigner?: SolanaTransactionSigner;
   /** Declared max native SOL outflow (lamports) for arbitrary instruction txs. */
   maxSolLamports?: bigint;

@@ -13,6 +13,11 @@
  */
 import "server-only";
 import { isDefinitelyPreSend } from "@/lib/web3/pre-send";
+import {
+  type SendReport,
+  type SendRoute,
+  sendReportFields,
+} from "@/lib/web3/submit-signed";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { eq } from "drizzle-orm";
@@ -141,6 +146,8 @@ export type BatchWriteContractResult =
     simulation?: NextBlockSimulation;
     // The block the per-call results were checked against.
     resultsSimulation?: NextBlockSimulation;
+    route?: SendRoute;
+    included?: boolean;
   }
   | {
     success: false;
@@ -148,6 +155,8 @@ export type BatchWriteContractResult =
     rejection?: RevertKind;
     errorClass?: ExecutionErrorType;
     simulation?: NextBlockSimulation;
+    route?: SendRoute;
+    included?: boolean;
     transactionHash?: string;
     chainId?: number;
     // Present when the pre-broadcast simulation ran and decoded per-call
@@ -187,6 +196,7 @@ export function applyBatchFailOnError(
     success: true,
     error: redactAllUrls(result.error),
     rejection: result.rejection,
+    ...sendReportFields(result),
     // Carried forward when present (e.g. an all-calls-failed simulation
     // abort): unlike transactionHash, these are pre-broadcast diagnostics
     // with no KEEP-966 reconciliation risk, so there is no reason to drop
@@ -780,6 +790,7 @@ async function batchWriteContractCoreImpl(
     }
 
     let receivedTransactionHash: string | undefined;
+    const sendReport: SendReport = {};
     try {
       const receipt = await adapter.executeContractCall(
         signer,
@@ -803,6 +814,7 @@ async function batchWriteContractCoreImpl(
             simulation && checkedAt
               ? { ...simulation, basedOn: checkedAt }
               : simulation,
+          sendReport,
         }
       );
 
@@ -824,6 +836,7 @@ async function batchWriteContractCoreImpl(
         totalCalls: results.length,
         ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
         ...(checkedAt ? { resultsSimulation: checkedAt } : {}),
+        ...sendReportFields(sendReport),
       };
     } catch (error) {
       if (isNextBlockSimulationUnsupported(error)) {
@@ -853,6 +866,7 @@ async function batchWriteContractCoreImpl(
             ? false
             : true,
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
+        ...sendReportFields(sendReport),
       };
       // aggregate3 is atomic, so a confirmed on-chain revert (receipt status
       // 0) is the one case where every call's outcome is actually known:

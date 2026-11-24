@@ -1,0 +1,84 @@
+import type { RpcProviderManager } from "@/lib/rpc/providers";
+import {
+  type Delivery,
+  deliveryOfRpcError,
+  isDuplicateHashMessage,
+  neverConnected,
+} from "@/lib/web3/extra-broadcast";
+
+/** Where a write was broadcast. Reported as the step's `route` output. */
+export type SendRoute = "public" | "private-relay" | "sponsored";
+
+/** Filled in while a write is sent; `included` once a receipt is seen. */
+export type SendReport = { route?: SendRoute; included?: boolean };
+
+/** One broadcast to a managed endpoint and what became of it. */
+export type Attempt = { route: SendRoute; delivery: Delivery };
+
+/**
+ * How a managed endpoint's broadcast error reads, for the route only.
+ * `knownRefusal` is the caller's own verdict (refused connection, nonce
+ * conflict), passed in so this module does not import the send helper.
+ */
+export function deliveryOfBroadcastError(
+  error: unknown,
+  message: string,
+  knownRefusal: boolean
+): Delivery {
+  if (isDuplicateHashMessage(message)) {
+    return "accepted";
+  }
+  if (knownRefusal || neverConnected(error)) {
+    return "refused";
+  }
+  const rpcError = rpcErrorOf(error);
+  return rpcError ? deliveryOfRpcError(rpcError) : "unknown";
+}
+
+// The JSON-RPC error object ethers keeps on an error the node answered with.
+function rpcErrorOf(
+  error: unknown
+): { code?: unknown; message?: unknown } | undefined {
+  const e = error as {
+    info?: { error?: unknown };
+    error?: unknown;
+  } | null;
+  const candidate = e?.info?.error ?? e?.error;
+  return candidate && typeof candidate === "object"
+    ? (candidate as { code?: unknown; message?: unknown })
+    : undefined;
+}
+
+/**
+ * Route for a send the managed endpoints did not accept outright: public
+ * when a public endpoint took or may have taken the bytes, then the relay.
+ * When nobody did but the hash exists anyway, fall back to the manager's
+ * own route. Undefined means nothing was delivered.
+ */
+export function routeFromEvidence(
+  rpcManager: RpcProviderManager,
+  attempts: readonly Attempt[],
+  extraDeliveries: readonly Delivery[],
+  found: boolean
+): SendRoute | undefined {
+  const delivered = (delivery: Delivery): boolean => delivery !== "refused";
+  if (
+    extraDeliveries.some(delivered) ||
+    attempts.some((a) => a.route === "public" && delivered(a.delivery))
+  ) {
+    return "public";
+  }
+  if (
+    attempts.some((a) => a.route === "private-relay" && delivered(a.delivery))
+  ) {
+    return "private-relay";
+  }
+  if (!found) {
+    return;
+  }
+  const publicTried =
+    extraDeliveries.length > 0 || attempts.some((a) => a.route === "public");
+  return rpcManager.hasPrivateRelayPrimary() && !publicTried
+    ? "private-relay"
+    : "public";
+}

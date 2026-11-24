@@ -9,14 +9,19 @@ vi.mock("@/lib/logging", () => ({
   ErrorCategory: { NETWORK_RPC: "network_rpc" },
   logSystemError: vi.fn(),
   logSystemWarn: vi.fn(),
+  logWarn: vi.fn(),
 }));
 
 import { type RpcOperationType, RpcProviderManager } from "@/lib/rpc/providers";
+import { isDuplicateHashMessage } from "@/lib/web3/extra-broadcast";
+import { broadcastTransactionHash } from "@/lib/web3/onchain-revert";
 import {
   isNonceConflictError,
   isPreBroadcastNetworkError,
   NonceConflictError,
   PreBroadcastNetworkError,
+  type SendReport,
+  sendReportFields,
   submitSignedTransactionWithFailover,
 } from "@/lib/web3/submit-signed";
 
@@ -77,6 +82,13 @@ function makeMockSigner(populated?: ethers.TransactionLike<string>) {
   };
 }
 
+// A public RPC with no extra broadcast URLs, as most chains are configured.
+const NO_EXTRA_ROUTING = {
+  getBroadcastRpcUrls: () => [],
+  isPrivateRelayProvider: () => false,
+  hasPrivateRelayPrimary: () => false,
+};
+
 function makeMockRpcManager(provider: ScenarioProvider) {
   const executeWithFailover = vi
     .fn()
@@ -87,7 +99,10 @@ function makeMockRpcManager(provider: ScenarioProvider) {
       ) => await op(provider as unknown as ethers.JsonRpcProvider)
     );
   return {
-    rpcManager: { executeWithFailover } as unknown as RpcProviderManager,
+    rpcManager: {
+      executeWithFailover,
+      ...NO_EXTRA_ROUTING,
+    } as unknown as RpcProviderManager,
     executeWithFailover,
   };
 }
@@ -159,6 +174,7 @@ describe("submitSignedTransactionWithFailover", () => {
       );
     const rpcManager = {
       executeWithFailover,
+      ...NO_EXTRA_ROUTING,
     } as unknown as RpcProviderManager;
 
     const result = await submitSignedTransactionWithFailover(
@@ -244,19 +260,38 @@ describe("submitSignedTransactionWithFailover", () => {
     });
   });
 
-  it("throws NonceConflictError on geth 'already known' (ethers leaves this as SERVER_ERROR)", async () => {
-    const { signer } = makeMockSigner();
-    const originalError = new Error("already known");
-    const { rpcManager } = makeMockRpcManager({
-      broadcastTransaction: vi.fn().mockRejectedValue(originalError),
-      getTransactionReceipt: vi.fn().mockResolvedValue(null),
-      getTransaction: vi.fn().mockResolvedValue(null),
-    });
+  // geth/erigon/reth, Nethermind, anvil/Parity, Besu: each names our own hash.
+  it.each([
+    "already known",
+    "AlreadyKnown",
+    "transaction already imported",
+    "Known transaction",
+  ])(
+    "keeps the hash as pending on a duplicate-hash reply (%s), never a nonce conflict",
+    async (message) => {
+      const { signer } = makeMockSigner();
+      const { rpcManager } = makeMockRpcManager({
+        broadcastTransaction: vi.fn().mockRejectedValue(new Error(message)),
+        getTransactionReceipt: vi.fn().mockResolvedValue(null),
+        getTransaction: vi.fn().mockResolvedValue(null),
+      });
+      const report: SendReport = {};
 
-    await expect(
-      submitSignedTransactionWithFailover(signer, TEST_TX_REQUEST, rpcManager)
-    ).rejects.toBeInstanceOf(NonceConflictError);
-  });
+      const error = await submitSignedTransactionWithFailover(
+        signer,
+        TEST_TX_REQUEST,
+        rpcManager,
+        report
+      ).catch((caught: unknown) => caught);
+
+      expect(error).not.toBeInstanceOf(NonceConflictError);
+      expect(broadcastTransactionHash(error)).toBe(EXPECTED_HASH);
+      expect(sendReportFields(report)).toEqual({
+        route: "public",
+        included: false,
+      });
+    }
+  );
 
   it("tags a lone connection refusal as PreBroadcastNetworkError, preserving the cause", async () => {
     const { signer } = makeMockSigner();
@@ -515,10 +550,6 @@ describe("isNonceConflictError", () => {
   });
 
   it.each([
-    "already known",
-    "Already known",
-    "RPC error: ALREADY KNOWN",
-    "known transaction",
     "nonce too low",
     "nonce is too low",
     "nonce has already been used",
@@ -543,11 +574,30 @@ describe("isNonceConflictError", () => {
     expect(isNonceConflictError(new Error(msg))).toBe(false);
   });
 
+  it.each([
+    ["already known", true],
+    ["AlreadyKnown", true],
+    ["Known transaction: 0xabc", true],
+    ["unknown transaction type", false],
+    ["rlp: unknown transaction type", false],
+  ])("reads %s as a duplicate-hash reply: %s", (msg, duplicate) => {
+    expect(isDuplicateHashMessage(msg)).toBe(duplicate);
+  });
+
   it("handles non-Error values without throwing", () => {
-    expect(isNonceConflictError("already known")).toBe(true);
+    expect(isNonceConflictError("nonce too low")).toBe(true);
     expect(isNonceConflictError(null)).toBe(false);
     expect(isNonceConflictError(undefined)).toBe(false);
-    expect(isNonceConflictError({ message: "already known" })).toBe(false);
+    expect(isNonceConflictError({ message: "nonce too low" })).toBe(false);
+  });
+
+  it.each([
+    "already known",
+    "AlreadyKnown",
+    "already imported",
+    "known transaction",
+  ])("does not read a duplicate-hash reply as a nonce conflict: %s", (msg) => {
+    expect(isNonceConflictError(new Error(msg))).toBe(false);
   });
 
   it("matches CALL_EXCEPTION etc. as false (sanity)", () => {

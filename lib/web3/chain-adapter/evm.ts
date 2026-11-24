@@ -19,7 +19,10 @@ import {
   OnChainRevertError,
 } from "@/lib/web3/onchain-revert";
 import { RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
-import { submitSignedTransactionWithFailover } from "@/lib/web3/submit-signed";
+import {
+  type SendReport,
+  submitSignedTransactionWithFailover,
+} from "@/lib/web3/submit-signed";
 import type { AdaptiveGasStrategy, GasConfig } from "../gas-strategy";
 import {
   type NextBlockSimulation,
@@ -211,7 +214,8 @@ export class EvmChainAdapter implements ChainAdapter {
         await submitSignedTransactionWithFailover(
           signer,
           txRequest,
-          options.rpcManager
+          options.rpcManager,
+          options.sendReport
         )
       ).response;
     } else {
@@ -369,7 +373,8 @@ export class EvmChainAdapter implements ChainAdapter {
         const broadcast = await submitSignedTransactionWithFailover(
           signer,
           txRequest,
-          options.rpcManager
+          options.rpcManager,
+          options.sendReport
         );
         tx = broadcast.response;
       } else {
@@ -668,6 +673,7 @@ export class EvmChainAdapter implements ChainAdapter {
     gasConfig: GasConfig,
     options: TransactionOptions
   ): Promise<TransactionReceipt> {
+    const report: SendReport = options.sendReport ?? {};
     await this.nonceManager.recordTransaction(
       session,
       nonce,
@@ -692,6 +698,7 @@ export class EvmChainAdapter implements ChainAdapter {
         transactionHash: tx.hash,
       });
     }
+    report.included = true;
     // ethers v6 wait() throws CALL_EXCEPTION on reverts it can detect, but
     // that detection is provider-dependent; a tx that passed the staticCall
     // preflight and reverted only at inclusion time can still resolve here.
