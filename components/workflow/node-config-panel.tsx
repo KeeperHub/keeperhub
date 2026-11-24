@@ -1,6 +1,5 @@
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { Eraser, Eye, EyeOff, RefreshCw, Trash2 } from "lucide-react";
-import { clearUnsponsoredOnlyFields } from "@/lib/web3/unsponsored-only-fields";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ConfirmOverlay } from "@/components/overlays/confirm-overlay";
@@ -62,6 +61,10 @@ import {
   workflowNotFoundAtom,
 } from "@/lib/workflow/store";
 import { buildConfigForActionTypeChange } from "@/lib/workflow/editor/action-type-transition";
+import {
+  applyConfigUpdate,
+  type ConfigUpdateBatch,
+} from "@/lib/workflow/editor/config-update";
 import { findActionById } from "@/plugins/registry";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { ActionConfig } from "./config/action-config";
@@ -319,7 +322,7 @@ export const PanelInner = () => {
   // Tracks in-flight config so multiple synchronous onUpdateConfig calls
   // within the same event (e.g. toggling manual ABI + clearing the field)
   // don't overwrite each other due to stale selectedNode closure.
-  const pendingConfigRef = useRef<Record<string, unknown> | null>(null);
+  const pendingConfigRef = useRef<ConfigUpdateBatch | null>(null);
   const sidebarRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
@@ -532,20 +535,24 @@ export const PanelInner = () => {
     value: string | boolean | Record<string, unknown> | undefined
   ): void => {
     if (selectedNode) {
-      const baseConfig = pendingConfigRef.current ?? selectedNode.data.config;
-      let newConfig: Record<string, unknown> = clearUnsponsoredOnlyFields(
-        baseConfig ?? {},
-        { ...baseConfig, [key]: value }
+      const update = applyConfigUpdate(
+        pendingConfigRef.current,
+        selectedNode.data.config ?? {},
+        key,
+        value
       );
+      let newConfig = update.config;
+      let batch = update.batch;
 
       if (key === "actionType" && typeof value === "string") {
         // Prune leftovers from the previous action type and seed the new
         // action's defaults so showWhen conditions and validation evaluate
         // immediately. See buildConfigForActionTypeChange for details.
         newConfig = buildConfigForActionTypeChange(value, newConfig);
+        batch = { start: newConfig, merged: newConfig };
       }
 
-      pendingConfigRef.current = newConfig;
+      pendingConfigRef.current = batch;
       queueMicrotask(() => {
         pendingConfigRef.current = null;
       });

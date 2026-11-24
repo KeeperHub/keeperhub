@@ -1,12 +1,11 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TOGGLE_FIELD_RENDERERS } from "@/components/workflow/config/toggle-field-renderers";
-import {
-  clearUnsponsoredOnlyFields,
-  UNSPONSORED_ONLY_FIELD_KEYS,
-} from "@/lib/web3/unsponsored-only-fields";
+import { UNSPONSORED_ONLY_FIELD_KEYS } from "@/lib/web3/unsponsored-only-fields";
+import { applyConfigUpdate } from "@/lib/workflow/editor/config-update";
 import { sponsorGasField } from "@/plugins/field-fragments";
 
 let container: HTMLDivElement;
@@ -58,8 +57,19 @@ describe("Sponsor gas toggle", () => {
   });
 });
 
-describe("clearUnsponsoredOnlyFields", () => {
+describe("applyConfigUpdate: fees hidden while sponsored", () => {
   const FEES = { priorityFeeGwei: "3", maxFeeGwei: "50" };
+  const WRITE = "web3/write-contract";
+  const BATCH = "web3/batch-write-contract";
+
+  // One editor update outside any batch, as a single click sends it.
+  function update(
+    config: Record<string, unknown>,
+    key: string,
+    value: unknown
+  ): Record<string, unknown> {
+    return applyConfigUpdate(null, config, key, value).config;
+  }
 
   beforeEach(() => {
     vi.stubEnv("NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED", "true");
@@ -70,11 +80,13 @@ describe("clearUnsponsoredOnlyFields", () => {
   });
 
   it("clears every unsponsored-only setting when Sponsor gas is turned on", () => {
-    const before = { network: "1", sponsorGas: false, ...FEES };
-    const after = clearUnsponsoredOnlyFields(before, {
-      ...before,
-      sponsorGas: true,
-    });
+    const before = {
+      actionType: WRITE,
+      network: "1",
+      sponsorGas: false,
+      ...FEES,
+    };
+    const after = update(before, "sponsorGas", true);
     for (const key of UNSPONSORED_ONLY_FIELD_KEYS) {
       expect(after[key]).toBe("");
     }
@@ -83,36 +95,119 @@ describe("clearUnsponsoredOnlyFields", () => {
   it("clears them when Simulate at goes back to Latest block with Sponsor gas on", () => {
     // Fees set under Next block, Sponsor gas then turned on: still unsponsored.
     const nextBlock = {
+      actionType: WRITE,
       network: "1",
       simulateAt: "next-block",
-      sponsorGas: true,
+      sponsorGas: false,
       ...FEES,
     };
-    expect(
-      clearUnsponsoredOnlyFields({ ...nextBlock, sponsorGas: false }, nextBlock)
-    ).toEqual(nextBlock);
+    const sponsorOn = update(nextBlock, "sponsorGas", true);
+    expect(sponsorOn).toEqual({ ...nextBlock, sponsorGas: true });
 
-    const after = clearUnsponsoredOnlyFields(nextBlock, {
-      ...nextBlock,
-      simulateAt: "latest",
-    });
+    const after = update(sponsorOn, "simulateAt", "latest");
     expect(after.priorityFeeGwei).toBe("");
     expect(after.maxFeeGwei).toBe("");
   });
 
+  it("clears them when the network changes to a sponsored one", () => {
+    const optimism = { actionType: WRITE, network: "10", ...FEES };
+    expect(update(optimism, "network", "8453").maxFeeGwei).toBe("");
+  });
+
   it("keeps the settings when the node stays unsponsored", () => {
-    const before = { network: "1", sponsorGas: true, ...FEES };
-    const off = { ...before, sponsorGas: false };
-    expect(clearUnsponsoredOnlyFields(before, off)).toBe(off);
-    const viaSafe = { ...off, web3Connection: "safe:abc" };
-    expect(
-      clearUnsponsoredOnlyFields(viaSafe, { ...viaSafe, sponsorGas: true })
-    ).toEqual({ ...viaSafe, sponsorGas: true });
+    const before = {
+      actionType: WRITE,
+      network: "1",
+      sponsorGas: true,
+      ...FEES,
+    };
+    expect(update(before, "sponsorGas", false)).toEqual({
+      ...before,
+      sponsorGas: false,
+    });
+    const viaSafe = {
+      ...before,
+      sponsorGas: false,
+      web3Connection: "safe:abc",
+    };
+    expect(update(viaSafe, "sponsorGas", true)).toEqual({
+      ...viaSafe,
+      sponsorGas: true,
+    });
   });
 
   it("does not touch settings that are already empty", () => {
-    const before = { network: "1", sponsorGas: false };
-    const after = { ...before, sponsorGas: true };
-    expect(clearUnsponsoredOnlyFields(before, after)).toBe(after);
+    const before = { actionType: WRITE, network: "1", sponsorGas: false };
+    expect(update(before, "sponsorGas", true)).toEqual({
+      ...before,
+      sponsorGas: true,
+    });
+  });
+
+  it("never clears Batch Write's fees, which always show and always apply", () => {
+    const batch = {
+      actionType: BATCH,
+      network: "8453",
+      simulateAt: "next-block",
+      ...FEES,
+    };
+    expect(update(batch, "simulateAt", "latest")).toEqual({
+      ...batch,
+      simulateAt: "latest",
+    });
+    const optimism = { ...batch, network: "10", simulateAt: "latest" };
+    expect(update(optimism, "network", "1")).toEqual({
+      ...optimism,
+      network: "1",
+    });
+  });
+
+  it("judges a batch of updates from its start: picking a Flashbots network keeps fees", () => {
+    // The network select sends `network`, then `usePrivateMempool`, in one tick.
+    const optimism = { actionType: WRITE, network: "10", ...FEES };
+    const first = applyConfigUpdate(null, optimism, "network", "1");
+    const second = applyConfigUpdate(
+      first.batch,
+      optimism,
+      "usePrivateMempool",
+      true
+    );
+    expect(second.config).toEqual({
+      ...optimism,
+      network: "1",
+      usePrivateMempool: true,
+    });
+  });
+
+  it("clears once a batch ends sponsored", () => {
+    const flashbots = {
+      actionType: WRITE,
+      network: "1",
+      usePrivateMempool: true,
+      ...FEES,
+    };
+    const first = applyConfigUpdate(null, flashbots, "network", "8453");
+    const second = applyConfigUpdate(
+      first.batch,
+      flashbots,
+      "usePrivateMempool",
+      false
+    );
+    expect(second.config.maxFeeGwei).toBe("");
+    expect(second.config.priorityFeeGwei).toBe("");
+  });
+});
+
+describe("editor config handlers", () => {
+  // Both panels must route every field update through the shared rule.
+  it.each([
+    "components/workflow/node-config-panel.tsx",
+    "components/overlays/configuration-overlay.tsx",
+  ])("%s applies updates with applyConfigUpdate", (path) => {
+    const source = readFileSync(path, "utf8");
+    expect(source).toMatch(
+      /applyConfigUpdate\(\s*pendingConfigRef\.current,\s*selectedNode\.data\.config/
+    );
+    expect(source).toMatch(/pendingConfigRef\.current = batch;/);
   });
 });

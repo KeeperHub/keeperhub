@@ -900,6 +900,32 @@ describe("writeContractCore simulateAt next-block", () => {
       simulation: SIMULATION,
     });
   });
+
+  it("reports a failed next-block check as not sent", async () => {
+    // A temporary RPC error from the check, after retries and failover.
+    const checkFailed = Object.assign(new Error("header not found"), {
+      nextBlockCheckFailed: true,
+    });
+    mockExecuteContractCall.mockRejectedValueOnce(checkFailed);
+
+    const result = await writeContractCore({
+      ...baseInput,
+      simulateAt: "next-block",
+    });
+
+    expect(result).toMatchObject({ success: false, broadcastAttempted: false });
+  });
+
+  it("keeps a failure after the check as possibly sent", async () => {
+    mockExecuteContractCall.mockRejectedValueOnce(new Error("socket hang up"));
+
+    const result = await writeContractCore({
+      ...baseInput,
+      simulateAt: "next-block",
+    });
+
+    expect(result).toMatchObject({ success: false, broadcastAttempted: true });
+  });
 });
 
 describe("writeContractCore RPC resolution failure", () => {

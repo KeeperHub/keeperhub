@@ -61,12 +61,13 @@ import {
 import {
   type NextBlockSimulation,
   type NextBlockSimulationOptions,
+  failedNextBlockCheck,
+  getNextBlockSimulation,
   isNextBlockSimulationUnsupported,
   nextBlockFailure,
-  parseSimulationSettings,
+  readSimulationSettings,
   type SimulateAt,
   simulateCallAtNextBlock,
-  tagNextBlockSimulation,
   unsupportedFailure,
 } from "@/lib/web3/next-block-simulation";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
@@ -575,7 +576,7 @@ async function batchWriteContractCoreImpl(
   }
   const { priorityFeeOverride, maxFeeOverride } = fees;
 
-  const simulationSettings = parseSimulationSettings(
+  const simulationSettings = readSimulationSettings(
     simulateAt,
     simulateTimestampOffsetSec
   );
@@ -721,7 +722,7 @@ async function batchWriteContractCoreImpl(
       success: false,
       ...nextBlockFailure(
         `All ${results.length} calls failed simulation; skipping broadcast to avoid wasting gas. First error: ${results[0].error}`,
-        checkedAt ? tagNextBlockSimulation({}, checkedAt) : undefined
+        checkedAt
       ),
       results,
       totalCalls: results.length,
@@ -832,13 +833,17 @@ async function batchWriteContractCoreImpl(
         broadcastTransactionHash(error) ?? receivedTransactionHash;
       const base = {
         success: false as const,
-        ...nextBlockFailure(formatContractError(error, revertIface), error),
+        ...nextBlockFailure(
+      formatContractError(error, revertIface),
+      getNextBlockSimulation(error)
+    ),
         ...(errorClass ? { errorClass } : {}),
         ...(broadcastHash ? { transactionHash: broadcastHash, chainId } : {}),
         broadcastAttempted: broadcastHash
           ? true
           : rejection.kind !== "unknown" ||
-              isPreBroadcastNetworkError(error)
+              isPreBroadcastNetworkError(error) ||
+              failedNextBlockCheck(error)
             ? false
             : true,
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
@@ -883,12 +888,12 @@ async function simulateAggregate3AtNextBlock(params: {
   const { returnData, simulation } = await simulateCallAtNextBlock(
     params.rpcManager,
     {
-    chainId: params.chainId,
-    tx: {
-      from: params.walletAddress,
-      to: MULTICALL3_ADDRESS,
-      data: multicall.encodeFunctionData("aggregate3", [params.call3Array]),
-    },
+      chainId: params.chainId,
+      tx: {
+        from: params.walletAddress,
+        to: MULTICALL3_ADDRESS,
+        data: multicall.encodeFunctionData("aggregate3", [params.call3Array]),
+      },
       options: params.options,
       operationType: "preflight",
     }
@@ -913,7 +918,10 @@ function aggregateSimulationFailure(
   const rejection = classifyRevert(error, revertIface);
   return {
     success: false,
-    ...nextBlockFailure(formatContractError(error, revertIface), error),
+    ...nextBlockFailure(
+      formatContractError(error, revertIface),
+      getNextBlockSimulation(error)
+    ),
     ...(rejection.kind !== "unknown" ? { rejection } : {}),
   };
 }

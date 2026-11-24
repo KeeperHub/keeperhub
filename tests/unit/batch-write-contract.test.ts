@@ -1274,6 +1274,24 @@ describe("batch-write-contract - simulateAt next-block", () => {
     expect(mockExecuteContractCall).not.toHaveBeenCalled();
   });
 
+  it("reports a failed next-block check on the send as not sent", async () => {
+    mockSimulateAtNextBlock.mockResolvedValueOnce({
+      returnData: aggregate3Return([SUCCESS_RETURN, SUCCESS_RETURN]),
+      simulation: SIMULATION,
+    });
+    mockExecuteContractCall.mockRejectedValueOnce(
+      Object.assign(new Error("header not found"), {
+        nextBlockCheckFailed: true,
+      })
+    );
+
+    const result = await batchWriteContractCore(
+      baseInput({ simulateAt: "next-block" })
+    );
+
+    expect(result).toMatchObject({ success: false, broadcastAttempted: false });
+  });
+
   it("fails an unsupported RPC as a user error before any send", async () => {
     const { NextBlockSimulationUnsupportedError } = await import(
       "@/lib/web3/next-block-simulation"

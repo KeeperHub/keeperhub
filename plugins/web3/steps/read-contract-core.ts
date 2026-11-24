@@ -31,8 +31,9 @@ import { buildErrorDecodeInterface } from "@/lib/web3/extra-error-abis";
 import {
   type NextBlockSimulation,
   isNextBlockSimulationUnsupported,
-  parseSimulationSettings,
+  getNextBlockSimulation,
   nextBlockFailure,
+  readSimulationSettings,
   type SimulateAt,
   simulateCallAtNextBlock,
   unsupportedFailure,
@@ -195,7 +196,7 @@ async function readContractInner(
     };
   }
 
-  const simulationSettings = parseSimulationSettings(
+  const simulationSettings = readSimulationSettings(
     simulateAt,
     simulateTimestampOffsetSec
   );
@@ -476,7 +477,7 @@ async function readContractInner(
           error,
           buildErrorDecodeInterface(contractInterface, errorAbis)
         ),
-        error
+        getNextBlockSimulation(error)
       ),
       errorClass: ExecutionErrorType.USER,
     };

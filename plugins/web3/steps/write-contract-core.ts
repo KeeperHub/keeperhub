@@ -59,9 +59,11 @@ import {
 } from "@/lib/web3/gas-defaults";
 import {
   type NextBlockSimulation,
+  failedNextBlockCheck,
+  getNextBlockSimulation,
   isNextBlockSimulationUnsupported,
   nextBlockFailure,
-  parseSimulationSettings,
+  readSimulationSettings,
   type SimulateAt,
   unsupportedFailure,
 } from "@/lib/web3/next-block-simulation";
@@ -304,7 +306,7 @@ async function writeContractCoreImpl(
   }
   const { priorityFeeOverride, maxFeeOverride } = fees;
 
-  const simulationSettings = parseSimulationSettings(
+  const simulationSettings = readSimulationSettings(
     simulateAt,
     simulateTimestampOffsetSec
   );
@@ -916,13 +918,14 @@ async function writeContractCoreImpl(
             error,
             buildErrorDecodeInterface(contractInterface, errorAbis)
           ),
-          error
+          getNextBlockSimulation(error)
         ),
         ...(errorClass ? { errorClass } : {}),
         broadcastAttempted: broadcastHash
           ? true
           : rejection.kind !== "unknown" ||
-              isPreBroadcastNetworkError(error)
+              isPreBroadcastNetworkError(error) ||
+              failedNextBlockCheck(error)
             ? false
             : true,
         ...(rejection.kind !== "unknown" ? { rejection } : {}),

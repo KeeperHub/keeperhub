@@ -12,7 +12,7 @@ import { getErrorMessage } from "@/lib/utils";
 import {
   MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
   MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
-  parseSimulationSettings as parseSettings,
+  parseSimulationSettings,
 } from "@/lib/web3/next-block-limits";
 import { extractRevertData } from "@/lib/web3/revert-data";
 
@@ -50,16 +50,16 @@ export type SimulationTx = {
  * back to `latest`, and not retried: retrying the same endpoint cannot help,
  * and switching endpoints would move the chain's shared failover state.
  */
+const UNSUPPORTED_ERROR_NAME = "NextBlockSimulationUnsupportedError";
+
 export class NextBlockSimulationUnsupportedError extends Error {
   readonly nonRetryable = true;
 
   constructor(message: string) {
     super(message);
-    this.name = "NextBlockSimulationUnsupportedError";
+    this.name = UNSUPPORTED_ERROR_NAME;
   }
 }
-
-const UNSUPPORTED_ERROR_NAME = "NextBlockSimulationUnsupportedError";
 
 /**
  * Duck-typed, like the repo's other cross-bundle errors: `instanceof` fails
@@ -160,11 +160,11 @@ type SettingsResult =
   | { ok: false; failure: ConfigFailure };
 
 /** The step's settings, or the user error a bad value fails the step with. */
-export function parseSimulationSettings(
+export function readSimulationSettings(
   simulateAt: unknown,
   timestampOffsetSec: unknown
 ): SettingsResult {
-  const parsed = parseSettings(simulateAt, timestampOffsetSec);
+  const parsed = parseSimulationSettings(simulateAt, timestampOffsetSec);
   if (parsed.ok) {
     return parsed;
   }
@@ -212,6 +212,7 @@ function proofFailure(
 const SLOT_SAMPLE_BLOCKS = 6;
 const SLOT_CACHE_TTL_MS = 10 * 60_000;
 const SLOT_CACHE_MAX_ENTRIES = 256;
+const MIN_CACHED_PAIRS = 2;
 const slotSecondsCache = new Map<
   string,
   { seconds: number; expiresAt: number }
@@ -240,11 +241,13 @@ async function chainSlotSeconds(
   // Only adjacent blocks that both came back: a gap across a missing one
   // would stretch the block time.
   let seconds = Number.POSITIVE_INFINITY;
+  let pairs = 0;
   for (let i = 1; i < blocks.length; i += 1) {
     const previous = blocks[i - 1];
     const current = blocks[i];
     if (previous && current && current.number === previous.number + 1) {
       seconds = Math.min(seconds, current.timestamp - previous.timestamp);
+      pairs += 1;
     }
   }
   // Nothing measured. Guessing could send early on a fast chain, so fail as
@@ -255,6 +258,10 @@ async function chainSlotSeconds(
     );
   }
   seconds = Math.min(seconds, MAX_SIMULATE_TIMESTAMP_OFFSET_SEC);
+  // One pair may span a missed slot; use it for this run only.
+  if (pairs < MIN_CACHED_PAIRS) {
+    return seconds;
+  }
   slotSecondsCache.delete(key);
   if (slotSecondsCache.size >= SLOT_CACHE_MAX_ENTRIES) {
     const oldest = slotSecondsCache.keys().next().value;
@@ -276,12 +283,18 @@ export function clearSlotSecondsCache(): void {
 
 type NodeErrorKind = "failed" | "unsupported" | "transient";
 
+// A refusal of the overrides or the method by name; checked before the
+// transient answers, which share words such as "not available".
+const REFUSAL_PATTERN =
+  /overrides?\b[^.]{0,40}(not supported|unsupported|not allowed|disabled|not available|not enabled)|(does not|doesn't|cannot) (support|accept)[^.]{0,20}overrides?|unsupported method|method\b[^.]{0,80}(not found|not supported|not available|does not exist|not allowed|disabled|not whitelisted)/i;
 // A block the node does not have yet, or an endpoint briefly unavailable.
 const TRANSIENT_PATTERN =
-  /(header|block)\b[^.]{0,80}(not found|not available|not yet available|does not exist|could not be found)|unknown block|missing trie node|rate limit|too many requests|(?<!execution aborted \()timed? ?out|service unavailable|bad gateway|try again/i;
-// Refusals of the method itself or of the extra parameters only.
-const UNSUPPORTED_PATTERN =
-  /too many arguments|invalid (method )?param|unknown field|unexpected (field|argument)|not whitelisted|method\b[^.]{0,80}(not found|not supported|not available|does not exist|not allowed|disabled)|overrides? (is |are )?not supported/i;
+  /(header|block)\b(?!\s*overrides?)[^.]{0,80}(not found|not available|not yet available|does not exist|could not be found)|unknown block|missing trie node|rate limit|too many requests|(?<!execution aborted \()timed? ?out|service unavailable|bad gateway|try again/i;
+// The extra parameter rejected as malformed.
+const BAD_PARAMS_PATTERN =
+  /too many arguments|invalid (method )?param|unknown field|unexpected (field|argument)/i;
+// A revert reason is the contract's own text and may contain any words.
+const REVERT_PATTERN = /revert/i;
 const INVALID_PARAMS_CODE = -32_602;
 const METHOD_NOT_FOUND_CODE = -32_601;
 const LIMIT_EXCEEDED_CODE = -32_005;
@@ -290,16 +303,15 @@ const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_CLIENT_ERROR_MIN = 400;
 const HTTP_SERVER_ERROR_MIN = 500;
 
-// An HTTP 4xx (not 429) whose body refuses the method, as Flashbots Protect
-// answers a method it does not allow (403, -32601 "not whitelisted"). Other
-// 4xx, such as a gateway's brief 401/403, stay transient.
-function isMethodRefusedOverHttp(error: unknown): boolean {
+type HttpResponse = { statusCode?: number; bodyText?: string };
+
+// The response of an HTTP 4xx other than 429, which ethers reports as a
+// SERVER_ERROR.
+function clientErrorResponse(error: unknown): HttpResponse | undefined {
   if (!isError(error, "SERVER_ERROR")) {
-    return false;
+    return;
   }
-  const response = (
-    error as { response?: { statusCode?: number; bodyText?: string } }
-  ).response;
+  const response = (error as { response?: HttpResponse }).response;
   const status = response?.statusCode;
   if (
     status === undefined ||
@@ -307,34 +319,60 @@ function isMethodRefusedOverHttp(error: unknown): boolean {
     status >= HTTP_SERVER_ERROR_MIN ||
     status === HTTP_TOO_MANY_REQUESTS
   ) {
+    return;
+  }
+  return response;
+}
+
+// The JSON-RPC error in an HTTP error body, if it has one.
+function bodyRpcError(response: HttpResponse): {
+  code?: unknown;
+  message?: unknown;
+} {
+  try {
+    const body: unknown = JSON.parse(response.bodyText ?? "");
+    const reply = Array.isArray(body) ? body[0] : body;
+    return (
+      (reply as { error?: { code?: unknown; message?: unknown } })?.error ?? {}
+    );
+  } catch {
+    // Not JSON (an HTML error page, or unreadable): says nothing.
+    return {};
+  }
+}
+
+// An HTTP 4xx (not 429) whose JSON-RPC body refuses the method or its
+// parameters, as Flashbots Protect answers a method it does not allow (403,
+// -32601). Other 4xx, such as a gateway's brief 401/403, stay transient.
+function isMethodRefusedOverHttp(error: unknown): boolean {
+  const response = clientErrorResponse(error);
+  if (!response) {
     return false;
   }
-  let body = "";
-  try {
-    body = response?.bodyText ?? "";
-  } catch {
-    // A binary or unreadable body says nothing about the method.
-  }
+  const { code, message } = bodyRpcError(response);
   return (
-    body.includes(String(METHOD_NOT_FOUND_CODE)) ||
-    UNSUPPORTED_PATTERN.test(body)
+    code === METHOD_NOT_FOUND_CODE ||
+    code === INVALID_PARAMS_CODE ||
+    (typeof message === "string" &&
+      (REFUSAL_PATTERN.test(message) || BAD_PARAMS_PATTERN.test(message)))
   );
 }
 
 // ethers reports every eth_call / eth_estimateGas error as CALL_EXCEPTION, so
-// the node's own answer decides. A revert is final; known transient answers
-// are checked before the narrow refusals; anything else is final, as at
-// `latest`.
+// the node's own answer decides. A revert is final; a refusal of the
+// overrides or method comes next, then known transient answers, then
+// malformed-parameter codes; anything else is final, as at `latest`.
 function classifyNodeError(error: unknown): NodeErrorKind {
   const { code, message = "" } = rpcErrorOf(error);
   const data = extractRevertData(error);
   if (
     (data !== undefined && data.length > 2) ||
-    code === EXECUTION_REVERTED_CODE
+    code === EXECUTION_REVERTED_CODE ||
+    REVERT_PATTERN.test(message)
   ) {
     return "failed";
   }
-  if (isMethodRefusedOverHttp(error)) {
+  if (isMethodRefusedOverHttp(error) || REFUSAL_PATTERN.test(message)) {
     return "unsupported";
   }
   if (isTransportError(error) || TRANSIENT_PATTERN.test(message)) {
@@ -343,7 +381,7 @@ function classifyNodeError(error: unknown): NodeErrorKind {
   if (
     code === INVALID_PARAMS_CODE ||
     code === METHOD_NOT_FOUND_CODE ||
-    UNSUPPORTED_PATTERN.test(message)
+    BAD_PARAMS_PATTERN.test(message)
   ) {
     return "unsupported";
   }
@@ -367,6 +405,7 @@ export function tagNextBlockSimulation(
   if (
     typeof error === "object" &&
     error !== null &&
+    Object.isExtensible(error) &&
     getNextBlockSimulation(error) === undefined
   ) {
     Object.assign(error, { [SIMULATION_KEY]: simulation });
@@ -374,7 +413,28 @@ export function tagNextBlockSimulation(
   return error;
 }
 
-const tagged = tagNextBlockSimulation;
+const CHECK_FAILED_KEY = "nextBlockCheckFailed";
+
+// Marks an error thrown by the next-block check itself: nothing was sent.
+function markCheckFailed(error: unknown): unknown {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    Object.isExtensible(error)
+  ) {
+    Object.assign(error, { [CHECK_FAILED_KEY]: true });
+  }
+  return error;
+}
+
+/** Whether the next-block check failed before any send was attempted. */
+export function failedNextBlockCheck(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { [CHECK_FAILED_KEY]?: unknown })[CHECK_FAILED_KEY] === true
+  );
+}
 
 /** The predicted block a failed simulation ran against, if it got that far. */
 export function getNextBlockSimulation(
@@ -389,9 +449,8 @@ export function getNextBlockSimulation(
 /** A step's failure message and fields, with the predicted block when known. */
 export function nextBlockFailure(
   message: string,
-  error: unknown
+  simulation: NextBlockSimulation | undefined
 ): { error: string; simulation?: NextBlockSimulation } {
-  const simulation = getNextBlockSimulation(error);
   if (!simulation) {
     return { error: message };
   }
@@ -448,7 +507,11 @@ async function trySimulateV1(
       )
     );
   } catch (error) {
-    if (classifyNodeError(error) === "transient") {
+    // An HTTP 4xx falls back to eth_call, which then answers for the RPC.
+    if (
+      classifyNodeError(error) === "transient" &&
+      !clientErrorResponse(error)
+    ) {
       throw retryable("eth_simulateV1", error);
     }
     return;
@@ -473,7 +536,7 @@ async function trySimulateV1(
             info: { error: call.error },
           })
         : AbiCoder.getBuiltinCallException("call", tx, revertData);
-    throw tagged(exception, {
+    throw tagNextBlockSimulation(exception, {
       ...prepared.simulation,
       rpcMethod: "eth_simulateV1",
     });
@@ -508,7 +571,7 @@ async function ethCallAtNextBlock(
     if (classifyNodeError(call.reason) === "transient") {
       throw retryable("eth_call", call.reason);
     }
-    throw tagged(call.reason, prepared.simulation);
+    throw tagNextBlockSimulation(call.reason, prepared.simulation);
   }
   return call.value;
 }
@@ -550,7 +613,7 @@ async function tryEstimateAtNextBlock(
   if (classifyNodeError(estimate.reason) === "transient") {
     throw retryable("eth_estimateGas", estimate.reason);
   }
-  throw tagged(estimate.reason, simulation);
+  throw tagNextBlockSimulation(estimate.reason, simulation);
 }
 
 // gasUsed is net of refunds (up to a fifth of the gas spent) and leaves out
@@ -576,10 +639,12 @@ async function prepare(
   chainId: number,
   options: NextBlockSimulationOptions
 ): Promise<Prepared> {
-  if (options.basedOn) {
+  const latest = await provider.getBlock("latest");
+  // An earlier check's block is reused only while it is still the latest, so
+  // a wait (for the wallet's nonce lock) never sends on a stale check.
+  if (options.basedOn && latest?.number === options.basedOn.baseBlock) {
     return preparedFrom(options.basedOn);
   }
-  const latest = await provider.getBlock("latest");
   if (!latest) {
     throw new Error(
       `Next-block simulation: the RPC returned no latest block (${RETRY_HINT})`
@@ -647,6 +712,17 @@ export async function simulateCallAtNextBlock(
  * eth_estimateGas with block overrides, else eth_simulateV1 gas.
  */
 export async function simulateSendAtNextBlock(
+  rpcManager: RpcProviderManager,
+  request: NextBlockRequest
+): Promise<{ gasEstimate: bigint; simulation: NextBlockSimulation }> {
+  try {
+    return await sendCheck(rpcManager, request);
+  } catch (error) {
+    throw markCheckFailed(error);
+  }
+}
+
+async function sendCheck(
   rpcManager: RpcProviderManager,
   request: NextBlockRequest
 ): Promise<{ gasEstimate: bigint; simulation: NextBlockSimulation }> {

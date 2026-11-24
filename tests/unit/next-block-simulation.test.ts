@@ -8,13 +8,15 @@ import { isNonRetryableError } from "@/lib/rpc/providers/error-classification";
 import { formatContractError } from "@/lib/web3/decode-revert-error";
 import {
   clearSlotSecondsCache,
+  failedNextBlockCheck,
   getNextBlockSimulation,
   isNextBlockSimulationUnsupported,
   NextBlockSimulationUnsupportedError,
   nextBlockFailure,
-  parseSimulationSettings,
+  readSimulationSettings,
   simulateCallAtNextBlock,
   simulateSendAtNextBlock,
+  tagNextBlockSimulation,
 } from "@/lib/web3/next-block-simulation";
 
 // A contract that reverts with "too-soon" until block.timestamp >= unlockAt.
@@ -300,10 +302,10 @@ const WORKABLE_TX = {
 };
 const PADDED_SIMULATED_GAS = BigInt(Math.floor((SIMULATED_GAS * 80) / 63));
 
-describe("parseSimulationSettings", () => {
+describe("readSimulationSettings", () => {
   it("keeps today's behaviour when unset or latest", () => {
     for (const value of [undefined, null, "", "latest", " Latest "]) {
-      expect(parseSimulationSettings(value, "5")).toEqual({
+      expect(readSimulationSettings(value, "5")).toEqual({
         ok: true,
         options: undefined,
       });
@@ -311,26 +313,26 @@ describe("parseSimulationSettings", () => {
   });
 
   it("reads next-block with an automatic or explicit offset", () => {
-    expect(parseSimulationSettings("next-block", undefined)).toEqual({
+    expect(readSimulationSettings("next-block", undefined)).toEqual({
       ok: true,
       options: {},
     });
-    expect(parseSimulationSettings(" Next-Block ", "")).toEqual({
+    expect(readSimulationSettings(" Next-Block ", "")).toEqual({
       ok: true,
       options: {},
     });
-    expect(parseSimulationSettings("next-block", 6)).toEqual({
+    expect(readSimulationSettings("next-block", 6)).toEqual({
       ok: true,
       options: { timestampOffsetSec: 6 },
     });
-    expect(parseSimulationSettings("next-block", " 60 ")).toEqual({
+    expect(readSimulationSettings("next-block", " 60 ")).toEqual({
       ok: true,
       options: { timestampOffsetSec: 60 },
     });
   });
 
   it("refuses unknown modes and offsets outside 1..60 as user errors naming the field", () => {
-    expect(parseSimulationSettings("pending", undefined)).toEqual({
+    expect(readSimulationSettings("pending", undefined)).toEqual({
       ok: false,
       failure: {
         success: false,
@@ -340,7 +342,7 @@ describe("parseSimulationSettings", () => {
       },
     });
     for (const offset of ["0", "-1", "1.5", "61", "abc", "1e1"]) {
-      expect(parseSimulationSettings("next-block", offset)).toMatchObject({
+      expect(readSimulationSettings("next-block", offset)).toMatchObject({
         ok: false,
         failure: {
           error: expect.stringContaining("Invalid Next block timestamp offset"),
@@ -463,7 +465,9 @@ describe("next-block simulation", () => {
         expect(error).toMatchObject({ code: "CALL_EXCEPTION" });
         expect(formatContractError(error, IFACE)).toContain("too-soon");
         expect(getNextBlockSimulation(error)?.rpcMethod).toBe(method);
-        expect(nextBlockFailure("failed", error).error).toBe(
+        expect(
+          nextBlockFailure("failed", getNextBlockSimulation(error)).error
+        ).toBe(
           `failed (simulated as of next block 101, timestamp ${node.latestTimestamp + SLOT})`
         );
       }
@@ -680,6 +684,19 @@ describe("next-block simulation", () => {
 
       const { simulation } = await read();
       expect(simulation.timestampOffsetSec).toBe(2);
+    });
+
+    it("uses a single measured gap for this run only, without caching it", async () => {
+      node.timestampOf = (n: number): number =>
+        node.latestTimestamp - (node.latestNumber - n) * 24;
+      node.missing = new Set([94, 95, 96, 97, 98]);
+      expect((await read()).simulation.timestampOffsetSec).toBe(24);
+
+      node.missing = new Set();
+      node.timestampOf = (n: number): number =>
+        node.latestTimestamp - (node.latestNumber - n) * SLOT;
+      provider = new FakeProvider(node);
+      expect((await read()).simulation.timestampOffsetSec).toBe(SLOT);
     });
 
     it("fails as a temporary error, uncached, when no gap can be measured", async () => {
@@ -1016,6 +1033,216 @@ describe("next-block simulation", () => {
         expect((error as Error).message).toContain("rate limited");
       }
     );
+
+    it.each([
+      ["block overrides are not available on this plan"],
+      ["block overrides are not allowed"],
+      ["blockOverrides disabled on this endpoint"],
+      ["unsupported method: eth_call with overrides"],
+    ])(
+      'treats a relay refusing the overrides ("%s") as unsupported, not temporary',
+      async (message) => {
+        node.simulateV1 = "missing";
+        node.proofError = {
+          method: "eth_call",
+          error: { code: -32_000, message },
+        };
+        const error = await read({ timestampOffsetSec: SLOT }).catch(
+          (e: unknown) => e
+        );
+        expect(error).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      }
+    );
+
+    it('keeps a gateway\'s "IP not whitelisted" retryable, not unsupported', async () => {
+      node.simulateV1 = "missing";
+      node.proofError = {
+        method: "eth_call",
+        error: { code: -32_000, message: "IP 10.0.0.1 not whitelisted" },
+      };
+      const error = await read({ timestampOffsetSec: SLOT }).catch(
+        (e: unknown) => e
+      );
+      expect(error).not.toBeInstanceOf(NextBlockSimulationUnsupportedError);
+      expect(isNonRetryableError(error)).toBe(false);
+    });
+
+    it.each([
+      ["execution reverted: try again later"],
+      ["execution reverted: timed out"],
+      ["execution reverted: block 7 not found"],
+    ])(
+      'treats a revert whose reason reads like an RPC error ("%s") as a revert',
+      async (message) => {
+        node.unlockAt = node.latestTimestamp + 5;
+        node.realCallError = {
+          method: "eth_estimateGas",
+          error: { code: -32_000, message },
+        };
+        const error = await send().catch((e: unknown) => e);
+        expect(error).toMatchObject({ code: "CALL_EXCEPTION" });
+        expect(isNonRetryableError(error)).toBe(true);
+        expect(getNextBlockSimulation(error)).toBeDefined();
+      }
+    );
+
+    it.each([
+      [
+        "a JSON-RPC -32602 body",
+        '{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"bad params"}}',
+      ],
+      [
+        "an unsupported-method message",
+        '{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Unsupported method: eth_call"}}',
+      ],
+    ])("treats an HTTP 400 with %s as unsupported", async (_label, body) => {
+      node.simulateV1 = "missing";
+      vi.spyOn(provider, "_send").mockImplementation((payload) => {
+        const p = Array.isArray(payload) ? payload[0] : payload;
+        if (p.method === "eth_call") {
+          return Promise.reject(httpError(400, body));
+        }
+        return FakeProvider.prototype._send.call(provider, payload);
+      });
+      const error = await read({ timestampOffsetSec: SLOT }).catch(
+        (e: unknown) => e
+      );
+      expect(error).toBeInstanceOf(NextBlockSimulationUnsupportedError);
+    });
+
+    it("does not count a code that only contains -32601 as a refusal", async () => {
+      node.simulateV1 = "missing";
+      vi.spyOn(provider, "_send").mockImplementation((payload) => {
+        const p = Array.isArray(payload) ? payload[0] : payload;
+        if (p.method === "eth_call") {
+          return Promise.reject(
+            httpError(403, '{"error":{"code":-326012,"message":"denied"}}')
+          );
+        }
+        return FakeProvider.prototype._send.call(provider, payload);
+      });
+      const error = await read({ timestampOffsetSec: SLOT }).catch(
+        (e: unknown) => e
+      );
+      expect(error).not.toBeInstanceOf(NextBlockSimulationUnsupportedError);
+    });
+
+    it("falls back to eth_call when eth_simulateV1 answers an HTTP 4xx", async () => {
+      vi.spyOn(provider, "_send").mockImplementation((payload) => {
+        const p = Array.isArray(payload) ? payload[0] : payload;
+        if (p.method === "eth_simulateV1") {
+          return Promise.reject(
+            httpError(
+              400,
+              '{"error":{"code":-32600,"message":"Not offered on this plan"}}'
+            )
+          );
+        }
+        return FakeProvider.prototype._send.call(provider, payload);
+      });
+      const { simulation } = await read({ timestampOffsetSec: SLOT });
+      expect(simulation.rpcMethod).toBe("eth_call+blockOverrides");
+    });
+  });
+
+  describe("a send after an earlier check", () => {
+    async function checked(): Promise<
+      Awaited<ReturnType<typeof simulateCallAtNextBlock>>["simulation"]
+    > {
+      return (await read({ timestampOffsetSec: SLOT })).simulation;
+    }
+
+    function sendBasedOn(
+      basedOn: Awaited<ReturnType<typeof checked>>
+    ): ReturnType<typeof simulateSendAtNextBlock> {
+      return simulateSendAtNextBlock(managerFor(provider), {
+        chainId: CHAIN_ID,
+        tx: RUN_TX,
+        options: { timestampOffsetSec: SLOT, basedOn },
+      });
+    }
+
+    it("reuses the checked prediction while its block is still the latest", async () => {
+      const check = await checked();
+      // A prediction the send's own offset would not make: reuse is visible.
+      const basedOn = {
+        ...check,
+        assumedTimestamp: check.assumedTimestamp + 18,
+        timestampOffsetSec: SLOT + 18,
+      };
+      node.unlockAt = basedOn.assumedTimestamp;
+
+      const { simulation } = await sendBasedOn(basedOn);
+      expect(simulation.baseBlock).toBe(check.baseBlock);
+      expect(simulation.assumedTimestamp).toBe(basedOn.assumedTimestamp);
+      expect(node.seen.at(-1)?.overrides?.time).toBe(
+        ethers.toQuantity(basedOn.assumedTimestamp)
+      );
+    });
+
+    it("checks again against a fresh block once a new one landed", async () => {
+      const basedOn = await checked();
+      node.latestNumber += 3;
+      node.latestTimestamp += 3 * SLOT;
+      // A fresh provider skips ethers' short request cache.
+      provider = new FakeProvider(node);
+      node.unlockAt = node.latestTimestamp + SLOT;
+
+      const { simulation } = await sendBasedOn(basedOn);
+      expect(simulation.baseBlock).toBe(node.latestNumber);
+      expect(node.seen.at(-1)?.blockTag).toBe(
+        ethers.toQuantity(node.latestNumber)
+      );
+    });
+
+    it("refuses a call that became invalid while it waited", async () => {
+      node.unlockAt = node.latestTimestamp + SLOT;
+      const basedOn = await checked();
+      // Later blocks, and the contract locked again (another keeper ran it).
+      node.latestNumber += 2;
+      node.latestTimestamp += 2 * SLOT;
+      // A fresh provider skips ethers' short request cache.
+      provider = new FakeProvider(node);
+      node.unlockAt = node.latestTimestamp + 10 * SLOT;
+
+      const error = await sendBasedOn(basedOn).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: "CALL_EXCEPTION" });
+    });
+  });
+
+  describe("a failed send check", () => {
+    it("is marked as failing before anything was sent", async () => {
+      node.unlockAt = node.latestTimestamp + 30;
+      const reverted = await send().catch((e: unknown) => e);
+      expect(failedNextBlockCheck(reverted)).toBe(true);
+
+      node.realCallError = {
+        method: "eth_estimateGas",
+        error: HEADER_NOT_FOUND,
+      };
+      const transient = await send().catch((e: unknown) => e);
+      expect(failedNextBlockCheck(transient)).toBe(true);
+    });
+
+    it("leaves errors thrown after the check unmarked", () => {
+      expect(failedNextBlockCheck(new Error("broadcast failed"))).toBe(false);
+    });
+  });
+});
+
+describe("tagNextBlockSimulation", () => {
+  it("leaves a frozen error as it is instead of throwing", () => {
+    const frozen = Object.freeze(new Error("relay said no"));
+    const simulation = {
+      mode: "next-block",
+      baseBlock: 1,
+      assumedBlockNumber: 2,
+      assumedTimestamp: 3,
+      timestampOffsetSec: 1,
+      rpcMethod: "eth_estimateGas+blockOverrides",
+    } as const;
+    expect(tagNextBlockSimulation(frozen, simulation)).toBe(frozen);
+    expect(getNextBlockSimulation(frozen)).toBeUndefined();
   });
 });
 

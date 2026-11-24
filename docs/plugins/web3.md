@@ -631,8 +631,8 @@ The Advanced section has three optional gas settings. Leave them empty to use th
 | Setting | What it does | With Sponsor gas on |
 |---------|--------------|---------------------|
 | [Gas Limit](/wallet-management/gas#gas-limit-override) | Fixed gas limit, used instead of the estimate | Not applied to a sponsored transaction; the sponsor sets its own limit |
-| [Priority Fee (gwei)](/wallet-management/gas#priority-fee) | Tip paid to the block builder; a higher tip puts the transaction ahead of others in the same block | Hidden. Turn off Sponsor gas to set it |
-| [Max Fee (gwei)](/wallet-management/gas#max-fee) | Ceiling on the total fee per gas; a cap below the next block's base fee fails the step before sending | Hidden. Turn off Sponsor gas to set it |
+| [Priority Fee (gwei)](/wallet-management/gas#priority-fee) | Tip paid to the block builder; a higher tip puts the transaction ahead of others in the same block | Hidden. Shown while the node pays its own gas (see below) |
+| [Max Fee (gwei)](/wallet-management/gas#max-fee) | Ceiling on the total fee per gas; a cap below the next block's base fee fails the step before sending | Hidden. Shown while the node pays its own gas (see below) |
 
 Sponsored transactions cannot carry a custom priority fee or max fee, so those two fields show only while the node pays its own gas: Sponsor gas off, Simulate at set to Next block, or a network, private mempool or Safe that is not sponsored. Any change that makes the node sponsored again, such as turning Sponsor gas back on or setting Simulate at back to Latest block, clears them. With either one set, make sure the sending wallet holds enough of the network's native token to pay for gas. See [Custom gas settings and sponsorship](/wallet-management/gas#custom-gas-settings-and-sponsorship) for the full rules.
 
