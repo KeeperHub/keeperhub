@@ -1,6 +1,14 @@
 import { ethers, isError } from "ethers";
-import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
 import { sleep } from "@/lib/sleep";
+import { collectorFromSink } from "../engine/telemetry/collector-adapter";
+import { createPlatformSink } from "../engine/telemetry/platform-sink";
+import {
+  RpcErrorType,
+  RpcOperationType,
+  RpcTelemetryEventType,
+  type RpcTelemetrySink,
+} from "../engine/telemetry/sink";
+import { RpcChainType, RpcRoutePosition } from "../engine/types";
 import { safeEthersGetUrl } from "../safe-ethers-fetch";
 import { redactAllUrls, scrubRpcUrls } from "../scrub-rpc-urls";
 import {
@@ -10,6 +18,10 @@ import {
 } from "./error-classification";
 import { RpcRelayTransportError } from "./transport-error";
 
+export {
+  RpcErrorType,
+  RpcOperationType,
+} from "../engine/telemetry/sink";
 export {
   isNonRetryableError,
   isTransportFailure,
@@ -22,18 +34,6 @@ export { RpcRelayTransportError, rpcRelayErrorClass } from "./transport-error";
  * Interface for metrics collection - allows dependency injection
  * so both server-side (console/structured) and frontend (no-op) can use this
  */
-export type RpcErrorType =
-  | "timeout"
-  | "rate_limit"
-  | "connection"
-  | "rpc_error";
-
-export type RpcOperationType =
-  | "read"
-  | "write"
-  | "preflight"
-  | "write-broadcast";
-
 export type RpcMetricsCollector = {
   recordPrimaryAttempt(chainName: string, operation?: RpcOperationType): void;
   recordPrimaryFailure(chainName: string, operation?: RpcOperationType): void;
@@ -44,18 +44,18 @@ export type RpcMetricsCollector = {
   recordBothFailed(chainName: string): void;
   recordSuccess(
     chainName: string,
-    provider: "primary" | "fallback",
+    provider: RpcRoutePosition,
     operation?: RpcOperationType
   ): void;
   recordLatency(
     chainName: string,
-    provider: "primary" | "fallback",
+    provider: RpcRoutePosition,
     durationMs: number,
     operation?: RpcOperationType
   ): void;
   recordErrorType(
     chainName: string,
-    provider: "primary" | "fallback",
+    provider: RpcRoutePosition,
     errorType: RpcErrorType,
     operation?: RpcOperationType
   ): void;
@@ -97,14 +97,14 @@ export const noopMetricsCollector: RpcMetricsCollector = {
   },
   recordSuccess: (
     _chain: string,
-    _provider: "primary" | "fallback",
+    _provider: RpcRoutePosition,
     _operation?: RpcOperationType
   ) => {
     /* noop */
   },
   recordLatency: (
     _chain: string,
-    _provider: "primary" | "fallback",
+    _provider: RpcRoutePosition,
     _durationMs: number,
     _operation?: RpcOperationType
   ) => {
@@ -112,7 +112,7 @@ export const noopMetricsCollector: RpcMetricsCollector = {
   },
   recordErrorType: (
     _chain: string,
-    _provider: "primary" | "fallback",
+    _provider: RpcRoutePosition,
     _errorType: RpcErrorType,
     _operation?: RpcOperationType
   ) => {
@@ -124,13 +124,13 @@ export const noopMetricsCollector: RpcMetricsCollector = {
  * Console-based metrics collector for debugging
  */
 export const consoleMetricsCollector: RpcMetricsCollector = {
-  recordPrimaryAttempt: (chain, operation = "read") =>
+  recordPrimaryAttempt: (chain, operation = RpcOperationType.READ) =>
     console.debug(`[RPC Metrics] Primary attempt: ${chain} [${operation}]`),
-  recordPrimaryFailure: (chain, operation = "read") =>
+  recordPrimaryFailure: (chain, operation = RpcOperationType.READ) =>
     console.debug(`[RPC Metrics] Primary failure: ${chain} [${operation}]`),
-  recordFallbackAttempt: (chain, operation = "read") =>
+  recordFallbackAttempt: (chain, operation = RpcOperationType.READ) =>
     console.debug(`[RPC Metrics] Fallback attempt: ${chain} [${operation}]`),
-  recordFallbackFailure: (chain, operation = "read") =>
+  recordFallbackFailure: (chain, operation = RpcOperationType.READ) =>
     console.debug(`[RPC Metrics] Fallback failure: ${chain} [${operation}]`),
   recordFailoverEvent: (chain) =>
     console.debug(`[RPC Metrics] Failover event: ${chain}`),
@@ -138,15 +138,25 @@ export const consoleMetricsCollector: RpcMetricsCollector = {
     console.debug(`[RPC Metrics] Recovery event: ${chain}`),
   recordBothFailed: (chain) =>
     console.debug(`[RPC Metrics] Both endpoints failed: ${chain}`),
-  recordSuccess: (chain, provider, operation = "read") =>
+  recordSuccess: (chain, provider, operation = RpcOperationType.READ) =>
     console.debug(
       `[RPC Metrics] Success on ${provider}: ${chain} [${operation}]`
     ),
-  recordLatency: (chain, provider, durationMs, operation = "read") =>
+  recordLatency: (
+    chain,
+    provider,
+    durationMs,
+    operation = RpcOperationType.READ
+  ) =>
     console.debug(
       `[RPC Metrics] Latency ${provider} ${chain}: ${durationMs}ms [${operation}]`
     ),
-  recordErrorType: (chain, provider, errorType, operation = "read") =>
+  recordErrorType: (
+    chain,
+    provider,
+    errorType,
+    operation = RpcOperationType.READ
+  ) =>
     console.debug(
       `[RPC Metrics] Error ${errorType} on ${provider}: ${chain} [${operation}]`
     ),
@@ -159,14 +169,14 @@ export const consoleMetricsCollector: RpcMetricsCollector = {
  */
 export function classifyRpcError(error: unknown): RpcErrorType {
   if (error instanceof Error && error.message.startsWith("Timeout after ")) {
-    return "timeout";
+    return RpcErrorType.TIMEOUT;
   }
   if (isError(error, "SERVER_ERROR")) {
     const serverErr = error as ethers.EthersError & {
       response?: { statusCode?: number };
     };
     if (serverErr.response?.statusCode === 429) {
-      return "rate_limit";
+      return RpcErrorType.RATE_LIMIT;
     }
   }
   if (
@@ -175,9 +185,9 @@ export function classifyRpcError(error: unknown): RpcErrorType {
       error.message.includes(pattern)
     )
   ) {
-    return "connection";
+    return RpcErrorType.CONNECTION;
   }
-  return "rpc_error";
+  return RpcErrorType.RPC_ERROR;
 }
 
 function isConnectionRefusal(error: unknown): boolean {
@@ -215,6 +225,12 @@ export type RpcProviderMetrics = {
 export type RpcProviderManagerOptions = {
   config: RpcProviderConfig;
   metricsCollector?: RpcMetricsCollector;
+  /**
+   * Where this manager's counters and lifecycle logs go. Defaults to the
+   * KeeperHub sink over `metricsCollector`; the RPC engine passes a route
+   * sink so organization endpoints never reach platform telemetry.
+   */
+  telemetry?: RpcTelemetrySink;
   onFailoverStateChange?: FailoverStateChangeCallback;
 };
 
@@ -227,7 +243,7 @@ export class RpcProviderManager {
     fallbackRpcUrl?: string;
   };
   private readonly metrics: RpcProviderMetrics;
-  private readonly metricsCollector: RpcMetricsCollector;
+  private readonly telemetry: RpcTelemetrySink;
   private isUsingFallback = false;
   private onFailoverStateChange?: FailoverStateChangeCallback;
 
@@ -239,6 +255,7 @@ export class RpcProviderManager {
     const {
       config,
       metricsCollector = noopMetricsCollector,
+      telemetry,
       onFailoverStateChange,
     } = options;
     this.onFailoverStateChange = onFailoverStateChange;
@@ -253,7 +270,13 @@ export class RpcProviderManager {
       primaryIsPrivateRelay: config.primaryIsPrivateRelay ?? false,
     };
 
-    this.metricsCollector = metricsCollector;
+    this.telemetry =
+      telemetry ??
+      createPlatformSink({
+        family: RpcChainType.EVM,
+        chainName: this.config.chainName,
+        collector: metricsCollector,
+      });
 
     this.metrics = {
       primaryAttempts: 0,
@@ -312,7 +335,7 @@ export class RpcProviderManager {
 
   async executeWithFailover<T>(
     operation: (provider: ethers.JsonRpcProvider) => Promise<T>,
-    operationType: RpcOperationType = "read"
+    operationType: RpcOperationType = RpcOperationType.READ
   ): Promise<T> {
     this.metrics.totalRequests += 1;
 
@@ -323,55 +346,36 @@ export class RpcProviderManager {
         const fallbackResult = await this.tryProvider(
           fallbackProvider,
           operation,
-          "fallback",
+          RpcRoutePosition.FALLBACK,
           this.config.maxRetries,
           operationType
         );
 
         if (fallbackResult.success) {
-          this.metricsCollector.recordSuccess(
-            this.config.chainName,
-            "fallback",
-            operationType
-          );
+          this.telemetry.success(RpcRoutePosition.FALLBACK, operationType);
           return fallbackResult.result as T;
         }
 
         // Fallback failed - try primary in case it recovered. Not an outage
         // yet, so a Sentry warning with no error metric and no page.
-        logSystemWarn(
-          ErrorCategory.NETWORK_RPC,
-          `[RPC] Fallback RPC failed for ${this.config.chainName}, attempting primary recovery`,
-          fallbackResult.error,
-          {
-            event: "RPC_FALLBACK_FAILED",
-            chain: this.config.chainName,
-          }
-        );
+        this.telemetry.event({
+          type: RpcTelemetryEventType.FALLBACK_FAILED,
+          error: fallbackResult.error ?? "Unknown error",
+        });
 
         const primaryProvider = this.getPrimaryProvider();
         const primaryResult = await this.tryProvider(
           primaryProvider,
           operation,
-          "primary",
+          RpcRoutePosition.PRIMARY,
           this.config.maxRetries,
           operationType
         );
 
         if (primaryResult.success) {
-          console.info(
-            JSON.stringify({
-              level: "info",
-              event: "RPC_FAILOVER_RECOVERY",
-              message: `Primary RPC recovered for ${this.config.chainName}, switching back from fallback`,
-              chain: this.config.chainName,
-              previousState: "fallback",
-              newState: "primary",
-              timestamp: new Date().toISOString(),
-            })
-          );
+          this.telemetry.event({ type: RpcTelemetryEventType.RECOVERED });
           this.isUsingFallback = false;
-          this.metricsCollector.recordRecoveryEvent(this.config.chainName);
+          this.telemetry.recovery();
           this.onFailoverStateChange?.(
             this.config.chainName,
             false,
@@ -380,21 +384,13 @@ export class RpcProviderManager {
           return primaryResult.result as T;
         }
 
-        // Both failed -- throw without redundant retry
-        this.metricsCollector.recordBothFailed(this.config.chainName);
-        // Both endpoints are KeeperHub-managed, so exhausting them is a
-        // platform fault: error level and the system-error metric. The Sentry
-        // event only reaches Sentry from the Next.js runtimes - the
-        // workflow-runner pods initialise no Sentry client.
-        logSystemError(
-          ErrorCategory.NETWORK_RPC,
-          `[RPC] Both primary and fallback RPC failed for ${this.config.chainName}`,
-          `Fallback: ${fallbackResult.error}. Primary: ${primaryResult.error}`,
-          {
-            event: "RPC_BOTH_ENDPOINTS_FAILED",
-            chain: this.config.chainName,
-          }
-        );
+        // Both failed -- throw without redundant retry. On KeeperHub
+        // endpoints the sink reports this as a platform fault.
+        this.telemetry.bothFailed();
+        this.telemetry.event({
+          type: RpcTelemetryEventType.BOTH_FAILED,
+          detail: `Fallback: ${fallbackResult.error}. Primary: ${primaryResult.error}`,
+        });
         // Thrown messages reach end users via step errors; drop provider
         // URLs entirely (host included). Internal logs above keep the
         // host-visible masked form.
@@ -402,13 +398,13 @@ export class RpcProviderManager {
           `RPC failed on both endpoints. Fallback: ${fallbackResult.error}. Primary: ${primaryResult.error}`,
           [
             {
-              endpoint: "fallback",
+              endpoint: RpcRoutePosition.FALLBACK,
               transport: fallbackResult.transport,
               allAttemptsConnectionRefused:
                 fallbackResult.allAttemptsConnectionRefused,
             },
             {
-              endpoint: "primary",
+              endpoint: RpcRoutePosition.PRIMARY,
               transport: primaryResult.transport,
               allAttemptsConnectionRefused:
                 primaryResult.allAttemptsConnectionRefused,
@@ -423,29 +419,25 @@ export class RpcProviderManager {
     const primaryResult = await this.tryProvider(
       primaryProvider,
       operation,
-      "primary",
+      RpcRoutePosition.PRIMARY,
       this.config.maxRetries,
       operationType
     );
 
     if (primaryResult.success) {
-      this.metricsCollector.recordSuccess(
-        this.config.chainName,
-        "primary",
-        operationType
-      );
+      this.telemetry.success(RpcRoutePosition.PRIMARY, operationType);
       return primaryResult.result as T;
     }
 
     const fallbackProvider = this.getFallbackProvider();
     if (fallbackProvider) {
       this.metrics.lastFailoverTime = new Date();
-      this.metricsCollector.recordFailoverEvent(this.config.chainName);
+      this.telemetry.failover();
 
       const fallbackResult = await this.tryProvider(
         fallbackProvider,
         operation,
-        "fallback",
+        RpcRoutePosition.FALLBACK,
         this.config.maxRetries,
         operationType
       );
@@ -453,43 +445,31 @@ export class RpcProviderManager {
       if (fallbackResult.success) {
         // The call was served, so this is a recovery event rather than an
         // outage: Sentry warning, no error metric, no page.
-        logSystemWarn(
-          ErrorCategory.NETWORK_RPC,
-          `[RPC] Primary RPC failed for ${this.config.chainName}, switching to fallback`,
-          primaryResult.error,
-          {
-            event: "RPC_FAILOVER_ACTIVATED",
-            chain: this.config.chainName,
-            previous_state: "primary",
-            new_state: "fallback",
-          }
-        );
+        this.telemetry.event({
+          type: RpcTelemetryEventType.FAILOVER_ACTIVATED,
+          error: primaryResult.error ?? "Unknown error",
+        });
         this.isUsingFallback = true;
         this.onFailoverStateChange?.(this.config.chainName, true, "failover");
         return fallbackResult.result as T;
       }
 
-      this.metricsCollector.recordBothFailed(this.config.chainName);
-      logSystemError(
-        ErrorCategory.NETWORK_RPC,
-        `[RPC] Both primary and fallback RPC failed for ${this.config.chainName}`,
-        `Primary: ${primaryResult.error}. Fallback: ${fallbackResult.error}`,
-        {
-          event: "RPC_BOTH_ENDPOINTS_FAILED",
-          chain: this.config.chainName,
-        }
-      );
+      this.telemetry.bothFailed();
+      this.telemetry.event({
+        type: RpcTelemetryEventType.BOTH_FAILED,
+        detail: `Primary: ${primaryResult.error}. Fallback: ${fallbackResult.error}`,
+      });
       throw this.failoverError(
         `RPC failed on both endpoints. Primary: ${primaryResult.error}. Fallback: ${fallbackResult.error}`,
         [
           {
-            endpoint: "primary",
+            endpoint: RpcRoutePosition.PRIMARY,
             transport: primaryResult.transport,
             allAttemptsConnectionRefused:
               primaryResult.allAttemptsConnectionRefused,
           },
           {
-            endpoint: "fallback",
+            endpoint: RpcRoutePosition.FALLBACK,
             transport: fallbackResult.transport,
             allAttemptsConnectionRefused:
               fallbackResult.allAttemptsConnectionRefused,
@@ -502,7 +482,7 @@ export class RpcProviderManager {
       `RPC failed on primary endpoint: ${primaryResult.error}`,
       [
         {
-          endpoint: "primary",
+          endpoint: RpcRoutePosition.PRIMARY,
           transport: primaryResult.transport,
           allAttemptsConnectionRefused:
             primaryResult.allAttemptsConnectionRefused,
@@ -523,7 +503,7 @@ export class RpcProviderManager {
   private failoverError(
     message: string,
     failures: readonly {
-      endpoint: "primary" | "fallback";
+      endpoint: RpcRoutePosition;
       transport?: boolean;
       allAttemptsConnectionRefused?: boolean;
     }[]
@@ -537,7 +517,7 @@ export class RpcProviderManager {
     const allOnTheRelay = failures.every(
       (failure) =>
         failure.transport &&
-        failure.endpoint === "primary" &&
+        failure.endpoint === RpcRoutePosition.PRIMARY &&
         this.config.primaryIsPrivateRelay
     );
     const result = allOnTheRelay
@@ -552,41 +532,27 @@ export class RpcProviderManager {
   }
 
   private recordAttempt(
-    providerType: "primary" | "fallback",
-    operationType: RpcOperationType = "read"
+    providerType: RpcRoutePosition,
+    operationType: RpcOperationType = RpcOperationType.READ
   ): void {
-    if (providerType === "primary") {
+    if (providerType === RpcRoutePosition.PRIMARY) {
       this.metrics.primaryAttempts += 1;
-      this.metricsCollector.recordPrimaryAttempt(
-        this.config.chainName,
-        operationType
-      );
     } else {
       this.metrics.fallbackAttempts += 1;
-      this.metricsCollector.recordFallbackAttempt(
-        this.config.chainName,
-        operationType
-      );
     }
+    this.telemetry.attempt(providerType, operationType);
   }
 
   private recordFailure(
-    providerType: "primary" | "fallback",
-    operationType: RpcOperationType = "read"
+    providerType: RpcRoutePosition,
+    operationType: RpcOperationType = RpcOperationType.READ
   ): void {
-    if (providerType === "primary") {
+    if (providerType === RpcRoutePosition.PRIMARY) {
       this.metrics.primaryFailures += 1;
-      this.metricsCollector.recordPrimaryFailure(
-        this.config.chainName,
-        operationType
-      );
     } else {
       this.metrics.fallbackFailures += 1;
-      this.metricsCollector.recordFallbackFailure(
-        this.config.chainName,
-        operationType
-      );
     }
+    this.telemetry.failure(providerType, operationType);
   }
 
   /**
@@ -643,9 +609,9 @@ export class RpcProviderManager {
   private async tryProvider<T>(
     provider: ethers.JsonRpcProvider,
     operation: (p: ethers.JsonRpcProvider) => Promise<T>,
-    providerType: "primary" | "fallback",
+    providerType: RpcRoutePosition,
     maxRetries: number,
-    operationType: RpcOperationType = "read"
+    operationType: RpcOperationType = RpcOperationType.READ
   ): Promise<{
     success: boolean;
     result?: T;
@@ -670,30 +636,19 @@ export class RpcProviderManager {
         );
 
         const durationMs = performance.now() - startTime;
-        this.metricsCollector.recordLatency(
-          this.config.chainName,
-          providerType,
-          durationMs,
-          operationType
-        );
+        this.telemetry.latency(providerType, durationMs, operationType);
 
         return { success: true, result };
       } catch (error: unknown) {
         const durationMs = performance.now() - startTime;
-        this.metricsCollector.recordLatency(
-          this.config.chainName,
-          providerType,
-          durationMs,
-          operationType
-        );
+        this.telemetry.latency(providerType, durationMs, operationType);
 
         lastError = error instanceof Error ? error : new Error(String(error));
         attemptCount += 1;
         allAttemptsConnectionRefused =
           allAttemptsConnectionRefused && isConnectionRefusal(error);
         this.recordFailure(providerType, operationType);
-        this.metricsCollector.recordErrorType(
-          this.config.chainName,
+        this.telemetry.errorType(
           providerType,
           this.classifyError(error),
           operationType
@@ -744,8 +699,10 @@ export class RpcProviderManager {
     return this.isUsingFallback;
   }
 
-  getCurrentProviderType(): "primary" | "fallback" {
-    return this.isUsingFallback ? "fallback" : "primary";
+  getCurrentProviderType(): RpcRoutePosition {
+    return this.isUsingFallback
+      ? RpcRoutePosition.FALLBACK
+      : RpcRoutePosition.PRIMARY;
   }
 
   /**
@@ -785,8 +742,20 @@ export class RpcProviderManager {
     return this.config.chainName;
   }
 
+  /**
+   * A collector view over this manager's telemetry sink, for code that
+   * records around the manager by hand; it obeys the same routing.
+   */
   getMetricsCollector(): RpcMetricsCollector {
-    return this.metricsCollector;
+    return collectorFromSink(this.telemetry);
+  }
+
+  /** Report that this manager was created and cached. */
+  reportCreated(): void {
+    this.telemetry.event({
+      type: RpcTelemetryEventType.CREATED,
+      hasFallback: Boolean(this.config.fallbackRpcUrl),
+    });
   }
 }
 
@@ -802,13 +771,22 @@ export type CreateRpcProviderManagerOptions = {
   chainId?: number;
   primaryIsPrivateRelay?: boolean;
   metricsCollector?: RpcMetricsCollector;
+  telemetry?: RpcTelemetrySink;
   onFailoverStateChange?: FailoverStateChangeCallback;
+  /**
+   * Overrides the URL-based cache key. The RPC engine passes its route key so
+   * two routes over the same URLs but with different attribution never
+   * share a manager (and its telemetry sink).
+   */
+  cacheKey?: string;
 };
 
 export function createRpcProviderManager(
   options: CreateRpcProviderManagerOptions
 ): RpcProviderManager {
-  const cacheKey = `${options.primaryRpcUrl}|${options.fallbackRpcUrl || ""}|${options.chainId ?? ""}`;
+  const cacheKey =
+    options.cacheKey ??
+    `${options.primaryRpcUrl}|${options.fallbackRpcUrl || ""}|${options.chainId ?? ""}`;
 
   let manager = managerCache.get(cacheKey);
   if (!manager) {
@@ -823,19 +801,11 @@ export function createRpcProviderManager(
         primaryIsPrivateRelay: options.primaryIsPrivateRelay,
       },
       metricsCollector: options.metricsCollector,
+      telemetry: options.telemetry,
       onFailoverStateChange: options.onFailoverStateChange,
     });
     managerCache.set(cacheKey, manager);
-    console.info(
-      JSON.stringify({
-        level: "info",
-        event: "RPC_PROVIDER_CREATED",
-        message: `Created RPC provider manager for ${options.chainName || "unknown"}`,
-        chain: options.chainName || "unknown",
-        hasFallback: !!options.fallbackRpcUrl,
-        timestamp: new Date().toISOString(),
-      })
-    );
+    manager.reportCreated();
   } else if (options.onFailoverStateChange) {
     // Update callback on existing manager if provided
     manager.setFailoverStateChangeCallback(options.onFailoverStateChange);

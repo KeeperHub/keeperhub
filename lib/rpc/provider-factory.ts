@@ -5,86 +5,24 @@
  * configuration resolved from user preferences or chain defaults.
  */
 
-import { ErrorCategory, logSystemError } from "@/lib/logging";
 import {
   createRpcProviderManager,
   type FailoverStateChangeCallback,
-  type RpcMetricsCollector,
   type RpcProviderManager,
 } from "@/lib/rpc/providers";
 import {
   createSolanaProviderManager,
   type SolanaFailoverStateChangeCallback,
   type SolanaProviderManager,
-  type SolanaRpcMetricsCollector,
 } from "@/lib/rpc/providers/solana";
 import { resolveRpcConfig } from "./config-service";
+import {
+  composeFailoverCallbacks,
+  getEvmMetricsCollector,
+  getFailoverCallback,
+  getSolanaMetricsCollector,
+} from "./engine/telemetry/platform-collectors";
 import { isSolanaChain } from "./solana-chains";
-
-/**
- * Resolve the appropriate RPC metrics collector based on environment.
- * Uses Prometheus when available (server-side), falls back to console.
- */
-let cachedEvmCollector: RpcMetricsCollector | undefined;
-let cachedSolanaCollector: SolanaRpcMetricsCollector | undefined;
-let cachedFailoverCallback: FailoverStateChangeCallback | undefined;
-
-async function getEvmMetricsCollector(): Promise<RpcMetricsCollector> {
-  if (cachedEvmCollector) {
-    return cachedEvmCollector;
-  }
-
-  if (process.env.METRICS_COLLECTOR === "prometheus") {
-    const { prometheusRpcMetricsCollector } = await import(
-      "@/lib/metrics/rpc-metrics"
-    );
-    cachedEvmCollector = prometheusRpcMetricsCollector;
-  } else {
-    const { consoleMetricsCollector } = await import("@/lib/rpc/providers");
-    cachedEvmCollector = consoleMetricsCollector;
-  }
-
-  return cachedEvmCollector;
-}
-
-async function getSolanaMetricsCollector(): Promise<SolanaRpcMetricsCollector> {
-  if (cachedSolanaCollector) {
-    return cachedSolanaCollector;
-  }
-
-  if (process.env.METRICS_COLLECTOR === "prometheus") {
-    const { prometheusSolanaRpcMetricsCollector } = await import(
-      "@/lib/metrics/rpc-metrics"
-    );
-    cachedSolanaCollector = prometheusSolanaRpcMetricsCollector;
-  } else {
-    const { consoleSolanaMetricsCollector } = await import(
-      "@/lib/rpc/providers/solana"
-    );
-    cachedSolanaCollector = consoleSolanaMetricsCollector;
-  }
-
-  return cachedSolanaCollector;
-}
-
-async function getFailoverCallback(): Promise<FailoverStateChangeCallback> {
-  if (cachedFailoverCallback) {
-    return cachedFailoverCallback;
-  }
-
-  if (process.env.METRICS_COLLECTOR === "prometheus") {
-    const { onRpcFailoverStateChange } = await import(
-      "@/lib/metrics/rpc-metrics"
-    );
-    cachedFailoverCallback = onRpcFailoverStateChange;
-  } else {
-    cachedFailoverCallback = () => {
-      /* noop when prometheus is not enabled */
-    };
-  }
-
-  return cachedFailoverCallback;
-}
 
 // Solana chain IDs (non-EVM). The set and the test live in ./solana-chains so
 // callers that cannot take this module's graph (ethers, @solana/web3.js,
@@ -144,18 +82,10 @@ export async function getRpcProvider(
     chainId,
     primaryIsPrivateRelay: config.primaryIsPrivateRelay,
     metricsCollector,
-    onFailoverStateChange: (chain, isUsingFallback, reason) => {
-      try {
-        failoverCallback(chain, isUsingFallback, reason);
-      } catch (error) {
-        logSystemError(
-          ErrorCategory.INFRASTRUCTURE,
-          "[Metrics] Metrics failover callback error",
-          error
-        );
-      }
-      onFailoverStateChange?.(chain, isUsingFallback, reason);
-    },
+    onFailoverStateChange: composeFailoverCallbacks(
+      failoverCallback,
+      onFailoverStateChange
+    ),
   });
 }
 
@@ -193,18 +123,10 @@ export async function getSolanaProvider(
     fallbackRpcUrl: config.fallbackRpcUrl,
     chainName: config.chainName,
     metricsCollector,
-    onFailoverStateChange: (chain, isUsingFallback, reason) => {
-      try {
-        failoverCallback(chain, isUsingFallback, reason);
-      } catch (error) {
-        logSystemError(
-          ErrorCategory.INFRASTRUCTURE,
-          "[Metrics] Metrics failover callback error",
-          error
-        );
-      }
-      onFailoverStateChange?.(chain, isUsingFallback, reason);
-    },
+    onFailoverStateChange: composeFailoverCallbacks(
+      failoverCallback,
+      onFailoverStateChange
+    ),
   });
 }
 
