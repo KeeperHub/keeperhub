@@ -1,8 +1,9 @@
 import "server-only";
 
 import { type AccountInfo, PublicKey } from "@solana/web3.js";
+import type { RpcScope } from "@/lib/rpc/engine";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { isSolanaChain } from "@/lib/rpc/provider-factory";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { getErrorMessage } from "@/lib/utils";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import type { SolanaChainAdapter } from "@/lib/web3/chain-adapter/solana";
@@ -29,7 +30,8 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export function resolveSolanaAccountAddress(
   network: string,
-  address: string
+  address: string,
+  scope: RpcScope
 ):
   | { chainId: number; adapter: SolanaChainAdapter; pubkey: PublicKey }
   | { error: string } {
@@ -51,7 +53,7 @@ export function resolveSolanaAccountAddress(
 
   return {
     chainId,
-    adapter: getChainAdapter(chainId) as SolanaChainAdapter,
+    adapter: getChainAdapter(chainId, scope) as SolanaChainAdapter,
     pubkey,
   };
 }

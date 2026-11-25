@@ -36,7 +36,7 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 const mockGetChainIdFromNetwork = vi.fn();
-const mockGetRpcProvider = vi.fn();
+const mockRpcManager = vi.fn();
 const mockStaticCall = vi.fn();
 
 vi.mock("@/lib/rpc/network-utils", () => ({
@@ -44,9 +44,15 @@ vi.mock("@/lib/rpc/network-utils", () => ({
     mockGetChainIdFromNetwork(...args),
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
-  isSolanaChain: (chainId: number) => chainId === 101 || chainId === 103,
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: {
+    evm: async (...args: unknown[]) => ({
+      manager: await mockRpcManager(...args),
+    }),
+  },
 }));
 
 vi.mock("@/lib/contracts/multicall3", () => ({
@@ -337,7 +343,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   seenTargets.length = 0;
   mockGetChainIdFromNetwork.mockReturnValue(1);
-  mockGetRpcProvider.mockResolvedValue({
+  mockRpcManager.mockResolvedValue({
     executeWithFailover: (fn: (provider: unknown) => unknown) =>
       fn(new (class MockProvider {})()),
   });
@@ -1619,7 +1625,7 @@ describe("batch-read-contract - review fixes", () => {
         error:
           "Solana is not supported for this action yet. Pick an EVM network in Network.",
       });
-      expect(mockGetRpcProvider).not.toHaveBeenCalled();
+      expect(mockRpcManager).not.toHaveBeenCalled();
     });
 
     it("a Solana network with a list of argument sets or rows", async () => {
@@ -1643,7 +1649,7 @@ describe("batch-read-contract - review fixes", () => {
           })
         )
         .toEqual(refused);
-      expect(mockGetRpcProvider).not.toHaveBeenCalled();
+      expect(mockRpcManager).not.toHaveBeenCalled();
     });
 
     it("a Solana network in a Different contracts call", async () => {

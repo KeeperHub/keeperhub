@@ -80,7 +80,6 @@ export class SolanaChainAdapter implements ChainAdapter {
   private readonly chainId: number;
   private readonly providerFactory: SolanaProviderFactory;
   private readonly timings: SolanaExpiryProofTimings;
-  private managerPromise: Promise<SolanaProviderManager> | null = null;
 
   constructor(
     chainId: number,
@@ -92,13 +91,10 @@ export class SolanaChainAdapter implements ChainAdapter {
     this.timings = timings;
   }
 
+  // Asked for on every call: the RPC engine caches managers per route, and
+  // an organization's route can change while this adapter lives.
   private getManager(): Promise<SolanaProviderManager> {
-    // Cache the in-flight promise, not the resolved value, so concurrent
-    // callers share a single providerFactory() invocation. This adapter is a
-    // process-lifetime singleton (see chain-adapter registry), so it serves
-    // overlapping requests.
-    this.managerPromise ??= this.providerFactory();
-    return this.managerPromise;
+    return this.providerFactory();
   }
 
   private async buildSignAndSimulate(

@@ -22,6 +22,7 @@
 
 import type { ethers } from "ethers";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import type { EvmRpcClient, RpcEndpoint, RpcRoute } from "@/lib/rpc/engine";
 
 vi.mock("server-only", () => ({}));
 
@@ -171,19 +172,48 @@ vi.mock("@/lib/web3/nonce-manager", () => ({
   NonceManager: class {},
 }));
 
-// Override RPC URL lookup so the orchestrator's internal
-// getRpcProviderFromUrls calls hit our fork instead of live mainnet.
-vi.mock("@/lib/rpc/rpc-config", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/rpc/rpc-config")>(
-    "@/lib/rpc/rpc-config"
-  );
+// Every route the orchestrator asks the RPC engine for lands on the fork.
+vi.mock("@/lib/rpc/engine", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/rpc/engine")>();
+  const { createRpcProviderManager } = await import("@/lib/rpc/providers");
+  const fork = await import("./safe-fork-helpers");
+  const primary: RpcEndpoint = {
+    origin: actual.RpcOrigin.PLATFORM,
+    role: actual.RpcEndpointRole.PRIMARY,
+    transport: actual.RpcTransport.HTTP,
+    url: actual.SecretUrl.parse(fork.FORK_URL),
+    configId: null,
+    configName: null,
+  };
+  const route: RpcRoute = {
+    key: "anvil-fork",
+    chain: {
+      chainId: fork.MAINNET_CHAIN_ID,
+      name: "anvil-fork",
+      chainType: actual.RpcChainType.EVM,
+      isEnabled: true,
+    },
+    transport: actual.RpcTransport.HTTP,
+    primary,
+    organizationId: null,
+    ownRpcOnly: false,
+    notices: [],
+  };
+  const client: EvmRpcClient = {
+    route,
+    manager: createRpcProviderManager({
+      primaryRpcUrl: fork.FORK_URL,
+      chainId: fork.MAINNET_CHAIN_ID,
+      chainName: route.chain.name,
+    }),
+    activeEndpoint: () => primary,
+  };
   return {
     ...actual,
-    getRpcUrlByChainId: (chainId: number, _kind: "primary" | "fallback") => {
-      if (chainId === MAINNET_CHAIN_ID) {
-        return FORK_URL;
-      }
-      return actual.getRpcUrlByChainId(chainId, _kind);
+    rpc: {
+      evm: () => Promise.resolve(client),
+      solana: vi.fn(),
+      route: () => Promise.resolve(route),
     },
   };
 });
@@ -212,12 +242,7 @@ import {
   installRolesWithInitialConfig,
   reconcileSafeRoleFromChain,
 } from "@/lib/safe/roles-orchestrator";
-import {
-  deployFreshSafe,
-  FORK_URL,
-  getFork,
-  isForkReachable,
-} from "./safe-fork-helpers";
+import { deployFreshSafe, getFork, isForkReachable } from "./safe-fork-helpers";
 
 // ---------------------------------------------------------------------------
 // Skip detection

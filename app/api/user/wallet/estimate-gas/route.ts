@@ -6,9 +6,9 @@ import { apiError } from "@/lib/api-error";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { chains } from "@/lib/db/schema";
-import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import { getActiveOrgId } from "@/lib/middleware/org-context";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { RpcRouteError, rpc, rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { getGasStrategy } from "@/lib/web3/gas-strategy";
 import {
   convertAmountForWrite,
@@ -110,7 +110,10 @@ export async function POST(request: Request) {
 
     const chain = chainResult[0];
     const walletAddress = await getOrganizationWalletAddress(organizationId);
-    const rpcManager = await getRpcProvider({ chainId });
+    const { manager: rpcManager } = await rpc.evm(
+      rpcScopeForOrganization(organizationId),
+      chainId
+    );
 
     const estimatedGas = await rpcManager.executeWithFailover(
       async (provider): Promise<bigint> => {
@@ -182,6 +185,17 @@ export async function POST(request: Request) {
       maxFeePerGasGwei: ethers.formatUnits(gasConfig.maxFeePerGas, "gwei"),
     });
   } catch (error) {
+    if (error instanceof RpcRouteError) {
+      logUserError(
+        ErrorCategory.CONFIGURATION,
+        "[EstimateGas] No route",
+        error,
+        {
+          endpoint: "/api/user/wallet/estimate-gas",
+        }
+      );
+      return apiError(error, "Failed to estimate gas", 400);
+    }
     logSystemError(
       ErrorCategory.EXTERNAL_SERVICE,
       "[EstimateGas] Failed",

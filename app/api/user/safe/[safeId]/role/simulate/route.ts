@@ -9,8 +9,7 @@ import {
   safeRoleProtocols,
   safeRoles,
 } from "@/lib/db/schema";
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
-import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
+import { rpc, rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { getSafeForOrg, validateSafeAdmin } from "@/lib/safe/auth";
 import { TEMPLATE_SPECS } from "@/lib/safe/condition-templates";
 import { formatPeriod, formatTokenAmount } from "@/lib/safe/format-allowance";
@@ -489,10 +488,8 @@ export async function POST(
 
     let maxFeePerGasWei = BigInt(25_000_000_000);
     try {
-      const rpcUrl = getRpcUrlByChainId(safe.chainId, "primary");
-      const manager = await getRpcProviderFromUrls(
-        rpcUrl,
-        undefined,
+      const { manager } = await rpc.evm(
+        rpcScopeForOrganization(safe.organizationId),
         safe.chainId
       );
       const feeData = await manager.getProvider().getFeeData();

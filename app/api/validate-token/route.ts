@@ -4,12 +4,17 @@ import { NextResponse } from "next/server";
 import { normalizeAddressForStorage } from "@/lib/address-utils";
 import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { PlatformRpcPurpose, platformScope, rpc } from "@/lib/rpc/engine";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import type { SolanaChainAdapter } from "@/lib/web3/chain-adapter/solana";
 import { parseSolanaMintAccount } from "@/lib/web3/solana-mint";
 import { validateChainAddress } from "@/lib/web3/validate-chain-address";
+
+/** The endpoint is unauthenticated, so lookups run on KeeperHub's endpoints. */
+const VALIDATE_TOKEN_RPC_SCOPE = platformScope(PlatformRpcPurpose.PUBLIC_TOOL);
 
 /**
  * Validate Token API
@@ -67,9 +72,12 @@ async function validateEvmToken(
   address: string,
   chainId: number
 ): Promise<NextResponse> {
-  let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
+  let rpcManager: RpcProviderManager;
   try {
-    rpcManager = await getRpcProvider({ chainId });
+    ({ manager: rpcManager } = await rpc.evm(
+      VALIDATE_TOKEN_RPC_SCOPE,
+      chainId
+    ));
   } catch {
     return NextResponse.json(
       { valid: false, error: "Network not supported" },
@@ -122,7 +130,10 @@ async function validateSolanaToken(
   chainId: number
 ): Promise<NextResponse> {
   const mintPubkey = new PublicKey(address);
-  const adapter = getChainAdapter(chainId) as SolanaChainAdapter;
+  const adapter = getChainAdapter(
+    chainId,
+    VALIDATE_TOKEN_RPC_SCOPE
+  ) as SolanaChainAdapter;
 
   try {
     const mintInfo = await adapter.executeWithSolanaFailover((connection) =>

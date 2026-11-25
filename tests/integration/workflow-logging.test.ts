@@ -257,6 +257,12 @@ type FindManyOpts = {
   columns?: Record<string, boolean>;
 };
 
+const EXECUTION_ORG_ID = "org_1";
+vi.mock("@/lib/workflow/executor/helpers", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/workflow/executor/helpers")>()),
+  getOrganizationIdFromExecution: vi.fn(async () => EXECUTION_ORG_ID),
+}));
+
 vi.mock("@/lib/db", () => ({
   db: {
     query: {
@@ -309,6 +315,7 @@ vi.mock("@/lib/db", () => ({
 
 import { db } from "@/lib/db";
 import { logSystemError, logSystemWarn } from "@/lib/logging";
+import { orgScope } from "@/lib/rpc/engine/scope";
 import {
   logStepCompleteDb,
   logWorkflowCompleteDb,
@@ -896,10 +903,13 @@ describe("logWorkflowCompleteDb transactionHashes (KEEP-470)", () => {
 
     // KEEP-966: verifyExecutionReceipts is called with exactly the tracked
     // hashes -- the on-chain gate ran, not a no-op.
-    expect(verifyExecutionReceiptsMock).toHaveBeenCalledWith([
-      { hash: "0xaaa", chainId: 1 },
-      { hash: "0xbbb", chainId: 1 },
-    ]);
+    expect(verifyExecutionReceiptsMock).toHaveBeenCalledWith(
+      [
+        { hash: "0xaaa", chainId: 1 },
+        { hash: "0xbbb", chainId: 1 },
+      ],
+      orgScope(EXECUTION_ORG_ID)
+    );
 
     const update = getExecUpdate();
     expect(update?.set.status).toBe("success");
@@ -1184,9 +1194,10 @@ describe("logWorkflowCompleteDb transactionHashes (KEEP-470)", () => {
 
     // Only the in-flight hash is verified - re-reading a hash from a step that
     // succeeded is not what decides whether this run stays open.
-    expect(verifyExecutionReceiptsMock).toHaveBeenCalledWith([
-      { hash: "0xinflight", chainId: 1 },
-    ]);
+    expect(verifyExecutionReceiptsMock).toHaveBeenCalledWith(
+      [{ hash: "0xinflight", chainId: 1 }],
+      orgScope(EXECUTION_ORG_ID)
+    );
     // ...but the approve's transaction is real and belongs on the record.
     // Storing only the failed step's hash would replace an obviously-empty
     // list with a plausible-looking partial one.

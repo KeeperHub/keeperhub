@@ -46,16 +46,22 @@ vi.mock("@/lib/explorer", () => ({
 }));
 
 const mockGetChainIdFromNetwork = vi.fn();
-const mockGetRpcProvider = vi.fn();
+const mockRpcManager = vi.fn();
 
 vi.mock("@/lib/rpc/network-utils", () => ({
   getChainIdFromNetwork: (...args: unknown[]) =>
     mockGetChainIdFromNetwork(...args),
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
-  isSolanaChain: () => false,
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: {
+    evm: async (...args: unknown[]) => ({
+      manager: await mockRpcManager(...args),
+    }),
+  },
 }));
 
 const mockContractFunction = vi.fn();
@@ -107,6 +113,8 @@ vi.mock("@/lib/web3/next-block-simulation", async (importOriginal) => ({
     mockSimulateAtNextBlock(...args),
 }));
 
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { RpcRouteError, RpcRouteErrorCode } from "@/lib/rpc/engine";
 import { NextBlockSimulationUnsupportedError } from "@/lib/web3/next-block-simulation";
 import type { ReadContractCoreInput } from "@/plugins/web3/steps/read-contract-core";
 import { readContractCore } from "@/plugins/web3/steps/read-contract-core";
@@ -177,7 +185,7 @@ function makeInput(
 
 function setupRpcMocks(): void {
   mockGetChainIdFromNetwork.mockReturnValue(1);
-  mockGetRpcProvider.mockResolvedValue({
+  mockRpcManager.mockResolvedValue({
     executeWithFailover: (fn: (provider: unknown) => unknown) =>
       fn(new (class MockProvider {})()),
   });
@@ -598,7 +606,7 @@ describe("read-contract-core - failOnError", () => {
 
   it("still hard-fails an unresolved RPC config when failOnError is false", async () => {
     mockGetChainIdFromNetwork.mockReturnValue(1);
-    mockGetRpcProvider.mockRejectedValueOnce(new Error("No RPC configured"));
+    mockRpcManager.mockRejectedValueOnce(new Error("No RPC configured"));
 
     const result = await readContractCore(makeInput({ failOnError: false }));
 
@@ -607,6 +615,20 @@ describe("read-contract-core - failOnError", () => {
       return;
     }
     expect(result.errorClass).toBe("system");
+  });
+
+  it("classifies an RPC route refusal as a user error with its message", async () => {
+    mockGetChainIdFromNetwork.mockReturnValue(1);
+    const routeError = new RpcRouteError(RpcRouteErrorCode.NOT_COVERED, 1);
+    mockRpcManager.mockRejectedValueOnce(routeError);
+
+    const result = await readContractCore(makeInput({}));
+
+    expect(result).toMatchObject({
+      success: false,
+      error: routeError.message,
+      errorClass: ExecutionErrorType.USER,
+    });
   });
 });
 
@@ -631,7 +653,7 @@ describe("ABI fragment validation before RPC failover", () => {
     if (!result.success) {
       expect(result.error).toContain("Invalid ABI function");
     }
-    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockRpcManager).not.toHaveBeenCalled();
     expect(mockContractFunction).not.toHaveBeenCalled();
   });
 });

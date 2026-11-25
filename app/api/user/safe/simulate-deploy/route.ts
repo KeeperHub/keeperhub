@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
 import { db } from "@/lib/db";
 import { chains } from "@/lib/db/schema";
+import { rpc, rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { validateSafeAdmin } from "@/lib/safe/auth";
 import { TEMPLATE_SPECS } from "@/lib/safe/condition-templates";
 import { isSafeSupportedChain } from "@/lib/safe/contracts";
@@ -20,7 +21,6 @@ import {
   type ProtocolInput,
 } from "@/lib/safe/roles-orchestrator";
 import type { DroppedInput } from "@/lib/safe/route-input";
-import { buildFailoverRpcManager } from "@/lib/safe/rpc";
 import {
   type DirectRuleBody,
   GAS_ASSIGN_ROLES,
@@ -108,9 +108,15 @@ function normaliseProtocols(body: SimulateBody): {
   return { protocols: out, skipped, dropped };
 }
 
-async function getMaxFeePerGas(chainId: number): Promise<bigint> {
+async function getMaxFeePerGas(
+  organizationId: string,
+  chainId: number
+): Promise<bigint> {
   try {
-    const { rpcManager } = await buildFailoverRpcManager(chainId);
+    const { manager: rpcManager } = await rpc.evm(
+      rpcScopeForOrganization(organizationId),
+      chainId
+    );
     const feeData = await rpcManager.executeWithFailover(
       (provider) => provider.getFeeData(),
       "read"
@@ -374,7 +380,10 @@ export async function POST(request: Request): Promise<NextResponse> {
       .where(eq(chains.chainId, chainId))
       .limit(1);
 
-    const maxFeePerGasWei = await getMaxFeePerGas(chainId);
+    const maxFeePerGasWei = await getMaxFeePerGas(
+      admin.organizationId,
+      chainId
+    );
     const totalCostWei = totalGas * maxFeePerGasWei;
     const totalCostNative = ethers.formatEther(totalCostWei);
     const [totalCostUsd, nativePriceUsd] = await Promise.all([

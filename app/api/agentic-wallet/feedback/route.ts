@@ -37,7 +37,7 @@
  */
 import { and, eq } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
-import { createPublicClient, type Hex, http, serializeTransaction } from "viem";
+import { createPublicClient, type Hex, serializeTransaction } from "viem";
 import { mainnet } from "viem/chains";
 import {
   ERC_8004_REPUTATION_REGISTRY_ADDRESS,
@@ -66,8 +66,15 @@ import {
   workflowPayments,
   workflows,
 } from "@/lib/db/schema";
-import { ErrorCategory, logSystemError } from "@/lib/logging";
-import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
+import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
+import {
+  PlatformRpcPurpose,
+  platformScope,
+  RpcRouteError,
+  rpc,
+} from "@/lib/rpc/engine";
+import { viemTransportOf } from "@/lib/rpc/engine/viem";
+import { scrubRpcUrls } from "@/lib/rpc/scrub-rpc-urls";
 
 export const dynamic = "force-dynamic";
 
@@ -345,10 +352,13 @@ async function buildAndSignTx(args: {
     feedbackHash: args.feedbackHash,
   });
 
-  const rpcUrl = getRpcUrlByChainId(args.agentChainId);
+  const rpcClient = await rpc.evm(
+    platformScope(PlatformRpcPurpose.AGENTIC_WALLET),
+    args.agentChainId
+  );
   const publicClient = createPublicClient({
     chain: mainnet,
-    transport: http(rpcUrl),
+    transport: viemTransportOf(rpcClient),
   });
 
   // Live network reads -- nonce + balance + gas estimate + fee estimate.
@@ -564,7 +574,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       .update(feedback)
       .set({
         status: "failed",
-        error: err instanceof Error ? err.message : String(err),
+        error: scrubRpcUrls(err instanceof Error ? err.message : String(err)),
       })
       .where(eq(feedback.id, feedbackId));
     if (err instanceof InsufficientGasError) {
@@ -585,6 +595,18 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return NextResponse.json(
         { error: err.message, code: "POLICY_BLOCKED", feedbackId },
         { status: 403 }
+      );
+    }
+    if (err instanceof RpcRouteError) {
+      logUserError(
+        ErrorCategory.CONFIGURATION,
+        "[feedback] No RPC route for agent chain",
+        err,
+        { endpoint: "/api/agentic-wallet/feedback", feedbackId }
+      );
+      return NextResponse.json(
+        { error: err.message, feedbackId },
+        { status: 400 }
       );
     }
     if (err instanceof TurnkeyUpstreamError) {
@@ -627,7 +649,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       .update(feedback)
       .set({
         status: "failed",
-        error: err instanceof Error ? err.message : String(err),
+        error: scrubRpcUrls(err instanceof Error ? err.message : String(err)),
       })
       .where(eq(feedback.id, feedbackId));
     logSystemError(

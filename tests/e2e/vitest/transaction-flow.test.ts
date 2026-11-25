@@ -32,8 +32,10 @@ vi.unmock("@/lib/db");
 vi.mock("server-only", () => ({}));
 
 import { pendingTransactions, walletLocks } from "@/lib/db/schema-extensions";
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
-import type { RpcProviderManager } from "@/lib/rpc/providers";
+import {
+  createRpcProviderManager,
+  type RpcProviderManager,
+} from "@/lib/rpc/providers";
 import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
 import { AdaptiveGasStrategy, resetGasStrategy } from "@/lib/web3/gas-strategy";
 import { NonceManager, resetNonceManager } from "@/lib/web3/nonce-manager";
@@ -56,12 +58,12 @@ const SEPOLIA_FALLBACK_RPC = getRpcUrlByChainId(11_155_111, "fallback");
 // manager.executeWithFailover so a primary-endpoint hiccup falls back to
 // the configured secondary.
 async function buildSepoliaManager(): Promise<RpcProviderManager> {
-  return getRpcProviderFromUrls(
-    SEPOLIA_RPC,
-    SEPOLIA_FALLBACK_RPC,
-    TEST_CHAIN_ID,
-    "sepolia"
-  );
+  return createRpcProviderManager({
+    primaryRpcUrl: SEPOLIA_RPC,
+    fallbackRpcUrl: SEPOLIA_FALLBACK_RPC,
+    chainId: TEST_CHAIN_ID,
+    chainName: "sepolia",
+  });
 }
 
 describe.skipIf(shouldSkip)("Transaction Flow E2E", () => {

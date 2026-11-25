@@ -1,12 +1,14 @@
 import "server-only";
 import { and, eq, gt, gte, sql } from "drizzle-orm";
-import { type Address, createPublicClient, http } from "viem";
+import { type Address, createPublicClient } from "viem";
 import { db } from "@/lib/db";
 import {
   gasCreditAllocations,
   gasCreditUsage,
 } from "@/lib/db/schema-extensions";
 import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
+import { PlatformRpcPurpose, platformScope, rpc } from "@/lib/rpc/engine";
+import { viemTransportOf } from "@/lib/rpc/engine/viem";
 import {
   AGGREGATOR_V3_ABI,
   getGasTokenUsdFeedAddress,
@@ -323,12 +325,17 @@ function reportPriceFallback(args: {
  * fails, the answer is older than the stale threshold, or it is not positive.
  */
 async function readOraclePriceUsd(
-  rpcUrl: string,
   chainId: number,
   feedAddress: Address,
   now: number
 ): Promise<number> {
-  const client = createPublicClient({ transport: http(rpcUrl) });
+  // Pricing gas for billing is KeeperHub's own read, so it uses KeeperHub's
+  // endpoints whatever route the billed transaction took.
+  const rpcClient = await rpc.evm(
+    platformScope(PlatformRpcPurpose.BILLING),
+    chainId
+  );
+  const client = createPublicClient({ transport: viemTransportOf(rpcClient) });
 
   const result = await client.readContract({
     address: feedAddress,
@@ -363,7 +370,6 @@ async function readOraclePriceUsd(
  * that tracks nothing.
  */
 export async function getFreshGasTokenPriceUsd(
-  rpcUrl: string,
   chainId: number
 ): Promise<number> {
   const now = Date.now();
@@ -378,7 +384,7 @@ export async function getFreshGasTokenPriceUsd(
     throw new Error(`No gas-token USD price feed for chain ${chainId}`);
   }
 
-  return await readOraclePriceUsd(rpcUrl, chainId, feedAddress, now);
+  return await readOraclePriceUsd(chainId, feedAddress, now);
 }
 
 /**
@@ -387,10 +393,7 @@ export async function getFreshGasTokenPriceUsd(
  * cached for 60 seconds per chainId.
  * Fallback chain: oracle failure -> stale cache -> $3000 conservative estimate.
  */
-export async function getGasTokenPriceUsd(
-  rpcUrl: string,
-  chainId: number
-): Promise<number> {
+export async function getGasTokenPriceUsd(chainId: number): Promise<number> {
   const now = Date.now();
   const cached = ethPriceCache.get(chainId);
 
@@ -413,7 +416,7 @@ export async function getGasTokenPriceUsd(
   }
 
   try {
-    return await readOraclePriceUsd(rpcUrl, chainId, feedAddress, now);
+    return await readOraclePriceUsd(chainId, feedAddress, now);
   } catch (error) {
     if (cached !== undefined) {
       const cachedAgeMs = now - cached.fetchedAt;

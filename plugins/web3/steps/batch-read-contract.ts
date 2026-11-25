@@ -4,9 +4,14 @@ import { ethers } from "ethers";
 import { MULTICALL3_ABI, MULTICALL3_ADDRESS } from "@/lib/contracts/multicall3";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import {
+  RpcPurpose,
+  type RpcScope,
+  rpc,
+  rpcScopeFromStep,
+  scopeForManyChains,
+} from "@/lib/rpc/engine";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
-import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
 import {
@@ -624,7 +629,7 @@ async function executeMulticallBatches(
  */
 async function resolveChainRpc(
   network: string,
-  userId: string | undefined
+  scope: RpcScope
 ): Promise<
   | { chainId: number; rpcManager: RpcProviderManager; error?: undefined }
   | { chainId?: undefined; rpcManager?: undefined; error: string }
@@ -643,8 +648,8 @@ async function resolveChainRpc(
   }
 
   try {
-    const rpcManager = await getRpcProvider({ chainId, userId });
-    return { chainId, rpcManager };
+    const client = await rpc.evm(scope, chainId, { purpose: RpcPurpose.READ });
+    return { chainId, rpcManager: client.manager };
   } catch (rpcError) {
     logUserError(
       ErrorCategory.VALIDATION,
@@ -882,14 +887,14 @@ function prepareUniformCalls(input: BatchReadContractInput): PreparedCalls {
  */
 async function executeUniformMode(
   input: BatchReadContractInput,
-  userId: string | undefined
+  scope: RpcScope
 ): Promise<BatchReadContractResult> {
   const prepared = prepareUniformCalls(input);
   if (prepared.error !== undefined) {
     return validationFailure(prepared.error, prepared.destinationError);
   }
 
-  const chainRpc = await resolveChainRpc(input.network ?? "", userId);
+  const chainRpc = await resolveChainRpc(input.network ?? "", scope);
   if (chainRpc.error !== undefined) {
     return { success: false, destinationError: true, error: chainRpc.error };
   }
@@ -934,7 +939,7 @@ function groupCallsByNetwork(
  */
 async function executeMixedMode(
   input: BatchReadContractInput,
-  userId: string | undefined
+  scope: RpcScope
 ): Promise<BatchReadContractResult> {
   const {
     calls: normalizedCalls,
@@ -975,7 +980,10 @@ async function executeMixedMode(
 
   const groupOutcomes: GroupOutcome[] = await Promise.all(
     groupEntries.map(async ([networkKey, group]): Promise<GroupOutcome> => {
-      const chainRpc = await resolveChainRpc(networkKey, userId);
+      const chainRpc = await resolveChainRpc(
+        networkKey,
+        scopeForManyChains(scope)
+      );
       if (chainRpc.error !== undefined) {
         return { ok: false, error: chainRpc.error, destinationError: true };
       }
@@ -1014,12 +1022,12 @@ async function executeMixedMode(
 async function stepHandler(
   input: BatchReadContractInput
 ): Promise<BatchReadContractResult> {
-  const userId = await getRpcPreferenceUserId(input._context?.executionId);
+  const scope = rpcScopeFromStep(input);
   if (isUniformInputMode(input.inputMode)) {
-    return await executeUniformMode(input, userId);
+    return await executeUniformMode(input, scope);
   }
 
-  return await executeMixedMode(input, userId);
+  return await executeMixedMode(input, scope);
 }
 
 /**

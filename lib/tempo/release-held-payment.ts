@@ -10,6 +10,7 @@
  */
 import "server-only";
 
+import { rpcScopeForOrganization } from "@/lib/rpc/engine";
 import {
   claimHeldPayment,
   getHeldPaymentForOrg,
@@ -47,9 +48,8 @@ export type ReleaseHeldPaymentResult =
 export async function releaseHeldPaymentNow(params: {
   paymentId: string;
   organizationId: string;
-  userId?: string;
 }): Promise<ReleaseHeldPaymentResult> {
-  const { paymentId, organizationId, userId } = params;
+  const { paymentId, organizationId } = params;
 
   const existing = await getHeldPaymentForOrg(paymentId, organizationId);
   if (!existing) {
@@ -83,7 +83,7 @@ export async function releaseHeldPaymentNow(params: {
   try {
     const { hash } = await broadcastStoredTempoTx({
       chainId: claimed.chainId,
-      userId,
+      rpcScope: rpcScopeForOrganization(organizationId),
       serialized: claimed.serializedTx,
       expectedHash: claimed.precomputedHash,
       waitForConfirmation: true,

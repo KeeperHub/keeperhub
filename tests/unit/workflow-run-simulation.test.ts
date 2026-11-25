@@ -26,7 +26,7 @@ vi.mock("@/lib/rpc/network-utils", () => ({
   getChainIdFromNetwork: spies.getChainIdFromNetwork,
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
+vi.mock("@/lib/rpc/solana-chains", () => ({
   isSolanaChain: spies.isSolanaChain,
 }));
 

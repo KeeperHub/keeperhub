@@ -60,9 +60,14 @@ vi.mock("@/lib/rpc/network-utils", () => ({
     mockGetChainIdFromNetwork(...args),
 }));
 
-const mockGetRpcProvider = vi.fn();
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
+const mockRpcEvm = vi.fn();
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: {
+    evm: (...args: unknown[]) => mockRpcEvm(...args),
+    solana: vi.fn(),
+    route: vi.fn(),
+  },
 }));
 
 const mockRpcRelayErrorClass = vi.fn();
@@ -271,9 +276,11 @@ function revertReturn(): [boolean, string] {
 beforeEach(() => {
   vi.clearAllMocks();
   mockGetChainIdFromNetwork.mockReturnValue(1);
-  mockGetRpcProvider.mockResolvedValue({
-    resolveActiveRpcUrl: () => Promise.resolve("https://rpc.example.com"),
-    executeWithFailover: (fn: (provider: unknown) => unknown) => fn({}),
+  mockRpcEvm.mockResolvedValue({
+    manager: {
+      resolveActiveRpcUrl: () => Promise.resolve("https://rpc.example.com"),
+      executeWithFailover: (fn: (provider: unknown) => unknown) => fn({}),
+    },
   });
   mockResolveSignerForNode.mockResolvedValue({
     kind: "eoa",
@@ -641,7 +648,7 @@ describe("batch-write-contract - MAX_TOTAL_CALLS", () => {
     }
     expect(result.error).toContain("Too many calls");
     expect(result.errorClass).toBe(ExecutionErrorType.USER);
-    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockRpcEvm).not.toHaveBeenCalled();
   });
 
   it("accepts a batch of exactly 200 calls", async () => {
@@ -846,7 +853,7 @@ describe("batch-write-contract - per-call ABI/function validation", () => {
     if (!result.success) {
       expect(result.error).toContain("index 1");
     }
-    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockRpcEvm).not.toHaveBeenCalled();
   });
 });
 
@@ -862,7 +869,7 @@ describe("batch-write-contract - per-call argument validation", () => {
     if (!result.success) {
       expect(result.error).toContain("index 1");
     }
-    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockRpcEvm).not.toHaveBeenCalled();
   });
 });
 

@@ -20,6 +20,7 @@ import {
   collectContractRefs,
   validateWorkflowDeep,
 } from "@/lib/mcp/validate-workflow-deep";
+import { orgScope } from "@/lib/rpc/engine/scope";
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -73,6 +74,8 @@ function makeWriteNode(
     },
   };
 }
+
+const TEST_SCOPE = orgScope("org_test");
 
 const SIMPLE_ABI_TRANSFER = JSON.stringify([
   {
@@ -385,7 +388,7 @@ describe("collectContractRefs, batch-write-contract calls[]", () => {
 describe("validateWorkflowDeep — fast tier composition", () => {
   it("returns fast-tier result when no contract refs", async () => {
     const workflow = makeWorkflow();
-    const result = await validateWorkflowDeep(workflow, {
+    const result = await validateWorkflowDeep(workflow, TEST_SCOPE, {
       resolveAbiOverride: vi
         .fn()
         .mockResolvedValue({ abi: SIMPLE_ABI_TRANSFER, source: "explorer" }),
@@ -397,7 +400,7 @@ describe("validateWorkflowDeep — fast tier composition", () => {
 
   it("propagates fast-tier errors for empty nodes", async () => {
     const workflow = makeWorkflow({ nodes: [] });
-    const result = await validateWorkflowDeep(workflow, {
+    const result = await validateWorkflowDeep(workflow, TEST_SCOPE, {
       resolveAbiOverride: vi.fn(),
     });
     expect(result.valid).toBe(false);
@@ -409,7 +412,7 @@ describe("validateWorkflowDeep — fast tier composition", () => {
 
   it("returns same result as validateWorkflow when no write nodes", async () => {
     const workflow = makeWorkflow();
-    const result = await validateWorkflowDeep(workflow, {
+    const result = await validateWorkflowDeep(workflow, TEST_SCOPE, {
       resolveAbiOverride: vi.fn(),
     });
     expect(result.errors).toHaveLength(0);
@@ -437,7 +440,7 @@ describe("validateWorkflowDeep — ABI match", () => {
       abi: SIMPLE_ABI_TRANSFER,
       source: "explorer",
     });
-    const result = await validateWorkflowDeep(workflow, {
+    const result = await validateWorkflowDeep(workflow, TEST_SCOPE, {
       resolveAbiOverride: mockResolve,
     });
     expect(result.warnings).toHaveLength(0);
@@ -466,7 +469,7 @@ describe("validateWorkflowDeep — ABI mismatch (Pitfall 1)", () => {
       abi: SIMPLE_ABI_APPROVE,
       source: "explorer",
     });
-    const result = await validateWorkflowDeep(workflow, {
+    const result = await validateWorkflowDeep(workflow, TEST_SCOPE, {
       resolveAbiOverride: mockResolve,
     });
     expect(
@@ -511,7 +514,7 @@ describe("validateWorkflowDeep — ABI mismatch (Pitfall 1)", () => {
       abi: SIMPLE_ABI_APPROVE,
       source: "explorer",
     });
-    const result = await validateWorkflowDeep(workflow, {
+    const result = await validateWorkflowDeep(workflow, TEST_SCOPE, {
       resolveAbiOverride: mockResolve,
     });
 
@@ -539,7 +542,7 @@ describe("validateWorkflowDeep — ABI mismatch (Pitfall 1)", () => {
       abi: SIMPLE_ABI_APPROVE,
       source: "explorer",
     });
-    const result = await validateWorkflowDeep(workflow, {
+    const result = await validateWorkflowDeep(workflow, TEST_SCOPE, {
       resolveAbiOverride: mockResolve,
     });
     // Explicit assertion: errors array is empty
@@ -572,7 +575,7 @@ describe("validateWorkflowDeep — proxy contract (Pitfall 1 regression)", () =>
       abi: IMPL_ABI,
       source: "explorer",
     });
-    const result = await validateWorkflowDeep(workflow, {
+    const result = await validateWorkflowDeep(workflow, TEST_SCOPE, {
       resolveAbiOverride: mockResolve,
     });
     // Warning is expected (signatures differ)
@@ -606,7 +609,7 @@ describe("validateWorkflowDeep — resolveAbi failure handling", () => {
       .mockRejectedValue(
         new Error("Unable to fetch ABI: contract not verified")
       );
-    const result = await validateWorkflowDeep(workflow, {
+    const result = await validateWorkflowDeep(workflow, TEST_SCOPE, {
       resolveAbiOverride: mockResolve,
     });
     expect(result.warnings).toHaveLength(0);
@@ -640,7 +643,7 @@ describe("validateWorkflowDeep — per-call timeout", () => {
         })
     );
     const start = Date.now();
-    const result = await validateWorkflowDeep(workflow, {
+    const result = await validateWorkflowDeep(workflow, TEST_SCOPE, {
       resolveAbiOverride: mockResolve,
       perCallTimeoutMs: 200, // use short timeout for test speed
       aggregateDeadlineMs: 300, // aggregate also short
@@ -689,7 +692,7 @@ describe("validateWorkflowDeep — concurrency cap", () => {
     });
 
     const start = Date.now();
-    const result = await validateWorkflowDeep(workflow, {
+    const result = await validateWorkflowDeep(workflow, TEST_SCOPE, {
       resolveAbiOverride: mockResolve,
       concurrency: 5,
       perCallTimeoutMs: 2000,
@@ -737,7 +740,7 @@ describe("validateWorkflowDeep — aggregate timeout", () => {
     });
 
     const start = Date.now();
-    const result = await validateWorkflowDeep(workflow, {
+    const result = await validateWorkflowDeep(workflow, TEST_SCOPE, {
       resolveAbiOverride: mockResolve,
       concurrency: 5,
       perCallTimeoutMs: 2000,
@@ -780,7 +783,7 @@ describe("validateWorkflowDeep — aggregate timeout", () => {
     });
 
     const start = Date.now();
-    const result = await validateWorkflowDeep(workflow, {
+    const result = await validateWorkflowDeep(workflow, TEST_SCOPE, {
       resolveAbiOverride: mockResolve,
       concurrency: 5,
       perCallTimeoutMs: 2000,
@@ -809,7 +812,7 @@ describe("validateWorkflowDeep — no contract refs", () => {
   it("returns fast-tier pass-through for workflow with no write or read-contract nodes", async () => {
     const workflow = makeWorkflow({ nodes: [makeTriggerNode()] });
     const mockResolve = vi.fn();
-    const result = await validateWorkflowDeep(workflow, {
+    const result = await validateWorkflowDeep(workflow, TEST_SCOPE, {
       resolveAbiOverride: mockResolve,
     });
     expect(mockResolve).not.toHaveBeenCalled();

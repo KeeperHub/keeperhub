@@ -7,6 +7,7 @@ import {
   readContractCore,
 } from "@/plugins/web3/steps/read-contract-core";
 import { resolveAbi } from "@/lib/abi/cache";
+import { RPC_SELECTION_CONFIG_KEY } from "@/lib/rpc/engine";
 import {
   isSolidityArrayType,
   normalizeProtocolArrayValue,
@@ -18,6 +19,7 @@ import {
   type ProtocolMeta,
   resolveProtocolMeta,
 } from "./resolve-protocol-meta";
+import { rpcScopeFromStep } from "@/lib/rpc/engine";
 
 type ProtocolReadInput = StepInput & {
   network: string;
@@ -129,6 +131,7 @@ export async function protocolReadStep(
         contractAddress,
         network: input.network,
         abi: contract.abi,
+        scope: rpcScopeFromStep(input),
       });
       resolvedAbi = abiResult.abi;
     } catch (error) {
@@ -148,8 +151,12 @@ export async function protocolReadStep(
       abi: resolvedAbi,
       abiFunction: meta.functionName,
       functionArgs,
+      [RPC_SELECTION_CONFIG_KEY]: input[RPC_SELECTION_CONFIG_KEY],
       _context: input._context
-        ? { executionId: input._context.executionId }
+        ? {
+            executionId: input._context.executionId,
+            organizationId: input._context.organizationId,
+          }
         : undefined,
     };
 

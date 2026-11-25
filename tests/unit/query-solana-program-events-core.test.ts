@@ -40,9 +40,16 @@ const fakeConnection = {
 const mockExecuteWithFailover = vi.fn((operation: (c: unknown) => unknown) =>
   Promise.resolve(operation(fakeConnection))
 );
-const mockGetSolanaProvider = vi.fn();
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getSolanaProvider: (...args: unknown[]) => mockGetSolanaProvider(...args),
+const mockSolanaManager = vi.fn();
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: {
+    solana: async (...args: unknown[]) => ({
+      manager: await mockSolanaManager(...args),
+    }),
+  },
 }));
 
 import {
@@ -127,7 +134,7 @@ describe("queryProgramEventsCore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetChainIdFromNetwork.mockReturnValue(101);
-    mockGetSolanaProvider.mockResolvedValue({
+    mockSolanaManager.mockResolvedValue({
       executeWithFailover: mockExecuteWithFailover,
     });
     mockDbSelect.mockReturnValue({
@@ -464,21 +471,6 @@ describe("queryProgramEventsCore", () => {
     expect(result.success).toBe(false);
   });
 
-  it("does not fail the query when the userId lookup throws", async () => {
-    mockDbSelect.mockImplementation(() => {
-      throw new Error("connection pool exhausted");
-    });
-    mockGetSignaturesForAddress.mockResolvedValueOnce([]);
-
-    const result = await queryProgramEventsCore({
-      network: "solana",
-      programId: PROGRAM_ID,
-      _context: { executionId: "exec-1" },
-    });
-
-    expect(result.success).toBe(true);
-  });
-
   it("marks the result truncated and returns a resume cursor when the page cap is hit", async () => {
     const fullPage = Array.from({ length: MAX_SIGNATURES_PER_PAGE }, (_, i) =>
       sigInfo(`sig-${i}`, i)
@@ -616,7 +608,7 @@ describe("queryProgramEventsCore - failOnError", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetChainIdFromNetwork.mockReturnValue(101);
-    mockGetSolanaProvider.mockResolvedValue({
+    mockSolanaManager.mockResolvedValue({
       executeWithFailover: mockExecuteWithFailover,
     });
     mockDbSelect.mockReturnValue({

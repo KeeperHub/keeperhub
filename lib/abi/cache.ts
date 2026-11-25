@@ -8,6 +8,7 @@ import {
   fetchEtherscanSourceCode,
 } from "@/lib/explorer/etherscan";
 import { detectProxyViaRpc } from "@/lib/explorer/proxy-detection";
+import type { RpcScope } from "@/lib/rpc/engine";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { DAY_MS } from "@/lib/utils/duration";
 
@@ -20,6 +21,8 @@ type ResolveAbiInput = {
   contractAddress: string;
   network: string;
   abi?: string;
+  /** Whose RPC route the proxy probe uses. */
+  scope: RpcScope;
 };
 
 type ResolveAbiResult = {
@@ -37,7 +40,8 @@ function buildCacheKey(chainId: number, contractAddress: string): string {
 
 async function fetchAbiFromExplorer(
   chainId: number,
-  contractAddress: string
+  contractAddress: string,
+  scope: RpcScope
 ): Promise<string> {
   const explorerResults = await db
     .select()
@@ -93,7 +97,7 @@ async function fetchAbiFromExplorer(
     }
   }
 
-  const proxyResult = await detectProxyViaRpc(contractAddress, chainId);
+  const proxyResult = await detectProxyViaRpc(contractAddress, chainId, scope);
   if (proxyResult.isProxy && proxyResult.implementationAddress) {
     const implResult = await fetchEtherscanAbi(
       explorer.explorerApiUrl,
@@ -126,7 +130,11 @@ export async function resolveAbi(
     return { abi: cached.abi, source: "cache" };
   }
 
-  const abi = await fetchAbiFromExplorer(chainId, input.contractAddress);
+  const abi = await fetchAbiFromExplorer(
+    chainId,
+    input.contractAddress,
+    input.scope
+  );
   abiCache.set(cacheKey, { abi, fetchedAt: Date.now() });
 
   return { abi, source: "explorer" };

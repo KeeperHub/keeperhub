@@ -1,19 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockAuthorizationState } = vi.hoisted(() => ({
+const { mockAuthorizationState, mockRpcEvm } = vi.hoisted(() => ({
   mockAuthorizationState: vi.fn(),
+  mockRpcEvm: vi.fn(),
 }));
 
 vi.mock("ethers", () => {
-  class MockJsonRpcProvider {}
   class MockContract {
     authorizationState = mockAuthorizationState;
   }
-  return {
-    JsonRpcProvider: MockJsonRpcProvider,
-    Contract: MockContract,
-  };
+  return { Contract: MockContract };
 });
+
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  rpc: { evm: mockRpcEvm },
+}));
 
 describe("isTimeoutError", () => {
   beforeEach(() => {
@@ -50,6 +53,11 @@ describe("pollForPaymentConfirmation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    mockRpcEvm.mockResolvedValue({
+      manager: {
+        executeWithFailover: (op: (provider: unknown) => unknown) => op({}),
+      },
+    });
   });
 
   afterEach(() => {
@@ -68,6 +76,13 @@ describe("pollForPaymentConfirmation", () => {
       intervalMs: 10,
     });
     expect(result).toBe(true);
+    const { platformScope } = await import("@/lib/rpc/engine/scope");
+    const { PlatformRpcPurpose } = await import("@/lib/rpc/engine/types");
+    const { railForProtocol } = await import("@/lib/payments/rails");
+    expect(mockRpcEvm).toHaveBeenCalledWith(
+      platformScope(PlatformRpcPurpose.PAYMENTS),
+      railForProtocol("x402").chainId
+    );
   });
 
   it("Test 7: returns true when nonce becomes used on second poll", async () => {

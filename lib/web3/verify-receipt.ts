@@ -16,10 +16,10 @@
 import "server-only";
 import type { Connection, SignatureStatus } from "@solana/web3.js";
 import { ethers } from "ethers";
-import { resolveRpcConfig } from "@/lib/rpc/config-service";
-import { isSolanaChain } from "@/lib/rpc/provider-factory";
-import { RpcProviderManager } from "@/lib/rpc/providers";
-import { SolanaProviderManager } from "@/lib/rpc/providers/solana";
+import { RpcRouteError, type RpcScope, rpc } from "@/lib/rpc/engine";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
+import type { SolanaProviderManager } from "@/lib/rpc/providers/solana";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { sleep } from "@/lib/sleep";
 
 export type ReceiptStatus =
@@ -131,46 +131,44 @@ function hasSafeExecutionFailureLog(
   );
 }
 
-async function buildVerificationManager(
-  chainId: number
-): Promise<RpcProviderManager | null> {
-  const config = await resolveRpcConfig(chainId);
-  if (!config) {
-    return null;
-  }
-  return new RpcProviderManager({
-    config: {
-      primaryRpcUrl: config.primaryRpcUrl,
-      fallbackRpcUrl: config.fallbackRpcUrl,
-      chainName: config.chainName,
-      chainId,
-      maxRetries: VERIFY_MAX_RETRIES,
-      timeoutMs: VERIFY_TIMEOUT_MS,
-    },
-  });
-}
+const VERIFY_TUNING = {
+  maxRetries: VERIFY_MAX_RETRIES,
+  timeoutMs: VERIFY_TIMEOUT_MS,
+} as const;
 
 /**
- * Constructed directly rather than through createSolanaProviderManager: that
- * cache is keyed by URL alone, so it would hand back the adapter's manager with
- * its own retry count and 30s timeout in place of the budget above.
+ * A manager on the scope's own route with the verification budget above. A
+ * chain the scope cannot route (unknown chain, not covered under own RPC
+ * only) yields null, which reads as unreadable rather than failed.
  */
+async function buildVerificationManager(
+  scope: RpcScope,
+  chainId: number
+): Promise<RpcProviderManager | null> {
+  try {
+    const client = await rpc.evm(scope, chainId, { tuning: VERIFY_TUNING });
+    return client.manager;
+  } catch (error) {
+    if (error instanceof RpcRouteError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 async function buildSolanaVerificationManager(
+  scope: RpcScope,
   chainId: number
 ): Promise<SolanaProviderManager | null> {
-  const config = await resolveRpcConfig(chainId);
-  if (!config) {
-    return null;
+  try {
+    const client = await rpc.solana(scope, chainId, { tuning: VERIFY_TUNING });
+    return client.manager;
+  } catch (error) {
+    if (error instanceof RpcRouteError) {
+      return null;
+    }
+    throw error;
   }
-  return new SolanaProviderManager({
-    config: {
-      primaryRpcUrl: config.primaryRpcUrl,
-      fallbackRpcUrl: config.fallbackRpcUrl,
-      chainName: config.chainName,
-      maxRetries: VERIFY_MAX_RETRIES,
-      timeoutMs: VERIFY_TIMEOUT_MS,
-    },
-  });
 }
 
 type ReceiptLookup = {
@@ -522,6 +520,7 @@ function unreadableChainResults(
  */
 export async function verifyExecutionReceipts(
   hashes: { hash: string; chainId: number }[],
+  scope: RpcScope,
   options: ReceiptLookupOptions = {}
 ): Promise<{ allVerified: boolean; results: ReceiptVerificationResult[] }> {
   if (hashes.length === 0) {
@@ -539,7 +538,10 @@ export async function verifyExecutionReceipts(
 
   for (const [chainId, group] of groups) {
     if (isSolanaChain(chainId)) {
-      const solanaManager = await buildSolanaVerificationManager(chainId);
+      const solanaManager = await buildSolanaVerificationManager(
+        scope,
+        chainId
+      );
       if (!solanaManager) {
         allResults.push(...unreadableChainResults(chainId, group));
         continue;
@@ -554,7 +556,7 @@ export async function verifyExecutionReceipts(
       continue;
     }
 
-    const manager = await buildVerificationManager(chainId);
+    const manager = await buildVerificationManager(scope, chainId);
     if (!manager) {
       allResults.push(...unreadableChainResults(chainId, group));
       continue;

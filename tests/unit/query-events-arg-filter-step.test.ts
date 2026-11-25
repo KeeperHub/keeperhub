@@ -9,9 +9,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-const { mockGetAddressUrl, mockGetRpcProvider } = vi.hoisted(() => ({
+const { mockGetAddressUrl, mockRpcManager } = vi.hoisted(() => ({
   mockGetAddressUrl: vi.fn(),
-  mockGetRpcProvider: vi.fn(),
+  mockRpcManager: vi.fn(),
 }));
 
 vi.mock("@/lib/web3/chain-adapter", () => ({
@@ -29,9 +29,15 @@ vi.mock("@/lib/rpc/network-utils", () => ({
   },
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
-  isSolanaChain: () => false,
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: {
+    evm: async (...args: unknown[]) => ({
+      manager: await mockRpcManager(...args),
+    }),
+  },
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -96,7 +102,7 @@ describe("queryEventsStep - indexed argument filters", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetAddressUrl.mockResolvedValue("");
-    mockGetRpcProvider.mockResolvedValue({
+    mockRpcManager.mockResolvedValue({
       executeWithFailover: () =>
         Promise.resolve({
           success: false,
@@ -118,7 +124,7 @@ describe("queryEventsStep - indexed argument filters", () => {
     // Named, because ethers' own encoder error names neither the parameter
     // nor the step and leaves the user guessing which input was wrong.
     expect(result.error).toContain("account");
-    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockRpcManager).not.toHaveBeenCalled();
   });
 
   it("rejects a parameter the event does not index, before a provider", async () => {
@@ -132,7 +138,7 @@ describe("queryEventsStep - indexed argument filters", () => {
       return;
     }
     expect(result.error).toContain("amount");
-    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockRpcManager).not.toHaveBeenCalled();
   });
 
   it("asks for a provider once the filter compiles", async () => {
@@ -144,13 +150,13 @@ describe("queryEventsStep - indexed argument filters", () => {
     });
 
     expect(result.success).toBe(false);
-    expect(mockGetRpcProvider).toHaveBeenCalled();
+    expect(mockRpcManager).toHaveBeenCalled();
   });
 
   it("asks for a provider when no filter is set", async () => {
     const result = await queryEventsStep(eventInput);
 
     expect(result.success).toBe(false);
-    expect(mockGetRpcProvider).toHaveBeenCalled();
+    expect(mockRpcManager).toHaveBeenCalled();
   });
 });

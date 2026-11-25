@@ -12,7 +12,7 @@ vi.mock("@/lib/metrics", () => ({
   }),
 }));
 
-import { getSolanaProviderFromUrls } from "@/lib/rpc/provider-factory";
+import { createSolanaProviderManager } from "@/lib/rpc/providers/solana";
 import { getRpcUrlByChainId, PUBLIC_RPCS } from "@/lib/rpc/rpc-config";
 import { SolanaChainAdapter } from "@/lib/web3/chain-adapter/solana";
 
@@ -32,7 +32,13 @@ describe("SolanaChainAdapter — devnet integration", () => {
     async () => {
       const fallbackRpc = getRpcUrlByChainId(DEVNET_CHAIN_ID, "fallback");
       const adapter = new SolanaChainAdapter(DEVNET_CHAIN_ID, () =>
-        getSolanaProviderFromUrls(primaryRpc, fallbackRpc, "Solana Devnet")
+        Promise.resolve(
+          createSolanaProviderManager({
+            primaryRpcUrl: primaryRpc,
+            fallbackRpcUrl: fallbackRpc,
+            chainName: "Solana Devnet",
+          })
+        )
       );
       const balance = await adapter.getBalance(
         null as never,

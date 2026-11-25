@@ -46,13 +46,19 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: vi.fn().mockResolvedValue({
-    executeWithFailover: vi
-      .fn()
-      .mockImplementation((fn: (provider: unknown) => unknown) => fn({})),
-    getProvider: vi.fn().mockReturnValue({}),
-  }),
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  rpc: {
+    evm: vi.fn().mockResolvedValue({
+      manager: {
+        executeWithFailover: vi
+          .fn()
+          .mockImplementation((fn: (provider: unknown) => unknown) => fn({})),
+        getProvider: vi.fn().mockReturnValue({}),
+      },
+    }),
+  },
 }));
 
 // Chain service: default no-op. Configured per-test in the DAI exclusion suite.

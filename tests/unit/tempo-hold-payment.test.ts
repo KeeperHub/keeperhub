@@ -21,9 +21,14 @@ vi.mock("@/lib/rpc/network-utils", () => ({
     mockGetChainIdFromNetwork(...args),
 }));
 
-const mockGetRpcProvider = vi.fn();
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
+const mockRpcEvm = vi.fn();
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: {
+    evm: (...args: unknown[]) => mockRpcEvm(...args),
+    solana: vi.fn(),
+    route: vi.fn(),
+  },
 }));
 
 const mockResolveOrganizationContext = vi.fn();
@@ -72,6 +77,12 @@ vi.mock("@/lib/tempo/held-payments", () => ({
 }));
 
 import {
+  RpcRouteError,
+  RpcRouteErrorCode,
+  RpcScopeKind,
+  rpcScopeForOrganization,
+} from "@/lib/rpc/engine";
+import {
   type HoldPaymentInput,
   holdPaymentStep,
 } from "@/plugins/tempo/steps/hold-payment";
@@ -79,6 +90,7 @@ import { executeHoldPayment } from "@/plugins/tempo/steps/hold-payment-core";
 
 const USDC = "0x20c0000000000000000000000000000000000001";
 const RECIPIENT = "0x1111111111111111111111111111111111111111";
+const ORG_SCOPE = rpcScopeForOrganization("org1");
 const NOW_SEC = 1_800_000_000;
 const DAY = 24 * 60 * 60;
 const HOUR = 60 * 60;
@@ -110,9 +122,8 @@ beforeEach(() => {
   mockResolveOrganizationContext.mockResolvedValue({
     success: true,
     organizationId: "org1",
-    userId: "u1",
   });
-  mockGetRpcProvider.mockResolvedValue({});
+  mockRpcEvm.mockResolvedValue({ manager: {} });
   mockResolveTempoToken.mockResolvedValue({
     address: USDC,
     decimals: 6,
@@ -170,17 +181,20 @@ describe("holdPaymentStep - manual mode", () => {
     expect(createArgs.workflowId).toBe("wf1");
   });
 
-  it("records the run's user when their RPC preferences are dropped", async () => {
+  it("records the run's user and routes RPC by the organization", async () => {
     mockResolveOrganizationContext.mockResolvedValue({
       success: true,
       organizationId: "org1",
-      userId: undefined,
       executionUserId: "viewer-creator",
     });
     const res = await holdPaymentStep(baseInput());
     expect(res.success).toBe(true);
-    expect(mockGetRpcProvider).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: undefined })
+    expect(mockRpcEvm.mock.calls[0]?.[0]).toMatchObject({
+      kind: RpcScopeKind.ORG,
+      organizationId: "org1",
+    });
+    expect(mockSignTempoTx.mock.calls[0][0].rpcScope).toBe(
+      mockRpcEvm.mock.calls[0]?.[0]
     );
     expect(mockCreateHeldPayment.mock.calls[0][0].createdByUserId).toBe(
       "viewer-creator"
@@ -314,7 +328,7 @@ describe("executeHoldPayment - validation vs infrastructure", () => {
 
     const res = await executeHoldPayment({
       organizationId: "org1",
-      userId: "u1",
+      rpcScope: ORG_SCOPE,
       network: "tempo-testnet",
       tokenConfig: "NOTATOKEN",
       amount: "1",
@@ -332,7 +346,7 @@ describe("executeHoldPayment - validation vs infrastructure", () => {
   it("returns validation failureKind for a non-numeric amount", async () => {
     const res = await executeHoldPayment({
       organizationId: "org1",
-      userId: "u1",
+      rpcScope: ORG_SCOPE,
       network: "tempo-testnet",
       tokenConfig: { supportedTokenId: "usdc" },
       amount: "abc",
@@ -346,12 +360,33 @@ describe("executeHoldPayment - validation vs infrastructure", () => {
     expect(mockSignTempoTx).not.toHaveBeenCalled();
   });
 
-  it("returns infrastructure failureKind when RPC provider setup fails", async () => {
-    mockGetRpcProvider.mockRejectedValue(new Error("RPC unavailable"));
+  it("returns validation failureKind when the organization's RPC settings rule out a route", async () => {
+    const routeError = new RpcRouteError(RpcRouteErrorCode.NOT_COVERED, 42_431);
+    mockRpcEvm.mockRejectedValue(routeError);
 
     const res = await executeHoldPayment({
       organizationId: "org1",
-      userId: "u1",
+      rpcScope: ORG_SCOPE,
+      network: "tempo-testnet",
+      tokenConfig: { supportedTokenId: "usdc" },
+      amount: "1",
+      recipientAddress: RECIPIENT,
+    });
+
+    expect(res).toEqual({
+      success: false,
+      error: routeError.message,
+      failureKind: "validation",
+    });
+    expect(mockSignTempoTx).not.toHaveBeenCalled();
+  });
+
+  it("returns infrastructure failureKind when RPC provider setup fails", async () => {
+    mockRpcEvm.mockRejectedValue(new Error("RPC unavailable"));
+
+    const res = await executeHoldPayment({
+      organizationId: "org1",
+      rpcScope: ORG_SCOPE,
       network: "tempo-testnet",
       tokenConfig: { supportedTokenId: "usdc" },
       amount: "1",
@@ -372,7 +407,7 @@ describe("executeHoldPayment - validation vs infrastructure", () => {
 
     const res = await executeHoldPayment({
       organizationId: "org1",
-      userId: "u1",
+      rpcScope: ORG_SCOPE,
       network: "tempo-testnet",
       tokenConfig: { supportedTokenId: "usdc" },
       amount: "1",

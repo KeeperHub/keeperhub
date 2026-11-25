@@ -1,29 +1,47 @@
-import { getSolanaProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
+import { rpc } from "@/lib/rpc/engine";
+import { type RpcScope, RpcScopeKind } from "@/lib/rpc/engine/types";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { getGasStrategy } from "../gas-strategy";
 import { getNonceManager } from "../nonce-manager";
 import { EvmChainAdapter } from "./evm";
 import { SolanaChainAdapter } from "./solana";
 import type { ChainAdapter } from "./types";
 
-const adapterCache = new Map<number, ChainAdapter>();
+const adapterCache = new Map<string, ChainAdapter>();
 
-export function getChainAdapter(chainId: number): ChainAdapter {
-  const cached = adapterCache.get(chainId);
+/** Who the adapter's RPC traffic belongs to; EVM adapters take theirs per call. */
+function scopeKey(scope: RpcScope): string {
+  return scope.kind === RpcScopeKind.ORG
+    ? JSON.stringify([scope.organizationId, scope.selection])
+    : JSON.stringify([scope.purpose]);
+}
+
+/**
+ * The adapter for a chain. EVM adapters are handed their RPC manager on each
+ * call; Solana adapters reach the RPC themselves, so they are kept per scope
+ * and resolve their route through the engine.
+ */
+export function getChainAdapter(
+  chainId: number,
+  scope: RpcScope
+): ChainAdapter {
+  const solana = isSolanaChain(chainId);
+  const key = solana
+    ? JSON.stringify([chainId, scopeKey(scope)])
+    : String(chainId);
+  const cached = adapterCache.get(key);
   if (cached) {
     return cached;
   }
 
-  let adapter: ChainAdapter;
+  const adapter: ChainAdapter = solana
+    ? new SolanaChainAdapter(chainId, async () => {
+        const client = await rpc.solana(scope, chainId);
+        return client.manager;
+      })
+    : new EvmChainAdapter(chainId, getGasStrategy(), getNonceManager());
 
-  if (isSolanaChain(chainId)) {
-    adapter = new SolanaChainAdapter(chainId, () =>
-      getSolanaProvider({ chainId })
-    );
-  } else {
-    adapter = new EvmChainAdapter(chainId, getGasStrategy(), getNonceManager());
-  }
-
-  adapterCache.set(chainId, adapter);
+  adapterCache.set(key, adapter);
   return adapter;
 }
 

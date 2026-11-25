@@ -6,11 +6,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-const { mockGetBalance, mockGetAddressUrl, mockGetRpcProvider } = vi.hoisted(
+const { mockGetBalance, mockGetAddressUrl, mockRpcManager } = vi.hoisted(
   () => ({
     mockGetBalance: vi.fn(),
     mockGetAddressUrl: vi.fn(),
-    mockGetRpcProvider: vi.fn(),
+    mockRpcManager: vi.fn(),
   })
 );
 
@@ -30,9 +30,15 @@ vi.mock("@/lib/rpc/network-utils", () => ({
   },
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
-  isSolanaChain: () => false,
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: {
+    evm: async (...args: unknown[]) => ({
+      manager: await mockRpcManager(...args),
+    }),
+  },
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -137,7 +143,7 @@ describe("checkBalanceStep - failOnError", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetAddressUrl.mockResolvedValue("https://etherscan.io/address/0x123");
-    mockGetRpcProvider.mockResolvedValue({});
+    mockRpcManager.mockResolvedValue({});
   });
 
   it("hard-fails a failed read by default", async () => {
@@ -211,7 +217,7 @@ describe("checkBalanceStep - failOnError", () => {
   });
 
   it("still hard-fails an unresolved RPC config when the toggle is off", async () => {
-    mockGetRpcProvider.mockRejectedValue(new Error("No RPC configured"));
+    mockRpcManager.mockRejectedValue(new Error("No RPC configured"));
 
     const result = await checkBalanceStep({
       network: "mainnet",
@@ -245,7 +251,7 @@ describe("queryEventsStep - failOnError", () => {
     mockGetAddressUrl.mockResolvedValue("");
     // resolveBlockRange runs inside executeWithFailover and returns its own
     // result object, so a failed range read surfaces as this value.
-    mockGetRpcProvider.mockResolvedValue({
+    mockRpcManager.mockResolvedValue({
       executeWithFailover: () =>
         Promise.resolve({
           success: false,

@@ -7,6 +7,7 @@ import "server-only";
 import { BN, BorshAccountsCoder } from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
 import { ErrorCategory, logUserError } from "@/lib/logging";
+import { rpcScopeFromStep } from "@/lib/rpc/engine";
 import { getErrorMessage } from "@/lib/utils";
 import { parseAnchorIdl } from "@/lib/web3/anchor-idl";
 import {
@@ -26,7 +27,7 @@ export type ReadSolanaProgramCoreInput = ReadFailOnErrorInput & {
   programId: string;
   idl: string | object;
   accountType: string;
-  _context?: { executionId?: string };
+  _context?: { executionId?: string; organizationId?: string };
 };
 
 export type ReadSolanaProgramResult =
@@ -101,7 +102,11 @@ async function readSolanaProgramInner(
 ): Promise<ReadSolanaProgramResult> {
   const { network, accountAddress, programId, idl, accountType } = input;
 
-  const resolved = resolveSolanaAccountAddress(network, accountAddress);
+  const resolved = resolveSolanaAccountAddress(
+    network,
+    accountAddress,
+    rpcScopeFromStep(input)
+  );
   if ("error" in resolved) {
     return { success: false, destinationError: true, error: resolved.error };
   }

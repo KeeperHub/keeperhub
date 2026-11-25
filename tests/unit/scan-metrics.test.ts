@@ -74,7 +74,11 @@ vi.mock("@/lib/scan/zerion-fallback", () => ({
 }));
 
 // Mock heavy RPC/adapter dependencies not relevant to metrics testing
-vi.mock("@/lib/rpc/provider-factory", () => ({ getRpcProvider: vi.fn() }));
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  rpc: { evm: vi.fn() },
+}));
 vi.mock("@/lib/scan/adapters/aave-v3", () => ({
   buildAaveV3Calls: vi.fn(),
   decodeAaveV3Results: vi.fn(),

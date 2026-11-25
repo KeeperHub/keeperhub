@@ -52,12 +52,8 @@ vi.mock("viem", () => ({
   }),
   encodeFunctionData: () => "0xencoded",
   http: (url: string) => ({ url }),
+  fallback: (transports: { url: string }[]) => transports[0],
   BaseError: class BaseError extends Error {},
-}));
-
-const mockResolveRpcConfig = vi.fn();
-vi.mock("@/lib/rpc/config-service", () => ({
-  resolveRpcConfig: (...args: unknown[]) => mockResolveRpcConfig(...args),
 }));
 
 vi.mock("@/lib/logging", () => ({
@@ -82,6 +78,17 @@ vi.mock("@/lib/metrics/types", () => ({
   },
 }));
 
+import type { EvmRpcClient } from "@/lib/rpc/engine";
+import { SecretUrl } from "@/lib/rpc/engine/secret-url";
+import {
+  RpcChainType,
+  type RpcEndpoint,
+  RpcEndpointRole,
+  RpcOrigin,
+  type RpcRoute,
+  RpcTransport,
+} from "@/lib/rpc/engine/types";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
 import {
   executeSponsoredContractTransaction,
   executeSponsoredTransaction,
@@ -93,11 +100,58 @@ import {
   type SponsoredTxPendingError,
 } from "@/lib/web3/turnkey-revert";
 
+const PRIMARY_URL = "https://rpc.example.com";
+const FALLBACK_URL = "https://fallback.example.com";
+
+function endpoint(
+  url: string,
+  origin: RpcOrigin,
+  role: RpcEndpointRole
+): RpcEndpoint {
+  return {
+    origin,
+    role,
+    transport: RpcTransport.HTTP,
+    url: SecretUrl.parse(url),
+    configId: null,
+    configName: null,
+  };
+}
+
+function evmClient(
+  primaryUrl: string,
+  fallbackUrl?: string,
+  origin: RpcOrigin = RpcOrigin.PLATFORM
+): EvmRpcClient {
+  const route: RpcRoute = {
+    key: "test-route",
+    chain: {
+      chainId: 11_155_111,
+      name: "sepolia",
+      chainType: RpcChainType.EVM,
+      isEnabled: true,
+    },
+    transport: RpcTransport.HTTP,
+    primary: endpoint(primaryUrl, origin, RpcEndpointRole.PRIMARY),
+    fallback: fallbackUrl
+      ? endpoint(fallbackUrl, origin, RpcEndpointRole.FALLBACK)
+      : undefined,
+    organizationId: origin === RpcOrigin.ORG ? "org_1" : null,
+    ownRpcOnly: false,
+    notices: [],
+  };
+  return {
+    route,
+    manager: {} as RpcProviderManager,
+    activeEndpoint: () => route.primary,
+  };
+}
+
 const baseTxParams = {
   organizationId: "org_1",
   executionId: "exec_1",
   chainId: 11_155_111,
-  rpcUrl: "https://rpc.example.com",
+  rpc: evmClient(PRIMARY_URL, FALLBACK_URL),
   walletAddress: "0xwallet",
   to: "0xrecipient",
 };
@@ -144,12 +198,6 @@ function setupSuccessfulSponsorship(): void {
   });
   mockGetGasTokenPriceUsd.mockResolvedValue(2000);
   mockRecordGasUsage.mockResolvedValue(undefined);
-  mockResolveRpcConfig.mockResolvedValue({
-    chainId: 11_155_111,
-    chainName: "sepolia",
-    primaryRpcUrl: "https://rpc.example.com",
-    fallbackRpcUrl: "https://fallback.example.com",
-  });
 }
 
 beforeEach(() => {
@@ -283,16 +331,13 @@ describe("executeSponsoredTransaction", () => {
     expect(result?.success).toBe(true);
   });
 
-  it("passes rpcUrl and chainId to getGasTokenPriceUsd", async () => {
+  it("passes chainId to getGasTokenPriceUsd", async () => {
     setupSuccessfulSponsorship();
     const mainnetParams = { ...baseTxParams, chainId: 8453 };
 
     await executeSponsoredTransaction(mainnetParams);
 
-    expect(mockGetGasTokenPriceUsd).toHaveBeenCalledWith(
-      "https://rpc.example.com",
-      8453
-    );
+    expect(mockGetGasTokenPriceUsd).toHaveBeenCalledWith(8453);
   });
 
   it("records gas usage with zero price on testnet chains", async () => {
@@ -342,7 +387,7 @@ describe("executeSponsoredTransaction", () => {
 
       const result = await executeSponsoredTransaction({
         ...baseTxParams,
-        rpcUrl,
+        rpc: evmClient(rpcUrl),
       });
 
       expect(result).toBeNull();
@@ -403,7 +448,7 @@ describe("failures after the sponsored transaction is broadcast", () => {
     setupSuccessfulSponsorship();
     mockWaitForTransactionReceipt.mockImplementation(
       ({ url }: { url: string }) => {
-        if (url === "https://fallback.example.com") {
+        if (url === FALLBACK_URL) {
           return Promise.resolve({
             status: "success",
             gasUsed: BigInt(21_000),
@@ -418,6 +463,35 @@ describe("failures after the sponsored transaction is broadcast", () => {
 
     expect(result?.success).toBe(true);
     expect(result?.transactionHash).toBe("0xtxhash");
+  });
+
+  it("reads an organization route's receipt only from its own endpoints", async () => {
+    setupSuccessfulSponsorship();
+    const orgPrimary = "https://org-primary.example.org";
+    const orgFallback = "https://org-fallback.example.org";
+    mockWaitForTransactionReceipt.mockImplementation(
+      ({ url }: { url: string }) => {
+        if (url === orgFallback) {
+          return Promise.resolve({
+            status: "success",
+            gasUsed: BigInt(21_000),
+            effectiveGasPrice: BigInt(1_000_000_000),
+          });
+        }
+        return Promise.reject(new Error("HTTP 503"));
+      }
+    );
+
+    const result = await executeSponsoredTransaction({
+      ...baseTxParams,
+      rpc: evmClient(orgPrimary, orgFallback, RpcOrigin.ORG),
+    });
+
+    expect(result?.success).toBe(true);
+    const askedUrls = mockWaitForTransactionReceipt.mock.calls.map(
+      ([args]) => (args as { url: string }).url
+    );
+    expect(askedUrls).toEqual([orgPrimary, orgFallback]);
   });
 
   it("converts an untyped post-receipt failure into a pending error rather than letting it look pre-broadcast", async () => {
@@ -509,7 +583,7 @@ describe("executeSponsoredContractTransaction", () => {
 
       const result = await executeSponsoredContractTransaction({
         ...baseContractParams,
-        rpcUrl,
+        rpc: evmClient(rpcUrl),
       });
 
       expect(result).toBeNull();

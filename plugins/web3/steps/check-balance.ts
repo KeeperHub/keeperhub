@@ -5,10 +5,10 @@ import { ethers } from "ethers";
 import { db } from "@/lib/db";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
+import { RpcPurpose, rpc, rpcScopeFromStep } from "@/lib/rpc/engine";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { resolveExplorerLink } from "@/lib/web3/explorer-link";
-import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
@@ -51,16 +51,8 @@ async function stepHandler(
     executionId: input._context?.executionId,
   });
 
-  const { network, address, _context } = input;
-
-  // Get userId from execution context (for user RPC preferences)
-  const userId = await getRpcPreferenceUserId(_context?.executionId);
-  if (userId) {
-    console.log(
-      "[Check Balance] Using user RPC preferences for userId:",
-      userId
-    );
-  }
+  const { network, address } = input;
+  const scope = rpcScopeFromStep(input);
 
   // Resolve the chain first so address validation, RPC handling, and balance
   // formatting can branch on the chain family (EVM vs Solana).
@@ -111,7 +103,10 @@ async function stepHandler(
   let rpcManager: RpcProviderManager | undefined;
   if (!isSolana) {
     try {
-      rpcManager = await getRpcProvider({ chainId, userId });
+      const client = await rpc.evm(scope, chainId, {
+        purpose: RpcPurpose.READ,
+      });
+      rpcManager = client.manager;
     } catch (error) {
       logUserError(
         ErrorCategory.VALIDATION,
@@ -131,7 +126,7 @@ async function stepHandler(
     }
   }
 
-  const adapter = getChainAdapter(chainId);
+  const adapter = getChainAdapter(chainId, scope);
 
   // Check balance. Native decimals differ by family: 18 for EVM, 9 for Solana.
   try {

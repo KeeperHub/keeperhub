@@ -133,7 +133,6 @@ describe("POST /api/tempo/held-payments/[id]/broadcast authorization", () => {
     expect(mockReleaseHeldPaymentNow).toHaveBeenCalledWith({
       paymentId: "hp-1",
       organizationId: "org-1",
-      userId: "user-1",
     });
   });
 
@@ -188,7 +187,6 @@ describe("POST /api/tempo/held-payments/[id]/broadcast authorization", () => {
     expect(mockReleaseHeldPaymentNow).toHaveBeenCalledWith({
       paymentId: "hp-1",
       organizationId: "org-1",
-      userId: "user-1",
     });
   });
 

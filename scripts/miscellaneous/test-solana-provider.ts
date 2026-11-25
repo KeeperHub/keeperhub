@@ -11,7 +11,7 @@
 
 import "dotenv/config";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { getSolanaProviderFromUrls } from "../../lib/rpc/provider-factory";
+import { createSolanaProviderManager } from "../../lib/rpc/providers/solana";
 import {
   createRpcUrlResolver,
   PUBLIC_RPCS,
@@ -28,38 +28,38 @@ async function testSolanaProvider() {
   console.log("Testing Solana Provider...\n");
 
   // Test with mainnet (JSON config → env var → public RPC)
-  const mainnetProvider = await getSolanaProviderFromUrls(
-    getRpcUrl(
+  const mainnetProvider = createSolanaProviderManager({
+    primaryRpcUrl: getRpcUrl(
       "solana-mainnet",
       "CHAIN_SOLANA_MAINNET_PRIMARY_RPC",
       PUBLIC_RPCS.SOLANA_MAINNET,
       "primary"
     ),
-    getRpcUrl(
+    fallbackRpcUrl: getRpcUrl(
       "solana-mainnet",
       "CHAIN_SOLANA_MAINNET_FALLBACK_RPC",
       PUBLIC_RPCS.SOLANA_MAINNET,
       "fallback"
     ),
-    "Solana Mainnet"
-  );
+    chainName: "Solana Mainnet",
+  });
 
   // Test with devnet (JSON config → env var → public RPC)
-  const devnetProvider = await getSolanaProviderFromUrls(
-    getRpcUrl(
+  const devnetProvider = createSolanaProviderManager({
+    primaryRpcUrl: getRpcUrl(
       "solana-devnet",
       "CHAIN_SOLANA_DEVNET_PRIMARY_RPC",
       PUBLIC_RPCS.SOLANA_DEVNET,
       "primary"
     ),
-    getRpcUrl(
+    fallbackRpcUrl: getRpcUrl(
       "solana-devnet",
       "CHAIN_SOLANA_DEVNET_FALLBACK_RPC",
       PUBLIC_RPCS.SOLANA_DEVNET,
       "fallback"
     ),
-    "Solana Devnet"
-  );
+    chainName: "Solana Devnet",
+  });
 
   try {
     // Test mainnet - get slot

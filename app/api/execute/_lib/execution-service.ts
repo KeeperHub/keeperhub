@@ -7,6 +7,7 @@ import {
   directExecutions,
 } from "@/lib/db/schema";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { type RpcScope, rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { generateId } from "@/lib/utils/id";
 import type { RevertKind } from "@/lib/web3/decode-revert-error";
 import {
@@ -76,6 +77,16 @@ export async function markRunning(executionId: string): Promise<void> {
     .where(eq(directExecutions.id, executionId));
 }
 
+/** Receipts are read on the routes of the organization that owns the execution. */
+async function executionRpcScope(executionId: string): Promise<RpcScope> {
+  const [row] = await db
+    .select({ organizationId: directExecutions.organizationId })
+    .from(directExecutions)
+    .where(eq(directExecutions.id, executionId))
+    .limit(1);
+  return rpcScopeForOrganization(row?.organizationId);
+}
+
 /**
  * KEEP-966: the single gate every direct-execute route must go through to
  * finalize an execution. Trusts nothing about `result` beyond the presence
@@ -103,9 +114,10 @@ export async function completeExecution(
       status = "unconfirmed";
       error = "Unable to verify transaction: missing chainId";
     } else {
-      const { allVerified, results } = await verifyExecutionReceipts([
-        { hash: result.transactionHash, chainId: result.chainId },
-      ]);
+      const { allVerified, results } = await verifyExecutionReceipts(
+        [{ hash: result.transactionHash, chainId: result.chainId }],
+        await executionRpcScope(executionId)
+      );
       receipts = results.map((r) => ({
         hash: r.hash,
         chainId: r.chainId,
@@ -212,9 +224,10 @@ export async function failExecution(
   // failure. Such a row remains unconfirmed until reconciliation can adjudicate
   // it with enough chain context.
   if (params.transactionHash && params.chainId !== undefined) {
-    const { results } = await verifyExecutionReceipts([
-      { hash: params.transactionHash, chainId: params.chainId },
-    ]);
+    const { results } = await verifyExecutionReceipts(
+      [{ hash: params.transactionHash, chainId: params.chainId }],
+      await executionRpcScope(executionId)
+    );
     receipts = results.map((r) => ({
       hash: r.hash,
       chainId: r.chainId,

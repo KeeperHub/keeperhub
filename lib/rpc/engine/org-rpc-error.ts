@@ -1,4 +1,11 @@
 import { findInErrorChain } from "@/lib/errors/cause-chain";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+
+/**
+ * Leads every OrgRpcError message, so a failure that only survives as text
+ * (step results, run errors) is still told apart from a KeeperHub outage.
+ */
+export const ORG_RPC_FAILURE_PREFIX = "Organization";
 
 /** Survives duplicated module copies, unlike an instanceof check. */
 const ORG_RPC_ERROR_BRAND = Symbol.for("keeperhub.rpc.orgRpcError");
@@ -11,9 +18,11 @@ const ORG_RPC_ERROR_BRAND = Symbol.for("keeperhub.rpc.orgRpcError");
  */
 export class OrgRpcError extends Error {
   readonly [ORG_RPC_ERROR_BRAND] = true;
+  /** An endpoint the organization chose, not one KeeperHub runs. */
+  readonly errorClass = ExecutionErrorType.EXTERNAL;
 
   constructor(message: string) {
-    super(message);
+    super(`${ORG_RPC_FAILURE_PREFIX} ${message}`);
     this.name = OrgRpcError.name;
   }
 }

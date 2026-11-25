@@ -21,7 +21,14 @@ import {
   initializeWalletSigner,
 } from "@/lib/web3/wallet-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import {
+  type EvmRpcClient,
+  RPC_SELECTION_CONFIG_KEY,
+  RpcPurpose,
+  RpcRouteError,
+  rpc,
+  rpcScopeFromStep,
+} from "@/lib/rpc/engine";
 import { rpcRelayErrorClass } from "@/lib/rpc/providers";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getErrorMessage } from "@/lib/utils";
@@ -82,6 +89,7 @@ export type ApproveTokenCoreInput = {
   // Per-node Web3 Connection field. See parseWeb3Connection in
   // lib/safe/signer-resolver.ts. Missing -> "default" -> org-policy resolver.
   web3Connection?: string;
+  [RPC_SELECTION_CONFIG_KEY]?: string;
   _context?: {
     executionId?: string;
     organizationId?: string;
@@ -219,19 +227,18 @@ async function approveTokenCoreImpl(
     return orgCtx;
   }
 
-  const { organizationId, userId } = orgCtx;
+  const { organizationId } = orgCtx;
+  const rpcScope = rpcScopeFromStep(input, organizationId);
 
-  // Resolve RPC config (with failover)
-  let rpcUrl: string;
-  let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
+  let rpcClient: EvmRpcClient;
   try {
-    rpcManager = await getRpcProvider({
-      chainId,
-      userId,
-      usePrivateMempool,
-      strict,
+    rpcClient = await rpc.evm(rpcScope, chainId, {
+      purpose: RpcPurpose.WRITE,
+      privateMempool: usePrivateMempool
+        ? { strict: strict ?? true }
+        : undefined,
     });
-    rpcUrl = await rpcManager.resolveActiveRpcUrl();
+    await rpcClient.manager.resolveActiveRpcUrl();
   } catch (error) {
     logUserError(
       ErrorCategory.VALIDATION,
@@ -243,13 +250,17 @@ async function approveTokenCoreImpl(
         chain_id: String(chainId),
       }
     );
-    const errorClass = rpcRelayErrorClass(error);
+    const errorClass =
+      error instanceof RpcRouteError
+        ? ExecutionErrorType.USER
+        : rpcRelayErrorClass(error);
     return {
       success: false,
       error: getErrorMessage(error),
       ...(errorClass ? { errorClass } : {}),
     };
   }
+  const rpcManager = rpcClient.manager;
 
   // Get wallet address for nonce management
   let walletAddress: string;
@@ -305,7 +316,6 @@ async function approveTokenCoreImpl(
     executionId: _context.executionId ?? `direct-${generateId()}`,
     workflowId,
     chainId,
-    rpcUrl,
     rpcManager,
   };
 
@@ -385,7 +395,7 @@ async function approveTokenCoreImpl(
         organizationId,
         executionId: _context.executionId ?? "direct-execution",
         chainId,
-        rpcUrl,
+        rpc: rpcClient,
         walletAddress,
         to: tokenAddress,
         abi: ERC20_ABI,
@@ -457,7 +467,7 @@ async function approveTokenCoreImpl(
   }
 
   // Fall back to direct signing with nonce management and RPC failover
-  const adapter = getChainAdapter(chainId);
+  const adapter = getChainAdapter(chainId, rpcScope);
 
   // Answer gas affordability before queueing on the wallet's nonce lock. A
   // holder that cannot pay would otherwise take the lock, spend a full failover
@@ -476,7 +486,7 @@ async function approveTokenCoreImpl(
     // Initialize wallet signer
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
     try {
-      signer = await initializeWalletSigner(organizationId, rpcUrl, chainId);
+      signer = await initializeWalletSigner(organizationId, rpcManager);
     } catch (error) {
       return {
         success: false,

@@ -12,6 +12,7 @@ const SCHEME_TRANSPORT: Readonly<Record<string, RpcTransport>> = {
 
 const MASK = "••••";
 const ROOT_PATH = "/";
+const IPV6_BRACKETS = /^\[|\]$/g;
 
 /** Hash used to identify an endpoint without holding its URL. */
 export const FINGERPRINT_HASH = "sha256";
@@ -27,6 +28,8 @@ export const FINGERPRINT_ENCODING = "hex";
 export class SecretUrl {
   readonly transport: RpcTransport;
   readonly host: string;
+  /** Host without port or IPv6 brackets. */
+  readonly hostname: string;
   readonly masked: string;
   readonly fingerprint: string;
   readonly #raw: string;
@@ -35,6 +38,7 @@ export class SecretUrl {
     this.#raw = raw;
     this.transport = transport;
     this.host = parsed.host;
+    this.hostname = parsed.hostname.replace(IPV6_BRACKETS, "");
     const hasSecretPart =
       (parsed.pathname.length > 0 && parsed.pathname !== ROOT_PATH) ||
       parsed.search.length > 0 ||

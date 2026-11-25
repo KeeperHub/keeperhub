@@ -26,8 +26,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
-import type { RpcProviderManager } from "@/lib/rpc/providers";
+import {
+  createRpcProviderManager,
+  type RpcProviderManager,
+} from "@/lib/rpc/providers";
 import {
   NonceConflictError,
   submitSignedTransactionWithFailover,
@@ -77,13 +79,13 @@ describe.skipIf(shouldSkip)(
     let fallbackProvider: ethers.JsonRpcProvider;
     let wallet: ethers.Wallet;
 
-    beforeAll(async () => {
-      rpcManager = await getRpcProviderFromUrls(
-        DEAD_PRIMARY_URL,
-        ANVIL_URL,
-        CHAIN_ID,
-        "anvil-test"
-      );
+    beforeAll(() => {
+      rpcManager = createRpcProviderManager({
+        primaryRpcUrl: DEAD_PRIMARY_URL,
+        fallbackRpcUrl: ANVIL_URL,
+        chainId: CHAIN_ID,
+        chainName: "anvil-test",
+      });
       // Wallet stays connected to the healthy fallback so the unrelated
       // populateTransaction-time chainId/network lookups never hit the
       // dead primary; the broadcast itself still goes through rpcManager.

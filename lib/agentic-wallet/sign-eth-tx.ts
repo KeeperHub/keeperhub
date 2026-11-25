@@ -21,9 +21,10 @@
  * Anything else gets rejected by Turnkey with CONSENSUS_NEEDED -- we surface
  * that as PolicyBlockedError, never leaking the policy text upstream.
  */
-import { createPublicClient, type Hex, http, parseTransaction } from "viem";
+import { createPublicClient, type Hex, parseTransaction } from "viem";
 import { mainnet } from "viem/chains";
-import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
+import { PlatformRpcPurpose, platformScope, rpc } from "@/lib/rpc/engine";
+import { viemTransportOf } from "@/lib/rpc/engine/viem";
 import {
   runTurnkeyActivity,
   type TurnkeyActivityErrorSpec,
@@ -97,15 +98,17 @@ export async function broadcastSignedTransaction(args: {
       `Signed tx chainId ${parsed.chainId} does not match requested chainId ${chainId}`
     );
   }
-  // getRpcUrlByChainId throws on unknown chain id; that maps to our existing
-  // contract (No RPC configured for chainId X).
-  const rpcUrl = getRpcUrlByChainId(chainId);
+  // An unknown or disabled chain id throws RpcRouteError before broadcast.
+  const rpcClient = await rpc.evm(
+    platformScope(PlatformRpcPurpose.AGENTIC_WALLET),
+    chainId
+  );
   // Mainnet only today; if/when we sign on more chains, extend the chain
   // selection here. viem's mainnet chain is sufficient for serialization
   // checks regardless of the actual chain since we only need the transport.
   const client = createPublicClient({
     chain: mainnet,
-    transport: http(rpcUrl),
+    transport: viemTransportOf(rpcClient),
   });
   const txHash = await client.sendRawTransaction({
     serializedTransaction: signedTransaction,

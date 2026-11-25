@@ -27,6 +27,8 @@ vi.mock("@/lib/metrics", async (importOriginal) => ({
   }),
 }));
 
+import { classifyExecutionError } from "@/lib/errors/classify";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import {
   ErrorCategory,
   logSystemError,
@@ -35,7 +37,7 @@ import {
 } from "@/lib/logging";
 import { isOrgRpcError, OrgRpcError } from "@/lib/rpc/engine/org-rpc-error";
 import { RpcOrigin } from "@/lib/rpc/engine/types";
-import { RpcProviderManager } from "@/lib/rpc/providers";
+import { RpcProviderManager, rpcRelayErrorClass } from "@/lib/rpc/providers";
 import { SolanaProviderManager } from "@/lib/rpc/providers/solana";
 
 const down = (): Promise<never> => Promise.reject(new Error("down"));
@@ -121,5 +123,36 @@ describe("manager failure ownership", () => {
     });
     const failure = await manager.executeWithFailover(down).catch((e) => e);
     expect(isOrgRpcError(failure)).toBe(true);
+  });
+});
+
+describe("organization RPC failure classification", () => {
+  it("treats an organization endpoint outage as external, not a platform fault", async () => {
+    const manager = new RpcProviderManager({
+      config: {
+        primaryRpcUrl: "https://org.example.com/key",
+        maxRetries: 1,
+        failureOwner: RpcOrigin.ORG,
+      },
+    });
+    const failure = await manager.executeWithFailover(down).catch((e) => e);
+
+    expect(rpcRelayErrorClass(failure)).toBe(ExecutionErrorType.EXTERNAL);
+    expect(
+      classifyExecutionError(`Failed to check balance: ${failure.message}`)
+        .errorType
+    ).toBe(ExecutionErrorType.EXTERNAL);
+  });
+
+  it("keeps a KeeperHub endpoint outage a platform fault", async () => {
+    const manager = new RpcProviderManager({
+      config: { primaryRpcUrl: "https://kh.example.com/key", maxRetries: 1 },
+    });
+    const failure = await manager.executeWithFailover(down).catch((e) => e);
+
+    expect(rpcRelayErrorClass(failure)).toBeUndefined();
+    expect(classifyExecutionError(failure.message).errorType).toBe(
+      ExecutionErrorType.SYSTEM
+    );
   });
 });

@@ -1,8 +1,7 @@
 import "server-only";
 
 import { ethers } from "ethers";
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
-import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
+import { PlatformRpcPurpose, platformScope, rpc } from "@/lib/rpc/engine";
 
 /**
  * Native-token USD pricing for the gas estimate shown in the confirm modal.
@@ -53,8 +52,10 @@ export async function getNativeUsdPrice(
   }
 
   try {
-    const rpcUrl = getRpcUrlByChainId(chainId, "primary");
-    const manager = await getRpcProviderFromUrls(rpcUrl, undefined, chainId);
+    const { manager } = await rpc.evm(
+      platformScope(PlatformRpcPurpose.BILLING),
+      chainId
+    );
     const provider = manager.getProvider();
     const contract = new ethers.Contract(
       feedAddress,

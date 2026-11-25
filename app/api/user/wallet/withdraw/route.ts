@@ -6,12 +6,17 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { chains } from "@/lib/db/schema";
 import { safeWallets } from "@/lib/db/schema-extensions";
-import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import { recordSafeWithdraw } from "@/lib/metrics/instrumentation/safe";
 import { STEP_UP_ACTIONS } from "@/lib/mfa/step-up-policy";
 import { authorizeAction } from "@/lib/middleware/authorize-action";
 import { getActiveOrgId } from "@/lib/middleware/org-context";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import {
+  RpcPurpose,
+  RpcRouteError,
+  rpc,
+  rpcScopeForOrganization,
+} from "@/lib/rpc/engine";
 import {
   executeContractCallAsSafe,
   executeNativeTransferAsSafe,
@@ -192,20 +197,17 @@ export async function POST(request: Request) {
     // Generate a unique execution ID for this API call
     const executionId = `withdraw-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
-    // KEEP-548: build an RPC manager via getRpcProvider so the withdraw
-    // honours per-user RPC preferences (private mempool / Flashbots Protect)
-    // AND gets failover between primary + fallback for gas estimation,
-    // gas-strategy reads, and receipt polling -- same surface the Safe
-    // executors already use via options.rpcManager. resolveActiveRpcUrl()
-    // probes once and returns whichever endpoint is live so the signer URL
-    // stays consistent with what the manager will dispatch to.
-    const rpcManager = await getRpcProvider({ chainId, userId: user.id });
-    const rpcUrl = await rpcManager.resolveActiveRpcUrl();
+    // The manager fails over for gas estimation, gas reads and receipt polling.
+    const { manager: rpcManager } = await rpc.evm(
+      rpcScopeForOrganization(organizationId),
+      chainId,
+      { purpose: RpcPurpose.WRITE }
+    );
+    await rpcManager.resolveActiveRpcUrl();
     const txContext: TransactionContext = {
       organizationId,
       executionId,
       chainId,
-      rpcUrl,
       rpcManager,
     };
 
@@ -221,11 +223,7 @@ export async function POST(request: Request) {
         console.log(
           `[Withdraw] Initializing signer for org ${organizationId} on chain ${chain.name}`
         );
-        const signer = await initializeWalletSigner(
-          organizationId,
-          rpcUrl,
-          chainId
-        );
+        const signer = await initializeWalletSigner(organizationId, rpcManager);
         const provider = signer.provider;
 
         if (!provider) {
@@ -530,10 +528,14 @@ export async function POST(request: Request) {
       recipient: recipientAddr,
     });
   } catch (error) {
-    logSystemError(ErrorCategory.EXTERNAL_SERVICE, "[Withdraw] Failed", error, {
+    const log = error instanceof RpcRouteError ? logUserError : logSystemError;
+    log(ErrorCategory.EXTERNAL_SERVICE, "[Withdraw] Failed", error, {
       endpoint: "/api/user/wallet/withdraw",
       operation: "post",
     });
+    if (error instanceof RpcRouteError) {
+      return apiError(error, "Failed to execute withdrawal", 400);
+    }
     const errorResponse = handleTransferError(error);
     return errorResponse ?? apiError(error, "Failed to execute withdrawal");
   }

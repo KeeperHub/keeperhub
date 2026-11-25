@@ -12,7 +12,7 @@ import { MULTICALL3_ABI, MULTICALL3_ADDRESS } from "@/lib/contracts/multicall3";
 import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { RpcRouteError, rpc, rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { resolveSignerForNode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
 import { getChainGasDefaults } from "@/lib/web3/gas-defaults";
 import { getOrganizationWalletAddress } from "@/lib/web3/wallet-helpers";
@@ -366,7 +366,10 @@ export async function POST(request: Request): Promise<NextResponse> {
       return badRequest("No wallet configured. Create a wallet first.");
     }
 
-    const rpcManager = await getRpcProvider({ chainId });
+    const { manager: rpcManager } = await rpc.evm(
+      rpcScopeForOrganization(activeOrgId),
+      chainId
+    );
 
     const result = await rpcManager.executeWithFailover(async (provider) => {
       switch (actionSlug) {
@@ -403,6 +406,9 @@ export async function POST(request: Request): Promise<NextResponse> {
       },
     });
   } catch (error) {
+    if (error instanceof RpcRouteError) {
+      return apiError(error, "Failed to estimate gas", 400);
+    }
     return apiError(error, "Failed to estimate gas");
   }
 }

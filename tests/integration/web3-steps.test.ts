@@ -56,21 +56,25 @@ vi.mock("@/lib/rpc/network-utils", () => ({
   }),
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: vi.fn().mockResolvedValue({
-    executeWithFailover: vi.fn(
-      async (operation: (provider: unknown) => Promise<unknown>) => {
-        const mockProvider = {
-          getBalance: vi
-            .fn()
-            .mockResolvedValue(BigInt(5_000_000_000_000_000_000)),
-        };
-        return await operation(mockProvider);
-      }
-    ),
-  }),
-  isSolanaChain: () => false,
+const { mockRpcEvm } = vi.hoisted(() => ({ mockRpcEvm: vi.fn() }));
+
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: { evm: mockRpcEvm, solana: vi.fn(), route: vi.fn() },
 }));
+
+function clientWithBalance(wei: bigint): {
+  manager: { executeWithFailover: ReturnType<typeof vi.fn> };
+} {
+  return {
+    manager: {
+      executeWithFailover: vi.fn(
+        async (operation: (provider: unknown) => Promise<unknown>) =>
+          await operation({ getBalance: vi.fn().mockResolvedValue(wei) })
+      ),
+    },
+  };
+}
 
 // Mock database
 vi.mock("@/lib/security/org-role", () => ({
@@ -142,14 +146,17 @@ vi.mock("@/lib/utils", async () => {
   };
 });
 
+import { RpcPurpose, RpcScopeKind } from "@/lib/rpc/engine";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
 // Now import the step functions after all mocks are set up
 import { checkBalanceStep } from "@/plugins/web3/steps/check-balance";
 
 // Helper to create test context
+const ORG_ID = "org_123";
+
 const createTestContext = () => ({
   executionId: "exec_123",
+  organizationId: ORG_ID,
   nodeId: "node_123",
   nodeName: "Test Node",
   nodeType: "check-balance" as const,
@@ -158,6 +165,9 @@ const createTestContext = () => ({
 describe("Web3 Plugin Steps Integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRpcEvm.mockResolvedValue(
+      clientWithBalance(BigInt(5_000_000_000_000_000_000))
+    );
   });
 
   describe("checkBalanceStep", () => {
@@ -179,11 +189,14 @@ describe("Web3 Plugin Steps Integration", () => {
         );
       }
 
-      // Verify getRpcProvider is called with chainId and userId for user RPC preferences
-      expect(getRpcProvider).toHaveBeenCalledWith({
-        chainId: 1,
-        userId: "user_123",
-      });
+      expect(mockRpcEvm).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: RpcScopeKind.ORG,
+          organizationId: ORG_ID,
+        }),
+        1,
+        { purpose: RpcPurpose.READ }
+      );
     });
 
     it("should successfully check balance on sepolia", async () => {
@@ -234,8 +247,7 @@ describe("Web3 Plugin Steps Integration", () => {
     });
 
     it("should handle RPC provider errors", async () => {
-      // Mock getRpcProvider to reject (chain not found/disabled)
-      vi.mocked(getRpcProvider).mockRejectedValueOnce(
+      mockRpcEvm.mockRejectedValueOnce(
         new Error("Chain 1 not found or not enabled")
       );
 
@@ -252,32 +264,18 @@ describe("Web3 Plugin Steps Integration", () => {
         expect(result.error).toContain("not found or not enabled");
       }
     });
-
-    it("should use user RPC preferences when available", async () => {
-      const input = {
-        network: "mainnet",
-        address: "0x1234567890123456789012345678901234567890",
-        _context: createTestContext(),
-      };
-
-      const result = await checkBalanceStep(input);
-
-      expect(result.success).toBe(true);
-      // Verify getRpcProvider is called with userId so user preferences are resolved
-      expect(getRpcProvider).toHaveBeenCalledWith({
-        chainId: 1,
-        userId: "user_123",
-      });
-    });
   });
 });
 
 describe("Web3 RPC Provider Resolution", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRpcEvm.mockResolvedValue(
+      clientWithBalance(BigInt(5_000_000_000_000_000_000))
+    );
   });
 
-  it("should pass userId to getRpcProvider for user preferences", async () => {
+  it("resolves the route from the step's organization", async () => {
     const result = await checkBalanceStep({
       network: "mainnet",
       address: "0x1234567890123456789012345678901234567890",
@@ -285,14 +283,18 @@ describe("Web3 RPC Provider Resolution", () => {
     });
 
     expect(result.success).toBe(true);
-    expect(getRpcProvider).toHaveBeenCalledWith({
-      chainId: 1,
-      userId: "user_123",
-    });
+    expect(mockRpcEvm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: RpcScopeKind.ORG,
+        organizationId: ORG_ID,
+      }),
+      1,
+      { purpose: RpcPurpose.READ }
+    );
   });
 
-  it("should fail when getRpcProvider rejects for disabled chain", async () => {
-    vi.mocked(getRpcProvider).mockRejectedValueOnce(
+  it("should fail when the route cannot be resolved for a disabled chain", async () => {
+    mockRpcEvm.mockRejectedValueOnce(
       new Error("Chain 999 not found or not enabled")
     );
 
@@ -309,19 +311,8 @@ describe("Web3 RPC Provider Resolution", () => {
   });
 
   it("should use executeWithFailover for balance check", async () => {
-    const mockExecuteWithFailover = vi.fn(
-      async (operation: (provider: unknown) => Promise<unknown>) => {
-        const mockProvider = {
-          getBalance: vi
-            .fn()
-            .mockResolvedValue(BigInt(3_000_000_000_000_000_000)),
-        };
-        return await operation(mockProvider);
-      }
-    );
-    vi.mocked(getRpcProvider).mockResolvedValueOnce({
-      executeWithFailover: mockExecuteWithFailover,
-    } as unknown as Awaited<ReturnType<typeof getRpcProvider>>);
+    const client = clientWithBalance(BigInt(3_000_000_000_000_000_000));
+    mockRpcEvm.mockResolvedValueOnce(client);
 
     const result = await checkBalanceStep({
       network: "mainnet",
@@ -330,6 +321,6 @@ describe("Web3 RPC Provider Resolution", () => {
     });
 
     expect(result.success).toBe(true);
-    expect(mockExecuteWithFailover).toHaveBeenCalledOnce();
+    expect(client.manager.executeWithFailover).toHaveBeenCalledOnce();
   });
 });

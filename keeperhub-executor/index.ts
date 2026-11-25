@@ -1222,6 +1222,13 @@ async function listen(): Promise<void> {
   console.log(`[Executor] Runner image: ${CONFIG.runnerImage}`);
   console.log(`[Executor] K8s namespace: ${CONFIG.namespace}`);
 
+  // In-process runs count organization RPC usage here; this process never
+  // runs the Next.js instrumentation hook that starts the flusher.
+  const { startRpcUsageFlusher } = await import(
+    "../lib/rpc/engine/usage-store"
+  );
+  startRpcUsageFlusher();
+
   // Wire up Prometheus dual-write. The Next.js app does this in
   // instrumentation.ts; the executor is a separate tsx-launched process and
   // never runs Next.js's instrumentation hook, so without this its

@@ -5,7 +5,7 @@ import {
   parseNativeValueLamports,
 } from "@/lib/execute/native-value";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { isSolanaChain } from "@/lib/rpc/provider-factory";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { SOLANA_SPL_MAX_FEE_LAMPORTS } from "@/lib/web3/solana-fees";
 
 export {

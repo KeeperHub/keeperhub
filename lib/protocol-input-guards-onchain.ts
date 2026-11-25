@@ -8,6 +8,7 @@ import {
 } from "@/lib/logging";
 import type { ProtocolInputGuardResult } from "@/lib/protocol-input-guards";
 import { getProtocol, resolveContractAddress } from "@/lib/protocol-registry";
+import { RPC_SELECTION_CONFIG_KEY } from "@/lib/rpc/engine";
 import { listOrgSafes } from "@/lib/safe/deployment";
 import {
   resolveSignerForNode,
@@ -71,12 +72,10 @@ type ProtocolOnchainGuardInput = {
   inputs: Record<string, unknown>;
   network: string;
   organizationId: string | undefined;
-  /**
-   * The workflow execution this write belongs to, when there is one. RPC
-   * preferences are resolved from the execution's user, so this is what lets
-   * the ownerOf read use the same provider as the write it guards.
-   */
+  /** The workflow execution this write belongs to, when there is one. */
   executionId?: string;
+  /** The node's RPC selection, so the ownerOf read takes the write's route. */
+  [RPC_SELECTION_CONFIG_KEY]?: unknown;
 };
 
 /**
@@ -268,21 +267,12 @@ export async function checkProtocolOnchainGuards(
     abiFunction: "ownerOf",
     functionArgs: JSON.stringify([tokenId]),
     failOnError: false,
-    // Match the provider the write will use. Pass executionId and never
-    // organizationId: readContractCore treats organizationId as "skip the
-    // preference lookup", so adding it would force the chain default even
-    // where the write honours a user's RPC. The three callers:
-    //
-    // - Workflow runs: executionId is a workflowExecutions row, so
-    //   getRpcPreferenceUserId finds the user and the read and the write both
-    //   use their preferred RPC.
-    // - /api/execute/node: executionId is a directExecutions row. That lookup
-    //   selects from workflowExecutions only, misses, and returns undefined,
-    //   so the read uses the chain default.
-    // - /api/execute/{protocol}/{action}: the guard runs before reservation
-    //   with no executionId, and that route's write passes organizationId, so
-    //   both use the chain default.
-    _context: { executionId: input.executionId },
+    // Same organization and selection as the write, so both take one route.
+    [RPC_SELECTION_CONFIG_KEY]: input[RPC_SELECTION_CONFIG_KEY],
+    _context: {
+      executionId: input.executionId,
+      organizationId: input.organizationId,
+    },
   });
 
   if (!read.success || read.error !== undefined || read.result === null) {

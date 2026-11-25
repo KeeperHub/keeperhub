@@ -41,9 +41,17 @@ export type RpcEngineDeps = {
   failoverCallback: () => Promise<FailoverStateChangeCallback>;
 };
 
+/** Retry budget for callers that must not use the shared defaults. */
+export type RpcClientTuning = {
+  maxRetries?: number;
+  timeoutMs?: number;
+};
+
 export type RouteRequest = {
   purpose?: RpcPurpose;
   privateMempool?: PrivateMempoolRequest;
+  /** Gets its own cached manager, so the shared one keeps its defaults. */
+  tuning?: RpcClientTuning;
 };
 
 type RpcClient<TManager> = {
@@ -95,8 +103,11 @@ function failureOwnerOf(route: RpcRoute): RpcOrigin {
 /** Namespaces engine-built managers in the provider caches. */
 const MANAGER_CACHE_PREFIX = "route:";
 
-function managerCacheKey(route: RpcRoute): string {
-  return `${MANAGER_CACHE_PREFIX}${route.key}`;
+function managerCacheKey(route: RpcRoute, tuning?: RpcClientTuning): string {
+  const base = `${MANAGER_CACHE_PREFIX}${route.key}`;
+  return tuning
+    ? `${base}:${tuning.maxRetries ?? ""}:${tuning.timeoutMs ?? ""}`
+    : base;
 }
 
 export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
@@ -207,7 +218,9 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
         failureOwner: failureOwnerOf(resolved),
         telemetry: sink,
         onFailoverStateChange,
-        cacheKey: managerCacheKey(resolved),
+        maxRetries: request.tuning?.maxRetries,
+        timeoutMs: request.tuning?.timeoutMs,
+        cacheKey: managerCacheKey(resolved, request.tuning),
       });
       return {
         route: resolved,
@@ -238,7 +251,9 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
         failureOwner: failureOwnerOf(resolved),
         telemetry: sink,
         onFailoverStateChange,
-        cacheKey: managerCacheKey(resolved),
+        maxRetries: request.tuning?.maxRetries,
+        timeoutMs: request.tuning?.timeoutMs,
+        cacheKey: managerCacheKey(resolved, request.tuning),
       });
       return {
         route: resolved,

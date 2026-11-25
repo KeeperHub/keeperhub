@@ -116,9 +116,7 @@ describe.skipIf(shouldSkip)("next-block simulation (anvil E2E)", () => {
 
   beforeAll(async () => {
     vi.stubEnv("SAFE_FETCH_SHADOW", "true");
-    const { getRpcProviderFromUrls } = await import(
-      "@/lib/rpc/provider-factory"
-    );
+    const { createRpcProviderManager } = await import("@/lib/rpc/providers");
     nextBlock = await import("@/lib/web3/next-block-simulation");
     const { EvmChainAdapter } = await import("@/lib/web3/chain-adapter/evm");
     const { getGasStrategy } = await import("@/lib/web3/gas-strategy");
@@ -140,12 +138,11 @@ describe.skipIf(shouldSkip)("next-block simulation (anvil E2E)", () => {
     provider = new ethers.JsonRpcProvider(ANVIL_URL, CHAIN_ID, {
       staticNetwork: true,
     });
-    rpcManager = await getRpcProviderFromUrls(
-      ANVIL_URL,
-      undefined,
-      CHAIN_ID,
-      "anvil-next-block"
-    );
+    rpcManager = createRpcProviderManager({
+      primaryRpcUrl: ANVIL_URL,
+      chainId: CHAIN_ID,
+      chainName: "anvil-next-block",
+    });
     wallet = new ethers.Wallet(ANVIL_PRIV_0, provider);
     await provider.send("evm_setIntervalMining", [0]);
     await provider.send("evm_setAutomine", [false]);

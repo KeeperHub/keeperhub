@@ -8,8 +8,7 @@ import { db } from "@/lib/db";
 import { chains, type SafeWallet, safeWallets } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import { startSafeDeployMetrics } from "@/lib/metrics/instrumentation/safe";
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
-import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
+import { RpcPurpose, rpc, rpcScopeForOrganization } from "@/lib/rpc/engine";
 import {
   buildCreateProxyCalldata,
   buildSetupCalldata,
@@ -146,15 +145,17 @@ export async function deployOrgSafe(
     saltNonce,
   });
 
-  const rpcUrl = getRpcUrlByChainId(chainId, "primary");
-  const rpcManager = await getRpcProviderFromUrls(rpcUrl, undefined, chainId);
+  const { manager: rpcManager } = await rpc.evm(
+    rpcScopeForOrganization(organizationId),
+    chainId,
+    { purpose: RpcPurpose.WRITE }
+  );
   const executionId = input.executionId ?? `safe-deploy-${generateId()}`;
 
   const context: TransactionContext = {
     organizationId,
     executionId,
     chainId,
-    rpcUrl,
     rpcManager,
   };
 
@@ -226,7 +227,8 @@ export async function deployOrgSafe(
   // Signer isn't used directly here (executeTransaction builds its own inside
   // the nonce session), but we call initializeWalletSigner early to surface a
   // clear error if the EOA is unreachable before acquiring the nonce lock.
-  await initializeWalletSigner(organizationId, rpcUrl, chainId);
+  await rpcManager.resolveActiveRpcUrl();
+  await initializeWalletSigner(organizationId, rpcManager);
 
   try {
     const result = await withNonceSession(context, ownerAddress, (session) =>
@@ -408,11 +410,8 @@ export async function reconcileSafeWalletForChain(input: {
       fallbackHandler: contracts.compatibilityFallbackHandler,
     });
 
-    const rpcUrl = getRpcUrlByChainId(chainId, "primary");
-    const fallbackRpcUrl = getRpcUrlByChainId(chainId, "fallback");
-    const rpcManager = await getRpcProviderFromUrls(
-      rpcUrl,
-      fallbackRpcUrl === rpcUrl ? undefined : fallbackRpcUrl,
+    const { manager: rpcManager } = await rpc.evm(
+      rpcScopeForOrganization(organizationId),
       chainId
     );
 

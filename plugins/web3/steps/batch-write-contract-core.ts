@@ -30,7 +30,14 @@ import { MULTICALL3_ABI, MULTICALL3_ADDRESS } from "@/lib/contracts/multicall3";
 import { getErrorMessage, resolveFailOnError } from "@/lib/utils";
 import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import {
+  type EvmRpcClient,
+  RPC_SELECTION_CONFIG_KEY,
+  RpcPurpose,
+  RpcRouteError,
+  rpc,
+  rpcScopeFromStep,
+} from "@/lib/rpc/engine";
 import {
   getOrganizationWalletAddress,
   initializeWalletSigner,
@@ -112,6 +119,7 @@ export type BatchWriteContractCoreInput = {
   // See WriteContractCoreInput: "next-block" simulates as of the next block.
   simulateAt?: SimulateAt;
   simulateTimestampOffsetSec?: string | number;
+  [RPC_SELECTION_CONFIG_KEY]?: string;
   _context?: {
     executionId?: string;
     organizationId?: string;
@@ -612,22 +620,31 @@ async function batchWriteContractCoreImpl(
   if (!orgCtx.success) {
     return { success: false, error: orgCtx.error, errorClass: ExecutionErrorType.SYSTEM };
   }
-  const { organizationId, userId } = orgCtx;
+  const { organizationId } = orgCtx;
+  const rpcScope = rpcScopeFromStep(input, organizationId);
 
   let chainId: number;
-  let rpcUrl: string;
-  let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
+  let rpcClient: EvmRpcClient;
   try {
     chainId = getChainIdFromNetwork(network);
-    rpcManager = await getRpcProvider({ chainId, userId, usePrivateMempool, strict });
-    rpcUrl = await rpcManager.resolveActiveRpcUrl();
+    rpcClient = await rpc.evm(rpcScope, chainId, {
+      purpose: RpcPurpose.WRITE,
+      privateMempool: usePrivateMempool
+        ? { strict: strict ?? true }
+        : undefined,
+    });
+    await rpcClient.manager.resolveActiveRpcUrl();
   } catch (error) {
     return {
       success: false,
       error: getErrorMessage(error),
-      errorClass: ExecutionErrorType.SYSTEM,
+      errorClass:
+        error instanceof RpcRouteError
+          ? ExecutionErrorType.USER
+          : ExecutionErrorType.SYSTEM,
     };
   }
+  const rpcManager = rpcClient.manager;
 
   if (maxFeeOverride !== undefined) {
     const capError = await maxFeeBelowBaseFeeError(rpcManager, maxFeeOverride);
@@ -748,11 +765,10 @@ async function batchWriteContractCoreImpl(
     executionId: _context?.executionId ?? `direct-${generateId()}`,
     workflowId,
     chainId,
-    rpcUrl,
     rpcManager,
   };
 
-  const adapter = getChainAdapter(chainId);
+  const adapter = getChainAdapter(chainId, rpcScope);
 
   // Answer affordability before queueing on the wallet's nonce lock. A holder
   // that cannot pay would otherwise take the lock, spend a full failover
@@ -772,7 +788,7 @@ async function batchWriteContractCoreImpl(
   return withNonceSession(txContext, walletAddress, async (session) => {
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
     try {
-      signer = await initializeWalletSigner(organizationId, rpcUrl, chainId);
+      signer = await initializeWalletSigner(organizationId, rpcManager);
     } catch (error) {
       return {
         success: false,

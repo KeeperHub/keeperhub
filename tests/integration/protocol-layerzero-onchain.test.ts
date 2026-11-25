@@ -31,7 +31,7 @@
  *   2. Individual CHAIN_ETH_MAINNET_*_RPC env vars (dev override)
  *   3. Public Ethereum mainnet RPC default (last resort)
  *
- * Calls run through getRpcProviderFromUrls + executeWithFailover, so a
+ * Calls run through createRpcProviderManager + executeWithFailover, so a
  * primary-endpoint hiccup falls back to the secondary instead of
  * failing the test.
  *
@@ -52,8 +52,10 @@ import {
   applyEthValueTransform,
   readPayableValue,
 } from "@/lib/execute/protocol-eth-value";
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
-import type { RpcProviderManager } from "@/lib/rpc/providers";
+import {
+  createRpcProviderManager,
+  type RpcProviderManager,
+} from "@/lib/rpc/providers";
 import {
   createRpcUrlResolver,
   getChainConfig,
@@ -227,13 +229,13 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
   // primary-endpoint hiccup falls back to the secondary.
   let manager: RpcProviderManager;
 
-  beforeAll(async () => {
-    manager = await getRpcProviderFromUrls(
-      MAINNET_PRIMARY_URL,
-      MAINNET_FALLBACK_URL,
-      MAINNET_CHAIN_ID,
-      "ethereum"
-    );
+  beforeAll(() => {
+    manager = createRpcProviderManager({
+      primaryRpcUrl: MAINNET_PRIMARY_URL,
+      fallbackRpcUrl: MAINNET_FALLBACK_URL,
+      chainId: MAINNET_CHAIN_ID,
+      chainName: "ethereum",
+    });
   });
 
   /**
@@ -708,24 +710,29 @@ describe("LayerZero reference deployments on the other six chains", () => {
     describe(`chain ${chainId}`, () => {
       let chainManager: RpcProviderManager;
 
-      beforeAll(async () => {
+      beforeAll(() => {
         const cfg = getChainConfig(Number(chainId));
         if (!cfg) {
           throw new Error(
             `chain ${chainId} is in the LayerZero address map but not in CHAIN_CONFIG, so no RPC can be resolved for it`
           );
         }
-        chainManager = await getRpcProviderFromUrls(
-          resolveRpcUrl(cfg.jsonKey, cfg.envKey, cfg.publicDefault, "primary"),
-          resolveRpcUrl(
+        chainManager = createRpcProviderManager({
+          primaryRpcUrl: resolveRpcUrl(
+            cfg.jsonKey,
+            cfg.envKey,
+            cfg.publicDefault,
+            "primary"
+          ),
+          fallbackRpcUrl: resolveRpcUrl(
             cfg.jsonKey,
             cfg.fallbackEnvKey,
             cfg.publicFallback ?? cfg.publicDefault,
             "fallback"
           ),
-          Number(chainId),
-          `layerzero-chain-${chainId}`
-        );
+          chainId: Number(chainId),
+          chainName: `layerzero-chain-${chainId}`,
+        });
       });
 
       async function readOnChain(
@@ -821,27 +828,29 @@ describe("LayerZero reference map completeness", () => {
 const EID_ABI = ["function eid() view returns (uint32)"];
 
 /** Failover-aware manager for a chain in one of the LayerZero address maps. */
-async function managerForChain(
-  chainId: string,
-  label: string
-): Promise<RpcProviderManager> {
+function managerForChain(chainId: string, label: string): RpcProviderManager {
   const cfg = getChainConfig(Number(chainId));
   if (!cfg) {
     throw new Error(
       `chain ${chainId} is in a LayerZero address map but not in CHAIN_CONFIG, so no RPC can be resolved for it`
     );
   }
-  return await getRpcProviderFromUrls(
-    resolveRpcUrl(cfg.jsonKey, cfg.envKey, cfg.publicDefault, "primary"),
-    resolveRpcUrl(
+  return createRpcProviderManager({
+    primaryRpcUrl: resolveRpcUrl(
+      cfg.jsonKey,
+      cfg.envKey,
+      cfg.publicDefault,
+      "primary"
+    ),
+    fallbackRpcUrl: resolveRpcUrl(
       cfg.jsonKey,
       cfg.fallbackEnvKey,
       cfg.publicFallback ?? cfg.publicDefault,
       "fallback"
     ),
-    Number(chainId),
-    label
-  );
+    chainId: Number(chainId),
+    chainName: label,
+  });
 }
 
 describe("LayerZero EndpointV2 deployments identify their own chain", () => {
@@ -851,7 +860,7 @@ describe("LayerZero EndpointV2 deployments identify their own chain", () => {
     itOnchain(
       `chain ${chainId} endpoint reports EID ${LAYERZERO_EIDS[chainId]}`,
       async () => {
-        const manager = await managerForChain(
+        const manager = managerForChain(
           chainId,
           `layerzero-endpoint-eid-${chainId}`
         );
@@ -894,8 +903,8 @@ describe("executable() on a path with no history", () => {
 
   let manager: RpcProviderManager;
 
-  beforeAll(async () => {
-    manager = await managerForChain("1", "layerzero-unsent-nonce");
+  beforeAll(() => {
+    manager = managerForChain("1", "layerzero-unsent-nonce");
   });
 
   itOnchain(
@@ -944,7 +953,7 @@ describe("LayerZero EndpointV2View deployments answer executable()", () => {
     itOnchain(
       `chain ${chainId} view returns an execution state`,
       async () => {
-        const manager = await managerForChain(
+        const manager = managerForChain(
           chainId,
           `layerzero-endpoint-view-${chainId}`
         );

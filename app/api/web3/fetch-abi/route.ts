@@ -12,8 +12,8 @@ import { ErrorCategory, logUserError, logWarn } from "@/lib/logging";
 import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
+import { type RpcScope, rpc, rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { sleep } from "@/lib/sleep";
 
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY || "";
@@ -256,9 +256,10 @@ const DIAMOND_LOUPE_ABI = [
  */
 async function getDiamondFacets(
   contractAddress: string,
-  chainId: number
+  chainId: number,
+  scope: RpcScope
 ): Promise<string[]> {
-  const rpcManager = await getRpcProvider({ chainId });
+  const { manager: rpcManager } = await rpc.evm(scope, chainId);
 
   return rpcManager.executeWithFailover(async (provider) => {
     const diamondContract = new ethers.Contract(
@@ -470,7 +471,8 @@ async function handleDiamondContract(
   sourceCodeResult: {
     facetAddresses?: string[];
     implementationAddress?: string;
-  }
+  },
+  scope: RpcScope
 ): Promise<{
   abi: string;
   isProxy: boolean;
@@ -488,7 +490,7 @@ async function handleDiamondContract(
   // Prefer RPC loupe for the full facet list; Etherscan's Facets field may be truncated.
   let facetAddresses: string[] = [];
   try {
-    facetAddresses = await getDiamondFacets(contractAddress, chainId);
+    facetAddresses = await getDiamondFacets(contractAddress, chainId, scope);
     if (facetAddresses.length > 0) {
       console.log(
         "[Diamond] Using facet list from RPC loupe (full list from chain)"
@@ -632,7 +634,8 @@ function validateAbiFetchInputs(contractAddress: string): void {
 async function tryDetectDiamondViaRpc(
   contractAddress: string,
   baseUrl: string,
-  chainId: number
+  chainId: number,
+  scope: RpcScope
 ): Promise<{
   abi: string;
   isProxy: boolean;
@@ -647,7 +650,11 @@ async function tryDetectDiamondViaRpc(
 } | null> {
   console.log("[Diamond] Attempting to detect Diamond contract via RPC...");
   try {
-    const facetAddresses = await getDiamondFacets(contractAddress, chainId);
+    const facetAddresses = await getDiamondFacets(
+      contractAddress,
+      chainId,
+      scope
+    );
     if (facetAddresses && facetAddresses.length > 0) {
       console.log(
         `[Diamond] Detected Diamond contract with ${facetAddresses.length} facets via RPC`
@@ -658,7 +665,8 @@ async function tryDetectDiamondViaRpc(
         chainId,
         {
           facetAddresses,
-        }
+        },
+        scope
       );
       if (!result.implementationAddress) {
         const sourceCode = await fetchEtherscanSourceCode(
@@ -903,7 +911,8 @@ async function tryRpcDetectionOnAbiFailure(
   contractAddress: string,
   baseUrl: string,
   chainId: number,
-  error: unknown
+  error: unknown,
+  scope: RpcScope
 ): Promise<{
   abi: string;
   isProxy: boolean;
@@ -915,7 +924,7 @@ async function tryRpcDetectionOnAbiFailure(
     "[Etherscan] ABI fetch failed, trying RPC-based proxy detection..."
   );
   try {
-    const rpcResult = await detectProxyViaRpc(contractAddress, chainId);
+    const rpcResult = await detectProxyViaRpc(contractAddress, chainId, scope);
     if (rpcResult.isProxy && rpcResult.implementationAddress) {
       const implementationAbi = await fetchAbiFromAddress(
         baseUrl,
@@ -948,7 +957,8 @@ async function tryRpcDetectionOnProxyPattern(
   contractAddress: string,
   baseUrl: string,
   chainId: number,
-  abi: string
+  abi: string,
+  scope: RpcScope
 ): Promise<{
   abi: string;
   isProxy: boolean;
@@ -965,7 +975,7 @@ async function tryRpcDetectionOnProxyPattern(
     "[Etherscan] ABI pattern suggests proxy, trying RPC detection..."
   );
   try {
-    const rpcResult = await detectProxyViaRpc(contractAddress, chainId);
+    const rpcResult = await detectProxyViaRpc(contractAddress, chainId, scope);
     if (rpcResult.isProxy && rpcResult.implementationAddress) {
       const implementationAbi = await fetchAbiFromAddress(
         baseUrl,
@@ -1004,7 +1014,8 @@ async function tryRpcDetectionOnProxyPattern(
 async function handleSourceCodeFetchFailure(
   contractAddress: string,
   baseUrl: string,
-  chainId: number
+  chainId: number,
+  scope: RpcScope
 ): Promise<{
   abi: string;
   isProxy: boolean;
@@ -1021,7 +1032,8 @@ async function handleSourceCodeFetchFailure(
       contractAddress,
       baseUrl,
       chainId,
-      error
+      error,
+      scope
     );
     if (rpcResult) {
       return rpcResult;
@@ -1033,7 +1045,8 @@ async function handleSourceCodeFetchFailure(
     contractAddress,
     baseUrl,
     chainId,
-    abi
+    abi,
+    scope
   );
   if (rpcResult) {
     return rpcResult;
@@ -1048,7 +1061,8 @@ async function handleSourceCodeFetchFailure(
 async function handleNoProxyDetected(
   contractAddress: string,
   baseUrl: string,
-  chainId: number
+  chainId: number,
+  scope: RpcScope
 ): Promise<{
   abi: string;
   isProxy: boolean;
@@ -1066,7 +1080,8 @@ async function handleNoProxyDetected(
       contractAddress,
       baseUrl,
       chainId,
-      error
+      error,
+      scope
     );
     if (rpcResult) {
       return rpcResult;
@@ -1078,7 +1093,8 @@ async function handleNoProxyDetected(
     contractAddress,
     baseUrl,
     chainId,
-    abi
+    abi,
+    scope
   );
   if (rpcResult) {
     return rpcResult;
@@ -1093,7 +1109,8 @@ async function handleNoProxyDetected(
 async function handleEtherscanExplorer(
   contractAddress: string,
   baseUrl: string,
-  chainId: number
+  chainId: number,
+  scope: RpcScope
 ): Promise<{
   abi: string;
   isProxy: boolean;
@@ -1127,7 +1144,8 @@ async function handleEtherscanExplorer(
     return await handleSourceCodeFetchFailure(
       contractAddress,
       baseUrl,
-      chainId
+      chainId,
+      scope
     );
   }
 
@@ -1136,7 +1154,8 @@ async function handleEtherscanExplorer(
       contractAddress,
       baseUrl,
       chainId,
-      sourceCodeResult
+      sourceCodeResult,
+      scope
     );
   }
 
@@ -1150,7 +1169,7 @@ async function handleEtherscanExplorer(
   }
 
   // Etherscan didn't detect a proxy, but check if ABI looks like one
-  return await handleNoProxyDetected(contractAddress, baseUrl, chainId);
+  return await handleNoProxyDetected(contractAddress, baseUrl, chainId, scope);
 }
 
 /**
@@ -1158,7 +1177,8 @@ async function handleEtherscanExplorer(
  */
 async function fetchAbiFromEtherscan(
   contractAddress: string,
-  network: string
+  network: string,
+  scope: RpcScope
 ): Promise<{
   abi: string;
   isProxy: boolean;
@@ -1189,7 +1209,8 @@ async function fetchAbiFromEtherscan(
   const diamondResult = await tryDetectDiamondViaRpc(
     contractAddress,
     baseUrl,
-    chainId
+    chainId,
+    scope
   );
   if (diamondResult) {
     return diamondResult;
@@ -1197,7 +1218,12 @@ async function fetchAbiFromEtherscan(
 
   // For Etherscan explorers, check for proxy contracts
   if (explorerApiType === "etherscan") {
-    return await handleEtherscanExplorer(contractAddress, baseUrl, chainId);
+    return await handleEtherscanExplorer(
+      contractAddress,
+      baseUrl,
+      chainId,
+      scope
+    );
   }
 
   // For non-Etherscan explorers, skip proxy detection
@@ -1261,8 +1287,9 @@ export async function POST(request: Request) {
     const checksummedAddress = toChecksumAddress(contractAddress);
 
     const chainId = getChainIdFromNetwork(network);
+    const scope = rpcScopeForOrganization(authCtx.organizationId);
     try {
-      const rpcManager = await getRpcProvider({ chainId });
+      const { manager: rpcManager } = await rpc.evm(scope, chainId);
       const code = await rpcManager.executeWithFailover((provider) =>
         provider.getCode(checksummedAddress)
       );
@@ -1285,7 +1312,11 @@ export async function POST(request: Request) {
     });
 
     // Fetch ABI from Etherscan with proxy detection
-    const result = await fetchAbiFromEtherscan(checksummedAddress, network);
+    const result = await fetchAbiFromEtherscan(
+      checksummedAddress,
+      network,
+      scope
+    );
 
     return NextResponse.json({
       success: true,

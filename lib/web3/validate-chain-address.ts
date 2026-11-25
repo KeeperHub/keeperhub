@@ -1,6 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
 import { ethers } from "ethers";
-import { isSolanaChain } from "@/lib/rpc/provider-factory";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 
 // Lives in a leaf module with no @solana/web3.js or ethers import so bundles
 // that forbid Node modules can reach it; re-exported here so callers of this

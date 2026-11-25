@@ -4,7 +4,6 @@ import {
   BaseError,
   createPublicClient,
   encodeFunctionData,
-  http,
   type PublicClient,
 } from "viem";
 import { markBroadcast } from "@/keeperhub-executor/lib/broadcast-marker";
@@ -16,12 +15,9 @@ import {
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getMetricsCollector } from "@/lib/metrics";
 import { MetricNames } from "@/lib/metrics/types";
-import { resolveRpcConfig } from "@/lib/rpc/config-service";
-import {
-  isBlockedHost,
-  isBlockedIp,
-  stripIpv6Brackets,
-} from "@/lib/safe-fetch";
+import { type EvmRpcClient, isPlatformOnlyRoute } from "@/lib/rpc/engine";
+import { viemTransportOf, viemTransportsOf } from "@/lib/rpc/engine/viem";
+import { isBlockedHost, isBlockedIp } from "@/lib/safe-fetch";
 import { sleep } from "@/lib/sleep";
 import { isTestnetChain } from "@/lib/web3/chainlink-feeds";
 import { createSponsoredClient } from "@/lib/web3/sponsored-client";
@@ -49,7 +45,8 @@ type SponsoredTxParams = {
   organizationId: string;
   executionId: string;
   chainId: number;
-  rpcUrl: string;
+  /** The route the caller signs against; receipts are read from it too. */
+  rpc: EvmRpcClient;
   walletAddress: string;
   to: string;
   value?: bigint;
@@ -60,7 +57,7 @@ type SponsoredContractTxParams = {
   organizationId: string;
   executionId: string;
   chainId: number;
-  rpcUrl: string;
+  rpc: EvmRpcClient;
   walletAddress: string;
   to: string;
   // biome-ignore lint/suspicious/noExplicitAny: ABI types from viem are deeply nested generics
@@ -78,13 +75,8 @@ type SponsoredContractTxParams = {
  * hang: a sponsored activity Turnkey accepts but can never confirm raises
  * without returning null.
  */
-function isSponsorshipBlockedRpc(rpcUrl: string): boolean {
-  let hostname: string;
-  try {
-    hostname = stripIpv6Brackets(new URL(rpcUrl).hostname);
-  } catch {
-    return false;
-  }
+function isSponsorshipBlockedRpc(rpc: EvmRpcClient): boolean {
+  const { hostname } = rpc.activeEndpoint().url;
   return isBlockedHost(hostname).blocked || isBlockedIp(hostname).blocked;
 }
 
@@ -104,7 +96,7 @@ export async function executeSponsoredTransaction(
     return null;
   }
 
-  if (isSponsorshipBlockedRpc(params.rpcUrl)) {
+  if (isSponsorshipBlockedRpc(params.rpc)) {
     return null;
   }
 
@@ -146,7 +138,7 @@ export async function executeSponsoredTransaction(
   return await settleSponsoredTx(
     submitResult.txHash,
     submitResult.sendTransactionStatusId,
-    params.rpcUrl,
+    params.rpc,
     params.organizationId,
     params.chainId,
     params.executionId,
@@ -168,7 +160,7 @@ export async function executeSponsoredContractTransaction(
     return null;
   }
 
-  if (isSponsorshipBlockedRpc(params.rpcUrl)) {
+  if (isSponsorshipBlockedRpc(params.rpc)) {
     return null;
   }
 
@@ -216,7 +208,7 @@ export async function executeSponsoredContractTransaction(
   return await settleSponsoredTx(
     submitResult.txHash,
     submitResult.sendTransactionStatusId,
-    params.rpcUrl,
+    params.rpc,
     params.organizationId,
     params.chainId,
     params.executionId,
@@ -298,25 +290,6 @@ export type ReceiptWaitOptions = {
 };
 
 /**
- * Every endpoint worth asking for the receipt, most-likely first: the URL the
- * caller broadcast against, then the chain's configured primary and fallback.
- * Deduped, since the caller's URL is usually the primary already.
- */
-async function receiptRpcUrls(
-  rpcUrl: string,
-  chainId: number
-): Promise<string[]> {
-  let config: Awaited<ReturnType<typeof resolveRpcConfig>> = null;
-  try {
-    config = await resolveRpcConfig(chainId);
-  } catch {
-    // Config lookup is an optimization; the caller's URL alone still works.
-  }
-  const candidates = [rpcUrl, config?.primaryRpcUrl, config?.fallbackRpcUrl];
-  return [...new Set(candidates.filter((url): url is string => Boolean(url)))];
-}
-
-/**
  * Read the receipt for an already-broadcast sponsored transaction, trying
  * every configured endpoint before giving up.
  *
@@ -330,15 +303,16 @@ async function receiptRpcUrls(
 async function waitForSponsoredReceipt(
   txHash: Hex,
   sendTransactionStatusId: string,
-  rpcUrl: string,
-  chainId: number,
+  rpc: EvmRpcClient,
   options: ReceiptWaitOptions = {}
 ): Promise<TransactionReceipt> {
   const budgetMs = options.budgetMs ?? RECEIPT_WAIT_BUDGET_MS;
   const perEndpointMs = options.perEndpointMs ?? RECEIPT_WAIT_PER_ENDPOINT_MS;
   const roundDelayMs = options.roundDelayMs ?? RECEIPT_WAIT_ROUND_DELAY_MS;
 
-  const urls = await receiptRpcUrls(rpcUrl, chainId);
+  // Only the route's own endpoints: an organization that brought its own RPC
+  // reads its receipts there, never from KeeperHub's.
+  const transports = viemTransportsOf(rpc);
   const deadline = Date.now() + budgetMs;
   let lastError: unknown;
   let firstRound = true;
@@ -352,14 +326,14 @@ async function waitForSponsoredReceipt(
     }
     firstRound = false;
 
-    for (const url of urls) {
+    for (const transport of transports) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
         break;
       }
       try {
         return await createPublicClient({
-          transport: http(url),
+          transport,
         }).waitForTransactionReceipt({
           hash: txHash,
           timeout: Math.min(perEndpointMs, remaining),
@@ -370,12 +344,19 @@ async function waitForSponsoredReceipt(
     }
   }
 
-  logSystemError(
-    ErrorCategory.NETWORK_RPC,
-    "[Sponsorship] Sponsored transaction broadcast but its receipt could not be read on any endpoint",
-    lastError instanceof Error ? lastError : new Error(String(lastError)),
-    { chainId: chainId.toString(), txHash, endpoints: String(urls.length) }
-  );
+  // An organization's own endpoints are its business, not a platform fault.
+  if (isPlatformOnlyRoute(rpc.route)) {
+    logSystemError(
+      ErrorCategory.NETWORK_RPC,
+      "[Sponsorship] Sponsored transaction broadcast but its receipt could not be read on any endpoint",
+      lastError instanceof Error ? lastError : new Error(String(lastError)),
+      {
+        chainId: String(rpc.route.chain.chainId),
+        txHash,
+        endpoints: String(transports.length),
+      }
+    );
+  }
 
   throw new SponsoredTxPendingError({
     message: `Sponsored transaction was broadcast but its receipt could not be read on any RPC endpoint: ${
@@ -401,21 +382,20 @@ async function waitForSponsoredReceipt(
 async function finalizeSponsoredTx(
   txHash: Hex,
   sendTransactionStatusId: string,
-  rpcUrl: string,
+  rpc: EvmRpcClient,
   organizationId: string,
   chainId: number,
   executionId: string,
   receiptWait?: ReceiptWaitOptions
 ): Promise<SponsoredTransactionResult> {
   const publicClient = createPublicClient({
-    transport: http(rpcUrl),
+    transport: viemTransportOf(rpc),
   });
 
   const receipt = await waitForSponsoredReceipt(
     txHash,
     sendTransactionStatusId,
-    rpcUrl,
-    chainId,
+    rpc,
     receiptWait
   );
 
@@ -462,7 +442,7 @@ async function finalizeSponsoredTx(
   const isTestnet = isTestnetChain(chainId);
   const ethPriceUsd = isTestnet
     ? TESTNET_ETH_PRICE_USD
-    : await getGasTokenPriceUsd(rpcUrl, chainId);
+    : await getGasTokenPriceUsd(chainId);
 
   try {
     await recordGasUsage({
@@ -521,7 +501,7 @@ async function finalizeSponsoredTx(
 async function settleSponsoredTx(
   txHash: Hex,
   sendTransactionStatusId: string,
-  rpcUrl: string,
+  rpc: EvmRpcClient,
   organizationId: string,
   chainId: number,
   executionId: string,
@@ -531,7 +511,7 @@ async function settleSponsoredTx(
     return await finalizeSponsoredTx(
       txHash,
       sendTransactionStatusId,
-      rpcUrl,
+      rpc,
       organizationId,
       chainId,
       executionId,

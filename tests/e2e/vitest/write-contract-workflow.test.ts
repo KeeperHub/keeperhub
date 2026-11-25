@@ -33,8 +33,10 @@ import {
   workflowExecutions,
   workflows,
 } from "@/lib/db/schema";
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
-import type { RpcProviderManager } from "@/lib/rpc/providers";
+import {
+  createRpcProviderManager,
+  type RpcProviderManager,
+} from "@/lib/rpc/providers";
 import { generateId } from "@/lib/utils/id";
 import type { WriteContractInput } from "@/plugins/web3/steps/write-contract";
 
@@ -111,12 +113,12 @@ describe.skipIf(shouldSkip)("Write Contract Workflow E2E", () => {
     // instead of failing the test. The manager pulls primary + fallback
     // straight from the chains table -- same source the production runtime
     // uses for this chain.
-    sepoliaManager = await getRpcProviderFromUrls(
-      sepoliaRpcUrl,
-      sepoliaChain[0].defaultFallbackRpc ?? undefined,
-      SEPOLIA_CHAIN_ID,
-      "sepolia"
-    );
+    sepoliaManager = createRpcProviderManager({
+      primaryRpcUrl: sepoliaRpcUrl,
+      fallbackRpcUrl: sepoliaChain[0].defaultFallbackRpc ?? undefined,
+      chainId: SEPOLIA_CHAIN_ID,
+      chainName: "sepolia",
+    });
 
     // Look up persistent test org
     const testOrg = await db

@@ -2,7 +2,7 @@ import "server-only";
 
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { RpcPurpose, rpc, rpcScopeFromStep } from "@/lib/rpc/engine";
 import { getErrorMessage } from "@/lib/utils";
 import {
   runPluginStep,
@@ -77,7 +77,11 @@ async function stepHandler(
   const { token } = resolved;
 
   try {
-    const rpcManager = await getRpcProvider({ chainId });
+    const { manager: rpcManager } = await rpc.evm(
+      rpcScopeFromStep(input),
+      chainId,
+      { purpose: RpcPurpose.READ }
+    );
     // Corroboration only, and absent for most tickers, so a directory outage
     // must not fail a price the issuer answered perfectly well.
     let feed: ChainlinkFeed | undefined;

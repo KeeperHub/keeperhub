@@ -66,8 +66,9 @@ vi.mock("@/lib/rpc/network-utils", () => ({
   getChainIdFromNetwork: vi.fn().mockReturnValue(1),
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: vi.fn(),
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: { evm: vi.fn(), solana: vi.fn(), route: vi.fn() },
 }));
 
 vi.mock("ethers", () => ({

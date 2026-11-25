@@ -128,10 +128,18 @@ vi.mock("@/lib/rpc/network-utils", () => ({
   getChainIdFromNetwork: vi.fn().mockReturnValue(1),
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: vi.fn().mockResolvedValue({
+const { mockRpcManager } = vi.hoisted(() => ({
+  mockRpcManager: {
     resolveActiveRpcUrl: vi.fn().mockResolvedValue("https://rpc.example.com"),
-  }),
+  },
+}));
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: {
+    evm: vi.fn().mockResolvedValue({ manager: mockRpcManager }),
+    solana: vi.fn(),
+    route: vi.fn(),
+  },
 }));
 
 vi.mock("ethers", () => ({
@@ -308,8 +316,16 @@ vi.mock("@/lib/web3/transaction-manager", () => ({
 
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { logUserError } from "@/lib/logging";
+import {
+  RPC_SELECTION_CONFIG_KEY,
+  RpcPurpose,
+  RpcRouteError,
+  RpcRouteErrorCode,
+  RpcScopeKind,
+  RpcSelectionMode,
+  rpc,
+} from "@/lib/rpc/engine";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { RpcRelayTransportError } from "@/lib/rpc/providers/transport-error";
 import {
   executeContractCallAsRole,
@@ -508,7 +524,7 @@ describe("writeContractCore signer chain ID", () => {
     capturedTxContext = null;
   });
 
-  it("should pass resolved chainId to initializeWalletSigner", async () => {
+  it("should resolve the route for the network's chainId", async () => {
     vi.mocked(getChainIdFromNetwork).mockReturnValue(11_155_111);
 
     await writeContractCore({
@@ -519,11 +535,28 @@ describe("writeContractCore signer chain ID", () => {
       _context: { organizationId: "org-1" },
     });
 
+    expect(vi.mocked(rpc.evm).mock.calls[0]?.[1]).toBe(11_155_111);
     expect(initializeWalletSigner).toHaveBeenCalledWith(
       "org-1",
-      "https://rpc.example.com",
-      11_155_111
+      mockRpcManager
     );
+  });
+
+  it("scopes the route to the organization and the node's RPC selection", async () => {
+    await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "1",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      [RPC_SELECTION_CONFIG_KEY]: "config-1",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(vi.mocked(rpc.evm).mock.calls[0]?.[0]).toMatchObject({
+      kind: RpcScopeKind.ORG,
+      organizationId: "org-1",
+      selection: { mode: RpcSelectionMode.CONFIG, configId: "config-1" },
+    });
   });
 
   it("should pass mainnet chainId when network is mainnet", async () => {
@@ -537,10 +570,10 @@ describe("writeContractCore signer chain ID", () => {
       _context: { organizationId: "org-1" },
     });
 
+    expect(vi.mocked(rpc.evm).mock.calls[0]?.[1]).toBe(1);
     expect(initializeWalletSigner).toHaveBeenCalledWith(
       "org-1",
-      "https://rpc.example.com",
-      1
+      mockRpcManager
     );
   });
 });
@@ -803,9 +836,10 @@ describe("writeContractCore simulateAt next-block", () => {
       simulateAt: "next-block",
     });
 
-    expect(vi.mocked(getRpcProvider)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(getRpcProvider).mock.calls[0]?.[0]).toMatchObject({
-      usePrivateMempool: true,
+    expect(vi.mocked(rpc.evm)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(rpc.evm).mock.calls[0]?.[2]).toEqual({
+      purpose: RpcPurpose.WRITE,
+      privateMempool: { strict: true },
     });
     const optionsArg = mockExecuteContractCall.mock.calls[0]?.[3] as {
       rpcManager?: unknown;
@@ -937,8 +971,8 @@ describe("writeContractCore RPC resolution failure", () => {
   // This branch previously omitted errorClass, which made applyFailOnError
   // treat an RPC misconfiguration as a softenable execution failure instead
   // of the SYSTEM-classified config problem it is.
-  it("classifies a getRpcProvider failure as SYSTEM so it is exempt from failOnError softening", async () => {
-    vi.mocked(getRpcProvider).mockRejectedValueOnce(
+  it("classifies an RPC resolution failure as SYSTEM so it is exempt from failOnError softening", async () => {
+    vi.mocked(rpc.evm).mockRejectedValueOnce(
       new Error("no RPC providers configured for chain 1")
     );
 
@@ -956,14 +990,40 @@ describe("writeContractCore RPC resolution failure", () => {
     }
   });
 
+  it("fails a route the organization's RPC settings rule out as a user error", async () => {
+    vi.mocked(rpc.evm).mockRejectedValueOnce(
+      new RpcRouteError(RpcRouteErrorCode.NOT_COVERED, 1)
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorClass).toBe(ExecutionErrorType.USER);
+      expect(result.error).toBe(
+        new RpcRouteError(RpcRouteErrorCode.NOT_COVERED, 1).message
+      );
+    }
+  });
+
   it("forwards the relay's fault domain when the private-mempool endpoint never answered", async () => {
-    vi.mocked(getRpcProvider).mockResolvedValueOnce({
-      resolveActiveRpcUrl: vi
-        .fn()
-        .mockRejectedValue(
-          new RpcRelayTransportError("RPC failed on primary endpoint: timeout")
-        ),
-    } as unknown as Awaited<ReturnType<typeof getRpcProvider>>);
+    vi.mocked(rpc.evm).mockResolvedValueOnce({
+      manager: {
+        resolveActiveRpcUrl: vi
+          .fn()
+          .mockRejectedValue(
+            new RpcRelayTransportError(
+              "RPC failed on primary endpoint: timeout"
+            )
+          ),
+      },
+    } as unknown as Awaited<ReturnType<typeof rpc.evm>>);
 
     const result = await writeContractCore({
       contractAddress: "0x1234567890123456789012345678901234567890",

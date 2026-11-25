@@ -22,16 +22,18 @@ import {
   vi,
 } from "vitest";
 
-// `@/lib/rpc/providers` (transitively imported via provider-factory) pulls in
-// `lib/rpc/safe-ethers-fetch.ts`, which guards itself with
-// `import "server-only"`. Without this mock the file-load throws under vitest.
+// `@/lib/rpc/providers` pulls in `lib/rpc/safe-ethers-fetch.ts`, which guards
+// itself with `import "server-only"`. Without this mock the file-load throws
+// under vitest.
 vi.mock("server-only", () => ({}));
 
 // Unmock for e2e tests so the real DB module is loaded.
 vi.unmock("@/lib/db");
 
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
-import type { RpcProviderManager } from "@/lib/rpc/providers";
+import {
+  createRpcProviderManager,
+  type RpcProviderManager,
+} from "@/lib/rpc/providers";
 import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
 import { AdaptiveGasStrategy, resetGasStrategy } from "@/lib/web3/gas-strategy";
 
@@ -60,18 +62,18 @@ describe.skipIf(shouldSkip)("Gas Strategy E2E", () => {
     sepoliaProvider = new ethers.JsonRpcProvider(SEPOLIA_PRIMARY);
     baseSepoliaProvider = new ethers.JsonRpcProvider(BASE_SEPOLIA_PRIMARY);
 
-    sepoliaManager = await getRpcProviderFromUrls(
-      SEPOLIA_PRIMARY,
-      SEPOLIA_FALLBACK,
-      11_155_111,
-      "sepolia"
-    );
-    baseSepoliaManager = await getRpcProviderFromUrls(
-      BASE_SEPOLIA_PRIMARY,
-      BASE_SEPOLIA_FALLBACK,
-      84_532,
-      "base-sepolia"
-    );
+    sepoliaManager = createRpcProviderManager({
+      primaryRpcUrl: SEPOLIA_PRIMARY,
+      fallbackRpcUrl: SEPOLIA_FALLBACK,
+      chainId: 11_155_111,
+      chainName: "sepolia",
+    });
+    baseSepoliaManager = createRpcProviderManager({
+      primaryRpcUrl: BASE_SEPOLIA_PRIMARY,
+      fallbackRpcUrl: BASE_SEPOLIA_FALLBACK,
+      chainId: 84_532,
+      chainName: "base-sepolia",
+    });
 
     // Verify connectivity (via the manager so a primary 402 still falls
     // over to the secondary instead of skipping the whole suite).
@@ -391,14 +393,14 @@ describe.skipIf(shouldSkip)("Gas Strategy Real Transaction Estimation", () => {
   let sepoliaProvider: ethers.JsonRpcProvider;
   let sepoliaManager: RpcProviderManager;
 
-  beforeAll(async () => {
+  beforeAll(() => {
     sepoliaProvider = new ethers.JsonRpcProvider(SEPOLIA_PRIMARY);
-    sepoliaManager = await getRpcProviderFromUrls(
-      SEPOLIA_PRIMARY,
-      SEPOLIA_FALLBACK,
-      11_155_111,
-      "sepolia"
-    );
+    sepoliaManager = createRpcProviderManager({
+      primaryRpcUrl: SEPOLIA_PRIMARY,
+      fallbackRpcUrl: SEPOLIA_FALLBACK,
+      chainId: 11_155_111,
+      chainName: "sepolia",
+    });
   });
 
   beforeEach(() => {

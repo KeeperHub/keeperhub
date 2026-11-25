@@ -33,8 +33,9 @@ vi.mock("@/lib/safe/signer-resolver", () => ({
 vi.mock("@/lib/web3/wallet-helpers", () => ({
   getOrganizationWallet: vi.fn(),
 }));
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: vi.fn(),
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: { evm: vi.fn(), solana: vi.fn(), route: vi.fn() },
 }));
 vi.mock("@/lib/logging", () => ({
   ErrorCategory: { TRANSACTION: "transaction" },
@@ -42,6 +43,7 @@ vi.mock("@/lib/logging", () => ({
   logSecurityEvent: vi.fn(),
 }));
 
+import { rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { resolveSignerMode } from "@/lib/safe/signer-resolver";
 import { getOrganizationWallet } from "@/lib/web3/wallet-helpers";
 import {
@@ -200,7 +202,7 @@ describe("signTempoTx stablecoin ceiling", () => {
     await expect(
       signTempoTx({
         organizationId: "org-1",
-        userId: "user-1",
+        rpcScope: rpcScopeForOrganization("org-1"),
         chainId: 4217,
         feeToken: USDC,
         calls: [
@@ -221,7 +223,7 @@ describe("signTempoTx stablecoin ceiling", () => {
     await expect(
       signTempoTx({
         organizationId: "org-1",
-        userId: "user-1",
+        rpcScope: rpcScopeForOrganization("org-1"),
         chainId: 4217,
         feeToken: USDC,
         calls: [

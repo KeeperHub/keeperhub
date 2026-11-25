@@ -7,7 +7,7 @@ import {
 } from "@/lib/execute/native-balance";
 import { cachedRead } from "@/lib/redis-cache";
 import { gasPriceKey, nativeBalanceKey } from "@/lib/redis-keys";
-import type { getRpcProvider } from "@/lib/rpc/provider-factory";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { SIGNER_MODE, type SignerMode } from "@/lib/safe/signer-resolver";
 
 /**
@@ -24,7 +24,7 @@ import { SIGNER_MODE, type SignerMode } from "@/lib/safe/signer-resolver";
  * `write-contract` call with no payable value never otherwise checks.
  */
 
-type RpcManager = Awaited<ReturnType<typeof getRpcProvider>>;
+type RpcManager = RpcProviderManager;
 
 /**
  * Cheapest possible EVM transaction. No call can cost less, so a holder below

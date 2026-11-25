@@ -22,7 +22,7 @@ vi.mock("server-only", () => ({}));
 const mockAggregate3StaticCall = vi.fn();
 const mockDbSelectFn = vi.fn();
 const mockDbInsertFn = vi.fn();
-const mockGetRpcProvider = vi.fn();
+const mockRpcManager = vi.fn();
 const mockGetEnabledChains = vi.fn();
 const mockFetchDefillamaPrice = vi.fn().mockResolvedValue(null);
 
@@ -39,8 +39,14 @@ vi.mock("@/lib/rpc/chain-service", () => ({
   getEnabledChains: mockGetEnabledChains,
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: mockGetRpcProvider,
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  rpc: {
+    evm: async (...args: unknown[]) => ({
+      manager: await mockRpcManager(...args),
+    }),
+  },
 }));
 
 vi.mock("@/lib/scan/zerion-fallback", () => ({
@@ -203,7 +209,7 @@ describe("scan orchestrator", () => {
     mockDbInsertFn.mockReturnValue({ values: mockValues });
 
     // Default RPC provider — overridden per-test as needed.
-    mockGetRpcProvider.mockResolvedValue({
+    mockRpcManager.mockResolvedValue({
       executeWithFailover: vi
         .fn()
         .mockImplementation((fn: (p: unknown) => unknown) => fn({})),
@@ -216,7 +222,7 @@ describe("scan orchestrator", () => {
   // ─── Test A: cache-hit ─────────────────────────────────────────────────────
 
   describe("cache-hit", () => {
-    it("returns the cached ScanResponse and issues zero getRpcProvider calls on a fresh row", async () => {
+    it("returns the cached ScanResponse and issues zero RPC calls on a fresh row", async () => {
       // Cache check → fresh row present (expiresAt 4 min from now).
       mockDbSelectFn.mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -239,7 +245,7 @@ describe("scan orchestrator", () => {
       const result = await scanAddress(TEST_RAW);
 
       expect(result).toEqual(CACHED_RESPONSE);
-      expect(mockGetRpcProvider).not.toHaveBeenCalled();
+      expect(mockRpcManager).not.toHaveBeenCalled();
     });
   });
 
@@ -362,6 +368,14 @@ describe("scan orchestrator", () => {
         Date.now() + 4 * 60 * 1000
       );
       expect(writeRow.resultJson.schemaVersion).toBe(SCAN_SCHEMA_VERSION);
+
+      // An unauthenticated scan runs on KeeperHub's endpoints.
+      const { platformScope } = await import("@/lib/rpc/engine/scope");
+      const { PlatformRpcPurpose } = await import("@/lib/rpc/engine/types");
+      expect(mockRpcManager).toHaveBeenCalledWith(
+        platformScope(PlatformRpcPurpose.PUBLIC_TOOL),
+        1
+      );
     });
 
     it("positive: Spark active loan + sUSDS holding produce a spark position and a priced sky position", async () => {

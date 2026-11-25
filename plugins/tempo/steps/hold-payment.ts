@@ -1,6 +1,7 @@
 import "server-only";
 
 import { ethers } from "ethers";
+import { rpcScopeFromStep } from "@/lib/rpc/engine";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getErrorMessage } from "@/lib/utils";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
@@ -97,7 +98,7 @@ async function stepHandler(
 
   return executeHoldPayment({
     organizationId: orgCtx.organizationId,
-    userId: orgCtx.userId,
+    rpcScope: rpcScopeFromStep(input, orgCtx.organizationId),
     createdByUserId: orgCtx.executionUserId,
     network: input.network,
     tokenConfig: input.tokenConfig,

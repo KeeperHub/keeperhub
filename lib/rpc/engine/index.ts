@@ -12,6 +12,7 @@ import type { RpcRoute, RpcScope } from "./types";
 export type {
   EvmRpcClient,
   RouteRequest,
+  RpcClientTuning,
   RpcEngine,
   RpcEngineDeps,
   SolanaRpcClient,
@@ -24,9 +25,13 @@ export {
   parseRpcSelection,
   platformScope,
   RPC_SELECTION_CONFIG_KEY,
+  type RpcStepInput,
+  rpcScopeForOrganization,
   rpcScopeFromStep,
+  scopeForManyChains,
 } from "./scope";
 export { SecretUrl } from "./secret-url";
+export { isPlatformOnlyRoute } from "./telemetry/route-sink";
 export {
   RpcErrorType,
   RpcOperationType,

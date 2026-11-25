@@ -25,8 +25,10 @@ import { beforeAll, describe, expect, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
-import type { RpcProviderManager } from "@/lib/rpc/providers";
+import {
+  createRpcProviderManager,
+  type RpcProviderManager,
+} from "@/lib/rpc/providers";
 import {
   createRpcUrlResolver,
   PUBLIC_RPCS,
@@ -67,13 +69,13 @@ const MAINNET_FALLBACK_URL = resolveRpcUrl(
 describe("Renzo on-chain integration", () => {
   let manager: RpcProviderManager;
 
-  beforeAll(async () => {
-    manager = await getRpcProviderFromUrls(
-      MAINNET_PRIMARY_URL,
-      MAINNET_FALLBACK_URL,
-      MAINNET_CHAIN_ID,
-      "ethereum"
-    );
+  beforeAll(() => {
+    manager = createRpcProviderManager({
+      primaryRpcUrl: MAINNET_PRIMARY_URL,
+      fallbackRpcUrl: MAINNET_FALLBACK_URL,
+      chainId: MAINNET_CHAIN_ID,
+      chainName: "ethereum",
+    });
   });
 
   /**

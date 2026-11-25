@@ -5,7 +5,8 @@ import type { Hex } from "viem";
 import { createHeldPayment } from "@/lib/tempo/held-payments";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { RpcRouteError, type RpcScope, rpc } from "@/lib/rpc/engine";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { getErrorMessage } from "@/lib/utils";
 import {
   buildTransferWithMemoCall,
@@ -28,7 +29,7 @@ export type BroadcastMode = "manual" | "schedule";
 
 export type HoldPaymentCoreInput = {
   organizationId: string;
-  userId?: string;
+  rpcScope: RpcScope;
   createdByUserId?: string;
   network: string;
   tokenConfig: string | Record<string, unknown>;
@@ -163,13 +164,13 @@ export async function executeHoldPayment(
     return validationFailure(window.error);
   }
 
-  let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
+  let rpcManager: RpcProviderManager;
   try {
-    rpcManager = await getRpcProvider({
-      chainId,
-      userId: input.userId,
-    });
+    ({ manager: rpcManager } = await rpc.evm(input.rpcScope, chainId));
   } catch (error) {
+    if (error instanceof RpcRouteError) {
+      return validationFailure(error.message);
+    }
     return infrastructureFailure(getErrorMessage(error));
   }
 
@@ -204,7 +205,7 @@ export async function executeHoldPayment(
     );
     const signed = await signTempoTx({
       organizationId: input.organizationId,
-      userId: input.userId,
+      rpcScope: input.rpcScope,
       chainId,
       calls: [call],
       feeToken: token.address,
@@ -216,7 +217,7 @@ export async function executeHoldPayment(
 
     const held = await createHeldPayment({
       organizationId: input.organizationId,
-      createdByUserId: input.createdByUserId ?? input.userId,
+      createdByUserId: input.createdByUserId,
       workflowId: input.workflowId,
       executionId: input.executionId,
       chainId,

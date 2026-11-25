@@ -1,14 +1,9 @@
-import { Contract, JsonRpcProvider } from "ethers";
+import { Contract } from "ethers";
 import { USDC_BASE_ADDRESS } from "@/lib/agentic-wallet/constants";
+import { PlatformRpcPurpose, platformScope, rpc } from "@/lib/rpc/engine";
 import { PAYG_DEFAULT_CHAIN_ID } from "./constants";
 
 const BALANCE_OF_ABI = ["function balanceOf(address) view returns (uint256)"];
-
-// Module-level singleton so a per-execution check does not build a new
-// connection pool each time. Mirrors lib/payments/x402/reconcile.ts.
-const provider = new JsonRpcProvider(
-  process.env.BASE_RPC_URL ?? "https://mainnet.base.org"
-);
 
 const usdcByChainId: Record<number, string> = {
   [PAYG_DEFAULT_CHAIN_ID]: USDC_BASE_ADDRESS,
@@ -37,8 +32,15 @@ export async function hasSufficientUsdc(params: {
     return null;
   }
   try {
-    const contract = new Contract(token, BALANCE_OF_ABI, provider);
-    const balance = (await contract.balanceOf(params.payerAddress)) as bigint;
+    const { manager } = await rpc.evm(
+      platformScope(PlatformRpcPurpose.BILLING),
+      params.chainId
+    );
+    const balance = (await manager.executeWithFailover((provider) =>
+      new Contract(token, BALANCE_OF_ABI, provider).balanceOf(
+        params.payerAddress
+      )
+    )) as bigint;
     return balance >= params.amountRaw;
   } catch {
     return null;

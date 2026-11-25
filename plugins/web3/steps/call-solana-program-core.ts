@@ -2,7 +2,12 @@ import "server-only";
 
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { isSolanaChain } from "@/lib/rpc/provider-factory";
+import {
+  RPC_SELECTION_CONFIG_KEY,
+  RpcRouteError,
+  rpcScopeFromStep,
+} from "@/lib/rpc/engine";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { getErrorMessage } from "@/lib/utils";
 import {
   encodeAnchorInstruction,
@@ -36,6 +41,7 @@ export type CallSolanaProgramCoreInput = {
    * CPI that never appears in its encoded arguments.
    */
   maxSol?: string;
+  [RPC_SELECTION_CONFIG_KEY]?: string;
   _context?: {
     executionId?: string;
     organizationId?: string;
@@ -197,7 +203,10 @@ async function callSolanaProgramCoreImpl(
 
   try {
     const submitted = await submitSolanaInstructionTx({
-      adapter: getChainAdapter(chainId) as SolanaChainAdapter,
+      adapter: getChainAdapter(
+        chainId,
+        rpcScopeFromStep(input, orgCtx.organizationId)
+      ) as SolanaChainAdapter,
       solanaSigner: wallet.signer,
       feePayer: walletPk,
       data,
@@ -226,7 +235,8 @@ async function callSolanaProgramCoreImpl(
     return {
       success: false,
       error: getErrorMessage(error),
-      broadcastAttempted: true,
+      // No route means nothing was sent.
+      broadcastAttempted: !(error instanceof RpcRouteError),
     };
   }
 }

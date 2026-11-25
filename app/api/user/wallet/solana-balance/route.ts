@@ -3,11 +3,16 @@ import { ethers } from "ethers";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { chains, organizationWallets } from "@/lib/db/schema";
-import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import {
   type DualAuthContext,
   getDualAuthContext,
 } from "@/lib/middleware/auth-helpers";
+import {
+  RpcRouteError,
+  type RpcScope,
+  rpcScopeForOrganization,
+} from "@/lib/rpc/engine";
 import { getChainAdapter } from "@/lib/web3/chain-adapter/registry";
 
 const SOLANA_DECIMALS = 9;
@@ -22,13 +27,14 @@ type SolanaChainBalance = {
 };
 
 async function fetchSolanaBalance(
+  scope: RpcScope,
   chainId: number,
   chainName: string,
   isTestnet: boolean,
   address: string
 ): Promise<SolanaChainBalance> {
   try {
-    const adapter = getChainAdapter(chainId);
+    const adapter = getChainAdapter(chainId, scope);
     // SolanaChainAdapter owns its own provider manager and ignores rpcManager.
     const lamports = await adapter.getBalance(undefined, address);
     return {
@@ -40,7 +46,8 @@ async function fetchSolanaBalance(
       error: false,
     };
   } catch (error) {
-    logSystemError(
+    const log = error instanceof RpcRouteError ? logUserError : logSystemError;
+    log(
       ErrorCategory.NETWORK_RPC,
       `[Solana Balance] Failed to fetch balance on chain ${chainId}`,
       error,
@@ -96,9 +103,11 @@ export async function GET(request: Request): Promise<NextResponse> {
       .from(chains)
       .where(and(eq(chains.chainType, "solana"), eq(chains.isEnabled, true)));
 
+    const scope = rpcScopeForOrganization(activeOrgId);
     const balances: SolanaChainBalance[] = await Promise.all(
       solanaChains.map((chain) =>
         fetchSolanaBalance(
+          scope,
           chain.chainId,
           chain.name,
           chain.isTestnet ?? false,

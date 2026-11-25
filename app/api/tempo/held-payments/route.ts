@@ -21,6 +21,7 @@ import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { resolveCreatorContext } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { buildPage, parsePageRequest } from "@/lib/pagination";
+import { rpcScopeForOrganization } from "@/lib/rpc/engine";
 import {
   buildActor,
   buildAuditMetadata,
@@ -222,7 +223,8 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const result = await executeHoldPayment({
     organizationId: resolved.organizationId,
-    userId: resolved.userId,
+    rpcScope: rpcScopeForOrganization(resolved.organizationId),
+    createdByUserId: resolved.userId,
     network,
     tokenConfig,
     amount,

@@ -13,10 +13,11 @@ import {
   type INSUFFICIENT_BALANCE_CODE,
 } from "@/lib/execute/native-balance";
 import { checkStablecoinContractCall } from "@/lib/execute/stablecoin-cap";
+import { RpcRouteError, rpc, rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { isNonRetryableError } from "@/lib/rpc/providers/error-classification";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { getErrorMessage } from "@/lib/utils";
 import {
   classifyRevert,
@@ -579,7 +580,8 @@ async function failureFromPreflightError(input: {
 }
 
 export async function getRpcManagerForChain(
-  network: string
+  network: string,
+  organizationId: string
 ): Promise<RpcManagerResolution> {
   let chainId: number;
 
@@ -602,12 +604,19 @@ export async function getRpcManagerForChain(
   }
 
   try {
-    return {
-      success: true,
-      rpc: await getRpcProvider({ chainId }),
-      chainId,
-    };
-  } catch {
+    const client = await rpc.evm(
+      rpcScopeForOrganization(organizationId),
+      chainId
+    );
+    return { success: true, rpc: client.manager, chainId };
+  } catch (error) {
+    if (error instanceof RpcRouteError) {
+      return {
+        success: false,
+        failureKind: "validation",
+        error: error.message,
+      };
+    }
     return {
       success: false,
       failureKind: "unavailable",
@@ -796,7 +805,10 @@ export async function simulateContractCall(
   const { value, data: encodedData, iface, canonicalKey, abiFn } = prepared;
   const argsOrError = prepared.args;
 
-  const rpcResolution = await getRpcManagerForChain(input.network);
+  const rpcResolution = await getRpcManagerForChain(
+    input.network,
+    input.organizationId
+  );
   if (!rpcResolution.success) {
     return rpcResolutionFailure(rpcResolution, from, to, value);
   }
@@ -901,7 +913,10 @@ export async function simulateNativeTransfer(
   }
   const value = valueOrError;
 
-  const rpcResolution = await getRpcManagerForChain(input.network);
+  const rpcResolution = await getRpcManagerForChain(
+    input.network,
+    input.organizationId
+  );
   if (!rpcResolution.success) {
     return rpcResolutionFailure(rpcResolution, from, to, value);
   }
@@ -971,7 +986,10 @@ export async function simulateTokenTransfer(
   }
   const from = fromOrFailure;
 
-  const rpcResolution = await getRpcManagerForChain(input.network);
+  const rpcResolution = await getRpcManagerForChain(
+    input.network,
+    input.organizationId
+  );
   if (!rpcResolution.success) {
     return rpcResolutionFailure(
       rpcResolution,

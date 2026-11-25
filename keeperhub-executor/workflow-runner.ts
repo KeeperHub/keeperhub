@@ -31,6 +31,7 @@ import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { validateWorkflowIntegrations } from "../lib/db/integrations";
+import { flushRpcUsage } from "../lib/rpc/engine/usage-store";
 import {
   workflowExecutions,
   workflowSchedules,
@@ -167,6 +168,12 @@ function shipMetricsOnce(
   return metricsShipment;
 }
 
+// Organization RPC usage counted during the run lives in memory until stored;
+// the pod exits right after the run, so it is written out on every exit path.
+function flushRpcUsageOnExit(): Promise<unknown> {
+  return flushRpcUsage().catch(() => undefined);
+}
+
 async function handleGracefulShutdown(signal: string): Promise<void> {
   if (isShuttingDown) {
     console.log(`[Runner] Already shutting down, ignoring ${signal}`);
@@ -209,7 +216,7 @@ async function handleGracefulShutdown(signal: string): Promise<void> {
     // process; they only reach the executor if shipped before exit. Shipping
     // is bounded by its own fetch timeout, and the forced-exit timer stays
     // armed until it resolves.
-    await shipMetricsOnce();
+    await Promise.all([shipMetricsOnce(), flushRpcUsageOnExit()]);
     clearTimeout(shutdownTimeout);
     console.log("[Runner] Graceful shutdown complete");
     process.exit(1);
@@ -419,7 +426,10 @@ async function main(): Promise<void> {
       // let main() resolve into process.exit before that write lands.
       await shutdownCompletion;
     } else {
-      await shipMetricsOnce(pendingObservations);
+      await Promise.all([
+        shipMetricsOnce(pendingObservations),
+        flushRpcUsageOnExit(),
+      ]);
       await queryClient.end();
       console.log("[Runner] Database connection closed");
     }

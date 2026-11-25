@@ -55,6 +55,7 @@ const {
   mockSignEthereumTransaction,
   mockBroadcastSignedTransaction,
   mockGetBalance,
+  mockRpcEvm,
 } = vi.hoisted(
   (): {
     mockSelectLimit: MockFn;
@@ -65,6 +66,7 @@ const {
     mockSignEthereumTransaction: MockFn;
     mockBroadcastSignedTransaction: MockFn;
     mockGetBalance: MockFn;
+    mockRpcEvm: MockFn;
   } => {
     const updateWhere = vi.fn();
     return {
@@ -80,6 +82,7 @@ const {
       // buildAndSignTx's gas preflight reads the wallet balance; tests drive
       // it per-case (default healthy balance set in beforeEach).
       mockGetBalance: vi.fn(),
+      mockRpcEvm: vi.fn(),
     };
   }
 );
@@ -161,8 +164,22 @@ vi.mock("@/lib/logging", () => ({
     WORKFLOW_ENGINE: "workflow_engine",
     DATABASE: "database",
     EXTERNAL_SERVICE: "external_service",
+    CONFIGURATION: "configuration",
   },
   logSystemError: vi.fn(),
+  logUserError: vi.fn(),
+}));
+
+// The route reads the agent chain on KeeperHub's agentic-wallet route; the
+// public client below is canned, so the transport only has to exist.
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: { evm: mockRpcEvm },
+}));
+vi.mock("@/lib/rpc/engine/viem", () => ({
+  viemTransportOf: () => ({}),
 }));
 
 // buildAndSignTx does live RPC reads (getTransactionCount / getBalance /
@@ -294,6 +311,8 @@ beforeEach(() => {
   mockSignEthereumTransaction.mockReset();
   mockBroadcastSignedTransaction.mockReset();
   mockGetBalance.mockReset();
+  mockRpcEvm.mockReset();
+  mockRpcEvm.mockResolvedValue({ manager: {} });
 
   mockLookupSecret.mockResolvedValue({
     secret: TEST_HMAC_SECRET,
@@ -337,6 +356,12 @@ describe("POST /api/agentic-wallet/feedback -- KEEP-515 retry recovery", () => {
     expect(mockInsertReturning).toHaveBeenCalledTimes(1);
     expect(mockSignEthereumTransaction).toHaveBeenCalledTimes(1);
     expect(mockBroadcastSignedTransaction).toHaveBeenCalledTimes(1);
+    const { platformScope } = await import("@/lib/rpc/engine/scope");
+    const { PlatformRpcPurpose } = await import("@/lib/rpc/engine/types");
+    expect(mockRpcEvm).toHaveBeenCalledWith(
+      platformScope(PlatformRpcPurpose.AGENTIC_WALLET),
+      ETHEREUM_MAINNET_CHAIN_ID
+    );
   });
 
   it("returns 409 ALREADY_RATED and does NOT broadcast when a prior row already has a txHash", async () => {
