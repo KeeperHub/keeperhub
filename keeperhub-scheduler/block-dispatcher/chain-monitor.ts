@@ -26,6 +26,7 @@ const MAX_DELAY_MS = 30_000;
 const STALE_BLOCK_THRESHOLD_S = 120; // warn if block timestamp >2 min behind
 const HEARTBEAT_INTERVAL_MS = 60_000;
 const MAX_BACKFILL_BLOCKS = 100;
+const GET_BLOCK_ATTEMPTS = 2;
 // Upper bound on headers kept from newHeads pushes. Entries are pruned as
 // blocks are processed, so the cap only matters while processing lags.
 const HEADER_CACHE_MAX_ENTRIES = 256;
@@ -54,6 +55,8 @@ const HEX_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/;
 //   CONNECT_TIMEOUT_MS           bound on a single connect() attempt
 //   DESTROY_PROVIDER_TIMEOUT_MS  bound on each ethers v6 teardown step
 //   GET_BLOCK_TIMEOUT_MS         bound on each fallback getBlock request
+//   GET_BLOCK_RETRY_DELAY_MS     pause before the second getBlock attempt
+//   GET_BLOCK_MAX_HOLD_ATTEMPTS  range attempts on an unfetched block before skipping it
 //   SOCKET_MAX_AGE_MS            proactive recycle of an apparently-healthy socket
 //   PRIMARY_PROBE_*              fallback-to-primary recovery probe timing
 // ---------------------------------------------------------------------------
@@ -105,6 +108,14 @@ const LIVENESS_DEFAULTS = {
   // Unbounded, such a request keeps isProcessing set forever and every later
   // block on every later socket is parked in pendingBlock.
   GET_BLOCK_TIMEOUT_MS: 5_000,
+  // Pause before the second getBlock attempt, so a reconnect that caused the
+  // first failure has a moment to install a new provider.
+  GET_BLOCK_RETRY_DELAY_MS: 1_000,
+  // Range attempts on a matched block whose data cannot be fetched before it
+  // is skipped. Until then the monitor holds just before it and the next
+  // pushed block retries it. Small so a hold resolves well within
+  // MAX_BACKFILL_BLOCKS on fast chains, and later blocks are not held back.
+  GET_BLOCK_MAX_HOLD_ATTEMPTS: 3,
   // Proactive socket recycle: tear down and re-subscribe a socket that has
   // been continuously connected longer than this, even when blocks keep
   // arriving. Belt-and-suspenders against degraded-but-not-dead WSS state.
@@ -309,6 +320,10 @@ export class ChainMonitor {
   // reconnects (a header stays valid), pruned as blocks are processed, and
   // cleared on stop().
   private readonly headerCache: Map<number, BlockHeader> = new Map();
+  // Matched block that could not be fetched and is retried on the next push,
+  // and how many range attempts have failed on it.
+  private heldBlock: number | null = null;
+  private heldBlockAttempts = 0;
 
   constructor(config: ChainMonitorConfig) {
     this.chainId = config.chain.chainId;
@@ -356,6 +371,8 @@ export class ChainMonitor {
     this.stopTimers();
     await this.destroyProvider();
     this.headerCache.clear();
+    this.heldBlock = null;
+    this.heldBlockAttempts = 0;
     // forgetChain() removes every per-chain gauge labelset, so the chain
     // disappears entirely from /metrics output. No need to flip individual
     // gauges to 0 first — that would leave residual labels behind. Counters
@@ -769,7 +786,7 @@ export class ChainMonitor {
       );
     }
 
-    const fromBlock =
+    let fromBlock =
       this.lastProcessedBlock !== null
         ? this.lastProcessedBlock + 1
         : blockNumber;
@@ -780,46 +797,34 @@ export class ChainMonitor {
       console.warn(
         `[BlockMonitor:${this.chainName}] Gap too large (${gap} blocks), skipping backfill. Resuming from block ${blockNumber}`,
       );
+      fromBlock = blockNumber;
     } else if (fromBlock < blockNumber) {
       console.log(
         `[BlockMonitor:${this.chainName}] Gap detected: last=${this.lastProcessedBlock}, received=${blockNumber}, backfilling ${gap} block(s)`,
       );
+    }
 
-      for (let bn = fromBlock; bn < blockNumber; bn++) {
-        // A stopped monitor (reaped by the reconciler, leadership lost, or
-        // reconnects exhausted) must not keep dispatching from work that was
-        // still queued when it stopped.
-        if (!this.isRunning) {
-          return;
-        }
-        await this.processBlockNumber(bn);
+    for (let bn = fromBlock; bn <= blockNumber; bn++) {
+      // A stopped monitor (reaped by the reconciler, leadership lost, or
+      // reconnects exhausted) must not keep dispatching from work that was
+      // still queued when it stopped.
+      if (!this.isRunning) {
+        return;
       }
+      const handled = await this.processBlockNumber(bn);
+      // Stopped while this block was in flight: leave state and metrics alone,
+      // stop() already removed this chain's gauges.
+      if (!this.isRunning) {
+        return;
+      }
+      if (!handled && this.holdBlock(bn)) {
+        return;
+      }
+      this.recordBlockAdvance(bn);
     }
 
-    if (!this.isRunning) {
-      return;
-    }
-    await this.processBlockNumber(blockNumber);
-    // Stopped while this block was in flight: leave state and metrics alone,
-    // stop() already removed this chain's gauges.
-    if (!this.isRunning) {
-      return;
-    }
-    this.lastProcessedBlock = blockNumber;
-    this.pruneHeaderCache(blockNumber);
-    // Height genuinely advanced — refresh liveness AFTER the fact.
-    const advancedAt = Date.now();
-    this.lastBlockAdvanceAt = advancedAt;
-    // Trust the current URL again: a real height advance means the
-    // subscription is delivering. Without this reset, an old streak of silent
-    // reconnects would still trigger a URL flip on the next disconnect.
-    this.silentReconnects = 0;
-    this.resetNoBlockTimer();
     this.blocksReceived++;
     metrics.recordBlockReceived(this.chainName);
-    metrics.setLastProcessedBlock(this.chainName, blockNumber);
-    metrics.setLastBlockAdvanceAt(this.chainName, advancedAt);
-    metrics.setSilentReconnectsCurrent(this.chainName, 0);
 
     // Heartbeat log
     const now = Date.now();
@@ -831,23 +836,77 @@ export class ChainMonitor {
     }
   }
 
-  private async processBlockNumber(blockNumber: number): Promise<void> {
-    const matchingWorkflows = this.workflows.filter(
+  // A real height advance, backfilled or pushed: refresh liveness after it.
+  private recordBlockAdvance(blockNumber: number): void {
+    this.lastProcessedBlock = blockNumber;
+    if (this.heldBlock !== null && blockNumber >= this.heldBlock) {
+      this.heldBlock = null;
+      this.heldBlockAttempts = 0;
+    }
+    this.pruneHeaderCache(blockNumber);
+    const advancedAt = Date.now();
+    this.lastBlockAdvanceAt = advancedAt;
+    // Trust the current URL again: a real height advance means the
+    // subscription is delivering. Without this reset, an old streak of silent
+    // reconnects would still trigger a URL flip on the next disconnect.
+    this.silentReconnects = 0;
+    this.resetNoBlockTimer();
+    metrics.setLastProcessedBlock(this.chainName, blockNumber);
+    metrics.setLastBlockAdvanceAt(this.chainName, advancedAt);
+    metrics.setSilentReconnectsCurrent(this.chainName, 0);
+  }
+
+  // Returns true while an unfetched block is held for a retry on the next
+  // push, false once its attempts are used up and it is skipped.
+  private holdBlock(blockNumber: number): boolean {
+    if (this.heldBlock !== blockNumber) {
+      this.heldBlock = blockNumber;
+      this.heldBlockAttempts = 0;
+    }
+    // A failure while the socket is being replaced says nothing about the
+    // block itself, so it holds the block without using up an attempt.
+    if (this.provider !== null && !this.isReconnecting) {
+      this.heldBlockAttempts++;
+    }
+    const maxAttempts = liveness("GET_BLOCK_MAX_HOLD_ATTEMPTS");
+    if (this.heldBlockAttempts < maxAttempts) {
+      this.lastProcessedBlock = blockNumber - 1;
+      console.warn(
+        `[BlockMonitor:${this.chainName}] Holding at block ${blockNumber - 1}, block ${blockNumber} could not be fetched (attempt ${this.heldBlockAttempts}/${maxAttempts}), retrying on the next block received`,
+      );
+      return true;
+    }
+    const workflowIds = this.matchingWorkflowsFor(blockNumber).map(
+      (wf) => wf.id,
+    );
+    console.error(
+      `[BlockMonitor:${this.chainName}] Skipping block ${blockNumber} permanently after ${this.heldBlockAttempts} failed fetch attempts, not dispatched for workflow(s): ${workflowIds.join(", ")}`,
+    );
+    this.heldBlock = null;
+    this.heldBlockAttempts = 0;
+    return false;
+  }
+
+  private matchingWorkflowsFor(blockNumber: number): BlockWorkflow[] {
+    return this.workflows.filter(
       (wf) => blockNumber > 0 && blockNumber % wf.blockInterval === 0,
     );
+  }
+
+  // Returns false when the block was not handled: a matched block whose data
+  // could not be fetched, or the monitor stopped while fetching it.
+  private async processBlockNumber(blockNumber: number): Promise<boolean> {
+    const matchingWorkflows = this.matchingWorkflowsFor(blockNumber);
 
     if (matchingWorkflows.length === 0) {
-      return;
+      return true;
     }
 
     // Fetch block data for the matched block
     const block = await this.getBlockData(blockNumber);
-    if (!block) {
-      return;
-    }
     // A fallback getBlock can settle after the monitor was stopped.
-    if (!this.isRunning) {
-      return;
+    if (!(block && this.isRunning)) {
+      return false;
     }
 
     // Stale block warning + lag histogram
@@ -883,6 +942,7 @@ export class ChainMonitor {
         metrics.recordSqsEnqueue(this.chainName, "success");
       }
     }
+    return true;
   }
 
   /**
@@ -986,15 +1046,22 @@ export class ChainMonitor {
     // No pushed header for this block (for example it was mined while the
     // socket was down, or the provider sends partial headers): fetch it.
     const timeoutMs = liveness("GET_BLOCK_TIMEOUT_MS");
-    for (let attempt = 0; attempt < 2; attempt++) {
+    let failure = "no connected provider";
+    for (let attempt = 0; attempt < GET_BLOCK_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, liveness("GET_BLOCK_RETRY_DELAY_MS"));
+        });
+        if (!this.isRunning) {
+          return null;
+        }
+      }
       // Read the provider per attempt: a reconnect between attempts replaces
       // it, and it is null while the reconnect is in progress.
       const provider = this.provider;
       if (!provider) {
-        console.warn(
-          `[BlockMonitor:${this.chainName}] No connected provider to fetch block ${blockNumber}, skipping it`,
-        );
-        return null;
+        failure = "no connected provider";
+        continue;
       }
       try {
         const block = await withTimeout(
@@ -1009,16 +1076,16 @@ export class ChainMonitor {
             parentHash: block.parentHash,
           };
         }
+        failure = "getBlock returned null";
       } catch (error) {
-        if (attempt === 1) {
-          console.warn(
-            `[BlockMonitor:${this.chainName}] Failed to fetch block ${blockNumber} after 2 attempts:`,
-            error instanceof Error ? error.message : error,
-          );
-        }
+        failure = error instanceof Error ? error.message : String(error);
       }
     }
 
+    console.warn(
+      `[BlockMonitor:${this.chainName}] Failed to fetch block ${blockNumber} after ${GET_BLOCK_ATTEMPTS} attempts:`,
+      failure,
+    );
     return null;
   }
 
