@@ -391,6 +391,62 @@ describe("simulateCallSequence on a node without eth_simulateV1", () => {
     });
   });
 
+  it("zeroes slots present in pre.storage that geth omits from post.storage when cleared (#2541)", async () => {
+    const ALLOWANCE_SLOT =
+      "0x0000000000000000000000000000000000000000000000000000000000000009";
+    const NONZERO_ALLOWANCE =
+      "0x00000000000000000000000000000000000000000000000000000000000f4240";
+    let traceIdx = 0;
+
+    spies.send.mockImplementation((method: string) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(new Error("method not found"));
+      }
+      if (method === "eth_call") {
+        return Promise.resolve(TRUE);
+      }
+      if (method === "eth_estimateGas") {
+        return Promise.resolve("0x5208");
+      }
+      if (method === "debug_traceCall") {
+        traceIdx += 1;
+        // Call 1 (approve) writes non-zero allowance into ALLOWANCE_SLOT.
+        if (traceIdx === 1) {
+          return Promise.resolve({
+            pre: { [TOKEN]: { storage: { [ALLOWANCE_SLOT]: ethers.ZeroHash } } },
+            post: { [TOKEN]: { storage: { [ALLOWANCE_SLOT]: NONZERO_ALLOWANCE } } },
+          });
+        }
+        // Call 2 (deposit/transferFrom) drains ALLOWANCE_SLOT to zero; geth's
+        // prestateTracer (diffMode: true) includes the previous value in
+        // pre.storage and omits cleared zero slots from post.storage.
+        return Promise.resolve({
+          pre: { [TOKEN]: { storage: { [ALLOWANCE_SLOT]: NONZERO_ALLOWANCE } } },
+          post: { [TOKEN]: {} },
+        });
+      }
+      return Promise.reject(new Error(`unexpected ${method}`));
+    });
+
+    await run([
+      ...APPROVE_THEN_DEPOSIT,
+      {
+        contractAddress: TOKEN,
+        abi: ERC20_ABI,
+        functionName: "allowance",
+        functionArgs: JSON.stringify([FROM, VAULT]),
+      },
+    ]);
+
+    const calls = spies.send.mock.calls.filter(([m]) => m === "eth_call");
+    expect(calls[1][1][2]).toEqual({
+      [TOKEN]: { stateDiff: { [ALLOWANCE_SLOT]: NONZERO_ALLOWANCE } },
+    });
+    expect(calls[2][1][2]).toEqual({
+      [TOKEN]: { stateDiff: { [ALLOWANCE_SLOT]: ethers.ZeroHash } },
+    });
+  });
+
   it("does not retry eth_simulateV1 for that chain again", async () => {
     fallbackNode();
 
