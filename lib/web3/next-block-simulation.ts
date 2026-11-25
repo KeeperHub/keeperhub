@@ -763,9 +763,11 @@ const currentSeconds = (): number => Math.floor(Date.now() / MS_PER_SECOND);
 const TRIGGER_WAIT_READS = 8;
 const TRIGGER_WAIT_MS = 250;
 
-type TriggerWait = { reads: number };
+type TriggerWait = { readsLeft: number };
 
-const newTriggerWait = (): TriggerWait => ({ reads: TRIGGER_WAIT_READS });
+const newTriggerWait = (): TriggerWait => ({
+  readsLeft: TRIGGER_WAIT_READS,
+});
 
 // The RPC's latest block, once it has reached the block that triggered the run.
 async function latestReaching(
@@ -784,10 +786,10 @@ async function latestReaching(
     if (trigger?.chainId !== chainId || latest.number >= trigger.number) {
       return latest;
     }
-    wait.reads -= 1;
-    if (wait.reads <= 0) {
+    wait.readsLeft -= 1;
+    if (wait.readsLeft <= 0) {
       throw new Error(
-        `Next-block simulation: the RPC has not reached the block that triggered the run (${RETRY_HINT}). If this keeps happening, the RPC lags the network: choose another RPC for it (see "RPC Preferences" in the API docs), or set "Simulate at" back to "Latest block".`
+        `Next-block simulation: the RPC has not reached the block that triggered the run (${RETRY_HINT}). If this keeps happening, the RPC lags the block trigger: use another RPC for this network (see "RPC Preferences" in the API docs), or set "Simulate at" back to "Latest block"`
       );
     }
     await sleep(TRIGGER_WAIT_MS);

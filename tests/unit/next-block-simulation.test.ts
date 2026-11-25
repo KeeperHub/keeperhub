@@ -948,8 +948,38 @@ describe("next-block simulation", () => {
       const triggerTime = node.latestTimestamp + SLOT;
       setClock(triggerTime + 5);
       node.unlockAt = triggerTime + SLOT;
-      // Behind for the whole budget (8 reads) and the second attempt's read.
-      lagFor(9);
+      // Never catches up: a budget per attempt would read 8 times on each.
+      lagFor(100);
+
+      const error = await simulateSendAtNextBlock(retrying, {
+        chainId: MAINNET,
+        tx: RUN_TX,
+        options: { triggerBlock: TRIGGER },
+      }).catch((e: unknown) => e);
+      expect((error as Error).message).toContain(
+        "has not reached the block that triggered the run"
+      );
+      // 8 reads on attempt 1, then one read each on attempts 2 and 3.
+      expect(
+        node.methods.filter((m) => m === "eth_getBlockByNumber")
+      ).toHaveLength(10);
+    });
+
+    it("succeeds on a later attempt once the RPC catches up", async () => {
+      const retrying = {
+        executeWithFailover: async <T>(
+          operation: (p: ethers.JsonRpcProvider) => Promise<T>
+        ): Promise<T> => {
+          try {
+            return await operation(provider);
+          } catch {
+            return await operation(provider);
+          }
+        },
+      } as unknown as RpcProviderManager;
+      setClock(node.latestTimestamp + SLOT + 5);
+      node.unlockAt = node.latestTimestamp + 2 * SLOT;
+      lagFor(8);
 
       const { simulation } = await simulateSendAtNextBlock(retrying, {
         chainId: MAINNET,
@@ -957,10 +987,6 @@ describe("next-block simulation", () => {
         options: { triggerBlock: TRIGGER },
       });
       expect(simulation.baseBlock).toBe(101);
-      // 8 reads on attempt 1, then one read each on attempts 2 and 3.
-      expect(
-        node.methods.filter((m) => m === "eth_getBlockByNumber")
-      ).toHaveLength(10);
     });
 
     it("predicts from the trigger block after missed slots, without the stale-head error", async () => {
@@ -995,7 +1021,7 @@ describe("next-block simulation", () => {
       expect((error as Error).message).toContain(
         "the RPC has not reached the block that triggered the run"
       );
-      expect((error as Error).message).toContain("choose another RPC");
+      expect((error as Error).message).toContain("use another RPC");
       expect(isNonRetryableError(error)).toBe(false);
       expect(failedNextBlockCheck(error)).toBe(true);
       expect(node.seen).toHaveLength(0);
