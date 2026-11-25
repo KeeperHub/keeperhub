@@ -40,8 +40,11 @@ vi.mock("../../lib/phantom.js", () => ({
 }));
 
 const PUSH_INTERVAL_MS = 150;
-const SOCKET_MAX_AGE_MS = 1500;
+// Half a push interval off a multiple of it, so the recycle never races a push
+// that the server counts as delivered but the closing socket drops.
+const SOCKET_MAX_AGE_MS = 1575;
 const GET_BLOCK_TIMEOUT_MS = 300;
+const GET_BLOCK_RETRY_DELAY_MS = 100;
 // Answered getBlock requests on the first connection before it starts
 // withholding them.
 const ANSWERED_ON_FIRST_CONNECTION = 3;
@@ -288,6 +291,7 @@ describe("ChainMonitor: socket closes while getBlock is in flight", () => {
     vi.stubEnv("MONITOR_RECREATE_TIMEOUT_MS", "120000");
     vi.stubEnv("PRIMARY_PROBE_INTERVAL_MS", "600000");
     vi.stubEnv("GET_BLOCK_TIMEOUT_MS", String(GET_BLOCK_TIMEOUT_MS));
+    vi.stubEnv("GET_BLOCK_RETRY_DELAY_MS", String(GET_BLOCK_RETRY_DELAY_MS));
     const silence = (): void => {
       // keep test output readable; assertions do not depend on logs
     };
@@ -399,7 +403,8 @@ describe("ChainMonitor: socket closes while getBlock is in flight", () => {
     await sleep(SOCKET_MAX_AGE_MS);
 
     expect(lag(server)).toBeLessThanOrEqual(MAX_LAG_BLOCKS);
-    expect(Math.max(...dispatchedBlocks())).toBeGreaterThan(stuckAt + 1);
+    // The withheld block itself is retried and dispatched, not skipped.
+    expect(dispatchedBlocks()).toContain(stuckAt + 1);
   }, 15_000);
 
   it("upstream close: an unanswered getBlock fallback times out and the monitor keeps dispatching", async () => {
@@ -423,6 +428,7 @@ describe("ChainMonitor: socket closes while getBlock is in flight", () => {
     await sleep(SOCKET_MAX_AGE_MS);
 
     expect(lag(server)).toBeLessThanOrEqual(MAX_LAG_BLOCKS);
-    expect(Math.max(...dispatchedBlocks())).toBeGreaterThan(stuckAt + 1);
+    // The withheld block itself is retried and dispatched, not skipped.
+    expect(dispatchedBlocks()).toContain(stuckAt + 1);
   }, 15_000);
 });
