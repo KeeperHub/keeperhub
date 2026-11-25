@@ -9,6 +9,7 @@ import { simulateV1Params, txForNode } from "@/lib/execute/node-call";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import type { RpcOperationType, RpcProviderManager } from "@/lib/rpc/providers";
 import { scrubRpcUrls } from "@/lib/rpc/scrub-rpc-urls";
+import { sleep } from "@/lib/sleep";
 import { getErrorMessage } from "@/lib/utils";
 import {
   MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
@@ -757,18 +758,23 @@ function predictedTime(
 
 const currentSeconds = (): number => Math.floor(Date.now() / MS_PER_SECOND);
 
-// Re-reads of latest while the RPC is behind the trigger block, before the
-// temporary error that hands over to the usual retry and failover.
+// Reads of latest one check may spend waiting for the trigger block, across
+// all retry attempts; once spent, a lagging RPC fails the attempt at once.
 const TRIGGER_WAIT_READS = 8;
 const TRIGGER_WAIT_MS = 250;
+
+type TriggerWait = { reads: number };
+
+const newTriggerWait = (): TriggerWait => ({ reads: TRIGGER_WAIT_READS });
 
 // The RPC's latest block, once it has reached the block that triggered the run.
 async function latestReaching(
   provider: ethers.JsonRpcProvider,
   chainId: number,
-  trigger: TriggerBlock | undefined
+  trigger: TriggerBlock | undefined,
+  wait: TriggerWait
 ): Promise<ethers.Block> {
-  for (let read = 1; ; read++) {
+  for (;;) {
     const latest = await provider.getBlock("latest");
     if (!latest) {
       throw new Error(
@@ -778,21 +784,28 @@ async function latestReaching(
     if (trigger?.chainId !== chainId || latest.number >= trigger.number) {
       return latest;
     }
-    if (read === TRIGGER_WAIT_READS) {
+    wait.reads -= 1;
+    if (wait.reads <= 0) {
       throw new Error(
-        `Next-block simulation: the RPC has not reached the block that triggered the run (${RETRY_HINT})`
+        `Next-block simulation: the RPC has not reached the block that triggered the run (${RETRY_HINT}). If this keeps happening, the RPC lags the network: choose another RPC for it (see "RPC Preferences" in the API docs), or set "Simulate at" back to "Latest block".`
       );
     }
-    await new Promise((resolve) => setTimeout(resolve, TRIGGER_WAIT_MS));
+    await sleep(TRIGGER_WAIT_MS);
   }
 }
 
 async function prepare(
   provider: ethers.JsonRpcProvider,
   chainId: number,
-  options: NextBlockSimulationOptions
+  options: NextBlockSimulationOptions,
+  wait: TriggerWait
 ): Promise<Prepared> {
-  const latest = await latestReaching(provider, chainId, options.triggerBlock);
+  const latest = await latestReaching(
+    provider,
+    chainId,
+    options.triggerBlock,
+    wait
+  );
   const { basedOn } = options;
   // Reuse an earlier check's prediction only while nothing moved, so a wait
   // never sends on a stale check.
@@ -865,8 +878,14 @@ export async function simulateCallAtNextBlock(
   rpcManager: RpcProviderManager,
   request: NextBlockRequest & { operationType?: RpcOperationType }
 ): Promise<{ returnData: string; simulation: NextBlockSimulation }> {
+  const wait = newTriggerWait();
   return await rpcManager.executeWithFailover(async (provider) => {
-    const prepared = await prepare(provider, request.chainId, request.options);
+    const prepared = await prepare(
+      provider,
+      request.chainId,
+      request.options,
+      wait
+    );
     const tx = txForNode(request.tx.from, request.tx);
     const v1 = await trySimulateV1(provider, tx, prepared);
     if (v1) {
@@ -899,8 +918,14 @@ async function sendCheck(
   rpcManager: RpcProviderManager,
   request: NextBlockRequest
 ): Promise<{ gasEstimate: bigint; simulation: NextBlockSimulation }> {
+  const wait = newTriggerWait();
   return await rpcManager.executeWithFailover(async (provider) => {
-    const base = await prepare(provider, request.chainId, request.options);
+    const base = await prepare(
+      provider,
+      request.chainId,
+      request.options,
+      wait
+    );
     const tx = txForNode(request.tx.from, request.tx);
     const estimating: Prepared = {
       ...base,

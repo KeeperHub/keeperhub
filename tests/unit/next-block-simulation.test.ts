@@ -2,6 +2,8 @@ import { ethers } from "ethers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+// The wait for the trigger block sleeps between reads; no real time in tests.
+vi.mock("@/lib/sleep", () => ({ sleep: () => Promise.resolve() }));
 
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { isNonRetryableError } from "@/lib/rpc/providers/error-classification";
@@ -926,12 +928,74 @@ describe("next-block simulation", () => {
       expect(simulation.baseBlock).toBe(101);
     });
 
+    it("spends one read budget per check across retry attempts", async () => {
+      // Retries like executeWithFailover: up to 3 attempts on one RPC.
+      const retrying = {
+        executeWithFailover: async <T>(
+          operation: (p: ethers.JsonRpcProvider) => Promise<T>
+        ): Promise<T> => {
+          let lastError: unknown;
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              return await operation(provider);
+            } catch (error) {
+              lastError = error;
+            }
+          }
+          throw lastError;
+        },
+      } as unknown as RpcProviderManager;
+      const triggerTime = node.latestTimestamp + SLOT;
+      setClock(triggerTime + 5);
+      node.unlockAt = triggerTime + SLOT;
+      // Behind for the whole budget (8 reads) and the second attempt's read.
+      lagFor(9);
+
+      const { simulation } = await simulateSendAtNextBlock(retrying, {
+        chainId: MAINNET,
+        tx: RUN_TX,
+        options: { triggerBlock: TRIGGER },
+      });
+      expect(simulation.baseBlock).toBe(101);
+      // 8 reads on attempt 1, then one read each on attempts 2 and 3.
+      expect(
+        node.methods.filter((m) => m === "eth_getBlockByNumber")
+      ).toHaveLength(10);
+    });
+
+    it("predicts from the trigger block after missed slots, without the stale-head error", async () => {
+      // Five missed slots: the trigger block is 72 s after latest, and the
+      // step runs 3 s into its slot; latest alone would be 75 s old.
+      const handle = node.handle.bind(node);
+      let reads = 0;
+      node.handle = (method, params) => {
+        if (method === "eth_getBlockByNumber" && params[0] === "latest") {
+          reads += 1;
+          if (reads === 2) {
+            node.latestNumber = 101;
+            node.latestTimestamp += 6 * SLOT;
+          }
+        }
+        return handle(method, params);
+      };
+      const triggerTime = node.latestTimestamp + 6 * SLOT;
+      setClock(triggerTime + 3);
+      node.unlockAt = triggerTime + SLOT;
+
+      const { simulation } = await sendWith(TRIGGER);
+      expect(simulation).toMatchObject({
+        baseBlock: 101,
+        assumedTimestamp: triggerTime + SLOT,
+      });
+    });
+
     it("fails as a temporary error, before any call, when the RPC never catches up", async () => {
       setClock(node.latestTimestamp + 1);
       const error = await sendWith(TRIGGER).catch((e: unknown) => e);
       expect((error as Error).message).toContain(
         "the RPC has not reached the block that triggered the run"
       );
+      expect((error as Error).message).toContain("choose another RPC");
       expect(isNonRetryableError(error)).toBe(false);
       expect(failedNextBlockCheck(error)).toBe(true);
       expect(node.seen).toHaveLength(0);

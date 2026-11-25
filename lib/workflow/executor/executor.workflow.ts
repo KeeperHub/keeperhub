@@ -3823,14 +3823,10 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
 
         // Build context for logging
         const triggerContext: StepContext = {
-          executionId,
+          ...runStepContext,
           nodeId: node.id,
           nodeName: getNodeName(node),
           nodeType: node.data.type,
-          organizationId,
-          orgSlug: organizationSlug,
-          createdBy,
-          workflowId,
         };
 
         // Execute trigger step (handles logging internally)
