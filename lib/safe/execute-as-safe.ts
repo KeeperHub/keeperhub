@@ -3,6 +3,7 @@ import "server-only";
 import { ethers } from "ethers";
 import { startSafeTxMetrics } from "@/lib/metrics/instrumentation/safe";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { buildExecTransactionCalldata } from "@/lib/safe/allowance-module";
 import { buildExecTransactionWithRoleCalldata } from "@/lib/safe/zodiac-roles";
 import { getErrorMessage } from "@/lib/utils";
@@ -146,8 +147,8 @@ function throwIfReverted(
  * `waitForTransaction` rejects only when a timeout is supplied and otherwise
  * waits on the block listener forever, so without one a Safe-routed
  * transaction that never mines pins the step until the reaper takes it and
- * records no hash. Supplying the timeout is also what makes the null return
- * below reachable -- at confirms = 1 ethers resolves null only on timeout.
+ * records no hash. At confirms = 1 ethers rejects with TIMEOUT when the
+ * timeout passes; it never resolves null.
  */
 async function waitForSafeReceipt(
   broadcast: BroadcastResult,
@@ -157,25 +158,47 @@ async function waitForSafeReceipt(
 ): Promise<ethers.TransactionReceipt> {
   const receipt =
     broadcast.preExistingReceipt ??
-    (await readSafeReceipt(broadcast, rpcManager, label));
+    (await readSafeReceipt(broadcast, rpcManager, label, report.route));
   report.included = true;
   return receipt;
+}
+
+/** Where a relay manager's send went: the relay, or the strict: false fallback. */
+function relaySendProvider(
+  rpcManager: RpcProviderManager,
+  route: SendReport["route"]
+): ethers.JsonRpcProvider {
+  return (
+    (route === "public" ? rpcManager.getFallbackProvider() : null) ??
+    rpcManager.getProvider()
+  );
 }
 
 async function readSafeReceipt(
   broadcast: BroadcastResult,
   rpcManager: RpcProviderManager,
-  label: string
+  label: string,
+  route: SendReport["route"]
 ): Promise<ethers.TransactionReceipt> {
   let receipt: ethers.TransactionReceipt | null;
   try {
-    receipt = await rpcManager.executeWithFailover(
-      (p) => p.waitForTransaction(broadcast.hash, 1, RECEIPT_WAIT_TIMEOUT_MS),
-      "read"
-    );
+    // A relay can hold a send for about 25 blocks: wait outside the per-try timeout.
+    receipt = rpcManager.hasPrivateRelayPrimary()
+      ? await relaySendProvider(rpcManager, route).waitForTransaction(
+          broadcast.hash,
+          1,
+          RECEIPT_WAIT_TIMEOUT_MS
+        )
+      : await rpcManager.executeWithFailover(
+          (p) =>
+            p.waitForTransaction(broadcast.hash, 1, RECEIPT_WAIT_TIMEOUT_MS),
+          "read"
+        );
   } catch (error) {
     throw new OnChainPendingError({
-      message: `${label} sent but receipt could not be read (${getErrorMessage(error)})`,
+      message: ethers.isError(error, "TIMEOUT")
+        ? `${label} sent but not included within ${RECEIPT_WAIT_TIMEOUT_MS / 60_000} minutes`
+        : `${label} sent but receipt could not be read (${redactAllUrls(getErrorMessage(error))})`,
       transactionHash: broadcast.hash,
     });
   }

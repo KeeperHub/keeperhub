@@ -222,6 +222,35 @@ describe("/api/chains route", () => {
       expect(chain).toHaveProperty("isEnabled", true);
     });
 
+    it("reports a private relay only with the flag on and a relay URL set, never the URL", async () => {
+      const withRelay = (
+        usePrivateMempoolRpc: boolean,
+        defaultPrivateRpcUrl: string | null
+      ) => ({
+        ...mockChains.ethereumWithExplorer,
+        chain: {
+          ...mockChains.ethereumWithExplorer.chain,
+          usePrivateMempoolRpc,
+          defaultPrivateRpcUrl,
+        },
+      });
+      mockQueryResult = [
+        withRelay(true, "https://relay.example"),
+        withRelay(true, null),
+        withRelay(false, "https://relay.example"),
+      ];
+
+      const data = await (await GET(createRequest("/api/chains"))).json();
+
+      expect(
+        data.map(
+          (chain: { usePrivateMempoolRpc: boolean }) =>
+            chain.usePrivateMempoolRpc
+        )
+      ).toEqual([true, false, false]);
+      expect(JSON.stringify(data)).not.toContain("relay.example");
+    });
+
     it("should handle chains without explorer config", async () => {
       mockQueryResult = [mockChains.solanaNoExplorer];
 

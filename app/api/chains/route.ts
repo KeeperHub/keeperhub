@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { chains, explorerConfigs } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { chainHasPrivateRelay } from "@/lib/web3/send-mode";
 
 export type ChainResponse = {
   id: string;
@@ -16,7 +17,7 @@ export type ChainResponse = {
   explorerApiType: string | null;
   isTestnet: boolean;
   isEnabled: boolean;
-  // KEEP-137: whether the chain supports private mempool routing (Flashbots Protect)
+  // The chain has a private relay: the flag on and a relay URL set (never sent).
   usePrivateMempoolRpc: boolean;
 };
 
@@ -63,7 +64,7 @@ export async function GET(request: Request) {
       explorerApiType: explorer?.explorerApiType ?? null,
       isTestnet: chain.isTestnet ?? false,
       isEnabled: chain.isEnabled ?? true,
-      usePrivateMempoolRpc: chain.usePrivateMempoolRpc ?? false,
+      usePrivateMempoolRpc: chainHasPrivateRelay(chain),
     }));
 
     return NextResponse.json(response);

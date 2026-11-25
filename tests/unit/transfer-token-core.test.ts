@@ -81,6 +81,7 @@ const mockExecuteWithFailover = vi.fn();
 vi.mock("@/lib/rpc/provider-factory", () => ({
   getRpcProvider: vi.fn().mockImplementation(() =>
     Promise.resolve({
+      hasPrivateRelayPrimary: () => false,
       resolveActiveRpcUrl: vi.fn().mockResolvedValue("https://rpc.example.com"),
       executeWithFailover: mockExecuteWithFailover,
     })
@@ -332,6 +333,57 @@ describe("transfer-token-core - executedCall on direct send", () => {
         functionName: "transfer",
       })
     );
+  });
+});
+
+describe("transfer-token-core - Send as", () => {
+  it("selects the relay from sendMode alone", async () => {
+    const { getRpcProvider } = await import("@/lib/rpc/provider-factory");
+    vi.mocked(getRpcProvider).mockClear();
+    await transferTokenCore(makeInput({ sendMode: "private-relay" }));
+    expect(vi.mocked(getRpcProvider).mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+    });
+  });
+
+  it("asks for the relay only where there is one for an old non-boolean flag", async () => {
+    const { getRpcProvider } = await import("@/lib/rpc/provider-factory");
+    vi.mocked(getRpcProvider).mockClear();
+    await transferTokenCore(
+      makeInput({ usePrivateMempool: 1 as unknown as boolean })
+    );
+    expect(vi.mocked(getRpcProvider).mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+      relayOptional: true,
+    });
+  });
+
+  it("refuses an unknown sendMode as a user error before any RPC", async () => {
+    const { getRpcProvider } = await import("@/lib/rpc/provider-factory");
+    vi.mocked(getRpcProvider).mockClear();
+    const result = await transferTokenCore(
+      makeInput({ sendMode: "private_relay" })
+    );
+    expect(result).toMatchObject({ success: false, errorClass: "user" });
+    expect(vi.mocked(getRpcProvider)).not.toHaveBeenCalled();
+  });
+
+  it("fails as a user error when the chain has no relay", async () => {
+    const { getRpcProvider } = await import("@/lib/rpc/provider-factory");
+    const { PrivateRelayUnavailableError } = await import(
+      "@/lib/rpc/providers/transport-error"
+    );
+    vi.mocked(getRpcProvider).mockRejectedValueOnce(
+      new PrivateRelayUnavailableError("no relay")
+    );
+    const result = await transferTokenCore(
+      makeInput({ sendMode: "private-relay" })
+    );
+    expect(result).toMatchObject({
+      success: false,
+      error: "no relay",
+      errorClass: "user",
+    });
   });
 });
 

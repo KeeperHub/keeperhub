@@ -9,6 +9,7 @@ import { isBoolLiteral, isToggleValue, switchRefusal } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
 import { cutText } from "@/lib/utils/cut-text";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
+import { SEND_MODE_KEY } from "@/lib/web3/send-mode";
 import {
   checkSolidityValue,
   HEX_BYTES_PATTERN,
@@ -1221,7 +1222,11 @@ export function validateWorkflowActionConfigs(
         });
       }
 
-      const fieldCheck = validateFieldValue(field, value);
+      // Send as is checked by validateSendModeForSave, with one issue per node.
+      const fieldCheck: FieldCheckResult =
+        field.key === SEND_MODE_KEY
+          ? { valid: true }
+          : validateFieldValue(field, value);
       if (!fieldCheck.valid) {
         // A check that explains itself is quoted in the summary, as a
         // cross-field issue is.

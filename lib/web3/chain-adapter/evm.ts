@@ -56,9 +56,13 @@ type LatestBlock = { number: number; gasLimit: bigint };
 const MISSING_BLOCK_PATTERN =
   /header not found|unknown block|block (?:\S+ )?not found|beyond the current head/i;
 
+type Probe = (overrides: PreflightOverrides) => Promise<unknown>;
+
 /**
  * The Latest-mode revert check, run under a fixed Gas Limit when one is set,
  * all at one pinned block.
+ * - Through a private relay, which refuses eth_call, the probe is
+ *   eth_estimateGas; with no fixed limit the send's own estimate is the check.
  * - Above the network's limit (block gas limit, 2^24 on Ethereum L1): too high.
  * - A capped failure with out-of-gas evidence (revert data, or the node's
  *   out-of-gas words) is retried uncapped (a real revert throws there), then
@@ -67,13 +71,17 @@ const MISSING_BLOCK_PATTERN =
  */
 async function preflightCall(
   fixed: bigint | undefined,
-  call: (overrides: PreflightOverrides) => Promise<unknown>,
+  probes: { relay: boolean; call: Probe; estimate: Probe },
   check: {
     chainId: number;
     latestBlock: () => Promise<LatestBlock>;
     contractInterface?: ethers.Interface;
   }
 ): Promise<void> {
+  if (probes.relay && fixed === undefined) {
+    return;
+  }
+  const call = probes.relay ? probes.estimate : probes.call;
   if (fixed === undefined) {
     await call({});
     return;
@@ -114,6 +122,23 @@ async function preflightCall(
   }
 }
 
+/** eth_estimateGas at a pinned block; ethers' estimateGas drops the tag. */
+async function estimateGasAt(
+  p: ethers.Provider,
+  tx: ethers.TransactionRequest,
+  blockTag: number | undefined
+): Promise<bigint> {
+  if (blockTag === undefined || !(p instanceof ethers.JsonRpcApiProvider)) {
+    return p.estimateGas(tx);
+  }
+  return BigInt(
+    await p.send("eth_estimateGas", [
+      p.getRpcTransaction(tx),
+      ethers.toQuantity(blockTag),
+    ])
+  );
+}
+
 export class EvmChainAdapter implements ChainAdapter {
   readonly chainFamily = "evm";
   private readonly chainId: number;
@@ -149,16 +174,26 @@ export class EvmChainAdapter implements ChainAdapter {
     };
 
     const fixed = fixedGasLimit(options.gasOverrides.gasLimitOverride);
+    const run = <T>(
+      probe: (p: ethers.Provider, tx: ethers.TransactionRequest) => Promise<T>,
+      overrides: PreflightOverrides
+    ): Promise<T> => {
+      const preflightTx = { ...baseTx, from: walletAddress, ...overrides };
+      return options.rpcManager
+        ? options.rpcManager.executeWithFailover(
+            (rpcProvider) => probe(rpcProvider, preflightTx),
+            "preflight"
+          )
+        : probe(provider, preflightTx);
+    };
+    const estimate = ({ blockTag, ...rest }: PreflightOverrides) =>
+      run((p, tx) => estimateGasAt(p, tx, blockTag), rest);
     await preflightCall(
       fixed,
-      (overrides) => {
-        const preflightTx = { ...baseTx, from: walletAddress, ...overrides };
-        return options.rpcManager
-          ? options.rpcManager.executeWithFailover(
-              (rpcProvider) => rpcProvider.call(preflightTx),
-              "preflight"
-            )
-          : provider.call(preflightTx);
+      {
+        relay: options.rpcManager?.hasPrivateRelayPrimary() === true,
+        call: (overrides) => run((p, tx) => p.call(tx), overrides),
+        estimate,
       },
       {
         chainId: this.chainId,
@@ -171,13 +206,7 @@ export class EvmChainAdapter implements ChainAdapter {
     // A fixed Gas Limit is used as is, so no estimate is needed.
     let estimatedGas: bigint | undefined;
     if (fixed === undefined) {
-      estimatedGas = options.rpcManager
-        ? await options.rpcManager.executeWithFailover(
-            (rpcProvider) =>
-              rpcProvider.estimateGas({ ...baseTx, from: walletAddress }),
-            "preflight"
-          )
-        : await provider.estimateGas({ ...baseTx, from: walletAddress });
+      estimatedGas = await estimate({});
     }
 
     const gasConfig = await this.gasStrategy.getGasConfig(
@@ -290,22 +319,50 @@ export class EvmChainAdapter implements ChainAdapter {
         ...(request.value ? { value: request.value } : {}),
         from: signerAddress,
       };
+      const run = <T>(
+        probe: (
+          method: ethers.BaseContractMethod,
+          p: ethers.Provider
+        ) => Promise<T>
+      ): Promise<T> =>
+        options.rpcManager
+          ? options.rpcManager.executeWithFailover(
+              (rpcProvider) =>
+                probe(
+                  new ethers.Contract(
+                    request.contractAddress,
+                    request.abi,
+                    rpcProvider
+                  ).getFunction(request.functionKey),
+                  rpcProvider
+                ),
+              "preflight"
+            )
+          : probe(fn, provider);
+      const estimate = ({ blockTag, ...rest }: PreflightOverrides) =>
+        run(async (method, p) => {
+          const overrides = { ...callOverrides, ...rest };
+          if (blockTag === undefined) {
+            return method.estimateGas(...request.args, overrides);
+          }
+          const tx = await method.populateTransaction(
+            ...request.args,
+            overrides
+          );
+          return estimateGasAt(p, tx, blockTag);
+        });
       await preflightCall(
         fixed,
-        (overrides) => {
-          const preflightOverrides = { ...callOverrides, ...overrides };
-          return options.rpcManager
-            ? options.rpcManager.executeWithFailover((rpcProvider) => {
-                const readContract = new ethers.Contract(
-                  request.contractAddress,
-                  request.abi,
-                  rpcProvider
-                );
-                return readContract
-                  .getFunction(request.functionKey)
-                  .staticCall(...request.args, preflightOverrides);
-              }, "preflight")
-            : fn.staticCall(...request.args, preflightOverrides);
+        {
+          relay: options.rpcManager?.hasPrivateRelayPrimary() === true,
+          call: (overrides) =>
+            run((method) =>
+              method.staticCall(...request.args, {
+                ...callOverrides,
+                ...overrides,
+              })
+            ),
+          estimate,
         },
         {
           chainId: this.chainId,
@@ -316,18 +373,7 @@ export class EvmChainAdapter implements ChainAdapter {
 
       // A fixed Gas Limit is used as is, so no estimate is needed.
       if (fixed === undefined) {
-        estimatedGas = options.rpcManager
-          ? await options.rpcManager.executeWithFailover((rpcProvider) => {
-              const readContract = new ethers.Contract(
-                request.contractAddress,
-                request.abi,
-                rpcProvider
-              );
-              return readContract
-                .getFunction(request.functionKey)
-                .estimateGas(...request.args, callOverrides);
-            }, "preflight")
-          : await fn.estimateGas(...request.args, callOverrides);
+        estimatedGas = await estimate({});
       }
     }
 

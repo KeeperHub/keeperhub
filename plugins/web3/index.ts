@@ -8,13 +8,13 @@ import {
   checkErrorOutput,
   contractAddressField,
   evmNetworkField,
-  evmPrivateNetworkField,
   executedCallArgsOutput,
   executedCallContractAddressOutput,
   executedCallFromOutput,
   executedCallRevertedOutput,
   executedCallSponsoredOutput,
   readFailOnErrorField,
+  sendModeField,
   receiptChainIdOutput,
   simulateAtField,
   simulateTimestampOffsetField,
@@ -63,7 +63,7 @@ const SEND_ROUTE_OUTPUT_FIELDS = [
   {
     field: "route",
     description:
-      "How KeeperHub routed the send: public (the public mempool, through your RPC or the chain's default RPC), private-relay (accepted by the relay of the network's (Flashbots) entry) or sponsored (gas-sponsored). Through a Safe, the route of the transaction your wallet sent to the Safe. Absent when nothing was sent; more values may be added.",
+      "How KeeperHub routed the send: public (the public mempool, through your RPC or the chain's default RPC), private-relay (accepted by the private relay chosen in Send as) or sponsored (gas-sponsored). Through a Safe, the route of the transaction your wallet sent to the Safe. Absent when nothing was sent; more values may be added.",
   },
   {
     field: "included",
@@ -328,10 +328,10 @@ const web3Plugin: IntegrationPlugin = {
           type: "chain-select",
           // Native transfer works on any native-token chain (EVM + Solana),
           // so no chainType filter here - the adapter routes by chainId.
-          showPrivateVariants: true,
           placeholder: "Select network",
           required: true,
         },
+        sendModeField(),
         {
           key: "amount",
           label: "Amount",
@@ -402,7 +402,8 @@ const web3Plugin: IntegrationPlugin = {
         transferErrorOutput(),
       ],
       configFields: [
-        evmPrivateNetworkField(),
+        evmNetworkField(),
+        sendModeField(),
         tokenConfigField(),
         amountField(),
         {
@@ -1868,7 +1869,8 @@ const web3Plugin: IntegrationPlugin = {
         ...SEND_ROUTE_OUTPUT_FIELDS,
       ],
       configFields: [
-        evmPrivateNetworkField(),
+        evmNetworkField(),
+        sendModeField("web3/batch-write-contract"),
         {
           key: "calls",
           label: "Calls",
@@ -1976,7 +1978,8 @@ const web3Plugin: IntegrationPlugin = {
         },
       ],
       configFields: [
-        evmPrivateNetworkField(),
+        evmNetworkField(),
+        sendModeField(),
         tokenConfigField(),
         {
           key: "spenderAddress",
@@ -2171,7 +2174,8 @@ const web3Plugin: IntegrationPlugin = {
         simulationOutput(),
       ],
       configFields: [
-        evmPrivateNetworkField(),
+        evmNetworkField(),
+        sendModeField(),
         contractAddressField(),
         {
           key: "abi",

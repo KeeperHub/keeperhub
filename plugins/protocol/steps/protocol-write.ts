@@ -40,7 +40,8 @@ type ProtocolWriteInput = StepInput & {
   gasLimitMultiplier?: string;
   // Per-node "Sponsor gas" toggle. Forwarded to writeContractCore.
   sponsorGas?: boolean;
-  // KEEP-137: Private mempool routing (Flashbots Protect). Forwarded to writeContractCore.
+  // "Send as" and its legacy flag, both forwarded to writeContractCore.
+  sendMode?: string;
   usePrivateMempool?: boolean;
   strict?: boolean;
   _protocolMeta?: string;
@@ -373,6 +374,7 @@ export async function protocolWriteStep(
       payerParam: payerParamOf(protocolAction),
       gasLimitMultiplier: input.gasLimitMultiplier,
       sponsorGas: input.sponsorGas,
+      sendMode: input.sendMode,
       usePrivateMempool: input.usePrivateMempool,
       strict: input.strict,
       _context: input._context

@@ -33,8 +33,8 @@ import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 import {
   formatActionConfigValidationResponse,
-  validateWorkflowActionConfigs,
 } from "@/lib/workflow/validation/action-config";
+import { validateWorkflowNodesForSave } from "@/lib/workflow/validation/save";
 function createDefaultNodes() {
   const triggerId = nanoid();
   const actionId = nanoid();
@@ -241,7 +241,7 @@ export async function POST(request: Request) {
       return featureGuard.response;
     }
 
-    const actionConfigValidation = validateWorkflowActionConfigs(nodes);
+    const actionConfigValidation = await validateWorkflowNodesForSave(nodes);
     if (!actionConfigValidation.valid) {
       return NextResponse.json(
         formatActionConfigValidationResponse(actionConfigValidation),

@@ -34,7 +34,9 @@ import {
 } from "@/lib/web3/wallet-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { readRpcFor } from "@/lib/rpc/read-provider";
 import { rpcRelayErrorClass } from "@/lib/rpc/providers";
+import { getSendRpcProvider } from "@/lib/rpc/send-provider";
 import {
   describeAmbiguousKey,
   resolveAbiFunction,
@@ -108,8 +110,9 @@ export type WriteContractCoreInput = {
   // route outright so the transaction is signed and paid for by the org's own
   // wallet. Resolved through resolveSponsorGas so an unset value stays on.
   sponsorGas?: boolean;
-  // KEEP-137: Route the write transaction through the chain's private mempool
-  // RPC (e.g. Flashbots Protect). Skips Turnkey-sponsored execution -- mutually exclusive.
+  // "Send as" ("transaction" | "private-relay") and its legacy flag, read
+  // together by usesPrivateRelay. A private relay send is never sponsored.
+  sendMode?: string;
   usePrivateMempool?: boolean;
   // When true and usePrivateMempool is true, failing to reach the private RPC
   // does NOT fall back to the public mempool. Ignored when usePrivateMempool is false.
@@ -282,8 +285,6 @@ async function writeContractCoreImpl(
     priorityFeeGwei,
     maxFeeGwei,
     sponsorGas,
-    usePrivateMempool,
-    strict,
     web3Connection,
     errorAbis,
     payerParam,
@@ -291,6 +292,8 @@ async function writeContractCoreImpl(
     simulateTimestampOffsetSec,
     _context,
   } = input;
+  // Set from the Send as keys once the RPC is resolved.
+  let usePrivateMempool: boolean;
 
   if (!abiFunction || abiFunction.trim() === "") {
     logUserError(
@@ -444,16 +447,15 @@ async function writeContractCoreImpl(
   let chainId: number;
   let rpcUrl: string;
   let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
+  // Reads with no transaction data (the trace); the send stays on rpcManager.
+  let readRpc: Awaited<ReturnType<typeof getRpcProvider>>;
   try {
     chainId = getChainIdFromNetwork(network);
 
-    rpcManager = await getRpcProvider({
-      chainId,
-      userId,
-      usePrivateMempool,
-      strict,
-    });
+    ({ rpcManager, relayRequested: usePrivateMempool } =
+      await getSendRpcProvider(input, { chainId, userId }));
     rpcUrl = await rpcManager.resolveActiveRpcUrl();
+    readRpc = await readRpcFor(rpcManager, { chainId, userId });
   } catch (error) {
     logUserError(
       ErrorCategory.VALIDATION,
@@ -467,9 +469,8 @@ async function writeContractCoreImpl(
     return {
       success: false,
       error: getErrorMessage(error),
-      // A private-mempool relay that never answered is not our platform
-      // failing; everything else here (unknown chain, disabled chain, our own
-      // endpoints) is.
+      // A relay that never answered is not our platform failing, and a
+      // missing relay is the step's setting; everything else here is ours.
       errorClass: rpcRelayErrorClass(error) ?? ExecutionErrorType.SYSTEM,
     };
   }
@@ -682,7 +683,7 @@ async function writeContractCoreImpl(
           : "";
 
         const executedCall = await traceExecutedCallWithFailover(
-          rpcManager,
+          readRpc,
           sponsoredResult.transactionHash,
           { target: contractAddress, abi: parsedAbi, functionName: abiFunction }
         );
@@ -876,7 +877,7 @@ async function writeContractCoreImpl(
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
       const transactionLink = await adapter.getTransactionUrl(receipt.hash);
 
-      const executedCall = await traceExecutedCallWithFailover(rpcManager, receipt.hash, {
+      const executedCall = await traceExecutedCallWithFailover(readRpc, receipt.hash, {
         target: contractAddress,
         abi: parsedAbi,
         functionName: abiFunction,

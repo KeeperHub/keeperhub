@@ -96,9 +96,10 @@ export type GetProviderOptions = {
   chainId: number;
   userId?: string;
   onFailoverStateChange?: FailoverStateChangeCallback;
-  // KEEP-137: Private mempool routing (Flashbots Protect). See resolveRpcConfig.
+  // Private relay routing; see resolveRpcConfig.
   usePrivateMempool?: boolean;
   strict?: boolean;
+  relayOptional?: boolean;
 };
 
 export type GetSolanaProviderOptions = {
@@ -118,8 +119,14 @@ export type GetSolanaProviderOptions = {
 export async function getRpcProvider(
   options: GetProviderOptions
 ): Promise<RpcProviderManager> {
-  const { chainId, userId, onFailoverStateChange, usePrivateMempool, strict } =
-    options;
+  const {
+    chainId,
+    userId,
+    onFailoverStateChange,
+    usePrivateMempool,
+    strict,
+    relayOptional,
+  } = options;
 
   if (isSolanaChain(chainId)) {
     throw new Error(
@@ -128,7 +135,11 @@ export async function getRpcProvider(
   }
 
   const [config, metricsCollector, failoverCallback] = await Promise.all([
-    resolveRpcConfig(chainId, userId, { usePrivateMempool, strict }),
+    resolveRpcConfig(chainId, userId, {
+      usePrivateMempool,
+      strict,
+      relayOptional,
+    }),
     getEvmMetricsCollector(),
     getFailoverCallback(),
   ]);

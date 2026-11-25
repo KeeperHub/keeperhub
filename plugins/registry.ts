@@ -97,10 +97,9 @@ export type ActionConfigFieldBase = {
   // Default value
   defaultValue?: string;
 
-  // For chain-select on write actions: also render private mempool variants
-  // (e.g., "Ethereum Mainnet (Flashbots)") for chains with usePrivateMempoolRpc=true.
-  // On selection, sets both the network field AND config.usePrivateMempool.
-  showPrivateVariants?: boolean;
+  // Draw the field with this registered editor renderer instead of its
+  // type's own; the type still decides validation and schemas.
+  editorRenderer?: "send-mode";
 
   // Example value for AI prompt generation
   example?: string;

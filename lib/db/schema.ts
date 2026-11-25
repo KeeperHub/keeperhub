@@ -1383,6 +1383,8 @@ export const chains = pgTable(
     // write transactions for this chain can be routed through defaultPrivateRpcUrl
     // instead of the public mempool.
     usePrivateMempoolRpc: boolean("use_private_mempool_rpc").default(false),
+    // The Send as copy (private, no gas on revert) assumes the default Protect
+    // URL: no useMempool, canRevert, hint=calldata or /fast.
     defaultPrivateRpcUrl: text("default_private_rpc_url"),
     // Extra public RPCs every signed write is also sent to, at the same time.
     // Set from CHAIN_RPC_CONFIG (broadcastRpcUrls) by the chain seed.

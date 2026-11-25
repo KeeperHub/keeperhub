@@ -26,6 +26,7 @@ import {
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
 import { rpcRelayErrorClass } from "@/lib/rpc/providers";
+import { getSendRpcProvider } from "@/lib/rpc/send-provider";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getErrorMessage } from "@/lib/utils";
 import { generateId } from "@/lib/utils/id";
@@ -78,8 +79,9 @@ export type TransferFundsCoreInput = {
   // route outright so the transaction is signed and paid for by the org's own
   // wallet. Resolved through resolveSponsorGas so an unset value stays on.
   sponsorGas?: boolean;
-  // KEEP-137: Route through private mempool (Flashbots Protect). Skips
-  // Turnkey-sponsored execution -- mutually exclusive.
+  // "Send as" ("transaction" | "private-relay") and its legacy flag, read
+  // together by usesPrivateRelay. A private relay send is never sponsored.
+  sendMode?: string;
   usePrivateMempool?: boolean;
   // Strict mode: when true and usePrivateMempool is true, failing to reach the
   // private RPC does NOT fall back to the public mempool. Ignored otherwise.
@@ -145,11 +147,11 @@ async function transferFundsCoreImpl(
     recipientAddress,
     gasLimitMultiplier,
     sponsorGas,
-    usePrivateMempool,
-    strict,
     web3Connection,
     _context,
   } = input;
+  // Set from the Send as keys once the RPC is resolved.
+  let usePrivateMempool: boolean;
 
   const { multiplierOverride, gasLimitOverride } =
     resolveGasLimitOverrides(gasLimitMultiplier);
@@ -229,12 +231,8 @@ async function transferFundsCoreImpl(
   let rpcUrl: string;
   let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
   try {
-    rpcManager = await getRpcProvider({
-      chainId,
-      userId,
-      usePrivateMempool,
-      strict,
-    });
+    ({ rpcManager, relayRequested: usePrivateMempool } =
+      await getSendRpcProvider(input, { chainId, userId }));
     rpcUrl = await rpcManager.resolveActiveRpcUrl();
   } catch (error) {
     logUserError(

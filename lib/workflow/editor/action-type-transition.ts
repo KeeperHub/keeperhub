@@ -9,6 +9,12 @@
  * validation evaluate immediately. `_protocolMeta` is always refreshed since
  * stale metadata would call the wrong contract function at runtime.
  */
+import {
+  SEND_MODE,
+  sendModeUpdates,
+  unsupportedSendMode,
+} from "@/lib/web3/send-mode";
+import { editorSendModeOn } from "@/lib/workflow/editor/send-mode-chains";
 import { isKnownConfigKeyForAction } from "@/lib/workflow/validation/action-config";
 import { findActionById, flattenConfigFields } from "@/plugins/registry";
 
@@ -24,6 +30,15 @@ export function buildConfigForActionTypeChange(
       continue;
     }
     if (isKnownConfigKeyForAction(actionType, key)) {
+      pruned[key] = value;
+    }
+  }
+
+  // Send as a new step cannot use (e.g. Write Contract's private relay on
+  // Batch Write Contract) goes back to Normal rather than failing every run.
+  const mode = editorSendModeOn(pruned, "network");
+  if (mode !== SEND_MODE.TRANSACTION && unsupportedSendMode(actionType, mode)) {
+    for (const [key, value] of sendModeUpdates(SEND_MODE.TRANSACTION)) {
       pruned[key] = value;
     }
   }

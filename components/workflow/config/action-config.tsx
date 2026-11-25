@@ -1206,11 +1206,8 @@ export function ActionConfig({
   };
 
   // Adapter for plugin config components that expect (key, value: unknown).
-  // KEEP-137: do NOT coerce to string -- booleans (e.g. usePrivateMempool)
-  // must remain booleans so downstream truthy checks work and the ChainSelect
-  // private-mempool variant resolves correctly. String() turns `false` into
-  // the truthy string "false", which both breaks the UI (Select stuck on the
-  // Flashbots variant) and the runtime (private-mempool routing stays on).
+  // Do NOT coerce to string: booleans (e.g. usePrivateMempool, sponsorGas)
+  // must remain booleans. String() turns `false` into the truthy "false".
   const handlePluginUpdateConfig = (key: string, value: unknown): void => {
     if (
       typeof value === "string" ||

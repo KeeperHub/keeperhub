@@ -273,6 +273,7 @@ function makeInput(
 function setupMocks(): void {
   mockGetChainIdFromNetwork.mockReturnValue(1);
   mockGetRpcProvider.mockResolvedValue({
+    hasPrivateRelayPrimary: () => false,
     resolveActiveRpcUrl: () => Promise.resolve("https://rpc.example.com"),
     executeWithFailover: (fn: (p: unknown) => unknown) => fn({} as any),
   });
@@ -372,6 +373,60 @@ describe("approve-token - validation", () => {
     if (!result.success) {
       expect(result.error).toContain("Execution ID or organization ID");
     }
+  });
+});
+
+describe("approve-token - Send as", () => {
+  it("selects the relay from sendMode alone", async () => {
+    setupMocks();
+    await approveTokenCore(
+      makeInput({ amount: "100", sendMode: "private-relay" })
+    );
+    expect(mockGetRpcProvider.mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+    });
+  });
+
+  it("asks for the relay only where there is one for an old non-boolean flag", async () => {
+    setupMocks();
+    await approveTokenCore(
+      makeInput({
+        amount: "100",
+        usePrivateMempool: "yes" as unknown as boolean,
+      })
+    );
+    expect(mockGetRpcProvider.mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+      relayOptional: true,
+    });
+  });
+
+  it("refuses an unknown sendMode as a user error before any RPC", async () => {
+    setupMocks();
+    mockGetRpcProvider.mockClear();
+    const result = await approveTokenCore(
+      makeInput({ amount: "100", sendMode: " private-relay" })
+    );
+    expect(result).toMatchObject({ success: false, errorClass: "user" });
+    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+  });
+
+  it("fails as a user error when the chain has no relay", async () => {
+    setupMocks();
+    const { PrivateRelayUnavailableError } = await import(
+      "@/lib/rpc/providers/transport-error"
+    );
+    mockGetRpcProvider.mockRejectedValueOnce(
+      new PrivateRelayUnavailableError("no relay")
+    );
+    const result = await approveTokenCore(
+      makeInput({ amount: "100", sendMode: "private-relay" })
+    );
+    expect(result).toMatchObject({
+      success: false,
+      error: "no relay",
+      errorClass: "user",
+    });
   });
 });
 

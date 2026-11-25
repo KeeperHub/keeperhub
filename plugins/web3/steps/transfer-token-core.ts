@@ -26,7 +26,9 @@ import {
 } from "@/lib/web3/wallet-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { readRpcFor } from "@/lib/rpc/read-provider";
 import { rpcRelayErrorClass } from "@/lib/rpc/providers";
+import { getSendRpcProvider } from "@/lib/rpc/send-provider";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getErrorMessage } from "@/lib/utils";
 import { generateId } from "@/lib/utils/id";
@@ -77,8 +79,9 @@ export type TransferTokenCoreInput = {
   // route outright so the transaction is signed and paid for by the org's own
   // wallet. Resolved through resolveSponsorGas so an unset value stays on.
   sponsorGas?: boolean;
-  // KEEP-137: Route through private mempool (Flashbots Protect). Skips
-  // Turnkey-sponsored execution -- mutually exclusive.
+  // "Send as" ("transaction" | "private-relay") and its legacy flag, read
+  // together by usesPrivateRelay. A private relay send is never sponsored.
+  sendMode?: string;
   usePrivateMempool?: boolean;
   // Strict mode: when true and usePrivateMempool is true, failing to reach the
   // private RPC does NOT fall back to the public mempool. Ignored otherwise.
@@ -257,11 +260,11 @@ async function transferTokenCoreImpl(
     amount,
     gasLimitMultiplier,
     sponsorGas,
-    usePrivateMempool,
-    strict,
     web3Connection,
     _context,
   } = input;
+  // Set from the Send as keys once the RPC is resolved.
+  let usePrivateMempool: boolean;
 
   const { multiplierOverride, gasLimitOverride } =
     resolveGasLimitOverrides(gasLimitMultiplier);
@@ -350,14 +353,13 @@ async function transferTokenCoreImpl(
   // Resolve RPC config (with failover)
   let rpcUrl: string;
   let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
+  // Token lookups and the trace; the send and its checks stay on rpcManager.
+  let readRpc: Awaited<ReturnType<typeof getRpcProvider>>;
   try {
-    rpcManager = await getRpcProvider({
-      chainId,
-      userId,
-      usePrivateMempool,
-      strict,
-    });
+    ({ rpcManager, relayRequested: usePrivateMempool } =
+      await getSendRpcProvider(input, { chainId, userId }));
     rpcUrl = await rpcManager.resolveActiveRpcUrl();
+    readRpc = await readRpcFor(rpcManager, { chainId, userId });
   } catch (error) {
     logUserError(
       ErrorCategory.VALIDATION,
@@ -446,7 +448,7 @@ async function transferTokenCoreImpl(
     })
   ) {
     try {
-      const [decimals, symbol] = await rpcManager.executeWithFailover(
+      const [decimals, symbol] = await readRpc.executeWithFailover(
         (p) => {
           const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, p);
           return Promise.all([
@@ -460,7 +462,7 @@ async function transferTokenCoreImpl(
       // Identity for every ordinary ERC-20. Refuses rather than guessing: an
       // unscaled fallback here would move several times the intended amount.
       const multiplier = await resolveForWrite(
-        (op) => rpcManager.executeWithFailover(op),
+        (op) => readRpc.executeWithFailover(op),
         chainId,
         tokenAddress
       );
@@ -497,7 +499,7 @@ async function transferTokenCoreImpl(
           : "";
 
         const executedCall = await traceExecutedCallWithFailover(
-          rpcManager,
+          readRpc,
           sponsoredResult.transactionHash,
           { target: tokenAddress, abi: ERC20_ABI, functionName: "transfer" }
         );
@@ -594,7 +596,7 @@ async function transferTokenCoreImpl(
       let symbol: string;
       let balance: bigint;
       try {
-        [decimals, symbol, balance] = await rpcManager.executeWithFailover((p) => {
+        [decimals, symbol, balance] = await readRpc.executeWithFailover((p) => {
           const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, p);
           return Promise.all([
             tokenContract.decimals() as Promise<bigint>,
@@ -617,7 +619,7 @@ async function transferTokenCoreImpl(
       // compared. Identity for every ordinary ERC-20. Refuses rather than
       // guessing: an unscaled fallback would move several times the ask.
       const multiplierResult = await resolveForWrite(
-        (op) => rpcManager.executeWithFailover(op),
+        (op) => readRpc.executeWithFailover(op),
         chainId,
         tokenAddress
       );
@@ -726,7 +728,7 @@ async function transferTokenCoreImpl(
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
       const transactionLink = await adapter.getTransactionUrl(receipt.hash);
 
-      const executedCall = await traceExecutedCallWithFailover(rpcManager, receipt.hash, {
+      const executedCall = await traceExecutedCallWithFailover(readRpc, receipt.hash, {
         target: tokenAddress,
         abi: ERC20_ABI,
         functionName: "transfer",

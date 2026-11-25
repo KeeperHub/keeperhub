@@ -21,11 +21,19 @@ import { memo, useState } from "react";
 import { Node } from "@/components/ai-elements/node";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { NodeLabel } from "@/components/workflow/nodes/node-label";
+import { useSendModeChains } from "@/lib/hooks/use-send-mode-chains";
 import {
   integrationIdsAtom,
   integrationsLoadedAtom,
 } from "@/lib/integrations-store";
 import { cn } from "@/lib/utils";
+import { sendModeOption } from "@/lib/web3/send-mode";
+import {
+  editorSendMode,
+  hasSendModeField,
+  sendModeWarning,
+  sendsPrivately,
+} from "@/lib/workflow/editor/send-mode-editor";
 import {
   CONDITION_SOURCE_HANDLES,
   FOR_EACH_SOURCE_HANDLES,
@@ -220,6 +228,53 @@ const ModelBadge = ({ model }: { model: string }) => {
   );
 };
 
+// 0.6875rem is --ds-text-xs (11px), the badge size in the design.
+const SEND_MODE_BADGE_CLASS =
+  "rounded border px-1.5 py-0.5 font-semibold text-[0.6875rem] uppercase leading-none tracking-wide";
+
+// How a write node sends (e.g. PRIVATE), or a warning when Send as stops it.
+export const SendModeBadge = ({
+  config,
+}: {
+  config: Record<string, unknown>;
+}) => {
+  // Re-renders once the chain list is known (an old flag depends on it).
+  useSendModeChains();
+  const warning = sendModeWarning(config);
+  if (warning?.fails) {
+    return (
+      <span
+        className={cn(
+          SEND_MODE_BADGE_CLASS,
+          "inline-flex items-center border-destructive/40 bg-destructive/5 text-destructive"
+        )}
+        data-testid="send-mode-warning-badge"
+        title={warning.text}
+      >
+        <AlertTriangle aria-hidden="true" className="size-3" />
+        <span className="sr-only">Send as: {warning.text}</span>
+      </span>
+    );
+  }
+  const option = sendModeOption(editorSendMode(config));
+  if (!(sendsPrivately(config) && option.badge)) {
+    return null;
+  }
+  return (
+    <span
+      className={cn(
+        SEND_MODE_BADGE_CLASS,
+        "border-border bg-secondary text-secondary-foreground"
+      )}
+      data-testid="send-mode-badge"
+      title={`Send as: ${option.label}`}
+    >
+      {option.badge}
+      <span className="sr-only">, sent as {option.label}</span>
+    </span>
+  );
+};
+
 // Generated image thumbnail with zoom dialog
 function GeneratedImageThumbnail({ base64 }: { base64: string }) {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -411,6 +466,9 @@ export const ActionNode = memo(({ data, selected, id }: ActionNodeProps) => {
           title={displayTitle}
         />
         {aiModel && <ModelBadge model={aiModel} />}
+        {data.config && hasSendModeField(data.config) && (
+          <SendModeBadge config={data.config} />
+        )}
       </div>
     </Node>
   );

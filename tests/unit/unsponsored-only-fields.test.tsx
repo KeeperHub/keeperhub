@@ -206,8 +206,8 @@ describe("applyConfigUpdate: fees locked while sponsored", () => {
     });
   });
 
-  it("judges a batch of updates from its start: picking a Flashbots network keeps fees", () => {
-    // The network select sends `network`, then `usePrivateMempool`, in one tick.
+  it("judges a batch of updates from its start: a midway sponsored state keeps fees", () => {
+    // Several writes in one tick, as Send as and a network change send them.
     const optimism = { actionType: WRITE, network: "10", ...FEES };
     const first = applyConfigUpdate(null, optimism, "network", "1");
     const second = applyConfigUpdate(
@@ -224,7 +224,7 @@ describe("applyConfigUpdate: fees locked while sponsored", () => {
   });
 
   it("clears when the network select moves to a sponsored network in one batch", () => {
-    // Optimism -> Base: `network`, then `usePrivateMempool: false`.
+    // Optimism -> Base, then the Send as keys back to Normal.
     const optimism = { actionType: WRITE, network: "10", ...FEES };
     const first = applyConfigUpdate(null, optimism, "network", "8453");
     const second = applyConfigUpdate(
@@ -296,7 +296,7 @@ describe("applyConfigUpdate: fees locked while sponsored", () => {
       "Priority Fee and Max Fee cleared: Sponsor gas is on, so the sponsor sets the fees. Turn off Sponsor gas to set them again."
     );
 
-    // Flashbots: midway sponsored, final not: nothing cleared at the end.
+    // Private relay: midway sponsored, final not: nothing cleared at the end.
     const optimism = { actionType: WRITE, network: "10", ...FEES };
     const first = applyConfigUpdate(null, optimism, "network", "1");
     expect(first.batch.cleared.length).toBeGreaterThan(0);

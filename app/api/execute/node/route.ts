@@ -21,6 +21,7 @@ import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
 import { getErrorMessage } from "@/lib/utils";
+import { validateSendModeForSave } from "@/lib/workflow/validation/send-mode";
 import type { ResolvedAction } from "../_lib/action-resolver";
 import { resolveAction } from "../_lib/action-resolver";
 import type { ApiKeyContext } from "../_lib/auth";
@@ -803,6 +804,27 @@ export async function POST(request: Request): Promise<NextResponse> {
   );
   if (featureGuard.blocked) {
     return featureGuard.response;
+  }
+
+  // The same Send as checks a workflow save runs; the step itself refuses a
+  // relay request on a chain without one.
+  const sendModeCheck = await validateSendModeForSave([
+    {
+      id: "direct",
+      data: {
+        config: {
+          ...config,
+          actionType: resolved.actionType,
+          network: effectiveNetwork,
+        },
+      },
+    },
+  ]);
+  if (!sendModeCheck.valid) {
+    return NextResponse.json(
+      { error: sendModeCheck.issues[0].message },
+      { status: HttpStatus.BAD_REQUEST }
+    );
   }
 
   if (effectiveIntegrationId) {

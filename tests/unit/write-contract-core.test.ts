@@ -130,6 +130,7 @@ vi.mock("@/lib/rpc/network-utils", () => ({
 
 vi.mock("@/lib/rpc/provider-factory", () => ({
   getRpcProvider: vi.fn().mockResolvedValue({
+    hasPrivateRelayPrimary: () => false,
     resolveActiveRpcUrl: vi.fn().mockResolvedValue("https://rpc.example.com"),
   }),
 }));
@@ -310,7 +311,10 @@ import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
-import { RpcRelayTransportError } from "@/lib/rpc/providers/transport-error";
+import {
+  PrivateRelayUnavailableError,
+  RpcRelayTransportError,
+} from "@/lib/rpc/providers/transport-error";
 import {
   executeContractCallAsRole,
   executeContractCallAsSafe,
@@ -800,6 +804,38 @@ describe("writeContractCore simulateAt next-block", () => {
     expect(options?.simulation).toEqual({});
   });
 
+  it("selects the relay from sendMode alone", async () => {
+    await writeContractCore({ ...baseInput, sendMode: "private-relay" });
+
+    expect(vi.mocked(getRpcProvider).mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+    });
+  });
+
+  it("asks for the relay only where there is one for an old non-boolean flag", async () => {
+    await writeContractCore({
+      ...baseInput,
+      usePrivateMempool: "false" as unknown as boolean,
+    });
+    expect(vi.mocked(getRpcProvider).mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+      relayOptional: true,
+    });
+  });
+
+  it("refuses an unknown sendMode as a user error before any RPC", async () => {
+    vi.mocked(getRpcProvider).mockClear();
+    const result = await writeContractCore({
+      ...baseInput,
+      sendMode: "Private-Relay",
+    });
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+    });
+    expect(vi.mocked(getRpcProvider)).not.toHaveBeenCalled();
+  });
+
   it("simulates on the private-mempool relay, the same RPC that sends", async () => {
     await writeContractCore({
       ...baseInput,
@@ -962,6 +998,7 @@ describe("writeContractCore RPC resolution failure", () => {
 
   it("forwards the relay's fault domain when the private-mempool endpoint never answered", async () => {
     vi.mocked(getRpcProvider).mockResolvedValueOnce({
+      hasPrivateRelayPrimary: () => false,
       resolveActiveRpcUrl: vi
         .fn()
         .mockRejectedValue(
@@ -982,6 +1019,27 @@ describe("writeContractCore RPC resolution failure", () => {
     if (!result.success) {
       expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
     }
+  });
+
+  it("classifies a missing private relay as a USER error", async () => {
+    vi.mocked(getRpcProvider).mockRejectedValueOnce(
+      new PrivateRelayUnavailableError("no relay")
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      sendMode: "private-relay",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: "no relay",
+      errorClass: ExecutionErrorType.USER,
+    });
   });
 });
 

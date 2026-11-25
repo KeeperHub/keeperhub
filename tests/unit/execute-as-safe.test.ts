@@ -124,6 +124,7 @@ function makeRpcManager(receipt: ethers.TransactionReceipt | null): {
     executeWithFailover: (
       op: (p: ethers.JsonRpcProvider) => Promise<unknown>
     ) => op(provider),
+    hasPrivateRelayPrimary: () => false,
   } as unknown as ExecuteAsSafeOptions["rpcManager"];
   return {
     options: { chainId: 1, workflowId: "wf-1", rpcManager },
@@ -144,6 +145,7 @@ function makeExhaustedRpcManager(reason: Error): ExecuteAsSafeOptions {
     executeWithFailover: (
       op: (p: ethers.JsonRpcProvider) => Promise<unknown>
     ) => op(provider),
+    hasPrivateRelayPrimary: () => false,
   } as unknown as ExecuteAsSafeOptions["rpcManager"];
   return { chainId: 1, workflowId: "wf-1", rpcManager };
 }
@@ -353,6 +355,99 @@ describe.each(cases)("%s", (_name, invoke) => {
     const args = mocks.getGasConfig.mock.calls[0];
     expect(args?.[6]).toBe(feeOverrides.priorityFeeOverride);
     expect(args?.[7]).toBe(feeOverrides.maxFeeOverride);
+  });
+
+  describe("through the private relay", () => {
+    function relayOptions(
+      relayWait: ReturnType<typeof vi.fn>,
+      fallbackWait?: ReturnType<typeof vi.fn>
+    ): ExecuteAsSafeOptions {
+      const relay = {
+        estimateGas: vi.fn().mockResolvedValue(BigInt(50_000)),
+        waitForTransaction: relayWait,
+      };
+      const rpcManager = {
+        executeWithFailover: (op: (p: unknown) => Promise<unknown>) =>
+          op(relay),
+        hasPrivateRelayPrimary: () => true,
+        getProvider: () => relay,
+        getFallbackProvider: () =>
+          fallbackWait ? { waitForTransaction: fallbackWait } : null,
+      } as unknown as ExecuteAsSafeOptions["rpcManager"];
+      return { chainId: 1, workflowId: "wf-1", rpcManager, sendReport: {} };
+    }
+
+    it("waits on the relay for as long as it can hold the send", async () => {
+      const relayWait = vi.fn().mockResolvedValue(makeReceipt(1));
+
+      await invoke(relayOptions(relayWait));
+
+      expect(relayWait).toHaveBeenCalledWith(TX_HASH, 1, 600_000);
+      expect(mocks.confirmTransaction).toHaveBeenCalledWith(TX_HASH);
+    });
+
+    it("reports a send not included by the deadline as pending, with the hash", async () => {
+      const relayWait = vi
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error("timeout"), { code: "TIMEOUT" })
+        );
+
+      const error: unknown = await invoke(relayOptions(relayWait)).catch(
+        (e: unknown) => e
+      );
+
+      expect(isOnChainPendingError(error)).toBe(true);
+      expect(broadcastTransactionHash(error)).toBe(TX_HASH);
+      expect((error as Error).message).toContain(
+        "sent but not included within 10 minutes"
+      );
+      expect((error as Error).message).not.toContain("could not be read");
+    });
+
+    it("reads a send that went out through the strict: false fallback there", async () => {
+      mocks.submitSigned.mockImplementation(
+        (
+          _s: unknown,
+          _tx: unknown,
+          _m: unknown,
+          report: { route?: string }
+        ) => {
+          report.route = "public";
+          return Promise.resolve({
+            hash: TX_HASH,
+            response: { hash: TX_HASH },
+          });
+        }
+      );
+      const relayWait = vi.fn(() => new Promise(() => undefined));
+      const fallbackWait = vi.fn().mockResolvedValue(makeReceipt(1));
+
+      await invoke(relayOptions(relayWait, fallbackWait));
+
+      expect(fallbackWait).toHaveBeenCalledWith(TX_HASH, 1, 600_000);
+      expect(relayWait).not.toHaveBeenCalled();
+      expect(mocks.confirmTransaction).toHaveBeenCalledWith(TX_HASH);
+    });
+
+    it("keeps the relay URL out of the error", async () => {
+      const relayWait = vi
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            'server response 403 (url="https://relay.example/fast?key=secret")'
+          )
+        );
+
+      const error: unknown = await invoke(relayOptions(relayWait)).catch(
+        (e: unknown) => e
+      );
+
+      expect(isOnChainPendingError(error)).toBe(true);
+      expect((error as Error).message).toContain("could not be read");
+      expect((error as Error).message).not.toContain("relay.example");
+      expect((error as Error).message).not.toContain("secret");
+    });
   });
 });
 

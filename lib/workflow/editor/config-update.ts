@@ -16,8 +16,8 @@ export function isFieldEditable(
 }
 
 /**
- * Field updates made in the same tick (the network select sends `network`,
- * then `usePrivateMempool`): `start` is the config before the first of them,
+ * Field updates made in the same tick (Send as sends `sendMode`, then
+ * `usePrivateMempool`): `start` is the config before the first of them,
  * `merged` every value set since, before any clearing, and `cleared` the
  * labels of the fields the batch so far clears.
  */
@@ -57,8 +57,8 @@ function withFields(config: Record<string, unknown>): {
 /**
  * One editor field update. `prepare` reshapes the merged config (an action
  * type change prunes and seeds it). The whole batch is judged from its start,
- * so a midway state (sponsored after `network`, not after
- * `usePrivateMempool`) cannot clear fees the final config still shows.
+ * so a midway state (sponsored after one write, not after the next) cannot
+ * clear fees the final config still shows.
  */
 export function applyConfigUpdate(
   batch: ConfigUpdateBatch | null,

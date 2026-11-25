@@ -5,11 +5,15 @@ const {
   mockGetOrgContext,
   mockValidateWorkflowIntegrations,
   mockSelect,
+  mockUpdate,
+  mockInsert,
 } = vi.hoisted(() => ({
   mockGetSession: vi.fn(),
   mockGetOrgContext: vi.fn(),
   mockValidateWorkflowIntegrations: vi.fn(),
   mockSelect: vi.fn(),
+  mockUpdate: vi.fn(),
+  mockInsert: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -23,8 +27,8 @@ vi.mock("@/lib/auth", () => ({
 vi.mock("@/lib/db", () => ({
   db: {
     select: mockSelect,
-    update: vi.fn(),
-    insert: vi.fn(),
+    update: mockUpdate,
+    insert: mockInsert,
   },
 }));
 
@@ -79,6 +83,10 @@ describe("POST /api/workflows/current action config validation", () => {
   });
 
   it("rejects invalid action config before autosaving current workflow", async () => {
+    // The stored draft is read first: its unchanged nodes are let through.
+    mockSelect.mockReturnValueOnce({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }),
+    });
     const response = await POST(
       request([
         {
@@ -99,7 +107,8 @@ describe("POST /api/workflows/current action config validation", () => {
 
     expect(response.status).toBe(422);
     expect(body.error).toBe("INVALID_ACTION_CONFIG");
-    expect(mockSelect).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled();
   });
 
   it("validates integration ownership after sanitizer moves misplaced config fields", async () => {

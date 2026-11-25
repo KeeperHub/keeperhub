@@ -66,7 +66,8 @@ vi.mock("@/lib/rpc/provider-factory", () => ({
 }));
 
 const mockRpcRelayErrorClass = vi.fn();
-vi.mock("@/lib/rpc/providers", () => ({
+vi.mock("@/lib/rpc/providers", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/providers")>()),
   rpcRelayErrorClass: (...args: unknown[]) => mockRpcRelayErrorClass(...args),
 }));
 
@@ -274,6 +275,7 @@ beforeEach(() => {
   mockGetRpcProvider.mockResolvedValue({
     resolveActiveRpcUrl: () => Promise.resolve("https://rpc.example.com"),
     executeWithFailover: (fn: (provider: unknown) => unknown) => fn({}),
+    hasPrivateRelayPrimary: () => false,
   });
   mockResolveSignerForNode.mockResolvedValue({
     kind: "eoa",
@@ -360,6 +362,43 @@ describe("batch-write-contract - happy path", () => {
     expect(result.results?.[0].success).toBe(true);
     expect(result.results?.[1].success).toBe(true);
     expect(result.results?.[1].result).toBe(true);
+  });
+});
+
+describe("batch-write-contract - old (Flashbots) relay configs", () => {
+  it.each([{ usePrivateMempool: true }, { sendMode: "private-relay" }])(
+    "fails %j before any RPC, as a user error",
+    async (relay) => {
+      mockGetRpcProvider.mockClear();
+      const { rpcRelayErrorClass } = await vi.importActual<
+        typeof import("@/lib/rpc/providers")
+      >("@/lib/rpc/providers");
+      mockRpcRelayErrorClass.mockImplementationOnce(rpcRelayErrorClass);
+      const result = await batchWriteContractCore(baseInput(relay));
+      expect(result).toMatchObject({
+        success: false,
+        errorClass: "user",
+      });
+      expect((result as { error: string }).error).toContain(
+        "Batch Write Contract can't send through the private relay yet"
+      );
+      expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    }
+  );
+});
+
+describe("batch-write-contract - old non-boolean flag", () => {
+  it("asks for the relay only where there is one, and sends when there is none", async () => {
+    mockGetRpcProvider.mockClear();
+    mockStaticCall.mockResolvedValueOnce([SUCCESS_RETURN, SUCCESS_RETURN]);
+    const result = await batchWriteContractCore(
+      baseInput({ usePrivateMempool: "false" as unknown as boolean })
+    );
+    expect(mockGetRpcProvider.mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+      relayOptional: true,
+    });
+    expect(result.success).toBe(true);
   });
 });
 

@@ -8,7 +8,10 @@ import {
   isTransportFailure,
   RPC_CONNECTION_ERROR_PATTERNS,
 } from "./error-classification";
-import { RpcRelayTransportError } from "./transport-error";
+import {
+  PrivateRelayUnavailableError,
+  RpcRelayTransportError,
+} from "./transport-error";
 
 export {
   isNonRetryableError,
@@ -16,7 +19,12 @@ export {
   NON_RETRYABLE_ERROR_CODES,
   RPC_CONNECTION_ERROR_PATTERNS,
 } from "./error-classification";
-export { RpcRelayTransportError, rpcRelayErrorClass } from "./transport-error";
+export {
+  InvalidSendModeError,
+  PrivateRelayUnavailableError,
+  RpcRelayTransportError,
+  rpcRelayErrorClass,
+} from "./transport-error";
 
 /**
  * Interface for metrics collection - allows dependency injection
@@ -325,6 +333,52 @@ export class RpcProviderManager {
     return this.config.primaryIsPrivateRelay;
   }
 
+  // Relay URL and chain pairs seen to match, and mismatches already alerted on.
+  private static readonly verifiedRelayChains = new Set<string>();
+  private static readonly reportedRelayChains = new Set<string>();
+
+  /**
+   * Refuses a relay that serves another chain (e.g. a mainnet relay set for a
+   * testnet), checked once per relay and chain. An unreachable relay is left
+   * to fail on the send itself.
+   */
+  async assertPrivateRelayChain(): Promise<void> {
+    const key = `${this.config.primaryRpcUrl}|${this.config.chainId}`;
+    if (
+      !this.config.primaryIsPrivateRelay ||
+      RpcProviderManager.verifiedRelayChains.has(key)
+    ) {
+      return;
+    }
+    let served: bigint;
+    try {
+      served = BigInt(
+        (await this.getPrimaryProvider().send("eth_chainId", [])) as string
+      );
+    } catch {
+      // Safe to skip: a transaction signed for this chain is invalid on any
+      // other (EIP-155); a public fallback exists only under strict: false.
+      return;
+    }
+    if (served !== BigInt(this.config.chainId)) {
+      const error = new PrivateRelayUnavailableError(
+        `This step is set to Send as: Private relay, but the private relay for ${this.config.chainName} is misconfigured (it serves chain ${served}, not ${this.config.chainId}). Set Send as to Normal transaction (sendMode: "transaction") only if a public send is acceptable.`
+      );
+      // Our configuration is wrong: alert once per relay and chain; the step fails as USER.
+      if (!RpcProviderManager.reportedRelayChains.has(key)) {
+        RpcProviderManager.reportedRelayChains.add(key);
+        logSystemError(
+          ErrorCategory.CONFIGURATION,
+          "[RPC] Private relay serves another chain",
+          error,
+          { chain_id: String(this.config.chainId) }
+        );
+      }
+      throw error;
+    }
+    RpcProviderManager.verifiedRelayChains.add(key);
+  }
+
   /** Extra public broadcast URLs. The one place that keeps them off relay sends. */
   getBroadcastRpcUrls(): readonly string[] {
     return this.config.primaryIsPrivateRelay
@@ -486,8 +540,12 @@ export class RpcProviderManager {
             new_state: "fallback",
           }
         );
-        this.isUsingFallback = true;
-        this.onFailoverStateChange?.(this.config.chainName, true, "failover");
+        // A relay manager tries the relay first on every call: one refused
+        // read must not send later transactions to the public fallback.
+        if (!this.config.primaryIsPrivateRelay) {
+          this.isUsingFallback = true;
+          this.onFailoverStateChange?.(this.config.chainName, true, "failover");
+        }
         return fallbackResult.result as T;
       }
 

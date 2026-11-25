@@ -454,6 +454,110 @@ describe("RpcProviderManager", () => {
       );
     });
 
+    it("keeps trying the relay first after one call fell back (strict: false)", async () => {
+      const manager = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://rpc.flashbots.example.com",
+          fallbackRpcUrl: "https://public.example.com",
+          maxRetries: 1,
+          timeoutMs: 100,
+          chainName: "Ethereum",
+          primaryIsPrivateRelay: true,
+        },
+        metricsCollector,
+      });
+      const seen: unknown[] = [];
+      const operation = vi.fn((provider: unknown) => {
+        seen.push(provider);
+        // The relay refuses the first call (a method it does not allow).
+        return seen.length === 1
+          ? Promise.reject(makeServerError(403))
+          : Promise.resolve("ok");
+      });
+
+      await manager.executeWithFailover(operation);
+      await manager.executeWithFailover(operation);
+
+      expect(seen[1]).not.toBe(seen[0]);
+      expect(seen[2]).toBe(seen[0]);
+      expect(manager.isCurrentlyUsingFallback()).toBe(false);
+    });
+
+    it("never retries a revert on the relay elsewhere", async () => {
+      const manager = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://rpc.flashbots.example.com",
+          fallbackRpcUrl: "https://public.example.com",
+          maxRetries: 3,
+          timeoutMs: 100,
+          chainName: "Ethereum",
+          primaryIsPrivateRelay: true,
+        },
+        metricsCollector,
+      });
+      const operation = vi
+        .fn()
+        .mockRejectedValue(makeEthersError("CALL_EXCEPTION", "reverted"));
+
+      await expect(manager.executeWithFailover(operation)).rejects.toThrow(
+        "reverted"
+      );
+      expect(operation).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses a relay that serves another chain, checked once", async () => {
+      const manager = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://rpc.flashbots.example.com",
+          chainId: 11_155_111,
+          chainName: "Sepolia",
+          primaryIsPrivateRelay: true,
+        },
+        metricsCollector,
+      });
+      const send = vi.fn().mockResolvedValue("0x1");
+      (
+        manager as unknown as { getPrimaryProvider: () => unknown }
+      ).getPrimaryProvider = () => ({ send });
+
+      vi.mocked(captureException).mockClear();
+      await expect(manager.assertPrivateRelayChain()).rejects.toThrow(
+        'the private relay for Sepolia is misconfigured (it serves chain 1, not 11155111). Set Send as to Normal transaction (sendMode: "transaction") only if a public send is acceptable.'
+      );
+      // Our misconfiguration: alerted as a system error, the step fails as USER.
+      expect(captureException).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "PrivateRelayUnavailableError" }),
+        expect.objectContaining({
+          tags: expect.objectContaining({ error_category: "configuration" }),
+        })
+      );
+      // Refused on every run, alerted once per relay and chain.
+      await expect(manager.assertPrivateRelayChain()).rejects.toThrow(
+        "misconfigured"
+      );
+      expect(captureException).toHaveBeenCalledTimes(1);
+      send.mockResolvedValue("0xaa36a7");
+      await manager.assertPrivateRelayChain();
+      await manager.assertPrivateRelayChain();
+      expect(send).toHaveBeenCalledTimes(3);
+
+      // A later manager for the same relay and chain does not ask again.
+      const next = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://rpc.flashbots.example.com",
+          chainId: 11_155_111,
+          chainName: "Sepolia",
+          primaryIsPrivateRelay: true,
+        },
+        metricsCollector,
+      });
+      (
+        next as unknown as { getPrimaryProvider: () => unknown }
+      ).getPrimaryProvider = () => ({ send });
+      await next.assertPrivateRelayChain();
+      expect(send).toHaveBeenCalledTimes(3);
+    });
+
     it("attributes a private-mempool relay timeout to the relay, not the platform", async () => {
       const manager = new RpcProviderManager({
         config: {

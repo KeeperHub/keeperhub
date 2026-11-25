@@ -207,8 +207,8 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
       if (!selectedNode) {
         return;
       }
-      // KEEP-137: some fields (e.g., ChainSelectField with showPrivateVariants)
-      // fire two synchronous handleUpdateConfig calls. Without pendingConfigRef,
+      // Some fields (e.g. Send as, which also writes usePrivateMempool)
+      // fire several synchronous handleUpdateConfig calls. Without pendingConfigRef,
       // both spread the same stale selectedNode.data.config snapshot and the
       // second call wipes out the first. The ref batches back-to-back updates
       // within a microtask so the second call sees the first's merged config.

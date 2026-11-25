@@ -76,27 +76,43 @@ Returns a bare JSON array of chain objects. The response is not wrapped in a `da
 | `explorerApiType` | string \| null | Explorer API family (e.g. `etherscan`, `blockscout`) |
 | `isTestnet` | boolean | Whether this chain is a testnet |
 | `isEnabled` | boolean | Whether the chain is currently available for workflow execution |
-| `usePrivateMempoolRpc` | boolean | Whether this chain offers a configured private-mempool RPC capability (Flashbots Protect). This does not enable private routing by default. |
+| `usePrivateMempoolRpc` | boolean | Whether this chain offers a configured private relay (Flashbots Protect): `true` only when the relay is switched on and its URL is set. This does not enable private routing by default. |
 
 RPC endpoint URLs (`defaultPrimaryRpc`, `defaultFallbackRpc`) are not returned by this endpoint. They may embed provider API keys and are read server-side only; client code should use the user-configurable RPC preferences API instead.
 
 ### Private Mempool Capability
 
 `usePrivateMempoolRpc` describes a chain capability, not the route used by a
-specific transaction. A `true` value makes the chain's `(Flashbots)` variant
-available on supported workflow write actions. Selecting that variant stores
-`usePrivateMempool: true` in the action configuration. Programmatic workflow
-definitions can set the same field directly.
+specific transaction. A `true` value lists Private relay in the Send as field
+of workflow write actions (see [Send as](/plugins/web3#send-as)). Choosing it
+stores `sendMode: "private-relay"`, together with `usePrivateMempool: true` for
+older readers. Programmatic workflow definitions can send either key; a config
+with `usePrivateMempool: true` and no `sendMode` sends through the relay.
+New values of `usePrivateMempool` must be booleans; an older stored value that
+is not a boolean (such as the text `"false"`) is read as before: through the
+relay on a chain that has one, as a normal send elsewhere. Any `sendMode` other
+than `"transaction"` or `"private-relay"` is refused. When both keys are sent
+they must agree (`true` with `"private-relay"`, `false` with `"transaction"`),
+except on an update that changes only one of them: that key wins, and both are
+saved in agreement. To change the route, set `sendMode`. Saving
+`"private-relay"` on a chain where this value is `false` is refused.
 
 Private routing is strict by default: when the private RPC is available, its
-public fallback is removed. Set `strict: false` only when falling back to the
-public mempool is acceptable. If a stored action requests private routing after
-the chain capability is removed, execution proceeds through the public RPC and
-logs a warning.
+public fallback is removed, and a step that asks for the relay on a chain
+without one fails before anything is sent (for example a stored step whose
+chain later lost its relay, or a network set by a template). Set
+`strict: false` only when falling back to the public mempool is acceptable;
+the send itself can then go to the public mempool. See
+[Send as](/plugins/web3#send-as) for exactly when it falls back. A relay that
+serves another chain is always refused, `strict: false` included. Saving a
+workflow again is allowed while a step's network and Send as are unchanged.
 
 Private-mempool writes are not gas sponsored because Turnkey sponsorship uses
-its own broadcast path. The direct-execution API and MCP execute tools do not
-currently expose the workflow action's `usePrivateMempool` or `strict` fields.
+its own broadcast path. The direct node-execution API takes `sendMode`,
+`usePrivateMempool` and `strict` in a write action's config, runs the same
+Send as checks as a workflow save, and answers 400 with the first problem
+found. The contract-call and transfer execution endpoints and the MCP execute
+tools take no `sendMode` and always send normally.
 
 Neither this chain capability nor a saved workflow setting confirms that a
 specific transaction used a private route. Workflow Write Contract and Batch

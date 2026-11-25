@@ -42,6 +42,7 @@ import {
 } from "@/lib/web3/wallet-helpers";
 import { resolveSignerForNode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
 import { type RpcProviderManager, rpcRelayErrorClass } from "@/lib/rpc/providers";
+import { getSendRpcProvider } from "@/lib/rpc/send-provider";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import {
   preflightGasBalance,
@@ -78,6 +79,7 @@ import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import type { TransactionContext } from "@/lib/web3/transaction-manager";
 import { withNonceSession } from "@/lib/web3/transaction-manager";
 import { generateId } from "@/lib/utils/id";
+import { SEND_MODE, unsupportedSendMode } from "@/lib/web3/send-mode";
 import {
   type AbiOutputParam,
   structureAbiOutputs,
@@ -110,6 +112,9 @@ export type BatchWriteContractCoreInput = {
   // Optional maxFeePerGas ceiling (in gwei). The send is refused when it is
   // below the current base fee.
   maxFeeGwei?: string;
+  // "Send as" ("transaction" | "private-relay") and its legacy flag, read
+  // together by usesPrivateRelay. A private relay send is never sponsored.
+  sendMode?: string;
   usePrivateMempool?: boolean;
   strict?: boolean;
   web3Connection?: string;
@@ -571,8 +576,6 @@ async function batchWriteContractCoreImpl(
     gasLimitMultiplier,
     priorityFeeGwei,
     maxFeeGwei,
-    usePrivateMempool,
-    strict,
     web3Connection,
     simulateAt,
     simulateTimestampOffsetSec,
@@ -628,13 +631,22 @@ async function batchWriteContractCoreImpl(
   let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
   try {
     chainId = getChainIdFromNetwork(network);
-    rpcManager = await getRpcProvider({ chainId, userId, usePrivateMempool, strict });
+    // An old "(Flashbots)" batch that would use the relay is refused before
+    // sending, as the editor says; one without a relay sends publicly.
+    ({ rpcManager } = await getSendRpcProvider(input, {
+      chainId,
+      userId,
+      relayRefusal: unsupportedSendMode(
+        "web3/batch-write-contract",
+        SEND_MODE.PRIVATE_RELAY
+      ),
+    }));
     rpcUrl = await rpcManager.resolveActiveRpcUrl();
   } catch (error) {
     return {
       success: false,
       error: getErrorMessage(error),
-      errorClass: ExecutionErrorType.SYSTEM,
+      errorClass: rpcRelayErrorClass(error) ?? ExecutionErrorType.SYSTEM,
     };
   }
 

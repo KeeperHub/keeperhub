@@ -20,11 +20,33 @@ export class RpcRelayTransportError extends Error {
 }
 
 /**
- * The fault domain an RPC failure declares, or undefined for anything that is
- * not a relay transport failure (the caller keeps its own classification).
+ * The step asked for the private relay and none is usable on its chain (no
+ * relay, or one serving another chain). Refused before anything is sent.
+ */
+export class PrivateRelayUnavailableError extends Error {
+  override readonly name = "PrivateRelayUnavailableError" as const;
+  readonly errorClass = ExecutionErrorType.USER;
+}
+
+/** A `sendMode` that names no mode: refused rather than sent as Normal. */
+export class InvalidSendModeError extends Error {
+  override readonly name = "InvalidSendModeError" as const;
+  readonly errorClass = ExecutionErrorType.USER;
+}
+
+/**
+ * The fault domain a relay or Send as failure declares, or undefined for
+ * anything else (the caller keeps its own classification).
  */
 export function rpcRelayErrorClass(
   error: unknown
 ): ExecutionErrorType | undefined {
-  return error instanceof RpcRelayTransportError ? error.errorClass : undefined;
+  if (
+    error instanceof RpcRelayTransportError ||
+    error instanceof PrivateRelayUnavailableError ||
+    error instanceof InvalidSendModeError
+  ) {
+    return error.errorClass;
+  }
+  return;
 }

@@ -24,11 +24,13 @@
 import { deriveStateMutability } from "@/lib/abi/mutability";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { simulatesNextBlock } from "@/lib/web3/next-block-limits";
+import { SEND_MODE } from "@/lib/web3/send-mode";
 import { isSponsorshipSupported } from "@/lib/web3/sponsorship-chains-meta";
 import {
   isGasSponsorshipEnabled,
   resolveSponsorGas,
 } from "@/lib/web3/sponsorship-feature-flag";
+import { editorSendModeOn } from "@/lib/workflow/editor/send-mode-chains";
 
 export type ShowWhen =
   | { field: string; equals: string }
@@ -86,15 +88,15 @@ function isNetworkSponsorable(network: unknown): boolean {
 /**
  * Whether a write node would take the gas-sponsored route, as far as the
  * editor can tell: the deployment flag, a covered network, the Sponsor gas
- * toggle, and neither a private mempool nor an explicit Safe sender. A
- * "default" connection that org policy resolves to a Safe is not visible here.
+ * toggle, Send as left at Normal, and no explicit Safe sender. A "default"
+ * connection that org policy resolves to a Safe is not visible here.
  */
 export function wouldBeSponsored(
   config: Record<string, unknown>,
   networkField: string
 ): boolean {
   const privateMempool =
-    config.usePrivateMempool === true || config.usePrivateMempool === "true";
+    editorSendModeOn(config, networkField) !== SEND_MODE.TRANSACTION;
   const viaSafe = String(config.web3Connection ?? "").startsWith("safe:");
   return (
     isGasSponsorshipEnabled() &&

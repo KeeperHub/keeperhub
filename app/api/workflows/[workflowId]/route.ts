@@ -47,9 +47,9 @@ import { isReservedSlug } from "@/lib/workflow/reserved-slugs";
 import {
   formatActionConfigValidationResponse,
   hasDraftActionNodes,
-  validateWorkflowActionConfigs,
   type WorkflowNodeForValidation,
 } from "@/lib/workflow/validation/action-config";
+import { validateWorkflowNodesForSave } from "@/lib/workflow/validation/save";
 import { findInvalidTemplateTokens } from "@/lib/workflow/validation/template-syntax";
 import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 async function fetchWorkflowPublicTags(
@@ -621,12 +621,13 @@ export async function PATCH(
 
       // Stray toggle values already stored are let through (keptStrayMatcher),
       // compared in the same sanitized shape as the incoming nodes.
-      const actionConfigValidation = validateWorkflowActionConfigs(
+      const savedNodes = sanitizeWorkflowData(
+        existingWorkflow.nodes ?? [],
+        []
+      ).nodes;
+      const actionConfigValidation = await validateWorkflowNodesForSave(
         updateData.nodes,
-        {
-          savedNodes: sanitizeWorkflowData(existingWorkflow.nodes ?? [], [])
-            .nodes,
-        }
+        { savedNodes }
       );
       if (!actionConfigValidation.valid) {
         return NextResponse.json(

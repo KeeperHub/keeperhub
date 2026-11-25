@@ -222,15 +222,49 @@ describe("config-service", () => {
       expect(result?.fallbackRpcUrl).toBe("https://default-eth.example.com");
     });
 
-    it("does not flag the relay when the chain does not support private mempool", async () => {
+    it("refuses a relay request on a chain without one", async () => {
+      mockChainQuery(mockChain);
+
+      await expect(
+        resolveRpcConfig(1, undefined, { usePrivateMempool: true })
+      ).rejects.toThrow(
+        'This step is set to Send as: Private relay, but Ethereum Mainnet has no private relay. Set Send as to Normal transaction (sendMode: "transaction").'
+      );
+    });
+
+    it("proceeds on the public RPC without a relay only when strict is false", async () => {
       mockChainQuery(mockChain);
 
       const result = await resolveRpcConfig(1, undefined, {
         usePrivateMempool: true,
+        strict: false,
       });
 
       expect(result?.primaryRpcUrl).toBe("https://default-eth.example.com");
       expect(result?.primaryIsPrivateRelay).toBeUndefined();
+    });
+
+    it("uses an optional relay only where the chain has one", async () => {
+      mockChainQuery(mockChain);
+      const plain = await resolveRpcConfig(1, undefined, {
+        usePrivateMempool: true,
+        relayOptional: true,
+      });
+      expect(plain?.primaryRpcUrl).toBe("https://default-eth.example.com");
+      expect(plain?.primaryIsPrivateRelay).toBeUndefined();
+
+      mockChainQuery({
+        ...mockChain,
+        usePrivateMempoolRpc: true,
+        defaultPrivateRpcUrl: "https://rpc.flashbots.example.com",
+      });
+      const relay = await resolveRpcConfig(1, undefined, {
+        usePrivateMempool: true,
+        relayOptional: true,
+      });
+      expect(relay?.primaryIsPrivateRelay).toBe(true);
+      // Still strict on a chain with the relay: no public fallback.
+      expect(relay?.fallbackRpcUrl).toBeUndefined();
     });
 
     it("cleans the stored extra URLs again at run time", async () => {

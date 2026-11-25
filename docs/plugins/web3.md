@@ -616,11 +616,11 @@ Schedule (every 15 min)
 
 Execute state-changing functions on smart contracts using your Turnkey wallet. Requires a connected wallet.
 
-**Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Fail workflow on error (optional, on by default), Gas Limit, Priority Fee, Max Fee, Sponsor gas, Simulate at and Next block timestamp offset (optional, in Advanced section; Sponsor gas only on networks gas sponsorship covers)
+**Inputs:** Network, Send as (only on networks with a private relay; see [Send as](#send-as)), Contract Address, ABI (auto-fetched), Function, Function Arguments, Fail workflow on error (optional, on by default), Gas Limit, Priority Fee, Max Fee, Sponsor gas, Simulate at and Next block timestamp offset (optional, in Advanced section; Sponsor gas only on networks gas sponsorship covers)
 
 **Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total gas cost in wei), `result`, `route`, `included`, `error`, `simulation` (only when Simulate at is Next block)
 
-- `route`: how KeeperHub routed the send. `public` is the public mempool, through your RPC or the chain's default RPC. `private-relay` means the private relay used by the network's "(Flashbots)" entry accepted it. `sponsored` is a gas-sponsored send. Through a Safe, it is the route of the transaction your wallet sent to the Safe. More values may be added.
+- `route`: how KeeperHub routed the send. `public` is the public mempool, through your RPC or the chain's default RPC. `private-relay` means the private relay chosen in [Send as](#send-as) accepted it. `sponsored` is a gas-sponsored send. Through a Safe, it is the route of the transaction your wallet sent to the Safe. More values may be added.
 - `included`: `true` when the transaction was seen in a block (one confirmation, not final). It may have reverted, so check `error` too. `false` when it was sent but is not in a block.
 
 Both fields are absent when nothing was sent, so `included` absent with `error` set means KeeperHub found no sign the transaction was sent. Only Write Contract and Batch Write Contract report them for now.
@@ -635,6 +635,31 @@ A Condition that compares an absent field fails the run. Put `exists` on the fie
 
 **Note:** The `gasUsed` output represents the total transaction cost in wei (gas units × effective gas price), not just the number of gas units consumed.
 
+### Send as
+
+**Send as**, right under Network, picks how the transaction goes out. It is listed only on networks that offer more than a normal send, such as Ethereum with its private relay.
+
+| Send as | What it does |
+|---------|--------------|
+| Normal transaction (default) | Sent to the public mempool. Can be sponsored. A reverted send still pays gas. |
+| Private relay (Flashbots Protect) | Hidden from the public mempool until it lands and not included if it would revert, so a failed send costs no gas. Builders include it when they choose; there is no target block. Never sponsored. |
+
+The same field is on Transfer Native Token, Transfer ERC20 Token, Approve ERC20 Token and every protocol action that writes. Batch Write Contract does not offer Private relay yet: its per-call check needs `eth_call`, which Flashbots Protect refuses. A Batch Write Contract step saved with the old "(Flashbots)" network keeps that setting, but every run of it fails before anything is sent, whatever Simulate at is and with `strict: false` too; the editor shows a warning with a one-click switch to Normal transaction. To keep such calls private, split them into Write Contract steps.
+
+What Flashbots Protect does with a private relay send: it is not sent to the public mempool, so it cannot be front-run or sandwiched from there. Protect shares limited hints (such as the contract, function and event logs) with searchers, who can back-run it, and refunds from that go to your wallet. A transaction not included within about 25 blocks is dropped.
+
+- **Sponsor gas:** only a normal send can be sponsored. Picking Private relay turns Sponsor gas off, and turning Sponsor gas back on sets Send as to Normal transaction. The editor says so each time, with an Undo.
+- **Changing network:** a network without the chosen route sets Send as back to Normal transaction. The editor says so, with an Undo that brings back the network and Send as.
+- **On the canvas:** a write node sent through the private relay shows a PRIVATE badge; Normal sends show none. A step that fails before sending because of Send as (an old Batch Write Contract with the relay, or Private relay on a network without one) shows a warning marker instead; open it for the one-click switch to Normal transaction.
+- **Pre-send check:** Flashbots Protect does not allow `eth_call`, so with Simulate at set to Latest the revert check runs as `eth_estimateGas` on the relay, with your Gas Limit as its gas when one is set, all at one block. The editor's gas estimate under Gas Limit also runs on the relay. Nothing is sent to a public RPC for the check, unless the action's config sets `strict: false` (see below).
+- **No relay, no send:** a step set to Private relay whose network has no relay at run time (for example a network set by a template, or a network that lost its relay) fails before anything is sent (with `strict: false` it sends publicly instead; see below). The editor shows a warning on such a step, with a one-click switch to Normal transaction. A relay that serves another network is refused too, `strict: false` included.
+- **Waiting for it to land:** the step waits up to 10 minutes for the transaction to be included, longer than Protect keeps it. If no receipt is found by then, the step fails with the transaction hash, and the run is held as unconfirmed until the transaction is found on chain or treated as dropped. This fails the run even with Fail workflow on error off, so the next steps do not run on an unknown outcome.
+- **Token lookups:** Transfer ERC20 Token and Approve ERC20 Token read the token's decimals, symbol and your balance with `eth_call`, so through the private relay those reads go to the network's regular RPC. The trace of the mined transaction is read there too. The transaction, its check and its send stay on the relay.
+- **`strict: false`** (API only): when a call to the relay fails for a reason other than a revert (the relay is down, or refuses a method), that call is retried on the network's regular RPC, calldata included, so the send itself can then go to the public mempool; the next call tries the relay again. A step on a network without a relay then sends publicly, with a warning in the logs. A revert is never retried elsewhere.
+- **Earlier workflows:** a step saved with the old "Ethereum (Flashbots)" network entry opens as Ethereum with Send as set to Private relay, and sends exactly as before; Sponsor gas shows as off, since a private relay send is never sponsored. The editor tells you once per step in each browser; the saved config is not changed. If that step's network has no relay (it was moved by a template, or the network lost its relay), it now fails before sending instead of going out publicly, and the editor shows a warning. A config whose `usePrivateMempool` holds something other than `true` or `false` (such as the text "false") reads as before: Private relay on a network with a relay, Normal transaction elsewhere.
+
+Through the API, Send as is the `sendMode` key (see [Direct-API field names](#direct-api-field-names)).
+
 ### Gas settings
 
 The Advanced section has three optional gas settings. Leave them empty to use the network defaults.
@@ -645,7 +670,7 @@ The Advanced section has three optional gas settings. Leave them empty to use th
 | [Priority Fee (gwei)](/wallet-management/gas#priority-fee) | Tip paid to the block builder; a higher tip puts the transaction ahead of others in the same block | Disabled. Turn off Sponsor gas to set it |
 | [Max Fee (gwei)](/wallet-management/gas#max-fee) | Ceiling on the total fee per gas; a cap below the next block's base fee fails the step before sending | Disabled. Turn off Sponsor gas to set it |
 
-Sponsored transactions cannot carry a custom priority fee or max fee, so those two fields stay visible but disabled while the node would be sponsored. They become editable once the node pays its own gas: Sponsor gas off, Simulate at set to Next block, a network that gas sponsorship does not cover, a private mempool, or a Safe. Any change that disables them, such as turning Sponsor gas on or setting Simulate at back to Latest block, clears them, and the editor says so. With either one set, make sure the sending wallet holds enough of the network's native token to pay for gas. See [Custom gas settings and sponsorship](/wallet-management/gas#custom-gas-settings-and-sponsorship) for the full rules.
+Sponsored transactions cannot carry a custom priority fee or max fee, so those two fields stay visible but disabled while the node would be sponsored. They become editable once the node pays its own gas: Sponsor gas off, Simulate at set to Next block, a network that gas sponsorship does not cover, Send as set to Private relay, or a Safe. Any change that disables them, such as turning Sponsor gas on or setting Simulate at back to Latest block, clears them, and the editor says so. With either one set, make sure the sending wallet holds enough of the network's native token to pay for gas. See [Custom gas settings and sponsorship](/wallet-management/gas#custom-gas-settings-and-sponsorship) for the full rules.
 
 ### Simulate at the next block
 
@@ -668,15 +693,15 @@ The prediction only helps with a "not before" condition. A late next block has a
 
 **Costs and risks.**
 
-- If another transaction changes the state first, or a block lands while yours is being sent, your transaction can revert on-chain. On networks with a private-mempool option in the Network list (for example Ethereum (Flashbots), which sends through Flashbots Protect), choose it so a failed prediction costs nothing. The check then runs on the private relay, the same RPC that sends. By default the step fails before sending if the relay cannot answer; if the action's config sets `strict: false` (see [Chains API](/api/chains)), the call falls back to the public RPC, which then sees your calldata. A private relay does not promise inclusion in the very next block. Elsewhere a lost race or an early send spends gas.
-- KeeperHub does not stop a second send. With a trigger that fires every block, the run after the one that sent can still see the job as unworked (your transaction is not mined yet) and send again. Make the Condition before the write read something your transaction changes, or use a private-mempool network so a duplicate that reverts costs nothing.
+- If another transaction changes the state first, or a block lands while yours is being sent, your transaction can revert on-chain. On networks with a private relay (for example Ethereum, through Flashbots Protect), set [Send as](#send-as) to Private relay so a failed prediction costs nothing. The check then runs on the private relay, the same RPC that sends. By default the step fails before sending if the relay cannot answer; if the action's config sets `strict: false` (see [Chains API](/api/chains)), the call falls back to the public RPC, which then sees your calldata. A private relay does not promise inclusion in the very next block. Elsewhere a lost race or an early send spends gas.
+- KeeperHub does not stop a second send. With a trigger that fires every block, the run after the one that sent can still see the job as unworked (your transaction is not mined yet) and send again. Make the Condition before the write read something your transaction changes, or send through the private relay so a duplicate that reverts costs nothing.
 - Gas sponsorship is off for a write with this setting, because the sponsor would simulate against the latest block again. Keep native gas in the wallet that pays.
 - The extra calls take time. On networks with very short blocks the transaction can still land a block late.
 
 **How the check runs.**
 
-- **Writes** (Write Contract, and Batch Write Contract's send) use `eth_estimateGas` with block overrides: one call gives the revert check, the revert reason and the gas for the success path. This works on Flashbots Protect, which does not allow `eth_call`. With Simulate at set to Latest the pre-send check is an `eth_call`, so on an "(Flashbots)" network use Next block (see [Gas Limit](/wallet-management/gas#field-behavior)). If the RPC does not accept block overrides on `eth_estimateGas`, `eth_simulateV1` runs the check instead, and its gas used is taken plus about 27% (for refunds and nested calls) before your Gas Limit Multiplier applies; very deeply nested calls may need a higher multiplier.
-- **Reads** (Read Contract, and Batch Write Contract's per-call check before sending) need return data, so they use `eth_simulateV1`, or `eth_call` with block overrides. Read Contract always uses the network's regular RPC, never a private relay. Batch Write Contract's check runs on its own network's RPC, so on a private relay that allows neither method, such as Flashbots Protect, it cannot run at the next block. Its send reuses the check's prediction while the block it was predicted from is still the latest and, on Ethereum, the predicted slot has not passed; otherwise the send checks again, and the reported `simulation` is the send's. Either way, the send reads the latest block again and repeats the proof that the RPC applies the predicted timestamp. `resultsSimulation` names the predicted block the per-call results were checked against.
+- **Writes** (Write Contract, and Batch Write Contract's send) use `eth_estimateGas` with block overrides: one call gives the revert check, the revert reason and the gas for the success path. This works on Flashbots Protect, which does not allow `eth_call`. With Simulate at set to Latest the pre-send check is an `eth_call` on a normal send and an `eth_estimateGas` through the private relay (see [Send as](#send-as)). If the RPC does not accept block overrides on `eth_estimateGas`, `eth_simulateV1` runs the check instead, and its gas used is taken plus about 27% (for refunds and nested calls) before your Gas Limit Multiplier applies; very deeply nested calls may need a higher multiplier.
+- **Reads** (Read Contract, and Batch Write Contract's per-call check before sending) need return data, so they use `eth_simulateV1`, or `eth_call` with block overrides. Read Contract always uses the network's regular RPC, never a private relay. Batch Write Contract cannot send through a private relay (see [Send as](#send-as)). Its send reuses the check's prediction while the block it was predicted from is still the latest and, on Ethereum, the predicted slot has not passed; otherwise the send checks again, and the reported `simulation` is the send's. Either way, the send reads the latest block again and repeats the proof that the RPC applies the predicted timestamp. `resultsSimulation` names the predicted block the per-call results were checked against.
 - Each check is paired with a proof call showing that the RPC applies the predicted timestamp (on a load-balanced RPC the two are separate requests). If the proof shows the timestamp was not applied, or the RPC rejects the overrides (for a write, after the `eth_simulateV1` fallback), the step fails with "Next-block simulation is not supported by this network's RPC", naming the method, rather than falling back to the latest block. That failure stops the run even with Fail workflow on error off, and the fallback RPC is not tried for it. An invalid-params answer (`-32602`) counts as not supported only when its message names the overrides or the method's parameters; a bad or out-of-range block number is treated as temporary. Temporary RPC errors are retried and fail over as usual; if they persist, the step fails like any RPC error (softened when Fail workflow on error is off), and the next run or a re-run tries again.
 - To check an RPC without sending, run the write once while the job is still locked: an error ending with "(simulated as of next block N, timestamp T)" means the check works and nothing was sent. To use a different RPC for a network, set one through [RPC preferences](/api/user#rpc-preferences).
 
@@ -687,7 +712,7 @@ Block trigger (every block)
   -> Read Contract "Read lastRun" (id lastRun)      lastRun()
   -> Read Contract "Read interval" (id interval)    interval()
   -> Condition     {{@__system:System.unixTimestamp}} - {{@lastRun:Read lastRun.result}} >= {{@interval:Read interval.result}} - 24
-  -> Write Contract    run(), Simulate at: Next block, Network: Ethereum (Flashbots), Fail workflow on error: off
+  -> Write Contract    run(), Simulate at: Next block, Network: Ethereum, Send as: Private relay, Fail workflow on error: off
 ```
 
 The Condition keeps runs far from the unlock from reaching the write: 24 is two 12-second blocks, so use about twice the block time on other networks. It only subtracts, because read results are text and `+` would join them instead of adding. Close to the unlock, the write's check reverts until the run where the next block is the first valid one; its error ends with "(simulated as of next block N, timestamp T)". That run sends. If the job exposes a check such as `workable()`, a single Read Contract with Simulate at set to Next block can replace the two reads and the arithmetic.
@@ -735,6 +760,7 @@ If you're building this action via the [Workflows API](/api/workflows) rather th
 | Contract ABI | `abi` | JSON-encoded string (same convention as `functionArgs`) |
 | Web3 Connection | `web3Connection` | Sender routing: `"default"` (org policy), `"eoa"` (force the Turnkey EOA), or `"safe:<safeWalletId>"`. The signing wallet is your org's Turnkey wallet, resolved automatically. |
 | Network | `network` | numeric chain id as a string (e.g. `"11155111"`) |
+| Send as | `sendMode` | `"transaction"` (default) or `"private-relay"`. `"private-relay"` is refused at save on a network without a private relay (see `usePrivateMempoolRpc` in the [Chains API](/api/chains)). Any other value is refused at save and by direct execution, and a step run with one fails before sending. A config with `usePrivateMempool: true` and no `sendMode` sends as `"private-relay"`; new `usePrivateMempool` values must be booleans. When you send both, they must agree (`true` with `"private-relay"`, `false` with `"transaction"`), except on an update that changes only one of them: that one wins and both are saved in agreement. The same key is on Transfer Native Token, Transfer ERC20 Token, Approve ERC20 Token, Batch Write Contract and protocol write actions. On Batch Write Contract only `"transaction"` is accepted for now; `"private-relay"` (or `usePrivateMempool: true`) is refused at save, except on a step already saved that way. |
 | Fail workflow on error | `failOnError` | `true` or `false` (or `"true"` / `"false"`), on by default. Off softens a failed write into `success: true` with `error` set. Anything else, a template included, is refused at save, unless the step already holds it (see [On/off toggles](/workflows/templating#onoff-toggles)); a value kept that way runs as off only when it resolves to `false`. |
 | Priority Fee (gwei) | `priorityFeeGwei` | plain decimal string in gwei (e.g. `"3"`), optional. Greater than 0, at most 10000, at most 9 decimal places. Templates are allowed. Empty uses the network default. A value that is set but not valid (for example `"abc"`, `"0x5"`, `"1e3"`, `"0"`) fails the step before anything is sent. The editor disables the field while the node would be sponsored. When set, the node is never gas-sponsored and pays gas from the sending wallet. See [Priority Fee](/wallet-management/gas#priority-fee). |
 | Max Fee (gwei) | `maxFeeGwei` | plain decimal string in gwei (e.g. `"50"`), optional. Same format rules as `priorityFeeGwei`, and at least the priority fee when both are set. Empty means no cap. Higher fees are lowered to the cap; a cap below the next block's base fee fails the step before anything is sent (softened when `failOnError` is off). The editor disables the field while the node would be sponsored. When set, the node is never gas-sponsored and pays gas from the sending wallet. See [Max Fee](/wallet-management/gas#max-fee). |
@@ -750,7 +776,7 @@ See the [generic web3 write-contract example](/api/workflows#generic-web3-write-
 
 Send native tokens from your Turnkey wallet to a recipient address. On EVM networks this sends ETH, MATIC, or the chain's native asset. On Solana networks this sends SOL.
 
-**Inputs:** Network, Amount, Recipient Address, Gas Limit Multiplier (optional, in Advanced section; EVM only)
+**Inputs:** Network, Send as (only on networks with a private relay; see [Send as](#send-as)), Amount, Recipient Address, Gas Limit, Sponsor gas (optional, in Advanced section; EVM only)
 
 **Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total fee in wei on EVM, lamports on Solana), `gasUsedUnits` and `effectiveGasPrice` on Solana (compute-unit metadata), `error`
 
@@ -766,7 +792,7 @@ Send native tokens from your Turnkey wallet to a recipient address. On EVM netwo
 
 Send ERC20 tokens from your Turnkey wallet to a recipient address.
 
-**Inputs:** Network, Token, Amount, Recipient Address, Gas Limit Multiplier (optional, in Advanced section)
+**Inputs:** Network, Send as (only on networks with a private relay; see [Send as](#send-as)), Token, Amount, Recipient Address, Gas Limit, Sponsor gas (optional, in Advanced section)
 
 **Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total gas cost in wei), `amount`, `symbol`, `recipient`, `error`
 
@@ -794,7 +820,7 @@ Send SPL tokens on Solana from your Turnkey wallet to a recipient address. If th
 
 Grant spending permission to a spender contract, allowing it to transfer ERC20 tokens on behalf of your Turnkey wallet. This is required before using DEX aggregators, DeFi protocols, or any contract that needs to move tokens from your wallet.
 
-**Inputs:** Network, Token, Spender Address, Amount, Gas Limit Multiplier (optional, in Advanced section)
+**Inputs:** Network, Send as (only on networks with a private relay; see [Send as](#send-as)), Token, Spender Address, Amount, Gas Limit, Sponsor gas (optional, in Advanced section)
 
 **Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total gas cost in wei), `approvedAmount` (human-readable or "unlimited"), `spender`, `symbol`, `error`
 

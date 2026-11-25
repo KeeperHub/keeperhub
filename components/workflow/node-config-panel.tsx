@@ -531,7 +531,7 @@ export const PanelInner = () => {
   );
 
   // Widened value type to support structured config objects (e.g. conditionConfig)
-  // and booleans (e.g. usePrivateMempool for Flashbots routing).
+  // and booleans (e.g. usePrivateMempool, kept in step with Send as).
   const handleUpdateConfig = (
     key: string,
     value: string | boolean | Record<string, unknown> | undefined

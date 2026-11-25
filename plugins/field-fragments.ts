@@ -12,6 +12,11 @@ import {
   MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
   MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
 } from "@/lib/web3/next-block-limits";
+import {
+  SEND_MODE_KEY,
+  SEND_MODE_OPTIONS,
+  unsupportedSendMode,
+} from "@/lib/web3/send-mode";
 import type {
   ActionConfigField,
   ActionConfigFieldBase,
@@ -40,15 +45,30 @@ export function evmNetworkField(): ActionConfigField {
   };
 }
 
-export function evmPrivateNetworkField(): ActionConfigField {
+/**
+ * "Send as", right under Network on every write step that can use a private
+ * relay. Listed only when the chain offers more than Normal; see
+ * lib/web3/send-mode.ts for how a config is read. `actionType` drops the
+ * choices that action cannot send with yet.
+ */
+export function sendModeField(actionType?: string): ActionConfigFieldBase {
+  const noRelay = unsupportedSendMode(actionType, "private-relay");
   return {
-    chainTypeFilter: "evm",
-    key: "network",
-    label: "Network",
-    placeholder: "Select network",
-    required: true,
-    showPrivateVariants: true,
-    type: "chain-select",
+    editorRenderer: "send-mode",
+    helpTip: noRelay
+      ? `How the transaction goes out. "transaction" (the default) sends it to the public mempool. "private-relay" and usePrivateMempool: true are refused at save. ${noRelay}`
+      : 'How the transaction goes out. "transaction" (the default) sends it to the public mempool. "private-relay" sends it through the network\'s private relay (Flashbots Protect on Ethereum), only on networks that have one, and is never gas-sponsored. A config with usePrivateMempool: true and no sendMode reads as "private-relay".',
+    key: SEND_MODE_KEY,
+    label: "Send as",
+    networkField: "network",
+    options: SEND_MODE_OPTIONS.filter(
+      ({ value }) => !unsupportedSendMode(actionType, value)
+    ).map(({ value, label, description }) => ({
+      description,
+      label,
+      value,
+    })),
+    type: "select",
   };
 }
 
@@ -114,7 +134,7 @@ export function sponsorGasField(): ActionConfigFieldBase {
   return {
     defaultValue: "true",
     helpTip:
-      "When on, the transaction goes through gas sponsorship first and falls back to your own wallet if sponsorship is unavailable on this network or your credits are spent. Turn it off to always pay gas from your own wallet. Sponsorship is skipped regardless when the node routes through a private mempool or signs through a Safe, and on Write Contract when Simulate at is set to Next block.",
+      "When on, the transaction goes through gas sponsorship first and falls back to your own wallet if sponsorship is unavailable on this network or your credits are spent. Turn it off to always pay gas from your own wallet. Sponsorship is never used when Send as is not Normal transaction or the node signs through a Safe, and on Write Contract when Simulate at is set to Next block.",
     key: "sponsorGas",
     label: "Sponsor gas",
     // Hidden on a network the Gas Station does not cover, where the toggle

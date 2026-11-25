@@ -2,7 +2,7 @@
 
 import { FailOnErrorSwitchField } from "@/components/workflow/config/fail-on-error-switch-field";
 import { PlainSwitchField } from "@/components/workflow/config/plain-switch-field";
-import { SponsorGasField } from "@/components/workflow/config/sponsor-gas-field";
+import { SponsorGasSendModeField } from "@/components/workflow/config/send-mode-field";
 import type { CustomFieldRenderer } from "@/lib/workflow/editor/extension-registry";
 import { isShownOnlyToFix, type ToggleFieldType } from "@/plugins/registry";
 
@@ -39,19 +39,17 @@ export const TOGGLE_FIELD_RENDERERS: Readonly<
     />
   ),
   // "Sponsor gas" on a web3 write. Default-on through resolveSponsorGas, so
-  // the form and the step agree on what an unset value means.
+  // the form and the step agree on what an unset value means. Turning it on
+  // sets Send as back to Normal. Clearing fees once the node becomes
+  // sponsored again is a general rule (clearUnsponsoredOnlyFields).
   "gas-sponsorship-switch": ({ field, config, onUpdateConfig, disabled }) => (
-    <SponsorGasField
-      description={field.helpTip ?? field.helpText}
+    <SponsorGasSendModeField
+      config={config}
       disabled={disabled}
-      id={field.key}
+      field={field}
       key={field.key}
-      label={field.label}
-      // Clearing fees once the node becomes sponsored again is a general
-      // rule, applied to every config change (clearUnsponsoredOnlyFields).
-      onChange={(next) => onUpdateConfig(field.key, next)}
+      onUpdateConfig={onUpdateConfig}
       resetOnly={isShownOnlyToFix(field, config)}
-      value={config[field.key]}
     />
   ),
 };

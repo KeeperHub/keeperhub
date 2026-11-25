@@ -9,12 +9,20 @@ import {
 import { apiError } from "@/lib/api-error";
 import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
 import { MULTICALL3_ABI, MULTICALL3_ADDRESS } from "@/lib/contracts/multicall3";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import {
+  type RpcProviderManager,
+  rpcRelayErrorClass,
+} from "@/lib/rpc/providers";
+import { readRpcFor } from "@/lib/rpc/read-provider";
+import { getSendRpcProvider } from "@/lib/rpc/send-provider";
 import { resolveSignerForNode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
+import { getErrorMessage } from "@/lib/utils";
 import { getChainGasDefaults } from "@/lib/web3/gas-defaults";
+import { SEND_MODE, unsupportedSendMode } from "@/lib/web3/send-mode";
 import { getOrganizationWalletAddress } from "@/lib/web3/wallet-helpers";
 import { hasTemplateToken } from "@/lib/workflow/template-ref";
 import { buildCallsWithMeta } from "@/plugins/web3/steps/batch-write-contract-core";
@@ -30,6 +38,8 @@ type EstimateConfig = {
   calls?: string | unknown[];
   isolateCallFailures?: string | boolean;
   web3Connection?: string;
+  sendMode?: unknown;
+  usePrivateMempool?: unknown;
 };
 
 type ActionSlug =
@@ -107,7 +117,8 @@ function parseTokenAddress(tokenConfig: unknown): string | undefined {
 async function estimateTransferToken(
   config: EstimateConfig,
   provider: ethers.JsonRpcProvider,
-  walletAddress: string
+  walletAddress: string,
+  readDecimals: (tokenAddress: string) => Promise<number>
 ): Promise<NextResponse | bigint> {
   if (!config.recipientAddress) {
     return badRequest(
@@ -123,7 +134,7 @@ async function estimateTransferToken(
   }
 
   const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
-  const decimals = Number(await tokenContract.decimals());
+  const decimals = await readDecimals(tokenAddress);
   const amountRaw = config.amount
     ? ethers.parseUnits(config.amount, decimals)
     : BigInt(0);
@@ -366,14 +377,46 @@ export async function POST(request: Request): Promise<NextResponse> {
       return badRequest("No wallet configured. Create a wallet first.");
     }
 
-    const rpcManager = await getRpcProvider({ chainId });
+    // Through the private relay the calldata goes to the relay, as the send
+    // will; only the token's decimals are read from the public RPC.
+    let rpcManager: RpcProviderManager;
+    try {
+      ({ rpcManager } = await getSendRpcProvider(config, {
+        chainId,
+        relayRefusal: unsupportedSendMode(
+          `web3/${actionSlug}`,
+          SEND_MODE.PRIVATE_RELAY
+        ),
+      }));
+    } catch (error) {
+      if (rpcRelayErrorClass(error) === ExecutionErrorType.USER) {
+        return badRequest(getErrorMessage(error));
+      }
+      throw error;
+    }
+    const readDecimals = async (tokenAddress: string): Promise<number> =>
+      (await readRpcFor(rpcManager, { chainId })).executeWithFailover(
+        async (provider) =>
+          Number(
+            await new ethers.Contract(
+              tokenAddress,
+              ERC20_ABI,
+              provider
+            ).decimals()
+          )
+      );
 
     const result = await rpcManager.executeWithFailover(async (provider) => {
       switch (actionSlug) {
         case "transfer-funds":
           return await estimateTransferFunds(config, provider, walletAddress);
         case "transfer-token":
-          return await estimateTransferToken(config, provider, walletAddress);
+          return await estimateTransferToken(
+            config,
+            provider,
+            walletAddress,
+            readDecimals
+          );
         case "write-contract":
           return await estimateWriteContract(config, provider, walletAddress);
         case "batch-write-contract":
