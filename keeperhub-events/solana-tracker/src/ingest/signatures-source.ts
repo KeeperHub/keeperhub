@@ -6,7 +6,7 @@ import {
   SOLANA_SIGNATURES_POLL_INTERVAL_MS,
   SOLANA_SIGNATURES_STALL_RESET_MS,
 } from "../../lib/config/environment";
-import { logger } from "../../lib/utils/logger";
+import { type LogSink, logger } from "../../lib/utils/logger";
 import { formatError } from "../format-error";
 import type { NormalizedBlock } from "../match/types";
 import {
@@ -72,12 +72,15 @@ export class SignaturesSource implements BlockSource {
   private pendingTick = false;
   private lastPollAt = 0;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly log: LogSink;
 
   constructor(
     private readonly opts: BlockSourceOptions,
     private readonly pollIntervalMs: number = SOLANA_SIGNATURES_POLL_INTERVAL_MS,
     private readonly stallResetMs: number = SOLANA_SIGNATURES_STALL_RESET_MS,
-  ) {}
+  ) {
+    this.log = opts.logger ?? logger;
+  }
 
   async start(): Promise<void> {
     this.connection = new SolanaConnection({
@@ -85,6 +88,7 @@ export class SignaturesSource implements BlockSource {
       source: "signatures",
       endpoints: this.opts.endpoints,
       commitment: this.opts.commitment,
+      logger: this.opts.logger,
       onSlot: () => this.onTick(),
     });
     this.connection.start();
@@ -99,12 +103,12 @@ export class SignaturesSource implements BlockSource {
           this.setCursor(programId, seed[0].signature);
         }
       } catch (err) {
-        logger.warn(
+        this.log.warn(
           `[signatures] chain ${this.opts.chainId} seed for ${programId} failed: ${formatError(err)}`,
         );
       }
     }
-    logger.log(
+    this.log.log(
       `[signatures] chain ${this.opts.chainId} source started (programs=${this.opts.watchedProgramIds.length})`,
     );
   }
@@ -158,7 +162,7 @@ export class SignaturesSource implements BlockSource {
     this.isProcessing = true;
     void this.poll()
       .catch((err) => {
-        logger.warn(
+        this.log.warn(
           `[signatures] chain ${this.opts.chainId} poll error: ${formatError(err)}`,
         );
       })
@@ -251,19 +255,19 @@ export class SignaturesSource implements BlockSource {
     const cursor = this.cursors.get(programId);
     if (cursor && isUnknownCursorError(err)) {
       this.dropCursor(programId);
-      logger.warn(
+      this.log.warn(
         `[signatures] chain ${this.opts.chainId} program ${programId} cursor ${cursor} is unknown to the endpoint; re-seeding to head and skipping that window. An endpoint serving a different cluster than the cursor came from does this (KEEP-1202).`,
       );
       return;
     }
     if (cursor && this.hasStalled(programId)) {
       this.dropCursor(programId);
-      logger.error(
+      this.log.error(
         `[signatures] chain ${this.opts.chainId} program ${programId} completed no poll for ${this.stallResetMs}ms; dropping cursor ${cursor} and re-seeding to head, skipping that window. Last error: ${formatError(err)}`,
       );
       return;
     }
-    logger.warn(
+    this.log.warn(
       `[signatures] chain ${this.opts.chainId} program ${programId} poll error: ${formatError(err)}`,
     );
   }
@@ -328,7 +332,7 @@ export class SignaturesSource implements BlockSource {
       before = batch[batch.length - 1].signature;
     }
 
-    logger.error(
+    this.log.error(
       `[signatures] chain ${this.opts.chainId} program ${programId} exceeded ${MAX_SIGNATURE_PAGES} pages (${collected.length} signatures) in one window; older signatures are being dropped - raise SOLANA_SIGNATURES_POLL_INTERVAL_MS pressure or move this chain to Geyser`,
     );
     return collected;

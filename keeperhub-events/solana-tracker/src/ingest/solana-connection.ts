@@ -9,9 +9,11 @@ import {
   type VersionedBlockResponse,
   type VersionedTransactionResponse,
 } from "@solana/web3.js";
-import { logger } from "../../lib/utils/logger";
+import { type LogSink, logger } from "../../lib/utils/logger";
 import { redactRpcUrl, redactUrlsInText } from "../../lib/utils/redact-url";
 import { formatError } from "../format-error";
+import { UsageCounter } from "../rpc-route/constants";
+import type { UsageRecorder } from "../rpc-route/usage-meter";
 
 /**
  * Per-chain Solana connection: a web3.js Connection providing both the WS
@@ -66,7 +68,10 @@ const REMOVE_SUB_TIMEOUT_MS = 5_000;
 
 export interface Endpoint {
   rpcUrl: string;
-  wssUrl: string;
+  /** Absent for organization routes: web3.js derives it from `rpcUrl`. */
+  wssUrl?: string;
+  /** Set only for organization routes. */
+  usage?: UsageRecorder;
 }
 
 /**
@@ -148,6 +153,7 @@ interface ConnectionInternals {
 function closeAbandonedConnection(
   connection: Connection,
   chainId: number,
+  log: LogSink,
 ): void {
   const internals = connection as unknown as ConnectionInternals;
   const socket = internals._rpcWebSocket;
@@ -158,7 +164,7 @@ function closeAbandonedConnection(
       internals._subscriptionsByHash
     )
   ) {
-    logger.warn(
+    log.warn(
       `[solana-conn] chain ${chainId} cannot close an abandoned connection: web3.js internals changed, so its socket will stay open`,
     );
     return;
@@ -168,8 +174,8 @@ function closeAbandonedConnection(
     internals._subscriptionsByHash = {};
     socket.close(1000);
   } catch (err) {
-    logger.warn(
-      `[solana-conn] chain ${chainId} closing an abandoned connection failed: ${formatError(err)}`,
+    log.warn(
+      `[solana-conn] chain ${chainId} closing an abandoned connection failed: ${redactUrlsInText(formatError(err))}`,
     );
   }
 }
@@ -192,6 +198,7 @@ export class SolanaConnection {
    * ignored - see removeSub() for why abandoned subscriptions exist at all.
    */
   private epoch = 0;
+  private readonly log: LogSink;
 
   constructor(
     private readonly opts: {
@@ -200,8 +207,11 @@ export class SolanaConnection {
       endpoints: Endpoint[];
       commitment: Commitment;
       onSlot: (slot: number) => void;
+      logger?: LogSink;
     },
-  ) {}
+  ) {
+    this.log = opts.logger ?? logger;
+  }
 
   start(): void {
     this.stopped = false;
@@ -238,15 +248,35 @@ export class SolanaConnection {
   private getConnection(): Connection {
     if (!this.connection) {
       const endpoint = this.opts.endpoints[this.activeIndex];
-      this.connection = new Connection(endpoint.rpcUrl, {
-        wsEndpoint: endpoint.wssUrl,
-        commitment: this.opts.commitment,
-      });
+      this.connection = new Connection(
+        endpoint.rpcUrl,
+        endpoint.wssUrl
+          ? { wsEndpoint: endpoint.wssUrl, commitment: this.opts.commitment }
+          : { commitment: this.opts.commitment },
+      );
     }
     return this.connection;
   }
 
-  private openAndSubscribe(): void {
+  private recordUsage(counter: UsageCounter, index = this.activeIndex): void {
+    this.opts.endpoints[index]?.usage?.(counter);
+  }
+
+  /** Counts one HTTP call, and its failure, against the endpoint serving it. */
+  private async rpc<T>(
+    call: (connection: Connection) => Promise<T>,
+  ): Promise<T> {
+    const index = this.activeIndex;
+    this.recordUsage(UsageCounter.REQUESTS, index);
+    try {
+      return await call(this.getConnection());
+    } catch (err) {
+      this.recordUsage(UsageCounter.ERRORS, index);
+      throw err;
+    }
+  }
+
+  private openAndSubscribe(isReconnect = false): void {
     if (this.stopped) {
       return;
     }
@@ -256,7 +286,7 @@ export class SolanaConnection {
       // try/catch below turned into a meaningless lastError.
       this.phase = "failed";
       this.lastError = "no endpoints configured";
-      logger.error(
+      this.log.error(
         `[solana-conn] chain ${this.opts.chainId} has no endpoints; nothing to subscribe to`,
       );
       return;
@@ -266,19 +296,30 @@ export class SolanaConnection {
     // during registration, setting it afterwards would stomp "live" back down.
     this.phase = "subscribing";
     this.subscribedAt = Date.now();
+    const index = this.activeIndex;
+    let delivered = false;
     try {
       const connection = this.getConnection();
       this.slotSubId = connection.onSlotChange((info) => {
         if (this.stopped || epoch !== this.epoch) {
           return;
         }
+        // A socket counts as connected once it delivers, not when subscribed.
+        if (!delivered) {
+          delivered = true;
+          this.recordUsage(UsageCounter.WS_CONNECTS, index);
+          if (isReconnect) {
+            this.recordUsage(UsageCounter.WS_RECONNECTS, index);
+          }
+        }
+        this.recordUsage(UsageCounter.EVENTS_RECEIVED, index);
         this.lastSlotAt = Date.now();
         this.lastError = null;
         this.phase = "live";
         this.opts.onSlot(info.slot);
       });
-      logger.log(
-        `[solana-conn] chain ${this.opts.chainId} slot subscription on ${redactRpcUrl(endpoint.wssUrl)} (endpoint ${this.activeIndex + 1}/${this.opts.endpoints.length})`,
+      this.log.log(
+        `[solana-conn] chain ${this.opts.chainId} slot subscription on ${redactRpcUrl(endpoint.wssUrl ?? endpoint.rpcUrl)} (endpoint ${this.activeIndex + 1}/${this.opts.endpoints.length})`,
       );
     } catch (err) {
       // Message only, URLs redacted: lastError is served on /healthz, node-fetch
@@ -294,8 +335,9 @@ export class SolanaConnection {
       // forever, and checkStaleness() skipped any chain in that state, so a
       // subscribe that threw was never retried for the life of the pod.
       this.phase = "failed";
-      logger.warn(
-        `[solana-conn] chain ${this.opts.chainId} subscribe failed: ${formatError(err)}`,
+      this.recordUsage(UsageCounter.ERRORS, index);
+      this.log.warn(
+        `[solana-conn] chain ${this.opts.chainId} subscribe failed: ${redactUrlsInText(formatError(err))}`,
       );
     }
   }
@@ -322,7 +364,7 @@ export class SolanaConnection {
     }
     const now = Date.now();
     if (this.phase === "failed") {
-      logger.warn(
+      this.log.warn(
         `[solana-conn] chain ${this.opts.chainId} in failed state; retrying`,
       );
       void this.reconnect();
@@ -333,7 +375,7 @@ export class SolanaConnection {
         this.subscribedAt !== null &&
         now - this.subscribedAt > FIRST_SLOT_GRACE_MS
       ) {
-        logger.warn(
+        this.log.warn(
           `[solana-conn] chain ${this.opts.chainId} no first slot within ${FIRST_SLOT_GRACE_MS}ms; rotating`,
         );
         void this.reconnect();
@@ -344,7 +386,7 @@ export class SolanaConnection {
       this.lastSlotAt !== null &&
       now - this.lastSlotAt > SLOT_STALENESS_TIMEOUT_MS
     ) {
-      logger.warn(
+      this.log.warn(
         `[solana-conn] chain ${this.opts.chainId} slot stream stale; reconnecting`,
       );
       void this.reconnect();
@@ -369,7 +411,7 @@ export class SolanaConnection {
     if (this.opts.endpoints.length > 1) {
       this.activeIndex = (this.activeIndex + 1) % this.opts.endpoints.length;
     }
-    this.openAndSubscribe();
+    this.openAndSubscribe(true);
   }
 
   private async removeSub(): Promise<void> {
@@ -394,14 +436,14 @@ export class SolanaConnection {
             // this is the single number that turns a repeat of PD #33473 into a
             // five-minute diagnosis.
             this.abandonedSubscriptions += 1;
-            logger.warn(
+            this.log.warn(
               `[solana-conn] chain ${this.opts.chainId} removeSlotChangeListener did not settle in ${REMOVE_SUB_TIMEOUT_MS}ms; abandoning subscription`,
             );
             // Without this the abandoned socket stays open for the life of the
             // process, and nothing restarts the process any more to cap it. The
             // epoch guard in openAndSubscribe() covers any notification that
             // lands before the close completes.
-            closeAbandonedConnection(connection, this.opts.chainId);
+            closeAbandonedConnection(connection, this.opts.chainId, this.log);
             resolve();
           }, REMOVE_SUB_TIMEOUT_MS);
         }),
@@ -423,22 +465,21 @@ export class SolanaConnection {
       rewards: false,
       transactionDetails,
     };
-    return (await this.getConnection().getBlock(
-      slot,
-      config,
+    return (await this.rpc((connection) =>
+      connection.getBlock(slot, config),
     )) as VersionedBlockResponse | null;
   }
 
   async getProducedSlots(from: number, to: number): Promise<number[]> {
-    return this.getConnection().getBlocks(
-      from,
-      to,
-      toFinality(this.opts.commitment),
+    return this.rpc((connection) =>
+      connection.getBlocks(from, to, toFinality(this.opts.commitment)),
     );
   }
 
   async getCurrentSlot(): Promise<number> {
-    return this.getConnection().getSlot(toFinality(this.opts.commitment));
+    return this.rpc((connection) =>
+      connection.getSlot(toFinality(this.opts.commitment)),
+    );
   }
 
   /**
@@ -449,20 +490,24 @@ export class SolanaConnection {
     address: string,
     options: SignaturesForAddressOptions,
   ): Promise<ConfirmedSignatureInfo[]> {
-    return this.getConnection().getSignaturesForAddress(
-      new PublicKey(address),
-      options,
-      toFinality(this.opts.commitment),
+    return this.rpc((connection) =>
+      connection.getSignaturesForAddress(
+        new PublicKey(address),
+        options,
+        toFinality(this.opts.commitment),
+      ),
     );
   }
 
   async getTransaction(
     signature: string,
   ): Promise<VersionedTransactionResponse | null> {
-    return this.getConnection().getTransaction(signature, {
-      commitment: toFinality(this.opts.commitment),
-      maxSupportedTransactionVersion: 0,
-    });
+    return this.rpc((connection) =>
+      connection.getTransaction(signature, {
+        commitment: toFinality(this.opts.commitment),
+        maxSupportedTransactionVersion: 0,
+      }),
+    );
   }
 
   getHealth(): ConnectionHealth {

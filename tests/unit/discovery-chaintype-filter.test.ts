@@ -6,6 +6,12 @@ import { WorkflowTriggerEnum } from "@/lib/workflow/store";
 vi.mock("server-only", () => ({}));
 
 // Accept every request - these tests cover the chainType filter, not auth.
+// Route attachment has its own tests; here every workflow keeps KeeperHub's.
+vi.mock("@/lib/rpc/engine/trigger-routes", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine/trigger-routes")>()),
+  attachTriggerRoutes: <T>(workflows: T[]): Promise<T[]> =>
+    Promise.resolve(workflows),
+}));
 vi.mock("@/lib/internal-service-auth", () => ({
   authenticateInternalService: () => ({
     authenticated: true,

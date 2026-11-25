@@ -319,3 +319,36 @@ export const metrics = {
     registry.resetMetrics();
   },
 };
+
+/** The per-chain series a ChainMonitor writes. */
+export type ChainMetrics = Omit<
+  typeof metrics,
+  "setChainsMonitored" | "recordUnhandledRejection" | "resetForTests"
+>;
+
+function noop(): void {
+  // intentionally records nothing
+}
+
+/** For monitors on organization routes, which must not appear in any series. */
+export const silentChainMetrics: ChainMetrics = {
+  setLastBlockAdvanceAt: noop,
+  setSubscribedAt: noop,
+  forgetChain: noop,
+  setIsAlive: noop,
+  setIsReconnecting: noop,
+  setHasActiveSubscription: noop,
+  setCurrentUrlIndex: noop,
+  setSilentReconnectsCurrent: noop,
+  setLastProcessedBlock: noop,
+  setWorkflowsTracked: noop,
+  recordBlockReceived: noop,
+  recordBlockMatched: noop,
+  recordWsClose: noop,
+  recordReconnect: noop,
+  recordUrlFlip: noop,
+  recordSqsEnqueue: noop,
+  recordDispatchRefused: noop,
+  observeReconnectDuration: noop,
+  observeBlockLag: noop,
+};

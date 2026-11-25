@@ -4,17 +4,58 @@
  * Keeps one ChainMonitor per chain that has active block workflows. A
  * reconcile loop refetches the workflows, starts and stops monitors, and
  * recreates a monitor whose config changed or that reports not alive.
+ * Workflows on an organization route get a silent monitor per route key.
  */
 
 import { RECONCILE_INTERVAL_MS } from "../lib/config.js";
-import { metrics } from "../lib/metrics.js";
-import type { BlockWorkflow, ChainConfig } from "../lib/types.js";
-import { fetchBlockWorkflows } from "./api-client.js";
-import { ChainMonitor } from "./chain-monitor.js";
+import { metrics, silentChainMetrics } from "../lib/metrics.js";
+import { RpcEndpointRole, type RpcUsageCounter } from "../lib/rpc-route.js";
+import { RpcUsageReporter } from "../lib/rpc-usage.js";
+import type {
+  BlockWorkflow,
+  ChainConfig,
+  RpcRoute,
+  RpcRouteEndpoint,
+} from "../lib/types.js";
+import { type RouteGroup, fetchBlockWorkflows } from "./api-client.js";
+import {
+  ChainMonitor,
+  type MonitorUsage,
+  silentLogger,
+} from "./chain-monitor.js";
 import { type HealthStatus, buildHealthStatus } from "./health.js";
+
+type RouteMonitor = {
+  monitor: ChainMonitor;
+  route: RpcRoute;
+  starting: boolean;
+};
+
+function sameEndpoint(
+  a: RpcRouteEndpoint | undefined,
+  b: RpcRouteEndpoint | undefined,
+): boolean {
+  return (
+    a?.url === b?.url && a?.origin === b?.origin && a?.configId === b?.configId
+  );
+}
+
+function routeChanged(current: RpcRoute, next: RpcRoute): boolean {
+  return (
+    current.organizationId !== next.organizationId ||
+    current.chainId !== next.chainId ||
+    current.transport !== next.transport ||
+    !sameEndpoint(current.primary, next.primary) ||
+    !sameEndpoint(current.fallback, next.fallback)
+  );
+}
 
 export class BlockMonitorService {
   private readonly monitors: Map<number, ChainMonitor> = new Map();
+  private readonly routeMonitors: Map<string, RouteMonitor> = new Map();
+  // Last block a dropped route monitor processed, so its replacement backfills.
+  private readonly routeResumeBlocks: Map<string, number> = new Map();
+  private readonly usageReporter = new RpcUsageReporter();
   private reconcileTimer: ReturnType<typeof setInterval> | null = null;
   private isShuttingDown = false;
 
@@ -27,6 +68,7 @@ export class BlockMonitorService {
       `[BlockMonitorService] Starting (reconcile every ${RECONCILE_INTERVAL_MS}ms)`,
     );
 
+    this.usageReporter.start();
     await this.reconcile();
 
     this.reconcileTimer = setInterval(() => {
@@ -62,6 +104,10 @@ export class BlockMonitorService {
     }
 
     this.monitors.clear();
+    await this.stopAllRouteMonitors();
+    await this.usageReporter.stop().catch(() => {
+      // the reporter logs its own failure
+    });
     console.log("[BlockMonitorService] Stopped");
   }
 
@@ -80,11 +126,12 @@ export class BlockMonitorService {
     }
 
     try {
-      const grouped = await fetchBlockWorkflows();
+      const { platform: grouped, routed } = await fetchBlockWorkflows();
       const activeChainIds = new Set(grouped.keys());
 
       await this.removeStaleMonitors(activeChainIds);
       await this.syncActiveMonitors(grouped);
+      await this.syncRouteMonitors(routed);
 
       const chainNames = [...grouped.entries()]
         .map(
@@ -166,5 +213,123 @@ export class BlockMonitorService {
       );
       this.monitors.delete(chainId);
     }
+  }
+
+  private async syncRouteMonitors(
+    routed: Map<string, RouteGroup>,
+  ): Promise<void> {
+    if (this.isShuttingDown) {
+      return;
+    }
+    for (const key of [...this.routeMonitors.keys()]) {
+      if (!routed.has(key)) {
+        this.routeResumeBlocks.delete(key);
+        await this.dropRouteMonitor(key);
+      }
+    }
+    for (const [key, group] of routed) {
+      try {
+        await this.syncRouteMonitor(key, group);
+      } catch {
+        await this.dropRouteMonitor(key);
+      }
+    }
+  }
+
+  private async syncRouteMonitor(
+    key: string,
+    group: RouteGroup,
+  ): Promise<void> {
+    const existing = this.routeMonitors.get(key);
+    if (!existing) {
+      this.startRouteMonitor(key, group);
+      return;
+    }
+    if (routeChanged(existing.route, group.route)) {
+      this.rememberResumeBlock(key, existing.monitor);
+      await this.dropRouteMonitor(key);
+      this.startRouteMonitor(key, group);
+      return;
+    }
+    if (!(existing.starting || existing.monitor.isAlive())) {
+      this.rememberResumeBlock(key, existing.monitor);
+      await this.dropRouteMonitor(key);
+      return;
+    }
+    existing.monitor.updateWorkflows(group.workflows);
+  }
+
+  private rememberResumeBlock(key: string, monitor: ChainMonitor): void {
+    const { lastBlock } = monitor.getStatus();
+    if (lastBlock !== null) {
+      this.routeResumeBlocks.set(key, lastBlock);
+    }
+  }
+
+  // Not awaited: a slow organization endpoint must not hold up the reconcile.
+  private startRouteMonitor(key: string, group: RouteGroup): void {
+    const monitor = new ChainMonitor({
+      chain: group.chain,
+      workflows: group.workflows,
+      resumeFromBlock: this.routeResumeBlocks.get(key) ?? null,
+      logger: silentLogger,
+      metrics: silentChainMetrics,
+      usage: this.usageFor(group.route),
+    });
+    const entry: RouteMonitor = { monitor, route: group.route, starting: true };
+    this.routeMonitors.set(key, entry);
+    this.routeResumeBlocks.delete(key);
+    monitor.start().then(
+      async () => {
+        entry.starting = false;
+        if (this.routeMonitors.get(key) !== entry) {
+          await monitor.stop().catch(() => undefined);
+        }
+      },
+      async () => {
+        entry.starting = false;
+        if (this.routeMonitors.get(key) === entry) {
+          await this.dropRouteMonitor(key);
+        }
+      },
+    );
+  }
+
+  private usageFor(route: RpcRoute): MonitorUsage {
+    return {
+      record: (role: RpcEndpointRole, counter: RpcUsageCounter): void => {
+        const endpoint =
+          role === RpcEndpointRole.PRIMARY ? route.primary : route.fallback;
+        if (!endpoint) {
+          return;
+        }
+        this.usageReporter.record(
+          {
+            organizationId: route.organizationId,
+            configId: endpoint.configId,
+            origin: endpoint.origin,
+            chainId: route.chainId,
+            transport: route.transport,
+          },
+          counter,
+        );
+      },
+    };
+  }
+
+  private async dropRouteMonitor(key: string): Promise<void> {
+    const entry = this.routeMonitors.get(key);
+    if (!entry) {
+      return;
+    }
+    this.routeMonitors.delete(key);
+    await entry.monitor.stop().catch(() => undefined);
+  }
+
+  private async stopAllRouteMonitors(): Promise<void> {
+    const entries = [...this.routeMonitors.values()];
+    this.routeMonitors.clear();
+    this.routeResumeBlocks.clear();
+    await Promise.allSettled(entries.map((entry) => entry.monitor.stop()));
   }
 }

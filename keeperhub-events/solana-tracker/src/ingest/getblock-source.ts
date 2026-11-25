@@ -1,4 +1,4 @@
-import { logger } from "../../lib/utils/logger";
+import { type LogSink, logger } from "../../lib/utils/logger";
 import { formatError } from "../format-error";
 import {
   type BlockSource,
@@ -25,8 +25,11 @@ export class GetBlockSource implements BlockSource {
   private lastProcessedSlot: number | null = null;
   private isProcessing = false;
   private pendingTick = false;
+  private readonly log: LogSink;
 
-  constructor(private readonly opts: BlockSourceOptions) {}
+  constructor(private readonly opts: BlockSourceOptions) {
+    this.log = opts.logger ?? logger;
+  }
 
   async start(): Promise<void> {
     this.connection = new SolanaConnection({
@@ -34,6 +37,7 @@ export class GetBlockSource implements BlockSource {
       source: "getblock",
       endpoints: this.opts.endpoints,
       commitment: this.opts.commitment,
+      logger: this.opts.logger,
       // The slot tick is only a wake-up; the confirmed tip is the real target.
       onSlot: () => this.onSlot(),
     });
@@ -41,11 +45,11 @@ export class GetBlockSource implements BlockSource {
     try {
       this.lastProcessedSlot = await this.connection.getCurrentSlot();
     } catch (err) {
-      logger.warn(
+      this.log.warn(
         `[getblock] chain ${this.opts.chainId} cursor seed failed, will seed on first tick: ${formatError(err)}`,
       );
     }
-    logger.log(
+    this.log.log(
       `[getblock] chain ${this.opts.chainId} source started (detail=${this.detail()})`,
     );
   }
@@ -82,7 +86,7 @@ export class GetBlockSource implements BlockSource {
     this.isProcessing = true;
     void this.processConfirmed()
       .catch((err) => {
-        logger.warn(
+        this.log.warn(
           `[getblock] chain ${this.opts.chainId} process error: ${formatError(err)}`,
         );
       })
@@ -103,7 +107,7 @@ export class GetBlockSource implements BlockSource {
     try {
       tip = await this.connection.getCurrentSlot();
     } catch (err) {
-      logger.warn(
+      this.log.warn(
         `[getblock] chain ${this.opts.chainId} getSlot failed: ${formatError(err)}`,
       );
       return;
@@ -117,7 +121,7 @@ export class GetBlockSource implements BlockSource {
       return;
     }
     if (tip - from > MAX_BACKFILL_SLOTS) {
-      logger.warn(
+      this.log.warn(
         `[getblock] chain ${this.opts.chainId} behind by ${tip - from} slots (> ${MAX_BACKFILL_SLOTS}); processing the most recent ${MAX_BACKFILL_SLOTS}, older skipped`,
       );
       from = tip - MAX_BACKFILL_SLOTS;

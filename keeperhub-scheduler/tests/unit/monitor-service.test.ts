@@ -121,9 +121,12 @@ function makeWorkflow(): BlockWorkflow {
 }
 
 function serveChain(chain: ChainConfig): void {
-  vi.mocked(fetchBlockWorkflows).mockResolvedValue(
-    new Map([[chain.chainId, { chain, workflows: [makeWorkflow()] }]]),
-  );
+  vi.mocked(fetchBlockWorkflows).mockResolvedValue({
+    platform: new Map([
+      [chain.chainId, { chain, workflows: [makeWorkflow()] }],
+    ]),
+    routed: new Map(),
+  });
 }
 
 // ---------------------------------------------------------------------------

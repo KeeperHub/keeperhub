@@ -1,5 +1,6 @@
 import type { Commitment } from "@solana/web3.js";
 import type { Endpoint } from "./ingest/solana-connection";
+import type { RpcOrigin, RpcTransport } from "./rpc-route/constants";
 
 /**
  * The in-memory registration shapes the reconciler builds from discovery and
@@ -29,6 +30,22 @@ export interface SolanaBlockTrigger {
   configHash: string;
 }
 
+export interface RouteEndpointSpec {
+  url: string;
+  origin: RpcOrigin;
+  configId: string | null;
+}
+
+/** An organization's own route, as the app hands it out. URLs carry API keys. */
+export interface RouteSpec {
+  key: string;
+  organizationId: string;
+  chainId: number;
+  transport: RpcTransport;
+  primary: RouteEndpointSpec;
+  fallback?: RouteEndpointSpec;
+}
+
 export interface ChainRegistration {
   chainId: number;
   /**
@@ -40,9 +57,12 @@ export interface ChainRegistration {
   isTestnet: boolean;
   rpcUrl: string;
   fallbackRpcUrl?: string;
-  wssUrl: string;
+  /** Absent on an organization route, whose socket web3.js derives from the RPC URL. */
+  wssUrl?: string;
   fallbackWssUrl?: string;
   commitment: Commitment;
+  /** Set when this registration serves an organization route instead of a chain. */
+  route?: RouteSpec;
   /**
    * Ingestion strategy. "getblock" (default) serves event + block triggers;
    * "signatures" is the getSignaturesForAddress / eth_getLogs analog (event
@@ -77,6 +97,12 @@ export interface ChainRegistration {
 export function registrationEndpoints(
   registration: ChainRegistration,
 ): Endpoint[] {
+  if (registration.route) {
+    const { primary, fallback } = registration.route;
+    return fallback
+      ? [{ rpcUrl: primary.url }, { rpcUrl: fallback.url }]
+      : [{ rpcUrl: primary.url }];
+  }
   const endpoints: Endpoint[] = [
     { rpcUrl: registration.rpcUrl, wssUrl: registration.wssUrl },
   ];
@@ -88,3 +114,5 @@ export function registrationEndpoints(
   }
   return endpoints;
 }
+
+export type RouteRegistration = ChainRegistration & { route: RouteSpec };

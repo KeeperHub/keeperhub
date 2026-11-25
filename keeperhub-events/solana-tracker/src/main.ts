@@ -1,7 +1,8 @@
 import { SQS_QUEUE_URL } from "../lib/config/environment";
 import * as metrics from "../lib/metrics";
 import { sqs } from "../lib/sqs-client";
-import { logger } from "../lib/utils/logger";
+import type { DiscoveryData } from "../lib/types";
+import { logger, silentLogger } from "../lib/utils/logger";
 import { redactUrlsInText } from "../lib/utils/redact-url";
 import type { DedupStore } from "./dedup";
 import { createRedisDedupStore } from "./dedup-redis";
@@ -9,8 +10,11 @@ import { fetchSolanaTriggers } from "./discovery";
 import { BlockIngestor } from "./ingest/block-ingestor";
 import { disconnectedHealth } from "./ingest/block-source";
 import type { ConnectionHealth } from "./ingest/solana-connection";
-import { buildRegistrations } from "./mapper";
+import { buildRegistrations, buildRouteRegistrations } from "./mapper";
 import { type ChainRegistration, registrationEndpoints } from "./registrations";
+import { RoutePool } from "./rpc-route/route-pool";
+import { UsageMeter } from "./rpc-route/usage-meter";
+import { createUsageReporter } from "./rpc-route/usage-reporter";
 import { STARTUP_GRACE_MS } from "./startup-grace";
 
 /**
@@ -73,6 +77,35 @@ function getDedup(): DedupStore {
     dedup = createRedisDedupStore();
   }
   return dedup;
+}
+
+const usageMeter = new UsageMeter();
+const usageReporter = createUsageReporter(usageMeter);
+
+/** Organization routes: silent, uncounted in metrics, and reported as usage instead. */
+const routePool = new RoutePool(
+  (registration, endpointUsage) =>
+    new BlockIngestor({
+      registration,
+      sqs,
+      sqsQueueUrl: SQS_QUEUE_URL,
+      dedup: getDedup(),
+      logger: silentLogger,
+      endpointUsage,
+    }),
+  usageMeter,
+);
+
+export function startUsageReporting(): void {
+  usageReporter.start();
+}
+
+async function syncRoutes(data: DiscoveryData): Promise<void> {
+  try {
+    await routePool.reconcile(buildRouteRegistrations(data));
+  } catch {
+    // An organization route never affects platform chains, and is never logged.
+  }
 }
 
 async function startIngestor(registration: ChainRegistration): Promise<void> {
@@ -199,6 +232,7 @@ export async function synchronizeData(): Promise<void> {
       `Found ${data.eventWorkflows.length} event + ${data.blockWorkflows.length} block workflows -> ${registrations.length} Solana chains`,
     );
     await reconcile(registrations);
+    await syncRoutes(data);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error(`Error during synchronization: ${message}`);
@@ -209,6 +243,9 @@ export async function synchronizeData(): Promise<void> {
 }
 
 export async function shutdownAll(): Promise<void> {
+  // First, and neither can throw, so the last usage report always goes out.
+  await routePool.stopAll();
+  await usageReporter.stop();
   for (const ingestor of registry.values()) {
     await ingestor.stop();
   }

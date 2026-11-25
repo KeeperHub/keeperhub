@@ -25,6 +25,28 @@ export function signHmacHeaders(
   };
 }
 
+/**
+ * POST a pre-serialised JSON body to an internal app route, signing exactly
+ * the bytes sent. Resolves true on a 2xx. Never logs the target URL.
+ */
+export async function postSignedInternal(
+  path: string,
+  rawBody: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const url = `${KEEPERHUB_API_URL}${path}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...signHmacHeaders("POST", url, rawBody),
+    },
+    body: rawBody,
+    signal,
+  });
+  return response.ok;
+}
+
 export async function fetchActiveWorkflows(
   signal?: AbortSignal,
 ): Promise<SyncData | null> {

@@ -1,4 +1,5 @@
 import type { Commitment } from "@solana/web3.js";
+import type { LogSink } from "../../lib/utils/logger";
 import { redactRpcUrl } from "../../lib/utils/redact-url";
 import type { NormalizedBlock } from "../match/types";
 import type {
@@ -40,6 +41,8 @@ export interface BlockSourceOptions {
    * processed serially (the ingestor runs the matchers + enqueue inside it).
    */
   onBlock: (block: NormalizedBlock) => Promise<void>;
+  /** Defaults to the process logger; organization routes pass a silent one. */
+  logger?: LogSink;
 }
 
 export interface BlockSource {

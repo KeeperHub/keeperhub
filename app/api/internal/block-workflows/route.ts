@@ -4,18 +4,12 @@ import { db } from "@/lib/db";
 import { type Chain, chains, workflows } from "@/lib/db/schema";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import {
+  attachTriggerRoutes,
+  triggerChainId,
+} from "@/lib/rpc/engine/trigger-routes";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 import type { WorkflowNode } from "@/lib/workflow/store";
-
-/** The chainId a trigger node targets (config.network), or null if absent/unparseable. */
-function triggerChainId(node: WorkflowNode | undefined): number | null {
-  const raw = node?.data?.config?.network;
-  if (typeof raw !== "string" && typeof raw !== "number") {
-    return null;
-  }
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
-}
 
 export async function GET(request: Request): Promise<NextResponse> {
   const auth = await authenticateInternalService(request);
@@ -96,7 +90,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     });
 
     return NextResponse.json({
-      workflows: filteredWorkflows,
+      workflows: await attachTriggerRoutes(filteredWorkflows),
       networks: networkMap,
     });
   } catch (error) {

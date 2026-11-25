@@ -1,4 +1,4 @@
-import { logger } from "../../lib/utils/logger";
+import { type LogSink, logger } from "../../lib/utils/logger";
 import { formatError } from "../format-error";
 import {
   type BlockSource,
@@ -42,6 +42,7 @@ export class CompositeSource implements BlockSource {
     private readonly chainId: number,
     private readonly endpoints: Endpoint[],
     readonly sources: BlockSource[],
+    private readonly log: LogSink = logger,
   ) {}
 
   async start(): Promise<void> {
@@ -67,7 +68,7 @@ export class CompositeSource implements BlockSource {
   async stop(): Promise<void> {
     for (const source of this.sources) {
       await source.stop().catch((err) => {
-        logger.warn(
+        this.log.warn(
           `[composite] chain ${this.chainId} member stop failed: ${formatError(err)}`,
         );
       });

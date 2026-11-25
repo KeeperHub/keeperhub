@@ -7,9 +7,10 @@ const HMAC_CALLER = "scheduler";
  * Per-attempt budget and retry schedule for internal API calls. A transport
  * failure (connection refused or reset, DNS, the timeout below) or a 5xx reply
  * is retried on the schedule; a 4xx is a definitive answer and is not. Every
- * call this client makes is idempotent, which is what makes a retry safe: the
- * GETs by nature, the phantom POST through its dispatch key, the PATCH through
- * its terminal-status compare-and-set.
+ * call made through apiRequest is idempotent, which is what makes a retry safe:
+ * the GETs by nature, the phantom POST through its dispatch key, the PATCH
+ * through its terminal-status compare-and-set. A call that is not idempotent
+ * uses apiRequestOnce and retries on its own schedule.
  *
  * Keep in sync with the copies in keeperhub-events/event-tracker/lib/phantom.ts
  * and keeperhub-events/solana-tracker/lib/phantom.ts (those packages cannot
@@ -96,9 +97,26 @@ async function attemptRequest<T>(
  * needs this: after a retry, the reply may be answering for this caller's own
  * earlier attempt whose response was lost, not for another caller's request.
  */
-export async function apiRequestWithAttempts<T>(
+export function apiRequestWithAttempts<T>(
   path: string,
   options: RequestInit = {},
+): Promise<ApiResponse<T>> {
+  return signedRequest<T>(path, options, MAX_ATTEMPTS);
+}
+
+/** One signed attempt, for calls that a repeat would apply twice. */
+export async function apiRequestOnce<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const { data } = await signedRequest<T>(path, options, 1);
+  return data;
+}
+
+async function signedRequest<T>(
+  path: string,
+  options: RequestInit,
+  maxAttempts: number,
 ): Promise<ApiResponse<T>> {
   const url = `${KEEPERHUB_URL}${path}`;
   const method = (options.method ?? "GET").toUpperCase();
@@ -120,7 +138,7 @@ export async function apiRequestWithAttempts<T>(
     if (outcome.kind === "ok") {
       return { data: outcome.data, attempts: attempt };
     }
-    if (outcome.kind === "fail" || attempt === MAX_ATTEMPTS) {
+    if (outcome.kind === "fail" || attempt >= maxAttempts) {
       throw outcome.error;
     }
     const delayMs = RETRY_DELAYS_MS[attempt - 1];

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { ethers } from "ethers";
 import type {
+  NetworkConfig,
   NetworksMap,
   RawWorkflow,
   RawWorkflowNodeConfig,
@@ -8,6 +9,12 @@ import type {
 import { logger } from "../../lib/utils/logger";
 import { buildEventAbi } from "../chains/event-serializer";
 import { redactRpcUrl } from "../chains/provider-manager";
+import {
+  type RpcRoute,
+  RpcTransport,
+  isWebSocketUrl,
+  parseRpcRoute,
+} from "../chains/rpc-route";
 import type { AbiEvent } from "../chains/validation";
 import type {
   StateThresholdRegistration,
@@ -72,45 +79,25 @@ export function buildRegistration(
     return null;
   }
 
-  // The DB column `chains.default_primary_wss` is nullable, but
-  // `NetworkConfig.defaultPrimaryWss` is typed `string`. Treat it as
-  // `string | null | undefined` at runtime: an HTTP URL or empty string
-  // pasted into this column would otherwise reach
-  // `new ethers.WebSocketProvider(...)` and trigger an `eth_subscribe`
-  // rejection that ethers' SocketSubscriber.start() leaves uncaught,
-  // crashing the pod.
-  const wssUrl: unknown = network.defaultPrimaryWss;
-  if (typeof wssUrl !== "string" || wssUrl.length === 0) {
-    logger.warn(
-      `[workflow-mapper] workflow ${workflowId} chain ${chainId} has no defaultPrimaryWss; skipping`,
-    );
-    return null;
-  }
-  if (!(wssUrl.startsWith("wss://") || wssUrl.startsWith("ws://"))) {
-    logger.warn(
-      `[workflow-mapper] workflow ${workflowId} chain ${chainId} defaultPrimaryWss is not a WebSocket URL ("${redactRpcUrl(wssUrl)}"); skipping`,
-    );
-    return null;
-  }
-
-  // Fallback is optional. Same nullable-DB-column caveat as primary: the
-  // type says `string` but rows can be null/empty. A bad fallback (wrong
-  // scheme, empty) is logged and dropped rather than failing the whole
-  // workflow; the listener still runs on primary alone.
-  const rawFallbackWssUrl: unknown = network.defaultFallbackWss;
-  let fallbackWssUrl: string | undefined;
-  if (typeof rawFallbackWssUrl === "string" && rawFallbackWssUrl.length > 0) {
-    if (
-      rawFallbackWssUrl.startsWith("wss://") ||
-      rawFallbackWssUrl.startsWith("ws://")
-    ) {
-      fallbackWssUrl = rawFallbackWssUrl;
-    } else {
+  let rpcRoute: RpcRoute | undefined;
+  let connection: Connection | null;
+  if (workflow.rpcRoute === undefined || workflow.rpcRoute === null) {
+    connection = platformConnection(workflowId, chainId, network);
+  } else {
+    const parsed = parseRpcRoute(workflow.rpcRoute);
+    if (!parsed) {
       logger.warn(
-        `[workflow-mapper] workflow ${workflowId} chain ${chainId} defaultFallbackWss is not a WebSocket URL ("${redactRpcUrl(String(rawFallbackWssUrl))}"); ignoring fallback`,
+        `[workflow-mapper] workflow ${workflowId} has a malformed rpcRoute; skipping`,
       );
+      return null;
     }
+    rpcRoute = parsed;
+    connection = routeConnection(workflowId, chainId, parsed);
   }
+  if (!connection) {
+    return null;
+  }
+  const { wssUrl, fallbackWssUrl } = connection;
 
   const contractAddress =
     typeof config.contractAddress === "string" ? config.contractAddress : null;
@@ -129,6 +116,7 @@ export function buildRegistration(
       wssUrl,
       fallbackWssUrl,
       contractAddress,
+      rpcRoute,
     });
   }
 
@@ -203,11 +191,102 @@ export function buildRegistration(
     rawEventsAbi,
     recipientFilter,
     memoFilter,
+    rpcRoute,
   };
   return {
     ...registration,
     configHash: hashRegistration(registration),
   };
+}
+
+interface Connection {
+  wssUrl: string;
+  fallbackWssUrl?: string;
+}
+
+/** The chain's shared KeeperHub endpoints, for a workflow with no route. */
+function platformConnection(
+  workflowId: string,
+  chainId: number,
+  network: NetworkConfig,
+): Connection | null {
+  // The DB column `chains.default_primary_wss` is nullable, but
+  // `NetworkConfig.defaultPrimaryWss` is typed `string`. Treat it as
+  // `string | null | undefined` at runtime: an HTTP URL or empty string
+  // pasted into this column would otherwise reach
+  // `new ethers.WebSocketProvider(...)` and trigger an `eth_subscribe`
+  // rejection that ethers' SocketSubscriber.start() leaves uncaught,
+  // crashing the pod.
+  const wssUrl: unknown = network.defaultPrimaryWss;
+  if (typeof wssUrl !== "string" || wssUrl.length === 0) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} chain ${chainId} has no defaultPrimaryWss; skipping`,
+    );
+    return null;
+  }
+  if (!(wssUrl.startsWith("wss://") || wssUrl.startsWith("ws://"))) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} chain ${chainId} defaultPrimaryWss is not a WebSocket URL ("${redactRpcUrl(wssUrl)}"); skipping`,
+    );
+    return null;
+  }
+
+  // Fallback is optional. Same nullable-DB-column caveat as primary: the
+  // type says `string` but rows can be null/empty. A bad fallback (wrong
+  // scheme, empty) is logged and dropped rather than failing the whole
+  // workflow; the listener still runs on primary alone.
+  const rawFallbackWssUrl: unknown = network.defaultFallbackWss;
+  let fallbackWssUrl: string | undefined;
+  if (typeof rawFallbackWssUrl === "string" && rawFallbackWssUrl.length > 0) {
+    if (
+      rawFallbackWssUrl.startsWith("wss://") ||
+      rawFallbackWssUrl.startsWith("ws://")
+    ) {
+      fallbackWssUrl = rawFallbackWssUrl;
+    } else {
+      logger.warn(
+        `[workflow-mapper] workflow ${workflowId} chain ${chainId} defaultFallbackWss is not a WebSocket URL ("${redactRpcUrl(String(rawFallbackWssUrl))}"); ignoring fallback`,
+      );
+    }
+  }
+  return { wssUrl, fallbackWssUrl };
+}
+
+/**
+ * The organization route's endpoints. Nothing about the route is logged: its
+ * URLs carry credentials.
+ */
+function routeConnection(
+  workflowId: string,
+  chainId: number,
+  route: RpcRoute,
+): Connection | null {
+  if (route.transport !== RpcTransport.WSS) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} rpcRoute is not a WebSocket route; skipping`,
+    );
+    return null;
+  }
+  if (route.chainId !== chainId) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} rpcRoute chain does not match chainId ${chainId}; skipping`,
+    );
+    return null;
+  }
+  if (!isWebSocketUrl(route.primary.url)) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} rpcRoute primary is not a WebSocket URL; skipping`,
+    );
+    return null;
+  }
+  const fallback = route.fallback?.url;
+  if (fallback !== undefined && !isWebSocketUrl(fallback)) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} rpcRoute fallback is not a WebSocket URL; ignoring fallback`,
+    );
+    return { wssUrl: route.primary.url };
+  }
+  return { wssUrl: route.primary.url, fallbackWssUrl: fallback };
 }
 
 /**
@@ -232,6 +311,7 @@ export function hashRegistration(
     userId: reg.userId,
     recipientFilter: reg.recipientFilter ?? null,
     memoFilter: reg.memoFilter ?? null,
+    rpcRouteKey: reg.rpcRoute?.key ?? null,
   });
   return createHash("sha256").update(canonical).digest("hex");
 }
@@ -272,6 +352,7 @@ function buildStateThresholdRegistration(
     wssUrl: string;
     fallbackWssUrl?: string;
     contractAddress: string;
+    rpcRoute?: RpcRoute;
   },
 ): StateThresholdRegistration | null {
   const abiRaw =
@@ -411,11 +492,13 @@ function buildStateThresholdRegistration(
     wssUrl: connection.wssUrl,
     fallbackWssUrl: connection.fallbackWssUrl,
     subscription,
+    rpcRoute: connection.rpcRoute,
     configHash: hashStateRegistration({
       subscriptionId: subscription.subscriptionId,
       wssUrl: connection.wssUrl,
       fallbackWssUrl: connection.fallbackWssUrl ?? null,
       userId,
+      rpcRouteKey: connection.rpcRoute?.key ?? null,
     }),
   };
 }
@@ -496,6 +579,7 @@ export function hashStateRegistration(parts: {
   wssUrl: string;
   fallbackWssUrl: string | null;
   userId: string;
+  rpcRouteKey: string | null;
 }): string {
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 }
