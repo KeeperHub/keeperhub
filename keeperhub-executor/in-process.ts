@@ -129,6 +129,7 @@ export async function executeInProcess(params: {
     const result = await executeWorkflow(
       buildExecutorInput(workflow, {
         triggerInput: input,
+        fromBlockScheduler: triggerType === "block",
         executionId,
         organizationName,
       })

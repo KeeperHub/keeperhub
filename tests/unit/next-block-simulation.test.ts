@@ -2,15 +2,19 @@ import { ethers } from "ethers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+// The wait for the trigger block sleeps between reads; no real time in tests.
+vi.mock("@/lib/sleep", () => ({ sleep: () => Promise.resolve() }));
 
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { isNonRetryableError } from "@/lib/rpc/providers/error-classification";
 import { formatContractError } from "@/lib/web3/decode-revert-error";
+import type { TriggerBlock } from "@/lib/web3/next-block-limits";
 import {
   clearSlotSecondsCache,
   failedNextBlockCheck,
   getNextBlockSimulation,
   isNextBlockSimulationUnsupported,
+  type NextBlockSimulation,
   NextBlockSimulationUnsupportedError,
   nextBlockFailure,
   nextSlotTime,
@@ -247,7 +251,12 @@ class FakeProvider extends ethers.JsonRpcProvider {
   private readonly node: FakeNode;
 
   constructor(node: FakeNode, url = "http://fake.invalid") {
-    super(url, CHAIN_ID, { staticNetwork: true, batchMaxCount: 1 });
+    // No request cache, as in production (lib/rpc/providers).
+    super(url, CHAIN_ID, {
+      staticNetwork: true,
+      batchMaxCount: 1,
+      cacheTimeout: -1,
+    });
     this.node = node;
   }
 
@@ -329,6 +338,18 @@ describe("readSimulationSettings", () => {
     expect(readSimulationSettings("next-block", " 60 ")).toEqual({
       ok: true,
       options: { timestampOffsetSec: 60 },
+    });
+  });
+
+  it("carries the trigger block into next-block options only", () => {
+    const triggerBlock = { chainId: 1, number: 101 };
+    expect(readSimulationSettings("next-block", "", triggerBlock)).toEqual({
+      ok: true,
+      options: { triggerBlock },
+    });
+    expect(readSimulationSettings("latest", "", triggerBlock)).toEqual({
+      ok: true,
+      options: undefined,
     });
   });
 
@@ -828,6 +849,198 @@ describe("next-block simulation", () => {
           latest + predicted
         );
       }
+    });
+  });
+
+  describe("a Block-triggered run whose RPC lags the trigger", () => {
+    const MAINNET = 1;
+    const TRIGGER = { chainId: MAINNET, number: 101 };
+
+    // The RPC answers block 100 for the first `lagReads` reads of latest, then 101.
+    function lagFor(lagReads: number): void {
+      const handle = node.handle.bind(node);
+      let reads = 0;
+      node.handle = (method, params) => {
+        if (method === "eth_getBlockByNumber" && params[0] === "latest") {
+          reads += 1;
+          if (reads === lagReads + 1) {
+            node.latestNumber = 101;
+            node.latestTimestamp += SLOT;
+          }
+        }
+        return handle(method, params);
+      };
+    }
+
+    function sendWith(
+      triggerBlock: TriggerBlock,
+      options: { chainId?: number; basedOn?: NextBlockSimulation } = {}
+    ): ReturnType<typeof simulateSendAtNextBlock> {
+      return simulateSendAtNextBlock(managerFor(provider), {
+        chainId: options.chainId ?? MAINNET,
+        tx: RUN_TX,
+        options: {
+          triggerBlock,
+          ...(options.basedOn ? { basedOn: options.basedOn } : {}),
+        },
+      });
+    }
+
+    it("waits for the RPC to reach the trigger block, then predicts the block after it", async () => {
+      // 5 s into the trigger block's slot: from block 100 the check would
+      // use the trigger block's own time and refuse.
+      const triggerTime = node.latestTimestamp + SLOT;
+      setClock(triggerTime + 5);
+      node.unlockAt = triggerTime + SLOT;
+      lagFor(2);
+
+      const { simulation } = await sendWith(TRIGGER);
+      expect(simulation).toMatchObject({
+        baseBlock: 101,
+        assumedBlockNumber: 102,
+        assumedTimestamp: triggerTime + SLOT,
+      });
+      for (const call of node.seen) {
+        expect(call.blockTag).toBe(ethers.toQuantity(101));
+        expect(call.overrides?.number).toBe(ethers.toQuantity(102));
+      }
+    });
+
+    it("refuses the same call without a trigger block", async () => {
+      setClock(node.latestTimestamp + SLOT + 5);
+      node.unlockAt = node.latestTimestamp + 2 * SLOT;
+      const error = await send().catch((e: unknown) => e);
+      expect(formatContractError(error, IFACE)).toContain("too-soon");
+    });
+
+    it("waits on a read as well", async () => {
+      const triggerTime = node.latestTimestamp + SLOT;
+      setClock(triggerTime + 5);
+      lagFor(1);
+      const { simulation } = await simulateCallAtNextBlock(
+        managerFor(provider),
+        {
+          chainId: MAINNET,
+          tx: WORKABLE_TX,
+          options: { triggerBlock: TRIGGER },
+        }
+      );
+      expect(simulation.baseBlock).toBe(101);
+    });
+
+    it("spends one read budget per check across retry attempts", async () => {
+      // Retries like executeWithFailover: up to 3 attempts on one RPC.
+      const retrying = {
+        executeWithFailover: async <T>(
+          operation: (p: ethers.JsonRpcProvider) => Promise<T>
+        ): Promise<T> => {
+          let lastError: unknown;
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              return await operation(provider);
+            } catch (error) {
+              lastError = error;
+            }
+          }
+          throw lastError;
+        },
+      } as unknown as RpcProviderManager;
+      const triggerTime = node.latestTimestamp + SLOT;
+      setClock(triggerTime + 5);
+      node.unlockAt = triggerTime + SLOT;
+      // Never catches up: a budget per attempt would read 8 times on each.
+      lagFor(100);
+
+      const error = await simulateSendAtNextBlock(retrying, {
+        chainId: MAINNET,
+        tx: RUN_TX,
+        options: { triggerBlock: TRIGGER },
+      }).catch((e: unknown) => e);
+      expect((error as Error).message).toContain(
+        "has not reached the block that triggered the run"
+      );
+      // 8 reads on attempt 1, then one read each on attempts 2 and 3.
+      expect(
+        node.methods.filter((m) => m === "eth_getBlockByNumber")
+      ).toHaveLength(10);
+    });
+
+    it("succeeds on a later attempt once the RPC catches up", async () => {
+      const retrying = {
+        executeWithFailover: async <T>(
+          operation: (p: ethers.JsonRpcProvider) => Promise<T>
+        ): Promise<T> => {
+          try {
+            return await operation(provider);
+          } catch {
+            return await operation(provider);
+          }
+        },
+      } as unknown as RpcProviderManager;
+      setClock(node.latestTimestamp + SLOT + 5);
+      node.unlockAt = node.latestTimestamp + 2 * SLOT;
+      lagFor(8);
+
+      const { simulation } = await simulateSendAtNextBlock(retrying, {
+        chainId: MAINNET,
+        tx: RUN_TX,
+        options: { triggerBlock: TRIGGER },
+      });
+      expect(simulation.baseBlock).toBe(101);
+    });
+
+    it("predicts from the trigger block after missed slots, without the stale-head error", async () => {
+      // Five missed slots: the trigger block is 72 s after latest, and the
+      // step runs 3 s into its slot; latest alone would be 75 s old.
+      const handle = node.handle.bind(node);
+      let reads = 0;
+      node.handle = (method, params) => {
+        if (method === "eth_getBlockByNumber" && params[0] === "latest") {
+          reads += 1;
+          if (reads === 2) {
+            node.latestNumber = 101;
+            node.latestTimestamp += 6 * SLOT;
+          }
+        }
+        return handle(method, params);
+      };
+      const triggerTime = node.latestTimestamp + 6 * SLOT;
+      setClock(triggerTime + 3);
+      node.unlockAt = triggerTime + SLOT;
+
+      const { simulation } = await sendWith(TRIGGER);
+      expect(simulation).toMatchObject({
+        baseBlock: 101,
+        assumedTimestamp: triggerTime + SLOT,
+      });
+    });
+
+    it("fails as a temporary error, before any call, when the RPC never catches up", async () => {
+      setClock(node.latestTimestamp + 1);
+      const error = await sendWith(TRIGGER).catch((e: unknown) => e);
+      expect((error as Error).message).toContain(
+        "the RPC has not reached the block that triggered the run"
+      );
+      expect((error as Error).message).toContain("use another RPC");
+      expect(isNonRetryableError(error)).toBe(false);
+      expect(failedNextBlockCheck(error)).toBe(true);
+      expect(node.seen).toHaveLength(0);
+      expect(
+        node.methods.filter((m) => m === "eth_getBlockByNumber")
+      ).toHaveLength(8);
+    });
+
+    it.each([
+      ["the RPC already has the trigger block", { ...TRIGGER, number: 100 }],
+      ["the RPC is ahead of the trigger block", { ...TRIGGER, number: 99 }],
+      ["the trigger is on another chain", { ...TRIGGER, chainId: CHAIN_ID }],
+    ])("reads latest once when %s", async (_label, triggerBlock) => {
+      node.unlockAt = node.latestTimestamp + SLOT;
+      const { simulation } = await sendWith(triggerBlock);
+      expect(simulation.baseBlock).toBe(100);
+      expect(
+        node.methods.filter((m) => m === "eth_getBlockByNumber")
+      ).toHaveLength(1);
     });
   });
 

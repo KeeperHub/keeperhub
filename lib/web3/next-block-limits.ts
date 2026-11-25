@@ -3,6 +3,9 @@
 export const MIN_SIMULATE_TIMESTAMP_OFFSET_SEC = 1;
 export const MAX_SIMULATE_TIMESTAMP_OFFSET_SEC = 60;
 
+/** The block a Block trigger fired for, from the block scheduler only. */
+export type TriggerBlock = { chainId: number; number: number };
+
 type ParsedSimulationSettings =
   | { ok: true; options: { timestampOffsetSec?: number } | undefined }
   | {

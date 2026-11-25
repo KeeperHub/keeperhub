@@ -95,6 +95,7 @@ import {
   TemplateResolutionError,
   type TemplateResolutionTracker,
 } from "@/lib/workflow/executor/template-resolution";
+import { triggerBlockOf } from "@/lib/workflow/executor/trigger-block";
 import { readActionType } from "@/lib/workflow/node-config-read";
 import {
   isMissingReference,
@@ -295,6 +296,8 @@ export type WorkflowExecutionInput = {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   triggerInput?: Record<string, unknown>;
+  // Set by the executor for runs the block scheduler started; never from input.
+  fromBlockScheduler?: boolean;
   executionId?: string;
   workflowId?: string; // Used by steps to fetch credentials
   organizationId?: string;
@@ -2617,6 +2620,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     nodes,
     edges,
     triggerInput = {},
+    fromBlockScheduler,
     executionId,
     workflowId,
     organizationId,
@@ -2853,8 +2857,8 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
   );
 
   // Detect trigger type for step context (gas strategy uses this for multiplier selection)
+  const triggerNode = nodes.find((n) => n.data.type === "trigger");
   const workflowTriggerType: string = (() => {
-    const triggerNode = nodes.find((n) => n.data.type === "trigger");
     if (!triggerNode) {
       return "manual";
     }
@@ -2870,6 +2874,20 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     }
     return "manual";
   })();
+
+  // Context every step of this run gets, at the top level and in For Each bodies.
+  const runStepContext = {
+    executionId,
+    organizationId,
+    orgSlug: organizationSlug,
+    createdBy,
+    workflowId,
+    triggerBlock: triggerBlockOf(
+      fromBlockScheduler,
+      triggerNode?.data.config,
+      triggerInput
+    ),
+  };
 
   // Helper to get a meaningful node name
   function getNodeName(node: WorkflowNode): string {
@@ -3042,13 +3060,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           data: getBuiltinVariables(),
         };
       },
-      baseStepContext: {
-        executionId,
-        organizationId,
-        orgSlug: organizationSlug,
-        createdBy,
-        workflowId,
-      },
+      baseStepContext: runStepContext,
       runStep: async ({
         actionType,
         processedConfig,
@@ -3426,15 +3438,11 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           await mod[collectAction.stepFunction]({
             ...collectData,
             _context: {
-              executionId,
+              ...runStepContext,
               nodeId: aggregateCollectNodeId,
               nodeName: collectLabel,
               nodeType: "Collect",
               forEachNodeId,
-              organizationId,
-              orgSlug: organizationSlug,
-              createdBy,
-              workflowId,
             } satisfies StepContext,
           });
         }
@@ -3815,14 +3823,10 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
 
         // Build context for logging
         const triggerContext: StepContext = {
-          executionId,
+          ...runStepContext,
           nodeId: node.id,
           nodeName: getNodeName(node),
           nodeType: node.data.type,
-          organizationId,
-          orgSlug: organizationSlug,
-          createdBy,
-          workflowId,
         };
 
         // Execute trigger step (handles logging internally)
@@ -3912,15 +3916,11 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
 
         // Build step context for logging (stepHandler will handle the logging)
         const stepContext: StepContext = {
-          executionId,
+          ...runStepContext,
           nodeId: node.id,
           nodeName: getNodeName(node),
           nodeType: actionType,
           triggerType: workflowTriggerType,
-          organizationId,
-          orgSlug: organizationSlug,
-          createdBy,
-          workflowId,
         };
 
         // Execute the action step with stepHandler (logging is handled inside)
