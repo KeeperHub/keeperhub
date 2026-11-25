@@ -31,6 +31,11 @@ import {
   runWithLeaderElection,
 } from "../lib/leader-election.js";
 import { metrics, registry } from "../lib/metrics.js";
+import {
+  BLOCK_PROGRESS_ANNOTATION,
+  parseBlockProgress,
+  serializeBlockProgress,
+} from "./block-progress.js";
 import { BlockMonitorService } from "./monitor-service.js";
 
 // Ethers v6 WebSocketProvider teardown produces a detached eth_unsubscribe
@@ -110,16 +115,24 @@ async function main(): Promise<void> {
   // leader opens WebSocket subscriptions and enqueues, otherwise every block
   // triggers once per replica (and doubles upstream RPC/WSS load). On losing
   // leadership the standby tears its monitors down via service.stop().
+  // Per-chain progress rides the Lease renew so the next leader resumes there.
   const election: LeaderElectionHandle = runWithLeaderElection({
     leaseName: process.env.LEASE_NAME ?? "block-dispatcher-leader",
-    onStartedLeading: async () => {
+    onStartedLeading: async ({ annotations }) => {
       console.log("[BlockDispatcher] Became leader — starting monitors");
-      await service.start();
+      await service.start(
+        parseBlockProgress(annotations[BLOCK_PROGRESS_ANNOTATION]),
+      );
     },
     onStoppedLeading: async () => {
       console.log("[BlockDispatcher] Lost leadership — stopping monitors");
       await service.stop();
     },
+    getAnnotations: () => ({
+      [BLOCK_PROGRESS_ANNOTATION]: serializeBlockProgress(
+        service.getResumeBlocks(),
+      ),
+    }),
   });
 
   // Start health check server
