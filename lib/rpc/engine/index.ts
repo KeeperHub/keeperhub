@@ -1,20 +1,12 @@
 import "server-only";
 
-import {
-  createRpcEngine,
-  type EvmRpcClient,
-  type RouteRequest,
-  type RpcEngine,
-  type SolanaRpcClient,
+import type {
+  EvmRpcClient,
+  RouteRequest,
+  RpcEngine,
+  SolanaRpcClient,
 } from "./engine";
-import { emptyOrgRpcSource } from "./sources/org-source";
-import { createDbPlatformRpcSource } from "./sources/platform-source";
-import {
-  getEvmMetricsCollector,
-  getFailoverCallback,
-  getSolanaMetricsCollector,
-} from "./telemetry/platform-collectors";
-import { RpcUsageAccumulator } from "./telemetry/usage";
+import { getRpcEngine } from "./runtime";
 import type { RpcRoute, RpcScope } from "./types";
 
 export type {
@@ -26,6 +18,7 @@ export type {
 } from "./engine";
 export { createRpcEngine } from "./engine";
 export { RpcRouteError, RpcRouteErrorCode } from "./route-error";
+export { orgRpcSource, rpcUsageAccumulator } from "./runtime";
 export {
   orgScope,
   parseRpcSelection,
@@ -40,23 +33,6 @@ export {
   RpcTelemetryEventType,
 } from "./telemetry/sink";
 export * from "./types";
-
-/** Organization usage recorded by this process, drained by the usage store. */
-export const rpcUsageAccumulator = new RpcUsageAccumulator();
-
-let engine: RpcEngine | undefined;
-
-function getRpcEngine(): RpcEngine {
-  engine ??= createRpcEngine({
-    platformSource: createDbPlatformRpcSource(),
-    orgSource: emptyOrgRpcSource,
-    usageRecorder: rpcUsageAccumulator,
-    evmCollector: getEvmMetricsCollector,
-    solanaCollector: getSolanaMetricsCollector,
-    failoverCallback: getFailoverCallback,
-  });
-  return engine;
-}
 
 /**
  * The single entry point for RPC access. Every call names its scope, so

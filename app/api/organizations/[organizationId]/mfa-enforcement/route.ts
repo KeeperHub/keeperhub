@@ -1,7 +1,7 @@
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { member, organization } from "@/lib/db/schema";
+import { organization } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import {
@@ -9,58 +9,13 @@ import {
   parseEnforcedFactors,
 } from "@/lib/mfa/org-mfa-enforcement";
 import type { StepUpFactor } from "@/lib/mfa/step-up-policy";
-import type { AuthMethod } from "@/lib/middleware/auth-helpers";
-import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
+import {
+  ORG_MANAGERS,
+  ORG_OWNER_ONLY,
+  requireOrgRole,
+} from "@/lib/middleware/require-org-role";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
-
-type OwnerOk = {
-  ok: true;
-  userId: string;
-  authMethod: AuthMethod;
-  apiKeyId: string | null;
-  scope?: string;
-};
-type OwnerErr = { ok: false; status: number; error: string };
-
-// MFA enforcement is a security-critical org setting, so only the owner may
-// read or change it (stricter than the owner+admin digest settings).
-async function requireOrgRole(
-  request: Request,
-  organizationId: string,
-  allowedRoles: ReadonlySet<string> = new Set(["owner"])
-): Promise<OwnerOk | OwnerErr> {
-  const authContext = await getDualAuthContext(request);
-  if ("error" in authContext) {
-    return { ok: false, status: authContext.status, error: authContext.error };
-  }
-  const { userId, organizationId: callerOrgId, authMethod } = authContext;
-  if (!userId) {
-    return { ok: false, status: 400, error: "Auth context missing user" };
-  }
-  if (authMethod === "api-key" && callerOrgId !== organizationId) {
-    return { ok: false, status: 403, error: "Forbidden" };
-  }
-
-  const [membership] = await db
-    .select({ role: member.role })
-    .from(member)
-    .where(
-      and(eq(member.organizationId, organizationId), eq(member.userId, userId))
-    )
-    .limit(1);
-
-  if (!(membership && allowedRoles.has(membership.role))) {
-    return { ok: false, status: 403, error: "Forbidden" };
-  }
-  return {
-    ok: true,
-    userId,
-    authMethod,
-    apiKeyId: authContext.apiKeyId,
-    scope: authContext.scope,
-  };
-}
 
 export async function GET(
   request: Request,
@@ -69,11 +24,7 @@ export async function GET(
   try {
     const { organizationId } = await context.params;
     // Admins may read the enforcement status (read-only); only the owner writes.
-    const access = await requireOrgRole(
-      request,
-      organizationId,
-      new Set(["owner", "admin"])
-    );
+    const access = await requireOrgRole(request, organizationId, ORG_MANAGERS);
     if (!access.ok) {
       return NextResponse.json(
         { error: access.error },
@@ -119,7 +70,9 @@ export async function PUT(
 ): Promise<NextResponse> {
   try {
     const { organizationId } = await context.params;
-    const owner = await requireOrgRole(request, organizationId);
+    // MFA enforcement is a security-critical org setting, so only the owner
+    // may change it.
+    const owner = await requireOrgRole(request, organizationId, ORG_OWNER_ONLY);
     if (!owner.ok) {
       return NextResponse.json(
         { error: owner.error },

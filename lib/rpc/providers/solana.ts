@@ -1,6 +1,7 @@
 import { type Commitment, Connection } from "@solana/web3.js";
 import { safeFetch } from "@/lib/safe-fetch";
 import { sleep } from "@/lib/sleep";
+import { OrgRpcError } from "../engine/org-rpc-error";
 import { createPlatformSink } from "../engine/telemetry/platform-sink";
 import {
   RpcErrorType,
@@ -8,7 +9,7 @@ import {
   RpcTelemetryEventType,
   type RpcTelemetrySink,
 } from "../engine/telemetry/sink";
-import { RpcChainType, RpcRoutePosition } from "../engine/types";
+import { RpcChainType, RpcOrigin, RpcRoutePosition } from "../engine/types";
 import { redactAllUrls, scrubRpcUrls } from "../scrub-rpc-urls";
 import { RPC_CONNECTION_ERROR_PATTERNS } from "./index";
 
@@ -18,7 +19,7 @@ import { RPC_CONNECTION_ERROR_PATTERNS } from "./index";
  * the @solana/web3.js Connection uses Node's global fetch, which bypasses
  * `lib/safe-fetch`'s denylist.
  */
-const safeSolanaFetch = (
+export const safeSolanaFetch = (
   info: Parameters<typeof fetch>[0],
   init?: Parameters<typeof fetch>[1]
 ): Promise<Response> =>
@@ -168,6 +169,8 @@ export type SolanaProviderConfig = {
   timeoutMs?: number;
   chainName?: string;
   commitment?: Commitment;
+  /** See RpcProviderConfig.failureOwner. */
+  failureOwner?: RpcOrigin;
 };
 
 export type SolanaProviderMetrics = {
@@ -221,6 +224,7 @@ export class SolanaProviderManager {
       timeoutMs: config.timeoutMs ?? SolanaProviderManager.DEFAULT_TIMEOUT_MS,
       chainName: config.chainName ?? "solana",
       commitment: config.commitment ?? SolanaProviderManager.DEFAULT_COMMITMENT,
+      failureOwner: config.failureOwner ?? RpcOrigin.PLATFORM,
     };
 
     this.telemetry =
@@ -360,18 +364,22 @@ export class SolanaProviderManager {
       // Thrown messages reach end users via step errors; drop provider URLs
       // entirely (host included). Internal logs above keep the host-visible
       // masked form.
-      throw new Error(
-        redactAllUrls(
-          `Solana RPC failed on both endpoints. Primary: ${primaryResult.error}. Fallback: ${fallbackResult.error}`
-        )
+      throw this.failoverError(
+        `Solana RPC failed on both endpoints. Primary: ${primaryResult.error}. Fallback: ${fallbackResult.error}`
       );
     }
 
-    throw new Error(
-      redactAllUrls(
-        `Solana RPC failed on primary endpoint: ${primaryResult.error}`
-      )
+    throw this.failoverError(
+      `Solana RPC failed on primary endpoint: ${primaryResult.error}`
     );
+  }
+
+  /** See RpcProviderManager.failoverError; Solana has no relay case. */
+  private failoverError(message: string): Error {
+    const redacted = redactAllUrls(message);
+    return this.config.failureOwner === RpcOrigin.ORG
+      ? new OrgRpcError(redacted)
+      : new Error(redacted);
   }
 
   private classifyError(error: unknown): RpcErrorType {
@@ -513,6 +521,7 @@ export type CreateSolanaProviderManagerOptions = {
   timeoutMs?: number;
   chainName?: string;
   commitment?: Commitment;
+  failureOwner?: RpcOrigin;
   metricsCollector?: SolanaRpcMetricsCollector;
   telemetry?: RpcTelemetrySink;
   onFailoverStateChange?: SolanaFailoverStateChangeCallback;
@@ -537,6 +546,7 @@ export function createSolanaProviderManager(
         timeoutMs: options.timeoutMs,
         chainName: options.chainName,
         commitment: options.commitment,
+        failureOwner: options.failureOwner,
       },
       metricsCollector: options.metricsCollector,
       telemetry: options.telemetry,

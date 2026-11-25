@@ -104,6 +104,13 @@ export async function register() {
     );
     startRateLimitCleanupInterval();
 
+    // Organization RPC usage is counted in memory and stored hourly; this
+    // writes the counts out for the analytics page.
+    const { startRpcUsageFlusher } = await import(
+      "@/lib/rpc/engine/usage-store"
+    );
+    startRpcUsageFlusher();
+
     // The shared Redis client connects lazily with its offline queue disabled,
     // so the first command on a cold client is rejected while the socket is
     // still opening. Open it here so the first MCP request reaches the

@@ -1,5 +1,6 @@
 import { ethers, isError } from "ethers";
 import { sleep } from "@/lib/sleep";
+import { OrgRpcError } from "../engine/org-rpc-error";
 import { collectorFromSink } from "../engine/telemetry/collector-adapter";
 import { createPlatformSink } from "../engine/telemetry/platform-sink";
 import {
@@ -8,7 +9,7 @@ import {
   RpcTelemetryEventType,
   type RpcTelemetrySink,
 } from "../engine/telemetry/sink";
-import { RpcChainType, RpcRoutePosition } from "../engine/types";
+import { RpcChainType, RpcOrigin, RpcRoutePosition } from "../engine/types";
 import { safeEthersGetUrl } from "../safe-ethers-fetch";
 import { redactAllUrls, scrubRpcUrls } from "../scrub-rpc-urls";
 import {
@@ -211,6 +212,11 @@ export type RpcProviderConfig = {
   // primary. Defaults to false, so a manager built from raw URLs keeps
   // attributing its failures to KeeperHub.
   primaryIsPrivateRelay?: boolean;
+  /**
+   * Who runs the endpoints. An exhausted round on a route that includes an
+   * organization endpoint raises OrgRpcError, which platform logging drops.
+   */
+  failureOwner?: RpcOrigin;
 };
 
 export type RpcProviderMetrics = {
@@ -268,6 +274,7 @@ export class RpcProviderManager {
       chainName: config.chainName ?? "unknown",
       chainId: config.chainId ?? 1,
       primaryIsPrivateRelay: config.primaryIsPrivateRelay ?? false,
+      failureOwner: config.failureOwner ?? RpcOrigin.PLATFORM,
     };
 
     this.telemetry =
@@ -520,9 +527,14 @@ export class RpcProviderManager {
         failure.endpoint === RpcRoutePosition.PRIMARY &&
         this.config.primaryIsPrivateRelay
     );
-    const result = allOnTheRelay
-      ? new RpcRelayTransportError(redacted)
-      : new Error(redacted);
+    let result: Error;
+    if (this.config.failureOwner === RpcOrigin.ORG) {
+      result = new OrgRpcError(redacted);
+    } else if (allOnTheRelay) {
+      result = new RpcRelayTransportError(redacted);
+    } else {
+      result = new Error(redacted);
+    }
     // A write-broadcast classifier must know whether *every retry attempt*
     // was refused. The rendered message only contains each endpoint's final
     // error, so text alone can turn "timeout, then refused" into "never sent".
@@ -770,6 +782,7 @@ export type CreateRpcProviderManagerOptions = {
   chainName?: string;
   chainId?: number;
   primaryIsPrivateRelay?: boolean;
+  failureOwner?: RpcOrigin;
   metricsCollector?: RpcMetricsCollector;
   telemetry?: RpcTelemetrySink;
   onFailoverStateChange?: FailoverStateChangeCallback;
@@ -799,6 +812,7 @@ export function createRpcProviderManager(
         chainName: options.chainName,
         chainId: options.chainId,
         primaryIsPrivateRelay: options.primaryIsPrivateRelay,
+        failureOwner: options.failureOwner,
       },
       metricsCollector: options.metricsCollector,
       telemetry: options.telemetry,

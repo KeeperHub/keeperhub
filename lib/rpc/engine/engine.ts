@@ -24,6 +24,7 @@ import {
   RpcChainType,
   type RpcEndpoint,
   RpcEndpointRole,
+  RpcOrigin,
   RpcPurpose,
   type RpcRoute,
   RpcRouteNotice,
@@ -84,6 +85,11 @@ function activeEndpointOf(
     manager.isCurrentlyUsingFallback() && route.fallback
       ? route.fallback
       : route.primary;
+}
+
+/** A route with any organization endpoint fails as that organization's. */
+function failureOwnerOf(route: RpcRoute): RpcOrigin {
+  return isPlatformOnlyRoute(route) ? RpcOrigin.PLATFORM : RpcOrigin.ORG;
 }
 
 /** Namespaces engine-built managers in the provider caches. */
@@ -198,6 +204,7 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
         chainId: resolved.chain.chainId,
         primaryIsPrivateRelay:
           resolved.primary.role === RpcEndpointRole.PRIVATE,
+        failureOwner: failureOwnerOf(resolved),
         telemetry: sink,
         onFailoverStateChange,
         cacheKey: managerCacheKey(resolved),
@@ -228,6 +235,7 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
         primaryRpcUrl: resolved.primary.url.reveal(),
         fallbackRpcUrl: resolved.fallback?.url.reveal(),
         chainName: resolved.chain.name,
+        failureOwner: failureOwnerOf(resolved),
         telemetry: sink,
         onFailoverStateChange,
         cacheKey: managerCacheKey(resolved),

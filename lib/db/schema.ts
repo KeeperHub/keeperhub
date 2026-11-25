@@ -1216,6 +1216,15 @@ export {
   workflowPayments,
 } from "./schema-payments";
 export {
+  type NewOrganizationRpcConfigRow,
+  type OrganizationRpcConfigRow,
+  type OrganizationRpcPolicyRow,
+  type OrganizationRpcUsageRow,
+  organizationRpcConfigs,
+  organizationRpcPolicy,
+  organizationRpcUsageHourly,
+} from "./schema-rpc";
+export {
   type NewTempoHeldPayment,
   type TempoHeldPayment,
   tempoHeldPaymentStatus,

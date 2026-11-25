@@ -1,4 +1,10 @@
-export type OrgRole = "owner" | "admin" | "member" | "viewer";
+export const OrgRoles = {
+  OWNER: "owner",
+  ADMIN: "admin",
+  MEMBER: "member",
+  VIEWER: "viewer",
+} as const;
+export type OrgRole = (typeof OrgRoles)[keyof typeof OrgRoles];
 
 export const VIEWER_ROLE = "viewer" satisfies OrgRole;
 

@@ -25,6 +25,7 @@ import { captureException, captureMessage } from "@sentry/nextjs";
 import { emitLogLine, type LogLevel, type LogPayload } from "@/lib/log/core";
 import { getMetricsCollector } from "@/lib/metrics";
 import { LabelKeys, MetricNames } from "@/lib/metrics/types";
+import { isOrgRpcError } from "@/lib/rpc/engine/org-rpc-error";
 import { scrubRpcUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { getWorkflowErrorContext } from "@/lib/workflow/executor/error-context";
 
@@ -260,6 +261,10 @@ export function logUserError(
   error?: unknown,
   labels?: Record<string, string>
 ): void {
+  // An organization endpoint failure stays out of platform telemetry.
+  if (isOrgRpcError(error)) {
+    return;
+  }
   const metrics = getMetricsCollector();
   const context = extractContext(message);
 
@@ -326,6 +331,10 @@ export function logSystemError(
   error: unknown,
   labels?: Record<string, string>
 ): void {
+  // An organization endpoint failure stays out of platform telemetry.
+  if (isOrgRpcError(error)) {
+    return;
+  }
   const metrics = getMetricsCollector();
   const context = extractContext(message);
 
@@ -404,6 +413,10 @@ export function logSystemWarn(
   error: unknown,
   labels?: Record<string, string>
 ): void {
+  // An organization endpoint failure stays out of platform telemetry.
+  if (isOrgRpcError(error)) {
+    return;
+  }
   const context = extractContext(message);
   const fullLabels = mergeLabels(labels);
 
