@@ -12,6 +12,7 @@ import { withPluginMetrics } from "@/lib/metrics/instrumentation/plugin";
 import { recordStepMetrics } from "@/lib/metrics/instrumentation/workflow";
 import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { redactSensitiveData } from "@/lib/utils/redact";
+import type { TriggerBlock } from "@/lib/web3/next-block-limits";
 import {
   runWithWorkflowErrorContext,
   type WorkflowErrorContext,
@@ -58,6 +59,8 @@ export type StepContext = {
   orgSlug?: string;
   createdBy?: string;
   workflowId?: string;
+  // Set on block-scheduler runs; read by next-block simulation.
+  triggerBlock?: TriggerBlock;
 };
 
 /**
