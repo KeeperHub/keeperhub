@@ -1,26 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { triggerBlockOf } from "@/lib/workflow/executor/trigger-block";
 
-const PARENT = `0x${"ab".repeat(32)}`;
 const BLOCK = { triggerType: "Block", network: "1", blockInterval: "1" };
-const INPUT = {
-  blockNumber: 101,
-  blockTimestamp: 1_000_012,
-  parentHash: PARENT,
-};
+const INPUT = { blockNumber: 101, blockTimestamp: 1_000_012 };
 
 describe("triggerBlockOf", () => {
   it("reads a block-scheduler run's block and chain", () => {
-    const expected = {
+    expect(triggerBlockOf(true, BLOCK, INPUT)).toEqual({
       chainId: 1,
       number: 101,
-      timestamp: 1_000_012,
-      parentHash: PARENT,
-    };
-    expect(triggerBlockOf(true, BLOCK, INPUT)).toEqual(expected);
+    });
     expect(
       triggerBlockOf(true, { ...BLOCK, network: "mainnet" }, INPUT)
-    ).toEqual(expected);
+    ).toEqual({ chainId: 1, number: 101 });
   });
 
   it.each([
@@ -29,11 +21,9 @@ describe("triggerBlockOf", () => {
     ["another trigger type", true, { ...BLOCK, triggerType: "Event" }, INPUT],
     ["no trigger", true, undefined, INPUT],
     ["no block in the input", true, BLOCK, {}],
-    ["a string number", true, BLOCK, { ...INPUT, blockNumber: "101" }],
-    ["a fractional number", true, BLOCK, { ...INPUT, blockNumber: 1.5 }],
-    ["a negative timestamp", true, BLOCK, { ...INPUT, blockTimestamp: -1 }],
-    ["no parent hash", true, BLOCK, { ...INPUT, parentHash: undefined }],
-    ["a short parent hash", true, BLOCK, { ...INPUT, parentHash: "0xab" }],
+    ["a string number", true, BLOCK, { blockNumber: "101" }],
+    ["a fractional number", true, BLOCK, { blockNumber: 1.5 }],
+    ["a zero number", true, BLOCK, { blockNumber: 0 }],
     ["an unknown network", true, { ...BLOCK, network: "nowhere" }, INPUT],
     ["no network", true, { ...BLOCK, network: undefined }, INPUT],
   ])("is undefined for %s", (_label, fromScheduler, config, input) => {

@@ -249,7 +249,12 @@ class FakeProvider extends ethers.JsonRpcProvider {
   private readonly node: FakeNode;
 
   constructor(node: FakeNode, url = "http://fake.invalid") {
-    super(url, CHAIN_ID, { staticNetwork: true, batchMaxCount: 1 });
+    // No request cache, as in production (lib/rpc/providers).
+    super(url, CHAIN_ID, {
+      staticNetwork: true,
+      batchMaxCount: 1,
+      cacheTimeout: -1,
+    });
     this.node = node;
   }
 
@@ -335,12 +340,7 @@ describe("readSimulationSettings", () => {
   });
 
   it("carries the trigger block into next-block options only", () => {
-    const triggerBlock = {
-      chainId: 1,
-      number: 101,
-      timestamp: 1_000_012,
-      parentHash: ethers.ZeroHash,
-    };
+    const triggerBlock = { chainId: 1, number: 101 };
     expect(readSimulationSettings("next-block", "", triggerBlock)).toEqual({
       ok: true,
       options: { triggerBlock },
@@ -850,17 +850,25 @@ describe("next-block simulation", () => {
     });
   });
 
-  describe("a Block-triggered run whose RPC is a block behind the trigger", () => {
+  describe("a Block-triggered run whose RPC lags the trigger", () => {
     const MAINNET = 1;
-    // The fake node's block n has hash n + 1; latest is block 100 at T.
-    const LATEST_HASH = ethers.zeroPadValue(ethers.toBeHex(101), 32);
-    const trigger = (overrides: Partial<TriggerBlock> = {}): TriggerBlock => ({
-      chainId: MAINNET,
-      number: 101,
-      timestamp: 1_000_000 + SLOT,
-      parentHash: LATEST_HASH,
-      ...overrides,
-    });
+    const TRIGGER = { chainId: MAINNET, number: 101 };
+
+    // The RPC answers block 100 for the first `lagReads` reads of latest, then 101.
+    function lagFor(lagReads: number): void {
+      const handle = node.handle.bind(node);
+      let reads = 0;
+      node.handle = (method, params) => {
+        if (method === "eth_getBlockByNumber" && params[0] === "latest") {
+          reads += 1;
+          if (reads === lagReads + 1) {
+            node.latestNumber = 101;
+            node.latestTimestamp += SLOT;
+          }
+        }
+        return handle(method, params);
+      };
+    }
 
     function sendWith(
       triggerBlock: TriggerBlock,
@@ -876,23 +884,23 @@ describe("next-block simulation", () => {
       });
     }
 
-    it("predicts the time of the block after the trigger block", async () => {
-      // 5 s into the trigger block's slot: without the trigger the check
-      // would use the trigger block's own time and refuse.
-      setClock(node.latestTimestamp + SLOT + 5);
-      node.unlockAt = node.latestTimestamp + 2 * SLOT;
+    it("waits for the RPC to reach the trigger block, then predicts the block after it", async () => {
+      // 5 s into the trigger block's slot: from block 100 the check would
+      // use the trigger block's own time and refuse.
+      const triggerTime = node.latestTimestamp + SLOT;
+      setClock(triggerTime + 5);
+      node.unlockAt = triggerTime + SLOT;
+      lagFor(2);
 
-      const { simulation } = await sendWith(trigger());
+      const { simulation } = await sendWith(TRIGGER);
       expect(simulation).toMatchObject({
-        baseBlock: 100,
-        assumedBlockNumber: 101,
-        assumedTimestamp: node.latestTimestamp + 2 * SLOT,
-        rpcBehindTrigger: true,
+        baseBlock: 101,
+        assumedBlockNumber: 102,
+        assumedTimestamp: triggerTime + SLOT,
       });
-      // State and block number stay the RPC's: no gap in block numbers.
       for (const call of node.seen) {
-        expect(call.blockTag).toBe(ethers.toQuantity(100));
-        expect(call.overrides?.number).toBe(ethers.toQuantity(101));
+        expect(call.blockTag).toBe(ethers.toQuantity(101));
+        expect(call.overrides?.number).toBe(ethers.toQuantity(102));
       }
     });
 
@@ -903,112 +911,46 @@ describe("next-block simulation", () => {
       expect(formatContractError(error, IFACE)).toContain("too-soon");
     });
 
-    it("predicts trigger time + block time on a network without a slot clock", async () => {
-      setClock(node.latestTimestamp + SLOT + 2);
-      node.unlockAt = node.latestTimestamp + 2 * SLOT;
-      const { simulation } = await simulateSendAtNextBlock(
+    it("waits on a read as well", async () => {
+      const triggerTime = node.latestTimestamp + SLOT;
+      setClock(triggerTime + 5);
+      lagFor(1);
+      const { simulation } = await simulateCallAtNextBlock(
         managerFor(provider),
         {
-          chainId: CHAIN_ID,
-          tx: RUN_TX,
-          options: {
-            timestampOffsetSec: SLOT,
-            triggerBlock: trigger({ chainId: CHAIN_ID }),
-          },
+          chainId: MAINNET,
+          tx: WORKABLE_TX,
+          options: { triggerBlock: TRIGGER },
         }
       );
-      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + 2 * SLOT);
-      expect(simulation.rpcBehindTrigger).toBe(true);
+      expect(simulation.baseBlock).toBe(101);
+    });
+
+    it("fails as a temporary error, before any call, when the RPC never catches up", async () => {
+      setClock(node.latestTimestamp + 1);
+      const error = await sendWith(TRIGGER).catch((e: unknown) => e);
+      expect((error as Error).message).toContain(
+        "the RPC has not reached the block that triggered the run"
+      );
+      expect(isNonRetryableError(error)).toBe(false);
+      expect(failedNextBlockCheck(error)).toBe(true);
+      expect(node.seen).toHaveLength(0);
+      expect(
+        node.methods.filter((m) => m === "eth_getBlockByNumber")
+      ).toHaveLength(8);
     });
 
     it.each([
-      ["the RPC already has the trigger block", { number: 100 }],
-      ["the RPC is more than one block behind", { number: 102 }],
-      ["the trigger is on another chain", { chainId: CHAIN_ID }],
-      ["the trigger is not latest's child", { parentHash: ethers.ZeroHash }],
-      ["its time is not after latest", { timestamp: 1_000_000 }],
-      ["its time is off the slot grid", { timestamp: 1_000_000 + SLOT + 1 }],
-      ["its time is in the future", { timestamp: 1_000_000 + 10 * SLOT }],
-    ])("keeps today's prediction when %s", async (_label, overrides) => {
-      setClock(node.latestTimestamp + SLOT + 5);
+      ["the RPC already has the trigger block", { ...TRIGGER, number: 100 }],
+      ["the RPC is ahead of the trigger block", { ...TRIGGER, number: 99 }],
+      ["the trigger is on another chain", { ...TRIGGER, chainId: CHAIN_ID }],
+    ])("reads latest once when %s", async (_label, triggerBlock) => {
       node.unlockAt = node.latestTimestamp + SLOT;
-      const { simulation } = await sendWith(trigger(overrides));
-      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + SLOT);
-      expect(simulation).not.toHaveProperty("rpcBehindTrigger");
-    });
-
-    it("takes a beacon trigger block only once its slot has started", async () => {
-      node.unlockAt = node.latestTimestamp + 2 * SLOT;
-      setClock(node.latestTimestamp + SLOT - 1);
-      const early = await sendWith(trigger()).catch((e: unknown) => e);
-      expect(getNextBlockSimulation(early)).not.toHaveProperty(
-        "rpcBehindTrigger"
-      );
-
-      setClock(node.latestTimestamp + SLOT);
-      provider = new FakeProvider(node);
-      const { simulation } = await sendWith(trigger());
-      expect(simulation.rpcBehindTrigger).toBe(true);
-    });
-
-    it("allows 2 s of clock skew where there is no slot clock", async () => {
-      node.unlockAt = node.latestTimestamp + 2 * SLOT;
-      const sendOn = () =>
-        simulateSendAtNextBlock(managerFor(provider), {
-          chainId: CHAIN_ID,
-          tx: RUN_TX,
-          options: {
-            timestampOffsetSec: SLOT,
-            triggerBlock: trigger({ chainId: CHAIN_ID }),
-          },
-        });
-      setClock(node.latestTimestamp + SLOT - 2);
-      expect((await sendOn()).simulation.rpcBehindTrigger).toBe(true);
-
-      setClock(node.latestTimestamp + SLOT - 3);
-      provider = new FakeProvider(node);
-      const error = await sendOn().catch((e: unknown) => e);
-      expect(getNextBlockSimulation(error)).not.toHaveProperty(
-        "rpcBehindTrigger"
-      );
-    });
-
-    it("names the block the time belongs to in a failure", async () => {
-      setClock(node.latestTimestamp + SLOT + 5);
-      node.unlockAt = node.latestTimestamp + 3 * SLOT;
-      const error = await sendWith(trigger()).catch((e: unknown) => e);
-      const simulation = getNextBlockSimulation(error);
-      expect(nextBlockFailure("reverted", simulation).error).toBe(
-        `reverted (simulated as of next block 101, timestamp ${node.latestTimestamp + 2 * SLOT}; the RPC was one block behind the trigger, so this is block 102's time)`
-      );
-    });
-
-    it("reuses an earlier check made with the trigger while nothing moved", async () => {
-      // A two-slot minimum: reuse keeps trigger + 24; a fresh check gives + 12.
-      setClock(node.latestTimestamp + SLOT + 5);
-      node.unlockAt = node.latestTimestamp + 3 * SLOT;
-      const basedOn = (
-        await simulateSendAtNextBlock(managerFor(provider), {
-          chainId: MAINNET,
-          tx: RUN_TX,
-          options: { timestampOffsetSec: 2 * SLOT, triggerBlock: trigger() },
-        })
-      ).simulation;
-      provider = new FakeProvider(node);
-
-      const { simulation } = await sendWith(trigger(), { basedOn });
-      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + 3 * SLOT);
-    });
-
-    it("checks again when the trigger moves the time an earlier check did not use", async () => {
-      setClock(node.latestTimestamp + SLOT + 5);
-      node.unlockAt = node.latestTimestamp + SLOT;
-      const basedOn = (await send()).simulation;
-      node.unlockAt = node.latestTimestamp + 2 * SLOT;
-      provider = new FakeProvider(node);
-
-      const { simulation } = await sendWith(trigger(), { basedOn });
-      expect(simulation.assumedTimestamp).toBe(node.latestTimestamp + 2 * SLOT);
+      const { simulation } = await sendWith(triggerBlock);
+      expect(simulation.baseBlock).toBe(100);
+      expect(
+        node.methods.filter((m) => m === "eth_getBlockByNumber")
+      ).toHaveLength(1);
     });
   });
 

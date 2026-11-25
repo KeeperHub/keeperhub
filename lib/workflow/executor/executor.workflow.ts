@@ -3438,15 +3438,11 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           await mod[collectAction.stepFunction]({
             ...collectData,
             _context: {
-              executionId,
+              ...runStepContext,
               nodeId: aggregateCollectNodeId,
               nodeName: collectLabel,
               nodeType: "Collect",
               forEachNodeId,
-              organizationId,
-              orgSlug: organizationSlug,
-              createdBy,
-              workflowId,
             } satisfies StepContext,
           });
         }

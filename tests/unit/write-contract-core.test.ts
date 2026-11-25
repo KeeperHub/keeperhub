@@ -744,8 +744,6 @@ describe("writeContractCore simulateAt next-block", () => {
     const triggerBlock = {
       chainId: 16_602,
       number: 101,
-      timestamp: 1_000_012,
-      parentHash: `0x${"ab".repeat(32)}`,
     };
     await writeContractCore({
       ...baseInput,

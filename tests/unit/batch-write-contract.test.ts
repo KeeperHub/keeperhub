@@ -1268,8 +1268,6 @@ describe("batch-write-contract - simulateAt next-block", () => {
     const triggerBlock = {
       chainId: 1,
       number: 101,
-      timestamp: 1_000_012,
-      parentHash: `0x${"ab".repeat(32)}`,
     };
 
     await batchWriteContractCore(

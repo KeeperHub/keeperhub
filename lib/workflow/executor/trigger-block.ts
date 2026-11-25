@@ -1,14 +1,6 @@
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import type { TriggerBlock } from "@/lib/web3/next-block-limits";
 
-const BLOCK_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/;
-
-function wholeNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
-    ? value
-    : undefined;
-}
-
 /**
  * The trigger block of an EVM Block-triggered run. Only for runs the block
  * scheduler started: run input from callers is never trusted for it.
@@ -25,22 +17,18 @@ export function triggerBlockOf(
   ) {
     return;
   }
-  const number = wholeNumber(triggerInput.blockNumber);
-  const timestamp = wholeNumber(triggerInput.blockTimestamp);
-  const { parentHash } = triggerInput;
+  const { blockNumber } = triggerInput;
   const network = triggerConfig.network;
   if (
-    number === undefined ||
-    timestamp === undefined ||
-    typeof parentHash !== "string" ||
-    !BLOCK_HASH_PATTERN.test(parentHash) ||
+    typeof blockNumber !== "number" ||
+    !Number.isSafeInteger(blockNumber) ||
+    blockNumber <= 0 ||
     (typeof network !== "string" && typeof network !== "number")
   ) {
     return;
   }
   try {
-    const chainId = getChainIdFromNetwork(network);
-    return { chainId, number, timestamp, parentHash };
+    return { chainId: getChainIdFromNetwork(network), number: blockNumber };
   } catch {
     return;
   }
