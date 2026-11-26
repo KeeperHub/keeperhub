@@ -1,9 +1,10 @@
 import { Connection } from "@solana/web3.js";
 import { ethers, type WebSocketLike } from "ethers";
-import { assertUrlIsPublic, SsrfBlockedError } from "@/lib/safe-fetch";
+import { SsrfBlockedError } from "@/lib/safe-fetch";
 import { safeSolanaFetch } from "../../providers/solana";
 import { safeEthersGetUrl } from "../../safe-ethers-fetch";
 import { SOLANA_GENESIS_HASHES } from "../../solana-chains";
+import { resolveEndpointAddresses } from "../public-endpoint";
 import { SecretUrl } from "../secret-url";
 import { type RpcChain, RpcChainType, RpcTransport } from "../types";
 import { RpcUrlCheckFailure } from "./codes";
@@ -25,12 +26,6 @@ const PROBE_TIMEOUT_MS = 10_000;
 const SECURE_SCHEME: Readonly<Record<RpcTransport, string>> = {
   [RpcTransport.HTTP]: "https:",
   [RpcTransport.WSS]: "wss:",
-};
-
-/** URL schemes the public-host check understands, for each WebSocket scheme. */
-const WS_TO_HTTP_SCHEME: Readonly<Record<string, string>> = {
-  "ws:": "http:",
-  "wss:": "https:",
 };
 
 const EVM_CHAIN_ID_METHOD = "eth_chainId";
@@ -86,12 +81,7 @@ function evmProvider(
 
 export const liveRpcProbe: RpcProbe = {
   async assertPublic(url: string): Promise<void> {
-    const parsed = new URL(url);
-    const httpScheme = WS_TO_HTTP_SCHEME[parsed.protocol];
-    if (httpScheme) {
-      parsed.protocol = httpScheme;
-    }
-    await assertUrlIsPublic(parsed.toString());
+    await resolveEndpointAddresses(url);
   },
 
   async evm(

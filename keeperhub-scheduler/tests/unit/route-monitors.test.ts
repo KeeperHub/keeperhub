@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import type { LookupFunction } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BlockMonitorService } from "../../block-dispatcher/monitor-service.js";
 import { enqueueBlockTrigger } from "../../block-dispatcher/sqs-enqueue.js";
@@ -95,10 +96,25 @@ class MockProvider {
 const providers: MockProvider[] = [];
 const failingUrls = new Set<string>();
 
+type MockSocket = { url: string; options?: { lookup?: LookupFunction } };
+const sockets: MockSocket[] = [];
+
+vi.mock("ws", () => ({
+  WebSocket: class {
+    constructor(
+      readonly url: string,
+      readonly options?: { lookup?: LookupFunction },
+    ) {
+      sockets.push(this);
+    }
+  },
+}));
+
 vi.mock("ethers", () => ({
   ethers: {
     WebSocketProvider: class {
-      constructor(url: string) {
+      constructor(target: string | (() => MockSocket)) {
+        const url = typeof target === "string" ? target : target().url;
         const instance = new MockProvider(url);
         providers.push(instance);
         // biome-ignore lint/correctness/noConstructorReturn: substitutes the mock instance for `new`
@@ -122,6 +138,7 @@ function route(key: string, chainId = 1): RpcRoute {
       url: `wss://org-${key}-primary.test/secret-key`,
       origin: RpcOrigin.ORG,
       configId: `cfg-${key}`,
+      addresses: ["203.0.113.10"],
     },
     fallback: {
       url: `wss://platform-${key}-fallback.test`,
@@ -192,6 +209,7 @@ describe("BlockMonitorService organization routes", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     providers.length = 0;
+    sockets.length = 0;
     failingUrls.clear();
     apiRequest.mockReset();
     apiRequestOnce.mockReset().mockResolvedValue({ accepted: 1 });
@@ -211,6 +229,34 @@ describe("BlockMonitorService organization routes", () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     metrics.resetForTests();
+  });
+
+  it("dials an organization endpoint only at its vetted addresses", async () => {
+    serve([{ id: "org-b", rpcRoute: route("k1") }]);
+
+    await service.start();
+    await settle();
+
+    const socket = sockets.find((s) => s.url === route("k1").primary.url);
+    const lookup = socket?.options?.lookup;
+    expect(lookup).toBeDefined();
+    const answer = await new Promise<string>((resolve) => {
+      lookup?.("internal.example", {}, (_err, address) =>
+        resolve(String(address)),
+      );
+    });
+    expect(answer).toBe("203.0.113.10");
+  });
+
+  it("skips an organization route that carries no vetted addresses", async () => {
+    const unvetted = route("k1");
+    unvetted.primary = { ...unvetted.primary, addresses: undefined };
+    serve([{ id: "org-b", rpcRoute: unvetted }]);
+
+    await service.start();
+    await settle();
+
+    expect(providers.map((p) => p.url)).not.toContain(unvetted.primary.url);
   });
 
   it("shares one monitor per route key, built from the route's endpoints", async () => {

@@ -7,7 +7,8 @@
  */
 
 import { apiRequest } from "../lib/http-client.js";
-import { RpcTransport } from "../lib/rpc-route.js";
+import { isAddressList } from "../lib/pinned-lookup.js";
+import { RpcOrigin, RpcTransport } from "../lib/rpc-route.js";
 import type {
   BlockWorkflow,
   ChainConfig,
@@ -52,7 +53,7 @@ function addRouted(
   route: RpcRoute,
   networks: FetchBlockWorkflowsResponse["networks"],
 ): void {
-  if (route.transport !== RpcTransport.WSS) {
+  if (route.transport !== RpcTransport.WSS || !hasVettedAddresses(route)) {
     return;
   }
   const blockWorkflow = toBlockWorkflow(workflow);
@@ -71,6 +72,17 @@ function addRouted(
     },
     workflows: [blockWorkflow],
   });
+}
+
+// An organization's endpoint without vetted addresses is never dialled.
+function hasVettedAddresses(route: RpcRoute): boolean {
+  const endpoints = route.fallback
+    ? [route.primary, route.fallback]
+    : [route.primary];
+  return endpoints.every(
+    (endpoint) =>
+      endpoint.origin !== RpcOrigin.ORG || isAddressList(endpoint.addresses),
+  );
 }
 
 export async function fetchBlockWorkflows(): Promise<BlockWorkflowGroups> {

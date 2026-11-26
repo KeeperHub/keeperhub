@@ -1,5 +1,6 @@
 import type { RouteEndpointSpec, RouteSpec } from "../registrations";
 import { RpcOrigin, RpcTransport } from "./constants";
+import { isAddressList } from "./pinned-lookup";
 
 const ORIGINS: ReadonlySet<string> = new Set(Object.values(RpcOrigin));
 
@@ -27,10 +28,17 @@ function parseEndpoint(raw: unknown): RouteEndpointSpec | null {
     return null;
   }
   const configId = typeof raw.configId === "string" ? raw.configId : null;
+  // An organization's endpoint without vetted addresses is never dialled.
+  if (raw.origin === RpcOrigin.ORG && !isAddressList(raw.addresses)) {
+    return null;
+  }
   return {
     url: raw.url,
     origin: raw.origin as RpcOrigin,
     configId,
+    ...(raw.origin === RpcOrigin.ORG
+      ? { addresses: raw.addresses as string[] }
+      : {}),
   };
 }
 

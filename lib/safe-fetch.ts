@@ -673,9 +673,22 @@ export async function safeFetch(
  * Caveat: this is a write-time check. An attacker-controlled domain that
  * resolves to a public IP at validation time and re-binds to a private IP
  * before the fetch (DNS rebinding) is not blocked here. Pair this with the
- * runtime `safeFetch` guard wherever the URL is later used.
+ * runtime `safeFetch` guard wherever the URL is later used, or connect only
+ * to the addresses `resolvePublicAddresses` returns.
  */
 export async function assertUrlIsPublic(rawUrl: string): Promise<void> {
+  await resolvePublicAddresses(rawUrl);
+}
+
+/**
+ * The addresses a URL's host resolves to, every one of them checked against
+ * the SSRF denylist; an IP-literal host is its own single address. Throws
+ * exactly as `assertUrlIsPublic` does. A client that connects only to these
+ * addresses cannot be re-bound to a private one after the check.
+ */
+export async function resolvePublicAddresses(
+  rawUrl: string
+): Promise<string[]> {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -710,7 +723,7 @@ export async function assertUrlIsPublic(rawUrl: string): Promise<void> {
         reason: verdict.reason,
       });
     }
-    return;
+    return [hostname];
   }
 
   let addresses: LookupAddress[];
@@ -730,4 +743,5 @@ export async function assertUrlIsPublic(rawUrl: string): Promise<void> {
       });
     }
   }
+  return addresses.map((addr) => addr.address);
 }

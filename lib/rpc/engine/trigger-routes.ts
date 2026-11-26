@@ -1,6 +1,7 @@
 import "server-only";
 
 import { logWarn } from "@/lib/logging";
+import { resolveEndpointAddresses } from "./public-endpoint";
 import { ORG_SETTING_ROUTE_ERRORS, RpcRouteError } from "./route-error";
 import { getRpcEngine } from "./runtime";
 import {
@@ -11,7 +12,7 @@ import {
 import { isPlatformOnlyRoute } from "./telemetry/route-sink";
 import {
   type RpcEndpoint,
-  type RpcOrigin,
+  RpcOrigin,
   RpcPurpose,
   type RpcRoute,
   type RpcTransport,
@@ -24,6 +25,12 @@ export type TriggerRouteEndpoint = {
   url: string;
   origin: RpcOrigin;
   configId: string | null;
+  /**
+   * Set on an organization's endpoints: the public addresses its host
+   * resolved to here. Services connect only to these, so the host cannot be
+   * re-pointed at an internal address after the check.
+   */
+  addresses?: string[];
 };
 
 /**
@@ -60,25 +67,45 @@ export function triggerChainId(node: TriggerNode | undefined): number | null {
   return Number.isFinite(chainId) ? chainId : null;
 }
 
-function toEndpoint(endpoint: RpcEndpoint): TriggerRouteEndpoint {
-  return {
-    url: endpoint.url.reveal(),
-    origin: endpoint.origin,
-    configId: endpoint.configId,
-  };
+/**
+ * An endpoint as a service receives it. An organization's endpoint carries
+ * its vetted addresses, or is null when its host is not public right now.
+ */
+async function toEndpoint(
+  endpoint: RpcEndpoint
+): Promise<TriggerRouteEndpoint | null> {
+  const url = endpoint.url.reveal();
+  const sent = { url, origin: endpoint.origin, configId: endpoint.configId };
+  if (endpoint.origin !== RpcOrigin.ORG) {
+    return sent;
+  }
+  try {
+    return { ...sent, addresses: await resolveEndpointAddresses(url) };
+  } catch {
+    return null;
+  }
 }
 
-function toTriggerRoute(
+/** Null when none of the route's endpoints can be handed out. */
+async function toTriggerRoute(
   route: RpcRoute,
   organizationId: string
-): TriggerRpcRoute {
+): Promise<TriggerRpcRoute | null> {
+  const [primary, fallback] = await Promise.all([
+    toEndpoint(route.primary),
+    route.fallback ? toEndpoint(route.fallback) : null,
+  ]);
+  const first = primary ?? fallback;
+  if (!first) {
+    return null;
+  }
   return {
     key: route.key,
     organizationId,
     chainId: route.chain.chainId,
     transport: route.transport,
-    primary: toEndpoint(route.primary),
-    fallback: route.fallback ? toEndpoint(route.fallback) : undefined,
+    primary: first,
+    fallback: primary ? (fallback ?? undefined) : undefined,
   };
 }
 
@@ -115,9 +142,21 @@ async function routeOne<T extends TriggerWorkflow>(
     });
     return null;
   }
-  return isPlatformOnlyRoute(route)
-    ? workflow
-    : { ...workflow, rpcRoute: toTriggerRoute(route, workflow.organizationId) };
+  if (isPlatformOnlyRoute(route)) {
+    return workflow;
+  }
+  const rpcRoute = await toTriggerRoute(route, workflow.organizationId);
+  if (!rpcRoute) {
+    logWarn(
+      "[Trigger Routes] Trigger's RPC endpoints are not public; not listening",
+      {
+        workflow_id: workflow.id,
+        chain_id: String(chainId),
+      }
+    );
+    return null;
+  }
+  return { ...workflow, rpcRoute };
 }
 
 /**

@@ -57,6 +57,8 @@ function solanaNetwork(chainId: number): NetworkConfig {
   };
 }
 
+const VETTED = ["203.0.113.10"];
+
 function route(
   key: string,
   overrides: Record<string, unknown> = {},
@@ -66,11 +68,17 @@ function route(
     organizationId: "org-1",
     chainId: 101,
     transport: RpcTransport.HTTP,
-    primary: { url: ORG_PRIMARY, origin: RpcOrigin.ORG, configId: "cfg-1" },
+    primary: {
+      url: ORG_PRIMARY,
+      origin: RpcOrigin.ORG,
+      configId: "cfg-1",
+      addresses: VETTED,
+    },
     fallback: {
       url: ORG_FALLBACK,
       origin: RpcOrigin.ORG,
       configId: "cfg-1",
+      addresses: VETTED,
     },
     ...overrides,
   };
@@ -205,6 +213,7 @@ describe("RoutePool", () => {
         url: "https://org-other.example/k",
         origin: RpcOrigin.ORG,
         configId: "cfg-2",
+        addresses: VETTED,
       },
     });
     await pool.reconcile(

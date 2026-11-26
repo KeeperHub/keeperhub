@@ -6,6 +6,10 @@ const engine = vi.hoisted(() => ({ route: vi.fn() }));
 vi.mock("@/lib/rpc/engine/runtime", () => ({
   getRpcEngine: () => engine,
 }));
+const resolver = vi.hoisted(() => ({ resolve: vi.fn() }));
+vi.mock("@/lib/rpc/engine/public-endpoint", () => ({
+  resolveEndpointAddresses: resolver.resolve,
+}));
 vi.mock("@/lib/logging", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/logging")>()),
   logWarn: vi.fn(),
@@ -34,6 +38,7 @@ import {
 const ORG_ID = "org_1";
 const CHAIN_ID = 1;
 const ORG_WSS = "wss://org.example.com/key";
+const PUBLIC_ADDRESS = "203.0.113.10";
 
 function endpoint(origin: RpcOrigin, url: string): RpcEndpoint {
   return {
@@ -86,6 +91,8 @@ describe("triggerChainId", () => {
 describe("attachTriggerRoutes", () => {
   beforeEach(() => {
     engine.route.mockReset();
+    resolver.resolve.mockReset();
+    resolver.resolve.mockResolvedValue([PUBLIC_ADDRESS]);
   });
 
   it("leaves KeeperHub routes alone so the shared per-chain socket serves them", async () => {
@@ -121,9 +128,25 @@ describe("attachTriggerRoutes", () => {
       organizationId: ORG_ID,
       chainId: CHAIN_ID,
       transport: RpcTransport.WSS,
-      primary: { url: ORG_WSS, origin: RpcOrigin.ORG, configId: "cfg_main" },
+      primary: {
+        url: ORG_WSS,
+        origin: RpcOrigin.ORG,
+        configId: "cfg_main",
+        addresses: [PUBLIC_ADDRESS],
+      },
       fallback: undefined,
     });
+  });
+
+  it("does not hand out an organization endpoint whose host is not public", async () => {
+    engine.route.mockResolvedValue(route(endpoint(RpcOrigin.ORG, ORG_WSS)));
+    resolver.resolve.mockRejectedValue(new Error("blocked: private address"));
+
+    const result = await attachTriggerRoutes([
+      workflow("wf_1", { network: String(CHAIN_ID) }),
+    ]);
+
+    expect(result).toEqual([]);
   });
 
   it("drops a trigger the engine refuses to route", async () => {

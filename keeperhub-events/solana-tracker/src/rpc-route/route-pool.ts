@@ -5,6 +5,7 @@ import type {
   RouteSpec,
 } from "../registrations";
 import { ROUTE_START_TIMEOUT_MS } from "./constants";
+import { pinEndpointHosts } from "./pinned-dns";
 import type { UsageMeter, UsageRecorder } from "./usage-meter";
 
 /** The slice of BlockIngestor the pool drives. */
@@ -104,6 +105,11 @@ export class RoutePool {
     for (const registration of registrations) {
       wanted.set(registration.route.key, registration);
     }
+    pinEndpointHosts(
+      [...wanted.values()].flatMap(({ route }) =>
+        route.fallback ? [route.primary, route.fallback] : [route.primary],
+      ),
+    );
     const tornDown = new Set<string>();
     for (const [key, ingestor] of [...this.ingestors]) {
       if (!wanted.has(key)) {

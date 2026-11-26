@@ -12,9 +12,15 @@
  * from the previous leader's progress.
  */
 
+import type { LookupFunction } from "node:net";
 import { RECONCILE_INTERVAL_MS } from "../lib/config.js";
 import { metrics, silentChainMetrics } from "../lib/metrics.js";
-import { RpcEndpointRole, type RpcUsageCounter } from "../lib/rpc-route.js";
+import { pinnedLookup } from "../lib/pinned-lookup.js";
+import {
+  RpcEndpointRole,
+  RpcOrigin,
+  type RpcUsageCounter,
+} from "../lib/rpc-route.js";
 import { RpcUsageReporter } from "../lib/rpc-usage.js";
 import type {
   BlockWorkflow,
@@ -41,8 +47,22 @@ function sameEndpoint(
   b: RpcRouteEndpoint | undefined,
 ): boolean {
   return (
-    a?.url === b?.url && a?.origin === b?.origin && a?.configId === b?.configId
+    a?.url === b?.url &&
+    a?.origin === b?.origin &&
+    a?.configId === b?.configId &&
+    (a?.addresses ?? []).join(",") === (b?.addresses ?? []).join(",")
   );
+}
+
+/** Pinned to the vetted addresses for an organization endpoint, else none. */
+function lookupFor(route: RpcRoute, url: string): LookupFunction | undefined {
+  const endpoint = [route.primary, route.fallback].find(
+    (candidate) => candidate?.url === url,
+  );
+  if (endpoint?.origin !== RpcOrigin.ORG) {
+    return undefined;
+  }
+  return pinnedLookup(endpoint.addresses ?? []);
 }
 
 function routeChanged(current: RpcRoute, next: RpcRoute): boolean {
@@ -333,6 +353,7 @@ export class BlockMonitorService {
       logger: silentLogger,
       metrics: silentChainMetrics,
       usage: this.usageFor(group.route),
+      lookupFor: (url) => lookupFor(group.route, url),
     });
     const entry: RouteMonitor = { monitor, route: group.route, starting: true };
     this.routeMonitors.set(key, entry);

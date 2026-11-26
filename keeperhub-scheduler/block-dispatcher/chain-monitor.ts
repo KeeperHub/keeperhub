@@ -11,7 +11,9 @@
  * provider goes silent.
  */
 
+import type { LookupFunction } from "node:net";
 import { ethers } from "ethers";
+import { WebSocket } from "ws";
 import { type ChainMetrics, metrics } from "../lib/metrics.js";
 import {
   createPhantomExecution,
@@ -194,6 +196,9 @@ type ChainMonitorConfig = {
   logger?: MonitorLogger;
   metrics?: ChainMetrics;
   usage?: MonitorUsage;
+  // Organization routes dial their endpoints only at the app's vetted
+  // addresses; undefined for a URL means ordinary DNS.
+  lookupFor?: (url: string) => LookupFunction | undefined;
 };
 
 export type BlockHeader = {
@@ -351,11 +356,13 @@ export class ChainMonitor {
   private readonly log: MonitorLogger;
   private readonly metrics: ChainMetrics;
   private readonly usage: MonitorUsage;
+  private readonly lookupFor: ChainMonitorConfig["lookupFor"];
 
   constructor(config: ChainMonitorConfig) {
     this.log = config.logger ?? console;
     this.metrics = config.metrics ?? metrics;
     this.usage = config.usage ?? noUsage;
+    this.lookupFor = config.lookupFor;
     this.chainId = config.chain.chainId;
     this.chainName = config.chain.name;
     this.primaryWss = config.chain.defaultPrimaryWss;
@@ -560,6 +567,13 @@ export class ChainMonitor {
     }
   }
 
+  private openProvider(url: string): ethers.WebSocketProvider {
+    const lookup = this.lookupFor?.(url);
+    return lookup
+      ? new ethers.WebSocketProvider(() => new WebSocket(url, { lookup }))
+      : new ethers.WebSocketProvider(url);
+  }
+
   private async connect(): Promise<void> {
     type Candidate = {
       url: string;
@@ -601,7 +615,7 @@ export class ChainMonitor {
     for (const [iterIdx, candidate] of ordered.entries()) {
       let provider: ethers.WebSocketProvider | null = null;
       try {
-        provider = new ethers.WebSocketProvider(candidate.url);
+        provider = this.openProvider(candidate.url);
 
         // ethers v6 WebSocketProvider does not attach an 'error' listener on
         // the underlying ws. Without one, an HTTP 429 (or any non-101 upgrade
@@ -1345,7 +1359,7 @@ export class ChainMonitor {
 
     let probeProvider: ethers.WebSocketProvider | null = null;
     try {
-      probeProvider = new ethers.WebSocketProvider(this.primaryWss);
+      probeProvider = this.openProvider(this.primaryWss);
       // Inline silent listener (not attachConnectErrorListener) so probe
       // failures produce only the single "Primary probe failed" line below.
       const ws = probeProvider.websocket as unknown as {

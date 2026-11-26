@@ -98,6 +98,7 @@ export const ROUTE_CHAIN_ID = 8453;
 export const ORG_ID = "org-1";
 export const ORG_PRIMARY_URL = "wss://org-primary.example/secret-key-1";
 export const ORG_FALLBACK_URL = "wss://org-fallback.example/secret-key-2";
+export const ORG_PRIMARY_ADDRESSES = ["203.0.113.10"];
 
 export function makeRoute(overrides: Partial<RpcRoute> = {}): RpcRoute {
   return {
@@ -109,6 +110,7 @@ export function makeRoute(overrides: Partial<RpcRoute> = {}): RpcRoute {
       url: ORG_PRIMARY_URL,
       origin: RpcOrigin.ORG,
       configId: "cfg-1",
+      addresses: ORG_PRIMARY_ADDRESSES,
     },
     fallback: {
       url: ORG_FALLBACK_URL,

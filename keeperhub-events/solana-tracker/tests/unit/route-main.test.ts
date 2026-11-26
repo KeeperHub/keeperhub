@@ -79,7 +79,12 @@ function orgRoute(chainId: number): Record<string, unknown> {
     organizationId: ORG_ID,
     chainId,
     transport: "http",
-    primary: { url: ORG_URL, origin: "org", configId: "cfg-1" },
+    primary: {
+      url: ORG_URL,
+      origin: "org",
+      configId: "cfg-1",
+      addresses: ["203.0.113.10"],
+    },
   };
 }
 

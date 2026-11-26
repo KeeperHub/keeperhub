@@ -1,3 +1,5 @@
+import { isAddressList } from "./pinned-lookup";
+
 /** Who operates an endpoint: KeeperHub, or the organization that added it. */
 export const RpcOrigin = {
   PLATFORM: "platform",
@@ -28,6 +30,8 @@ export interface RpcRouteEndpoint {
   url: string;
   origin: RpcOrigin;
   configId: string | null;
+  /** On an organization's endpoint: the only addresses it may be dialled at. */
+  addresses?: string[];
 }
 
 /**
@@ -54,7 +58,7 @@ function parseEndpoint(value: unknown): RpcRouteEndpoint | null {
   if (!isRecord(value)) {
     return null;
   }
-  const { url, origin, configId } = value;
+  const { url, origin, configId, addresses } = value;
   if (typeof url !== "string" || url.length === 0) {
     return null;
   }
@@ -68,10 +72,15 @@ function parseEndpoint(value: unknown): RpcRouteEndpoint | null {
   ) {
     return null;
   }
+  // An organization's endpoint without vetted addresses is never dialled.
+  if (origin === RpcOrigin.ORG && !isAddressList(addresses)) {
+    return null;
+  }
   return {
     url,
     origin: origin as RpcOrigin,
     configId: typeof configId === "string" ? configId : null,
+    ...(origin === RpcOrigin.ORG ? { addresses: addresses as string[] } : {}),
   };
 }
 

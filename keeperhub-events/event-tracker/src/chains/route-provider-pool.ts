@@ -1,7 +1,9 @@
+import { pinnedLookup } from "./pinned-lookup";
 import {
   ChainProviderManager,
   type ChainProviderManagerOptions,
   type ProviderUsageEvent,
+  createWebSocketProvider,
   silentLogger,
 } from "./provider-manager";
 import type { RpcRoute, RpcRouteEndpoint, RpcUsageCounter } from "./rpc-route";
@@ -77,6 +79,8 @@ export class RouteProviderPool {
 
   acquire(route: RpcRoute): RouteLease {
     const entry = this.entries.get(route.key) ?? this.createEntry(route);
+    // The latest vetted addresses are the ones the next connection uses.
+    entry.route = route;
     entry.refs += 1;
     let released = false;
     return {
@@ -116,6 +120,11 @@ export class RouteProviderPool {
       this.opts.createManager ??
       ((opts: ChainProviderManagerOptions) => new ChainProviderManager(opts));
     entry.manager = create({
+      factory: (url) =>
+        createWebSocketProvider(
+          url,
+          pinnedLookup(endpointFor(entry.route, url)?.addresses ?? []),
+        ),
       ...this.opts.managerOptions,
       logger: silentLogger,
       onPermanentFailure: () => this.fail(route.key, entry),

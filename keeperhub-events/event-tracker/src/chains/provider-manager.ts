@@ -1,3 +1,4 @@
+import type { LookupFunction } from "node:net";
 import { ethers } from "ethers";
 import { WebSocket } from "ws";
 import { logger } from "../../lib/utils/logger";
@@ -657,14 +658,21 @@ function newChainStats(): ChainStats {
  * the time the connection attempt resolves so the EventEmitter does not
  * re-throw synchronously.
  */
-const defaultFactory: ProviderFactory = (wssUrl) =>
-  new ethers.WebSocketProvider(() => {
-    const socket = new WebSocket(wssUrl);
+export function createWebSocketProvider(
+  wssUrl: string,
+  lookup?: LookupFunction,
+): ethers.WebSocketProvider {
+  return new ethers.WebSocketProvider(() => {
+    const socket = new WebSocket(wssUrl, lookup ? { lookup } : undefined);
     socket.on("error", () => {
       // intentionally empty - see comment on defaultFactory
     });
     return socket;
   });
+}
+
+const defaultFactory: ProviderFactory = (wssUrl) =>
+  createWebSocketProvider(wssUrl);
 
 const defaultOnPermanentFailure = (chainId: number): void => {
   logger.error(

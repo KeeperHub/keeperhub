@@ -44,6 +44,8 @@ export type RpcRouteEndpoint = {
   url: string;
   origin: RpcOrigin;
   configId: string | null;
+  /** On an organization's endpoint: the only addresses it may be dialled at. */
+  addresses?: string[];
 };
 
 /** Endpoints a workflow listens on when its organization's route differs from KeeperHub's. */

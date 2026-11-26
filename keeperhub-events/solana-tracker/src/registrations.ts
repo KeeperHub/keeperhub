@@ -34,6 +34,8 @@ export interface RouteEndpointSpec {
   url: string;
   origin: RpcOrigin;
   configId: string | null;
+  /** On an organization's endpoint: the only addresses it may be dialled at. */
+  addresses?: string[];
 }
 
 /** An organization's own route, as the app hands it out. URLs carry API keys. */
